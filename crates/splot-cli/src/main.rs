@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <contact@splotlabs.io>
 
 //! `splot` — a thin command-line interface over the `splot-*` library crates.
 //!
@@ -20,7 +20,7 @@ mod commands;
     version,
     about = "splot — an AV2 bitstream validator/inspector and future encoder",
     propagate_version = true,
-    after_help = "splot is free for noncommercial use under PolyForm Noncommercial 1.0.0.\nCommercial use of ANY component (validator, inspector, encoder, CLI) requires a\nseparate commercial license: bartekplus@gmail.com."
+    after_help = "splot is free for noncommercial use under PolyForm Noncommercial 1.0.0.\nCommercial use of ANY component (validator, inspector, encoder, CLI) requires a\nseparate commercial license: contact@splotlabs.io."
 )]
 struct Cli {
     /// Increase logging verbosity (repeatable: -v, -vv, -vvv).

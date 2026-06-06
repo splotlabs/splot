@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <contact@splotlabs.io>
 
 //! Strongly-typed AV2 OBU header identifiers (AV2 v1.0.0 § 5.2, § 6.2.2, Table 6.1).
 

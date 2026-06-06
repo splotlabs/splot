@@ -66,7 +66,7 @@ cargo fuzz run parse_obu   # requires `cargo install cargo-fuzz --locked`; not p
 
   ```rust
   // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-  // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+  // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <contact@splotlabs.io>
   ```
 
 - **Unsafe:** forbidden in the workspace (`unsafe_code = "forbid"`). Future SIMD/FFI

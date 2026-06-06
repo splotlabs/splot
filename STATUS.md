@@ -66,8 +66,8 @@ Toolchain: Rust 1.96.0, edition 2024, resolver 3. Generated 2026-06-06.
 1. **clippy lint priority.** `[workspace.lints.clippy] all` is written as
    `{ level = "warn", priority = -1 }` instead of `all = "warn"`. Rust 1.96 clippy's
    `lint_groups_priority` check fails the plain form under `-D warnings`.
-2. **`CONTACT_EMAIL`.** Filled with `bartekplus@gmail.com` (the maintainer's email).
-   Replace if a dedicated commercial-licensing address is preferred.
+2. **`CONTACT_EMAIL`.** Set to `contact@splotlabs.io` (the Splot Labs commercial-
+   licensing / support address). The SPDX copyright holder remains `Bartosz Tomczyk`.
 3. **`xtask ci`** calls the license-header and dependency-direction checks as
    in-process functions rather than spawning `cargo xtask …` subprocesses (same
    effect, no recompile). CI (`.github/workflows/ci.yml`) still invokes them as

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <contact@splotlabs.io>
 
 //! CLI subcommand implementations and shared helpers.
 

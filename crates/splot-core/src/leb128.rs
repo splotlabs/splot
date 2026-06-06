@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <contact@splotlabs.io>
 
 //! AV2 LEB128 unsigned-integer parsing (AV2 v1.0.0 § 4.11.6).
 //!

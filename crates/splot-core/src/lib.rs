@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <contact@splotlabs.io>
 
 //! `splot-core` — the AV2 (AOMedia Video 2) bitstream model and parsing
 //! foundation for the [`splot`](https://github.com/splotlabs/splot) toolkit.

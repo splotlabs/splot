@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <contact@splotlabs.io>
 #
 # The fuzz crate is intentionally OUTSIDE the workspace (see the root Cargo.toml
 # `exclude = ["fuzz"]`) so that libFuzzer's `unsafe` usage is not subject to the
@@ -10,7 +10,7 @@ name = "splot-fuzz"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.96.0"
-authors = ["Bartosz Tomczyk <bartekplus@gmail.com>"]
+authors = ["Bartosz Tomczyk <contact@splotlabs.io>"]
 publish = false
 license = "PolyForm-Noncommercial-1.0.0"
 

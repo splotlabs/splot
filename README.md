@@ -68,7 +68,7 @@ fuzz                   cargo-fuzz target (outside the workspace)
 `splot` is licensed under **PolyForm Noncommercial 1.0.0** (see [LICENSE.md](./LICENSE.md)).
 It is free for noncommercial use. **Commercial use of any component** — validator,
 inspector, decoder, encoder, CLI, docs, tests — requires a separate commercial
-license: <bartekplus@gmail.com>.
+license: <contact@splotlabs.io>.
 
 ## Contributing
 
