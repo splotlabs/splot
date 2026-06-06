@@ -88,11 +88,11 @@ All run from the repo root:
 cargo fmt --all -- --check                                              # ok (no diff)
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings  # ok, 0 warnings
 cargo build --workspace --all-targets --locked                          # ok
-cargo test --workspace --all-targets --locked                           # ok: 50 passed, 0 failed
+cargo test --workspace --all-targets --locked                           # ok: 53 passed, 0 failed
 cargo xtask ci                                                          # ok: all checks passed
 ```
 
-Test breakdown: `splot-core` 34, `splot-encode` 2, `splot-validate` 8,
+Test breakdown: `splot-core` 37, `splot-encode` 2, `splot-validate` 8,
 `splot-cli` 6 (CLI integration tests over `tests/fixtures/`), `xtask` 0.
 
 Also verified:

@@ -13,10 +13,9 @@ use crate::diagnostic::{Diagnostic, Severity, ValidationReport};
 /// Validates AV2 length-delimited bitstreams and produces a [`ValidationReport`].
 #[derive(Debug, Clone, Copy)]
 pub struct Validator {
-    /// When `true`, consumers should treat warnings as conformance failures.
-    ///
-    /// The library always reports the same diagnostics; the CLI uses this flag to
-    /// decide its exit status. It is reserved for future, stricter check sets.
+    /// When `true`, [`Validator::is_acceptable`] treats a report with warnings
+    /// (not just errors) as a conformance failure. The set of diagnostics produced
+    /// by [`Validator::validate_bytes`] is unaffected.
     pub strict: bool,
 }
 
@@ -25,6 +24,17 @@ impl Validator {
     #[must_use]
     pub fn new(strict: bool) -> Self {
         Self { strict }
+    }
+
+    /// Returns `true` if `report` passes under this validator's strictness.
+    ///
+    /// A report always fails if it contains any [`Severity::Error`]; in
+    /// [`Validator::strict`] mode it additionally fails if it contains any warning.
+    /// This is the single source of truth for pass/fail (the CLI's exit status
+    /// uses it).
+    #[must_use]
+    pub fn is_acceptable(&self, report: &ValidationReport) -> bool {
+        report.is_conformant() && !(self.strict && report.warnings().next().is_some())
     }
 
     /// Validates `data` as an AV2 Annex B bitstream.

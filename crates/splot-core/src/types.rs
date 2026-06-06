@@ -6,17 +6,24 @@
 use serde::{Deserialize, Serialize};
 
 /// `obu_xlayer_id` value (31) denoting global scope (AV2 v1.0.0 § 3, `GLOBAL_XLAYER_ID`).
-pub const GLOBAL_XLAYER_ID: ExtendedLayerId = ExtendedLayerId::new(31);
+pub const GLOBAL_XLAYER_ID: ExtendedLayerId = ExtendedLayerId::from_bits(31);
 
 /// `obu_tlayer_id`: temporal layer id of an OBU (2 bits; AV2 § 6.2.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TemporalLayerId(u8);
 
 impl TemporalLayerId {
-    /// Creates a temporal layer id from its raw value.
+    /// Creates a temporal layer id from a value already known to fit the 2-bit
+    /// `obu_tlayer_id` field (for example, just read from the bitstream).
     #[must_use]
-    pub const fn new(value: u8) -> Self {
+    pub const fn from_bits(value: u8) -> Self {
         Self(value)
+    }
+
+    /// Creates a temporal layer id, returning `None` if `value > 3` (2 bits).
+    #[must_use]
+    pub const fn try_new(value: u8) -> Option<Self> {
+        if value <= 3 { Some(Self(value)) } else { None }
     }
 
     /// Returns the raw value.
@@ -31,10 +38,17 @@ impl TemporalLayerId {
 pub struct EmbeddedLayerId(u8);
 
 impl EmbeddedLayerId {
-    /// Creates an embedded layer id from its raw value.
+    /// Creates an embedded layer id from a value already known to fit the 3-bit
+    /// `obu_mlayer_id` field.
     #[must_use]
-    pub const fn new(value: u8) -> Self {
+    pub const fn from_bits(value: u8) -> Self {
         Self(value)
+    }
+
+    /// Creates an embedded layer id, returning `None` if `value > 7` (3 bits).
+    #[must_use]
+    pub const fn try_new(value: u8) -> Option<Self> {
+        if value <= 7 { Some(Self(value)) } else { None }
     }
 
     /// Returns the raw value.
@@ -51,10 +65,17 @@ impl EmbeddedLayerId {
 pub struct ExtendedLayerId(u8);
 
 impl ExtendedLayerId {
-    /// Creates an extended layer id from its raw value.
+    /// Creates an extended layer id from a value already known to fit the 5-bit
+    /// `obu_xlayer_id` field.
     #[must_use]
-    pub const fn new(value: u8) -> Self {
+    pub const fn from_bits(value: u8) -> Self {
         Self(value)
+    }
+
+    /// Creates an extended layer id, returning `None` if `value > 31` (5 bits).
+    #[must_use]
+    pub const fn try_new(value: u8) -> Option<Self> {
+        if value <= 31 { Some(Self(value)) } else { None }
     }
 
     /// Returns the raw value.
@@ -354,7 +375,26 @@ mod tests {
     fn global_xlayer_constant() {
         assert_eq!(GLOBAL_XLAYER_ID.get(), 31);
         assert!(GLOBAL_XLAYER_ID.is_global());
-        assert!(!ExtendedLayerId::new(0).is_global());
+        assert!(!ExtendedLayerId::from_bits(0).is_global());
+    }
+
+    #[test]
+    fn checked_constructors_enforce_field_widths() {
+        assert_eq!(
+            TemporalLayerId::try_new(3).map(TemporalLayerId::get),
+            Some(3)
+        );
+        assert!(TemporalLayerId::try_new(4).is_none());
+        assert_eq!(
+            EmbeddedLayerId::try_new(7).map(EmbeddedLayerId::get),
+            Some(7)
+        );
+        assert!(EmbeddedLayerId::try_new(8).is_none());
+        assert_eq!(
+            ExtendedLayerId::try_new(31).map(ExtendedLayerId::get),
+            Some(31)
+        );
+        assert!(ExtendedLayerId::try_new(32).is_none());
     }
 
     #[test]

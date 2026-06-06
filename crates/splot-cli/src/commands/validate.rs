@@ -35,7 +35,8 @@ pub struct ValidateArgs {
 /// serialized.
 pub fn run(args: &ValidateArgs) -> Result<ExitCode> {
     let data = read_input(&args.input)?;
-    let report = Validator::new(args.strict).validate_bytes(&data);
+    let validator = Validator::new(args.strict);
+    let report = validator.validate_bytes(&data);
 
     if args.json {
         let json = serde_json::to_string_pretty(&report).context("failed to serialize report")?;
@@ -44,11 +45,9 @@ pub fn run(args: &ValidateArgs) -> Result<ExitCode> {
         print!("{report}");
     }
 
-    let has_warnings = report.warnings().next().is_some();
-    let failed = !report.is_conformant() || (args.strict && has_warnings);
-    Ok(if failed {
-        ExitCode::from(1)
-    } else {
+    Ok(if validator.is_acceptable(&report) {
         ExitCode::from(0)
+    } else {
+        ExitCode::from(1)
     })
 }

@@ -40,7 +40,7 @@ impl<'a> BitReader<'a> {
     /// Returns the bit position (`0..=7`, MSB-first) within the current byte.
     #[must_use]
     pub const fn bit_offset(&self) -> BitOffset {
-        BitOffset::new(self.bit_pos)
+        BitOffset::from_bits(self.bit_pos)
     }
 
     /// Returns `true` if the reader is positioned on a byte boundary.

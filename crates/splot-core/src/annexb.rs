@@ -17,7 +17,7 @@
 
 use crate::error::{Error, Result};
 use crate::leb128::read_leb128;
-use crate::obu::{ObuHeader, read_obu_header};
+use crate::obu::{ObuHeader, read_obu_header_from_slice};
 use crate::span::ByteOffset;
 
 /// One length-delimited OBU from an Annex B bitstream.
@@ -111,18 +111,11 @@ fn parse_one_obu(input: &[u8], cursor: usize) -> Result<(ObuEnvelope<'_>, usize)
         });
     }
 
-    let header = read_obu_header(input, ByteOffset::new(header_start as u64))?;
-    let header_len = usize::from(header.header_size_bytes);
-    if header_len > size_usize {
-        return Err(Error::InvalidObuHeader {
-            offset: ByteOffset::new(header_start as u64),
-            message: "OBU header is larger than the declared OBU size".to_owned(),
-        });
-    }
-
-    let payload_start = header_start.saturating_add(header_len);
-    let payload_end = header_start.saturating_add(size_usize);
-    let Some(payload) = input.get(payload_start..payload_end) else {
+    // The OBU header and payload must lie entirely within this OBU's declared
+    // bytes (Annex B: `open_bitstream_unit` receives exactly `num_bytes_in_obu`
+    // bytes), so parse the header from that bounded slice and never the next OBU.
+    let obu_end = header_start.saturating_add(size_usize);
+    let Some(obu_bytes) = input.get(header_start..obu_end) else {
         return Err(Error::ObuPayloadOutOfRange {
             offset: ByteOffset::new(header_start as u64),
             size,
@@ -130,13 +123,18 @@ fn parse_one_obu(input: &[u8], cursor: usize) -> Result<(ObuEnvelope<'_>, usize)
         });
     };
 
+    let header = read_obu_header_from_slice(obu_bytes, ByteOffset::new(header_start as u64))?;
+    let payload = obu_bytes
+        .get(usize::from(header.header_size_bytes)..)
+        .unwrap_or(&[]);
+
     let envelope = ObuEnvelope {
         offset: ByteOffset::new(header_start as u64),
         size,
         header,
         payload,
     };
-    Ok((envelope, header_start.saturating_add(size_usize)))
+    Ok((envelope, obu_end))
 }
 
 #[cfg(test)]
@@ -212,6 +210,26 @@ mod tests {
         ));
         // The strict wrapper still surfaces the error.
         assert!(parse_annex_b_obus(&stream).is_err());
+    }
+
+    #[test]
+    fn header_parsing_is_bounded_to_declared_obu_size() {
+        // size=1 but the header byte signals an extension; its extension byte would
+        // fall in the NEXT OBU. The parser must error within this OBU, not peek ahead.
+        assert!(matches!(
+            parse_annex_b_obus(&[0x01, 0x88, 0x01, 0x08]),
+            Err(Error::UnexpectedEof { .. })
+        ));
+        // Same class of error when the truncated extension is at end of stream.
+        assert!(matches!(
+            parse_annex_b_obus(&[0x01, 0x88]),
+            Err(Error::UnexpectedEof { .. })
+        ));
+        // A valid 2-byte extension header still parses.
+        let valid = parse_annex_b_obus(&[0x02, 0x88, 0x05]).unwrap();
+        assert_eq!(valid.len(), 1);
+        assert!(valid[0].header.has_header_extension);
+        assert_eq!(valid[0].header.extended_layer_id.get(), 5);
     }
 }
 

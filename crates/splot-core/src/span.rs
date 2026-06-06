@@ -52,10 +52,17 @@ impl From<u64> for ByteOffset {
 pub struct BitOffset(u8);
 
 impl BitOffset {
-    /// Creates a [`BitOffset`]. Values are expected to be in `0..=7`.
+    /// Creates a [`BitOffset`] from a value already known to be `0..=7` (for
+    /// example, a bit position tracked by the bit reader).
     #[must_use]
-    pub const fn new(value: u8) -> Self {
+    pub const fn from_bits(value: u8) -> Self {
         Self(value)
+    }
+
+    /// Creates a [`BitOffset`], returning `None` if `value > 7`.
+    #[must_use]
+    pub const fn try_new(value: u8) -> Option<Self> {
+        if value <= 7 { Some(Self(value)) } else { None }
     }
 
     /// Returns the raw bit position (`0..=7`, MSB-first).
@@ -128,6 +135,12 @@ mod tests {
     #[test]
     fn offsets_display() {
         assert_eq!(ByteOffset::new(7).to_string(), "7");
-        assert_eq!(BitOffset::new(3).to_string(), "3");
+        assert_eq!(BitOffset::from_bits(3).to_string(), "3");
+    }
+
+    #[test]
+    fn bit_offset_try_new_enforces_range() {
+        assert_eq!(BitOffset::try_new(7).map(BitOffset::get), Some(7));
+        assert!(BitOffset::try_new(8).is_none());
     }
 }
