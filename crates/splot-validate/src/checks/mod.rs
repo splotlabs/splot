@@ -29,6 +29,7 @@ pub trait Check {
 pub fn default_checks() -> Vec<Box<dyn Check>> {
     vec![
         Box::new(ReservedObuType),
+        Box::new(ReservedObuAllZeroPayload),
         Box::new(GlobalXLayerRequired),
         Box::new(GlobalXLayerRequiresBaseLayers),
         Box::new(GlobalXLayerAllowedTypes),
@@ -76,6 +77,37 @@ impl Check for ReservedObuType {
                     "reserved obu_type {} is ignored by conformant decoders",
                     obu.header.obu_type.raw()
                 ),
+            );
+        }
+    }
+}
+
+/// A reserved OBU that carries payload must have at least one non-zero payload byte
+/// (AV2 § 5.3 / § 6.2.3: `trailing_one_bit` shall be 1).
+struct ReservedObuAllZeroPayload;
+
+impl Check for ReservedObuAllZeroPayload {
+    fn id(&self) -> &'static str {
+        "obu-reserved/all-zero-payload"
+    }
+
+    fn spec_section(&self) -> Option<&'static str> {
+        Some("5.3")
+    }
+
+    fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.header.obu_type.is_reserved()
+            && !obu.payload.is_empty()
+            && obu.payload.iter().all(|&byte| byte == 0)
+        {
+            emit(
+                report,
+                self,
+                Severity::Error,
+                obu,
+                "reserved OBU payload is entirely zero; AV2 § 5.3 requires at least one non-zero \
+                 payload byte (including the trailing bit)"
+                    .to_owned(),
             );
         }
     }

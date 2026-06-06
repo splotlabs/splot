@@ -12,6 +12,7 @@ the OBU **headers** matter to the current validator (payloads are opaque to it).
 | `conformant.av2` | `01 08 02 04 ab` | TemporalDelimiter (len 1, hdr `08`) + SequenceHeader (len 2, hdr `04` + 1 payload byte) | conformant, exit `0` |
 | `bad-global-xlayer.av2` | `02 88 05` | TemporalDelimiter with an extension byte and `obu_xlayer_id = 5`; AV2 §6.2.2 requires `GLOBAL_XLAYER_ID` (31) | error, exit `1` |
 | `truncated.av2` | `05 08` | Declares a 5-byte OBU but only the 1 header byte is present | parse error, exit `1` |
+| `prefix-then-truncated.av2` | `01 08 05 08` | A valid TemporalDelimiter followed by a truncated OBU; `inspect` prints the valid prefix, then reports the tail error | parse error, exit `1` |
 
 Header byte decoding (AV2 §5.2.2, MSB-first `f(1) f(5) f(2)`):
 

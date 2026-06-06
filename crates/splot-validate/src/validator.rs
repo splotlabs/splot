@@ -141,4 +141,24 @@ mod tests {
             "expected the parse error for the truncated tail"
         );
     }
+
+    #[test]
+    fn reserved_obu_with_all_zero_payload_is_an_error() {
+        // size=2: reserved header 0x00 (obu_type=0) + an all-zero payload byte.
+        let report = Validator::new(false).validate_bytes(&[0x02, 0x00, 0x00]);
+        assert!(!report.is_conformant());
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "obu-reserved/all-zero-payload"),
+            "an all-zero reserved OBU payload must be an error (AV2 § 5.3)"
+        );
+    }
+
+    #[test]
+    fn reserved_obu_with_nonzero_payload_is_conformant() {
+        // size=2: reserved header 0x00 + payload 0x80 (trailing_one_bit = 1).
+        let report = Validator::new(false).validate_bytes(&[0x02, 0x00, 0x80]);
+        assert!(report.is_conformant());
+    }
 }

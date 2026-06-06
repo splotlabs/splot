@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use anyhow::{Context as _, Result};
 use clap::Args;
 use serde::Serialize;
-use splot_core::annexb::{ObuEnvelope, parse_annex_b_obus};
+use splot_core::annexb::{ObuEnvelope, parse_annex_b_obus_partial};
 use splot_core::obu::ObuHeader;
 
 use crate::commands::read_input;
@@ -51,34 +51,36 @@ impl InspectRecord {
 
 /// Runs `splot inspect`.
 ///
-/// Exit codes: `0` on success, `1` if the bitstream cannot be parsed, and `2`
-/// (via an `Err`) for I/O failures.
+/// Exit codes: `0` on success, `1` if a structural parse error is hit (the OBUs
+/// parsed before it are still printed), and `2` (via an `Err`) for I/O failures.
 ///
 /// # Errors
 /// Returns an error if the input file cannot be read or the output cannot be
 /// serialized.
 pub fn run(args: &InspectArgs) -> Result<ExitCode> {
     let data = read_input(&args.input)?;
-    match parse_annex_b_obus(&data) {
-        Ok(obus) => {
-            if args.json {
-                let records: Vec<InspectRecord> = obus
-                    .iter()
-                    .enumerate()
-                    .map(|(index, obu)| InspectRecord::new(index, obu))
-                    .collect();
-                let json = serde_json::to_string_pretty(&records)
-                    .context("failed to serialize inspection")?;
-                println!("{json}");
-            } else {
-                print_human(&obus, args.headers);
-            }
-            Ok(ExitCode::from(0))
-        }
-        Err(error) => {
-            eprintln!("error: failed to parse bitstream: {error}");
-            Ok(ExitCode::from(1))
-        }
+    // Use the partial parse so the OBUs before a malformed tail are still shown.
+    let parsed = parse_annex_b_obus_partial(&data);
+
+    if args.json {
+        let records: Vec<InspectRecord> = parsed
+            .obus
+            .iter()
+            .enumerate()
+            .map(|(index, obu)| InspectRecord::new(index, obu))
+            .collect();
+        let json =
+            serde_json::to_string_pretty(&records).context("failed to serialize inspection")?;
+        println!("{json}");
+    } else {
+        print_human(&parsed.obus, args.headers);
+    }
+
+    if let Some(error) = parsed.error {
+        eprintln!("error: failed to parse remainder of bitstream: {error}");
+        Ok(ExitCode::from(1))
+    } else {
+        Ok(ExitCode::from(0))
     }
 }
 

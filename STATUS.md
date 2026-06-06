@@ -28,8 +28,9 @@ Toolchain: Rust 1.96.0, edition 2024, resolver 3. Generated 2026-06-06.
     `Display`, and serde `Serialize`.
   - `validator` — `Validator::validate_bytes` (never returns `Err`); parse failures
     become error diagnostics.
-  - `checks` — `Check` trait + registry: six checks (five § 6.2.2 header
-    constraints + one informational reserved-type check), all spec-cited.
+  - `checks` — `Check` trait + registry: seven checks (five § 6.2.2 header
+    constraints, one informational reserved-type check, and a reserved-OBU
+    all-zero-payload error per § 5.3 / § 6.2.3), all spec-cited.
 - **`splot-cli`** (`splot`) — `validate` and `inspect` are functional;
   `encode`/`decode` print clear "not yet implemented" messages and exit non-zero.
   Global `-v/--verbose`/`--quiet`, `tracing` logging to stderr, `--json` output,
@@ -88,12 +89,12 @@ All run from the repo root:
 cargo fmt --all -- --check                                              # ok (no diff)
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings  # ok, 0 warnings
 cargo build --workspace --all-targets --locked                          # ok
-cargo test --workspace --all-targets --locked                           # ok: 53 passed, 0 failed
+cargo test --workspace --all-targets --locked                           # ok: 56 passed, 0 failed
 cargo xtask ci                                                          # ok: all checks passed
 ```
 
-Test breakdown: `splot-core` 37, `splot-encode` 2, `splot-validate` 8,
-`splot-cli` 6 (CLI integration tests over `tests/fixtures/`), `xtask` 0.
+Test breakdown: `splot-core` 37, `splot-encode` 2, `splot-validate` 10,
+`splot-cli` 7 (CLI integration tests over `tests/fixtures/`), `xtask` 0.
 
 Also verified:
 

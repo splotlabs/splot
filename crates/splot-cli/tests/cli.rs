@@ -85,6 +85,20 @@ fn inspect_lists_obu_headers() {
 }
 
 #[test]
+fn inspect_prints_valid_prefix_before_a_tail_error() {
+    // A valid TemporalDelimiter followed by a truncated OBU: the prefix is shown,
+    // and the tail parse error sets a non-zero exit.
+    let path = fixture("prefix-then-truncated.av2");
+    let out = splot(&["inspect", "--headers", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("OBU_TEMPORAL_DELIMITER"),
+        "stdout was: {stdout}"
+    );
+}
+
+#[test]
 fn missing_input_file_exits_two() {
     let out = validate("does-not-exist.av2", &[]);
     assert_eq!(out.status.code(), Some(2));
