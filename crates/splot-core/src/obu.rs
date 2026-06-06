@@ -22,7 +22,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::bitio::BitReader;
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, TrailingBitsErrorKind};
 use crate::span::ByteOffset;
 use crate::types::{EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID, ObuType, TemporalLayerId};
 
@@ -41,6 +41,49 @@ pub struct ObuHeader {
     pub extended_layer_id: ExtendedLayerId,
     /// Number of header bytes consumed (`1` without extension, `2` with).
     pub header_size_bytes: u8,
+}
+
+/// Parses AV2 `trailing_bits(nbBits)` from `reader` (AV2 v1.0.0 § 5.2.3).
+///
+/// The parser consumes exactly `nb_bits` bits: the first bit must be
+/// `trailing_one_bit == 1`, and every remaining bit must be zero per AV2 § 6.2.3.
+///
+/// # Errors
+/// Returns [`Error::InvalidTrailingBits`] if `nb_bits == 0`, if the first bit is
+/// not `1`, or if any zero-padding bit is not `0`. Returns
+/// [`Error::UnexpectedEof`] if fewer than `nb_bits` bits remain.
+pub fn parse_trailing_bits(reader: &mut BitReader<'_>, nb_bits: u64) -> Result<()> {
+    if nb_bits == 0 {
+        return Err(Error::InvalidTrailingBits {
+            offset: reader.byte_offset(),
+            bit_offset: reader.bit_offset(),
+            kind: TrailingBitsErrorKind::Empty,
+        });
+    }
+
+    let offset = reader.byte_offset();
+    let bit_offset = reader.bit_offset();
+    if reader.read_bit()? != 1 {
+        return Err(Error::InvalidTrailingBits {
+            offset,
+            bit_offset,
+            kind: TrailingBitsErrorKind::MissingOneBit,
+        });
+    }
+
+    for _ in 1..nb_bits {
+        let offset = reader.byte_offset();
+        let bit_offset = reader.bit_offset();
+        if reader.read_bit()? != 0 {
+            return Err(Error::InvalidTrailingBits {
+                offset,
+                bit_offset,
+                kind: TrailingBitsErrorKind::ZeroBitNotZero,
+            });
+        }
+    }
+
+    Ok(())
 }
 
 /// Parses an AV2 OBU header from `obu_bytes`, whose first byte is at absolute
@@ -169,5 +212,75 @@ mod tests {
             read_obu_header(&[], ByteOffset::new(0)),
             Err(Error::UnexpectedEof { .. })
         ));
+    }
+
+    #[test]
+    fn trailing_bits_accepts_one_bit_followed_by_zeroes() {
+        let mut reader = BitReader::new(&[0b1000_0000], ByteOffset::new(0));
+        parse_trailing_bits(&mut reader, 8).unwrap();
+        assert_eq!(reader.remaining_bits(), 0);
+    }
+
+    #[test]
+    fn trailing_bits_rejects_empty_payload_bits() {
+        let mut reader = BitReader::new(&[], ByteOffset::new(0));
+        assert!(matches!(
+            parse_trailing_bits(&mut reader, 0),
+            Err(Error::InvalidTrailingBits {
+                kind: TrailingBitsErrorKind::Empty,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn trailing_bits_requires_first_bit_to_be_one() {
+        let mut reader = BitReader::new(&[0b0000_0000], ByteOffset::new(0));
+        assert!(matches!(
+            parse_trailing_bits(&mut reader, 8),
+            Err(Error::InvalidTrailingBits {
+                kind: TrailingBitsErrorKind::MissingOneBit,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn trailing_bits_requires_zero_padding() {
+        let mut reader = BitReader::new(&[0b1100_0000], ByteOffset::new(0));
+        assert!(matches!(
+            parse_trailing_bits(&mut reader, 8),
+            Err(Error::InvalidTrailingBits {
+                kind: TrailingBitsErrorKind::ZeroBitNotZero,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn trailing_bits_reports_eof() {
+        let mut reader = BitReader::new(&[], ByteOffset::new(0));
+        assert!(matches!(
+            parse_trailing_bits(&mut reader, 1),
+            Err(Error::UnexpectedEof { .. })
+        ));
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// `trailing_bits(nbBits)` must never panic on arbitrary payload-shaped input.
+        #[test]
+        fn trailing_bits_never_panic(
+            data in proptest::collection::vec(any::<u8>(), 0..64),
+            nb_bits in 0u64..=512,
+        ) {
+            let mut reader = BitReader::new(&data, ByteOffset::new(0));
+            let _ = parse_trailing_bits(&mut reader, nb_bits);
+        }
     }
 }

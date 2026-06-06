@@ -22,188 +22,22 @@ cargo xtask ci
 - Use OpenSpec change IDs that match the change folder, e.g. `parse-sequence-header` or `validator-coverage-roadmap`.
 - Use `pending` for `avm_diff` until AVM/public-vector proof is recorded.
 
-## 2. Existing rows to revise, not replace
+## 2. Phase 1 rows now implemented
 
-### `AV2-5.2.3-TRAILING-BITS`
+The canonical matrix now records Phase 1 proof for these rows:
 
-Current notes say the reserved-OBU all-zero-payload check partially exercises trailing semantics. Revise when implementing the actual parser:
+- `AV2-4.11.3-UVLC`
+- `AV2-4.11.5-LE`
+- `AV2-4.11.8-NS`
+- `AV2-5.2.3-TRAILING-BITS`
+- `AV2-5.2.4-BYTE-ALIGNMENT`
 
-```toml
-[[feature]]
-id = "AV2-5.2.3-TRAILING-BITS"
-name = "Trailing bits syntax and semantics"
-category = "normative"
-kind = "bitstream-syntax"
-spec_sections = ["5.2.3", "6.2.3"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-core"
-module = "crates/splot-core/src/obu.rs"
-openspec_change = "validator-coverage-roadmap"
-tracking_issue = ""
-owner = "core"
-risk = "medium"
-notes = "Parse trailing_bits(nbBits), enforce trailing_one_bit and zero padding, and share diagnostics with payload parsers."
-[feature.status]
-mapped = "done"
-types = "partial"
-parse = "todo"
-validate = "todo"
-write = "todo"
-encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
-avm_diff = "pending"
-perf = "not-applicable"
-[feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
-```
+Descriptor parsing and decode checks are marked `done`. Trailing-bit and
+byte-alignment validation are intentionally `partial` until Phase 2 payload
+dispatch and later payload parsers can call the boundary helpers for every OBU
+type.
 
-### `AV2-5.2.4-BYTE-ALIGNMENT`
-
-```toml
-[[feature]]
-id = "AV2-5.2.4-BYTE-ALIGNMENT"
-name = "Byte alignment syntax and semantics"
-category = "normative"
-kind = "bitstream-syntax"
-spec_sections = ["5.2.4", "6.2.4"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-core"
-module = "crates/splot-core/src/bitio.rs"
-openspec_change = "validator-coverage-roadmap"
-tracking_issue = ""
-owner = "core"
-risk = "medium"
-notes = "Model byte_alignment() as a syntax structure, not only as a reader helper. Zero bits must be validated."
-[feature.status]
-mapped = "done"
-types = "partial"
-parse = "todo"
-validate = "todo"
-write = "todo"
-encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
-avm_diff = "pending"
-perf = "not-applicable"
-[feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
-```
-
-## 3. Descriptor rows to add
-
-### `AV2-4.11.3-UVLC`
-
-```toml
-[[feature]]
-id = "AV2-4.11.3-UVLC"
-name = "Unsigned variable-length code descriptor"
-category = "normative"
-kind = "bitstream-syntax"
-spec_sections = ["4.11.3"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-core"
-module = "crates/splot-core/src/bitio.rs"
-openspec_change = "validator-coverage-roadmap"
-tracking_issue = ""
-owner = "core"
-risk = "high"
-notes = "Needed by sequence_header_obu(), metadata, LCR, OPS, frame header, and many later payload parsers. Must be bounded and panic-free."
-[feature.status]
-mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "not-applicable"
-write = "todo"
-encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
-avm_diff = "pending"
-perf = "not-applicable"
-[feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
-```
-
-### `AV2-4.11.5-LE`
-
-```toml
-[[feature]]
-id = "AV2-4.11.5-LE"
-name = "Little-endian fixed-width descriptor"
-category = "normative"
-kind = "bitstream-syntax"
-spec_sections = ["4.11.5"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-core"
-module = "crates/splot-core/src/bitio.rs"
-openspec_change = "validator-coverage-roadmap"
-tracking_issue = ""
-owner = "core"
-risk = "medium"
-notes = "Needed by payload syntax that uses le(n). Implement only from AV2 descriptor semantics."
-[feature.status]
-mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "not-applicable"
-write = "todo"
-encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
-avm_diff = "pending"
-perf = "not-applicable"
-[feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
-```
-
-### `AV2-4.11.8-NS`
-
-```toml
-[[feature]]
-id = "AV2-4.11.8-NS"
-name = "Non-symmetric integer descriptor"
-category = "normative"
-kind = "bitstream-syntax"
-spec_sections = ["4.11.8"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-core"
-module = "crates/splot-core/src/bitio.rs"
-openspec_change = "validator-coverage-roadmap"
-tracking_issue = ""
-owner = "core"
-risk = "high"
-notes = "Needed by sequence and frame syntax. Implement with tests for powers of two, non-powers, n=1, EOF, and malformed boundaries."
-[feature.status]
-mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "not-applicable"
-write = "todo"
-encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
-avm_diff = "pending"
-perf = "not-applicable"
-[feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
-```
-
-## 4. OBU dispatch row to add
+## 3. OBU dispatch row to add
 
 ```toml
 [[feature]]
@@ -238,7 +72,7 @@ fixtures = []
 diagnostics = []
 ```
 
-## 5. Sequence header split rows
+## 4. Sequence header split rows
 
 Keep the existing `AV2-5.4-SEQUENCE-HEADER` umbrella, but add child rows. Use `crates/splot-core/src/headers/sequence.rs` or `crates/splot-core/src/headers.rs` depending on the module split selected in the PR.
 
@@ -368,7 +202,7 @@ fixtures = []
 diagnostics = []
 ```
 
-## 6. Activated sequence header limits row
+## 5. Activated sequence header limits row
 
 ```toml
 [[feature]]
@@ -411,7 +245,7 @@ obu-header/mlayer-exceeds-sequence-max
 obu-header/no-active-sequence-header
 ```
 
-## 7. OBU ordering and HLS rows
+## 6. OBU ordering and HLS rows
 
 The existing `AV2-7.3-OBU-ORDERING` row should become an umbrella. Add child rows before coding.
 
@@ -461,7 +295,7 @@ fixtures = []
 diagnostics = []
 ```
 
-## 8. Missing top-level §5 OBU rows to add or split
+## 7. Missing top-level §5 OBU rows to add or split
 
 Some rows already exist as umbrellas. Add missing ones and split them as implementation starts.
 
@@ -523,7 +357,7 @@ fixtures = []
 diagnostics = []
 ```
 
-## 9. LCR and OPS child rows
+## 8. LCR and OPS child rows
 
 `AV2-5.8-LAYER-CONFIG-RECORD` is split into:
 
@@ -551,7 +385,7 @@ AV2-5.11.4-OPS-COLOR-INFO
 AV2-5.11.5-OPS-MLAYER-INFO
 ```
 
-## 10. Frame header child rows
+## 9. Frame header child rows
 
 Do not implement `AV2-5.18-FRAME-HEADER` as one row. Add:
 
@@ -570,7 +404,7 @@ AV2-5.18.10-FILM-GRAIN-STRUCTURES
 
 Matching semantics rows can use `AV2-<6.17 child section>-<SLUG>` IDs when implementation begins.
 
-## 11. Metadata child rows
+## 10. Metadata child rows
 
 Add these before implementing metadata:
 
@@ -590,7 +424,7 @@ AV2-5.17.12-METADATA-DECODED-FRAME-HASH
 AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED
 ```
 
-## 12. Annex and conformance rows
+## 11. Annex and conformance rows
 
 Add these after enough syntax exists to make them actionable:
 
@@ -604,7 +438,7 @@ CONF-AVM-INVALID-STREAMS
 CONF-PUBLIC-VECTOR-LICENSE-REVIEW
 ```
 
-## 13. Suggested matrix proof pattern
+## 12. Suggested matrix proof pattern
 
 When a parser/check is done, update proof like this:
 

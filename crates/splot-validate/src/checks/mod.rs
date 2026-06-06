@@ -11,6 +11,10 @@
 // TODO(spec: AV2-7.3-OBU-ORDERING): add OBU-ordering and sequence-header-activated checks.
 
 use splot_core::annexb::ObuEnvelope;
+use splot_core::bitio::BitReader;
+use splot_core::error::{ByteAlignmentErrorKind, Error, TrailingBitsErrorKind};
+use splot_core::obu::parse_trailing_bits;
+use splot_core::types::ObuType;
 
 use crate::diagnostic::{Diagnostic, Severity, ValidationReport};
 
@@ -30,12 +34,53 @@ pub fn default_checks() -> Vec<Box<dyn Check>> {
     vec![
         Box::new(ReservedObuType),
         Box::new(ReservedObuAllZeroPayload),
+        Box::new(TrailingBitsForEmptySyntaxObus),
         Box::new(GlobalXLayerRequired),
         Box::new(GlobalXLayerRequiresBaseLayers),
         Box::new(GlobalXLayerAllowedTypes),
         Box::new(BaseLayerOnlyTypes),
         Box::new(TemporalLayerZeroOnlyTypes),
     ]
+}
+
+/// Converts core payload-boundary syntax errors into stable validator diagnostics.
+#[must_use]
+pub(crate) fn syntax_error_diagnostic(error: &Error) -> Option<Diagnostic> {
+    match error {
+        Error::InvalidTrailingBits {
+            offset,
+            bit_offset,
+            kind,
+        } => {
+            let rule_id = match kind {
+                TrailingBitsErrorKind::Empty => "trailing-bits/empty",
+                TrailingBitsErrorKind::MissingOneBit => "trailing-bits/missing-one-bit",
+                TrailingBitsErrorKind::ZeroBitNotZero => "trailing-bits/zero-bit-not-zero",
+            };
+            Some(
+                Diagnostic::error(rule_id, kind.to_string())
+                    .with_spec_section("6.2.3")
+                    .with_byte_offset(*offset)
+                    .with_bit_offset(*bit_offset),
+            )
+        }
+        Error::InvalidByteAlignment {
+            offset,
+            bit_offset,
+            kind,
+        } => {
+            let rule_id = match kind {
+                ByteAlignmentErrorKind::ZeroBitNotZero => "byte-alignment/zero-bit-not-zero",
+            };
+            Some(
+                Diagnostic::error(rule_id, kind.to_string())
+                    .with_spec_section("6.2.4")
+                    .with_byte_offset(*offset)
+                    .with_bit_offset(*bit_offset),
+            )
+        }
+        _ => None,
+    }
 }
 
 /// Builds and pushes a diagnostic located at `obu`, tagged with `check`'s id and section.
@@ -52,6 +97,45 @@ fn emit(
         diagnostic = diagnostic.with_spec_section(section);
     }
     report.push(diagnostic);
+}
+
+/// OBUs with empty payload syntax still carry `trailing_bits` when their declared
+/// payload is non-empty. Until full payload dispatch exists, only these OBU types
+/// can be checked without guessing where payload syntax ends.
+struct TrailingBitsForEmptySyntaxObus;
+
+impl Check for TrailingBitsForEmptySyntaxObus {
+    fn id(&self) -> &'static str {
+        "trailing-bits/empty-syntax-obu-payload"
+    }
+
+    fn spec_section(&self) -> Option<&'static str> {
+        Some("5.2.3")
+    }
+
+    fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.payload.is_empty() || !has_empty_payload_syntax(obu.header.obu_type) {
+            return;
+        }
+
+        let payload_offset = obu
+            .offset
+            .saturating_add(u64::from(obu.header.header_size_bytes));
+        let mut reader = BitReader::new(obu.payload, payload_offset);
+        let nb_bits = (obu.payload.len() as u64).saturating_mul(8);
+        if let Err(error) = parse_trailing_bits(&mut reader, nb_bits)
+            && let Some(diagnostic) = syntax_error_diagnostic(&error)
+        {
+            report.push(diagnostic);
+        }
+    }
+}
+
+fn has_empty_payload_syntax(obu_type: ObuType) -> bool {
+    matches!(
+        obu_type,
+        ObuType::Reserved0 | ObuType::Reserved(_) | ObuType::TemporalDelimiter
+    )
 }
 
 /// Informational: reserved OBU types are ignored by conformant decoders (AV2 Table 6.1).
@@ -265,5 +349,49 @@ impl Check for TemporalLayerZeroOnlyTypes {
                 ),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use splot_core::span::{BitOffset, ByteOffset};
+
+    #[test]
+    fn syntax_error_diagnostic_maps_trailing_bits_errors() {
+        let diagnostic = syntax_error_diagnostic(&Error::InvalidTrailingBits {
+            offset: ByteOffset::new(3),
+            bit_offset: BitOffset::from_bits(1),
+            kind: TrailingBitsErrorKind::ZeroBitNotZero,
+        });
+        assert!(
+            diagnostic.is_some(),
+            "trailing-bit error should map to a diagnostic"
+        );
+        let diagnostic =
+            diagnostic.unwrap_or_else(|| Diagnostic::error("trailing-bits/test", "missing"));
+        assert_eq!(diagnostic.rule_id, "trailing-bits/zero-bit-not-zero");
+        assert_eq!(diagnostic.spec_section.as_deref(), Some("6.2.3"));
+        assert_eq!(diagnostic.byte_offset, Some(ByteOffset::new(3)));
+        assert_eq!(diagnostic.bit_offset, Some(BitOffset::from_bits(1)));
+    }
+
+    #[test]
+    fn syntax_error_diagnostic_maps_byte_alignment_errors() {
+        let diagnostic = syntax_error_diagnostic(&Error::InvalidByteAlignment {
+            offset: ByteOffset::new(7),
+            bit_offset: BitOffset::from_bits(5),
+            kind: ByteAlignmentErrorKind::ZeroBitNotZero,
+        });
+        assert!(
+            diagnostic.is_some(),
+            "byte-alignment error should map to a diagnostic"
+        );
+        let diagnostic =
+            diagnostic.unwrap_or_else(|| Diagnostic::error("byte-alignment/test", "missing"));
+        assert_eq!(diagnostic.rule_id, "byte-alignment/zero-bit-not-zero");
+        assert_eq!(diagnostic.spec_section.as_deref(), Some("6.2.4"));
+        assert_eq!(diagnostic.byte_offset, Some(ByteOffset::new(7)));
+        assert_eq!(diagnostic.bit_offset, Some(BitOffset::from_bits(5)));
     }
 }

@@ -22,6 +22,8 @@ Keep these stable:
 | `bitstream/` | Envelope, LEB128, OBU size, EOF, parse errors. |
 | `obu-header/` | §6.2.2 OBU header conformance. |
 | `obu-reserved/` | Reserved OBU checks. |
+| `trailing-bits/` | §6.2.3 trailing bit conformance for modeled payload boundaries. |
+| `byte-alignment/` | §6.2.4 byte-alignment zero-bit conformance for modeled syntax. |
 
 Existing examples:
 
@@ -34,6 +36,9 @@ obu-header/base-layer-only-types
 obu-header/temporal-layer-zero-only-types
 obu-header/reserved-obu-type
 obu-reserved/all-zero-payload
+trailing-bits/missing-one-bit
+trailing-bits/zero-bit-not-zero
+byte-alignment/zero-bit-not-zero
 ```
 
 ## 2. New diagnostic namespaces to allow
@@ -42,8 +47,6 @@ Add these namespaces in the xtask diagnostic allowlist when corresponding checks
 
 | Namespace | Owner | First features |
 |---|---|---|
-| `trailing-bits/` | `AV2-5.2.3-TRAILING-BITS` | `trailing_one_bit`, zero padding, invalid `nbBits`. |
-| `byte-alignment/` | `AV2-5.2.4-BYTE-ALIGNMENT` | non-zero alignment bits. |
 | `obu-payload/` | `AV2-5.2.1-OBU-DISPATCH` | unparsed payload in strict mode, payload overread/underread. |
 | `sequence-header/` | `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` | sequence-header local semantics. |
 | `sequence-state/` | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` | activation/availability and max layer checks. |

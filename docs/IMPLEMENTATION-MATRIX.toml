@@ -66,23 +66,23 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Needed by sequence_header_obu(), metadata, LCR, OPS, frame header, and later payload parsers. Must be bounded and panic-free."
+notes = "Implemented as BitReader::read_uvlc() from AV2 §4.11.3. The parser rejects EOF and the leadingZeros >= 32 conformance bound without panics."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
+types = "not-applicable"
+parse = "done"
 validate = "not-applicable"
 write = "todo"
 encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests"]
+commands = ["cargo test -p splot-core bitio"]
 fixtures = []
 diagnostics = []
 
@@ -99,23 +99,23 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Needed by payload syntax that uses le(n). Implement only from AV2 descriptor semantics."
+notes = "Implemented as BitReader::read_le(n) from AV2 §4.11.5, returning a u64 for n <= 8 and rejecting wider reads before consuming input."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
+types = "not-applicable"
+parse = "done"
 validate = "not-applicable"
 write = "todo"
 encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests"]
+commands = ["cargo test -p splot-core bitio"]
 fixtures = []
 diagnostics = []
 
@@ -132,23 +132,23 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Needed by sequence and frame syntax. Implement with tests for powers of two, non-powers, n=1, EOF, and malformed boundaries."
+notes = "Implemented as BitReader::read_ns(n) from AV2 §4.11.8. Covers n=1, power-of-two and non-power-of-two ranges, EOF, and invalid n=0 without panics."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
+types = "not-applicable"
+parse = "done"
 validate = "not-applicable"
 write = "todo"
 encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests"]
+commands = ["cargo test -p splot-core bitio"]
 fixtures = []
 diagnostics = []
 
@@ -304,25 +304,25 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Parse trailing_bits(nbBits), enforce trailing_one_bit and zero padding, and share diagnostics with payload parsers. The reserved-OBU all-zero-payload check partially exercises the trailing_one_bit semantics, but trailing_bits() itself is not yet modeled."
+notes = "Implemented parse_trailing_bits(nbBits), enforcing nbBits > 0, trailing_one_bit == 1, and zero padding. Validator diagnostics are wired for zero-syntax OBUs (reserved and temporal delimiter); full payload-boundary coverage waits for OBU dispatch."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/obu.rs::tests", "crates/splot-core/src/obu.rs::proptests", "crates/splot-validate/src/validator.rs::tests", "crates/splot-validate/src/checks/mod.rs::tests"]
+commands = ["cargo test -p splot-core trailing", "cargo test -p splot-validate trailing"]
 fixtures = []
-diagnostics = []
+diagnostics = ["trailing-bits/missing-one-bit", "trailing-bits/zero-bit-not-zero"]
 
 [[feature]]
 id = "AV2-5.2.4-BYTE-ALIGNMENT"
@@ -337,25 +337,25 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Model byte_alignment() as a syntax structure, not only as a reader helper. Zero bits must be validated."
+notes = "Implemented BitReader::byte_align_zero() for byte_alignment() zero-bit validation. Diagnostic mapping is ready; full validator reachability waits for payload parsers that call byte_alignment()."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests", "crates/splot-validate/src/checks/mod.rs::tests"]
+commands = ["cargo test -p splot-core bitio", "cargo test -p splot-validate syntax_error_diagnostic"]
 fixtures = []
-diagnostics = []
+diagnostics = ["byte-alignment/zero-bit-not-zero"]
 
 [[feature]]
 id = "AV2-5.3-RESERVED-OBU"

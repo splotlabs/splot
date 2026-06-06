@@ -7,9 +7,49 @@
 //! variants. Recognized-but-unmodeled functionality returns
 //! [`Error::Unimplemented`] rather than `todo!()`/`unimplemented!()`.
 
+use core::fmt;
+
 use thiserror::Error;
 
-use crate::span::ByteOffset;
+use crate::span::{BitOffset, ByteOffset};
+
+/// Specific ways `trailing_bits(nbBits)` can violate AV2 § 6.2.3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrailingBitsErrorKind {
+    /// `trailing_bits` was asked to parse zero bits.
+    Empty,
+    /// The required `trailing_one_bit` was not equal to `1`.
+    MissingOneBit,
+    /// A `trailing_zero_bit` was not equal to `0`.
+    ZeroBitNotZero,
+}
+
+impl fmt::Display for TrailingBitsErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::Empty => "nbBits must be greater than zero",
+            Self::MissingOneBit => "trailing_one_bit must be equal to 1",
+            Self::ZeroBitNotZero => "trailing_zero_bit must be equal to 0",
+        };
+        f.write_str(message)
+    }
+}
+
+/// Specific ways `byte_alignment()` can violate AV2 § 6.2.4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteAlignmentErrorKind {
+    /// A byte-alignment `zero_bit` was not equal to `0`.
+    ZeroBitNotZero,
+}
+
+impl fmt::Display for ByteAlignmentErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::ZeroBitNotZero => "zero_bit must be equal to 0",
+        };
+        f.write_str(message)
+    }
+}
 
 /// Errors produced while parsing AV2 bitstreams.
 #[derive(Debug, Error)]
@@ -31,6 +71,15 @@ pub enum Error {
         max: u32,
     },
 
+    /// A byte-read requested more bytes than the reader supports for the target.
+    #[error("cannot read {requested} little-endian byte(s) (maximum is {max})")]
+    ByteWidthTooLarge {
+        /// Number of bytes requested.
+        requested: u32,
+        /// Maximum number of bytes supported for this read.
+        max: u32,
+    },
+
     /// The input ended before a complete syntax element could be read.
     #[error("unexpected end of input at byte {offset}: needed {needed} more byte(s)")]
     UnexpectedEof {
@@ -49,6 +98,28 @@ pub enum Error {
         message: String,
     },
 
+    /// A `uvlc()` descriptor violated AV2 § 4.11.3.
+    #[error("invalid uvlc() at byte {offset}.{bit_offset}: {message}")]
+    InvalidUvlc {
+        /// Offset of the offending bit.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidUvlc::offset`].
+        bit_offset: BitOffset,
+        /// Human-readable reason.
+        message: String,
+    },
+
+    /// An `ns(n)` descriptor was requested with an invalid parameter.
+    #[error("invalid ns(n) at byte {offset}.{bit_offset}: {message}")]
+    InvalidNs {
+        /// Offset of the descriptor request.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidNs::offset`].
+        bit_offset: BitOffset,
+        /// Human-readable reason.
+        message: String,
+    },
+
     /// An OBU header violated AV2 § 5.2.2.
     #[error("invalid OBU header at byte {offset}: {message}")]
     InvalidObuHeader {
@@ -56,6 +127,28 @@ pub enum Error {
         offset: ByteOffset,
         /// Human-readable reason.
         message: String,
+    },
+
+    /// `trailing_bits(nbBits)` violated AV2 § 6.2.3.
+    #[error("invalid trailing_bits() at byte {offset}.{bit_offset}: {kind}")]
+    InvalidTrailingBits {
+        /// Offset of the offending bit.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidTrailingBits::offset`].
+        bit_offset: BitOffset,
+        /// Specific trailing-bits violation.
+        kind: TrailingBitsErrorKind,
+    },
+
+    /// `byte_alignment()` violated AV2 § 6.2.4.
+    #[error("invalid byte_alignment() at byte {offset}.{bit_offset}: {kind}")]
+    InvalidByteAlignment {
+        /// Offset of the offending bit.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidByteAlignment::offset`].
+        bit_offset: BitOffset,
+        /// Specific byte-alignment violation.
+        kind: ByteAlignmentErrorKind,
     },
 
     /// A declared OBU size was structurally invalid (for example, zero).

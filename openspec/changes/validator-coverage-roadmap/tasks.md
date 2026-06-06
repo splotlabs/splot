@@ -28,14 +28,14 @@
 
 ## Phase 1 implementation: descriptors and payload boundaries
 
-- [ ] Implement `uvlc()` in `splot-core` with EOF and bound tests.
-- [ ] Implement `le(n)` if needed by first payload syntax.
-- [ ] Implement `ns(n)` with power-of-two and non-power-of-two tests.
-- [ ] Implement `trailing_bits(nbBits)` parser.
-- [ ] Implement `byte_alignment()` parser/check.
-- [ ] Add proptests/fuzz coverage for new bitreader paths.
-- [ ] Add diagnostics for invalid trailing bits and alignment bits.
-- [ ] Update matrix proof.
+- [x] Implement `uvlc()` in `splot-core` with EOF and bound tests.
+- [x] Implement `le(n)` if needed by first payload syntax.
+- [x] Implement `ns(n)` with power-of-two and non-power-of-two tests.
+- [x] Implement `trailing_bits(nbBits)` parser.
+- [x] Implement `byte_alignment()` parser/check.
+- [x] Add proptests/fuzz coverage for new bitreader paths.
+- [x] Add diagnostics for invalid trailing bits and alignment bits.
+- [x] Update matrix proof.
 
 ## Phase 2 implementation: payload dispatch
 

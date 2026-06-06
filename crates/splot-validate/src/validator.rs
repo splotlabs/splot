@@ -5,9 +5,9 @@
 
 use splot_core::Error;
 use splot_core::annexb::{ObuEnvelope, parse_annex_b_obus_partial};
-use splot_core::span::ByteOffset;
+use splot_core::span::{BitOffset, ByteOffset};
 
-use crate::checks::{Check, default_checks};
+use crate::checks::{Check, default_checks, syntax_error_diagnostic};
 use crate::diagnostic::{Diagnostic, Severity, ValidationReport};
 
 /// Validates AV2 length-delimited bitstreams and produces a [`ValidationReport`].
@@ -65,11 +65,18 @@ fn run_checks(checks: &[Box<dyn Check>], obu: &ObuEnvelope<'_>, report: &mut Val
 }
 
 fn parse_error_diagnostic(error: &Error) -> Diagnostic {
+    if let Some(diagnostic) = syntax_error_diagnostic(error) {
+        return diagnostic;
+    }
+
     let mut diagnostic =
         Diagnostic::new(Severity::Error, "bitstream/parse-error", error.to_string())
             .with_spec_section("Annex B");
     if let Some(offset) = error_offset(error) {
         diagnostic = diagnostic.with_byte_offset(offset);
+    }
+    if let Some(bit_offset) = error_bit_offset(error) {
+        diagnostic = diagnostic.with_bit_offset(bit_offset);
     }
     diagnostic
 }
@@ -78,9 +85,23 @@ fn error_offset(error: &Error) -> Option<ByteOffset> {
     match error {
         Error::UnexpectedEof { offset, .. }
         | Error::InvalidLeb128 { offset, .. }
+        | Error::InvalidUvlc { offset, .. }
+        | Error::InvalidNs { offset, .. }
         | Error::InvalidObuHeader { offset, .. }
+        | Error::InvalidTrailingBits { offset, .. }
+        | Error::InvalidByteAlignment { offset, .. }
         | Error::ObuSizeOutOfRange { offset, .. }
         | Error::ObuPayloadOutOfRange { offset, .. } => Some(*offset),
+        _ => None,
+    }
+}
+
+fn error_bit_offset(error: &Error) -> Option<BitOffset> {
+    match error {
+        Error::InvalidUvlc { bit_offset, .. }
+        | Error::InvalidNs { bit_offset, .. }
+        | Error::InvalidTrailingBits { bit_offset, .. }
+        | Error::InvalidByteAlignment { bit_offset, .. } => Some(*bit_offset),
         _ => None,
     }
 }
@@ -160,6 +181,35 @@ mod tests {
         // size=2: reserved header 0x00 + payload 0x80 (trailing_one_bit = 1).
         let report = Validator::new(false).validate_bytes(&[0x02, 0x00, 0x80]);
         assert!(report.is_conformant());
+    }
+
+    #[test]
+    fn reserved_obu_with_nonzero_bad_trailing_zero_bit_is_flagged() {
+        // size=2: reserved header 0x00 + payload 0xC0. The first trailing bit is
+        // valid, but the next padding bit is 1.
+        let report = Validator::new(false).validate_bytes(&[0x02, 0x00, 0xC0]);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "trailing-bits/zero-bit-not-zero"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn temporal_delimiter_payload_trailing_bits_are_validated() {
+        // size=2: temporal delimiter header 0x08 + valid full-byte trailing_bits.
+        let valid = Validator::new(false).validate_bytes(&[0x02, 0x08, 0x80]);
+        assert!(valid.is_conformant(), "report was: {valid}");
+
+        // Same OBU with missing trailing_one_bit.
+        let invalid = Validator::new(false).validate_bytes(&[0x02, 0x08, 0x00]);
+        assert!(
+            invalid
+                .errors()
+                .any(|d| d.rule_id == "trailing-bits/missing-one-bit"),
+            "report was: {invalid}"
+        );
     }
 
     #[test]

@@ -9,15 +9,15 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | ID | Name | Category | Kind | Mapped | Types | Parse | Validate | Write | Encode | DecChk | Tests | AVM | Module |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | `AV2-4.11.6-LEB128` | LEB128 descriptor | normative | bitstream-syntax | done | done | done | partial | todo | n/a | done | done | pending | `crates/splot-core/src/leb128.rs` |
-| `AV2-4.11.3-UVLC` | Unsigned variable-length code descriptor | normative | bitstream-syntax | done | todo | todo | n/a | todo | n/a | todo | todo | pending | `crates/splot-core/src/bitio.rs` |
-| `AV2-4.11.5-LE` | Little-endian fixed-width descriptor | normative | bitstream-syntax | done | todo | todo | n/a | todo | n/a | todo | todo | pending | `crates/splot-core/src/bitio.rs` |
-| `AV2-4.11.8-NS` | Non-symmetric integer descriptor | normative | bitstream-syntax | done | todo | todo | n/a | todo | n/a | todo | todo | pending | `crates/splot-core/src/bitio.rs` |
+| `AV2-4.11.3-UVLC` | Unsigned variable-length code descriptor | normative | bitstream-syntax | done | n/a | done | n/a | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
+| `AV2-4.11.5-LE` | Little-endian fixed-width descriptor | normative | bitstream-syntax | done | n/a | done | n/a | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
+| `AV2-4.11.8-NS` | Non-symmetric integer descriptor | normative | bitstream-syntax | done | n/a | done | n/a | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
 | `AV2-5.2.2-OBU-HEADER` | OBU header syntax | normative | bitstream-syntax | done | done | done | done | todo | n/a | done | done | pending | `crates/splot-core/src/obu.rs` |
 | `AV2-5.2.1-OBU-TYPE` | OBU type and OBU-class predicates | normative | bitstream-syntax | done | done | done | partial | n/a | n/a | done | done | pending | `crates/splot-core/src/types.rs` |
 | `AV2-5.2.1-OBU-DISPATCH` | open_bitstream_unit payload dispatch | normative | bitstream-syntax | done | todo | todo | n/a | todo | n/a | todo | todo | pending | `crates/splot-core/src/obu.rs` |
 | `AV2-B-ANNEXB-OBU-ENVELOPE` | Annex B length-delimited OBU envelope | normative | bitstream-syntax | done | done | done | done | todo | n/a | done | done | pending | `crates/splot-core/src/annexb.rs` |
-| `AV2-5.2.3-TRAILING-BITS` | Trailing bits syntax and semantics | normative | bitstream-syntax | done | todo | todo | todo | todo | n/a | todo | todo | pending | `crates/splot-core/src/obu.rs` |
-| `AV2-5.2.4-BYTE-ALIGNMENT` | Byte alignment syntax and semantics | normative | bitstream-syntax | done | todo | todo | todo | todo | n/a | todo | todo | pending | `crates/splot-core/src/bitio.rs` |
+| `AV2-5.2.3-TRAILING-BITS` | Trailing bits syntax and semantics | normative | bitstream-syntax | done | done | done | partial | todo | n/a | done | done | pending | `crates/splot-core/src/obu.rs` |
+| `AV2-5.2.4-BYTE-ALIGNMENT` | Byte alignment syntax and semantics | normative | bitstream-syntax | done | done | done | partial | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
 | `AV2-5.3-RESERVED-OBU` | Reserved OBU handling | normative | validator-check | done | done | n/a | done | n/a | n/a | done | done | pending | `crates/splot-validate/src/checks/mod.rs` |
 | `AV2-5.4-SEQUENCE-HEADER` | Sequence header OBU syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
 | `AV2-5.4.1-SEQUENCE-HEADER-GENERAL` | General sequence header syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers/sequence.rs` |
