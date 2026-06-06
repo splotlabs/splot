@@ -15,6 +15,7 @@
 - [ ] No fabricated AV2 syntax/semantics were introduced.
 - [ ] Diagnostics have stable rule IDs, spec sections, offsets, and messages where applicable.
 - [ ] Tests/proof were added and recorded in the matrix.
+- [ ] PR title and commit subjects use Conventional Commits.
 - [ ] `cargo fmt --all -- --check` passes.
 - [ ] `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` passes.
 - [ ] `cargo test --workspace --all-targets --locked` passes.

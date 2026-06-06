@@ -33,6 +33,18 @@ struct Cli {
 enum Task {
     /// Run the local acceptance pipeline (fmt, clippy, build, test, repo checks).
     Ci,
+    /// Verify commit subjects follow Conventional Commits.
+    CheckConventionalCommits {
+        /// Git revision range to inspect. Defaults to the current HEAD commit.
+        #[arg(value_name = "REV_RANGE")]
+        rev_range: Option<String>,
+    },
+    /// Verify a PR title follows Conventional Commits.
+    CheckConventionalTitle {
+        /// Pull request title to inspect.
+        #[arg(value_name = "TITLE")]
+        title: String,
+    },
     /// Verify every tracked `.rs` file starts with the SPDX license header.
     CheckLicenseHeaders,
     /// Verify member crates honor the one-way dependency direction.
@@ -72,6 +84,10 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Task::Ci => run_ci(),
+        Task::CheckConventionalCommits { rev_range } => {
+            check_conventional_commits(&workspace_root()?, rev_range.as_deref())
+        }
+        Task::CheckConventionalTitle { title } => check_conventional_title(&title),
         Task::CheckLicenseHeaders => check_license_headers(&workspace_root()?),
         Task::CheckDependencyDirection => check_dependency_direction(&workspace_root()?),
         Task::FeatureStatus {
@@ -139,6 +155,161 @@ fn run_cargo(args: &[&str]) -> Result<()> {
         bail!("`{display}` failed with {status}");
     }
     Ok(())
+}
+
+/// Checks XTASK-CONVENTIONAL-COMMITS: commit subjects follow Conventional Commits.
+fn check_conventional_commits(root: &Path, rev_range: Option<&str>) -> Result<()> {
+    let commits = git_commit_subjects(root, rev_range)?;
+    if commits.is_empty() {
+        let target = rev_range.unwrap_or("HEAD");
+        bail!("check-conventional-commits: no commits found for `{target}`");
+    }
+
+    let offenders: Vec<&CommitSubject> = commits
+        .iter()
+        .filter(|commit| !is_conventional_commit_subject(&commit.subject))
+        .collect();
+
+    if offenders.is_empty() {
+        eprintln!(
+            "check-conventional-commits: ok ({} commit(s))",
+            commits.len()
+        );
+        return Ok(());
+    }
+
+    for offender in &offenders {
+        eprintln!(
+            "non-conventional commit {}: {}",
+            short_sha(&offender.sha),
+            offender.subject
+        );
+    }
+    eprintln!(
+        "expected: <type>[optional scope][!]: <description>; allowed types: {}",
+        CONVENTIONAL_COMMIT_TYPES.join(", ")
+    );
+    bail!(
+        "{} commit(s) do not use Conventional Commits",
+        offenders.len()
+    )
+}
+
+fn check_conventional_title(title: &str) -> Result<()> {
+    if is_conventional_commit_subject(title) {
+        eprintln!("check-conventional-title: ok");
+        return Ok(());
+    }
+
+    eprintln!("non-conventional PR title: {title}");
+    eprintln!(
+        "expected: <type>[optional scope][!]: <description>; allowed types: {}",
+        CONVENTIONAL_COMMIT_TYPES.join(", ")
+    );
+    bail!("PR title does not use Conventional Commits")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommitSubject {
+    sha: String,
+    subject: String,
+}
+
+const CONVENTIONAL_COMMIT_TYPES: &[&str] = &[
+    "build", "chore", "ci", "docs", "feat", "fix", "perf", "refactor", "revert", "style", "test",
+];
+
+fn git_commit_subjects(root: &Path, rev_range: Option<&str>) -> Result<Vec<CommitSubject>> {
+    if let Some(range) = rev_range {
+        if range.trim().is_empty() {
+            bail!("revision range must not be empty");
+        }
+        if range.starts_with('-') {
+            bail!("revision range must not start with `-`");
+        }
+    }
+
+    let output = if let Some(range) = rev_range {
+        run_git(root, &["log", "--format=%H%x09%s", range])?
+    } else {
+        run_git(root, &["log", "-1", "--format=%H%x09%s"])?
+    };
+    parse_commit_subjects(&output)
+}
+
+fn run_git(root: &Path, args: &[&str]) -> Result<String> {
+    let display = format!("git -C {} {}", root.display(), args.join(" "));
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to spawn `{display}`"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "`{display}` failed with {}; stderr:\n{}",
+            output.status,
+            stderr.trim_end()
+        );
+    }
+    String::from_utf8(output.stdout).with_context(|| format!("`{display}` emitted non-UTF-8"))
+}
+
+fn parse_commit_subjects(output: &str) -> Result<Vec<CommitSubject>> {
+    let mut commits = Vec::new();
+    for line in output.lines().filter(|line| !line.is_empty()) {
+        let Some((sha, subject)) = line.split_once('\t') else {
+            bail!("git log output line did not contain a tab separator: {line}");
+        };
+        commits.push(CommitSubject {
+            sha: sha.to_owned(),
+            subject: subject.to_owned(),
+        });
+    }
+    Ok(commits)
+}
+
+fn is_conventional_commit_subject(subject: &str) -> bool {
+    let Some((prefix, description)) = subject.split_once(": ") else {
+        return false;
+    };
+    if description.trim().is_empty() {
+        return false;
+    }
+
+    let type_and_scope = prefix.strip_suffix('!').unwrap_or(prefix);
+    let Some((commit_type, scope)) = split_commit_type_and_scope(type_and_scope) else {
+        return false;
+    };
+
+    CONVENTIONAL_COMMIT_TYPES.contains(&commit_type) && scope.is_none_or(is_valid_commit_scope)
+}
+
+fn split_commit_type_and_scope(type_and_scope: &str) -> Option<(&str, Option<&str>)> {
+    if let Some((commit_type, scope_with_end)) = type_and_scope.split_once('(') {
+        let scope = scope_with_end.strip_suffix(')')?;
+        if commit_type.is_empty() || scope.is_empty() || scope.contains('(') || scope.contains(')')
+        {
+            return None;
+        }
+        return Some((commit_type, Some(scope)));
+    }
+
+    if type_and_scope.is_empty() || type_and_scope.contains(')') {
+        return None;
+    }
+    Some((type_and_scope, None))
+}
+
+fn is_valid_commit_scope(scope: &str) -> bool {
+    scope
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '/' | '.'))
+}
+
+fn short_sha(sha: &str) -> &str {
+    sha.get(..7).unwrap_or(sha)
 }
 
 /// Returns the workspace root (the parent of this xtask crate).
@@ -395,4 +566,51 @@ fn fetch_vectors_stub() {
 fn conformance_stub() {
     eprintln!("xtask conformance: not yet implemented.");
     eprintln!("Planned: differential testing against AVM (avm encode -> splot validate).");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conventional_subjects_accept_expected_forms() {
+        for subject in [
+            "feat: add Annex B parser",
+            "fix(parser): reject truncated OBU headers",
+            "ci(github-actions): check commit subjects",
+            "docs!: rewrite contribution rules",
+            "refactor(core)!: split OBU types",
+        ] {
+            assert!(
+                is_conventional_commit_subject(subject),
+                "{subject} should be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn conventional_subjects_reject_non_matching_forms() {
+        for subject in [
+            "add Annex B parser",
+            "Feat: uppercase type",
+            "feat: ",
+            "feat(scope):",
+            "feat(): empty scope",
+            "feat(scope space): invalid scope",
+            "feat(SCOPE): uppercase scope should be rejected",
+            "merge pull request #1",
+            "wip: unsupported type",
+        ] {
+            assert!(
+                !is_conventional_commit_subject(subject),
+                "{subject} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn conventional_title_check_reuses_subject_rules() {
+        assert!(check_conventional_title("ci: enforce conventional commits").is_ok());
+        assert!(check_conventional_title("Enforce Conventional Commits in CI").is_err());
+    }
 }

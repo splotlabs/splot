@@ -27,6 +27,25 @@ cargo test --workspace --all-targets --locked
 cargo xtask ci
 ```
 
+## Commit messages
+
+Every commit subject and pull request title must use Conventional Commits:
+
+```text
+<type>[optional scope][!]: <description>
+```
+
+Allowed types are `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`,
+`refactor`, `revert`, `style`, and `test`. Examples: `feat: add OBU parser`,
+`fix(parser): reject truncated OBU headers`, `ci!: require conventional commits`.
+CI checks every PR title with `cargo xtask check-conventional-title` and every PR
+commit with `cargo xtask check-conventional-commits`.
+
+Use squash or rebase merges only; GitHub's generated merge commits do not use
+Conventional Commits subjects. Repository settings should keep "Allow merge
+commits" disabled so push-to-main CI checks the resulting commit subject, not a
+generated `Merge pull request ...` subject.
+
 ## Style rules
 
 - **Library-first, thin CLI.** Logic lives in libraries; `splot-cli` is plumbing.

@@ -36,8 +36,9 @@ Toolchain: Rust 1.96.0, edition 2024, resolver 3. Generated 2026-06-06.
   Global `-v/--verbose`/`--quiet`, `tracing` logging to stderr, `--json` output,
   documented exit codes (0/1/2), and a project-wide PolyForm-Noncommercial notice in
   `--help`.
-- **`xtask`** — `ci`, `check-license-headers`, `check-dependency-direction`
-  implemented; `gen-tables`, `fetch-vectors`, `conformance` are explanatory stubs.
+- **`xtask`** — `ci`, `check-license-headers`, `check-dependency-direction`,
+  `check-conventional-commits` implemented; `gen-tables`, `fetch-vectors`,
+  `conformance` are explanatory stubs.
 - **`fuzz`** — `parse_obu` libFuzzer target over all three parsers (outside the
   workspace).
 
@@ -162,29 +163,31 @@ All run from the repo root:
 cargo fmt --all -- --check                                                      # ok (no diff)
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # ok, 0 warnings
 cargo build --workspace --all-targets --locked                                  # ok
-cargo test --workspace --all-targets --locked                                   # ok: 73 passed, 0 failed
-cargo xtask feature-status                                                       # ok (renders 28-row table)
+cargo test --workspace --all-targets --locked                                   # ok: 78 passed, 0 failed
+cargo xtask feature-status                                                       # ok (renders 29-row table)
 cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md    # ok, worktree stays clean
-cargo xtask check-feature-status                                                # ok (28 features)
+cargo xtask check-conventional-title "ci: enforce conventional commits"          # ok
+cargo xtask check-conventional-commits                                           # ok (current HEAD)
+cargo xtask check-feature-status                                                # ok (29 features)
 cargo xtask spec-coverage                                                       # ok
 cargo xtask ci                                                                  # ok: all checks passed
 git diff --check                                                                # ok (no whitespace errors)
-openspec validate --all --no-interactive                                        # ok: 11/11 (CLI present)
+openspec validate --all --no-interactive                                        # ok: 13/13 (CLI present)
 ```
 
 Test breakdown: `splot-core` 37, `splot-encode` 2, `splot-validate` 15,
-`splot-cli` 7 (CLI integration tests over `tests/fixtures/`), `xtask` 12.
+`splot-cli` 7 (CLI integration tests over `tests/fixtures/`), `xtask` 17.
 
 Also verified:
 
 ```text
 cargo run -p splot-cli -- --help            # shows subcommands, aliases, PolyForm notice
 cargo run -p splot-cli -- inspect --help    # shows inspect args
-cargo run -p xtask -- --help                # shows xtask subcommands (incl. feature-status, check-feature-status, spec-coverage)
+cargo run -p xtask -- --help                # shows xtask subcommands (incl. check-conventional-title, check-conventional-commits, feature-status, check-feature-status, spec-coverage)
 splot validate good.av2                     # conformant, exit 0
 splot validate bad.av2                      # 1 error (§6.2.2), exit 1
 splot inspect good.av2 --headers            # lists 2 OBUs with inferred xlayer
 ```
 
 > OpenSpec CLI: `openspec validate --all --no-interactive` was run and passed
-> (11/11). It is optional — CI runs it only when the CLI is installed.
+> (13/13). It is optional — CI runs it only when the CLI is installed.
