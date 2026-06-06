@@ -938,3 +938,36 @@ tests = []
 commands = []
 fixtures = []
 diagnostics = []
+
+[[feature]]
+id = "DOC-ENCODER-REFERENCE-GATE"
+name = "Encoder reference gate documentation"
+category = "docs"
+kind = "docs"
+spec_sections = []
+sources = []
+crate = "docs"
+module = "docs/references/ENCODER-RESEARCH-NOTES.md"
+openspec_change = "encoder-reference-gate"
+tracking_issue = ""
+owner = "docs"
+risk = "low"
+notes = "Documents the rav1e/SVT-AV1 inspiration-only policy, third-party notices, required encoder research gate, and reviewer/agent workflow wiring."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "not-applicable"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []

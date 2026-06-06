@@ -12,6 +12,23 @@ solo-developer, source-available project optimized for maintainability, clear
 boundaries, and automation. Toolchain: Rust **1.96.0**, edition **2024**, resolver
 **3**.
 
+## 1a. Encoder reference gate
+
+Before changing `crates/splot-encode`, encoder-facing `splot-core` syntax/parsing code, or any
+encoder research documentation, read:
+
+1. `docs/references/ENCODER-RESEARCH-NOTES.md`
+2. `docs/references/THIRD-PARTY-NOTICES.md`
+3. `docs/references/RAV1E-SOURCE-MAP.md` when using Rust API, RDO, tiling, fuzzing, profiling, or
+   safe data-structure ideas from rav1e
+4. `docs/references/SVT-AV1-RESEARCH-MAPPING.md` when using production pipeline, mode-decision,
+   motion-estimation, rate-control, filter-search, threading, or SIMD ideas from SVT-AV1
+
+rav1e and SVT-AV1 are engineering inspiration only. Do not copy AV1 syntax, source code, tables,
+constants, entropy CDFs, comments, or prose. AV2 behavior must be derived from the AV2 specification
+and AVM. If a feature touches syntax, reconstruction, reference state, or layer behavior, update
+`docs/SPEC-MAPPING.md` before implementation.
+
 ## 2. Repository map and dependency direction
 
 ```text

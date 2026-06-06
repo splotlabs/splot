@@ -9,6 +9,18 @@ A concise checklist for humans and agents reviewing changes to `splot`.
       or size-field assumptions)?
 - [ ] No invented syntax, constants, or table contents?
 
+## Encoder reference review checklist
+
+For encoder or syntax-related PRs, reviewers must check:
+
+- The PR includes the Encoder research gate from `docs/references/ENCODER-RESEARCH-NOTES.md`.
+- AV2 spec sections and AVM oracle paths are identified for decoder-visible behavior.
+- rav1e/SVT-AV1 are used only as inspiration.
+- No AV1 syntax, code, tables, constants, entropy CDFs, comments, or prose were copied.
+- `docs/SPEC-MAPPING.md` is updated when syntax/reconstruction/reference/layer behavior changes.
+- Tests include edge cases and differential coverage where possible.
+- Scalar correctness and deterministic traces exist before performance work.
+
 ## Error handling
 
 - [ ] No `unwrap` / `expect` / `panic!` / `todo!` / `unimplemented!` reachable in

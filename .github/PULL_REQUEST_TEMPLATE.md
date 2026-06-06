@@ -21,4 +21,22 @@
 - [ ] `cargo xtask check-feature-status` passes.
 - [ ] `cargo xtask ci` passes.
 
+## Encoder research gate, if applicable
+
+- Feature / module:
+- AV2 spec sections read:
+- AVM files/tests/streams used as oracle:
+- Decoder-visible behavior? yes/no
+- `docs/SPEC-MAPPING.md` entries updated? yes/no
+- Reference docs read:
+  - [ ] `docs/references/ENCODER-RESEARCH-NOTES.md`
+  - [ ] `docs/references/THIRD-PARTY-NOTICES.md`
+  - [ ] `docs/references/RAV1E-SOURCE-MAP.md`
+  - [ ] `docs/references/SVT-AV1-RESEARCH-MAPPING.md`
+- rav1e/SVT concepts used for inspiration:
+- Third-party material copied: none
+- AV1 syntax/tables/constants excluded: yes
+- Tests/traces added:
+- How this design aims to be better than the reference:
+
 ## Deviations or follow-ups

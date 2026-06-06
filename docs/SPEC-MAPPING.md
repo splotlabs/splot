@@ -25,6 +25,17 @@ Every syntax-element implementation carries a doc comment (or a
 `// TODO(spec: <FEATURE-ID>): …` marker) naming the AV2 section it derives from.
 Never invent syntax, constants, or semantics.
 
+## Encoder implementation precondition
+
+Encoder code must not be implemented from rav1e or SVT-AV1 behavior. For every decoder-visible
+feature, this mapping must identify:
+
+| Feature | AV2 spec section | AVM oracle | `splot` module | Reference docs consulted | Status |
+|---|---|---|---|---|---|
+
+If the AV2 section or AVM oracle is unknown, use `TODO(spec: <FEATURE-ID>): <section/topic>` in code
+and keep the feature stubbed.
+
 ## Current mapping
 
 | Module                              | Spec area                         | Status |

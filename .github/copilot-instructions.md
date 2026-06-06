@@ -21,4 +21,17 @@ The canonical guide is [AGENTS.md](../AGENTS.md). Read it. The most critical rul
   `TODO(spec: FEATURE-ID)`. Do not mark implementation stages as done unless proof
   is recorded. See [../docs/FEATURE-TRACKING.md](../docs/FEATURE-TRACKING.md).
 
+## Encoder research references
+
+Before suggesting encoder implementation code, consult:
+
+- `docs/references/ENCODER-RESEARCH-NOTES.md`
+- `docs/references/THIRD-PARTY-NOTICES.md`
+- `docs/references/RAV1E-SOURCE-MAP.md` for rav1e-inspired Rust/RDO/API/tiling ideas
+- `docs/references/SVT-AV1-RESEARCH-MAPPING.md` for SVT-inspired pipeline/ME/RC/filter ideas
+
+Use rav1e and SVT-AV1 only as architecture inspiration. Do not copy AV1 syntax, source code, tables,
+constants, entropy CDFs, comments, or prose. AV2 syntax and decoder-visible behavior must be derived
+from the AV2 specification and AVM.
+
 Validate work with `cargo xtask ci` (which runs `cargo xtask check-feature-status`).

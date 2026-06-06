@@ -37,6 +37,18 @@ fuzz lives outside the workspace and depends on splot-core only.
   (`check-license-headers`, `check-dependency-direction`) plus codegen/vector/
   conformance stubs.
 
+## Reference-informed encoder architecture
+
+Future `splot-encode` work should combine:
+
+- rav1e-style Rust API, RDO, tile/plane-region, fuzzing, and profiling discipline;
+- SVT-AV1-style production pipeline, resource ownership, mode-decision, ME, RC, and filter-search
+  architecture;
+- AV2-spec and AVM-derived syntax, semantics, reconstruction, and conformance behavior.
+
+Before implementing encoder features, read `docs/references/ENCODER-RESEARCH-NOTES.md` and update
+`docs/SPEC-MAPPING.md` for any syntax/reconstruction behavior.
+
 ## Error model
 
 Libraries use typed errors (`thiserror`); `anyhow` is confined to `splot-cli` and
