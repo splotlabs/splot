@@ -4,9 +4,10 @@
 name: zizmor
 
 # Static security analysis of the workflows themselves — the CI/CD layer
-# that `cargo xtask ci` can't see. Findings are uploaded to GitHub code
-# scanning (Security tab) and the job fails on anything at/above zizmor's
-# default gate.
+# that `cargo xtask ci` can't see. Mirrors GitHub's standard code-scanning
+# split: pull requests are the enforcement point (annotations mode, which
+# exits non-zero on findings and so blocks the merge), and pushes to main
+# upload SARIF to the Security tab for post-merge tracking.
 
 on:
   push:
@@ -22,15 +23,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read # checkout
-      security-events: write # upload the SARIF report to code scanning
-      actions: read # resolve referenced workflows/actions
-    # SARIF upload needs a writable security-events scope, which GitHub
-    # forces read-only on fork and Dependabot PRs. Only enable the upload
-    # when the token can actually write; otherwise zizmor still runs and
-    # gates the job via its exit code, surfacing findings as inline
-    # annotations instead (the two outputs are mutually exclusive).
+      security-events: write # upload the SARIF report to code scanning (push only)
+      actions: read # resolve referenced workflows/actions for online audits
+    # zizmor-action's GitHub Advanced Security (SARIF) mode exits 0 even when
+    # zizmor finds problems, so it reports but does NOT gate. Annotations mode
+    # (`--format=github`) exits non-zero on findings and needs no write token.
+    # So: gate on pull requests via annotations (works for fork/Dependabot PRs
+    # too), and upload SARIF for the Security tab only on push to main.
     env:
-      CAN_UPLOAD_SARIF: ${{ github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
+      UPLOAD_SARIF: ${{ github.event_name == 'push' }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -39,5 +40,5 @@ jobs:
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@5f14fd08f7cf1cb1609c1e344975f152c7ee938d # v0.5.6
         with:
-          advanced-security: ${{ env.CAN_UPLOAD_SARIF }}
-          annotations: ${{ env.CAN_UPLOAD_SARIF != 'true' }}
+          advanced-security: ${{ env.UPLOAD_SARIF }}
+          annotations: ${{ env.UPLOAD_SARIF != 'true' }}
