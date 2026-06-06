@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <contact@splotlabs.io>
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! A minimal, panic-free, MSB-first bit reader for AV2 fixed-width `f(n)` syntax
 //! elements, plus explicit stubs for the AV2 entropy (range) coder.

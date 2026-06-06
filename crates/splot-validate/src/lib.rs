@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <contact@splotlabs.io>
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! `splot-validate` — turns [`splot_core`] parser output into structured AV2
 //! conformance diagnostics.

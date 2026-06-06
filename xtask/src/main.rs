@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <contact@splotlabs.io>
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Project automation for the splot workspace. Run via `cargo xtask <command>`.
 //!

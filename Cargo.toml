@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <contact@splotlabs.io>
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 [workspace]
 members = [
@@ -23,7 +23,7 @@ resolver = "3"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.96.0"
-authors = ["Bartosz Tomczyk <contact@splotlabs.io>"]
+authors = ["Bartosz Tomczyk <bartekplus@gmail.com>"]
 repository = "https://github.com/splotlabs/splot"
 license = "PolyForm-Noncommercial-1.0.0"
 publish = false
