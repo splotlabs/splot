@@ -3,6 +3,10 @@
 ## Feature IDs
 
 - `ENC-BITSTREAM-WRITER`
+- `AV2-4.11.6-LEB128` (advances its `write` stage)
+- `AV2-5.2.2-OBU-HEADER` (advances its `write` stage)
+- `AV2-5.2.3-TRAILING-BITS` (advances its `write` stage, when modeled)
+- `AV2-5.2.4-BYTE-ALIGNMENT` (advances its `write` stage, when modeled)
 
 ## Why
 

@@ -5,7 +5,8 @@ The canonical guide is [AGENTS.md](../AGENTS.md). Read it. The most critical rul
 - **Toolchain:** Rust **1.96.0**, edition **2024**, resolver **3**.
 - **AV2, not AV1:** the OBU header is AV2 v1.0.0 § 5.2.2. Never copy AV1 OBU header
   fields, the AV1 OBU type table, `obu_forbidden_bit`, or `obu_has_size_field`.
-  Never invent AV2 syntax — leave `// TODO(spec): …` instead.
+  Never invent AV2 syntax — leave `// TODO(spec: <FEATURE-ID>): …` (a matrix id)
+  instead; `cargo xtask check-feature-status` rejects bare/unknown spec TODOs.
 - **No panics in libraries:** no `unwrap` / `expect` / `panic!` / `todo!` /
   `unimplemented!` reachable in library code. Stubs return
   `Error::Unimplemented { feature }`. `anyhow` is only for `splot-cli` and `xtask`.

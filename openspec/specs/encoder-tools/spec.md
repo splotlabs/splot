@@ -9,13 +9,18 @@ code and produce only deliberately simple, writer-validated streams at first.
 Tracked by Feature IDs: `ENC-BITSTREAM-WRITER`, `ENC-INTRA-TOY-V0`,
 `ENC-RATE-CONTROL-V0`.
 
+**Status: planned.** No part of this capability is implemented yet (those rows are
+`todo`/proposed in the matrix). The requirements below are the accepted *target*
+contract; implementation is proposed in `openspec/changes/add-bitstream-writer` and
+`openspec/changes/toy-intra-encoder-v0`.
+
 ## Requirements
 
 ### Requirement: writer symmetry
 
-The bitstream writer SHALL be symmetric with the parsers: anything the writer emits
-SHALL parse back to an equal structure (round-trip tests) before the writer stage is
-marked `done` in the matrix.
+When implemented, the bitstream writer SHALL be symmetric with the parsers: anything
+the writer emits SHALL parse back to an equal structure (round-trip tests) before
+the writer stage is marked `done` in the matrix.
 
 #### Scenario: round-trip
 
@@ -24,8 +29,8 @@ marked `done` in the matrix.
 
 ### Requirement: legal-stream-only encoding
 
-The toy encoder SHALL emit only syntax that is implemented in the writer and
-accepted by `splot validate`. It SHALL NOT fabricate AV2 syntax.
+When implemented, the toy encoder SHALL emit only syntax that is implemented in the
+writer and accepted by `splot validate`. It SHALL NOT fabricate AV2 syntax.
 
 #### Scenario: toy intra output
 

@@ -40,8 +40,10 @@ cargo xtask ci
 ## Spec honesty
 
 Never invent AV2 syntax, constants, or semantics. Cite the spec section for every
-syntax element. If something is not yet modeled, leave a `// TODO(spec): …` marker
-rather than guessing. The AV2 OBU header is § 5.2.2 — not AV1.
+syntax element. If something is not yet modeled, leave a `// TODO(spec: <FEATURE-ID>): …`
+marker referencing a row in `docs/IMPLEMENTATION-MATRIX.toml` rather than guessing
+(`cargo xtask check-feature-status` rejects bare/unknown spec TODOs). The AV2 OBU
+header is § 5.2.2 — not AV1.
 
 ## Dependency policy
 

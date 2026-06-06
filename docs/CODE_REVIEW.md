@@ -4,7 +4,7 @@ A concise checklist for humans and agents reviewing changes to `splot`.
 
 ## Spec correctness
 
-- [ ] Is the AV2 spec section cited (doc comment or `// TODO(spec)`)?
+- [ ] Is the AV2 spec section cited (doc comment or `// TODO(spec: <FEATURE-ID>)`)?
 - [ ] No AV1 leakage (OBU header is § 5.2.2; no AV1 OBU type table, forbidden bit,
       or size-field assumptions)?
 - [ ] No invented syntax, constants, or table contents?

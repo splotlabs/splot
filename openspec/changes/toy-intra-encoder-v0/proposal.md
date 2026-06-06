@@ -3,6 +3,11 @@
 ## Feature IDs
 
 - `ENC-INTRA-TOY-V0`
+- `ENC-BITSTREAM-WRITER` (dependency)
+- `AV2-5.4-SEQUENCE-HEADER` (dependency)
+- `AV2-5.18-FRAME-HEADER` (dependency)
+- `AV2-5.19-TILE-GROUP` (dependency)
+- `CONF-AVM-DIFF-HARNESS` (stretch proof)
 
 ## Why
 

@@ -21,7 +21,7 @@ Toolchain: Rust 1.96.0, edition 2024, resolver 3. Generated 2026-06-06.
   - `obu` — `read_obu_header` (§ 5.2.2) with the no-extension xlayer inference.
   - `annexb` — `parse_annex_b_obus` (Annex B § B.2): LEB128-prefixed OBUs, payload
     slicing, panic-free on malformed input.
-  - `headers`, `tables` — documented placeholders (`TODO(spec)`).
+  - `headers`, `tables` — documented placeholders (`TODO(spec: <FEATURE-ID>)`).
 - **`splot-validate`**
   - `diagnostic` — `Severity`, `Diagnostic` (rule id / section / severity / byte /
     bit / message), `ValidationReport` with `is_conformant`, `errors`, `warnings`,
@@ -44,7 +44,7 @@ Toolchain: Rust 1.96.0, edition 2024, resolver 3. Generated 2026-06-06.
 ## Stubbed / not implemented
 
 - Entropy (range) coder, decoder, encoder — all return `Error::Unimplemented`.
-- Sequence/frame header syntax, spec tables (`TODO(spec)` / codegen).
+- Sequence/frame header syntax, spec tables (`TODO(spec: <FEATURE-ID>)` / codegen).
 - OBU ordering and sequence-header-activated conformance checks.
 - `insta` snapshot tests, conformance vectors, AVM differential testing.
 
@@ -82,7 +82,7 @@ stages remain `todo`/`pending`. `cargo xtask spec-coverage` flags
 `CONF-INSPECT-SNAPSHOTS` as the one row that has progressed but records no proof
 (its snapshot tests do not exist yet).
 
-**Existing `TODO(spec): …` markers** in `headers.rs`, `tables.rs`, `config.rs`,
+**Bare `TODO(spec)` markers** in `headers.rs`, `tables.rs`, `config.rs`,
 `context.rs`, and `checks/mod.rs` were migrated to the
 `TODO(spec: <FEATURE-ID>): …` form so they reference matrix ids; the checker
 rejects bare or unknown spec TODOs.
@@ -143,29 +143,47 @@ Feature-tracking framework (2026-06-06):
 12. The TODO scanner runs over `.rs` files; the feature-ID token scanner runs over
     `.rs`/`.md`/`.toml`/`.yml`/`.yaml` (skipping `target`, `.git`, and the fuzz
     `corpus`).
+13. **Diagnostic rule-id convention.** The prompt suggests feature-corresponding
+    diagnostics use the Feature ID as the base rule id (with optional `.SUFFIX`).
+    The existing validator instead uses a stable kebab/slash namespace
+    (`obu-header/`, `obu-reserved/`, `bitstream/`), which predates this framework.
+    To avoid churning stable, user-facing rule ids, `check-feature-status` accepts
+    **both**: a documented kebab/slash prefix *or* a known Feature ID (optionally
+    with a `.SUFFIX`). New feature-specific diagnostics may use either form; new
+    kebab prefixes must be added to the allowlist in `xtask/src/feature_status.rs`
+    and documented in `docs/FEATURE-TRACKING.md`.
 
-## Acceptance command results (2026-06-06)
+## Acceptance command results (current head)
 
 All run from the repo root:
 
 ```text
-cargo fmt --all -- --check                                              # ok (no diff)
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings  # ok, 0 warnings
-cargo build --workspace --all-targets --locked                          # ok
-cargo test --workspace --all-targets --locked                           # ok: 56 passed, 0 failed
-cargo xtask ci                                                          # ok: all checks passed
+cargo fmt --all -- --check                                                      # ok (no diff)
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # ok, 0 warnings
+cargo build --workspace --all-targets --locked                                  # ok
+cargo test --workspace --all-targets --locked                                   # ok: 73 passed, 0 failed
+cargo xtask feature-status                                                       # ok (renders 27-row table)
+cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md    # ok, worktree stays clean
+cargo xtask check-feature-status                                                # ok (27 features)
+cargo xtask spec-coverage                                                       # ok
+cargo xtask ci                                                                  # ok: all checks passed
+git diff --check                                                                # ok (no whitespace errors)
+openspec validate --all --no-interactive                                        # ok: 11/11 (CLI present)
 ```
 
-Test breakdown: `splot-core` 37, `splot-encode` 2, `splot-validate` 10,
-`splot-cli` 7 (CLI integration tests over `tests/fixtures/`), `xtask` 0.
+Test breakdown: `splot-core` 37, `splot-encode` 2, `splot-validate` 15,
+`splot-cli` 7 (CLI integration tests over `tests/fixtures/`), `xtask` 12.
 
 Also verified:
 
 ```text
 cargo run -p splot-cli -- --help            # shows subcommands, aliases, PolyForm notice
 cargo run -p splot-cli -- inspect --help    # shows inspect args
-cargo run -p xtask -- --help                # shows xtask subcommands
+cargo run -p xtask -- --help                # shows xtask subcommands (incl. feature-status, check-feature-status, spec-coverage)
 splot validate good.av2                     # conformant, exit 0
 splot validate bad.av2                      # 1 error (§6.2.2), exit 1
 splot inspect good.av2 --headers            # lists 2 OBUs with inferred xlayer
 ```
+
+> OpenSpec CLI: `openspec validate --all --no-interactive` was run and passed
+> (11/11). It is optional — CI runs it only when the CLI is installed.
