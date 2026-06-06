@@ -8,4 +8,4 @@
 //! tables (`all_tables.h`) by `cargo xtask gen-tables` so that they stay faithful
 //! to the spec.
 //
-// TODO(spec): code-generate tables from AV2 v1.0.0 § 9 (Additional tables).
+// TODO(spec: AV2-9-ADDITIONAL-TABLES): code-generate tables from AV2 v1.0.0 § 9.

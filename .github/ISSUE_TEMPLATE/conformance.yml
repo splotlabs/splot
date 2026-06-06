@@ -1,0 +1,39 @@
+name: Conformance / vector / fuzz
+description: Track AVM differential, public-vector, fuzz, or snapshot conformance work
+labels: ["conformance"]
+body:
+  - type: input
+    id: feature_id
+    attributes:
+      label: Feature ID
+      description: A CONF-* (or related) ID from docs/IMPLEMENTATION-MATRIX.toml.
+      placeholder: CONF-AVM-DIFF-HARNESS
+    validations:
+      required: true
+  - type: input
+    id: source_license
+    attributes:
+      label: Vector / source and its license
+      description: Where the input comes from and whether it is redistributable. Do not vendor unclear-license samples.
+      placeholder: "AOMedia public vectors (license: ...)"
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Command to reproduce
+      placeholder: |
+        cargo xtask conformance
+        cargo +nightly fuzz run parse_obu
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+      description: What conformant behavior looks like (exit code, no panic, matching AVM, snapshot, ...).
+    validations:
+      required: true
+  - type: textarea
+    id: proof
+    attributes:
+      label: Matrix proof update
+      description: Which [feature.proof] entries (tests/commands/fixtures/diagnostics) this will add or change.

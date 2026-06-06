@@ -161,4 +161,71 @@ mod tests {
         let report = Validator::new(false).validate_bytes(&[0x02, 0x00, 0x80]);
         assert!(report.is_conformant());
     }
+
+    #[test]
+    fn global_xlayer_requires_base_layers_is_flagged() {
+        // size=2, header 0xA0 0x3F: OBU_METADATA_SHORT, ext, mlayer=1, xlayer=31
+        // (global). A global xlayer requires base mlayer/tlayer (§ 6.2.2).
+        let report = Validator::new(false).validate_bytes(&[0x02, 0xA0, 0x3F]);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "obu-header/global-xlayer-requires-base-layers"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn global_xlayer_on_disallowed_type_is_flagged() {
+        // size=2, header 0x84 0x1F: OBU_SEQUENCE_HEADER, ext, mlayer=0, xlayer=31.
+        // The sequence header may not carry the global xlayer (§ 6.2.2).
+        let report = Validator::new(false).validate_bytes(&[0x02, 0x84, 0x1F]);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "obu-header/global-xlayer-allowed-types"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn base_layer_only_type_with_nonzero_layer_is_flagged() {
+        // size=2, header 0x85 0x00: OBU_SEQUENCE_HEADER, ext, tlayer=1, mlayer=0,
+        // xlayer=0. The sequence header must be base tlayer/mlayer (§ 6.2.2).
+        let report = Validator::new(false).validate_bytes(&[0x02, 0x85, 0x00]);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "obu-header/base-layer-only-types"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn temporal_layer_zero_only_type_is_flagged() {
+        // size=1, header 0x11: OBU_CLOSED_LOOP_KEY, no extension, tlayer=1. Closed/
+        // open-loop key, switch, and RAS frames must use tlayer 0 (§ 6.2.2).
+        let report = Validator::new(false).validate_bytes(&[0x01, 0x11]);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "obu-header/temporal-layer-zero-only-types"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn reserved_obu_type_emits_info_and_stays_conformant() {
+        // size=2, header 0x68 (reserved obu_type 26) + non-zero payload 0x80.
+        // Reserved types are ignored by decoders: informational, not an error.
+        let report = Validator::new(false).validate_bytes(&[0x02, 0x68, 0x80]);
+        assert!(report.is_conformant(), "report was: {report}");
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|d| d.rule_id == "obu-header/reserved-obu-type"),
+            "report was: {report}"
+        );
+    }
 }

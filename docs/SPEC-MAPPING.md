@@ -11,11 +11,19 @@ Normative reference: **AV2 Bitstream & Decoding Process Specification v1.0.0**
 - Additional tables: <https://av2.aomedia.org/v1.0.0/attachments/all_tables.h>
 - AVM reference software (oracle): <https://github.com/AOMediaCodec/avm/tree/v1.0.0>
 
+## Canonical status
+
+This table is a human-readable narrative. The **canonical** per-feature status
+lives in [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml) and is rendered
+to [FEATURE-STATUS.md](./FEATURE-STATUS.md). The workflow and conventions are in
+[FEATURE-TRACKING.md](./FEATURE-TRACKING.md). Run `cargo xtask feature-status` for
+the live view.
+
 ## Rule
 
-Every syntax-element implementation carries a doc comment (or `// TODO(spec): …`)
-naming the AV2 section it derives from. Never invent syntax, constants, or
-semantics.
+Every syntax-element implementation carries a doc comment (or a
+`// TODO(spec: <FEATURE-ID>): …` marker) naming the AV2 section it derives from.
+Never invent syntax, constants, or semantics.
 
 ## Current mapping
 

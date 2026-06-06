@@ -75,7 +75,9 @@ cargo +nightly fuzz run parse_obu   # nightly-only (cargo-fuzz); `cargo install 
 ## 6. AV2 spec honesty
 
 - **Never invent** AV2 syntax, constants, table contents, or semantics. If a detail
-  is not modeled, add `// TODO(spec): <section/topic>`.
+  is not modeled, add `// TODO(spec: <FEATURE-ID>): <topic>` referencing the matrix
+  id (see the Feature tracking section); `cargo xtask check-feature-status` rejects
+  a bare or unknown spec TODO.
 - Cite the spec section in the doc comment or code comment for each syntax element.
 - The AV2 OBU header is from **§ 5.2.2**, not AV1. There is no AV1 OBU type table.
 - Treat **AVM** (<https://github.com/AOMediaCodec/avm>) as the differential-testing
@@ -95,6 +97,36 @@ In priority order: parser unit tests (LEB128, OBU header, Annex B) → property/
 tests (parsers never panic) → `inspect` snapshots → conformance vectors → AVM
 differential testing. See [docs/TESTING.md](./docs/TESTING.md). Add positive,
 negative, and EOF cases for every parser change.
+
+## Feature tracking
+
+Every non-trivial change must use a stable Feature ID.
+
+The canonical status file is:
+
+```text
+docs/IMPLEMENTATION-MATRIX.toml
+```
+
+Before implementing a feature:
+
+1. Find or create a matrix row.
+2. Find or create an OpenSpec change under `openspec/changes/` unless the work is trivial.
+3. Use the Feature ID in code comments, diagnostics, tests, and PR text.
+4. Add `TODO(spec: FEATURE-ID): ...` for any intentionally unmapped AV2 detail.
+
+Before finishing:
+
+```bash
+cargo xtask feature-status
+cargo xtask check-feature-status
+cargo xtask ci
+```
+
+Do not mark a stage `done` unless tests/proof are recorded in the matrix. The
+schema, status model, and ID convention live in
+[docs/FEATURE-TRACKING.md](./docs/FEATURE-TRACKING.md) and
+[docs/IMPLEMENTATION-MATRIX.schema.md](./docs/IMPLEMENTATION-MATRIX.schema.md).
 
 ## 9. Licensing
 

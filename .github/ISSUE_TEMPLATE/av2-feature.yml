@@ -1,0 +1,52 @@
+name: AV2 feature
+description: Track an AV2 spec or encoder feature
+labels: ["feature", "av2"]
+body:
+  - type: input
+    id: feature_id
+    attributes:
+      label: Feature ID
+      description: Use an existing ID from docs/IMPLEMENTATION-MATRIX.toml or propose a new one.
+      placeholder: AV2-5.2.2-OBU-HEADER
+    validations:
+      required: true
+  - type: input
+    id: spec_sections
+    attributes:
+      label: AV2 spec sections
+      placeholder: "5.2.2, 6.2.2"
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - normative
+        - encoder
+        - conformance
+        - cli
+        - docs
+        - automation
+        - infrastructure
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What should be implemented?
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Non-goals
+      description: What must not be implemented in this issue?
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      value: |
+        - [ ] OpenSpec change exists or is not needed.
+        - [ ] Matrix row is updated.
+        - [ ] Tests/proof are recorded.
+        - [ ] cargo xtask check-feature-status passes.

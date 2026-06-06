@@ -1,0 +1,39 @@
+# Template for one `[[feature]]` row in docs/IMPLEMENTATION-MATRIX.toml.
+#
+# Copy this block into the matrix and edit it. The canonical schema, the allowed
+# values for every field, and the proof rules live in
+# docs/IMPLEMENTATION-MATRIX.schema.md. Run `cargo xtask check-feature-status`
+# after editing.
+
+[[feature]]
+id = "AV2-SECTION-SLUG"
+name = "Human-readable feature name"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.x", "6.x"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/example.rs"
+openspec_change = "change-id"
+tracking_issue = ""
+owner = "core"
+risk = "unknown"
+notes = "Short status note."
+
+[feature.status]
+mapped = "todo"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []

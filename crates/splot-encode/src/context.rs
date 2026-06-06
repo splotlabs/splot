@@ -10,7 +10,7 @@ use splot_core::{Error, Result};
 use crate::config::EncoderConfig;
 
 /// An input video frame (stub).
-// TODO(spec): model plane data, stride, and color format.
+// TODO(spec: ENC-Y4M-INPUT): model plane data, stride, and color format.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Frame {}

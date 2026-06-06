@@ -8,7 +8,7 @@
 //! than *how fast*.
 
 /// Placeholder sample bit depth.
-// TODO(spec): confirm the exact set of AV2-permitted bit depths.
+// TODO(spec: AV2-5.4-SEQUENCE-HEADER): confirm the exact set of permitted bit depths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum BitDepth {
@@ -22,7 +22,7 @@ pub enum BitDepth {
 }
 
 /// Placeholder chroma subsampling.
-// TODO(spec): map to the AV2 sequence-header color configuration.
+// TODO(spec: AV2-5.4-SEQUENCE-HEADER): map to the sequence-header color configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum ChromaSubsampling {
@@ -49,7 +49,7 @@ pub struct EncoderConfig {
     pub bit_depth: BitDepth,
     /// Chroma subsampling (placeholder).
     pub chroma_subsampling: ChromaSubsampling,
-    // TODO(spec): profile, level, color/transfer characteristics, and more.
+    // TODO(spec: AV2-5.4-SEQUENCE-HEADER): profile, level, color/transfer characteristics, and more.
 }
 
 impl EncoderConfig {
