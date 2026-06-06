@@ -869,6 +869,43 @@ diagnostics = []
 # ---------------------------------------------------------------------------
 
 [[feature]]
+id = "XTASK-CONVENTIONAL-COMMITS"
+name = "Conventional commit enforcement"
+category = "automation"
+kind = "automation"
+spec_sections = []
+sources = ["https://www.conventionalcommits.org/"]
+crate = "xtask"
+module = "xtask/src/main.rs"
+openspec_change = "enforce-conventional-commits"
+tracking_issue = ""
+owner = "automation"
+risk = "low"
+notes = "Adds `cargo xtask check-conventional-title` and `cargo xtask check-conventional-commits`, documents the allowed subject/title format, and wires the checks into CI for PR titles plus PR and push commit ranges."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["xtask/src/main.rs::tests"]
+commands = [
+    "cargo xtask check-conventional-title \"ci: enforce conventional commits\"",
+    "cargo xtask check-conventional-commits",
+    "cargo test -p xtask conventional",
+]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "XTASK-FEATURE-STATUS"
 name = "xtask feature status reporting and checks"
 category = "automation"

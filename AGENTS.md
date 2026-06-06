@@ -63,6 +63,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo build --workspace --all-targets --locked
 cargo test --workspace --all-targets --locked
+cargo xtask check-conventional-commits  # validates the current HEAD commit subject
 cargo +nightly fuzz run parse_obu   # nightly-only (cargo-fuzz); `cargo install cargo-fuzz --locked`; not in CI
 ```
 
@@ -88,6 +89,21 @@ cargo +nightly fuzz run parse_obu   # nightly-only (cargo-fuzz); `cargo install 
 
 - **Unsafe:** forbidden in the workspace (`unsafe_code = "forbid"`). Future SIMD/FFI
   must live behind narrowly-scoped, documented, tested modules.
+
+## 5.1 Commit messages
+
+Use Conventional Commits for every commit subject and pull request title:
+
+```text
+<type>[optional scope][!]: <description>
+```
+
+Allowed types are `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`,
+`refactor`, `revert`, `style`, and `test`. CI enforces this with
+`cargo xtask check-conventional-title` and `cargo xtask check-conventional-commits`
+(tracked as `XTASK-CONVENTIONAL-COMMITS`).
+Use squash or rebase merges only; generated GitHub merge commits are not
+Conventional Commits subjects.
 
 ## 6. AV2 spec honesty
 

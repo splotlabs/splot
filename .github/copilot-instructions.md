@@ -20,6 +20,9 @@ The canonical guide is [AGENTS.md](../AGENTS.md). Read it. The most critical rul
   canonical status) for non-trivial work. Do not create TODOs without
   `TODO(spec: FEATURE-ID)`. Do not mark implementation stages as done unless proof
   is recorded. See [../docs/FEATURE-TRACKING.md](../docs/FEATURE-TRACKING.md).
+- **Commit messages:** every commit subject and pull request title must use
+  Conventional Commits; CI enforces this with `cargo xtask check-conventional-title`
+  and `cargo xtask check-conventional-commits`.
 
 ## Encoder research references
 

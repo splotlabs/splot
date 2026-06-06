@@ -7,6 +7,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, edited]
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,6 +23,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       # rustup honors rust-toolchain.toml; this installs the pinned 1.96.0
       # toolchain together with its rustfmt and clippy components.
@@ -38,6 +40,25 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+
+      - name: Check Conventional Commits
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_COMMIT_RANGE: ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_COMMIT_RANGE: ${{ github.event.before }}..${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            cargo xtask check-conventional-title "$PR_TITLE"
+            cargo xtask check-conventional-commits "$PR_COMMIT_RANGE"
+          else
+            if [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              echo "Initial push; skipping conventional commit range check"
+              exit 0
+            fi
+            cargo xtask check-conventional-commits "$PUSH_COMMIT_RANGE"
+          fi
 
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
