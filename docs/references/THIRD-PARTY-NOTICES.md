@@ -1,0 +1,221 @@
+# Third-Party Notices and Source-Use Policy
+
+**Generated:** 2026-06-06
+**Scope:** `splot` third-party research references
+**Audience:** contributors, AI coding agents, reviewers
+
+> This file is a project policy and notice index for research references. It is not legal advice.
+> The safe default for `splot` is to keep third-party projects as links and original summaries,
+> not vendored code or copied documentation.
+
+---
+
+## 1. Current repository policy
+
+`splot` project code and original documentation are intended to be licensed under:
+
+```text
+PolyForm Noncommercial 1.0.0
+```
+
+The reference documents in `docs/references/` are original summaries written for `splot`. They link
+to upstream projects but should not contain copied upstream source code, tables, constants, entropy
+CDFs, or substantial prose.
+
+Private or closed GitHub visibility does **not** remove the need to respect third-party licenses.
+Treat every copied file, copied table, copied constant block, copied comment, and copied prose block
+as a deliberate legal/licensing event.
+
+---
+
+## 2. Reference inventory
+
+| Reference | Role in `splot` | License / notice source | Allowed default use |
+|---|---|---|---|
+| AV2 Specification v1.0.0 | Normative bitstream and decoding process | AOMedia license information in spec | Read and implement AV2 behavior; cite sections in docs. Do not paste large spec text. |
+| AVM reference software | Differential oracle for AV2 behavior | AOMedia repository notices | Test/compare behavior. Do not copy code/tables without review. |
+| rav1e | Rust AV1 encoder architecture reference | `https://github.com/xiph/rav1e/blob/master/LICENSE` and `PATENTS` | Read, link, summarize, learn Rust/RDO/API patterns. |
+| SVT-AV1 | Production AV1 encoder architecture reference | `https://gitlab.com/AOMediaCodec/SVT-AV1/-/raw/master/LICENSE.md` and `PATENTS.md` | Read, link, summarize, learn pipeline/ME/RC/filter/search architecture. |
+
+---
+
+## 3. Source-use levels
+
+### Level 0: links and original summaries — allowed
+
+Examples:
+
+- link to rav1e docs;
+- summarize “rav1e uses a Config -> Context -> Packet style API” in original words;
+- map SVT pipeline stages to proposed `splot` modules;
+- mention that AV2 spec section needs to be implemented.
+
+This is the default mode for `docs/references/`.
+
+### Level 1: short quotations — allowed only when necessary
+
+A short quote may be used only when:
+
+- it is necessary for precision;
+- it is clearly attributed;
+- it is short;
+- it is not code, tables, constants, or CDF data;
+- it does not become a substitute for linking to the upstream document.
+
+Prefer paraphrase and links.
+
+### Level 2: pseudocode or algorithms — caution
+
+Do not copy upstream pseudocode from rav1e/SVT-AV1. For AV2 syntax and decoding algorithms, prefer
+implementing from the AV2 spec with section references and tests. If a source algorithm is not
+normative AV2 behavior, re-design it in original terms and validate empirically.
+
+### Level 3: copied code/tables/constants/prose — blocked by default
+
+Blocked unless a maintainer explicitly performs license/patent review and records the decision:
+
+- source code;
+- C/Rust headers;
+- tables and constants;
+- entropy CDFs or probability tables;
+- transform/filter/scan tables;
+- comments;
+- large documentation excerpts;
+- test vectors from third-party repos, unless their license permits reuse and notices are kept.
+
+---
+
+## 4. If vendoring is ever approved
+
+Do not put vendored third-party material directly under `docs/references/` or normal `splot` source
+modules. Use an explicit third-party location:
+
+```text
+third_party/
+  rav1e/
+    LICENSE
+    PATENTS
+    NOTICE.md
+    <vendored files>
+  svt-av1/
+    LICENSE.md
+    PATENTS.md
+    NOTICE.md
+    <vendored files>
+```
+
+Required steps:
+
+1. Record why vendoring is necessary.
+2. Record the exact upstream commit/tag.
+3. Preserve upstream license and patent files.
+4. Mark files as third-party.
+5. Do not relicense upstream material as PolyForm Noncommercial.
+6. Add or update this `THIRD-PARTY-NOTICES.md`.
+7. Add a review note explaining how the material is isolated from original `splot` code.
+8. Add tests proving behavior without hiding provenance.
+
+---
+
+## 5. Attribution snippets
+
+Use these snippets in docs when relevant.
+
+### rav1e
+
+```md
+rav1e is used as a Rust AV1 encoder engineering reference for API, RDO, testing,
+fuzzing, profiling, and module-organization ideas. AV2 syntax and behavior are not
+copied from rav1e.
+```
+
+### SVT-AV1
+
+```md
+SVT-AV1 is used as a production AV1 encoder engineering reference for pipeline,
+resource-management, mode-decision, motion-estimation, rate-control, and filter-search ideas.
+AV2 syntax and behavior are not copied from SVT-AV1.
+```
+
+### AVM
+
+```md
+AVM is used as the AV2 reference-software oracle for differential testing and behavior checks.
+`splot` code remains an original Rust implementation.
+```
+
+---
+
+## 6. Files that must remain original
+
+These areas must be written as original `splot` work:
+
+```text
+crates/splot-core/src/*
+crates/splot-validate/src/*
+crates/splot-encode/src/*
+crates/splot-cli/src/*
+fuzz/fuzz_targets/*
+docs/*.md
+docs/references/*.md
+```
+
+The reference docs may contain links and original summaries. They must not become mirrors of upstream
+documentation.
+
+---
+
+## 7. AV1-to-AV2 contamination checklist
+
+Before merging encoder work, confirm:
+
+- No AV1 OBU header fields were added to AV2 parser/writer structures.
+- No AV1 OBU type table was copied.
+- No AV1 frame-header syntax was copied.
+- No AV1 DPB/reference slot names leaked into public AV2 APIs.
+- No AV1 entropy CDFs or token tables were copied.
+- No AV1 transform/filter/scan tables were copied.
+- No AV1 constants were imported without independent AV2 derivation.
+- No third-party comments or prose were copied.
+- All AV2 names are backed by AV2 spec sections or marked `TODO(spec)`.
+
+---
+
+## 8. Patent and standards caution
+
+Video codecs can involve patent pools, standards commitments, and implementation-specific patent
+licenses. The presence of BSD-style source licenses or AOM patent notices in upstream projects does
+not automatically answer all commercial-use or AV2 implementation questions.
+
+Project policy:
+
+- Keep implementation provenance clean.
+- Keep AV2 behavior traceable to the AV2 spec and AVM.
+- Keep third-party material out of the codebase unless reviewed.
+- Before commercial distribution, perform a separate legal/patent review.
+
+---
+
+## 9. Review checklist
+
+A reviewer should ask:
+
+- Is this file original `splot` work?
+- Does it contain copied third-party code/prose/tables/constants?
+- Are upstream links used instead of pasted content?
+- If third-party material is copied, are license and patent notices preserved?
+- Is third-party material isolated under `third_party/`?
+- Does the PR update this notices file if needed?
+- Does the PR description include the encoder research gate?
+- Is the implementation derived from AV2 spec/AVM rather than AV1 code?
+
+---
+
+## 10. Safe default
+
+When uncertain, use this rule:
+
+```text
+Read references. Link references. Summarize in original words.
+Implement from AV2 spec and AVM. Do not copy third-party material.
+```

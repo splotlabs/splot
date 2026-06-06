@@ -56,7 +56,7 @@ queue; tests are proof.
 
 **Files added:**
 
-- `docs/IMPLEMENTATION-MATRIX.toml` (canonical, 27 rows), `*.schema.md`,
+- `docs/IMPLEMENTATION-MATRIX.toml` (canonical, 28 rows), `*.schema.md`,
   `docs/FEATURE-STATUS.md` (generated), `docs/FEATURE-TRACKING.md`,
   `docs/ENCODER-ROADMAP.md`, `docs/CONFORMANCE.md`,
   `docs/DECISIONS/0001-feature-tracking.md`, `docs/templates/FEATURE_MATRIX_ROW.toml`.
@@ -73,7 +73,8 @@ and `.github/workflows/ci.yml`.
 
 **Matrix rows seeded and adjusted after inspecting the code:** the 23 seeded rows
 plus four added to reflect shipped reality — `AV2-5.2.1-OBU-TYPE`,
-`AV2-9-ADDITIONAL-TABLES`, `CLI-VALIDATE`, `CLI-INSPECT`. Statuses were upgraded
+`AV2-9-ADDITIONAL-TABLES`, `CLI-VALIDATE`, `CLI-INSPECT` — and one docs workflow
+row for `DOC-ENCODER-REFERENCE-GATE`. Statuses were upgraded
 from the seed where the code is real and proven: LEB128, OBU header, Annex B, and
 the OBU type table are `parse`/`tests` `done`; the OBU-header §6.2.2 checks and the
 reserved-OBU checks are `validate`/`tests` `done` with diagnostic + test proof; the
@@ -162,9 +163,9 @@ cargo fmt --all -- --check                                                      
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # ok, 0 warnings
 cargo build --workspace --all-targets --locked                                  # ok
 cargo test --workspace --all-targets --locked                                   # ok: 73 passed, 0 failed
-cargo xtask feature-status                                                       # ok (renders 27-row table)
+cargo xtask feature-status                                                       # ok (renders 28-row table)
 cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md    # ok, worktree stays clean
-cargo xtask check-feature-status                                                # ok (27 features)
+cargo xtask check-feature-status                                                # ok (28 features)
 cargo xtask spec-coverage                                                       # ok
 cargo xtask ci                                                                  # ok: all checks passed
 git diff --check                                                                # ok (no whitespace errors)

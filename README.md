@@ -66,6 +66,16 @@ fuzz                   cargo-fuzz target (outside the workspace)
 See [docs/ENCODER-ROADMAP.md](./docs/ENCODER-ROADMAP.md) for milestones tied to
 Feature IDs.
 
+## Encoder research references
+
+`splot` uses rav1e and SVT-AV1 as engineering references for future AV2 encoder architecture, not as
+sources of AV2 syntax or copied implementation material. See:
+
+- `docs/references/ENCODER-RESEARCH-NOTES.md`
+- `docs/references/RAV1E-SOURCE-MAP.md`
+- `docs/references/SVT-AV1-RESEARCH-MAPPING.md`
+- `docs/references/THIRD-PARTY-NOTICES.md`
+
 ## Feature tracking
 
 Implementation status is tracked in
