@@ -33,7 +33,7 @@ openspec/
 
 ```bash
 if command -v openspec >/dev/null 2>&1; then
-  openspec validate
+  openspec validate --all --no-interactive
 else
   echo "openspec not installed; skipping OpenSpec CLI validation"
 fi

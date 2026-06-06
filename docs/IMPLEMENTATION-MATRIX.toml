@@ -774,7 +774,7 @@ openspec_change = "parser-fuzz-no-panic"
 tracking_issue = ""
 owner = "conformance"
 risk = "high"
-notes = "Malformed data must return errors/reports, never panic. The stable-toolchain proptest covers the same invariant in CI; the cargo-fuzz target needs nightly and is not in CI."
+notes = "Malformed data must return errors/reports, never panic. The stable-toolchain proptest covers the same invariant in CI; the cargo-fuzz target needs nightly and is not in CI. The cargo-fuzz corpus (fuzz/corpus) is gitignored and not committed, so it is not listed as proof."
 
 [feature.status]
 mapped = "done"
@@ -791,7 +791,7 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-core/src/annexb.rs::proptests"]
 commands = ["cargo test -p splot-core", "cargo +nightly fuzz run parse_obu"]
-fixtures = ["fuzz/corpus/parse_obu"]
+fixtures = []
 diagnostics = []
 
 # ---------------------------------------------------------------------------

@@ -1041,6 +1041,9 @@ fn is_diagnostic_id(s: &str) -> bool {
 
 /// Extracts double-quoted substrings from `text`, honoring `\"` / `\\` escapes so
 /// an escaped quote cannot desync the literal/code parity.
+///
+/// NOTE: raw strings (`r#"…"#`) are not specially handled; diagnostic rule ids
+/// should use plain string literals so they are visible to this scanner.
 fn string_literals(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut chars = text.chars();
@@ -1268,12 +1271,29 @@ diagnostics = []
     }
 
     #[test]
-    fn markdown_render_is_deterministic() {
+    fn markdown_render_has_expected_shape() {
         let matrix = parse_matrix(SAMPLE).unwrap();
         let all: Vec<&Feature> = matrix.feature.iter().collect();
+        let rendered = render_markdown(&matrix, &all);
+        // Guard the exact header (including the curated stage projection) so a
+        // change to column order/headers/separator is caught here.
+        assert!(
+            rendered.contains(
+                "| ID | Name | Category | Kind | Mapped | Types | Parse | Validate | \
+                 Write | Encode | DecChk | Tests | AVM | Module |"
+            ),
+            "header row changed:\n{rendered}"
+        );
+        // Guard a feature row and a status value, then confirm determinism.
+        assert!(
+            rendered.contains("`AV2-5.2.2-OBU-HEADER`"),
+            "feature row missing"
+        );
+        assert!(rendered.contains(" done "), "status value missing");
         assert_eq!(
+            rendered,
             render_markdown(&matrix, &all),
-            render_markdown(&matrix, &all)
+            "render not deterministic"
         );
     }
 }
