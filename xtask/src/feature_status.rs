@@ -1012,31 +1012,30 @@ fn display_path(root: &Path, path: &Path) -> String {
         .to_string()
 }
 
-/// Returns `true` if `s` is a kebab/slash diagnostic rule id
-/// (`^[a-z][a-z0-9-]*(/[a-z0-9-]+)+$`).
+/// Returns `true` if `s` looks like a validator diagnostic rule id: lowercase
+/// kebab segments, optionally `/`-separated — e.g. `obu-header/foo` or `parse-error`.
+///
+/// Slash-less ids are recognized too, so an un-namespaced rule id is still checked
+/// against the documented prefixes (and therefore rejected) rather than silently
+/// skipped.
 fn is_diagnostic_id(s: &str) -> bool {
-    if !s.contains('/') {
+    if !s.bytes().next().is_some_and(|b| b.is_ascii_lowercase()) {
         return false;
     }
-    let segments: Vec<&str> = s.split('/').collect();
-    if segments.len() < 2 {
+    if !s
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'/')
+    {
         return false;
     }
-    for (i, seg) in segments.iter().enumerate() {
-        if seg.is_empty() {
-            return false;
-        }
-        if i == 0 && !matches!(seg.bytes().next(), Some(b) if b.is_ascii_lowercase()) {
-            return false;
-        }
-        if !seg
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        {
-            return false;
-        }
+    // Must contain at least one separator and have no empty segments.
+    if !(s.contains('-') || s.contains('/')) {
+        return false;
     }
-    true
+    if s.starts_with(['-', '/']) || s.ends_with(['-', '/']) {
+        return false;
+    }
+    !s.split(['/', '-']).any(str::is_empty)
 }
 
 /// Extracts double-quoted substrings from `text`, honoring `\"` / `\\` escapes so
@@ -1254,9 +1253,13 @@ diagnostics = []
     fn diagnostic_id_grammar() {
         assert!(is_diagnostic_id("obu-header/global-xlayer-required"));
         assert!(is_diagnostic_id("bitstream/parse-error"));
+        // Slash-less kebab ids are recognized so they get prefix-checked.
+        assert!(is_diagnostic_id("parse-error"));
         assert!(!is_diagnostic_id("6.2.2"));
         assert!(!is_diagnostic_id("a message with spaces"));
         assert!(!is_diagnostic_id("NoSlashHere"));
+        assert!(!is_diagnostic_id("plain"));
+        assert!(!is_diagnostic_id("-leading"));
     }
 
     #[test]
