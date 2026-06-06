@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy", "rust-analyzer"]
+profile = "default"

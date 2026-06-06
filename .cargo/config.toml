@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+#
+# Shared command vocabulary for humans and agents.
+
+[alias]
+xtask = "run --package xtask --"
+ci = "run --package xtask -- ci"
+fmt-check = "fmt --all -- --check"
+lint = "clippy --workspace --all-targets --all-features --locked -- -D warnings"

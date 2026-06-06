@@ -13,9 +13,32 @@ target
 # Contains mutation testing data
 **/mutants.out*/
 
-# RustRover
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
+# cargo-fuzz artifacts (the fuzz crate is outside the workspace)
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/coverage
+
+# Coverage / profiling output
+*.profraw
+*.profdata
+/coverage
+
+# Editor / IDE files
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Local AV2 scratch streams (do not commit sample bitstreams)
+/scratch
+*.av2
+*.obu
+# ...but DO track the curated test fixtures.
+!/tests/fixtures/*.av2
+
+# NOTE: Cargo.lock is intentionally committed (this repo builds binaries).
