@@ -29,5 +29,6 @@ same id in the matrix, the OpenSpec folder, and the GitHub issue/PR.
 | `parse-annexb-and-obu-headers` | `AV2-4.11.6-LEB128`, `AV2-5.2.2-OBU-HEADER`, `AV2-5.2.1-OBU-TYPE`, `AV2-B-ANNEXB-OBU-ENVELOPE` | implemented |
 | `add-bitstream-writer` | `ENC-BITSTREAM-WRITER` (+ `AV2-4.11.6-LEB128`, `AV2-5.2.2-OBU-HEADER`, `AV2-5.2.3-TRAILING-BITS`, `AV2-5.2.4-BYTE-ALIGNMENT` write stages) | proposed |
 | `parse-sequence-header` | `AV2-5.4-SEQUENCE-HEADER` | proposed |
+| `validator-coverage-roadmap` | descriptor rows, OBU dispatch, sequence-header child rows, sequence semantics, and activated sequence limits | proposed |
 | `avm-differential-harness` | `CONF-AVM-DIFF-HARNESS` | proposed |
 | `toy-intra-encoder-v0` | `ENC-INTRA-TOY-V0` (deps: `ENC-BITSTREAM-WRITER`, `AV2-5.4-SEQUENCE-HEADER`, `AV2-5.18-FRAME-HEADER`, `AV2-5.19-TILE-GROUP`, `CONF-AVM-DIFF-HARNESS`) | proposed |

@@ -36,6 +36,18 @@ feature, this mapping must identify:
 If the AV2 section or AVM oracle is unknown, use `TODO(spec: <FEATURE-ID>): <section/topic>` in code
 and keep the feature stubbed.
 
+## Validator roadmap
+
+The validator coverage plan is split across:
+
+- [VALIDATOR-GAP-ANALYSIS.md](./VALIDATOR-GAP-ANALYSIS.md)
+- [VALIDATOR-ROADMAP.md](./VALIDATOR-ROADMAP.md)
+- [VALIDATOR-IMPLEMENTATION-MATRIX-EXPANSION.md](./VALIDATOR-IMPLEMENTATION-MATRIX-EXPANSION.md)
+- [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md)
+
+These documents are planning aids. The canonical status remains
+[IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml).
+
 ## Current mapping
 
 | Module                              | Spec area                         | Status |

@@ -159,6 +159,13 @@ children are. See the schema's "splitting" section.
 5. Implement, prove, update the matrix, regenerate `FEATURE-STATUS.md`, run
    `cargo xtask ci`.
 
+For the current validator expansion plan, start with
+[VALIDATOR-GAP-ANALYSIS.md](./VALIDATOR-GAP-ANALYSIS.md),
+[VALIDATOR-ROADMAP.md](./VALIDATOR-ROADMAP.md),
+[VALIDATOR-IMPLEMENTATION-MATRIX-EXPANSION.md](./VALIDATOR-IMPLEMENTATION-MATRIX-EXPANSION.md),
+and [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md). Those files are
+planning aids; the matrix remains canonical.
+
 ## 12. Diagnostic-ID convention
 
 Validator diagnostics use a kebab/slash namespace with a documented prefix:

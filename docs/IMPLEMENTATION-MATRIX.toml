@@ -54,6 +54,105 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "AV2-4.11.3-UVLC"
+name = "Unsigned variable-length code descriptor"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["4.11.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/bitio.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Needed by sequence_header_obu(), metadata, LCR, OPS, frame header, and later payload parsers. Must be bounded and panic-free."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "not-applicable"
+write = "todo"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-4.11.5-LE"
+name = "Little-endian fixed-width descriptor"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["4.11.5"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/bitio.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Needed by payload syntax that uses le(n). Implement only from AV2 descriptor semantics."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "not-applicable"
+write = "todo"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-4.11.8-NS"
+name = "Non-symmetric integer descriptor"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["4.11.8"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/bitio.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Needed by sequence and frame syntax. Implement with tests for powers of two, non-powers, n=1, EOF, and malformed boundaries."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "not-applicable"
+write = "todo"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "AV2-5.2.2-OBU-HEADER"
 name = "OBU header syntax"
 category = "normative"
@@ -127,6 +226,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "AV2-5.2.1-OBU-DISPATCH"
+name = "open_bitstream_unit payload dispatch"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.2.1"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/obu.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Dispatch OBU payloads by AV2 obu_type after parsing obu_header(). Initially partial: variants are added as child syntax parsers land."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "not-applicable"
+write = "todo"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "AV2-B-ANNEXB-OBU-ENVELOPE"
 name = "Annex B length-delimited OBU envelope"
 category = "normative"
@@ -168,11 +300,11 @@ spec_sections = ["5.2.3", "6.2.3"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/obu.rs"
-openspec_change = ""
+openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Needed for deeper payload parsing and writer correctness. The reserved-OBU all-zero-payload check partially exercises the trailing_one_bit semantics, but trailing_bits() itself is not yet modeled."
+notes = "Parse trailing_bits(nbBits), enforce trailing_one_bit and zero padding, and share diagnostics with payload parsers. The reserved-OBU all-zero-payload check partially exercises the trailing_one_bit semantics, but trailing_bits() itself is not yet modeled."
 
 [feature.status]
 mapped = "done"
@@ -201,11 +333,11 @@ spec_sections = ["5.2.4", "6.2.4"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/bitio.rs"
-openspec_change = ""
+openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "BitReader provides the alignment primitive (is_byte_aligned, bit/byte offsets), but the byte_alignment() syntax element is not yet modeled. Required before robust payload parsing and writer symmetry."
+notes = "Model byte_alignment() as a syntax structure, not only as a reader helper. Zero bits must be validated."
 
 [feature.status]
 mapped = "done"
@@ -234,7 +366,7 @@ spec_sections = ["5.3", "6.2.3"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
 module = "crates/splot-validate/src/checks/mod.rs"
-openspec_change = ""
+openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "validator"
 risk = "medium"
@@ -292,6 +424,600 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "AV2-5.4.1-SEQUENCE-HEADER-GENERAL"
+name = "General sequence header syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.4.1", "6.4.1"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/sequence.rs"
+openspec_change = "parse-sequence-header"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Parse sequence_header_obu() general fields before child config parsers."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.4.2-SEQUENCE-TILE-CONFIG"
+name = "Sequence tile configuration syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.4.2", "6.4.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/sequence.rs"
+openspec_change = "parse-sequence-header"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.4.3-SEQUENCE-PARTITION-CONFIG"
+name = "Sequence partition configuration syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.4.3", "6.4.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/sequence.rs"
+openspec_change = "parse-sequence-header"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG"
+name = "Sequence segment configuration syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.4.4", "6.4.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/sequence.rs"
+openspec_change = "parse-sequence-header"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.4.5-SEQUENCE-INTRA-CONFIG"
+name = "Sequence intra configuration syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.4.5", "6.4.5"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/sequence.rs"
+openspec_change = "parse-sequence-header"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.4.6-SEQUENCE-INTER-CONFIG"
+name = "Sequence inter configuration syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.4.6", "6.4.6"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/sequence.rs"
+openspec_change = "parse-sequence-header"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.4.7-SEQUENCE-SCC-CONFIG"
+name = "Sequence screen-content-coding configuration syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.4.7", "6.4.7"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/sequence.rs"
+openspec_change = "parse-sequence-header"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG"
+name = "Sequence transform, quantization, and entropy configuration syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.4.8", "6.4.8"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/sequence.rs"
+openspec_change = "parse-sequence-header"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.4.9-SEGMENT-INFO"
+name = "Sequence segment info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.4.9", "6.4.9"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/sequence.rs"
+openspec_change = "parse-sequence-header"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.4.10-SEQUENCE-FILTER-CONFIG"
+name = "Sequence filter configuration syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.4.10", "6.4.10"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/sequence.rs"
+openspec_change = "parse-sequence-header"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.4.11-USER-QM"
+name = "Sequence user quantization matrix syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.4.11", "6.4.11"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/sequence.rs"
+openspec_change = "parse-sequence-header"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.4.12-TIMING-INFO"
+name = "Sequence timing info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.4.12", "6.4.12"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/sequence.rs"
+openspec_change = "parse-sequence-header"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO"
+name = "Sequence decoder model info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.4.13", "6.4.13"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/sequence.rs"
+openspec_change = "parse-sequence-header"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-6.4-SEQUENCE-HEADER-SEMANTICS"
+name = "Sequence header OBU semantics"
+category = "normative"
+kind = "validator-check"
+spec_sections = ["6.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-validate"
+module = "crates/splot-validate/src/checks/sequence.rs"
+openspec_change = "parse-sequence-header"
+tracking_issue = ""
+owner = "validator"
+risk = "high"
+notes = "Validator checks for locally decidable sequence-header semantics. Split into child rows if the file becomes too broad."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "not-applicable"
+validate = "todo"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS"
+name = "OBU header layer ids constrained by activated sequence header"
+category = "normative"
+kind = "validator-check"
+spec_sections = ["6.2.2", "6.4", "7.3.8"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-validate"
+module = "crates/splot-validate/src/validator.rs"
+openspec_change = "parse-sequence-header"
+tracking_issue = ""
+owner = "validator"
+risk = "high"
+notes = "Completes the §6.2.2 checks that require max_tlayer_id and max_mlayer_id from an activated sequence header. Depends on sequence-header parsing and stateful validation context."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "not-applicable"
+validate = "todo"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.5-TEMPORAL-DELIMITER"
+name = "Temporal delimiter OBU syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.5", "6.5"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/obu.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Payload syntax and validator state effect for temporal-unit boundaries."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.6-MSDO"
+name = "Multistream decoder operation OBU syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.6", "6.6"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Needed for multistream boundaries, xlayer map validation, and profile checks."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.7-MULTI-FRAME-HEADER"
+name = "Multi-frame header OBU syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.7", "6.7"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Needed before frame header reuse and frame-unit validation."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "AV2-5.8-LAYER-CONFIG-RECORD"
 name = "Layer configuration record OBU syntax"
 category = "normative"
@@ -300,11 +1026,44 @@ spec_sections = ["5.8", "6.8"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers.rs"
-openspec_change = ""
+openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
 notes = "Needed for multistream/layer-aware validation and future operating-point handling."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.9-ATLAS-SEGMENT"
+name = "Atlas segment info OBU syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.9", "6.9"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Required for atlas/LCR relationships and atlas-region constraints."
 
 [feature.status]
 mapped = "done"
@@ -333,11 +1092,671 @@ spec_sections = ["5.10", "5.11", "6.10"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers.rs"
-openspec_change = ""
+openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
 notes = "Needed for layer/sub-bitstream extraction and conformance tooling."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.11-OPERATING-POINT-PAYLOAD"
+name = "Operating point payload syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.11", "6.10"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Payload parser and validator hooks for operating point sets. Kept separate from the OPS umbrella for proof tracking."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.12-BUFFER-REMOVAL-TIMING"
+name = "Buffer removal timing OBU syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.12", "6.11"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Required for decoder-model timing checks after timing syntax exists."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.13-QUANTIZATION-MATRIX"
+name = "Quantization matrix OBU syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.13", "6.12"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Needed for sequence/frame quantization matrix references and value checks."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.14-FILM-GRAIN"
+name = "Film grain OBU syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.14", "6.13"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Needed for film-grain syntax and update flag checks."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.15-CONTENT-INTERPRETATION"
+name = "Content interpretation OBU syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.15", "6.14"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Needed for content interpretation metadata semantics."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.16-PADDING"
+name = "Padding OBU syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.16", "6.15"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/obu.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Needed for padding payload validation and ordering exceptions."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.17-METADATA"
+name = "Metadata OBU syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.17", "6.16"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/metadata.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Umbrella for metadata OBUs. Split child rows before implementing type-specific metadata parsing."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.17.1-METADATA-UNIT"
+name = "Metadata unit syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.17.1", "6.16"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/metadata.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.17.2-METADATA-SHORT"
+name = "Short metadata OBU syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.17.2", "6.16"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/metadata.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.17.3-METADATA-GROUP"
+name = "Metadata group OBU syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.17.3", "6.16"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/metadata.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.17.4-METADATA-ITUT-T35"
+name = "ITU-T T.35 metadata syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.17.4", "6.16"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/metadata.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.17.5-METADATA-HDR-CLL"
+name = "HDR CLL metadata syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.17.5", "6.16"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/metadata.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.17.6-METADATA-HDR-MDCV"
+name = "HDR MDCV metadata syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.17.6", "6.16"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/metadata.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.17.7-METADATA-TIMECODE"
+name = "Timecode metadata syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.17.7", "6.16"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/metadata.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.17.8-METADATA-BANDING-HINTS"
+name = "Banding hints metadata syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.17.8", "6.16"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/metadata.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.17.9-METADATA-ICC-PROFILE"
+name = "ICC profile metadata syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.17.9", "6.16"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/metadata.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.17.10-METADATA-SCAN-TYPE"
+name = "Scan type metadata syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.17.10", "6.16"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/metadata.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO"
+name = "Temporal point info metadata syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.17.11", "6.16"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/metadata.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.17.12-METADATA-DECODED-FRAME-HASH"
+name = "Decoded frame hash metadata syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.17.12", "6.16"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/metadata.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED"
+name = "User data unregistered metadata syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.17.13", "6.16"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/metadata.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
 
 [feature.status]
 mapped = "done"
@@ -366,11 +1785,341 @@ spec_sections = ["5.18", "6.17"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers.rs"
-openspec_change = ""
+openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
 notes = "Large feature. Only an empty placeholder type exists. Split into smaller rows before implementation."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.18.1-FRAME-HEADER-GENERAL"
+name = "Frame header general syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.18.1", "6.17"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.18.2-FRAME-HEADER-INFO"
+name = "Frame header info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.18.2", "6.17"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.18.3-FRAME-CONFIGURATION"
+name = "Frame configuration syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.18.3", "6.17"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.18.4-FRAME-SIZE"
+name = "Frame size syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.18.4", "6.17"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.18.5-FILTERING"
+name = "Frame filtering syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.18.5", "6.17"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.18.6-QUANTIZATION"
+name = "Frame quantization syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.18.6", "6.17"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.18.7-SEGMENTATION-TILING"
+name = "Frame segmentation and tiling syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.18.7", "6.17"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.18.8-TRANSFORM-CODING-MODES"
+name = "Frame transform and coding mode syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.18.8", "6.17"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.18.9-GLOBAL-MOTION"
+name = "Frame global motion syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.18.9", "6.17"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.18.10-FILM-GRAIN-STRUCTURES"
+name = "Frame film grain structures syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.18.10", "6.17"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
 
 [feature.status]
 mapped = "done"
@@ -399,11 +2148,44 @@ spec_sections = ["5.19", "5.20", "6.18", "6.19"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers.rs"
-openspec_change = ""
+openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
 notes = "Large feature. Do not start until the frame-header skeleton and bit-level payload parsing are planned."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.20-TILE-GROUP-PAYLOAD"
+name = "Tile group payload syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.20", "6.19"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Deep payload syntax and arithmetic boundary validation. Split further before pixel-reconstruction-dependent checks."
 
 [feature.status]
 mapped = "done"
@@ -432,11 +2214,275 @@ spec_sections = ["7.3"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
 module = "crates/splot-validate/src/checks/mod.rs"
-openspec_change = "validate-obu-ordering"
+openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
 notes = "Validator-level semantic checks once enough OBU/header parsing exists. The current checks are per-OBU and header-only; ordering across OBUs is future work."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "not-applicable"
+validate = "todo"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-7.3.2-CMVS-BOUNDARIES"
+name = "CMVS boundary ordering semantics"
+category = "normative"
+kind = "bitstream-semantics"
+spec_sections = ["7.3.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-validate"
+module = "crates/splot-validate/src/checks/ordering.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "validator"
+risk = "high"
+notes = "Child row of AV2-7.3-OBU-ORDERING. Add temporal-state checks only after required payload parsers exist."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "not-applicable"
+validate = "todo"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT"
+name = "Coded output frame unit ordering semantics"
+category = "normative"
+kind = "bitstream-semantics"
+spec_sections = ["7.3.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-validate"
+module = "crates/splot-validate/src/checks/ordering.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "validator"
+risk = "high"
+notes = "Child row of AV2-7.3-OBU-ORDERING. Add temporal-state checks only after required payload parsers exist."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "not-applicable"
+validate = "todo"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT"
+name = "Coded nonoutput frame unit ordering semantics"
+category = "normative"
+kind = "bitstream-semantics"
+spec_sections = ["7.3.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-validate"
+module = "crates/splot-validate/src/checks/ordering.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "validator"
+risk = "high"
+notes = "Child row of AV2-7.3-OBU-ORDERING. Add temporal-state checks only after required payload parsers exist."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "not-applicable"
+validate = "todo"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-7.3.5-CODED-FRAME-UNIT"
+name = "Coded frame unit ordering semantics"
+category = "normative"
+kind = "bitstream-semantics"
+spec_sections = ["7.3.5"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-validate"
+module = "crates/splot-validate/src/checks/ordering.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "validator"
+risk = "high"
+notes = "Child row of AV2-7.3-OBU-ORDERING. Add temporal-state checks only after required payload parsers exist."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "not-applicable"
+validate = "todo"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT"
+name = "Coded extended layer unit ordering semantics"
+category = "normative"
+kind = "bitstream-semantics"
+spec_sections = ["7.3.6"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-validate"
+module = "crates/splot-validate/src/checks/ordering.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "validator"
+risk = "high"
+notes = "Child row of AV2-7.3-OBU-ORDERING. Add temporal-state checks only after required payload parsers exist."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "not-applicable"
+validate = "todo"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-7.3.7-TEMPORAL-UNIT-ORDER"
+name = "Temporal unit OBU order"
+category = "normative"
+kind = "bitstream-semantics"
+spec_sections = ["7.3.7"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-validate"
+module = "crates/splot-validate/src/checks/ordering.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "validator"
+risk = "high"
+notes = "Temporal unit state machine: global temporal delimiter, HLS prefix OBUs, coded extended layer units in ascending xlayer order, and padding exceptions."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "not-applicable"
+validate = "todo"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-7.3.8-HLS-AVAILABILITY"
+name = "High-level syntax availability"
+category = "normative"
+kind = "bitstream-semantics"
+spec_sections = ["7.3.8"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-validate"
+module = "crates/splot-validate/src/checks/ordering.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "validator"
+risk = "high"
+notes = "Track availability and activation of sequence headers, MSDO, LCR, atlas, OPS, and repeated/identical requirements."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "not-applicable"
+validate = "todo"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY"
+name = "Long-term reference availability"
+category = "normative"
+kind = "bitstream-semantics"
+spec_sections = ["7.3.9"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-validate"
+module = "crates/splot-validate/src/checks/ordering.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "validator"
+risk = "high"
+notes = "Child row of AV2-7.3-OBU-ORDERING. Add checks after frame/reference state exists."
 
 [feature.status]
 mapped = "done"
@@ -476,6 +2522,105 @@ mapped = "done"
 types = "todo"
 parse = "todo"
 validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-A-PROFILES"
+name = "Annex A profile constraints"
+category = "normative"
+kind = "bitstream-semantics"
+spec_sections = ["Annex A"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-validate"
+module = "crates/splot-validate/src/checks/mod.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "validator"
+risk = "high"
+notes = "Profile constraints become actionable after enough sequence/frame syntax is parsed."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "not-applicable"
+validate = "todo"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-A-LEVELS-TIERS"
+name = "Annex A level and tier constraints"
+category = "normative"
+kind = "bitstream-semantics"
+spec_sections = ["Annex A"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-validate"
+module = "crates/splot-validate/src/checks/mod.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "validator"
+risk = "high"
+notes = "Level and tier checks depend on parsed sequence/frame syntax and stream-level state."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "not-applicable"
+validate = "todo"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-E-DECODER-MODEL"
+name = "Annex E decoder model constraints"
+category = "normative"
+kind = "bitstream-semantics"
+spec_sections = ["Annex E"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-validate"
+module = "crates/splot-validate/src/checks/mod.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "validator"
+risk = "high"
+notes = "Decoder-model checks depend on timing, buffer-removal, and stream-level state."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "not-applicable"
+validate = "todo"
 write = "not-applicable"
 encode = "not-applicable"
 decode_check = "todo"
@@ -729,6 +2874,138 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "CONF-AVM-PARSER-TRACES"
+name = "AVM parser trace comparison"
+category = "conformance"
+kind = "conformance"
+spec_sections = []
+sources = ["https://github.com/AOMediaCodec/avm"]
+crate = "xtask"
+module = "xtask/src/main.rs"
+openspec_change = "avm-differential-harness"
+tracking_issue = ""
+owner = "conformance"
+risk = "high"
+notes = "Future trace-comparison mode for parser behavior. Depends on AVM harness and stable parser trace output."
+
+[feature.status]
+mapped = "todo"
+types = "todo"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "todo"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "CONF-AVM-VALID-STREAMS"
+name = "AVM valid stream conformance"
+category = "conformance"
+kind = "conformance"
+spec_sections = []
+sources = ["https://github.com/AOMediaCodec/avm"]
+crate = "xtask"
+module = "xtask/src/main.rs"
+openspec_change = "avm-differential-harness"
+tracking_issue = ""
+owner = "conformance"
+risk = "high"
+notes = "Future proof that representative AVM-generated valid streams pass implemented validator checks."
+
+[feature.status]
+mapped = "todo"
+types = "todo"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "todo"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "CONF-AVM-INVALID-STREAMS"
+name = "AVM invalid stream conformance"
+category = "conformance"
+kind = "conformance"
+spec_sections = []
+sources = ["https://github.com/AOMediaCodec/avm"]
+crate = "xtask"
+module = "xtask/src/main.rs"
+openspec_change = "avm-differential-harness"
+tracking_issue = ""
+owner = "conformance"
+risk = "high"
+notes = "Future proof that malformed/minimized streams produce expected diagnostics without panics."
+
+[feature.status]
+mapped = "todo"
+types = "todo"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "todo"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "CONF-PUBLIC-VECTOR-LICENSE-REVIEW"
+name = "Public vector license review"
+category = "conformance"
+kind = "conformance"
+spec_sections = []
+sources = ["https://github.com/AOMediaCodec"]
+crate = "docs"
+module = "docs/CONFORMANCE.md"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "conformance"
+risk = "medium"
+notes = "Review redistributability before vendoring or linking public AV2 vector corpora."
+
+[feature.status]
+mapped = "todo"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "CONF-INSPECT-SNAPSHOTS"
 name = "Inspector snapshot tests"
 category = "conformance"
@@ -957,6 +3234,39 @@ tracking_issue = ""
 owner = "docs"
 risk = "low"
 notes = "Documents the five-layer model, ID convention, status model, proof rules, diagnostic-ID convention, and agent workflow."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "not-applicable"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "DOC-VALIDATOR-ROADMAP"
+name = "Validator coverage roadmap documentation"
+category = "docs"
+kind = "docs"
+spec_sections = []
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "docs"
+module = "docs/VALIDATOR-ROADMAP.md"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "docs"
+risk = "low"
+notes = "Documents validator gap analysis, roadmap phases, matrix expansion guidance, and diagnostic namespace planning."
 
 [feature.status]
 mapped = "done"
