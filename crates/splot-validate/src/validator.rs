@@ -7,6 +7,7 @@ use splot_core::Error;
 use splot_core::annexb::{ObuEnvelope, parse_annex_b_obus_partial};
 
 use crate::checks::{Check, default_checks, syntax_error_diagnostic};
+use crate::context::ValidatorContext;
 use crate::diagnostic::{Diagnostic, Severity, ValidationReport};
 use crate::error_location::{error_bit_offset, error_offset};
 
@@ -48,7 +49,9 @@ impl Validator {
         // error so their conformance diagnostics are not lost.
         let parsed = parse_annex_b_obus_partial(data);
         let checks = default_checks();
+        let mut context = ValidatorContext::default();
         for obu in &parsed.obus {
+            context.observe_obu(obu, &mut report);
             run_checks(&checks, obu, &mut report);
         }
         if let Some(error) = parsed.error {
@@ -127,12 +130,68 @@ mod tests {
     }
 
     fn annex_b_obu(header: u8, payload: &[u8]) -> Vec<u8> {
-        let size = (payload.len() + 1) as u8;
-        let mut data = Vec::with_capacity(payload.len() + 2);
-        data.push(size);
-        data.push(header);
+        annex_b_obu_with_header(&[header], payload)
+    }
+
+    fn annex_b_obu_with_header(header: &[u8], payload: &[u8]) -> Vec<u8> {
+        let size = payload.len() + header.len();
+        assert!(u8::try_from(size).is_ok());
+        let mut data = Vec::with_capacity(payload.len() + header.len() + 1);
+        data.push(size as u8);
+        data.extend_from_slice(header);
         data.extend_from_slice(payload);
         data
+    }
+
+    fn layer_obu_header(obu_type: u8, tlayer: u8, mlayer: u8, xlayer: u8) -> [u8; 2] {
+        [
+            0x80 | (obu_type << 2) | (tlayer & 0b11),
+            ((mlayer & 0b111) << 5) | (xlayer & 0b1_1111),
+        ]
+    }
+
+    fn ceil_log2_u32(value: u32) -> u32 {
+        if value <= 1 {
+            0
+        } else {
+            u32::BITS - (value - 1).leading_zeros()
+        }
+    }
+
+    fn sequence_header_payload(max_tlayer_id: u32, max_mlayer_id: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.uvlc(0); // seq_header_id
+        bits.f(0, 5); // seq_profile_idc
+        bits.bit(0); // single_picture_header_flag
+        bits.f(0, 5); // seq_level_idx
+        bits.uvlc(0); // chroma_format_idc
+        bits.uvlc(0); // bit_depth_idc
+        bits.f(0, 3); // seq_lcr_id
+        bits.bit(0); // still_picture
+        bits.f(max_tlayer_id, 2);
+        bits.f(max_mlayer_id, 3);
+        if max_mlayer_id > 0 {
+            bits.f(0, ceil_log2_u32(max_mlayer_id + 1)); // seq_max_mlayer_cnt_minus_1
+        }
+        bits.bit(1); // monotonic_output_order_flag
+        bits.f(3, 4); // frame_width_bits_minus_1
+        bits.f(3, 4); // frame_height_bits_minus_1
+        bits.f(15, 4); // max_frame_width_minus_1
+        bits.f(7, 4); // max_frame_height_minus_1
+        bits.bit(0); // seq_cropping_window_present_flag
+        bits.bit(0); // seq_initial_display_delay_present_flag
+        bits.bit(0); // decoder_model_info_present_flag
+        if max_mlayer_id > 0 {
+            bits.bit(0); // mlayer_dependency_present_flag
+        }
+        if max_tlayer_id > 0 {
+            bits.bit(0); // tlayer_dependency_present_flag
+        }
+        bits.into_bytes()
+    }
+
+    fn stream_with_sequence_header(max_tlayer_id: u32, max_mlayer_id: u32) -> Vec<u8> {
+        annex_b_obu(0x04, &sequence_header_payload(max_tlayer_id, max_mlayer_id))
     }
 
     #[test]
@@ -327,6 +386,81 @@ mod tests {
                 .diagnostics
                 .iter()
                 .any(|d| d.rule_id == "obu-header/reserved-obu-type"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn active_sequence_header_allows_following_obu_within_layer_limits() {
+        let mut data = stream_with_sequence_header(1, 1);
+        data.extend(annex_b_obu_with_header(&layer_obu_header(6, 1, 1, 0), &[]));
+
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("sequence-state/")),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn layer_obu_before_sequence_header_reports_missing_active_sequence() {
+        let data = annex_b_obu_with_header(&layer_obu_header(6, 0, 0, 0), &[]);
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/no-active-sequence-header"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn active_sequence_header_bounds_temporal_layer_id() {
+        let mut data = stream_with_sequence_header(1, 1);
+        data.extend(annex_b_obu_with_header(&layer_obu_header(6, 2, 0, 0), &[]));
+
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/tlayer-exceeds-max"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn active_sequence_header_bounds_embedded_layer_id() {
+        let mut data = stream_with_sequence_header(1, 1);
+        data.extend(annex_b_obu_with_header(&layer_obu_header(6, 0, 2, 0), &[]));
+
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/mlayer-exceeds-max"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn stateful_diagnostics_from_prefix_survive_a_later_parse_error() {
+        let mut data = stream_with_sequence_header(0, 0);
+        data.extend(annex_b_obu_with_header(&layer_obu_header(6, 1, 0, 0), &[]));
+        data.extend_from_slice(&[0x05, 0x08]);
+
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/tlayer-exceeds-max"),
+            "report was: {report}"
+        );
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "bitstream/parse-error"),
             "report was: {report}"
         );
     }

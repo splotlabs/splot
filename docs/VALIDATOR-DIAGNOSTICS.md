@@ -24,6 +24,8 @@ Keep these stable:
 | `obu-reserved/` | Reserved OBU checks. |
 | `trailing-bits/` | §6.2.3 trailing bit conformance for modeled payload boundaries. |
 | `byte-alignment/` | §6.2.4 byte-alignment zero-bit conformance for modeled syntax. |
+| `sequence-header/` | §6.4 sequence-header local syntax and semantics. |
+| `sequence-state/` | Activated sequence-header availability and max-layer checks. |
 
 Existing examples:
 
@@ -39,6 +41,10 @@ obu-reserved/all-zero-payload
 trailing-bits/missing-one-bit
 trailing-bits/zero-bit-not-zero
 byte-alignment/zero-bit-not-zero
+sequence-header/chroma-format-out-of-range
+sequence-state/no-active-sequence-header
+sequence-state/tlayer-exceeds-max
+sequence-state/mlayer-exceeds-max
 ```
 
 ## 2. New diagnostic namespaces to allow
@@ -48,8 +54,6 @@ Add these namespaces in the xtask diagnostic allowlist when corresponding checks
 | Namespace | Owner | First features |
 |---|---|---|
 | `obu-payload/` | `AV2-5.2.1-OBU-DISPATCH` | unparsed payload in strict mode, payload overread/underread. |
-| `sequence-header/` | `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` | sequence-header local semantics. |
-| `sequence-state/` | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` | activation/availability and max layer checks. |
 | `obu-order/` | `AV2-7.3-OBU-ORDERING` child rows | temporal-unit and frame-unit order. |
 | `hls-availability/` | `AV2-7.3.8-HLS-AVAILABILITY` | missing or repeated high-level syntax OBUs. |
 | `msdo/` | `AV2-5.6-MSDO` | multistream decoder operation syntax/semantics. |

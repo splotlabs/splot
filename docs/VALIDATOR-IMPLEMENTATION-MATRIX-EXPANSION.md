@@ -186,12 +186,12 @@ kind = "validator-check"
 spec_sections = ["6.2.2", "6.4", "7.3.8"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
-module = "crates/splot-validate/src/validator.rs"
-openspec_change = "parse-sequence-header"
+module = "crates/splot-validate/src/context.rs"
+openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Completes the §6.2.2 checks that require max_tlayer_id and max_mlayer_id from an activated sequence header. Depends on sequence-header parsing and stateful validation context."
+notes = "Tracks parseable sequence headers by seq_header_id and xlayer context, then enforces max_tlayer_id/max_mlayer_id for non-global OBUs with an active sequence. Full HLS activation remains partial until §7.3.8 ordering/availability lands."
 [feature.status]
 mapped = "done"
 types = "todo"
@@ -213,9 +213,9 @@ diagnostics = []
 Suggested diagnostics:
 
 ```text
-obu-header/tlayer-exceeds-sequence-max
-obu-header/mlayer-exceeds-sequence-max
-obu-header/no-active-sequence-header
+sequence-state/tlayer-exceeds-max
+sequence-state/mlayer-exceeds-max
+sequence-state/no-active-sequence-header
 ```
 
 ## 6. OBU ordering and HLS rows

@@ -59,12 +59,12 @@
 
 ## Phase 4 implementation: stateful validator
 
-- [ ] Add `ValidatorContext` without breaking the public `Validator` API.
-- [ ] Store parsed sequence headers by `seq_header_id` and layer context.
-- [ ] Implement activated sequence state enough to enforce remaining §6.2.2 layer-limit checks.
-- [ ] Add diagnostics for unknown/missing active sequence header and layer id exceeding sequence maximum.
-- [ ] Add tests with sequence header followed by valid/invalid OBUs.
-- [ ] Update matrix proof.
+- [x] Add `ValidatorContext` without breaking the public `Validator` API.
+- [x] Store parsed sequence headers by `seq_header_id` and layer context.
+- [x] Implement activated sequence state enough to enforce remaining §6.2.2 layer-limit checks.
+- [x] Add diagnostics for unknown/missing active sequence header and layer id exceeding sequence maximum.
+- [x] Add tests with sequence header followed by valid/invalid OBUs.
+- [x] Update matrix proof.
 
 ## Phase 5 implementation: OBU ordering
 

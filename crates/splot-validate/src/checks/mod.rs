@@ -8,7 +8,7 @@
 //! v1.0.0 § 6.2.2 (they do not require an activated sequence header). OBU
 //! ordering and sequence/frame-level conformance are future work.
 //
-// TODO(spec: AV2-7.3-OBU-ORDERING): add OBU-ordering and sequence-header-activated checks.
+// TODO(spec: AV2-7.3-OBU-ORDERING): add OBU-ordering checks.
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;

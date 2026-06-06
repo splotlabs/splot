@@ -58,6 +58,7 @@ These documents are planning aids. The canonical status remains
 | `splot-core::obu`                   | § 5.2.2 OBU header                 | implemented |
 | `splot-core::annexb`                | Annex B § B.2, § 5.2.1 OBU size   | implemented |
 | `splot-validate::checks`            | § 6.2.2 header constraints        | partial (header-only checks) |
+| `splot-validate::context`           | § 6.2.2 / § 7.3.8 sequence state  | partial (active sequence limits) |
 | `splot-core::headers`               | § 5.4 sequence / frame headers    | TODO |
 | `splot-core::tables`                | § 9 additional tables             | TODO / codegen (`cargo xtask gen-tables`) |
 
@@ -77,6 +78,18 @@ All are pure functions of the OBU header (no activated sequence header required)
   RAS frames must have `obu_tlayer_id == 0`.
 - `obu-header/reserved-obu-type` — informational: reserved types are ignored by
   conformant decoders.
+
+### Implemented stateful sequence checks
+
+These depend on a parseable, active sequence header in the same `obu_xlayer_id`
+context:
+
+- `sequence-state/no-active-sequence-header` — a layer-scoped OBU appears before
+  an active sequence header is available for its `obu_xlayer_id`.
+- `sequence-state/tlayer-exceeds-max` — `obu_tlayer_id` exceeds the active
+  sequence header's `max_tlayer_id`.
+- `sequence-state/mlayer-exceeds-max` — `obu_mlayer_id` exceeds the active
+  sequence header's `max_mlayer_id`.
 
 ## ⚠️ AV2 is not AV1
 
