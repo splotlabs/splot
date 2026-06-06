@@ -7,6 +7,10 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # Wait a week before adopting a freshly published release, to avoid
+    # pulling in a just-compromised version (zizmor `dependabot-cooldown`).
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       cargo:
@@ -16,4 +20,6 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
