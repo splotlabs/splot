@@ -199,16 +199,34 @@ fn check_dependency_direction(root: &Path) -> Result<()> {
     }
 }
 
-/// Internal (`splot-*`) crates each member is permitted to depend on.
+/// The one-way dependency rule: each internal crate and the internal crates it may
+/// depend on. Single source of truth for both the allow-list and the set of names
+/// recognized as internal.
+const INTERNAL_DEP_RULES: &[(&str, &[&str])] = &[
+    ("splot-core", &[]),
+    ("splot-validate", &["splot-core"]),
+    ("splot-encode", &["splot-core"]),
+    (
+        "splot-cli",
+        &["splot-core", "splot-validate", "splot-encode"],
+    ),
+    ("xtask", &[]),
+];
+
+/// Internal crates `name` is permitted to depend on, or `None` if `name` is not a
+/// known workspace member.
 fn allowed_internal_deps(name: &str) -> Option<&'static [&'static str]> {
-    match name {
-        "splot-core" => Some(&[]),
-        "splot-validate" => Some(&["splot-core"]),
-        "splot-encode" => Some(&["splot-core"]),
-        "splot-cli" => Some(&["splot-core", "splot-validate", "splot-encode"]),
-        "xtask" => Some(&[]),
-        _ => None,
-    }
+    INTERNAL_DEP_RULES
+        .iter()
+        .find(|(crate_name, _)| *crate_name == name)
+        .map(|(_, deps)| *deps)
+}
+
+/// Returns `true` if `name` is one of this workspace's internal crates.
+fn is_internal_crate(name: &str) -> bool {
+    INTERNAL_DEP_RULES
+        .iter()
+        .any(|(crate_name, _)| *crate_name == name)
 }
 
 fn workspace_members(root: &Path) -> Result<Vec<String>> {
@@ -262,7 +280,7 @@ fn collect_internal_deps(parent: &toml::Table, deps: &mut Vec<String>) {
         if let Some(table) = parent.get(table_name).and_then(toml::Value::as_table) {
             for (key, value) in table {
                 let name = resolved_dep_name(key, value);
-                if name.starts_with("splot-") {
+                if is_internal_crate(&name) {
                     deps.push(name);
                 }
             }
