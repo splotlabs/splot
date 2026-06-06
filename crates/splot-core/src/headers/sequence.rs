@@ -855,6 +855,52 @@ mod tests {
     }
 
     #[test]
+    fn parses_non_single_picture_general_sequence_header() {
+        let mut bits = Bits::default();
+        bits.uvlc(0); // seq_header_id
+        bits.f(1, 5); // seq_profile_idc
+        bits.bit(0); // single_picture_header_flag
+        bits.f(2, 5); // seq_level_idx; seq_tier inferred Main because level <= 3
+        bits.uvlc(2); // chroma_format_idc = CHROMA_FORMAT_444
+        bits.uvlc(1); // bit_depth_idc = 8-bit
+        bits.f(5, 3); // seq_lcr_id
+        bits.bit(0); // still_picture
+        bits.f(2, 2); // max_tlayer_id
+        bits.f(0, 3); // max_mlayer_id
+        bits.bit(0); // monotonic_output_order_flag
+        bits.f(3, 4); // frame_width_bits_minus_1
+        bits.f(3, 4); // frame_height_bits_minus_1
+        bits.f(15, 4); // max_frame_width_minus_1
+        bits.f(7, 4); // max_frame_height_minus_1
+        bits.bit(0); // seq_cropping_window_present_flag
+        bits.bit(1); // seq_initial_display_delay_present_flag
+        bits.f(2, 4); // seq_initial_display_delay_minus_1
+        bits.bit(0); // decoder_model_info_present_flag
+        bits.bit(0); // tlayer_dependency_present_flag
+
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let header = parse_sequence_header_general(&mut reader).unwrap();
+        assert_eq!(header.seq_header_id.get(), 0);
+        assert_eq!(header.seq_profile_idc.get(), 1);
+        assert!(!header.single_picture_header_flag);
+        assert_eq!(header.seq_level_idx.get(), 2);
+        assert_eq!(header.seq_tier, Tier::Main);
+        assert_eq!(header.chroma_format_idc, ChromaFormatIdc::Yuv444);
+        assert_eq!(header.bit_depth_idc, BitDepthIdc::Eight);
+        assert_eq!(header.seq_lcr_id.get(), 5);
+        assert!(!header.still_picture);
+        assert_eq!(header.max_tlayer_id.get(), 2);
+        assert_eq!(header.max_mlayer_id.get(), 0);
+        assert_eq!(header.seq_max_mlayer_count.get(), 1);
+        assert!(!header.monotonic_output_order_flag);
+        assert_eq!(header.seq_initial_display_delay_minus_1, Some(2));
+        assert!(!header.decoder_model_info_present_flag);
+        assert_eq!(header.num_units_in_decoding_tick, None);
+        assert!(!header.seq_decoder_model_info_present_flag);
+    }
+
+    #[test]
     fn rejects_seq_header_id_out_of_range() {
         let mut bits = Bits::default();
         bits.uvlc(MAX_SEQ_NUM);
@@ -999,5 +1045,22 @@ mod tests {
             parse_sequence_header_general(&mut reader),
             Err(Error::UnexpectedEof { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// `sequence_header_obu()` general parsing must never panic on arbitrary input.
+        #[test]
+        fn parse_sequence_header_general_never_panics(
+            data in proptest::collection::vec(any::<u8>(), 0..128),
+        ) {
+            let mut reader = BitReader::new(&data, ByteOffset::new(0));
+            let _ = parse_sequence_header_general(&mut reader);
+        }
     }
 }

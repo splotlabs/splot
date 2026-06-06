@@ -16,5 +16,7 @@ pub mod checks;
 pub mod diagnostic;
 pub mod validator;
 
+mod error_location;
+
 pub use diagnostic::{Diagnostic, Severity, ValidationReport};
 pub use validator::Validator;

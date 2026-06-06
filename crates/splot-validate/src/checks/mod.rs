@@ -20,6 +20,7 @@ use splot_core::obu::parse_trailing_bits;
 use splot_core::types::ObuType;
 
 use crate::diagnostic::{Diagnostic, Severity, ValidationReport};
+use crate::error_location::{error_bit_offset, error_offset};
 
 /// A single conformance check over one OBU envelope.
 pub trait Check {
@@ -219,33 +220,6 @@ fn payload_parse_error_diagnostic(error: &Error, spec_section: &'static str) -> 
         diagnostic = diagnostic.with_bit_offset(bit_offset);
     }
     diagnostic
-}
-
-fn error_offset(error: &Error) -> Option<splot_core::span::ByteOffset> {
-    match error {
-        Error::UnexpectedEof { offset, .. }
-        | Error::InvalidLeb128 { offset, .. }
-        | Error::InvalidUvlc { offset, .. }
-        | Error::InvalidNs { offset, .. }
-        | Error::InvalidObuHeader { offset, .. }
-        | Error::InvalidTrailingBits { offset, .. }
-        | Error::InvalidByteAlignment { offset, .. }
-        | Error::InvalidSequenceHeader { offset, .. }
-        | Error::ObuSizeOutOfRange { offset, .. }
-        | Error::ObuPayloadOutOfRange { offset, .. } => Some(*offset),
-        _ => None,
-    }
-}
-
-fn error_bit_offset(error: &Error) -> Option<splot_core::span::BitOffset> {
-    match error {
-        Error::InvalidUvlc { bit_offset, .. }
-        | Error::InvalidNs { bit_offset, .. }
-        | Error::InvalidTrailingBits { bit_offset, .. }
-        | Error::InvalidByteAlignment { bit_offset, .. }
-        | Error::InvalidSequenceHeader { bit_offset, .. } => Some(*bit_offset),
-        _ => None,
-    }
 }
 
 /// Informational: reserved OBU types are ignored by conformant decoders (AV2 Table 6.1).
