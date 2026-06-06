@@ -45,7 +45,17 @@ The reader SHALL parse the Annex B length-delimited envelope per AV2 v1.0.0
 Annex B: each OBU is a `leb128()` length followed by `open_bitstream_unit(...)`.
 Header parsing SHALL be bounded to the declared OBU size.
 
+#### Scenario: conformant Annex B stream
+
+- **WHEN** a conformant Annex B stream is parsed
+- **THEN** each OBU envelope, header, and payload is recovered with correct offsets
+
 #### Scenario: bounded header parse
 
 - **WHEN** an OBU header signals an extension byte beyond its declared size
 - **THEN** parsing fails within that OBU rather than reading into the next one
+
+#### Scenario: malformed input
+
+- **WHEN** truncated or out-of-range input is parsed
+- **THEN** a typed `Error` is returned and any parseable prefix is retained

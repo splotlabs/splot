@@ -23,8 +23,8 @@
 
 ## Checks
 
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
-- [ ] `cargo test --workspace --all-targets --locked`
-- [ ] `cargo xtask check-feature-status`
-- [ ] `cargo xtask ci`
+- [x] `cargo fmt --all -- --check`
+- [x] `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+- [x] `cargo test --workspace --all-targets --locked`
+- [x] `cargo xtask check-feature-status`
+- [x] `cargo xtask ci`
