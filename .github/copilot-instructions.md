@@ -15,5 +15,9 @@ The canonical guide is [AGENTS.md](../AGENTS.md). Read it. The most critical rul
   nothing depends on `splot-cli`; only `splot-cli` depends on `splot-encode`; `xtask`
   is standalone. Enforced by `cargo xtask check-dependency-direction`.
 - **SPDX header** on every `.rs` file; **public docs** on every public item.
+- **Feature tracking:** use Feature IDs from `docs/IMPLEMENTATION-MATRIX.toml` (the
+  canonical status) for non-trivial work. Do not create TODOs without
+  `TODO(spec: FEATURE-ID)`. Do not mark implementation stages as done unless proof
+  is recorded. See [../docs/FEATURE-TRACKING.md](../docs/FEATURE-TRACKING.md).
 
-Validate work with `cargo xtask ci`.
+Validate work with `cargo xtask ci` (which runs `cargo xtask check-feature-status`).

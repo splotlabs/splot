@@ -1,0 +1,940 @@
+# Canonical AV2 implementation matrix for `splot`.
+#
+# This file is the SINGLE SOURCE OF TRUTH for what is implemented and how far.
+# GitHub Issues/Projects, README checklists, and STATUS.md are NOT canonical.
+#
+# Schema, status model, and proof rules: docs/IMPLEMENTATION-MATRIX.schema.md
+# Workflow and conventions:               docs/FEATURE-TRACKING.md
+# Render it:                              cargo xtask feature-status
+# Check it for drift:                     cargo xtask check-feature-status
+# Summarize coverage:                     cargo xtask spec-coverage
+#
+# Status values: todo | partial | done | blocked | not-applicable | experimental | pending
+# A code stage may be "done" only when [feature.proof] records proof (see schema).
+# Do NOT use percentages.
+
+matrix_version = 1
+last_reviewed = "2026-06-06"
+
+# ---------------------------------------------------------------------------
+# Normative AV2 bitstream syntax and semantics
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "AV2-4.11.6-LEB128"
+name = "LEB128 descriptor"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["4.11.6"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/leb128.rs"
+openspec_change = "parse-annexb-and-obu-headers"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "AV2 LEB128 is byte-aligned, up to 8 bytes, bounded to u32, and permits non-minimal encodings. read_leb128 enforces the byte-7-MSB rule and the u32 bound. validate/decode_check are satisfied via the generic bitstream/parse-error diagnostic (no LEB128-specific validator check)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "partial"
+write = "todo"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/leb128.rs::tests"]
+commands = ["cargo test -p splot-core leb128"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.2.2-OBU-HEADER"
+name = "OBU header syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.2.2", "6.2.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/obu.rs"
+openspec_change = "parse-annexb-and-obu-headers"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Critical AV2/AV1 difference: no AV1 obu_forbidden_bit, obu_has_size_field, or AV1 extension header. validate covers the header-only constraints; sequence/frame-level conformance is tracked elsewhere."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "done"
+write = "todo"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/obu.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core obu", "cargo test -p splot-validate"]
+fixtures = ["tests/fixtures/conformant.av2", "tests/fixtures/bad-global-xlayer.av2"]
+diagnostics = [
+    "obu-header/global-xlayer-required",
+    "obu-header/global-xlayer-requires-base-layers",
+    "obu-header/global-xlayer-allowed-types",
+    "obu-header/base-layer-only-types",
+    "obu-header/temporal-layer-zero-only-types",
+    "obu-header/reserved-obu-type",
+]
+
+[[feature]]
+id = "AV2-5.2.1-OBU-TYPE"
+name = "OBU type and OBU-class predicates"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.2.1", "6.2.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/types.rs"
+openspec_change = "parse-annexb-and-obu-headers"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "ObuType enum (AV2 Table 6.1, raw round-trip for 0..=31, reserved preserved) plus AV2 § 5.2.1 OBU-class predicates (is_tile_group, is_sef, requires_global_xlayer, ...) — citations match crates/splot-core/src/types.rs. No AV1 OBU type table."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "partial"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/types.rs::tests"]
+commands = ["cargo test -p splot-core types"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-B-ANNEXB-OBU-ENVELOPE"
+name = "Annex B length-delimited OBU envelope"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["Annex B"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/annexb.rs"
+openspec_change = "parse-annexb-and-obu-headers"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Annex B packs each OBU as leb128 length then open_bitstream_unit(num_bytes_in_obu). Header parsing is bounded to the declared OBU size; partial parse retains the prefix before a structural error."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "done"
+write = "todo"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/annexb.rs::tests", "crates/splot-core/src/annexb.rs::proptests"]
+commands = ["cargo test -p splot-core annexb"]
+fixtures = ["tests/fixtures/conformant.av2", "tests/fixtures/truncated.av2", "tests/fixtures/prefix-then-truncated.av2"]
+diagnostics = ["bitstream/parse-error"]
+
+[[feature]]
+id = "AV2-5.2.3-TRAILING-BITS"
+name = "Trailing bits syntax and semantics"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.2.3", "6.2.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/obu.rs"
+openspec_change = ""
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Needed for deeper payload parsing and writer correctness. The reserved-OBU all-zero-payload check partially exercises the trailing_one_bit semantics, but trailing_bits() itself is not yet modeled."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.2.4-BYTE-ALIGNMENT"
+name = "Byte alignment syntax and semantics"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.2.4", "6.2.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/bitio.rs"
+openspec_change = ""
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "BitReader provides the alignment primitive (is_byte_aligned, bit/byte offsets), but the byte_alignment() syntax element is not yet modeled. Required before robust payload parsing and writer symmetry."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.3-RESERVED-OBU"
+name = "Reserved OBU handling"
+category = "normative"
+kind = "validator-check"
+spec_sections = ["5.3", "6.2.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-validate"
+module = "crates/splot-validate/src/checks/mod.rs"
+openspec_change = ""
+tracking_issue = ""
+owner = "validator"
+risk = "medium"
+notes = "Reserved OBUs are ignored by decoders (informational diagnostic). A reserved OBU whose payload is entirely zero is flagged as an error: AV2 5.3 / 6.2.3 require a non-zero trailing bit."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-validate"]
+fixtures = []
+diagnostics = ["obu-reserved/all-zero-payload", "obu-header/reserved-obu-type"]
+
+[[feature]]
+id = "AV2-5.4-SEQUENCE-HEADER"
+name = "Sequence header OBU syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.4", "6.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "parse-sequence-header"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Only an empty placeholder type exists today. Do not fabricate fields; implement only with direct spec mapping."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.8-LAYER-CONFIG-RECORD"
+name = "Layer configuration record OBU syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.8", "6.8"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = ""
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Needed for multistream/layer-aware validation and future operating-point handling."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.10-OPERATING-POINT-SET"
+name = "Operating point set OBU syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.10", "5.11", "6.10"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = ""
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Needed for layer/sub-bitstream extraction and conformance tooling."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.18-FRAME-HEADER"
+name = "Frame header syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.18", "6.17"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = ""
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Large feature. Only an empty placeholder type exists. Split into smaller rows before implementation."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.19-TILE-GROUP"
+name = "Tile group OBU syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.19", "5.20", "6.18", "6.19"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = ""
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Large feature. Do not start until the frame-header skeleton and bit-level payload parsing are planned."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-7.3-OBU-ORDERING"
+name = "Ordering of OBUs"
+category = "normative"
+kind = "bitstream-semantics"
+spec_sections = ["7.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-validate"
+module = "crates/splot-validate/src/checks/mod.rs"
+openspec_change = "validate-obu-ordering"
+tracking_issue = ""
+owner = "validator"
+risk = "high"
+notes = "Validator-level semantic checks once enough OBU/header parsing exists. The current checks are per-OBU and header-only; ordering across OBUs is future work."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "not-applicable"
+validate = "todo"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-9-ADDITIONAL-TABLES"
+name = "Additional spec tables (codegen)"
+category = "normative"
+kind = "bitstream-semantics"
+spec_sections = ["9"]
+sources = ["https://av2.aomedia.org/v1.0.0/attachments/all_tables.h"]
+crate = "splot-core"
+module = "crates/splot-core/src/tables.rs"
+openspec_change = ""
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Placeholder module for AV2 9 (Additional tables). Planned to be code-generated by `cargo xtask gen-tables` from all_tables.h. Never hand-transcribe table contents."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+# ---------------------------------------------------------------------------
+# Encoder roadmap (strategy is not always a direct spec section)
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "ENC-BITSTREAM-WRITER"
+name = "Bitstream writer foundation"
+category = "encoder"
+kind = "writer"
+spec_sections = []
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/bitio.rs"
+openspec_change = "add-bitstream-writer"
+tracking_issue = ""
+owner = "encoder"
+risk = "high"
+notes = "Writer must be symmetric with parsed syntax and validated by round-trip tests where possible. Only the RangeEncoder stub exists today."
+
+[feature.status]
+mapped = "partial"
+types = "todo"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "todo"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-Y4M-INPUT"
+name = "Y4M input reader integration"
+category = "encoder"
+kind = "encoder-api"
+spec_sections = []
+sources = []
+crate = "splot-encode"
+module = "crates/splot-encode/src/context.rs"
+openspec_change = "encoder-input-model"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Input format plumbing; not normative AV2 syntax. Only the Frame stub exists today."
+
+[feature.status]
+mapped = "partial"
+types = "todo"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "todo"
+decode_check = "not-applicable"
+tests = "todo"
+avm_diff = "not-applicable"
+perf = "todo"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-INTRA-TOY-V0"
+name = "Minimal toy intra encoder path"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = []
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/context.rs"
+openspec_change = "toy-intra-encoder-v0"
+tracking_issue = ""
+owner = "encoder"
+risk = "high"
+notes = "Only after writer, headers, and validation are sufficient to produce a deliberately simple legal stream."
+
+[feature.status]
+mapped = "partial"
+types = "todo"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "todo"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-RATE-CONTROL-V0"
+name = "Initial rate control strategy"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = []
+sources = []
+crate = "splot-encode"
+module = "crates/splot-encode/src/context.rs"
+openspec_change = "rate-control-v0"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Encoder strategy, not direct spec implementation. Requires design before code."
+
+[feature.status]
+mapped = "partial"
+types = "todo"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "todo"
+decode_check = "not-applicable"
+tests = "todo"
+avm_diff = "not-applicable"
+perf = "todo"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-SPEED-PRESETS"
+name = "Encoder speed preset framework"
+category = "encoder"
+kind = "encoder-api"
+spec_sections = []
+sources = []
+crate = "splot-encode"
+module = "crates/splot-encode/src/config.rs"
+openspec_change = "encoder-speed-presets"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Runtime/policy knobs must not pollute bitstream-affecting configuration (EncoderConfig). Thread count is already a Context::new parameter rather than config."
+
+[feature.status]
+mapped = "partial"
+types = "todo"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "todo"
+decode_check = "not-applicable"
+tests = "todo"
+avm_diff = "not-applicable"
+perf = "todo"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+# ---------------------------------------------------------------------------
+# Conformance and differential testing
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "CONF-AVM-DIFF-HARNESS"
+name = "AVM differential testing harness"
+category = "conformance"
+kind = "conformance"
+spec_sections = []
+sources = ["https://github.com/AOMediaCodec/avm"]
+crate = "xtask"
+module = "xtask/src/main.rs"
+openspec_change = "avm-differential-harness"
+tracking_issue = ""
+owner = "conformance"
+risk = "high"
+notes = "Future oracle: avm encode -> splot validate, then splot encode -> avm decode. Only the `cargo xtask conformance` stub exists today."
+
+[feature.status]
+mapped = "partial"
+types = "todo"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "todo"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "CONF-PUBLIC-VECTORS"
+name = "Public AV2 vector corpus integration"
+category = "conformance"
+kind = "conformance"
+spec_sections = []
+sources = ["https://github.com/AOMediaCodec"]
+crate = "xtask"
+module = "xtask/src/main.rs"
+openspec_change = "fetch-public-vectors"
+tracking_issue = ""
+owner = "conformance"
+risk = "medium"
+notes = "Use only redistributable/public vectors. Do not vendor unclear-license samples. Only the `cargo xtask fetch-vectors` stub exists today."
+
+[feature.status]
+mapped = "partial"
+types = "todo"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "CONF-INSPECT-SNAPSHOTS"
+name = "Inspector snapshot tests"
+category = "conformance"
+kind = "conformance"
+spec_sections = []
+sources = []
+crate = "splot-cli"
+module = "crates/splot-cli/src/commands/inspect.rs"
+openspec_change = "inspect-snapshot-tests"
+tracking_issue = ""
+owner = "conformance"
+risk = "medium"
+notes = "Snapshot output should stabilize CLI inspector behavior. Basic CLI integration tests exist (see CLI-INSPECT); insta-style snapshots do not yet."
+
+[feature.status]
+mapped = "partial"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "todo"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "CONF-FUZZ-NO-PANIC"
+name = "Parser no-panic fuzzing"
+category = "conformance"
+kind = "conformance"
+spec_sections = []
+sources = []
+crate = "fuzz"
+module = "fuzz/fuzz_targets/parse_obu.rs"
+openspec_change = "parser-fuzz-no-panic"
+tracking_issue = ""
+owner = "conformance"
+risk = "high"
+notes = "Malformed data must return errors/reports, never panic. The stable-toolchain proptest covers the same invariant in CI; the cargo-fuzz target needs nightly and is not in CI."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "partial"
+validate = "partial"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/annexb.rs::proptests"]
+commands = ["cargo test -p splot-core", "cargo +nightly fuzz run parse_obu"]
+fixtures = ["fuzz/corpus/parse_obu"]
+diagnostics = []
+
+# ---------------------------------------------------------------------------
+# CLI behaviors (thin UI over the libraries)
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "CLI-VALIDATE"
+name = "splot validate command"
+category = "cli"
+kind = "cli"
+spec_sections = []
+sources = []
+crate = "splot-cli"
+module = "crates/splot-cli/src/commands/validate.rs"
+openspec_change = ""
+tracking_issue = ""
+owner = "cli"
+risk = "low"
+notes = "Thin CLI over splot-validate: human and --json reports, --strict mode, documented exit codes (0 conformant / 1 errors / 2 I/O)."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-cli/tests/cli.rs"]
+commands = ["cargo test -p splot-cli"]
+fixtures = ["tests/fixtures/conformant.av2", "tests/fixtures/bad-global-xlayer.av2", "tests/fixtures/truncated.av2"]
+diagnostics = []
+
+[[feature]]
+id = "CLI-INSPECT"
+name = "splot inspect command"
+category = "cli"
+kind = "cli"
+spec_sections = []
+sources = []
+crate = "splot-cli"
+module = "crates/splot-cli/src/commands/inspect.rs"
+openspec_change = ""
+tracking_issue = ""
+owner = "cli"
+risk = "low"
+notes = "Thin CLI over splot-core: lists OBUs and headers, --headers and --json output, prints the parseable prefix before a tail error. Snapshot tests are tracked by CONF-INSPECT-SNAPSHOTS."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-cli/tests/cli.rs"]
+commands = ["cargo test -p splot-cli"]
+fixtures = ["tests/fixtures/conformant.av2", "tests/fixtures/prefix-then-truncated.av2"]
+diagnostics = []
+
+# ---------------------------------------------------------------------------
+# Automation and documentation
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "XTASK-FEATURE-STATUS"
+name = "xtask feature status reporting and checks"
+category = "automation"
+kind = "automation"
+spec_sections = []
+sources = []
+crate = "xtask"
+module = "xtask/src/feature_status.rs"
+openspec_change = "feature-tracking-framework"
+tracking_issue = ""
+owner = "automation"
+risk = "medium"
+notes = "Implements feature-status (table/json/markdown), check-feature-status (drift guard), and spec-coverage. Wired into `cargo xtask ci`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["xtask/src/feature_status.rs::tests"]
+commands = [
+    "cargo xtask feature-status",
+    "cargo xtask check-feature-status",
+    "cargo xtask spec-coverage",
+    "cargo test -p xtask",
+]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "DOC-FEATURE-TRACKING"
+name = "Feature tracking documentation"
+category = "docs"
+kind = "docs"
+spec_sections = []
+sources = []
+crate = "docs"
+module = "docs/FEATURE-TRACKING.md"
+openspec_change = "feature-tracking-framework"
+tracking_issue = ""
+owner = "docs"
+risk = "low"
+notes = "Documents the five-layer model, ID convention, status model, proof rules, diagnostic-ID convention, and agent workflow."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "not-applicable"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []

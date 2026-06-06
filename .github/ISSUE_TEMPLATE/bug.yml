@@ -1,0 +1,46 @@
+name: Bug
+description: Report incorrect parsing, validation, or diagnostics
+labels: ["bug"]
+body:
+  - type: input
+    id: feature_id
+    attributes:
+      label: Affected Feature ID
+      description: The closest ID from docs/IMPLEMENTATION-MATRIX.toml, if known.
+      placeholder: AV2-5.2.2-OBU-HEADER
+  - type: textarea
+    id: repro
+    attributes:
+      label: Input sample or reproduction
+      description: A minimal bitstream (hex or a fixture path) and the exact command.
+      placeholder: |
+        splot validate sample.av2
+        hex: 02 88 05
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Command output
+      render: text
+  - type: dropdown
+    id: diagnostics
+    attributes:
+      label: Are diagnostics wrong or missing?
+      options:
+        - "Diagnostics are wrong (incorrect rule_id / section / offset / message)"
+        - "A diagnostic is missing (a real violation is not reported)"
+        - "A false positive (a conformant stream is flagged)"
+        - "Not a diagnostics issue"

@@ -45,6 +45,15 @@ jobs:
       - run: cargo test --workspace --all-targets --locked
       - run: cargo xtask check-license-headers
       - run: cargo xtask check-dependency-direction
+      - run: cargo xtask check-feature-status
+
+      - name: OpenSpec validation if available
+        run: |
+          if command -v openspec >/dev/null 2>&1; then
+            openspec validate
+          else
+            echo "openspec not installed; skipping OpenSpec CLI validation"
+          fi
 
   # Optional, non-blocking supply-chain audit. Advisory results can change without
   # a repo diff, so it must not gate the main pipeline.

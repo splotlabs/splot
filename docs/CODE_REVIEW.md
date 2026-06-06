@@ -31,6 +31,14 @@ A concise checklist for humans and agents reviewing changes to `splot`.
 - [ ] Crate dependency graph unchanged (`cargo xtask check-dependency-direction`)?
 - [ ] Library-first: no codec/validation logic leaked into `splot-cli`?
 
+## Feature tracking
+
+- [ ] Feature ID is present in the PR title/body.
+- [ ] Matrix row is added or updated (`docs/IMPLEMENTATION-MATRIX.toml`).
+- [ ] OpenSpec change exists for non-trivial behavior/design changes.
+- [ ] `cargo xtask check-feature-status` passes.
+- [ ] Any `done` status has proof recorded in `[feature.proof]`.
+
 ## Hygiene
 
 - [ ] SPDX header on every `.rs` file (`cargo xtask check-license-headers`)?

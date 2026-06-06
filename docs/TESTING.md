@@ -38,3 +38,9 @@ cargo xtask conformance         # stub for AVM differential testing
 - Tests may use `unwrap`/`expect` only inside `#[cfg(test)]` modules annotated with
   `#[allow(clippy::unwrap_used, clippy::expect_used)]`; production library code must
   not.
+- **Record proof in the matrix.** When a feature's stage becomes `done`, record the
+  test module/path, the reproducible command, the fixture/vector, and/or the
+  diagnostic id in that row's `[feature.proof]` in
+  [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml). `cargo xtask
+  check-feature-status` rejects a `done` code stage with no proof; `cargo xtask
+  spec-coverage` lists rows still missing proof.

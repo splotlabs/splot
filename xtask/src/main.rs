@@ -12,6 +12,10 @@ use std::process::Command;
 use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 
+mod feature_status;
+
+use feature_status::{CoverageFormat, StatusFormat};
+
 /// SPDX identifier line every tracked `.rs` file must begin with.
 const SPDX_LINE: &str = "// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0";
 
@@ -33,6 +37,29 @@ enum Task {
     CheckLicenseHeaders,
     /// Verify member crates honor the one-way dependency direction.
     CheckDependencyDirection,
+    /// Render the implementation matrix (docs/IMPLEMENTATION-MATRIX.toml).
+    FeatureStatus {
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = StatusFormat::Table)]
+        format: StatusFormat,
+        /// Filter to a single category.
+        #[arg(long)]
+        category: Option<String>,
+        /// Filter to a single kind.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Write the rendered output to a file instead of stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Validate the implementation matrix and fail on drift.
+    CheckFeatureStatus,
+    /// Summarize implementation coverage from the matrix.
+    SpecCoverage {
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = CoverageFormat::Text)]
+        format: CoverageFormat,
+    },
     /// (stub) Generate spec tables from the AV2 additional tables.
     GenTables,
     /// (stub) Fetch AV2/AOMedia conformance vectors.
@@ -47,6 +74,16 @@ fn main() -> Result<()> {
         Task::Ci => run_ci(),
         Task::CheckLicenseHeaders => check_license_headers(&workspace_root()?),
         Task::CheckDependencyDirection => check_dependency_direction(&workspace_root()?),
+        Task::FeatureStatus {
+            format,
+            category,
+            kind,
+            output,
+        } => feature_status::run_feature_status(&workspace_root()?, format, category, kind, output),
+        Task::CheckFeatureStatus => feature_status::run_check_feature_status(&workspace_root()?),
+        Task::SpecCoverage { format } => {
+            feature_status::run_spec_coverage(&workspace_root()?, format)
+        }
         Task::GenTables => {
             gen_tables_stub();
             Ok(())
@@ -80,6 +117,7 @@ fn run_ci() -> Result<()> {
     let root = workspace_root()?;
     check_license_headers(&root)?;
     check_dependency_direction(&root)?;
+    feature_status::run_check_feature_status(&root)?;
 
     eprintln!("ci: all checks passed");
     Ok(())

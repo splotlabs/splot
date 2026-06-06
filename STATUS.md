@@ -48,10 +48,51 @@ Toolchain: Rust 1.96.0, edition 2024, resolver 3. Generated 2026-06-06.
 - OBU ordering and sequence-header-activated conformance checks.
 - `insta` snapshot tests, conformance vectors, AVM differential testing.
 
+## Feature tracking framework (added 2026-06-06)
+
+A canonical, machine-readable AV2 implementation matrix plus `xtask` enforcement.
+The matrix is the source of truth; OpenSpec records intent; GitHub is the execution
+queue; tests are proof.
+
+**Files added:**
+
+- `docs/IMPLEMENTATION-MATRIX.toml` (canonical, 27 rows), `*.schema.md`,
+  `docs/FEATURE-STATUS.md` (generated), `docs/FEATURE-TRACKING.md`,
+  `docs/ENCODER-ROADMAP.md`, `docs/CONFORMANCE.md`,
+  `docs/DECISIONS/0001-feature-tracking.md`, `docs/templates/FEATURE_MATRIX_ROW.toml`.
+- `openspec/` (README, `specs/{bitstream,validator,encoder-api,encoder-tools,conformance}/spec.md`,
+  `changes/` with a `.template/` and six initial change folders).
+- `xtask/src/feature_status.rs` (matrix model, render, and the drift checker).
+- `.github/ISSUE_TEMPLATE/{av2-feature,conformance,bug}.yml`,
+  `.github/PULL_REQUEST_TEMPLATE.md`.
+
+**xtask subcommands added:** `feature-status` (`--format table|json|markdown`,
+`--category`, `--kind`, `--output`), `check-feature-status`, `spec-coverage`
+(`--format text|markdown`). `check-feature-status` is wired into `cargo xtask ci`
+and `.github/workflows/ci.yml`.
+
+**Matrix rows seeded and adjusted after inspecting the code:** the 23 seeded rows
+plus four added to reflect shipped reality — `AV2-5.2.1-OBU-TYPE`,
+`AV2-9-ADDITIONAL-TABLES`, `CLI-VALIDATE`, `CLI-INSPECT`. Statuses were upgraded
+from the seed where the code is real and proven: LEB128, OBU header, Annex B, and
+the OBU type table are `parse`/`tests` `done`; the OBU-header §6.2.2 checks and the
+reserved-OBU checks are `validate`/`tests` `done` with diagnostic + test proof; the
+no-panic proptest makes `CONF-FUZZ-NO-PANIC` `tests` `done`. Writer/encoder/AVM
+stages remain `todo`/`pending`. `cargo xtask spec-coverage` flags
+`CONF-INSPECT-SNAPSHOTS` as the one row that has progressed but records no proof
+(its snapshot tests do not exist yet).
+
+**Existing `TODO(spec): …` markers** in `headers.rs`, `tables.rs`, `config.rs`,
+`context.rs`, and `checks/mod.rs` were migrated to the
+`TODO(spec: <FEATURE-ID>): …` form so they reference matrix ids; the checker
+rejects bare or unknown spec TODOs.
+
 ## Dependencies added
 
 | Crate | Where | Purpose |
 |-------|-------|---------|
+| `serde` 1 (derive) | xtask (added) | typed matrix model |
+| `serde_json` 1 | xtask (added) | `feature-status --format json` |
 | `thiserror` 2 | core, (re-used) | typed library errors |
 | `serde` 1 (derive) | core, validate, cli | serialize types/reports |
 | `serde_json` 1 | cli | `--json` output |
@@ -80,6 +121,28 @@ Toolchain: Rust 1.96.0, edition 2024, resolver 3. Generated 2026-06-06.
    `license-file` fallback was not needed.
 6. Local toolchain is Homebrew Rust 1.96.0 (no `rustup`); `rust-toolchain.toml`
    still pins `1.96.0` for `rustup`/CI users.
+
+Feature-tracking framework (2026-06-06):
+
+7. **Four matrix rows beyond the prompt's seed.** Added `AV2-5.2.1-OBU-TYPE`,
+   `AV2-9-ADDITIONAL-TABLES`, `CLI-VALIDATE`, and `CLI-INSPECT` so the matrix
+   reflects shipped reality, and upgraded seeded statuses where the code is real
+   and proven (the prompt explicitly asks to adjust statuses after inspection).
+8. **Checker allowlists are documented in `xtask/src/feature_status.rs`.** Per the
+   prompt's rule 11, feature-ID-shaped tokens must resolve to a matrix id, a
+   `<known-id>.SUFFIX` diagnostic sub-rule, or an allowlisted placeholder
+   (`AV2-SECTION-SLUG`). Validator diagnostic ids use a documented kebab/slash
+   prefix allowlist (`obu-header/`, `obu-reserved/`, `bitstream/`).
+9. **Rule 13 is strict.** `check-feature-status` regenerates the markdown render and
+   fails if `docs/FEATURE-STATUS.md` is stale (no warning-only mode).
+10. **`CLAUDE.md` is a symlink to `AGENTS.md`**, so only `AGENTS.md` was edited; the
+    new "Feature tracking" section is unnumbered to keep the existing "§ 9
+    Licensing" cross-reference stable.
+11. **Issue forms use `description:`** (the valid GitHub issue-form key) rather than
+    the prompt's `about:` (a legacy markdown-template key).
+12. The TODO scanner runs over `.rs` files; the feature-ID token scanner runs over
+    `.rs`/`.md`/`.toml`/`.yml`/`.yaml` (skipping `target`, `.git`, and the fuzz
+    `corpus`).
 
 ## Acceptance command results (2026-06-06)
 

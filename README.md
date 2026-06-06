@@ -63,6 +63,25 @@ fuzz                   cargo-fuzz target (outside the workspace)
 5. AVM differential testing.
 6. Encoder experiments.
 
+See [docs/ENCODER-ROADMAP.md](./docs/ENCODER-ROADMAP.md) for milestones tied to
+Feature IDs.
+
+## Feature tracking
+
+Implementation status is tracked in
+[`docs/IMPLEMENTATION-MATRIX.toml`](./docs/IMPLEMENTATION-MATRIX.toml) — the
+canonical source of truth — and rendered with:
+
+```bash
+cargo xtask feature-status            # aligned table
+cargo xtask check-feature-status      # fail on drift (also part of cargo xtask ci)
+cargo xtask spec-coverage             # coverage summary
+```
+
+OpenSpec changes under [`openspec/`](./openspec/) describe intent; the matrix is the
+canonical status. See [docs/FEATURE-TRACKING.md](./docs/FEATURE-TRACKING.md) and the
+generated [docs/FEATURE-STATUS.md](./docs/FEATURE-STATUS.md).
+
 ## License
 
 `splot` is licensed under **PolyForm Noncommercial 1.0.0** (see [LICENSE.md](./LICENSE.md)).
