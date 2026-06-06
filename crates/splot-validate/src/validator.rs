@@ -417,6 +417,21 @@ mod tests {
     }
 
     #[test]
+    fn non_activating_sequence_header_does_not_suppress_missing_active_sequence_error() {
+        // 0x05 = OBU_SEQUENCE_HEADER at tlayer=1, so it parses but cannot activate.
+        let mut data = annex_b_obu(0x05, &sequence_header_payload(1, 0));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(6, 0, 0, 0), &[]));
+
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/no-active-sequence-header"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
     fn active_sequence_header_bounds_temporal_layer_id() {
         let mut data = stream_with_sequence_header(1, 1);
         data.extend(annex_b_obu_with_header(&layer_obu_header(6, 2, 0, 0), &[]));

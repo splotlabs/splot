@@ -75,6 +75,9 @@ impl ValidatorContext {
             return;
         };
 
+        // Invariant: sequence_headers and active_sequence_by_xlayer are updated
+        // together in observe_sequence_header(). This guard only becomes reachable
+        // if a future sequence-header eviction policy removes stored headers.
         let Some(sequence_header) = self.sequence_headers.get(seq_header_id) else {
             report.push(sequence_state_error(
                 "sequence-state/unknown-sequence-header-id",
