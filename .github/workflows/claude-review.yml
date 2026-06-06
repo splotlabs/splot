@@ -7,6 +7,15 @@ on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
 
+# Each push (synchronize) starts a fresh review that can run up to 20m, so
+# cancel any in-flight review of an older commit on the same PR — otherwise
+# a slow stale run can finish last and post outdated comments / verdict.
+# For pull_request events github.ref is the per-PR merge ref, so this keys
+# the group by PR.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -71,15 +80,18 @@ jobs:
             files in full and the code they call into or depend on, then
             trace data and control flow before forming a conclusion.
 
-            CI (.github/workflows/ci.yml) already runs `cargo fmt --check`,
+            CI (.github/workflows/ci.yml) already runs — and gates on —
+            `cargo fmt --check`,
             `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
-            build,
-            the full test suite, `cargo xtask check-license-headers`,
-            `cargo xtask check-dependency-direction`, and a cargo-deny
-            advisory/license scan. Do not re-report anything those jobs
-            would already fail on. Spend your effort on what only a careful
-            human-style read catches: edge cases, spec fidelity, intent, and
-            reasoning across files.
+            build, the full test suite, `cargo xtask check-license-headers`,
+            and `cargo xtask check-dependency-direction`. Do not re-report
+            anything those gating jobs would already fail on. (The cargo-deny
+            license/advisory job is advisory-only — it runs with
+            `continue-on-error: true` and never blocks merge — so do NOT
+            treat licensing, security advisories, or new dependencies as
+            covered; review them yourself per dimension 9 below.) Spend your
+            effort on what only a careful human-style read catches: edge
+            cases, spec fidelity, intent, and reasoning across files.
 
             Review every dimension below. Within each, verify against the
             actual code — do not assume:
