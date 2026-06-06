@@ -22,11 +22,13 @@ pub enum Error {
         feature: &'static str,
     },
 
-    /// A bit-read requested more bits than fit in the target integer.
-    #[error("cannot read {requested} bits into a u8 (maximum is 8)")]
+    /// A bit-read requested more bits than the reader supports for the target.
+    #[error("cannot read {requested} bits (maximum is {max})")]
     BitWidthTooLarge {
         /// Number of bits requested.
         requested: u32,
+        /// Maximum number of bits supported for this read.
+        max: u32,
     },
 
     /// The input ended before a complete syntax element could be read.

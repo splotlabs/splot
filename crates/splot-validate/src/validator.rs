@@ -4,7 +4,7 @@
 //! The AV2 bitstream validator: parse, then run the check registry.
 
 use splot_core::Error;
-use splot_core::annexb::{ObuEnvelope, parse_annex_b_obus};
+use splot_core::annexb::{ObuEnvelope, parse_annex_b_obus_partial};
 use splot_core::span::ByteOffset;
 
 use crate::checks::{Check, default_checks};
@@ -34,14 +34,15 @@ impl Validator {
     #[must_use]
     pub fn validate_bytes(&self, data: &[u8]) -> ValidationReport {
         let mut report = ValidationReport::new();
-        match parse_annex_b_obus(data) {
-            Ok(obus) => {
-                let checks = default_checks();
-                for obu in &obus {
-                    run_checks(&checks, obu, &mut report);
-                }
-            }
-            Err(error) => report.push(parse_error_diagnostic(&error)),
+        // Parse the whole stream, keeping OBUs parsed before any later structural
+        // error so their conformance diagnostics are not lost.
+        let parsed = parse_annex_b_obus_partial(data);
+        let checks = default_checks();
+        for obu in &parsed.obus {
+            run_checks(&checks, obu, &mut report);
+        }
+        if let Some(error) = parsed.error {
+            report.push(parse_error_diagnostic(&error));
         }
         report
     }
@@ -109,5 +110,25 @@ mod tests {
     fn report_display_reports_status() {
         let report = Validator::new(false).validate_bytes(&[0x02, 0x88, 0x05]);
         assert!(report.to_string().contains("ERROR"));
+    }
+
+    #[test]
+    fn diagnostics_from_prefix_survive_a_later_parse_error() {
+        // OBU #0: TemporalDelimiter with extension, xlayer=5 (a §6.2.2 violation).
+        // OBU #1: truncated (declares 5 bytes, only 1 present).
+        let report = Validator::new(false).validate_bytes(&[0x02, 0x88, 0x05, 0x05, 0x08]);
+        assert!(!report.is_conformant());
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "obu-header/global-xlayer-required"),
+            "expected the conformance error from the parseable prefix"
+        );
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "bitstream/parse-error"),
+            "expected the parse error for the truncated tail"
+        );
     }
 }

@@ -33,68 +33,110 @@ pub struct ObuEnvelope<'a> {
     pub payload: &'a [u8],
 }
 
+/// As much of an Annex B bitstream as could be parsed: every OBU parsed before
+/// the first structural error, plus that error (if any).
+#[derive(Debug)]
+pub struct PartialParse<'a> {
+    /// OBUs parsed before the first structural error (or all of them).
+    pub obus: Vec<ObuEnvelope<'a>>,
+    /// The error that stopped parsing, or `None` if the whole stream parsed.
+    pub error: Option<Error>,
+}
+
+/// Parses an AV2 Annex B bitstream, keeping every OBU parsed before the first
+/// structural error together with that error (AV2 v1.0.0 Annex B § B.2).
+///
+/// Unlike [`parse_annex_b_obus`], the parseable prefix is never discarded, so a
+/// validator can still run checks on the OBUs that precede a later malformed OBU.
+/// The parser never panics on malformed input.
+#[must_use]
+pub fn parse_annex_b_obus_partial(input: &[u8]) -> PartialParse<'_> {
+    let mut obus = Vec::new();
+    let mut cursor: usize = 0;
+
+    while cursor < input.len() {
+        match parse_one_obu(input, cursor) {
+            Ok((envelope, next)) => {
+                obus.push(envelope);
+                cursor = next;
+            }
+            Err(error) => {
+                return PartialParse {
+                    obus,
+                    error: Some(error),
+                };
+            }
+        }
+    }
+
+    PartialParse { obus, error: None }
+}
+
 /// Parses a complete AV2 Annex B length-delimited bitstream into OBU envelopes
 /// (AV2 v1.0.0 Annex B § B.2).
 ///
 /// # Errors
 /// Returns an [`Error`] describing the first malformed length prefix, header, or
-/// out-of-range size. The parser never panics on malformed input.
+/// out-of-range size. The parser never panics on malformed input. Use
+/// [`parse_annex_b_obus_partial`] to retain the OBUs parsed before the error.
 pub fn parse_annex_b_obus(input: &[u8]) -> Result<Vec<ObuEnvelope<'_>>> {
-    let mut envelopes = Vec::new();
-    let mut cursor: usize = 0;
+    let partial = parse_annex_b_obus_partial(input);
+    match partial.error {
+        Some(error) => Err(error),
+        None => Ok(partial.obus),
+    }
+}
 
-    while cursor < input.len() {
-        let prefix = read_leb128(input, ByteOffset::new(cursor as u64))?;
-        let header_start = cursor.saturating_add(usize::from(prefix.bytes_read));
-        let size = prefix.value;
+/// Parses a single OBU starting at absolute byte `cursor`, returning the envelope
+/// and the cursor position immediately after it.
+fn parse_one_obu(input: &[u8], cursor: usize) -> Result<(ObuEnvelope<'_>, usize)> {
+    let prefix = read_leb128(input, ByteOffset::new(cursor as u64))?;
+    let header_start = cursor.saturating_add(usize::from(prefix.bytes_read));
+    let size = prefix.value;
 
-        if size == 0 {
-            return Err(Error::ObuSizeOutOfRange {
-                offset: ByteOffset::new(cursor as u64),
-                size: 0,
-            });
-        }
-
-        let size_usize = size as usize;
-        let remaining = input.len().saturating_sub(header_start);
-        if size_usize > remaining {
-            return Err(Error::ObuPayloadOutOfRange {
-                offset: ByteOffset::new(header_start as u64),
-                size,
-                remaining,
-            });
-        }
-
-        let header = read_obu_header(input, ByteOffset::new(header_start as u64))?;
-        let header_len = usize::from(header.header_size_bytes);
-        if header_len > size_usize {
-            return Err(Error::InvalidObuHeader {
-                offset: ByteOffset::new(header_start as u64),
-                message: "OBU header is larger than the declared OBU size".to_owned(),
-            });
-        }
-
-        let payload_start = header_start.saturating_add(header_len);
-        let payload_end = header_start.saturating_add(size_usize);
-        let Some(payload) = input.get(payload_start..payload_end) else {
-            return Err(Error::ObuPayloadOutOfRange {
-                offset: ByteOffset::new(header_start as u64),
-                size,
-                remaining,
-            });
-        };
-
-        envelopes.push(ObuEnvelope {
-            offset: ByteOffset::new(header_start as u64),
-            size,
-            header,
-            payload,
+    if size == 0 {
+        return Err(Error::ObuSizeOutOfRange {
+            offset: ByteOffset::new(cursor as u64),
+            size: 0,
         });
-
-        cursor = header_start.saturating_add(size_usize);
     }
 
-    Ok(envelopes)
+    let size_usize = size as usize;
+    let remaining = input.len().saturating_sub(header_start);
+    if size_usize > remaining {
+        return Err(Error::ObuPayloadOutOfRange {
+            offset: ByteOffset::new(header_start as u64),
+            size,
+            remaining,
+        });
+    }
+
+    let header = read_obu_header(input, ByteOffset::new(header_start as u64))?;
+    let header_len = usize::from(header.header_size_bytes);
+    if header_len > size_usize {
+        return Err(Error::InvalidObuHeader {
+            offset: ByteOffset::new(header_start as u64),
+            message: "OBU header is larger than the declared OBU size".to_owned(),
+        });
+    }
+
+    let payload_start = header_start.saturating_add(header_len);
+    let payload_end = header_start.saturating_add(size_usize);
+    let Some(payload) = input.get(payload_start..payload_end) else {
+        return Err(Error::ObuPayloadOutOfRange {
+            offset: ByteOffset::new(header_start as u64),
+            size,
+            remaining,
+        });
+    };
+
+    let envelope = ObuEnvelope {
+        offset: ByteOffset::new(header_start as u64),
+        size,
+        header,
+        payload,
+    };
+    Ok((envelope, header_start.saturating_add(size_usize)))
 }
 
 #[cfg(test)]
@@ -154,6 +196,22 @@ mod tests {
     #[test]
     fn empty_input_yields_no_obus() {
         assert!(parse_annex_b_obus(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn partial_parse_keeps_prefix_and_reports_error() {
+        // OBU #0 parses (TemporalDelimiter with extension); OBU #1 is truncated
+        // (declares 5 bytes but only 1 is present).
+        let stream = [0x02, 0x88, 0x05, 0x05, 0x08];
+        let partial = parse_annex_b_obus_partial(&stream);
+        assert_eq!(partial.obus.len(), 1);
+        assert_eq!(partial.obus[0].header.obu_type, ObuType::TemporalDelimiter);
+        assert!(matches!(
+            partial.error,
+            Some(Error::ObuPayloadOutOfRange { .. })
+        ));
+        // The strict wrapper still surfaces the error.
+        assert!(parse_annex_b_obus(&stream).is_err());
     }
 }
 

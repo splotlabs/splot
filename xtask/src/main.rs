@@ -5,6 +5,7 @@
 //!
 //! `xtask` is standalone automation: it depends on no `splot-*` crate.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -171,6 +172,8 @@ fn has_spdx_header(path: &Path) -> Result<bool> {
 }
 
 fn check_dependency_direction(root: &Path) -> Result<()> {
+    let root_manifest = read_manifest(&root.join("Cargo.toml"))?;
+    let workspace_deps = workspace_dep_names(&root_manifest);
     let mut violations = Vec::new();
 
     for member in workspace_members(root)? {
@@ -179,7 +182,7 @@ fn check_dependency_direction(root: &Path) -> Result<()> {
         let name = manifest_package_name(&manifest)
             .with_context(|| format!("{} has no [package].name", manifest_path.display()))?;
         let permitted = allowed_internal_deps(&name).unwrap_or(&[]);
-        for dependency in internal_deps(&manifest) {
+        for dependency in internal_deps(&manifest, &workspace_deps) {
             if !permitted.contains(&dependency.as_str()) {
                 violations.push(format!(
                     "{name} must not depend on internal crate {dependency}"
@@ -261,25 +264,53 @@ fn manifest_package_name(manifest: &toml::Table) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn internal_deps(manifest: &toml::Table) -> Vec<String> {
+/// Maps each `[workspace.dependencies]` alias to the real crate name it resolves
+/// to (honoring a `package = "..."` rename), for resolving `x.workspace = true`.
+fn workspace_dep_names(root_manifest: &toml::Table) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let deps = root_manifest
+        .get("workspace")
+        .and_then(|workspace| workspace.get("dependencies"))
+        .and_then(toml::Value::as_table);
+    if let Some(deps) = deps {
+        for (alias, value) in deps {
+            let name = value
+                .as_table()
+                .and_then(|table| table.get("package"))
+                .and_then(toml::Value::as_str)
+                .map_or_else(|| alias.clone(), str::to_owned);
+            map.insert(alias.clone(), name);
+        }
+    }
+    map
+}
+
+fn internal_deps(manifest: &toml::Table, workspace_deps: &HashMap<String, String>) -> Vec<String> {
     let mut deps = Vec::new();
-    collect_internal_deps(manifest, &mut deps);
+    collect_internal_deps(manifest, workspace_deps, &mut deps);
     // Also scan platform-specific `[target.'cfg(...)'.dependencies]` tables.
     if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
         for target in targets.values() {
             if let Some(table) = target.as_table() {
-                collect_internal_deps(table, &mut deps);
+                collect_internal_deps(table, workspace_deps, &mut deps);
             }
         }
     }
+    // Report each internal dependency once even if it appears in several tables.
+    deps.sort_unstable();
+    deps.dedup();
     deps
 }
 
-fn collect_internal_deps(parent: &toml::Table, deps: &mut Vec<String>) {
+fn collect_internal_deps(
+    parent: &toml::Table,
+    workspace_deps: &HashMap<String, String>,
+    deps: &mut Vec<String>,
+) {
     for table_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
         if let Some(table) = parent.get(table_name).and_then(toml::Value::as_table) {
             for (key, value) in table {
-                let name = resolved_dep_name(key, value);
+                let name = resolved_dep_name(key, value, workspace_deps);
                 if is_internal_crate(&name) {
                     deps.push(name);
                 }
@@ -288,13 +319,26 @@ fn collect_internal_deps(parent: &toml::Table, deps: &mut Vec<String>) {
     }
 }
 
-/// Resolves a dependency's real crate name, honoring a `package = "..."` rename.
-fn resolved_dep_name(key: &str, value: &toml::Value) -> String {
-    value
-        .as_table()
-        .and_then(|table| table.get("package"))
-        .and_then(toml::Value::as_str)
-        .map_or_else(|| key.to_owned(), str::to_owned)
+/// Resolves a dependency's real crate name: a local `package = "..."` rename, then
+/// a workspace-inherited alias (`x.workspace = true`, resolved via the root
+/// `[workspace.dependencies]`), else the dependency key itself.
+fn resolved_dep_name(
+    key: &str,
+    value: &toml::Value,
+    workspace_deps: &HashMap<String, String>,
+) -> String {
+    let Some(table) = value.as_table() else {
+        return key.to_owned();
+    };
+    if let Some(package) = table.get("package").and_then(toml::Value::as_str) {
+        return package.to_owned();
+    }
+    if table.get("workspace").and_then(toml::Value::as_bool) == Some(true)
+        && let Some(real) = workspace_deps.get(key)
+    {
+        return real.clone();
+    }
+    key.to_owned()
 }
 
 fn gen_tables_stub() {

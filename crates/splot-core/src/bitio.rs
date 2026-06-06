@@ -69,11 +69,18 @@ impl<'a> BitReader<'a> {
         Ok(bit)
     }
 
-    /// Reads `n` bits (MSB-first) into a `u32`. `n` must be `<= 32`.
+    /// Reads `n` bits (MSB-first) into a `u32`.
     ///
     /// # Errors
-    /// Returns [`Error::UnexpectedEof`] if fewer than `n` bits remain.
+    /// Returns [`Error::BitWidthTooLarge`] if `n > 32`, or [`Error::UnexpectedEof`]
+    /// if fewer than `n` bits remain.
     pub fn read_bits(&mut self, n: u32) -> Result<u32> {
+        if n > 32 {
+            return Err(Error::BitWidthTooLarge {
+                requested: n,
+                max: 32,
+            });
+        }
         let mut value = 0u32;
         for _ in 0..n {
             value = (value << 1) | u32::from(self.read_bit()?);
@@ -88,7 +95,10 @@ impl<'a> BitReader<'a> {
     /// if fewer than `n` bits remain.
     pub fn read_bits_u8(&mut self, n: u32) -> Result<u8> {
         if n > 8 {
-            return Err(Error::BitWidthTooLarge { requested: n });
+            return Err(Error::BitWidthTooLarge {
+                requested: n,
+                max: 8,
+            });
         }
         // `n <= 8` guarantees the value fits in a `u8` without truncation.
         Ok(self.read_bits(n)? as u8)
@@ -172,11 +182,28 @@ mod tests {
     }
 
     #[test]
+    fn read_bits_rejects_widths_over_32() {
+        let mut reader = BitReader::new(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF], ByteOffset::new(0));
+        assert!(matches!(
+            reader.read_bits(33),
+            Err(Error::BitWidthTooLarge {
+                requested: 33,
+                max: 32
+            })
+        ));
+        // The guard rejects before consuming any bits.
+        assert_eq!(reader.byte_offset(), ByteOffset::new(0));
+    }
+
+    #[test]
     fn read_bits_u8_rejects_wide_reads() {
         let mut reader = BitReader::new(&[0xFF, 0xFF], ByteOffset::new(0));
         assert!(matches!(
             reader.read_bits_u8(9),
-            Err(Error::BitWidthTooLarge { requested: 9 })
+            Err(Error::BitWidthTooLarge {
+                requested: 9,
+                max: 8
+            })
         ));
     }
 }
