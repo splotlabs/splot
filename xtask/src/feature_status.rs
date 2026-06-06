@@ -50,6 +50,26 @@ const KINDS: &[&str] = &[
 ];
 /// Allowed `risk` values.
 const RISKS: &[&str] = &["low", "medium", "high", "unknown"];
+/// Allowed `crate` values (workspace members plus the `docs` pseudo-crate).
+const CRATES: &[&str] = &[
+    "splot-core",
+    "splot-validate",
+    "splot-encode",
+    "splot-cli",
+    "xtask",
+    "fuzz",
+    "docs",
+];
+/// Allowed `owner` values.
+const OWNERS: &[&str] = &[
+    "core",
+    "validator",
+    "encoder",
+    "conformance",
+    "cli",
+    "automation",
+    "docs",
+];
 /// Allowed status values for every stage.
 const STATUSES: &[&str] = &[
     "todo",
@@ -776,6 +796,14 @@ impl Checker {
                 self.problems
                     .push(format!("{}: unknown risk `{}`", f.id, f.risk));
             }
+            if !CRATES.contains(&f.krate.as_str()) {
+                self.problems
+                    .push(format!("{}: unknown crate `{}`", f.id, f.krate));
+            }
+            if !OWNERS.contains(&f.owner.as_str()) {
+                self.problems
+                    .push(format!("{}: unknown owner `{}`", f.id, f.owner));
+            }
             for stage in STAGE_NAMES {
                 match f.status.get(stage) {
                     Some(value) if STATUSES.contains(&value) => {}
@@ -1185,6 +1213,20 @@ diagnostics = []
         let bad = SAMPLE.replace(r#"category = "normative""#, r#"category = "made-up""#);
         let problems = intrinsic_problems(&bad);
         assert!(problems.iter().any(|p| p.contains("unknown category")));
+    }
+
+    #[test]
+    fn invalid_crate_is_rejected() {
+        let bad = SAMPLE.replace(r#"crate = "splot-core""#, r#"crate = "splot-validte""#);
+        let problems = intrinsic_problems(&bad);
+        assert!(problems.iter().any(|p| p.contains("unknown crate")));
+    }
+
+    #[test]
+    fn invalid_owner_is_rejected() {
+        let bad = SAMPLE.replace(r#"owner = "core""#, r#"owner = "codec""#);
+        let problems = intrinsic_problems(&bad);
+        assert!(problems.iter().any(|p| p.contains("unknown owner")));
     }
 
     #[test]

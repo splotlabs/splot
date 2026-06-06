@@ -143,7 +143,7 @@ diagnostics = ["obu-header/global-xlayer-required"]  # diagnostic rule id
 3. Feature IDs are unique.
 4. Feature IDs match the ID regex (§6).
 5. Status values are from the allowed set.
-6. `category` / `kind` / `risk` values are allowed.
+6. `category` / `kind` / `risk` / `crate` / `owner` values are allowed.
 7. The `module` path exists whenever any implementation stage is `partial`,
    `done`, or `experimental`.
 8. A code stage marked `done` has proof (§5.3) — unless it is `not-applicable`.
