@@ -22,11 +22,11 @@ Arbitrary input SHALL never panic the parsers. This is covered on stable by the
 
 ### Requirement: AVM as oracle
 
-*Planned* — tracked by `openspec/changes/avm-differential-harness`; not yet
-implemented (`CONF-AVM-DIFF-HARNESS` is proposed). When implemented, differential
-testing SHALL use AVM as the oracle: first `avm encode` → `splot validate`, and
-later `splot encode` → `avm decode`. Proof is recorded in the relevant matrix row's
-`[feature.proof]`.
+Differential testing SHALL use AVM as the oracle: first `avm encode` →
+`splot validate`, and later `splot encode` → `avm decode`. Proof is recorded in the
+relevant matrix row's `[feature.proof]`. *Status: planned — tracked by
+`openspec/changes/avm-differential-harness`; not yet implemented
+(`CONF-AVM-DIFF-HARNESS` is proposed).*
 
 #### Scenario: AVM-produced stream
 
