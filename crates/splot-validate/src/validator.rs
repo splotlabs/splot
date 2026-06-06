@@ -230,22 +230,19 @@ mod tests {
 
     #[test]
     fn reserved_obu_with_nonzero_payload_is_conformant() {
-        // size=2: reserved header 0x00 + payload 0x80 (trailing_one_bit = 1).
-        let report = Validator::new(false).validate_bytes(&[0x02, 0x00, 0x80]);
+        // size=2: reserved header 0x00 + non-zero payload. Reserved OBUs have no
+        // defined payload syntax, so this is retained and ignored.
+        let report = Validator::new(false).validate_bytes(&[0x02, 0x00, 0x40]);
         assert!(report.is_conformant());
     }
 
     #[test]
-    fn reserved_obu_with_nonzero_bad_trailing_zero_bit_is_flagged() {
-        // size=2: reserved header 0x00 + payload 0xC0. The first trailing bit is
-        // valid, but the next padding bit is 1.
+    fn reserved_obu_with_nonzero_trailing_bits_shape_is_conformant() {
+        // size=2: reserved header 0x00 + non-zero payload that is not a valid
+        // trailing_bits pattern. Reserved OBUs are ignored except for the
+        // all-zero-payload guard.
         let report = Validator::new(false).validate_bytes(&[0x02, 0x00, 0xC0]);
-        assert!(
-            report
-                .errors()
-                .any(|d| d.rule_id == "trailing-bits/zero-bit-not-zero"),
-            "report was: {report}"
-        );
+        assert!(report.is_conformant(), "report was: {report}");
     }
 
     #[test]

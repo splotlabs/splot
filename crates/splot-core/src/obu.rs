@@ -45,20 +45,17 @@ pub enum PayloadStatus<'a, T> {
 /// Parsed OBU payload syntax for OBU types currently modeled by `splot-core`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum ParsedObu<'a> {
+pub enum ParsedObu {
     /// `temporal_delimiter_obu()` (AV2 v1.0.0 § 5.5).
     TemporalDelimiter,
-    /// Reserved OBU payload bytes (AV2 v1.0.0 § 5.3).
-    Reserved(ReservedObu<'a>),
 }
 
-impl ParsedObu<'_> {
+impl ParsedObu {
     /// Returns the implementation-matrix feature ID for this parsed payload syntax.
     #[must_use]
     pub const fn feature_id(&self) -> &'static str {
         match self {
             Self::TemporalDelimiter => "AV2-5.5-TEMPORAL-DELIMITER",
-            Self::Reserved(_) => "AV2-5.3-RESERVED-OBU",
         }
     }
 
@@ -67,16 +64,8 @@ impl ParsedObu<'_> {
     pub const fn syntax_name(&self) -> &'static str {
         match self {
             Self::TemporalDelimiter => "temporal_delimiter_obu",
-            Self::Reserved(_) => "reserved_obu",
         }
     }
-}
-
-/// Parsed reserved OBU payload (AV2 v1.0.0 § 5.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReservedObu<'a> {
-    /// Raw payload bytes, retained because reserved OBUs are ignored by decoders.
-    pub payload: &'a [u8],
 }
 
 /// A parsed AV2 OBU header (AV2 v1.0.0 § 5.2.2).
@@ -105,19 +94,14 @@ pub struct ObuHeader {
 ///
 /// # Errors
 /// Returns [`Error::InvalidTrailingBits`] or [`Error::UnexpectedEof`] if a
-/// currently implemented empty-syntax payload has malformed trailing bits.
+/// currently implemented temporal-delimiter payload has malformed trailing bits.
 pub fn dispatch_obu_payload<'a>(
     header: ObuHeader,
     payload: &'a [u8],
     payload_offset: ByteOffset,
-) -> Result<PayloadStatus<'a, ParsedObu<'a>>> {
+) -> Result<PayloadStatus<'a, ParsedObu>> {
     match header.obu_type {
-        ObuType::Reserved0 | ObuType::Reserved(_) => {
-            parse_empty_payload_syntax(payload, payload_offset)?;
-            Ok(PayloadStatus::Parsed(ParsedObu::Reserved(ReservedObu {
-                payload,
-            })))
-        }
+        ObuType::Reserved0 | ObuType::Reserved(_) => Ok(PayloadStatus::Opaque(payload)),
         ObuType::TemporalDelimiter => {
             parse_empty_payload_syntax(payload, payload_offset)?;
             Ok(PayloadStatus::Parsed(ParsedObu::TemporalDelimiter))
@@ -405,14 +389,11 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_parses_reserved_payload() {
+    fn dispatch_keeps_reserved_payload_opaque() {
         let header = read_obu_header(&[0x00], ByteOffset::new(0)).unwrap();
-        let payload = [0x80];
+        let payload = [0x40];
         let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
-        assert_eq!(
-            status,
-            PayloadStatus::Parsed(ParsedObu::Reserved(ReservedObu { payload: &payload }))
-        );
+        assert_eq!(status, PayloadStatus::Opaque(&payload));
     }
 
     #[test]
@@ -428,15 +409,11 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_rejects_bad_empty_syntax_payload_for_reserved_obu() {
+    fn dispatch_keeps_all_zero_reserved_payload_opaque() {
         let header = read_obu_header(&[0x00], ByteOffset::new(0)).unwrap();
-        assert!(matches!(
-            dispatch_obu_payload(header, &[0x00], ByteOffset::new(1)),
-            Err(Error::InvalidTrailingBits {
-                kind: TrailingBitsErrorKind::MissingOneBit,
-                ..
-            })
-        ));
+        let payload = [0x00];
+        let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
+        assert_eq!(status, PayloadStatus::Opaque(&payload));
     }
 
     #[test]

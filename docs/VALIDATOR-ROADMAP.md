@@ -98,11 +98,10 @@ pub enum PayloadStatus<'a, T> {
 
 pub enum ParsedObu<'a> {
     TemporalDelimiter,
-    Reserved(ReservedObu<'a>),
 }
 ```
 
-Keep `ParsedObu` `#[non_exhaustive]` and only add concrete variants when the parser exists. Until a parser exists, dispatch returns `PayloadStatus::Unimplemented` with the owning Feature ID plus the bounded raw payload bytes. Strict validation should fail on unparsed normative payloads once the feature is marked as required.
+Keep `ParsedObu` `#[non_exhaustive]` and only add concrete variants when the parser exists. Reserved OBU payload bytes remain `PayloadStatus::Opaque` because AV2 §5.3 defines no syntax for them. Until a parser exists, dispatch returns `PayloadStatus::Unimplemented` with the owning Feature ID plus the bounded raw payload bytes. Strict validation should fail on unparsed normative payloads once the feature is marked as required.
 
 Acceptance:
 

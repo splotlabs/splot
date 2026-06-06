@@ -51,7 +51,7 @@ impl<'a> ObuEnvelope<'a> {
     /// # Errors
     /// Returns typed parser errors for payload syntax that is implemented but
     /// malformed.
-    pub fn payload_status(&self) -> Result<PayloadStatus<'a, ParsedObu<'a>>> {
+    pub fn payload_status(&self) -> Result<PayloadStatus<'a, ParsedObu>> {
         dispatch_obu_payload(self.header, self.payload, self.payload_offset())
     }
 }

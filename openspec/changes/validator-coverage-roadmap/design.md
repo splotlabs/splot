@@ -70,7 +70,6 @@ For the public API, prefer a typed enum:
 pub enum ParsedObu<'a> {
     SequenceHeader(SequenceHeader),
     TemporalDelimiter,
-    Reserved(ReservedObu<'a>),
     Padding(PaddingObu<'a>),
     Unimplemented { feature: &'static str, payload: &'a [u8] },
 }

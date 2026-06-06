@@ -46,7 +46,7 @@ Use this as the human-readable roadmap. The canonical status still lives in `doc
 | §5.2.2 `obu_header()` | done | Keep as foundation; add activated sequence header checks once sequence state exists. |
 | §5.2.3 `trailing_bits(nbBits)` | todo/partial | Parse and validate `trailing_one_bit == 1`, zero padding, and no payload overread. |
 | §5.2.4 `byte_alignment()` | todo/partial | Validate zero alignment bits where syntax requires them. |
-| §5.3 `reserved_obu()` | partial/done | Keep all-zero-payload rule; add payload/trailing-bit handling through the common OBU payload path. |
+| §5.3 `reserved_obu()` | partial/done | Keep all-zero-payload rule; do not interpret non-zero reserved payload bytes beyond retaining them for inspection. |
 | §5.4 `sequence_header_obu()` | todo | First payload parser. Split into child rows for §5.4.1-§5.4.13. |
 | §5.5 temporal delimiter | todo | Empty/no-payload syntax plus ordering/state effect: `FirstPictureInTU = 1`. |
 | §5.6 MSDO | todo | Required for multistream boundaries, xlayer map validation, and profile checks. |

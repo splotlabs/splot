@@ -238,7 +238,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Dispatch skeleton exists after parsing obu_header(): temporal delimiter and reserved empty-syntax payloads are parsed through trailing_bits(), while other recognized OBU payloads return Unimplemented with the owning Feature ID. inspect --json reports the payload status."
+notes = "Dispatch skeleton exists after parsing obu_header(): temporal delimiter payloads are parsed through trailing_bits(), reserved payload bytes stay opaque per AV2 5.3, and other recognized OBU payloads return Unimplemented with the owning Feature ID. inspect --json reports the payload status."
 
 [feature.status]
 mapped = "done"
@@ -304,7 +304,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Implemented parse_trailing_bits(nbBits), enforcing nbBits > 0, trailing_one_bit == 1, and zero padding. Validator diagnostics are wired for zero-syntax OBUs (reserved and temporal delimiter); full payload-boundary coverage waits for OBU dispatch."
+notes = "Implemented parse_trailing_bits(nbBits), enforcing nbBits > 0, trailing_one_bit == 1, and zero padding. Validator diagnostics are wired for temporal delimiter payloads; full payload-boundary coverage waits for OBU dispatch."
 
 [feature.status]
 mapped = "done"
@@ -370,7 +370,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "validator"
 risk = "medium"
-notes = "Reserved OBUs are ignored by decoders (informational diagnostic). A reserved OBU whose payload is entirely zero is flagged as an error: AV2 5.3 / 6.2.3 require a non-zero trailing bit."
+notes = "Reserved OBUs are ignored by decoders (informational diagnostic). A reserved OBU whose payload is entirely zero is flagged as an error: AV2 5.3 requires at least one non-zero payload byte when payload data is present."
 
 [feature.status]
 mapped = "done"

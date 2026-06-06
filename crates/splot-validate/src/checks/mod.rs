@@ -178,10 +178,7 @@ impl Check for TrailingBitsForEmptySyntaxObus {
 }
 
 fn has_empty_payload_syntax(obu_type: ObuType) -> bool {
-    matches!(
-        obu_type,
-        ObuType::Reserved0 | ObuType::Reserved(_) | ObuType::TemporalDelimiter
-    )
+    matches!(obu_type, ObuType::TemporalDelimiter)
 }
 
 /// Parses the locally decidable general sequence-header syntax and maps § 6.4.1

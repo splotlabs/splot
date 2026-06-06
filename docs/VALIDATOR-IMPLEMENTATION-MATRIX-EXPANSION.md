@@ -40,10 +40,10 @@ type.
 ## 3. Phase 2 row now partially implemented
 
 The canonical matrix now records Phase 2 proof for `AV2-5.2.1-OBU-DISPATCH`.
-The row remains `partial`: dispatch parses temporal delimiter and reserved
-empty-syntax payloads through `trailing_bits()`, while other recognized OBU
-payloads report `PayloadStatus::Unimplemented` with the owning Feature ID until
-their child parsers land.
+The row remains `partial`: dispatch parses temporal delimiter payloads through
+`trailing_bits()`, keeps reserved payload bytes opaque per AV2 §5.3, and reports
+other recognized OBU payloads as `PayloadStatus::Unimplemented` with the owning
+Feature ID until their child parsers land.
 
 ## 4. Sequence header split rows
 
