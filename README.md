@@ -99,6 +99,9 @@ It is free for noncommercial use. **Commercial use of any component** — valida
 inspector, decoder, encoder, CLI, docs, tests — requires a separate commercial
 license: <bartekplus@gmail.com>.
 
+OpenSpec-generated assistant integration files are MIT-licensed and isolated to
+agent/tooling directories; see [THIRD-PARTY-NOTICES.md](./docs/references/THIRD-PARTY-NOTICES.md).
+
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) and the canonical agent/contributor guide

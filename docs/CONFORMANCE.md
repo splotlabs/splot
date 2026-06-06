@@ -37,8 +37,9 @@ in normal CI.
 ### Licensing caution
 
 Vendor only **redistributable / public** vectors. Do **not** commit samples whose
-license is unclear. The whole repository is PolyForm Noncommercial 1.0.0; do not mix
-licenses (see [AGENTS.md](../AGENTS.md) § 9).
+license is unclear. Project code, docs, tests, and fixtures are PolyForm
+Noncommercial 1.0.0; only the documented OpenSpec-generated assistant integration
+exception may use MIT (see [AGENTS.md](../AGENTS.md) § 9).
 
 ## No-panic fuzzing
 

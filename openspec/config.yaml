@@ -13,7 +13,10 @@ context: |
   invent syntax, constants, tables, or semantics. Do not copy AV1 syntax, source
   code, constants, entropy CDFs, comments, or prose from reference projects.
 
-  The repository is PolyForm Noncommercial 1.0.0. Do not introduce copied
+  Project source code, docs, tests, fixtures, and automation are PolyForm
+  Noncommercial 1.0.0. The only approved mixed-license exception is the
+  OpenSpec-generated assistant integration material under .claude, .codex, and
+  .github OpenSpec prompt/skill paths. Do not introduce other copied
   third-party material, mixed-license files, or new dependencies without an
   explicit maintainer decision.
 
