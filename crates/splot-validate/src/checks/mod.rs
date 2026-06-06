@@ -12,7 +12,10 @@
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
-use splot_core::error::{ByteAlignmentErrorKind, Error, TrailingBitsErrorKind};
+use splot_core::error::{
+    ByteAlignmentErrorKind, Error, SequenceHeaderErrorKind, TrailingBitsErrorKind,
+};
+use splot_core::headers::sequence::parse_sequence_header_general;
 use splot_core::obu::parse_trailing_bits;
 use splot_core::types::ObuType;
 
@@ -35,6 +38,7 @@ pub fn default_checks() -> Vec<Box<dyn Check>> {
         Box::new(ReservedObuType),
         Box::new(ReservedObuAllZeroPayload),
         Box::new(TrailingBitsForEmptySyntaxObus),
+        Box::new(SequenceHeaderGeneralSyntax),
         Box::new(GlobalXLayerRequired),
         Box::new(GlobalXLayerRequiresBaseLayers),
         Box::new(GlobalXLayerAllowedTypes),
@@ -75,6 +79,47 @@ pub(crate) fn syntax_error_diagnostic(error: &Error) -> Option<Diagnostic> {
             Some(
                 Diagnostic::error(rule_id, kind.to_string())
                     .with_spec_section("6.2.4")
+                    .with_byte_offset(*offset)
+                    .with_bit_offset(*bit_offset),
+            )
+        }
+        Error::InvalidSequenceHeader {
+            offset,
+            bit_offset,
+            kind,
+        } => {
+            let rule_id = match kind {
+                SequenceHeaderErrorKind::SeqHeaderIdOutOfRange => {
+                    "sequence-header/seq-header-id-out-of-range"
+                }
+                SequenceHeaderErrorKind::ChromaFormatOutOfRange => {
+                    "sequence-header/chroma-format-out-of-range"
+                }
+                SequenceHeaderErrorKind::BitDepthOutOfRange => {
+                    "sequence-header/bit-depth-out-of-range"
+                }
+                SequenceHeaderErrorKind::SeqMaxMlayerCountOutOfRange => {
+                    "sequence-header/seq-max-mlayer-count-out-of-range"
+                }
+                SequenceHeaderErrorKind::CropLeftOutOfRange => {
+                    "sequence-header/crop-left-out-of-range"
+                }
+                SequenceHeaderErrorKind::CropRightOutOfRange => {
+                    "sequence-header/crop-right-out-of-range"
+                }
+                SequenceHeaderErrorKind::CropTopOutOfRange => {
+                    "sequence-header/crop-top-out-of-range"
+                }
+                SequenceHeaderErrorKind::CropBottomOutOfRange => {
+                    "sequence-header/crop-bottom-out-of-range"
+                }
+                SequenceHeaderErrorKind::TimingNumUnitsZero => {
+                    "sequence-header/timing-num-units-zero"
+                }
+            };
+            Some(
+                Diagnostic::error(rule_id, kind.to_string())
+                    .with_spec_section("6.4.1")
                     .with_byte_offset(*offset)
                     .with_bit_offset(*bit_offset),
             )
@@ -137,6 +182,73 @@ fn has_empty_payload_syntax(obu_type: ObuType) -> bool {
         obu_type,
         ObuType::Reserved0 | ObuType::Reserved(_) | ObuType::TemporalDelimiter
     )
+}
+
+/// Parses the locally decidable general sequence-header syntax and maps § 6.4.1
+/// violations into stable diagnostics.
+struct SequenceHeaderGeneralSyntax;
+
+impl Check for SequenceHeaderGeneralSyntax {
+    fn id(&self) -> &'static str {
+        // Registry identifier only; emitted diagnostics use syntax_error_diagnostic() rule ids.
+        "sequence-header/general-syntax"
+    }
+
+    fn spec_section(&self) -> Option<&'static str> {
+        Some("5.4.1")
+    }
+
+    fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.header.obu_type != ObuType::SequenceHeader {
+            return;
+        }
+
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        if let Err(error) = parse_sequence_header_general(&mut reader) {
+            let diagnostic = syntax_error_diagnostic(&error)
+                .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.4.1"));
+            report.push(diagnostic);
+        }
+    }
+}
+
+fn payload_parse_error_diagnostic(error: &Error, spec_section: &'static str) -> Diagnostic {
+    let mut diagnostic = Diagnostic::error("bitstream/parse-error", error.to_string())
+        .with_spec_section(spec_section);
+    if let Some(offset) = error_offset(error) {
+        diagnostic = diagnostic.with_byte_offset(offset);
+    }
+    if let Some(bit_offset) = error_bit_offset(error) {
+        diagnostic = diagnostic.with_bit_offset(bit_offset);
+    }
+    diagnostic
+}
+
+fn error_offset(error: &Error) -> Option<splot_core::span::ByteOffset> {
+    match error {
+        Error::UnexpectedEof { offset, .. }
+        | Error::InvalidLeb128 { offset, .. }
+        | Error::InvalidUvlc { offset, .. }
+        | Error::InvalidNs { offset, .. }
+        | Error::InvalidObuHeader { offset, .. }
+        | Error::InvalidTrailingBits { offset, .. }
+        | Error::InvalidByteAlignment { offset, .. }
+        | Error::InvalidSequenceHeader { offset, .. }
+        | Error::ObuSizeOutOfRange { offset, .. }
+        | Error::ObuPayloadOutOfRange { offset, .. } => Some(*offset),
+        _ => None,
+    }
+}
+
+fn error_bit_offset(error: &Error) -> Option<splot_core::span::BitOffset> {
+    match error {
+        Error::InvalidUvlc { bit_offset, .. }
+        | Error::InvalidNs { bit_offset, .. }
+        | Error::InvalidTrailingBits { bit_offset, .. }
+        | Error::InvalidByteAlignment { bit_offset, .. }
+        | Error::InvalidSequenceHeader { bit_offset, .. } => Some(*bit_offset),
+        _ => None,
+    }
 }
 
 /// Informational: reserved OBU types are ignored by conformant decoders (AV2 Table 6.1).
@@ -394,5 +506,27 @@ mod tests {
         assert_eq!(diagnostic.spec_section.as_deref(), Some("6.2.4"));
         assert_eq!(diagnostic.byte_offset, Some(ByteOffset::new(7)));
         assert_eq!(diagnostic.bit_offset, Some(BitOffset::from_bits(5)));
+    }
+
+    #[test]
+    fn syntax_error_diagnostic_maps_sequence_header_errors() {
+        let diagnostic = syntax_error_diagnostic(&Error::InvalidSequenceHeader {
+            offset: ByteOffset::new(11),
+            bit_offset: BitOffset::from_bits(2),
+            kind: SequenceHeaderErrorKind::ChromaFormatOutOfRange,
+        });
+        assert!(
+            diagnostic.is_some(),
+            "sequence-header error should map to a diagnostic"
+        );
+        let diagnostic =
+            diagnostic.unwrap_or_else(|| Diagnostic::error("sequence-header/test", "missing"));
+        assert_eq!(
+            diagnostic.rule_id,
+            "sequence-header/chroma-format-out-of-range"
+        );
+        assert_eq!(diagnostic.spec_section.as_deref(), Some("6.4.1"));
+        assert_eq!(diagnostic.byte_offset, Some(ByteOffset::new(11)));
+        assert_eq!(diagnostic.bit_offset, Some(BitOffset::from_bits(2)));
     }
 }

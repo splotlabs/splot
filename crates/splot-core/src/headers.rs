@@ -7,11 +7,9 @@
 //! implemented. Do not add fields that are not backed by the spec — leave a spec
 //! TODO that names the implementation-matrix feature id instead (see AGENTS.md).
 
-/// AV2 sequence header (`sequence_header_obu()`, AV2 v1.0.0 § 5.4). Not yet modeled.
-// TODO(spec: AV2-5.4-SEQUENCE-HEADER): model sequence_header_obu() fields (AV2 v1.0.0 § 5.4).
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct SequenceHeader {}
+pub mod sequence;
+
+pub use sequence::SequenceHeader;
 
 /// AV2 frame header (`frame_header()`). Not yet modeled.
 // TODO(spec: AV2-5.18-FRAME-HEADER): model frame header syntax (AV2 v1.0.0 § 5.18).

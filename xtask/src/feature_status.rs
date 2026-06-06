@@ -152,6 +152,7 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
     "bitstream/",
     "trailing-bits/",
     "byte-alignment/",
+    "sequence-header/",
 ];
 
 /// Output format for `feature-status`.

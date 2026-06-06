@@ -90,6 +90,7 @@ fn error_offset(error: &Error) -> Option<ByteOffset> {
         | Error::InvalidObuHeader { offset, .. }
         | Error::InvalidTrailingBits { offset, .. }
         | Error::InvalidByteAlignment { offset, .. }
+        | Error::InvalidSequenceHeader { offset, .. }
         | Error::ObuSizeOutOfRange { offset, .. }
         | Error::ObuPayloadOutOfRange { offset, .. } => Some(*offset),
         _ => None,
@@ -101,7 +102,8 @@ fn error_bit_offset(error: &Error) -> Option<BitOffset> {
         Error::InvalidUvlc { bit_offset, .. }
         | Error::InvalidNs { bit_offset, .. }
         | Error::InvalidTrailingBits { bit_offset, .. }
-        | Error::InvalidByteAlignment { bit_offset, .. } => Some(*bit_offset),
+        | Error::InvalidByteAlignment { bit_offset, .. }
+        | Error::InvalidSequenceHeader { bit_offset, .. } => Some(*bit_offset),
         _ => None,
     }
 }
@@ -109,6 +111,56 @@ fn error_bit_offset(error: &Error) -> Option<BitOffset> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct Bits {
+        bits: Vec<u8>,
+    }
+
+    impl Bits {
+        fn bit(&mut self, bit: u8) {
+            self.bits.push(bit & 1);
+        }
+
+        fn f(&mut self, value: u32, width: u32) {
+            for shift in (0..width).rev() {
+                self.bit(((value >> shift) & 1) as u8);
+            }
+        }
+
+        fn uvlc(&mut self, value: u32) {
+            let code_num = value + 1;
+            let leading_zeros = u32::BITS - 1 - code_num.leading_zeros();
+            for _ in 0..leading_zeros {
+                self.bit(0);
+            }
+            self.bit(1);
+            if leading_zeros > 0 {
+                self.f(code_num - (1 << leading_zeros), leading_zeros);
+            }
+        }
+
+        fn into_bytes(self) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            for chunk in self.bits.chunks(8) {
+                let mut byte = 0u8;
+                for (i, bit) in chunk.iter().enumerate() {
+                    byte |= *bit << (7 - i);
+                }
+                bytes.push(byte);
+            }
+            bytes
+        }
+    }
+
+    fn annex_b_obu(header: u8, payload: &[u8]) -> Vec<u8> {
+        let size = (payload.len() + 1) as u8;
+        let mut data = Vec::with_capacity(payload.len() + 2);
+        data.push(size);
+        data.push(header);
+        data.extend_from_slice(payload);
+        data
+    }
 
     #[test]
     fn conformant_temporal_delimiter() {
@@ -209,6 +261,36 @@ mod tests {
                 .errors()
                 .any(|d| d.rule_id == "trailing-bits/missing-one-bit"),
             "report was: {invalid}"
+        );
+    }
+
+    #[test]
+    fn sequence_header_payload_syntax_is_validated() {
+        let mut bits = Bits::default();
+        bits.uvlc(0); // seq_header_id
+        bits.f(0, 5); // seq_profile_idc
+        bits.bit(1); // single_picture_header_flag
+        bits.f(0, 5); // seq_level_idx
+        bits.uvlc(4); // invalid chroma_format_idc
+
+        let data = annex_b_obu(0x04, &bits.into_bytes());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "sequence-header/chroma-format-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn sequence_header_payload_eof_is_reported() {
+        let report = Validator::new(false).validate_bytes(&[0x01, 0x04]);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "bitstream/parse-error"),
+            "report was: {report}"
         );
     }
 

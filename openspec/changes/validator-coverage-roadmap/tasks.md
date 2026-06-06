@@ -48,14 +48,14 @@
 
 ## Phase 3 implementation: sequence header
 
-- [ ] Add sequence-header strong types.
-- [ ] Add `crates/splot-core/src/headers/sequence.rs` or equivalent.
-- [ ] Parse §5.4.1 general sequence header syntax.
-- [ ] Add child parser stubs for §5.4.2-§5.4.13 with `TODO(spec: FEATURE-ID)` markers.
-- [ ] Validate local §6.4.1 conformance rules that are decidable from the parsed header.
-- [ ] Add positive/negative/EOF tests.
-- [ ] Add small sequence-header fixtures or test builders.
-- [ ] Update matrix proof.
+- [x] Add sequence-header strong types.
+- [x] Add `crates/splot-core/src/headers/sequence.rs` or equivalent.
+- [x] Parse §5.4.1 general sequence header syntax.
+- [x] Add child parser stubs for §5.4.2-§5.4.13 with `TODO(spec: FEATURE-ID)` markers.
+- [x] Validate local §6.4.1 conformance rules that are decidable from the parsed header.
+- [x] Add positive/negative/EOF tests.
+- [x] Add small sequence-header fixtures or test builders.
+- [x] Update matrix proof.
 
 ## Phase 4 implementation: stateful validator
 

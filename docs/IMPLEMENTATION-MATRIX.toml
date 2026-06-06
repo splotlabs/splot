@@ -399,29 +399,29 @@ spec_sections = ["5.4", "6.4"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers.rs"
-openspec_change = "parse-sequence-header"
+openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Only an empty placeholder type exists today. Do not fabricate fields; implement only with direct spec mapping."
+notes = "Umbrella for sequence_header_obu(). General §5.4.1 fields are modeled; child config parsers remain explicit stubs until implemented."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "partial"
+parse = "partial"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "partial"
+tests = "partial"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-validate sequence_header"]
+fixtures = ["tests/fixtures/conformant.av2"]
+diagnostics = ["sequence-header/chroma-format-out-of-range"]
 
 [[feature]]
 id = "AV2-5.4.1-SEQUENCE-HEADER-GENERAL"
@@ -432,29 +432,29 @@ spec_sections = ["5.4.1", "6.4.1"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/sequence.rs"
-openspec_change = "parse-sequence-header"
+openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Parse sequence_header_obu() general fields before child config parsers."
+notes = "Parses sequence_header_obu() general fields through dependency maps and stops before sequence_partition_config(). Child config parsers remain explicit stubs."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "done"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-validate/src/checks/mod.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-validate sequence_header"]
+fixtures = ["tests/fixtures/conformant.av2"]
+diagnostics = ["sequence-header/seq-header-id-out-of-range", "sequence-header/chroma-format-out-of-range", "sequence-header/bit-depth-out-of-range", "sequence-header/seq-max-mlayer-count-out-of-range", "sequence-header/crop-left-out-of-range", "sequence-header/timing-num-units-zero"]
 
 [[feature]]
 id = "AV2-5.4.2-SEQUENCE-TILE-CONFIG"
@@ -860,30 +860,30 @@ kind = "validator-check"
 spec_sections = ["6.4"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
-module = "crates/splot-validate/src/checks/sequence.rs"
-openspec_change = "parse-sequence-header"
+module = "crates/splot-validate/src/checks/mod.rs"
+openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Validator checks for locally decidable sequence-header semantics. Split into child rows if the file becomes too broad."
+notes = "Maps locally decidable §6.4.1 sequence-header violations from the §5.4.1 parser. Stateful sequence semantics remain future work."
 
 [feature.status]
 mapped = "done"
-types = "todo"
+types = "done"
 parse = "not-applicable"
-validate = "todo"
+validate = "partial"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
+decode_check = "partial"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
+tests = ["crates/splot-validate/src/checks/mod.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-validate sequence_header"]
+fixtures = ["tests/fixtures/conformant.av2"]
+diagnostics = ["sequence-header/seq-header-id-out-of-range", "sequence-header/chroma-format-out-of-range", "sequence-header/bit-depth-out-of-range", "sequence-header/seq-max-mlayer-count-out-of-range", "sequence-header/crop-left-out-of-range", "sequence-header/crop-right-out-of-range", "sequence-header/crop-top-out-of-range", "sequence-header/crop-bottom-out-of-range", "sequence-header/timing-num-units-zero"]
 
 [[feature]]
 id = "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS"
