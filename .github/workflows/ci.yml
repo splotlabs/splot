@@ -46,8 +46,8 @@ jobs:
       - run: cargo xtask check-license-headers
       - run: cargo xtask check-dependency-direction
 
-  # Optional, non-blocking supply-chain audit. It installs a network-heavy tool, so
-  # it must not gate the main pipeline.
+  # Optional, non-blocking supply-chain audit. Advisory results can change without
+  # a repo diff, so it must not gate the main pipeline.
   cargo-deny:
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -55,6 +55,8 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
-      - run: cargo deny check
+
+      - uses: EmbarkStudios/cargo-deny-action@8a45e1c7c9a95dfae3276e89a553705e40ae45a2 # v2.0.20
+        with:
+          command: check
+          arguments: ""
