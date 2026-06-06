@@ -98,7 +98,7 @@ jobs:
 
             1. **AV2 spec honesty** — every syntax element cites its AV2
                spec section (doc or code comment) or is marked
-               `// TODO(spec: <FEATURE-ID>): <topic>` (a matrix id). No invented syntax, constants, or
+               `// TODO(spec): <topic>`. No invented syntax, constants, or
                table contents. No AV1 leakage: the OBU header is AV2 § 5.2.2,
                and there is no AV1 OBU type table, forbidden bit, or
                size-field assumption. AVM
