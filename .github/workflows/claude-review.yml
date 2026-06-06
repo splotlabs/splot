@@ -1,0 +1,169 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+name: claude-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+# Each push (synchronize) starts a fresh review that can run up to 20m, so
+# cancel any in-flight review of an older commit on the same PR — otherwise
+# a slow stale run can finish last and post outdated comments / verdict.
+# For pull_request events github.ref is the per-PR merge ref, so this keys
+# the group by PR.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    name: claude-review
+    # Skip when the token would be unavailable or the review would be noise:
+    # - forks (cross-repo PRs have no access to repo/org secrets);
+    # - Dependabot PRs (same-repo branches, but secrets are withheld on
+    #   `pull_request`, so the action would fail with an empty token and
+    #   leave every dep-update PR red);
+    # - draft PRs (the author flips out of draft when ready for review).
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.draft == false
+      && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    # A multi-dimensional read (spec fidelity, parser robustness, no-panic
+    # discipline, diagnostics, boundaries) over a full PR can run long;
+    # 20m is a generous cap so the review is never cut off mid-pass.
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # The action does its own `git fetch origin --depth=N <head-ref>`
+          # to pull the PR branch on top of this checkout, so we need git
+          # credentials persisted in the workspace's `.git/config`.
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Claude PR review
+        uses: anthropics/claude-code-action@36a69b6a90b850823f86de06fdfd56264772ad98 # v1.0.134
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
+          # Only non-user-controlled context (repo slug + numeric PR id)
+          # is interpolated into the prompt — no injection surface.
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            You are a senior reviewer for `splot`, a validator-first Rust
+            toolkit for the AV2 video codec. The workspace crates are
+            splot-core (AV2 bitstream model + parsers), splot-validate
+            (parser-driven conformance diagnostics), splot-encode (encoder
+            stub), and splot-cli (thin binary), plus standalone `xtask`
+            automation and a cargo-fuzz target. It is a solo-developer,
+            source-available project that optimizes for safety,
+            maintainability, and clear boundaries. The canonical rules live
+            in AGENTS.md and the docs it links: docs/ARCHITECTURE.md,
+            docs/CODE_REVIEW.md, docs/SPEC-MAPPING.md, and docs/TESTING.md.
+            Before flagging a violation, read the relevant doc. Review the
+            change in context, not just the diff hunks: read the changed
+            files in full and the code they call into or depend on, then
+            trace data and control flow before forming a conclusion.
+
+            CI (.github/workflows/ci.yml) already runs — and gates on —
+            `cargo fmt --check`,
+            `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
+            build, the full test suite, `cargo xtask check-license-headers`,
+            and `cargo xtask check-dependency-direction`. Do not re-report
+            anything those gating jobs would already fail on. (The cargo-deny
+            license/advisory job is advisory-only — it runs with
+            `continue-on-error: true` and never blocks merge — so do NOT
+            treat licensing, security advisories, or new dependencies as
+            covered; review them yourself per dimension 9 below.) Spend your
+            effort on what only a careful human-style read catches: edge
+            cases, spec fidelity, intent, and reasoning across files.
+
+            Review every dimension below. Within each, verify against the
+            actual code — do not assume:
+
+            1. **AV2 spec honesty** — every syntax element cites its AV2
+               spec section (doc or code comment) or is marked
+               `// TODO(spec): <topic>`. No invented syntax, constants, or
+               table contents. No AV1 leakage: the OBU header is AV2 § 5.2.2,
+               and there is no AV1 OBU type table, forbidden bit, or
+               size-field assumption. AVM
+               (https://github.com/AOMediaCodec/avm) is the
+               differential-testing oracle; flag claims that contradict it.
+            2. **Parser correctness & robustness** — LEB128, OBU header, and
+               Annex B parsing: off-by-one, truncation/EOF, integer
+               overflow, and attacker-controlled length fields. Parsers take
+               untrusted bitstreams as their trust boundary; they must return
+               typed errors — never panic, hang, or allocate unboundedly — on
+               malformed or truncated input.
+            3. **No-panic & error discipline** — no `unwrap`, `expect`,
+               `panic!`, `todo!`, or `unimplemented!` reachable in library
+               code (allowed only inside `#[cfg(test)]` modules carrying the
+               clippy allow attribute). Libraries use typed `thiserror`
+               errors; `anyhow` is permitted only in splot-cli and xtask.
+               Stubs return `Error::Unimplemented { feature }` or a
+               structured `Diagnostic`, never a panic.
+            4. **Diagnostics quality** — every validator finding is
+               structured data: a stable `rule_id`, a `severity`, an optional
+               `spec_section`, an optional byte/bit offset, and a clear
+               human-readable `message`. The validator must never "just log".
+            5. **Architecture & boundaries** — the one-way crate dependency
+               rule holds: splot-core depends on no other splot-* crate;
+               nothing depends on splot-cli; nothing but splot-cli depends on
+               splot-encode; xtask is standalone. Library-first: only
+               arg-parsing, IO, and logging belong in splot-cli — all
+               codec/validation logic lives in the libraries. Public
+               boundaries use newtypes/enums (ObuType, TemporalLayerId,
+               ByteOffset, …), not bare integers.
+            6. **Safety** — `unsafe` is forbidden workspace-wide
+               (`unsafe_code = "forbid"`); flag any introduction of it or any
+               feature/dependency that would require it. Watch for panics or
+               resource exhaustion reachable from hostile input.
+            7. **Test coverage** — for parser changes, expect positive,
+               negative, and EOF cases, plus property/fuzz coverage wherever
+               the "parsers never panic" invariant is at stake. Look for gaps
+               in the specific changed behaviour (new branches, the
+               regression being fixed), not coverage in general.
+            8. **Docs & API hygiene** — public items and each crate (`//!`)
+               are documented, and the docs are accurate, not merely present;
+               doc comments cite the spec section for syntax elements.
+            9. **Licensing & dependencies** — the repo is uniformly PolyForm
+               Noncommercial 1.0.0 with no license mixing. A new third-party
+               dependency or any change to the crate dependency graph needs
+               explicit human sign-off (AGENTS.md §10) — call these out
+               prominently even when otherwise harmless.
+
+            Be thorough in analysis but high-signal in output. Report each
+            issue you are genuinely confident is real as an inline comment,
+            tagged with severity — [Blocker], [Important], or [Nit] — and
+            citing file path and line number. Do not pad with style nits or
+            restate what CI enforces. Post one top-level summary comment for
+            cross-cutting observations and the overall verdict, and — when
+            the PR is clean — say so explicitly there.
+
+          # Tools restricted to read-only PR introspection + the dedicated
+          # structured comment writers. The review ingests untrusted PR text,
+          # so it gets NO shell-backed publishing channel:
+          # - the summary goes through `update_claude_comment` (the tracking
+          #   comment track_progress manages), and inline notes through
+          #   `create_inline_comment` — neither can read arbitrary files;
+          # - `Bash(gh pr comment:*)` is NOT granted: its `--body-file`/`--body`
+          #   would let a prompt-injected review publish runner secrets/files;
+          # - `gh api:*` is NOT granted: it would allow arbitrary authenticated
+          #   mutating calls. Only read-only `gh pr diff`/`gh pr view` remain.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,mcp__github_comment__update_claude_comment,Bash(gh pr diff:*),Bash(gh pr view:*)"
