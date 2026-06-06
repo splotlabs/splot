@@ -165,6 +165,7 @@ fn unimplemented_payload_feature(obu_type: ObuType) -> &'static str {
         ObuType::ContentInterpretation => "AV2-5.15-CONTENT-INTERPRETATION",
         ObuType::Padding => "AV2-5.16-PADDING",
         ObuType::Reserved0 | ObuType::TemporalDelimiter | ObuType::Reserved(_) => {
+            // Unreachable via dispatch_obu_payload(); present only for match exhaustiveness.
             "AV2-5.2.1-OBU-DISPATCH"
         }
     }
@@ -417,6 +418,18 @@ mod tests {
     #[test]
     fn dispatch_rejects_bad_empty_syntax_payload_trailing_bits() {
         let header = read_obu_header(&[0x08], ByteOffset::new(0)).unwrap();
+        assert!(matches!(
+            dispatch_obu_payload(header, &[0x00], ByteOffset::new(1)),
+            Err(Error::InvalidTrailingBits {
+                kind: TrailingBitsErrorKind::MissingOneBit,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn dispatch_rejects_bad_empty_syntax_payload_for_reserved_obu() {
+        let header = read_obu_header(&[0x00], ByteOffset::new(0)).unwrap();
         assert!(matches!(
             dispatch_obu_payload(header, &[0x00], ByteOffset::new(1)),
             Err(Error::InvalidTrailingBits {
