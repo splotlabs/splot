@@ -66,7 +66,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Implemented as BitReader::read_uvlc() from AV2 §4.11.3. The parser rejects EOF and the leadingZeros >= 32 conformance bound without panics."
+notes = "Implemented as BitReader::read_uvlc() from AV2 §4.11.3. AV2 treats leadingZeros >= 32 as a conformance violation rather than returning the AV1 sentinel; the parser rejects EOF and the AV2 bound without panics."
 
 [feature.status]
 mapped = "done"
@@ -99,7 +99,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Implemented as BitReader::read_le(n) from AV2 §4.11.5, returning a u64 for n <= 8 and rejecting wider reads before consuming input."
+notes = "Implemented as BitReader::read_le(n) from AV2 §4.11.5, returning arbitrary-width little-endian bytes with a read_le_u64(n) convenience helper for n <= 8."
 
 [feature.status]
 mapped = "done"

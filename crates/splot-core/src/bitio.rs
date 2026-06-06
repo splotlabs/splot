@@ -8,6 +8,48 @@
 use crate::error::{ByteAlignmentErrorKind, Error, Result};
 use crate::span::{BitOffset, ByteOffset};
 
+/// Arbitrary-width value read by the AV2 `le(n)` descriptor (AV2 v1.0.0 § 4.11.5).
+///
+/// Bytes are stored in the same little-endian order they appear in the bitstream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LittleEndianValue {
+    bytes: Vec<u8>,
+}
+
+impl LittleEndianValue {
+    /// Creates a little-endian value from raw descriptor bytes.
+    #[must_use]
+    pub fn from_le_bytes(bytes: Vec<u8>) -> Self {
+        Self { bytes }
+    }
+
+    /// Returns the raw little-endian bytes.
+    #[must_use]
+    pub fn as_le_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Returns the number of bytes read by the descriptor.
+    #[must_use]
+    pub fn byte_len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// Converts this value to `u64` when it fits in eight bytes.
+    #[must_use]
+    pub fn to_u64(&self) -> Option<u64> {
+        if self.bytes.len() > 8 {
+            return None;
+        }
+
+        let mut value = 0u64;
+        for (i, byte) in self.bytes.iter().enumerate() {
+            value |= u64::from(*byte) << (i * 8);
+        }
+        Some(value)
+    }
+}
+
 /// Reads fixed-width bit fields MSB-first, matching the AV2 `f(n)` descriptor.
 ///
 /// The reader borrows a byte slice and tracks an absolute [`ByteOffset`] base so
@@ -118,6 +160,9 @@ impl<'a> BitReader<'a> {
 
     /// Reads an AV2 `uvlc()` descriptor (AV2 v1.0.0 § 4.11.3).
     ///
+    /// AV2 differs from AV1 here: `leadingZeros >= 32` is a conformance
+    /// violation, and no `(1 << 32) - 1` sentinel value is returned.
+    ///
     /// # Errors
     /// Returns [`Error::UnexpectedEof`] if the code is truncated, or
     /// [`Error::InvalidUvlc`] if the code has 32 or more leading zero bits.
@@ -146,15 +191,24 @@ impl<'a> BitReader<'a> {
         Ok(suffix + (1u32 << leading_zeros) - 1)
     }
 
-    /// Reads an AV2 `le(n)` descriptor as a little-endian unsigned integer
-    /// (AV2 v1.0.0 § 4.11.5).
+    /// Reads an arbitrary-width AV2 `le(n)` descriptor (AV2 v1.0.0 § 4.11.5).
     ///
-    /// This helper returns `u64`, so it supports up to 8 bytes.
+    /// # Errors
+    /// Returns [`Error::UnexpectedEof`] if fewer than `n` bytes remain.
+    pub fn read_le(&mut self, n: u32) -> Result<LittleEndianValue> {
+        let mut bytes = Vec::new();
+        for _ in 0..n {
+            bytes.push(self.read_bits_u8(8)?);
+        }
+        Ok(LittleEndianValue::from_le_bytes(bytes))
+    }
+
+    /// Reads an AV2 `le(n)` descriptor and converts it to `u64`.
     ///
     /// # Errors
     /// Returns [`Error::ByteWidthTooLarge`] if `n > 8`, or
     /// [`Error::UnexpectedEof`] if fewer than `n` bytes remain.
-    pub fn read_le(&mut self, n: u32) -> Result<u64> {
+    pub fn read_le_u64(&mut self, n: u32) -> Result<u64> {
         if n > 8 {
             return Err(Error::ByteWidthTooLarge {
                 requested: n,
@@ -162,12 +216,13 @@ impl<'a> BitReader<'a> {
             });
         }
 
-        let mut value = 0u64;
-        for i in 0..n {
-            let byte = u64::from(self.read_bits_u8(8)?);
-            value |= byte << (i * 8);
+        match self.read_le(n)?.to_u64() {
+            Some(value) => Ok(value),
+            None => Err(Error::ByteWidthTooLarge {
+                requested: n,
+                max: 8,
+            }),
         }
-        Ok(value)
     }
 
     /// Reads an AV2 `ns(n)` non-symmetric integer descriptor (AV2 v1.0.0 § 4.11.8).
@@ -368,22 +423,44 @@ mod tests {
     #[test]
     fn read_le_decodes_little_endian_bytes() {
         let mut reader = BitReader::new(&[0x34, 0x12, 0xAB], ByteOffset::new(0));
-        assert_eq!(reader.read_le(2).unwrap(), 0x1234);
-        assert_eq!(reader.read_le(1).unwrap(), 0xAB);
+        let first = reader.read_le(2).unwrap();
+        assert_eq!(first.as_le_bytes(), &[0x34, 0x12]);
+        assert_eq!(first.byte_len(), 2);
+        assert_eq!(first.to_u64(), Some(0x1234));
+
+        let second = reader.read_le(1).unwrap();
+        assert_eq!(second.as_le_bytes(), &[0xAB]);
+        assert_eq!(second.to_u64(), Some(0xAB));
+
+        let mut u64_reader = BitReader::new(&[0x78, 0x56, 0x34, 0x12], ByteOffset::new(0));
+        assert_eq!(u64_reader.read_le_u64(4).unwrap(), 0x1234_5678);
     }
 
     #[test]
-    fn read_le_rejects_too_many_bytes_and_reports_eof() {
+    fn read_le_supports_values_wider_than_u64() {
+        let data = [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x10];
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let value = reader.read_le(9).unwrap();
+        assert_eq!(value.as_le_bytes(), &data);
+        assert_eq!(value.byte_len(), 9);
+        assert_eq!(value.to_u64(), None);
+    }
+
+    #[test]
+    fn read_le_u64_rejects_too_many_bytes_before_consuming() {
         let mut wide = BitReader::new(&[0; 9], ByteOffset::new(0));
         assert!(matches!(
-            wide.read_le(9),
+            wide.read_le_u64(9),
             Err(Error::ByteWidthTooLarge {
                 requested: 9,
                 max: 8
             })
         ));
         assert_eq!(wide.byte_offset(), ByteOffset::new(0));
+    }
 
+    #[test]
+    fn read_le_reports_eof() {
         let mut eof = BitReader::new(&[0x34], ByteOffset::new(0));
         assert!(matches!(eof.read_le(2), Err(Error::UnexpectedEof { .. })));
     }
