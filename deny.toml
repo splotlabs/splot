@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+#
+# cargo-deny configuration. Practical, not maximal: it guards advisories,
+# license policy, and obviously-banned sources without blocking the scaffold.
+# Run with `cargo deny check`.
+
+[advisories]
+version = 2
+# Add advisory IDs here only with a written justification.
+ignore = []
+
+[licenses]
+version = 2
+# This repository is PolyForm Noncommercial; dependencies must be permissive.
+allow = [
+    "PolyForm-Noncommercial-1.0.0",
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
