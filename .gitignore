@@ -27,6 +27,7 @@ target
 # Editor / IDE files
 .idea/
 .vscode/
+.claude/settings.local.json
 *.swp
 *~
 
