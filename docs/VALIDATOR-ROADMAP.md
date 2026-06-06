@@ -90,35 +90,25 @@ Feature ID:
 Implementation shape:
 
 ```rust
+pub enum PayloadStatus<'a, T> {
+    Parsed(T),
+    Opaque(&'a [u8]),
+    Unimplemented { feature: &'static str, payload: &'a [u8] },
+}
+
 pub enum ParsedObu<'a> {
-    SequenceHeader(SequenceHeader),
     TemporalDelimiter,
-    Msdo(MsdoObu),
-    MultiFrameHeader(MultiFrameHeader),
-    FrameHeader(FrameHeader),
-    MetadataShort(MetadataShortObu<'a>),
-    MetadataGroup(MetadataGroupObu),
-    TileGroup(TileGroupObu<'a>),
-    LayerConfigurationRecord(LayerConfigurationRecord),
-    AtlasSegment(AtlasSegmentInfo),
-    OperatingPointSet(OperatingPointSet),
-    BufferRemovalTiming(BufferRemovalTiming),
-    QuantizerMatrix(QuantizerMatrix),
-    FilmGrain(FilmGrainObu),
-    ContentInterpretation(ContentInterpretationObu),
-    Padding(PaddingObu<'a>),
     Reserved(ReservedObu<'a>),
-    Unparsed { feature: &'static str, payload: &'a [u8] },
 }
 ```
 
-Keep the enum `#[non_exhaustive]` and only add concrete variants when the parser exists. Until a parser exists, dispatch may return `Unparsed` plus a validator warning only if the project intentionally permits partial validation mode. Strict validation should fail on unparsed normative payloads once the feature is marked as required.
+Keep `ParsedObu` `#[non_exhaustive]` and only add concrete variants when the parser exists. Until a parser exists, dispatch returns `PayloadStatus::Unimplemented` with the owning Feature ID plus the bounded raw payload bytes. Strict validation should fail on unparsed normative payloads once the feature is marked as required.
 
 Acceptance:
 
 - Existing envelope/header tests still pass.
 - `inspect --headers` remains stable.
-- `inspect --json` can include `payload_status: "opaque" | "parsed" | "unimplemented"`.
+- `inspect --json` includes a `payload_status` object whose `status` is `"opaque"`, `"parsed"`, `"unimplemented"`, or `"invalid"`.
 - Matrix stages are honest: dispatch can be `partial` while payload variants remain `todo`.
 
 ## Phase 3 — sequence header parser, split by §5.4 child rows

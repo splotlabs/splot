@@ -37,40 +37,13 @@ byte-alignment validation are intentionally `partial` until Phase 2 payload
 dispatch and later payload parsers can call the boundary helpers for every OBU
 type.
 
-## 3. OBU dispatch row to add
+## 3. Phase 2 row now partially implemented
 
-```toml
-[[feature]]
-id = "AV2-5.2.1-OBU-DISPATCH"
-name = "open_bitstream_unit payload dispatch"
-category = "normative"
-kind = "bitstream-syntax"
-spec_sections = ["5.2.1"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-core"
-module = "crates/splot-core/src/obu.rs"
-openspec_change = "validator-coverage-roadmap"
-tracking_issue = ""
-owner = "core"
-risk = "high"
-notes = "Dispatch OBU payloads by AV2 obu_type after parsing obu_header(). Initially partial: variants are added as child syntax parsers land."
-[feature.status]
-mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "not-applicable"
-write = "todo"
-encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
-avm_diff = "pending"
-perf = "not-applicable"
-[feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
-```
+The canonical matrix now records Phase 2 proof for `AV2-5.2.1-OBU-DISPATCH`.
+The row remains `partial`: dispatch parses temporal delimiter and reserved
+empty-syntax payloads through `trailing_bits()`, while other recognized OBU
+payloads report `PayloadStatus::Unimplemented` with the owning Feature ID until
+their child parsers land.
 
 ## 4. Sequence header split rows
 

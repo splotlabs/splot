@@ -17,7 +17,9 @@
 
 use crate::error::{Error, Result};
 use crate::leb128::read_leb128;
-use crate::obu::{ObuHeader, read_obu_header_from_slice};
+use crate::obu::{
+    ObuHeader, ParsedObu, PayloadStatus, dispatch_obu_payload, read_obu_header_from_slice,
+};
 use crate::span::ByteOffset;
 
 /// One length-delimited OBU from an Annex B bitstream.
@@ -31,6 +33,27 @@ pub struct ObuEnvelope<'a> {
     pub header: ObuHeader,
     /// The OBU payload (`size - header_size_bytes` bytes).
     pub payload: &'a [u8],
+}
+
+impl<'a> ObuEnvelope<'a> {
+    /// Returns the absolute byte offset where this OBU's payload begins.
+    #[must_use]
+    pub fn payload_offset(&self) -> ByteOffset {
+        self.offset
+            .saturating_add(u64::from(self.header.header_size_bytes))
+    }
+
+    /// Dispatches this OBU's payload according to its parsed `obu_type`.
+    ///
+    /// Structural Annex B parsing remains header-first and payload-bounded; this
+    /// helper lets callers opt into the currently implemented payload syntax.
+    ///
+    /// # Errors
+    /// Returns typed parser errors for payload syntax that is implemented but
+    /// malformed.
+    pub fn payload_status(&self) -> Result<PayloadStatus<'a, ParsedObu<'a>>> {
+        dispatch_obu_payload(self.header, self.payload, self.payload_offset())
+    }
 }
 
 /// As much of an Annex B bitstream as could be parsed: every OBU parsed before
@@ -141,6 +164,7 @@ fn parse_one_obu(input: &[u8], cursor: usize) -> Result<(ObuEnvelope<'_>, usize)
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::obu::PayloadStatus;
     use crate::types::{GLOBAL_XLAYER_ID, ObuType};
 
     #[test]
@@ -165,6 +189,23 @@ mod tests {
         assert_eq!(obus[1].header.obu_type, ObuType::SequenceHeader);
         assert_eq!(obus[1].size, 2);
         assert_eq!(obus[1].payload, &[0xAB]);
+    }
+
+    #[test]
+    fn envelope_payload_status_is_opt_in_and_preserves_raw_payload() {
+        // SequenceHeader payload parsing is intentionally not implemented yet,
+        // but the envelope still preserves the bounded raw payload bytes.
+        let stream = [0x02, 0x04, 0xAB];
+        let obus = parse_annex_b_obus(&stream).unwrap();
+        assert_eq!(obus[0].payload, &[0xAB]);
+        assert_eq!(obus[0].payload_offset(), ByteOffset::new(2));
+        assert_eq!(
+            obus[0].payload_status().unwrap(),
+            PayloadStatus::Unimplemented {
+                feature: "AV2-5.4-SEQUENCE-HEADER",
+                payload: obus[0].payload,
+            }
+        );
     }
 
     #[test]

@@ -238,24 +238,24 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Dispatch OBU payloads by AV2 obu_type after parsing obu_header(). Initially partial: variants are added as child syntax parsers land."
+notes = "Dispatch skeleton exists after parsing obu_header(): temporal delimiter and reserved empty-syntax payloads are parsed through trailing_bits(), while other recognized OBU payloads return Unimplemented with the owning Feature ID. inspect --json reports the payload status."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
+types = "done"
+parse = "partial"
 validate = "not-applicable"
 write = "todo"
 encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
+decode_check = "partial"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
+tests = ["crates/splot-core/src/obu.rs::tests", "crates/splot-core/src/annexb.rs::tests", "crates/splot-cli/tests/cli.rs::inspect_json_includes_payload_status_without_dropping_header_fields"]
+commands = ["cargo test -p splot-core dispatch", "cargo test -p splot-core envelope_payload_status", "cargo test -p splot-cli inspect_json_includes_payload_status"]
+fixtures = ["tests/fixtures/conformant.av2"]
 diagnostics = []
 
 [[feature]]

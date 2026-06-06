@@ -39,12 +39,12 @@
 
 ## Phase 2 implementation: payload dispatch
 
-- [ ] Add `ParsedObu` / payload status type.
-- [ ] Dispatch OBU payloads according to `obu_type`.
-- [ ] Keep unimplemented payloads explicit and honest.
-- [ ] Update `inspect` JSON to include payload status.
-- [ ] Add tests preserving existing header-only behavior.
-- [ ] Update matrix proof.
+- [x] Add `ParsedObu` / payload status type.
+- [x] Dispatch OBU payloads according to `obu_type`.
+- [x] Keep unimplemented payloads explicit and honest.
+- [x] Update `inspect` JSON to include payload status.
+- [x] Add tests preserving existing header-only behavior.
+- [x] Update matrix proof.
 
 ## Phase 3 implementation: sequence header
 
