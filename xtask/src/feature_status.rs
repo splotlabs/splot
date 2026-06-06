@@ -99,6 +99,12 @@ const IMPL_STAGES: &[&str] = &[
 ];
 
 /// Columns rendered by the table and markdown formats: `(header, stage)`.
+///
+/// This is a curated projection of [`STAGE_NAMES`]: `perf` is omitted to keep the
+/// table readable (it is uniformly low-signal today). `decode_check` is included
+/// because, for a validator-first project, "the validator/inspector can check this"
+/// is a primary proof stage. `cargo xtask feature-status --format json` always
+/// emits all ten stages.
 const TABLE_COLUMNS: &[(&str, &str)] = &[
     ("Mapped", "mapped"),
     ("Types", "types"),
@@ -106,6 +112,7 @@ const TABLE_COLUMNS: &[(&str, &str)] = &[
     ("Validate", "validate"),
     ("Write", "write"),
     ("Encode", "encode"),
+    ("DecChk", "decode_check"),
     ("Tests", "tests"),
     ("AVM", "avm_diff"),
 ];

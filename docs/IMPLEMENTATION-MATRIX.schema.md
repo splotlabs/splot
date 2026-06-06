@@ -87,6 +87,10 @@ that are not yet available.
 | `avm_diff` | Differential/conformance proof against AVM or public vectors exists. |
 | `perf` | Benchmarked/optimized where relevant. |
 
+The `table` and `markdown` renders show a curated nine-stage projection (they omit
+`perf`, which is uniformly low-signal today). `cargo xtask feature-status --format
+json` always emits all ten stages.
+
 ### 5.1 Status definitions
 
 - `todo` — not started.
