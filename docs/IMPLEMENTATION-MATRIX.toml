@@ -1360,7 +1360,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -1393,7 +1393,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -1426,7 +1426,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -1459,7 +1459,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -1492,7 +1492,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -1525,7 +1525,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -1558,7 +1558,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -1591,7 +1591,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -1624,7 +1624,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -1657,7 +1657,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -1690,7 +1690,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -1723,7 +1723,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -1756,7 +1756,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -1822,7 +1822,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation. When implementing, narrow spec_sections to the exact §6.17 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -1855,7 +1855,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation. When implementing, narrow spec_sections to the exact §6.17 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -1888,7 +1888,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation. When implementing, narrow spec_sections to the exact §6.17 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -1921,7 +1921,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation. When implementing, narrow spec_sections to the exact §6.17 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -1954,7 +1954,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation. When implementing, narrow spec_sections to the exact §6.17 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -1987,7 +1987,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation. When implementing, narrow spec_sections to the exact §6.17 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -2020,7 +2020,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation. When implementing, narrow spec_sections to the exact §6.17 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -2053,7 +2053,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation. When implementing, narrow spec_sections to the exact §6.17 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -2086,7 +2086,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation. When implementing, narrow spec_sections to the exact §6.17 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"
@@ -2119,7 +2119,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation."
+notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation. When implementing, narrow spec_sections to the exact §6.17 subsection if the spec has one."
 
 [feature.status]
 mapped = "done"

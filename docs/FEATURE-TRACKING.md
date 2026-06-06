@@ -183,3 +183,6 @@ AV2-B-ANNEXB-OBU-ENVELOPE.ZERO-LENGTH-OBU
 The base id (before the `.SUFFIX`) must be a known matrix id. New kebab prefixes
 must be added to the documented allowlist in `xtask/src/feature_status.rs` and
 listed here.
+Planned future namespaces are staged in
+[VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md) §2 and should be moved here
+when the corresponding xtask allowlist entry lands.
