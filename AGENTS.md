@@ -46,7 +46,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo build --workspace --all-targets --locked
 cargo test --workspace --all-targets --locked
-cargo fuzz run parse_obu   # requires `cargo install cargo-fuzz --locked`; not part of CI
+cargo +nightly fuzz run parse_obu   # nightly-only (cargo-fuzz); `cargo install cargo-fuzz --locked`; not in CI
 ```
 
 ## 5. Coding conventions

@@ -38,5 +38,7 @@ Thumbs.db
 /scratch
 *.av2
 *.obu
+# ...but DO track the curated test fixtures.
+!/tests/fixtures/*.av2
 
 # NOTE: Cargo.lock is intentionally committed (this repo builds binaries).

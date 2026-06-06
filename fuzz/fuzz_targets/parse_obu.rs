@@ -2,10 +2,14 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 //
 // Fuzz target: the AV2 parsers must return errors, never panic, on arbitrary
-// input. Run with:
+// input. cargo-fuzz requires a NIGHTLY toolchain (AddressSanitizer + coverage are
+// nightly-only). Run with:
 //
 //     cargo install cargo-fuzz --locked
-//     cargo fuzz run parse_obu
+//     cargo +nightly fuzz run parse_obu
+//
+// On stable, the same invariant is covered by the `parsers_never_panic` proptest
+// in `splot-core::annexb`.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
