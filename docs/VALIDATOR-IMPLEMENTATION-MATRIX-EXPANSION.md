@@ -482,8 +482,6 @@ AV2-5.17-METADATA
 Existing umbrellas to split:
 
 ```text
-AV2-5.8-LAYER-CONFIG-RECORD
-AV2-5.10-OPERATING-POINT-SET
 AV2-5.18-FRAME-HEADER
 AV2-5.19-TILE-GROUP
 AV2-5.20-TILE-GROUP-PAYLOAD
@@ -525,7 +523,35 @@ fixtures = []
 diagnostics = []
 ```
 
-## 9. Frame header child rows
+## 9. LCR and OPS child rows
+
+`AV2-5.8-LAYER-CONFIG-RECORD` is split into:
+
+```text
+AV2-5.8.1-LCR-GLOBAL-INFO
+AV2-5.8.2-LCR-LOCAL-INFO
+AV2-5.8.3-LCR-AGGREGATE-INFO
+AV2-5.8.4-LCR-SEQ-PTL-INFO
+AV2-5.8.5-LCR-GLOBAL-PAYLOAD
+AV2-5.8.6-LCR-XLAYER-INFO
+AV2-5.8.7-LCR-REP-INFO
+AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO
+AV2-5.8.9-LCR-XLAYER-COLOR-INFO
+```
+
+`AV2-5.10-OPERATING-POINT-SET` and `AV2-5.11-OPERATING-POINT-PAYLOAD`
+are split into:
+
+```text
+AV2-5.10-OPS-SYNTAX-ELEMENTS
+AV2-5.11.1-OPS-AGGREGATE-INFO
+AV2-5.11.2-OPS-SEQ-PTL-INFO
+AV2-5.11.3-OPS-DECODER-MODEL-INFO
+AV2-5.11.4-OPS-COLOR-INFO
+AV2-5.11.5-OPS-MLAYER-INFO
+```
+
+## 10. Frame header child rows
 
 Do not implement `AV2-5.18-FRAME-HEADER` as one row. Add:
 
@@ -544,7 +570,7 @@ AV2-5.18.10-FILM-GRAIN-STRUCTURES
 
 Matching semantics rows can use `AV2-<6.17 child section>-<SLUG>` IDs when implementation begins.
 
-## 10. Metadata child rows
+## 11. Metadata child rows
 
 Add these before implementing metadata:
 
@@ -564,7 +590,7 @@ AV2-5.17.12-METADATA-DECODED-FRAME-HASH
 AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED
 ```
 
-## 11. Annex and conformance rows
+## 12. Annex and conformance rows
 
 Add these after enough syntax exists to make them actionable:
 
@@ -578,7 +604,7 @@ CONF-AVM-INVALID-STREAMS
 CONF-PUBLIC-VECTOR-LICENSE-REVIEW
 ```
 
-## 12. Suggested matrix proof pattern
+## 13. Suggested matrix proof pattern
 
 When a parser/check is done, update proof like this:
 

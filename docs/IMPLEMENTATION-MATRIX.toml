@@ -1051,6 +1051,303 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "AV2-5.8.1-LCR-GLOBAL-INFO"
+name = "LCR global info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.8.1", "6.8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.8-LAYER-CONFIG-RECORD. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.8.2-LCR-LOCAL-INFO"
+name = "LCR local info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.8.2", "6.8.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.8-LAYER-CONFIG-RECORD. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.8.3-LCR-AGGREGATE-INFO"
+name = "LCR aggregate info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.8.3", "6.8.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.8-LAYER-CONFIG-RECORD. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.8.4-LCR-SEQ-PTL-INFO"
+name = "LCR sequence profile tier level information syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.8.4", "6.8.5"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.8-LAYER-CONFIG-RECORD. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.8.5-LCR-GLOBAL-PAYLOAD"
+name = "LCR global payload syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.8.5", "6.8.6"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.8-LAYER-CONFIG-RECORD. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.8.6-LCR-XLAYER-INFO"
+name = "LCR xlayer info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.8.6", "6.8.7"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.8-LAYER-CONFIG-RECORD. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.8.7-LCR-REP-INFO"
+name = "LCR representation info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.8.7", "6.8.8"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.8-LAYER-CONFIG-RECORD. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO"
+name = "LCR embedded layer info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.8.8", "6.8.9"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.8-LAYER-CONFIG-RECORD. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.8.9-LCR-XLAYER-COLOR-INFO"
+name = "LCR xlayer color info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.8.9", "6.8.10"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.8-LAYER-CONFIG-RECORD. Do not mark the umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "AV2-5.9-ATLAS-SEGMENT"
 name = "Atlas segment info OBU syntax"
 category = "normative"
@@ -1117,6 +1414,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "AV2-5.10-OPS-SYNTAX-ELEMENTS"
+name = "Operating point set syntax elements"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.10", "6.10.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.10-OPERATING-POINT-SET. Tracks the top-level OPS OBU syntax before operating_point_payload() children."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "AV2-5.11-OPERATING-POINT-PAYLOAD"
 name = "Operating point payload syntax"
 category = "normative"
@@ -1130,6 +1460,171 @@ tracking_issue = ""
 owner = "core"
 risk = "high"
 notes = "Payload parser and validator hooks for operating point sets. Kept separate from the OPS umbrella for proof tracking."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.11.1-OPS-AGGREGATE-INFO"
+name = "Operating point aggregate info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.11.1", "6.10.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.11-OPERATING-POINT-PAYLOAD. Do not mark the payload umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.11.2-OPS-SEQ-PTL-INFO"
+name = "Operating point sequence profile tier level information syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.11.2", "6.10.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.11-OPERATING-POINT-PAYLOAD. Do not mark the payload umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.11.3-OPS-DECODER-MODEL-INFO"
+name = "Operating point decoder model info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.11.3", "6.10.5"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.11-OPERATING-POINT-PAYLOAD. Do not mark the payload umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.11.4-OPS-COLOR-INFO"
+name = "Operating point color info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.11.4", "6.10.6"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.11-OPERATING-POINT-PAYLOAD. Do not mark the payload umbrella done until this child is proven."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "todo"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.11.5-OPS-MLAYER-INFO"
+name = "Operating point mlayer info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.11.5", "6.10.7"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers.rs"
+openspec_change = "validator-coverage-roadmap"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.11-OPERATING-POINT-PAYLOAD. Do not mark the payload umbrella done until this child is proven."
 
 [feature.status]
 mapped = "done"

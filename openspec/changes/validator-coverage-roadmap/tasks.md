@@ -24,7 +24,7 @@
 - [x] Split `AV2-7.3-OBU-ORDERING` into child rows before implementing ordering.
 - [x] Add missing top-level OBU rows for §5.5-§5.17.
 - [x] Split frame header, metadata, and tile group rows before coding them.
-- [ ] Split LCR and OPS rows before coding them.
+- [x] Split LCR and OPS rows before coding them.
 
 ## Phase 1 implementation: descriptors and payload boundaries
 
