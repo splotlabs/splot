@@ -19,7 +19,7 @@ cargo xtask ci
 - Split large rows before implementation. Sequence header, frame header, tile group, metadata, LCR, and OPS are too large for one row.
 - The umbrella row remains `partial` until all child rows are done.
 - `mapped = done` is allowed when the row is identified and linked. `parse = done`, `validate = done`, `tests = done`, and `decode_check = done` need proof entries.
-- Use OpenSpec change IDs that match the change folder, e.g. `add-bitstream-writer` or `validator-coverage-roadmap`.
+- Use OpenSpec change IDs that match an active change folder, e.g. `add-bitstream-writer` or `avm-differential-harness`.
 - Use `pending` for `avm_diff` until AVM/public-vector proof is recorded.
 
 ## 2. Phase 1 rows now implemented
@@ -187,7 +187,7 @@ spec_sections = ["6.2.2", "6.4", "7.3.8"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
 module = "crates/splot-validate/src/context.rs"
-openspec_change = "validator-coverage-roadmap"
+openspec_change = "avm-differential-harness"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
@@ -245,7 +245,7 @@ spec_sections = ["7.3.7"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
 module = "crates/splot-validate/src/context.rs"
-openspec_change = "validator-coverage-roadmap"
+openspec_change = "avm-differential-harness"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
@@ -307,7 +307,7 @@ spec_sections = ["5.X", "6.Y"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+openspec_change = "avm-differential-harness"
 tracking_issue = ""
 owner = "core"
 risk = "high"
