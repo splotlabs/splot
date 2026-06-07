@@ -63,8 +63,9 @@ fuzz                   cargo-fuzz target (outside the workspace)
 5. AVM differential testing.
 6. Encoder experiments.
 
-See [docs/ENCODER-ROADMAP.md](./docs/ENCODER-ROADMAP.md) for milestones tied to
-Feature IDs.
+See [docs/VALIDATOR-ROADMAP.md](./docs/VALIDATOR-ROADMAP.md) for validator
+coverage phases and [docs/ENCODER-ROADMAP.md](./docs/ENCODER-ROADMAP.md) for
+encoder milestones tied to Feature IDs.
 
 ## Encoder research references
 

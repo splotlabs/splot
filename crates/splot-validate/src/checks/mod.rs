@@ -8,11 +8,19 @@
 //! v1.0.0 § 6.2.2 (they do not require an activated sequence header). OBU
 //! ordering and sequence/frame-level conformance are future work.
 //
-// TODO(spec: AV2-7.3-OBU-ORDERING): add OBU-ordering and sequence-header-activated checks.
+// TODO(spec: AV2-7.3-OBU-ORDERING): add OBU-ordering checks.
 
 use splot_core::annexb::ObuEnvelope;
+use splot_core::bitio::BitReader;
+use splot_core::error::{
+    ByteAlignmentErrorKind, Error, SequenceHeaderErrorKind, TrailingBitsErrorKind,
+};
+use splot_core::headers::sequence::parse_sequence_header_general;
+use splot_core::obu::parse_trailing_bits;
+use splot_core::types::ObuType;
 
 use crate::diagnostic::{Diagnostic, Severity, ValidationReport};
+use crate::error_location::{error_bit_offset, error_offset};
 
 /// A single conformance check over one OBU envelope.
 pub trait Check {
@@ -30,12 +38,95 @@ pub fn default_checks() -> Vec<Box<dyn Check>> {
     vec![
         Box::new(ReservedObuType),
         Box::new(ReservedObuAllZeroPayload),
+        Box::new(TrailingBitsForEmptySyntaxObus),
+        Box::new(SequenceHeaderGeneralSyntax),
         Box::new(GlobalXLayerRequired),
         Box::new(GlobalXLayerRequiresBaseLayers),
         Box::new(GlobalXLayerAllowedTypes),
         Box::new(BaseLayerOnlyTypes),
         Box::new(TemporalLayerZeroOnlyTypes),
     ]
+}
+
+/// Converts core payload-boundary syntax errors into stable validator diagnostics.
+#[must_use]
+pub(crate) fn syntax_error_diagnostic(error: &Error) -> Option<Diagnostic> {
+    match error {
+        Error::InvalidTrailingBits {
+            offset,
+            bit_offset,
+            kind,
+        } => {
+            let rule_id = match kind {
+                TrailingBitsErrorKind::Empty => "trailing-bits/empty",
+                TrailingBitsErrorKind::MissingOneBit => "trailing-bits/missing-one-bit",
+                TrailingBitsErrorKind::ZeroBitNotZero => "trailing-bits/zero-bit-not-zero",
+            };
+            Some(
+                Diagnostic::error(rule_id, kind.to_string())
+                    .with_spec_section("6.2.3")
+                    .with_byte_offset(*offset)
+                    .with_bit_offset(*bit_offset),
+            )
+        }
+        Error::InvalidByteAlignment {
+            offset,
+            bit_offset,
+            kind,
+        } => {
+            let rule_id = match kind {
+                ByteAlignmentErrorKind::ZeroBitNotZero => "byte-alignment/zero-bit-not-zero",
+            };
+            Some(
+                Diagnostic::error(rule_id, kind.to_string())
+                    .with_spec_section("6.2.4")
+                    .with_byte_offset(*offset)
+                    .with_bit_offset(*bit_offset),
+            )
+        }
+        Error::InvalidSequenceHeader {
+            offset,
+            bit_offset,
+            kind,
+        } => {
+            let rule_id = match kind {
+                SequenceHeaderErrorKind::SeqHeaderIdOutOfRange => {
+                    "sequence-header/seq-header-id-out-of-range"
+                }
+                SequenceHeaderErrorKind::ChromaFormatOutOfRange => {
+                    "sequence-header/chroma-format-out-of-range"
+                }
+                SequenceHeaderErrorKind::BitDepthOutOfRange => {
+                    "sequence-header/bit-depth-out-of-range"
+                }
+                SequenceHeaderErrorKind::SeqMaxMlayerCountOutOfRange => {
+                    "sequence-header/seq-max-mlayer-count-out-of-range"
+                }
+                SequenceHeaderErrorKind::CropLeftOutOfRange => {
+                    "sequence-header/crop-left-out-of-range"
+                }
+                SequenceHeaderErrorKind::CropRightOutOfRange => {
+                    "sequence-header/crop-right-out-of-range"
+                }
+                SequenceHeaderErrorKind::CropTopOutOfRange => {
+                    "sequence-header/crop-top-out-of-range"
+                }
+                SequenceHeaderErrorKind::CropBottomOutOfRange => {
+                    "sequence-header/crop-bottom-out-of-range"
+                }
+                SequenceHeaderErrorKind::TimingNumUnitsZero => {
+                    "sequence-header/timing-num-units-zero"
+                }
+            };
+            Some(
+                Diagnostic::error(rule_id, kind.to_string())
+                    .with_spec_section("6.4.1")
+                    .with_byte_offset(*offset)
+                    .with_bit_offset(*bit_offset),
+            )
+        }
+        _ => None,
+    }
 }
 
 /// Builds and pushes a diagnostic located at `obu`, tagged with `check`'s id and section.
@@ -52,6 +143,83 @@ fn emit(
         diagnostic = diagnostic.with_spec_section(section);
     }
     report.push(diagnostic);
+}
+
+/// OBUs with empty payload syntax still carry `trailing_bits` when their declared
+/// payload is non-empty. Until full payload dispatch exists, only these OBU types
+/// can be checked without guessing where payload syntax ends.
+struct TrailingBitsForEmptySyntaxObus;
+
+impl Check for TrailingBitsForEmptySyntaxObus {
+    fn id(&self) -> &'static str {
+        // Registry identifier only; emitted diagnostics use syntax_error_diagnostic() rule ids.
+        "trailing-bits/empty-syntax-obu-payload"
+    }
+
+    fn spec_section(&self) -> Option<&'static str> {
+        Some("5.2.3")
+    }
+
+    fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.payload.is_empty() || !has_empty_payload_syntax(obu.header.obu_type) {
+            return;
+        }
+
+        let payload_offset = obu
+            .offset
+            .saturating_add(u64::from(obu.header.header_size_bytes));
+        let mut reader = BitReader::new(obu.payload, payload_offset);
+        let nb_bits = (obu.payload.len() as u64).saturating_mul(8);
+        if let Err(error) = parse_trailing_bits(&mut reader, nb_bits)
+            && let Some(diagnostic) = syntax_error_diagnostic(&error)
+        {
+            report.push(diagnostic);
+        }
+    }
+}
+
+fn has_empty_payload_syntax(obu_type: ObuType) -> bool {
+    matches!(obu_type, ObuType::TemporalDelimiter)
+}
+
+/// Parses the locally decidable general sequence-header syntax and maps § 6.4.1
+/// violations into stable diagnostics.
+struct SequenceHeaderGeneralSyntax;
+
+impl Check for SequenceHeaderGeneralSyntax {
+    fn id(&self) -> &'static str {
+        // Registry identifier only; emitted diagnostics use syntax_error_diagnostic() rule ids.
+        "sequence-header/general-syntax"
+    }
+
+    fn spec_section(&self) -> Option<&'static str> {
+        Some("5.4.1")
+    }
+
+    fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.header.obu_type != ObuType::SequenceHeader {
+            return;
+        }
+
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        if let Err(error) = parse_sequence_header_general(&mut reader) {
+            let diagnostic = syntax_error_diagnostic(&error)
+                .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.4.1"));
+            report.push(diagnostic);
+        }
+    }
+}
+
+fn payload_parse_error_diagnostic(error: &Error, spec_section: &'static str) -> Diagnostic {
+    let mut diagnostic = Diagnostic::error("bitstream/parse-error", error.to_string())
+        .with_spec_section(spec_section);
+    if let Some(offset) = error_offset(error) {
+        diagnostic = diagnostic.with_byte_offset(offset);
+    }
+    if let Some(bit_offset) = error_bit_offset(error) {
+        diagnostic = diagnostic.with_bit_offset(bit_offset);
+    }
+    diagnostic
 }
 
 /// Informational: reserved OBU types are ignored by conformant decoders (AV2 Table 6.1).
@@ -265,5 +433,71 @@ impl Check for TemporalLayerZeroOnlyTypes {
                 ),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use splot_core::span::{BitOffset, ByteOffset};
+
+    #[test]
+    fn syntax_error_diagnostic_maps_trailing_bits_errors() {
+        let diagnostic = syntax_error_diagnostic(&Error::InvalidTrailingBits {
+            offset: ByteOffset::new(3),
+            bit_offset: BitOffset::from_bits(1),
+            kind: TrailingBitsErrorKind::ZeroBitNotZero,
+        });
+        assert!(
+            diagnostic.is_some(),
+            "trailing-bit error should map to a diagnostic"
+        );
+        let diagnostic =
+            diagnostic.unwrap_or_else(|| Diagnostic::error("trailing-bits/test", "missing"));
+        assert_eq!(diagnostic.rule_id, "trailing-bits/zero-bit-not-zero");
+        assert_eq!(diagnostic.spec_section.as_deref(), Some("6.2.3"));
+        assert_eq!(diagnostic.byte_offset, Some(ByteOffset::new(3)));
+        assert_eq!(diagnostic.bit_offset, Some(BitOffset::from_bits(1)));
+    }
+
+    #[test]
+    fn syntax_error_diagnostic_maps_byte_alignment_errors() {
+        let diagnostic = syntax_error_diagnostic(&Error::InvalidByteAlignment {
+            offset: ByteOffset::new(7),
+            bit_offset: BitOffset::from_bits(5),
+            kind: ByteAlignmentErrorKind::ZeroBitNotZero,
+        });
+        assert!(
+            diagnostic.is_some(),
+            "byte-alignment error should map to a diagnostic"
+        );
+        let diagnostic =
+            diagnostic.unwrap_or_else(|| Diagnostic::error("byte-alignment/test", "missing"));
+        assert_eq!(diagnostic.rule_id, "byte-alignment/zero-bit-not-zero");
+        assert_eq!(diagnostic.spec_section.as_deref(), Some("6.2.4"));
+        assert_eq!(diagnostic.byte_offset, Some(ByteOffset::new(7)));
+        assert_eq!(diagnostic.bit_offset, Some(BitOffset::from_bits(5)));
+    }
+
+    #[test]
+    fn syntax_error_diagnostic_maps_sequence_header_errors() {
+        let diagnostic = syntax_error_diagnostic(&Error::InvalidSequenceHeader {
+            offset: ByteOffset::new(11),
+            bit_offset: BitOffset::from_bits(2),
+            kind: SequenceHeaderErrorKind::ChromaFormatOutOfRange,
+        });
+        assert!(
+            diagnostic.is_some(),
+            "sequence-header error should map to a diagnostic"
+        );
+        let diagnostic =
+            diagnostic.unwrap_or_else(|| Diagnostic::error("sequence-header/test", "missing"));
+        assert_eq!(
+            diagnostic.rule_id,
+            "sequence-header/chroma-format-out-of-range"
+        );
+        assert_eq!(diagnostic.spec_section.as_deref(), Some("6.4.1"));
+        assert_eq!(diagnostic.byte_offset, Some(ByteOffset::new(11)));
+        assert_eq!(diagnostic.bit_offset, Some(BitOffset::from_bits(2)));
     }
 }

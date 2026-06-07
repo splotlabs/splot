@@ -7,9 +7,99 @@
 //! variants. Recognized-but-unmodeled functionality returns
 //! [`Error::Unimplemented`] rather than `todo!()`/`unimplemented!()`.
 
+use core::fmt;
+
 use thiserror::Error;
 
-use crate::span::ByteOffset;
+use crate::span::{BitOffset, ByteOffset};
+
+/// Specific ways `trailing_bits(nbBits)` can violate AV2 § 6.2.3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrailingBitsErrorKind {
+    /// `trailing_bits` was asked to parse zero bits.
+    Empty,
+    /// The required `trailing_one_bit` was not equal to `1`.
+    MissingOneBit,
+    /// A `trailing_zero_bit` was not equal to `0`.
+    ZeroBitNotZero,
+}
+
+impl fmt::Display for TrailingBitsErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::Empty => "nbBits must be greater than zero",
+            Self::MissingOneBit => "trailing_one_bit must be equal to 1",
+            Self::ZeroBitNotZero => "trailing_zero_bit must be equal to 0",
+        };
+        f.write_str(message)
+    }
+}
+
+/// Specific ways `byte_alignment()` can violate AV2 § 6.2.4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteAlignmentErrorKind {
+    /// A byte-alignment `zero_bit` was not equal to `0`.
+    ZeroBitNotZero,
+}
+
+impl fmt::Display for ByteAlignmentErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::ZeroBitNotZero => "zero_bit must be equal to 0",
+        };
+        f.write_str(message)
+    }
+}
+
+/// Specific locally decidable `sequence_header_obu()` violations from AV2 § 6.4.1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SequenceHeaderErrorKind {
+    /// `seq_header_id` is not less than `MAX_SEQ_NUM`.
+    SeqHeaderIdOutOfRange,
+    /// `chroma_format_idc` is not in Table 6.2.
+    ChromaFormatOutOfRange,
+    /// `bit_depth_idc` is not in Table 6.3.
+    BitDepthOutOfRange,
+    /// `seq_max_mlayer_cnt_minus_1` is greater than `max_mlayer_id`.
+    SeqMaxMlayerCountOutOfRange,
+    /// `seq_cropping_win_left_offset` is greater than `max_frame_width_minus_1`.
+    CropLeftOutOfRange,
+    /// `seq_cropping_win_right_offset` is greater than `max_frame_width_minus_1`.
+    CropRightOutOfRange,
+    /// `seq_cropping_win_top_offset` is greater than `max_frame_height_minus_1`.
+    CropTopOutOfRange,
+    /// `seq_cropping_win_bottom_offset` is greater than `max_frame_height_minus_1`.
+    CropBottomOutOfRange,
+    /// `num_units_in_decoding_tick` is zero.
+    TimingNumUnitsZero,
+}
+
+impl fmt::Display for SequenceHeaderErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::SeqHeaderIdOutOfRange => "seq_header_id must be less than MAX_SEQ_NUM",
+            Self::ChromaFormatOutOfRange => "chroma_format_idc must be less than or equal to 3",
+            Self::BitDepthOutOfRange => "bit_depth_idc must be less than or equal to 1",
+            Self::SeqMaxMlayerCountOutOfRange => {
+                "seq_max_mlayer_cnt_minus_1 must be less than or equal to max_mlayer_id"
+            }
+            Self::CropLeftOutOfRange => {
+                "seq_cropping_win_left_offset must be less than or equal to max_frame_width_minus_1"
+            }
+            Self::CropRightOutOfRange => {
+                "seq_cropping_win_right_offset must be less than or equal to max_frame_width_minus_1"
+            }
+            Self::CropTopOutOfRange => {
+                "seq_cropping_win_top_offset must be less than or equal to max_frame_height_minus_1"
+            }
+            Self::CropBottomOutOfRange => {
+                "seq_cropping_win_bottom_offset must be less than or equal to max_frame_height_minus_1"
+            }
+            Self::TimingNumUnitsZero => "num_units_in_decoding_tick must be greater than 0",
+        };
+        f.write_str(message)
+    }
+}
 
 /// Errors produced while parsing AV2 bitstreams.
 #[derive(Debug, Error)]
@@ -31,6 +121,15 @@ pub enum Error {
         max: u32,
     },
 
+    /// A byte-read requested more bytes than the reader supports for the target.
+    #[error("cannot read {requested} little-endian byte(s) (maximum is {max})")]
+    ByteWidthTooLarge {
+        /// Number of bytes requested.
+        requested: u32,
+        /// Maximum number of bytes supported for this read.
+        max: u32,
+    },
+
     /// The input ended before a complete syntax element could be read.
     #[error("unexpected end of input at byte {offset}: needed {needed} more byte(s)")]
     UnexpectedEof {
@@ -49,6 +148,28 @@ pub enum Error {
         message: String,
     },
 
+    /// A `uvlc()` descriptor violated AV2 § 4.11.3.
+    #[error("invalid uvlc() at byte {offset}.{bit_offset}: {message}")]
+    InvalidUvlc {
+        /// Offset of the offending bit.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidUvlc::offset`].
+        bit_offset: BitOffset,
+        /// Human-readable reason.
+        message: String,
+    },
+
+    /// An `ns(n)` descriptor was requested with an invalid parameter.
+    #[error("invalid ns(n) at byte {offset}.{bit_offset}: {message}")]
+    InvalidNs {
+        /// Offset of the descriptor request.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidNs::offset`].
+        bit_offset: BitOffset,
+        /// Human-readable reason.
+        message: String,
+    },
+
     /// An OBU header violated AV2 § 5.2.2.
     #[error("invalid OBU header at byte {offset}: {message}")]
     InvalidObuHeader {
@@ -56,6 +177,39 @@ pub enum Error {
         offset: ByteOffset,
         /// Human-readable reason.
         message: String,
+    },
+
+    /// `trailing_bits(nbBits)` violated AV2 § 6.2.3.
+    #[error("invalid trailing_bits() at byte {offset}.{bit_offset}: {kind}")]
+    InvalidTrailingBits {
+        /// Offset of the offending bit.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidTrailingBits::offset`].
+        bit_offset: BitOffset,
+        /// Specific trailing-bits violation.
+        kind: TrailingBitsErrorKind,
+    },
+
+    /// `byte_alignment()` violated AV2 § 6.2.4.
+    #[error("invalid byte_alignment() at byte {offset}.{bit_offset}: {kind}")]
+    InvalidByteAlignment {
+        /// Offset of the offending bit.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidByteAlignment::offset`].
+        bit_offset: BitOffset,
+        /// Specific byte-alignment violation.
+        kind: ByteAlignmentErrorKind,
+    },
+
+    /// `sequence_header_obu()` violated AV2 § 6.4.1.
+    #[error("invalid sequence_header_obu() at byte {offset}.{bit_offset}: {kind}")]
+    InvalidSequenceHeader {
+        /// Offset of the offending syntax element.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidSequenceHeader::offset`].
+        bit_offset: BitOffset,
+        /// Specific sequence-header violation.
+        kind: SequenceHeaderErrorKind,
     },
 
     /// A declared OBU size was structurally invalid (for example, zero).

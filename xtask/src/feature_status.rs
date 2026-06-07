@@ -146,7 +146,16 @@ const ALLOWLISTED_TOKENS: &[&str] = &["AV2-SECTION-SLUG"];
 
 /// Documented validator diagnostic rule-id prefixes. Diagnostic rule ids use a
 /// kebab/slash namespace that is separate from Feature IDs (see FEATURE-TRACKING.md).
-const DIAGNOSTIC_PREFIXES: &[&str] = &["obu-header/", "obu-reserved/", "bitstream/"];
+const DIAGNOSTIC_PREFIXES: &[&str] = &[
+    "obu-header/",
+    "obu-reserved/",
+    "bitstream/",
+    "trailing-bits/",
+    "byte-alignment/",
+    "sequence-header/",
+    "sequence-state/",
+    "obu-order/",
+];
 
 /// Output format for `feature-status`.
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]

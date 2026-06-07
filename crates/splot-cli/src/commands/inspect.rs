@@ -10,7 +10,7 @@ use anyhow::{Context as _, Result};
 use clap::Args;
 use serde::Serialize;
 use splot_core::annexb::{ObuEnvelope, parse_annex_b_obus_partial};
-use splot_core::obu::ObuHeader;
+use splot_core::obu::{ObuHeader, PayloadStatus};
 
 use crate::commands::read_input;
 
@@ -34,6 +34,7 @@ struct InspectRecord {
     byte_offset: u64,
     size: u32,
     payload_len: usize,
+    payload_status: InspectPayloadStatus,
     header: ObuHeader,
 }
 
@@ -44,7 +45,51 @@ impl InspectRecord {
             byte_offset: obu.offset.get(),
             size: obu.size,
             payload_len: obu.payload.len(),
+            payload_status: InspectPayloadStatus::new(obu),
             header: obu.header,
+        }
+    }
+}
+
+/// A serializable summary of how much OBU payload syntax is currently parsed.
+#[derive(Serialize)]
+struct InspectPayloadStatus {
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    syntax: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    feature: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+impl InspectPayloadStatus {
+    fn new(obu: &ObuEnvelope<'_>) -> Self {
+        match obu.payload_status() {
+            Ok(PayloadStatus::Parsed(parsed)) => Self {
+                status: "parsed",
+                syntax: Some(parsed.syntax_name()),
+                feature: Some(parsed.feature_id()),
+                error: None,
+            },
+            Ok(PayloadStatus::Opaque(_)) => Self {
+                status: "opaque",
+                syntax: None,
+                feature: None,
+                error: None,
+            },
+            Ok(PayloadStatus::Unimplemented { feature, .. }) => Self {
+                status: "unimplemented",
+                syntax: None,
+                feature: Some(feature),
+                error: None,
+            },
+            Err(error) => Self {
+                status: "invalid",
+                syntax: None,
+                feature: Some("AV2-5.2.1-OBU-DISPATCH"),
+                error: Some(error.to_string()),
+            },
         }
     }
 }

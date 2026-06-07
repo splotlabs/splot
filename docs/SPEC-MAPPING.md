@@ -36,6 +36,18 @@ feature, this mapping must identify:
 If the AV2 section or AVM oracle is unknown, use `TODO(spec: <FEATURE-ID>): <section/topic>` in code
 and keep the feature stubbed.
 
+## Validator roadmap
+
+The validator coverage plan is split across:
+
+- [VALIDATOR-GAP-ANALYSIS.md](./VALIDATOR-GAP-ANALYSIS.md)
+- [VALIDATOR-ROADMAP.md](./VALIDATOR-ROADMAP.md)
+- [VALIDATOR-IMPLEMENTATION-MATRIX-EXPANSION.md](./VALIDATOR-IMPLEMENTATION-MATRIX-EXPANSION.md)
+- [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md)
+
+These documents are planning aids. The canonical status remains
+[IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml).
+
 ## Current mapping
 
 | Module                              | Spec area                         | Status |
@@ -46,6 +58,7 @@ and keep the feature stubbed.
 | `splot-core::obu`                   | § 5.2.2 OBU header                 | implemented |
 | `splot-core::annexb`                | Annex B § B.2, § 5.2.1 OBU size   | implemented |
 | `splot-validate::checks`            | § 6.2.2 header constraints        | partial (header-only checks) |
+| `splot-validate::context`           | § 6.2.2 / § 7.3 sequence state    | partial (active sequence + temporal order) |
 | `splot-core::headers`               | § 5.4 sequence / frame headers    | TODO |
 | `splot-core::tables`                | § 9 additional tables             | TODO / codegen (`cargo xtask gen-tables`) |
 
@@ -65,6 +78,32 @@ All are pure functions of the OBU header (no activated sequence header required)
   RAS frames must have `obu_tlayer_id == 0`.
 - `obu-header/reserved-obu-type` — informational: reserved types are ignored by
   conformant decoders.
+
+### Implemented stateful sequence checks
+
+These depend on a parseable, active sequence header in the same `obu_xlayer_id`
+context:
+
+- `sequence-state/no-active-sequence-header` — a layer-scoped OBU appears before
+  an active sequence header is available for its `obu_xlayer_id`.
+- `sequence-state/tlayer-exceeds-max` — `obu_tlayer_id` exceeds the active
+  sequence header's `max_tlayer_id`.
+- `sequence-state/mlayer-exceeds-max` — `obu_mlayer_id` exceeds the active
+  sequence header's `max_mlayer_id`.
+
+### Implemented § 7.3 ordering checks
+
+These are header-level ordering checks; deeper frame-unit and metadata suffix
+ordering remains future work until the corresponding payload parsers exist:
+
+- `obu-order/temporal-unit-missing-delimiter` — a non-reserved OBU appears before
+  a global temporal delimiter starts the temporal unit.
+- `obu-order/global-hls-after-coded-layer` — a global HLS prefix OBU appears
+  after a coded extended layer unit in the same temporal unit.
+- `obu-order/xlayer-order-not-ascending` — coded extended layer units regress in
+  `obu_xlayer_id` within one temporal unit.
+- `obu-order/padding-non-global-outside-coded-layer` — non-global padding appears
+  outside the current coded extended layer unit.
 
 ## ⚠️ AV2 is not AV1
 

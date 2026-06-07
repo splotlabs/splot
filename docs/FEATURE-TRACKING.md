@@ -159,10 +159,19 @@ children are. See the schema's "splitting" section.
 5. Implement, prove, update the matrix, regenerate `FEATURE-STATUS.md`, run
    `cargo xtask ci`.
 
+For the current validator expansion plan, start with
+[VALIDATOR-GAP-ANALYSIS.md](./VALIDATOR-GAP-ANALYSIS.md),
+[VALIDATOR-ROADMAP.md](./VALIDATOR-ROADMAP.md),
+[VALIDATOR-IMPLEMENTATION-MATRIX-EXPANSION.md](./VALIDATOR-IMPLEMENTATION-MATRIX-EXPANSION.md),
+and [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md). Those files are
+planning aids; the matrix remains canonical.
+
 ## 12. Diagnostic-ID convention
 
 Validator diagnostics use a kebab/slash namespace with a documented prefix:
-`obu-header/`, `obu-reserved/`, `bitstream/`. Example: `obu-header/global-xlayer-required`.
+`obu-header/`, `obu-reserved/`, `bitstream/`, `trailing-bits/`, and
+`byte-alignment/`, `sequence-header/`, `sequence-state/`, and `obu-order/`. Example:
+`obu-header/global-xlayer-required`.
 
 A diagnostic that corresponds directly to a modeled feature MAY instead use the
 Feature ID as a base, optionally with a `.SUFFIX` for a narrower rule:
@@ -176,3 +185,6 @@ AV2-B-ANNEXB-OBU-ENVELOPE.ZERO-LENGTH-OBU
 The base id (before the `.SUFFIX`) must be a known matrix id. New kebab prefixes
 must be added to the documented allowlist in `xtask/src/feature_status.rs` and
 listed here.
+Planned future namespaces are staged in
+[VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md) §2 and should be moved here
+when the corresponding xtask allowlist entry lands.

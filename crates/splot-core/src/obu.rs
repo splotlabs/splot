@@ -22,9 +22,51 @@
 use serde::{Deserialize, Serialize};
 
 use crate::bitio::BitReader;
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, TrailingBitsErrorKind};
 use crate::span::ByteOffset;
 use crate::types::{EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID, ObuType, TemporalLayerId};
+
+/// Payload dispatch status for an OBU whose envelope and header have parsed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadStatus<'a, T> {
+    /// Payload syntax was parsed into a typed representation.
+    Parsed(T),
+    /// Payload bytes are intentionally retained without syntax interpretation.
+    Opaque(&'a [u8]),
+    /// The OBU type is recognized, but its payload parser has not been implemented yet.
+    Unimplemented {
+        /// Feature ID that tracks the missing payload parser.
+        feature: &'static str,
+        /// Raw payload bytes within the declared OBU boundary.
+        payload: &'a [u8],
+    },
+}
+
+/// Parsed OBU payload syntax for OBU types currently modeled by `splot-core`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ParsedObu {
+    /// `temporal_delimiter_obu()` (AV2 v1.0.0 § 5.5).
+    TemporalDelimiter,
+}
+
+impl ParsedObu {
+    /// Returns the implementation-matrix feature ID for this parsed payload syntax.
+    #[must_use]
+    pub const fn feature_id(&self) -> &'static str {
+        match self {
+            Self::TemporalDelimiter => "AV2-5.5-TEMPORAL-DELIMITER",
+        }
+    }
+
+    /// Returns a stable snake-case syntax label for tools and JSON output.
+    #[must_use]
+    pub const fn syntax_name(&self) -> &'static str {
+        match self {
+            Self::TemporalDelimiter => "temporal_delimiter_obu",
+        }
+    }
+}
 
 /// A parsed AV2 OBU header (AV2 v1.0.0 § 5.2.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +83,119 @@ pub struct ObuHeader {
     pub extended_layer_id: ExtendedLayerId,
     /// Number of header bytes consumed (`1` without extension, `2` with).
     pub header_size_bytes: u8,
+}
+
+/// Dispatches an OBU payload according to `obu_type` (AV2 v1.0.0 § 5.2.1).
+///
+/// This is intentionally a partial dispatcher: OBU types whose payload syntax is
+/// not yet implemented return [`PayloadStatus::Unimplemented`] with the matrix
+/// feature ID that owns the missing parser. Payload syntax errors for implemented
+/// cases are returned as typed [`Error`] values.
+///
+/// # Errors
+/// Returns [`Error::InvalidTrailingBits`] or [`Error::UnexpectedEof`] if a
+/// currently implemented temporal-delimiter payload has malformed trailing bits.
+pub fn dispatch_obu_payload<'a>(
+    header: ObuHeader,
+    payload: &'a [u8],
+    payload_offset: ByteOffset,
+) -> Result<PayloadStatus<'a, ParsedObu>> {
+    match header.obu_type {
+        ObuType::Reserved0 | ObuType::Reserved(_) => Ok(PayloadStatus::Opaque(payload)),
+        ObuType::TemporalDelimiter => {
+            parse_empty_payload_syntax(payload, payload_offset)?;
+            Ok(PayloadStatus::Parsed(ParsedObu::TemporalDelimiter))
+        }
+        obu_type => Ok(PayloadStatus::Unimplemented {
+            feature: unimplemented_payload_feature(obu_type),
+            payload,
+        }),
+    }
+}
+
+fn parse_empty_payload_syntax(payload: &[u8], payload_offset: ByteOffset) -> Result<()> {
+    if payload.is_empty() {
+        return Ok(());
+    }
+
+    let mut reader = BitReader::new(payload, payload_offset);
+    let nb_bits = (payload.len() as u64).saturating_mul(8);
+    parse_trailing_bits(&mut reader, nb_bits)
+}
+
+fn unimplemented_payload_feature(obu_type: ObuType) -> &'static str {
+    match obu_type {
+        ObuType::SequenceHeader => "AV2-5.4-SEQUENCE-HEADER",
+        ObuType::MultiFrameHeader => "AV2-5.7-MULTI-FRAME-HEADER",
+        ObuType::ClosedLoopKey
+        | ObuType::OpenLoopKey
+        | ObuType::LeadingTileGroup
+        | ObuType::RegularTileGroup
+        | ObuType::Switch
+        | ObuType::RasFrame => "AV2-5.19-TILE-GROUP",
+        ObuType::MetadataShort | ObuType::MetadataGroup => "AV2-5.17-METADATA",
+        ObuType::LeadingSef
+        | ObuType::RegularSef
+        | ObuType::LeadingTip
+        | ObuType::RegularTip
+        | ObuType::BridgeFrame => "AV2-5.18-FRAME-HEADER",
+        ObuType::BufferRemovalTiming => "AV2-5.12-BUFFER-REMOVAL-TIMING",
+        ObuType::LayerConfigurationRecord => "AV2-5.8-LAYER-CONFIG-RECORD",
+        ObuType::AtlasSegment => "AV2-5.9-ATLAS-SEGMENT",
+        ObuType::OperatingPointSet => "AV2-5.10-OPERATING-POINT-SET",
+        ObuType::Msdo => "AV2-5.6-MSDO",
+        ObuType::QuantizationMatrix => "AV2-5.13-QUANTIZATION-MATRIX",
+        ObuType::FilmGrain => "AV2-5.14-FILM-GRAIN",
+        ObuType::ContentInterpretation => "AV2-5.15-CONTENT-INTERPRETATION",
+        ObuType::Padding => "AV2-5.16-PADDING",
+        ObuType::Reserved0 | ObuType::TemporalDelimiter | ObuType::Reserved(_) => {
+            // Unreachable via dispatch_obu_payload(); present only for match exhaustiveness.
+            "AV2-5.2.1-OBU-DISPATCH"
+        }
+    }
+}
+
+/// Parses AV2 `trailing_bits(nbBits)` from `reader` (AV2 v1.0.0 § 5.2.3).
+///
+/// The parser consumes exactly `nb_bits` bits: the first bit must be
+/// `trailing_one_bit == 1`, and every remaining bit must be zero per AV2 § 6.2.3.
+///
+/// # Errors
+/// Returns [`Error::InvalidTrailingBits`] if `nb_bits == 0`, if the first bit is
+/// not `1`, or if any zero-padding bit is not `0`. Returns
+/// [`Error::UnexpectedEof`] if fewer than `nb_bits` bits remain.
+pub fn parse_trailing_bits(reader: &mut BitReader<'_>, nb_bits: u64) -> Result<()> {
+    if nb_bits == 0 {
+        return Err(Error::InvalidTrailingBits {
+            offset: reader.byte_offset(),
+            bit_offset: reader.bit_offset(),
+            kind: TrailingBitsErrorKind::Empty,
+        });
+    }
+
+    let offset = reader.byte_offset();
+    let bit_offset = reader.bit_offset();
+    if reader.read_bit()? != 1 {
+        return Err(Error::InvalidTrailingBits {
+            offset,
+            bit_offset,
+            kind: TrailingBitsErrorKind::MissingOneBit,
+        });
+    }
+
+    for _ in 1..nb_bits {
+        let offset = reader.byte_offset();
+        let bit_offset = reader.bit_offset();
+        if reader.read_bit()? != 0 {
+            return Err(Error::InvalidTrailingBits {
+                offset,
+                bit_offset,
+                kind: TrailingBitsErrorKind::ZeroBitNotZero,
+            });
+        }
+    }
+
+    Ok(())
 }
 
 /// Parses an AV2 OBU header from `obu_bytes`, whose first byte is at absolute
@@ -169,5 +324,127 @@ mod tests {
             read_obu_header(&[], ByteOffset::new(0)),
             Err(Error::UnexpectedEof { .. })
         ));
+    }
+
+    #[test]
+    fn trailing_bits_accepts_one_bit_followed_by_zeroes() {
+        let mut reader = BitReader::new(&[0b1000_0000], ByteOffset::new(0));
+        parse_trailing_bits(&mut reader, 8).unwrap();
+        assert_eq!(reader.remaining_bits(), 0);
+    }
+
+    #[test]
+    fn trailing_bits_rejects_empty_payload_bits() {
+        let mut reader = BitReader::new(&[], ByteOffset::new(0));
+        assert!(matches!(
+            parse_trailing_bits(&mut reader, 0),
+            Err(Error::InvalidTrailingBits {
+                kind: TrailingBitsErrorKind::Empty,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn trailing_bits_requires_first_bit_to_be_one() {
+        let mut reader = BitReader::new(&[0b0000_0000], ByteOffset::new(0));
+        assert!(matches!(
+            parse_trailing_bits(&mut reader, 8),
+            Err(Error::InvalidTrailingBits {
+                kind: TrailingBitsErrorKind::MissingOneBit,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn trailing_bits_requires_zero_padding() {
+        let mut reader = BitReader::new(&[0b1100_0000], ByteOffset::new(0));
+        assert!(matches!(
+            parse_trailing_bits(&mut reader, 8),
+            Err(Error::InvalidTrailingBits {
+                kind: TrailingBitsErrorKind::ZeroBitNotZero,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn trailing_bits_reports_eof() {
+        let mut reader = BitReader::new(&[], ByteOffset::new(0));
+        assert!(matches!(
+            parse_trailing_bits(&mut reader, 1),
+            Err(Error::UnexpectedEof { .. })
+        ));
+    }
+
+    #[test]
+    fn dispatch_parses_temporal_delimiter_payload() {
+        let header = read_obu_header(&[0x08], ByteOffset::new(0)).unwrap();
+        let status = dispatch_obu_payload(header, &[0x80], ByteOffset::new(1)).unwrap();
+        assert!(matches!(
+            status,
+            PayloadStatus::Parsed(ParsedObu::TemporalDelimiter)
+        ));
+    }
+
+    #[test]
+    fn dispatch_keeps_reserved_payload_opaque() {
+        let header = read_obu_header(&[0x00], ByteOffset::new(0)).unwrap();
+        let payload = [0x40];
+        let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
+        assert_eq!(status, PayloadStatus::Opaque(&payload));
+    }
+
+    #[test]
+    fn dispatch_rejects_bad_empty_syntax_payload_trailing_bits() {
+        let header = read_obu_header(&[0x08], ByteOffset::new(0)).unwrap();
+        assert!(matches!(
+            dispatch_obu_payload(header, &[0x00], ByteOffset::new(1)),
+            Err(Error::InvalidTrailingBits {
+                kind: TrailingBitsErrorKind::MissingOneBit,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn dispatch_keeps_all_zero_reserved_payload_opaque() {
+        let header = read_obu_header(&[0x00], ByteOffset::new(0)).unwrap();
+        let payload = [0x00];
+        let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
+        assert_eq!(status, PayloadStatus::Opaque(&payload));
+    }
+
+    #[test]
+    fn dispatch_marks_sequence_header_payload_unimplemented() {
+        let header = read_obu_header(&[0x04], ByteOffset::new(0)).unwrap();
+        let payload = [0xAB];
+        let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
+        assert_eq!(
+            status,
+            PayloadStatus::Unimplemented {
+                feature: "AV2-5.4-SEQUENCE-HEADER",
+                payload: &payload,
+            }
+        );
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// `trailing_bits(nbBits)` must never panic on arbitrary payload-shaped input.
+        #[test]
+        fn trailing_bits_never_panic(
+            data in proptest::collection::vec(any::<u8>(), 0..64),
+            nb_bits in 0u64..=512,
+        ) {
+            let mut reader = BitReader::new(&data, ByteOffset::new(0));
+            let _ = parse_trailing_bits(&mut reader, nb_bits);
+        }
     }
 }

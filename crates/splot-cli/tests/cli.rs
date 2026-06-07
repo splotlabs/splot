@@ -85,6 +85,37 @@ fn inspect_lists_obu_headers() {
 }
 
 #[test]
+fn inspect_json_includes_payload_status_without_dropping_header_fields() {
+    let path = fixture("conformant.av2");
+    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let records = json.as_array().expect("inspect output is an array");
+    assert!(
+        records.len() >= 2,
+        "stdout was: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    let temporal_delimiter = &records[0];
+    assert_eq!(temporal_delimiter["payload_status"]["status"], "parsed");
+    assert_eq!(
+        temporal_delimiter["payload_status"]["feature"],
+        "AV2-5.5-TEMPORAL-DELIMITER"
+    );
+    assert!(temporal_delimiter.get("header").is_some());
+    assert!(temporal_delimiter.get("payload_len").is_some());
+
+    let sequence_header = &records[1];
+    assert_eq!(sequence_header["payload_status"]["status"], "unimplemented");
+    assert_eq!(
+        sequence_header["payload_status"]["feature"],
+        "AV2-5.4-SEQUENCE-HEADER"
+    );
+    assert!(sequence_header.get("header").is_some());
+}
+
+#[test]
 fn inspect_prints_valid_prefix_before_a_tail_error() {
     // A valid TemporalDelimiter followed by a truncated OBU: the prefix is shown,
     // and the tail parse error sets a non-zero exit.
