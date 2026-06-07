@@ -1317,6 +1317,13 @@ mod tests {
     /// `ci_color_description_idc` (idc < 4, so the `rg(2)` prefix is a single zero
     /// bit). When idc == 0 an explicit BT.709 triple is coded.
     fn content_interpretation_color_obu(color_idc: u32) -> Vec<u8> {
+        // This helper encodes rg(2) with a single terminating zero bit (q == 0), so
+        // it is only correct for idc < 4. Use content_interpretation_color_custom_obu
+        // for larger ids (it emits the full rg(2) unary prefix).
+        assert!(
+            color_idc < 4,
+            "content_interpretation_color_obu only encodes idc < 4; use content_interpretation_color_custom_obu"
+        );
         let mut bits = Bits::default();
         bits.f(0, 2); // ci_scan_type_idc
         bits.bit(1); // ci_color_description_present_flag

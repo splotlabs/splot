@@ -655,6 +655,22 @@ mod tests {
         assert_eq!(preset.derived(), explicit.derived());
         assert_eq!(preset.derived().primaries, (1, 1, 1));
 
+        // Each Table 6.13 preset derives to its exact (primaries, transfer, matrix)
+        // triple, so a wrong constant for any preset is caught.
+        let preset_triple = |idc: u32| {
+            ColorDescription {
+                color_description_idc: idc,
+                primaries: None,
+                full_range_flag: false,
+            }
+            .derived()
+            .primaries
+        };
+        assert_eq!(preset_triple(2), (9, 16, 9)); // BT.2100 PQ
+        assert_eq!(preset_triple(3), (9, 18, 9)); // BT.2100 HLG
+        assert_eq!(preset_triple(4), (1, 13, 0)); // sRGB
+        assert_eq!(preset_triple(5), (1, 13, 5)); // sYCC
+
         // A different preset derives to a different triple.
         let bt2100_pq = ColorDescription {
             color_description_idc: 2,
@@ -662,7 +678,6 @@ mod tests {
             full_range_flag: false,
         };
         assert_ne!(preset.derived(), bt2100_pq.derived());
-        assert_eq!(bt2100_pq.derived().primaries, (9, 16, 9));
 
         // Reserved idc (6..=127) derives to the unspecified (2, 2, 2) triple — the
         // same as an explicitly-unspecified color description — but full_range still
