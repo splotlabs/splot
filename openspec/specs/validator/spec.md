@@ -8,7 +8,10 @@ product: every finding is structured data (stable `rule_id`, `severity`, optiona
 bitstream is a report, never a process failure.
 
 Tracked by Feature IDs: `AV2-5.2.2-OBU-HEADER` (header constraints),
-`AV2-5.3-RESERVED-OBU`, `AV2-7.3-OBU-ORDERING`.
+`AV2-5.3-RESERVED-OBU`, `AV2-5.18.2-FRAME-HEADER-INFO`,
+`AV2-5.18.7.3-TILE-PARAMS`, `AV2-5.19-TILE-GROUP`,
+`AV2-5.15-CONTENT-INTERPRETATION`, `AV2-6.4-SEQUENCE-HEADER-SEMANTICS`,
+`AV2-7.3-OBU-ORDERING`, and `AV2-7.3.8-HLS-AVAILABILITY`.
 ## Requirements
 ### Requirement: structured diagnostics
 
@@ -72,7 +75,10 @@ MAY use the Feature ID as a base with a `.SUFFIX`.
 
 ### Requirement: HLS availability state
 
-`splot-validate` SHALL model in-band HLS availability before an OBU references sequence/HLS state.
+`splot-validate` SHALL model in-band HLS availability before an OBU references
+sequence/HLS state, with optional caller-provided external HLS supplied through
+`ValidationOptions` (AV2 v1.0.0 § 7.3.8). The default `ValidationOptions` SHALL NOT
+assume any external HLS is available.
 
 #### Scenario: unavailable sequence header
 
@@ -80,6 +86,175 @@ MAY use the Feature ID as a base with a `.SUFFIX`.
 - **AND** no matching in-band or caller-provided external sequence header is available
 - **WHEN** validation reaches the reference
 - **THEN** validation SHALL emit `hls/unavailable-sequence-header`.
+
+#### Scenario: multi-frame header references an available sequence header
+
+- **GIVEN** a sequence-header OBU with `seq_header_id` equal to id earlier in the
+  bitstream
+- **AND** a later multi-frame header OBU with `mfh_seq_header_id` equal to id
+- **WHEN** validation reaches the reference
+- **THEN** validation SHALL NOT emit `mfh/sequence-header-unavailable`.
+
+#### Scenario: multi-frame header references an unavailable sequence header
+
+- **GIVEN** a multi-frame header OBU with `mfh_seq_header_id` equal to id
+- **AND** no in-band or caller-provided sequence header with that id is available
+- **WHEN** validation reaches the reference
+- **THEN** validation SHALL emit `mfh/sequence-header-unavailable`.
+
+#### Scenario: external HLS provides the referenced sequence header
+
+- **GIVEN** a multi-frame header OBU with `mfh_seq_header_id` equal to id
+- **AND** no in-band sequence header with that id, but caller-provided external HLS
+  declares id available
+- **WHEN** validation runs with `ExternalHlsMode::Provided`
+- **THEN** validation SHALL NOT emit `mfh/sequence-header-unavailable`.
+
+#### Scenario: external HLS disabled advisory
+
+- **GIVEN** a multi-frame header reference that cannot be satisfied in-band
+- **WHEN** validation runs with the default `ExternalHlsMode::Disabled`
+- **THEN** validation SHALL emit `mfh/sequence-header-unavailable`
+- **AND** SHALL additionally emit the advisory `hls/external-hls-disabled`.
+
+### Requirement: Cross-embedded-layer timing consistency
+
+`splot-validate` SHALL compare timing information (`timing_info()`, reached through
+the content-interpretation OBU) across embedded layers of the same coded video
+sequence, and flag inconsistencies (AV2 v1.0.0 § 6.4.12). The comparison SHALL be
+made only between two timing values that are both present and both decidably within
+the same modeled coded-video-sequence scope.
+
+#### Scenario: matching timing across embedded layers is accepted
+
+- **GIVEN** two content-interpretation OBUs for the same extended layer but
+  different embedded layers, both carrying timing information
+- **WHEN** their `num_units_in_display_tick`, `time_scale`,
+  `equal_picture_interval`, and `num_ticks_per_picture_minus_1` values are equal
+- **THEN** validation SHALL NOT emit any `sequence-header/timing-*-mismatch`.
+
+#### Scenario: mismatched display tick across embedded layers
+
+- **GIVEN** two embedded layers in one coded video sequence that both carry timing
+  information
+- **WHEN** their `num_units_in_display_tick` values differ
+- **THEN** validation SHALL emit `sequence-header/timing-display-tick-mismatch`.
+
+#### Scenario: mismatched time scale across embedded layers
+
+- **GIVEN** two embedded layers in one coded video sequence that both carry timing
+  information
+- **WHEN** their `time_scale` values differ
+- **THEN** validation SHALL emit `sequence-header/timing-time-scale-mismatch`.
+
+#### Scenario: mismatched equal-picture-interval across embedded layers
+
+- **GIVEN** two embedded layers in one coded video sequence that both carry timing
+  information
+- **WHEN** their `equal_picture_interval` values differ
+- **THEN** validation SHALL emit
+  `sequence-header/timing-equal-picture-interval-mismatch`.
+
+#### Scenario: mismatched ticks-per-picture across embedded layers
+
+- **GIVEN** two embedded layers in one coded video sequence that both carry timing
+  information with `equal_picture_interval` equal to 1
+- **WHEN** their `num_ticks_per_picture_minus_1` values differ
+- **THEN** validation SHALL emit `sequence-header/timing-num-ticks-mismatch`.
+
+#### Scenario: timing not yet comparable
+
+- **GIVEN** at most one embedded layer carries present timing information in the
+  modeled coded-video-sequence scope
+- **WHEN** validation runs
+- **THEN** the validator SHALL NOT fabricate a timing-mismatch diagnostic.
+
+### Requirement: Content-interpretation range conformance
+
+`splot-validate` SHALL enforce the locally-decidable § 6.14 range constraints of the
+content-interpretation OBU.
+
+#### Scenario: chroma sample position out of range
+
+- **GIVEN** a content-interpretation OBU with `ci_chroma_sample_position_top` or
+  `ci_chroma_sample_position_bottom` greater than 5
+- **WHEN** validation runs
+- **THEN** validation SHALL emit
+  `content-interpretation/chroma-sample-position-out-of-range`.
+
+#### Scenario: aspect ratio idc out of range
+
+- **GIVEN** a content-interpretation OBU with `ci_aspect_ratio_idc` not equal to 255
+  and greater than 16
+- **WHEN** validation runs
+- **THEN** validation SHALL emit
+  `content-interpretation/aspect-ratio-idc-out-of-range`.
+
+### Requirement: Repeated content-interpretation identity
+
+`splot-validate` SHALL flag a content-interpretation OBU that is repeated for the
+same embedded layer within the modeled coded-video-sequence scope carrying different
+*information* (AV2 v1.0.0 § 6.14: a repeated CI OBU must "contain the same
+information"). The comparison SHALL be sound and complete for the fields it covers:
+it compares `ci_scan_type_idc`, the chroma sample position, `timing_info()`, and the
+**derived** color description and aspect ratio (§ 6.14 Table 6.13 / § 5.15 aspect
+tables, resolving presets, reserved ids, and absence to canonical values including
+the § 5.15 unspecified defaults), and SHALL NOT hard-flag a difference confined to
+the decoder-ignored `ci_reserved_2bit` or an alias-equivalent re-encoding (a preset
+vs. its equivalent explicit triple or SAR, or a reserved id vs. an explicit
+unspecified one).
+
+#### Scenario: repeated content interpretation with differing timing
+
+- **GIVEN** two content-interpretation OBUs for the same `(obu_xlayer_id,
+  obu_mlayer_id)` within one coded video sequence
+- **WHEN** their `timing_info()`, `ci_scan_type_idc`, or chroma sample position
+  differs
+- **THEN** validation SHALL emit `content-interpretation/repeated-ci-not-identical`.
+
+#### Scenario: repeated content interpretation with differing color or aspect
+
+- **GIVEN** two content-interpretation OBUs for the same `(obu_xlayer_id,
+  obu_mlayer_id)` both carrying a color description (or aspect ratio)
+- **WHEN** their derived color information (or derived sample aspect ratio) differs
+  (e.g. BT.709 vs BT.2100 PQ, or SAR 1:1 vs 12:11)
+- **THEN** validation SHALL emit `content-interpretation/repeated-ci-not-identical`.
+
+#### Scenario: repeat differing only in reserved bits
+
+- **GIVEN** two content-interpretation OBUs for the same `(obu_xlayer_id,
+  obu_mlayer_id)` whose parsed § 5.15 fields are identical except `ci_reserved_2bit`
+- **WHEN** validation runs
+- **THEN** validation SHALL NOT emit `content-interpretation/repeated-ci-not-identical`.
+
+#### Scenario: repeat differing only in alias-equivalent color/aspect encoding
+
+- **GIVEN** two content-interpretation OBUs for the same `(obu_xlayer_id,
+  obu_mlayer_id)` whose color (or aspect) is encoded differently but derives to the
+  same value (a preset idc vs. the equivalent explicit triple or SAR, or a reserved
+  id vs. an explicit unspecified one)
+- **WHEN** validation runs
+- **THEN** validation SHALL NOT emit `content-interpretation/repeated-ci-not-identical`.
+
+#### Scenario: repeat with present color/aspect after an unspecified default
+
+- **GIVEN** two content-interpretation OBUs for the same `(obu_xlayer_id,
+  obu_mlayer_id)`, one omitting the color description (or aspect ratio) so it derives
+  to the § 5.15 unspecified default, and the other carrying a specific value (e.g.
+  BT.709, or SAR 1:1)
+- **WHEN** validation runs
+- **THEN** validation SHALL emit `content-interpretation/repeated-ci-not-identical`.
+
+### Requirement: Content-interpretation reserved bits
+
+`splot-validate` SHALL surface a non-zero `ci_reserved_2bit` (AV2 v1.0.0 § 6.14).
+
+#### Scenario: non-zero reserved bits
+
+- **GIVEN** a content-interpretation OBU whose `ci_reserved_2bit` is not 0
+- **WHEN** validation runs
+- **THEN** validation SHALL emit `content-interpretation/reserved-bits-nonzero` as a
+  warning (the value is ignored by a decoder, so it is not a hard error).
 
 ### Requirement: Temporal-unit ordering
 
@@ -150,3 +325,169 @@ available local LCR (same xlayer) or, failing that, an available global LCR whos
 - **WHEN** the validator runs with external HLS disabled
 - **THEN** it SHALL emit a `lcr/global-xlayer-map-missing-xlayer` error.
 
+### Requirement: Sequence headers with segment/tile info run payload-tail validation
+
+`splot-validate` SHALL run the §5.2.1 payload-tail check (`obu_extension_flag` +
+`trailing_bits`) on a sequence header whose `seg_info()` and `tile_params()` now parse
+fully, so a truncated or malformed payload after the segment or tile info is reported
+rather than silently accepted by an early bound.
+
+#### Scenario: malformed tail after segment info is diagnosed
+
+- **GIVEN** a sequence header with `seq_seg_info_present_flag` equal to 1 followed by a
+  malformed §5.2.1 payload tail
+- **WHEN** the validator runs
+- **THEN** it SHALL emit a payload-tail conformance diagnostic
+  (`trailing-bits/*`, `byte-alignment/*`, `obu-header/extension-flag-not-zero`, or
+  `bitstream/parse-error`).
+
+### Requirement: Multi-frame-header availability is gated on full tail validation
+
+`splot-validate` SHALL run the §5.2.1 payload-tail check on a multi-frame header whose
+`seg_info()` now parses fully, and SHALL record its availability only when the tail is
+valid, so a later `cur_mfh_id` reference resolves only against well-formed multi-frame
+headers.
+
+#### Scenario: multi-frame header with segment info is recorded when well-formed
+
+- **GIVEN** a multi-frame header with `mfh_seg_info_present_flag` equal to 1 and a valid
+  payload tail
+- **WHEN** the validator runs
+- **THEN** it SHALL NOT report it bounded
+- **AND** it SHALL record it as an available high-level-syntax object.
+
+### Requirement: Sequence tile-params local constraints are checked
+
+`splot-validate` SHALL check the local §6.17.7 tile constraints on a fully parsed
+sequence tile config and emit the corresponding diagnostics.
+
+#### Scenario: too many tile columns
+
+- **GIVEN** a non-uniform sequence tile config whose derived tile columns exceed
+  `MAX_TILE_COLS`
+- **WHEN** the validator runs
+- **THEN** it SHALL emit `tile-params/tile-cols-out-of-range`.
+
+#### Scenario: too many tile rows
+
+- **GIVEN** a non-uniform sequence tile config whose derived tile rows exceed
+  `MAX_TILE_ROWS`
+- **WHEN** the validator runs
+- **THEN** it SHALL emit `tile-params/tile-rows-out-of-range`.
+
+#### Scenario: non-uniform tiles do not cover the frame
+
+- **GIVEN** a non-uniform sequence tile config whose tile column or row starts do not
+  sum to the frame size in superblocks
+- **WHEN** the validator runs
+- **THEN** it SHALL emit `tile-params/nonuniform-cols-do-not-cover-frame` or
+  `tile-params/nonuniform-rows-do-not-cover-frame` respectively.
+
+#### Scenario: valid tile config is accepted
+
+- **GIVEN** a valid uniform or non-uniform sequence tile config that covers the frame
+  within the tile-count limits
+- **WHEN** the validator runs
+- **THEN** it SHALL NOT emit any `tile-params/*` diagnostic.
+
+### Requirement: Frame-header sequence-header references are checked
+
+`splot-validate` SHALL check a parsed frame-header prefix that directly references
+`seq_header_id_in_frame_header` and emit `hls/unavailable-sequence-header` (error,
+§7.3.8.6) when the referenced sequence header is not available in-band or through
+caller-supplied external HLS. An out-of-range `seq_header_id_in_frame_header` instead
+emits `frame-header/seq-header-id-out-of-range` (error) and is not double-reported as
+unavailable.
+
+#### Scenario: missing direct sequence-header reference
+
+- **GIVEN** a frame header with `cur_mfh_id` equal to 0
+- **AND** `seq_header_id_in_frame_header` names a sequence header not available
+  in-band or externally
+- **WHEN** the validator observes the frame-header prefix
+- **THEN** it SHALL emit `hls/unavailable-sequence-header`.
+
+#### Scenario: direct sequence-header reference is available in-band
+
+- **GIVEN** a frame header with `cur_mfh_id` equal to 0
+- **AND** `seq_header_id_in_frame_header` names an available in-band sequence header
+- **WHEN** the validator observes the frame-header prefix
+- **THEN** it SHALL NOT emit `hls/unavailable-sequence-header`.
+
+#### Scenario: direct sequence-header reference is available externally
+
+- **GIVEN** a frame header with `cur_mfh_id` equal to 0
+- **AND** `seq_header_id_in_frame_header` is declared through external HLS
+- **WHEN** the validator runs with `ExternalHlsMode::Provided`
+- **THEN** it SHALL NOT emit `hls/unavailable-sequence-header`.
+
+### Requirement: Frame-header multi-frame-header references are checked
+
+`splot-validate` SHALL check a parsed frame-header prefix with `cur_mfh_id` greater
+than 0 and emit `hls/unavailable-multi-frame-header` (error, §7.3.8.7) when the
+referenced multi-frame header is not available in-band. An out-of-range `cur_mfh_id`
+instead emits `frame-header/cur-mfh-id-out-of-range` (error) and is not
+double-reported as unavailable.
+
+#### Scenario: missing MFH reference
+
+- **GIVEN** a frame header with `cur_mfh_id` greater than 0
+- **AND** no available multi-frame header with that id
+- **WHEN** the validator observes the frame-header prefix
+- **THEN** it SHALL emit `hls/unavailable-multi-frame-header`.
+
+#### Scenario: MFH reference is available
+
+- **GIVEN** a frame header with `cur_mfh_id` greater than 0
+- **AND** an available multi-frame header with that id referencing an available
+  sequence header
+- **WHEN** the validator observes the frame-header prefix
+- **THEN** it SHALL NOT emit `hls/unavailable-multi-frame-header`
+- **AND** it SHALL use the multi-frame header's sequence-header reference for modeled
+  activation checks.
+
+### Requirement: Sequence activation uses parsed frame-header references
+
+`splot-validate` SHALL use the sequence header referenced by a parsed CLK/OLK
+frame-header prefix to update the active sequence state for the modeled extended
+layer, overriding the OBU-order fallback.
+
+#### Scenario: CLK activates a referenced sequence header
+
+- **GIVEN** two available sequence headers with different layer limits
+- **AND** a CLK frame header that references the second one
+- **WHEN** the validator observes the CLK frame-header prefix
+- **THEN** it SHALL activate the referenced sequence header for that extended layer
+- **AND** subsequent layer-limit checks SHALL use the referenced header, not the
+  OBU-order fallback.
+
+### Requirement: In-CVS repeated sequence header remains detectable across activation
+
+`splot-validate` SHALL keep a CVS-opening sequence header's fingerprint across the
+activating CLK within a temporal unit, so a non-identical repeat of that sequence
+header later in the temporal unit is still flagged as
+`hls/repeated-sequence-header-not-identical`.
+
+#### Scenario: non-identical repeat after the activating CLK
+
+- **GIVEN** a sequence header that opens a coded video sequence
+- **AND** a CLK frame header that references it
+- **AND** a later sequence header in the same temporal unit reusing the id with
+  different payload bytes
+- **WHEN** the validator observes the later sequence header
+- **THEN** it SHALL emit `hls/repeated-sequence-header-not-identical`.
+
+### Requirement: Prefix-only parse is not full frame conformance
+
+`splot-validate` SHALL NOT treat full frame-header or tile-group parsing as complete
+because the prefix skeleton parsed the activation/reference fields, and SHALL NOT emit
+a full-payload trailing-bits diagnostic for a prefix-only parse.
+
+#### Scenario: prefix parser stops after activation fields
+
+- **GIVEN** a frame header that contains additional unparsed §5.18 syntax after the
+  activation/reference fields
+- **WHEN** the prefix parser reaches its designed stopping point
+- **THEN** the parsed-payload summary SHALL report a prefix-only status
+- **AND** the implementation matrix SHALL remain partial for full frame-header
+  coverage.

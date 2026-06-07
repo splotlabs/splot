@@ -1,6 +1,6 @@
 # Tasks
 
-> Status: **proposed**. Blocked on `add-bitstream-writer` and `parse-sequence-header`.
+> Status: **proposed**. Blocked on `add-bitstream-writer` and enough frame/tile header writer support.
 
 ## Implementation
 
