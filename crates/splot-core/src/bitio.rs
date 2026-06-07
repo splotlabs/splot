@@ -299,7 +299,8 @@ impl<'a> BitReader<'a> {
 
         Err(Error::InvalidLeb128 {
             offset: start_offset,
-            message: "LEB128 uses more than 8 bytes (MSB of byte 7 is set)".to_owned(),
+            message: "LEB128 uses more than 8 bytes (MSB of the 8th byte, index 7, is set)"
+                .to_owned(),
         })
     }
 

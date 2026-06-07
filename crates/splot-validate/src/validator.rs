@@ -2588,6 +2588,25 @@ mod tests {
     }
 
     #[test]
+    fn lcr_local_missing_global_is_suppressed_under_external_hls() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // Under external HLS the global LCR could be supplied out-of-band (not
+        // modeled), so the in-band-unavailable error must be suppressed.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu(3, 2, 1, None));
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "lcr/global-lcr-unavailable"),
+            "external HLS may supply the global LCR; report was: {report}"
+        );
+    }
+
+    #[test]
     fn atlas_local_atlas_unavailable_is_flagged() {
         // Local LCR references lcr_local_atlas_id = 4, but no local atlas precedes it.
         let mut data = temporal_delimiter_obu();
@@ -2598,6 +2617,25 @@ mod tests {
                 .errors()
                 .any(|d| d.rule_id == "atlas/local-atlas-unavailable"),
             "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn atlas_local_atlas_unavailable_is_suppressed_under_external_hls() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // Under external HLS the local atlas could be supplied out-of-band (not
+        // modeled), so the in-band-unavailable error must be suppressed.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu(3, 0, 1, Some(4)));
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "atlas/local-atlas-unavailable"),
+            "external HLS may supply the local atlas; report was: {report}"
         );
     }
 

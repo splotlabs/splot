@@ -298,8 +298,10 @@ pub fn parse_atlas_segment(reader: &mut BitReader<'_>) -> Result<AtlasSegment> {
         }
     };
 
-    // Defensive: numSegments drives the label loop; the per-mode parsers already cap
-    // their counts, so this only fires for the derived enhanced single-region count.
+    // numSegments drives the label loop. This is unreachable via the per-mode parsers
+    // (each caps its count: the single-region path checks num_regions_in_atlas, the
+    // others check minus_1 >= MAX_NUM_ATLAS_SEGMENTS); kept as a safety net in case a
+    // future mode derives numSegments differently.
     if num_segments > MAX_NUM_ATLAS_SEGMENTS {
         return Err(Error::InvalidAtlasSegment {
             offset: reader.byte_offset(),
