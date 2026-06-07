@@ -1462,6 +1462,73 @@ mod tests {
     }
 
     #[test]
+    fn mfh_reference_not_in_external_hls_set_is_flagged_without_advisory() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // External HLS is Provided but does not declare id 5, so the reference is
+        // genuinely unavailable: the error fires, but the external-hls-disabled
+        // advisory must be suppressed (external HLS is not disabled).
+        let data = stream_with_mfh_reference(0, 5);
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(99),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "mfh/sequence-header-unavailable"),
+            "report was: {report}"
+        );
+        assert!(
+            !report
+                .warnings()
+                .any(|d| d.rule_id == "hls/external-hls-disabled"),
+            "advisory must be suppressed when external HLS is Provided; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn external_hls_suppresses_no_active_sequence_header() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // A multi-frame header at xlayer 0 with no in-band sequence header at all.
+        let mut data = temporal_delimiter_obu();
+        data.extend(multi_frame_header_obu(5));
+
+        // Default (external disabled): no in-band active sequence -> flagged.
+        let default_report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            default_report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/no-active-sequence-header"),
+            "report was: {default_report}"
+        );
+
+        // External HLS provided: an external sequence header may be the active one,
+        // so the missing-in-band-sequence error is suppressed (the validator must not
+        // reject a conformant external-HLS stream), and the referenced id 5 resolves
+        // externally.
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(5),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/no-active-sequence-header"),
+            "report was: {report}"
+        );
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "mfh/sequence-header-unavailable"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
     fn mfh_reference_to_non_activating_in_band_sequence_header_is_available() {
         // A sequence header that cannot activate (tlayer != 0, 0x05) is still
         // "included in the bitstream", so its seq_header_id is available (§7.3.8.6).

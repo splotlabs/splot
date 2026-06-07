@@ -12,7 +12,7 @@ use splot_core::headers::content_interpretation::{
     ContentInterpretation, parse_content_interpretation,
 };
 use splot_core::headers::sequence::{
-    SequenceHeaderGeneral, SequenceHeaderId, TimingInfo, parse_sequence_header_general,
+    SequenceHeaderGeneral, SequenceHeaderId, TimingInfo, parse_sequence_header,
 };
 use splot_core::hls::parse_multi_frame_header;
 use splot_core::span::{BitOffset, ByteOffset};
@@ -70,9 +70,10 @@ enum HlsResolution {
 }
 
 impl HlsAvailabilityStore {
-    /// Records a sequence header as available in-band (AV2 § 7.3.8.6).
-    fn record_sequence_header(&mut self, id: SequenceHeaderId) {
-        self.sequence_header_ids.insert(u32::from(id.get()));
+    /// Records a sequence header (by `seq_header_id`) as available in-band
+    /// (AV2 § 7.3.8.6).
+    fn record_sequence_header(&mut self, seq_header_id: u32) {
+        self.sequence_header_ids.insert(seq_header_id);
     }
 
     /// Resolves a `seq_header_id` reference against in-band then caller-provided
@@ -116,7 +117,7 @@ impl ValidatorContext {
         if obu.header.obu_type == ObuType::SequenceHeader {
             self.observe_sequence_header(obu, report);
         } else {
-            self.validate_active_sequence_limits(obu, report);
+            self.validate_active_sequence_limits(obu, options, report);
         }
 
         match obu.header.obu_type {
@@ -313,21 +314,28 @@ impl ValidatorContext {
 
     fn observe_sequence_header(&mut self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        let Ok(sequence_header) = parse_sequence_header_general(&mut reader) else {
+        // Gate availability and activation on the full sequence_header_obu() parse
+        // (the same parser the SequenceHeaderSyntax check uses), accepting a
+        // bounded-but-Ok parse (one that stops at an unimplemented child config). A
+        // header that fails its child configs or payload is malformed and is NOT
+        // recorded as available, so a later MFH cannot resolve against it
+        // (AV2 § 7.3.8.6).
+        let Ok(sequence_header) = parse_sequence_header(&mut reader) else {
             return;
         };
+        let general = sequence_header.general;
 
-        // Record in-band availability for ANY parseable sequence header (AV2
+        // Record in-band availability for ANY well-formed sequence header (AV2
         // § 7.3.8.6), regardless of whether it can activate: "inclusion in the
         // bitstream" makes its seq_header_id available to later references.
         self.hls
-            .record_sequence_header(sequence_header.seq_header_id);
+            .record_sequence_header(u32::from(general.seq_header_id.get()));
 
         if !sequence_header_can_activate(obu) {
             return;
         }
 
-        let seq_header_id = sequence_header.seq_header_id;
+        let seq_header_id = general.seq_header_id;
         let xlayer = obu.header.extended_layer_id;
         let fingerprint = payload_fingerprint(obu.payload);
 
@@ -375,7 +383,7 @@ impl ValidatorContext {
         // sequence header from the CLK frame header instead of the first base-layer copy.
         self.sequence_headers
             .entry(seq_header_id)
-            .or_insert(sequence_header);
+            .or_insert(general);
         self.active_sequence_by_xlayer
             .entry(xlayer)
             .or_insert(seq_header_id);
@@ -384,6 +392,7 @@ impl ValidatorContext {
     fn validate_active_sequence_limits(
         &self,
         obu: &ObuEnvelope<'_>,
+        options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
         if !requires_active_sequence(obu) {
@@ -394,6 +403,16 @@ impl ValidatorContext {
             .active_sequence_by_xlayer
             .get(&obu.header.extended_layer_id)
         else {
+            // No in-band sequence header has activated for this extended layer. With
+            // external HLS, an externally-provided sequence header may be the active
+            // one (AV2 § 7.3.8.1: external HLS objects "remain available ... until
+            // superseded"), and its layer limits are not modeled here, so the
+            // conservative (sound) choice is to not report it missing — the
+            // validator must never reject a conformant external-HLS stream. In the
+            // default (external disabled) mode this stays a hard error.
+            if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
+                return;
+            }
             report.push(sequence_state_error(
                 "sequence-state/no-active-sequence-header",
                 "7.3.8",

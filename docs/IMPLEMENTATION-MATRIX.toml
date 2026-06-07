@@ -2959,7 +2959,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-validate/src/validator.rs::tests::hls_repeated_non_identical_sequence_header_is_flagged", "crates/splot-validate/src/validator.rs::tests::mfh_referencing_missing_sequence_header_is_flagged", "crates/splot-validate/src/validator.rs::tests::mfh_reference_satisfied_by_external_hls_is_accepted", "crates/splot-validate/src/options.rs::tests"]
+tests = ["crates/splot-validate/src/validator.rs::tests::hls_repeated_non_identical_sequence_header_is_flagged", "crates/splot-validate/src/validator.rs::tests::mfh_referencing_missing_sequence_header_is_flagged", "crates/splot-validate/src/validator.rs::tests::mfh_reference_satisfied_by_external_hls_is_accepted", "crates/splot-validate/src/validator.rs::tests::external_hls_suppresses_no_active_sequence_header", "crates/splot-validate/src/options.rs::tests"]
 commands = ["cargo test -p splot-validate hls", "cargo test -p splot-validate mfh_"]
 fixtures = []
 diagnostics = ["hls/repeated-sequence-header-not-identical", "sequence-state/no-active-sequence-header", "mfh/sequence-header-unavailable", "hls/external-hls-disabled"]

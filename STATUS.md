@@ -158,13 +158,20 @@ group, entropy coder, decoder, or encoder.
 
 **Availability store and reference check (`context.rs`):**
 
-- `HlsAvailabilityStore` records every in-band sequence header's `seq_header_id`
-  (any parseable sequence header, activating or not; §7.3.8.6).
+- `HlsAvailabilityStore` records a sequence header's `seq_header_id` only when its
+  full `sequence_header_obu()` parse succeeds (fully or bounded at an unimplemented
+  child) — a header that fails its child configs/payload is malformed and is not
+  recorded — activating or not (§7.3.8.6).
 - The multi-frame header's `mfh_seq_header_id` reference is resolved against the
   in-band store, then caller-provided external HLS. An unresolved reference emits
   `mfh/sequence-header-unavailable` (error, §7.3.8.6/§7.3.8.7); under the default
   (external disabled) it also emits the advisory `hls/external-hls-disabled`
   (warning, §7.3.8.1).
+- When external HLS is `Provided`, `sequence-state/no-active-sequence-header` is
+  suppressed for an extended layer with no in-band active sequence: an
+  externally-provided sequence header may be the active one (§7.3.8.1), so the
+  validator must not reject the conformant external-HLS stream. The default
+  (external disabled) mode is unchanged.
 
 **Bounded honestly (blocked on `AV2-5.18-FRAME-HEADER` / CLK activation):**
 
@@ -185,7 +192,7 @@ group, entropy coder, decoder, or encoder.
 ```text
 cargo fmt --all -- --check                                                      # ok (no diff)
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # ok, 0 warnings
-cargo test --workspace --all-targets --locked                                   # ok: 223 passed, 0 failed
+cargo test --workspace --all-targets --locked                                   # ok: 225 passed, 0 failed
 cargo test -p splot-validate mfh_                                               # ok
 cargo test -p splot-validate options                                            # ok
 cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md    # ok (114 features)
@@ -196,7 +203,7 @@ openspec validate sequence-timing-hls-availability --strict                     
 ```
 
 Test breakdown after PR B: `splot-core` 123, `splot-encode` 2, `splot-validate`
-72, `splot-cli` 9, `xtask` 17 (223 total).
+74, `splot-cli` 9, `xtask` 17 (225 total).
 
 ## Implemented
 
