@@ -290,7 +290,7 @@ tile-group payload. New fixture `tests/fixtures/frame-header-prefix.av2`.
 ```text
 cargo fmt --all -- --check                                                      # ok (no diff)
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # ok, 0 warnings
-cargo test --workspace --all-targets --locked                                   # ok: 270 passed, 0 failed
+cargo test --workspace --all-targets --locked                                   # ok: 271 passed, 0 failed
 cargo test -p splot-core frame_header                                           # ok
 cargo test -p splot-core tile_group                                            # ok
 cargo test -p splot-validate frame_header                                      # ok
@@ -304,7 +304,7 @@ cargo run -p splot-cli -- inspect tests/fixtures/frame-header-prefix.av2 --json 
 ```
 
 Test breakdown after this phase: `splot-core` 138, `splot-encode` 2,
-`splot-validate` 102, `splot-cli` 11, `xtask` 17 (270 total).
+`splot-validate` 103, `splot-cli` 11, `xtask` 17 (271 total).
 
 **Code-review follow-ups** (addressing the PR #16 AI reviews):
 
@@ -314,6 +314,14 @@ Test breakdown after this phase: `splot-core` 138, `splot-encode` 2,
   `obu_tlayer_id == 0` but may carry a non-zero `obu_mlayer_id`, so the previous order
   could falsely flag `sequence-state/mlayer-exceeds-max` against the stale fallback
   header.
+- Activation applies to *every* parsed frame header, not only CLK/OLK key frames:
+  AV2 §5.18.2 calls `load_sequence_header()` before the `if (keyFrame)` block, so a
+  non-key regular tile group referencing a more-permissive sequence header is checked
+  against that header rather than the stale fallback.
+- Multi-frame-header availability is kept monotonic, matching the sequence-header
+  store: the §7.3.8.1 "HLS OBUs must be resent at each random access point"
+  requirement (which the spec NOTE applies to multi-frame headers) is a documented
+  false negative until random-access state is modeled — never a false positive.
 - MFH availability recording is gated on a valid §5.2.1 payload tail (consistent with
   the sequence-header path): a fully-parsed MFH with a malformed tail is not recorded,
   so a later `cur_mfh_id` reference treats it as unavailable.

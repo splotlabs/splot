@@ -214,13 +214,14 @@ impl ValidatorContext {
 
         let resolved = self.resolve_frame_header_reference(&prefix, obu, options, report);
 
-        // AV2 § 5.18.2: a parsed CLK/OLK frame header activates the referenced
-        // sequence header for its extended layer, overriding the OBU-order fallback.
-        // Only an in-band reference is activated (its layer limits are modeled); an
-        // external reference already suppresses the layer-limit checks.
-        if prefix.is_key_frame
-            && let Some(seq_id) = resolved
-        {
+        // AV2 § 5.18.2: frame_header_info() calls load_sequence_header() for EVERY
+        // frame (both cur_mfh_id == 0 and cur_mfh_id > 0), before the `if (keyFrame)`
+        // block — so any parsed frame header, not only a CLK/OLK key frame, activates
+        // the referenced sequence header for its extended layer, overriding the
+        // OBU-order fallback. Only an in-band reference is activated (its layer limits
+        // are modeled); an external reference already suppresses the layer-limit
+        // checks.
+        if let Some(seq_id) = resolved {
             self.active_sequence_by_xlayer
                 .insert(obu.header.extended_layer_id, seq_id);
         }

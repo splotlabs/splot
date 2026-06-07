@@ -2226,4 +2226,27 @@ mod tests {
             "external HLS may supply the MFH; report was: {report}"
         );
     }
+
+    #[test]
+    fn frame_header_activation_applies_to_non_key_frames() {
+        // AV2 §5.18.2 calls load_sequence_header() for every frame, before the
+        // `if (keyFrame)` block — not just CLK/OLK key frames. seq 0 allows only
+        // tlayer 0; seq 1 allows tlayer 1. A non-key OBU_REGULAR_TILE_GROUP at tlayer 1
+        // that references seq 1 activates it, so it is checked against seq 1 (allows
+        // tlayer 1) rather than the stale seq-0 fallback — no false positive.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 0)));
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(1, 1, 0)));
+        // OBU_REGULAR_TILE_GROUP (type 7), tlayer 1, mlayer 0, xlayer 0, references seq 1.
+        data.extend(frame_obu_direct_seq_ref_layer(7, 1, 0, 0, 1));
+
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/tlayer-exceeds-max"),
+            "a non-key frame must activate its referenced (permissive) seq header; \
+             report was: {report}"
+        );
+    }
 }
