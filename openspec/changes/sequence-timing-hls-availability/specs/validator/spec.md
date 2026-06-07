@@ -83,9 +83,11 @@ same embedded layer within the modeled coded-video-sequence scope carrying diffe
 information"). The comparison SHALL be sound and complete for the fields it covers:
 it compares `ci_scan_type_idc`, the chroma sample position, `timing_info()`, and the
 **derived** color description and aspect ratio (§ 6.14 Table 6.13 / § 5.15 aspect
-tables), and SHALL NOT hard-flag a difference confined to the decoder-ignored
-`ci_reserved_2bit` or an alias-equivalent re-encoding (a preset vs. its equivalent
-explicit triple or SAR).
+tables, resolving presets, reserved ids, and absence to canonical values including
+the § 5.15 unspecified defaults), and SHALL NOT hard-flag a difference confined to
+the decoder-ignored `ci_reserved_2bit` or an alias-equivalent re-encoding (a preset
+vs. its equivalent explicit triple or SAR, or a reserved id vs. an explicit
+unspecified one).
 
 #### Scenario: repeated content interpretation with differing timing
 
@@ -114,9 +116,19 @@ explicit triple or SAR).
 
 - **GIVEN** two content-interpretation OBUs for the same `(obu_xlayer_id,
   obu_mlayer_id)` whose color (or aspect) is encoded differently but derives to the
-  same value (a preset idc vs. the equivalent explicit triple or SAR)
+  same value (a preset idc vs. the equivalent explicit triple or SAR, or a reserved
+  id vs. an explicit unspecified one)
 - **WHEN** validation runs
 - **THEN** validation SHALL NOT emit `content-interpretation/repeated-ci-not-identical`.
+
+#### Scenario: repeat with present color/aspect after an unspecified default
+
+- **GIVEN** two content-interpretation OBUs for the same `(obu_xlayer_id,
+  obu_mlayer_id)`, one omitting the color description (or aspect ratio) so it derives
+  to the § 5.15 unspecified default, and the other carrying a specific value (e.g.
+  BT.709, or SAR 1:1)
+- **WHEN** validation runs
+- **THEN** validation SHALL emit `content-interpretation/repeated-ci-not-identical`.
 
 ### Requirement: Content-interpretation reserved bits
 

@@ -110,18 +110,19 @@ checks are hard errors (both are "requirement of bitstream conformance" in §6.1
 The repeated-CI check compares parsed §6.14 *information* (a weaker requirement than
 the sequence header's bit-identity in §7.3.8). It excludes the decoder-ignored
 `ci_reserved_2bit`, and compares the color description and aspect ratio by their
-**derived** values — `splot-core` normalizes the §6.14 Table 6.13 color presets and
-the §5.15 aspect tables (`ColorDescription::derived` / `AspectRatioInfo::derived_sar`)
-— so an alias-equivalent re-encoding (a preset vs. the equivalent explicit triple or
-SAR) is not flagged while genuinely different color or aspect information is. The
-derived SAR is reduced to lowest terms (so `2:2` equals `1:1`) and any zero
-dimension maps to the canonical unspecified `(0, 0)` (§5.15). Color and aspect are
-compared only when present in both OBUs; a present-vs-absent difference is left
-unflagged because the absent side defaults to unspecified values that could alias
-the present one (a sound-over-complete false negative, never a false-positive). The
-per-layer baseline records the *first present* color/aspect, so an absent-first CI
-does not hide a genuine difference between two later present values
-(absent → BT.709 → BT.2100 is flagged).
+**derived** values — `splot-core` resolves every encoding to a canonical value
+(`ContentInterpretation::derived_color` / `derived_sample_aspect_ratio`): the §6.14
+Table 6.13 color presets and explicit triple, the §5.15 aspect tables (reduced to
+lowest terms, with any zero dimension mapping to the unspecified `(0, 0)`), and the
+§5.15 *unspecified defaults* for a reserved id or an absent description
+(`(CP/TC/MC_UNSPECIFIED) = (2, 2, 2)` for color, `(0, 0)` for aspect). Because every
+case resolves to a defined value, the values are compared unconditionally: an
+alias-equivalent re-encoding (a preset vs. the equivalent explicit triple/SAR, or a
+reserved id vs. an explicit unspecified one) is not flagged, while genuinely
+different information — including a present value vs. an absent (unspecified) one
+(e.g. absent → BT.709) — is. The first CI record is therefore a complete baseline
+and is kept as-is. A reserved `ci_aspect_ratio_idc` (already an out-of-range error)
+yields no derived SAR and is not double-reported by this check.
 
 PR B (HLS availability, §7.3.8):
 

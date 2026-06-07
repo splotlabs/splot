@@ -1480,6 +1480,112 @@ mod tests {
         );
     }
 
+    /// CI OBU (xlayer 0 / mlayer 0) carrying a color description with an arbitrary
+    /// `ci_color_description_idc` (properly `rg(2)`-encoded), the explicit triple when
+    /// `idc == 0`, and the given full-range flag.
+    fn content_interpretation_color_custom_obu(
+        color_idc: u32,
+        triple: Option<(u8, u8, u8)>,
+        full_range: bool,
+    ) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(0, 2); // ci_scan_type_idc
+        bits.bit(1); // ci_color_description_present_flag
+        bits.bit(0); // ci_chroma_sample_position_present_flag
+        bits.bit(0); // ci_aspect_ratio_info_present_flag
+        bits.bit(0); // ci_timing_info_present_flag
+        bits.f(0, 2); // ci_reserved_2bit
+        // rg(2): (idc >> 2) one bits, a terminating zero, then the 2-bit remainder.
+        for _ in 0..(color_idc >> 2) {
+            bits.bit(1);
+        }
+        bits.bit(0);
+        bits.f(color_idc & 0b11, 2);
+        if color_idc == 0 {
+            let (cp, tc, mc) = triple.unwrap_or((1, 1, 1));
+            bits.f(u32::from(cp), 8);
+            bits.f(u32::from(tc), 8);
+            bits.f(u32::from(mc), 8);
+        }
+        bits.bit(u8::from(full_range)); // ci_full_range_flag
+        bits.bit(0); // obu_extension_flag
+        bits.bit(1); // trailing_one_bit
+        annex_b_obu_with_header(&layer_obu_header(24, 0, 0, 0), &bits.into_bytes())
+    }
+
+    #[test]
+    fn ci_repeat_reserved_color_vs_explicit_unspecified_is_not_flagged() {
+        // A reserved color id (6) is decoder-ignored -> unspecified (2, 2, 2), the
+        // same derived color as an explicit (2, 2, 2) with the same full-range flag,
+        // so the repeat must not be flagged.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(content_interpretation_color_custom_obu(6, None, false)); // reserved
+        data.extend(content_interpretation_color_custom_obu(
+            0,
+            Some((2, 2, 2)),
+            false,
+        )); // explicit unspecified
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/repeated-ci-not-identical"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_repeat_present_color_vs_absent_default_is_flagged() {
+        // An absent color description defaults to unspecified (2, 2, 2); a present
+        // BT.709 carries different information, so the repeat is flagged.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(content_interpretation_obu(0, 0, None)); // color absent
+        data.extend(content_interpretation_color_obu(1)); // BT.709
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/repeated-ci-not-identical"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_repeat_present_aspect_vs_absent_default_is_flagged() {
+        // An absent aspect ratio defaults to unspecified (0, 0); a present SAR 1:1
+        // carries different information, so the repeat is flagged.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(content_interpretation_obu(0, 0, None)); // aspect absent
+        data.extend(content_interpretation_aspect_obu(1)); // SAR 1:1
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/repeated-ci-not-identical"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_repeat_both_absent_color_and_aspect_is_not_flagged() {
+        // Two CIs that both omit color and aspect carry the same (unspecified)
+        // information and must not be flagged.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(content_interpretation_obu(0, 0, None));
+        data.extend(content_interpretation_obu(0, 0, None));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/repeated-ci-not-identical"),
+            "report was: {report}"
+        );
+    }
+
     #[test]
     fn ci_zero_display_tick_is_reported_under_timing_namespace() {
         // A timing-range violation carried by a content-interpretation OBU is

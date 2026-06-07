@@ -64,45 +64,66 @@ pub struct ColorDescription {
     pub full_range_flag: bool,
 }
 
+/// The unspecified `(CP_UNSPECIFIED, TC_UNSPECIFIED, MC_UNSPECIFIED)` color-primaries
+/// triple (AV2 § 6.14: each constant is `2`). It is the default when no color
+/// description is present and the derived value of any reserved color id.
+const UNSPECIFIED_COLOR_PRIMARIES: (u8, u8, u8) = (2, 2, 2);
+
 /// Derived color information for AV2 § 6.14 "same information" comparisons.
 ///
 /// A content-interpretation OBU can encode the same color information in more than
-/// one way (an explicit triple with `ci_color_description_idc == 0`, or a Table 6.13
-/// preset id), so two descriptions carry the same information iff their *derived*
-/// values match. See [`ColorDescription::derived`].
+/// one way (an explicit triple with `ci_color_description_idc == 0`, a Table 6.13
+/// preset id, a reserved id, or by omitting the color description entirely — all of
+/// which resolve to a defined value), so two layers carry the same information iff
+/// their *derived* values match. See [`ColorDescription::derived`] and
+/// [`ContentInterpretation::derived_color`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DerivedColorInfo {
-    /// `(ci_color_primaries, ci_transfer_characteristics, ci_matrix_coefficients)`
-    /// for an explicit (`idc == 0`) or Table 6.13 preset (`idc` in `1..=5`)
-    /// description; `None` for a reserved `idc` (`6..=127`), which decoders ignore so
-    /// it carries no defined color information.
-    pub primaries: Option<(u8, u8, u8)>,
+    /// `(ci_color_primaries, ci_transfer_characteristics, ci_matrix_coefficients)`:
+    /// the explicit triple for `idc == 0`, the Table 6.13 preset for `idc` in
+    /// `1..=5`, or the unspecified `(2, 2, 2)` for a reserved `idc` (`6..=127`),
+    /// which decoders ignore.
+    pub primaries: (u8, u8, u8),
     /// `ci_full_range_flag`.
     pub full_range: bool,
 }
 
+impl DerivedColorInfo {
+    /// The derived color information when no color description is present (AV2
+    /// § 5.15: `ci_color_*` default to `*_UNSPECIFIED` and `ci_full_range_flag` to 0).
+    pub const UNSPECIFIED: Self = Self {
+        primaries: UNSPECIFIED_COLOR_PRIMARIES,
+        full_range: false,
+    };
+}
+
 impl ColorDescription {
-    /// Returns the derived color information per AV2 § 6.14 (Table 6.13): explicit
-    /// values for `idc == 0`, the preset triple for `idc` in `1..=5`, or an
-    /// unspecified (reserved) marker for `idc` in `6..=127`.
+    /// Returns the derived color information per AV2 § 6.14 (Table 6.13): the explicit
+    /// values for `idc == 0`, the preset triple for `idc` in `1..=5`, or the
+    /// unspecified `(2, 2, 2)` for a reserved `idc` (`6..=127`), which decoders ignore
+    /// (so it carries the same color information as an absent or explicitly
+    /// unspecified description).
     #[must_use]
     pub fn derived(&self) -> DerivedColorInfo {
         // AV2 § 6.14 Table 6.13: ci_color_description_idc has the same interpretation
         // as ops_color_description_idc.
         let primaries = match self.color_description_idc {
-            0 => self.primaries.map(|p| {
-                (
-                    p.color_primaries,
-                    p.transfer_characteristics,
-                    p.matrix_coefficients,
-                )
-            }),
-            1 => Some((1, 1, 1)),  // BT.709 SDR
-            2 => Some((9, 16, 9)), // BT.2100 PQ
-            3 => Some((9, 18, 9)), // BT.2100 HLG
-            4 => Some((1, 13, 0)), // sRGB
-            5 => Some((1, 13, 5)), // sYCC
-            _ => None,             // 6..=127 reserved -> ignored by decoders
+            0 => self
+                .primaries
+                .map(|p| {
+                    (
+                        p.color_primaries,
+                        p.transfer_characteristics,
+                        p.matrix_coefficients,
+                    )
+                })
+                .unwrap_or(UNSPECIFIED_COLOR_PRIMARIES),
+            1 => (1, 1, 1),                   // BT.709 SDR
+            2 => (9, 16, 9),                  // BT.2100 PQ
+            3 => (9, 18, 9),                  // BT.2100 HLG
+            4 => (1, 13, 0),                  // sRGB
+            5 => (1, 13, 5),                  // sYCC
+            _ => UNSPECIFIED_COLOR_PRIMARIES, // 6..=127 reserved -> ignored by decoders
         };
         DerivedColorInfo {
             primaries,
@@ -216,6 +237,27 @@ pub struct ContentInterpretation {
     /// `ci_reserved_2bit`; AV2 § 6.14 requires this to be 0 (the value is otherwise
     /// ignored by a decoder). The validator surfaces a non-zero value.
     pub reserved_2bit: u8,
+}
+
+impl ContentInterpretation {
+    /// Returns the derived color information, resolving an absent color description
+    /// to its § 5.15 default (`*_UNSPECIFIED`, full range 0). Suitable for § 6.14
+    /// "same information" comparisons across OBUs regardless of how (or whether) the
+    /// color description is signalled.
+    #[must_use]
+    pub fn derived_color(&self) -> DerivedColorInfo {
+        self.color_description
+            .map_or(DerivedColorInfo::UNSPECIFIED, |c| c.derived())
+    }
+
+    /// Returns the derived sample aspect ratio (normalized, see
+    /// [`AspectRatioInfo::derived_sar`]), resolving an absent aspect ratio to the
+    /// unspecified `(0, 0)`. Returns `None` only for a reserved `ci_aspect_ratio_idc`
+    /// (`17..=254`), which is itself a § 6.14 conformance violation flagged elsewhere.
+    #[must_use]
+    pub fn derived_sample_aspect_ratio(&self) -> Option<(u32, u32)> {
+        self.aspect_ratio.map_or(Some((0, 0)), |a| a.derived_sar())
+    }
 }
 
 /// Parses `content_interpretation_obu()` (AV2 v1.0.0 § 5.15).
@@ -611,7 +653,7 @@ mod tests {
             full_range_flag: false,
         };
         assert_eq!(preset.derived(), explicit.derived());
-        assert_eq!(preset.derived().primaries, Some((1, 1, 1)));
+        assert_eq!(preset.derived().primaries, (1, 1, 1));
 
         // A different preset derives to a different triple.
         let bt2100_pq = ColorDescription {
@@ -620,16 +662,31 @@ mod tests {
             full_range_flag: false,
         };
         assert_ne!(preset.derived(), bt2100_pq.derived());
-        assert_eq!(bt2100_pq.derived().primaries, Some((9, 16, 9)));
+        assert_eq!(bt2100_pq.derived().primaries, (9, 16, 9));
 
-        // Reserved idc (6..=127) derives to None (unspecified); full_range still counts.
+        // Reserved idc (6..=127) derives to the unspecified (2, 2, 2) triple — the
+        // same as an explicitly-unspecified color description — but full_range still
+        // counts.
         let reserved = ColorDescription {
             color_description_idc: 50,
             primaries: None,
             full_range_flag: true,
         };
-        assert_eq!(reserved.derived().primaries, None);
+        assert_eq!(reserved.derived().primaries, (2, 2, 2));
         assert!(reserved.derived().full_range);
+
+        // A reserved id and an explicit (2, 2, 2) with the same full_range carry the
+        // same derived color information.
+        let explicit_unspecified = ColorDescription {
+            color_description_idc: 0,
+            primaries: Some(ColorPrimariesTriple {
+                color_primaries: 2,
+                transfer_characteristics: 2,
+                matrix_coefficients: 2,
+            }),
+            full_range_flag: true,
+        };
+        assert_eq!(reserved.derived(), explicit_unspecified.derived());
     }
 
     #[test]

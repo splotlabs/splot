@@ -152,14 +152,15 @@ impl ValidatorContext {
                     offset: obu.offset,
                 });
             }
-            Entry::Occupied(mut slot) => {
+            Entry::Occupied(slot) => {
                 let existing = slot.get();
                 // AV2 § 6.14: a repeated CI OBU for the same embedded layer within a
                 // CVS must carry the same *information* (a weaker requirement than the
-                // sequence header's bit-identity in § 7.3.8). The decoder-ignored
-                // ci_reserved_2bit is normalized out before comparing, so a difference
-                // confined to the reserved bits is not flagged here (it is surfaced
-                // separately as a warning by the stateless syntax check).
+                // sequence header's bit-identity in § 7.3.8). Each compared field
+                // resolves to a canonical value (incl. unspecified defaults for absent
+                // color/aspect), so the first record is a complete baseline and is
+                // kept as-is (matching the sequence-header first-wins approximation);
+                // the decoder-ignored ci_reserved_2bit is excluded.
                 if content_interpretation_information_differs(
                     &existing.content,
                     &content_interpretation,
@@ -179,23 +180,6 @@ impl ValidatorContext {
                         .with_spec_section("6.14")
                         .with_byte_offset(obu.offset),
                     );
-                }
-                // Keep the first record for the layer (matching the sequence-header
-                // first-wins approximation), but fill in the color description and
-                // aspect ratio once they first appear. Those two fields are compared
-                // only when present in BOTH OBUs (present-vs-absent is left unflagged,
-                // since the absent side defaults to unspecified values that could
-                // alias the present one), so without this fill-in an absent-first
-                // baseline would hide a genuine difference between two LATER present
-                // values (e.g. absent -> BT.709 -> BT.2100). Recording the first
-                // present value as the baseline makes that present-vs-present
-                // difference detectable.
-                let record = slot.get_mut();
-                if record.content.color_description.is_none() {
-                    record.content.color_description = content_interpretation.color_description;
-                }
-                if record.content.aspect_ratio.is_none() {
-                    record.content.aspect_ratio = content_interpretation.aspect_ratio;
                 }
             }
         }
@@ -418,12 +402,14 @@ fn compare_timing_across_embedded_layers(
 ///
 /// `ci_reserved_2bit` is excluded — it is decoder-ignored (§ 6.14) and surfaced
 /// separately as a warning. The color description and aspect ratio are compared by
-/// their *derived* values (§ 6.14 Table 6.13 / the § 5.15 aspect tables), so an
-/// alias-equivalent re-encoding (a preset vs. the equivalent explicit triple / SAR)
-/// is not flagged, while genuinely different color or aspect information is. They are
-/// compared only when present in both OBUs: a present-vs-absent difference is left
-/// unflagged because the absent side defaults to unspecified values that could alias
-/// the present one (a sound-over-complete false negative, never a false positive).
+/// their *derived* values (§ 6.14 Table 6.13 / the § 5.15 aspect tables), resolving
+/// presets, reserved ids, and absence to their canonical (incl. unspecified)
+/// values: an alias-equivalent re-encoding (a preset vs. the equivalent explicit
+/// triple / SAR, or a reserved id vs. an explicit unspecified one) is not flagged,
+/// while genuinely different color/aspect information is — including a present value
+/// vs. an absent (unspecified) one. The aspect ratio is compared only when both
+/// derived SARs are decidable; a reserved `ci_aspect_ratio_idc` (already an
+/// out-of-range error) yields no derived SAR and is not double-reported here.
 fn content_interpretation_information_differs(
     a: &ContentInterpretation,
     b: &ContentInterpretation,
@@ -431,27 +417,19 @@ fn content_interpretation_information_differs(
     a.scan_type_idc != b.scan_type_idc
         || a.chroma_sample_position != b.chroma_sample_position
         || a.timing_info != b.timing_info
-        || color_description_information_differs(a, b)
+        || a.derived_color() != b.derived_color()
         || aspect_ratio_information_differs(a, b)
 }
 
-/// Compares the derived color information (§ 6.14 Table 6.13) when both OBUs carry a
-/// color description; a present-vs-absent difference is conservatively not flagged.
-fn color_description_information_differs(
-    a: &ContentInterpretation,
-    b: &ContentInterpretation,
-) -> bool {
-    match (a.color_description, b.color_description) {
-        (Some(ca), Some(cb)) => ca.derived() != cb.derived(),
-        _ => false,
-    }
-}
-
-/// Compares the derived sample aspect ratio (§ 5.15 tables) when both OBUs carry
-/// aspect-ratio info; a present-vs-absent difference is conservatively not flagged.
+/// Compares the derived sample aspect ratios (§ 5.15), resolving absence to the
+/// unspecified `(0, 0)`. Only flags when both SARs are decidable; a reserved
+/// `ci_aspect_ratio_idc` yields no derived SAR (it is already an out-of-range error).
 fn aspect_ratio_information_differs(a: &ContentInterpretation, b: &ContentInterpretation) -> bool {
-    match (a.aspect_ratio, b.aspect_ratio) {
-        (Some(aa), Some(ab)) => aa.derived_sar() != ab.derived_sar(),
+    match (
+        a.derived_sample_aspect_ratio(),
+        b.derived_sample_aspect_ratio(),
+    ) {
+        (Some(sar_a), Some(sar_b)) => sar_a != sar_b,
         _ => false,
     }
 }
