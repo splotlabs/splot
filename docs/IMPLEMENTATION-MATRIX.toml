@@ -1756,7 +1756,7 @@ openspec_change = "sequence-timing-hls-availability"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Full §5.15 parser (scan type, rg(2) color description, chroma sample position, aspect ratio incl. extended SAR) reaching timing_info() via ci_timing_info_present_flag. Dispatched by open_bitstream_unit and surfaced in inspect --json. splot-validate enforces the §6.14 locally-decidable ranges (chroma sample position <= 5, aspect_ratio_idc <= 16), the reserved-bits anomaly, and the repeated-CI same-information check; cross-embedded-layer timing consistency is tracked under AV2-6.4-SEQUENCE-HEADER-SEMANTICS."
+notes = "Full §5.15 parser (scan type, rg(2) color description, chroma sample position, aspect ratio incl. extended SAR) reaching timing_info() via ci_timing_info_present_flag. Dispatched by open_bitstream_unit and surfaced in inspect --json. splot-core derives §6.14 Table 6.13 color presets and the §5.15 aspect tables (ColorDescription::derived / AspectRatioInfo::derived_sar). splot-validate enforces the §6.14 locally-decidable ranges (chroma sample position <= 5, aspect_ratio_idc <= 16), the reserved-bits anomaly, and the repeated-CI same-information check (compared on derived color/aspect so alias-equivalent re-encodings are not flagged while genuinely different info is); cross-embedded-layer timing consistency is tracked under AV2-6.4-SEQUENCE-HEADER-SEMANTICS."
 
 [feature.status]
 mapped = "done"
@@ -1771,7 +1771,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/content_interpretation.rs::tests", "crates/splot-validate/src/validator.rs::tests::ci_reserved_bits_nonzero_is_warned", "crates/splot-validate/src/validator.rs::tests::ci_repeated_for_same_embedded_layer_with_different_payload_is_flagged", "crates/splot-validate/src/validator.rs::tests::ci_chroma_sample_position_out_of_range_is_flagged", "crates/splot-validate/src/validator.rs::tests::ci_aspect_ratio_idc_out_of_range_is_flagged"]
+tests = ["crates/splot-core/src/headers/content_interpretation.rs::tests", "crates/splot-validate/src/validator.rs::tests::ci_reserved_bits_nonzero_is_warned", "crates/splot-validate/src/validator.rs::tests::ci_repeat_differing_in_color_preset_is_flagged", "crates/splot-validate/src/validator.rs::tests::ci_repeat_differing_only_in_color_encoding_is_not_flagged", "crates/splot-validate/src/validator.rs::tests::ci_chroma_sample_position_out_of_range_is_flagged", "crates/splot-validate/src/validator.rs::tests::ci_aspect_ratio_idc_out_of_range_is_flagged"]
 commands = ["cargo test -p splot-core content_interpretation", "cargo test -p splot-validate ci_"]
 fixtures = []
 diagnostics = ["content-interpretation/reserved-bits-nonzero", "content-interpretation/repeated-ci-not-identical", "content-interpretation/chroma-sample-position-out-of-range", "content-interpretation/aspect-ratio-idc-out-of-range"]

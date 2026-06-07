@@ -99,12 +99,13 @@ decoder, or encoder was implemented.
   `…/timing-equal-picture-interval-mismatch`, and `…/timing-num-ticks-mismatch`;
   a repeated CI carrying different §6.14 *information* emits
   `content-interpretation/repeated-ci-not-identical` (per §6.14's "same information"
-  wording — weaker than the sequence header's §7.3.8 bit-identity). To stay sound the
-  comparison uses only the alias-free fields (`ci_scan_type_idc`, chroma sample
-  position, `timing_info()`) and excludes the decoder-ignored `ci_reserved_2bit` and
-  the alias-prone color/aspect fields (preset-vs-explicit normalization is future
-  work). CI records reset per xlayer at the conservative CLK CVS boundary, sharing
-  the sequence-fingerprint reset's documented CVS-start false-negative.
+  wording — weaker than the sequence header's §7.3.8 bit-identity). The comparison
+  covers `ci_scan_type_idc`, chroma sample position, `timing_info()`, and the
+  **derived** color/aspect values (§6.14 Table 6.13 / §5.15 aspect tables, normalized
+  in `splot-core`), so an alias-equivalent re-encoding is not flagged while genuinely
+  different color/aspect info is; the decoder-ignored `ci_reserved_2bit` is excluded.
+  CI records reset per xlayer at the conservative CLK CVS boundary, sharing the
+  sequence-fingerprint reset's documented CVS-start false-negative.
 
 **Inspector:** `inspect --json` now reports a `content_interpretation` object
 (scan type, the four present-flags, `reserved_2bit`) for CI OBUs.

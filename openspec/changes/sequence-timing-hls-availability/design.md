@@ -108,14 +108,21 @@ violation. Strict mode still escalates warnings to a failing verdict.
 The chroma-sample-position (`<= 5`) and aspect-ratio-idc (`<= 16` when `!= 255`)
 checks are hard errors (both are "requirement of bitstream conformance" in §6.14).
 The repeated-CI check compares parsed §6.14 *information* (a weaker requirement than
-the sequence header's bit-identity in §7.3.8). To stay sound (never hard-reject a
-conformant stream) it compares only fields whose parsed value uniquely determines
-the information regardless of encoding — `ci_scan_type_idc`, the chroma sample
-position, and `timing_info()` — and excludes the decoder-ignored `ci_reserved_2bit`
-and the alias-prone color-description / aspect-ratio fields (a Table 6.13 / aspect
-preset and an explicit triple or SAR can carry the same information). Comparing the
-excluded fields soundly needs the §6.14 preset normalization, which is future work
-(a documented false-negative, never a false-positive).
+the sequence header's bit-identity in §7.3.8). It excludes the decoder-ignored
+`ci_reserved_2bit`, and compares the color description and aspect ratio by their
+**derived** values — `splot-core` resolves every encoding to a canonical value
+(`ContentInterpretation::derived_color` / `derived_sample_aspect_ratio`): the §6.14
+Table 6.13 color presets and explicit triple, the §5.15 aspect tables (reduced to
+lowest terms, with any zero dimension mapping to the unspecified `(0, 0)`), and the
+§5.15 *unspecified defaults* for a reserved id or an absent description
+(`(CP/TC/MC_UNSPECIFIED) = (2, 2, 2)` for color, `(0, 0)` for aspect). Because every
+case resolves to a defined value, the values are compared unconditionally: an
+alias-equivalent re-encoding (a preset vs. the equivalent explicit triple/SAR, or a
+reserved id vs. an explicit unspecified one) is not flagged, while genuinely
+different information — including a present value vs. an absent (unspecified) one
+(e.g. absent → BT.709) — is. The first CI record is therefore a complete baseline
+and is kept as-is. A reserved `ci_aspect_ratio_idc` (already an out-of-range error)
+yields no derived SAR and is not double-reported by this check.
 
 PR B (HLS availability, §7.3.8):
 

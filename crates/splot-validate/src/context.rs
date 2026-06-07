@@ -220,10 +220,11 @@ impl ValidatorContext {
                 let existing = slot.get();
                 // AV2 § 6.14: a repeated CI OBU for the same embedded layer within a
                 // CVS must carry the same *information* (a weaker requirement than the
-                // sequence header's bit-identity in § 7.3.8). The decoder-ignored
-                // ci_reserved_2bit is normalized out before comparing, so a difference
-                // confined to the reserved bits is not flagged here (it is surfaced
-                // separately as a warning by the stateless syntax check).
+                // sequence header's bit-identity in § 7.3.8). Each compared field
+                // resolves to a canonical value (incl. unspecified defaults for absent
+                // color/aspect), so the first record is a complete baseline and is
+                // kept as-is (matching the sequence-header first-wins approximation);
+                // the decoder-ignored ci_reserved_2bit is excluded.
                 if content_interpretation_information_differs(
                     &existing.content,
                     &content_interpretation,
@@ -244,9 +245,6 @@ impl ValidatorContext {
                         .with_byte_offset(obu.offset),
                     );
                 }
-                // Keep the first record for the layer (matching the sequence-header
-                // first-wins approximation); a non-identical repeat is reported but
-                // does not overwrite the established timing baseline.
             }
         }
     }
@@ -574,21 +572,16 @@ fn compare_timing_across_embedded_layers(
 /// Returns `true` if two content-interpretation OBUs carry different *information*
 /// (AV2 § 6.14: a repeated CI OBU must "contain the same information").
 ///
-/// Only fields whose parsed value uniquely determines the information regardless of
-/// encoding are compared: `ci_scan_type_idc`, the chroma sample position, and
-/// `timing_info()`. Deliberately excluded:
-/// - `ci_reserved_2bit` — decoder-ignored (§ 6.14); surfaced separately as a warning.
-/// - `ci_color_description` and the aspect ratio — these can encode the *same*
-///   information in multiple ways (a Table 6.13 / aspect preset vs. an explicit
-///   triple or SAR), so a raw difference is not necessarily a content change.
-///   Comparing them raw would risk a false-positive hard error against a conformant
-///   stream, which this validator must never do; soundly comparing them needs the
-///   § 6.14 preset normalization, which is not modeled yet (a documented
-///   false-negative, never a false-positive).
-///
-// TODO(spec: AV2-5.15-CONTENT-INTERPRETATION): normalize § 6.14 color-description
-// (Table 6.13) and aspect-ratio presets to derived values so repeated-CI
-// color/aspect differences can be compared soundly and promoted to this check.
+/// `ci_reserved_2bit` is excluded — it is decoder-ignored (§ 6.14) and surfaced
+/// separately as a warning. The color description and aspect ratio are compared by
+/// their *derived* values (§ 6.14 Table 6.13 / the § 5.15 aspect tables), resolving
+/// presets, reserved ids, and absence to their canonical (incl. unspecified)
+/// values: an alias-equivalent re-encoding (a preset vs. the equivalent explicit
+/// triple / SAR, or a reserved id vs. an explicit unspecified one) is not flagged,
+/// while genuinely different color/aspect information is — including a present value
+/// vs. an absent (unspecified) one. The aspect ratio is compared only when both
+/// derived SARs are decidable; a reserved `ci_aspect_ratio_idc` (already an
+/// out-of-range error) yields no derived SAR and is not double-reported here.
 fn content_interpretation_information_differs(
     a: &ContentInterpretation,
     b: &ContentInterpretation,
@@ -596,6 +589,21 @@ fn content_interpretation_information_differs(
     a.scan_type_idc != b.scan_type_idc
         || a.chroma_sample_position != b.chroma_sample_position
         || a.timing_info != b.timing_info
+        || a.derived_color() != b.derived_color()
+        || aspect_ratio_information_differs(a, b)
+}
+
+/// Compares the derived sample aspect ratios (§ 5.15), resolving absence to the
+/// unspecified `(0, 0)`. Only flags when both SARs are decidable; a reserved
+/// `ci_aspect_ratio_idc` yields no derived SAR (it is already an out-of-range error).
+fn aspect_ratio_information_differs(a: &ContentInterpretation, b: &ContentInterpretation) -> bool {
+    match (
+        a.derived_sample_aspect_ratio(),
+        b.derived_sample_aspect_ratio(),
+    ) {
+        (Some(sar_a), Some(sar_b)) => sar_a != sar_b,
+        _ => false,
+    }
 }
 
 /// Builds a § 6.4.12 cross-embedded-layer timing-mismatch diagnostic located at `obu`.
