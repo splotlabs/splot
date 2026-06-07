@@ -12,6 +12,7 @@
 use crate::bitio::BitReader;
 use crate::error::Result;
 use crate::headers::sequence::{MAX_SEQ_NUM, SequenceHeaderId};
+use crate::segment::{SegmentInfo, parse_seg_info};
 use crate::span::ByteOffset;
 use crate::types::{EmbeddedLayerId, TemporalLayerId};
 
@@ -225,8 +226,9 @@ pub struct MultiFrameHeader {
     pub mfh_ext_seg_flag: Option<bool>,
     /// `mfh_allow_seg_info_change`, present when segment info is signalled.
     pub mfh_allow_seg_info_change: Option<bool>,
-    /// Feature ID at which parsing stopped for the bounded `seg_info()` helper, if any.
-    pub unimplemented_at: Option<&'static str>,
+    /// Parsed `seg_info(mfh_ext_seg_flag ? 16 : 8)` (§ 5.4.9), present when segment
+    /// info is signalled.
+    pub segment_info: Option<SegmentInfo>,
 }
 
 impl MultiFrameHeader {
@@ -249,10 +251,9 @@ impl MultiFrameHeader {
     }
 }
 
-/// Parses `multi_frame_header_obu()` up to the bounded `seg_info()` helper (AV2 § 5.7).
-///
-/// When `mfh_seg_info_present_flag` is set, parsing stops at `seg_info()`
-/// (`AV2-5.4.9-SEGMENT-INFO`) and [`MultiFrameHeader::unimplemented_at`] is set.
+/// Parses `multi_frame_header_obu()` syntax in full (AV2 § 5.7), including
+/// `seg_info(mfh_ext_seg_flag ? 16 : 8)` (§ 5.4.9) when `mfh_seg_info_present_flag` is
+/// set.
 ///
 /// # Errors
 /// Returns descriptor errors or
@@ -287,21 +288,15 @@ pub fn parse_multi_frame_header(reader: &mut BitReader<'_>) -> Result<MultiFrame
     }
 
     let mfh_seg_info_present_flag = reader.read_bit()? != 0;
-    let (mfh_ext_seg_flag, mfh_allow_seg_info_change, unimplemented_at) =
-        if mfh_seg_info_present_flag {
-            let ext_seg = reader.read_bit()? != 0;
-            let allow_change = reader.read_bit()? != 0;
-            // AV2 § 5.7 then calls seg_info(mfh_ext_seg_flag ? 16 : 8) (§ 5.4.9),
-            // which splot does not yet model.
-            // TODO(spec: AV2-5.4.9-SEGMENT-INFO): parse seg_info() in the MFH path.
-            (
-                Some(ext_seg),
-                Some(allow_change),
-                Some("AV2-5.4.9-SEGMENT-INFO"),
-            )
-        } else {
-            (None, None, None)
-        };
+    let (mfh_ext_seg_flag, mfh_allow_seg_info_change, segment_info) = if mfh_seg_info_present_flag {
+        let ext_seg = reader.read_bit()? != 0;
+        let allow_change = reader.read_bit()? != 0;
+        // AV2 § 5.7: ( MfhFeatureEnabled, MfhFeatureData ) = seg_info(mfh_ext_seg_flag ? 16 : 8).
+        let info = parse_seg_info(reader, if ext_seg { 16 } else { 8 })?;
+        (Some(ext_seg), Some(allow_change), Some(info))
+    } else {
+        (None, None, None)
+    };
 
     Ok(MultiFrameHeader {
         mfh_seq_header_id,
@@ -312,7 +307,7 @@ pub fn parse_multi_frame_header(reader: &mut BitReader<'_>) -> Result<MultiFrame
         mfh_seg_info_present_flag,
         mfh_ext_seg_flag,
         mfh_allow_seg_info_change,
-        unimplemented_at,
+        segment_info,
     })
 }
 
@@ -456,7 +451,7 @@ mod tests {
         assert!(mfh.mfh_id_in_range());
         assert_eq!(mfh.mfh_frame_size, None);
         assert!(!mfh.mfh_deblocking_filter_update);
-        assert_eq!(mfh.unimplemented_at, None);
+        assert_eq!(mfh.segment_info, None);
     }
 
     #[test]
@@ -484,26 +479,53 @@ mod tests {
         assert_eq!(size.width_minus_1, 15);
         assert_eq!(size.height_minus_1, 7);
         assert_eq!(mfh.mfh_apply_deblocking_filter, [true, false, true, false]);
-        assert_eq!(mfh.unimplemented_at, None);
+        assert_eq!(mfh.segment_info, None);
     }
 
     #[test]
-    fn mfh_with_segment_info_is_bounded() {
+    fn mfh_with_segment_info_is_parsed() {
+        // mfh_ext_seg_flag = 0 -> seg_info(8); all features disabled.
         let mut bits = Bits::default();
         bits.uvlc(0); // mfh_seq_header_id
         bits.uvlc(0); // mfh_id_minus_1
         bits.bit(0); // mfh_frame_size_present_flag
         bits.bit(0); // mfh_deblocking_filter_update
         bits.bit(1); // mfh_seg_info_present_flag
-        bits.bit(0); // mfh_ext_seg_flag
+        bits.bit(0); // mfh_ext_seg_flag -> MaxSegments = 8
         bits.bit(1); // mfh_allow_seg_info_change
+        for _ in 0..(8 * 3) {
+            bits.bit(0); // seg_info(8): all features disabled
+        }
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let mfh = parse_multi_frame_header(&mut reader).unwrap();
         assert!(mfh.mfh_seg_info_present_flag);
         assert_eq!(mfh.mfh_ext_seg_flag, Some(false));
         assert_eq!(mfh.mfh_allow_seg_info_change, Some(true));
-        assert_eq!(mfh.unimplemented_at, Some("AV2-5.4.9-SEGMENT-INFO"));
+        let info = mfh.segment_info.expect("segment info parsed when present");
+        assert_eq!(info.num_segments, 8);
+    }
+
+    #[test]
+    fn mfh_with_ext_segment_info_uses_sixteen_segments() {
+        // mfh_ext_seg_flag = 1 -> seg_info(16).
+        let mut bits = Bits::default();
+        bits.uvlc(0); // mfh_seq_header_id
+        bits.uvlc(0); // mfh_id_minus_1
+        bits.bit(0); // mfh_frame_size_present_flag
+        bits.bit(0); // mfh_deblocking_filter_update
+        bits.bit(1); // mfh_seg_info_present_flag
+        bits.bit(1); // mfh_ext_seg_flag -> MaxSegments = 16
+        bits.bit(0); // mfh_allow_seg_info_change
+        for _ in 0..(16 * 3) {
+            bits.bit(0); // seg_info(16): all features disabled
+        }
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let mfh = parse_multi_frame_header(&mut reader).unwrap();
+        assert_eq!(mfh.mfh_ext_seg_flag, Some(true));
+        let info = mfh.segment_info.expect("segment info parsed when present");
+        assert_eq!(info.num_segments, 16);
     }
 
     #[test]

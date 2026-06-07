@@ -984,6 +984,156 @@ mod tests {
         );
     }
 
+    /// Builds a single-picture `sequence_header_obu()` payload (16x8, BLOCK_64X64,
+    /// level 0) with optional segment info and tile config, plus the §5.2.1 payload
+    /// tail. Mirrors the splot-core still-picture parser field-for-field.
+    fn single_picture_seq_header_payload(
+        seg_present: bool,
+        tile_present: bool,
+        uniform: bool,
+    ) -> Vec<u8> {
+        let mut bits = Bits::default();
+        // general (single picture, chroma 4:2:0, 16x8, level 0)
+        bits.uvlc(0); // seq_header_id
+        bits.f(0, 5); // seq_profile_idc
+        bits.bit(1); // single_picture_header_flag
+        bits.f(0, 5); // seq_level_idx (single picture -> no seq_tier)
+        bits.uvlc(0); // chroma_format_idc = 420
+        bits.uvlc(0); // bit_depth_idc
+        bits.f(3, 4); // frame_width_bits_minus_1
+        bits.f(3, 4); // frame_height_bits_minus_1
+        bits.f(15, 4); // max_frame_width_minus_1 -> 16
+        bits.f(7, 4); // max_frame_height_minus_1 -> 8
+        bits.bit(0); // seq_cropping_window_present_flag
+        // sequence_partition_config
+        bits.bit(0); // use_256x256_superblock
+        bits.bit(0); // use_128x128_superblock -> BLOCK_64X64
+        bits.bit(0); // enable_sdp
+        bits.bit(0); // enable_ext_partitions
+        bits.bit(0); // reduce_pb_aspect_ratio
+        // sequence_segment_config
+        bits.bit(0); // enable_ext_seg -> MaxSegments = 8
+        bits.bit(u8::from(seg_present)); // seq_seg_info_present_flag
+        if seg_present {
+            bits.bit(0); // seq_allow_seg_info_change
+            for _ in 0..(8 * 3) {
+                bits.bit(0); // seg_info(8): all features disabled
+            }
+        }
+        // sequence_intra_config
+        bits.bit(0); // enable_dip
+        bits.bit(0); // enable_intra_edge_filter
+        bits.bit(0); // enable_mrls
+        bits.bit(0); // enable_cfl_intra
+        bits.f(0, 2); // cfl_ds_filter_index
+        bits.bit(0); // enable_mhccp
+        bits.bit(0); // enable_ibp
+        // sequence_inter_config (single-picture branch)
+        bits.bit(0); // enable_refmvbank
+        bits.bit(1); // disable_drl_reorder -> DRL_REORDER_DISABLED
+        bits.bit(0); // seq_max_bvp_drl_bits_minus_1 = ns(3) -> 0
+        bits.bit(0); // allow_frame_max_bvp_drl_bits
+        bits.bit(0); // enable_bawp
+        // sequence_scc_config (single picture -> no signalled bits)
+        // sequence_transform_quant_entropy_config
+        bits.bit(0); // enable_fsc
+        bits.bit(0); // enable_idtx_intra
+        bits.bit(0); // enable_intra_ist
+        bits.bit(0); // enable_inter_ist
+        bits.bit(0); // enable_chroma_dctonly
+        bits.bit(0); // reduced_tx_part_set
+        bits.bit(0); // enable_cctx
+        bits.bit(0); // enable_tcq
+        bits.bit(0); // enable_parity_hiding
+        bits.bit(0); // separate_uv_delta_q
+        bits.bit(1); // equal_ac_dc_q
+        bits.f(0, 5); // base_uv_ac_delta_q
+        bits.bit(0); // uv_ac_delta_q_enabled
+        // sequence_filter_config (BLOCK_64X64, single picture)
+        bits.bit(0); // disable_loopfilters_across_tiles
+        bits.bit(0); // enable_cdef
+        bits.bit(0); // enable_gdf
+        bits.bit(0); // enable_restoration
+        bits.bit(0); // enable_ccso
+        bits.f(0, 2); // df_par_bits_minus_2
+        // sequence_tile_config
+        bits.bit(u8::from(tile_present)); // seq_tile_info_present_flag
+        if tile_present {
+            bits.bit(0); // allow_tile_info_change
+            // tile_params(16, 8, BLOCK_64X64, ...): single tile, only uniform flag.
+            bits.bit(u8::from(uniform)); // uniform_tile_spacing_flag
+        }
+        // film_grain_params_present
+        bits.bit(0);
+        // §5.2.1 tail (extensible OBU)
+        bits.bit(0); // obu_extension_flag = 0
+        bits.bit(1); // trailing_one_bit
+        bits.into_bytes()
+    }
+
+    #[test]
+    fn sequence_header_with_uniform_tile_config_is_accepted() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(
+            0x04,
+            &single_picture_seq_header_payload(false, true, true),
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("tile-params/")),
+            "report was: {report}"
+        );
+        assert!(report.is_conformant(), "report was: {report}");
+    }
+
+    #[test]
+    fn sequence_header_with_nonuniform_tile_config_is_accepted() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(
+            0x04,
+            &single_picture_seq_header_payload(false, true, false),
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("tile-params/")),
+            "report was: {report}"
+        );
+        assert!(report.is_conformant(), "report was: {report}");
+    }
+
+    #[test]
+    fn sequence_header_with_segment_info_is_accepted() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(
+            0x04,
+            &single_picture_seq_header_payload(true, false, false),
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(report.is_conformant(), "report was: {report}");
+    }
+
+    #[test]
+    fn sequence_header_malformed_tail_after_segment_info_is_flagged() {
+        // seg_info() now parses fully, so the §5.2.1 payload tail is validated. An extra
+        // non-zero byte after the tail is a trailing-bits violation the previously
+        // bounded parse missed.
+        let mut payload = single_picture_seq_header_payload(true, false, false);
+        payload.push(0xFF);
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &payload));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id.starts_with("trailing-bits/")),
+            "report was: {report}"
+        );
+    }
+
     #[test]
     fn hls_mfh_nonzero_obu_extension_flag_is_flagged() {
         // A fully parsed MFH (no seg_info) is extensible, so a set obu_extension_flag

@@ -33,6 +33,7 @@ Keep these stable:
 | `content-interpretation/` | §5.15 / §6.14 content interpretation constraints. |
 | `frame-header/` | §5.18 / §6.17 frame-header prefix references and local id ranges. |
 | `tile-group/` | §5.19 tile-group prefix and ordering checks. |
+| `tile-params/` | §6.17.7 sequence tile-params local constraints (tile counts, frame coverage). |
 
 Existing examples:
 
@@ -64,6 +65,10 @@ msdo/non-global-layer-id
 msdo/too-many-streams
 mfh/seq-header-id-out-of-range
 mfh/id-out-of-range
+tile-params/tile-cols-out-of-range
+tile-params/tile-rows-out-of-range
+tile-params/nonuniform-cols-do-not-cover-frame
+tile-params/nonuniform-rows-do-not-cover-frame
 ```
 
 ## 2. New diagnostic namespaces to allow
@@ -406,3 +411,34 @@ preserved):
 frame-header/prefix-parse-error
 tile-group/prefix-parse-error
 ```
+
+## 13. Sequence tile params (implemented)
+
+OpenSpec change `segmentation-tile-params-foundation`. The sequence `tile_params()`
+helper (`AV2-5.18.7.3-TILE-PARAMS`, used by `AV2-5.4.2-SEQUENCE-TILE-CONFIG`) drives
+these local §6.17.7 tile constraints on a fully parsed sequence tile config.
+
+Emitted (all `error`):
+
+```text
+tile-params/tile-cols-out-of-range            # §6.17.7.2: TileCols > MAX_TILE_COLS (64)
+tile-params/tile-rows-out-of-range            # §6.17.7.2: TileRows > MAX_TILE_ROWS (64)
+tile-params/nonuniform-cols-do-not-cover-frame  # §6.17.7.3: column starts != sbCols
+tile-params/nonuniform-rows-do-not-cover-frame  # §6.17.7.3: row starts != sbRows
+```
+
+The tile-count diagnostics are reachable for a non-uniform config that codes more than
+`MAX_TILE_COLS` / `MAX_TILE_ROWS` tiles. The frame-coverage diagnostics are a defensive
+cross-check: the `ns()`-bounded non-uniform parse caps each tile to the remaining
+superblocks, so coverage is exact for any decodable stream. They are therefore
+**unreachable for a stream that parses without error** (a parse error surfaces first)
+and are unit-tested via a synthetic `TileParams` rather than a bitstream — they only
+guard the invariant should a `TileParams` be produced another way.
+
+Wiring note: with `seg_info()` (`AV2-5.4.9-SEGMENT-INFO`) and `tile_params()` now
+parsed in full, a valid sequence header and a multi-frame header parse completely, so
+the existing §5.2.1 payload-tail checks (`trailing-bits/*`, `byte-alignment/*`,
+`obu-header/extension-flag-not-zero`) now run on them and a malformed tail after the
+segment or tile info is diagnosed. The only residual bounded sequence-header case is a
+reserved (non-conformant) `seq_level_idx` with tile info present, which has no defined
+tile bit layout (`AV2-5.4.2-SEQUENCE-TILE-CONFIG`).

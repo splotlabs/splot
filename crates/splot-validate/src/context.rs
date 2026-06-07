@@ -461,19 +461,17 @@ impl ValidatorContext {
         }
 
         // Gate availability on the same validation the SequenceHeaderSyntax /
-        // observe_sequence_header path uses: a fully parsed MFH must have a valid
-        // §5.2.1 payload tail (obu_extension_flag + trailing_bits). A malformed tail
-        // makes the MFH not a valid available HLS object, so a later cur_mfh_id
-        // reference must treat it as unavailable rather than resolve through it. An MFH
-        // bounded at seg_info() leaves the tail position unknown, so (like a bounded
-        // sequence header) it is still recorded.
-        if mfh.unimplemented_at.is_none()
-            && finish_obu_payload(
-                &mut reader,
-                obu.payload,
-                obu.header.obu_type.is_extensible_obu(),
-            )
-            .is_err()
+        // observe_sequence_header path uses: a fully parsed MFH (now including
+        // seg_info()) must have a valid §5.2.1 payload tail (obu_extension_flag +
+        // trailing_bits). A malformed tail makes the MFH not a valid available HLS
+        // object, so a later cur_mfh_id reference must treat it as unavailable rather
+        // than resolve through it.
+        if finish_obu_payload(
+            &mut reader,
+            obu.payload,
+            obu.header.obu_type.is_extensible_obu(),
+        )
+        .is_err()
         {
             return;
         }
