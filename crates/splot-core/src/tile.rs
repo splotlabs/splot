@@ -111,15 +111,6 @@ pub fn tile_log2(blk_size: u32, target: u32) -> u8 {
     k as u8
 }
 
-/// Returns `true` when `1 << tile_log2` tiles fit within `sb_num` superblocks, i.e. a
-/// uniform split at this log2 is non-degenerate (every requested tile gets at least
-/// one superblock). This is a `splot` convenience predicate over the § 5.18.7.5
-/// `uniform_spacing` behavior, not a named spec function.
-#[must_use]
-pub fn uniform_eligible(tile_log2: u8, sb_num: u32) -> bool {
-    (1u64 << u32::from(tile_log2).min(63)) <= u64::from(sb_num)
-}
-
 /// The superblock column/row starts produced by `uniform_spacing()` (AV2 v1.0.0
 /// § 5.18.7.5).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -411,15 +402,6 @@ mod tests {
     }
 
     #[test]
-    fn uniform_eligible_checks_tile_count_fits() {
-        assert!(uniform_eligible(0, 1));
-        assert!(uniform_eligible(1, 2));
-        assert!(!uniform_eligible(1, 1));
-        assert!(uniform_eligible(6, 64));
-        assert!(!uniform_eligible(6, 63));
-    }
-
-    #[test]
     fn uniform_spacing_single_tile() {
         // miCols = 4 (16-wide frame), BLOCK_64X64 -> sbCols = 1, one tile at sb 0.
         let spacing = uniform_spacing(0, 4, SuperblockSize::Block64x64);
@@ -595,23 +577,20 @@ mod proptests {
             });
         }
 
-        /// `tile_log2()` and `uniform_eligible()` must never panic for any input; both
-        /// internally cap their shift amounts. `uniform_spacing()` must not panic for
-        /// `mis` across the full `u32` range (its rounding-up arithmetic saturates).
-        /// `tile_log2` for `uniform_spacing` is bounded here only to keep the produced
-        /// start vector small — a large `tile_log2` is a misuse outside the AV2 domain.
+        /// `tile_log2()` must never panic for any input (it caps its shift amount).
+        /// `uniform_spacing()` must not panic for `mis` across the full `u32` range
+        /// (its rounding-up arithmetic saturates). `tile_log2` for `uniform_spacing` is
+        /// bounded here only to keep the produced start vector small — a large
+        /// `tile_log2` is a misuse outside the AV2 domain.
         #[test]
         fn tile_helpers_never_panic(
             blk in any::<u32>(),
             target in any::<u32>(),
-            tile_log2_any in any::<u8>(),
-            sb_num in any::<u32>(),
             tile_log2_small in 0u8..=8,
             mis in any::<u32>(),
             sb in any::<u8>(),
         ) {
             let _ = tile_log2(blk, target);
-            let _ = uniform_eligible(tile_log2_any, sb_num);
             let _ = uniform_spacing(tile_log2_small, mis, sb_size(sb));
         }
     }

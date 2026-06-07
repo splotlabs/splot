@@ -40,11 +40,10 @@ or malformed payloads that the bounded parse used to miss.
   `Segmentation_Feature_Max` tables (§5.4.9).
 - Wire `seg_info()` into `sequence_segment_config()` and `multi_frame_header_obu()`,
   removing their `seg_info()` bounded holes.
-- Add the tile-partitioning helpers (`tile_log2`, `uniform_eligible`,
-  `uniform_spacing`, the block-size conversion tables, and the level/tier
-  `Tile_Width_Scaling_Factor` / `Tile_Area_Scaling_Factor` tables) and implement
-  `tile_params()` for the sequence tile config (§5.18.7.3 with §5.18.7.5/§5.18.7.7
-  helpers).
+- Add the tile-partitioning helpers (`tile_log2`, `uniform_spacing`, the block-size
+  conversion tables, and the level/tier `Tile_Width_Scaling_Factor` /
+  `Tile_Area_Scaling_Factor` tables) and implement `tile_params()` for the sequence
+  tile config (§5.18.7.3 with §5.18.7.5/§5.18.7.7 helpers).
 - Promote the validator: fully parsed sequence headers and multi-frame headers run
   the §5.2.1 payload-tail check; MFH availability is gated on it.
 - Add local tile semantic diagnostics (`tile-params/*`) and the `tile-params/`

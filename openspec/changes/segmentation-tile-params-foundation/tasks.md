@@ -28,7 +28,7 @@
 
 ## 5. Tile params foundation (`splot-core`)
 
-- [x] Add `tile.rs` with `tile_log2`, `uniform_eligible`, `uniform_spacing`, and the block-size / scaling tables.
+- [x] Add `tile.rs` with `tile_log2`, `uniform_spacing`, and the block-size / scaling tables.
 - [x] Implement `parse_tile_params(reader, input)` (uniform and non-uniform paths).
 - [x] Wire `SequenceTileConfig { seq_tile_info_present_flag, allow_tile_info_change, params }`.
 - [x] Pass profile/tier/level + frame dims + seqSbSize from the parsed header.
