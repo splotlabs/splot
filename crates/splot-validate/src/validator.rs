@@ -1340,14 +1340,83 @@ mod tests {
     #[test]
     fn ci_repeat_differing_only_in_color_encoding_is_not_flagged() {
         // AV2 § 6.14: color descriptions can encode the same information in multiple
-        // ways (a preset idc vs. an explicit triple), so the repeated-CI check must
-        // not hard-flag a color-description difference (it would risk a false
-        // positive against a conformant stream). The check conservatively excludes
-        // color/aspect until § 6.14 preset normalization is modeled.
+        // ways (a Table 6.13 preset idc vs. the equivalent explicit triple). The
+        // repeated-CI check compares *derived* values, so an alias-equivalent
+        // re-encoding is not flagged (it must never false-positive a conformant
+        // stream): BT.709 as preset idc 1 and as explicit (1, 1, 1) carry the same
+        // information.
         let mut data = temporal_delimiter_obu();
         data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
         data.extend(content_interpretation_color_obu(1)); // BT.709 preset
         data.extend(content_interpretation_color_obu(0)); // explicit BT.709 triple
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/repeated-ci-not-identical"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_repeat_differing_in_color_preset_is_flagged() {
+        // Genuinely different color information (BT.709 vs BT.2100 PQ) is a §6.14
+        // violation and must be flagged even though both are preset encodings.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(content_interpretation_color_obu(1)); // BT.709 SDR
+        data.extend(content_interpretation_color_obu(2)); // BT.2100 PQ
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/repeated-ci-not-identical"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_repeat_differing_in_aspect_preset_is_flagged() {
+        // Different aspect ratios (1:1 vs 12:11) are different information (§6.14).
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(content_interpretation_aspect_obu(1)); // SAR 1:1
+        data.extend(content_interpretation_aspect_obu(2)); // SAR 12:11
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/repeated-ci-not-identical"),
+            "report was: {report}"
+        );
+    }
+
+    /// CI OBU (xlayer 0 / mlayer 0) carrying an explicit sample aspect ratio
+    /// (`ci_aspect_ratio_idc == 255`).
+    fn content_interpretation_extended_sar_obu(sar_width: u32, sar_height: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(0, 2); // ci_scan_type_idc
+        bits.bit(0); // ci_color_description_present_flag
+        bits.bit(0); // ci_chroma_sample_position_present_flag
+        bits.bit(1); // ci_aspect_ratio_info_present_flag
+        bits.bit(0); // ci_timing_info_present_flag
+        bits.f(0, 2); // ci_reserved_2bit
+        bits.f(255, 8); // ci_aspect_ratio_idc = 255 -> extended SAR
+        bits.uvlc(sar_width);
+        bits.uvlc(sar_height);
+        bits.bit(0); // obu_extension_flag
+        bits.bit(1); // trailing_one_bit
+        annex_b_obu_with_header(&layer_obu_header(24, 0, 0, 0), &bits.into_bytes())
+    }
+
+    #[test]
+    fn ci_repeat_alias_equivalent_aspect_is_not_flagged() {
+        // Aspect preset idc 1 derives to SAR 1:1, the same as the explicit 255-coded
+        // SAR 1:1, so the alias-equivalent re-encoding must not be flagged.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(content_interpretation_aspect_obu(1)); // preset SAR 1:1
+        data.extend(content_interpretation_extended_sar_obu(1, 1)); // explicit SAR 1:1
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             !report

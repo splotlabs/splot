@@ -108,14 +108,16 @@ violation. Strict mode still escalates warnings to a failing verdict.
 The chroma-sample-position (`<= 5`) and aspect-ratio-idc (`<= 16` when `!= 255`)
 checks are hard errors (both are "requirement of bitstream conformance" in §6.14).
 The repeated-CI check compares parsed §6.14 *information* (a weaker requirement than
-the sequence header's bit-identity in §7.3.8). To stay sound (never hard-reject a
-conformant stream) it compares only fields whose parsed value uniquely determines
-the information regardless of encoding — `ci_scan_type_idc`, the chroma sample
-position, and `timing_info()` — and excludes the decoder-ignored `ci_reserved_2bit`
-and the alias-prone color-description / aspect-ratio fields (a Table 6.13 / aspect
-preset and an explicit triple or SAR can carry the same information). Comparing the
-excluded fields soundly needs the §6.14 preset normalization, which is future work
-(a documented false-negative, never a false-positive).
+the sequence header's bit-identity in §7.3.8). It excludes the decoder-ignored
+`ci_reserved_2bit`, and compares the color description and aspect ratio by their
+**derived** values — `splot-core` normalizes the §6.14 Table 6.13 color presets and
+the §5.15 aspect tables (`ColorDescription::derived` / `AspectRatioInfo::derived_sar`)
+— so an alias-equivalent re-encoding (a preset vs. the equivalent explicit triple or
+SAR) is not flagged while genuinely different color or aspect information is. Color
+and aspect are compared only when present in both OBUs; a present-vs-absent
+difference is left unflagged because the absent side defaults to unspecified values
+that could alias the present one (a sound-over-complete false negative, never a
+false-positive).
 
 PR B (HLS availability, §7.3.8):
 

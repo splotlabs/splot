@@ -402,21 +402,14 @@ fn compare_timing_across_embedded_layers(
 /// Returns `true` if two content-interpretation OBUs carry different *information*
 /// (AV2 § 6.14: a repeated CI OBU must "contain the same information").
 ///
-/// Only fields whose parsed value uniquely determines the information regardless of
-/// encoding are compared: `ci_scan_type_idc`, the chroma sample position, and
-/// `timing_info()`. Deliberately excluded:
-/// - `ci_reserved_2bit` — decoder-ignored (§ 6.14); surfaced separately as a warning.
-/// - `ci_color_description` and the aspect ratio — these can encode the *same*
-///   information in multiple ways (a Table 6.13 / aspect preset vs. an explicit
-///   triple or SAR), so a raw difference is not necessarily a content change.
-///   Comparing them raw would risk a false-positive hard error against a conformant
-///   stream, which this validator must never do; soundly comparing them needs the
-///   § 6.14 preset normalization, which is not modeled yet (a documented
-///   false-negative, never a false-positive).
-///
-// TODO(spec: AV2-5.15-CONTENT-INTERPRETATION): normalize § 6.14 color-description
-// (Table 6.13) and aspect-ratio presets to derived values so repeated-CI
-// color/aspect differences can be compared soundly and promoted to this check.
+/// `ci_reserved_2bit` is excluded — it is decoder-ignored (§ 6.14) and surfaced
+/// separately as a warning. The color description and aspect ratio are compared by
+/// their *derived* values (§ 6.14 Table 6.13 / the § 5.15 aspect tables), so an
+/// alias-equivalent re-encoding (a preset vs. the equivalent explicit triple / SAR)
+/// is not flagged, while genuinely different color or aspect information is. They are
+/// compared only when present in both OBUs: a present-vs-absent difference is left
+/// unflagged because the absent side defaults to unspecified values that could alias
+/// the present one (a sound-over-complete false negative, never a false positive).
 fn content_interpretation_information_differs(
     a: &ContentInterpretation,
     b: &ContentInterpretation,
@@ -424,6 +417,29 @@ fn content_interpretation_information_differs(
     a.scan_type_idc != b.scan_type_idc
         || a.chroma_sample_position != b.chroma_sample_position
         || a.timing_info != b.timing_info
+        || color_description_information_differs(a, b)
+        || aspect_ratio_information_differs(a, b)
+}
+
+/// Compares the derived color information (§ 6.14 Table 6.13) when both OBUs carry a
+/// color description; a present-vs-absent difference is conservatively not flagged.
+fn color_description_information_differs(
+    a: &ContentInterpretation,
+    b: &ContentInterpretation,
+) -> bool {
+    match (a.color_description, b.color_description) {
+        (Some(ca), Some(cb)) => ca.derived() != cb.derived(),
+        _ => false,
+    }
+}
+
+/// Compares the derived sample aspect ratio (§ 5.15 tables) when both OBUs carry
+/// aspect-ratio info; a present-vs-absent difference is conservatively not flagged.
+fn aspect_ratio_information_differs(a: &ContentInterpretation, b: &ContentInterpretation) -> bool {
+    match (a.aspect_ratio, b.aspect_ratio) {
+        (Some(aa), Some(ab)) => aa.derived_sar() != ab.derived_sar(),
+        _ => false,
+    }
 }
 
 /// Builds a § 6.4.12 cross-embedded-layer timing-mismatch diagnostic located at `obu`.

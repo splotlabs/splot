@@ -80,11 +80,12 @@ content-interpretation OBU.
 `splot-validate` SHALL flag a content-interpretation OBU that is repeated for the
 same embedded layer within the modeled coded-video-sequence scope carrying different
 *information* (AV2 v1.0.0 § 6.14: a repeated CI OBU must "contain the same
-information"). The comparison SHALL be sound: it compares only fields whose parsed
-value uniquely determines the information regardless of encoding (`ci_scan_type_idc`,
-the chroma sample position, and `timing_info()`), and SHALL NOT hard-flag a
-difference confined to the decoder-ignored `ci_reserved_2bit` or to the alias-prone
-color-description / aspect-ratio fields.
+information"). The comparison SHALL be sound and complete for the fields it covers:
+it compares `ci_scan_type_idc`, the chroma sample position, `timing_info()`, and the
+**derived** color description and aspect ratio (§ 6.14 Table 6.13 / § 5.15 aspect
+tables), and SHALL NOT hard-flag a difference confined to the decoder-ignored
+`ci_reserved_2bit` or an alias-equivalent re-encoding (a preset vs. its equivalent
+explicit triple or SAR).
 
 #### Scenario: repeated content interpretation with differing timing
 
@@ -94,6 +95,14 @@ color-description / aspect-ratio fields.
   differs
 - **THEN** validation SHALL emit `content-interpretation/repeated-ci-not-identical`.
 
+#### Scenario: repeated content interpretation with differing color or aspect
+
+- **GIVEN** two content-interpretation OBUs for the same `(obu_xlayer_id,
+  obu_mlayer_id)` both carrying a color description (or aspect ratio)
+- **WHEN** their derived color information (or derived sample aspect ratio) differs
+  (e.g. BT.709 vs BT.2100 PQ, or SAR 1:1 vs 12:11)
+- **THEN** validation SHALL emit `content-interpretation/repeated-ci-not-identical`.
+
 #### Scenario: repeat differing only in reserved bits
 
 - **GIVEN** two content-interpretation OBUs for the same `(obu_xlayer_id,
@@ -101,15 +110,13 @@ color-description / aspect-ratio fields.
 - **WHEN** validation runs
 - **THEN** validation SHALL NOT emit `content-interpretation/repeated-ci-not-identical`.
 
-#### Scenario: repeat differing only in color-description encoding
+#### Scenario: repeat differing only in alias-equivalent color/aspect encoding
 
 - **GIVEN** two content-interpretation OBUs for the same `(obu_xlayer_id,
-  obu_mlayer_id)` whose color description is encoded differently (a preset idc vs. an
-  explicit triple)
+  obu_mlayer_id)` whose color (or aspect) is encoded differently but derives to the
+  same value (a preset idc vs. the equivalent explicit triple or SAR)
 - **WHEN** validation runs
-- **THEN** validation SHALL NOT hard-flag them with
-  `content-interpretation/repeated-ci-not-identical` (color/aspect comparison awaits
-  § 6.14 preset normalization).
+- **THEN** validation SHALL NOT emit `content-interpretation/repeated-ci-not-identical`.
 
 ### Requirement: Content-interpretation reserved bits
 

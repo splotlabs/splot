@@ -64,6 +64,53 @@ pub struct ColorDescription {
     pub full_range_flag: bool,
 }
 
+/// Derived color information for AV2 § 6.14 "same information" comparisons.
+///
+/// A content-interpretation OBU can encode the same color information in more than
+/// one way (an explicit triple with `ci_color_description_idc == 0`, or a Table 6.13
+/// preset id), so two descriptions carry the same information iff their *derived*
+/// values match. See [`ColorDescription::derived`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DerivedColorInfo {
+    /// `(ci_color_primaries, ci_transfer_characteristics, ci_matrix_coefficients)`
+    /// for an explicit (`idc == 0`) or Table 6.13 preset (`idc` in `1..=5`)
+    /// description; `None` for a reserved `idc` (`6..=127`), which decoders ignore so
+    /// it carries no defined color information.
+    pub primaries: Option<(u8, u8, u8)>,
+    /// `ci_full_range_flag`.
+    pub full_range: bool,
+}
+
+impl ColorDescription {
+    /// Returns the derived color information per AV2 § 6.14 (Table 6.13): explicit
+    /// values for `idc == 0`, the preset triple for `idc` in `1..=5`, or an
+    /// unspecified (reserved) marker for `idc` in `6..=127`.
+    #[must_use]
+    pub fn derived(&self) -> DerivedColorInfo {
+        // AV2 § 6.14 Table 6.13: ci_color_description_idc has the same interpretation
+        // as ops_color_description_idc.
+        let primaries = match self.color_description_idc {
+            0 => self.primaries.map(|p| {
+                (
+                    p.color_primaries,
+                    p.transfer_characteristics,
+                    p.matrix_coefficients,
+                )
+            }),
+            1 => Some((1, 1, 1)),  // BT.709 SDR
+            2 => Some((9, 16, 9)), // BT.2100 PQ
+            3 => Some((9, 18, 9)), // BT.2100 HLG
+            4 => Some((1, 13, 0)), // sRGB
+            5 => Some((1, 13, 5)), // sYCC
+            _ => None,             // 6..=127 reserved -> ignored by decoders
+        };
+        DerivedColorInfo {
+            primaries,
+            full_range: self.full_range_flag,
+        }
+    }
+}
+
 /// `ci_chroma_sample_position_present_flag` payload (AV2 § 5.15).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChromaSamplePosition {
@@ -83,14 +130,45 @@ pub struct ExtendedSampleAspectRatio {
     pub sar_height: u32,
 }
 
+/// `Aspect_Ratio_Width[17]` (AV2 § 5.15): sample-aspect-ratio width for
+/// `ci_aspect_ratio_idc` in `0..=16`.
+const ASPECT_RATIO_WIDTH: [u32; 17] = [
+    0, 1, 12, 10, 16, 40, 24, 20, 32, 80, 18, 15, 64, 160, 4, 3, 2,
+];
+/// `Aspect_Ratio_Height[17]` (AV2 § 5.15): sample-aspect-ratio height for
+/// `ci_aspect_ratio_idc` in `0..=16`.
+const ASPECT_RATIO_HEIGHT: [u32; 17] = [
+    0, 1, 11, 11, 11, 33, 11, 11, 11, 33, 11, 11, 33, 99, 3, 2, 1,
+];
+
 /// `ci_aspect_ratio_info_present_flag` payload (AV2 § 5.15).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AspectRatioInfo {
     /// `ci_aspect_ratio_idc` (`f(8)`).
     pub aspect_ratio_idc: u8,
     /// Present only when `ci_aspect_ratio_idc == 255`; otherwise the SAR is looked
-    /// up in `Aspect_Ratio_Width`/`Aspect_Ratio_Height` (not transcribed here).
+    /// up in `Aspect_Ratio_Width`/`Aspect_Ratio_Height`.
     pub extended_sar: Option<ExtendedSampleAspectRatio>,
+}
+
+impl AspectRatioInfo {
+    /// Returns the derived sample aspect ratio `(sar_width, sar_height)` (AV2 § 5.15):
+    /// the explicit SAR for `ci_aspect_ratio_idc == 255`, the
+    /// `Aspect_Ratio_Width`/`Aspect_Ratio_Height` entry for `idc` in `0..=16`, or
+    /// `None` for a reserved `idc` (`17..=254`, which is itself a § 6.14 conformance
+    /// violation flagged elsewhere).
+    #[must_use]
+    pub fn derived_sar(&self) -> Option<(u32, u32)> {
+        if self.aspect_ratio_idc == 255 {
+            self.extended_sar.map(|s| (s.sar_width, s.sar_height))
+        } else {
+            let index = usize::from(self.aspect_ratio_idc);
+            ASPECT_RATIO_WIDTH
+                .get(index)
+                .copied()
+                .zip(ASPECT_RATIO_HEIGHT.get(index).copied())
+        }
+    }
 }
 
 /// Parsed `content_interpretation_obu()` syntax (AV2 v1.0.0 § 5.15).
@@ -485,6 +563,78 @@ mod tests {
             parse_content_interpretation(&mut reader),
             Err(Error::UnexpectedEof { .. })
         ));
+    }
+
+    #[test]
+    fn derived_color_normalizes_presets_and_explicit() {
+        // Preset BT.709 (idc 1) derives to the same triple as the explicit encoding.
+        let preset = ColorDescription {
+            color_description_idc: 1,
+            primaries: None,
+            full_range_flag: false,
+        };
+        let explicit = ColorDescription {
+            color_description_idc: 0,
+            primaries: Some(ColorPrimariesTriple {
+                color_primaries: 1,
+                transfer_characteristics: 1,
+                matrix_coefficients: 1,
+            }),
+            full_range_flag: false,
+        };
+        assert_eq!(preset.derived(), explicit.derived());
+        assert_eq!(preset.derived().primaries, Some((1, 1, 1)));
+
+        // A different preset derives to a different triple.
+        let bt2100_pq = ColorDescription {
+            color_description_idc: 2,
+            primaries: None,
+            full_range_flag: false,
+        };
+        assert_ne!(preset.derived(), bt2100_pq.derived());
+        assert_eq!(bt2100_pq.derived().primaries, Some((9, 16, 9)));
+
+        // Reserved idc (6..=127) derives to None (unspecified); full_range still counts.
+        let reserved = ColorDescription {
+            color_description_idc: 50,
+            primaries: None,
+            full_range_flag: true,
+        };
+        assert_eq!(reserved.derived().primaries, None);
+        assert!(reserved.derived().full_range);
+    }
+
+    #[test]
+    fn derived_sar_normalizes_table_and_explicit() {
+        // Preset idc 1 -> (1, 1); the explicit-255 encoding of (1, 1) matches.
+        let preset = AspectRatioInfo {
+            aspect_ratio_idc: 1,
+            extended_sar: None,
+        };
+        let explicit = AspectRatioInfo {
+            aspect_ratio_idc: 255,
+            extended_sar: Some(ExtendedSampleAspectRatio {
+                sar_width: 1,
+                sar_height: 1,
+            }),
+        };
+        assert_eq!(preset.derived_sar(), Some((1, 1)));
+        assert_eq!(preset.derived_sar(), explicit.derived_sar());
+
+        // A different preset derives to a different SAR.
+        let other = AspectRatioInfo {
+            aspect_ratio_idc: 2,
+            extended_sar: None,
+        };
+        assert_eq!(other.derived_sar(), Some((12, 11)));
+        assert_ne!(preset.derived_sar(), other.derived_sar());
+
+        // Reserved idc (17..=254) has no table entry.
+        let reserved = AspectRatioInfo {
+            aspect_ratio_idc: 17,
+            extended_sar: None,
+        };
+        assert_eq!(reserved.derived_sar(), None);
     }
 
     #[test]
