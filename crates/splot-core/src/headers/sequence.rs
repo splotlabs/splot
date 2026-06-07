@@ -5,7 +5,9 @@
 
 use crate::bitio::BitReader;
 use crate::error::{Error, Result, SequenceHeaderErrorKind};
+use crate::segment::{SegmentInfo, parse_seg_info};
 use crate::span::{BitOffset, ByteOffset};
+use crate::tile::{TileParams, TileParamsInput, parse_tile_params};
 use crate::types::{EmbeddedLayerId, TemporalLayerId};
 
 /// `MAX_SEQ_NUM` for `seq_header_id` validation (AV2 v1.0.0 § 6.4.1).
@@ -601,11 +603,13 @@ impl SequenceHeader {
 /// Parses the full `sequence_header_obu()` syntax, including the child config
 /// structures (AV2 v1.0.0 § 5.4.1).
 ///
-/// Parsing is bounded honestly: when a child reaches a table-dependent helper that
-/// `splot` does not yet model (`seg_info()` or `tile_params()`), the returned
-/// [`SequenceHeader`] has [`SequenceHeader::unimplemented_at`] set to the owning
-/// Feature ID and the later children are `None`. The parser never skips unknown
-/// payload bits.
+/// `seg_info()` (§ 5.4.9) and the sequence `tile_params()` (§ 5.18.7.3) are parsed in
+/// full, so a valid sequence header parses completely. The only remaining bounded
+/// residual is a `seq_tile_info_present_flag = 1` header whose `seq_level_idx` is a
+/// reserved (non-conformant) level with no defined tile bit layout: the returned
+/// [`SequenceHeader`] then has [`SequenceHeader::unimplemented_at`] set to
+/// `AV2-5.4.2-SEQUENCE-TILE-CONFIG` and the later children are `None`. The parser never
+/// skips unknown payload bits.
 ///
 /// # Errors
 /// Returns typed [`Error`] values for EOF, malformed descriptors, or local § 6.4
@@ -619,29 +623,25 @@ pub fn parse_sequence_header(reader: &mut BitReader<'_>) -> Result<SequenceHeade
     let seq_sb_size = partition.seq_sb_size();
 
     let segment = parse_sequence_segment_config(reader)?;
-    if let Some(feature) = segment.unimplemented_at() {
-        return Ok(SequenceHeader {
-            general,
-            partition: Some(partition),
-            segment: Some(segment),
-            intra: None,
-            inter: None,
-            screen_content: None,
-            transform_quant_entropy: None,
-            filter: None,
-            tile: None,
-            film_grain_params_present: None,
-            unimplemented_at: Some(feature),
-        });
-    }
-
     let intra = parse_sequence_intra_config(reader, monochrome)?;
     let inter = parse_sequence_inter_config(reader, single_picture)?;
     let screen_content = parse_sequence_scc_config(reader, single_picture)?;
     let transform_quant_entropy =
         parse_sequence_transform_quant_entropy_config(reader, monochrome, single_picture)?;
     let filter = parse_sequence_filter_config(reader, single_picture, seq_sb_size)?;
-    let tile = parse_sequence_tile_config(reader)?;
+
+    // AV2 § 5.4.2: tile_params(max_frame_width_minus_1 + 1, max_frame_height_minus_1 + 1,
+    // seqSbSize, seqSbSize, 0) with the sequence tier/level.
+    let tile_params_input = TileParamsInput {
+        frame_width: general.max_frame_width.get(),
+        frame_height: general.max_frame_height.get(),
+        uniform_sb_size: seq_sb_size,
+        sb_size: seq_sb_size,
+        is_bridge: false,
+        seq_tier: general.seq_tier,
+        seq_level_idx: general.seq_level_idx,
+    };
+    let tile = parse_sequence_tile_config(reader, tile_params_input)?;
 
     if let Some(feature) = tile.unimplemented_at() {
         return Ok(SequenceHeader {
@@ -777,8 +777,6 @@ pub fn parse_sequence_partition_config(
 }
 
 /// `sequence_segment_config()` (AV2 v1.0.0 § 5.4.4 / § 6.4.4).
-///
-/// `seg_info()` (§ 5.4.9) is intentionally bounded; see [`SequenceSegmentConfig::unimplemented_at`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SequenceSegmentConfig {
     /// `enable_ext_seg`.
@@ -789,36 +787,26 @@ pub struct SequenceSegmentConfig {
     pub seq_seg_info_present_flag: bool,
     /// `seq_allow_seg_info_change`, present when segment info is signalled.
     pub seq_allow_seg_info_change: Option<bool>,
+    /// Parsed `seg_info(MaxSegments)` (§ 5.4.9), present when segment info is signalled.
+    pub segment_info: Option<SegmentInfo>,
 }
 
-impl SequenceSegmentConfig {
-    /// Returns the owning Feature ID if parsing must stop at the bounded `seg_info()` helper.
-    #[must_use]
-    pub const fn unimplemented_at(&self) -> Option<&'static str> {
-        if self.seq_seg_info_present_flag {
-            Some("AV2-5.4.9-SEGMENT-INFO")
-        } else {
-            None
-        }
-    }
-}
-
-/// Parses `sequence_segment_config()` up to the bounded `seg_info()` helper (AV2 § 5.4.4).
+/// Parses `sequence_segment_config()` (AV2 § 5.4.4), including `seg_info(MaxSegments)`
+/// (§ 5.4.9) when `seq_seg_info_present_flag` is set.
 ///
 /// # Errors
-/// Returns [`Error::UnexpectedEof`] if the payload ends mid-field.
+/// Returns descriptor errors or [`Error::UnexpectedEof`] if the payload ends mid-field.
 pub fn parse_sequence_segment_config(reader: &mut BitReader<'_>) -> Result<SequenceSegmentConfig> {
     let enable_ext_seg = reader.read_bit()? != 0;
     let max_segments = if enable_ext_seg { 16 } else { 8 };
     let seq_seg_info_present_flag = reader.read_bit()? != 0;
-    let seq_allow_seg_info_change = if seq_seg_info_present_flag {
-        // AV2 § 5.4.4 then calls seg_info(MaxSegments) (§ 5.4.9), which depends on
-        // segmentation feature tables that splot does not yet model.
-        // TODO(spec: AV2-5.4.9-SEGMENT-INFO): parse seg_info() once the
-        // Segmentation_Feature_* tables and su(n) descriptor are modeled.
-        Some(reader.read_bit()? != 0)
+    let (seq_allow_seg_info_change, segment_info) = if seq_seg_info_present_flag {
+        let allow = reader.read_bit()? != 0;
+        // AV2 § 5.4.4: ( SeqFeatureEnabled, SeqFeatureData ) = seg_info( MaxSegments ).
+        let info = parse_seg_info(reader, max_segments)?;
+        (Some(allow), Some(info))
     } else {
-        None
+        (None, None)
     };
 
     Ok(SequenceSegmentConfig {
@@ -826,18 +814,7 @@ pub fn parse_sequence_segment_config(reader: &mut BitReader<'_>) -> Result<Seque
         max_segments,
         seq_seg_info_present_flag,
         seq_allow_seg_info_change,
-    })
-}
-
-/// `seg_info()` (AV2 § 5.4.9), bounded until segmentation tables are modeled.
-///
-/// # Errors
-/// Always returns [`Error::Unimplemented`].
-pub fn parse_segment_info(_reader: &mut BitReader<'_>) -> Result<()> {
-    // TODO(spec: AV2-5.4.9-SEGMENT-INFO): parse seg_info() (needs Segmentation_Feature_Bits,
-    // Segmentation_Feature_Max, Segmentation_Feature_Signed, and the su(n) descriptor).
-    Err(Error::Unimplemented {
-        feature: "AV2-5.4.9-SEGMENT-INFO",
+        segment_info,
     })
 }
 
@@ -1485,21 +1462,24 @@ pub fn parse_sequence_filter_config(
 }
 
 /// `sequence_tile_config()` (AV2 v1.0.0 § 5.4.2 / § 6.4.2).
-///
-/// `tile_params()` is intentionally bounded; see [`SequenceTileConfig::unimplemented_at`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SequenceTileConfig {
     /// `seq_tile_info_present_flag`.
     pub seq_tile_info_present_flag: bool,
     /// `allow_tile_info_change`, present when tile info is signalled.
     pub allow_tile_info_change: Option<bool>,
+    /// Parsed `tile_params()` (§ 5.18.7.3), present when tile info is signalled and the
+    /// sequence level is not reserved.
+    pub params: Option<TileParams>,
 }
 
 impl SequenceTileConfig {
-    /// Returns the owning Feature ID if parsing must stop at the bounded `tile_params()` helper.
+    /// Returns the owning Feature ID if tile info is present but `tile_params()` could
+    /// not be parsed because `seq_level_idx` is a reserved (non-conformant) level with
+    /// no defined tile bit layout. `None` for any valid sequence header.
     #[must_use]
     pub const fn unimplemented_at(&self) -> Option<&'static str> {
-        if self.seq_tile_info_present_flag {
+        if self.seq_tile_info_present_flag && self.params.is_none() {
             Some("AV2-5.4.2-SEQUENCE-TILE-CONFIG")
         } else {
             None
@@ -1507,25 +1487,44 @@ impl SequenceTileConfig {
     }
 }
 
-/// Parses `sequence_tile_config()` up to the bounded `tile_params()` helper (AV2 § 5.4.2).
+/// Parses `sequence_tile_config()` (AV2 § 5.4.2), including `tile_params()`
+/// (§ 5.18.7.3) when `seq_tile_info_present_flag` is set.
+///
+/// `tile_params_input` carries the frame dimensions, superblock size, tier, and level
+/// that `tile_params()` needs; the caller builds it from the parsed general header and
+/// partition config (`is_bridge` is `false` at the sequence call site). A reserved
+/// `seq_level_idx` has no defined tile bit layout, so the params are left `None` (a
+/// bounded residual reported by [`SequenceTileConfig::unimplemented_at`]).
 ///
 /// # Errors
-/// Returns [`Error::UnexpectedEof`] if the payload ends mid-field.
-pub fn parse_sequence_tile_config(reader: &mut BitReader<'_>) -> Result<SequenceTileConfig> {
+/// Returns descriptor errors or [`Error::UnexpectedEof`] if the payload ends mid-field.
+pub fn parse_sequence_tile_config(
+    reader: &mut BitReader<'_>,
+    tile_params_input: TileParamsInput,
+) -> Result<SequenceTileConfig> {
     let seq_tile_info_present_flag = reader.read_bit()? != 0;
-    let allow_tile_info_change = if seq_tile_info_present_flag {
-        // AV2 § 5.4.2 then derives seqSbSize and calls tile_params(...), which
-        // splot does not yet model (it needs the shared tile partitioning helper).
-        // TODO(spec: AV2-5.4.2-SEQUENCE-TILE-CONFIG): parse tile_params() once the
-        // shared tile partitioning helper exists.
-        Some(reader.read_bit()? != 0)
-    } else {
-        None
+    if !seq_tile_info_present_flag {
+        return Ok(SequenceTileConfig {
+            seq_tile_info_present_flag: false,
+            allow_tile_info_change: None,
+            params: None,
+        });
+    }
+
+    let allow_tile_info_change = reader.read_bit()? != 0;
+    // AV2 § 5.4.2: tile_params(max_frame_width_minus_1 + 1, max_frame_height_minus_1 + 1,
+    // seqSbSize, seqSbSize, 0). A reserved seq_level_idx has no defined layout, so it is
+    // surfaced as a bounded residual rather than a hard parse error.
+    let params = match parse_tile_params(reader, tile_params_input) {
+        Ok(params) => Some(params),
+        Err(Error::Unimplemented { .. }) => None,
+        Err(error) => return Err(error),
     };
 
     Ok(SequenceTileConfig {
-        seq_tile_info_present_flag,
-        allow_tile_info_change,
+        seq_tile_info_present_flag: true,
+        allow_tile_info_change: Some(allow_tile_info_change),
+        params,
     })
 }
 
@@ -2027,7 +2026,7 @@ mod tests {
     /// fields through `film_grain_params_present`) with chroma format 4:2:0 (not
     /// monochrome). All tool flags are `0` except where a fixed value is required.
     fn push_still_picture_header(bits: &mut Bits) {
-        push_still_picture_header_until_tile(bits);
+        push_still_picture_header_until_tile(bits, 0, false);
         // sequence_tile_config
         bits.bit(0); // seq_tile_info_present_flag (fully parsed)
         // film_grain_params_present
@@ -2307,61 +2306,88 @@ mod tests {
     }
 
     #[test]
-    fn sequence_segment_config_present_flag_is_bounded() {
+    fn sequence_segment_config_parses_seg_info() {
         let mut bits = Bits::default();
         bits.bit(0); // enable_ext_seg -> MaxSegments = 8
         bits.bit(1); // seq_seg_info_present_flag
         bits.bit(0); // seq_allow_seg_info_change
+        for _ in 0..(8 * crate::segment::SEG_LVL_MAX) {
+            bits.bit(0); // seg_info(8): all features disabled
+        }
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let segment = parse_sequence_segment_config(&mut reader).unwrap();
         assert_eq!(segment.max_segments, 8);
         assert!(segment.seq_seg_info_present_flag);
-        assert_eq!(segment.unimplemented_at(), Some("AV2-5.4.9-SEGMENT-INFO"));
+        assert_eq!(segment.seq_allow_seg_info_change, Some(false));
+        let info = segment
+            .segment_info
+            .expect("segment info is parsed when present");
+        assert_eq!(info.num_segments, 8);
     }
 
     #[test]
-    fn sequence_header_composite_bounds_at_segment_info() {
+    fn sequence_segment_config_absent_has_no_segment_info() {
         let mut bits = Bits::default();
-        // general (single picture, chroma 4:2:0)
-        bits.uvlc(0);
-        bits.f(0, 5);
-        bits.bit(1);
-        bits.f(0, 5);
-        bits.uvlc(0);
-        bits.uvlc(0);
-        bits.f(3, 4);
-        bits.f(3, 4);
-        bits.f(15, 4);
-        bits.f(7, 4);
-        bits.bit(0);
-        // sequence_partition_config
-        bits.bit(0);
-        bits.bit(0);
-        bits.bit(0);
-        bits.bit(0);
-        bits.bit(0);
-        // sequence_segment_config with segment info present -> bounded
-        bits.bit(0); // enable_ext_seg
-        bits.bit(1); // seq_seg_info_present_flag
-        bits.bit(0); // seq_allow_seg_info_change
+        bits.bit(1); // enable_ext_seg -> MaxSegments = 16
+        bits.bit(0); // seq_seg_info_present_flag
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let segment = parse_sequence_segment_config(&mut reader).unwrap();
+        assert_eq!(segment.max_segments, 16);
+        assert!(!segment.seq_seg_info_present_flag);
+        assert_eq!(segment.segment_info, None);
+    }
+
+    #[test]
+    fn sequence_header_composite_parses_segment_info() {
+        // A header with seq_seg_info_present_flag = 1 now parses fully (no bound).
+        let mut bits = Bits::default();
+        push_still_picture_header_until_tile(&mut bits, 0, true);
+        bits.bit(0); // seq_tile_info_present_flag (tile absent)
+        bits.bit(0); // film_grain_params_present
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let header = parse_sequence_header(&mut reader).unwrap();
-        assert!(!header.is_fully_parsed());
-        assert_eq!(header.unimplemented_at, Some("AV2-5.4.9-SEGMENT-INFO"));
-        assert!(header.partition.is_some());
-        assert!(header.segment.is_some());
-        assert!(header.intra.is_none());
-        assert_eq!(header.film_grain_params_present, None);
+        assert!(header.is_fully_parsed());
+        assert_eq!(header.unimplemented_at, None);
+        let segment = header.segment.unwrap();
+        assert!(segment.seq_seg_info_present_flag);
+        let info = segment.segment_info.expect("segment info present");
+        assert_eq!(info.num_segments, 8);
+        assert_eq!(header.film_grain_params_present, Some(false));
     }
 
     #[test]
-    fn sequence_header_composite_bounds_at_tile_params() {
-        // Build a header identical to the still-picture case but with
-        // seq_tile_info_present_flag = 1 so the composite bounds at tile_params.
+    fn sequence_header_composite_parses_tile_params() {
+        // A header with seq_tile_info_present_flag = 1 now parses tile_params fully.
         let mut bits = Bits::default();
-        push_still_picture_header_until_tile(&mut bits);
+        push_still_picture_header_until_tile(&mut bits, 0, false);
+        bits.bit(1); // seq_tile_info_present_flag
+        bits.bit(0); // allow_tile_info_change
+        bits.bit(1); // uniform_tile_spacing_flag (16x8 frame -> single tile, no increments)
+        bits.bit(0); // film_grain_params_present
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let header = parse_sequence_header(&mut reader).unwrap();
+        assert!(header.is_fully_parsed());
+        assert_eq!(header.unimplemented_at, None);
+        let tile = header.tile.unwrap();
+        assert!(tile.seq_tile_info_present_flag);
+        assert_eq!(tile.allow_tile_info_change, Some(false));
+        let params = tile.params.expect("tile params parsed for a valid level");
+        assert!(params.uniform_spacing);
+        assert_eq!(params.tile_cols, 1);
+        assert_eq!(params.tile_rows, 1);
+        assert_eq!(header.film_grain_params_present, Some(false));
+    }
+
+    #[test]
+    fn sequence_header_composite_bounds_at_reserved_level_tile_params() {
+        // seq_level_idx 22 is a reserved level with no defined tile bit layout, so a
+        // seq_tile_info_present header bounds at tile_params (the only residual bound).
+        let mut bits = Bits::default();
+        push_still_picture_header_until_tile(&mut bits, 22, false);
         bits.bit(1); // seq_tile_info_present_flag
         bits.bit(0); // allow_tile_info_change
         let data = bits.into_bytes();
@@ -2372,17 +2398,25 @@ mod tests {
             Some("AV2-5.4.2-SEQUENCE-TILE-CONFIG")
         );
         assert!(header.filter.is_some());
+        assert!(header.tile.unwrap().params.is_none());
         assert_eq!(header.film_grain_params_present, None);
     }
 
     /// Appends a still-picture `sequence_header_obu()` up to (but not including)
-    /// `sequence_tile_config()`. Mirrors the parser field-for-field.
-    fn push_still_picture_header_until_tile(bits: &mut Bits) {
+    /// `sequence_tile_config()`. Mirrors the parser field-for-field. `seq_level_idx`
+    /// selects the level (single-picture headers never code `seq_tier`, so the level is
+    /// free to vary). When `segment_info_present`, an all-disabled `seg_info(8)` is
+    /// appended after the segment-config flags.
+    fn push_still_picture_header_until_tile(
+        bits: &mut Bits,
+        seq_level_idx: u32,
+        segment_info_present: bool,
+    ) {
         // general (single_picture_header_flag = 1, chroma 4:2:0)
         bits.uvlc(0); // seq_header_id
         bits.f(0, 5); // seq_profile_idc
         bits.bit(1); // single_picture_header_flag
-        bits.f(0, 5); // seq_level_idx (<= 3 -> no seq_tier)
+        bits.f(seq_level_idx, 5); // seq_level_idx (single picture -> no seq_tier)
         bits.uvlc(0); // chroma_format_idc = CHROMA_FORMAT_420
         bits.uvlc(0); // bit_depth_idc
         bits.f(3, 4); // frame_width_bits_minus_1
@@ -2397,8 +2431,14 @@ mod tests {
         bits.bit(0); // enable_ext_partitions
         bits.bit(0); // reduce_pb_aspect_ratio
         // sequence_segment_config
-        bits.bit(0); // enable_ext_seg
-        bits.bit(0); // seq_seg_info_present_flag (fully parsed)
+        bits.bit(0); // enable_ext_seg -> MaxSegments = 8
+        bits.bit(u8::from(segment_info_present)); // seq_seg_info_present_flag
+        if segment_info_present {
+            bits.bit(0); // seq_allow_seg_info_change
+            for _ in 0..(8 * crate::segment::SEG_LVL_MAX) {
+                bits.bit(0); // seg_info(8): 8 segments x SEG_LVL_MAX features, all disabled
+            }
+        }
         // sequence_intra_config (not monochrome)
         bits.bit(0); // enable_dip
         bits.bit(0); // enable_intra_edge_filter
@@ -2505,9 +2545,11 @@ mod tests {
     #[test]
     fn dispatch_reports_bounded_sequence_header_as_unimplemented() {
         use crate::obu::{PayloadStatus, dispatch_obu_payload, read_obu_header_from_slice};
+        // A reserved seq_level_idx (22) with tile info present is the only residual
+        // bounded sequence-header case: tile_params has no defined layout for it.
         let mut bits = Bits::default();
-        push_still_picture_header_until_tile(&mut bits);
-        bits.bit(1); // seq_tile_info_present_flag -> bounded at tile_params
+        push_still_picture_header_until_tile(&mut bits, 22, false);
+        bits.bit(1); // seq_tile_info_present_flag -> bounded at tile_params (reserved level)
         bits.bit(0); // allow_tile_info_change
         let payload = bits.into_bytes();
         let header = read_obu_header_from_slice(&[0x04], ByteOffset::new(0)).unwrap();

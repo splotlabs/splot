@@ -19,6 +19,7 @@ use splot_core::headers::content_interpretation::parse_content_interpretation;
 use splot_core::headers::sequence::parse_sequence_header;
 use splot_core::hls::{parse_msdo, parse_multi_frame_header};
 use splot_core::obu::{finish_obu_payload, parse_trailing_bits};
+use splot_core::tile::{MAX_TILE_COLS, MAX_TILE_ROWS, TileParams};
 use splot_core::types::ObuType;
 
 use crate::diagnostic::{Diagnostic, Severity, ValidationReport};
@@ -234,8 +235,14 @@ impl Check for SequenceHeaderSyntax {
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
         match parse_sequence_header(&mut reader) {
             Ok(header) => {
-                // A bounded child (seg_info/tile_params) is intentional, not an
-                // error; only validate the payload tail when fully parsed.
+                // Local §6.17.7 tile constraints on a parsed sequence tile config.
+                if let Some(tile) = header.tile.as_ref()
+                    && let Some(params) = tile.params.as_ref()
+                {
+                    check_tile_params(params, obu, report);
+                }
+                // A reserved-level tile config (bounded) is intentional, not an error;
+                // only validate the payload tail when fully parsed.
                 if header.is_fully_parsed()
                     && let Err(error) = finish_obu_payload(
                         &mut reader,
@@ -254,6 +261,79 @@ impl Check for SequenceHeaderSyntax {
             }
         }
     }
+}
+
+/// Checks the local §6.17.7 tile constraints on a parsed `tile_params()` result and
+/// pushes any `tile-params/*` diagnostics.
+///
+/// The tile-count limits (§6.17.7.2) are reachable for a non-uniform config that codes
+/// more than `MAX_TILE_COLS` / `MAX_TILE_ROWS` tiles. The frame-coverage checks
+/// (§6.17.7.3) are a defensive, never-false-positive cross-check: the `ns()`-bounded
+/// non-uniform parse makes coverage exact for any decodable stream, so they are
+/// reported only if a parsed config ever fails to cover the frame.
+pub(crate) fn check_tile_params(
+    params: &TileParams,
+    obu: &ObuEnvelope<'_>,
+    report: &mut ValidationReport,
+) {
+    if params.tile_cols > MAX_TILE_COLS {
+        report.push(tile_params_error(
+            "tile-params/tile-cols-out-of-range",
+            "6.17.7.2",
+            obu,
+            format!(
+                "TileCols {} must be less than or equal to MAX_TILE_COLS ({MAX_TILE_COLS})",
+                params.tile_cols
+            ),
+        ));
+    }
+    if params.tile_rows > MAX_TILE_ROWS {
+        report.push(tile_params_error(
+            "tile-params/tile-rows-out-of-range",
+            "6.17.7.2",
+            obu,
+            format!(
+                "TileRows {} must be less than or equal to MAX_TILE_ROWS ({MAX_TILE_ROWS})",
+                params.tile_rows
+            ),
+        ));
+    }
+    if !params.uniform_spacing {
+        if !params.covers_cols {
+            report.push(tile_params_error(
+                "tile-params/nonuniform-cols-do-not-cover-frame",
+                "6.17.7.3",
+                obu,
+                format!(
+                    "non-uniform tile column widths must sum to sbCols ({})",
+                    params.sb_cols
+                ),
+            ));
+        }
+        if !params.covers_rows {
+            report.push(tile_params_error(
+                "tile-params/nonuniform-rows-do-not-cover-frame",
+                "6.17.7.3",
+                obu,
+                format!(
+                    "non-uniform tile row heights must sum to sbRows ({})",
+                    params.sb_rows
+                ),
+            ));
+        }
+    }
+}
+
+/// Builds a §6.17.7 `tile-params/*` diagnostic located at `obu`.
+fn tile_params_error(
+    rule_id: &'static str,
+    spec_section: &'static str,
+    obu: &ObuEnvelope<'_>,
+    message: String,
+) -> Diagnostic {
+    Diagnostic::error(rule_id, message)
+        .with_spec_section(spec_section)
+        .with_byte_offset(obu.offset)
 }
 
 fn payload_parse_error_diagnostic(error: &Error, spec_section: &'static str) -> Diagnostic {
@@ -381,11 +461,9 @@ impl Check for MultiFrameHeaderSyntax {
                     );
                 }
                 // AV2 § 5.2.1: the multi-frame header is extensible, so a fully
-                // parsed MFH must have a valid obu_extension_flag / trailing_bits
-                // tail. A header bounded at seg_info() leaves the tail position
-                // unknown, so it is not validated here.
-                if mfh.unimplemented_at.is_none()
-                    && let Err(error) = finish_obu_payload(&mut reader, obu.payload, true)
+                // parsed MFH (now including seg_info()) must have a valid
+                // obu_extension_flag / trailing_bits tail.
+                if let Err(error) = finish_obu_payload(&mut reader, obu.payload, true)
                     && let Some(diagnostic) = syntax_error_diagnostic(&error)
                 {
                     report.push(diagnostic);
@@ -706,7 +784,122 @@ impl Check for TemporalLayerZeroOnlyTypes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use splot_core::annexb::ObuEnvelope;
+    use splot_core::obu::ObuHeader;
     use splot_core::span::{BitOffset, ByteOffset};
+    use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, TemporalLayerId};
+
+    /// A minimal sequence-header OBU envelope for `check_tile_params` unit tests.
+    fn dummy_obu() -> ObuEnvelope<'static> {
+        ObuEnvelope {
+            offset: ByteOffset::new(0),
+            size: 1,
+            header: ObuHeader {
+                has_header_extension: false,
+                obu_type: ObuType::SequenceHeader,
+                temporal_layer_id: TemporalLayerId::from_bits(0),
+                embedded_layer_id: EmbeddedLayerId::from_bits(0),
+                extended_layer_id: ExtendedLayerId::from_bits(0),
+                header_size_bytes: 1,
+            },
+            payload: &[],
+        }
+    }
+
+    /// A valid single-tile uniform `TileParams` to mutate per test.
+    fn base_tile_params() -> TileParams {
+        TileParams {
+            tile_cols: 1,
+            tile_rows: 1,
+            tile_cols_log2: 0,
+            tile_rows_log2: 0,
+            sb_cols: 1,
+            sb_rows: 1,
+            uniform_spacing: true,
+            covers_cols: true,
+            covers_rows: true,
+        }
+    }
+
+    #[test]
+    fn check_tile_params_accepts_valid_layout() {
+        let mut report = ValidationReport::new();
+        check_tile_params(&base_tile_params(), &dummy_obu(), &mut report);
+        assert!(
+            !report
+                .diagnostics
+                .iter()
+                .any(|d| d.rule_id.starts_with("tile-params/")),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn check_tile_params_flags_too_many_columns_and_rows() {
+        let params = TileParams {
+            tile_cols: MAX_TILE_COLS + 1,
+            tile_rows: MAX_TILE_ROWS + 1,
+            ..base_tile_params()
+        };
+        let mut report = ValidationReport::new();
+        check_tile_params(&params, &dummy_obu(), &mut report);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|d| d.rule_id == "tile-params/tile-cols-out-of-range")
+        );
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|d| d.rule_id == "tile-params/tile-rows-out-of-range")
+        );
+    }
+
+    #[test]
+    fn check_tile_params_flags_nonuniform_coverage_gaps() {
+        let params = TileParams {
+            uniform_spacing: false,
+            covers_cols: false,
+            covers_rows: false,
+            ..base_tile_params()
+        };
+        let mut report = ValidationReport::new();
+        check_tile_params(&params, &dummy_obu(), &mut report);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|d| d.rule_id == "tile-params/nonuniform-cols-do-not-cover-frame")
+        );
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|d| d.rule_id == "tile-params/nonuniform-rows-do-not-cover-frame")
+        );
+    }
+
+    #[test]
+    fn check_tile_params_ignores_coverage_for_uniform_layout() {
+        // covers_* are always true for uniform layouts; even if they were not, a
+        // uniform layout must not emit the non-uniform coverage diagnostics.
+        let params = TileParams {
+            uniform_spacing: true,
+            covers_cols: false,
+            covers_rows: false,
+            ..base_tile_params()
+        };
+        let mut report = ValidationReport::new();
+        check_tile_params(&params, &dummy_obu(), &mut report);
+        assert!(
+            !report
+                .diagnostics
+                .iter()
+                .any(|d| d.rule_id.starts_with("tile-params/nonuniform"))
+        );
+    }
 
     #[test]
     fn syntax_error_diagnostic_maps_trailing_bits_errors() {

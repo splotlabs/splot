@@ -73,10 +73,16 @@ Keep these parsers field-level and syntax-exact. They should not implement motio
 
 Handle the rows that depend on shared structures or spec tables:
 
-- `AV2-5.4.2-SEQUENCE-TILE-CONFIG` calls `tile_params(...)`.
-- `AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG` may call `seg_info(MaxSegments)`.
-- `AV2-5.4.9-SEGMENT-INFO` uses segmentation feature tables.
-- `AV2-5.4.11-USER-QM` uses transform-size/scan/QM tables.
+- `AV2-5.4.2-SEQUENCE-TILE-CONFIG` calls `tile_params(...)`. **Done** (OpenSpec
+  `segmentation-tile-params-foundation`): the shared `tile_params()` helper
+  (`AV2-5.18.7.3-TILE-PARAMS`) is implemented and wired in; only a reserved
+  `seq_level_idx` stays bounded.
+- `AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG` may call `seg_info(MaxSegments)`. **Done**: wired
+  to `AV2-5.4.9-SEGMENT-INFO`.
+- `AV2-5.4.9-SEGMENT-INFO` uses segmentation feature tables. **Done**: reusable
+  `seg_info(numSegments)` with the §5.4.9 feature tables and the `su(n)` descriptor
+  (`AV2-4.11.7-SU`); also wired into the multi-frame header (`AV2-5.7-MULTI-FRAME-HEADER`).
+- `AV2-5.4.11-USER-QM` uses transform-size/scan/QM tables. (Still future.)
 
 Preferred behavior:
 

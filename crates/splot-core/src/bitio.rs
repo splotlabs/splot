@@ -167,6 +167,37 @@ impl<'a> BitReader<'a> {
         Ok(self.read_bits(n)? as u8)
     }
 
+    /// Reads an AV2 `su(n)` signed integer descriptor (AV2 v1.0.0 § 4.11.7).
+    ///
+    /// The value is the `n`-bit unsigned field read MSB-first, sign-extended:
+    /// `signMask = 1 << (n - 1)`; if the sign bit is set, `value -= 2 * signMask`.
+    /// The bottom `n` bits of the result equal the coded unsigned value.
+    ///
+    /// # Errors
+    /// Returns [`Error::BitWidthTooLarge`] if `n == 0` or `n > 32`, or
+    /// [`Error::UnexpectedEof`] if fewer than `n` bits remain.
+    pub fn read_su(&mut self, n: u32) -> Result<i32> {
+        if n == 0 || n > 32 {
+            return Err(Error::BitWidthTooLarge {
+                requested: n,
+                max: 32,
+            });
+        }
+
+        let value = self.read_bits(n)?;
+        // AV2 § 4.11.7: signMask = 1 << (n - 1); if set, value -= 2 * signMask.
+        // Compute in i64 to keep the n == 32 case panic-free, then narrow: the
+        // sign-extended result of an n-bit (n <= 32) two's-complement value always
+        // fits in i32.
+        let sign_mask = 1i64 << (n - 1);
+        let mut signed = i64::from(value);
+        if signed & sign_mask != 0 {
+            signed -= 2 * sign_mask;
+        }
+        // n <= 32, so the sign-extended value is in [-2^31, 2^31 - 1] and fits i32.
+        Ok(signed as i32)
+    }
+
     /// Reads an AV2 `uvlc()` descriptor (AV2 v1.0.0 § 4.11.3).
     ///
     /// AV2 differs from AV1 here: `leadingZeros >= 32` is a conformance
@@ -609,6 +640,58 @@ mod tests {
     }
 
     #[test]
+    fn read_su_decodes_single_bit_sign() {
+        // su(1): 0 -> 0, 1 -> -1 (signMask = 1, value - 2 = -1).
+        let mut zero = BitReader::new(&[0b0000_0000], ByteOffset::new(0));
+        assert_eq!(zero.read_su(1).unwrap(), 0);
+
+        let mut neg_one = BitReader::new(&[0b1000_0000], ByteOffset::new(0));
+        assert_eq!(neg_one.read_su(1).unwrap(), -1);
+    }
+
+    #[test]
+    fn read_su_decodes_positive_and_negative_multi_bit() {
+        // su(4): 0b0101 = 5 (top bit clear -> positive).
+        let mut positive = BitReader::new(&[0b0101_0000], ByteOffset::new(0));
+        assert_eq!(positive.read_su(4).unwrap(), 5);
+
+        // su(4): 0b1011 = 11, signMask = 8, set -> 11 - 16 = -5.
+        let mut negative = BitReader::new(&[0b1011_0000], ByteOffset::new(0));
+        assert_eq!(negative.read_su(4).unwrap(), -5);
+
+        // su(10): 0b10_0000_0000 = 512, signMask = 512, set -> 512 - 1024 = -512.
+        let mut min10 = BitReader::new(&[0b1000_0000, 0b0000_0000], ByteOffset::new(0));
+        assert_eq!(min10.read_su(10).unwrap(), -512);
+
+        // su(10): 0b01_1111_1111 = 511 (top bit clear -> max positive).
+        let mut max10 = BitReader::new(&[0b0111_1111, 0b1100_0000], ByteOffset::new(0));
+        assert_eq!(max10.read_su(10).unwrap(), 511);
+    }
+
+    #[test]
+    fn read_su_reports_eof_and_rejects_invalid_widths() {
+        let mut eof = BitReader::new(&[], ByteOffset::new(0));
+        assert!(matches!(eof.read_su(4), Err(Error::UnexpectedEof { .. })));
+
+        // width == 0 is invalid for su(n).
+        let mut zero_width = BitReader::new(&[0xFF], ByteOffset::new(0));
+        assert!(matches!(
+            zero_width.read_su(0),
+            Err(Error::BitWidthTooLarge { .. })
+        ));
+        // The guard rejects before consuming any bits.
+        assert_eq!(zero_width.byte_offset(), ByteOffset::new(0));
+
+        // width > 32 is rejected (su reads via the 32-bit fixed-width path).
+        let mut wide = BitReader::new(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF], ByteOffset::new(0));
+        assert!(matches!(
+            wide.read_su(33),
+            Err(Error::BitWidthTooLarge { .. })
+        ));
+        assert_eq!(wide.byte_offset(), ByteOffset::new(0));
+    }
+
+    #[test]
     fn byte_align_zero_accepts_zero_bits_and_rejects_one_bits() {
         let mut aligned = BitReader::new(&[0b1000_0000], ByteOffset::new(0));
         let _ = aligned.read_bit().unwrap();
@@ -647,6 +730,9 @@ mod proptests {
 
             let mut rg_reader = BitReader::new(&data, ByteOffset::new(0));
             let _ = rg_reader.read_rg(n.min(32));
+
+            let mut su_reader = BitReader::new(&data, ByteOffset::new(0));
+            let _ = su_reader.read_su(n.min(32));
 
             let mut alignment_reader = BitReader::new(&data, ByteOffset::new(0));
             let _ = alignment_reader.read_bits(n.min(7));

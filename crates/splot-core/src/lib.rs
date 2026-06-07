@@ -28,8 +28,10 @@ pub mod headers;
 pub mod hls;
 pub mod leb128;
 pub mod obu;
+pub mod segment;
 pub mod span;
 pub mod tables;
+pub mod tile;
 pub mod types;
 
 pub use error::{Error, Result};

@@ -153,6 +153,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "AV2-4.11.7-SU"
+name = "Signed integer descriptor"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["4.11.7"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/bitio.rs"
+openspec_change = "segmentation-tile-params-foundation"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Implemented as BitReader::read_su(n) from AV2 §4.11.7 (sign-extension via signMask). Reused by seg_info() (AV2-5.4.9-SEGMENT-INFO). Covers su(1), positive/negative multi-bit values, EOF, and invalid widths without panics."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "done"
+validate = "not-applicable"
+write = "todo"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests"]
+commands = ["cargo test -p splot-core bitio"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "AV2-5.2.2-OBU-HEADER"
 name = "OBU header syntax"
 category = "normative"
@@ -465,17 +498,17 @@ spec_sections = ["5.4.2", "6.4.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/sequence.rs"
-openspec_change = "parse-sequence-header"
+openspec_change = "segmentation-tile-params-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. tile_params() is now parsed via the shared AV2-5.18.7.3-TILE-PARAMS helper, so a valid sequence tile config parses fully (no bounded status); only a reserved seq_level_idx (non-conformant) leaves a documented bounded residual. Local §6.17.7 tile constraints are checked (tile-params/* diagnostics). Do not mark the umbrella done until this child is proven."
 
 [feature.status]
 mapped = "done"
 types = "done"
-parse = "partial"
-validate = "partial"
+parse = "done"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -484,10 +517,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-cli/tests/cli.rs"]
-commands = ["cargo test -p splot-core sequence", "cargo test -p splot-cli inspect"]
-fixtures = ["tests/fixtures/seq-header-tile-unimplemented.av2"]
-diagnostics = []
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-core/src/tile.rs::tests", "crates/splot-validate/src/validator.rs::tests", "crates/splot-cli/tests/cli.rs"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-core tile", "cargo test -p splot-validate sequence_header", "cargo test -p splot-cli inspect"]
+fixtures = ["tests/fixtures/seq-header-tile-params.av2"]
+diagnostics = ["tile-params/tile-cols-out-of-range", "tile-params/tile-rows-out-of-range", "tile-params/nonuniform-cols-do-not-cover-frame", "tile-params/nonuniform-rows-do-not-cover-frame"]
 
 [[feature]]
 id = "AV2-5.4.3-SEQUENCE-PARTITION-CONFIG"
@@ -531,16 +564,16 @@ spec_sections = ["5.4.4", "6.4.4"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/sequence.rs"
-openspec_change = "parse-sequence-header"
+openspec_change = "segmentation-tile-params-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. seg_info(MaxSegments) is now parsed via the shared AV2-5.4.9-SEGMENT-INFO helper, so the config parses fully (no bounded status). Do not mark the umbrella done until this child is proven."
 
 [feature.status]
 mapped = "done"
 types = "done"
-parse = "partial"
+parse = "done"
 validate = "partial"
 write = "todo"
 encode = "todo"
@@ -550,8 +583,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests"]
-commands = ["cargo test -p splot-core sequence"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-core/src/segment.rs::tests"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-core segment"]
 fixtures = []
 diagnostics = []
 
@@ -689,34 +722,34 @@ diagnostics = []
 
 [[feature]]
 id = "AV2-5.4.9-SEGMENT-INFO"
-name = "Sequence segment info syntax"
+name = "Segment info syntax"
 category = "normative"
 kind = "bitstream-syntax"
 spec_sections = ["5.4.9", "6.4.9"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers/sequence.rs"
-openspec_change = "parse-sequence-header"
+module = "crates/splot-core/src/segment.rs"
+openspec_change = "segmentation-tile-params-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+notes = "Reusable seg_info(numSegments) parser shared by AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG and AV2-5.7-MULTI-FRAME-HEADER. Uses the exact §5.4.9 Segmentation_Feature_Bits/_Signed/_Max tables and the AV2-4.11.7-SU descriptor; clips per spec (clipping is not a conformance error). Frame segmentation_params() reuse is future work."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "not-applicable"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/segment.rs::tests", "crates/splot-core/src/segment.rs::proptests"]
+commands = ["cargo test -p splot-core segment"]
 fixtures = []
 diagnostics = []
 
@@ -997,12 +1030,12 @@ openspec_change = "frame-activation-hls-skeleton"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Syntax parsed up to seg_info() (bounded at AV2-5.4.9-SEGMENT-INFO). Local id ranges are checked, and the mfh_seq_header_id -> sequence-header reference availability (§7.3.8.6/§7.3.8.7) is validated against the in-band store plus optional external HLS (see AV2-7.3.8-HLS-AVAILABILITY). Valid MFHs are now recorded as MultiFrameHeaderRecord availability and consumed by the frame-header cur_mfh_id reference check (hls/unavailable-multi-frame-header). seg_info() and the MFH layer-dependency-map checks remain future work."
+notes = "multi_frame_header_obu() syntax is now parsed in full, including seg_info() via the shared AV2-5.4.9-SEGMENT-INFO helper (no bounded status). Local id ranges are checked, and the mfh_seq_header_id -> sequence-header reference availability (§7.3.8.6/§7.3.8.7) is validated against the in-band store plus optional external HLS (see AV2-7.3.8-HLS-AVAILABILITY). Fully parsed MFHs run the §5.2.1 payload-tail check and are recorded as MultiFrameHeaderRecord availability, consumed by the frame-header cur_mfh_id reference check (hls/unavailable-multi-frame-header). The MFH layer-dependency-map checks remain future work."
 
 [feature.status]
 mapped = "done"
 types = "done"
-parse = "partial"
+parse = "done"
 validate = "partial"
 write = "todo"
 encode = "todo"
@@ -2515,25 +2548,58 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation. When implementing, narrow spec_sections to the exact §6.17 subsection if the spec has one."
+notes = "Child row of AV2-5.18-FRAME-HEADER. The reusable tile-partitioning foundation (AV2-5.18.7.3-TILE-PARAMS) and seg_info() (AV2-5.4.9-SEGMENT-INFO) now exist and are used by the sequence header. The frame-level segmentation_params() (§5.18.7.1) and tile_info() (§5.18.7.2) live parser paths are still future work and depend on the full frame header. Do not mark this umbrella done until those land."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "partial"
+parse = "partial"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "partial"
+tests = "partial"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/tile.rs::tests"]
+commands = ["cargo test -p splot-core tile"]
 fixtures = []
 diagnostics = []
+
+[[feature]]
+id = "AV2-5.18.7.3-TILE-PARAMS"
+name = "Tile params helper and tile-partitioning tables"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.18.7.3", "5.18.7.5", "5.18.7.7", "6.17.7"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/tile.rs"
+openspec_change = "segmentation-tile-params-foundation"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.18.7-SEGMENTATION-TILING. Reusable tile_params() helper (tile_log2, uniform_spacing, the §9.3 block-size conversion tables, and the level/tier Tile_Width_Scaling_Factor / Tile_Area_Scaling_Factor tables). Wired into the sequence tile config (AV2-5.4.2-SEQUENCE-TILE-CONFIG); the frame tile_info() reuse path is future work. Reserved seq_level_idx values have no defined layout and leave a documented bounded residual."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "done"
+write = "todo"
+encode = "todo"
+decode_check = "done"
+tests = "done"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/tile.rs::tests", "crates/splot-core/src/tile.rs::proptests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core tile", "cargo test -p splot-validate sequence_header"]
+fixtures = ["tests/fixtures/seq-header-tile-params.av2"]
+diagnostics = ["tile-params/tile-cols-out-of-range", "tile-params/tile-rows-out-of-range", "tile-params/nonuniform-cols-do-not-cover-frame", "tile-params/nonuniform-rows-do-not-cover-frame"]
 
 [[feature]]
 id = "AV2-5.18.8-TRANSFORM-CODING-MODES"

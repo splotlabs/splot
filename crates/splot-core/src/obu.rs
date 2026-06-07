@@ -49,7 +49,8 @@ pub enum PayloadStatus<'a, T> {
 
 /// Parsed OBU payload syntax for OBU types currently modeled by `splot-core`.
 ///
-/// `SequenceHeader` is boxed because it is much larger than the other variants.
+/// `SequenceHeader` and `MultiFrameHeader` are boxed because they embed the large
+/// `seg_info()` feature matrix and are much bigger than the other variants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ParsedObu {
@@ -60,7 +61,7 @@ pub enum ParsedObu {
     /// `multistream_decoder_operation_obu()` (AV2 v1.0.0 § 5.6).
     Msdo(MultistreamDecoderOperation),
     /// `multi_frame_header_obu()` (AV2 v1.0.0 § 5.7).
-    MultiFrameHeader(MultiFrameHeader),
+    MultiFrameHeader(Box<MultiFrameHeader>),
     /// `content_interpretation_obu()` (AV2 v1.0.0 § 5.15).
     ContentInterpretation(ContentInterpretation),
 }
@@ -149,12 +150,9 @@ pub fn dispatch_obu_payload<'a>(
         ObuType::MultiFrameHeader => {
             let mut reader = BitReader::new(payload, payload_offset);
             let multi_frame_header = parse_multi_frame_header(&mut reader)?;
-            if let Some(feature) = multi_frame_header.unimplemented_at {
-                return Ok(PayloadStatus::Unimplemented { feature, payload });
-            }
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::MultiFrameHeader(
-                multi_frame_header,
+                Box::new(multi_frame_header),
             )))
         }
         ObuType::ContentInterpretation => {
