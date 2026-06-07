@@ -8,10 +8,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
+use splot_core::headers::atlas_segment::parse_atlas_segment;
 use splot_core::headers::content_interpretation::{
     ContentInterpretation, parse_content_interpretation,
 };
 use splot_core::headers::frame::{FrameHeaderPrefix, parse_frame_header_prefix};
+use splot_core::headers::layer_config_record::{
+    LayerConfigurationRecord, parse_layer_config_record,
+};
 use splot_core::headers::sequence::{
     MAX_SEQ_NUM, SequenceHeaderGeneral, SequenceHeaderId, TimingInfo, parse_sequence_header,
 };
@@ -48,10 +52,11 @@ pub(crate) struct ValidatorContext {
 
 /// Availability of in-band HLS objects, for the § 7.3.8 reference checks.
 ///
-/// Sequence-header availability (§ 7.3.8.6) and multi-frame-header availability
-/// (§ 7.3.8.7) are modeled: the MFH records are consumed by the frame-header
-/// `cur_mfh_id` reference check. MSDO / LCR / atlas / OPS availability records remain
-/// deferred (their consumers need RAP detection or syntax that is out of scope).
+/// Sequence-header availability (§ 7.3.8.6), multi-frame-header availability
+/// (§ 7.3.8.7), layer-configuration-record availability (§ 7.3.8.3), and local
+/// atlas-segment availability (§ 7.3.8.4) are modeled. MSDO / OPS availability records
+/// and the global atlas reference (§ 7.3.8.4 uses "can be available", not a hard
+/// requirement) remain deferred.
 ///
 /// The store is kept **monotonic** (entries are never removed): an object included
 /// earlier in the bitstream stays available, so the validator never falsely reports
@@ -64,6 +69,15 @@ struct HlsAvailabilityStore {
     sequence_header_ids: BTreeSet<u32>,
     /// Multi-frame-header records keyed by `mfhId`, seen in-band so far (§ 7.3.8.7).
     multi_frame_headers: BTreeMap<u32, MultiFrameHeaderRecord>,
+    /// `lcr_xlayer_map` of each global LCR, keyed by `lcr_global_config_record_id`,
+    /// seen in-band so far (§ 7.3.8.3).
+    global_lcr_xlayer_maps: BTreeMap<u8, u32>,
+    /// `lcr_local_id` values of local LCRs, keyed by their `obu_xlayer_id`, seen
+    /// in-band so far (§ 7.3.8.3).
+    local_lcr_ids: BTreeMap<ExtendedLayerId, BTreeSet<u8>>,
+    /// `(obu_xlayer_id, atlas_segment_id)` of local atlas segment OBUs seen in-band so
+    /// far (§ 7.3.8.4).
+    local_atlases: BTreeSet<(ExtendedLayerId, u8)>,
 }
 
 /// How a referenced HLS object resolves against available objects (AV2 § 7.3.8).
@@ -111,6 +125,48 @@ impl HlsAvailabilityStore {
     fn multi_frame_header(&self, id: MfhId) -> Option<&MultiFrameHeaderRecord> {
         self.multi_frame_headers.get(&id.get())
     }
+
+    /// Records a global LCR (by `lcr_global_config_record_id`) and its `lcr_xlayer_map`
+    /// as available in-band (AV2 § 7.3.8.3). A redefinition overwrites the map but
+    /// keeps the id available, preserving monotonic availability.
+    fn record_global_lcr(&mut self, global_id: u8, xlayer_map: u32) {
+        self.global_lcr_xlayer_maps.insert(global_id, xlayer_map);
+    }
+
+    /// Returns the `lcr_xlayer_map` of the available global LCR with
+    /// `lcr_global_config_record_id == global_id`, if any (AV2 § 7.3.8.3).
+    fn global_lcr_xlayer_map(&self, global_id: u8) -> Option<u32> {
+        self.global_lcr_xlayer_maps.get(&global_id).copied()
+    }
+
+    /// Records a local LCR (by `obu_xlayer_id` and `lcr_local_id`) as available in-band
+    /// (AV2 § 7.3.8.3).
+    fn record_local_lcr(&mut self, xlayer: ExtendedLayerId, local_id: u8) {
+        self.local_lcr_ids
+            .entry(xlayer)
+            .or_default()
+            .insert(local_id);
+    }
+
+    /// Returns `true` if a local LCR with `lcr_local_id == local_id` is available in
+    /// the extended layer `xlayer` (AV2 § 7.3.8.3).
+    fn has_local_lcr(&self, xlayer: ExtendedLayerId, local_id: u8) -> bool {
+        self.local_lcr_ids
+            .get(&xlayer)
+            .is_some_and(|ids| ids.contains(&local_id))
+    }
+
+    /// Records a local atlas segment OBU (by `obu_xlayer_id` and `atlas_segment_id`)
+    /// as available in-band (AV2 § 7.3.8.4).
+    fn record_local_atlas(&mut self, xlayer: ExtendedLayerId, atlas_id: u8) {
+        self.local_atlases.insert((xlayer, atlas_id));
+    }
+
+    /// Returns `true` if a local atlas segment OBU with `atlas_segment_id == atlas_id`
+    /// is available in the extended layer `xlayer` (AV2 § 7.3.8.4).
+    fn has_local_atlas(&self, xlayer: ExtendedLayerId, atlas_id: u8) -> bool {
+        self.local_atlases.contains(&(xlayer, atlas_id))
+    }
 }
 
 /// Key identifying a content-interpretation record: `(obu_xlayer_id, obu_mlayer_id)`.
@@ -141,7 +197,7 @@ impl ValidatorContext {
         self.temporal_unit.observe_obu(obu, report);
 
         if obu.header.obu_type == ObuType::SequenceHeader {
-            self.observe_sequence_header(obu, report);
+            self.observe_sequence_header(obu, options, report);
         } else {
             // AV2 § 5.18.2: a frame header's load_sequence_header() runs at the start
             // of frame_header_info(), before the frame's own layer ids are
@@ -158,6 +214,10 @@ impl ValidatorContext {
         match obu.header.obu_type {
             ObuType::ContentInterpretation => self.observe_content_interpretation(obu, report),
             ObuType::MultiFrameHeader => self.observe_multi_frame_header(obu, options, report),
+            ObuType::LayerConfigurationRecord => {
+                self.observe_layer_config_record(obu, options, report);
+            }
+            ObuType::AtlasSegment => self.observe_atlas_segment(obu),
             _ => {}
         }
     }
@@ -284,6 +344,13 @@ impl ValidatorContext {
                 }
                 return None;
             };
+            // TODO(spec: AV2-5.7-MULTI-FRAME-HEADER): when cur_mfh_id > 0, also enforce
+            // the §7.3.8.7 layer-dependency constraints
+            // MLayerDependencyMap[obu_mlayer_id][MfhMLayerId[cur_mfh_id]] == 1 and
+            // TLayerDependencyMap[obu_mlayer_id][obu_tlayer_id][MfhTLayerId[cur_mfh_id]]
+            // == 1. The sequence-header model does not expose MLayerDependencyMap /
+            // TLayerDependencyMap (parse_dependency_map_bits discards the bits), so this
+            // check is deferred rather than fabricated from max layer ids.
             let seq_raw = u32::from(record.mfh_seq_header_id.get());
             self.resolve_referenced_sequence_header(seq_raw, obu, options, report)
         }
@@ -495,7 +562,199 @@ impl ValidatorContext {
         }
     }
 
-    fn observe_sequence_header(&mut self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+    /// Observes a layer configuration record OBU: records its in-band availability and
+    /// checks a local record's references to a global LCR (AV2 § 7.3.8.3) and a local
+    /// atlas segment OBU (AV2 § 7.3.8.4). Availability is recorded only after a
+    /// successful parse and a valid § 5.2.1 payload tail, mirroring the sequence-header
+    /// and multi-frame-header observers.
+    fn observe_layer_config_record(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        // Parse failures and syntax diagnostics are handled by the stateless
+        // LayerConfigRecordSyntax check; here we only act on a successful parse.
+        let Ok(record) = parse_layer_config_record(&mut reader, obu.header.extended_layer_id)
+        else {
+            return;
+        };
+        if finish_obu_payload(
+            &mut reader,
+            obu.payload,
+            obu.header.obu_type.is_extensible_obu(),
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        let xlayer = obu.header.extended_layer_id;
+        let external_disabled = matches!(options.external_hls, ExternalHlsMode::Disabled);
+        match record {
+            LayerConfigurationRecord::Global(info) => {
+                // AV2 § 7.3.8.3: record the global LCR's id and xlayer map for later
+                // local-LCR and sequence-header references.
+                self.hls
+                    .record_global_lcr(info.global_config_record_id, info.xlayer_map);
+            }
+            LayerConfigurationRecord::Local(info) => {
+                // AV2 § 7.3.8.3: a local LCR's lcr_global_id (when non-zero) must
+                // resolve to an available global LCR.
+                if info.global_id != 0
+                    && self.hls.global_lcr_xlayer_map(info.global_id).is_none()
+                    && external_disabled
+                {
+                    report.push(
+                        Diagnostic::error(
+                            "lcr/global-lcr-unavailable",
+                            format!(
+                                "local layer configuration record for obu_xlayer_id {} references \
+                                 lcr_global_id {}, but no global layer configuration record with \
+                                 that id is available in-band (external HLS is disabled)",
+                                xlayer.get(),
+                                info.global_id
+                            ),
+                        )
+                        .with_spec_section("7.3.8.3")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+                // AV2 § 7.3.8.4: a local LCR's lcr_local_atlas_id must resolve to an
+                // available local atlas segment OBU in the same extended layer.
+                if let Some(atlas_id) = info.local_atlas_id
+                    && !self.hls.has_local_atlas(xlayer, atlas_id)
+                    && external_disabled
+                {
+                    report.push(
+                        Diagnostic::error(
+                            "atlas/local-atlas-unavailable",
+                            format!(
+                                "local layer configuration record for obu_xlayer_id {} references \
+                                 lcr_local_atlas_id {}, but no local atlas segment OBU with that id \
+                                 is available in-band for that extended layer (external HLS is \
+                                 disabled)",
+                                xlayer.get(),
+                                atlas_id
+                            ),
+                        )
+                        .with_spec_section("7.3.8.4")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+                self.hls.record_local_lcr(xlayer, info.local_id);
+            }
+            // `LayerConfigurationRecord` is `#[non_exhaustive]`; only global and local
+            // scopes exist in AV2 v1.0.0, so any future variant is ignored here.
+            _ => {}
+        }
+    }
+
+    /// Observes an atlas segment info OBU and records a local atlas segment's in-band
+    /// availability (AV2 § 7.3.8.4). A global atlas (§ 7.3.8.4 uses "can be available",
+    /// not a hard requirement) is not recorded. Recording is gated on a successful
+    /// parse and a valid § 5.2.1 payload tail.
+    fn observe_atlas_segment(&mut self, obu: &ObuEnvelope<'_>) {
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        // Parse failures and syntax diagnostics are handled by the stateless
+        // AtlasSegmentSyntax check; here we only record availability.
+        let Ok(atlas) = parse_atlas_segment(&mut reader) else {
+            return;
+        };
+        if finish_obu_payload(
+            &mut reader,
+            obu.payload,
+            obu.header.obu_type.is_extensible_obu(),
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        let xlayer = obu.header.extended_layer_id;
+        if !xlayer.is_global() {
+            self.hls.record_local_atlas(xlayer, atlas.atlas_segment_id);
+        }
+    }
+
+    /// Resolves a sequence header's `seq_lcr_id` reference (AV2 § 6.4.1 / § 7.3.8.3 /
+    /// § 7.3.8.6): when non-zero it must resolve to an available local LCR (same
+    /// xlayer, `lcr_local_id == seq_lcr_id`) or, failing that, an available global LCR
+    /// (`lcr_global_config_record_id == seq_lcr_id`) whose `lcr_xlayer_map` includes
+    /// this header's xlayer. Availability diagnostics are gated on external HLS being
+    /// disabled (an externally-provided LCR is not modeled).
+    fn check_seq_lcr_reference(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        seq_lcr_id: u8,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        if seq_lcr_id == 0 {
+            // AV2 § 6.4.1: seq_lcr_id == 0 means no LCR is associated.
+            return;
+        }
+        let xlayer = obu.header.extended_layer_id;
+
+        // Resolution order (AV2 § 6.4.1): a local LCR in this xlayer first, then a
+        // global LCR.
+        if self.hls.has_local_lcr(xlayer, seq_lcr_id) {
+            return;
+        }
+        if let Some(xlayer_map) = self.hls.global_lcr_xlayer_map(seq_lcr_id) {
+            // AV2 § 6.4.1: the activated global LCR's lcr_xlayer_map must include the
+            // sequence header's obu_xlayer_id. This is suppressed under external HLS:
+            // an externally-provided local LCR (not modeled) could resolve seq_lcr_id
+            // ahead of this in-band global, making the global's map irrelevant, so
+            // flagging it would be a false positive — consistent with the unavailable
+            // branch below and the multi-frame-header precedent.
+            let xlayer_bit = xlayer.get();
+            if matches!(options.external_hls, ExternalHlsMode::Disabled)
+                && xlayer_bit < 31
+                && xlayer_map & (1u32 << xlayer_bit) == 0
+            {
+                report.push(
+                    Diagnostic::error(
+                        "lcr/global-xlayer-map-missing-xlayer",
+                        format!(
+                            "sequence header for obu_xlayer_id {} references global layer \
+                             configuration record {seq_lcr_id} via seq_lcr_id, but that xlayer is \
+                             not set in its lcr_xlayer_map (0x{xlayer_map:08x})",
+                            xlayer.get()
+                        ),
+                    )
+                    .with_spec_section("6.4.1")
+                    .with_byte_offset(obu.offset),
+                );
+            }
+            return;
+        }
+
+        // Unresolved: neither a local nor a global LCR with this id is available.
+        if matches!(options.external_hls, ExternalHlsMode::Disabled) {
+            report.push(
+                Diagnostic::error(
+                    "hls/unavailable-layer-configuration-record",
+                    format!(
+                        "sequence header references seq_lcr_id {seq_lcr_id}, but no local layer \
+                         configuration record in obu_xlayer_id {} and no global layer configuration \
+                         record with that id is available in-band (external HLS is disabled)",
+                        xlayer.get()
+                    ),
+                )
+                .with_spec_section("7.3.8.3")
+                .with_byte_offset(obu.offset),
+            );
+        }
+    }
+
+    fn observe_sequence_header(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
         // Gate availability and activation on the same validation the
         // SequenceHeaderSyntax check applies: the full sequence_header_obu() parse,
@@ -533,6 +792,11 @@ impl ValidatorContext {
         // references.
         self.hls
             .record_sequence_header(u32::from(general.seq_header_id.get()));
+
+        // AV2 § 6.4.1 / § 7.3.8.3 / § 7.3.8.6: when seq_lcr_id != 0, the referenced
+        // layer configuration record must be available (local-then-global resolution),
+        // and a referenced global LCR must include this header's xlayer in its map.
+        self.check_seq_lcr_reference(obu, general.seq_lcr_id.get(), options, report);
 
         let seq_header_id = general.seq_header_id;
         let xlayer = obu.header.extended_layer_id;

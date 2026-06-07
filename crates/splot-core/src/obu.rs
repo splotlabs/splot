@@ -23,7 +23,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::bitio::BitReader;
 use crate::error::{Error, Result, TrailingBitsErrorKind};
+use crate::headers::atlas_segment::{AtlasSegment, parse_atlas_segment};
 use crate::headers::content_interpretation::{ContentInterpretation, parse_content_interpretation};
+use crate::headers::layer_config_record::{LayerConfigurationRecord, parse_layer_config_record};
 use crate::headers::sequence::{SequenceHeader, parse_sequence_header};
 use crate::hls::{
     MultiFrameHeader, MultistreamDecoderOperation, parse_msdo, parse_multi_frame_header,
@@ -62,6 +64,10 @@ pub enum ParsedObu {
     Msdo(MultistreamDecoderOperation),
     /// `multi_frame_header_obu()` (AV2 v1.0.0 § 5.7).
     MultiFrameHeader(Box<MultiFrameHeader>),
+    /// `layer_config_record_obu()` (AV2 v1.0.0 § 5.8).
+    LayerConfigurationRecord(Box<LayerConfigurationRecord>),
+    /// `atlas_segment_info_obu()` (AV2 v1.0.0 § 5.9).
+    AtlasSegment(Box<AtlasSegment>),
     /// `content_interpretation_obu()` (AV2 v1.0.0 § 5.15).
     ContentInterpretation(ContentInterpretation),
 }
@@ -75,6 +81,8 @@ impl ParsedObu {
             Self::SequenceHeader(_) => "AV2-5.4-SEQUENCE-HEADER",
             Self::Msdo(_) => "AV2-5.6-MSDO",
             Self::MultiFrameHeader(_) => "AV2-5.7-MULTI-FRAME-HEADER",
+            Self::LayerConfigurationRecord(_) => "AV2-5.8-LAYER-CONFIG-RECORD",
+            Self::AtlasSegment(_) => "AV2-5.9-ATLAS-SEGMENT",
             Self::ContentInterpretation(_) => "AV2-5.15-CONTENT-INTERPRETATION",
         }
     }
@@ -87,6 +95,8 @@ impl ParsedObu {
             Self::SequenceHeader(_) => "sequence_header_obu",
             Self::Msdo(_) => "multistream_decoder_operation_obu",
             Self::MultiFrameHeader(_) => "multi_frame_header_obu",
+            Self::LayerConfigurationRecord(_) => "layer_config_record_obu",
+            Self::AtlasSegment(_) => "atlas_segment_info_obu",
             Self::ContentInterpretation(_) => "content_interpretation_obu",
         }
     }
@@ -154,6 +164,23 @@ pub fn dispatch_obu_payload<'a>(
             Ok(PayloadStatus::Parsed(ParsedObu::MultiFrameHeader(
                 Box::new(multi_frame_header),
             )))
+        }
+        ObuType::LayerConfigurationRecord => {
+            let mut reader = BitReader::new(payload, payload_offset);
+            let layer_config_record =
+                parse_layer_config_record(&mut reader, header.extended_layer_id)?;
+            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            Ok(PayloadStatus::Parsed(ParsedObu::LayerConfigurationRecord(
+                Box::new(layer_config_record),
+            )))
+        }
+        ObuType::AtlasSegment => {
+            let mut reader = BitReader::new(payload, payload_offset);
+            let atlas_segment = parse_atlas_segment(&mut reader)?;
+            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            Ok(PayloadStatus::Parsed(ParsedObu::AtlasSegment(Box::new(
+                atlas_segment,
+            ))))
         }
         ObuType::ContentInterpretation => {
             let mut reader = BitReader::new(payload, payload_offset);
@@ -547,6 +574,43 @@ mod tests {
                 payload: &payload,
             }
         );
+    }
+
+    #[test]
+    fn dispatch_parses_layer_config_record_payload() {
+        // 0xC0 0x1F -> ext=1, type=16 (LayerConfigurationRecord), xlayer=31 (global).
+        let header = read_obu_header(&[0xC0, 0x1F], ByteOffset::new(0)).unwrap();
+        assert_eq!(header.obu_type, ObuType::LayerConfigurationRecord);
+        // Minimal global LCR (lcr_global_config_record_id=1, lcr_xlayer_map=1, all flags
+        // 0) followed by obu_extension_flag(0) + trailing_one_bit.
+        let payload = [0x20, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x40];
+        let status = dispatch_obu_payload(header, &payload, ByteOffset::new(2)).unwrap();
+        assert!(matches!(
+            &status,
+            PayloadStatus::Parsed(ParsedObu::LayerConfigurationRecord(_))
+        ));
+        if let PayloadStatus::Parsed(parsed) = &status {
+            assert_eq!(parsed.syntax_name(), "layer_config_record_obu");
+            assert_eq!(parsed.feature_id(), "AV2-5.8-LAYER-CONFIG-RECORD");
+        }
+    }
+
+    #[test]
+    fn dispatch_parses_atlas_segment_payload() {
+        // 0xC4 0x03 -> ext=1, type=17 (AtlasSegment), xlayer=3.
+        let header = read_obu_header(&[0xC4, 0x03], ByteOffset::new(0)).unwrap();
+        assert_eq!(header.obu_type, ObuType::AtlasSegment);
+        // SINGLE_ATLAS (mode 2), nominal dims, no signaled ids, then the OBU tail.
+        let payload = [0x0F, 0x20];
+        let status = dispatch_obu_payload(header, &payload, ByteOffset::new(2)).unwrap();
+        assert!(matches!(
+            &status,
+            PayloadStatus::Parsed(ParsedObu::AtlasSegment(_))
+        ));
+        if let PayloadStatus::Parsed(parsed) = &status {
+            assert_eq!(parsed.syntax_name(), "atlas_segment_info_obu");
+            assert_eq!(parsed.feature_id(), "AV2-5.9-ATLAS-SEGMENT");
+        }
     }
 }
 

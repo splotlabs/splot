@@ -7,8 +7,9 @@ v1.0.0. This capability never panics on malformed input — every failure is a t
 `Error`.
 
 Tracked by Feature IDs: `AV2-4.11.6-LEB128`, `AV2-5.2.2-OBU-HEADER`,
-`AV2-5.2.1-OBU-TYPE`, `AV2-B-ANNEXB-OBU-ENVELOPE`, plus the not-yet-parsed
-header/syntax rows in `docs/IMPLEMENTATION-MATRIX.toml`.
+`AV2-5.2.1-OBU-TYPE`, `AV2-B-ANNEXB-OBU-ENVELOPE`, `AV2-5.8-LAYER-CONFIG-RECORD`,
+`AV2-5.9-ATLAS-SEGMENT`, plus the not-yet-parsed header/syntax rows in
+`docs/IMPLEMENTATION-MATRIX.toml`.
 ## Requirements
 ### Requirement: LEB128 decoding
 
@@ -24,6 +25,12 @@ The reader SHALL decode `leb128()` per AV2 v1.0.0 § 4.11.6: byte-aligned, at mo
 
 - **WHEN** a value exceeds `u32` or uses more than 8 bytes
 - **THEN** an `Error` is returned, never a panic
+
+#### Scenario: bit-reader descriptor path
+
+- **WHEN** the bit reader decodes the `leb128()` element `0x80 0x01`
+- **THEN** it yields `128` and advances by two bytes
+- **AND** a truncated or overlong code returns an `Error`, never a panic
 
 ### Requirement: AV2 OBU header
 
@@ -88,4 +95,55 @@ Header parsing SHALL be bounded to the declared OBU size.
 - **WHEN** the bitstream is parsed
 - **THEN** the parser SHALL return a structured error or invalid payload status
 - **AND** the validator SHALL convert it to a diagnostic rather than panicking.
+
+### Requirement: Layer configuration record OBU parsing
+
+`splot-core` SHALL parse `layer_config_record_obu()` (AV2 v1.0.0 § 5.8) into typed
+syntax, dispatching on `obu_xlayer_id` to `lcr_global_info()` or
+`lcr_local_info(obu_xlayer_id)`, reading the full nested syntax (including the
+length-bounded `lcr_global_payload()`), never skipping payload bits and never reading
+past the OBU boundary, and retaining reserved-zero fields rather than rejecting them.
+
+#### Scenario: minimal global record
+
+- **GIVEN** a global LCR (`obu_xlayer_id == GLOBAL_XLAYER_ID`) with no optional sections
+- **WHEN** the parser reads it
+- **THEN** it SHALL return a global record exposing `lcr_global_config_record_id` and
+  `lcr_xlayer_map`.
+
+#### Scenario: global payload remaining bits and overflow
+
+- **GIVEN** a global LCR with `lcr_global_payload_present_flag` set
+- **WHEN** the parser reads the payload
+- **THEN** it SHALL consume exactly `lcr_data_size * 8` bits including the trailing
+  `lcr_remaining_payload_bit` bits
+- **AND** parsed content exceeding `lcr_data_size * 8` SHALL return a structured error.
+
+#### Scenario: truncated record
+
+- **GIVEN** a layer configuration record OBU that ends mid-field
+- **WHEN** the parser reads it
+- **THEN** it SHALL return a structured end-of-input error and SHALL NOT panic.
+
+### Requirement: Atlas segment info OBU parsing
+
+`splot-core` SHALL parse `atlas_segment_info_obu()` (AV2 v1.0.0 § 5.9) into typed
+syntax for all five `ats_atlas_segment_mode_idc` modes plus `ats_label_segment_info()`,
+never skipping payload bits and never reading past the OBU boundary, and SHALL
+range-check the mode and the segment/region counts before any loop.
+
+#### Scenario: single-mode atlas
+
+- **GIVEN** an atlas OBU with `ats_atlas_segment_mode_idc == SINGLE_ATLAS`
+- **WHEN** the parser reads it
+- **THEN** it SHALL return a record with `num_segments == 1` and the nominal
+  dimensions.
+
+#### Scenario: out-of-range mode or count
+
+- **GIVEN** an atlas OBU with `ats_atlas_segment_mode_idc` greater than 4, or a segment
+  count reaching `MAX_NUM_ATLAS_SEGMENTS`
+- **WHEN** the parser reads it
+- **THEN** it SHALL return a structured atlas-segment error before iterating, and SHALL
+  NOT panic.
 

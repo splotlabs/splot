@@ -10,12 +10,21 @@
 //
 // TODO(spec: AV2-7.3-OBU-ORDERING): add OBU-ordering checks.
 
+use std::collections::BTreeSet;
+
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::error::{
-    ByteAlignmentErrorKind, Error, SequenceHeaderErrorKind, TrailingBitsErrorKind,
+    AtlasSegmentErrorKind, ByteAlignmentErrorKind, Error, LayerConfigRecordErrorKind,
+    SequenceHeaderErrorKind, TrailingBitsErrorKind,
+};
+use splot_core::headers::atlas_segment::{
+    AtlasModeInfo, AtlasSegment, AtlasSegmentMode, parse_atlas_segment,
 };
 use splot_core::headers::content_interpretation::parse_content_interpretation;
+use splot_core::headers::layer_config_record::{
+    LayerConfigurationRecord, parse_layer_config_record,
+};
 use splot_core::headers::sequence::parse_sequence_header;
 use splot_core::hls::{parse_msdo, parse_multi_frame_header};
 use splot_core::obu::{finish_obu_payload, parse_trailing_bits};
@@ -45,6 +54,8 @@ pub fn default_checks() -> Vec<Box<dyn Check>> {
         Box::new(SequenceHeaderSyntax),
         Box::new(MsdoSyntax),
         Box::new(MultiFrameHeaderSyntax),
+        Box::new(LayerConfigRecordSyntax),
+        Box::new(AtlasSegmentSyntax),
         Box::new(ContentInterpretationSyntax),
         Box::new(GlobalXLayerRequired),
         Box::new(GlobalXLayerRequiresBaseLayers),
@@ -150,6 +161,44 @@ pub(crate) fn syntax_error_diagnostic(error: &Error) -> Option<Diagnostic> {
             .with_byte_offset(*offset)
             .with_bit_offset(*bit_offset),
         ),
+        Error::InvalidLayerConfigRecord {
+            offset,
+            bit_offset,
+            kind,
+        } => {
+            let (rule_id, spec_section) = match kind {
+                LayerConfigRecordErrorKind::PayloadSizeOverflow => {
+                    ("lcr/payload-size-overflow", "6.8.6")
+                }
+            };
+            Some(
+                Diagnostic::error(rule_id, kind.to_string())
+                    .with_spec_section(spec_section)
+                    .with_byte_offset(*offset)
+                    .with_bit_offset(*bit_offset),
+            )
+        }
+        Error::InvalidAtlasSegment {
+            offset,
+            bit_offset,
+            kind,
+        } => {
+            let (rule_id, spec_section) = match kind {
+                AtlasSegmentErrorKind::ModeOutOfRange => ("atlas/segment-mode-out-of-range", "6.9"),
+                AtlasSegmentErrorKind::RegionDimensionOutOfRange => {
+                    ("atlas/region-dimension-out-of-range", "6.9.3.1")
+                }
+                AtlasSegmentErrorKind::SegmentCountOutOfRange => {
+                    ("atlas/segment-count-out-of-range", "6.9.6")
+                }
+            };
+            Some(
+                Diagnostic::error(rule_id, kind.to_string())
+                    .with_spec_section(spec_section)
+                    .with_byte_offset(*offset)
+                    .with_bit_offset(*bit_offset),
+            )
+        }
         _ => None,
     }
 }
@@ -473,6 +522,219 @@ impl Check for MultiFrameHeaderSyntax {
             }
             Err(error) => report.push(payload_parse_error_diagnostic(&error, "5.7")),
         }
+    }
+}
+
+/// `OBU_LAYER_CONFIGURATION_RECORD` syntax: full `layer_config_record_obu()` parse,
+/// the reserved-zero-bits anomaly, and payload-tail conformance (AV2 § 5.8 / § 6.8).
+/// Cross-OBU LCR/atlas availability is stateful and handled in [`crate::context`].
+struct LayerConfigRecordSyntax;
+
+impl Check for LayerConfigRecordSyntax {
+    fn id(&self) -> &'static str {
+        // Registry identifier; emitted diagnostics use their own rule ids.
+        "lcr/syntax"
+    }
+
+    fn spec_section(&self) -> Option<&'static str> {
+        Some("5.8")
+    }
+
+    fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.header.obu_type != ObuType::LayerConfigurationRecord {
+            return;
+        }
+
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        match parse_layer_config_record(&mut reader, obu.header.extended_layer_id) {
+            Ok(record) => {
+                if record.has_nonzero_reserved_bits() {
+                    // AV2 § 6.8: the lcr_*_reserved_zero_* fields must be 0, but a
+                    // decoder ignores the value, so a non-zero value is a producer
+                    // anomaly (warning) rather than a decode-breaking error.
+                    report.push(
+                        Diagnostic::warning(
+                            "lcr/reserved-bits-nonzero",
+                            "a layer configuration record reserved-zero field is non-zero; \
+                             the value is ignored by a decoder",
+                        )
+                        .with_spec_section("6.8")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+                check_layer_config_record_semantics(&record, obu, report);
+                // AV2 § 5.2.1: the layer configuration record is extensible, so its
+                // payload tail must be a valid obu_extension_flag / trailing_bits.
+                if let Err(error) = finish_obu_payload(&mut reader, obu.payload, true)
+                    && let Some(diagnostic) = syntax_error_diagnostic(&error)
+                {
+                    report.push(diagnostic);
+                }
+            }
+            Err(error) => {
+                let diagnostic = syntax_error_diagnostic(&error)
+                    .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.8"));
+                report.push(diagnostic);
+            }
+        }
+    }
+}
+
+/// Checks the locally decidable § 6.8.2 / § 6.8.3 layer-configuration-record id and
+/// map constraints on a parsed record and pushes any `lcr/*` diagnostics.
+fn check_layer_config_record_semantics(
+    record: &LayerConfigurationRecord,
+    obu: &ObuEnvelope<'_>,
+    report: &mut ValidationReport,
+) {
+    match record {
+        LayerConfigurationRecord::Global(global) => {
+            if global.global_config_record_id == 0 {
+                // AV2 § 6.8.2: lcr_global_config_record_id is in the range 1..7.
+                report.push(
+                    Diagnostic::error(
+                        "lcr/global-id-out-of-range",
+                        "lcr_global_config_record_id must be in the range 1 to 7 (found 0)",
+                    )
+                    .with_spec_section("6.8.2")
+                    .with_byte_offset(obu.offset),
+                );
+            }
+            if global.xlayer_map == 0 {
+                // AV2 § 6.8.2: lcr_xlayer_map is in the range 1..(1 << 31) - 1.
+                report.push(
+                    Diagnostic::error(
+                        "lcr/xlayer-map-empty",
+                        "lcr_xlayer_map must be in the range 1 to (1 << 31) - 1 (found 0)",
+                    )
+                    .with_spec_section("6.8.2")
+                    .with_byte_offset(obu.offset),
+                );
+            }
+            if global.dependent_xlayers_flag {
+                // AV2 § 6.8.2: lcr_dependent_xlayers_flag must be 0, but a decoder
+                // ignores the value, so a set flag is a producer anomaly (warning).
+                report.push(
+                    Diagnostic::warning(
+                        "lcr/dependent-xlayers-flag-nonzero",
+                        "lcr_dependent_xlayers_flag must be 0; the value is ignored by a decoder",
+                    )
+                    .with_spec_section("6.8.2")
+                    .with_byte_offset(obu.offset),
+                );
+            }
+        }
+        // AV2 § 6.8.3: lcr_local_id is not equal to 0.
+        LayerConfigurationRecord::Local(local) if local.local_id == 0 => {
+            report.push(
+                Diagnostic::error("lcr/local-id-zero", "lcr_local_id must not be equal to 0")
+                    .with_spec_section("6.8.3")
+                    .with_byte_offset(obu.offset),
+            );
+        }
+        // A conformant local record, or (since `LayerConfigurationRecord` is
+        // `#[non_exhaustive]`) a future scope variant, is left unchecked here.
+        _ => {}
+    }
+}
+
+/// `OBU_ATLAS_SEGMENT` syntax: full `atlas_segment_info_obu()` parse (including the
+/// mode and segment/region range checks) and payload-tail conformance
+/// (AV2 § 5.9 / § 6.9). Cross-OBU atlas availability is stateful and handled in
+/// [`crate::context`].
+struct AtlasSegmentSyntax;
+
+impl Check for AtlasSegmentSyntax {
+    fn id(&self) -> &'static str {
+        // Registry identifier; emitted diagnostics use their own rule ids.
+        "atlas/syntax"
+    }
+
+    fn spec_section(&self) -> Option<&'static str> {
+        Some("5.9")
+    }
+
+    fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.header.obu_type != ObuType::AtlasSegment {
+            return;
+        }
+
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        match parse_atlas_segment(&mut reader) {
+            Ok(atlas) => {
+                check_atlas_segment_semantics(&atlas, obu, report);
+                // AV2 § 5.2.1: the atlas segment info OBU is extensible, so its payload
+                // tail must be a valid obu_extension_flag / trailing_bits.
+                if let Err(error) = finish_obu_payload(&mut reader, obu.payload, true)
+                    && let Some(diagnostic) = syntax_error_diagnostic(&error)
+                {
+                    report.push(diagnostic);
+                }
+            }
+            Err(error) => {
+                let diagnostic = syntax_error_diagnostic(&error)
+                    .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.9"));
+                report.push(diagnostic);
+            }
+        }
+    }
+}
+
+/// Checks the locally decidable § 6.9 atlas-segment constraints on a parsed atlas and
+/// pushes any `atlas/*` diagnostics.
+fn check_atlas_segment_semantics(
+    atlas: &AtlasSegment,
+    obu: &ObuEnvelope<'_>,
+    report: &mut ValidationReport,
+) {
+    // AV2 § 6.9: MULTISTREAM_ATLAS / MULTISTREAM_ALPHA_ATLAS require obu_xlayer_id to
+    // equal GLOBAL_XLAYER_ID.
+    if matches!(
+        atlas.mode,
+        AtlasSegmentMode::Multistream | AtlasSegmentMode::MultistreamAlpha
+    ) && !obu.header.extended_layer_id.is_global()
+    {
+        report.push(
+            Diagnostic::error(
+                "atlas/multistream-requires-global-xlayer",
+                format!(
+                    "a multistream atlas (ats_atlas_segment_mode_idc {}) requires \
+                     obu_xlayer_id == GLOBAL_XLAYER_ID, found {}",
+                    atlas.mode.idc(),
+                    obu.header.extended_layer_id.get()
+                ),
+            )
+            .with_spec_section("6.9")
+            .with_byte_offset(obu.offset),
+        );
+    }
+
+    // AV2 § 6.9.6: ats_input_stream_id values of a basic atlas must be unique; AV2
+    // § 6.9.4 gives ats_msi_input_stream_id the same semantics, so the multistream
+    // modes share the requirement.
+    let input_stream_ids: Vec<u8> = match &atlas.mode_info {
+        AtlasModeInfo::Basic(basic) => basic
+            .segments
+            .iter()
+            .filter_map(|segment| segment.input_stream_id)
+            .collect(),
+        AtlasModeInfo::Multistream(msi) | AtlasModeInfo::MultistreamAlpha(msi) => msi
+            .segments
+            .iter()
+            .map(|segment| segment.input_stream_id)
+            .collect(),
+        _ => Vec::new(),
+    };
+    let mut seen = BTreeSet::new();
+    if input_stream_ids.iter().any(|id| !seen.insert(*id)) {
+        report.push(
+            Diagnostic::error(
+                "atlas/duplicate-input-stream-id",
+                "ats_input_stream_id / ats_msi_input_stream_id values of an atlas must be unique",
+            )
+            .with_spec_section("6.9.6")
+            .with_byte_offset(obu.offset),
+        );
     }
 }
 
