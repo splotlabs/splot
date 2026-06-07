@@ -108,8 +108,15 @@ impl ValidatorContext {
             }
         }
 
-        // TODO(spec: AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT): model CLK frame
-        // references before switching an already-active sequence header.
+        // `or_insert` keeps the first activated header per id/xlayer for the run.
+        // This is a known approximation: when a later CVS (after a CLK) reuses the
+        // same seq_header_id with different layer limits, the stale header is still
+        // used for max_tlayer_id/max_mlayer_id checks. Resolving this requires CLK
+        // frame-header activation (the activating CLK follows its sequence header in
+        // OBU order, so the state cannot be reset purely on the CLK without breaking
+        // intra-CVS frames). Tracked for the follow-up HLS-availability change.
+        // TODO(spec: AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT): activate/reset the per-xlayer
+        // sequence header from the CLK frame header instead of the first base-layer copy.
         self.sequence_headers
             .entry(seq_header_id)
             .or_insert(sequence_header);

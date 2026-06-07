@@ -26,6 +26,12 @@ These tasks were deferred from the `sequence-hls-validator-coverage` change.
       sequence header that is not available in-band or externally.
 - [ ] Keep CLK/frame-header-dependent activation bounded
       (`AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT`) until frame headers are parsed.
+- [ ] Reset the per-xlayer active sequence header (`active_sequence_by_xlayer` /
+      `sequence_headers`) at CVS boundaries so a CLK-driven reconfiguration that
+      reuses a `seq_header_id` with new layer limits is checked against the new
+      header, not the stale one. Requires CLK frame-header activation (the CLK
+      follows its sequence header in OBU order), so it cannot be done by resetting
+      purely on the CLK without breaking intra-CVS frames.
 
 ## 3. Matrix, docs, and proof
 

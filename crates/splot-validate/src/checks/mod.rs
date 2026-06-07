@@ -15,9 +15,9 @@ use splot_core::bitio::BitReader;
 use splot_core::error::{
     ByteAlignmentErrorKind, Error, SequenceHeaderErrorKind, TrailingBitsErrorKind,
 };
-use splot_core::headers::sequence::parse_sequence_header_general;
+use splot_core::headers::sequence::parse_sequence_header;
 use splot_core::hls::{parse_msdo, parse_multi_frame_header};
-use splot_core::obu::parse_trailing_bits;
+use splot_core::obu::{finish_obu_payload, parse_trailing_bits};
 use splot_core::types::ObuType;
 
 use crate::diagnostic::{Diagnostic, Severity, ValidationReport};
@@ -40,7 +40,7 @@ pub fn default_checks() -> Vec<Box<dyn Check>> {
         Box::new(ReservedObuType),
         Box::new(ReservedObuAllZeroPayload),
         Box::new(TrailingBitsForEmptySyntaxObus),
-        Box::new(SequenceHeaderGeneralSyntax),
+        Box::new(SequenceHeaderSyntax),
         Box::new(MsdoSyntax),
         Box::new(MultiFrameHeaderSyntax),
         Box::new(GlobalXLayerRequired),
@@ -204,18 +204,24 @@ fn has_empty_payload_syntax(obu_type: ObuType) -> bool {
     matches!(obu_type, ObuType::TemporalDelimiter)
 }
 
-/// Parses the locally decidable general sequence-header syntax and maps § 6.4.1
-/// violations into stable diagnostics.
-struct SequenceHeaderGeneralSyntax;
+/// Parses the full `sequence_header_obu()` syntax (general fields plus every
+/// implemented § 5.4 child config) and maps violations into stable diagnostics.
+///
+/// A child config that is intentionally bounded (`seg_info()` / `tile_params()`) is
+/// not a conformance error; the header is accepted in that case. A fully parsed
+/// header additionally has its § 5.2.1 payload tail (`obu_extension_flag` /
+/// `trailing_bits`) validated, so a truncated or malformed child config — which the
+/// general-only check used to miss — is now reported by `validate`.
+struct SequenceHeaderSyntax;
 
-impl Check for SequenceHeaderGeneralSyntax {
+impl Check for SequenceHeaderSyntax {
     fn id(&self) -> &'static str {
         // Registry identifier only; emitted diagnostics use syntax_error_diagnostic() rule ids.
-        "sequence-header/general-syntax"
+        "sequence-header/syntax"
     }
 
     fn spec_section(&self) -> Option<&'static str> {
-        Some("5.4.1")
+        Some("5.4")
     }
 
     fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
@@ -224,10 +230,26 @@ impl Check for SequenceHeaderGeneralSyntax {
         }
 
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        if let Err(error) = parse_sequence_header_general(&mut reader) {
-            let diagnostic = syntax_error_diagnostic(&error)
-                .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.4.1"));
-            report.push(diagnostic);
+        match parse_sequence_header(&mut reader) {
+            Ok(header) => {
+                // A bounded child (seg_info/tile_params) is intentional, not an
+                // error; only validate the payload tail when fully parsed.
+                if header.is_fully_parsed()
+                    && let Err(error) = finish_obu_payload(
+                        &mut reader,
+                        obu.payload,
+                        obu.header.obu_type.is_extensible_obu(),
+                    )
+                    && let Some(diagnostic) = syntax_error_diagnostic(&error)
+                {
+                    report.push(diagnostic);
+                }
+            }
+            Err(error) => {
+                let diagnostic = syntax_error_diagnostic(&error)
+                    .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.4"));
+                report.push(diagnostic);
+            }
         }
     }
 }
@@ -301,13 +323,10 @@ impl Check for MsdoSyntax {
                 }
                 // AV2 § 5.2.1: OBU_MSDO is non-extensible, so the remaining payload
                 // bits must form valid trailing_bits().
-                if !obu.payload.is_empty() {
-                    let remaining = reader.remaining_bits();
-                    if let Err(error) = parse_trailing_bits(&mut reader, remaining)
-                        && let Some(diagnostic) = syntax_error_diagnostic(&error)
-                    {
-                        report.push(diagnostic);
-                    }
+                if let Err(error) = finish_obu_payload(&mut reader, obu.payload, false)
+                    && let Some(diagnostic) = syntax_error_diagnostic(&error)
+                {
+                    report.push(diagnostic);
                 }
             }
             Err(error) => report.push(payload_parse_error_diagnostic(&error, "5.6")),
@@ -358,6 +377,16 @@ impl Check for MultiFrameHeaderSyntax {
                         .with_spec_section("5.7")
                         .with_byte_offset(obu.offset),
                     );
+                }
+                // AV2 § 5.2.1: the multi-frame header is extensible, so a fully
+                // parsed MFH must have a valid obu_extension_flag / trailing_bits
+                // tail. A header bounded at seg_info() leaves the tail position
+                // unknown, so it is not validated here.
+                if mfh.unimplemented_at.is_none()
+                    && let Err(error) = finish_obu_payload(&mut reader, obu.payload, true)
+                    && let Some(diagnostic) = syntax_error_diagnostic(&error)
+                {
+                    report.push(diagnostic);
                 }
             }
             Err(error) => report.push(payload_parse_error_diagnostic(&error, "5.7")),

@@ -195,7 +195,96 @@ mod tests {
         if max_tlayer_id > 0 {
             bits.bit(0); // tlayer_dependency_present_flag
         }
+        append_non_single_child_configs(&mut bits);
         bits.into_bytes()
+    }
+
+    /// Appends the §5.4 child configs for a non-single-picture, 4:2:0 (non-monochrome)
+    /// sequence header with every tool flag cleared, plus the §5.2.1 payload tail
+    /// (`obu_extension_flag = 0` + `trailing_bits`). This makes the validator's
+    /// state-test payloads complete sequence headers that pass the full syntax check.
+    fn append_non_single_child_configs(bits: &mut Bits) {
+        // sequence_partition_config (BLOCK_64X64, SDP off)
+        bits.bit(0); // use_256x256_superblock
+        bits.bit(0); // use_128x128_superblock
+        bits.bit(0); // enable_sdp
+        bits.bit(0); // enable_ext_partitions
+        bits.bit(0); // reduce_pb_aspect_ratio
+        // sequence_segment_config
+        bits.bit(0); // enable_ext_seg
+        bits.bit(0); // seq_seg_info_present_flag
+        // sequence_intra_config
+        bits.bit(0); // enable_dip
+        bits.bit(0); // enable_intra_edge_filter
+        bits.bit(0); // enable_mrls
+        bits.bit(0); // enable_cfl_intra
+        bits.f(0, 2); // cfl_ds_filter_index
+        bits.bit(0); // enable_mhccp
+        bits.bit(0); // enable_ibp
+        // sequence_inter_config (non-single-picture branch)
+        bits.f(0, 4); // seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]
+        bits.bit(0); // enable_masked_compound
+        bits.bit(0); // enable_ref_frame_mvs
+        bits.f(0, 4); // order_hint_bits_minus_1
+        bits.bit(0); // enable_refmvbank
+        bits.bit(1); // disable_drl_reorder -> DRL_REORDER_DISABLED
+        bits.bit(0); // explicit_ref_frame_map
+        bits.bit(0); // explicit_num_ref_frames
+        bits.f(0, 3); // long_term_frame_id_bits
+        bits.f(0, 2); // seq_max_drl_bits_minus_1 = ns(5) -> 0
+        bits.bit(0); // allow_frame_max_drl_bits
+        bits.bit(0); // seq_max_bvp_drl_bits_minus_1 = ns(3) -> 0
+        bits.bit(0); // allow_frame_max_bvp_drl_bits
+        bits.f(0, 2); // num_same_ref_compound
+        bits.bit(0); // enable_tip
+        bits.bit(0); // enable_mv_traj
+        bits.bit(0); // enable_bawp
+        bits.bit(0); // enable_cwp
+        bits.bit(0); // enable_imp_msk_bld
+        bits.bit(0); // enable_df_sub_pu
+        bits.f(0, 2); // enable_opfl_refine
+        bits.bit(0); // enable_refinemv
+        bits.bit(0); // enable_bru
+        bits.bit(0); // enable_adaptive_mvd
+        bits.bit(0); // enable_mvd_sign_derive
+        bits.bit(0); // enable_flex_mvres
+        bits.bit(0); // enable_global_motion
+        bits.bit(0); // enable_short_refresh_frame_flags
+        // sequence_scc_config (non-single-picture branch)
+        bits.bit(1); // seq_choose_screen_content_tools -> SELECT
+        bits.bit(1); // seq_choose_integer_mv -> SELECT
+        // sequence_transform_quant_entropy_config
+        bits.bit(0); // enable_fsc
+        bits.bit(0); // enable_idtx_intra
+        bits.bit(0); // enable_intra_ist
+        bits.bit(0); // enable_inter_ist
+        bits.bit(0); // enable_chroma_dctonly
+        bits.bit(0); // enable_inter_ddt
+        bits.bit(0); // reduced_tx_part_set
+        bits.bit(0); // enable_cctx
+        bits.bit(0); // enable_tcq
+        bits.bit(0); // enable_parity_hiding
+        bits.bit(0); // enable_avg_cdf
+        bits.bit(0); // separate_uv_delta_q
+        bits.bit(1); // equal_ac_dc_q
+        bits.f(0, 5); // base_uv_ac_delta_q
+        bits.bit(0); // uv_ac_delta_q_enabled
+        // sequence_filter_config (BLOCK_64X64)
+        bits.bit(0); // disable_loopfilters_across_tiles
+        bits.bit(0); // enable_cdef
+        bits.bit(0); // enable_gdf
+        bits.bit(0); // enable_restoration
+        bits.bit(0); // enable_ccso
+        bits.bit(0); // cdef_on_skip_txfm_always_on
+        bits.bit(0); // cdef_on_skip_txfm_disabled -> Adaptive
+        bits.f(0, 2); // df_par_bits_minus_2
+        // sequence_tile_config
+        bits.bit(0); // seq_tile_info_present_flag
+        // film_grain_params_present
+        bits.bit(0);
+        // open_bitstream_unit tail (extensible OBU)
+        bits.bit(0); // obu_extension_flag = 0
+        bits.bit(1); // trailing_one_bit
     }
 
     fn sequence_header_payload_with_decoder_model_info() -> Vec<u8> {
@@ -229,6 +318,7 @@ mod tests {
         // max_tlayer_id = 1 -> tlayer_dependency_present_flag
         bits.bit(0); // mlayer_dependency_present_flag
         bits.bit(0); // tlayer_dependency_present_flag
+        append_non_single_child_configs(&mut bits);
         bits.into_bytes()
     }
 
@@ -845,6 +935,54 @@ mod tests {
                 .errors()
                 .any(|d| d.rule_id == "hls/repeated-sequence-header-not-identical"),
             "a CLK between the two headers starts a new CVS; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn sequence_header_truncated_child_config_is_flagged() {
+        // General fields parse, but the payload ends inside sequence_partition_config.
+        // The full sequence-header check now reports this (the general-only check missed it).
+        let mut bits = Bits::default();
+        bits.uvlc(0); // seq_header_id
+        bits.f(0, 5); // seq_profile_idc
+        bits.bit(1); // single_picture_header_flag
+        bits.f(0, 5); // seq_level_idx
+        bits.uvlc(0); // chroma_format_idc
+        bits.uvlc(0); // bit_depth_idc
+        bits.f(3, 4); // frame_width_bits_minus_1
+        bits.f(3, 4); // frame_height_bits_minus_1
+        bits.f(15, 4); // max_frame_width_minus_1
+        bits.f(7, 4); // max_frame_height_minus_1
+        bits.bit(0); // seq_cropping_window_present_flag (no child config follows)
+        let data = annex_b_obu(0x04, &bits.into_bytes());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "bitstream/parse-error"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn hls_mfh_nonzero_obu_extension_flag_is_flagged() {
+        // A fully parsed MFH (no seg_info) is extensible, so a set obu_extension_flag
+        // after the syntax violates AV2 §6.2.1.
+        let mut bits = Bits::default();
+        bits.uvlc(0); // mfh_seq_header_id
+        bits.uvlc(0); // mfh_id_minus_1
+        bits.bit(0); // mfh_frame_size_present_flag
+        bits.bit(0); // mfh_deblocking_filter_update
+        bits.bit(0); // mfh_seg_info_present_flag -> fully parsed
+        bits.bit(1); // obu_extension_flag = 1 -> §6.2.1 violation
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x0C, &bits.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "obu-header/extension-flag-not-zero"),
+            "report was: {report}"
         );
     }
 

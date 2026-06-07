@@ -162,12 +162,22 @@ pub fn dispatch_obu_payload<'a>(
 /// Validates the bits between the end of an OBU's parsed syntax and the OBU
 /// boundary (AV2 v1.0.0 § 5.2.1 `open_bitstream_unit`).
 ///
-/// For `is_extensible_obu()` types, an `obu_extension_flag` follows the syntax; AV2
-/// § 6.2.1 requires it to be `0` in this specification version, so a set flag is
-/// rejected as [`Error::InvalidObuExtension`]. Otherwise the remainder is
-/// `trailing_bits()`. Non-extensible types use `trailing_bits()` directly. Tile
-/// groups (`usedArith`) are not dispatched here.
-fn finish_obu_payload(
+/// `reader` must be positioned immediately after the OBU's parsed syntax, over the
+/// same `payload` slice. For `is_extensible_obu()` types, an `obu_extension_flag`
+/// follows the syntax; AV2 § 6.2.1 requires it to be `0` in this specification
+/// version, so a set flag is rejected as [`Error::InvalidObuExtension`]. Otherwise
+/// the remainder is `trailing_bits()`. Non-extensible types use `trailing_bits()`
+/// directly. Tile groups (`usedArith`) are not handled here.
+///
+/// This is the shared "finish" logic used by both `dispatch_obu_payload` and the
+/// `splot-validate` payload checks, so the validator and inspector agree on
+/// payload-tail conformance.
+///
+/// # Errors
+/// Returns [`Error::InvalidObuExtension`] for a set `obu_extension_flag`,
+/// [`Error::InvalidTrailingBits`] for malformed trailing bits, or
+/// [`Error::UnexpectedEof`] if the tail is truncated.
+pub fn finish_obu_payload(
     reader: &mut BitReader<'_>,
     payload: &[u8],
     is_extensible: bool,
