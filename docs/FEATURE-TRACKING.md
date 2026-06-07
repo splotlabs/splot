@@ -169,9 +169,9 @@ planning aids; the matrix remains canonical.
 ## 12. Diagnostic-ID convention
 
 Validator diagnostics use a kebab/slash namespace with a documented prefix:
-`obu-header/`, `obu-reserved/`, `bitstream/`, `trailing-bits/`, and
-`byte-alignment/`, `sequence-header/`, `sequence-state/`, and `obu-order/`. Example:
-`obu-header/global-xlayer-required`.
+`obu-header/`, `obu-reserved/`, `bitstream/`, `trailing-bits/`,
+`byte-alignment/`, `sequence-header/`, `sequence-state/`, `obu-order/`, `hls/`,
+`msdo/`, and `mfh/`. Example: `obu-header/global-xlayer-required`.
 
 A diagnostic that corresponds directly to a modeled feature MAY instead use the
 Feature ID as a base, optionally with a `.SUFFIX` for a narrower rule:

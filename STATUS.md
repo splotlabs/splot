@@ -6,6 +6,65 @@ decoder/encoder are reserved API shapes.
 
 Toolchain: Rust 1.96.0, edition 2024, resolver 3. Generated 2026-06-06.
 
+## Sequence + HLS validator coverage (2026-06-07)
+
+OpenSpec change `sequence-hls-validator-coverage`. This phase extends the validator
+from a sequence-header-general parser to a full §5.4 `sequence_header_obu()` parser,
+strengthens sequence/HLS validator state, and adds the first HLS payload
+foundations. It is still validator-first: no encoder, decoder, entropy coder, frame
+header, or tile-group parser was implemented.
+
+**Implemented (parsers, `splot-core`):**
+
+- Full `sequence_header_obu()` walk via `parse_sequence_header()` in
+  `headers/sequence.rs`, returning the composite `SequenceHeader { general, … }`.
+  `parse_sequence_header_general()` now parses `seq_decoder_model_info()` inline.
+- Child config parsers, syntax-exact to AV2 v1.0.0:
+  `AV2-5.4.3-SEQUENCE-PARTITION-CONFIG`, `AV2-5.4.5-SEQUENCE-INTRA-CONFIG`,
+  `AV2-5.4.6-SEQUENCE-INTER-CONFIG`, `AV2-5.4.7-SEQUENCE-SCC-CONFIG`,
+  `AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG`, `AV2-5.4.10-SEQUENCE-FILTER-CONFIG`,
+  `AV2-5.4.12-TIMING-INFO` (standalone; referenced by the content-interpretation
+  OBU, not the sequence header), and `AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO`.
+- HLS payloads in `hls.rs`: `AV2-5.6-MSDO` (full syntax) and
+  `AV2-5.7-MULTI-FRAME-HEADER` (syntax up to `seg_info()`), plus
+  `AV2-5.5-TEMPORAL-DELIMITER` empty-payload/`trailing_bits` handling.
+- OBU dispatch (`obu.rs`) now parses sequence header / MSDO / MFH payloads and
+  validates the post-syntax `obu_extension_flag` / `trailing_bits` per §5.2.1.
+
+**Bounded honestly (returns `Unimplemented` / `unimplemented_at` at the exact
+feature boundary, never skips bits):**
+
+- `AV2-5.4.2-SEQUENCE-TILE-CONFIG` parses `seq_tile_info_present_flag` /
+  `allow_tile_info_change`, then bounds at `tile_params()`.
+- `AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG` parses its flags, then bounds at
+  `seg_info()` (`AV2-5.4.9-SEGMENT-INFO`, still a typed `Unimplemented` stub).
+- `AV2-5.4.11-USER-QM` remains a typed `Unimplemented` stub (not reached from the
+  sequence header).
+- `AV2-5.7-MULTI-FRAME-HEADER` bounds at its `seg_info()` call.
+
+**Validator state and diagnostics (`splot-validate`):**
+
+- `ValidatorContext` stores a payload fingerprint per `(xlayer, seq_header_id)` and
+  emits `hls/repeated-sequence-header-not-identical` (§7.3.8).
+- `TemporalUnitState` emits `obu-order/duplicate-temporal-delimiter` (§7.3.7) for
+  back-to-back global delimiters; existing tlayer/mlayer-limit and ordering checks
+  are retained.
+- New stateless checks: MSDO (`msdo/non-global-layer-id`, `msdo/too-many-streams`,
+  §6.6) and MFH (`mfh/seq-header-id-out-of-range`, `mfh/id-out-of-range`, §5.7).
+- Timing range diagnostics mapped (`sequence-header/timing-display-tick-zero`,
+  `…/timing-time-scale-zero`, `…/timing-num-ticks-per-picture-out-of-range`, §6.4.12).
+
+**Inspector:** `inspect --json` now reports a `sequence_header` object with the
+parsed §5.4 child sections and `payload_status.status = parsed` for a complete
+header, or `unimplemented` with the bounding `feature` for a bounded child.
+
+**New diagnostic prefixes** registered in `xtask` and the diagnostic docs:
+`hls/`, `msdo/`, `mfh/`.
+
+**Still stubbed / out of scope:** `seg_info()` (§5.4.9), `tile_params()` (§5.4.2),
+`user_defined_qm()` (§5.4.11), frame header, tile groups, entropy coder, decoder,
+encoder, AVM differential harness, and external-HLS availability.
+
 ## Implemented
 
 - **`splot-core`**
@@ -175,8 +234,28 @@ git diff --check                                                                
 openspec validate --all --no-interactive                                        # ok: 13/13 (CLI present)
 ```
 
-Test breakdown: `splot-core` 37, `splot-encode` 2, `splot-validate` 15,
-`splot-cli` 7 (CLI integration tests over `tests/fixtures/`), `xtask` 17.
+Test breakdown (after the 2026-06-07 sequence + HLS phase): `splot-core` 101,
+`splot-encode` 2, `splot-validate` 44, `splot-cli` 9 (CLI integration tests over
+`tests/fixtures/`), `xtask` 17.
+
+Sequence + HLS phase acceptance (2026-06-07), run from the repo root:
+
+```text
+cargo fmt --all -- --check                                                      # ok (no diff)
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # ok, 0 warnings
+cargo build --workspace --all-targets --locked                                  # ok
+cargo test --workspace --all-targets --locked                                   # ok: 173 passed, 0 failed
+cargo test -p splot-core sequence                                               # ok: 31 passed
+cargo test -p splot-validate sequence_header                                    # ok: 13 passed
+cargo test -p splot-validate hls                                                # ok: 9 passed
+cargo test -p splot-cli inspect                                                 # ok: 4 passed
+cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md    # ok (114 features)
+cargo xtask check-feature-status                                                # ok (114 features)
+cargo xtask spec-coverage                                                       # ok
+cargo xtask ci                                                                  # ok: all checks passed
+cargo run -p splot-cli -- inspect tests/fixtures/conformant.av2 --json          # parsed sequence_header
+openspec validate sequence-hls-validator-coverage --strict                      # ok: change is valid
+```
 
 Also verified:
 

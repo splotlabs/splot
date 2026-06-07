@@ -59,7 +59,9 @@ These documents are planning aids. The canonical status remains
 | `splot-core::annexb`                | Annex B § B.2, § 5.2.1 OBU size   | implemented |
 | `splot-validate::checks`            | § 6.2.2 header constraints        | partial (header-only checks) |
 | `splot-validate::context`           | § 6.2.2 / § 7.3 sequence state    | partial (active sequence + temporal order) |
-| `splot-core::headers`               | § 5.4 sequence / frame headers    | TODO |
+| `splot-core::headers::sequence`     | § 5.4 sequence header             | partial (full § 5.4 walk; `seg_info`/`tile_params`/`user_qm` bounded) |
+| `splot-core::hls`                   | § 5.6 MSDO, § 5.7 multi-frame hdr | partial (syntax; MSDO/MFH `seg_info` bounded) |
+| `splot-core::headers` (frame)       | § 5.18 frame header               | TODO |
 | `splot-core::tables`                | § 9 additional tables             | TODO / codegen (`cargo xtask gen-tables`) |
 
 ### Implemented § 6.2.2 header checks

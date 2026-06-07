@@ -107,12 +107,42 @@ fn inspect_json_includes_payload_status_without_dropping_header_fields() {
     assert!(temporal_delimiter.get("payload_len").is_some());
 
     let sequence_header = &records[1];
-    assert_eq!(sequence_header["payload_status"]["status"], "unimplemented");
+    assert_eq!(sequence_header["payload_status"]["status"], "parsed");
     assert_eq!(
         sequence_header["payload_status"]["feature"],
         "AV2-5.4-SEQUENCE-HEADER"
     );
     assert!(sequence_header.get("header").is_some());
+
+    // The parsed sequence header exposes its §5.4 child sections.
+    let view = &sequence_header["sequence_header"];
+    assert_eq!(view["fully_parsed"], true);
+    assert_eq!(view["single_picture_header_flag"], true);
+    assert_eq!(view["children"]["partition"], true);
+    assert_eq!(view["children"]["tile"], true);
+    assert_eq!(view["children"]["film_grain_params_present"], true);
+}
+
+#[test]
+fn inspect_json_reports_bounded_sequence_header_child() {
+    // A sequence header that sets seq_tile_info_present_flag bounds parsing at the
+    // unimplemented tile_params() helper.
+    let path = fixture("seq-header-tile-unimplemented.av2");
+    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let records = json.as_array().expect("inspect output is an array");
+    let sequence_header = &records[1];
+    assert_eq!(sequence_header["payload_status"]["status"], "unimplemented");
+    assert_eq!(
+        sequence_header["payload_status"]["feature"],
+        "AV2-5.4.2-SEQUENCE-TILE-CONFIG"
+    );
+    let view = &sequence_header["sequence_header"];
+    assert_eq!(view["fully_parsed"], false);
+    assert_eq!(view["unimplemented_at"], "AV2-5.4.2-SEQUENCE-TILE-CONFIG");
+    assert_eq!(view["children"]["filter"], true);
+    assert_eq!(view["children"]["film_grain_params_present"], false);
 }
 
 #[test]

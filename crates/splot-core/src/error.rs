@@ -72,6 +72,12 @@ pub enum SequenceHeaderErrorKind {
     CropBottomOutOfRange,
     /// `num_units_in_decoding_tick` is zero.
     TimingNumUnitsZero,
+    /// `num_units_in_display_tick` is zero (AV2 § 6.4.12).
+    TimingDisplayTickZero,
+    /// `time_scale` is zero (AV2 § 6.4.12).
+    TimingTimeScaleZero,
+    /// `num_ticks_per_picture_minus_1` exceeds `(1 << 32) - 2` (AV2 § 6.4.12).
+    TimingNumTicksOutOfRange,
 }
 
 impl fmt::Display for SequenceHeaderErrorKind {
@@ -96,6 +102,11 @@ impl fmt::Display for SequenceHeaderErrorKind {
                 "seq_cropping_win_bottom_offset must be less than or equal to max_frame_height_minus_1"
             }
             Self::TimingNumUnitsZero => "num_units_in_decoding_tick must be greater than 0",
+            Self::TimingDisplayTickZero => "num_units_in_display_tick must be greater than 0",
+            Self::TimingTimeScaleZero => "time_scale must be greater than 0",
+            Self::TimingNumTicksOutOfRange => {
+                "num_ticks_per_picture_minus_1 must not exceed (1 << 32) - 2"
+            }
         };
         f.write_str(message)
     }
@@ -219,6 +230,17 @@ pub enum Error {
         offset: ByteOffset,
         /// The offending declared size.
         size: u64,
+    },
+
+    /// `obu_extension_flag` was non-zero, violating AV2 § 6.2.1.
+    #[error(
+        "invalid obu_extension_flag at byte {offset}.{bit_offset}: must be 0 in this specification version (§ 6.2.1)"
+    )]
+    InvalidObuExtension {
+        /// Offset of the `obu_extension_flag` bit.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidObuExtension::offset`].
+        bit_offset: BitOffset,
     },
 
     /// A declared OBU payload extends beyond the available input.

@@ -15,8 +15,9 @@ use splot_core::bitio::BitReader;
 use splot_core::error::{
     ByteAlignmentErrorKind, Error, SequenceHeaderErrorKind, TrailingBitsErrorKind,
 };
-use splot_core::headers::sequence::parse_sequence_header_general;
-use splot_core::obu::parse_trailing_bits;
+use splot_core::headers::sequence::parse_sequence_header;
+use splot_core::hls::{parse_msdo, parse_multi_frame_header};
+use splot_core::obu::{finish_obu_payload, parse_trailing_bits};
 use splot_core::types::ObuType;
 
 use crate::diagnostic::{Diagnostic, Severity, ValidationReport};
@@ -39,7 +40,9 @@ pub fn default_checks() -> Vec<Box<dyn Check>> {
         Box::new(ReservedObuType),
         Box::new(ReservedObuAllZeroPayload),
         Box::new(TrailingBitsForEmptySyntaxObus),
-        Box::new(SequenceHeaderGeneralSyntax),
+        Box::new(SequenceHeaderSyntax),
+        Box::new(MsdoSyntax),
+        Box::new(MultiFrameHeaderSyntax),
         Box::new(GlobalXLayerRequired),
         Box::new(GlobalXLayerRequiresBaseLayers),
         Box::new(GlobalXLayerAllowedTypes),
@@ -89,42 +92,61 @@ pub(crate) fn syntax_error_diagnostic(error: &Error) -> Option<Diagnostic> {
             bit_offset,
             kind,
         } => {
-            let rule_id = match kind {
+            let (rule_id, spec_section) = match kind {
                 SequenceHeaderErrorKind::SeqHeaderIdOutOfRange => {
-                    "sequence-header/seq-header-id-out-of-range"
+                    ("sequence-header/seq-header-id-out-of-range", "6.4.1")
                 }
                 SequenceHeaderErrorKind::ChromaFormatOutOfRange => {
-                    "sequence-header/chroma-format-out-of-range"
+                    ("sequence-header/chroma-format-out-of-range", "6.4.1")
                 }
                 SequenceHeaderErrorKind::BitDepthOutOfRange => {
-                    "sequence-header/bit-depth-out-of-range"
+                    ("sequence-header/bit-depth-out-of-range", "6.4.1")
                 }
                 SequenceHeaderErrorKind::SeqMaxMlayerCountOutOfRange => {
-                    "sequence-header/seq-max-mlayer-count-out-of-range"
+                    ("sequence-header/seq-max-mlayer-count-out-of-range", "6.4.1")
                 }
                 SequenceHeaderErrorKind::CropLeftOutOfRange => {
-                    "sequence-header/crop-left-out-of-range"
+                    ("sequence-header/crop-left-out-of-range", "6.4.1")
                 }
                 SequenceHeaderErrorKind::CropRightOutOfRange => {
-                    "sequence-header/crop-right-out-of-range"
+                    ("sequence-header/crop-right-out-of-range", "6.4.1")
                 }
                 SequenceHeaderErrorKind::CropTopOutOfRange => {
-                    "sequence-header/crop-top-out-of-range"
+                    ("sequence-header/crop-top-out-of-range", "6.4.1")
                 }
                 SequenceHeaderErrorKind::CropBottomOutOfRange => {
-                    "sequence-header/crop-bottom-out-of-range"
+                    ("sequence-header/crop-bottom-out-of-range", "6.4.1")
                 }
                 SequenceHeaderErrorKind::TimingNumUnitsZero => {
-                    "sequence-header/timing-num-units-zero"
+                    ("sequence-header/timing-num-units-zero", "6.4.1")
                 }
+                SequenceHeaderErrorKind::TimingDisplayTickZero => {
+                    ("sequence-header/timing-display-tick-zero", "6.4.12")
+                }
+                SequenceHeaderErrorKind::TimingTimeScaleZero => {
+                    ("sequence-header/timing-time-scale-zero", "6.4.12")
+                }
+                SequenceHeaderErrorKind::TimingNumTicksOutOfRange => (
+                    "sequence-header/timing-num-ticks-per-picture-out-of-range",
+                    "6.4.12",
+                ),
             };
             Some(
                 Diagnostic::error(rule_id, kind.to_string())
-                    .with_spec_section("6.4.1")
+                    .with_spec_section(spec_section)
                     .with_byte_offset(*offset)
                     .with_bit_offset(*bit_offset),
             )
         }
+        Error::InvalidObuExtension { offset, bit_offset } => Some(
+            Diagnostic::error(
+                "obu-header/extension-flag-not-zero",
+                "obu_extension_flag must be 0 in this specification version",
+            )
+            .with_spec_section("6.2.1")
+            .with_byte_offset(*offset)
+            .with_bit_offset(*bit_offset),
+        ),
         _ => None,
     }
 }
@@ -182,18 +204,24 @@ fn has_empty_payload_syntax(obu_type: ObuType) -> bool {
     matches!(obu_type, ObuType::TemporalDelimiter)
 }
 
-/// Parses the locally decidable general sequence-header syntax and maps § 6.4.1
-/// violations into stable diagnostics.
-struct SequenceHeaderGeneralSyntax;
+/// Parses the full `sequence_header_obu()` syntax (general fields plus every
+/// implemented § 5.4 child config) and maps violations into stable diagnostics.
+///
+/// A child config that is intentionally bounded (`seg_info()` / `tile_params()`) is
+/// not a conformance error; the header is accepted in that case. A fully parsed
+/// header additionally has its § 5.2.1 payload tail (`obu_extension_flag` /
+/// `trailing_bits`) validated, so a truncated or malformed child config — which the
+/// general-only check used to miss — is now reported by `validate`.
+struct SequenceHeaderSyntax;
 
-impl Check for SequenceHeaderGeneralSyntax {
+impl Check for SequenceHeaderSyntax {
     fn id(&self) -> &'static str {
         // Registry identifier only; emitted diagnostics use syntax_error_diagnostic() rule ids.
-        "sequence-header/general-syntax"
+        "sequence-header/syntax"
     }
 
     fn spec_section(&self) -> Option<&'static str> {
-        Some("5.4.1")
+        Some("5.4")
     }
 
     fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
@@ -202,10 +230,26 @@ impl Check for SequenceHeaderGeneralSyntax {
         }
 
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        if let Err(error) = parse_sequence_header_general(&mut reader) {
-            let diagnostic = syntax_error_diagnostic(&error)
-                .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.4.1"));
-            report.push(diagnostic);
+        match parse_sequence_header(&mut reader) {
+            Ok(header) => {
+                // A bounded child (seg_info/tile_params) is intentional, not an
+                // error; only validate the payload tail when fully parsed.
+                if header.is_fully_parsed()
+                    && let Err(error) = finish_obu_payload(
+                        &mut reader,
+                        obu.payload,
+                        obu.header.obu_type.is_extensible_obu(),
+                    )
+                    && let Some(diagnostic) = syntax_error_diagnostic(&error)
+                {
+                    report.push(diagnostic);
+                }
+            }
+            Err(error) => {
+                let diagnostic = syntax_error_diagnostic(&error)
+                    .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.4"));
+                report.push(diagnostic);
+            }
         }
     }
 }
@@ -220,6 +264,134 @@ fn payload_parse_error_diagnostic(error: &Error, spec_section: &'static str) -> 
         diagnostic = diagnostic.with_bit_offset(bit_offset);
     }
     diagnostic
+}
+
+/// `OBU_MSDO` layer-id and `num_streams_minus_2` constraints (AV2 § 6.6).
+struct MsdoSyntax;
+
+impl Check for MsdoSyntax {
+    fn id(&self) -> &'static str {
+        // Registry identifier; emitted diagnostics use their own rule ids.
+        "msdo/syntax"
+    }
+
+    fn spec_section(&self) -> Option<&'static str> {
+        Some("6.6")
+    }
+
+    fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.header.obu_type != ObuType::Msdo {
+            return;
+        }
+
+        let header = &obu.header;
+        if header.temporal_layer_id.get() != 0
+            || header.embedded_layer_id.get() != 0
+            || !header.extended_layer_id.is_global()
+        {
+            report.push(
+                Diagnostic::error(
+                    "msdo/non-global-layer-id",
+                    format!(
+                        "OBU_MSDO requires obu_tlayer_id == 0, obu_mlayer_id == 0, and \
+                         obu_xlayer_id == GLOBAL_XLAYER_ID (found tlayer={}, mlayer={}, xlayer={})",
+                        header.temporal_layer_id.get(),
+                        header.embedded_layer_id.get(),
+                        header.extended_layer_id.get()
+                    ),
+                )
+                .with_spec_section("6.6")
+                .with_byte_offset(obu.offset),
+            );
+        }
+
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        match parse_msdo(&mut reader) {
+            Ok(msdo) => {
+                if msdo.num_streams_minus_2 > 2 {
+                    report.push(
+                        Diagnostic::error(
+                            "msdo/too-many-streams",
+                            format!(
+                                "num_streams_minus_2 {} must not exceed 2",
+                                msdo.num_streams_minus_2
+                            ),
+                        )
+                        .with_spec_section("6.6")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+                // AV2 § 5.2.1: OBU_MSDO is non-extensible, so the remaining payload
+                // bits must form valid trailing_bits().
+                if let Err(error) = finish_obu_payload(&mut reader, obu.payload, false)
+                    && let Some(diagnostic) = syntax_error_diagnostic(&error)
+                {
+                    report.push(diagnostic);
+                }
+            }
+            Err(error) => report.push(payload_parse_error_diagnostic(&error, "5.6")),
+        }
+    }
+}
+
+/// `OBU_MULTI_FRAME_HEADER` local id ranges (AV2 § 5.7 / § 6.4.1).
+struct MultiFrameHeaderSyntax;
+
+impl Check for MultiFrameHeaderSyntax {
+    fn id(&self) -> &'static str {
+        // Registry identifier; emitted diagnostics use their own rule ids.
+        "mfh/syntax"
+    }
+
+    fn spec_section(&self) -> Option<&'static str> {
+        Some("5.7")
+    }
+
+    fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.header.obu_type != ObuType::MultiFrameHeader {
+            return;
+        }
+
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        match parse_multi_frame_header(&mut reader) {
+            Ok(mfh) => {
+                if !mfh.seq_header_id_in_range() {
+                    report.push(
+                        Diagnostic::error(
+                            "mfh/seq-header-id-out-of-range",
+                            format!(
+                                "mfh_seq_header_id {} must be less than MAX_SEQ_NUM (16)",
+                                mfh.mfh_seq_header_id
+                            ),
+                        )
+                        .with_spec_section("6.4.1")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+                if !mfh.mfh_id_in_range() {
+                    report.push(
+                        Diagnostic::error(
+                            "mfh/id-out-of-range",
+                            format!("mfhId {} must be less than MAX_MFH_NUM (16)", mfh.mfh_id()),
+                        )
+                        .with_spec_section("5.7")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+                // AV2 § 5.2.1: the multi-frame header is extensible, so a fully
+                // parsed MFH must have a valid obu_extension_flag / trailing_bits
+                // tail. A header bounded at seg_info() leaves the tail position
+                // unknown, so it is not validated here.
+                if mfh.unimplemented_at.is_none()
+                    && let Err(error) = finish_obu_payload(&mut reader, obu.payload, true)
+                    && let Some(diagnostic) = syntax_error_diagnostic(&error)
+                {
+                    report.push(diagnostic);
+                }
+            }
+            Err(error) => report.push(payload_parse_error_diagnostic(&error, "5.7")),
+        }
+    }
 }
 
 /// Informational: reserved OBU types are ignored by conformant decoders (AV2 Table 6.1).
@@ -477,6 +649,45 @@ mod tests {
         assert_eq!(diagnostic.spec_section.as_deref(), Some("6.2.4"));
         assert_eq!(diagnostic.byte_offset, Some(ByteOffset::new(7)));
         assert_eq!(diagnostic.bit_offset, Some(BitOffset::from_bits(5)));
+    }
+
+    #[test]
+    fn syntax_error_diagnostic_maps_obu_extension_flag() {
+        let diagnostic = syntax_error_diagnostic(&Error::InvalidObuExtension {
+            offset: ByteOffset::new(9),
+            bit_offset: BitOffset::from_bits(3),
+        })
+        .unwrap_or_else(|| Diagnostic::error("obu-header/test", "missing"));
+        assert_eq!(diagnostic.rule_id, "obu-header/extension-flag-not-zero");
+        assert_eq!(diagnostic.spec_section.as_deref(), Some("6.2.1"));
+        assert_eq!(diagnostic.byte_offset, Some(ByteOffset::new(9)));
+    }
+
+    #[test]
+    fn syntax_error_diagnostic_maps_timing_errors() {
+        for (kind, rule_id) in [
+            (
+                SequenceHeaderErrorKind::TimingDisplayTickZero,
+                "sequence-header/timing-display-tick-zero",
+            ),
+            (
+                SequenceHeaderErrorKind::TimingTimeScaleZero,
+                "sequence-header/timing-time-scale-zero",
+            ),
+            (
+                SequenceHeaderErrorKind::TimingNumTicksOutOfRange,
+                "sequence-header/timing-num-ticks-per-picture-out-of-range",
+            ),
+        ] {
+            let diagnostic = syntax_error_diagnostic(&Error::InvalidSequenceHeader {
+                offset: ByteOffset::new(4),
+                bit_offset: BitOffset::from_bits(0),
+                kind,
+            })
+            .unwrap_or_else(|| Diagnostic::error("sequence-header/test", "missing"));
+            assert_eq!(diagnostic.rule_id, rule_id);
+            assert_eq!(diagnostic.spec_section.as_deref(), Some("6.4.12"));
+        }
     }
 
     #[test]

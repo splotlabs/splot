@@ -412,16 +412,16 @@ parse = "partial"
 validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "partial"
+decode_check = "done"
 tests = "partial"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
-commands = ["cargo test -p splot-core sequence", "cargo test -p splot-validate sequence_header"]
-fixtures = ["tests/fixtures/conformant.av2"]
-diagnostics = ["sequence-header/chroma-format-out-of-range"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-validate/src/validator.rs::tests", "crates/splot-cli/tests/cli.rs"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-cli inspect"]
+fixtures = ["tests/fixtures/conformant.av2", "tests/fixtures/seq-header-tile-unimplemented.av2"]
+diagnostics = ["hls/repeated-sequence-header-not-identical"]
 
 [[feature]]
 id = "AV2-5.4.1-SEQUENCE-HEADER-GENERAL"
@@ -473,20 +473,20 @@ notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done unt
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "partial"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-cli/tests/cli.rs"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-cli inspect"]
+fixtures = ["tests/fixtures/seq-header-tile-unimplemented.av2"]
 diagnostics = []
 
 [[feature]]
@@ -506,20 +506,20 @@ notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done unt
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
+tests = ["crates/splot-core/src/headers/sequence.rs::tests"]
+commands = ["cargo test -p splot-core sequence"]
+fixtures = ["tests/fixtures/conformant.av2"]
 diagnostics = []
 
 [[feature]]
@@ -539,19 +539,19 @@ notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done unt
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "partial"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/sequence.rs::tests"]
+commands = ["cargo test -p splot-core sequence"]
 fixtures = []
 diagnostics = []
 
@@ -572,20 +572,20 @@ notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done unt
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
+tests = ["crates/splot-core/src/headers/sequence.rs::tests"]
+commands = ["cargo test -p splot-core sequence"]
+fixtures = ["tests/fixtures/conformant.av2"]
 diagnostics = []
 
 [[feature]]
@@ -605,20 +605,20 @@ notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done unt
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
+tests = ["crates/splot-core/src/headers/sequence.rs::tests"]
+commands = ["cargo test -p splot-core sequence"]
+fixtures = ["tests/fixtures/conformant.av2"]
 diagnostics = []
 
 [[feature]]
@@ -638,20 +638,20 @@ notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done unt
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
+tests = ["crates/splot-core/src/headers/sequence.rs::tests"]
+commands = ["cargo test -p splot-core sequence"]
+fixtures = ["tests/fixtures/conformant.av2"]
 diagnostics = []
 
 [[feature]]
@@ -671,20 +671,20 @@ notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done unt
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
+tests = ["crates/splot-core/src/headers/sequence.rs::tests"]
+commands = ["cargo test -p splot-core sequence"]
+fixtures = ["tests/fixtures/conformant.av2"]
 diagnostics = []
 
 [[feature]]
@@ -737,20 +737,20 @@ notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done unt
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
+tests = ["crates/splot-core/src/headers/sequence.rs::tests"]
+commands = ["cargo test -p splot-core sequence"]
+fixtures = ["tests/fixtures/conformant.av2"]
 diagnostics = []
 
 [[feature]]
@@ -803,21 +803,21 @@ notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done unt
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "done"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/sequence.rs::tests::sequence_timing_rejects_zero_display_tick", "crates/splot-validate/src/checks/mod.rs::tests::syntax_error_diagnostic_maps_timing_errors"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-validate sequence_header"]
 fixtures = []
-diagnostics = []
+diagnostics = ["sequence-header/timing-display-tick-zero", "sequence-header/timing-time-scale-zero", "sequence-header/timing-num-ticks-per-picture-out-of-range"]
 
 [[feature]]
 id = "AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO"
@@ -836,19 +836,19 @@ notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done unt
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/sequence.rs::tests::sequence_decoder_model_info_parses_delays", "crates/splot-validate/src/validator.rs::tests::sequence_header_with_decoder_model_info_tail_can_activate"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-validate sequence_header"]
 fixtures = []
 diagnostics = []
 
@@ -865,25 +865,25 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Maps locally decidable §6.4.1 sequence-header violations from the §5.4.1 parser. Stateful sequence semantics remain future work."
+notes = "Maps locally decidable §6.4.1 / §6.4.12 sequence-header and timing violations. Next phase: cross-embedded-layer timing consistency once timing_info() is wired via the content-interpretation OBU (AV2-5.15-CONTENT-INTERPRETATION), and monotonic-output-order / distinct-mlayer-count checks across a coded multistream video sequence."
 
 [feature.status]
 mapped = "done"
 types = "done"
-parse = "not-applicable"
+parse = "done"
 validate = "partial"
-write = "not-applicable"
-encode = "not-applicable"
+write = "todo"
+encode = "todo"
 decode_check = "partial"
 tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-validate/src/checks/mod.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
-commands = ["cargo test -p splot-validate sequence_header"]
-fixtures = ["tests/fixtures/conformant.av2"]
-diagnostics = ["sequence-header/seq-header-id-out-of-range", "sequence-header/chroma-format-out-of-range", "sequence-header/bit-depth-out-of-range", "sequence-header/seq-max-mlayer-count-out-of-range", "sequence-header/crop-left-out-of-range", "sequence-header/crop-right-out-of-range", "sequence-header/crop-top-out-of-range", "sequence-header/crop-bottom-out-of-range", "sequence-header/timing-num-units-zero"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_repeated_non_identical_sequence_header_is_flagged", "crates/splot-validate/src/checks/mod.rs::tests"]
+commands = ["cargo test -p splot-validate sequence_header", "cargo test -p splot-validate hls"]
+fixtures = []
+diagnostics = ["sequence-header/timing-display-tick-zero", "hls/repeated-sequence-header-not-identical"]
 
 [[feature]]
 id = "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS"
@@ -903,20 +903,20 @@ notes = "Tracks parseable sequence headers by seq_header_id and xlayer context, 
 [feature.status]
 mapped = "done"
 types = "done"
-parse = "not-applicable"
+parse = "done"
 validate = "partial"
-write = "not-applicable"
-encode = "not-applicable"
+write = "todo"
+encode = "todo"
 decode_check = "partial"
 tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-validate/src/validator.rs::tests"]
-commands = ["cargo test -p splot-validate"]
+tests = ["crates/splot-validate/src/validator.rs::tests::active_sequence_header_bounds_temporal_layer_id", "crates/splot-validate/src/validator.rs::tests::active_sequence_header_bounds_embedded_layer_id"]
+commands = ["cargo test -p splot-validate sequence_header", "cargo test -p splot-validate active_sequence"]
 fixtures = []
-diagnostics = ["sequence-state/no-active-sequence-header", "sequence-state/tlayer-exceeds-max", "sequence-state/mlayer-exceeds-max"]
+diagnostics = ["sequence-state/tlayer-exceeds-max", "sequence-state/mlayer-exceeds-max", "sequence-state/no-active-sequence-header"]
 
 [[feature]]
 id = "AV2-5.5-TEMPORAL-DELIMITER"
@@ -935,21 +935,21 @@ notes = "Payload syntax and validator state effect for temporal-unit boundaries.
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
+tests = ["crates/splot-core/src/obu.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_duplicate_temporal_delimiter_is_flagged"]
+commands = ["cargo test -p splot-core obu", "cargo test -p splot-validate hls"]
+fixtures = ["tests/fixtures/conformant.av2"]
+diagnostics = ["obu-order/duplicate-temporal-delimiter", "obu-order/temporal-unit-missing-delimiter"]
 
 [[feature]]
 id = "AV2-5.6-MSDO"
@@ -959,8 +959,8 @@ kind = "bitstream-syntax"
 spec_sections = ["5.6", "6.6"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/hls.rs"
+openspec_change = "sequence-hls-validator-coverage"
 tracking_issue = ""
 owner = "core"
 risk = "high"
@@ -968,21 +968,21 @@ notes = "Needed for multistream boundaries, xlayer map validation, and profile c
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/hls.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_msdo_too_many_streams_is_flagged"]
+commands = ["cargo test -p splot-core hls", "cargo test -p splot-validate hls"]
 fixtures = []
-diagnostics = []
+diagnostics = ["msdo/non-global-layer-id", "msdo/too-many-streams"]
 
 [[feature]]
 id = "AV2-5.7-MULTI-FRAME-HEADER"
@@ -992,8 +992,8 @@ kind = "bitstream-syntax"
 spec_sections = ["5.7", "6.7"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/hls.rs"
+openspec_change = "sequence-hls-validator-coverage"
 tracking_issue = ""
 owner = "core"
 risk = "high"
@@ -1001,21 +1001,21 @@ notes = "Needed before frame header reuse and frame-unit validation."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "partial"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/hls.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_mfh_out_of_range_ids_are_flagged"]
+commands = ["cargo test -p splot-core hls", "cargo test -p splot-validate hls"]
 fixtures = []
-diagnostics = []
+diagnostics = ["mfh/seq-header-id-out-of-range", "mfh/id-out-of-range"]
 
 [[feature]]
 id = "AV2-5.8-LAYER-CONFIG-RECORD"
@@ -2916,20 +2916,20 @@ notes = "Temporal unit state machine: global temporal delimiter, HLS prefix OBUs
 [feature.status]
 mapped = "done"
 types = "done"
-parse = "not-applicable"
+parse = "done"
 validate = "partial"
-write = "not-applicable"
-encode = "not-applicable"
+write = "todo"
+encode = "todo"
 decode_check = "partial"
 tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-validate/src/validator.rs::tests"]
-commands = ["cargo test -p splot-validate"]
+tests = ["crates/splot-validate/src/validator.rs::tests::hls_duplicate_temporal_delimiter_is_flagged", "crates/splot-validate/src/validator.rs::tests::temporal_unit_accepts_ascending_coded_xlayers"]
+commands = ["cargo test -p splot-validate hls", "cargo test -p splot-validate temporal_unit"]
 fixtures = []
-diagnostics = ["obu-order/temporal-unit-missing-delimiter", "obu-order/global-hls-after-coded-layer", "obu-order/xlayer-order-not-ascending", "obu-order/padding-non-global-outside-coded-layer"]
+diagnostics = ["obu-order/duplicate-temporal-delimiter", "obu-order/temporal-unit-missing-delimiter", "obu-order/xlayer-order-not-ascending"]
 
 [[feature]]
 id = "AV2-7.3.8-HLS-AVAILABILITY"
@@ -2944,25 +2944,25 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Initial sequence-header availability state is implemented for active sequence lookup by xlayer. MSDO, LCR, atlas, OPS, repeated-identical requirements, and full ordering availability remain future work."
+notes = "Active sequence lookup by xlayer plus the repeated-identical (bit-fingerprint) check are implemented. Next phase: a full HLS availability store for MSDO/MFH/LCR/atlas/OPS objects, caller-provided external-HLS availability, and MFH/frame-header sequence-header reference checks."
 
 [feature.status]
 mapped = "done"
-types = "partial"
-parse = "not-applicable"
+types = "done"
+parse = "done"
 validate = "partial"
-write = "not-applicable"
-encode = "not-applicable"
+write = "todo"
+encode = "todo"
 decode_check = "partial"
 tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-validate/src/validator.rs::tests"]
-commands = ["cargo test -p splot-validate"]
+tests = ["crates/splot-validate/src/validator.rs::tests::hls_repeated_identical_sequence_header_is_accepted", "crates/splot-validate/src/validator.rs::tests::hls_repeated_non_identical_sequence_header_is_flagged"]
+commands = ["cargo test -p splot-validate hls"]
 fixtures = []
-diagnostics = ["sequence-state/no-active-sequence-header"]
+diagnostics = ["hls/repeated-sequence-header-not-identical", "sequence-state/no-active-sequence-header"]
 
 [[feature]]
 id = "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY"

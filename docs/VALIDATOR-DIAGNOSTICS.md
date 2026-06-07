@@ -27,6 +27,9 @@ Keep these stable:
 | `sequence-header/` | §6.4 sequence-header local syntax and semantics. |
 | `sequence-state/` | Activated sequence-header availability and max-layer checks. |
 | `obu-order/` | Temporal-unit and coded-extended-layer ordering checks. |
+| `hls/` | §7.3.8 high-level-syntax availability (sequence-header repeats, etc.). |
+| `msdo/` | §6.6 Multi Stream Decoder Operation OBU checks. |
+| `mfh/` | §5.7 / §6.4.1 multi-frame-header local id-range checks. |
 
 Existing examples:
 
@@ -50,6 +53,14 @@ obu-order/temporal-unit-missing-delimiter
 obu-order/global-hls-after-coded-layer
 obu-order/xlayer-order-not-ascending
 obu-order/padding-non-global-outside-coded-layer
+obu-order/duplicate-temporal-delimiter
+sequence-header/timing-display-tick-zero
+sequence-header/timing-time-scale-zero
+hls/repeated-sequence-header-not-identical
+msdo/non-global-layer-id
+msdo/too-many-streams
+mfh/seq-header-id-out-of-range
+mfh/id-out-of-range
 ```
 
 ## 2. New diagnostic namespaces to allow

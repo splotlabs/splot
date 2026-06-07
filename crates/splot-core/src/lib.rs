@@ -25,6 +25,7 @@ pub mod annexb;
 pub mod bitio;
 pub mod error;
 pub mod headers;
+pub mod hls;
 pub mod leb128;
 pub mod obu;
 pub mod span;
