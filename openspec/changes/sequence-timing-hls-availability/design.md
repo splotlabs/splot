@@ -108,9 +108,14 @@ violation. Strict mode still escalates warnings to a failing verdict.
 The chroma-sample-position (`<= 5`) and aspect-ratio-idc (`<= 16` when `!= 255`)
 checks are hard errors (both are "requirement of bitstream conformance" in §6.14).
 The repeated-CI check compares parsed §6.14 *information* (a weaker requirement than
-the sequence header's bit-identity in §7.3.8), normalizing the decoder-ignored
-`ci_reserved_2bit` out of the comparison so a difference confined to the reserved
-bits is surfaced only as the warning above, never as a hard repeat error.
+the sequence header's bit-identity in §7.3.8). To stay sound (never hard-reject a
+conformant stream) it compares only fields whose parsed value uniquely determines
+the information regardless of encoding — `ci_scan_type_idc`, the chroma sample
+position, and `timing_info()` — and excludes the decoder-ignored `ci_reserved_2bit`
+and the alias-prone color-description / aspect-ratio fields (a Table 6.13 / aspect
+preset and an explicit triple or SAR can carry the same information). Comparing the
+excluded fields soundly needs the §6.14 preset normalization, which is future work
+(a documented false-negative, never a false-positive).
 
 PR B (HLS availability, §7.3.8):
 

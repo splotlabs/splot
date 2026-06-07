@@ -1313,6 +1313,50 @@ mod tests {
         );
     }
 
+    /// CI OBU (xlayer 0 / mlayer 0) carrying a color description with the given
+    /// `ci_color_description_idc` (idc < 4, so the `rg(2)` prefix is a single zero
+    /// bit). When idc == 0 an explicit BT.709 triple is coded.
+    fn content_interpretation_color_obu(color_idc: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(0, 2); // ci_scan_type_idc
+        bits.bit(1); // ci_color_description_present_flag
+        bits.bit(0); // ci_chroma_sample_position_present_flag
+        bits.bit(0); // ci_aspect_ratio_info_present_flag
+        bits.bit(0); // ci_timing_info_present_flag
+        bits.f(0, 2); // ci_reserved_2bit
+        bits.bit(0); // rg(2): q = 0 (terminating zero bit)
+        bits.f(color_idc, 2); // rg(2): 2-bit remainder == idc for idc < 4
+        if color_idc == 0 {
+            bits.f(1, 8); // ci_color_primaries (BT.709)
+            bits.f(1, 8); // ci_transfer_characteristics
+            bits.f(1, 8); // ci_matrix_coefficients
+        }
+        bits.bit(0); // ci_full_range_flag
+        bits.bit(0); // obu_extension_flag
+        bits.bit(1); // trailing_one_bit
+        annex_b_obu_with_header(&layer_obu_header(24, 0, 0, 0), &bits.into_bytes())
+    }
+
+    #[test]
+    fn ci_repeat_differing_only_in_color_encoding_is_not_flagged() {
+        // AV2 § 6.14: color descriptions can encode the same information in multiple
+        // ways (a preset idc vs. an explicit triple), so the repeated-CI check must
+        // not hard-flag a color-description difference (it would risk a false
+        // positive against a conformant stream). The check conservatively excludes
+        // color/aspect until § 6.14 preset normalization is modeled.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(content_interpretation_color_obu(1)); // BT.709 preset
+        data.extend(content_interpretation_color_obu(0)); // explicit BT.709 triple
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/repeated-ci-not-identical"),
+            "report was: {report}"
+        );
+    }
+
     #[test]
     fn ci_zero_display_tick_is_reported_under_timing_namespace() {
         // A timing-range violation carried by a content-interpretation OBU is

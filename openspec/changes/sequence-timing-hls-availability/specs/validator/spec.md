@@ -79,15 +79,19 @@ content-interpretation OBU.
 
 `splot-validate` SHALL flag a content-interpretation OBU that is repeated for the
 same embedded layer within the modeled coded-video-sequence scope carrying different
-*information*, where the decoder-ignored `ci_reserved_2bit` is normalized out of the
-comparison (AV2 v1.0.0 § 6.14: a repeated CI OBU must "contain the same
-information").
+*information* (AV2 v1.0.0 § 6.14: a repeated CI OBU must "contain the same
+information"). The comparison SHALL be sound: it compares only fields whose parsed
+value uniquely determines the information regardless of encoding (`ci_scan_type_idc`,
+the chroma sample position, and `timing_info()`), and SHALL NOT hard-flag a
+difference confined to the decoder-ignored `ci_reserved_2bit` or to the alias-prone
+color-description / aspect-ratio fields.
 
-#### Scenario: repeated non-identical content interpretation
+#### Scenario: repeated content interpretation with differing timing
 
 - **GIVEN** two content-interpretation OBUs for the same `(obu_xlayer_id,
   obu_mlayer_id)` within one coded video sequence
-- **WHEN** their parsed § 5.15 information differs (other than `ci_reserved_2bit`)
+- **WHEN** their `timing_info()`, `ci_scan_type_idc`, or chroma sample position
+  differs
 - **THEN** validation SHALL emit `content-interpretation/repeated-ci-not-identical`.
 
 #### Scenario: repeat differing only in reserved bits
@@ -96,6 +100,16 @@ information").
   obu_mlayer_id)` whose parsed § 5.15 fields are identical except `ci_reserved_2bit`
 - **WHEN** validation runs
 - **THEN** validation SHALL NOT emit `content-interpretation/repeated-ci-not-identical`.
+
+#### Scenario: repeat differing only in color-description encoding
+
+- **GIVEN** two content-interpretation OBUs for the same `(obu_xlayer_id,
+  obu_mlayer_id)` whose color description is encoded differently (a preset idc vs. an
+  explicit triple)
+- **WHEN** validation runs
+- **THEN** validation SHALL NOT hard-flag them with
+  `content-interpretation/repeated-ci-not-identical` (color/aspect comparison awaits
+  § 6.14 preset normalization).
 
 ### Requirement: Content-interpretation reserved bits
 

@@ -90,6 +90,12 @@ impl ValidatorContext {
             // Cross-embedded-layer timing and repeated-CI identity are scoped to a
             // coded video sequence (AV2 § 6.4.12 / § 6.14), so clear this xlayer's
             // content-interpretation records at the same conservative CVS boundary.
+            // This shares the sequence-fingerprint reset's documented sound-over-
+            // complete bias: a CI OBU at CVS start precedes its CLK in the same
+            // temporal unit (§ 7.3.6), so its record is cleared here and a later
+            // non-identical CI *within the same CVS* is not caught (a false negative,
+            // never a false positive). Exact scoping needs CLK frame-header
+            // activation (AV2-5.18-FRAME-HEADER).
             self.content_interpretations
                 .retain(|(x, _), _| *x != xlayer);
         }
@@ -394,18 +400,30 @@ fn compare_timing_across_embedded_layers(
 }
 
 /// Returns `true` if two content-interpretation OBUs carry different *information*
-/// (AV2 § 6.14: a repeated CI OBU must "contain the same information"). The
-/// decoder-ignored `ci_reserved_2bit` is normalized out so a difference confined to
-/// the reserved bits is not treated as a content change.
+/// (AV2 § 6.14: a repeated CI OBU must "contain the same information").
+///
+/// Only fields whose parsed value uniquely determines the information regardless of
+/// encoding are compared: `ci_scan_type_idc`, the chroma sample position, and
+/// `timing_info()`. Deliberately excluded:
+/// - `ci_reserved_2bit` — decoder-ignored (§ 6.14); surfaced separately as a warning.
+/// - `ci_color_description` and the aspect ratio — these can encode the *same*
+///   information in multiple ways (a Table 6.13 / aspect preset vs. an explicit
+///   triple or SAR), so a raw difference is not necessarily a content change.
+///   Comparing them raw would risk a false-positive hard error against a conformant
+///   stream, which this validator must never do; soundly comparing them needs the
+///   § 6.14 preset normalization, which is not modeled yet (a documented
+///   false-negative, never a false-positive).
+///
+// TODO(spec: AV2-5.15-CONTENT-INTERPRETATION): normalize § 6.14 color-description
+// (Table 6.13) and aspect-ratio presets to derived values so repeated-CI
+// color/aspect differences can be compared soundly and promoted to this check.
 fn content_interpretation_information_differs(
     a: &ContentInterpretation,
     b: &ContentInterpretation,
 ) -> bool {
-    let mut a_info = *a;
-    let mut b_info = *b;
-    a_info.reserved_2bit = 0;
-    b_info.reserved_2bit = 0;
-    a_info != b_info
+    a.scan_type_idc != b.scan_type_idc
+        || a.chroma_sample_position != b.chroma_sample_position
+        || a.timing_info != b.timing_info
 }
 
 /// Builds a § 6.4.12 cross-embedded-layer timing-mismatch diagnostic located at `obu`.
