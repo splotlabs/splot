@@ -2972,13 +2972,18 @@ mod tests {
         annex_b_obu_with_header(&layer_obu_header(18, 0, 0, 31), &finish_extensible(bits))
     }
 
-    /// A global OPS OBU (`ops_id 0`, `ops_cnt 1`, `idc 2`) with two included layers,
-    /// where layer 1 inherits from `(ops_id 0, op_index 5)` — out of range for
-    /// `ops_cnt 1` and a same-OPS forward reference.
-    fn global_ops_inherited_out_of_range_obu() -> Vec<u8> {
+    /// A global OPS OBU (`ops_cnt 1`, `idc 2`) with two included layers, where layer 1
+    /// inherits its mlayer info from `(embedded_ops_id, embedded_op_index)`. With
+    /// `embedded_ops_id == ops_id` this is a same-OPS reference; otherwise it resolves
+    /// against another OPS in the active store.
+    fn global_ops_inherited_obu(
+        ops_id: u32,
+        embedded_ops_id: u32,
+        embedded_op_index: u32,
+    ) -> Vec<u8> {
         let mut bits = Bits::default();
         bits.bit(0); // reset
-        bits.f(0, 4); // ops_id = 0
+        bits.f(ops_id, 4); // ops_id
         bits.f(1, 3); // ops_cnt = 1
         bits.f(0, 4); // priority
         bits.f(0, 7); // intent
@@ -2993,8 +2998,8 @@ mod tests {
         body.bit(1); // layer 0: ops_mlayer_explicit_info_flag = 1
         body.f(0, 8); // layer 0: ops_mlayer_map = 0
         body.bit(0); // layer 1: ops_mlayer_explicit_info_flag = 0 -> inherited
-        body.f(0, 4); // layer 1: ops_embedded_ops_id = 0 (self)
-        body.f(5, 3); // layer 1: ops_embedded_op_index = 5
+        body.f(embedded_ops_id, 4); // layer 1: ops_embedded_ops_id
+        body.f(embedded_op_index, 3); // layer 1: ops_embedded_op_index
         body.align();
         let body_bytes = (body.bits.len() / 8) as u32;
         bits.f(body_bytes, 8); // ops_data_size
@@ -3140,14 +3145,48 @@ mod tests {
 
     #[test]
     fn ops_inherited_op_index_out_of_range_is_flagged() {
+        // Same-OPS reference (embedded_ops_id == ops_id 0): op_index 5 >= ops_cnt 1
+        // and >= j (layer 1).
         let mut data = temporal_delimiter_obu();
-        data.extend(global_ops_inherited_out_of_range_obu());
+        data.extend(global_ops_inherited_obu(0, 0, 5));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             report
                 .errors()
                 .any(|d| d.rule_id == "ops/inherited-op-index-out-of-range"),
             "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ops_cross_ops_inherited_op_index_out_of_range_is_flagged() {
+        // OPS 0 inherits from a different, already-defined OPS 1 (ops_cnt 1) at
+        // op_index 5, which is out of range — exercises the cross-OPS resolution
+        // against the prior active OPS state.
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_ops_obu(false, 1, 1)); // define OPS 1 (ops_cnt 1)
+        data.extend(global_ops_inherited_obu(0, 1, 5)); // OPS 0 inherits OPS 1 op 5
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "ops/inherited-op-index-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ops_cross_ops_inherited_op_index_in_range_is_not_flagged() {
+        // OPS 0 inherits from OPS 1 (ops_cnt 3) at op_index 2, which is in range, so
+        // the cross-OPS bound check must not flag it.
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_ops_obu(false, 1, 3)); // define OPS 1 (ops_cnt 3)
+        data.extend(global_ops_inherited_obu(0, 1, 2)); // OPS 0 inherits OPS 1 op 2
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "ops/inherited-op-index-out-of-range"),
+            0,
+            "an in-range cross-OPS inheritance must not be flagged: {report}"
         );
     }
 

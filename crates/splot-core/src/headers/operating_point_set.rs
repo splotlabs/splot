@@ -434,7 +434,10 @@ fn parse_operating_point_payload(
     // `byte_alignment()` then `opsBytes = (get_position() - startPos) >> 3`.
     reader.byte_align_zero()?;
     let consumed = reader.consumed_bits().saturating_sub(start_bits);
-    let computed_size_bytes = u32::try_from(consumed / 8).unwrap_or(u32::MAX);
+    // `0` (rather than `u32::MAX`) is the safe fallback for the practically-impossible
+    // overflow: an under-count trips `ops/payload-size-mismatch` instead of silently
+    // matching a declared `ops_data_size` of `u32::MAX`.
+    let computed_size_bytes = u32::try_from(consumed / 8).unwrap_or(0);
 
     Ok(OperatingPointPayload {
         index,

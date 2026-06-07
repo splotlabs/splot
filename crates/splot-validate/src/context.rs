@@ -238,8 +238,19 @@ impl OpsAvailabilityStore {
                 .entry(xlayer)
                 .or_default()
                 .insert(ops_id, record);
-        } else if let Some(map) = self.by_xlayer.get_mut(&xlayer) {
-            map.remove(&ops_id);
+        } else {
+            // Remove only this (xlayer, ops_id), then prune the layer's map if it is
+            // now empty so the store does not accumulate empty inner maps.
+            let now_empty = match self.by_xlayer.get_mut(&xlayer) {
+                Some(map) => {
+                    map.remove(&ops_id);
+                    map.is_empty()
+                }
+                None => false,
+            };
+            if now_empty {
+                self.by_xlayer.remove(&xlayer);
+            }
         }
     }
 
