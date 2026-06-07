@@ -113,11 +113,15 @@ the sequence header's bit-identity in §7.3.8). It excludes the decoder-ignored
 **derived** values — `splot-core` normalizes the §6.14 Table 6.13 color presets and
 the §5.15 aspect tables (`ColorDescription::derived` / `AspectRatioInfo::derived_sar`)
 — so an alias-equivalent re-encoding (a preset vs. the equivalent explicit triple or
-SAR) is not flagged while genuinely different color or aspect information is. Color
-and aspect are compared only when present in both OBUs; a present-vs-absent
-difference is left unflagged because the absent side defaults to unspecified values
-that could alias the present one (a sound-over-complete false negative, never a
-false-positive).
+SAR) is not flagged while genuinely different color or aspect information is. The
+derived SAR is reduced to lowest terms (so `2:2` equals `1:1`) and any zero
+dimension maps to the canonical unspecified `(0, 0)` (§5.15). Color and aspect are
+compared only when present in both OBUs; a present-vs-absent difference is left
+unflagged because the absent side defaults to unspecified values that could alias
+the present one (a sound-over-complete false negative, never a false-positive). The
+per-layer baseline records the *first present* color/aspect, so an absent-first CI
+does not hide a genuine difference between two later present values
+(absent → BT.709 → BT.2100 is flagged).
 
 PR B (HLS availability, §7.3.8):
 

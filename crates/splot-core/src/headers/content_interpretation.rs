@@ -152,14 +152,20 @@ pub struct AspectRatioInfo {
 }
 
 impl AspectRatioInfo {
-    /// Returns the derived sample aspect ratio `(sar_width, sar_height)` (AV2 § 5.15):
-    /// the explicit SAR for `ci_aspect_ratio_idc == 255`, the
+    /// Returns the derived sample aspect ratio as a *normalized* `(width, height)`
+    /// ratio (AV2 § 5.15): the explicit SAR for `ci_aspect_ratio_idc == 255`, the
     /// `Aspect_Ratio_Width`/`Aspect_Ratio_Height` entry for `idc` in `0..=16`, or
     /// `None` for a reserved `idc` (`17..=254`, which is itself a § 6.14 conformance
     /// violation flagged elsewhere).
+    ///
+    /// § 5.15 defines the SAR as a ratio "in the same arbitrary units", so the pair
+    /// is reduced by its greatest common divisor (e.g. `2:2` derives to `1:1`), and
+    /// any pair with a zero dimension — which § 5.15 defines as unspecified — maps to
+    /// the single canonical `(0, 0)`. This makes the value suitable for "same
+    /// information" comparisons.
     #[must_use]
     pub fn derived_sar(&self) -> Option<(u32, u32)> {
-        if self.aspect_ratio_idc == 255 {
+        let raw = if self.aspect_ratio_idc == 255 {
             self.extended_sar.map(|s| (s.sar_width, s.sar_height))
         } else {
             let index = usize::from(self.aspect_ratio_idc);
@@ -167,8 +173,30 @@ impl AspectRatioInfo {
                 .get(index)
                 .copied()
                 .zip(ASPECT_RATIO_HEIGHT.get(index).copied())
-        }
+        };
+        raw.map(|(w, h)| normalize_sample_aspect_ratio(w, h))
     }
+}
+
+/// Reduces a sample aspect ratio to lowest terms for "same information" comparison
+/// (AV2 § 5.15). A zero in either dimension means the SAR is unspecified, mapped to
+/// the canonical `(0, 0)`.
+fn normalize_sample_aspect_ratio(width: u32, height: u32) -> (u32, u32) {
+    if width == 0 || height == 0 {
+        return (0, 0);
+    }
+    let divisor = gcd(width, height);
+    (width / divisor, height / divisor)
+}
+
+/// Greatest common divisor (Euclid's algorithm); `gcd(a, 0) == a`.
+const fn gcd(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        let remainder = a % b;
+        a = b;
+        b = remainder;
+    }
+    a
 }
 
 /// Parsed `content_interpretation_obu()` syntax (AV2 v1.0.0 § 5.15).
@@ -635,6 +663,33 @@ mod tests {
             extended_sar: None,
         };
         assert_eq!(reserved.derived_sar(), None);
+
+        // An explicit ratio is reduced to lowest terms: 2:2 derives to 1:1.
+        let unreduced = AspectRatioInfo {
+            aspect_ratio_idc: 255,
+            extended_sar: Some(ExtendedSampleAspectRatio {
+                sar_width: 2,
+                sar_height: 2,
+            }),
+        };
+        assert_eq!(unreduced.derived_sar(), Some((1, 1)));
+        assert_eq!(unreduced.derived_sar(), preset.derived_sar());
+
+        // A zero dimension is unspecified, mapped to the canonical (0, 0): an
+        // explicit 0:1, the explicit 0:0, and the preset idc 0 (table 0:0) all agree.
+        let explicit_zero = AspectRatioInfo {
+            aspect_ratio_idc: 255,
+            extended_sar: Some(ExtendedSampleAspectRatio {
+                sar_width: 0,
+                sar_height: 1,
+            }),
+        };
+        let preset_zero = AspectRatioInfo {
+            aspect_ratio_idc: 0,
+            extended_sar: None,
+        };
+        assert_eq!(explicit_zero.derived_sar(), Some((0, 0)));
+        assert_eq!(explicit_zero.derived_sar(), preset_zero.derived_sar());
     }
 
     #[test]

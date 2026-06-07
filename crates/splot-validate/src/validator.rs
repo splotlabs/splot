@@ -1427,6 +1427,60 @@ mod tests {
     }
 
     #[test]
+    fn ci_repeat_unreduced_explicit_sar_is_not_flagged() {
+        // SAR 2:2 reduces to 1:1, the same ratio as the preset idc 1, so the
+        // unreduced explicit re-encoding must not be flagged.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(content_interpretation_aspect_obu(1)); // preset SAR 1:1
+        data.extend(content_interpretation_extended_sar_obu(2, 2)); // explicit SAR 2:2 == 1:1
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/repeated-ci-not-identical"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_present_color_difference_after_absent_baseline_is_flagged() {
+        // An absent-color first CI must not hide a genuine difference between two
+        // later PRESENT color descriptions (absent -> BT.709 -> BT.2100). The
+        // baseline records the first present color so the present-vs-present
+        // difference is detected.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(content_interpretation_obu(0, 0, None)); // color absent
+        data.extend(content_interpretation_color_obu(1)); // BT.709
+        data.extend(content_interpretation_color_obu(2)); // BT.2100 PQ
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/repeated-ci-not-identical"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_present_aspect_difference_after_absent_baseline_is_flagged() {
+        // Same as above for aspect ratio: absent -> SAR 1:1 -> SAR 12:11.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(content_interpretation_obu(0, 0, None)); // aspect absent
+        data.extend(content_interpretation_aspect_obu(1)); // SAR 1:1
+        data.extend(content_interpretation_aspect_obu(2)); // SAR 12:11
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/repeated-ci-not-identical"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
     fn ci_zero_display_tick_is_reported_under_timing_namespace() {
         // A timing-range violation carried by a content-interpretation OBU is
         // reported under the §6.4.12 timing namespace (sequence-header/timing-*).

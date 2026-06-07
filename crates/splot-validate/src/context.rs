@@ -152,7 +152,7 @@ impl ValidatorContext {
                     offset: obu.offset,
                 });
             }
-            Entry::Occupied(slot) => {
+            Entry::Occupied(mut slot) => {
                 let existing = slot.get();
                 // AV2 § 6.14: a repeated CI OBU for the same embedded layer within a
                 // CVS must carry the same *information* (a weaker requirement than the
@@ -181,8 +181,22 @@ impl ValidatorContext {
                     );
                 }
                 // Keep the first record for the layer (matching the sequence-header
-                // first-wins approximation); a non-identical repeat is reported but
-                // does not overwrite the established timing baseline.
+                // first-wins approximation), but fill in the color description and
+                // aspect ratio once they first appear. Those two fields are compared
+                // only when present in BOTH OBUs (present-vs-absent is left unflagged,
+                // since the absent side defaults to unspecified values that could
+                // alias the present one), so without this fill-in an absent-first
+                // baseline would hide a genuine difference between two LATER present
+                // values (e.g. absent -> BT.709 -> BT.2100). Recording the first
+                // present value as the baseline makes that present-vs-present
+                // difference detectable.
+                let record = slot.get_mut();
+                if record.content.color_description.is_none() {
+                    record.content.color_description = content_interpretation.color_description;
+                }
+                if record.content.aspect_ratio.is_none() {
+                    record.content.aspect_ratio = content_interpretation.aspect_ratio;
+                }
             }
         }
     }
