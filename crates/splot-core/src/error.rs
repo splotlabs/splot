@@ -232,6 +232,17 @@ pub enum Error {
         size: u64,
     },
 
+    /// `obu_extension_flag` was non-zero, violating AV2 § 6.2.1.
+    #[error(
+        "invalid obu_extension_flag at byte {offset}.{bit_offset}: must be 0 in this specification version (§ 6.2.1)"
+    )]
+    InvalidObuExtension {
+        /// Offset of the `obu_extension_flag` bit.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidObuExtension::offset`].
+        bit_offset: BitOffset,
+    },
+
     /// A declared OBU payload extends beyond the available input.
     #[error(
         "OBU payload out of range at byte {offset}: size {size} exceeds {remaining} remaining byte(s)"

@@ -694,7 +694,7 @@ mod tests {
         );
     }
 
-    fn msdo_payload(num_streams_minus_2: u32) -> Vec<u8> {
+    fn msdo_syntax_bits(num_streams_minus_2: u32) -> Bits {
         let mut bits = Bits::default();
         bits.f(num_streams_minus_2, 3); // num_streams_minus_2
         bits.f(0, 5); // multistream_profile_idc
@@ -708,6 +708,12 @@ mod tests {
             bits.bit(0); // sub_stream_max_tier
         }
         bits.bit(0); // multistream_doh_constraint_flag
+        bits
+    }
+
+    fn msdo_payload(num_streams_minus_2: u32) -> Vec<u8> {
+        let mut bits = msdo_syntax_bits(num_streams_minus_2);
+        bits.bit(1); // trailing_one_bit (valid trailing_bits)
         bits.into_bytes()
     }
 
@@ -787,6 +793,58 @@ mod tests {
                 .errors()
                 .any(|d| d.rule_id == "msdo/non-global-layer-id"),
             "global MSDO must not be flagged for layer ids; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn hls_msdo_malformed_trailing_bits_is_flagged() {
+        // Valid MSDO syntax followed by a non-zero trailing bit after the
+        // trailing_one_bit (AV2 § 5.2.1: MSDO is non-extensible -> trailing_bits).
+        let mut bits = msdo_syntax_bits(0);
+        bits.bit(1); // trailing_one_bit
+        bits.bit(1); // trailing_zero_bit must be 0 -> violation
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x50, &bits.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "trailing-bits/zero-bit-not-zero"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn hls_well_formed_msdo_has_no_trailing_bits_error() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x50, &msdo_payload(0)));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("trailing-bits/")),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn hls_repeated_sequence_header_after_clk_starts_new_coded_video_sequence() {
+        // CVS 1: seq header (id 0, params A) activated, then an OBU_CLOSED_LOOP_KEY
+        // for xlayer 0 (0x10 = type 4, no extension, xlayer 0). CVS 2 reuses
+        // seq_header_id 0 with different params B — a legal reconfiguration that must
+        // NOT be flagged as a non-identical repeat (AV2 § 7.3.8).
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
+        data.extend(annex_b_obu(0x10, &[]));
+        data.extend(temporal_delimiter_obu());
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 0)));
+
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "hls/repeated-sequence-header-not-identical"),
+            "a CLK between the two headers starts a new CVS; report was: {report}"
         );
     }
 

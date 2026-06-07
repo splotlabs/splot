@@ -138,6 +138,15 @@ pub(crate) fn syntax_error_diagnostic(error: &Error) -> Option<Diagnostic> {
                     .with_bit_offset(*bit_offset),
             )
         }
+        Error::InvalidObuExtension { offset, bit_offset } => Some(
+            Diagnostic::error(
+                "obu-header/extension-flag-not-zero",
+                "obu_extension_flag must be 0 in this specification version",
+            )
+            .with_spec_section("6.2.1")
+            .with_byte_offset(*offset)
+            .with_bit_offset(*bit_offset),
+        ),
         _ => None,
     }
 }
@@ -289,6 +298,16 @@ impl Check for MsdoSyntax {
                         .with_spec_section("6.6")
                         .with_byte_offset(obu.offset),
                     );
+                }
+                // AV2 § 5.2.1: OBU_MSDO is non-extensible, so the remaining payload
+                // bits must form valid trailing_bits().
+                if !obu.payload.is_empty() {
+                    let remaining = reader.remaining_bits();
+                    if let Err(error) = parse_trailing_bits(&mut reader, remaining)
+                        && let Some(diagnostic) = syntax_error_diagnostic(&error)
+                    {
+                        report.push(diagnostic);
+                    }
                 }
             }
             Err(error) => report.push(payload_parse_error_diagnostic(&error, "5.6")),
@@ -601,6 +620,18 @@ mod tests {
         assert_eq!(diagnostic.spec_section.as_deref(), Some("6.2.4"));
         assert_eq!(diagnostic.byte_offset, Some(ByteOffset::new(7)));
         assert_eq!(diagnostic.bit_offset, Some(BitOffset::from_bits(5)));
+    }
+
+    #[test]
+    fn syntax_error_diagnostic_maps_obu_extension_flag() {
+        let diagnostic = syntax_error_diagnostic(&Error::InvalidObuExtension {
+            offset: ByteOffset::new(9),
+            bit_offset: BitOffset::from_bits(3),
+        })
+        .unwrap_or_else(|| Diagnostic::error("obu-header/test", "missing"));
+        assert_eq!(diagnostic.rule_id, "obu-header/extension-flag-not-zero");
+        assert_eq!(diagnostic.spec_section.as_deref(), Some("6.2.1"));
+        assert_eq!(diagnostic.byte_offset, Some(ByteOffset::new(9)));
     }
 
     #[test]

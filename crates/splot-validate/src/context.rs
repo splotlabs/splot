@@ -38,6 +38,27 @@ impl ValidatorContext {
         } else {
             self.validate_active_sequence_limits(obu, report);
         }
+
+        self.maybe_reset_coded_video_sequence(obu);
+    }
+
+    /// Resets per-extended-layer sequence-header fingerprints at coded-video-sequence
+    /// boundaries (AV2 § 7.3.8): a new CVS for an extended layer starts at each
+    /// temporal unit containing an `OBU_CLOSED_LOOP_KEY` for that layer, after which
+    /// a reconfigured sequence header with the same `seq_header_id` is legal.
+    ///
+    /// Precise per-CVS scoping ultimately needs CLK frame-header association, which
+    /// is not modeled yet; this conservative reset removes the common false positive
+    /// where a later CVS reuses a `seq_header_id` with changed parameters.
+    fn maybe_reset_coded_video_sequence(&mut self, obu: &ObuEnvelope<'_>) {
+        if obu.header.obu_type == ObuType::ClosedLoopKey
+            && !obu.header.extended_layer_id.is_global()
+        {
+            let xlayer = obu.header.extended_layer_id;
+            // TODO(spec: AV2-7.3.8-HLS-AVAILABILITY): scope CVS boundaries precisely
+            // once CLK frame-header activation is parsed.
+            self.sequence_fingerprints.retain(|(x, _), _| *x != xlayer);
+        }
     }
 
     fn observe_sequence_header(&mut self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
@@ -57,7 +78,13 @@ impl ValidatorContext {
         // AV2 § 7.3.8: within a coded video sequence, a repeated activated sequence
         // header is allowed only if its payload bytes are bit-identical. Compare a
         // payload fingerprint, not parsed fields, since inferred values can hide
-        // syntax differences.
+        // syntax differences. Fingerprints are cleared per extended layer at CVS
+        // boundaries (see maybe_reset_coded_video_sequence).
+        //
+        // NOTE: the fingerprint key is (xlayer, seq_header_id); cross-xlayer identity
+        // for the same seq_header_id is not yet enforced.
+        // TODO(spec: AV2-7.3.8-HLS-AVAILABILITY): validate cross-xlayer seq_header_id
+        // identity once the full HLS availability store exists.
         match self.sequence_fingerprints.entry((xlayer, seq_header_id)) {
             Entry::Vacant(slot) => {
                 slot.insert(fingerprint);

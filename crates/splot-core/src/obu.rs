@@ -162,8 +162,9 @@ pub fn dispatch_obu_payload<'a>(
 /// Validates the bits between the end of an OBU's parsed syntax and the OBU
 /// boundary (AV2 v1.0.0 § 5.2.1 `open_bitstream_unit`).
 ///
-/// For `is_extensible_obu()` types, an `obu_extension_flag` follows the syntax: if
-/// set, the remainder is opaque `obu_extension_data()`; otherwise the remainder is
+/// For `is_extensible_obu()` types, an `obu_extension_flag` follows the syntax; AV2
+/// § 6.2.1 requires it to be `0` in this specification version, so a set flag is
+/// rejected as [`Error::InvalidObuExtension`]. Otherwise the remainder is
 /// `trailing_bits()`. Non-extensible types use `trailing_bits()` directly. Tile
 /// groups (`usedArith`) are not dispatched here.
 fn finish_obu_payload(
@@ -176,10 +177,18 @@ fn finish_obu_payload(
     }
 
     if is_extensible {
+        let flag_offset = reader.byte_offset();
+        let flag_bit_offset = reader.bit_offset();
         let obu_extension_flag = reader.read_bit()? != 0;
         if obu_extension_flag {
-            // obu_extension_data(remainingPayloadBits - 1): opaque, not validated.
-            return Ok(());
+            // AV2 § 6.2.1: it is a requirement of bitstream conformance that
+            // obu_extension_flag is equal to 0 in bitstreams conforming to this
+            // specification version, so a set flag is a conformance violation
+            // rather than opaque extension data.
+            return Err(Error::InvalidObuExtension {
+                offset: flag_offset,
+                bit_offset: flag_bit_offset,
+            });
         }
     }
 

@@ -1269,6 +1269,9 @@ pub fn parse_sequence_transform_quant_entropy_config(
     } else {
         false
     };
+    // AV2 § 5.4.8: enable_parity_hiding is inferred 0 only when
+    // (enable_tcq && !choose_tcq_per_frame); in every other case (including
+    // !enable_tcq) the spec reads the f(1) flag in the else branch.
     let enable_parity_hiding = if enable_tcq && !choose_tcq_per_frame {
         false
     } else {
@@ -2462,6 +2465,21 @@ mod tests {
         assert!(matches!(
             status,
             PayloadStatus::Parsed(ParsedObu::SequenceHeader(ref h)) if h.is_fully_parsed()
+        ));
+    }
+
+    #[test]
+    fn dispatch_rejects_sequence_header_nonzero_obu_extension_flag() {
+        use crate::obu::{dispatch_obu_payload, read_obu_header_from_slice};
+        let mut bits = Bits::default();
+        push_still_picture_header(&mut bits);
+        bits.bit(1); // obu_extension_flag = 1 -> conformance violation (AV2 § 6.2.1)
+        bits.bit(1); // trailing_one_bit (would be valid, but the flag is already bad)
+        let payload = bits.into_bytes();
+        let header = read_obu_header_from_slice(&[0x04], ByteOffset::new(0)).unwrap();
+        assert!(matches!(
+            dispatch_obu_payload(header, &payload, ByteOffset::new(1)),
+            Err(Error::InvalidObuExtension { .. })
         ));
     }
 
