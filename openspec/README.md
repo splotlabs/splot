@@ -15,7 +15,7 @@ and is enforced by `cargo xtask check-feature-status`.
 openspec/
   specs/            current capability specs (bitstream, validator, encoder, conformance)
   changes/          proposed changes; each is a folder with proposal/tasks/design
-    .template/      copy this to start a new change
+  templates/change/ copy this to start a new change
 ```
 
 ## Rules

@@ -5,9 +5,9 @@ template:
 
 ```bash
 mkdir -p openspec/changes/<change-id>/specs/<area>
-cp openspec/changes/.template/proposal.md openspec/changes/<change-id>/proposal.md
-cp openspec/changes/.template/tasks.md openspec/changes/<change-id>/tasks.md
-cp openspec/changes/.template/design.md openspec/changes/<change-id>/design.md
+cp openspec/templates/change/proposal.md openspec/changes/<change-id>/proposal.md
+cp openspec/templates/change/tasks.md openspec/changes/<change-id>/tasks.md
+cp openspec/templates/change/design.md openspec/changes/<change-id>/design.md
 ```
 
 Then:
@@ -21,12 +21,10 @@ Then:
 A `<change-id>` is lowercase-kebab (for example, `parse-sequence-header`). Use the
 same id in the matrix, the OpenSpec folder, and the GitHub issue/PR.
 
-## Current changes
+## Active changes
 
 | Change | Feature IDs | State |
 |---|---|---|
-| `feature-tracking-framework` | `XTASK-FEATURE-STATUS`, `DOC-FEATURE-TRACKING` | implemented |
-| `parse-annexb-and-obu-headers` | `AV2-4.11.6-LEB128`, `AV2-5.2.2-OBU-HEADER`, `AV2-5.2.1-OBU-TYPE`, `AV2-B-ANNEXB-OBU-ENVELOPE` | implemented |
 | `add-bitstream-writer` | `ENC-BITSTREAM-WRITER` (+ `AV2-4.11.6-LEB128`, `AV2-5.2.2-OBU-HEADER`, `AV2-5.2.3-TRAILING-BITS`, `AV2-5.2.4-BYTE-ALIGNMENT` write stages) | proposed |
 | `parse-sequence-header` | `AV2-5.4-SEQUENCE-HEADER` | proposed |
 | `sequence-timing-hls-availability` | `AV2-5.15-CONTENT-INTERPRETATION`, `AV2-5.4.12-TIMING-INFO`, `AV2-6.4-SEQUENCE-HEADER-SEMANTICS`, `AV2-7.3.8-HLS-AVAILABILITY` (+ `AV2-5.6-MSDO`, `AV2-5.7-MULTI-FRAME-HEADER`, `AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT`) | in progress |
