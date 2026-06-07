@@ -159,8 +159,16 @@ mod tests {
     }
 
     fn sequence_header_payload(max_tlayer_id: u32, max_mlayer_id: u32) -> Vec<u8> {
+        sequence_header_payload_with_id(0, max_tlayer_id, max_mlayer_id)
+    }
+
+    fn sequence_header_payload_with_id(
+        seq_header_id: u32,
+        max_tlayer_id: u32,
+        max_mlayer_id: u32,
+    ) -> Vec<u8> {
         let mut bits = Bits::default();
-        bits.uvlc(0); // seq_header_id
+        bits.uvlc(seq_header_id);
         bits.f(0, 5); // seq_profile_idc
         bits.bit(0); // single_picture_header_flag
         bits.f(0, 5); // seq_level_idx
@@ -187,6 +195,33 @@ mod tests {
         if max_tlayer_id > 0 {
             bits.bit(0); // tlayer_dependency_present_flag
         }
+        bits.into_bytes()
+    }
+
+    fn sequence_header_payload_with_decoder_model_info() -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.uvlc(0); // seq_header_id
+        bits.f(0, 5); // seq_profile_idc
+        bits.bit(0); // single_picture_header_flag
+        bits.f(0, 5); // seq_level_idx
+        bits.uvlc(0); // chroma_format_idc
+        bits.uvlc(0); // bit_depth_idc
+        bits.f(0, 3); // seq_lcr_id
+        bits.bit(0); // still_picture
+        bits.f(1, 2); // max_tlayer_id
+        bits.f(1, 3); // max_mlayer_id
+        bits.f(0, 1); // seq_max_mlayer_cnt_minus_1
+        bits.bit(1); // monotonic_output_order_flag
+        bits.f(3, 4); // frame_width_bits_minus_1
+        bits.f(3, 4); // frame_height_bits_minus_1
+        bits.f(15, 4); // max_frame_width_minus_1
+        bits.f(7, 4); // max_frame_height_minus_1
+        bits.bit(0); // seq_cropping_window_present_flag
+        bits.bit(0); // seq_initial_display_delay_present_flag
+        bits.bit(1); // decoder_model_info_present_flag
+        bits.f(1, 32); // num_units_in_decoding_tick
+        bits.bit(1); // seq_decoder_model_info_present_flag
+        bits.f(0b1010, 4); // opaque seq_decoder_model_info() tail
         bits.into_bytes()
     }
 
@@ -422,6 +457,30 @@ mod tests {
     }
 
     #[test]
+    fn sequence_header_with_decoder_model_info_tail_can_activate() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_with_decoder_model_info(),
+        ));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(6, 1, 1, 0), &[]));
+
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "bitstream/parse-error"),
+            "report was: {report}"
+        );
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("sequence-state/")),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
     fn layer_obu_before_sequence_header_reports_missing_active_sequence() {
         let data = annex_b_obu_with_header(&layer_obu_header(6, 0, 0, 0), &[]);
         let report = Validator::new(false).validate_bytes(&data);
@@ -431,6 +490,43 @@ mod tests {
                 .any(|d| d.rule_id == "sequence-state/no-active-sequence-header"),
             "report was: {report}"
         );
+    }
+
+    #[test]
+    fn repeated_sequence_header_does_not_replace_active_limits_without_reference() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(1, 0, 0)));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(6, 1, 1, 0), &[]));
+
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("sequence-state/")),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn local_prefix_hls_before_sequence_header_does_not_require_active_sequence() {
+        for obu_type in [16, 17, 18] {
+            let mut data = temporal_delimiter_obu();
+            data.extend(annex_b_obu_with_header(
+                &layer_obu_header(obu_type, 0, 0, 0),
+                &[],
+            ));
+            data.extend(sequence_header_obu_for_xlayer(0, 1, 1));
+            data.extend(annex_b_obu_with_header(&layer_obu_header(6, 0, 0, 0), &[]));
+
+            let report = Validator::new(false).validate_bytes(&data);
+            assert!(
+                !report
+                    .errors()
+                    .any(|d| d.rule_id == "sequence-state/no-active-sequence-header"),
+                "obu_type={obu_type}, report was: {report}"
+            );
+        }
     }
 
     #[test]

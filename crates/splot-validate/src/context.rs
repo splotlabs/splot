@@ -46,9 +46,14 @@ impl ValidatorContext {
         };
 
         let seq_header_id = sequence_header.seq_header_id;
-        self.sequence_headers.insert(seq_header_id, sequence_header);
+        // TODO(spec: AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT): model CLK frame
+        // references before switching an already-active sequence header.
+        self.sequence_headers
+            .entry(seq_header_id)
+            .or_insert(sequence_header);
         self.active_sequence_by_xlayer
-            .insert(obu.header.extended_layer_id, seq_header_id);
+            .entry(obu.header.extended_layer_id)
+            .or_insert(seq_header_id);
     }
 
     fn validate_active_sequence_limits(
@@ -272,6 +277,9 @@ fn requires_active_sequence(obu: &ObuEnvelope<'_>) -> bool {
                 | ObuType::Reserved(_)
                 | ObuType::SequenceHeader
                 | ObuType::TemporalDelimiter
+                | ObuType::LayerConfigurationRecord
+                | ObuType::OperatingPointSet
+                | ObuType::AtlasSegment
         )
 }
 

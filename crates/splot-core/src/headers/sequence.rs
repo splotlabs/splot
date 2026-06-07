@@ -350,9 +350,11 @@ pub struct SequenceHeader {
 
 /// Parses the general sequence-header syntax through dependency maps (AV2 § 5.4.1).
 ///
-/// This parser intentionally stops immediately before `sequence_partition_config()`.
+/// This parser intentionally stops immediately before unimplemented child syntax.
 /// Child syntax structures are represented by explicit stubs until their matrix
-/// rows are implemented.
+/// rows are implemented. When `seq_decoder_model_info()` is present, the
+/// remaining sequence-header tail stays opaque rather than being treated as a
+/// conformance error.
 ///
 /// # Errors
 /// Returns typed [`Error`] values for EOF, malformed descriptors, or local § 6.4.1
@@ -484,9 +486,6 @@ pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<Seque
                 ));
             }
             let seq_decoder_model_info_present_flag = reader.read_bit()? != 0;
-            if seq_decoder_model_info_present_flag {
-                parse_sequence_decoder_model_info(reader)?;
-            }
             (
                 seq_initial_display_delay_minus_1,
                 true,
@@ -498,7 +497,13 @@ pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<Seque
         }
     };
 
-    parse_dependency_map_bits(reader, max_tlayer_id, max_mlayer_id)?;
+    if seq_decoder_model_info_present_flag {
+        // TODO(spec: AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO): parse
+        // seq_decoder_model_info() before validating the following dependency
+        // maps. Until then, keep the remaining payload tail opaque.
+    } else {
+        parse_dependency_map_bits(reader, max_tlayer_id, max_mlayer_id)?;
+    }
 
     Ok(SequenceHeader {
         seq_header_id,
