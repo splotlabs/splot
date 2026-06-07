@@ -256,6 +256,50 @@ impl<'a> BitReader<'a> {
         })
     }
 
+    /// Reads an AV2 `rg(n)` Rice-Golomb descriptor (AV2 v1.0.0 § 4.11.10).
+    ///
+    /// The value is `(q << n) + remainder`, where `q` is the number of leading one
+    /// bits before the first zero bit and `remainder` is the following `n`-bit
+    /// suffix. AV2 § 4.11.10 requires the descriptor never return a value less than
+    /// 0, i.e. the unary prefix must terminate (a zero bit must appear) within 32
+    /// iterations.
+    ///
+    /// # Errors
+    /// Returns [`Error::BitWidthTooLarge`] if `n > 32`, [`Error::InvalidRg`] if the
+    /// unary prefix does not terminate within 32 bits or the value does not fit in a
+    /// `u32`, or [`Error::UnexpectedEof`] if the code is truncated.
+    pub fn read_rg(&mut self, n: u32) -> Result<u32> {
+        if n > 32 {
+            return Err(Error::BitWidthTooLarge {
+                requested: n,
+                max: 32,
+            });
+        }
+
+        let start_offset = self.byte_offset();
+        let start_bit_offset = self.bit_offset();
+        for q in 0u32..32 {
+            if self.read_bit()? == 0 {
+                let remainder = self.read_bits(n)?;
+                // `q < 32` and `n <= 32`, so the shift is computed in u64 to avoid
+                // overflow; the spec only ever uses small `n` (e.g. rg(2)), but the
+                // u64 path keeps the general descriptor panic-free.
+                let value = (u64::from(q) << n) + u64::from(remainder);
+                return u32::try_from(value).map_err(|_| Error::InvalidRg {
+                    offset: start_offset,
+                    bit_offset: start_bit_offset,
+                    message: "decoded value does not fit in u32".to_owned(),
+                });
+            }
+        }
+
+        Err(Error::InvalidRg {
+            offset: start_offset,
+            bit_offset: start_bit_offset,
+            message: "rg(n) prefix must terminate within 32 bits".to_owned(),
+        })
+    }
+
     /// Parses AV2 `byte_alignment()` and validates all alignment bits are zero
     /// (AV2 v1.0.0 § 5.2.4 / § 6.2.4).
     ///
@@ -500,6 +544,51 @@ mod tests {
     }
 
     #[test]
+    fn read_rg_decodes_unary_prefix_and_remainder() {
+        // q = 0: prefix bit 0, remainder 0b10 -> (0 << 2) + 2 = 2.
+        // Bits: 0 10 00000 -> 0b0100_0000.
+        let mut zero_prefix = BitReader::new(&[0b0100_0000], ByteOffset::new(0));
+        assert_eq!(zero_prefix.read_rg(2).unwrap(), 2);
+
+        // q = 1: prefix 1,0, remainder 0b11 -> (1 << 2) + 3 = 7.
+        // Bits: 1 0 11 0000 -> 0b1011_0000.
+        let mut one_prefix = BitReader::new(&[0b1011_0000], ByteOffset::new(0));
+        assert_eq!(one_prefix.read_rg(2).unwrap(), 7);
+
+        // value 0: prefix bit 0, remainder 0b00 -> 0b0000_0000.
+        let mut value_zero = BitReader::new(&[0b0000_0000], ByteOffset::new(0));
+        assert_eq!(value_zero.read_rg(2).unwrap(), 0);
+    }
+
+    #[test]
+    fn read_rg_rejects_non_terminating_prefix_and_reports_eof() {
+        // 32 one bits with no terminating zero -> InvalidRg, not a panic.
+        let mut non_terminating = BitReader::new(&[0xFF, 0xFF, 0xFF, 0xFF], ByteOffset::new(0));
+        assert!(matches!(
+            non_terminating.read_rg(2),
+            Err(Error::InvalidRg { .. })
+        ));
+
+        // Truncated before the prefix can be read.
+        let mut eof = BitReader::new(&[], ByteOffset::new(0));
+        assert!(matches!(eof.read_rg(2), Err(Error::UnexpectedEof { .. })));
+    }
+
+    #[test]
+    fn read_rg_rejects_widths_over_32() {
+        let mut reader = BitReader::new(&[0x00], ByteOffset::new(0));
+        assert!(matches!(
+            reader.read_rg(33),
+            Err(Error::BitWidthTooLarge {
+                requested: 33,
+                max: 32
+            })
+        ));
+        // The guard rejects before consuming any bits.
+        assert_eq!(reader.byte_offset(), ByteOffset::new(0));
+    }
+
+    #[test]
     fn byte_align_zero_accepts_zero_bits_and_rejects_one_bits() {
         let mut aligned = BitReader::new(&[0b1000_0000], ByteOffset::new(0));
         let _ = aligned.read_bit().unwrap();
@@ -535,6 +624,9 @@ mod proptests {
 
             let mut ns_reader = BitReader::new(&data, ByteOffset::new(0));
             let _ = ns_reader.read_ns(n);
+
+            let mut rg_reader = BitReader::new(&data, ByteOffset::new(0));
+            let _ = rg_reader.read_rg(n.min(32));
 
             let mut alignment_reader = BitReader::new(&data, ByteOffset::new(0));
             let _ = alignment_reader.read_bits(n.min(7));

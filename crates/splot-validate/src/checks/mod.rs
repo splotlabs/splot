@@ -15,6 +15,7 @@ use splot_core::bitio::BitReader;
 use splot_core::error::{
     ByteAlignmentErrorKind, Error, SequenceHeaderErrorKind, TrailingBitsErrorKind,
 };
+use splot_core::headers::content_interpretation::parse_content_interpretation;
 use splot_core::headers::sequence::parse_sequence_header;
 use splot_core::hls::{parse_msdo, parse_multi_frame_header};
 use splot_core::obu::{finish_obu_payload, parse_trailing_bits};
@@ -43,6 +44,7 @@ pub fn default_checks() -> Vec<Box<dyn Check>> {
         Box::new(SequenceHeaderSyntax),
         Box::new(MsdoSyntax),
         Box::new(MultiFrameHeaderSyntax),
+        Box::new(ContentInterpretationSyntax),
         Box::new(GlobalXLayerRequired),
         Box::new(GlobalXLayerRequiresBaseLayers),
         Box::new(GlobalXLayerAllowedTypes),
@@ -390,6 +392,99 @@ impl Check for MultiFrameHeaderSyntax {
                 }
             }
             Err(error) => report.push(payload_parse_error_diagnostic(&error, "5.7")),
+        }
+    }
+}
+
+/// `OBU_CONTENT_INTERPRETATION` syntax: reserved-bits and payload-tail conformance
+/// (AV2 § 5.15 / § 6.14). Cross-embedded-layer timing consistency and repeated-CI
+/// identity are stateful and handled in [`crate::context`].
+struct ContentInterpretationSyntax;
+
+impl Check for ContentInterpretationSyntax {
+    fn id(&self) -> &'static str {
+        // Registry identifier; emitted diagnostics use their own rule ids.
+        "content-interpretation/syntax"
+    }
+
+    fn spec_section(&self) -> Option<&'static str> {
+        Some("5.15")
+    }
+
+    fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.header.obu_type != ObuType::ContentInterpretation {
+            return;
+        }
+
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        match parse_content_interpretation(&mut reader) {
+            Ok(content_interpretation) => {
+                if content_interpretation.reserved_2bit != 0 {
+                    // AV2 § 6.14: ci_reserved_2bit must be 0, but a decoder ignores
+                    // the value, so a non-zero value is a producer anomaly (warning)
+                    // rather than a hard, decode-breaking conformance error.
+                    report.push(
+                        Diagnostic::warning(
+                            "content-interpretation/reserved-bits-nonzero",
+                            format!(
+                                "ci_reserved_2bit must be 0 (found {}); the value is ignored by a \
+                                 decoder",
+                                content_interpretation.reserved_2bit
+                            ),
+                        )
+                        .with_spec_section("6.14")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+                // AV2 § 6.14: when present, ci_chroma_sample_position_top and
+                // ci_chroma_sample_position_bottom must each be <= 5 (6 is the
+                // inferred CSP_UNSPECIFIED, which is not coded).
+                if let Some(chroma) = content_interpretation.chroma_sample_position
+                    && (chroma.top > 5 || chroma.bottom > 5)
+                {
+                    report.push(
+                        Diagnostic::error(
+                            "content-interpretation/chroma-sample-position-out-of-range",
+                            format!(
+                                "ci_chroma_sample_position top {} / bottom {} must each be <= 5",
+                                chroma.top, chroma.bottom
+                            ),
+                        )
+                        .with_spec_section("6.14")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+                // AV2 § 6.14: when ci_aspect_ratio_idc is not 255 (the extended-SAR
+                // marker), it must be <= 16.
+                if let Some(aspect_ratio) = content_interpretation.aspect_ratio
+                    && aspect_ratio.aspect_ratio_idc != 255
+                    && aspect_ratio.aspect_ratio_idc > 16
+                {
+                    report.push(
+                        Diagnostic::error(
+                            "content-interpretation/aspect-ratio-idc-out-of-range",
+                            format!(
+                                "ci_aspect_ratio_idc {} must be <= 16 when not equal to 255",
+                                aspect_ratio.aspect_ratio_idc
+                            ),
+                        )
+                        .with_spec_section("6.14")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+                // AV2 § 5.2.1: OBU_CONTENT_INTERPRETATION is extensible, so a fully
+                // parsed CI OBU must have a valid obu_extension_flag / trailing_bits
+                // tail.
+                if let Err(error) = finish_obu_payload(&mut reader, obu.payload, true)
+                    && let Some(diagnostic) = syntax_error_diagnostic(&error)
+                {
+                    report.push(diagnostic);
+                }
+            }
+            Err(error) => report.push(
+                syntax_error_diagnostic(&error)
+                    .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.15")),
+            ),
         }
     }
 }

@@ -181,6 +181,18 @@ pub enum Error {
         message: String,
     },
 
+    /// An `rg(n)` descriptor violated AV2 § 4.11.10 (it must never return a value
+    /// less than 0, i.e. its unary prefix must terminate within 32 bits).
+    #[error("invalid rg(n) at byte {offset}.{bit_offset}: {message}")]
+    InvalidRg {
+        /// Offset of the start of the descriptor.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidRg::offset`].
+        bit_offset: BitOffset,
+        /// Human-readable reason.
+        message: String,
+    },
+
     /// An OBU header violated AV2 § 5.2.2.
     #[error("invalid OBU header at byte {offset}: {message}")]
     InvalidObuHeader {

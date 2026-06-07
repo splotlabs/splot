@@ -13,6 +13,7 @@ pub(crate) fn error_offset(error: &Error) -> Option<ByteOffset> {
         | Error::InvalidLeb128 { offset, .. }
         | Error::InvalidUvlc { offset, .. }
         | Error::InvalidNs { offset, .. }
+        | Error::InvalidRg { offset, .. }
         | Error::InvalidObuHeader { offset, .. }
         | Error::InvalidTrailingBits { offset, .. }
         | Error::InvalidByteAlignment { offset, .. }
@@ -28,6 +29,7 @@ pub(crate) fn error_bit_offset(error: &Error) -> Option<BitOffset> {
     match error {
         Error::InvalidUvlc { bit_offset, .. }
         | Error::InvalidNs { bit_offset, .. }
+        | Error::InvalidRg { bit_offset, .. }
         | Error::InvalidTrailingBits { bit_offset, .. }
         | Error::InvalidByteAlignment { bit_offset, .. }
         | Error::InvalidSequenceHeader { bit_offset, .. } => Some(*bit_offset),

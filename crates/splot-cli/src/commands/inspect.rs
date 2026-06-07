@@ -11,6 +11,9 @@ use clap::Args;
 use serde::Serialize;
 use splot_core::annexb::{ObuEnvelope, parse_annex_b_obus_partial};
 use splot_core::bitio::BitReader;
+use splot_core::headers::content_interpretation::{
+    ContentInterpretation, parse_content_interpretation,
+};
 use splot_core::headers::sequence::{SequenceHeader, parse_sequence_header};
 use splot_core::obu::{ObuHeader, PayloadStatus};
 use splot_core::types::ObuType;
@@ -40,6 +43,8 @@ struct InspectRecord {
     payload_status: InspectPayloadStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     sequence_header: Option<SequenceHeaderView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_interpretation: Option<ContentInterpretationView>,
     header: ObuHeader,
 }
 
@@ -52,7 +57,44 @@ impl InspectRecord {
             payload_len: obu.payload.len(),
             payload_status: InspectPayloadStatus::new(obu),
             sequence_header: sequence_header_view(obu),
+            content_interpretation: content_interpretation_view(obu),
             header: obu.header,
+        }
+    }
+}
+
+/// Re-parses a content-interpretation OBU so `--json` can expose its parsed flags
+/// and timing status.
+fn content_interpretation_view(obu: &ObuEnvelope<'_>) -> Option<ContentInterpretationView> {
+    if obu.header.obu_type != ObuType::ContentInterpretation {
+        return None;
+    }
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    parse_content_interpretation(&mut reader)
+        .ok()
+        .map(|ci| ContentInterpretationView::new(&ci))
+}
+
+/// A compact, machine-readable view of a parsed `content_interpretation_obu()`.
+#[derive(Serialize)]
+struct ContentInterpretationView {
+    scan_type_idc: u8,
+    color_description_present: bool,
+    chroma_sample_position_present: bool,
+    aspect_ratio_info_present: bool,
+    timing_info_present: bool,
+    reserved_2bit: u8,
+}
+
+impl ContentInterpretationView {
+    fn new(ci: &ContentInterpretation) -> Self {
+        Self {
+            scan_type_idc: ci.scan_type_idc.get(),
+            color_description_present: ci.color_description.is_some(),
+            chroma_sample_position_present: ci.chroma_sample_position.is_some(),
+            aspect_ratio_info_present: ci.aspect_ratio.is_some(),
+            timing_info_present: ci.timing_info.is_some(),
+            reserved_2bit: ci.reserved_2bit,
         }
     }
 }
