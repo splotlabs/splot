@@ -2547,6 +2547,28 @@ mod tests {
         annex_b_obu_with_header(&layer_obu_header(17, 0, 0, xlayer), &bits.into_bytes())
     }
 
+    /// A global MULTISTREAM_ATLAS OBU (xlayer 31) whose two segments share an
+    /// `ats_msi_input_stream_id`.
+    fn atlas_multistream_duplicate_stream_obu() -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(0, 3); // atlas_segment_id
+        bits.uvlc(3); // ats_atlas_segment_mode_idc = MULTISTREAM_ATLAS
+        bits.uvlc(0); // ats_msi_width
+        bits.uvlc(0); // ats_msi_height
+        bits.uvlc(1); // ats_msi_num_atlas_segments_minus_1 = 1 -> 2 segments
+        bits.bit(0); // ats_msi_background_info_present_flag
+        for _ in 0..2 {
+            bits.f(5, 5); // ats_msi_input_stream_id = 5 (duplicated)
+            bits.uvlc(0); // pos_x
+            bits.uvlc(0); // pos_y
+            bits.uvlc(0); // width
+            bits.uvlc(0); // height
+        }
+        bits.bit(0); // ats_signaled_atlas_segment_ids_flag
+        extensible_obu_tail(&mut bits);
+        annex_b_obu_with_header(&layer_obu_header(17, 0, 0, 31), &bits.into_bytes())
+    }
+
     /// A global LCR OBU whose `lcr_dependent_xlayers_flag` is set (no payload).
     fn global_lcr_obu_with_dependent_flag() -> Vec<u8> {
         let mut bits = Bits::default();
@@ -2845,6 +2867,20 @@ mod tests {
         // AV2 §6.9.6: ats_input_stream_id values of a basic atlas must be unique.
         let mut data = temporal_delimiter_obu();
         data.extend(atlas_basic_duplicate_stream_obu(3));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "atlas/duplicate-input-stream-id"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn atlas_multistream_duplicate_input_stream_id_is_flagged() {
+        // AV2 §6.9.4 gives ats_msi_input_stream_id the same (§6.9.6 unique) semantics.
+        let mut data = temporal_delimiter_obu();
+        data.extend(atlas_multistream_duplicate_stream_obu());
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             report

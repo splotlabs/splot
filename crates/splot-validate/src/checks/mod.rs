@@ -709,24 +709,32 @@ fn check_atlas_segment_semantics(
         );
     }
 
-    // AV2 § 6.9.6: all ats_input_stream_id values of a basic atlas must be unique.
-    if let AtlasModeInfo::Basic(basic) = &atlas.mode_info {
-        let mut seen = BTreeSet::new();
-        let has_duplicate = basic
+    // AV2 § 6.9.6: ats_input_stream_id values of a basic atlas must be unique; AV2
+    // § 6.9.4 gives ats_msi_input_stream_id the same semantics, so the multistream
+    // modes share the requirement.
+    let input_stream_ids: Vec<u8> = match &atlas.mode_info {
+        AtlasModeInfo::Basic(basic) => basic
             .segments
             .iter()
             .filter_map(|segment| segment.input_stream_id)
-            .any(|id| !seen.insert(id));
-        if has_duplicate {
-            report.push(
-                Diagnostic::error(
-                    "atlas/duplicate-input-stream-id",
-                    "ats_input_stream_id values of a basic atlas must be unique",
-                )
-                .with_spec_section("6.9.6")
-                .with_byte_offset(obu.offset),
-            );
-        }
+            .collect(),
+        AtlasModeInfo::Multistream(msi) | AtlasModeInfo::MultistreamAlpha(msi) => msi
+            .segments
+            .iter()
+            .map(|segment| segment.input_stream_id)
+            .collect(),
+        _ => Vec::new(),
+    };
+    let mut seen = BTreeSet::new();
+    if input_stream_ids.iter().any(|id| !seen.insert(*id)) {
+        report.push(
+            Diagnostic::error(
+                "atlas/duplicate-input-stream-id",
+                "ats_input_stream_id / ats_msi_input_stream_id values of an atlas must be unique",
+            )
+            .with_spec_section("6.9.6")
+            .with_byte_offset(obu.offset),
+        );
     }
 }
 
