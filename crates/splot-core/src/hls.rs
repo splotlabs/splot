@@ -11,10 +11,71 @@
 
 use crate::bitio::BitReader;
 use crate::error::Result;
-use crate::headers::sequence::MAX_SEQ_NUM;
+use crate::headers::sequence::{MAX_SEQ_NUM, SequenceHeaderId};
+use crate::span::ByteOffset;
+use crate::types::{EmbeddedLayerId, TemporalLayerId};
 
 /// `MAX_MFH_NUM` (AV2 v1.0.0 § 3): maximum number of multi-frame headers.
 pub const MAX_MFH_NUM: u32 = 16;
+
+/// A `cur_mfh_id` / `mfhId` multi-frame-header identifier (AV2 v1.0.0 § 5.7 / § 6.17).
+///
+/// The value `0` is the special "no multi-frame header" case: a frame header with
+/// `cur_mfh_id == 0` references a sequence header directly via
+/// `seq_header_id_in_frame_header`. Stored multi-frame headers use
+/// `mfhId = mfh_id_minus_1 + 1`, which conformance bounds to `1..MAX_MFH_NUM`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MfhId(u32);
+
+impl MfhId {
+    /// Wraps a raw `cur_mfh_id` / `mfhId` value as read from the bitstream. The value
+    /// may be out of range; callers gate on [`MfhId::in_range`].
+    #[must_use]
+    pub const fn from_raw(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// The `cur_mfh_id == 0` "reference a sequence header directly" value.
+    #[must_use]
+    pub const fn zero() -> Self {
+        Self(0)
+    }
+
+    /// Returns the raw value.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+
+    /// Returns `true` if this is the `cur_mfh_id == 0` direct-reference value.
+    #[must_use]
+    pub const fn is_zero(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Returns `true` if the value can name a valid multi-frame header
+    /// (`< MAX_MFH_NUM`; AV2 § 5.7).
+    #[must_use]
+    pub const fn in_range(self) -> bool {
+        self.0 < MAX_MFH_NUM
+    }
+}
+
+/// HLS availability record for a parsed multi-frame header OBU (AV2 v1.0.0 § 5.7 /
+/// § 7.3.8.7), consumed by the frame-header `cur_mfh_id` reference check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MultiFrameHeaderRecord {
+    /// `mfhId = mfh_id_minus_1 + 1` (in range, `< MAX_MFH_NUM`).
+    pub mfh_id: MfhId,
+    /// `mfh_seq_header_id`: the sequence header this multi-frame header references.
+    pub mfh_seq_header_id: SequenceHeaderId,
+    /// `MfhTLayerId[mfhId]`: the multi-frame header OBU's `obu_tlayer_id`.
+    pub mfh_tlayer_id: TemporalLayerId,
+    /// `MfhMLayerId[mfhId]`: the multi-frame header OBU's `obu_mlayer_id`.
+    pub mfh_mlayer_id: EmbeddedLayerId,
+    /// Source byte offset of the multi-frame header OBU that produced this record.
+    pub offset: ByteOffset,
+}
 
 /// Maximum number of sub-streams an MSDO can signal: `num_streams_minus_2` is
 /// `f(3)` (0..=7), so `num_streams_minus_2 + 2` is at most 9.
@@ -459,6 +520,16 @@ mod tests {
         let mfh = parse_multi_frame_header(&mut reader).unwrap();
         assert!(!mfh.seq_header_id_in_range());
         assert!(!mfh.mfh_id_in_range());
+    }
+
+    #[test]
+    fn mfh_id_models_zero_and_range() {
+        assert!(MfhId::zero().is_zero());
+        assert!(MfhId::zero().in_range());
+        assert_eq!(MfhId::from_raw(3).get(), 3);
+        assert!(!MfhId::from_raw(3).is_zero());
+        assert!(MfhId::from_raw(MAX_MFH_NUM - 1).in_range());
+        assert!(!MfhId::from_raw(MAX_MFH_NUM).in_range());
     }
 }
 

@@ -15,6 +15,7 @@ to pass the full §5.4 `sequence_header_obu()` parser.
 | `bad-global-xlayer.av2` | `02 88 05` | TemporalDelimiter with an extension byte and `obu_xlayer_id = 5`; AV2 §6.2.2 requires `GLOBAL_XLAYER_ID` (31) | error, exit `1` |
 | `truncated.av2` | `05 08` | Declares a 5-byte OBU but only the 1 header byte is present | parse error, exit `1` |
 | `prefix-then-truncated.av2` | `01 08 05 08` | A valid TemporalDelimiter followed by a truncated OBU; `inspect` prints the valid prefix, then reports the tail error | parse error, exit `1` |
+| `frame-header-prefix.av2` | `01 08 0b 04 82 0c cf dc 00 01 00 04 00 02 02 10 e0` | `conformant.av2` plus an `OBU_CLOSED_LOOP_KEY` (len 2, hdr `10`, payload `e0`) whose first tile group carries a frame header with `cur_mfh_id = 0` and `seq_header_id_in_frame_header = 0`; `inspect --json` reports a `frame_header_prefix` activation summary | conformant, exit `0` |
 
 Header byte decoding (AV2 §5.2.2, MSB-first `f(1) f(5) f(2)`):
 
@@ -22,6 +23,9 @@ Header byte decoding (AV2 §5.2.2, MSB-first `f(1) f(5) f(2)`):
   extension, the validator infers `xlayer = 31` for a TemporalDelimiter.
 - `0x04` = `0_00001_00`: ext=0, `obu_type`=1 (SequenceHeader), `tlayer`=0.
 - `0x88 0x05` = ext=1, `obu_type`=2, `tlayer`=0, then `mlayer`=0, `xlayer`=5.
+- `0x10` = `0_00100_00`: ext=0, `obu_type`=4 (ClosedLoopKey), `tlayer`=0. Its payload
+  byte `e0` = `111_00000` is the tile-group prefix `is_first_tile_group = 1`,
+  `cur_mfh_id = uvlc(0) = 1`, `seq_header_id_in_frame_header = uvlc(0) = 1`.
 
 Regenerate with `printf`, e.g.:
 
@@ -30,6 +34,7 @@ printf '\x01\x08\x0b\x04\x82\x0c\xcf\xdc\x00\x01\x00\x04\x00\x02' > conformant.a
 printf '\x01\x08\x0b\x04\x82\x0c\xcf\xdc\x00\x01\x00\x04\x00\x10' > seq-header-tile-unimplemented.av2
 printf '\x02\x88\x05'                                             > bad-global-xlayer.av2
 printf '\x05\x08'                                                 > truncated.av2
+printf '\x01\x08\x0b\x04\x82\x0c\xcf\xdc\x00\x01\x00\x04\x00\x02\x02\x10\xe0' > frame-header-prefix.av2
 ```
 
 The two sequence-header fixtures share the general §5.4.1 prefix `82 0c cf dc …`

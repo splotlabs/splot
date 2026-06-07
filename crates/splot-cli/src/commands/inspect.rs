@@ -14,7 +14,9 @@ use splot_core::bitio::BitReader;
 use splot_core::headers::content_interpretation::{
     ContentInterpretation, parse_content_interpretation,
 };
+use splot_core::headers::frame::{FrameHeaderPrefix, parse_frame_header_prefix};
 use splot_core::headers::sequence::{SequenceHeader, parse_sequence_header};
+use splot_core::headers::tile_group::parse_tile_group_prefix;
 use splot_core::obu::{ObuHeader, PayloadStatus};
 use splot_core::types::ObuType;
 
@@ -45,6 +47,8 @@ struct InspectRecord {
     sequence_header: Option<SequenceHeaderView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     content_interpretation: Option<ContentInterpretationView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_header_prefix: Option<FrameHeaderPrefixView>,
     header: ObuHeader,
 }
 
@@ -58,7 +62,59 @@ impl InspectRecord {
             payload_status: InspectPayloadStatus::new(obu),
             sequence_header: sequence_header_view(obu),
             content_interpretation: content_interpretation_view(obu),
+            frame_header_prefix: frame_header_prefix_view(obu),
             header: obu.header,
+        }
+    }
+}
+
+/// Re-parses a frame-bearing OBU's prefix so `--json` can expose the
+/// activation/reference fields. This is **prefix-only** data, never a complete frame
+/// header. The inspector does not model temporal-unit state, so `FirstPictureInTU` is
+/// passed as `false` and `startCVS` is not surfaced.
+fn frame_header_prefix_view(obu: &ObuEnvelope<'_>) -> Option<FrameHeaderPrefixView> {
+    let obu_type = obu.header.obu_type;
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    let prefix = if obu_type.is_tile_group() {
+        parse_tile_group_prefix(&mut reader, obu_type, false)
+            .ok()
+            .and_then(|tile_group| tile_group.frame_header)?
+    } else if obu_type.is_sef() || obu_type.is_tip_frame() || obu_type == ObuType::BridgeFrame {
+        parse_frame_header_prefix(&mut reader, obu_type, false).ok()?
+    } else {
+        return None;
+    };
+    Some(FrameHeaderPrefixView::new(&prefix))
+}
+
+/// A prefix-only view of a parsed `frame_header_info()` for `--json`. The
+/// `payload_kind` / `prefix_status` labels make explicit that this is not a complete
+/// frame header (AV2 § 5.18 is only prefix-parsed).
+#[derive(Serialize)]
+struct FrameHeaderPrefixView {
+    payload_kind: &'static str,
+    prefix_status: &'static str,
+    cur_mfh_id: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seq_header_id_in_frame_header: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    referenced_sequence_header_id: Option<u8>,
+    is_key_frame: bool,
+    is_bridge: bool,
+    is_regular: bool,
+}
+
+impl FrameHeaderPrefixView {
+    fn new(prefix: &FrameHeaderPrefix) -> Self {
+        Self {
+            payload_kind: "frame_header_prefix",
+            prefix_status: prefix.status.label(),
+            cur_mfh_id: prefix.cur_mfh_id.get(),
+            seq_header_id_in_frame_header: prefix.seq_header_id_in_frame_header,
+            referenced_sequence_header_id: prefix.referenced_sequence_header_id.map(|id| id.get()),
+            is_key_frame: prefix.is_key_frame,
+            is_bridge: prefix.is_bridge,
+            is_regular: prefix.is_regular,
         }
     }
 }

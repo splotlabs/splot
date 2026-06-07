@@ -8,13 +8,20 @@
 //! TODO that names the implementation-matrix feature id instead (see AGENTS.md).
 
 pub mod content_interpretation;
+pub mod frame;
 pub mod sequence;
+pub mod tile_group;
 
 pub use content_interpretation::{ContentInterpretation, parse_content_interpretation};
+pub use frame::{FrameHeaderPrefix, FrameHeaderPrefixStatus, parse_frame_header_prefix};
 pub use sequence::{SequenceHeader, SequenceHeaderGeneral};
+pub use tile_group::{TileGroupHeaderPrefix, parse_tile_group_prefix};
 
-/// AV2 frame header (`frame_header()`). Not yet modeled.
-// TODO(spec: AV2-5.18-FRAME-HEADER): model frame header syntax (AV2 v1.0.0 § 5.18).
+/// Full AV2 frame header (`frame_header()`). Only a prefix parser exists today; the
+/// complete § 5.18 syntax (frame size, segmentation, filtering, quantization,
+/// prediction/reference, film grain, and `frame_header_copy()`) is not yet modeled.
+/// For the activation/reference fields, see [`FrameHeaderPrefix`].
+// TODO(spec: AV2-5.18-FRAME-HEADER): model the full frame header syntax (AV2 v1.0.0 § 5.18).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct FrameHeader {}
