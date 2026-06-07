@@ -178,6 +178,8 @@ impl<'a> BitReader<'a> {
     /// [`Error::UnexpectedEof`] if fewer than `n` bits remain.
     pub fn read_su(&mut self, n: u32) -> Result<i32> {
         if n == 0 || n > 32 {
+            // su(n) requires n in 1..=32: n == 0 has no sign bit, and n > 32 exceeds
+            // the 32-bit fixed-width read path. Both are reported as BitWidthTooLarge.
             return Err(Error::BitWidthTooLarge {
                 requested: n,
                 max: 32,
@@ -666,6 +668,23 @@ mod tests {
         // su(10): 0b01_1111_1111 = 511 (top bit clear -> max positive).
         let mut max10 = BitReader::new(&[0b0111_1111, 0b1100_0000], ByteOffset::new(0));
         assert_eq!(max10.read_su(10).unwrap(), 511);
+    }
+
+    #[test]
+    fn read_su_handles_full_width_boundary() {
+        // su(32) is the boundary where the i64 intermediate is load-bearing: without
+        // it, `read_bits(32) as i32` would skip the sign adjustment for the top bit.
+        // 0x8000_0000 -> 2147483648, sign set -> 2147483648 - 4294967296 = i32::MIN.
+        let mut min32 = BitReader::new(&[0x80, 0x00, 0x00, 0x00], ByteOffset::new(0));
+        assert_eq!(min32.read_su(32).unwrap(), i32::MIN);
+
+        // 0x7FFF_FFFF -> sign clear -> i32::MAX.
+        let mut max32 = BitReader::new(&[0x7F, 0xFF, 0xFF, 0xFF], ByteOffset::new(0));
+        assert_eq!(max32.read_su(32).unwrap(), i32::MAX);
+
+        // 0xFFFF_FFFF -> all bits set -> -1.
+        let mut neg_one = BitReader::new(&[0xFF, 0xFF, 0xFF, 0xFF], ByteOffset::new(0));
+        assert_eq!(neg_one.read_su(32).unwrap(), -1);
     }
 
     #[test]

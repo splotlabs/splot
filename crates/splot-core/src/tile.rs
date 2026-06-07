@@ -133,11 +133,15 @@ pub struct TileSpacing {
 /// `uniform_spacing(tileLog2, mis, sbSize)` (AV2 v1.0.0 § 5.18.7.5): distributes `mis`
 /// mode-info units across `1 << tileLog2` roughly-equal tiles and returns their
 /// superblock start positions and count.
+///
+/// AV2 syntax always passes a `mis` bounded by the sequence-header frame-dimension
+/// limit (≤ ~131072 for the widest legal frame), but the rounding-up arithmetic uses
+/// `saturating_add` so the function stays panic-free for an arbitrary `u32`.
 #[must_use]
 pub fn uniform_spacing(tile_log2: u8, mis: u32, sb_size: SuperblockSize) -> TileSpacing {
     let sb4x4 = num_4x4_blocks_wide(sb_size);
     let sb_shift = mi_width_log2(sb_size);
-    let sbs = (mis + sb4x4 - 1) >> sb_shift;
+    let sbs = mis.saturating_add(sb4x4 - 1) >> sb_shift;
     let full_sbs = mis >> sb_shift;
     let tile_log2 = u32::from(tile_log2).min(31);
     let tile_sb = full_sbs >> tile_log2;
@@ -225,10 +229,12 @@ pub struct TileParams {
 pub fn parse_tile_params(reader: &mut BitReader<'_>, input: TileParamsInput) -> Result<TileParams> {
     let sb4x4 = num_4x4_blocks_wide(input.sb_size);
     let sb_shift = mi_width_log2(input.sb_size);
-    let mi_cols = 2 * ((input.frame_width + 7) >> 3);
-    let mi_rows = 2 * ((input.frame_height + 7) >> 3);
-    let sb_cols = (mi_cols + sb4x4 - 1) >> sb_shift;
-    let sb_rows = (mi_rows + sb4x4 - 1) >> sb_shift;
+    // AV2 frame dimensions are bounded to ≤65 536 luma samples, but `saturating_add`
+    // keeps the grid arithmetic panic-free for an arbitrary `u32` via the public API.
+    let mi_cols = 2 * (input.frame_width.saturating_add(7) >> 3);
+    let mi_rows = 2 * (input.frame_height.saturating_add(7) >> 3);
+    let sb_cols = mi_cols.saturating_add(sb4x4 - 1) >> sb_shift;
+    let sb_rows = mi_rows.saturating_add(sb4x4 - 1) >> sb_shift;
 
     let level_idx = input.seq_level_idx.get();
     let (max_tile_width_sb, mut max_tile_area_sb) = if level_idx != NO_LEVEL_IDX {
@@ -247,7 +253,7 @@ pub fn parse_tile_params(reader: &mut BitReader<'_>, input: TileParamsInput) -> 
         let max_tile_area_sb = (area_sf * MAX_TILE_AREA) >> (2 * (sb_shift + 2) + 2);
         (max_tile_width_sb, max_tile_area_sb)
     } else {
-        (sb_cols, sb_cols * sb_rows)
+        (sb_cols, sb_cols.saturating_mul(sb_rows))
     };
 
     let min_log2_tile_cols = tile_log2(max_tile_width_sb, sb_cols);
@@ -524,6 +530,29 @@ mod tests {
             Err(Error::UnexpectedEof { .. })
         ));
     }
+
+    #[test]
+    fn extreme_frame_dimensions_do_not_panic() {
+        // u32::MAX frame dimensions are far outside the AV2-legal domain, but the
+        // saturating grid arithmetic must stay panic-free. With an empty reader the
+        // parser computes the grid, then hits EOF on the uniform-flag read.
+        let mut tp = input(16, 8);
+        tp.frame_width = u32::MAX;
+        tp.frame_height = u32::MAX;
+        let mut reader = BitReader::new(&[], ByteOffset::new(0));
+        assert!(matches!(
+            parse_tile_params(&mut reader, tp),
+            Err(Error::UnexpectedEof { .. })
+        ));
+
+        // Level 31 (unconstrained) exercises the `sb_cols * sb_rows` saturating path.
+        tp.seq_level_idx = LevelIdx::from_bits(31);
+        let mut reader = BitReader::new(&[], ByteOffset::new(0));
+        assert!(matches!(
+            parse_tile_params(&mut reader, tp),
+            Err(Error::UnexpectedEof { .. })
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -541,7 +570,9 @@ mod proptests {
     }
 
     proptest! {
-        /// `tile_params()` must never panic on arbitrary input or parameters.
+        /// `tile_params()` must never panic on arbitrary input or parameters across
+        /// the AV2-legal frame-size domain. The grid arithmetic at the `u32` extreme
+        /// is covered deterministically by `extreme_frame_dimensions_do_not_panic`.
         #[test]
         fn parse_tile_params_never_panics(
             data in proptest::collection::vec(any::<u8>(), 0..64),
@@ -562,6 +593,26 @@ mod proptests {
                 seq_tier: if tier_high { Tier::High } else { Tier::Main },
                 seq_level_idx: LevelIdx::from_bits(level),
             });
+        }
+
+        /// `tile_log2()` and `uniform_eligible()` must never panic for any input; both
+        /// internally cap their shift amounts. `uniform_spacing()` must not panic for
+        /// `mis` across the full `u32` range (its rounding-up arithmetic saturates).
+        /// `tile_log2` for `uniform_spacing` is bounded here only to keep the produced
+        /// start vector small — a large `tile_log2` is a misuse outside the AV2 domain.
+        #[test]
+        fn tile_helpers_never_panic(
+            blk in any::<u32>(),
+            target in any::<u32>(),
+            tile_log2_any in any::<u8>(),
+            sb_num in any::<u32>(),
+            tile_log2_small in 0u8..=8,
+            mis in any::<u32>(),
+            sb in any::<u8>(),
+        ) {
+            let _ = tile_log2(blk, target);
+            let _ = uniform_eligible(tile_log2_any, sb_num);
+            let _ = uniform_spacing(tile_log2_small, mis, sb_size(sb));
         }
     }
 }

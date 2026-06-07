@@ -269,8 +269,10 @@ impl Check for SequenceHeaderSyntax {
 /// The tile-count limits (§6.17.7.2) are reachable for a non-uniform config that codes
 /// more than `MAX_TILE_COLS` / `MAX_TILE_ROWS` tiles. The frame-coverage checks
 /// (§6.17.7.3) are a defensive, never-false-positive cross-check: the `ns()`-bounded
-/// non-uniform parse makes coverage exact for any decodable stream, so they are
-/// reported only if a parsed config ever fails to cover the frame.
+/// non-uniform parse caps each tile to the remaining superblocks, so `start_sb` always
+/// lands exactly on `sb_cols` / `sb_rows`. They are therefore **unreachable for any
+/// stream that parses without error** — a parse error would surface first — and exist
+/// only to guard the invariant if `TileParams` is ever produced another way.
 pub(crate) fn check_tile_params(
     params: &TileParams,
     obu: &ObuEnvelope<'_>,

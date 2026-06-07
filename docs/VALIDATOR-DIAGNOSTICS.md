@@ -429,9 +429,11 @@ tile-params/nonuniform-rows-do-not-cover-frame  # §6.17.7.3: row starts != sbRo
 
 The tile-count diagnostics are reachable for a non-uniform config that codes more than
 `MAX_TILE_COLS` / `MAX_TILE_ROWS` tiles. The frame-coverage diagnostics are a defensive
-cross-check: the `ns()`-bounded non-uniform parse makes coverage exact for any
-decodable stream, so they never false-positive a conformant stream (unit-tested via a
-synthetic `TileParams`).
+cross-check: the `ns()`-bounded non-uniform parse caps each tile to the remaining
+superblocks, so coverage is exact for any decodable stream. They are therefore
+**unreachable for a stream that parses without error** (a parse error surfaces first)
+and are unit-tested via a synthetic `TileParams` rather than a bitstream — they only
+guard the invariant should a `TileParams` be produced another way.
 
 Wiring note: with `seg_info()` (`AV2-5.4.9-SEGMENT-INFO`) and `tile_params()` now
 parsed in full, a valid sequence header and a multi-frame header parse completely, so
