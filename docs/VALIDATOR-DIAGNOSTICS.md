@@ -465,7 +465,7 @@ atlas/segment-mode-out-of-range           # §6.9: ats_atlas_segment_mode_idc > 
 atlas/region-dimension-out-of-range       # §6.9.3.1: region columns/rows >= MAX_ATLAS_COLS/ROWS
 atlas/segment-count-out-of-range          # §6.9.6: segment count >= MAX_NUM_ATLAS_SEGMENTS
 atlas/multistream-requires-global-xlayer  # §6.9: MULTISTREAM(_ALPHA) requires GLOBAL_XLAYER_ID
-atlas/duplicate-input-stream-id           # §6.9.6: basic-atlas ats_input_stream_id must be unique
+atlas/duplicate-input-stream-id           # §6.9.4/§6.9.6: ats_input_stream_id / ats_msi_input_stream_id must be unique
 atlas/local-atlas-unavailable             # §7.3.8.4: local LCR lcr_local_atlas_id has no local atlas
 hls/unavailable-layer-configuration-record  # §7.3.8.3/§7.3.8.6: seq_lcr_id resolves to no LCR
 ```
