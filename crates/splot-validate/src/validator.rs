@@ -465,6 +465,23 @@ mod tests {
     }
 
     #[test]
+    fn global_hls_in_prefix_phase_is_accepted() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(16, 0, 0, 31),
+            &[],
+        ));
+        data.extend(sequence_header_obu_for_xlayer(0, 1, 1));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(6, 0, 0, 0), &[]));
+
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report.errors().any(|d| d.rule_id.starts_with("obu-order/")),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
     fn temporal_unit_missing_delimiter_is_reported() {
         let data = annex_b_obu_with_header(&layer_obu_header(6, 0, 0, 0), &[]);
         let report = Validator::new(false).validate_bytes(&data);

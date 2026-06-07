@@ -280,6 +280,9 @@ fn is_padding_obu(obu: &ObuEnvelope<'_>) -> bool {
 }
 
 fn is_global_hls_prefix_obu(obu: &ObuEnvelope<'_>) -> bool {
+    // TODO(spec: AV2-7.3-OBU-ORDERING): BufferRemovalTiming also permits
+    // GLOBAL_XLAYER_ID per § 6.2.2; model its ordering position once
+    // decoder-model state exists.
     obu.header.extended_layer_id.is_global()
         && matches!(
             obu.header.obu_type,
