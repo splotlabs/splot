@@ -141,6 +141,63 @@ cargo run -p splot-cli -- inspect <ci>.av2 --json                              #
 Test breakdown after PR A: `splot-core` 123, `splot-encode` 2, `splot-validate`
 65, `splot-cli` 9, `xtask` 17 (216 total).
 
+## HLS availability store — PR B (2026-06-07)
+
+OpenSpec change `sequence-timing-hls-availability`, slice B. Adds caller-configurable
+external HLS and an in-band availability store, and validates the multi-frame
+header's sequence-header reference. Still validator-first: no frame header, tile
+group, entropy coder, decoder, or encoder.
+
+**Validation options (`splot-validate`, new `options` module):**
+
+- `ValidationOptions { external_hls: ExternalHlsMode }`, `ExternalHlsMode { Disabled,
+  Provided(ExternalHlsSet) }` (default `Disabled`), and `ExternalHlsSet` with declared
+  external sequence-header ids. Public API is unchanged:
+  `Validator::validate_bytes` delegates to the new
+  `validate_bytes_with_options(data, &ValidationOptions::default())`.
+
+**Availability store and reference check (`context.rs`):**
+
+- `HlsAvailabilityStore` records every in-band sequence header's `seq_header_id`
+  (any parseable sequence header, activating or not; §7.3.8.6).
+- The multi-frame header's `mfh_seq_header_id` reference is resolved against the
+  in-band store, then caller-provided external HLS. An unresolved reference emits
+  `mfh/sequence-header-unavailable` (error, §7.3.8.6/§7.3.8.7); under the default
+  (external disabled) it also emits the advisory `hls/external-hls-disabled`
+  (warning, §7.3.8.1).
+
+**Bounded honestly (blocked on `AV2-5.18-FRAME-HEADER` / CLK activation):**
+
+- In-band availability is kept **monotonic** (never cleared), so the §7.3.8.1
+  "HLS OBUs must be resent at each random access point" requirement is not enforced
+  (a sound-over-complete false negative, never a false positive).
+- MSDO / MFH-record / LCR / atlas / OPS availability *records* are deferred: their
+  consumers (frame-header `cur_mfh_id`, the RAP-identical MSDO rule, `seq_lcr_id`
+  resolution) need frame-header parsing or RAP detection, so storing them now would
+  be unconsumed state.
+- `hls/unavailable-sequence-header` is reserved for the generic frame-header
+  `seq_header_id_in_frame_header` reference path; it is not emitted yet.
+- The per-xlayer CVS resets for fingerprints and CI records remain approximated on
+  the `OBU_CLOSED_LOOP_KEY` (`AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT`).
+
+**PR B acceptance results** (run from the repo root):
+
+```text
+cargo fmt --all -- --check                                                      # ok (no diff)
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # ok, 0 warnings
+cargo test --workspace --all-targets --locked                                   # ok: 223 passed, 0 failed
+cargo test -p splot-validate mfh_                                               # ok
+cargo test -p splot-validate options                                            # ok
+cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md    # ok (114 features)
+cargo xtask check-feature-status                                                # ok (114 features)
+cargo xtask spec-coverage                                                       # ok
+cargo xtask ci                                                                  # ok: all checks passed
+openspec validate sequence-timing-hls-availability --strict                     # ok: change is valid
+```
+
+Test breakdown after PR B: `splot-core` 123, `splot-encode` 2, `splot-validate`
+72, `splot-cli` 9, `xtask` 17 (223 total).
+
 ## Implemented
 
 - **`splot-core`**

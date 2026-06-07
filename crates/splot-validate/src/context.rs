@@ -3,8 +3,8 @@
 
 //! Stateful validator context for checks that depend on earlier OBUs.
 
-use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
@@ -14,10 +14,12 @@ use splot_core::headers::content_interpretation::{
 use splot_core::headers::sequence::{
     SequenceHeaderGeneral, SequenceHeaderId, TimingInfo, parse_sequence_header_general,
 };
+use splot_core::hls::parse_multi_frame_header;
 use splot_core::span::{BitOffset, ByteOffset};
 use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, ObuType};
 
 use crate::diagnostic::{Diagnostic, ValidationReport};
+use crate::options::{ExternalHlsMode, ValidationOptions};
 
 /// Stateful validator data derived from parseable high-level syntax OBUs.
 #[derive(Debug, Default)]
@@ -32,7 +34,60 @@ pub(crate) struct ValidatorContext {
     /// within the modeled coded-video-sequence scope, used for cross-embedded-layer
     /// timing consistency (AV2 § 6.4.12) and repeated-CI identity (AV2 § 6.14).
     content_interpretations: BTreeMap<ContentInterpretationKey, ContentInterpretationRecord>,
+    /// Availability of in-band HLS objects, for reference checks (AV2 § 7.3.8).
+    hls: HlsAvailabilityStore,
     temporal_unit: TemporalUnitState,
+}
+
+/// Availability of in-band HLS objects, for the § 7.3.8 reference checks.
+///
+/// Only sequence-header availability is modeled today (the one in-band reference
+/// path implemented — the multi-frame header's `mfh_seq_header_id`). MSDO / MFH /
+/// LCR / atlas / OPS availability records are deferred: their consumers
+/// (frame-header `cur_mfh_id`, the random-access-point "identical MSDO" rule,
+/// `seq_lcr_id` resolution, …) require frame-header parsing or RAP detection that is
+/// out of scope, so storing them now would be unconsumed state.
+///
+/// The set is kept **monotonic** (never cleared): an object included earlier in the
+/// bitstream stays available, so the validator never falsely reports it unavailable.
+/// AV2 § 7.3.8.1's "HLS OBUs must be resent at each random access point" requirement
+/// needs CLK frame-header activation to model and is intentionally not enforced (a
+/// sound-over-complete false negative).
+#[derive(Debug, Default)]
+struct HlsAvailabilityStore {
+    /// `seq_header_id` values of sequence headers seen in-band so far (§ 7.3.8.6).
+    sequence_header_ids: BTreeSet<u32>,
+}
+
+/// How a referenced HLS object resolves against available objects (AV2 § 7.3.8).
+enum HlsResolution {
+    /// Available in the bitstream.
+    InBand,
+    /// Available only through caller-provided external HLS.
+    External,
+    /// Not available by any modeled means.
+    Unavailable,
+}
+
+impl HlsAvailabilityStore {
+    /// Records a sequence header as available in-band (AV2 § 7.3.8.6).
+    fn record_sequence_header(&mut self, id: SequenceHeaderId) {
+        self.sequence_header_ids.insert(u32::from(id.get()));
+    }
+
+    /// Resolves a `seq_header_id` reference against in-band then caller-provided
+    /// external availability (AV2 § 7.3.8.6).
+    fn resolve_sequence_header(&self, id: u32, options: &ValidationOptions) -> HlsResolution {
+        if self.sequence_header_ids.contains(&id) {
+            return HlsResolution::InBand;
+        }
+        if let ExternalHlsMode::Provided(set) = &options.external_hls
+            && set.has_sequence_header(id)
+        {
+            return HlsResolution::External;
+        }
+        HlsResolution::Unavailable
+    }
 }
 
 /// Key identifying a content-interpretation record: `(obu_xlayer_id, obu_mlayer_id)`.
@@ -50,7 +105,12 @@ struct ContentInterpretationRecord {
 
 impl ValidatorContext {
     /// Observes one parsed OBU, updating context and emitting stateful diagnostics.
-    pub(crate) fn observe_obu(&mut self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+    pub(crate) fn observe_obu(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
         self.temporal_unit.observe_obu(obu, report);
 
         if obu.header.obu_type == ObuType::SequenceHeader {
@@ -59,8 +119,10 @@ impl ValidatorContext {
             self.validate_active_sequence_limits(obu, report);
         }
 
-        if obu.header.obu_type == ObuType::ContentInterpretation {
-            self.observe_content_interpretation(obu, report);
+        match obu.header.obu_type {
+            ObuType::ContentInterpretation => self.observe_content_interpretation(obu, report),
+            ObuType::MultiFrameHeader => self.observe_multi_frame_header(obu, options, report),
+            _ => {}
         }
 
         self.maybe_reset_coded_video_sequence(obu);
@@ -187,15 +249,83 @@ impl ValidatorContext {
         }
     }
 
-    fn observe_sequence_header(&mut self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
-        if !sequence_header_can_activate(obu) {
+    /// Observes a multi-frame header OBU and checks that the sequence header it
+    /// references via `mfh_seq_header_id` is available in-band or through
+    /// caller-provided external HLS (AV2 § 7.3.8.6 / § 7.3.8.7).
+    fn observe_multi_frame_header(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        // Parse failures and the mfh_seq_header_id range check are handled by the
+        // stateless MultiFrameHeaderSyntax check; here we only resolve the reference.
+        let Ok(mfh) = parse_multi_frame_header(&mut reader) else {
+            return;
+        };
+        // An out-of-range id (>= MAX_SEQ_NUM) cannot name a valid sequence header and
+        // is already flagged as mfh/seq-header-id-out-of-range; do not double-report.
+        if !mfh.seq_header_id_in_range() {
             return;
         }
 
+        let id = mfh.mfh_seq_header_id;
+        match self.hls.resolve_sequence_header(id, options) {
+            HlsResolution::InBand | HlsResolution::External => {}
+            HlsResolution::Unavailable => {
+                let external_note = if matches!(options.external_hls, ExternalHlsMode::Disabled) {
+                    " (external HLS is disabled)"
+                } else {
+                    " in-band or through the supplied external HLS"
+                };
+                report.push(
+                    Diagnostic::error(
+                        "mfh/sequence-header-unavailable",
+                        format!(
+                            "multi-frame header references mfh_seq_header_id {id}, but no sequence \
+                             header with that id is available{external_note}"
+                        ),
+                    )
+                    .with_spec_section("7.3.8.6")
+                    .with_byte_offset(obu.offset),
+                );
+                if matches!(options.external_hls, ExternalHlsMode::Disabled) {
+                    // Advisory: the finding assumes no external HLS. If the referenced
+                    // sequence header is supplied out-of-band, the caller can declare
+                    // it via ValidationOptions to refine the check (AV2 § 7.3.8.1).
+                    report.push(
+                        Diagnostic::warning(
+                            "hls/external-hls-disabled",
+                            format!(
+                                "sequence header {id} is not available in-band and external HLS is \
+                                 disabled; supply it via ValidationOptions if it is provided through \
+                                 external means"
+                            ),
+                        )
+                        .with_spec_section("7.3.8.1")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+            }
+        }
+    }
+
+    fn observe_sequence_header(&mut self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
         let Ok(sequence_header) = parse_sequence_header_general(&mut reader) else {
             return;
         };
+
+        // Record in-band availability for ANY parseable sequence header (AV2
+        // § 7.3.8.6), regardless of whether it can activate: "inclusion in the
+        // bitstream" makes its seq_header_id available to later references.
+        self.hls
+            .record_sequence_header(sequence_header.seq_header_id);
+
+        if !sequence_header_can_activate(obu) {
+            return;
+        }
 
         let seq_header_id = sequence_header.seq_header_id;
         let xlayer = obu.header.extended_layer_id;
