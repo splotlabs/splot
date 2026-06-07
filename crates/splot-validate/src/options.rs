@@ -11,6 +11,8 @@
 
 use std::collections::BTreeSet;
 
+use splot_core::headers::sequence::MAX_SEQ_NUM;
+
 /// Caller-declared external HLS objects (AV2 § 7.3.8): objects provided "through
 /// external means" rather than in-band in the bitstream.
 ///
@@ -31,9 +33,15 @@ impl ExternalHlsSet {
 
     /// Declares that a sequence header with `seq_header_id` is available externally
     /// (AV2 § 7.3.8.6).
+    ///
+    /// An out-of-range id (`>= MAX_SEQ_NUM`) cannot be a valid `seq_header_id`
+    /// (AV2 § 6.4.1), so it is ignored — declaring one must not make the set act as
+    /// though a valid external sequence header were available.
     #[must_use]
     pub fn with_sequence_header_id(mut self, seq_header_id: u32) -> Self {
-        self.sequence_header_ids.insert(seq_header_id);
+        if seq_header_id < MAX_SEQ_NUM {
+            self.sequence_header_ids.insert(seq_header_id);
+        }
         self
     }
 
@@ -94,5 +102,14 @@ mod tests {
         assert!(set.has_sequence_header(3));
         assert!(set.has_sequence_header(7));
         assert!(!set.has_sequence_header(5));
+    }
+
+    #[test]
+    fn external_hls_set_ignores_out_of_range_ids() {
+        // MAX_SEQ_NUM (16) and above cannot be a valid seq_header_id, so declaring
+        // one is ignored and does not make the set non-empty.
+        let set = ExternalHlsSet::new().with_sequence_header_id(MAX_SEQ_NUM);
+        assert!(!set.has_sequence_header(MAX_SEQ_NUM));
+        assert!(!set.declares_any_sequence_header());
     }
 }

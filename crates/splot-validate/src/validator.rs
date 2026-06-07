@@ -1609,19 +1609,43 @@ mod tests {
     }
 
     #[test]
-    fn mfh_reference_to_non_activating_in_band_sequence_header_is_available() {
-        // A sequence header that cannot activate (tlayer != 0, 0x05) is still
-        // "included in the bitstream", so its seq_header_id is available (§7.3.8.6).
+    fn mfh_reference_to_malformed_layer_sequence_header_is_unavailable() {
+        // A sequence header with a §6.2.2 layer violation (tlayer != 0, 0x05) is
+        // malformed and is NOT a valid available HLS object, so an MFH referencing
+        // only that copy of id 4 is unavailable (§7.3.8.6).
         let mut data = temporal_delimiter_obu();
         data.extend(annex_b_obu(0x05, &sequence_header_payload_with_id(4, 1, 1)));
-        // An activating base-layer header so the MFH has an active sequence for its xlayer.
+        // An activating base-layer header (id 0) so the MFH has an active sequence for
+        // its xlayer; it does not make id 4 available.
         data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
         data.extend(multi_frame_header_obu(4));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
-            !report
+            report
                 .errors()
                 .any(|d| d.rule_id == "mfh/sequence-header-unavailable"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn external_hls_out_of_range_id_does_not_suppress_no_active_sequence_header() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // Declaring an out-of-range external id (16 >= MAX_SEQ_NUM) cannot make a
+        // valid sequence header available, so it must not suppress the missing-active
+        // error.
+        let mut data = temporal_delimiter_obu();
+        data.extend(multi_frame_header_obu(5));
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(16),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/no-active-sequence-header"),
             "report was: {report}"
         );
     }

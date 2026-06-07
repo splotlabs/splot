@@ -337,15 +337,20 @@ impl ValidatorContext {
         }
         let general = sequence_header.general;
 
-        // Record in-band availability for ANY well-formed sequence header (AV2
-        // § 7.3.8.6), regardless of whether it can activate: "inclusion in the
-        // bitstream" makes its seq_header_id available to later references.
-        self.hls
-            .record_sequence_header(u32::from(general.seq_header_id.get()));
-
+        // A conformant sequence header must be base-layer and non-global (AV2 §6.2.2);
+        // sequence_header_can_activate() captures exactly that layer-id validity. A
+        // header that violates it is malformed (flagged by the stateless §6.2.2
+        // checks) and is neither available (§7.3.8.6) nor activatable, so a later MFH
+        // cannot resolve against it.
         if !sequence_header_can_activate(obu) {
             return;
         }
+
+        // Record in-band availability (AV2 § 7.3.8.6): a well-formed sequence header
+        // included in the bitstream makes its seq_header_id available to later
+        // references.
+        self.hls
+            .record_sequence_header(u32::from(general.seq_header_id.get()));
 
         let seq_header_id = general.seq_header_id;
         let xlayer = obu.header.extended_layer_id;

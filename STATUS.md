@@ -158,10 +158,12 @@ group, entropy coder, decoder, or encoder.
 
 **Availability store and reference check (`context.rs`):**
 
-- `HlsAvailabilityStore` records a sequence header's `seq_header_id` only when its
-  full `sequence_header_obu()` parse succeeds (fully or bounded at an unimplemented
-  child) — a header that fails its child configs/payload is malformed and is not
-  recorded — activating or not (§7.3.8.6).
+- `HlsAvailabilityStore` records a sequence header's `seq_header_id` only when it is
+  a valid, available HLS object: its OBU header satisfies the §6.2.2 base-layer /
+  non-global layer constraints, its full `sequence_header_obu()` parse succeeds
+  (fully or bounded at an unimplemented child), and (for a fully-parsed header) its
+  §5.2.1 payload tail is valid. A header that fails any of these is malformed and is
+  not recorded, so a later MFH cannot resolve against it (§7.3.8.6).
 - The multi-frame header's `mfh_seq_header_id` reference is resolved against the
   in-band store, then caller-provided external HLS. An unresolved reference emits
   `mfh/sequence-header-unavailable` (error, §7.3.8.6/§7.3.8.7); under the default
@@ -192,7 +194,7 @@ group, entropy coder, decoder, or encoder.
 ```text
 cargo fmt --all -- --check                                                      # ok (no diff)
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # ok, 0 warnings
-cargo test --workspace --all-targets --locked                                   # ok: 228 passed, 0 failed
+cargo test --workspace --all-targets --locked                                   # ok: 230 passed, 0 failed
 cargo test -p splot-validate mfh_                                               # ok
 cargo test -p splot-validate options                                            # ok
 cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md    # ok (114 features)
@@ -203,7 +205,7 @@ openspec validate sequence-timing-hls-availability --strict                     
 ```
 
 Test breakdown after PR B: `splot-core` 123, `splot-encode` 2, `splot-validate`
-77, `splot-cli` 9, `xtask` 17 (228 total).
+79, `splot-cli` 9, `xtask` 17 (230 total).
 
 ## Implemented
 
