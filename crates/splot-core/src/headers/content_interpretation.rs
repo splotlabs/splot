@@ -133,6 +133,13 @@ pub fn parse_content_interpretation(reader: &mut BitReader<'_>) -> Result<Conten
     let reserved_2bit = reader.read_bits_u8(2)?;
 
     let color_description = if color_description_present_flag {
+        // AV2 § 6.14: ci_color_description_idc has the same interpretation as
+        // ops_color_description_idc, which "shall be in the range of 0 to 127,
+        // inclusive" (§ 6.14, Table 6.13). That bound is structurally enforced by
+        // rg(2): its maximum encodable value is (31 << 2) + 3 = 127, and a larger
+        // value cannot terminate the unary prefix, yielding Error::InvalidRg. Values
+        // 6..=127 are reserved and ignored by decoders, so they are not a validator
+        // error. No extra range check is therefore needed here.
         let color_description_idc = reader.read_rg(2)?;
         let primaries = if color_description_idc == 0 {
             Some(ColorPrimariesTriple {

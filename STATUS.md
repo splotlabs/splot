@@ -123,7 +123,7 @@ decoder, or encoder was implemented.
 ```text
 cargo fmt --all -- --check                                                      # ok (no diff)
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # ok, 0 warnings
-cargo test --workspace --all-targets --locked                                   # ok: 213 passed, 0 failed
+cargo test --workspace --all-targets --locked                                   # ok: 215 passed, 0 failed
 cargo test -p splot-core content_interpretation                                 # ok
 cargo test -p splot-core bitio                                                  # ok (rg descriptor)
 cargo test -p splot-validate ci_                                                # ok
@@ -135,8 +135,8 @@ openspec validate sequence-timing-hls-availability --strict                     
 cargo run -p splot-cli -- inspect <ci>.av2 --json                              # shows content_interpretation
 ```
 
-Test breakdown after PR A: `splot-core` 122, `splot-encode` 2, `splot-validate`
-63, `splot-cli` 9, `xtask` 17 (213 total).
+Test breakdown after PR A: `splot-core` 123, `splot-encode` 2, `splot-validate`
+64, `splot-cli` 9, `xtask` 17 (215 total).
 
 ## Implemented
 

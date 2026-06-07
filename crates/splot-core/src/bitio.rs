@@ -561,6 +561,17 @@ mod tests {
     }
 
     #[test]
+    fn read_rg_two_caps_at_127() {
+        // rg(2)'s largest encodable value is (31 << 2) + 3 = 127: 31 one bits, the
+        // terminating zero bit, then the 2-bit remainder 0b11. This is exactly the
+        // §6.14 / Table 6.13 upper bound for ci_color_description_idc, so the
+        // descriptor enforces the range structurally.
+        // Bits: thirty-one 1s, 0, 1, 1 -> 0xFF 0xFF 0xFF 0xFE 0xC0.
+        let mut reader = BitReader::new(&[0xFF, 0xFF, 0xFF, 0xFE, 0xC0], ByteOffset::new(0));
+        assert_eq!(reader.read_rg(2).unwrap(), 127);
+    }
+
+    #[test]
     fn read_rg_rejects_non_terminating_prefix_and_reports_eof() {
         // 32 one bits with no terminating zero -> InvalidRg, not a panic.
         let mut non_terminating = BitReader::new(&[0xFF, 0xFF, 0xFF, 0xFF], ByteOffset::new(0));

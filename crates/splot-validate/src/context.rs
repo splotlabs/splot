@@ -122,15 +122,21 @@ impl ValidatorContext {
         // against the first other embedded layer (same extended layer) that already
         // carries present timing within this CVS scope.
         if let Some(new_timing) = content_interpretation.timing_info
-            && let Some(existing_timing) = self
+            && let Some((existing_mlayer, existing_timing)) = self
                 .content_interpretations
                 .iter()
                 .find(|((x, m), record)| {
                     *x == xlayer && *m != mlayer && record.content.timing_info.is_some()
                 })
-                .and_then(|(_, record)| record.content.timing_info)
+                .and_then(|((_, m), record)| record.content.timing_info.map(|t| (*m, t)))
         {
-            compare_timing_across_embedded_layers(&existing_timing, &new_timing, obu, report);
+            compare_timing_across_embedded_layers(
+                existing_mlayer,
+                &existing_timing,
+                &new_timing,
+                obu,
+                report,
+            );
         }
 
         match self.content_interpretations.entry((xlayer, mlayer)) {
@@ -320,20 +326,29 @@ impl ValidatorContext {
 /// Compares two present `timing_info()` values from different embedded layers of
 /// the same coded video sequence and emits a diagnostic per differing field
 /// (AV2 § 6.4.12: these values, when present, shall be the same across all embedded
-/// layers). `new` is located at `obu`.
+/// layers). `new` is located at `obu` (embedded layer `obu.header.embedded_layer_id`);
+/// `existing` is the value previously seen for `existing_mlayer`. Both embedded-layer
+/// ids are named in each message so the finding is self-contained.
 fn compare_timing_across_embedded_layers(
+    existing_mlayer: EmbeddedLayerId,
     existing: &TimingInfo,
     new: &TimingInfo,
     obu: &ObuEnvelope<'_>,
     report: &mut ValidationReport,
 ) {
+    let new_mlayer = obu.header.embedded_layer_id.get();
+    let existing_mlayer = existing_mlayer.get();
     if existing.num_units_in_display_tick != new.num_units_in_display_tick {
         report.push(timing_mismatch_error(
             "sequence-header/timing-display-tick-mismatch",
             obu,
             format!(
-                "num_units_in_display_tick {} differs from {} signalled for another embedded layer",
-                new.num_units_in_display_tick, existing.num_units_in_display_tick
+                "num_units_in_display_tick {} (obu_mlayer_id {}) differs from {} (obu_mlayer_id {}) \
+                 in the same coded video sequence",
+                new.num_units_in_display_tick,
+                new_mlayer,
+                existing.num_units_in_display_tick,
+                existing_mlayer
             ),
         ));
     }
@@ -342,8 +357,9 @@ fn compare_timing_across_embedded_layers(
             "sequence-header/timing-time-scale-mismatch",
             obu,
             format!(
-                "time_scale {} differs from {} signalled for another embedded layer",
-                new.time_scale, existing.time_scale
+                "time_scale {} (obu_mlayer_id {}) differs from {} (obu_mlayer_id {}) in the same \
+                 coded video sequence",
+                new.time_scale, new_mlayer, existing.time_scale, existing_mlayer
             ),
         ));
     }
@@ -352,8 +368,9 @@ fn compare_timing_across_embedded_layers(
             "sequence-header/timing-equal-picture-interval-mismatch",
             obu,
             format!(
-                "equal_picture_interval {} differs from {} signalled for another embedded layer",
-                new.equal_picture_interval, existing.equal_picture_interval
+                "equal_picture_interval {} (obu_mlayer_id {}) differs from {} (obu_mlayer_id {}) in \
+                 the same coded video sequence",
+                new.equal_picture_interval, new_mlayer, existing.equal_picture_interval, existing_mlayer
             ),
         ));
     }
@@ -368,8 +385,9 @@ fn compare_timing_across_embedded_layers(
             "sequence-header/timing-num-ticks-mismatch",
             obu,
             format!(
-                "num_ticks_per_picture_minus_1 {new_ticks} differs from {existing_ticks} signalled \
-                 for another embedded layer"
+                "num_ticks_per_picture_minus_1 {new_ticks} (obu_mlayer_id {new_mlayer}) differs \
+                 from {existing_ticks} (obu_mlayer_id {existing_mlayer}) in the same coded video \
+                 sequence"
             ),
         ));
     }

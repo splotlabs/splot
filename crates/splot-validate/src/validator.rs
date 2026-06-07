@@ -1312,4 +1312,34 @@ mod tests {
             "report was: {report}"
         );
     }
+
+    #[test]
+    fn ci_zero_display_tick_is_reported_under_timing_namespace() {
+        // A timing-range violation carried by a content-interpretation OBU is
+        // reported under the §6.4.12 timing namespace (sequence-header/timing-*).
+        // §6.4.12 "Timing info semantics" is a subsection of §6.4 "Sequence header
+        // OBU semantics", so the namespace follows the spec's section hierarchy and
+        // is consistent with the cross-layer timing-mismatch diagnostics; the
+        // diagnostic's spec_section (6.4.12) and byte offset locate it precisely.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(content_interpretation_obu(
+            0,
+            0,
+            Some(CiTiming {
+                display_tick: 0, // num_units_in_display_tick == 0 -> §6.4.12 violation
+                time_scale: 30000,
+                equal_picture_interval: false,
+                num_ticks_minus_1: 0,
+            }),
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "sequence-header/timing-display-tick-zero"
+                    && d.spec_section.as_deref() == Some("6.4.12")
+            }),
+            "report was: {report}"
+        );
+    }
 }
