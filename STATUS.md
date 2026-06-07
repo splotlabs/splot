@@ -65,6 +65,82 @@ header, or `unimplemented` with the bounding `feature` for a bounded child.
 `user_defined_qm()` (§5.4.11), frame header, tile groups, entropy coder, decoder,
 encoder, AVM differential harness, and external-HLS availability.
 
+## Content interpretation + timing consistency — PR A (2026-06-07)
+
+OpenSpec change `sequence-timing-hls-availability`, slice A. Wires the timing path
+through the content-interpretation OBU and adds cross-embedded-layer timing
+diagnostics. Still validator-first: no frame header, tile group, entropy coder,
+decoder, or encoder was implemented.
+
+**Implemented (`splot-core`):**
+
+- `rg(n)` Rice-Golomb descriptor (`AV2 §4.11.10`) in `bitio.rs`, panic-free with a
+  typed `Error::InvalidRg` when the unary prefix does not terminate within 32 bits.
+- Full `content_interpretation_obu()` parser (`AV2-5.15-CONTENT-INTERPRETATION`) in
+  `headers/content_interpretation.rs`: scan type, `rg(2)` color description (with
+  the H.273 triple when `ci_color_description_idc == 0`), chroma sample position
+  (top, plus bottom when `ci_scan_type_idc != 1`), aspect ratio (incl. the extended
+  `ci_sar_width`/`ci_sar_height` path when `ci_aspect_ratio_idc == 255`), and
+  `timing_info()` via `ci_timing_info_present_flag`. The parser is complete and
+  never skips payload bits.
+- OBU dispatch (`obu.rs`): `OBU_CONTENT_INTERPRETATION` now parses to
+  `ParsedObu::ContentInterpretation` and validates the §5.2.1 extensible tail.
+
+**Validator (`splot-validate`):**
+
+- Stateless `ContentInterpretationSyntax` check: `content-interpretation/reserved-bits-nonzero`
+  (warning, §6.14 — the value is decoder-ignored), the §6.14 range errors
+  `content-interpretation/chroma-sample-position-out-of-range` (top/bottom `<= 5`) and
+  `content-interpretation/aspect-ratio-idc-out-of-range` (`<= 16` when `!= 255`), and
+  payload-tail / parse-error reporting.
+- Stateful (`context.rs`): per-`(obu_xlayer_id, obu_mlayer_id)` CI records within the
+  modeled CVS scope. Cross-embedded-layer timing consistency (§6.4.12) emits
+  `sequence-header/timing-display-tick-mismatch`, `…/timing-time-scale-mismatch`,
+  `…/timing-equal-picture-interval-mismatch`, and `…/timing-num-ticks-mismatch`;
+  a repeated CI carrying different §6.14 *information* emits
+  `content-interpretation/repeated-ci-not-identical` (per §6.14's "same information"
+  wording — weaker than the sequence header's §7.3.8 bit-identity). To stay sound the
+  comparison uses only the alias-free fields (`ci_scan_type_idc`, chroma sample
+  position, `timing_info()`) and excludes the decoder-ignored `ci_reserved_2bit` and
+  the alias-prone color/aspect fields (preset-vs-explicit normalization is future
+  work). CI records reset per xlayer at the conservative CLK CVS boundary, sharing
+  the sequence-fingerprint reset's documented CVS-start false-negative.
+
+**Inspector:** `inspect --json` now reports a `content_interpretation` object
+(scan type, the four present-flags, `reserved_2bit`) for CI OBUs.
+
+**Bounded honestly (blocked on `AV2-5.18-FRAME-HEADER` / CLK activation):**
+
+- Timing is compared across embedded layers *within the same extended layer's*
+  modeled CVS scope — a sound subset of the spec's "across all embedded layers"
+  requirement. Exact cross-extended-layer and CVS/RAP scoping needs CLK
+  frame-header activation.
+- HLS availability store and the MFH → sequence-header reference check are
+  deferred to PR B (slice B of this change).
+
+**New diagnostic prefix** registered in `xtask` and `docs/FEATURE-TRACKING.md`:
+`content-interpretation/`.
+
+**PR A acceptance results** (run from the repo root):
+
+```text
+cargo fmt --all -- --check                                                      # ok (no diff)
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # ok, 0 warnings
+cargo test --workspace --all-targets --locked                                   # ok: 216 passed, 0 failed
+cargo test -p splot-core content_interpretation                                 # ok
+cargo test -p splot-core bitio                                                  # ok (rg descriptor)
+cargo test -p splot-validate ci_                                                # ok
+cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md    # ok (114 features)
+cargo xtask check-feature-status                                                # ok (114 features)
+cargo xtask spec-coverage                                                       # ok
+cargo xtask ci                                                                  # ok: all checks passed
+openspec validate sequence-timing-hls-availability --strict                     # ok: change is valid
+cargo run -p splot-cli -- inspect <ci>.av2 --json                              # shows content_interpretation
+```
+
+Test breakdown after PR A: `splot-core` 123, `splot-encode` 2, `splot-validate`
+65, `splot-cli` 9, `xtask` 17 (216 total).
+
 ## Implemented
 
 - **`splot-core`**

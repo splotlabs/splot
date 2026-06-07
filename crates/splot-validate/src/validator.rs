@@ -1009,4 +1009,381 @@ mod tests {
             "report was: {report}"
         );
     }
+
+    #[derive(Clone, Copy)]
+    struct CiTiming {
+        display_tick: u32,
+        time_scale: u32,
+        equal_picture_interval: bool,
+        num_ticks_minus_1: u32,
+    }
+
+    /// Builds an `OBU_CONTENT_INTERPRETATION` (type 24) at obu_xlayer_id 0 /
+    /// obu_mlayer_id `mlayer`, with all optional branches cleared except the
+    /// requested timing, plus the §5.2.1 extensible payload tail.
+    fn content_interpretation_obu(
+        mlayer: u8,
+        reserved_2bit: u32,
+        timing: Option<CiTiming>,
+    ) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(0, 2); // ci_scan_type_idc
+        bits.bit(0); // ci_color_description_present_flag
+        bits.bit(0); // ci_chroma_sample_position_present_flag
+        bits.bit(0); // ci_aspect_ratio_info_present_flag
+        bits.bit(u8::from(timing.is_some())); // ci_timing_info_present_flag
+        bits.f(reserved_2bit, 2); // ci_reserved_2bit
+        if let Some(t) = timing {
+            bits.f(t.display_tick, 32);
+            bits.f(t.time_scale, 32);
+            bits.bit(u8::from(t.equal_picture_interval));
+            if t.equal_picture_interval {
+                bits.uvlc(t.num_ticks_minus_1);
+            }
+        }
+        bits.bit(0); // obu_extension_flag = 0
+        bits.bit(1); // trailing_one_bit
+        annex_b_obu_with_header(&layer_obu_header(24, 0, mlayer, 0), &bits.into_bytes())
+    }
+
+    /// Temporal delimiter + an activating sequence header for xlayer 0 that allows
+    /// embedded layers 0 and 1, then two content-interpretation OBUs at embedded
+    /// layers 0 and 1.
+    fn stream_with_two_ci_layers(a: Option<CiTiming>, b: Option<CiTiming>) -> Vec<u8> {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_obu(0, 0, a));
+        data.extend(content_interpretation_obu(1, 0, b));
+        data
+    }
+
+    const BASE_TIMING: CiTiming = CiTiming {
+        display_tick: 1000,
+        time_scale: 30000,
+        equal_picture_interval: true,
+        num_ticks_minus_1: 1,
+    };
+
+    #[test]
+    fn ci_matching_timing_across_embedded_layers_is_accepted() {
+        let data = stream_with_two_ci_layers(Some(BASE_TIMING), Some(BASE_TIMING));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("sequence-header/timing-")),
+            "report was: {report}"
+        );
+        assert!(report.is_conformant(), "report was: {report}");
+    }
+
+    #[test]
+    fn ci_different_display_tick_across_embedded_layers_is_flagged() {
+        let other = CiTiming {
+            display_tick: 2000,
+            ..BASE_TIMING
+        };
+        let data = stream_with_two_ci_layers(Some(BASE_TIMING), Some(other));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "sequence-header/timing-display-tick-mismatch"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_different_time_scale_across_embedded_layers_is_flagged() {
+        let other = CiTiming {
+            time_scale: 60000,
+            ..BASE_TIMING
+        };
+        let data = stream_with_two_ci_layers(Some(BASE_TIMING), Some(other));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "sequence-header/timing-time-scale-mismatch"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_different_equal_picture_interval_across_embedded_layers_is_flagged() {
+        let other = CiTiming {
+            equal_picture_interval: false,
+            ..BASE_TIMING
+        };
+        let data = stream_with_two_ci_layers(Some(BASE_TIMING), Some(other));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "sequence-header/timing-equal-picture-interval-mismatch"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_different_num_ticks_across_embedded_layers_is_flagged() {
+        let other = CiTiming {
+            num_ticks_minus_1: 4,
+            ..BASE_TIMING
+        };
+        let data = stream_with_two_ci_layers(Some(BASE_TIMING), Some(other));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "sequence-header/timing-num-ticks-mismatch"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_repeated_for_same_embedded_layer_with_different_payload_is_flagged() {
+        let other = CiTiming {
+            time_scale: 24000,
+            ..BASE_TIMING
+        };
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING)));
+        data.extend(content_interpretation_obu(0, 0, Some(other)));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/repeated-ci-not-identical"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_repeated_identical_for_same_embedded_layer_is_accepted() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING)));
+        data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING)));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/repeated-ci-not-identical"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_reserved_bits_nonzero_is_warned() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_obu(0, 0b10, None));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .warnings()
+                .any(|d| d.rule_id == "content-interpretation/reserved-bits-nonzero"),
+            "report was: {report}"
+        );
+        // A reserved-bits anomaly is a warning, not a conformance error.
+        assert!(report.is_conformant(), "report was: {report}");
+    }
+
+    #[test]
+    fn ci_repeat_differing_only_in_reserved_bits_is_not_flagged() {
+        // AV2 § 6.14: ci_reserved_2bit is decoder-ignored, so two CI OBUs for the
+        // same embedded layer that differ only in the reserved bits carry the same
+        // information and must not be flagged as a non-identical repeat.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING)));
+        data.extend(content_interpretation_obu(0, 0b11, Some(BASE_TIMING)));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/repeated-ci-not-identical"),
+            "report was: {report}"
+        );
+    }
+
+    /// Content-interpretation OBU (xlayer 0 / mlayer 0) carrying a chroma sample
+    /// position (interlace scan type, so top and bottom are coded independently).
+    fn content_interpretation_chroma_obu(top: u32, bottom: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(2, 2); // ci_scan_type_idc = 2 (interlace) -> bottom coded
+        bits.bit(0); // ci_color_description_present_flag
+        bits.bit(1); // ci_chroma_sample_position_present_flag
+        bits.bit(0); // ci_aspect_ratio_info_present_flag
+        bits.bit(0); // ci_timing_info_present_flag
+        bits.f(0, 2); // ci_reserved_2bit
+        bits.uvlc(top);
+        bits.uvlc(bottom);
+        bits.bit(0); // obu_extension_flag
+        bits.bit(1); // trailing_one_bit
+        annex_b_obu_with_header(&layer_obu_header(24, 0, 0, 0), &bits.into_bytes())
+    }
+
+    /// Content-interpretation OBU (xlayer 0 / mlayer 0) carrying an aspect-ratio idc.
+    fn content_interpretation_aspect_obu(idc: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(0, 2); // ci_scan_type_idc
+        bits.bit(0); // ci_color_description_present_flag
+        bits.bit(0); // ci_chroma_sample_position_present_flag
+        bits.bit(1); // ci_aspect_ratio_info_present_flag
+        bits.bit(0); // ci_timing_info_present_flag
+        bits.f(0, 2); // ci_reserved_2bit
+        bits.f(idc, 8); // ci_aspect_ratio_idc (!= 255 -> no extended SAR)
+        bits.bit(0); // obu_extension_flag
+        bits.bit(1); // trailing_one_bit
+        annex_b_obu_with_header(&layer_obu_header(24, 0, 0, 0), &bits.into_bytes())
+    }
+
+    #[test]
+    fn ci_chroma_sample_position_out_of_range_is_flagged() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(content_interpretation_chroma_obu(6, 0)); // top = 6 > 5
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/chroma-sample-position-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_chroma_sample_position_in_range_is_accepted() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(content_interpretation_chroma_obu(5, 0)); // both <= 5
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/chroma-sample-position-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_aspect_ratio_idc_out_of_range_is_flagged() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(content_interpretation_aspect_obu(17)); // 16 < 17 < 255
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/aspect-ratio-idc-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_aspect_ratio_idc_extended_marker_is_accepted() {
+        // ci_aspect_ratio_idc == 255 is the extended-SAR marker, not out of range.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        let mut bits = Bits::default();
+        bits.f(0, 2); // ci_scan_type_idc
+        bits.bit(0); // color description absent
+        bits.bit(0); // chroma sample position absent
+        bits.bit(1); // ci_aspect_ratio_info_present_flag
+        bits.bit(0); // timing absent
+        bits.f(0, 2); // ci_reserved_2bit
+        bits.f(255, 8); // ci_aspect_ratio_idc = 255 -> extended SAR
+        bits.uvlc(16); // ci_sar_width
+        bits.uvlc(9); // ci_sar_height
+        bits.bit(0); // obu_extension_flag
+        bits.bit(1); // trailing_one_bit
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(24, 0, 0, 0),
+            &bits.into_bytes(),
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/aspect-ratio-idc-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    /// CI OBU (xlayer 0 / mlayer 0) carrying a color description with the given
+    /// `ci_color_description_idc` (idc < 4, so the `rg(2)` prefix is a single zero
+    /// bit). When idc == 0 an explicit BT.709 triple is coded.
+    fn content_interpretation_color_obu(color_idc: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(0, 2); // ci_scan_type_idc
+        bits.bit(1); // ci_color_description_present_flag
+        bits.bit(0); // ci_chroma_sample_position_present_flag
+        bits.bit(0); // ci_aspect_ratio_info_present_flag
+        bits.bit(0); // ci_timing_info_present_flag
+        bits.f(0, 2); // ci_reserved_2bit
+        bits.bit(0); // rg(2): q = 0 (terminating zero bit)
+        bits.f(color_idc, 2); // rg(2): 2-bit remainder == idc for idc < 4
+        if color_idc == 0 {
+            bits.f(1, 8); // ci_color_primaries (BT.709)
+            bits.f(1, 8); // ci_transfer_characteristics
+            bits.f(1, 8); // ci_matrix_coefficients
+        }
+        bits.bit(0); // ci_full_range_flag
+        bits.bit(0); // obu_extension_flag
+        bits.bit(1); // trailing_one_bit
+        annex_b_obu_with_header(&layer_obu_header(24, 0, 0, 0), &bits.into_bytes())
+    }
+
+    #[test]
+    fn ci_repeat_differing_only_in_color_encoding_is_not_flagged() {
+        // AV2 § 6.14: color descriptions can encode the same information in multiple
+        // ways (a preset idc vs. an explicit triple), so the repeated-CI check must
+        // not hard-flag a color-description difference (it would risk a false
+        // positive against a conformant stream). The check conservatively excludes
+        // color/aspect until § 6.14 preset normalization is modeled.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(content_interpretation_color_obu(1)); // BT.709 preset
+        data.extend(content_interpretation_color_obu(0)); // explicit BT.709 triple
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "content-interpretation/repeated-ci-not-identical"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_zero_display_tick_is_reported_under_timing_namespace() {
+        // A timing-range violation carried by a content-interpretation OBU is
+        // reported under the §6.4.12 timing namespace (sequence-header/timing-*).
+        // §6.4.12 "Timing info semantics" is a subsection of §6.4 "Sequence header
+        // OBU semantics", so the namespace follows the spec's section hierarchy and
+        // is consistent with the cross-layer timing-mismatch diagnostics; the
+        // diagnostic's spec_section (6.4.12) and byte offset locate it precisely.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(content_interpretation_obu(
+            0,
+            0,
+            Some(CiTiming {
+                display_tick: 0, // num_units_in_display_tick == 0 -> §6.4.12 violation
+                time_scale: 30000,
+                equal_picture_interval: false,
+                num_ticks_minus_1: 0,
+            }),
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "sequence-header/timing-display-tick-zero"
+                    && d.spec_section.as_deref() == Some("6.4.12")
+            }),
+            "report was: {report}"
+        );
+    }
 }

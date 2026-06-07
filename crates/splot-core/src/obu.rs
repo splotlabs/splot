@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bitio::BitReader;
 use crate::error::{Error, Result, TrailingBitsErrorKind};
+use crate::headers::content_interpretation::{ContentInterpretation, parse_content_interpretation};
 use crate::headers::sequence::{SequenceHeader, parse_sequence_header};
 use crate::hls::{
     MultiFrameHeader, MultistreamDecoderOperation, parse_msdo, parse_multi_frame_header,
@@ -60,6 +61,8 @@ pub enum ParsedObu {
     Msdo(MultistreamDecoderOperation),
     /// `multi_frame_header_obu()` (AV2 v1.0.0 § 5.7).
     MultiFrameHeader(MultiFrameHeader),
+    /// `content_interpretation_obu()` (AV2 v1.0.0 § 5.15).
+    ContentInterpretation(ContentInterpretation),
 }
 
 impl ParsedObu {
@@ -71,6 +74,7 @@ impl ParsedObu {
             Self::SequenceHeader(_) => "AV2-5.4-SEQUENCE-HEADER",
             Self::Msdo(_) => "AV2-5.6-MSDO",
             Self::MultiFrameHeader(_) => "AV2-5.7-MULTI-FRAME-HEADER",
+            Self::ContentInterpretation(_) => "AV2-5.15-CONTENT-INTERPRETATION",
         }
     }
 
@@ -82,6 +86,7 @@ impl ParsedObu {
             Self::SequenceHeader(_) => "sequence_header_obu",
             Self::Msdo(_) => "multistream_decoder_operation_obu",
             Self::MultiFrameHeader(_) => "multi_frame_header_obu",
+            Self::ContentInterpretation(_) => "content_interpretation_obu",
         }
     }
 }
@@ -150,6 +155,14 @@ pub fn dispatch_obu_payload<'a>(
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::MultiFrameHeader(
                 multi_frame_header,
+            )))
+        }
+        ObuType::ContentInterpretation => {
+            let mut reader = BitReader::new(payload, payload_offset);
+            let content_interpretation = parse_content_interpretation(&mut reader)?;
+            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            Ok(PayloadStatus::Parsed(ParsedObu::ContentInterpretation(
+                content_interpretation,
             )))
         }
         obu_type => Ok(PayloadStatus::Unimplemented {

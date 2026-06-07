@@ -7,8 +7,10 @@
 //! implemented. Do not add fields that are not backed by the spec — leave a spec
 //! TODO that names the implementation-matrix feature id instead (see AGENTS.md).
 
+pub mod content_interpretation;
 pub mod sequence;
 
+pub use content_interpretation::{ContentInterpretation, parse_content_interpretation};
 pub use sequence::{SequenceHeader, SequenceHeaderGeneral};
 
 /// AV2 frame header (`frame_header()`). Not yet modeled.

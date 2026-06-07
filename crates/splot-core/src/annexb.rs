@@ -193,17 +193,17 @@ mod tests {
 
     #[test]
     fn envelope_payload_status_is_opt_in_and_preserves_raw_payload() {
-        // Content-interpretation payload parsing is intentionally not implemented
-        // yet, but the envelope still preserves the bounded raw payload bytes.
-        // 0x60 = 0b0_11000_00 -> ext=0, type=24 (ContentInterpretation).
-        let stream = [0x02, 0x60, 0xAB];
+        // Film-grain payload parsing is intentionally not implemented yet, but the
+        // envelope still preserves the bounded raw payload bytes.
+        // 0x5C = 0b0_10111_00 -> ext=0, type=23 (FilmGrain).
+        let stream = [0x02, 0x5C, 0xAB];
         let obus = parse_annex_b_obus(&stream).unwrap();
         assert_eq!(obus[0].payload, &[0xAB]);
         assert_eq!(obus[0].payload_offset(), ByteOffset::new(2));
         assert_eq!(
             obus[0].payload_status().unwrap(),
             PayloadStatus::Unimplemented {
-                feature: "AV2-5.15-CONTENT-INTERPRETATION",
+                feature: "AV2-5.14-FILM-GRAIN",
                 payload: obus[0].payload,
             }
         );

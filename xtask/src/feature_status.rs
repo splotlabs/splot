@@ -158,6 +158,7 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
     "hls/",
     "msdo/",
     "mfh/",
+    "content-interpretation/",
 ];
 
 /// Output format for `feature-status`.

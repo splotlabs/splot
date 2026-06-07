@@ -8,11 +8,14 @@ use std::collections::btree_map::Entry;
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
-use splot_core::headers::sequence::{
-    SequenceHeaderGeneral, SequenceHeaderId, parse_sequence_header_general,
+use splot_core::headers::content_interpretation::{
+    ContentInterpretation, parse_content_interpretation,
 };
-use splot_core::span::BitOffset;
-use splot_core::types::{ExtendedLayerId, ObuType};
+use splot_core::headers::sequence::{
+    SequenceHeaderGeneral, SequenceHeaderId, TimingInfo, parse_sequence_header_general,
+};
+use splot_core::span::{BitOffset, ByteOffset};
+use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, ObuType};
 
 use crate::diagnostic::{Diagnostic, ValidationReport};
 
@@ -25,7 +28,24 @@ pub(crate) struct ValidatorContext {
     /// `(obu_xlayer_id, seq_header_id)`, used to detect non-bit-identical repeats
     /// of an activated sequence header (AV2 § 7.3.8).
     sequence_fingerprints: BTreeMap<(ExtendedLayerId, SequenceHeaderId), u64>,
+    /// Content-interpretation records keyed by `(obu_xlayer_id, obu_mlayer_id)`
+    /// within the modeled coded-video-sequence scope, used for cross-embedded-layer
+    /// timing consistency (AV2 § 6.4.12) and repeated-CI identity (AV2 § 6.14).
+    content_interpretations: BTreeMap<ContentInterpretationKey, ContentInterpretationRecord>,
     temporal_unit: TemporalUnitState,
+}
+
+/// Key identifying a content-interpretation record: `(obu_xlayer_id, obu_mlayer_id)`.
+type ContentInterpretationKey = (ExtendedLayerId, EmbeddedLayerId);
+
+/// One observed content-interpretation OBU within the modeled CVS scope.
+#[derive(Debug)]
+struct ContentInterpretationRecord {
+    /// Parsed § 5.15 syntax, used for cross-embedded-layer timing consistency
+    /// (AV2 § 6.4.12) and the repeated-CI "same information" check (AV2 § 6.14).
+    content: ContentInterpretation,
+    /// Source byte offset of the OBU that produced this record.
+    offset: ByteOffset,
 }
 
 impl ValidatorContext {
@@ -37,6 +57,10 @@ impl ValidatorContext {
             self.observe_sequence_header(obu, report);
         } else {
             self.validate_active_sequence_limits(obu, report);
+        }
+
+        if obu.header.obu_type == ObuType::ContentInterpretation {
+            self.observe_content_interpretation(obu, report);
         }
 
         self.maybe_reset_coded_video_sequence(obu);
@@ -63,6 +87,103 @@ impl ValidatorContext {
             // TODO(spec: AV2-7.3.8-HLS-AVAILABILITY): scope CVS boundaries precisely
             // once CLK frame-header activation is parsed.
             self.sequence_fingerprints.retain(|(x, _), _| *x != xlayer);
+            // Cross-embedded-layer timing and repeated-CI identity are scoped to a
+            // coded video sequence (AV2 § 6.4.12 / § 6.14), so clear this xlayer's
+            // content-interpretation records at the same conservative CVS boundary.
+            // This shares the sequence-fingerprint reset's documented sound-over-
+            // complete bias: a CI OBU at CVS start precedes its CLK in the same
+            // temporal unit (§ 7.3.6), so its record is cleared here and a later
+            // non-identical CI *within the same CVS* is not caught (a false negative,
+            // never a false positive). Exact scoping needs CLK frame-header
+            // activation (AV2-5.18-FRAME-HEADER).
+            self.content_interpretations
+                .retain(|(x, _), _| *x != xlayer);
+        }
+    }
+
+    /// Observes a content-interpretation OBU: checks cross-embedded-layer timing
+    /// consistency (AV2 § 6.4.12) and repeated-CI identity (AV2 § 6.14) within the
+    /// modeled coded-video-sequence scope.
+    ///
+    /// Timing values are compared only between two present `timing_info()` values
+    /// that are both within the same extended layer's modeled CVS scope (a sound
+    /// subset of the spec's "across all embedded layers" requirement; exact
+    /// cross-extended-layer scoping needs CLK frame-header activation).
+    fn observe_content_interpretation(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        report: &mut ValidationReport,
+    ) {
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        // Parse failures are reported by the stateless ContentInterpretationSyntax
+        // check; here we only act on a successful parse.
+        let Ok(content_interpretation) = parse_content_interpretation(&mut reader) else {
+            return;
+        };
+
+        let xlayer = obu.header.extended_layer_id;
+        let mlayer = obu.header.embedded_layer_id;
+
+        // Cross-embedded-layer timing consistency: compare this layer's timing
+        // against the first other embedded layer (same extended layer) that already
+        // carries present timing within this CVS scope.
+        if let Some(new_timing) = content_interpretation.timing_info
+            && let Some((existing_mlayer, existing_timing)) = self
+                .content_interpretations
+                .iter()
+                .find(|((x, m), record)| {
+                    *x == xlayer && *m != mlayer && record.content.timing_info.is_some()
+                })
+                .and_then(|((_, m), record)| record.content.timing_info.map(|t| (*m, t)))
+        {
+            compare_timing_across_embedded_layers(
+                existing_mlayer,
+                &existing_timing,
+                &new_timing,
+                obu,
+                report,
+            );
+        }
+
+        match self.content_interpretations.entry((xlayer, mlayer)) {
+            Entry::Vacant(slot) => {
+                slot.insert(ContentInterpretationRecord {
+                    content: content_interpretation,
+                    offset: obu.offset,
+                });
+            }
+            Entry::Occupied(slot) => {
+                let existing = slot.get();
+                // AV2 § 6.14: a repeated CI OBU for the same embedded layer within a
+                // CVS must carry the same *information* (a weaker requirement than the
+                // sequence header's bit-identity in § 7.3.8). The decoder-ignored
+                // ci_reserved_2bit is normalized out before comparing, so a difference
+                // confined to the reserved bits is not flagged here (it is surfaced
+                // separately as a warning by the stateless syntax check).
+                if content_interpretation_information_differs(
+                    &existing.content,
+                    &content_interpretation,
+                ) {
+                    report.push(
+                        Diagnostic::error(
+                            "content-interpretation/repeated-ci-not-identical",
+                            format!(
+                                "content interpretation OBU for obu_xlayer_id {} / obu_mlayer_id {} \
+                                 is repeated within the coded video sequence with different \
+                                 information (first seen at byte {})",
+                                xlayer.get(),
+                                mlayer.get(),
+                                existing.offset
+                            ),
+                        )
+                        .with_spec_section("6.14")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+                // Keep the first record for the layer (matching the sequence-header
+                // first-wins approximation); a non-identical repeat is reported but
+                // does not overwrite the established timing baseline.
+            }
         }
     }
 
@@ -206,6 +327,114 @@ impl ValidatorContext {
             );
         }
     }
+}
+
+/// Compares two present `timing_info()` values from different embedded layers of
+/// the same coded video sequence and emits a diagnostic per differing field
+/// (AV2 § 6.4.12: these values, when present, shall be the same across all embedded
+/// layers). `new` is located at `obu` (embedded layer `obu.header.embedded_layer_id`);
+/// `existing` is the value previously seen for `existing_mlayer`. Both embedded-layer
+/// ids are named in each message so the finding is self-contained.
+fn compare_timing_across_embedded_layers(
+    existing_mlayer: EmbeddedLayerId,
+    existing: &TimingInfo,
+    new: &TimingInfo,
+    obu: &ObuEnvelope<'_>,
+    report: &mut ValidationReport,
+) {
+    let new_mlayer = obu.header.embedded_layer_id.get();
+    let existing_mlayer = existing_mlayer.get();
+    if existing.num_units_in_display_tick != new.num_units_in_display_tick {
+        report.push(timing_mismatch_error(
+            "sequence-header/timing-display-tick-mismatch",
+            obu,
+            format!(
+                "num_units_in_display_tick {} (obu_mlayer_id {}) differs from {} (obu_mlayer_id {}) \
+                 in the same coded video sequence",
+                new.num_units_in_display_tick,
+                new_mlayer,
+                existing.num_units_in_display_tick,
+                existing_mlayer
+            ),
+        ));
+    }
+    if existing.time_scale != new.time_scale {
+        report.push(timing_mismatch_error(
+            "sequence-header/timing-time-scale-mismatch",
+            obu,
+            format!(
+                "time_scale {} (obu_mlayer_id {}) differs from {} (obu_mlayer_id {}) in the same \
+                 coded video sequence",
+                new.time_scale, new_mlayer, existing.time_scale, existing_mlayer
+            ),
+        ));
+    }
+    if existing.equal_picture_interval != new.equal_picture_interval {
+        report.push(timing_mismatch_error(
+            "sequence-header/timing-equal-picture-interval-mismatch",
+            obu,
+            format!(
+                "equal_picture_interval {} (obu_mlayer_id {}) differs from {} (obu_mlayer_id {}) in \
+                 the same coded video sequence",
+                new.equal_picture_interval, new_mlayer, existing.equal_picture_interval, existing_mlayer
+            ),
+        ));
+    }
+    // num_ticks_per_picture_minus_1 is only present when equal_picture_interval is
+    // set; compare it only when both layers carry it (AV2 § 6.4.12).
+    if let (Some(existing_ticks), Some(new_ticks)) = (
+        existing.num_ticks_per_picture_minus_1,
+        new.num_ticks_per_picture_minus_1,
+    ) && existing_ticks != new_ticks
+    {
+        report.push(timing_mismatch_error(
+            "sequence-header/timing-num-ticks-mismatch",
+            obu,
+            format!(
+                "num_ticks_per_picture_minus_1 {new_ticks} (obu_mlayer_id {new_mlayer}) differs \
+                 from {existing_ticks} (obu_mlayer_id {existing_mlayer}) in the same coded video \
+                 sequence"
+            ),
+        ));
+    }
+}
+
+/// Returns `true` if two content-interpretation OBUs carry different *information*
+/// (AV2 § 6.14: a repeated CI OBU must "contain the same information").
+///
+/// Only fields whose parsed value uniquely determines the information regardless of
+/// encoding are compared: `ci_scan_type_idc`, the chroma sample position, and
+/// `timing_info()`. Deliberately excluded:
+/// - `ci_reserved_2bit` — decoder-ignored (§ 6.14); surfaced separately as a warning.
+/// - `ci_color_description` and the aspect ratio — these can encode the *same*
+///   information in multiple ways (a Table 6.13 / aspect preset vs. an explicit
+///   triple or SAR), so a raw difference is not necessarily a content change.
+///   Comparing them raw would risk a false-positive hard error against a conformant
+///   stream, which this validator must never do; soundly comparing them needs the
+///   § 6.14 preset normalization, which is not modeled yet (a documented
+///   false-negative, never a false-positive).
+///
+// TODO(spec: AV2-5.15-CONTENT-INTERPRETATION): normalize § 6.14 color-description
+// (Table 6.13) and aspect-ratio presets to derived values so repeated-CI
+// color/aspect differences can be compared soundly and promoted to this check.
+fn content_interpretation_information_differs(
+    a: &ContentInterpretation,
+    b: &ContentInterpretation,
+) -> bool {
+    a.scan_type_idc != b.scan_type_idc
+        || a.chroma_sample_position != b.chroma_sample_position
+        || a.timing_info != b.timing_info
+}
+
+/// Builds a § 6.4.12 cross-embedded-layer timing-mismatch diagnostic located at `obu`.
+fn timing_mismatch_error(
+    rule_id: &'static str,
+    obu: &ObuEnvelope<'_>,
+    message: String,
+) -> Diagnostic {
+    Diagnostic::error(rule_id, message)
+        .with_spec_section("6.4.12")
+        .with_byte_offset(obu.offset)
 }
 
 /// Computes a stable 64-bit FNV-1a fingerprint over an OBU payload's bytes.

@@ -14,7 +14,7 @@
 # Do NOT use percentages.
 
 matrix_version = 1
-last_reviewed = "2026-06-06"
+last_reviewed = "2026-06-07"
 
 # ---------------------------------------------------------------------------
 # Normative AV2 bitstream syntax and semantics
@@ -799,7 +799,7 @@ openspec_change = "parse-sequence-header"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. timing_info() is now reached from the content-interpretation OBU (AV2-5.15-CONTENT-INTERPRETATION) via ci_timing_info_present_flag; cross-embedded-layer consistency (§6.4.12) is checked under AV2-6.4-SEQUENCE-HEADER-SEMANTICS."
 
 [feature.status]
 mapped = "done"
@@ -814,8 +814,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests::sequence_timing_rejects_zero_display_tick", "crates/splot-validate/src/checks/mod.rs::tests::syntax_error_diagnostic_maps_timing_errors"]
-commands = ["cargo test -p splot-core sequence", "cargo test -p splot-validate sequence_header"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests::sequence_timing_rejects_zero_display_tick", "crates/splot-core/src/headers/content_interpretation.rs::tests::parses_with_timing_info_present", "crates/splot-validate/src/checks/mod.rs::tests::syntax_error_diagnostic_maps_timing_errors"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-core content_interpretation", "cargo test -p splot-validate sequence_header"]
 fixtures = []
 diagnostics = ["sequence-header/timing-display-tick-zero", "sequence-header/timing-time-scale-zero", "sequence-header/timing-num-ticks-per-picture-out-of-range"]
 
@@ -861,11 +861,11 @@ spec_sections = ["6.4"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
 module = "crates/splot-validate/src/checks/mod.rs"
-openspec_change = "validator-coverage-roadmap"
+openspec_change = "sequence-timing-hls-availability"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Maps locally decidable §6.4.1 / §6.4.12 sequence-header and timing violations. Next phase: cross-embedded-layer timing consistency once timing_info() is wired via the content-interpretation OBU (AV2-5.15-CONTENT-INTERPRETATION), and monotonic-output-order / distinct-mlayer-count checks across a coded multistream video sequence."
+notes = "Maps locally decidable §6.4.1 / §6.4.12 sequence-header and timing violations, plus cross-embedded-layer timing consistency (§6.4.12) compared across content-interpretation OBUs within a modeled CVS scope. Still partial: monotonic-output-order and distinct-mlayer-count checks across a coded multistream video sequence, and exact CVS/embedded-layer scoping, remain blocked on CLK frame-header activation (AV2-5.18-FRAME-HEADER)."
 
 [feature.status]
 mapped = "done"
@@ -880,10 +880,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_repeated_non_identical_sequence_header_is_flagged", "crates/splot-validate/src/checks/mod.rs::tests"]
-commands = ["cargo test -p splot-validate sequence_header", "cargo test -p splot-validate hls"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_repeated_non_identical_sequence_header_is_flagged", "crates/splot-validate/src/validator.rs::tests::ci_different_time_scale_across_embedded_layers_is_flagged", "crates/splot-validate/src/checks/mod.rs::tests"]
+commands = ["cargo test -p splot-validate sequence_header", "cargo test -p splot-validate hls", "cargo test -p splot-validate ci_"]
 fixtures = []
-diagnostics = ["sequence-header/timing-display-tick-zero", "hls/repeated-sequence-header-not-identical"]
+diagnostics = ["sequence-header/timing-display-tick-zero", "sequence-header/timing-display-tick-mismatch", "sequence-header/timing-time-scale-mismatch", "sequence-header/timing-equal-picture-interval-mismatch", "sequence-header/timing-num-ticks-mismatch", "hls/repeated-sequence-header-not-identical"]
 
 [[feature]]
 id = "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS"
@@ -1751,30 +1751,30 @@ kind = "bitstream-syntax"
 spec_sections = ["5.15", "6.14"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/content_interpretation.rs"
+openspec_change = "sequence-timing-hls-availability"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Needed for content interpretation metadata semantics."
+notes = "Full §5.15 parser (scan type, rg(2) color description, chroma sample position, aspect ratio incl. extended SAR) reaching timing_info() via ci_timing_info_present_flag. Dispatched by open_bitstream_unit and surfaced in inspect --json. splot-validate enforces the §6.14 locally-decidable ranges (chroma sample position <= 5, aspect_ratio_idc <= 16), the reserved-bits anomaly, and the repeated-CI same-information check; cross-embedded-layer timing consistency is tracked under AV2-6.4-SEQUENCE-HEADER-SEMANTICS."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "done"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/content_interpretation.rs::tests", "crates/splot-validate/src/validator.rs::tests::ci_reserved_bits_nonzero_is_warned", "crates/splot-validate/src/validator.rs::tests::ci_repeated_for_same_embedded_layer_with_different_payload_is_flagged", "crates/splot-validate/src/validator.rs::tests::ci_chroma_sample_position_out_of_range_is_flagged", "crates/splot-validate/src/validator.rs::tests::ci_aspect_ratio_idc_out_of_range_is_flagged"]
+commands = ["cargo test -p splot-core content_interpretation", "cargo test -p splot-validate ci_"]
 fixtures = []
-diagnostics = []
+diagnostics = ["content-interpretation/reserved-bits-nonzero", "content-interpretation/repeated-ci-not-identical", "content-interpretation/chroma-sample-position-out-of-range", "content-interpretation/aspect-ratio-idc-out-of-range"]
 
 [[feature]]
 id = "AV2-5.16-PADDING"

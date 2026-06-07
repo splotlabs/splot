@@ -2,19 +2,26 @@
 
 These tasks were deferred from the `sequence-hls-validator-coverage` change.
 
-## 1. Cross-embedded-layer timing consistency (§6.4.12)
+## 1. Cross-embedded-layer timing consistency (§6.4.12) — PR A
 
-- [ ] Parse the content-interpretation OBU (`AV2-5.15-CONTENT-INTERPRETATION`) far
+- [x] Parse the content-interpretation OBU (`AV2-5.15-CONTENT-INTERPRETATION`) far
       enough to reach `ci_timing_info_present_flag` and call the existing
-      `parse_timing_info()`.
-- [ ] Store timing values per embedded layer in `ValidatorContext`.
-- [ ] Emit `sequence-header/timing-display-tick-mismatch`,
+      `parse_timing_info()`. (Full §5.15 parser incl. `rg(2)`; dispatched by
+      `open_bitstream_unit` and surfaced in `inspect --json`.)
+- [x] Store timing values per embedded layer in `ValidatorContext`
+      (`content_interpretations` keyed by `(obu_xlayer_id, obu_mlayer_id)`).
+- [x] Emit `sequence-header/timing-display-tick-mismatch`,
       `…/timing-time-scale-mismatch`, `…/timing-equal-picture-interval-mismatch`,
       and `…/timing-num-ticks-mismatch` when present timing values differ across
       embedded layers in the same coded video sequence.
+- [x] Flag a repeated, non-identical content-interpretation OBU for the same
+      embedded layer (`content-interpretation/repeated-ci-not-identical`, §6.14)
+      and surface a non-zero `ci_reserved_2bit`
+      (`content-interpretation/reserved-bits-nonzero`, §6.14).
 - [ ] Add `sequence-state/monotonic-output-order-mismatch` and
       `sequence-state/distinct-mlayer-count-exceeds-seq-max` (§6.4.1) once the
-      multistream state needed to decide them is available.
+      multistream state needed to decide them is available. (Blocked on CLK
+      frame-header activation, `AV2-5.18-FRAME-HEADER`.)
 
 ## 2. Full HLS availability store (§7.3.8)
 
