@@ -39,13 +39,20 @@ holds active OPS records keyed by `(obu_xlayer_id, ops_id)`. It is **not** monot
 | 0 | 0 | reset only this `(xlayer, ops_id)` |
 | 0 | >0 | define/update only this `(xlayer, ops_id)` |
 
+Stateless `ops/syntax` and `brt/syntax` checks (alongside the existing `lcr`/`atlas`
+syntax checks) parse each OPS/BRT payload and surface a truncated or malformed payload —
+or an invalid payload tail — as a `bitstream/parse-error` (or a specific tail
+diagnostic), so a malformed newly-supported payload is never silently accepted. The
+stateful observers act only on a successful parse.
+
 OPS local-semantic checks run against the *prior* store state (before the OBU is
 applied) so cross-OPS inheritance references resolve correctly. A buffer-removal-timing
 OBU resolves `(obu_xlayer_id, br_ops_id)`: an unavailable OPS under external-HLS-
 disabled mode is `brt/unavailable-operating-point-set`, and a `br_ops_cnt` differing
-from the active `ops_cnt` is `brt/ops-count-mismatch`. When external HLS is provided,
-the hard missing-OPS error is suppressed so streams that rely on external OPS delivery
-are not false-flagged.
+from the active `ops_cnt` is `brt/ops-count-mismatch`. The hard missing-OPS error is
+suppressed only when the caller explicitly declares the referenced
+`(obu_xlayer_id, ops_id)` as external HLS (`ExternalHlsSet::with_operating_point_set`);
+a generic external-HLS mode that declares only other objects does not suppress it.
 
 ## Ordering
 

@@ -3260,20 +3260,81 @@ mod tests {
     }
 
     #[test]
-    fn brt_missing_ops_is_not_hard_error_when_external_hls_provided() {
+    fn brt_missing_ops_is_not_hard_error_when_external_ops_declared() {
         use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
         let mut data = temporal_delimiter_obu();
-        data.extend(brt_dependent_obu(31, 5, 1)); // no in-band OPS
+        data.extend(brt_dependent_obu(31, 5, 1)); // no in-band OPS (31, 5)
         let options = ValidationOptions {
             external_hls: ExternalHlsMode::Provided(
-                ExternalHlsSet::new().with_sequence_header_id(0),
+                ExternalHlsSet::new().with_operating_point_set(31, 5),
             ),
         };
         let report = Validator::new(false).validate_bytes_with_options(&data, &options);
         assert_eq!(
             ops_error_count(&report, "brt/unavailable-operating-point-set"),
             0,
-            "external HLS must suppress the hard missing-OPS error: {report}"
+            "a declared external OPS must suppress the hard missing-OPS error: {report}"
+        );
+    }
+
+    #[test]
+    fn brt_missing_ops_is_flagged_when_external_hls_lacks_the_ops() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        let mut data = temporal_delimiter_obu();
+        data.extend(brt_dependent_obu(31, 5, 1)); // references OPS (31, 5)
+        // External HLS is provided but only declares a sequence header and a
+        // different OPS, so OPS (31, 5) is still unavailable and must be flagged.
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new()
+                    .with_sequence_header_id(0)
+                    .with_operating_point_set(31, 4),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "brt/unavailable-operating-point-set"),
+            "an external HLS set that does not declare the referenced OPS must still flag it: \
+             {report}"
+        );
+    }
+
+    #[test]
+    fn ops_malformed_payload_is_flagged() {
+        // A global OPS header claims ops_cnt=1 but the payload ends immediately, so
+        // the header fields cannot be read. The OPS syntax check must report it.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(18, 0, 0, 31),
+            &[0x01],
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "bitstream/parse-error"),
+            "a malformed OPS payload must be reported: {report}"
+        );
+    }
+
+    #[test]
+    fn brt_malformed_payload_is_flagged() {
+        // br_ops_dependent_flag=1, br_ops_id=0, br_ops_cnt=1 fills the single payload
+        // byte, so the per-op flag read runs past the input. The BRT syntax check
+        // must report it.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(15, 0, 0, 31),
+            &[0x81],
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "bitstream/parse-error"),
+            "a malformed BRT payload must be reported: {report}"
         );
     }
 

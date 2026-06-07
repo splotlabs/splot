@@ -72,11 +72,20 @@ active OPS state, gating hard errors on external HLS being disabled.
 - **WHEN** the validator runs
 - **THEN** it SHALL emit a `brt/ops-count-mismatch` error.
 
-#### Scenario: external HLS suppresses the hard missing-OPS error
+#### Scenario: declared external OPS suppresses the hard missing-OPS error
 
 - **GIVEN** an OPS-dependent BRT whose `br_ops_id` resolves to no in-band OPS
-- **WHEN** the validator runs with external HLS provided
+- **AND** the caller declares that `(obu_xlayer_id, br_ops_id)` is available as external
+  HLS
+- **WHEN** the validator runs
 - **THEN** it SHALL NOT emit a hard `brt/unavailable-operating-point-set` error.
+
+#### Scenario: external HLS that does not declare the OPS still flags it
+
+- **GIVEN** an OPS-dependent BRT whose `br_ops_id` resolves to no in-band OPS
+- **AND** external HLS is provided but does not declare that `(obu_xlayer_id, br_ops_id)`
+- **WHEN** the validator runs
+- **THEN** it SHALL emit a `brt/unavailable-operating-point-set` error.
 
 ### Requirement: Buffer removal timing ordering classification
 

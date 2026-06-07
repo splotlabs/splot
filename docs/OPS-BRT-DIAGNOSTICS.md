@@ -35,6 +35,11 @@ offset, and a concise message with the offending field values.
 
 The parser returns a typed `Error` only when input ends before a required field, a
 variable-length code is malformed, or a closing `byte_alignment()` pad bit is non-zero.
+The stateless `ops/syntax` and `brt/syntax` checks convert such a parse (or payload-
+tail) error into a `bitstream/parse-error` (or a specific `trailing-bits/*` /
+`byte-alignment/*`) diagnostic, so a malformed payload is reported rather than silently
+accepted.
+
 Every conformance violation that leaves the bitstream parseable (reserved bits,
 reserved `ops_mlayer_info_idc`, `opsBytes` mismatch, inheritance bounds, BRT
 references) is a validator diagnostic with an OBU byte offset, so the parser keeps

@@ -1005,16 +1005,24 @@ impl ValidatorContext {
             }
             None => {
                 // AV2 § 7.3.8.5: the referenced OPS must be available in-band or by
-                // external means. Only flag a hard error when external HLS is disabled,
-                // so streams relying on external OPS delivery are not false-flagged.
-                if matches!(options.external_hls, ExternalHlsMode::Disabled) {
+                // external means. Suppress the hard error only when the caller has
+                // explicitly declared this `(obu_xlayer_id, ops_id)` as external HLS;
+                // a generic external-HLS mode that declares other objects (e.g. only
+                // sequence headers) does not make this OPS available.
+                let external_ops_declared = match &options.external_hls {
+                    ExternalHlsMode::Provided(set) => {
+                        set.has_operating_point_set(xlayer.get(), br_ops_id)
+                    }
+                    ExternalHlsMode::Disabled => false,
+                };
+                if !external_ops_declared {
                     report.push(
                         Diagnostic::error(
                             "brt/unavailable-operating-point-set",
                             format!(
                                 "OBU_BUFFER_REMOVAL_TIMING references ops_id {} for obu_xlayer_id \
-                                 {}, but no active in-band operating point set is available and \
-                                 external HLS is disabled",
+                                 {}, but no operating point set with that id is available in-band \
+                                 or declared as external HLS",
                                 br_ops_id,
                                 xlayer.get()
                             ),
