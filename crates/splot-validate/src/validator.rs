@@ -2507,6 +2507,65 @@ mod tests {
         annex_b_obu_with_header(&layer_obu_header(17, 0, 0, xlayer), &bits.into_bytes())
     }
 
+    /// A MULTISTREAM_ATLAS OBU with a single segment, placed at `xlayer`.
+    fn atlas_multistream_obu(xlayer: u8) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(0, 3); // atlas_segment_id
+        bits.uvlc(3); // ats_atlas_segment_mode_idc = MULTISTREAM_ATLAS
+        bits.uvlc(0); // ats_msi_width
+        bits.uvlc(0); // ats_msi_height
+        bits.uvlc(0); // ats_msi_num_atlas_segments_minus_1 = 0 -> 1 segment
+        bits.bit(0); // ats_msi_background_info_present_flag
+        bits.f(0, 5); // ats_msi_input_stream_id
+        bits.uvlc(0); // pos_x
+        bits.uvlc(0); // pos_y
+        bits.uvlc(0); // width
+        bits.uvlc(0); // height
+        bits.bit(0); // ats_signaled_atlas_segment_ids_flag
+        extensible_obu_tail(&mut bits);
+        annex_b_obu_with_header(&layer_obu_header(17, 0, 0, xlayer), &bits.into_bytes())
+    }
+
+    /// A BASIC_ATLAS OBU at `xlayer` whose two segments share an `ats_input_stream_id`.
+    fn atlas_basic_duplicate_stream_obu(xlayer: u8) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(0, 3); // atlas_segment_id
+        bits.uvlc(1); // ats_atlas_segment_mode_idc = BASIC_ATLAS
+        bits.bit(1); // ats_stream_id_present
+        bits.uvlc(0); // ats_width
+        bits.uvlc(0); // ats_height
+        bits.uvlc(1); // ats_num_atlas_segments_minus_1 = 1 -> 2 segments
+        for _ in 0..2 {
+            bits.f(5, 5); // ats_input_stream_id = 5 (duplicated)
+            bits.uvlc(0); // pos_x
+            bits.uvlc(0); // pos_y
+            bits.uvlc(0); // width
+            bits.uvlc(0); // height
+        }
+        bits.bit(0); // ats_signaled_atlas_segment_ids_flag
+        extensible_obu_tail(&mut bits);
+        annex_b_obu_with_header(&layer_obu_header(17, 0, 0, xlayer), &bits.into_bytes())
+    }
+
+    /// A global LCR OBU whose `lcr_dependent_xlayers_flag` is set (no payload).
+    fn global_lcr_obu_with_dependent_flag() -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(1, 3); // lcr_global_config_record_id
+        bits.f(0b1, 31); // lcr_xlayer_map
+        bits.bit(0); // aggregate
+        bits.bit(0); // ptl
+        bits.bit(0); // payload
+        bits.bit(1); // lcr_dependent_xlayers_flag
+        bits.bit(0); // atlas present
+        bits.f(0, 7); // purpose
+        bits.bit(0); // doh
+        bits.bit(0); // tile alignment
+        bits.f(0, 3); // reserved_zero_3bits
+        bits.f(0, 5); // reserved_zero_5bits
+        extensible_obu_tail(&mut bits);
+        annex_b_obu_with_header(&layer_obu_header(16, 0, 0, 31), &bits.into_bytes())
+    }
+
     /// A base-layer sequence header OBU at `xlayer` with `seq_lcr_id`.
     fn sequence_header_obu_with_lcr(xlayer: u8, seq_lcr_id: u32) -> Vec<u8> {
         let payload = sequence_header_payload_with_lcr(0, seq_lcr_id, 0, 0);
@@ -2697,6 +2756,100 @@ mod tests {
             report
                 .errors()
                 .any(|d| d.rule_id == "atlas/segment-mode-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_global_id_zero_is_flagged() {
+        // AV2 §6.8.2: lcr_global_config_record_id must be in 1..7.
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_lcr_obu(0, 0b1, None));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "lcr/global-id-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_empty_xlayer_map_is_flagged() {
+        // AV2 §6.8.2: lcr_xlayer_map must be in 1..(1 << 31) - 1.
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_lcr_obu(1, 0, None));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| d.rule_id == "lcr/xlayer-map-empty"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_local_id_zero_is_flagged() {
+        // AV2 §6.8.3: lcr_local_id must not be 0.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu(3, 0, 0, None));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| d.rule_id == "lcr/local-id-zero"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_dependent_xlayers_flag_nonzero_is_warned() {
+        // AV2 §6.8.2: lcr_dependent_xlayers_flag must be 0 (decoder-ignored -> warning).
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_lcr_obu_with_dependent_flag());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .warnings()
+                .any(|d| d.rule_id == "lcr/dependent-xlayers-flag-nonzero"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn atlas_multistream_outside_global_xlayer_is_flagged() {
+        // AV2 §6.9: MULTISTREAM_ATLAS requires obu_xlayer_id == GLOBAL_XLAYER_ID.
+        let mut data = temporal_delimiter_obu();
+        data.extend(atlas_multistream_obu(3));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "atlas/multistream-requires-global-xlayer"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn atlas_multistream_in_global_xlayer_is_accepted() {
+        // A multistream atlas at GLOBAL_XLAYER_ID is conformant.
+        let mut data = temporal_delimiter_obu();
+        data.extend(atlas_multistream_obu(31));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "atlas/multistream-requires-global-xlayer"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn atlas_duplicate_input_stream_id_is_flagged() {
+        // AV2 §6.9.6: ats_input_stream_id values of a basic atlas must be unique.
+        let mut data = temporal_delimiter_obu();
+        data.extend(atlas_basic_duplicate_stream_obu(3));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "atlas/duplicate-input-stream-id"),
             "report was: {report}"
         );
     }

@@ -1081,7 +1081,7 @@ perf = "not-applicable"
 tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_seq_lcr_missing_record_is_flagged", "crates/splot-validate/src/validator.rs::tests::lcr_local_missing_global_is_flagged"]
 commands = ["cargo test -p splot-core lcr", "cargo test -p splot-validate lcr", "cargo test -p splot-validate hls"]
 fixtures = []
-diagnostics = ["lcr/reserved-bits-nonzero", "lcr/payload-size-overflow", "lcr/global-lcr-unavailable", "lcr/global-xlayer-map-missing-xlayer", "hls/unavailable-layer-configuration-record"]
+diagnostics = ["lcr/reserved-bits-nonzero", "lcr/payload-size-overflow", "lcr/global-id-out-of-range", "lcr/xlayer-map-empty", "lcr/local-id-zero", "lcr/dependent-xlayers-flag-nonzero", "lcr/global-lcr-unavailable", "lcr/global-xlayer-map-missing-xlayer", "hls/unavailable-layer-configuration-record"]
 
 [[feature]]
 id = "AV2-5.8.1-LCR-GLOBAL-INFO"
@@ -1411,7 +1411,7 @@ perf = "not-applicable"
 tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests", "crates/splot-validate/src/validator.rs::tests::atlas_local_atlas_unavailable_is_flagged"]
 commands = ["cargo test -p splot-core atlas", "cargo test -p splot-validate atlas"]
 fixtures = []
-diagnostics = ["atlas/segment-mode-out-of-range", "atlas/region-dimension-out-of-range", "atlas/segment-count-out-of-range", "atlas/local-atlas-unavailable"]
+diagnostics = ["atlas/segment-mode-out-of-range", "atlas/region-dimension-out-of-range", "atlas/segment-count-out-of-range", "atlas/multistream-requires-global-xlayer", "atlas/duplicate-input-stream-id", "atlas/local-atlas-unavailable"]
 
 [[feature]]
 id = "AV2-5.9.1-ATLAS-LABEL-SEGMENT-INFO"

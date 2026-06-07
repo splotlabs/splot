@@ -454,12 +454,18 @@ Emitted (error unless noted):
 
 ```text
 lcr/reserved-bits-nonzero                 # warning, §6.8: a reserved-zero field is non-zero
+lcr/dependent-xlayers-flag-nonzero        # warning, §6.8.2: lcr_dependent_xlayers_flag must be 0
 lcr/payload-size-overflow                 # §6.8.6: lcr_global_payload parsed bits > lcr_data_size * 8
+lcr/global-id-out-of-range                # §6.8.2: lcr_global_config_record_id must be in 1..7
+lcr/xlayer-map-empty                      # §6.8.2: lcr_xlayer_map must be in 1..(1 << 31) - 1
+lcr/local-id-zero                         # §6.8.3: lcr_local_id must not be 0
 lcr/global-lcr-unavailable                # §7.3.8.3: local LCR lcr_global_id has no global LCR
 lcr/global-xlayer-map-missing-xlayer      # §6.4.1: seq_lcr_id global LCR omits the header xlayer
 atlas/segment-mode-out-of-range           # §6.9: ats_atlas_segment_mode_idc > 4
 atlas/region-dimension-out-of-range       # §6.9.3.1: region columns/rows >= MAX_ATLAS_COLS/ROWS
 atlas/segment-count-out-of-range          # §6.9.6: segment count >= MAX_NUM_ATLAS_SEGMENTS
+atlas/multistream-requires-global-xlayer  # §6.9: MULTISTREAM(_ALPHA) requires GLOBAL_XLAYER_ID
+atlas/duplicate-input-stream-id           # §6.9.6: basic-atlas ats_input_stream_id must be unique
 atlas/local-atlas-unavailable             # §7.3.8.4: local LCR lcr_local_atlas_id has no local atlas
 hls/unavailable-layer-configuration-record  # §7.3.8.3/§7.3.8.6: seq_lcr_id resolves to no LCR
 ```
