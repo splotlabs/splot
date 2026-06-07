@@ -96,11 +96,20 @@ impl<'a> BitReader<'a> {
     #[must_use]
     pub fn remaining_bits(&self) -> u64 {
         let total_bits = self.data.len().saturating_mul(8);
-        let consumed_bits = self
-            .byte_pos
+        total_bits.saturating_sub(self.consumed_bit_count()) as u64
+    }
+
+    /// Returns the number of bits read so far from this reader (relative to its start).
+    #[must_use]
+    pub fn consumed_bits(&self) -> u64 {
+        self.consumed_bit_count() as u64
+    }
+
+    /// Bits consumed since construction, in `usize` for offset arithmetic.
+    const fn consumed_bit_count(&self) -> usize {
+        self.byte_pos
             .saturating_mul(8)
-            .saturating_add(usize::from(self.bit_pos));
-        total_bits.saturating_sub(consumed_bits) as u64
+            .saturating_add(self.bit_pos as usize)
     }
 
     /// Reads a single bit (MSB-first).

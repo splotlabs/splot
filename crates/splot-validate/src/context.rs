@@ -11,10 +11,12 @@ use splot_core::bitio::BitReader;
 use splot_core::headers::content_interpretation::{
     ContentInterpretation, parse_content_interpretation,
 };
+use splot_core::headers::frame::{FrameHeaderPrefix, parse_frame_header_prefix};
 use splot_core::headers::sequence::{
-    SequenceHeaderGeneral, SequenceHeaderId, TimingInfo, parse_sequence_header,
+    MAX_SEQ_NUM, SequenceHeaderGeneral, SequenceHeaderId, TimingInfo, parse_sequence_header,
 };
-use splot_core::hls::parse_multi_frame_header;
+use splot_core::headers::tile_group::parse_tile_group_prefix;
+use splot_core::hls::{MAX_MFH_NUM, MfhId, MultiFrameHeaderRecord, parse_multi_frame_header};
 use splot_core::obu::finish_obu_payload;
 use splot_core::span::{BitOffset, ByteOffset};
 use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, ObuType};
@@ -38,26 +40,30 @@ pub(crate) struct ValidatorContext {
     /// Availability of in-band HLS objects, for reference checks (AV2 § 7.3.8).
     hls: HlsAvailabilityStore,
     temporal_unit: TemporalUnitState,
+    /// `true` once a frame-bearing OBU has been observed since the most recent global
+    /// temporal delimiter. Used to derive `FirstPictureInTU` for parsed frame headers
+    /// (AV2 § 5.18.2 `startCVS`).
+    seen_frame_in_tu: bool,
 }
 
 /// Availability of in-band HLS objects, for the § 7.3.8 reference checks.
 ///
-/// Only sequence-header availability is modeled today (the one in-band reference
-/// path implemented — the multi-frame header's `mfh_seq_header_id`). MSDO / MFH /
-/// LCR / atlas / OPS availability records are deferred: their consumers
-/// (frame-header `cur_mfh_id`, the random-access-point "identical MSDO" rule,
-/// `seq_lcr_id` resolution, …) require frame-header parsing or RAP detection that is
-/// out of scope, so storing them now would be unconsumed state.
+/// Sequence-header availability (§ 7.3.8.6) and multi-frame-header availability
+/// (§ 7.3.8.7) are modeled: the MFH records are consumed by the frame-header
+/// `cur_mfh_id` reference check. MSDO / LCR / atlas / OPS availability records remain
+/// deferred (their consumers need RAP detection or syntax that is out of scope).
 ///
-/// The set is kept **monotonic** (never cleared): an object included earlier in the
-/// bitstream stays available, so the validator never falsely reports it unavailable.
-/// AV2 § 7.3.8.1's "HLS OBUs must be resent at each random access point" requirement
-/// needs CLK frame-header activation to model and is intentionally not enforced (a
-/// sound-over-complete false negative).
+/// The store is kept **monotonic** (entries are never removed): an object included
+/// earlier in the bitstream stays available, so the validator never falsely reports
+/// it unavailable. AV2 § 7.3.8.1's "HLS OBUs must be resent at each random access
+/// point" requirement needs random-access state to model and is intentionally not
+/// enforced (a sound-over-complete false negative).
 #[derive(Debug, Default)]
 struct HlsAvailabilityStore {
     /// `seq_header_id` values of sequence headers seen in-band so far (§ 7.3.8.6).
     sequence_header_ids: BTreeSet<u32>,
+    /// Multi-frame-header records keyed by `mfhId`, seen in-band so far (§ 7.3.8.7).
+    multi_frame_headers: BTreeMap<u32, MultiFrameHeaderRecord>,
 }
 
 /// How a referenced HLS object resolves against available objects (AV2 § 7.3.8).
@@ -90,6 +96,21 @@ impl HlsAvailabilityStore {
         }
         HlsResolution::Unavailable
     }
+
+    /// Records a multi-frame header as available in-band, keyed by `mfhId`
+    /// (AV2 § 7.3.8.7). A later redefinition of the same id overwrites the record but
+    /// keeps the id available, preserving monotonic availability.
+    fn record_multi_frame_header(&mut self, record: MultiFrameHeaderRecord) {
+        self.multi_frame_headers.insert(record.mfh_id.get(), record);
+    }
+
+    /// Returns the in-band multi-frame-header record for `mfhId`, if available.
+    ///
+    /// External multi-frame-header availability is not modeled (`ValidationOptions`
+    /// declares only external sequence headers); it remains future work.
+    fn multi_frame_header(&self, id: MfhId) -> Option<&MultiFrameHeaderRecord> {
+        self.multi_frame_headers.get(&id.get())
+    }
 }
 
 /// Key identifying a content-interpretation record: `(obu_xlayer_id, obu_mlayer_id)`.
@@ -113,6 +134,10 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
+        // A new temporal unit resets CVS-scoped comparison state; see
+        // reset_at_temporal_unit_boundary.
+        self.reset_at_temporal_unit_boundary(obu);
+
         self.temporal_unit.observe_obu(obu, report);
 
         if obu.header.obu_type == ObuType::SequenceHeader {
@@ -127,41 +152,165 @@ impl ValidatorContext {
             _ => {}
         }
 
-        self.maybe_reset_coded_video_sequence(obu);
+        // Parse the frame/tile-group prefix (best-effort) and run the HLS reference
+        // and sequence-activation checks. A parse failure is silent, consistent with
+        // the multi-frame-header and content-interpretation observers: the prefix is
+        // not-yet-validated coverage, not a new error path.
+        self.observe_frame_bearing_obu(obu, options, report);
     }
 
-    /// Resets per-extended-layer sequence-header fingerprints at coded-video-sequence
-    /// boundaries (AV2 § 7.3.8): a new CVS for an extended layer starts at each
-    /// temporal unit containing an `OBU_CLOSED_LOOP_KEY` for that layer, after which
-    /// a reconfigured sequence header with the same `seq_header_id` is legal.
+    /// Resets the CVS-scoped comparison state at each temporal-unit boundary
+    /// (a global `OBU_TEMPORAL_DELIMITER`).
     ///
-    /// Precise per-CVS scoping ultimately needs CLK frame-header association, which
-    /// is not modeled yet. This conservative reset removes the common false positive
-    /// where a later CVS reuses a `seq_header_id` with changed parameters, at the cost
-    /// of a false negative: because the CVS-opening header precedes its CLK in the
-    /// same temporal unit (§7.3.6), a non-identical repeat *after* the CLK within the
-    /// same CVS is no longer compared. This sound-over-complete bias (never reject a
-    /// valid stream) is intentional until CLK activation is parsed
-    /// (see the `sequence-timing-hls-availability` change).
-    fn maybe_reset_coded_video_sequence(&mut self, obu: &ObuEnvelope<'_>) {
-        if obu.header.obu_type == ObuType::ClosedLoopKey
-            && !obu.header.extended_layer_id.is_global()
+    /// Sequence-header fingerprints (AV2 § 7.3.8) and content-interpretation records
+    /// (§ 6.4.12 / § 6.14) are compared within a coded video sequence. Modeling the
+    /// exact CVS boundary needs the `OBU_CLOSED_LOOP_KEY` frame header that starts a
+    /// CVS together with random-access state, which is out of scope. Resetting at the
+    /// temporal-unit boundary is sound-over-complete: it keeps a CVS-opening sequence
+    /// header's fingerprint across the activating CLK (which follows it in the same
+    /// temporal unit, AV2 § 7.3.6), so a non-identical repeat later in the temporal
+    /// unit is caught; a coded video sequence that spans temporal units yields a
+    /// documented false negative for a repeat crossing a temporal-unit boundary —
+    /// never a false positive (it only drops comparisons). Frame-header activation
+    /// drives the *active* sequence header (see `observe_frame_bearing_obu`); this
+    /// reset drives the fingerprint / content-interpretation scope.
+    // TODO(spec: AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY): scope per-CVS state
+    // exactly once random-access / long-term-reference detection is modeled.
+    fn reset_at_temporal_unit_boundary(&mut self, obu: &ObuEnvelope<'_>) {
+        if obu.header.obu_type == ObuType::TemporalDelimiter
+            && obu.header.extended_layer_id.is_global()
         {
-            let xlayer = obu.header.extended_layer_id;
-            // TODO(spec: AV2-7.3.8-HLS-AVAILABILITY): scope CVS boundaries precisely
-            // once CLK frame-header activation is parsed.
-            self.sequence_fingerprints.retain(|(x, _), _| *x != xlayer);
-            // Cross-embedded-layer timing and repeated-CI identity are scoped to a
-            // coded video sequence (AV2 § 6.4.12 / § 6.14), so clear this xlayer's
-            // content-interpretation records at the same conservative CVS boundary.
-            // This shares the sequence-fingerprint reset's documented sound-over-
-            // complete bias: a CI OBU at CVS start precedes its CLK in the same
-            // temporal unit (§ 7.3.6), so its record is cleared here and a later
-            // non-identical CI *within the same CVS* is not caught (a false negative,
-            // never a false positive). Exact scoping needs CLK frame-header
-            // activation (AV2-5.18-FRAME-HEADER).
-            self.content_interpretations
-                .retain(|(x, _), _| *x != xlayer);
+            self.sequence_fingerprints.clear();
+            self.content_interpretations.clear();
+            self.seen_frame_in_tu = false;
+        }
+    }
+
+    /// Observes a frame-bearing OBU — a tile-group OBU (tile group, switch, RAS
+    /// frame) or a SEF / TIP / bridge frame — by parsing its frame-header prefix
+    /// (best-effort) and running the HLS reference and sequence-activation checks
+    /// (AV2 § 5.18.2 / § 7.3.8).
+    fn observe_frame_bearing_obu(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        if !is_frame_bearing(obu.header.obu_type) {
+            return;
+        }
+
+        let first_picture_in_tu = !self.seen_frame_in_tu;
+        self.seen_frame_in_tu = true;
+
+        // A parse failure is silent: a frame/tile-group payload the skeleton cannot
+        // reach is not-yet-validated coverage, not a conformance error in this phase.
+        let Some(prefix) = parse_frame_prefix(obu, first_picture_in_tu) else {
+            return;
+        };
+
+        let resolved = self.resolve_frame_header_reference(&prefix, obu, options, report);
+
+        // AV2 § 5.18.2: a parsed CLK/OLK frame header activates the referenced
+        // sequence header for its extended layer, overriding the OBU-order fallback.
+        // Only an in-band reference is activated (its layer limits are modeled); an
+        // external reference already suppresses the layer-limit checks.
+        if prefix.is_key_frame
+            && let Some(seq_id) = resolved
+        {
+            self.active_sequence_by_xlayer
+                .insert(obu.header.extended_layer_id, seq_id);
+        }
+    }
+
+    /// Resolves a parsed frame header's sequence-header reference, emitting range and
+    /// availability diagnostics (AV2 § 5.18.2 / § 7.3.8.6 / § 7.3.8.7). Returns the
+    /// in-band-resolved `seq_header_id` for activation, or `None` when it is out of
+    /// range, resolved only externally, or unavailable.
+    fn resolve_frame_header_reference(
+        &self,
+        prefix: &FrameHeaderPrefix,
+        obu: &ObuEnvelope<'_>,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) -> Option<SequenceHeaderId> {
+        if prefix.cur_mfh_id.is_zero() {
+            // cur_mfh_id == 0: the frame references a sequence header directly.
+            let raw = prefix.seq_header_id_in_frame_header?;
+            if raw >= MAX_SEQ_NUM {
+                report.push(frame_header_error(
+                    "frame-header/seq-header-id-out-of-range",
+                    "6.17",
+                    obu,
+                    format!(
+                        "seq_header_id_in_frame_header {raw} must be less than MAX_SEQ_NUM \
+                         ({MAX_SEQ_NUM})"
+                    ),
+                ));
+                return None;
+            }
+            self.resolve_referenced_sequence_header(raw, obu, options, report)
+        } else {
+            // cur_mfh_id > 0: resolve the multi-frame header, then its sequence header.
+            let cur = prefix.cur_mfh_id;
+            if !cur.in_range() {
+                report.push(frame_header_error(
+                    "frame-header/cur-mfh-id-out-of-range",
+                    "6.17",
+                    obu,
+                    format!(
+                        "cur_mfh_id {} must be less than MAX_MFH_NUM ({MAX_MFH_NUM})",
+                        cur.get()
+                    ),
+                ));
+                return None;
+            }
+            let Some(record) = self.hls.multi_frame_header(cur) else {
+                report.push(frame_header_unavailable_mfh(cur, obu));
+                return None;
+            };
+            let seq_raw = u32::from(record.mfh_seq_header_id.get());
+            self.resolve_referenced_sequence_header(seq_raw, obu, options, report)
+        }
+    }
+
+    /// Resolves an in-range `seq_header_id` referenced by a frame header against the
+    /// HLS store, emitting `hls/unavailable-sequence-header` (§ 7.3.8.6) — and the
+    /// external-HLS advisory under the default — when unavailable. Returns the id only
+    /// for in-band availability (so it can be activated; an external reference has no
+    /// modeled layer limits).
+    fn resolve_referenced_sequence_header(
+        &self,
+        seq_header_id: u32,
+        obu: &ObuEnvelope<'_>,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) -> Option<SequenceHeaderId> {
+        match self.hls.resolve_sequence_header(seq_header_id, options) {
+            HlsResolution::InBand => SequenceHeaderId::try_new(seq_header_id),
+            HlsResolution::External => None,
+            HlsResolution::Unavailable => {
+                let external_note = if matches!(options.external_hls, ExternalHlsMode::Disabled) {
+                    " (external HLS is disabled)"
+                } else {
+                    " in-band or through the supplied external HLS"
+                };
+                report.push(
+                    Diagnostic::error(
+                        "hls/unavailable-sequence-header",
+                        format!(
+                            "frame header references sequence header {seq_header_id}, but no \
+                             sequence header with that id is available{external_note}"
+                        ),
+                    )
+                    .with_spec_section("7.3.8.6")
+                    .with_byte_offset(obu.offset),
+                );
+                if matches!(options.external_hls, ExternalHlsMode::Disabled) {
+                    report.push(external_hls_disabled_advisory(seq_header_id, obu));
+                }
+                None
+            }
         }
     }
 
@@ -291,23 +440,27 @@ impl ValidatorContext {
                     .with_byte_offset(obu.offset),
                 );
                 if matches!(options.external_hls, ExternalHlsMode::Disabled) {
-                    // Advisory: the finding assumes no external HLS. If the referenced
-                    // sequence header is supplied out-of-band, the caller can declare
-                    // it via ValidationOptions to refine the check (AV2 § 7.3.8.1).
-                    report.push(
-                        Diagnostic::warning(
-                            "hls/external-hls-disabled",
-                            format!(
-                                "sequence header {id} is not available in-band and external HLS is \
-                                 disabled; supply it via ValidationOptions if it is provided through \
-                                 external means"
-                            ),
-                        )
-                        .with_spec_section("7.3.8.1")
-                        .with_byte_offset(obu.offset),
-                    );
+                    report.push(external_hls_disabled_advisory(id, obu));
                 }
             }
+        }
+
+        // Record this multi-frame header's in-band availability (AV2 § 7.3.8.7) so a
+        // later frame header's cur_mfh_id reference can resolve it. Both ids are in
+        // range here (mfh_seq_header_id checked above; mfhId checked now). The MFH is
+        // recorded even when its own sequence-header reference is unavailable — that
+        // is a separate finding above, not a reason to treat the MFH as absent.
+        if mfh.mfh_id_in_range()
+            && let Some(seq_id) = SequenceHeaderId::try_new(mfh.mfh_seq_header_id)
+            && let Ok(mfh_id_value) = u32::try_from(mfh.mfh_id())
+        {
+            self.hls.record_multi_frame_header(MultiFrameHeaderRecord {
+                mfh_id: MfhId::from_raw(mfh_id_value),
+                mfh_seq_header_id: seq_id,
+                mfh_tlayer_id: obu.header.temporal_layer_id,
+                mfh_mlayer_id: obu.header.embedded_layer_id,
+                offset: obu.offset,
+            });
         }
     }
 
@@ -387,18 +540,15 @@ impl ValidatorContext {
             }
         }
 
-        // `or_insert` keeps the first activated header per id/xlayer for the run.
-        // This is a known approximation: when a later CVS (after a CLK) reuses the
-        // same seq_header_id with different layer limits, the stale header is still
-        // used for max_tlayer_id/max_mlayer_id checks. Resolving this requires CLK
-        // frame-header activation (the activating CLK follows its sequence header in
-        // OBU order, so the state cannot be reset purely on the CLK without breaking
-        // intra-CVS frames). Tracked for the follow-up HLS-availability change.
-        // TODO(spec: AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT): activate/reset the per-xlayer
-        // sequence header from the CLK frame header instead of the first base-layer copy.
-        self.sequence_headers
-            .entry(seq_header_id)
-            .or_insert(general);
+        // Store the latest well-formed header per seq_header_id, so a reconfiguration
+        // (a later sequence header reusing the id with different layer limits) is the
+        // one used for max_tlayer_id / max_mlayer_id checks once a frame header
+        // activates it. A non-identical repeat within a CVS is still flagged above.
+        self.sequence_headers.insert(seq_header_id, general);
+        // The active sequence header for an extended layer defaults to the first one
+        // seen in OBU order; a parsed CLK/OLK frame header overrides this with the
+        // sequence header it references (see observe_frame_bearing_obu), which is the
+        // exact AV2 § 5.18.2 activation point for the paths the skeleton parses.
         self.active_sequence_by_xlayer
             .entry(xlayer)
             .or_insert(seq_header_id);
@@ -849,4 +999,78 @@ fn ordering_error(rule_id: &'static str, obu: &ObuEnvelope<'_>, message: String)
     Diagnostic::error(rule_id, message)
         .with_spec_section("7.3.7")
         .with_byte_offset(obu.offset)
+}
+
+/// Returns `true` if `obu_type`'s payload begins with a `frame_header()` or
+/// `tile_group_obu()` (AV2 v1.0.0 § 5.2.1): the tile-group types, plus the SEF / TIP
+/// / bridge frames that call `frame_header( 1 )` directly.
+fn is_frame_bearing(obu_type: ObuType) -> bool {
+    obu_type.is_tile_group()
+        || obu_type.is_sef()
+        || obu_type.is_tip_frame()
+        || obu_type == ObuType::BridgeFrame
+}
+
+/// Parses a frame-bearing OBU's frame-header prefix (best-effort), returning `None`
+/// on any parse failure or when no parseable frame header is present (an absent
+/// header or a non-first tile group's `frame_header_copy()`).
+fn parse_frame_prefix(
+    obu: &ObuEnvelope<'_>,
+    first_picture_in_tu: bool,
+) -> Option<FrameHeaderPrefix> {
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    if obu.header.obu_type.is_tile_group() {
+        // Tile-group OBUs carry tile_group_obu(); a frame header is parseable only for
+        // the first tile group (a non-first tile group carries frame_header_copy()).
+        parse_tile_group_prefix(&mut reader, obu.header.obu_type, first_picture_in_tu)
+            .ok()
+            .and_then(|tile_group| tile_group.frame_header)
+    } else {
+        // SEF / TIP / bridge frames call frame_header( 1 ) directly (AV2 § 5.2.1).
+        parse_frame_header_prefix(&mut reader, obu.header.obu_type, first_picture_in_tu).ok()
+    }
+}
+
+/// Builds a frame-header reference diagnostic located at `obu`.
+fn frame_header_error(
+    rule_id: &'static str,
+    spec_section: &'static str,
+    obu: &ObuEnvelope<'_>,
+    message: String,
+) -> Diagnostic {
+    Diagnostic::error(rule_id, message)
+        .with_spec_section(spec_section)
+        .with_byte_offset(obu.offset)
+}
+
+/// Builds the `hls/unavailable-multi-frame-header` diagnostic (AV2 § 7.3.8.7).
+fn frame_header_unavailable_mfh(cur_mfh_id: MfhId, obu: &ObuEnvelope<'_>) -> Diagnostic {
+    Diagnostic::error(
+        "hls/unavailable-multi-frame-header",
+        format!(
+            "frame header references cur_mfh_id {}, but no multi-frame header with that id is \
+             available in-band (external multi-frame headers are not modeled)",
+            cur_mfh_id.get()
+        ),
+    )
+    .with_spec_section("7.3.8.7")
+    .with_byte_offset(obu.offset)
+}
+
+/// Builds the advisory `hls/external-hls-disabled` warning (AV2 § 7.3.8.1) for a
+/// sequence-header reference that is unavailable in-band under the default
+/// (external-disabled) options.
+fn external_hls_disabled_advisory(seq_header_id: u32, obu: &ObuEnvelope<'_>) -> Diagnostic {
+    // The finding assumes no external HLS. If the referenced sequence header is
+    // supplied out-of-band, the caller can declare it via ValidationOptions to refine
+    // the check (AV2 § 7.3.8.1).
+    Diagnostic::warning(
+        "hls/external-hls-disabled",
+        format!(
+            "sequence header {seq_header_id} is not available in-band and external HLS is \
+             disabled; supply it via ValidationOptions if it is provided through external means"
+        ),
+    )
+    .with_spec_section("7.3.8.1")
+    .with_byte_offset(obu.offset)
 }

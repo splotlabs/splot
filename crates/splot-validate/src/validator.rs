@@ -1915,4 +1915,218 @@ mod tests {
             "report was: {report}"
         );
     }
+
+    // --- Frame-header prefix activation / HLS reference checks ---
+
+    /// A frame-bearing OBU (`header` byte) whose first tile group carries a frame
+    /// header with `cur_mfh_id == 0` and the given `seq_header_id_in_frame_header`.
+    fn frame_obu_direct_seq_ref(header: u8, seq_header_id: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.bit(1); // is_first_tile_group -> frame_header_present_flag inferred 1
+        bits.uvlc(0); // cur_mfh_id == 0 -> direct sequence-header reference
+        bits.uvlc(seq_header_id); // seq_header_id_in_frame_header
+        annex_b_obu(header, &bits.into_bytes())
+    }
+
+    /// A frame-bearing OBU whose first tile group carries a frame header with
+    /// `cur_mfh_id` greater than 0 (the sequence header resolves through the MFH).
+    fn frame_obu_mfh_ref(header: u8, cur_mfh_id: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.bit(1); // is_first_tile_group
+        bits.uvlc(cur_mfh_id); // cur_mfh_id > 0
+        annex_b_obu(header, &bits.into_bytes())
+    }
+
+    /// Temporal delimiter + an activating sequence header (id `seq_id`) for xlayer 0.
+    fn td_and_seq_header(seq_id: u32, max_tlayer_id: u32, max_mlayer_id: u32) -> Vec<u8> {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_with_id(seq_id, max_tlayer_id, max_mlayer_id),
+        ));
+        data
+    }
+
+    // 0x10 = OBU_CLOSED_LOOP_KEY (type 4), no extension, tlayer 0.
+    const CLK_HEADER: u8 = 0x10;
+
+    #[test]
+    fn hls_frame_header_missing_sequence_header_is_flagged() {
+        let mut data = td_and_seq_header(0, 1, 1);
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 5)); // references missing id 5
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "hls/unavailable-sequence-header"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn hls_frame_header_sequence_header_available_inband_is_accepted() {
+        let mut data = td_and_seq_header(3, 1, 1);
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 3)); // references available id 3
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "hls/unavailable-sequence-header"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn hls_frame_header_sequence_header_available_external_is_accepted() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // No in-band sequence header with id 5; external HLS supplies it.
+        let mut data = temporal_delimiter_obu();
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 5));
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(5),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "hls/unavailable-sequence-header"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn hls_frame_header_missing_mfh_is_flagged() {
+        let mut data = td_and_seq_header(0, 1, 1);
+        data.extend(frame_obu_mfh_ref(CLK_HEADER, 2)); // references missing MFH id 2
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "hls/unavailable-multi-frame-header"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn hls_frame_header_mfh_available_is_accepted() {
+        // TD, seq(0), MFH (mfh_seq_header_id 0, mfhId 1), CLK with cur_mfh_id 1.
+        let mut data = td_and_seq_header(0, 1, 1);
+        data.extend(multi_frame_header_obu(0)); // mfh_seq_header_id 0 -> mfhId 1
+        data.extend(frame_obu_mfh_ref(CLK_HEADER, 1)); // resolves MFH 1 -> seq 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "hls/unavailable-multi-frame-header"),
+            "report was: {report}"
+        );
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "hls/unavailable-sequence-header"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_header_seq_header_id_out_of_range_is_not_double_reported() {
+        let mut data = td_and_seq_header(0, 1, 1);
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 16)); // == MAX_SEQ_NUM -> out of range
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/seq-header-id-out-of-range"),
+            "report was: {report}"
+        );
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "hls/unavailable-sequence-header"),
+            "an out-of-range id must not also report unavailable; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_header_cur_mfh_id_out_of_range_is_not_double_reported() {
+        let mut data = td_and_seq_header(0, 1, 1);
+        data.extend(frame_obu_mfh_ref(CLK_HEADER, 16)); // == MAX_MFH_NUM -> out of range
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/cur-mfh-id-out-of-range"),
+            "report was: {report}"
+        );
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "hls/unavailable-multi-frame-header"),
+            "an out-of-range cur_mfh_id must not also report unavailable; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn sequence_activation_uses_clk_referenced_sequence_header() {
+        // Two available sequence headers with different layer limits: id 0 allows
+        // tlayer up to 2, id 1 allows only tlayer 0. A CLK that references id 1
+        // activates it for xlayer 0, so a following tlayer-1 OBU exceeds the limit.
+        // Without frame-header activation, id 0 (the OBU-order fallback) would be
+        // active and the tlayer-1 OBU would be accepted.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 2, 2)));
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(1, 0, 0)));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 1)); // activate id 1
+        data.extend(annex_b_obu_with_header(&layer_obu_header(6, 1, 0, 0), &[]));
+
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/tlayer-exceeds-max"),
+            "the CLK-referenced sequence header (id 1) must bound the tlayer; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn sequence_fingerprint_preserved_for_in_cvs_repeat() {
+        // A sequence header opens a CVS, a CLK references (activates) it, then a
+        // non-identical repeat of the same id appears later in the SAME temporal unit.
+        // The opening header's fingerprint survives the activating CLK, so the repeat
+        // is still flagged (the previous CLK-level reset would have missed it).
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // activates id 0
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 0)));
+
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "hls/repeated-sequence-header-not-identical"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn sequence_reconfiguration_across_temporal_unit_is_not_flagged() {
+        // A new temporal unit (and CVS) legally reconfigures id 0 with different
+        // layer limits. The temporal-unit reset clears the previous fingerprint, so
+        // this is NOT flagged as a non-identical repeat (no false positive).
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        data.extend(temporal_delimiter_obu());
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 0)));
+
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "hls/repeated-sequence-header-not-identical"),
+            "a reconfiguration in a new temporal unit must not be flagged; report was: {report}"
+        );
+    }
 }

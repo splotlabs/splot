@@ -171,8 +171,8 @@ planning aids; the matrix remains canonical.
 Validator diagnostics use a kebab/slash namespace with a documented prefix:
 `obu-header/`, `obu-reserved/`, `bitstream/`, `trailing-bits/`,
 `byte-alignment/`, `sequence-header/`, `sequence-state/`, `obu-order/`, `hls/`,
-`msdo/`, `mfh/`, and `content-interpretation/`. Example:
-`obu-header/global-xlayer-required`.
+`msdo/`, `mfh/`, `content-interpretation/`, `frame-header/`, and `tile-group/`.
+Example: `obu-header/global-xlayer-required`.
 
 A diagnostic that corresponds directly to a modeled feature MAY instead use the
 Feature ID as a base, optionally with a `.SUFFIX` for a narrower rule:

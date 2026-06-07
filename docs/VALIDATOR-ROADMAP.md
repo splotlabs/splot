@@ -321,6 +321,19 @@ Acceptance:
 
 **Goal:** split the large frame header into implementable chunks.
 
+> **Status (OpenSpec `frame-activation-hls-skeleton`):** a bounded, prefix-only
+> frame-activation skeleton landed ahead of the full frame header. It parses just the
+> `frame_header_info()` activation/reference fields (`cur_mfh_id`,
+> `seq_header_id_in_frame_header`) and the `tile_group_obu()` prefix
+> (`is_first_tile_group`, `frame_header_present_flag`), which unblocks the generic HLS
+> reference checks (`hls/unavailable-sequence-header`,
+> `hls/unavailable-multi-frame-header`) and CLK/OLK sequence-header activation. This
+> deliberately precedes the full frame header (Phase 8) and tile payload (Phase 9):
+> the activation skeleton gives exact validator state without committing to the full
+> §5.18 / §5.20 syntax or the entropy coder. `AV2-5.18-FRAME-HEADER`,
+> `AV2-5.18.1-FRAME-HEADER-GENERAL`, `AV2-5.18.2-FRAME-HEADER-INFO`, and
+> `AV2-5.19-TILE-GROUP` are therefore `partial`, not `done`.
+
 Umbrella:
 
 - `AV2-5.18-FRAME-HEADER`

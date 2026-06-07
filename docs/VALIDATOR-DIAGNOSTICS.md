@@ -27,9 +27,12 @@ Keep these stable:
 | `sequence-header/` | §6.4 sequence-header local syntax and semantics. |
 | `sequence-state/` | Activated sequence-header availability and max-layer checks. |
 | `obu-order/` | Temporal-unit and coded-extended-layer ordering checks. |
-| `hls/` | §7.3.8 high-level-syntax availability (sequence-header repeats, etc.). |
+| `hls/` | §7.3.8 high-level-syntax availability (sequence-header / multi-frame-header references and repeats). |
 | `msdo/` | §6.6 Multi Stream Decoder Operation OBU checks. |
 | `mfh/` | §5.7 / §6.4.1 multi-frame-header local id-range checks. |
+| `content-interpretation/` | §5.15 / §6.14 content interpretation constraints. |
+| `frame-header/` | §5.18 / §6.17 frame-header prefix references and local id ranges. |
+| `tile-group/` | §5.19 tile-group prefix and ordering checks. |
 
 Existing examples:
 
@@ -371,3 +374,35 @@ Recommended diagnostic JSON fields:
 ```
 
 `feature_id` can be added later; if added, update all snapshot tests and docs.
+
+## 12. Frame activation HLS skeleton (implemented)
+
+OpenSpec change `frame-activation-hls-skeleton`. The prefix-only frame/tile-group
+parser (`AV2-5.18.2-FRAME-HEADER-INFO`, `AV2-5.19-TILE-GROUP`) drives these
+generic high-level-syntax reference checks.
+
+Emitted (error unless noted):
+
+```text
+hls/unavailable-sequence-header        # §7.3.8.6: cur_mfh_id == 0 references a missing seq header
+hls/unavailable-multi-frame-header     # §7.3.8.7: cur_mfh_id > 0 references a missing MFH
+frame-header/seq-header-id-out-of-range  # §6.17: seq_header_id_in_frame_header >= MAX_SEQ_NUM
+frame-header/cur-mfh-id-out-of-range     # §6.17: cur_mfh_id >= MAX_MFH_NUM
+```
+
+An out-of-range id emits only the `frame-header/*-out-of-range` diagnostic, not the
+matching `hls/unavailable-*` (no double-report). The existing
+`mfh/sequence-header-unavailable`, `hls/external-hls-disabled`,
+`hls/repeated-sequence-header-not-identical`, and
+`content-interpretation/repeated-ci-not-identical` diagnostics are preserved; the
+last two benefit from the new temporal-unit-scoped CVS reset.
+
+Reserved (the `splot-core` prefix parser returns a typed `Error` on EOF / invalid
+descriptors; validator emission is deferred until strict frame/tile payload parsing
+lands, so the current unparsed-frame-payload behavior — and its tests — are
+preserved):
+
+```text
+frame-header/prefix-parse-error
+tile-group/prefix-parse-error
+```

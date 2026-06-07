@@ -208,6 +208,104 @@ openspec validate sequence-timing-hls-availability --strict                     
 Test breakdown after PR B: `splot-core` 123, `splot-encode` 2, `splot-validate`
 79, `splot-cli` 9, `xtask` 17 (230 total).
 
+## Frame activation + HLS reference skeleton (2026-06-07)
+
+OpenSpec change `frame-activation-hls-skeleton`. Adds a **prefix-only** AV2
+frame-header and tile-group parser — just the activation/reference fields needed by
+validator state — and wires it into the HLS availability store and sequence
+activation. Still validator-first: **no** full frame header, tile payload, entropy
+coder, decoder, or encoder was implemented. This unblocks the validator gaps that
+were waiting on `AV2-5.18-FRAME-HEADER`.
+
+**Implemented (`splot-core`):**
+
+- `headers/frame.rs` — `parse_frame_header_prefix()` reads only the head of
+  `frame_header_info()` (AV2 §5.18.2): `cur_mfh_id` (`uvlc`, inferred `0` for
+  `OBU_BRIDGE_FRAME`) and, when `cur_mfh_id == 0`, `seq_header_id_in_frame_header`
+  (`uvlc`). It derives `keyFrame` / `IsBridge` / `IsRegular` / `startCVS` from
+  `obu_type`, reports consumed bits, and a `FrameHeaderPrefixStatus::ActivationFieldsOnly`
+  status that makes the prefix-only boundary explicit. It never runs a full-payload
+  trailing-bits check.
+- `headers/tile_group.rs` — `parse_tile_group_prefix()` reads the `tile_group_obu()`
+  prefix (AV2 §5.19): `is_first_tile_group`, `frame_header_present_flag`, and the
+  `FrameHeaderPrefix` for the first tile group only (a non-first tile group carries
+  `frame_header_copy()`, which is recorded but not parsed). It stops before tile
+  payload syntax.
+- `hls.rs` — `MfhId` newtype (`cur_mfh_id` / `mfhId`, with `is_zero()` / `in_range()`)
+  and `MultiFrameHeaderRecord` (mfhId, mfh_seq_header_id, mfh_tlayer_id,
+  mfh_mlayer_id, offset) for HLS availability.
+- `bitio.rs` — `BitReader::consumed_bits()`.
+
+**Validator (`splot-validate`, `context.rs`):**
+
+- The HLS store now records in-band multi-frame headers (`MultiFrameHeaderRecord`),
+  consumed by the frame-header `cur_mfh_id` reference check. External MFH availability
+  is future (`ValidationOptions` still declares only external sequence headers).
+- Frame-bearing OBUs (tile group / switch / RAS / SEF / TIP / bridge) are observed
+  best-effort: on a successful prefix parse the validator resolves the referenced
+  sequence header and emits, as errors, `hls/unavailable-sequence-header` (§7.3.8.6),
+  `hls/unavailable-multi-frame-header` (§7.3.8.7),
+  `frame-header/seq-header-id-out-of-range` (§6.17), and
+  `frame-header/cur-mfh-id-out-of-range` (§6.17). An out-of-range id is reported once
+  (no double-report as unavailable). A parse failure is silent (consistent with the
+  MFH/CI observers), so the existing unparsed-frame-payload behavior is preserved.
+- **Activation:** a parsed CLK/OLK frame header activates the sequence header it
+  references for its extended layer, overriding the OBU-order fallback; the latest
+  well-formed sequence header per `seq_header_id` is stored so a reconfiguration is
+  used for `max_tlayer_id` / `max_mlayer_id` checks.
+- **CVS scoping:** the per-CLK fingerprint/CI reset is replaced by a reset at the
+  global temporal delimiter. A CVS-opening sequence header now keeps its fingerprint
+  across the activating CLK, so a non-identical repeat later in the temporal unit is
+  caught (the previous CLK-level reset missed it), while a reconfiguration in a new
+  temporal unit is not flagged.
+
+**Inspector:** `inspect --json` now emits a `frame_header_prefix` summary
+(`payload_kind`, `prefix_status`, `cur_mfh_id`, `seq_header_id_in_frame_header`,
+`referenced_sequence_header_id`, and the obu-type flags) for frame-bearing OBUs,
+clearly labelled as prefix-only — the `payload_status` stays `unimplemented` for the
+tile-group payload. New fixture `tests/fixtures/frame-header-prefix.av2`.
+
+**New diagnostic prefixes** registered in `xtask` and `docs/FEATURE-TRACKING.md`:
+`frame-header/`, `tile-group/`.
+
+**Bounded honestly / documented false-negative bounds:**
+
+- The frame parser is prefix-only; `frame_header_copy()` and the rest of §5.18 / the
+  §5.20 tile payload remain future, so `AV2-5.18-FRAME-HEADER`,
+  `AV2-5.18.1-FRAME-HEADER-GENERAL`, `AV2-5.18.2-FRAME-HEADER-INFO`, and
+  `AV2-5.19-TILE-GROUP` are `partial`, not `done`.
+- `frame-header/prefix-parse-error` and `tile-group/prefix-parse-error` are reserved:
+  the core parser returns a typed `Error`, but the validator does not emit a new error
+  for an unparsed frame/tile-group payload in this phase (a sound-over-complete false
+  negative that preserves the existing behavior and tests).
+- A coded video sequence can span temporal units, so a non-identical repeated
+  sequence header that crosses a temporal-unit boundary within one CVS is a documented
+  false negative (never a false positive). Exact per-CVS scoping needs random-access
+  state (`AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY`).
+- External MFH availability, and the MFH `TLayerDependencyMap` / `MLayerDependencyMap`
+  checks, remain future.
+
+**Acceptance results** (run from the repo root):
+
+```text
+cargo fmt --all -- --check                                                      # ok (no diff)
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # ok, 0 warnings
+cargo test --workspace --all-targets --locked                                   # ok: 267 passed, 0 failed
+cargo test -p splot-core frame_header                                           # ok
+cargo test -p splot-core tile_group                                            # ok
+cargo test -p splot-validate frame_header                                      # ok
+cargo test -p splot-validate hls                                               # ok
+cargo test -p splot-validate mfh_                                              # ok
+cargo xtask check-feature-status                                               # ok (114 features)
+cargo xtask spec-coverage                                                      # ok
+cargo xtask ci                                                                 # ok: all checks passed
+openspec validate frame-activation-hls-skeleton --strict                       # ok: change is valid
+cargo run -p splot-cli -- inspect tests/fixtures/frame-header-prefix.av2 --json # shows frame_header_prefix
+```
+
+Test breakdown after this phase: `splot-core` 138, `splot-encode` 2,
+`splot-validate` 99, `splot-cli` 11, `xtask` 17 (267 total).
+
 ## Implemented
 
 - **`splot-core`**

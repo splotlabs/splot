@@ -160,6 +160,42 @@ fn inspect_prints_valid_prefix_before_a_tail_error() {
 }
 
 #[test]
+fn inspect_json_exposes_frame_header_prefix() {
+    // The fixture is TemporalDelimiter, SequenceHeader (id 0), then an
+    // OBU_CLOSED_LOOP_KEY whose first tile group carries a frame header referencing
+    // seq_header_id 0. The inspector surfaces the prefix-only activation fields.
+    let path = fixture("frame-header-prefix.av2");
+    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let records = json.as_array().expect("inspect output is an array");
+    assert!(
+        records.len() >= 3,
+        "stdout was: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    let frame = &records[2];
+    let prefix = &frame["frame_header_prefix"];
+    assert_eq!(prefix["payload_kind"], "frame_header_prefix");
+    assert_eq!(prefix["prefix_status"], "activation_fields_only");
+    assert_eq!(prefix["cur_mfh_id"], 0);
+    assert_eq!(prefix["seq_header_id_in_frame_header"], 0);
+    assert_eq!(prefix["referenced_sequence_header_id"], 0);
+    assert_eq!(prefix["is_key_frame"], true);
+    // The payload itself is only prefix-parsed, never a complete frame header.
+    assert_eq!(frame["payload_status"]["status"], "unimplemented");
+}
+
+#[test]
+fn validate_frame_header_prefix_fixture_exits_zero() {
+    let out = validate("frame-header-prefix.av2", &[]);
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("conformant"), "stdout was: {stdout}");
+}
+
+#[test]
 fn missing_input_file_exits_two() {
     let out = validate("does-not-exist.av2", &[]);
     assert_eq!(out.status.code(), Some(2));
