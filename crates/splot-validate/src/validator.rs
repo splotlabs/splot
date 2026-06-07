@@ -1529,6 +1529,86 @@ mod tests {
     }
 
     #[test]
+    fn external_hls_empty_set_does_not_suppress_no_active_sequence_header() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // An empty external set declares no sequence header that could be active, so
+        // the missing-active-header error must NOT be suppressed (otherwise an empty
+        // set would silently accept a malformed stream).
+        let mut data = temporal_delimiter_obu();
+        data.extend(multi_frame_header_obu(5));
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/no-active-sequence-header"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn external_hls_suppresses_active_sequence_layer_limits() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // In-band active sequence (id 0) for xlayer 0 allows only embedded layer 0,
+        // then a coded OBU at embedded layer 1.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 0)));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(6, 0, 1, 0), &[]));
+
+        // Default: the OBU exceeds the in-band active sequence's mlayer limit.
+        let default_report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            default_report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/mlayer-exceeds-max"),
+            "report was: {default_report}"
+        );
+
+        // External HLS declaring a sequence header: a different external sequence may
+        // be active with limits this validator does not model, so the in-band
+        // layer-limit check is suppressed (sound: never reject a conformant
+        // external-HLS stream).
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(0),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/mlayer-exceeds-max"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn mfh_reference_to_malformed_tail_sequence_header_is_unavailable() {
+        // A sequence header whose body parses but whose §5.2.1 payload tail is
+        // malformed (an extra non-zero trailing byte) is not a valid available HLS
+        // object, so it is not recorded — a later MFH referencing it is unavailable.
+        let mut data = temporal_delimiter_obu();
+        // A well-formed activating sequence header (id 0) so the MFH has an active
+        // sequence for its xlayer.
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 0)));
+        // Sequence header id 7 with a malformed tail (trailing zero bit not zero).
+        let mut malformed = sequence_header_payload_with_id(7, 0, 0);
+        malformed.push(0xFF);
+        data.extend(annex_b_obu(0x04, &malformed));
+        // Multi-frame header referencing id 7.
+        data.extend(multi_frame_header_obu(7));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "mfh/sequence-header-unavailable"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
     fn mfh_reference_to_non_activating_in_band_sequence_header_is_available() {
         // A sequence header that cannot activate (tlayer != 0, 0x05) is still
         // "included in the bitstream", so its seq_header_id is available (§7.3.8.6).

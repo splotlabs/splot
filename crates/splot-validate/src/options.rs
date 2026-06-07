@@ -42,6 +42,14 @@ impl ExternalHlsSet {
     pub(crate) fn has_sequence_header(&self, seq_header_id: u32) -> bool {
         self.sequence_header_ids.contains(&seq_header_id)
     }
+
+    /// Returns `true` if any sequence header at all was declared externally. Used to
+    /// decide whether an externally-provided sequence header could be the active one
+    /// for an extended layer (AV2 § 7.3.8.1).
+    #[must_use]
+    pub(crate) fn declares_any_sequence_header(&self) -> bool {
+        !self.sequence_header_ids.is_empty()
+    }
 }
 
 /// Whether caller-provided external HLS is available during validation

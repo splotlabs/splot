@@ -192,7 +192,7 @@ group, entropy coder, decoder, or encoder.
 ```text
 cargo fmt --all -- --check                                                      # ok (no diff)
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # ok, 0 warnings
-cargo test --workspace --all-targets --locked                                   # ok: 225 passed, 0 failed
+cargo test --workspace --all-targets --locked                                   # ok: 228 passed, 0 failed
 cargo test -p splot-validate mfh_                                               # ok
 cargo test -p splot-validate options                                            # ok
 cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md    # ok (114 features)
@@ -203,7 +203,7 @@ openspec validate sequence-timing-hls-availability --strict                     
 ```
 
 Test breakdown after PR B: `splot-core` 123, `splot-encode` 2, `splot-validate`
-74, `splot-cli` 9, `xtask` 17 (225 total).
+77, `splot-cli` 9, `xtask` 17 (228 total).
 
 ## Implemented
 

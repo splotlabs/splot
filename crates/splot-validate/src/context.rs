@@ -15,6 +15,7 @@ use splot_core::headers::sequence::{
     SequenceHeaderGeneral, SequenceHeaderId, TimingInfo, parse_sequence_header,
 };
 use splot_core::hls::parse_multi_frame_header;
+use splot_core::obu::finish_obu_payload;
 use splot_core::span::{BitOffset, ByteOffset};
 use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, ObuType};
 
@@ -314,15 +315,26 @@ impl ValidatorContext {
 
     fn observe_sequence_header(&mut self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        // Gate availability and activation on the full sequence_header_obu() parse
-        // (the same parser the SequenceHeaderSyntax check uses), accepting a
-        // bounded-but-Ok parse (one that stops at an unimplemented child config). A
-        // header that fails its child configs or payload is malformed and is NOT
-        // recorded as available, so a later MFH cannot resolve against it
-        // (AV2 § 7.3.8.6).
+        // Gate availability and activation on the same validation the
+        // SequenceHeaderSyntax check applies: the full sequence_header_obu() parse,
+        // accepting a bounded-but-Ok parse (one that stops at an unimplemented child
+        // config), and — for a fully parsed header — a valid §5.2.1 payload tail
+        // (obu_extension_flag + trailing_bits). A header that fails its child configs
+        // or its tail is malformed and is NOT recorded as available, so a later MFH
+        // cannot resolve against it (AV2 § 7.3.8.6).
         let Ok(sequence_header) = parse_sequence_header(&mut reader) else {
             return;
         };
+        if sequence_header.is_fully_parsed()
+            && finish_obu_payload(
+                &mut reader,
+                obu.payload,
+                obu.header.obu_type.is_extensible_obu(),
+            )
+            .is_err()
+        {
+            return;
+        }
         let general = sequence_header.general;
 
         // Record in-band availability for ANY well-formed sequence header (AV2
@@ -399,20 +411,26 @@ impl ValidatorContext {
             return;
         }
 
+        // When external HLS declares any sequence header, an externally-provided
+        // sequence header may be the active one for this extended layer (AV2
+        // § 7.3.8.1: external HLS objects "remain available ... until superseded"),
+        // with layer limits this validator does not model. The in-band
+        // active-sequence-limit checks (missing active header and tlayer/mlayer
+        // limits) are therefore unreliable and suppressed, so the validator never
+        // rejects a conformant external-HLS stream. An empty external set declares no
+        // sequence header that could be active, so it does NOT suppress (the missing
+        // active header is still an error). Exact enforcement needs external
+        // sequence-header activation and layer limits (AV2-5.18-FRAME-HEADER).
+        if let ExternalHlsMode::Provided(set) = &options.external_hls
+            && set.declares_any_sequence_header()
+        {
+            return;
+        }
+
         let Some(seq_header_id) = self
             .active_sequence_by_xlayer
             .get(&obu.header.extended_layer_id)
         else {
-            // No in-band sequence header has activated for this extended layer. With
-            // external HLS, an externally-provided sequence header may be the active
-            // one (AV2 § 7.3.8.1: external HLS objects "remain available ... until
-            // superseded"), and its layer limits are not modeled here, so the
-            // conservative (sound) choice is to not report it missing — the
-            // validator must never reject a conformant external-HLS stream. In the
-            // default (external disabled) mode this stays a hard error.
-            if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
-                return;
-            }
             report.push(sequence_state_error(
                 "sequence-state/no-active-sequence-header",
                 "7.3.8",
