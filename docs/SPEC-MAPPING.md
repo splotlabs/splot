@@ -58,7 +58,7 @@ These documents are planning aids. The canonical status remains
 | `splot-core::obu`                   | § 5.2.2 OBU header                 | implemented |
 | `splot-core::annexb`                | Annex B § B.2, § 5.2.1 OBU size   | implemented |
 | `splot-validate::checks`            | § 6.2.2 header constraints        | partial (header-only checks) |
-| `splot-validate::context`           | § 6.2.2 / § 7.3.8 sequence state  | partial (active sequence limits) |
+| `splot-validate::context`           | § 6.2.2 / § 7.3 sequence state    | partial (active sequence + temporal order) |
 | `splot-core::headers`               | § 5.4 sequence / frame headers    | TODO |
 | `splot-core::tables`                | § 9 additional tables             | TODO / codegen (`cargo xtask gen-tables`) |
 
@@ -90,6 +90,20 @@ context:
   sequence header's `max_tlayer_id`.
 - `sequence-state/mlayer-exceeds-max` — `obu_mlayer_id` exceeds the active
   sequence header's `max_mlayer_id`.
+
+### Implemented § 7.3 ordering checks
+
+These are header-level ordering checks; deeper frame-unit and metadata suffix
+ordering remains future work until the corresponding payload parsers exist:
+
+- `obu-order/temporal-unit-missing-delimiter` — a non-reserved OBU appears before
+  a global temporal delimiter starts the temporal unit.
+- `obu-order/global-hls-after-coded-layer` — a global HLS prefix OBU appears
+  after a coded extended layer unit in the same temporal unit.
+- `obu-order/xlayer-order-not-ascending` — coded extended layer units regress in
+  `obu_xlayer_id` within one temporal unit.
+- `obu-order/padding-non-global-outside-coded-layer` — non-global padding appears
+  outside the current coded extended layer unit.
 
 ## ⚠️ AV2 is not AV1
 

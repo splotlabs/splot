@@ -244,28 +244,28 @@ kind = "bitstream-semantics"
 spec_sections = ["7.3.7"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
-module = "crates/splot-validate/src/checks/ordering.rs"
+module = "crates/splot-validate/src/context.rs"
 openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Temporal unit state machine: global temporal delimiter, HLS prefix OBUs, coded extended layer units in ascending xlayer order, and padding exceptions."
+notes = "Temporal unit state machine: global temporal delimiter, HLS prefix OBUs, coded extended layer units in ascending xlayer order, and padding exceptions. Metadata suffix and frame-unit details remain future work."
 [feature.status]
 mapped = "done"
-types = "todo"
+types = "done"
 parse = "not-applicable"
-validate = "todo"
+validate = "partial"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
+decode_check = "partial"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-validate"]
 fixtures = []
-diagnostics = []
+diagnostics = ["obu-order/temporal-unit-missing-delimiter", "obu-order/global-hls-after-coded-layer", "obu-order/xlayer-order-not-ascending", "obu-order/padding-non-global-outside-coded-layer"]
 ```
 
 ## 7. Missing top-level §5 OBU rows to add or split

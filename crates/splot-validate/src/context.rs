@@ -20,11 +20,14 @@ use crate::diagnostic::{Diagnostic, ValidationReport};
 pub(crate) struct ValidatorContext {
     sequence_headers: BTreeMap<SequenceHeaderId, SequenceHeader>,
     active_sequence_by_xlayer: BTreeMap<ExtendedLayerId, SequenceHeaderId>,
+    temporal_unit: TemporalUnitState,
 }
 
 impl ValidatorContext {
     /// Observes one parsed OBU, updating context and emitting stateful diagnostics.
     pub(crate) fn observe_obu(&mut self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        self.temporal_unit.observe_obu(obu, report);
+
         if obu.header.obu_type == ObuType::SequenceHeader {
             self.observe_sequence_header(obu);
         } else {
@@ -126,6 +129,135 @@ impl ValidatorContext {
     }
 }
 
+#[derive(Debug, Default)]
+struct TemporalUnitState {
+    phase: TemporalUnitPhase,
+    current_coded_xlayer: Option<ExtendedLayerId>,
+    reported_missing_delimiter: bool,
+}
+
+impl TemporalUnitState {
+    fn observe_obu(&mut self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.header.obu_type.is_reserved() {
+            return;
+        }
+
+        if obu.header.obu_type == ObuType::TemporalDelimiter {
+            if obu.header.extended_layer_id.is_global() {
+                self.start_temporal_unit();
+            } else if matches!(self.phase, TemporalUnitPhase::AwaitingDelimiter) {
+                self.report_missing_delimiter_once(obu, report);
+            }
+            return;
+        }
+
+        if matches!(self.phase, TemporalUnitPhase::AwaitingDelimiter) {
+            self.report_missing_delimiter_once(obu, report);
+        }
+
+        if is_padding_obu(obu) {
+            self.observe_padding(obu, report);
+        } else if is_global_hls_prefix_obu(obu) {
+            self.observe_global_hls_prefix(obu, report);
+        } else if is_coded_extended_layer_obu(obu) {
+            self.observe_coded_extended_layer_obu(obu, report);
+        }
+    }
+
+    fn start_temporal_unit(&mut self) {
+        self.phase = TemporalUnitPhase::GlobalPrefix;
+        self.current_coded_xlayer = None;
+        self.reported_missing_delimiter = false;
+    }
+
+    fn report_missing_delimiter_once(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        report: &mut ValidationReport,
+    ) {
+        if self.reported_missing_delimiter {
+            return;
+        }
+        self.reported_missing_delimiter = true;
+        report.push(ordering_error(
+            "obu-order/temporal-unit-missing-delimiter",
+            obu,
+            format!(
+                "{} appears before a global OBU_TEMPORAL_DELIMITER starts the temporal unit",
+                obu.header.obu_type.spec_name()
+            ),
+        ));
+    }
+
+    fn observe_padding(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.header.extended_layer_id.is_global() {
+            return;
+        }
+
+        let inside_current_coded_layer = matches!(self.phase, TemporalUnitPhase::CodedLayers)
+            && self.current_coded_xlayer == Some(obu.header.extended_layer_id);
+        if !inside_current_coded_layer {
+            report.push(ordering_error(
+                "obu-order/padding-non-global-outside-coded-layer",
+                obu,
+                format!(
+                    "OBU_PADDING outside a coded extended layer unit must use \
+                     obu_xlayer_id == GLOBAL_XLAYER_ID, found {}",
+                    obu.header.extended_layer_id.get()
+                ),
+            ));
+        }
+    }
+
+    fn observe_global_hls_prefix(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if matches!(self.phase, TemporalUnitPhase::CodedLayers) {
+            report.push(ordering_error(
+                "obu-order/global-hls-after-coded-layer",
+                obu,
+                format!(
+                    "{} with GLOBAL_XLAYER_ID appears after a coded extended layer unit",
+                    obu.header.obu_type.spec_name()
+                ),
+            ));
+        }
+    }
+
+    fn observe_coded_extended_layer_obu(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        report: &mut ValidationReport,
+    ) {
+        let xlayer = obu.header.extended_layer_id;
+        match self.current_coded_xlayer {
+            Some(current) if xlayer < current => {
+                report.push(ordering_error(
+                    "obu-order/xlayer-order-not-ascending",
+                    obu,
+                    format!(
+                        "coded extended layer units must appear in ascending obu_xlayer_id order \
+                         within a temporal unit (found {} after {})",
+                        xlayer.get(),
+                        current.get()
+                    ),
+                ));
+            }
+            Some(current) if xlayer == current => {}
+            _ => {
+                self.current_coded_xlayer = Some(xlayer);
+            }
+        }
+        self.phase = TemporalUnitPhase::CodedLayers;
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum TemporalUnitPhase {
+    #[default]
+    AwaitingDelimiter,
+    GlobalPrefix,
+    CodedLayers,
+}
+
 fn sequence_header_can_activate(obu: &ObuEnvelope<'_>) -> bool {
     !obu.header.extended_layer_id.is_global()
         && obu.header.temporal_layer_id.get() == 0
@@ -143,6 +275,34 @@ fn requires_active_sequence(obu: &ObuEnvelope<'_>) -> bool {
         )
 }
 
+fn is_padding_obu(obu: &ObuEnvelope<'_>) -> bool {
+    obu.header.obu_type == ObuType::Padding
+}
+
+fn is_global_hls_prefix_obu(obu: &ObuEnvelope<'_>) -> bool {
+    obu.header.extended_layer_id.is_global()
+        && matches!(
+            obu.header.obu_type,
+            ObuType::Msdo
+                | ObuType::LayerConfigurationRecord
+                | ObuType::OperatingPointSet
+                | ObuType::AtlasSegment
+                | ObuType::MetadataShort
+                | ObuType::MetadataGroup
+        )
+}
+
+fn is_coded_extended_layer_obu(obu: &ObuEnvelope<'_>) -> bool {
+    !obu.header.extended_layer_id.is_global()
+        && !matches!(
+            obu.header.obu_type,
+            ObuType::TemporalDelimiter
+                | ObuType::Padding
+                | ObuType::Reserved0
+                | ObuType::Reserved(_)
+        )
+}
+
 fn sequence_state_error(
     rule_id: &'static str,
     spec_section: &'static str,
@@ -157,4 +317,10 @@ fn sequence_state_error(
         diagnostic = diagnostic.with_bit_offset(bit_offset);
     }
     diagnostic
+}
+
+fn ordering_error(rule_id: &'static str, obu: &ObuEnvelope<'_>, message: String) -> Diagnostic {
+    Diagnostic::error(rule_id, message)
+        .with_spec_section("7.3.7")
+        .with_byte_offset(obu.offset)
 }

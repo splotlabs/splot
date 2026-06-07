@@ -26,6 +26,7 @@ Keep these stable:
 | `byte-alignment/` | §6.2.4 byte-alignment zero-bit conformance for modeled syntax. |
 | `sequence-header/` | §6.4 sequence-header local syntax and semantics. |
 | `sequence-state/` | Activated sequence-header availability and max-layer checks. |
+| `obu-order/` | Temporal-unit and coded-extended-layer ordering checks. |
 
 Existing examples:
 
@@ -45,6 +46,10 @@ sequence-header/chroma-format-out-of-range
 sequence-state/no-active-sequence-header
 sequence-state/tlayer-exceeds-max
 sequence-state/mlayer-exceeds-max
+obu-order/temporal-unit-missing-delimiter
+obu-order/global-hls-after-coded-layer
+obu-order/xlayer-order-not-ascending
+obu-order/padding-non-global-outside-coded-layer
 ```
 
 ## 2. New diagnostic namespaces to allow
@@ -54,7 +59,6 @@ Add these namespaces in the xtask diagnostic allowlist when corresponding checks
 | Namespace | Owner | First features |
 |---|---|---|
 | `obu-payload/` | `AV2-5.2.1-OBU-DISPATCH` | unparsed payload in strict mode, payload overread/underread. |
-| `obu-order/` | `AV2-7.3-OBU-ORDERING` child rows | temporal-unit and frame-unit order. |
 | `hls-availability/` | `AV2-7.3.8-HLS-AVAILABILITY` | missing or repeated high-level syntax OBUs. |
 | `msdo/` | `AV2-5.6-MSDO` | multistream decoder operation syntax/semantics. |
 | `lcr/` | `AV2-5.8-LAYER-CONFIG-RECORD` | layer configuration record syntax/semantics. |

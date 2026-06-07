@@ -154,6 +154,7 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
     "byte-alignment/",
     "sequence-header/",
     "sequence-state/",
+    "obu-order/",
 ];
 
 /// Output format for `feature-status`.

@@ -194,6 +194,23 @@ mod tests {
         annex_b_obu(0x04, &sequence_header_payload(max_tlayer_id, max_mlayer_id))
     }
 
+    fn sequence_header_obu_for_xlayer(
+        xlayer: u8,
+        max_tlayer_id: u32,
+        max_mlayer_id: u32,
+    ) -> Vec<u8> {
+        let payload = sequence_header_payload(max_tlayer_id, max_mlayer_id);
+        if xlayer == 0 {
+            annex_b_obu(0x04, &payload)
+        } else {
+            annex_b_obu_with_header(&layer_obu_header(1, 0, 0, xlayer), &payload)
+        }
+    }
+
+    fn temporal_delimiter_obu() -> Vec<u8> {
+        annex_b_obu(0x08, &[])
+    }
+
     #[test]
     fn conformant_temporal_delimiter() {
         let report = Validator::new(false).validate_bytes(&[0x01, 0x08]);
@@ -427,6 +444,83 @@ mod tests {
             report
                 .errors()
                 .any(|d| d.rule_id == "sequence-state/no-active-sequence-header"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn temporal_unit_accepts_ascending_coded_xlayers() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(sequence_header_obu_for_xlayer(0, 1, 1));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(6, 1, 1, 0), &[]));
+        data.extend(sequence_header_obu_for_xlayer(1, 1, 1));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(6, 1, 1, 1), &[]));
+
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report.errors().any(|d| d.rule_id.starts_with("obu-order/")),
+            "report was: {report}"
+        );
+        assert!(report.is_conformant(), "report was: {report}");
+    }
+
+    #[test]
+    fn temporal_unit_missing_delimiter_is_reported() {
+        let data = annex_b_obu_with_header(&layer_obu_header(6, 0, 0, 0), &[]);
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "obu-order/temporal-unit-missing-delimiter"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn global_hls_after_coded_layer_is_reported() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(sequence_header_obu_for_xlayer(0, 1, 1));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(6, 0, 0, 0), &[]));
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(16, 0, 0, 31),
+            &[],
+        ));
+
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "obu-order/global-hls-after-coded-layer"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn coded_xlayers_must_ascend_within_temporal_unit() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(sequence_header_obu_for_xlayer(1, 1, 1));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(6, 0, 0, 1), &[]));
+        data.extend(sequence_header_obu_for_xlayer(0, 1, 1));
+
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "obu-order/xlayer-order-not-ascending"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn non_global_padding_outside_coded_layer_is_reported() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu_with_header(&layer_obu_header(25, 0, 0, 0), &[]));
+
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "obu-order/padding-non-global-outside-coded-layer"),
             "report was: {report}"
         );
     }

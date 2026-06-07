@@ -68,13 +68,13 @@
 
 ## Phase 5 implementation: OBU ordering
 
-- [ ] Add temporal-unit state machine.
-- [ ] Validate temporal delimiter presence/order.
-- [ ] Validate global HLS prefix ordering.
-- [ ] Validate ascending coded extended layer unit `obu_xlayer_id` order.
-- [ ] Validate padding exceptions.
-- [ ] Add tests for valid and invalid ordering.
-- [ ] Update matrix proof.
+- [x] Add temporal-unit state machine.
+- [x] Validate temporal delimiter presence/order.
+- [x] Validate global HLS prefix ordering.
+- [x] Validate ascending coded extended layer unit `obu_xlayer_id` order.
+- [x] Validate padding exceptions.
+- [x] Add tests for valid and invalid ordering.
+- [x] Update matrix proof.
 
 ## Later phases
 
