@@ -155,6 +155,9 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
     "sequence-header/",
     "sequence-state/",
     "obu-order/",
+    "hls/",
+    "msdo/",
+    "mfh/",
 ];
 
 /// Output format for `feature-status`.

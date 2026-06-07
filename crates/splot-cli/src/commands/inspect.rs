@@ -10,7 +10,10 @@ use anyhow::{Context as _, Result};
 use clap::Args;
 use serde::Serialize;
 use splot_core::annexb::{ObuEnvelope, parse_annex_b_obus_partial};
+use splot_core::bitio::BitReader;
+use splot_core::headers::sequence::{SequenceHeader, parse_sequence_header};
 use splot_core::obu::{ObuHeader, PayloadStatus};
+use splot_core::types::ObuType;
 
 use crate::commands::read_input;
 
@@ -35,6 +38,8 @@ struct InspectRecord {
     size: u32,
     payload_len: usize,
     payload_status: InspectPayloadStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sequence_header: Option<SequenceHeaderView>,
     header: ObuHeader,
 }
 
@@ -46,9 +51,80 @@ impl InspectRecord {
             size: obu.size,
             payload_len: obu.payload.len(),
             payload_status: InspectPayloadStatus::new(obu),
+            sequence_header: sequence_header_view(obu),
             header: obu.header,
         }
     }
+}
+
+/// Re-parses a sequence-header OBU so `--json` can expose which `§5.4` child
+/// sections were parsed and which (if any) are bounded as unimplemented.
+fn sequence_header_view(obu: &ObuEnvelope<'_>) -> Option<SequenceHeaderView> {
+    if obu.header.obu_type != ObuType::SequenceHeader {
+        return None;
+    }
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    parse_sequence_header(&mut reader)
+        .ok()
+        .map(|header| SequenceHeaderView::new(&header))
+}
+
+/// A compact, machine-readable view of a parsed `sequence_header_obu()`.
+#[derive(Serialize)]
+struct SequenceHeaderView {
+    seq_header_id: u8,
+    seq_profile_idc: u8,
+    single_picture_header_flag: bool,
+    chroma_format_idc: u8,
+    bit_depth: u8,
+    max_tlayer_id: u8,
+    max_mlayer_id: u8,
+    fully_parsed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unimplemented_at: Option<&'static str>,
+    children: SequenceChildrenView,
+}
+
+impl SequenceHeaderView {
+    fn new(header: &SequenceHeader) -> Self {
+        let general = &header.general;
+        Self {
+            seq_header_id: general.seq_header_id.get(),
+            seq_profile_idc: general.seq_profile_idc.get(),
+            single_picture_header_flag: general.single_picture_header_flag,
+            chroma_format_idc: general.chroma_format_idc.get(),
+            bit_depth: general.bit_depth_idc.bit_depth(),
+            max_tlayer_id: general.max_tlayer_id.get(),
+            max_mlayer_id: general.max_mlayer_id.get(),
+            fully_parsed: header.is_fully_parsed(),
+            unimplemented_at: header.unimplemented_at,
+            children: SequenceChildrenView {
+                partition: header.partition.is_some(),
+                segment: header.segment.is_some(),
+                intra: header.intra.is_some(),
+                inter: header.inter.is_some(),
+                screen_content: header.screen_content.is_some(),
+                transform_quant_entropy: header.transform_quant_entropy.is_some(),
+                filter: header.filter.is_some(),
+                tile: header.tile.is_some(),
+                film_grain_params_present: header.film_grain_params_present.is_some(),
+            },
+        }
+    }
+}
+
+/// Which `§5.4` child sections of a sequence header were parsed.
+#[derive(Serialize)]
+struct SequenceChildrenView {
+    partition: bool,
+    segment: bool,
+    intra: bool,
+    inter: bool,
+    screen_content: bool,
+    transform_quant_entropy: bool,
+    filter: bool,
+    tile: bool,
+    film_grain_params_present: bool,
 }
 
 /// A serializable summary of how much OBU payload syntax is currently parsed.

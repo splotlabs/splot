@@ -9,7 +9,7 @@
 
 pub mod sequence;
 
-pub use sequence::SequenceHeader;
+pub use sequence::{SequenceHeader, SequenceHeaderGeneral};
 
 /// AV2 frame header (`frame_header()`). Not yet modeled.
 // TODO(spec: AV2-5.18-FRAME-HEADER): model frame header syntax (AV2 v1.0.0 § 5.18).

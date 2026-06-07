@@ -23,11 +23,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::bitio::BitReader;
 use crate::error::{Error, Result, TrailingBitsErrorKind};
+use crate::headers::sequence::{SequenceHeader, parse_sequence_header};
+use crate::hls::{
+    MultiFrameHeader, MultistreamDecoderOperation, parse_msdo, parse_multi_frame_header,
+};
 use crate::span::ByteOffset;
 use crate::types::{EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID, ObuType, TemporalLayerId};
 
 /// Payload dispatch status for an OBU whose envelope and header have parsed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PayloadStatus<'a, T> {
     /// Payload syntax was parsed into a typed representation.
     Parsed(T),
@@ -43,11 +47,19 @@ pub enum PayloadStatus<'a, T> {
 }
 
 /// Parsed OBU payload syntax for OBU types currently modeled by `splot-core`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `SequenceHeader` is boxed because it is much larger than the other variants.
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ParsedObu {
     /// `temporal_delimiter_obu()` (AV2 v1.0.0 § 5.5).
     TemporalDelimiter,
+    /// `sequence_header_obu()` (AV2 v1.0.0 § 5.4).
+    SequenceHeader(Box<SequenceHeader>),
+    /// `multistream_decoder_operation_obu()` (AV2 v1.0.0 § 5.6).
+    Msdo(MultistreamDecoderOperation),
+    /// `multi_frame_header_obu()` (AV2 v1.0.0 § 5.7).
+    MultiFrameHeader(MultiFrameHeader),
 }
 
 impl ParsedObu {
@@ -56,6 +68,9 @@ impl ParsedObu {
     pub const fn feature_id(&self) -> &'static str {
         match self {
             Self::TemporalDelimiter => "AV2-5.5-TEMPORAL-DELIMITER",
+            Self::SequenceHeader(_) => "AV2-5.4-SEQUENCE-HEADER",
+            Self::Msdo(_) => "AV2-5.6-MSDO",
+            Self::MultiFrameHeader(_) => "AV2-5.7-MULTI-FRAME-HEADER",
         }
     }
 
@@ -64,6 +79,9 @@ impl ParsedObu {
     pub const fn syntax_name(&self) -> &'static str {
         match self {
             Self::TemporalDelimiter => "temporal_delimiter_obu",
+            Self::SequenceHeader(_) => "sequence_header_obu",
+            Self::Msdo(_) => "multistream_decoder_operation_obu",
+            Self::MultiFrameHeader(_) => "multi_frame_header_obu",
         }
     }
 }
@@ -106,11 +124,67 @@ pub fn dispatch_obu_payload<'a>(
             parse_empty_payload_syntax(payload, payload_offset)?;
             Ok(PayloadStatus::Parsed(ParsedObu::TemporalDelimiter))
         }
+        ObuType::SequenceHeader => {
+            let mut reader = BitReader::new(payload, payload_offset);
+            let sequence_header = parse_sequence_header(&mut reader)?;
+            if let Some(feature) = sequence_header.unimplemented_at {
+                return Ok(PayloadStatus::Unimplemented { feature, payload });
+            }
+            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            Ok(PayloadStatus::Parsed(ParsedObu::SequenceHeader(Box::new(
+                sequence_header,
+            ))))
+        }
+        ObuType::Msdo => {
+            let mut reader = BitReader::new(payload, payload_offset);
+            let msdo = parse_msdo(&mut reader)?;
+            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            Ok(PayloadStatus::Parsed(ParsedObu::Msdo(msdo)))
+        }
+        ObuType::MultiFrameHeader => {
+            let mut reader = BitReader::new(payload, payload_offset);
+            let multi_frame_header = parse_multi_frame_header(&mut reader)?;
+            if let Some(feature) = multi_frame_header.unimplemented_at {
+                return Ok(PayloadStatus::Unimplemented { feature, payload });
+            }
+            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            Ok(PayloadStatus::Parsed(ParsedObu::MultiFrameHeader(
+                multi_frame_header,
+            )))
+        }
         obu_type => Ok(PayloadStatus::Unimplemented {
             feature: unimplemented_payload_feature(obu_type),
             payload,
         }),
     }
+}
+
+/// Validates the bits between the end of an OBU's parsed syntax and the OBU
+/// boundary (AV2 v1.0.0 § 5.2.1 `open_bitstream_unit`).
+///
+/// For `is_extensible_obu()` types, an `obu_extension_flag` follows the syntax: if
+/// set, the remainder is opaque `obu_extension_data()`; otherwise the remainder is
+/// `trailing_bits()`. Non-extensible types use `trailing_bits()` directly. Tile
+/// groups (`usedArith`) are not dispatched here.
+fn finish_obu_payload(
+    reader: &mut BitReader<'_>,
+    payload: &[u8],
+    is_extensible: bool,
+) -> Result<()> {
+    if payload.is_empty() {
+        return Ok(());
+    }
+
+    if is_extensible {
+        let obu_extension_flag = reader.read_bit()? != 0;
+        if obu_extension_flag {
+            // obu_extension_data(remainingPayloadBits - 1): opaque, not validated.
+            return Ok(());
+        }
+    }
+
+    let remaining = reader.remaining_bits();
+    parse_trailing_bits(reader, remaining)
 }
 
 fn parse_empty_payload_syntax(payload: &[u8], payload_offset: ByteOffset) -> Result<()> {
@@ -417,14 +491,29 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_marks_sequence_header_payload_unimplemented() {
+    fn dispatch_attempts_sequence_header_payload() {
+        // A 1-byte payload is too short for a full sequence header, so dispatch now
+        // surfaces a typed parse error rather than reporting the payload unimplemented.
         let header = read_obu_header(&[0x04], ByteOffset::new(0)).unwrap();
+        let payload = [0xAB];
+        assert!(matches!(
+            dispatch_obu_payload(header, &payload, ByteOffset::new(1)),
+            Err(Error::UnexpectedEof { .. })
+        ));
+    }
+
+    #[test]
+    fn dispatch_marks_metadata_payload_unimplemented() {
+        // OBU_METADATA_SHORT payload parsing is not implemented; the dispatcher
+        // still preserves the raw payload and names the owning Feature ID.
+        // 0x20 = 0b0_01000_00 -> ext=0, type=8 (MetadataShort).
+        let header = read_obu_header(&[0x20], ByteOffset::new(0)).unwrap();
         let payload = [0xAB];
         let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
         assert_eq!(
             status,
             PayloadStatus::Unimplemented {
-                feature: "AV2-5.4-SEQUENCE-HEADER",
+                feature: "AV2-5.17-METADATA",
                 payload: &payload,
             }
         );

@@ -4,11 +4,12 @@
 //! Stateful validator context for checks that depend on earlier OBUs.
 
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::sequence::{
-    SequenceHeader, SequenceHeaderId, parse_sequence_header_general,
+    SequenceHeaderGeneral, SequenceHeaderId, parse_sequence_header_general,
 };
 use splot_core::span::BitOffset;
 use splot_core::types::{ExtendedLayerId, ObuType};
@@ -18,8 +19,12 @@ use crate::diagnostic::{Diagnostic, ValidationReport};
 /// Stateful validator data derived from parseable high-level syntax OBUs.
 #[derive(Debug, Default)]
 pub(crate) struct ValidatorContext {
-    sequence_headers: BTreeMap<SequenceHeaderId, SequenceHeader>,
+    sequence_headers: BTreeMap<SequenceHeaderId, SequenceHeaderGeneral>,
     active_sequence_by_xlayer: BTreeMap<ExtendedLayerId, SequenceHeaderId>,
+    /// Payload fingerprints for activated sequence headers, keyed by
+    /// `(obu_xlayer_id, seq_header_id)`, used to detect non-bit-identical repeats
+    /// of an activated sequence header (AV2 § 7.3.8).
+    sequence_fingerprints: BTreeMap<(ExtendedLayerId, SequenceHeaderId), u64>,
     temporal_unit: TemporalUnitState,
 }
 
@@ -29,13 +34,13 @@ impl ValidatorContext {
         self.temporal_unit.observe_obu(obu, report);
 
         if obu.header.obu_type == ObuType::SequenceHeader {
-            self.observe_sequence_header(obu);
+            self.observe_sequence_header(obu, report);
         } else {
             self.validate_active_sequence_limits(obu, report);
         }
     }
 
-    fn observe_sequence_header(&mut self, obu: &ObuEnvelope<'_>) {
+    fn observe_sequence_header(&mut self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
         if !sequence_header_can_activate(obu) {
             return;
         }
@@ -46,13 +51,43 @@ impl ValidatorContext {
         };
 
         let seq_header_id = sequence_header.seq_header_id;
+        let xlayer = obu.header.extended_layer_id;
+        let fingerprint = payload_fingerprint(obu.payload);
+
+        // AV2 § 7.3.8: within a coded video sequence, a repeated activated sequence
+        // header is allowed only if its payload bytes are bit-identical. Compare a
+        // payload fingerprint, not parsed fields, since inferred values can hide
+        // syntax differences.
+        match self.sequence_fingerprints.entry((xlayer, seq_header_id)) {
+            Entry::Vacant(slot) => {
+                slot.insert(fingerprint);
+            }
+            Entry::Occupied(slot) => {
+                if *slot.get() != fingerprint {
+                    report.push(
+                        Diagnostic::error(
+                            "hls/repeated-sequence-header-not-identical",
+                            format!(
+                                "activated sequence header seq_header_id {} for obu_xlayer_id {} \
+                                 is repeated with different payload bytes",
+                                seq_header_id.get(),
+                                xlayer.get()
+                            ),
+                        )
+                        .with_spec_section("7.3.8")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+            }
+        }
+
         // TODO(spec: AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT): model CLK frame
         // references before switching an already-active sequence header.
         self.sequence_headers
             .entry(seq_header_id)
             .or_insert(sequence_header);
         self.active_sequence_by_xlayer
-            .entry(obu.header.extended_layer_id)
+            .entry(xlayer)
             .or_insert(seq_header_id);
     }
 
@@ -134,11 +169,29 @@ impl ValidatorContext {
     }
 }
 
+/// Computes a stable 64-bit FNV-1a fingerprint over an OBU payload's bytes.
+///
+/// Used to compare repeated activated sequence headers for bit identity without
+/// pulling in a hashing dependency (AV2 § 7.3.8).
+fn payload_fingerprint(payload: &[u8]) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET_BASIS;
+    for &byte in payload {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
 #[derive(Debug, Default)]
 struct TemporalUnitState {
     phase: TemporalUnitPhase,
     current_coded_xlayer: Option<ExtendedLayerId>,
     reported_missing_delimiter: bool,
+    /// `true` once any non-reserved, non-delimiter OBU has appeared since the most
+    /// recent global temporal delimiter. Used to detect back-to-back delimiters.
+    saw_obu_since_delimiter: bool,
 }
 
 impl TemporalUnitState {
@@ -149,6 +202,18 @@ impl TemporalUnitState {
 
         if obu.header.obu_type == ObuType::TemporalDelimiter {
             if obu.header.extended_layer_id.is_global() {
+                if !matches!(self.phase, TemporalUnitPhase::AwaitingDelimiter)
+                    && !self.saw_obu_since_delimiter
+                {
+                    report.push(ordering_error(
+                        "obu-order/duplicate-temporal-delimiter",
+                        obu,
+                        "a temporal unit must start with exactly one global \
+                         OBU_TEMPORAL_DELIMITER; found a second delimiter with no \
+                         intervening OBU"
+                            .to_owned(),
+                    ));
+                }
                 self.start_temporal_unit();
             } else if matches!(self.phase, TemporalUnitPhase::AwaitingDelimiter) {
                 self.report_missing_delimiter_once(obu, report);
@@ -159,6 +224,7 @@ impl TemporalUnitState {
         if matches!(self.phase, TemporalUnitPhase::AwaitingDelimiter) {
             self.report_missing_delimiter_once(obu, report);
         }
+        self.saw_obu_since_delimiter = true;
 
         if is_padding_obu(obu) {
             self.observe_padding(obu, report);
@@ -173,6 +239,7 @@ impl TemporalUnitState {
         self.phase = TemporalUnitPhase::GlobalPrefix;
         self.current_coded_xlayer = None;
         self.reported_missing_delimiter = false;
+        self.saw_obu_since_delimiter = false;
     }
 
     fn report_missing_delimiter_once(

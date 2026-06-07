@@ -221,7 +221,14 @@ mod tests {
         bits.bit(1); // decoder_model_info_present_flag
         bits.f(1, 32); // num_units_in_decoding_tick
         bits.bit(1); // seq_decoder_model_info_present_flag
-        bits.f(0b1010, 4); // opaque seq_decoder_model_info() tail
+        // seq_decoder_model_info() (§ 5.4.13)
+        bits.uvlc(0); // decoder_buffer_delay
+        bits.uvlc(0); // encoder_buffer_delay
+        bits.bit(0); // low_delay_mode_flag
+        // dependency maps: max_mlayer_id = 1 -> mlayer_dependency_present_flag,
+        // max_tlayer_id = 1 -> tlayer_dependency_present_flag
+        bits.bit(0); // mlayer_dependency_present_flag
+        bits.bit(0); // tlayer_dependency_present_flag
         bits.into_bytes()
     }
 
@@ -683,6 +690,126 @@ mod tests {
             report
                 .errors()
                 .any(|d| d.rule_id == "bitstream/parse-error"),
+            "report was: {report}"
+        );
+    }
+
+    fn msdo_payload(num_streams_minus_2: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(num_streams_minus_2, 3); // num_streams_minus_2
+        bits.f(0, 5); // multistream_profile_idc
+        bits.f(0, 5); // multistream_level_idx
+        bits.bit(0); // multistream_tier
+        bits.bit(1); // multistream_even_allocation_flag
+        for _ in 0..(num_streams_minus_2 + 2) {
+            bits.f(0, 5); // sub_xlayer_id
+            bits.f(0, 5); // sub_stream_max_profile
+            bits.f(0, 5); // sub_stream_max_level
+            bits.bit(0); // sub_stream_max_tier
+        }
+        bits.bit(0); // multistream_doh_constraint_flag
+        bits.into_bytes()
+    }
+
+    #[test]
+    fn hls_duplicate_temporal_delimiter_is_flagged() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "obu-order/duplicate-temporal-delimiter"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn hls_repeated_identical_sequence_header_is_accepted() {
+        let mut data = temporal_delimiter_obu();
+        let payload = sequence_header_payload_with_id(0, 0, 0);
+        data.extend(annex_b_obu(0x04, &payload));
+        data.extend(annex_b_obu(0x04, &payload));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "hls/repeated-sequence-header-not-identical"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn hls_repeated_non_identical_sequence_header_is_flagged() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 0)));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "hls/repeated-sequence-header-not-identical"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn hls_msdo_non_global_layer_id_is_flagged() {
+        // OBU_MSDO (type 20) with an extension header at xlayer 5 (not global).
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(20, 0, 0, 5),
+            &msdo_payload(0),
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "msdo/non-global-layer-id"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn hls_msdo_too_many_streams_is_flagged() {
+        // Global OBU_MSDO (0x50 infers GLOBAL_XLAYER_ID) with num_streams_minus_2 = 3.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x50, &msdo_payload(3)));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "msdo/too-many-streams"),
+            "report was: {report}"
+        );
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "msdo/non-global-layer-id"),
+            "global MSDO must not be flagged for layer ids; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn hls_mfh_out_of_range_ids_are_flagged() {
+        // OBU_MULTI_FRAME_HEADER (type 3 -> 0x0C) with out-of-range ids.
+        let mut bits = Bits::default();
+        bits.uvlc(16); // mfh_seq_header_id (>= MAX_SEQ_NUM)
+        bits.uvlc(16); // mfh_id_minus_1 -> mfhId = 17 (>= MAX_MFH_NUM)
+        bits.bit(0); // mfh_frame_size_present_flag
+        bits.bit(0); // mfh_deblocking_filter_update
+        bits.bit(0); // mfh_seg_info_present_flag
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x0C, &bits.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "mfh/seq-header-id-out-of-range"),
+            "report was: {report}"
+        );
+        assert!(
+            report.errors().any(|d| d.rule_id == "mfh/id-out-of-range"),
             "report was: {report}"
         );
     }
