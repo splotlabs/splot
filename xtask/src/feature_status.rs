@@ -164,6 +164,8 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
     "tile-params/",
     "lcr/",
     "atlas/",
+    "ops/",
+    "brt/",
 ];
 
 /// Output format for `feature-status`.

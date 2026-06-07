@@ -11,10 +11,14 @@ use clap::Args;
 use serde::Serialize;
 use splot_core::annexb::{ObuEnvelope, parse_annex_b_obus_partial};
 use splot_core::bitio::BitReader;
+use splot_core::headers::buffer_removal_timing::{
+    BufferRemovalTiming, parse_buffer_removal_timing,
+};
 use splot_core::headers::content_interpretation::{
     ContentInterpretation, parse_content_interpretation,
 };
 use splot_core::headers::frame::{FrameHeaderPrefix, parse_frame_header_prefix};
+use splot_core::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
 use splot_core::headers::sequence::{SequenceHeader, parse_sequence_header};
 use splot_core::headers::tile_group::parse_tile_group_prefix;
 use splot_core::obu::{ObuHeader, PayloadStatus};
@@ -48,6 +52,10 @@ struct InspectRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     content_interpretation: Option<ContentInterpretationView>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    operating_point_set: Option<OperatingPointSetView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    buffer_removal_timing: Option<BufferRemovalTimingView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     frame_header_prefix: Option<FrameHeaderPrefixView>,
     header: ObuHeader,
 }
@@ -62,8 +70,89 @@ impl InspectRecord {
             payload_status: InspectPayloadStatus::new(obu),
             sequence_header: sequence_header_view(obu),
             content_interpretation: content_interpretation_view(obu),
+            operating_point_set: operating_point_set_view(obu),
+            buffer_removal_timing: buffer_removal_timing_view(obu),
             frame_header_prefix: frame_header_prefix_view(obu),
             header: obu.header,
+        }
+    }
+}
+
+/// Re-parses an `operating_point_set_obu()` so `--json` can expose its key fields.
+fn operating_point_set_view(obu: &ObuEnvelope<'_>) -> Option<OperatingPointSetView> {
+    if obu.header.obu_type != ObuType::OperatingPointSet {
+        return None;
+    }
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    parse_operating_point_set(&mut reader, obu.header.extended_layer_id)
+        .ok()
+        .map(|ops| OperatingPointSetView::new(&ops))
+}
+
+/// A compact, machine-readable view of a parsed `operating_point_set_obu()`.
+#[derive(Serialize)]
+struct OperatingPointSetView {
+    xlayer_id: u8,
+    is_global: bool,
+    reset_flag: bool,
+    ops_id: u8,
+    ops_cnt: u8,
+    payload_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mlayer_info_idc: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_reserved_2bits: Option<u8>,
+}
+
+impl OperatingPointSetView {
+    fn new(ops: &OperatingPointSet) -> Self {
+        Self {
+            xlayer_id: ops.xlayer_id.get(),
+            is_global: ops.is_global(),
+            reset_flag: ops.reset_flag,
+            ops_id: ops.ops_id,
+            ops_cnt: ops.ops_cnt,
+            payload_count: ops.payloads.len(),
+            mlayer_info_idc: ops.mlayer_info_idc,
+            local_reserved_2bits: ops.local_reserved_2bits,
+        }
+    }
+}
+
+/// Re-parses a `buffer_removal_timing_obu()` so `--json` can expose its key fields.
+fn buffer_removal_timing_view(obu: &ObuEnvelope<'_>) -> Option<BufferRemovalTimingView> {
+    if obu.header.obu_type != ObuType::BufferRemovalTiming {
+        return None;
+    }
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    parse_buffer_removal_timing(&mut reader)
+        .ok()
+        .map(|brt| BufferRemovalTimingView::new(&brt))
+}
+
+/// A compact, machine-readable view of a parsed `buffer_removal_timing_obu()`.
+#[derive(Serialize)]
+struct BufferRemovalTimingView {
+    ops_dependent: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    br_ops_id: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    br_ops_cnt: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    op_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    br_time: Option<u32>,
+}
+
+impl BufferRemovalTimingView {
+    fn new(brt: &BufferRemovalTiming) -> Self {
+        let ops_reference = brt.ops_reference();
+        Self {
+            ops_dependent: brt.is_ops_dependent(),
+            br_ops_id: ops_reference.map(|(id, _)| id),
+            br_ops_cnt: ops_reference.map(|(_, cnt)| cnt),
+            op_count: ops_reference.map(|_| brt.op_timings().len()),
+            br_time: brt.extended_layer_time(),
         }
     }
 }

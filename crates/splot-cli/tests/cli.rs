@@ -196,6 +196,62 @@ fn validate_frame_header_prefix_fixture_exits_zero() {
 }
 
 #[test]
+fn inspect_json_surfaces_operating_point_set() {
+    // TemporalDelimiter then a global operating_point_set_obu (ops_id 0, ops_cnt 1).
+    let path = fixture("operating-point-set.av2");
+    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let records = json.as_array().expect("inspect output is an array");
+    let ops = records
+        .iter()
+        .find(|r| r.get("operating_point_set").is_some())
+        .expect("an operating-point-set record");
+    assert_eq!(ops["payload_status"]["status"], "parsed");
+    assert_eq!(ops["payload_status"]["syntax"], "operating_point_set_obu");
+    let view = &ops["operating_point_set"];
+    assert_eq!(view["is_global"], true);
+    assert_eq!(view["reset_flag"], false);
+    assert_eq!(view["ops_id"], 0);
+    assert_eq!(view["ops_cnt"], 1);
+    assert_eq!(view["payload_count"], 1);
+}
+
+#[test]
+fn inspect_json_surfaces_buffer_removal_timing() {
+    // TemporalDelimiter, a global OPS (ops_id 0, ops_cnt 1), then an OPS-dependent
+    // buffer_removal_timing_obu referencing it.
+    let path = fixture("buffer-removal-timing.av2");
+    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let records = json.as_array().expect("inspect output is an array");
+    let brt = records
+        .iter()
+        .find(|r| r.get("buffer_removal_timing").is_some())
+        .expect("a buffer-removal-timing record");
+    assert_eq!(brt["payload_status"]["status"], "parsed");
+    assert_eq!(brt["payload_status"]["syntax"], "buffer_removal_timing_obu");
+    let view = &brt["buffer_removal_timing"];
+    assert_eq!(view["ops_dependent"], true);
+    assert_eq!(view["br_ops_id"], 0);
+    assert_eq!(view["br_ops_cnt"], 1);
+    assert_eq!(view["op_count"], 1);
+}
+
+#[test]
+fn validate_operating_point_set_fixture_exits_zero() {
+    let out = validate("operating-point-set.av2", &[]);
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn validate_buffer_removal_timing_fixture_exits_zero() {
+    let out = validate("buffer-removal-timing.av2", &[]);
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
 fn missing_input_file_exits_two() {
     let out = validate("does-not-exist.av2", &[]);
     assert_eq!(out.status.code(), Some(2));

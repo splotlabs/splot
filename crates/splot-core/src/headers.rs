@@ -8,16 +8,26 @@
 //! TODO that names the implementation-matrix feature id instead (see AGENTS.md).
 
 pub mod atlas_segment;
+pub mod buffer_removal_timing;
 pub mod content_interpretation;
 pub mod frame;
 pub mod layer_config_record;
+pub mod operating_point_set;
 pub mod sequence;
 pub mod tile_group;
 
 pub use atlas_segment::{AtlasSegment, parse_atlas_segment};
+pub use buffer_removal_timing::{
+    BufferRemovalOpTiming, BufferRemovalTiming, parse_buffer_removal_timing,
+};
 pub use content_interpretation::{ContentInterpretation, parse_content_interpretation};
 pub use frame::{FrameHeaderPrefix, FrameHeaderPrefixStatus, parse_frame_header_prefix};
 pub use layer_config_record::{LayerConfigurationRecord, parse_layer_config_record};
+pub use operating_point_set::{
+    OperatingPointPayload, OperatingPointSet, OpsAggregateInfo, OpsColorInfo, OpsDecoderModelInfo,
+    OpsMlayerInfo, OpsMlayerSource, OpsSeqProfileTierLevelInfo, OpsXlayerEntry,
+    parse_operating_point_set,
+};
 pub use sequence::{SequenceHeader, SequenceHeaderGeneral};
 pub use tile_group::{TileGroupHeaderPrefix, parse_tile_group_prefix};
 

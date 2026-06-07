@@ -16,6 +16,8 @@ to pass the full §5.4 `sequence_header_obu()` parser.
 | `truncated.av2` | `05 08` | Declares a 5-byte OBU but only the 1 header byte is present | parse error, exit `1` |
 | `prefix-then-truncated.av2` | `01 08 05 08` | A valid TemporalDelimiter followed by a truncated OBU; `inspect` prints the valid prefix, then reports the tail error | parse error, exit `1` |
 | `frame-header-prefix.av2` | `01 08 0b 04 82 0c cf dc 00 01 00 04 00 02 02 10 e0` | `conformant.av2` plus an `OBU_CLOSED_LOOP_KEY` (len 2, hdr `10`, payload `e0`) whose first tile group carries a frame header with `cur_mfh_id = 0` and `seq_header_id_in_frame_header = 0`; `inspect --json` reports a `frame_header_prefix` activation summary | conformant, exit `0` |
+| `operating-point-set.av2` | `01 08 0c c8 1f 01 00 00 05 00 00 00 00 80 40` | TemporalDelimiter + a global `operating_point_set_obu` (len 12, hdr `c8 1f` = ext, `obu_type` 18, `obu_xlayer_id = 31`) with `ops_reset_flag = 0`, `ops_id = 0`, `ops_cnt = 1`, one minimal operating point (`ops_data_size = 5`, `ops_xlayer_map` selects layer 0, `ops_mlayer_info_idc = 0`), then the extensible OBU tail; `inspect --json` surfaces an `operating_point_set` view | conformant, exit `0` |
+| `buffer-removal-timing.av2` | `01 08 0c c8 1f 01 00 00 05 00 00 00 00 80 40 04 bc 1f 81 40` | `operating-point-set.av2` plus an OPS-dependent `buffer_removal_timing_obu` (len 4, hdr `bc 1f` = ext, `obu_type` 15, `obu_xlayer_id = 31`) with `br_ops_dependent_flag = 1`, `br_ops_id = 0`, `br_ops_cnt = 1`; `br_ops_cnt` matches the active OPS `ops_cnt`, and `inspect --json` surfaces a `buffer_removal_timing` view | conformant, exit `0` |
 
 Header byte decoding (AV2 §5.2.2, MSB-first `f(1) f(5) f(2)`):
 
@@ -35,6 +37,8 @@ printf '\x01\x08\x0c\x04\x82\x0c\xcf\xdc\x00\x01\x00\x04\x00\x14\x80' > seq-head
 printf '\x02\x88\x05'                                             > bad-global-xlayer.av2
 printf '\x05\x08'                                                 > truncated.av2
 printf '\x01\x08\x0b\x04\x82\x0c\xcf\xdc\x00\x01\x00\x04\x00\x02\x02\x10\xe0' > frame-header-prefix.av2
+printf '\x01\x08\x0c\xc8\x1f\x01\x00\x00\x05\x00\x00\x00\x00\x80\x40' > operating-point-set.av2
+printf '\x01\x08\x0c\xc8\x1f\x01\x00\x00\x05\x00\x00\x00\x00\x80\x40\x04\xbc\x1f\x81\x40' > buffer-removal-timing.av2
 ```
 
 The two sequence-header fixtures share the general §5.4.1 prefix `82 0c cf dc …`;
