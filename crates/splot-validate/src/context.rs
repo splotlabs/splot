@@ -48,8 +48,13 @@ impl ValidatorContext {
     /// a reconfigured sequence header with the same `seq_header_id` is legal.
     ///
     /// Precise per-CVS scoping ultimately needs CLK frame-header association, which
-    /// is not modeled yet; this conservative reset removes the common false positive
-    /// where a later CVS reuses a `seq_header_id` with changed parameters.
+    /// is not modeled yet. This conservative reset removes the common false positive
+    /// where a later CVS reuses a `seq_header_id` with changed parameters, at the cost
+    /// of a false negative: because the CVS-opening header precedes its CLK in the
+    /// same temporal unit (§7.3.6), a non-identical repeat *after* the CLK within the
+    /// same CVS is no longer compared. This sound-over-complete bias (never reject a
+    /// valid stream) is intentional until CLK activation is parsed
+    /// (see the `sequence-timing-hls-availability` change).
     fn maybe_reset_coded_video_sequence(&mut self, obu: &ObuEnvelope<'_>) {
         if obu.header.obu_type == ObuType::ClosedLoopKey
             && !obu.header.extended_layer_id.is_global()

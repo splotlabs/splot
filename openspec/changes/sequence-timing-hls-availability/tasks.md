@@ -33,6 +33,23 @@ These tasks were deferred from the `sequence-hls-validator-coverage` change.
       follows its sequence header in OBU order), so it cannot be done by resetting
       purely on the CLK without breaking intra-CVS frames.
 
+### CLK-driven activation (root cause of the activation approximations)
+
+All of the following need the CLK/OLK frame header (which references and activates a
+`seq_header_id`) to be parsed. Because the activating CLK *follows* its sequence
+header in OBU order, none can be done correctly at the OBU level alone; the current
+validator uses sound-over-complete approximations and these tasks make them exact:
+
+- [ ] Activate a received sequence header only when the first CLK/OLK that
+      references it is seen (AV2 §7.3.8), instead of on the base-layer
+      `OBU_SEQUENCE_HEADER` itself. Until then, coded OBUs between a sequence header
+      and its activating key frame are checked against a still-pending header.
+- [ ] Preserve the fingerprint of the sequence header that opens a CVS so a later
+      non-identical repeat *within* that CVS is still caught (the current
+      `maybe_reset_coded_video_sequence` clears it on the CLK, which trails the
+      header in the CVS-start temporal unit, yielding a false negative — the
+      conservative inverse of the earlier cross-CVS false positive).
+
 ## 3. Matrix, docs, and proof
 
 - [ ] Update `docs/IMPLEMENTATION-MATRIX.toml` statuses and proof.
