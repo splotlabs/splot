@@ -10,6 +10,7 @@ bitstream is a report, never a process failure.
 Tracked by Feature IDs: `AV2-5.2.2-OBU-HEADER` (header constraints),
 `AV2-5.3-RESERVED-OBU`, `AV2-5.18.2-FRAME-HEADER-INFO`,
 `AV2-5.18.7.3-TILE-PARAMS`, `AV2-5.19-TILE-GROUP`,
+`AV2-5.15-CONTENT-INTERPRETATION`, `AV2-6.4-SEQUENCE-HEADER-SEMANTICS`,
 `AV2-7.3-OBU-ORDERING`, and `AV2-7.3.8-HLS-AVAILABILITY`.
 ## Requirements
 ### Requirement: structured diagnostics
@@ -74,7 +75,10 @@ MAY use the Feature ID as a base with a `.SUFFIX`.
 
 ### Requirement: HLS availability state
 
-`splot-validate` SHALL model in-band HLS availability before an OBU references sequence/HLS state.
+`splot-validate` SHALL model in-band HLS availability before an OBU references
+sequence/HLS state, with optional caller-provided external HLS supplied through
+`ValidationOptions` (AV2 v1.0.0 § 7.3.8). The default `ValidationOptions` SHALL NOT
+assume any external HLS is available.
 
 #### Scenario: unavailable sequence header
 
@@ -82,6 +86,175 @@ MAY use the Feature ID as a base with a `.SUFFIX`.
 - **AND** no matching in-band or caller-provided external sequence header is available
 - **WHEN** validation reaches the reference
 - **THEN** validation SHALL emit `hls/unavailable-sequence-header`.
+
+#### Scenario: multi-frame header references an available sequence header
+
+- **GIVEN** a sequence-header OBU with `seq_header_id` equal to id earlier in the
+  bitstream
+- **AND** a later multi-frame header OBU with `mfh_seq_header_id` equal to id
+- **WHEN** validation reaches the reference
+- **THEN** validation SHALL NOT emit `mfh/sequence-header-unavailable`.
+
+#### Scenario: multi-frame header references an unavailable sequence header
+
+- **GIVEN** a multi-frame header OBU with `mfh_seq_header_id` equal to id
+- **AND** no in-band or caller-provided sequence header with that id is available
+- **WHEN** validation reaches the reference
+- **THEN** validation SHALL emit `mfh/sequence-header-unavailable`.
+
+#### Scenario: external HLS provides the referenced sequence header
+
+- **GIVEN** a multi-frame header OBU with `mfh_seq_header_id` equal to id
+- **AND** no in-band sequence header with that id, but caller-provided external HLS
+  declares id available
+- **WHEN** validation runs with `ExternalHlsMode::Provided`
+- **THEN** validation SHALL NOT emit `mfh/sequence-header-unavailable`.
+
+#### Scenario: external HLS disabled advisory
+
+- **GIVEN** a multi-frame header reference that cannot be satisfied in-band
+- **WHEN** validation runs with the default `ExternalHlsMode::Disabled`
+- **THEN** validation SHALL emit `mfh/sequence-header-unavailable`
+- **AND** SHALL additionally emit the advisory `hls/external-hls-disabled`.
+
+### Requirement: Cross-embedded-layer timing consistency
+
+`splot-validate` SHALL compare timing information (`timing_info()`, reached through
+the content-interpretation OBU) across embedded layers of the same coded video
+sequence, and flag inconsistencies (AV2 v1.0.0 § 6.4.12). The comparison SHALL be
+made only between two timing values that are both present and both decidably within
+the same modeled coded-video-sequence scope.
+
+#### Scenario: matching timing across embedded layers is accepted
+
+- **GIVEN** two content-interpretation OBUs for the same extended layer but
+  different embedded layers, both carrying timing information
+- **WHEN** their `num_units_in_display_tick`, `time_scale`,
+  `equal_picture_interval`, and `num_ticks_per_picture_minus_1` values are equal
+- **THEN** validation SHALL NOT emit any `sequence-header/timing-*-mismatch`.
+
+#### Scenario: mismatched display tick across embedded layers
+
+- **GIVEN** two embedded layers in one coded video sequence that both carry timing
+  information
+- **WHEN** their `num_units_in_display_tick` values differ
+- **THEN** validation SHALL emit `sequence-header/timing-display-tick-mismatch`.
+
+#### Scenario: mismatched time scale across embedded layers
+
+- **GIVEN** two embedded layers in one coded video sequence that both carry timing
+  information
+- **WHEN** their `time_scale` values differ
+- **THEN** validation SHALL emit `sequence-header/timing-time-scale-mismatch`.
+
+#### Scenario: mismatched equal-picture-interval across embedded layers
+
+- **GIVEN** two embedded layers in one coded video sequence that both carry timing
+  information
+- **WHEN** their `equal_picture_interval` values differ
+- **THEN** validation SHALL emit
+  `sequence-header/timing-equal-picture-interval-mismatch`.
+
+#### Scenario: mismatched ticks-per-picture across embedded layers
+
+- **GIVEN** two embedded layers in one coded video sequence that both carry timing
+  information with `equal_picture_interval` equal to 1
+- **WHEN** their `num_ticks_per_picture_minus_1` values differ
+- **THEN** validation SHALL emit `sequence-header/timing-num-ticks-mismatch`.
+
+#### Scenario: timing not yet comparable
+
+- **GIVEN** at most one embedded layer carries present timing information in the
+  modeled coded-video-sequence scope
+- **WHEN** validation runs
+- **THEN** the validator SHALL NOT fabricate a timing-mismatch diagnostic.
+
+### Requirement: Content-interpretation range conformance
+
+`splot-validate` SHALL enforce the locally-decidable § 6.14 range constraints of the
+content-interpretation OBU.
+
+#### Scenario: chroma sample position out of range
+
+- **GIVEN** a content-interpretation OBU with `ci_chroma_sample_position_top` or
+  `ci_chroma_sample_position_bottom` greater than 5
+- **WHEN** validation runs
+- **THEN** validation SHALL emit
+  `content-interpretation/chroma-sample-position-out-of-range`.
+
+#### Scenario: aspect ratio idc out of range
+
+- **GIVEN** a content-interpretation OBU with `ci_aspect_ratio_idc` not equal to 255
+  and greater than 16
+- **WHEN** validation runs
+- **THEN** validation SHALL emit
+  `content-interpretation/aspect-ratio-idc-out-of-range`.
+
+### Requirement: Repeated content-interpretation identity
+
+`splot-validate` SHALL flag a content-interpretation OBU that is repeated for the
+same embedded layer within the modeled coded-video-sequence scope carrying different
+*information* (AV2 v1.0.0 § 6.14: a repeated CI OBU must "contain the same
+information"). The comparison SHALL be sound and complete for the fields it covers:
+it compares `ci_scan_type_idc`, the chroma sample position, `timing_info()`, and the
+**derived** color description and aspect ratio (§ 6.14 Table 6.13 / § 5.15 aspect
+tables, resolving presets, reserved ids, and absence to canonical values including
+the § 5.15 unspecified defaults), and SHALL NOT hard-flag a difference confined to
+the decoder-ignored `ci_reserved_2bit` or an alias-equivalent re-encoding (a preset
+vs. its equivalent explicit triple or SAR, or a reserved id vs. an explicit
+unspecified one).
+
+#### Scenario: repeated content interpretation with differing timing
+
+- **GIVEN** two content-interpretation OBUs for the same `(obu_xlayer_id,
+  obu_mlayer_id)` within one coded video sequence
+- **WHEN** their `timing_info()`, `ci_scan_type_idc`, or chroma sample position
+  differs
+- **THEN** validation SHALL emit `content-interpretation/repeated-ci-not-identical`.
+
+#### Scenario: repeated content interpretation with differing color or aspect
+
+- **GIVEN** two content-interpretation OBUs for the same `(obu_xlayer_id,
+  obu_mlayer_id)` both carrying a color description (or aspect ratio)
+- **WHEN** their derived color information (or derived sample aspect ratio) differs
+  (e.g. BT.709 vs BT.2100 PQ, or SAR 1:1 vs 12:11)
+- **THEN** validation SHALL emit `content-interpretation/repeated-ci-not-identical`.
+
+#### Scenario: repeat differing only in reserved bits
+
+- **GIVEN** two content-interpretation OBUs for the same `(obu_xlayer_id,
+  obu_mlayer_id)` whose parsed § 5.15 fields are identical except `ci_reserved_2bit`
+- **WHEN** validation runs
+- **THEN** validation SHALL NOT emit `content-interpretation/repeated-ci-not-identical`.
+
+#### Scenario: repeat differing only in alias-equivalent color/aspect encoding
+
+- **GIVEN** two content-interpretation OBUs for the same `(obu_xlayer_id,
+  obu_mlayer_id)` whose color (or aspect) is encoded differently but derives to the
+  same value (a preset idc vs. the equivalent explicit triple or SAR, or a reserved
+  id vs. an explicit unspecified one)
+- **WHEN** validation runs
+- **THEN** validation SHALL NOT emit `content-interpretation/repeated-ci-not-identical`.
+
+#### Scenario: repeat with present color/aspect after an unspecified default
+
+- **GIVEN** two content-interpretation OBUs for the same `(obu_xlayer_id,
+  obu_mlayer_id)`, one omitting the color description (or aspect ratio) so it derives
+  to the § 5.15 unspecified default, and the other carrying a specific value (e.g.
+  BT.709, or SAR 1:1)
+- **WHEN** validation runs
+- **THEN** validation SHALL emit `content-interpretation/repeated-ci-not-identical`.
+
+### Requirement: Content-interpretation reserved bits
+
+`splot-validate` SHALL surface a non-zero `ci_reserved_2bit` (AV2 v1.0.0 § 6.14).
+
+#### Scenario: non-zero reserved bits
+
+- **GIVEN** a content-interpretation OBU whose `ci_reserved_2bit` is not 0
+- **WHEN** validation runs
+- **THEN** validation SHALL emit `content-interpretation/reserved-bits-nonzero` as a
+  warning (the value is ignored by a decoder, so it is not a hard error).
 
 ### Requirement: Temporal-unit ordering
 

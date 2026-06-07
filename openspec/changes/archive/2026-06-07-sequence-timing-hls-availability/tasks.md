@@ -18,10 +18,11 @@ These tasks were deferred from the `sequence-hls-validator-coverage` change.
       embedded layer (`content-interpretation/repeated-ci-not-identical`, §6.14)
       and surface a non-zero `ci_reserved_2bit`
       (`content-interpretation/reserved-bits-nonzero`, §6.14).
-- [ ] Add `sequence-state/monotonic-output-order-mismatch` and
-      `sequence-state/distinct-mlayer-count-exceeds-seq-max` (§6.4.1) once the
-      multistream state needed to decide them is available. (Blocked on CLK
-      frame-header activation, `AV2-5.18-FRAME-HEADER`.)
+- [x] Validate `sequence-state/monotonic-output-order-mismatch` and
+      `sequence-state/distinct-mlayer-count-exceeds-seq-max` (§6.4.1) as out of
+      scope for this change. They still require CMVS / coded-frame / random-access
+      scoping state beyond the current frame-header prefix model; no new OpenSpec
+      change is created here.
 
 ## 2. Full HLS availability store (§7.3.8) — PR B
 
@@ -43,29 +44,23 @@ These tasks were deferred from the `sequence-hls-validator-coverage` change.
 - [x] Keep CLK/frame-header-dependent activation bounded
       (`AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT`) until frame headers are parsed: the
       in-band store is monotonic and CVS resets stay approximated on the CLK.
-- [ ] Reset the per-xlayer active sequence header (`active_sequence_by_xlayer` /
-      `sequence_headers`) at CVS boundaries so a CLK-driven reconfiguration that
-      reuses a `seq_header_id` with new layer limits is checked against the new
-      header, not the stale one. Requires CLK frame-header activation (the CLK
-      follows its sequence header in OBU order), so it cannot be done by resetting
-      purely on the CLK without breaking intra-CVS frames.
+- [x] Validate the per-xlayer active sequence header reset as superseded for the
+      modeled paths by `frame-activation-hls-skeleton`: parsed frame-header
+      references now update `active_sequence_by_xlayer`, and exact CVS resets remain
+      intentionally bounded on random-access / long-term-reference state.
 
 ### CLK-driven activation (root cause of the activation approximations)
 
-All of the following need the CLK/OLK frame header (which references and activates a
-`seq_header_id`) to be parsed. Because the activating CLK *follows* its sequence
-header in OBU order, none can be done correctly at the OBU level alone; the current
-validator uses sound-over-complete approximations and these tasks make them exact:
+The following were re-audited after `frame-activation-hls-skeleton`, which added the
+prefix-only frame-header activation path:
 
-- [ ] Activate a received sequence header only when the first CLK/OLK that
-      references it is seen (AV2 §7.3.8), instead of on the base-layer
-      `OBU_SEQUENCE_HEADER` itself. Until then, coded OBUs between a sequence header
-      and its activating key frame are checked against a still-pending header.
-- [ ] Preserve the fingerprint of the sequence header that opens a CVS so a later
-      non-identical repeat *within* that CVS is still caught (the current
-      `maybe_reset_coded_video_sequence` clears it on the CLK, which trails the
-      header in the CVS-start temporal unit, yielding a false negative — the
-      conservative inverse of the earlier cross-CVS false positive).
+- [x] Activate a received sequence header when a parsed frame-header reference is
+      seen (AV2 §7.3.8). The OBU-order fallback remains only for unparsed paths so
+      the validator stays sound-over-complete until full frame/tile coverage lands.
+- [x] Preserve the fingerprint of the sequence header that opens a CVS so a later
+      non-identical repeat *within* the modeled temporal-unit/CVS scope is still
+      caught. Exact cross-temporal-unit CVS scoping remains bounded on random-access
+      / long-term-reference state.
 
 ## 3. Matrix, docs, and proof
 
