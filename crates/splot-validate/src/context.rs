@@ -143,6 +143,15 @@ impl ValidatorContext {
         if obu.header.obu_type == ObuType::SequenceHeader {
             self.observe_sequence_header(obu, report);
         } else {
+            // AV2 § 5.18.2: a frame header's load_sequence_header() runs at the start
+            // of frame_header_info(), before the frame's own layer ids are
+            // interpreted. So for a frame-bearing OBU, parse the prefix (best-effort)
+            // and run the HLS reference + activation checks FIRST, then check the
+            // active-sequence layer limits against the just-activated header. A parse
+            // failure is silent, consistent with the multi-frame-header and
+            // content-interpretation observers: the prefix is not-yet-validated
+            // coverage, not a new error path.
+            self.observe_frame_bearing_obu(obu, options, report);
             self.validate_active_sequence_limits(obu, options, report);
         }
 
@@ -151,12 +160,6 @@ impl ValidatorContext {
             ObuType::MultiFrameHeader => self.observe_multi_frame_header(obu, options, report),
             _ => {}
         }
-
-        // Parse the frame/tile-group prefix (best-effort) and run the HLS reference
-        // and sequence-activation checks. A parse failure is silent, consistent with
-        // the multi-frame-header and content-interpretation observers: the prefix is
-        // not-yet-validated coverage, not a new error path.
-        self.observe_frame_bearing_obu(obu, options, report);
     }
 
     /// Resets the CVS-scoped comparison state at each temporal-unit boundary
@@ -266,7 +269,18 @@ impl ValidatorContext {
                 return None;
             }
             let Some(record) = self.hls.multi_frame_header(cur) else {
-                report.push(frame_header_unavailable_mfh(cur, obu));
+                // AV2 § 7.3.8.7: a multi-frame header may be provided "by inclusion in
+                // the bitstream or by provision through external means". The validator
+                // models external sequence headers but does not yet model external
+                // multi-frame headers, so under ExternalHlsMode::Provided an
+                // out-of-band MFH could satisfy this reference — suppress the hard
+                // error to avoid rejecting a conformant external-HLS stream. Under the
+                // default (Disabled) there is no external means, so it is unavailable.
+                // TODO(spec: AV2-7.3.8-HLS-AVAILABILITY): declare external multi-frame
+                // headers in ValidationOptions instead of suppressing under Provided.
+                if matches!(options.external_hls, ExternalHlsMode::Disabled) {
+                    report.push(frame_header_unavailable_mfh(cur, obu));
+                }
                 return None;
             };
             let seq_raw = u32::from(record.mfh_seq_header_id.get());
@@ -443,6 +457,24 @@ impl ValidatorContext {
                     report.push(external_hls_disabled_advisory(id, obu));
                 }
             }
+        }
+
+        // Gate availability on the same validation the SequenceHeaderSyntax /
+        // observe_sequence_header path uses: a fully parsed MFH must have a valid
+        // §5.2.1 payload tail (obu_extension_flag + trailing_bits). A malformed tail
+        // makes the MFH not a valid available HLS object, so a later cur_mfh_id
+        // reference must treat it as unavailable rather than resolve through it. An MFH
+        // bounded at seg_info() leaves the tail position unknown, so (like a bounded
+        // sequence header) it is still recorded.
+        if mfh.unimplemented_at.is_none()
+            && finish_obu_payload(
+                &mut reader,
+                obu.payload,
+                obu.header.obu_type.is_extensible_obu(),
+            )
+            .is_err()
+        {
+            return;
         }
 
         // Record this multi-frame header's in-band availability (AV2 § 7.3.8.7) so a
@@ -1043,13 +1075,16 @@ fn frame_header_error(
         .with_byte_offset(obu.offset)
 }
 
-/// Builds the `hls/unavailable-multi-frame-header` diagnostic (AV2 § 7.3.8.7).
+/// Builds the `hls/unavailable-multi-frame-header` diagnostic (AV2 § 7.3.8.7). Only
+/// emitted under the default (external-disabled) options; external multi-frame
+/// headers are not modeled, so under `ExternalHlsMode::Provided` the reference is left
+/// unresolved without a hard error (see `resolve_frame_header_reference`).
 fn frame_header_unavailable_mfh(cur_mfh_id: MfhId, obu: &ObuEnvelope<'_>) -> Diagnostic {
     Diagnostic::error(
         "hls/unavailable-multi-frame-header",
         format!(
             "frame header references cur_mfh_id {}, but no multi-frame header with that id is \
-             available in-band (external multi-frame headers are not modeled)",
+             available in-band (external HLS is disabled)",
             cur_mfh_id.get()
         ),
     )

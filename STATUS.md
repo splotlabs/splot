@@ -290,7 +290,7 @@ tile-group payload. New fixture `tests/fixtures/frame-header-prefix.av2`.
 ```text
 cargo fmt --all -- --check                                                      # ok (no diff)
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # ok, 0 warnings
-cargo test --workspace --all-targets --locked                                   # ok: 267 passed, 0 failed
+cargo test --workspace --all-targets --locked                                   # ok: 270 passed, 0 failed
 cargo test -p splot-core frame_header                                           # ok
 cargo test -p splot-core tile_group                                            # ok
 cargo test -p splot-validate frame_header                                      # ok
@@ -304,7 +304,25 @@ cargo run -p splot-cli -- inspect tests/fixtures/frame-header-prefix.av2 --json 
 ```
 
 Test breakdown after this phase: `splot-core` 138, `splot-encode` 2,
-`splot-validate` 99, `splot-cli` 11, `xtask` 17 (267 total).
+`splot-validate` 102, `splot-cli` 11, `xtask` 17 (270 total).
+
+**Code-review follow-ups** (addressing the PR #16 AI reviews):
+
+- Frame-bearing OBUs now resolve and activate their referenced sequence header
+  *before* their own active-sequence layer-limit check, since AV2 §5.18.2
+  `load_sequence_header()` runs at the start of `frame_header_info()`. A CLK requires
+  `obu_tlayer_id == 0` but may carry a non-zero `obu_mlayer_id`, so the previous order
+  could falsely flag `sequence-state/mlayer-exceeds-max` against the stale fallback
+  header.
+- MFH availability recording is gated on a valid §5.2.1 payload tail (consistent with
+  the sequence-header path): a fully-parsed MFH with a malformed tail is not recorded,
+  so a later `cur_mfh_id` reference treats it as unavailable.
+- `hls/unavailable-multi-frame-header` is suppressed under `ExternalHlsMode::Provided`
+  (an out-of-band MFH may satisfy the reference; external MFH declaration remains
+  future), so a conformant external-HLS stream is not rejected. It still fires under
+  the default (external-disabled) mode.
+- Confirmed against AV2 §6.7 (line: *"mfh_id_minus_1 + 1 is less than MAX_MFH_NUM"*)
+  that the strict `< MAX_MFH_NUM` bound for `mfhId` is correct.
 
 ## Implemented
 

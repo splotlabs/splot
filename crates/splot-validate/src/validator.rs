@@ -936,10 +936,13 @@ mod tests {
 
     #[test]
     fn hls_repeated_sequence_header_after_clk_starts_new_coded_video_sequence() {
-        // CVS 1: seq header (id 0, params A) activated, then an OBU_CLOSED_LOOP_KEY
-        // for xlayer 0 (0x10 = type 4, no extension, xlayer 0). CVS 2 reuses
-        // seq_header_id 0 with different params B — a legal reconfiguration that must
-        // NOT be flagged as a non-identical repeat (AV2 § 7.3.8).
+        // Temporal unit 1: seq header (id 0, params A), then an OBU_CLOSED_LOOP_KEY for
+        // xlayer 0 (0x10 = type 4, no extension, xlayer 0) with an empty payload (its
+        // prefix parse fails, so it does not activate). Temporal unit 2 reuses
+        // seq_header_id 0 with different params B — a legal reconfiguration in a new
+        // CVS that must NOT be flagged as a non-identical repeat (AV2 § 7.3.8). The
+        // second temporal delimiter clears the CVS-scoped fingerprint (the reset is at
+        // the temporal-unit boundary, not the CLK), so params A and B are not compared.
         let mut data = temporal_delimiter_obu();
         data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
         data.extend(annex_b_obu(0x10, &[]));
@@ -951,7 +954,7 @@ mod tests {
             !report
                 .errors()
                 .any(|d| d.rule_id == "hls/repeated-sequence-header-not-identical"),
-            "a CLK between the two headers starts a new CVS; report was: {report}"
+            "a new temporal unit clears the CVS fingerprint; report was: {report}"
         );
     }
 
@@ -2127,6 +2130,100 @@ mod tests {
                 .errors()
                 .any(|d| d.rule_id == "hls/repeated-sequence-header-not-identical"),
             "a reconfiguration in a new temporal unit must not be flagged; report was: {report}"
+        );
+    }
+
+    /// A frame-bearing OBU (with an extension header at the given layer ids) whose
+    /// first tile group carries a frame header referencing `seq_header_id`.
+    fn frame_obu_direct_seq_ref_layer(
+        obu_type: u8,
+        tlayer: u8,
+        mlayer: u8,
+        xlayer: u8,
+        seq_header_id: u32,
+    ) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.bit(1); // is_first_tile_group
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(seq_header_id); // seq_header_id_in_frame_header
+        annex_b_obu_with_header(
+            &layer_obu_header(obu_type, tlayer, mlayer, xlayer),
+            &bits.into_bytes(),
+        )
+    }
+
+    /// A multi-frame header OBU with in-range ids but a malformed §5.2.1 payload tail
+    /// (`obu_extension_flag == 1`), so it is not a valid available HLS object.
+    fn malformed_tail_mfh_obu(mfh_id_minus_1: u32, seq_header_id: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.uvlc(seq_header_id); // mfh_seq_header_id
+        bits.uvlc(mfh_id_minus_1); // mfh_id_minus_1
+        bits.bit(0); // mfh_frame_size_present_flag
+        bits.bit(0); // mfh_deblocking_filter_update
+        bits.bit(0); // mfh_seg_info_present_flag -> fully parsed
+        bits.bit(1); // obu_extension_flag = 1 -> §6.2.1 tail violation
+        annex_b_obu(0x0C, &bits.into_bytes())
+    }
+
+    #[test]
+    fn frame_header_activation_precedes_layer_limit_check() {
+        // A CLK requires obu_tlayer_id == 0 but may carry a non-zero obu_mlayer_id
+        // (AV2 §6.2.2). seq 0 allows only mlayer 0; seq 1 allows mlayer 1. A CLK at
+        // obu_mlayer_id 1 that references seq 1 activates the permissive header BEFORE
+        // its own layer-limit check, so it is not flagged. (Without activating first,
+        // the stale seq-0 fallback would falsely flag mlayer-exceeds-max.)
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 0)));
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(1, 0, 1)));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 1, 0, 1)); // CLK, mlayer 1, ref seq 1
+
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/mlayer-exceeds-max"),
+            "the CLK must activate seq 1 (allows mlayer 1) before its own limit check; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_header_referencing_malformed_tail_mfh_is_unavailable() {
+        // An MFH with in-range ids but a malformed §5.2.1 payload tail is not recorded
+        // as available, so a frame referencing it via cur_mfh_id is unavailable rather
+        // than resolved through the malformed HLS object.
+        let mut data = td_and_seq_header(0, 1, 1);
+        data.extend(malformed_tail_mfh_obu(1, 0)); // mfhId 2, malformed tail
+        data.extend(frame_obu_mfh_ref(CLK_HEADER, 2)); // CLK cur_mfh_id 2
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "hls/unavailable-multi-frame-header"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_header_missing_mfh_under_external_hls_is_not_flagged() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // With external HLS provided, an out-of-band multi-frame header may satisfy the
+        // cur_mfh_id reference. External MFHs are not modeled, so the validator neither
+        // resolves the MFH nor emits a hard error — it must not reject the conformant
+        // external-HLS stream.
+        let mut data = temporal_delimiter_obu();
+        data.extend(frame_obu_mfh_ref(CLK_HEADER, 2)); // CLK cur_mfh_id 2, no in-band MFH
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(0),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "hls/unavailable-multi-frame-header"),
+            "external HLS may supply the MFH; report was: {report}"
         );
     }
 }
