@@ -133,6 +133,12 @@ mod tests {
             }
         }
 
+        fn align(&mut self) {
+            while !self.bits.len().is_multiple_of(8) {
+                self.bit(0);
+            }
+        }
+
         fn into_bytes(self) -> Vec<u8> {
             let mut bytes = Vec::new();
             for chunk in self.bits.chunks(8) {
@@ -184,6 +190,15 @@ mod tests {
         max_tlayer_id: u32,
         max_mlayer_id: u32,
     ) -> Vec<u8> {
+        sequence_header_payload_with_lcr(seq_header_id, 0, max_tlayer_id, max_mlayer_id)
+    }
+
+    fn sequence_header_payload_with_lcr(
+        seq_header_id: u32,
+        seq_lcr_id: u32,
+        max_tlayer_id: u32,
+        max_mlayer_id: u32,
+    ) -> Vec<u8> {
         let mut bits = Bits::default();
         bits.uvlc(seq_header_id);
         bits.f(0, 5); // seq_profile_idc
@@ -191,7 +206,7 @@ mod tests {
         bits.f(0, 5); // seq_level_idx
         bits.uvlc(0); // chroma_format_idc
         bits.uvlc(0); // bit_depth_idc
-        bits.f(0, 3); // seq_lcr_id
+        bits.f(seq_lcr_id, 3); // seq_lcr_id
         bits.bit(0); // still_picture
         bits.f(max_tlayer_id, 2);
         bits.f(max_mlayer_id, 3);
@@ -2397,6 +2412,254 @@ mod tests {
                 .any(|d| d.rule_id == "sequence-state/tlayer-exceeds-max"),
             "a non-key frame must activate its referenced (permissive) seq header; \
              report was: {report}"
+        );
+    }
+
+    // --- HLS LCR / atlas availability (AV2 § 7.3.8.3 / § 7.3.8.4 / § 6.4.1) -------
+
+    /// Appends the §5.2.1 extensible-OBU payload tail (`obu_extension_flag = 0` +
+    /// `trailing_one_bit`); `into_bytes` zero-pads the remainder.
+    fn extensible_obu_tail(bits: &mut Bits) {
+        bits.bit(0); // obu_extension_flag = 0
+        bits.bit(1); // trailing_one_bit
+    }
+
+    /// A minimal global LCR OBU (`obu_xlayer_id == GLOBAL_XLAYER_ID == 31`).
+    fn global_lcr_obu(global_id: u32, xlayer_map: u32, atlas_id: Option<u32>) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(global_id, 3); // lcr_global_config_record_id
+        bits.f(xlayer_map, 31); // lcr_xlayer_map
+        bits.bit(0); // lcr_aggregate_info_present_flag
+        bits.bit(0); // lcr_seq_profile_tier_level_info_present_flag
+        bits.bit(0); // lcr_global_payload_present_flag
+        bits.bit(0); // lcr_dependent_xlayers_flag
+        bits.bit(u8::from(atlas_id.is_some())); // lcr_global_atlas_id_present_flag
+        bits.f(0, 7); // lcr_global_purpose_id
+        bits.bit(0); // lcr_doh_constraint_flag
+        bits.bit(0); // lcr_enforce_tile_alignment_flag
+        bits.f(atlas_id.unwrap_or(0), 3); // lcr_global_atlas_id or reserved_zero_3bits
+        bits.f(0, 5); // lcr_global_reserved_zero_5bits
+        extensible_obu_tail(&mut bits);
+        annex_b_obu_with_header(&layer_obu_header(16, 0, 0, 31), &bits.into_bytes())
+    }
+
+    /// A global LCR OBU whose `lcr_global_reserved_zero_5bits` is non-zero.
+    fn global_lcr_obu_with_nonzero_reserved() -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(1, 3); // lcr_global_config_record_id
+        bits.f(0b1, 31); // lcr_xlayer_map
+        bits.bit(0); // aggregate
+        bits.bit(0); // ptl
+        bits.bit(0); // payload
+        bits.bit(0); // dependent
+        bits.bit(0); // atlas present
+        bits.f(0, 7); // purpose
+        bits.bit(0); // doh
+        bits.bit(0); // tile alignment
+        bits.f(0, 3); // reserved_zero_3bits
+        bits.f(0b1_0001, 5); // lcr_global_reserved_zero_5bits != 0
+        extensible_obu_tail(&mut bits);
+        annex_b_obu_with_header(&layer_obu_header(16, 0, 0, 31), &bits.into_bytes())
+    }
+
+    /// A minimal local LCR OBU at `xlayer`.
+    fn local_lcr_obu(
+        xlayer: u8,
+        global_id: u32,
+        local_id: u32,
+        local_atlas_id: Option<u32>,
+    ) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(global_id, 3); // lcr_global_id
+        bits.f(local_id, 3); // lcr_local_id
+        bits.bit(0); // lcr_profile_tier_level_info_present_flag
+        bits.bit(u8::from(local_atlas_id.is_some())); // lcr_local_atlas_id_present_flag
+        bits.f(local_atlas_id.unwrap_or(0), 3); // lcr_local_atlas_id or reserved_zero_3bits
+        bits.f(0, 5); // lcr_local_reserved_zero_5bits
+        // lcr_xlayer_info(0, xId): all present flags clear, then byte_alignment().
+        bits.bit(0); // lcr_rep_info_present_flag
+        bits.bit(0); // lcr_xlayer_purpose_present_flag
+        bits.bit(0); // lcr_xlayer_color_info_present_flag
+        bits.bit(0); // lcr_embedded_layer_info_present_flag
+        bits.align(); // byte_alignment()
+        extensible_obu_tail(&mut bits);
+        annex_b_obu_with_header(&layer_obu_header(16, 0, 0, xlayer), &bits.into_bytes())
+    }
+
+    /// A minimal SINGLE-mode atlas segment OBU at `xlayer`.
+    fn atlas_obu(xlayer: u8, atlas_segment_id: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(atlas_segment_id, 3); // atlas_segment_id
+        bits.uvlc(2); // ats_atlas_segment_mode_idc = SINGLE_ATLAS
+        bits.uvlc(0); // ats_nominal_width_minus_1
+        bits.uvlc(0); // ats_nominal_height_minus_1
+        bits.bit(0); // ats_signaled_atlas_segment_ids_flag
+        extensible_obu_tail(&mut bits);
+        annex_b_obu_with_header(&layer_obu_header(17, 0, 0, xlayer), &bits.into_bytes())
+    }
+
+    /// An atlas segment OBU whose `ats_atlas_segment_mode_idc` is out of range (5).
+    fn atlas_obu_bad_mode(xlayer: u8) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(0, 3); // atlas_segment_id
+        bits.uvlc(5); // ats_atlas_segment_mode_idc = 5 -> out of range
+        extensible_obu_tail(&mut bits);
+        annex_b_obu_with_header(&layer_obu_header(17, 0, 0, xlayer), &bits.into_bytes())
+    }
+
+    /// A base-layer sequence header OBU at `xlayer` with `seq_lcr_id`.
+    fn sequence_header_obu_with_lcr(xlayer: u8, seq_lcr_id: u32) -> Vec<u8> {
+        let payload = sequence_header_payload_with_lcr(0, seq_lcr_id, 0, 0);
+        annex_b_obu_with_header(&layer_obu_header(1, 0, 0, xlayer), &payload)
+    }
+
+    #[test]
+    fn hls_seq_lcr_missing_record_is_flagged() {
+        // seq_lcr_id = 5 but no LCR precedes the sequence header.
+        let mut data = temporal_delimiter_obu();
+        data.extend(sequence_header_obu_with_lcr(3, 5));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "hls/unavailable-layer-configuration-record"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_seq_header_resolves_to_local_is_accepted() {
+        // A local LCR in xlayer 3 with lcr_local_id = 5 satisfies seq_lcr_id = 5.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu(3, 0, 5, None));
+        data.extend(sequence_header_obu_with_lcr(3, 5));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "hls/unavailable-layer-configuration-record"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_seq_header_resolves_to_global_is_accepted() {
+        // A global LCR id 5 whose xlayer_map includes xlayer 3 (bit 3 -> 0b1000 = 8).
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_lcr_obu(5, 0b1000, None));
+        data.extend(sequence_header_obu_with_lcr(3, 5));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report.errors().any(|d| {
+                d.rule_id == "hls/unavailable-layer-configuration-record"
+                    || d.rule_id == "lcr/global-xlayer-map-missing-xlayer"
+            }),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_global_xlayer_map_missing_xlayer_is_flagged() {
+        // Global LCR id 5 whose xlayer_map (bit 0 only) does NOT include xlayer 3.
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_lcr_obu(5, 0b1, None));
+        data.extend(sequence_header_obu_with_lcr(3, 5));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "lcr/global-xlayer-map-missing-xlayer"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_local_missing_global_is_flagged() {
+        // Local LCR references lcr_global_id = 2, but no global LCR is available.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu(3, 2, 1, None));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "lcr/global-lcr-unavailable"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn atlas_local_atlas_unavailable_is_flagged() {
+        // Local LCR references lcr_local_atlas_id = 4, but no local atlas precedes it.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu(3, 0, 1, Some(4)));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "atlas/local-atlas-unavailable"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn atlas_local_atlas_available_is_accepted() {
+        // A local atlas segment OBU (xlayer 3, id 4) precedes the referencing LCR.
+        let mut data = temporal_delimiter_obu();
+        data.extend(atlas_obu(3, 4));
+        data.extend(local_lcr_obu(3, 0, 1, Some(4)));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "atlas/local-atlas-unavailable"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_global_xlayer_map_missing_xlayer_is_suppressed_under_external_hls() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // Same shape as lcr_global_xlayer_map_missing_xlayer_is_flagged, but under
+        // external HLS an unmodeled external local LCR could resolve seq_lcr_id ahead
+        // of the in-band global, so the xlayer-map check must be suppressed.
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_lcr_obu(5, 0b1, None));
+        data.extend(sequence_header_obu_with_lcr(3, 5));
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "lcr/global-xlayer-map-missing-xlayer"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_reserved_bits_nonzero_is_warned() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_lcr_obu_with_nonzero_reserved());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .warnings()
+                .any(|d| d.rule_id == "lcr/reserved-bits-nonzero"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn atlas_segment_mode_out_of_range_is_flagged() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(atlas_obu_bad_mode(31));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "atlas/segment-mode-out-of-range"),
+            "report was: {report}"
         );
     }
 }

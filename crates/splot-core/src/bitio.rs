@@ -267,6 +267,42 @@ impl<'a> BitReader<'a> {
         }
     }
 
+    /// Reads an AV2 `leb128()` descriptor (AV2 v1.0.0 § 4.11.4).
+    ///
+    /// The value is encoded in up to eight little-endian groups of seven bits, each
+    /// group preceded by a continuation bit (the most-significant bit of the byte):
+    /// a set continuation bit means another group follows. AV2 requires the decoded
+    /// value to fit in `u32` and to use at most eight bytes.
+    ///
+    /// `leb128()` only appears at byte-aligned positions in the AV2 syntax; this
+    /// reader consumes whole 8-bit groups via [`Self::read_bits_u8`] regardless of the
+    /// current bit position, so it never panics, but its value is only meaningful when
+    /// the reader is byte-aligned (the spec guarantees this at every `leb128()` site).
+    ///
+    /// # Errors
+    /// Returns [`Error::UnexpectedEof`] if the code is truncated, or
+    /// [`Error::InvalidLeb128`] if it uses more than eight bytes or the decoded value
+    /// exceeds `(1 << 32) - 1`.
+    pub fn read_leb128(&mut self) -> Result<u32> {
+        let start_offset = self.byte_offset();
+        let mut value: u64 = 0;
+        for i in 0..8u32 {
+            let byte = self.read_bits_u8(8)?;
+            value |= u64::from(byte & 0x7f) << (i * 7);
+            if byte & 0x80 == 0 {
+                return u32::try_from(value).map_err(|_| Error::InvalidLeb128 {
+                    offset: start_offset,
+                    message: "value exceeds (1 << 32) - 1".to_owned(),
+                });
+            }
+        }
+
+        Err(Error::InvalidLeb128 {
+            offset: start_offset,
+            message: "LEB128 uses more than 8 bytes (MSB of byte 7 is set)".to_owned(),
+        })
+    }
+
     /// Reads an AV2 `ns(n)` non-symmetric integer descriptor (AV2 v1.0.0 § 4.11.8).
     ///
     /// # Errors
@@ -552,6 +588,51 @@ mod tests {
     }
 
     #[test]
+    fn read_leb128_decodes_single_and_multi_byte() {
+        // 0x00 -> 0 (one byte, continuation clear).
+        let mut zero = BitReader::new(&[0x00], ByteOffset::new(0));
+        assert_eq!(zero.read_leb128().unwrap(), 0);
+        assert_eq!(zero.byte_offset(), ByteOffset::new(1));
+
+        // 0x7F -> 127 (one byte).
+        let mut max1 = BitReader::new(&[0x7F], ByteOffset::new(0));
+        assert_eq!(max1.read_leb128().unwrap(), 127);
+
+        // 0x80 0x01 -> (0 | (1 << 7)) = 128 (two bytes, low group continues).
+        let mut two = BitReader::new(&[0x80, 0x01], ByteOffset::new(0));
+        assert_eq!(two.read_leb128().unwrap(), 128);
+        assert_eq!(two.byte_offset(), ByteOffset::new(2));
+
+        // 0xE5 0x8E 0x26 -> 624485 (the canonical LEB128 example).
+        let mut example = BitReader::new(&[0xE5, 0x8E, 0x26], ByteOffset::new(0));
+        assert_eq!(example.read_leb128().unwrap(), 624_485);
+    }
+
+    #[test]
+    fn read_leb128_reports_eof_and_overflow() {
+        // Truncated: continuation bit set but no following byte.
+        let mut eof = BitReader::new(&[0x80], ByteOffset::new(0));
+        assert!(matches!(
+            eof.read_leb128(),
+            Err(Error::UnexpectedEof { .. })
+        ));
+
+        // Nine continuation bytes -> more than eight bytes is invalid.
+        let mut too_long = BitReader::new(&[0x80; 9], ByteOffset::new(0));
+        assert!(matches!(
+            too_long.read_leb128(),
+            Err(Error::InvalidLeb128 { .. })
+        ));
+
+        // A value that does not fit in u32 (5 groups of 0x7f = 35 bits set).
+        let mut overflow = BitReader::new(&[0xFF, 0xFF, 0xFF, 0xFF, 0x7F], ByteOffset::new(0));
+        assert!(matches!(
+            overflow.read_leb128(),
+            Err(Error::InvalidLeb128 { .. })
+        ));
+    }
+
+    #[test]
     fn read_ns_decodes_power_of_two_range() {
         let mut reader = BitReader::new(&[0b1010_0000], ByteOffset::new(0));
         assert_eq!(reader.read_ns(8).unwrap(), 5);
@@ -740,6 +821,9 @@ mod proptests {
         ) {
             let mut uvlc_reader = BitReader::new(&data, ByteOffset::new(0));
             let _ = uvlc_reader.read_uvlc();
+
+            let mut leb128_reader = BitReader::new(&data, ByteOffset::new(0));
+            let _ = leb128_reader.read_leb128();
 
             let mut le_reader = BitReader::new(&data, ByteOffset::new(0));
             let _ = le_reader.read_le(n);

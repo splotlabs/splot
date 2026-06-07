@@ -13,9 +13,12 @@
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::error::{
-    ByteAlignmentErrorKind, Error, SequenceHeaderErrorKind, TrailingBitsErrorKind,
+    AtlasSegmentErrorKind, ByteAlignmentErrorKind, Error, LayerConfigRecordErrorKind,
+    SequenceHeaderErrorKind, TrailingBitsErrorKind,
 };
+use splot_core::headers::atlas_segment::parse_atlas_segment;
 use splot_core::headers::content_interpretation::parse_content_interpretation;
+use splot_core::headers::layer_config_record::parse_layer_config_record;
 use splot_core::headers::sequence::parse_sequence_header;
 use splot_core::hls::{parse_msdo, parse_multi_frame_header};
 use splot_core::obu::{finish_obu_payload, parse_trailing_bits};
@@ -45,6 +48,8 @@ pub fn default_checks() -> Vec<Box<dyn Check>> {
         Box::new(SequenceHeaderSyntax),
         Box::new(MsdoSyntax),
         Box::new(MultiFrameHeaderSyntax),
+        Box::new(LayerConfigRecordSyntax),
+        Box::new(AtlasSegmentSyntax),
         Box::new(ContentInterpretationSyntax),
         Box::new(GlobalXLayerRequired),
         Box::new(GlobalXLayerRequiresBaseLayers),
@@ -150,6 +155,44 @@ pub(crate) fn syntax_error_diagnostic(error: &Error) -> Option<Diagnostic> {
             .with_byte_offset(*offset)
             .with_bit_offset(*bit_offset),
         ),
+        Error::InvalidLayerConfigRecord {
+            offset,
+            bit_offset,
+            kind,
+        } => {
+            let (rule_id, spec_section) = match kind {
+                LayerConfigRecordErrorKind::PayloadSizeOverflow => {
+                    ("lcr/payload-size-overflow", "6.8.6")
+                }
+            };
+            Some(
+                Diagnostic::error(rule_id, kind.to_string())
+                    .with_spec_section(spec_section)
+                    .with_byte_offset(*offset)
+                    .with_bit_offset(*bit_offset),
+            )
+        }
+        Error::InvalidAtlasSegment {
+            offset,
+            bit_offset,
+            kind,
+        } => {
+            let (rule_id, spec_section) = match kind {
+                AtlasSegmentErrorKind::ModeOutOfRange => ("atlas/segment-mode-out-of-range", "6.9"),
+                AtlasSegmentErrorKind::RegionDimensionOutOfRange => {
+                    ("atlas/region-dimension-out-of-range", "6.9.3.1")
+                }
+                AtlasSegmentErrorKind::SegmentCountOutOfRange => {
+                    ("atlas/segment-count-out-of-range", "6.9.6")
+                }
+            };
+            Some(
+                Diagnostic::error(rule_id, kind.to_string())
+                    .with_spec_section(spec_section)
+                    .with_byte_offset(*offset)
+                    .with_bit_offset(*bit_offset),
+            )
+        }
         _ => None,
     }
 }
@@ -472,6 +515,101 @@ impl Check for MultiFrameHeaderSyntax {
                 }
             }
             Err(error) => report.push(payload_parse_error_diagnostic(&error, "5.7")),
+        }
+    }
+}
+
+/// `OBU_LAYER_CONFIGURATION_RECORD` syntax: full `layer_config_record_obu()` parse,
+/// the reserved-zero-bits anomaly, and payload-tail conformance (AV2 § 5.8 / § 6.8).
+/// Cross-OBU LCR/atlas availability is stateful and handled in [`crate::context`].
+struct LayerConfigRecordSyntax;
+
+impl Check for LayerConfigRecordSyntax {
+    fn id(&self) -> &'static str {
+        // Registry identifier; emitted diagnostics use their own rule ids.
+        "lcr/syntax"
+    }
+
+    fn spec_section(&self) -> Option<&'static str> {
+        Some("5.8")
+    }
+
+    fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.header.obu_type != ObuType::LayerConfigurationRecord {
+            return;
+        }
+
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        match parse_layer_config_record(&mut reader, obu.header.extended_layer_id) {
+            Ok(record) => {
+                if record.has_nonzero_reserved_bits() {
+                    // AV2 § 6.8: the lcr_*_reserved_zero_* fields must be 0, but a
+                    // decoder ignores the value, so a non-zero value is a producer
+                    // anomaly (warning) rather than a decode-breaking error.
+                    report.push(
+                        Diagnostic::warning(
+                            "lcr/reserved-bits-nonzero",
+                            "a layer configuration record reserved-zero field is non-zero; \
+                             the value is ignored by a decoder",
+                        )
+                        .with_spec_section("6.8")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+                // AV2 § 5.2.1: the layer configuration record is extensible, so its
+                // payload tail must be a valid obu_extension_flag / trailing_bits.
+                if let Err(error) = finish_obu_payload(&mut reader, obu.payload, true)
+                    && let Some(diagnostic) = syntax_error_diagnostic(&error)
+                {
+                    report.push(diagnostic);
+                }
+            }
+            Err(error) => {
+                let diagnostic = syntax_error_diagnostic(&error)
+                    .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.8"));
+                report.push(diagnostic);
+            }
+        }
+    }
+}
+
+/// `OBU_ATLAS_SEGMENT` syntax: full `atlas_segment_info_obu()` parse (including the
+/// mode and segment/region range checks) and payload-tail conformance
+/// (AV2 § 5.9 / § 6.9). Cross-OBU atlas availability is stateful and handled in
+/// [`crate::context`].
+struct AtlasSegmentSyntax;
+
+impl Check for AtlasSegmentSyntax {
+    fn id(&self) -> &'static str {
+        // Registry identifier; emitted diagnostics use their own rule ids.
+        "atlas/syntax"
+    }
+
+    fn spec_section(&self) -> Option<&'static str> {
+        Some("5.9")
+    }
+
+    fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.header.obu_type != ObuType::AtlasSegment {
+            return;
+        }
+
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        match parse_atlas_segment(&mut reader) {
+            Ok(_) => {
+                // AV2 § 5.2.1: the atlas segment info OBU is extensible, so its payload
+                // tail must be a valid obu_extension_flag / trailing_bits.
+                if let Err(error) = finish_obu_payload(&mut reader, obu.payload, true)
+                    && let Some(diagnostic) = syntax_error_diagnostic(&error)
+                {
+                    report.push(diagnostic);
+                }
+            }
+            Err(error) => {
+                let diagnostic = syntax_error_diagnostic(&error)
+                    .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.9"));
+                report.push(diagnostic);
+            }
         }
     }
 }

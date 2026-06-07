@@ -18,6 +18,8 @@ pub(crate) fn error_offset(error: &Error) -> Option<ByteOffset> {
         | Error::InvalidTrailingBits { offset, .. }
         | Error::InvalidByteAlignment { offset, .. }
         | Error::InvalidSequenceHeader { offset, .. }
+        | Error::InvalidLayerConfigRecord { offset, .. }
+        | Error::InvalidAtlasSegment { offset, .. }
         | Error::ObuSizeOutOfRange { offset, .. }
         | Error::ObuPayloadOutOfRange { offset, .. } => Some(*offset),
         _ => None,
@@ -32,7 +34,9 @@ pub(crate) fn error_bit_offset(error: &Error) -> Option<BitOffset> {
         | Error::InvalidRg { bit_offset, .. }
         | Error::InvalidTrailingBits { bit_offset, .. }
         | Error::InvalidByteAlignment { bit_offset, .. }
-        | Error::InvalidSequenceHeader { bit_offset, .. } => Some(*bit_offset),
+        | Error::InvalidSequenceHeader { bit_offset, .. }
+        | Error::InvalidLayerConfigRecord { bit_offset, .. }
+        | Error::InvalidAtlasSegment { bit_offset, .. } => Some(*bit_offset),
         _ => None,
     }
 }

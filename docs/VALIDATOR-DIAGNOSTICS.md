@@ -34,6 +34,8 @@ Keep these stable:
 | `frame-header/` | §5.18 / §6.17 frame-header prefix references and local id ranges. |
 | `tile-group/` | §5.19 tile-group prefix and ordering checks. |
 | `tile-params/` | §6.17.7 sequence tile-params local constraints (tile counts, frame coverage). |
+| `lcr/` | §5.8 / §6.8 / §7.3.8.3 layer-configuration-record syntax and availability. |
+| `atlas/` | §5.9 / §6.9 / §7.3.8.4 atlas-segment syntax and availability. |
 
 Existing examples:
 
@@ -80,9 +82,7 @@ Add these namespaces in the xtask diagnostic allowlist when corresponding checks
 | `obu-payload/` | `AV2-5.2.1-OBU-DISPATCH` | unparsed payload in strict mode, payload overread/underread. |
 | `hls-availability/` | `AV2-7.3.8-HLS-AVAILABILITY` | missing or repeated high-level syntax OBUs. |
 | `msdo/` | `AV2-5.6-MSDO` | multistream decoder operation syntax/semantics. |
-| `lcr/` | `AV2-5.8-LAYER-CONFIG-RECORD` | layer configuration record syntax/semantics. |
 | `ops/` | `AV2-5.10-OPERATING-POINT-SET` | operating point set syntax/semantics. |
-| `atlas/` | `AV2-5.9-ATLAS-SEGMENT` | atlas segment syntax/semantics. |
 | `metadata/` | `AV2-5.17-METADATA` | metadata unit and type-specific checks. |
 | `padding/` | `AV2-5.16-PADDING` | padding payload constraints. |
 | `film-grain/` | `AV2-5.14-FILM-GRAIN` | film grain field constraints. |
@@ -442,3 +442,41 @@ the existing §5.2.1 payload-tail checks (`trailing-bits/*`, `byte-alignment/*`,
 segment or tile info is diagnosed. The only residual bounded sequence-header case is a
 reserved (non-conformant) `seq_level_idx` with tile info present, which has no defined
 tile bit layout (`AV2-5.4.2-SEQUENCE-TILE-CONFIG`).
+
+## 14. HLS LCR/atlas foundation (implemented)
+
+OpenSpec change `hls-lcr-atlas-foundation`. The full §5.8 / §5.9 parsers
+(`AV2-5.8-LAYER-CONFIG-RECORD`, `AV2-5.9-ATLAS-SEGMENT`) drive these checks. Syntax
+checks (`LayerConfigRecordSyntax`, `AtlasSegmentSyntax`) run statelessly; the
+availability checks are stateful and live in `crate::context`.
+
+Emitted (error unless noted):
+
+```text
+lcr/reserved-bits-nonzero                 # warning, §6.8: a reserved-zero field is non-zero
+lcr/payload-size-overflow                 # §6.8.6: lcr_global_payload parsed bits > lcr_data_size * 8
+lcr/global-lcr-unavailable                # §7.3.8.3: local LCR lcr_global_id has no global LCR
+lcr/global-xlayer-map-missing-xlayer      # §6.4.1: seq_lcr_id global LCR omits the header xlayer
+atlas/segment-mode-out-of-range           # §6.9: ats_atlas_segment_mode_idc > 4
+atlas/region-dimension-out-of-range       # §6.9.3.1: region columns/rows >= MAX_ATLAS_COLS/ROWS
+atlas/segment-count-out-of-range          # §6.9.6: segment count >= MAX_NUM_ATLAS_SEGMENTS
+atlas/local-atlas-unavailable             # §7.3.8.4: local LCR lcr_local_atlas_id has no local atlas
+hls/unavailable-layer-configuration-record  # §7.3.8.3/§7.3.8.6: seq_lcr_id resolves to no LCR
+```
+
+Availability errors are gated on external HLS being disabled (matching the
+multi-frame-header path), since an externally-provided LCR/atlas is not modeled. The
+availability store records global-LCR (`id -> lcr_xlayer_map`), local-LCR
+(`xlayer -> {lcr_local_id}`), and local-atlas (`{(xlayer, atlas_segment_id)}`) entries
+after a successful parse and a valid §5.2.1 payload tail, and stays monotonic.
+
+Intentional non-checks (spec honesty):
+
+- The global atlas (§7.3.8.4) uses "can be available", so a missing global atlas is
+  not flagged.
+- §6.8 / §6.9 define no "repeated record must be identical" requirement, so no
+  duplicate-not-identical check is emitted (unlike `OBU_MSDO` / sequence headers).
+- MFH layer-dependency-map checks (`mfh/mlayer-dependency-violation`,
+  `mfh/tlayer-dependency-violation`) remain reserved: `MLayerDependencyMap` /
+  `TLayerDependencyMap` are not exposed by the sequence-header model, so they are not
+  fabricated from max layer ids (`TODO(spec: AV2-5.7-MULTI-FRAME-HEADER)`).

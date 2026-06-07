@@ -1058,30 +1058,30 @@ kind = "bitstream-syntax"
 spec_sections = ["5.8", "6.8"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/layer_config_record.rs"
+openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Needed for multistream/layer-aware validation and future operating-point handling."
+notes = "Full §5.8 layer_config_record_obu() parser (global/local; lcr_global_info, lcr_local_info, lcr_aggregate_info, lcr_seq_profile_tier_level_info, the length-bounded lcr_global_payload, lcr_xlayer_info, lcr_rep_info, lcr_embedded_layer_info, lcr_xlayer_color_info), dispatched by open_bitstream_unit and surfaced in inspect --json. splot-validate warns on non-zero reserved-zero fields (§6.8) and records in-band LCR availability, checking local->global LCR (§7.3.8.3), local->local-atlas (§7.3.8.4), and sequence-header seq_lcr_id resolution including the global lcr_xlayer_map membership rule (§6.4.1). §6.8 defines no identical-repeated-LCR requirement, so a duplicate-not-identical check is intentionally not emitted. Writer/encoder remain future work."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_seq_lcr_missing_record_is_flagged", "crates/splot-validate/src/validator.rs::tests::lcr_local_missing_global_is_flagged"]
+commands = ["cargo test -p splot-core lcr", "cargo test -p splot-validate lcr", "cargo test -p splot-validate hls"]
 fixtures = []
-diagnostics = []
+diagnostics = ["lcr/reserved-bits-nonzero", "lcr/payload-size-overflow", "lcr/global-lcr-unavailable", "lcr/global-xlayer-map-missing-xlayer", "hls/unavailable-layer-configuration-record"]
 
 [[feature]]
 id = "AV2-5.8.1-LCR-GLOBAL-INFO"
@@ -1091,28 +1091,28 @@ kind = "bitstream-syntax"
 spec_sections = ["5.8.1", "6.8.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/layer_config_record.rs"
+openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.8-LAYER-CONFIG-RECORD. Do not mark the umbrella done until this child is proven."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
+commands = ["cargo test -p splot-core lcr"]
 fixtures = []
 diagnostics = []
 
@@ -1124,28 +1124,28 @@ kind = "bitstream-syntax"
 spec_sections = ["5.8.2", "6.8.3"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/layer_config_record.rs"
+openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.8-LAYER-CONFIG-RECORD. Do not mark the umbrella done until this child is proven."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
+commands = ["cargo test -p splot-core lcr"]
 fixtures = []
 diagnostics = []
 
@@ -1157,28 +1157,28 @@ kind = "bitstream-syntax"
 spec_sections = ["5.8.3", "6.8.4"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/layer_config_record.rs"
+openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.8-LAYER-CONFIG-RECORD. Do not mark the umbrella done until this child is proven."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
+commands = ["cargo test -p splot-core lcr"]
 fixtures = []
 diagnostics = []
 
@@ -1190,28 +1190,28 @@ kind = "bitstream-syntax"
 spec_sections = ["5.8.4", "6.8.5"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/layer_config_record.rs"
+openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.8-LAYER-CONFIG-RECORD. Do not mark the umbrella done until this child is proven."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
+commands = ["cargo test -p splot-core lcr"]
 fixtures = []
 diagnostics = []
 
@@ -1223,28 +1223,28 @@ kind = "bitstream-syntax"
 spec_sections = ["5.8.5", "6.8.6"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/layer_config_record.rs"
+openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.8-LAYER-CONFIG-RECORD. Do not mark the umbrella done until this child is proven."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
+commands = ["cargo test -p splot-core lcr"]
 fixtures = []
 diagnostics = []
 
@@ -1256,28 +1256,28 @@ kind = "bitstream-syntax"
 spec_sections = ["5.8.6", "6.8.7"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/layer_config_record.rs"
+openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.8-LAYER-CONFIG-RECORD. Do not mark the umbrella done until this child is proven."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
+commands = ["cargo test -p splot-core lcr"]
 fixtures = []
 diagnostics = []
 
@@ -1289,28 +1289,28 @@ kind = "bitstream-syntax"
 spec_sections = ["5.8.7", "6.8.8"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/layer_config_record.rs"
+openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.8-LAYER-CONFIG-RECORD. Do not mark the umbrella done until this child is proven."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
+commands = ["cargo test -p splot-core lcr"]
 fixtures = []
 diagnostics = []
 
@@ -1322,28 +1322,28 @@ kind = "bitstream-syntax"
 spec_sections = ["5.8.8", "6.8.9"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/layer_config_record.rs"
+openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.8-LAYER-CONFIG-RECORD. Do not mark the umbrella done until this child is proven."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
+commands = ["cargo test -p splot-core lcr"]
 fixtures = []
 diagnostics = []
 
@@ -1355,28 +1355,28 @@ kind = "bitstream-syntax"
 spec_sections = ["5.8.9", "6.8.10"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/layer_config_record.rs"
+openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.8-LAYER-CONFIG-RECORD. Do not mark the umbrella done until this child is proven."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
+commands = ["cargo test -p splot-core lcr"]
 fixtures = []
 diagnostics = []
 
@@ -1388,28 +1388,193 @@ kind = "bitstream-syntax"
 spec_sections = ["5.9", "6.9"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/atlas_segment.rs"
+openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Required for atlas/LCR relationships and atlas-region constraints."
+notes = "Full §5.9 atlas_segment_info_obu() parser (all five modes: enhanced/basic/single/multistream/multistream-with-alpha, plus ats_region_info, ats_region_to_segment_mapping, ats_label_segment_info), dispatched by open_bitstream_unit and surfaced in inspect --json. The parser range-checks ats_atlas_segment_mode_idc (<=4) and the segment/region counts before looping (typed errors -> atlas/* diagnostics). splot-validate records local atlas availability and checks local LCR -> local atlas references (§7.3.8.4); the global atlas reference is can be available (§7.3.8.4) so a missing global atlas is intentionally not flagged. See the child rows for §5.9.1 through §5.9.5. Writer/encoder remain future work."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests", "crates/splot-validate/src/validator.rs::tests::atlas_local_atlas_unavailable_is_flagged"]
+commands = ["cargo test -p splot-core atlas", "cargo test -p splot-validate atlas"]
+fixtures = []
+diagnostics = ["atlas/segment-mode-out-of-range", "atlas/region-dimension-out-of-range", "atlas/segment-count-out-of-range", "atlas/local-atlas-unavailable"]
+
+[[feature]]
+id = "AV2-5.9.1-ATLAS-LABEL-SEGMENT-INFO"
+name = "Atlas label segment info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.9.1", "6.9.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/atlas_segment.rs"
+openspec_change = "hls-lcr-atlas-foundation"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "partial"
+write = "todo"
+encode = "todo"
+decode_check = "done"
+tests = "done"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests"]
+commands = ["cargo test -p splot-core atlas"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.9.2-ATLAS-ENHANCED-INFO"
+name = "Atlas enhanced atlas info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.9.2", "6.9.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/atlas_segment.rs"
+openspec_change = "hls-lcr-atlas-foundation"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "partial"
+write = "todo"
+encode = "todo"
+decode_check = "done"
+tests = "done"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests"]
+commands = ["cargo test -p splot-core atlas"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.9.3-ATLAS-MULTISTREAM-INFO"
+name = "Atlas multistream info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.9.3", "6.9.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/atlas_segment.rs"
+openspec_change = "hls-lcr-atlas-foundation"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "partial"
+write = "todo"
+encode = "todo"
+decode_check = "done"
+tests = "done"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests"]
+commands = ["cargo test -p splot-core atlas"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.9.4-ATLAS-MULTISTREAM-ALPHA-INFO"
+name = "Atlas multistream with alpha info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.9.4", "6.9.5"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/atlas_segment.rs"
+openspec_change = "hls-lcr-atlas-foundation"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "partial"
+write = "todo"
+encode = "todo"
+decode_check = "done"
+tests = "done"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests"]
+commands = ["cargo test -p splot-core atlas"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-5.9.5-ATLAS-BASIC-INFO"
+name = "Atlas basic info syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.9.5", "6.9.6"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/atlas_segment.rs"
+openspec_change = "hls-lcr-atlas-foundation"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "partial"
+write = "todo"
+encode = "todo"
+decode_check = "done"
+tests = "done"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests"]
+commands = ["cargo test -p splot-core atlas"]
 fixtures = []
 diagnostics = []
 
@@ -3010,7 +3175,7 @@ openspec_change = "frame-activation-hls-skeleton"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Active sequence lookup by xlayer, the repeated-identical (bit-fingerprint) check, an in-band sequence-header + multi-frame-header availability store, the multi-frame-header -> sequence-header reference check (mfh_seq_header_id), and the generic frame-header reference checks (seq_header_id_in_frame_header and cur_mfh_id) are implemented, with caller-provided external HLS via ValidationOptions (default disabled; external MFH is future). Availability is kept monotonic; the §7.3.8.1 resend-at-RAP requirement and MSDO/LCR/atlas/OPS reference paths remain bounded. MFH layer-dependency-map checks remain future."
+notes = "Active sequence lookup by xlayer, the repeated-identical (bit-fingerprint) check, an in-band sequence-header + multi-frame-header availability store, the multi-frame-header -> sequence-header reference check (mfh_seq_header_id), and the generic frame-header reference checks (seq_header_id_in_frame_header and cur_mfh_id) are implemented, with caller-provided external HLS via ValidationOptions (default disabled; external MFH/LCR/atlas are future). Layer-configuration-record availability (§7.3.8.3: local->global LCR and sequence-header seq_lcr_id resolution incl. lcr_xlayer_map membership) and local atlas-segment availability (§7.3.8.4) are now modeled; the global atlas (can be available) is not flagged. Availability is kept monotonic; the §7.3.8.1 resend-at-RAP requirement and MSDO/OPS reference paths remain bounded. MFH layer-dependency-map checks remain future (TLayerDependencyMap/MLayerDependencyMap are not exposed by the sequence-header model)."
 
 [feature.status]
 mapped = "done"
@@ -3028,7 +3193,7 @@ perf = "not-applicable"
 tests = ["crates/splot-validate/src/validator.rs::tests::hls_frame_header_missing_sequence_header_is_flagged", "crates/splot-validate/src/validator.rs::tests::hls_frame_header_missing_mfh_is_flagged", "crates/splot-validate/src/validator.rs::tests::hls_frame_header_sequence_header_available_external_is_accepted", "crates/splot-validate/src/validator.rs::tests::hls_repeated_non_identical_sequence_header_is_flagged", "crates/splot-validate/src/options.rs::tests"]
 commands = ["cargo test -p splot-validate hls", "cargo test -p splot-validate frame_header", "cargo test -p splot-validate mfh_"]
 fixtures = []
-diagnostics = ["hls/repeated-sequence-header-not-identical", "hls/unavailable-sequence-header", "hls/unavailable-multi-frame-header", "frame-header/seq-header-id-out-of-range", "frame-header/cur-mfh-id-out-of-range", "sequence-state/no-active-sequence-header", "mfh/sequence-header-unavailable", "hls/external-hls-disabled"]
+diagnostics = ["hls/repeated-sequence-header-not-identical", "hls/unavailable-sequence-header", "hls/unavailable-multi-frame-header", "hls/unavailable-layer-configuration-record", "lcr/global-lcr-unavailable", "lcr/global-xlayer-map-missing-xlayer", "atlas/local-atlas-unavailable", "frame-header/seq-header-id-out-of-range", "frame-header/cur-mfh-id-out-of-range", "sequence-state/no-active-sequence-header", "mfh/sequence-header-unavailable", "hls/external-hls-disabled"]
 
 [[feature]]
 id = "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY"

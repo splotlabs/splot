@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-07. 116 feature(s).
+Matrix version 1. Last reviewed 2026-06-07. 121 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -39,17 +39,22 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-5.5-TEMPORAL-DELIMITER` | Temporal delimiter OBU syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/obu.rs` |
 | `AV2-5.6-MSDO` | Multistream decoder operation OBU syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/hls.rs` |
 | `AV2-5.7-MULTI-FRAME-HEADER` | Multi-frame header OBU syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/hls.rs` |
-| `AV2-5.8-LAYER-CONFIG-RECORD` | Layer configuration record OBU syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
-| `AV2-5.8.1-LCR-GLOBAL-INFO` | LCR global info syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
-| `AV2-5.8.2-LCR-LOCAL-INFO` | LCR local info syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
-| `AV2-5.8.3-LCR-AGGREGATE-INFO` | LCR aggregate info syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
-| `AV2-5.8.4-LCR-SEQ-PTL-INFO` | LCR sequence profile tier level information syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
-| `AV2-5.8.5-LCR-GLOBAL-PAYLOAD` | LCR global payload syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
-| `AV2-5.8.6-LCR-XLAYER-INFO` | LCR xlayer info syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
-| `AV2-5.8.7-LCR-REP-INFO` | LCR representation info syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
-| `AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO` | LCR embedded layer info syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
-| `AV2-5.8.9-LCR-XLAYER-COLOR-INFO` | LCR xlayer color info syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
-| `AV2-5.9-ATLAS-SEGMENT` | Atlas segment info OBU syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
+| `AV2-5.8-LAYER-CONFIG-RECORD` | Layer configuration record OBU syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/layer_config_record.rs` |
+| `AV2-5.8.1-LCR-GLOBAL-INFO` | LCR global info syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/layer_config_record.rs` |
+| `AV2-5.8.2-LCR-LOCAL-INFO` | LCR local info syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/layer_config_record.rs` |
+| `AV2-5.8.3-LCR-AGGREGATE-INFO` | LCR aggregate info syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/layer_config_record.rs` |
+| `AV2-5.8.4-LCR-SEQ-PTL-INFO` | LCR sequence profile tier level information syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/layer_config_record.rs` |
+| `AV2-5.8.5-LCR-GLOBAL-PAYLOAD` | LCR global payload syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/layer_config_record.rs` |
+| `AV2-5.8.6-LCR-XLAYER-INFO` | LCR xlayer info syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/layer_config_record.rs` |
+| `AV2-5.8.7-LCR-REP-INFO` | LCR representation info syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/layer_config_record.rs` |
+| `AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO` | LCR embedded layer info syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/layer_config_record.rs` |
+| `AV2-5.8.9-LCR-XLAYER-COLOR-INFO` | LCR xlayer color info syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/layer_config_record.rs` |
+| `AV2-5.9-ATLAS-SEGMENT` | Atlas segment info OBU syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/atlas_segment.rs` |
+| `AV2-5.9.1-ATLAS-LABEL-SEGMENT-INFO` | Atlas label segment info syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/atlas_segment.rs` |
+| `AV2-5.9.2-ATLAS-ENHANCED-INFO` | Atlas enhanced atlas info syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/atlas_segment.rs` |
+| `AV2-5.9.3-ATLAS-MULTISTREAM-INFO` | Atlas multistream info syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/atlas_segment.rs` |
+| `AV2-5.9.4-ATLAS-MULTISTREAM-ALPHA-INFO` | Atlas multistream with alpha info syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/atlas_segment.rs` |
+| `AV2-5.9.5-ATLAS-BASIC-INFO` | Atlas basic info syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/atlas_segment.rs` |
 | `AV2-5.10-OPERATING-POINT-SET` | Operating point set OBU syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
 | `AV2-5.10-OPS-SYNTAX-ELEMENTS` | Operating point set syntax elements | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
 | `AV2-5.11-OPERATING-POINT-PAYLOAD` | Operating point payload syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |

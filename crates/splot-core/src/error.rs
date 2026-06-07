@@ -112,6 +112,59 @@ impl fmt::Display for SequenceHeaderErrorKind {
     }
 }
 
+/// Specific structural violations of `layer_config_record_obu()` (AV2 § 5.8 / § 6.8)
+/// that prevent further parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerConfigRecordErrorKind {
+    /// The bits parsed for `lcr_global_payload(n, sz)` exceeded the declared
+    /// `sz * 8` payload bits (AV2 § 5.8.5: `RemainingLcrPayloadBits` would be
+    /// negative).
+    PayloadSizeOverflow,
+}
+
+impl fmt::Display for LayerConfigRecordErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::PayloadSizeOverflow => {
+                "lcr_global_payload parsed content exceeds the declared lcr_data_size * 8 bits"
+            }
+        };
+        f.write_str(message)
+    }
+}
+
+/// Specific structural violations of `atlas_segment_info_obu()` (AV2 § 5.9 / § 6.9)
+/// that prevent further parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtlasSegmentErrorKind {
+    /// `ats_atlas_segment_mode_idc` is greater than 4 (AV2 § 6.9, Table 6.11): no
+    /// per-mode syntax is defined, so parsing cannot continue.
+    ModeOutOfRange,
+    /// A region-grid dimension (`ats_num_region_columns_minus_1` /
+    /// `ats_num_region_rows_minus_1`) reaches `MAX_ATLAS_COLS` / `MAX_ATLAS_ROWS`
+    /// (AV2 § 6.9.3.1), which would drive an out-of-range loop.
+    RegionDimensionOutOfRange,
+    /// A segment count (`numSegments` / `ats_num_atlas_segments_minus_1` /
+    /// `ats_msi_num_atlas_segments_minus_1`) reaches `MAX_NUM_ATLAS_SEGMENTS`
+    /// (AV2 § 6.9.6), which would drive an out-of-range loop.
+    SegmentCountOutOfRange,
+}
+
+impl fmt::Display for AtlasSegmentErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::ModeOutOfRange => "ats_atlas_segment_mode_idc must be less than or equal to 4",
+            Self::RegionDimensionOutOfRange => {
+                "atlas region columns/rows must be less than MAX_ATLAS_COLS / MAX_ATLAS_ROWS"
+            }
+            Self::SegmentCountOutOfRange => {
+                "atlas segment count must be less than or equal to MAX_NUM_ATLAS_SEGMENTS"
+            }
+        };
+        f.write_str(message)
+    }
+}
+
 /// Errors produced while parsing AV2 bitstreams.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -266,6 +319,30 @@ pub enum Error {
         size: u32,
         /// Bytes actually remaining in the input.
         remaining: usize,
+    },
+
+    /// `layer_config_record_obu()` violated AV2 § 5.8 / § 6.8 in a way that prevents
+    /// further parsing.
+    #[error("invalid layer_config_record_obu() at byte {offset}.{bit_offset}: {kind}")]
+    InvalidLayerConfigRecord {
+        /// Offset of the offending syntax element.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidLayerConfigRecord::offset`].
+        bit_offset: BitOffset,
+        /// Specific layer-config-record violation.
+        kind: LayerConfigRecordErrorKind,
+    },
+
+    /// `atlas_segment_info_obu()` violated AV2 § 5.9 / § 6.9 in a way that prevents
+    /// further parsing.
+    #[error("invalid atlas_segment_info_obu() at byte {offset}.{bit_offset}: {kind}")]
+    InvalidAtlasSegment {
+        /// Offset of the offending syntax element.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidAtlasSegment::offset`].
+        bit_offset: BitOffset,
+        /// Specific atlas-segment violation.
+        kind: AtlasSegmentErrorKind,
     },
 }
 

@@ -7,13 +7,17 @@
 //! implemented. Do not add fields that are not backed by the spec — leave a spec
 //! TODO that names the implementation-matrix feature id instead (see AGENTS.md).
 
+pub mod atlas_segment;
 pub mod content_interpretation;
 pub mod frame;
+pub mod layer_config_record;
 pub mod sequence;
 pub mod tile_group;
 
+pub use atlas_segment::{AtlasSegment, parse_atlas_segment};
 pub use content_interpretation::{ContentInterpretation, parse_content_interpretation};
 pub use frame::{FrameHeaderPrefix, FrameHeaderPrefixStatus, parse_frame_header_prefix};
+pub use layer_config_record::{LayerConfigurationRecord, parse_layer_config_record};
 pub use sequence::{SequenceHeader, SequenceHeaderGeneral};
 pub use tile_group::{TileGroupHeaderPrefix, parse_tile_group_prefix};
 
