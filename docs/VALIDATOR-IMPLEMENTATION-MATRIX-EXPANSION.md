@@ -19,7 +19,7 @@ cargo xtask ci
 - Split large rows before implementation. Sequence header, frame header, tile group, metadata, LCR, and OPS are too large for one row.
 - The umbrella row remains `partial` until all child rows are done.
 - `mapped = done` is allowed when the row is identified and linked. `parse = done`, `validate = done`, `tests = done`, and `decode_check = done` need proof entries.
-- Use OpenSpec change IDs that match the change folder, e.g. `sequence-hls-validator-coverage` or `validator-coverage-roadmap`.
+- Use OpenSpec change IDs that match the change folder, e.g. `add-bitstream-writer` or `validator-coverage-roadmap`.
 - Use `pending` for `avm_diff` until AVM/public-vector proof is recorded.
 
 ## 2. Phase 1 rows now implemented
