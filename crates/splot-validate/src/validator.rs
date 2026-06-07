@@ -10,6 +10,7 @@ use crate::checks::{Check, default_checks, syntax_error_diagnostic};
 use crate::context::ValidatorContext;
 use crate::diagnostic::{Diagnostic, Severity, ValidationReport};
 use crate::error_location::{error_bit_offset, error_offset};
+use crate::options::ValidationOptions;
 
 /// Validates AV2 length-delimited bitstreams and produces a [`ValidationReport`].
 #[derive(Debug, Clone, Copy)]
@@ -38,12 +39,28 @@ impl Validator {
         report.is_conformant() && !(self.strict && report.warnings().next().is_some())
     }
 
-    /// Validates `data` as an AV2 Annex B bitstream.
+    /// Validates `data` as an AV2 Annex B bitstream with the default
+    /// [`ValidationOptions`] (no external HLS).
     ///
     /// A malformed bitstream is reported as one or more [`Severity::Error`]
     /// diagnostics, never as a panic or an `Err`.
     #[must_use]
     pub fn validate_bytes(&self, data: &[u8]) -> ValidationReport {
+        self.validate_bytes_with_options(data, &ValidationOptions::default())
+    }
+
+    /// Validates `data` as an AV2 Annex B bitstream using `options`.
+    ///
+    /// `options` supplies caller-provided external HLS availability (AV2 § 7.3.8);
+    /// the default ([`Validator::validate_bytes`]) assumes none. A malformed
+    /// bitstream is reported as one or more [`Severity::Error`] diagnostics, never as
+    /// a panic or an `Err`.
+    #[must_use]
+    pub fn validate_bytes_with_options(
+        &self,
+        data: &[u8],
+        options: &ValidationOptions,
+    ) -> ValidationReport {
         let mut report = ValidationReport::new();
         // Parse the whole stream, keeping OBUs parsed before any later structural
         // error so their conformance diagnostics are not lost.
@@ -51,7 +68,7 @@ impl Validator {
         let checks = default_checks();
         let mut context = ValidatorContext::default();
         for obu in &parsed.obus {
-            context.observe_obu(obu, &mut report);
+            context.observe_obu(obu, options, &mut report);
             run_checks(&checks, obu, &mut report);
         }
         if let Some(error) = parsed.error {
@@ -1353,6 +1370,282 @@ mod tests {
             !report
                 .errors()
                 .any(|d| d.rule_id == "content-interpretation/repeated-ci-not-identical"),
+            "report was: {report}"
+        );
+    }
+
+    /// Multi-frame header OBU (type 3) at xlayer 0 referencing `seq_header_id`.
+    fn multi_frame_header_obu(seq_header_id: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.uvlc(seq_header_id); // mfh_seq_header_id
+        bits.uvlc(0); // mfh_id_minus_1 -> mfhId = 1
+        bits.bit(0); // mfh_frame_size_present_flag
+        bits.bit(0); // mfh_deblocking_filter_update
+        bits.bit(0); // mfh_seg_info_present_flag -> fully parsed
+        bits.bit(0); // obu_extension_flag = 0
+        bits.bit(1); // trailing_one_bit
+        annex_b_obu(0x0C, &bits.into_bytes())
+    }
+
+    /// Temporal delimiter + an activating sequence header with `seq_header_id` for
+    /// xlayer 0, then a multi-frame header referencing `mfh_seq_header_id`.
+    fn stream_with_mfh_reference(seq_header_id: u32, mfh_seq_header_id: u32) -> Vec<u8> {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_with_id(seq_header_id, 1, 1),
+        ));
+        data.extend(multi_frame_header_obu(mfh_seq_header_id));
+        data
+    }
+
+    #[test]
+    fn mfh_referencing_available_sequence_header_is_accepted() {
+        let data = stream_with_mfh_reference(0, 0);
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "mfh/sequence-header-unavailable"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn mfh_referencing_missing_sequence_header_is_flagged() {
+        // Only seq_header_id 0 is in-band; the MFH references 5. Default options do
+        // not assume any external HLS, so this is unavailable.
+        let data = stream_with_mfh_reference(0, 5);
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "mfh/sequence-header-unavailable"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn mfh_unavailable_under_default_options_emits_external_hls_disabled_advisory() {
+        let data = stream_with_mfh_reference(0, 5);
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .warnings()
+                .any(|d| d.rule_id == "hls/external-hls-disabled"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn mfh_reference_satisfied_by_external_hls_is_accepted() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        let data = stream_with_mfh_reference(0, 5);
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(5),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "mfh/sequence-header-unavailable"),
+            "report was: {report}"
+        );
+        assert!(
+            !report
+                .warnings()
+                .any(|d| d.rule_id == "hls/external-hls-disabled"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn mfh_reference_not_in_external_hls_set_is_flagged_without_advisory() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // External HLS is Provided but does not declare id 5, so the reference is
+        // genuinely unavailable: the error fires, but the external-hls-disabled
+        // advisory must be suppressed (external HLS is not disabled).
+        let data = stream_with_mfh_reference(0, 5);
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(99),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "mfh/sequence-header-unavailable"),
+            "report was: {report}"
+        );
+        assert!(
+            !report
+                .warnings()
+                .any(|d| d.rule_id == "hls/external-hls-disabled"),
+            "advisory must be suppressed when external HLS is Provided; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn external_hls_suppresses_no_active_sequence_header() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // A multi-frame header at xlayer 0 with no in-band sequence header at all.
+        let mut data = temporal_delimiter_obu();
+        data.extend(multi_frame_header_obu(5));
+
+        // Default (external disabled): no in-band active sequence -> flagged.
+        let default_report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            default_report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/no-active-sequence-header"),
+            "report was: {default_report}"
+        );
+
+        // External HLS provided: an external sequence header may be the active one,
+        // so the missing-in-band-sequence error is suppressed (the validator must not
+        // reject a conformant external-HLS stream), and the referenced id 5 resolves
+        // externally.
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(5),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/no-active-sequence-header"),
+            "report was: {report}"
+        );
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "mfh/sequence-header-unavailable"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn external_hls_empty_set_does_not_suppress_no_active_sequence_header() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // An empty external set declares no sequence header that could be active, so
+        // the missing-active-header error must NOT be suppressed (otherwise an empty
+        // set would silently accept a malformed stream).
+        let mut data = temporal_delimiter_obu();
+        data.extend(multi_frame_header_obu(5));
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/no-active-sequence-header"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn external_hls_suppresses_active_sequence_layer_limits() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // In-band active sequence (id 0) for xlayer 0 allows only embedded layer 0,
+        // then a coded OBU at embedded layer 1.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 0)));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(6, 0, 1, 0), &[]));
+
+        // Default: the OBU exceeds the in-band active sequence's mlayer limit.
+        let default_report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            default_report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/mlayer-exceeds-max"),
+            "report was: {default_report}"
+        );
+
+        // External HLS declaring a sequence header: a different external sequence may
+        // be active with limits this validator does not model, so the in-band
+        // layer-limit check is suppressed (sound: never reject a conformant
+        // external-HLS stream).
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(0),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/mlayer-exceeds-max"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn mfh_reference_to_malformed_tail_sequence_header_is_unavailable() {
+        // A sequence header whose body parses but whose §5.2.1 payload tail is
+        // malformed (an extra non-zero trailing byte) is not a valid available HLS
+        // object, so it is not recorded — a later MFH referencing it is unavailable.
+        let mut data = temporal_delimiter_obu();
+        // A well-formed activating sequence header (id 0) so the MFH has an active
+        // sequence for its xlayer.
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 0)));
+        // Sequence header id 7 with a malformed tail (trailing zero bit not zero).
+        let mut malformed = sequence_header_payload_with_id(7, 0, 0);
+        malformed.push(0xFF);
+        data.extend(annex_b_obu(0x04, &malformed));
+        // Multi-frame header referencing id 7.
+        data.extend(multi_frame_header_obu(7));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "mfh/sequence-header-unavailable"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn mfh_reference_to_malformed_layer_sequence_header_is_unavailable() {
+        // A sequence header with a §6.2.2 layer violation (tlayer != 0, 0x05) is
+        // malformed and is NOT a valid available HLS object, so an MFH referencing
+        // only that copy of id 4 is unavailable (§7.3.8.6).
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x05, &sequence_header_payload_with_id(4, 1, 1)));
+        // An activating base-layer header (id 0) so the MFH has an active sequence for
+        // its xlayer; it does not make id 4 available.
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
+        data.extend(multi_frame_header_obu(4));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "mfh/sequence-header-unavailable"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn external_hls_out_of_range_id_does_not_suppress_no_active_sequence_header() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // Declaring an out-of-range external id (16 >= MAX_SEQ_NUM) cannot make a
+        // valid sequence header available, so it must not suppress the missing-active
+        // error.
+        let mut data = temporal_delimiter_obu();
+        data.extend(multi_frame_header_obu(5));
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(16),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/no-active-sequence-header"),
             "report was: {report}"
         );
     }

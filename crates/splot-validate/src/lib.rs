@@ -14,10 +14,12 @@
 
 pub mod checks;
 pub mod diagnostic;
+pub mod options;
 pub mod validator;
 
 mod context;
 mod error_location;
 
 pub use diagnostic::{Diagnostic, Severity, ValidationReport};
+pub use options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
 pub use validator::Validator;

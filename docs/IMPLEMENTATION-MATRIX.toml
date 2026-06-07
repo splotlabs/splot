@@ -964,7 +964,7 @@ openspec_change = "sequence-hls-validator-coverage"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Needed for multistream boundaries, xlayer map validation, and profile checks."
+notes = "Full syntax parsed; the §6.6 layer-id and num_streams_minus_2 checks are enforced. MSDO availability (§7.3.8.2: a non-RAP OBU_MSDO must be identical to the previous one) is bounded — it needs random-access-point detection (CLK frame-header activation, AV2-5.18-FRAME-HEADER)."
 
 [feature.status]
 mapped = "done"
@@ -993,11 +993,11 @@ spec_sections = ["5.7", "6.7"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/hls.rs"
-openspec_change = "sequence-hls-validator-coverage"
+openspec_change = "sequence-timing-hls-availability"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Needed before frame header reuse and frame-unit validation."
+notes = "Syntax parsed up to seg_info() (bounded at AV2-5.4.9-SEGMENT-INFO). Local id ranges are checked, and the mfh_seq_header_id -> sequence-header reference availability (§7.3.8.6/§7.3.8.7) is validated against the in-band store plus optional external HLS (see AV2-7.3.8-HLS-AVAILABILITY). The cur_mfh_id frame-header reference and seg_info() remain future work."
 
 [feature.status]
 mapped = "done"
@@ -1012,10 +1012,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/hls.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_mfh_out_of_range_ids_are_flagged"]
-commands = ["cargo test -p splot-core hls", "cargo test -p splot-validate hls"]
+tests = ["crates/splot-core/src/hls.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_mfh_out_of_range_ids_are_flagged", "crates/splot-validate/src/validator.rs::tests::mfh_referencing_missing_sequence_header_is_flagged"]
+commands = ["cargo test -p splot-core hls", "cargo test -p splot-validate hls", "cargo test -p splot-validate mfh_"]
 fixtures = []
-diagnostics = ["mfh/seq-header-id-out-of-range", "mfh/id-out-of-range"]
+diagnostics = ["mfh/seq-header-id-out-of-range", "mfh/id-out-of-range", "mfh/sequence-header-unavailable"]
 
 [[feature]]
 id = "AV2-5.8-LAYER-CONFIG-RECORD"
@@ -2873,18 +2873,18 @@ kind = "bitstream-semantics"
 spec_sections = ["7.3.6"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
-module = "crates/splot-validate/src/checks/ordering.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-validate/src/context.rs"
+openspec_change = "sequence-timing-hls-availability"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Child row of AV2-7.3-OBU-ORDERING. Add temporal-state checks only after required payload parsers exist."
+notes = "Child row of AV2-7.3-OBU-ORDERING. Bounded/partial: the per-xlayer CVS-boundary resets for sequence-header fingerprints and content-interpretation records are approximated on the OBU_CLOSED_LOOP_KEY (a sound-over-complete bias), and HLS availability is kept monotonic, because exact coded-extended-layer-unit / CVS scoping needs the CLK frame header that references and activates a seq_header_id (AV2-5.18-FRAME-HEADER). The activating CLK follows its sequence header in OBU order, so it cannot be resolved at the OBU level alone."
 
 [feature.status]
 mapped = "done"
 types = "todo"
 parse = "not-applicable"
-validate = "todo"
+validate = "partial"
 write = "not-applicable"
 encode = "not-applicable"
 decode_check = "todo"
@@ -2940,11 +2940,11 @@ spec_sections = ["7.3.8"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
 module = "crates/splot-validate/src/context.rs"
-openspec_change = "validator-coverage-roadmap"
+openspec_change = "sequence-timing-hls-availability"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Active sequence lookup by xlayer plus the repeated-identical (bit-fingerprint) check are implemented. Next phase: a full HLS availability store for MSDO/MFH/LCR/atlas/OPS objects, caller-provided external-HLS availability, and MFH/frame-header sequence-header reference checks."
+notes = "Active sequence lookup by xlayer, the repeated-identical (bit-fingerprint) check, an in-band sequence-header availability store, and the multi-frame-header -> sequence-header reference check (mfh_seq_header_id) are implemented, with caller-provided external HLS via ValidationOptions (default disabled). Availability is kept monotonic; the §7.3.8.1 resend-at-RAP requirement and MSDO/LCR/atlas/OPS/frame-header reference paths remain bounded until CLK frame-header activation (AV2-5.18-FRAME-HEADER). hls/unavailable-sequence-header is reserved for the future frame-header reference path."
 
 [feature.status]
 mapped = "done"
@@ -2959,10 +2959,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-validate/src/validator.rs::tests::hls_repeated_identical_sequence_header_is_accepted", "crates/splot-validate/src/validator.rs::tests::hls_repeated_non_identical_sequence_header_is_flagged"]
-commands = ["cargo test -p splot-validate hls"]
+tests = ["crates/splot-validate/src/validator.rs::tests::hls_repeated_non_identical_sequence_header_is_flagged", "crates/splot-validate/src/validator.rs::tests::mfh_referencing_missing_sequence_header_is_flagged", "crates/splot-validate/src/validator.rs::tests::mfh_reference_satisfied_by_external_hls_is_accepted", "crates/splot-validate/src/validator.rs::tests::external_hls_suppresses_no_active_sequence_header", "crates/splot-validate/src/options.rs::tests"]
+commands = ["cargo test -p splot-validate hls", "cargo test -p splot-validate mfh_"]
 fixtures = []
-diagnostics = ["hls/repeated-sequence-header-not-identical", "sequence-state/no-active-sequence-header"]
+diagnostics = ["hls/repeated-sequence-header-not-identical", "sequence-state/no-active-sequence-header", "mfh/sequence-header-unavailable", "hls/external-hls-disabled"]
 
 [[feature]]
 id = "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY"
