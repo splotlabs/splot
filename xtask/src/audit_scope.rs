@@ -5,11 +5,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+
+use crate::git_util::{run_git, sha256_hex};
 
 const PROTOCOL_VERSION: u32 = 1;
 const DEFAULT_LEDGER_PATH: &str = "docs/audits/av2-conformance-ledger.json";
@@ -44,7 +44,7 @@ pub(crate) struct AuditScopeOptions {
 pub(crate) fn run_audit_scope(root: &Path, options: AuditScopeOptions) -> Result<()> {
     let report = build_report(root, &options)?;
     if options.write_ledger {
-        write_ledger(root, report.ledger_path.as_deref(), &report.ledger_update)?;
+        write_ledger(root, &report.ledger_path, &report.ledger_update)?;
     }
 
     match options.format {
@@ -64,7 +64,7 @@ struct AuditScopeReport {
     protocol_version: u32,
     mode: AuditScopeMode,
     audited_commit: String,
-    ledger_path: Option<String>,
+    ledger_path: String,
     workspace_members: Vec<WorkspaceMember>,
     force_wide_review_triggers: Vec<ForceWideReviewTrigger>,
     candidate_count: usize,
@@ -180,7 +180,7 @@ fn build_report(root: &Path, options: &AuditScopeOptions) -> Result<AuditScopeRe
         protocol_version: PROTOCOL_VERSION,
         mode,
         audited_commit,
-        ledger_path: Some(path_to_string(&ledger_path)),
+        ledger_path: path_to_string(&ledger_path),
         workspace_members,
         candidate_count: candidates.len(),
         candidates,
@@ -219,11 +219,8 @@ fn render_text(report: &AuditScopeReport) -> String {
     out
 }
 
-fn write_ledger(root: &Path, ledger_path: Option<&str>, ledger: &AuditLedger) -> Result<()> {
-    let Some(path) = ledger_path else {
-        bail!("cannot write audit ledger without a ledger path");
-    };
-    let path = root.join(path);
+fn write_ledger(root: &Path, ledger_path: &str, ledger: &AuditLedger) -> Result<()> {
+    let path = root.join(ledger_path);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -636,32 +633,6 @@ fn git_single_line(root: &Path, args: &[&str]) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("git command returned no output"))
 }
 
-fn run_git(root: &Path, args: &[&str]) -> Result<String> {
-    let display = format!("git -C {} {}", root.display(), args.join(" "));
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to spawn `{display}`"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "`{display}` failed with {}; stderr:\n{}",
-            output.status,
-            stderr.trim_end()
-        );
-    }
-    String::from_utf8(output.stdout).with_context(|| format!("`{display}` emitted non-UTF-8"))
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
@@ -751,6 +722,50 @@ edition = "2024"
                 .iter()
                 .any(|r| r == "wide-review-triggered")
         }));
+    }
+
+    #[test]
+    fn force_wide_review_reason_covers_explicit_path_mappings() {
+        let cases = [
+            ("AGENTS.md", "repository-agent-instructions"),
+            ("CLAUDE.md", "repository-agent-instructions"),
+            (
+                ".github/copilot-instructions.md",
+                "repository-agent-instructions",
+            ),
+            ("Cargo.toml", "workspace-membership"),
+            ("docs/IMPLEMENTATION-MATRIX.toml", "implementation-matrix"),
+            ("docs/SPEC-MAPPING.md", "spec-mapping"),
+            ("docs/FEATURE-TRACKING.md", "feature-tracking"),
+            (".codex/skills/splot-doc-audit/SKILL.md", "audit-skill"),
+            (".claude/skills/splot-doc-audit/SKILL.md", "audit-skill"),
+            (".github/skills/splot-doc-audit/SKILL.md", "audit-skill"),
+            ("xtask/src/audit_scope.rs", "audit-scope-tooling"),
+            ("docs/spec/av2/1.0.0/CHECKSUMS", "spec-mirror-integrity"),
+            (
+                "docs/spec/av2/1.0.0/provenance.toml",
+                "spec-mirror-provenance",
+            ),
+        ];
+        for (path, reason) in cases {
+            assert_eq!(force_wide_review_reason(path).as_deref(), Some(reason));
+        }
+        assert_eq!(
+            force_wide_review_reason("docs/spec/av2/1.0.0/05-syntax-structures.md"),
+            None
+        );
+    }
+
+    #[test]
+    fn changed_paths_from_base_rejects_option_like_base() -> Result<()> {
+        let Err(err) = changed_paths_from_base(Path::new("."), "--name-only") else {
+            bail!("option-like base should be rejected before git runs");
+        };
+        assert!(
+            err.to_string()
+                .contains("audit-scope --base must not be empty or start with `-`")
+        );
+        Ok(())
     }
 
     #[test]
