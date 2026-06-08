@@ -42,6 +42,10 @@ pub(crate) struct AuditScopeOptions {
 
 /// Implements `cargo xtask audit-scope`.
 pub(crate) fn run_audit_scope(root: &Path, options: AuditScopeOptions) -> Result<()> {
+    if options.write_ledger && options.base.is_some() {
+        bail!("audit-scope --write-ledger cannot be used with --base");
+    }
+
     let report = build_report(root, &options)?;
     if options.write_ledger {
         write_ledger(root, &report.ledger_path, &report.ledger_update)?;
@@ -140,7 +144,15 @@ fn build_report(root: &Path, options: &AuditScopeOptions) -> Result<AuditScopeRe
     let workspace_members = load_workspace_members(root)?;
     let feature_index = load_feature_index(root)?;
     let tracked_paths = git_lines(root, &["ls-files", "--cached"])?;
-    let in_scope = tracked_audit_files(root, &tracked_paths, &workspace_members, &feature_index)?;
+    let ledger_path_string = path_to_string(&ledger_path);
+    let excluded_paths = BTreeSet::from([ledger_path_string.clone()]);
+    let in_scope = tracked_audit_files(
+        root,
+        &tracked_paths,
+        &workspace_members,
+        &feature_index,
+        &excluded_paths,
+    )?;
     let audited_commit = git_single_line(root, &["rev-parse", "HEAD"])?;
 
     let changed_paths = if let Some(base) = &options.base {
@@ -177,7 +189,7 @@ fn build_report(root: &Path, options: &AuditScopeOptions) -> Result<AuditScopeRe
         protocol_version: PROTOCOL_VERSION,
         mode,
         audited_commit,
-        ledger_path: path_to_string(&ledger_path),
+        ledger_path: ledger_path_string,
         workspace_members,
         candidate_count: candidates.len(),
         candidates,
@@ -334,18 +346,27 @@ fn force_wide_review_triggers(
         changed_paths.clone()
     } else if let Some(ledger) = ledger {
         let ledger_files = ledger_files_by_path(Some(ledger)).unwrap_or_default();
-        files
-            .iter()
-            .filter(|file| {
-                let Some(entry) = ledger_files.get(&file.path) else {
-                    return true;
-                };
-                entry.sha256 != file.sha256
-                    || ledger.outcome != "success"
-                    || entry.outcome != "success"
-            })
-            .map(|file| file.path.clone())
-            .collect()
+        let mut changed = BTreeSet::new();
+        let mut current_paths = BTreeSet::new();
+        for file in files {
+            current_paths.insert(file.path.clone());
+            let Some(entry) = ledger_files.get(&file.path) else {
+                changed.insert(file.path.clone());
+                continue;
+            };
+            let file_changed = entry.sha256 != file.sha256
+                || ledger.outcome != "success"
+                || entry.outcome != "success";
+            if file_changed {
+                changed.insert(file.path.clone());
+            }
+        }
+        for entry in &ledger.files {
+            if !current_paths.contains(&entry.path) {
+                changed.insert(entry.path.clone());
+            }
+        }
+        changed
     } else {
         BTreeSet::new()
     };
@@ -389,9 +410,13 @@ fn tracked_audit_files(
     tracked_paths: &[String],
     workspace_members: &[WorkspaceMember],
     feature_index: &FeatureIndex,
+    excluded_paths: &BTreeSet<String>,
 ) -> Result<Vec<TrackedAuditFile>> {
     let mut files = Vec::new();
     for path in tracked_paths {
+        if excluded_paths.contains(path) {
+            continue;
+        }
         let Some(scope_kind) = scope_kind(path, workspace_members) else {
             continue;
         };
@@ -422,6 +447,9 @@ fn scope_kind(path: &str, workspace_members: &[WorkspaceMember]) -> Option<Strin
         if path.ends_with("/CHECKSUMS") || path.ends_with("/provenance.toml") {
             return Some("spec-mirror-integrity".to_owned());
         }
+        return None;
+    }
+    if path == DEFAULT_LEDGER_PATH {
         return None;
     }
     for member in workspace_members {
@@ -582,18 +610,113 @@ fn workspace_members_from_manifest_text(root: &Path, text: &str) -> Result<Vec<W
         .cloned()
         .unwrap_or_default();
     let mut out = Vec::new();
+    let mut seen_paths = BTreeSet::new();
     for member in members {
         let Some(path) = member.as_str() else {
             continue;
         };
-        let package = package_name_for_member(root, path)?;
-        out.push(WorkspaceMember {
-            package,
-            path: path.to_owned(),
-        });
+        for member_path in workspace_member_paths(root, path)? {
+            if !seen_paths.insert(member_path.clone()) {
+                continue;
+            }
+            let package = package_name_for_member(root, &member_path)?;
+            out.push(WorkspaceMember {
+                package,
+                path: member_path,
+            });
+        }
     }
     out.sort();
     Ok(out)
+}
+
+fn workspace_member_paths(root: &Path, pattern: &str) -> Result<Vec<String>> {
+    if !pattern.contains('*') {
+        return Ok(vec![pattern.to_owned()]);
+    }
+
+    let segments: Vec<&str> = pattern
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let mut paths = Vec::new();
+    expand_workspace_member_pattern(root, Path::new(""), &segments, &mut paths)?;
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn expand_workspace_member_pattern(
+    root: &Path,
+    prefix: &Path,
+    segments: &[&str],
+    paths: &mut Vec<String>,
+) -> Result<()> {
+    let Some((segment, rest)) = segments.split_first() else {
+        if root.join(prefix).join("Cargo.toml").is_file() {
+            paths.push(path_to_string(prefix));
+        }
+        return Ok(());
+    };
+
+    if segment.contains('*') {
+        let dir = root.join(prefix);
+        if !dir.is_dir() {
+            return Ok(());
+        }
+        let mut children = Vec::new();
+        for entry in
+            std::fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
+        {
+            let entry = entry.with_context(|| format!("failed to read {}", dir.display()))?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let file_name = entry.file_name();
+            let Some(name) = file_name.to_str() else {
+                continue;
+            };
+            if matches_glob_segment(segment, name) {
+                children.push(name.to_owned());
+            }
+        }
+        children.sort();
+        for child in children {
+            expand_workspace_member_pattern(root, &prefix.join(child), rest, paths)?;
+        }
+        return Ok(());
+    }
+
+    expand_workspace_member_pattern(root, &prefix.join(segment), rest, paths)
+}
+
+fn matches_glob_segment(pattern: &str, candidate: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+
+    let anchored_start = !pattern.starts_with('*');
+    let anchored_end = !pattern.ends_with('*');
+    let parts: Vec<&str> = pattern.split('*').filter(|part| !part.is_empty()).collect();
+    if parts.is_empty() {
+        return true;
+    }
+
+    let mut cursor = candidate;
+    for (index, part) in parts.iter().enumerate() {
+        if index == 0 && anchored_start {
+            let Some(rest) = cursor.strip_prefix(part) else {
+                return false;
+            };
+            cursor = rest;
+        } else if let Some(position) = cursor.find(part) {
+            cursor = &cursor[position + part.len()..];
+        } else {
+            return false;
+        }
+    }
+
+    !anchored_end || parts.last().is_some_and(|part| candidate.ends_with(part))
 }
 
 fn package_name_for_member(root: &Path, member: &str) -> Result<String> {
@@ -678,6 +801,46 @@ edition = "2024"
         assert_eq!(
             scope_kind("crates/splot-decode/src/lib.rs", &members).as_deref(),
             Some("workspace:splot-decode")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_member_globs_expand_before_classification() -> Result<()> {
+        let root = temp_root("audit-scope-workspace-globs")?;
+        let crate_dir = root.join("crates/splot-core");
+        std::fs::create_dir_all(crate_dir.join("src"))?;
+        std::fs::create_dir_all(root.join("crates/not-a-package"))?;
+        std::fs::write(
+            root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["crates/*"]
+"#,
+        )?;
+        std::fs::write(
+            crate_dir.join("Cargo.toml"),
+            r#"
+[package]
+name = "splot-core"
+version = "0.0.0"
+edition = "2024"
+"#,
+        )?;
+
+        let members = load_workspace_members(&root)?;
+        assert_eq!(
+            members,
+            vec![WorkspaceMember {
+                package: "splot-core".to_owned(),
+                path: "crates/splot-core".to_owned(),
+            }]
+        );
+        assert_eq!(
+            scope_kind("crates/splot-core/src/lib.rs", &members).as_deref(),
+            Some("workspace:splot-core")
         );
 
         let _ = std::fs::remove_dir_all(&root);
@@ -791,6 +954,21 @@ edition = "2024"
     }
 
     #[test]
+    fn force_wide_trigger_detects_deleted_ledger_paths() {
+        let ledger = AuditLedger {
+            protocol_version: PROTOCOL_VERSION,
+            audited_commit: "old".to_owned(),
+            outcome: "success".to_owned(),
+            files: vec![ledger_file("AGENTS.md", "old")],
+        };
+
+        let triggers = force_wide_review_triggers(None, Some(&ledger), &[]);
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].path, "AGENTS.md");
+        assert_eq!(triggers[0].reason, "repository-agent-instructions");
+    }
+
+    #[test]
     fn changed_paths_from_base_includes_deleted_force_wide_paths() -> Result<()> {
         let root = temp_git_repo("audit-scope-deleted-force-wide")?;
         std::fs::write(root.join("AGENTS.md"), "rules\n")?;
@@ -806,6 +984,34 @@ edition = "2024"
 
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
+    }
+
+    #[test]
+    fn run_audit_scope_rejects_diff_mode_ledger_writes() -> Result<()> {
+        let Err(err) = run_audit_scope(
+            Path::new("."),
+            AuditScopeOptions {
+                base: Some("HEAD~1".to_owned()),
+                ledger: None,
+                write_ledger: true,
+                all: false,
+                format: AuditScopeFormat::Json,
+                outcome: "success".to_owned(),
+            },
+        ) else {
+            bail!("diff-mode ledger writes should be rejected before report construction");
+        };
+
+        assert!(
+            err.to_string()
+                .contains("audit-scope --write-ledger cannot be used with --base")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scope_kind_excludes_default_audit_ledger() {
+        assert_eq!(scope_kind(DEFAULT_LEDGER_PATH, &[]), None);
     }
 
     #[test]
