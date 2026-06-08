@@ -2819,6 +2819,145 @@ mod tests {
     }
 
     #[test]
+    fn validator_accepts_in_range_frame_to_refresh() {
+        // The same compact-refresh frame with frame_to_refresh == 5 (< NumRefFrames 6)
+        // must not be flagged.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            num_ref_frames_minus_1: 5,
+            enable_short_refresh_frame_flags: true,
+            ..FrameCoreSeq::base()
+        });
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // frame_is_inter == 0 -> INTRA_ONLY
+        fb.bit(0); // immediate_output_frame
+        fb.bit(0); // frame_size_override_flag
+        fb.f(0, 1); // order_hint
+        fb.bit(1); // has_refresh_frame_flags
+        fb.f(5, 3); // frame_to_refresh == 5 (< NumRefFrames 6)
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        data.extend(annex_b_obu(RTG_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/frame-to-refresh-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_accepts_non_reserved_ref_long_term_id() {
+        // ref_long_term_id == 14 != the reserved (1 << 4) - 1 == 15 must not be flagged.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            long_term_frame_id_bits: 4,
+            ..FrameCoreSeq::base()
+        });
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // restricted_prediction_switch
+        fb.f(1, 3); // num_key_ref_frames == 1
+        fb.f(14, 4); // ref_long_term_id[0] == 14 (not reserved)
+        data.extend(annex_b_obu(RAS_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/ref-long-term-id-reserved"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_accepts_nonzero_refresh_on_deferred_output() {
+        // An OLK frame (immediate_output_frame == 0) with refresh_frame_flags != 0 is
+        // conformant.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // frame_size_override_flag
+        fb.f(0, 1); // order_hint
+        fb.f(1, 8); // refresh_frame_flags f(8) == 1 (nonzero)
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        data.extend(annex_b_obu(OLK_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/refresh-frame-flags-zero-on-deferred-output"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_accepts_still_picture_key_frame() {
+        // A still_picture sequence with a KEY_FRAME (CLK) and immediate_output_frame == 1
+        // is conformant.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            still_picture: true,
+            ..FrameCoreSeq::base()
+        });
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(1); // immediate_output_frame == 1
+        fb.bit(0); // frame_size_override_flag
+        fb.f(0, 1); // order_hint
+        // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        data.extend(annex_b_obu(CLK_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/still-picture-requires-key-frame"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_accepts_intra_only_partial_refresh() {
+        // An INTRA_ONLY frame whose refresh_frame_flags is not all slots is conformant.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            num_ref_frames_minus_1: 1, // NumRefFrames == 2
+            ..FrameCoreSeq::base()
+        });
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // frame_is_inter == 0 -> INTRA_ONLY
+        fb.bit(1); // immediate_output_frame == 1
+        fb.bit(0); // frame_size_override_flag
+        fb.f(0, 1); // order_hint
+        fb.f(0b01, 2); // refresh_frame_flags == 1 (not all slots)
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        data.extend(annex_b_obu(RTG_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/intra-only-refresh-all-slots"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
     fn validator_preserves_existing_unavailable_sequence_header_check() {
         // The frame-header core wiring must not suppress the activation/HLS checks: a
         // frame referencing an unavailable sequence header still reports it.
