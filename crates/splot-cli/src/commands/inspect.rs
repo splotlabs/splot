@@ -517,6 +517,10 @@ fn frame_header_core_view(
     } else if !(obu_type.is_sef() || obu_type.is_tip_frame() || obu_type == ObuType::BridgeFrame) {
         return None;
     }
+    // For tile-group OBUs, `reader` is now past the frame_header_present_flag bit and
+    // is what parse_frame_header_core consumes; resolve_inspect_sequence deliberately
+    // uses its own fresh reader to re-parse the small activation prefix (not a
+    // reader-position bug).
     let active_sequence = resolve_inspect_sequence(obu, sequences);
     let input = FrameHeaderParseInput {
         obu_type,

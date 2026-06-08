@@ -856,6 +856,27 @@ mod tests {
     }
 
     #[test]
+    fn frame_header_core_show_existing_frame_derives_order_hint() {
+        // derive_sef_order_hint == 1: sef_order_hint is not read; OrderHintLsbs is
+        // derived from the referenced slot (reference state), so it is left unknown.
+        let mut bits = Bits::default();
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(0); // seq_header_id_in_frame_header
+        bits.f(2, 3); // frame_to_show_map_idx
+        bits.bit(1); // derive_sef_order_hint == 1 -> no sef_order_hint bits
+        let data = bits.into_bytes();
+        let (core, _) = parse_body(&data, ObuType::RegularSef, true, &base_seq()).unwrap();
+
+        assert_eq!(core.show_existing_frame, Some(true));
+        assert_eq!(core.frame_to_show_map_idx, Some(2));
+        assert_eq!(
+            core.order_hint_lsb, None,
+            "order hint is derived from the slot, not signaled"
+        );
+        assert_eq!(core.status, FrameHeaderParseStatus::CoreFieldsOnly);
+    }
+
+    #[test]
     fn frame_header_core_inter_stops_after_frame_type() {
         // Regular tile group, frame_is_inter == 1 -> INTER_FRAME; the inter reference
         // map needs reference state, so the parser stops after the frame-type field.
@@ -919,6 +940,43 @@ mod tests {
         let data = bits.into_bytes();
         let err = parse_body(&data, ObuType::RasFrame, true, &seq).unwrap_err();
         assert!(matches!(err, Error::UnexpectedEof { .. }));
+    }
+
+    #[test]
+    fn frame_header_core_olk_reads_long_term_ids_then_intra_tail() {
+        // OLK: FrameType::Key reads long_term_id_plus_1 f(4), then (long_term_frame_id_bits
+        // != 0) num_key_ref_frames f(3) + the ref_long_term_id loop, then continues into
+        // the intra tail. Unlike CLK, OLK is not the `obu_type == OBU_CLOSED_LOOP_KEY`
+        // allFrames case, so refresh_frame_flags is read as f(NumRefFrames) (AV2 § 5.18.2).
+        let mut seq = base_seq();
+        seq.long_term_frame_id_bits = 4;
+        let mut bits = Bits::default();
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(0); // seq_header_id_in_frame_header
+        bits.f(1, 4); // long_term_id_plus_1
+        bits.f(1, 3); // num_key_ref_frames == 1
+        bits.f(3, 4); // ref_long_term_id[0]
+        // immediate_output_frame: OLK forces false (no bit)
+        bits.bit(0); // implicit_output_frame
+        bits.bit(0); // frame_size_override_flag (cur_mfh_id == 0 -> max dims)
+        bits.f(2, 4); // order_hint
+        bits.f(0b0000_0101, 8); // refresh_frame_flags f(NumRefFrames == 8)
+        bits.bit(0); // allow_intrabc
+        bits.bit(0); // disable_cdf_update
+        let data = bits.into_bytes();
+        let (core, _) = parse_body(&data, ObuType::OpenLoopKey, true, &seq).unwrap();
+
+        assert_eq!(core.frame_type, Some(FrameType::Key));
+        assert_eq!(core.frame_is_intra, Some(true));
+        assert_eq!(core.immediate_output_frame, Some(false));
+        assert_eq!(core.implicit_output_frame, Some(false));
+        assert_eq!(core.order_hint_lsb, Some(2));
+        assert_eq!(core.refresh_frame_flags, Some(0b0000_0101));
+        assert_eq!(core.frame_size, Some(FrameSize::new(4096, 2304)));
+        assert_eq!(
+            core.status,
+            FrameHeaderParseStatus::StoppedBeforeFilteringQuantSegmentation
+        );
     }
 
     #[test]
@@ -1047,6 +1105,42 @@ mod proptests {
                 },
             };
             let _ = parse_frame_header_core(&mut reader, &input);
+        }
+
+        /// The core body must never panic on arbitrary input when a concrete sequence
+        /// is present — this exercises the bridge / SEF / inter-stop / intra-tail
+        /// branches of `parse_core_body` that the no-sequence proptest never reaches.
+        /// NumRefFrames is non-power-of-2 and the compact-refresh / change-bvp-drl
+        /// flags are on to widen branch coverage.
+        #[test]
+        fn parse_core_body_with_sequence_never_panics(
+            data in proptest::collection::vec(any::<u8>(), 0..64),
+            raw_type in 0u8..=31,
+            first_picture in any::<bool>(),
+            single_picture in any::<bool>(),
+        ) {
+            let obu_type = ObuType::from_raw(raw_type);
+            let seq = CoreSeqView {
+                num_ref_frames: 6,
+                order_hint_bits: 4,
+                long_term_frame_id_bits: 4,
+                enable_short_refresh_frame_flags: true,
+                monotonic_output_order_flag: false,
+                single_picture_header_flag: single_picture,
+                max_mlayer_id: 0,
+                frame_width_bits: 12,
+                frame_height_bits: 12,
+                max_frame_width: 4096,
+                max_frame_height: 2304,
+                seq_force_screen_content_tools: 2,
+                seq_force_integer_mv: 2,
+                allow_frame_max_bvp_drl_bits: true,
+            };
+            let mut reader = BitReader::new(&data, ByteOffset::new(0));
+            if let Ok(prefix) = parse_frame_header_prefix(&mut reader, obu_type, first_picture) {
+                let mut core = init_core_from_prefix(&prefix, obu_type);
+                let _ = parse_core_body(&mut reader, &mut core, &seq);
+            }
         }
     }
 }
