@@ -23,11 +23,15 @@
 //! (`av2/decoder/obu_qm.c`); no AV1 scan or transform tables are copied.
 
 use crate::bitio::BitReader;
-use crate::error::Result;
-use crate::types::{EmbeddedLayerId, TemporalLayerId};
+use crate::error::{Error, Result};
 
 /// `NUM_CUSTOM_QMS`: number of custom quantizer-matrix levels (AV2 v1.0.0 § 3).
 pub const NUM_CUSTOM_QMS: usize = 15;
+
+/// Inclusive minimum of the conformant `quant_delta` range (AV2 v1.0.0 § 6.4.11).
+const QUANT_DELTA_MIN: i32 = -128;
+/// Inclusive maximum of the conformant `quant_delta` range (AV2 v1.0.0 § 6.4.11).
+const QUANT_DELTA_MAX: i32 = 127;
 
 /// `qm_bit_map` is a 15-bit field (`f(NUM_CUSTOM_QMS)`).
 const QM_BIT_MAP_BITS: u32 = NUM_CUSTOM_QMS as u32;
@@ -142,20 +146,18 @@ pub struct UserDefinedQmPlane {
 
 /// Parses a `quantizer_matrix_obu()` (AV2 v1.0.0 § 5.13).
 ///
-/// `obu_tlayer_id` / `obu_mlayer_id` come from the OBU header; they are not read from
-/// the payload but are surfaced to callers (and the validator) so per-level HLS
-/// availability can record the defining layer (`QmMLayerId` / `QmTLayerId`, § 6.12).
+/// The defining layer ids (`obu_tlayer_id` / `obu_mlayer_id`, used for per-level HLS
+/// availability, § 6.12) come from the OBU header rather than the payload, so the
+/// validator reads them from the OBU envelope instead of threading them through here.
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof),
 /// [`Error::InvalidUvlc`](crate::error::Error::InvalidUvlc), or
 /// [`Error::BitWidthTooLarge`](crate::error::Error::BitWidthTooLarge) from
-/// [`BitReader`] when the input is truncated or a descriptor is malformed.
-pub fn parse_quantizer_matrix(
-    reader: &mut BitReader<'_>,
-    _obu_tlayer_id: TemporalLayerId,
-    _obu_mlayer_id: EmbeddedLayerId,
-) -> Result<QuantizerMatrixObu> {
+/// [`BitReader`] when the input is truncated or a descriptor is malformed, or
+/// [`Error::InvalidQuantizerMatrix`](crate::error::Error::InvalidQuantizerMatrix) when a
+/// `quant_delta` is outside the conformant `-128..=127` range (AV2 § 6.4.11).
+pub fn parse_quantizer_matrix(reader: &mut BitReader<'_>) -> Result<QuantizerMatrixObu> {
     // qm_bit_map fits in 15 bits, so the u32 read never exceeds u16::MAX.
     let qm_bit_map = reader.read_bits(QM_BIT_MAP_BITS)? as u16;
     let chroma_info_present = reader.read_bit()? != 0;
@@ -289,7 +291,20 @@ fn user_defined_qm(
         } else if coef_repeat {
             values[pos] = quant;
         } else {
+            let delta_offset = reader.byte_offset();
+            let delta_bit_offset = reader.bit_offset();
             let quant_delta = reader.read_svlc()?;
+            // AV2 § 6.4.11: it is a requirement of bitstream conformance that
+            // quant_delta is in -128..=127.
+            if !(QUANT_DELTA_MIN..=QUANT_DELTA_MAX).contains(&quant_delta) {
+                return Err(Error::InvalidQuantizerMatrix {
+                    offset: delta_offset,
+                    bit_offset: delta_bit_offset,
+                    message: format!(
+                        "quant_delta {quant_delta} must be in {QUANT_DELTA_MIN}..={QUANT_DELTA_MAX}"
+                    ),
+                });
+            }
             // AV2 § 5.4.11: quant2 = (quant + quant_delta) & 255. The mask gives the
             // low byte (mathematical mod 256 in 0..=255) even for a negative sum.
             let quant2 = (i32::from(quant) + quant_delta) & 0xFF;
@@ -396,11 +411,7 @@ mod tests {
 
     fn parse(bytes: &[u8]) -> Result<QuantizerMatrixObu> {
         let mut reader = BitReader::new(bytes, ByteOffset::new(0));
-        parse_quantizer_matrix(
-            &mut reader,
-            TemporalLayerId::from_bits(0),
-            EmbeddedLayerId::from_bits(0),
-        )
+        parse_quantizer_matrix(&mut reader)
     }
 
     /// Fills one plane in scan order with a constant `svlc(0)` delta so every
@@ -551,6 +562,39 @@ mod tests {
     }
 
     #[test]
+    fn diagonal_scan_matches_av2_oracle_order() {
+        // Golden up-right (TX_CLASS_2D) scan order, derived from AV2 § 5.20.7.30 and
+        // cross-checked against AVM get_scan(txSz, DCT_DCT) (obu_qm.c). Positions are
+        // raster indices row * width + col.
+        assert_eq!(
+            diagonal_scan_2d(8, 8)[..10],
+            [0, 8, 1, 16, 9, 2, 24, 17, 10, 3]
+        );
+        assert_eq!(diagonal_scan_2d(8, 4)[..6], [0, 8, 1, 16, 9, 2]);
+        assert_eq!(
+            diagonal_scan_2d(4, 8)[..10],
+            [0, 4, 1, 8, 5, 2, 12, 9, 6, 3]
+        );
+    }
+
+    #[test]
+    fn quant_delta_out_of_range_is_rejected() {
+        // AV2 § 6.4.11: quant_delta must be in -128..=127. A user-defined matrix whose
+        // first quant_delta is 128 must be rejected.
+        let mut bits = Bits::default();
+        bits.f(1, 15); // qm_bit_map: level 0
+        bits.bit(0); // 1 plane
+        bits.bit(0); // qm_is_default_flag = 0
+        bits.bit(0); // qm_8x8_is_symmetric = 0
+        bits.svlc(128); // out of range (> 127)
+        let data = bits.into_bytes();
+        assert!(matches!(
+            parse(&data),
+            Err(crate::error::Error::InvalidQuantizerMatrix { .. })
+        ));
+    }
+
+    #[test]
     fn truncated_user_defined_qm_is_error_not_panic() {
         let mut bits = Bits::default();
         bits.f(1, 15); // qm_bit_map: level 0
@@ -576,11 +620,7 @@ mod proptests {
             data in proptest::collection::vec(any::<u8>(), 0..256),
         ) {
             let mut reader = BitReader::new(&data, ByteOffset::new(0));
-            let _ = parse_quantizer_matrix(
-                &mut reader,
-                TemporalLayerId::from_bits(0),
-                EmbeddedLayerId::from_bits(0),
-            );
+            let _ = parse_quantizer_matrix(&mut reader);
         }
     }
 }

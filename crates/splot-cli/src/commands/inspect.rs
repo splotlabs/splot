@@ -172,13 +172,9 @@ fn quantizer_matrix_view(obu: &ObuEnvelope<'_>) -> Option<QuantizerMatrixView> {
         return None;
     }
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-    parse_quantizer_matrix(
-        &mut reader,
-        obu.header.temporal_layer_id,
-        obu.header.embedded_layer_id,
-    )
-    .ok()
-    .map(|qm| QuantizerMatrixView::new(&qm))
+    parse_quantizer_matrix(&mut reader)
+        .ok()
+        .map(|qm| QuantizerMatrixView::new(&qm))
 }
 
 /// A compact, machine-readable view of a parsed `quantizer_matrix_obu()`. Coefficient
@@ -237,13 +233,9 @@ fn film_grain_view(obu: &ObuEnvelope<'_>) -> Option<FilmGrainView> {
         return None;
     }
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-    parse_film_grain(
-        &mut reader,
-        obu.header.temporal_layer_id,
-        obu.header.embedded_layer_id,
-    )
-    .ok()
-    .map(|fg| FilmGrainView::new(&fg))
+    parse_film_grain(&mut reader)
+        .ok()
+        .map(|fg| FilmGrainView::new(&fg))
 }
 
 /// A compact, machine-readable view of a parsed `film_grain_obu()`.

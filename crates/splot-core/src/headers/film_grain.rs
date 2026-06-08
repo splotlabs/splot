@@ -18,7 +18,6 @@
 
 use crate::bitio::BitReader;
 use crate::error::Result;
-use crate::types::{EmbeddedLayerId, TemporalLayerId};
 
 /// `MAX_FILM_GRAIN`: number of film grain model slots (AV2 v1.0.0 § 3).
 pub const MAX_FILM_GRAIN: usize = 8;
@@ -144,6 +143,9 @@ pub struct FilmGrainModel {
 /// `film_grain_model()` itself, so the fallback only affects the preserved summary.
 const fn chroma_subsampling(chroma_idc: u32) -> (bool, bool) {
     match chroma_idc {
+        // AV2 § 5.14 explicitly assigns subX = subY = 1 to both CHROMA_FORMAT_420 and
+        // CHROMA_FORMAT_400 (monochrome). The fields are a don't-care for the model
+        // syntax but drive the validator's § 6.17.10.2 4:2:0 chroma-pairing check.
         CHROMA_FORMAT_420 | CHROMA_FORMAT_400 => (true, true),
         CHROMA_FORMAT_422 => (true, false),
         CHROMA_FORMAT_444 => (false, false),
@@ -154,20 +156,16 @@ const fn chroma_subsampling(chroma_idc: u32) -> (bool, bool) {
 
 /// Parses a `film_grain_obu()` (AV2 v1.0.0 § 5.14).
 ///
-/// `obu_tlayer_id` / `obu_mlayer_id` come from the OBU header; they are surfaced to
-/// the validator for per-slot HLS availability (`FgmTLayerId` / `FgmMLayerId`,
-/// § 6.13) rather than read from the payload.
+/// The defining layer ids (`obu_tlayer_id` / `obu_mlayer_id`, used for per-slot HLS
+/// availability, § 6.13) come from the OBU header rather than the payload, so the
+/// validator reads them from the OBU envelope instead of threading them through here.
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof),
 /// [`Error::InvalidUvlc`](crate::error::Error::InvalidUvlc), or
 /// [`Error::BitWidthTooLarge`](crate::error::Error::BitWidthTooLarge) from
 /// [`BitReader`] when the input is truncated or a descriptor is malformed.
-pub fn parse_film_grain(
-    reader: &mut BitReader<'_>,
-    _obu_tlayer_id: TemporalLayerId,
-    _obu_mlayer_id: EmbeddedLayerId,
-) -> Result<FilmGrainObu> {
+pub fn parse_film_grain(reader: &mut BitReader<'_>) -> Result<FilmGrainObu> {
     let update_flags = reader.read_bits_u8(8)?;
     let chroma_idc = reader.read_uvlc()?;
     let monochrome = chroma_idc == CHROMA_FORMAT_400;
@@ -386,11 +384,7 @@ mod tests {
 
     fn parse(bytes: &[u8]) -> Result<FilmGrainObu> {
         let mut reader = BitReader::new(bytes, ByteOffset::new(0));
-        parse_film_grain(
-            &mut reader,
-            TemporalLayerId::from_bits(0),
-            EmbeddedLayerId::from_bits(0),
-        )
+        parse_film_grain(&mut reader)
     }
 
     /// Appends the smallest valid `film_grain_model()` for a non-monochrome,
@@ -529,11 +523,7 @@ mod proptests {
             data in proptest::collection::vec(any::<u8>(), 0..256),
         ) {
             let mut reader = BitReader::new(&data, ByteOffset::new(0));
-            let _ = parse_film_grain(
-                &mut reader,
-                TemporalLayerId::from_bits(0),
-                EmbeddedLayerId::from_bits(0),
-            );
+            let _ = parse_film_grain(&mut reader);
         }
     }
 }

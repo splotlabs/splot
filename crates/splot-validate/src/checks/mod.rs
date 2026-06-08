@@ -207,6 +207,16 @@ pub(crate) fn syntax_error_diagnostic(error: &Error) -> Option<Diagnostic> {
                     .with_bit_offset(*bit_offset),
             )
         }
+        Error::InvalidQuantizerMatrix {
+            offset,
+            bit_offset,
+            message,
+        } => Some(
+            Diagnostic::error("qm/quant-delta-out-of-range", message.clone())
+                .with_spec_section("6.4.11")
+                .with_byte_offset(*offset)
+                .with_bit_offset(*bit_offset),
+        ),
         _ => None,
     }
 }
@@ -848,11 +858,7 @@ impl Check for QuantizerMatrixSyntax {
         }
 
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        match parse_quantizer_matrix(
-            &mut reader,
-            obu.header.temporal_layer_id,
-            obu.header.embedded_layer_id,
-        ) {
+        match parse_quantizer_matrix(&mut reader) {
             Ok(_) => {
                 // AV2 § 5.2.1: OBU_QUANTIZATION_MATRIX is not extensible, so the
                 // remaining payload bits must form valid trailing_bits().
@@ -893,11 +899,7 @@ impl Check for FilmGrainSyntax {
         }
 
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        match parse_film_grain(
-            &mut reader,
-            obu.header.temporal_layer_id,
-            obu.header.embedded_layer_id,
-        ) {
+        match parse_film_grain(&mut reader) {
             Ok(_) => {
                 // AV2 § 5.2.1: OBU_FILM_GRAIN is not extensible, so the remaining
                 // payload bits must form valid trailing_bits().

@@ -246,6 +246,19 @@ pub enum Error {
         message: String,
     },
 
+    /// A `quantizer_matrix_obu()` / `user_defined_qm()` value violated AV2 § 5.13 /
+    /// § 6.4.11 (for example a `quant_delta` outside the conformant `-128..=127`
+    /// range).
+    #[error("invalid quantizer matrix at byte {offset}.{bit_offset}: {message}")]
+    InvalidQuantizerMatrix {
+        /// Offset of the offending value.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidQuantizerMatrix::offset`].
+        bit_offset: BitOffset,
+        /// Human-readable reason.
+        message: String,
+    },
+
     /// An OBU header violated AV2 § 5.2.2.
     #[error("invalid OBU header at byte {offset}: {message}")]
     InvalidObuHeader {

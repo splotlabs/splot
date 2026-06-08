@@ -13,7 +13,9 @@ use splot_core::headers::buffer_removal_timing::parse_buffer_removal_timing;
 use splot_core::headers::content_interpretation::{
     ContentInterpretation, parse_content_interpretation,
 };
-use splot_core::headers::film_grain::{FilmGrainObu, MAX_FILM_GRAIN, parse_film_grain};
+use splot_core::headers::film_grain::{
+    FilmGrainObu, FilmGrainScalingPoint, MAX_FILM_GRAIN, parse_film_grain,
+};
 use splot_core::headers::frame::{FrameHeaderPrefix, parse_frame_header_prefix};
 use splot_core::headers::layer_config_record::{
     LayerConfigurationRecord, parse_layer_config_record,
@@ -35,6 +37,10 @@ use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, ObuType};
 
 use crate::diagnostic::{Diagnostic, ValidationReport};
 use crate::options::{ExternalHlsMode, ValidationOptions};
+
+/// Maximum conformant `num_*_points` for a film-grain scaling function
+/// (AV2 v1.0.0 § 6.17.10.2).
+const MAX_FILM_GRAIN_SCALING_POINTS: u8 = 14;
 
 /// Stateful validator data derived from parseable high-level syntax OBUs.
 #[derive(Debug, Default)]
@@ -1068,11 +1074,7 @@ impl ValidatorContext {
     /// not-yet-validated coverage in that case), consistent with the OPS observer.
     fn observe_quantizer_matrix(&mut self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        let Ok(qm) = parse_quantizer_matrix(
-            &mut reader,
-            obu.header.temporal_layer_id,
-            obu.header.embedded_layer_id,
-        ) else {
+        let Ok(qm) = parse_quantizer_matrix(&mut reader) else {
             return;
         };
         if finish_obu_payload(
@@ -1190,11 +1192,7 @@ impl ValidatorContext {
     /// malformed payload tail is silent, consistent with the OPS observer.
     fn observe_film_grain(&mut self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        let Ok(fg) = parse_film_grain(
-            &mut reader,
-            obu.header.temporal_layer_id,
-            obu.header.embedded_layer_id,
-        ) else {
+        let Ok(fg) = parse_film_grain(&mut reader) else {
             return;
         };
         if finish_obu_payload(
@@ -1207,7 +1205,69 @@ impl ValidatorContext {
             return;
         }
         self.emit_film_grain_diagnostics(obu, &fg, report);
+        self.emit_film_grain_model_diagnostics(obu, &fg, report);
         self.record_film_grain(obu, &fg);
+    }
+
+    /// Emits the locally-decidable § 6.17.10.2 film-grain *model* conformance
+    /// diagnostics for each updated slot: scaling-point counts (`num_*_points <= 14`),
+    /// strictly-increasing-and-`< 256` scaling-point values, and the 4:2:0 chroma
+    /// pairing rule (when `subX == 1 && subY == 1`, `num_cb_points` and `num_cr_points`
+    /// must be both zero or both non-zero).
+    fn emit_film_grain_model_diagnostics(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        fg: &FilmGrainObu,
+        report: &mut ValidationReport,
+    ) {
+        for update in &fg.models {
+            let model = &update.model;
+            let slot = update.slot;
+            for (channel, count) in [
+                ("y", model.num_y_points),
+                ("cb", model.num_cb_points),
+                ("cr", model.num_cr_points),
+            ] {
+                if count > MAX_FILM_GRAIN_SCALING_POINTS {
+                    report.push(
+                        Diagnostic::error(
+                            "film-grain/scaling-points-out-of-range",
+                            format!(
+                                "film grain slot {slot} num_{channel}_points {count} must be less \
+                                 than or equal to {MAX_FILM_GRAIN_SCALING_POINTS}"
+                            ),
+                        )
+                        .with_spec_section("6.17.10.2")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+            }
+
+            for (channel, points) in [
+                ("y", &model.point_y),
+                ("cb", &model.point_cb),
+                ("cr", &model.point_cr),
+            ] {
+                emit_scaling_point_order_diagnostics(channel, points, slot, obu, report);
+            }
+
+            // AV2 § 6.17.10.2: in 4:2:0 (subX == 1 && subY == 1), film grain applies to
+            // both chroma components or neither.
+            if fg.sub_x && fg.sub_y && (model.num_cb_points == 0) != (model.num_cr_points == 0) {
+                report.push(
+                    Diagnostic::error(
+                        "film-grain/chroma-points-not-paired",
+                        format!(
+                            "film grain slot {slot}: in 4:2:0, num_cb_points ({}) and \
+                             num_cr_points ({}) must both be zero or both non-zero",
+                            model.num_cb_points, model.num_cr_points
+                        ),
+                    )
+                    .with_spec_section("6.17.10.2")
+                    .with_byte_offset(obu.offset),
+                );
+            }
+        }
     }
 
     /// Emits the § 6.13 film-grain diagnostics for `fg`, reading the coded-frame-unit
@@ -2006,6 +2066,35 @@ fn ordering_error(rule_id: &'static str, obu: &ObuEnvelope<'_>, message: String)
 /// Returns `true` if `obu_type`'s payload begins with a `frame_header()` or
 /// `tile_group_obu()` (AV2 v1.0.0 § 5.2.1): the tile-group types, plus the SEF / TIP
 /// / bridge frames that call `frame_header( 1 )` directly.
+/// Emits `film-grain/scaling-point-not-increasing` for any scaling point whose
+/// (cumulative) value is not strictly greater than its predecessor or is not less than
+/// 256 (AV2 v1.0.0 § 6.17.10.2: for `i > 0`, `point_*_value[i] > point_*_value[i - 1]`
+/// and `< 256`).
+fn emit_scaling_point_order_diagnostics(
+    channel: &str,
+    points: &[FilmGrainScalingPoint],
+    slot: u8,
+    obu: &ObuEnvelope<'_>,
+    report: &mut ValidationReport,
+) {
+    for i in 1..points.len() {
+        let value = points[i].value;
+        if value <= points[i - 1].value || value >= 256 {
+            report.push(
+                Diagnostic::error(
+                    "film-grain/scaling-point-not-increasing",
+                    format!(
+                        "film grain slot {slot} {channel} scaling point {i} value {value} must be \
+                         strictly greater than the previous point and less than 256"
+                    ),
+                )
+                .with_spec_section("6.17.10.2")
+                .with_byte_offset(obu.offset),
+            );
+        }
+    }
+}
+
 fn is_frame_bearing(obu_type: ObuType) -> bool {
     obu_type.is_tile_group()
         || obu_type.is_sef()

@@ -223,11 +223,7 @@ pub fn dispatch_obu_payload<'a>(
         }
         ObuType::QuantizationMatrix => {
             let mut reader = BitReader::new(payload, payload_offset);
-            let quantizer_matrix = parse_quantizer_matrix(
-                &mut reader,
-                header.temporal_layer_id,
-                header.embedded_layer_id,
-            )?;
+            let quantizer_matrix = parse_quantizer_matrix(&mut reader)?;
             // OBU_QUANTIZATION_MATRIX is not extensible (§ 5.2.1, ObuType::
             // is_extensible_obu), so finish_obu_payload uses trailing_bits() only.
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
@@ -237,11 +233,7 @@ pub fn dispatch_obu_payload<'a>(
         }
         ObuType::FilmGrain => {
             let mut reader = BitReader::new(payload, payload_offset);
-            let film_grain = parse_film_grain(
-                &mut reader,
-                header.temporal_layer_id,
-                header.embedded_layer_id,
-            )?;
+            let film_grain = parse_film_grain(&mut reader)?;
             // OBU_FILM_GRAIN is not extensible (§ 5.2.1), so finish_obu_payload uses
             // trailing_bits() only.
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
