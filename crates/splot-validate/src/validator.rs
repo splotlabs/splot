@@ -3575,4 +3575,36 @@ mod tests {
         assert!(!has_error(&report, "film-grain/update-flags-zero"));
         assert!(!has_error(&report, "film-grain/chroma-idc-out-of-range"));
     }
+
+    #[test]
+    fn qm_malformed_payload_is_flagged() {
+        // A quantizer matrix payload too short for qm_bit_map f(15): the
+        // QuantizerMatrixSyntax check must report the parse error.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(QM_HEADER, &[0xFF]));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "bitstream/parse-error"),
+            "a malformed quantizer matrix payload must be reported: {report}"
+        );
+    }
+
+    #[test]
+    fn film_grain_malformed_payload_is_flagged() {
+        // fgm_update_flags sets slot 0, but the film_grain_model is truncated
+        // (num_y_points = 5 with no point payload): the FilmGrainSyntax check must
+        // report the parse error.
+        let mut bits = Bits::default();
+        bits.f(0b0000_0001, 8); // fgm_update_flags: slot 0
+        bits.uvlc(2); // fgm_chroma_idc = 444 (non-monochrome)
+        bits.bit(0); // chroma_scaling_from_luma
+        bits.f(5, 4); // num_y_points = 5 -> point payload follows, but the input ends
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(FG_HEADER, &bits.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "bitstream/parse-error"),
+            "a malformed film-grain payload must be reported: {report}"
+        );
+    }
 }

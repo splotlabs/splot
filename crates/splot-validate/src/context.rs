@@ -1156,6 +1156,18 @@ impl ValidatorContext {
     fn check_quantizer_matrix(&mut self, obu: &ObuEnvelope<'_>, qm: &QuantizerMatrixObu) {
         self.qm.qm_obu_seen_since_coded_frame = true;
         if qm.qm_bit_map == 0 {
+            // AV2 § 5.13 reset path: every custom level returns to its defaults
+            // (QmDataPresent = 0, QmMLayerId = QmTLayerId = -1, QmNumPlanes = numPlanes),
+            // so a frame-reference check after a reset must not see stale layer/data
+            // state from a previously defined matrix.
+            for record in &mut self.qm.available {
+                *record = Some(QmLevelRecord {
+                    mlayer_id: None,
+                    tlayer_id: None,
+                    data_present: false,
+                    num_planes: qm.num_planes,
+                });
+            }
             return;
         }
         self.qm.seen_levels_since_coded_frame |= qm.qm_bit_map;

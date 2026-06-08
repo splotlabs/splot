@@ -1936,7 +1936,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/quantizer_matrix.rs::tests", "crates/splot-core/src/obu.rs::tests::dispatch_parses_quantizer_matrix_payload", "crates/splot-validate/src/validator.rs::tests::qm_duplicate_reset_between_frames_is_flagged", "crates/splot-validate/src/validator.rs::tests::qm_duplicate_level_between_frames_is_flagged"]
+tests = ["crates/splot-core/src/headers/quantizer_matrix.rs::tests", "crates/splot-core/src/obu.rs::tests::dispatch_parses_quantizer_matrix_payload", "crates/splot-validate/src/validator.rs::tests::qm_duplicate_reset_between_frames_is_flagged", "crates/splot-validate/src/validator.rs::tests::qm_duplicate_level_between_frames_is_flagged", "crates/splot-validate/src/validator.rs::tests::qm_malformed_payload_is_flagged"]
 commands = ["cargo test -p splot-core quantizer", "cargo test -p splot-validate qm"]
 fixtures = ["tests/fixtures/quantizer-matrix.av2"]
 diagnostics = ["qm/duplicate-reset-between-frames", "qm/duplicate-level-between-frames"]
@@ -1969,7 +1969,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/film_grain.rs::tests", "crates/splot-core/src/obu.rs::tests::dispatch_parses_film_grain_payload", "crates/splot-validate/src/validator.rs::tests::film_grain_zero_update_flags_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_chroma_idc_out_of_range_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_duplicate_slot_in_coded_frame_unit_is_flagged"]
+tests = ["crates/splot-core/src/headers/film_grain.rs::tests", "crates/splot-core/src/obu.rs::tests::dispatch_parses_film_grain_payload", "crates/splot-validate/src/validator.rs::tests::film_grain_zero_update_flags_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_chroma_idc_out_of_range_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_duplicate_slot_in_coded_frame_unit_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_malformed_payload_is_flagged"]
 commands = ["cargo test -p splot-core film", "cargo test -p splot-validate film"]
 fixtures = ["tests/fixtures/film-grain.av2"]
 diagnostics = ["film-grain/update-flags-zero", "film-grain/chroma-idc-out-of-range", "film-grain/duplicate-slot-in-coded-frame-unit"]

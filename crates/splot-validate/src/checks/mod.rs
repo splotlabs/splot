@@ -23,10 +23,12 @@ use splot_core::headers::atlas_segment::{
 };
 use splot_core::headers::buffer_removal_timing::parse_buffer_removal_timing;
 use splot_core::headers::content_interpretation::parse_content_interpretation;
+use splot_core::headers::film_grain::parse_film_grain;
 use splot_core::headers::layer_config_record::{
     LayerConfigurationRecord, parse_layer_config_record,
 };
 use splot_core::headers::operating_point_set::parse_operating_point_set;
+use splot_core::headers::quantizer_matrix::parse_quantizer_matrix;
 use splot_core::headers::sequence::parse_sequence_header;
 use splot_core::hls::{parse_msdo, parse_multi_frame_header};
 use splot_core::obu::{finish_obu_payload, parse_trailing_bits};
@@ -60,6 +62,8 @@ pub fn default_checks() -> Vec<Box<dyn Check>> {
         Box::new(AtlasSegmentSyntax),
         Box::new(OperatingPointSetSyntax),
         Box::new(BufferRemovalTimingSyntax),
+        Box::new(QuantizerMatrixSyntax),
+        Box::new(FilmGrainSyntax),
         Box::new(ContentInterpretationSyntax),
         Box::new(GlobalXLayerRequired),
         Box::new(GlobalXLayerRequiresBaseLayers),
@@ -817,6 +821,95 @@ impl Check for BufferRemovalTimingSyntax {
             Err(error) => {
                 let diagnostic = syntax_error_diagnostic(&error)
                     .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.12"));
+                report.push(diagnostic);
+            }
+        }
+    }
+}
+
+/// `OBU_QUANTIZATION_MATRIX` syntax: full `quantizer_matrix_obu()` parse and
+/// payload-tail conformance (AV2 § 5.13). The cross-OBU § 6.12 duplicate-reset /
+/// duplicate-level checks are stateful and handled in [`crate::context`].
+struct QuantizerMatrixSyntax;
+
+impl Check for QuantizerMatrixSyntax {
+    fn id(&self) -> &'static str {
+        // Registry identifier; emitted diagnostics use their own rule ids.
+        "qm/syntax"
+    }
+
+    fn spec_section(&self) -> Option<&'static str> {
+        Some("5.13")
+    }
+
+    fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.header.obu_type != ObuType::QuantizationMatrix {
+            return;
+        }
+
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        match parse_quantizer_matrix(
+            &mut reader,
+            obu.header.temporal_layer_id,
+            obu.header.embedded_layer_id,
+        ) {
+            Ok(_) => {
+                // AV2 § 5.2.1: OBU_QUANTIZATION_MATRIX is not extensible, so the
+                // remaining payload bits must form valid trailing_bits().
+                if let Err(error) = finish_obu_payload(&mut reader, obu.payload, false)
+                    && let Some(diagnostic) = syntax_error_diagnostic(&error)
+                {
+                    report.push(diagnostic);
+                }
+            }
+            Err(error) => {
+                let diagnostic = syntax_error_diagnostic(&error)
+                    .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.13"));
+                report.push(diagnostic);
+            }
+        }
+    }
+}
+
+/// `OBU_FILM_GRAIN` syntax: full `film_grain_obu()` / `film_grain_model()` parse and
+/// payload-tail conformance (AV2 § 5.14 / § 5.18.10.2). The cross-OBU § 6.13 update-
+/// flags / chroma-idc / duplicate-slot checks are stateful and handled in
+/// [`crate::context`].
+struct FilmGrainSyntax;
+
+impl Check for FilmGrainSyntax {
+    fn id(&self) -> &'static str {
+        // Registry identifier; emitted diagnostics use their own rule ids.
+        "film-grain/syntax"
+    }
+
+    fn spec_section(&self) -> Option<&'static str> {
+        Some("5.14")
+    }
+
+    fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.header.obu_type != ObuType::FilmGrain {
+            return;
+        }
+
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        match parse_film_grain(
+            &mut reader,
+            obu.header.temporal_layer_id,
+            obu.header.embedded_layer_id,
+        ) {
+            Ok(_) => {
+                // AV2 § 5.2.1: OBU_FILM_GRAIN is not extensible, so the remaining
+                // payload bits must form valid trailing_bits().
+                if let Err(error) = finish_obu_payload(&mut reader, obu.payload, false)
+                    && let Some(diagnostic) = syntax_error_diagnostic(&error)
+                {
+                    report.push(diagnostic);
+                }
+            }
+            Err(error) => {
+                let diagnostic = syntax_error_diagnostic(&error)
+                    .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.14"));
                 report.push(diagnostic);
             }
         }
