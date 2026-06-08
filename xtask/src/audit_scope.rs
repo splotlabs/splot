@@ -546,7 +546,13 @@ fn force_wide_review_reason(path: &str) -> Option<String> {
         _ if path.starts_with(".codex/skills/splot-") => Some("audit-skill".to_owned()),
         _ if path.starts_with(".claude/skills/splot-") => Some("audit-skill".to_owned()),
         _ if path.starts_with(".github/skills/splot-") => Some("audit-skill".to_owned()),
-        _ if path.starts_with("xtask/src/audit_scope.rs") => Some("audit-scope-tooling".to_owned()),
+        _ if matches!(
+            path,
+            "xtask/src/audit_scope.rs" | "xtask/src/git_util.rs" | "xtask/src/main.rs"
+        ) =>
+        {
+            Some("audit-scope-tooling".to_owned())
+        }
         _ if path.starts_with("docs/spec/av2/") && path.ends_with("/CHECKSUMS") => {
             Some("spec-mirror-integrity".to_owned())
         }
@@ -712,6 +718,7 @@ fn path_is_under_module_dir(path: &str, module: &str) -> bool {
 
 fn feature_ids_in_text(text: &str, known_ids: &BTreeSet<String>) -> BTreeSet<String> {
     text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '.'))
+        .map(|token| token.trim_matches('.'))
         .filter(|token| known_ids.contains(*token))
         .map(str::to_owned)
         .collect()
@@ -2360,6 +2367,8 @@ edition = "2024"
             (".claude/skills/splot-doc-audit/SKILL.md", "audit-skill"),
             (".github/skills/splot-doc-audit/SKILL.md", "audit-skill"),
             ("xtask/src/audit_scope.rs", "audit-scope-tooling"),
+            ("xtask/src/git_util.rs", "audit-scope-tooling"),
+            ("xtask/src/main.rs", "audit-scope-tooling"),
             ("docs/spec/av2/1.0.0/CHECKSUMS", "spec-mirror-integrity"),
             (
                 "docs/spec/av2/1.0.0/provenance.toml",
@@ -2416,6 +2425,9 @@ module = "xtask/src/audit_scope.rs"
         assert!(ids.contains("AV2-5.2.2-OBU-HEADER"));
         let text_ids = feature_ids_in_text("covered by XTASK-AUDIT-SCOPE", &index.known_ids);
         assert!(text_ids.contains("XTASK-AUDIT-SCOPE"));
+        let sentence_ids =
+            feature_ids_in_text("covered by AV2-5.2.2-OBU-HEADER.", &index.known_ids);
+        assert!(sentence_ids.contains("AV2-5.2.2-OBU-HEADER"));
         Ok(())
     }
 
