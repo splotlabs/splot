@@ -31,6 +31,10 @@ target
 *.swp
 *~
 
+# Python bytecode cache (spec-mirror regeneration scripts)
+__pycache__/
+*.pyc
+
 # OS noise
 .DS_Store
 Thumbs.db
