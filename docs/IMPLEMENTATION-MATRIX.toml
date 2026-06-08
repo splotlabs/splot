@@ -14,7 +14,7 @@
 # Do NOT use percentages.
 
 matrix_version = 1
-last_reviewed = "2026-06-07"
+last_reviewed = "2026-06-08"
 
 # ---------------------------------------------------------------------------
 # Normative AV2 bitstream syntax and semantics
@@ -4013,6 +4013,42 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "XTASK-AUDIT-SCOPE"
+name = "Changed-file AV2 audit scope"
+category = "automation"
+kind = "automation"
+spec_sections = []
+sources = []
+crate = "xtask"
+module = "xtask/src/audit_scope.rs"
+openspec_change = "add-splot-audit-protocols"
+tracking_issue = ""
+owner = "automation"
+risk = "medium"
+notes = "Computes deterministic changed-file scope for the heavy AV2 conformance audit. Supports diff mode, scheduled ledger mode, force-wide review triggers, dynamic workspace-member discovery, and deterministic ledger output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["xtask/src/audit_scope.rs::tests"]
+commands = [
+    "cargo xtask audit-scope --format json",
+    "cargo test -p xtask audit_scope",
+]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "DOC-FEATURE-TRACKING"
 name = "Feature tracking documentation"
 category = "docs"
@@ -4092,6 +4128,39 @@ tracking_issue = ""
 owner = "docs"
 risk = "low"
 notes = "Documents the rav1e/SVT-AV1 inspiration-only policy, third-party notices, required encoder research gate, and reviewer/agent workflow wiring."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "not-applicable"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "DOC-AUDIT-PROTOCOLS"
+name = "Agent audit protocol skills"
+category = "docs"
+kind = "docs"
+spec_sections = []
+sources = []
+crate = "docs"
+module = ".codex/skills/splot-av2-conformance-audit/SKILL.md"
+openspec_change = "add-splot-audit-protocols"
+tracking_issue = ""
+owner = "docs"
+risk = "medium"
+notes = "Defines repo-local documentation and heavy AV2 conformance audit skills for Codex and Claude Code. The heavy protocol uses deterministic audit-scope output first, supports multi-reviewer lanes when authorized, and covers future codec-facing workspace members."
 
 [feature.status]
 mapped = "done"

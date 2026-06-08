@@ -156,6 +156,23 @@ tests (parsers never panic) → `inspect` snapshots → conformance vectors → 
 differential testing. See [docs/TESTING.md](./docs/TESTING.md). Add positive,
 negative, and EOF cases for every parser change.
 
+## 8a. Audit protocols
+
+Use repo-local audit skills instead of expanding this file with full audit
+procedures:
+
+- Documentation/guidance audits: `.codex/skills/splot-doc-audit/SKILL.md` or
+  `.claude/skills/splot-doc-audit/SKILL.md` (`DOC-AUDIT-PROTOCOLS`).
+- Heavy AV2 conformance audits: `.codex/skills/splot-av2-conformance-audit/SKILL.md`
+  or `.claude/skills/splot-av2-conformance-audit/SKILL.md` (`XTASK-AUDIT-SCOPE`,
+  `DOC-AUDIT-PROTOCOLS`).
+
+Heavy audits must start from `cargo xtask audit-scope --format json` so changed
+files, force-wide triggers, future workspace members, and audit ledger state are
+selected deterministically. Do not rely on `.agents/skills/` as the only project
+skill location; mirror or generate into the agent-specific project skill paths
+above.
+
 ## Feature tracking
 
 Every non-trivial change must use a stable Feature ID.

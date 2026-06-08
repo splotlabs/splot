@@ -12,8 +12,10 @@ use std::process::{Command, Stdio};
 use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 
+mod audit_scope;
 mod feature_status;
 
+use audit_scope::{AuditScopeFormat, AuditScopeOptions};
 use feature_status::{CoverageFormat, StatusFormat};
 use sha2::{Digest, Sha256};
 
@@ -109,6 +111,27 @@ enum Task {
     },
     /// Run the networked cargo-deny advisory check (requires `cargo-deny`).
     Audit,
+    /// Compute changed-file scope for the heavy AV2 conformance audit.
+    AuditScope {
+        /// Git base revision for PR/diff mode.
+        #[arg(long)]
+        base: Option<String>,
+        /// Audit ledger path for scheduled mode.
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+        /// Write the computed ledger update.
+        #[arg(long)]
+        write_ledger: bool,
+        /// Select every in-scope file.
+        #[arg(long)]
+        all: bool,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = AuditScopeFormat::Json)]
+        format: AuditScopeFormat,
+        /// Outcome recorded when writing the generated ledger.
+        #[arg(long, default_value = "success")]
+        outcome: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -147,6 +170,24 @@ fn main() -> Result<()> {
         Task::Coverage => run_coverage(),
         Task::Fuzz { time } => run_fuzz(time),
         Task::Audit => run_audit(),
+        Task::AuditScope {
+            base,
+            ledger,
+            write_ledger,
+            all,
+            format,
+            outcome,
+        } => audit_scope::run_audit_scope(
+            &workspace_root()?,
+            AuditScopeOptions {
+                base,
+                ledger,
+                write_ledger,
+                all,
+                format,
+                outcome,
+            },
+        ),
     }
 }
 
