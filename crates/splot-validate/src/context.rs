@@ -2269,7 +2269,7 @@ fn frame_header_core_checks(
         if size.width > max_width || size.height > max_height {
             report.push(frame_header_error(
                 "frame-header/frame-size-exceeds-sequence-max",
-                "6.17.4",
+                "6.17.4.1",
                 obu,
                 format!(
                     "frame_header_info() derives FrameWidth={}, FrameHeight={}, which \

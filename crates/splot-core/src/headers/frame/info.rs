@@ -269,7 +269,6 @@ struct CoreSeqView {
     seq_force_screen_content_tools: u8,
     seq_force_integer_mv: u8,
     allow_frame_max_bvp_drl_bits: bool,
-    seq_max_bvp_drl_bits_minus_1: u32,
 }
 
 impl CoreSeqView {
@@ -292,7 +291,6 @@ impl CoreSeqView {
             seq_force_screen_content_tools: scc.seq_force_screen_content_tools,
             seq_force_integer_mv: scc.seq_force_integer_mv,
             allow_frame_max_bvp_drl_bits: inter.allow_frame_max_bvp_drl_bits,
-            seq_max_bvp_drl_bits_minus_1: inter.seq_max_bvp_drl_bits_minus_1,
         })
     }
 }
@@ -406,7 +404,7 @@ fn parse_core_body(
         core.frame_is_intra = Some(true);
         core.immediate_output_frame = Some(true);
         core.implicit_output_frame = Some(false);
-        return parse_intra_tail(reader, core, seq, true);
+        return parse_intra_tail(reader, core, seq, FrameType::Key, true);
     }
 
     // AV2 § 5.18.2: ShowExistingFrame = is_sef().
@@ -475,7 +473,7 @@ fn parse_core_body(
     };
     core.implicit_output_frame = Some(implicit_output_frame);
 
-    parse_intra_tail(reader, core, seq, false)
+    parse_intra_tail(reader, core, seq, frame_type, false)
 }
 
 /// Parses the show-existing-frame sub-path (AV2 § 5.18.2), stopping before
@@ -511,6 +509,7 @@ fn parse_intra_tail(
     reader: &mut BitReader<'_>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
+    frame_type: FrameType,
     single_picture: bool,
 ) -> Result<()> {
     // frame_size_override_flag: 0 for a single-picture key frame, else f(1) (a key
@@ -531,7 +530,7 @@ fn parse_intra_tail(
         reader,
         seq,
         core.obu_type,
-        core.frame_type,
+        frame_type,
     )?);
 
     // FrameIsIntra branch: frame_size(); screen_content_params(); intrabc_params().
@@ -558,7 +557,6 @@ fn parse_intra_tail(
         reader,
         true,
         seq.allow_frame_max_bvp_drl_bits,
-        seq.seq_max_bvp_drl_bits_minus_1,
     )?);
 
     // Not a TIP-as-output / bru-inactive / bridge frame -> disable_cdf_update f(1),
@@ -574,9 +572,9 @@ fn read_refresh_frame_flags(
     reader: &mut BitReader<'_>,
     seq: &CoreSeqView,
     obu_type: ObuType,
-    frame_type: Option<FrameType>,
+    frame_type: FrameType,
 ) -> Result<u32> {
-    if frame_type == Some(FrameType::Key) {
+    if frame_type == FrameType::Key {
         if obu_type == ObuType::ClosedLoopKey && seq.max_mlayer_id == 0 {
             Ok(all_frames_mask(seq.num_ref_frames))
         } else if seq.enable_short_refresh_frame_flags {
@@ -666,7 +664,6 @@ mod tests {
             seq_force_screen_content_tools: 0,
             seq_force_integer_mv: 0,
             allow_frame_max_bvp_drl_bits: false,
-            seq_max_bvp_drl_bits_minus_1: 0,
         }
     }
 

@@ -54,9 +54,8 @@ pub(crate) fn parse_screen_content_params(
 
 /// Parses `intrabc_params()` (AV2 v1.0.0 § 5.18.3.4) and returns `allow_intrabc`.
 ///
-/// `frame_is_intra` is `FrameIsIntra`; `allow_frame_max_bvp_drl_bits` and
-/// `seq_max_bvp_drl_bits_minus_1` come from the active sequence's
-/// `sequence_inter_config()` (§ 5.4.6).
+/// `frame_is_intra` is `FrameIsIntra`; `allow_frame_max_bvp_drl_bits` comes from the
+/// active sequence's `sequence_inter_config()` (§ 5.4.6).
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) or
@@ -66,7 +65,6 @@ pub(crate) fn parse_intrabc_params(
     reader: &mut BitReader<'_>,
     frame_is_intra: bool,
     allow_frame_max_bvp_drl_bits: bool,
-    seq_max_bvp_drl_bits_minus_1: u32,
 ) -> Result<bool> {
     // AV2 § 5.18.3.4.
     let allow_intrabc = reader.read_bit()? != 0;
@@ -83,14 +81,10 @@ pub(crate) fn parse_intrabc_params(
         if allow_frame_max_bvp_drl_bits {
             let change_bvp_drl = reader.read_bit()? != 0;
             if change_bvp_drl {
-                // max_bvp_drl_bits_minus_1 ns(2), then the +1 adjustment against the
-                // sequence default — read for alignment; the value is not surfaced.
-                let raw = reader.read_ns(2)?;
-                let _ = if raw >= seq_max_bvp_drl_bits_minus_1 {
-                    raw.saturating_add(1)
-                } else {
-                    raw
-                };
+                // max_bvp_drl_bits_minus_1 ns(2): read for alignment only; its value
+                // (and the +1 adjustment against the sequence default) gates DRL syntax
+                // this phase stops before, so it is not surfaced.
+                let _raw = reader.read_ns(2)?;
             }
         }
     }
@@ -179,7 +173,7 @@ mod tests {
         bits.bit(0); // allow_intrabc = 0
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let allow = parse_intrabc_params(&mut reader, true, false, 0).unwrap();
+        let allow = parse_intrabc_params(&mut reader, true, false).unwrap();
         assert!(!allow);
         assert_eq!(reader.consumed_bits(), 1);
     }
@@ -193,7 +187,7 @@ mod tests {
         bits.bit(0); // allow_local_intrabc
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let allow = parse_intrabc_params(&mut reader, true, false, 0).unwrap();
+        let allow = parse_intrabc_params(&mut reader, true, false).unwrap();
         assert!(allow);
         assert_eq!(reader.consumed_bits(), 3);
     }
@@ -209,7 +203,7 @@ mod tests {
         bits.bit(0); // ns(2): first bit 0 -> value 0 (w=2, m=4-2=2; v read as 1 bit = 0 < 2)
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let allow = parse_intrabc_params(&mut reader, true, true, 0).unwrap();
+        let allow = parse_intrabc_params(&mut reader, true, true).unwrap();
         assert!(allow);
         assert_eq!(reader.consumed_bits(), 4);
     }
@@ -219,7 +213,7 @@ mod tests {
         let data = [0u8; 0];
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         assert!(matches!(
-            parse_intrabc_params(&mut reader, true, false, 0),
+            parse_intrabc_params(&mut reader, true, false),
             Err(Error::UnexpectedEof { .. })
         ));
     }
