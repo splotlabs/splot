@@ -45,6 +45,20 @@ cargo test --workspace --all-targets --locked
 cargo test --doc --workspace --locked
 ```
 
+## Git hooks (optional)
+
+[lefthook](https://github.com/evilmartians/lefthook) is configured in
+`lefthook.yml` to run fast checks locally. It is an external binary with no cargo
+footprint. One-time setup:
+
+```bash
+brew install lefthook   # or see the lefthook README for other installers
+lefthook install
+```
+
+`pre-commit` runs `cargo fmt --all -- --check` and `typos`; `commit-msg` validates
+the Conventional Commits subject; `pre-push` runs the full `cargo xtask ci` gate.
+
 ## Commit messages
 
 Every commit subject and pull request title must use Conventional Commits:
