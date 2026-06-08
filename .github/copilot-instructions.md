@@ -20,6 +20,10 @@ The canonical guide is [AGENTS.md](../AGENTS.md). Read it. The most critical rul
   canonical status) for non-trivial work. Do not create TODOs without
   `TODO(spec: FEATURE-ID)`. Do not mark implementation stages as done unless proof
   is recorded. See [../docs/FEATURE-TRACKING.md](../docs/FEATURE-TRACKING.md).
+- **Audit protocols:** documentation audits use `DOC-AUDIT-PROTOCOLS`; heavy AV2
+  conformance audits start with `cargo xtask audit-scope --format json`
+  (`XTASK-AUDIT-SCOPE`) so current and future workspace members are selected
+  deterministically. See [../AGENTS.md](../AGENTS.md).
 - **Commit messages:** every commit subject and pull request title must use
   Conventional Commits; CI enforces this with `cargo xtask check-conventional-title`
   and `cargo xtask check-conventional-commits`.

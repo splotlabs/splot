@@ -1,72 +1,4 @@
-# process Specification
-
-## Purpose
-
-Repository process guardrails for source provenance, review hygiene, and CI-enforced
-contribution requirements.
-
-Tracked by Feature IDs: `DOC-ENCODER-REFERENCE-GATE`,
-`XTASK-CONVENTIONAL-COMMITS`, `DOC-AUDIT-PROTOCOLS`,
-`XTASK-AUDIT-SCOPE`.
-
-## Requirements
-### Requirement: encoder reference gate
-
-The repository SHALL require contributors to consult the reference notes before
-encoder work uses rav1e, SVT-AV1, or another AV1 implementation as research input,
-and to confirm the change does not copy AV1 syntax, constants, tables, comments,
-prose, or decoder-visible semantics into `splot`. Tracked by
-`DOC-ENCODER-REFERENCE-GATE`.
-
-#### Scenario: encoder change uses an AV1 implementation as research input
-
-- **WHEN** a contributor opens an encoder-facing change informed by rav1e, SVT-AV1,
-  or another AV1 implementation
-- **THEN** the PR explains the source as research context only and records any
-  decoder-visible AV2 mapping work separately
-
-### Requirement: conventional PR titles and commit subjects
-
-Repository pull request titles and commit subjects SHALL use Conventional Commits
-text with the format `<type>[optional scope][!]: <description>`, enforced by
-`cargo xtask check-conventional-title`, `cargo xtask check-conventional-commits`,
-and CI. Tracked by `XTASK-CONVENTIONAL-COMMITS`.
-
-#### Scenario: non-conventional pull request title
-
-- **WHEN** a pull request title does not match the documented Conventional Commits
-  format
-- **THEN** the CI title check fails with the offending title and the allowed type
-  list
-
-#### Scenario: non-conventional commit subject
-
-- **WHEN** a pull request or push contains a commit subject that does not match the
-  documented Conventional Commits format
-- **THEN** the CI commit-message check fails with the offending commit subject and
-  the allowed type list
-
-### Requirement: AV2 spec grounding via the committed mirror
-
-Development that asserts AV2 syntax, constants, tables, or semantics SHALL ground
-those claims in the committed AV2 specification mirror under `docs/spec/av2/<version>/`,
-treating it as the canonical offline source of truth alongside the upstream AOM
-PDF/HTML. Contributors and agents SHALL NOT invent spec behavior; where a detail
-is intentionally unmodeled, the existing `TODO(spec: <FEATURE-ID>)` convention
-applies. Tracked by `DOC-AV2-SPEC-MIRROR`.
-
-#### Scenario: a change cites AV2 behavior
-
-- **WHEN** a code comment, diagnostic, or document states an AV2 syntax element,
-  constant, table, or semantic rule
-- **THEN** it is traceable to a `§` section resolvable in the committed mirror
-  (via `index.md`), not to memory or an uncited external source
-
-#### Scenario: spec text is needed offline
-
-- **WHEN** an agent or reviewer needs the exact normative wording of an AV2
-  section while working in the repository
-- **THEN** the text is available from the committed mirror without network access
+## ADDED Requirements
 
 ### Requirement: documentation audit protocol
 
@@ -74,7 +6,7 @@ The repository SHALL provide a documentation audit protocol that checks
 project-authored agent guidance and documentation for stale claims, broken paths,
 duplicated rules, contradictions, size drift, and misplaced guidance. The protocol
 SHALL treat the AV2 specification mirror as read-only third-party material and
-SHALL NOT edit production Rust code. Tracked by `DOC-AUDIT-PROTOCOLS`.
+SHALL NOT edit production Rust code.
 
 #### Scenario: scheduled documentation audit finds stale guidance
 
@@ -96,8 +28,8 @@ recognized by the supported agent surfaces used by the repository. Claude Code
 project skills SHALL live under `.claude/skills/`, Codex project skills SHALL live
 under `.codex/skills/`, and any GitHub-hosted skill or prompt mirror SHALL live
 under the existing `.github/skills/` or `.github/prompts/` assistant-integration
-paths. The repository SHALL NOT rely on `.agents/skills/` as the only project
-skill location. Tracked by `DOC-AUDIT-PROTOCOLS`.
+paths. The repository SHALL NOT rely on `.agents/skills/` as the only project skill
+location.
 
 #### Scenario: Claude Code needs the documentation audit
 
@@ -121,7 +53,7 @@ separate audit findings from implementation fixes and SHALL require human review
 for ambiguous AV2 spec interpretation. The protocol SHALL cover current and future
 codec-facing areas, including parser, validator, encoder, decoder, writer,
 inspector, conformance, fuzzing, and automation work as those areas are added to
-the workspace. Tracked by `DOC-AUDIT-PROTOCOLS`.
+the workspace.
 
 #### Scenario: changed parser file is selected for audit
 
@@ -158,8 +90,7 @@ files and impacted Feature IDs for the heavy AV2 conformance audit. The tooling
 SHALL support both PR/diff-based operation and scheduled default-branch operation
 using a persisted content-hash ledger. The tooling SHALL discover workspace
 members and in-scope repository paths dynamically rather than hardcoding only the
-crates and docs present when the tool was first written. Tracked by
-`XTASK-AUDIT-SCOPE`.
+crates and docs present when the tool was first written.
 
 #### Scenario: unchanged file is skipped by scheduled audit
 
@@ -194,8 +125,7 @@ crates and docs present when the tool was first written. Tracked by
 The repository SHALL persist AV2 conformance audit state as reviewable generated
 metadata containing at least the audit protocol version, audited commit, tracked
 file paths, content hashes, impacted Feature IDs when known, and outcome. Audit
-state updates SHALL be deterministic and SHALL NOT be hand-edited. Tracked by
-`XTASK-AUDIT-SCOPE`.
+state updates SHALL be deterministic and SHALL NOT be hand-edited.
 
 #### Scenario: audit state is regenerated
 

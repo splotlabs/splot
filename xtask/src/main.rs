@@ -12,10 +12,13 @@ use std::process::{Command, Stdio};
 use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 
+mod audit_scope;
 mod feature_status;
+mod git_util;
 
+use audit_scope::{AuditScopeFormat, AuditScopeOptions};
 use feature_status::{CoverageFormat, StatusFormat};
-use sha2::{Digest, Sha256};
+use git_util::{run_git, sha256_hex};
 
 /// SPDX identifier line every tracked `.rs` file must begin with.
 const SPDX_LINE: &str = "// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0";
@@ -109,6 +112,27 @@ enum Task {
     },
     /// Run the networked cargo-deny advisory check (requires `cargo-deny`).
     Audit,
+    /// Compute changed-file scope for the heavy AV2 conformance audit.
+    AuditScope {
+        /// Git base revision for PR/diff mode.
+        #[arg(long)]
+        base: Option<String>,
+        /// Audit ledger path for scheduled mode.
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+        /// Write the computed ledger update.
+        #[arg(long)]
+        write_ledger: bool,
+        /// Select every in-scope file.
+        #[arg(long)]
+        all: bool,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = AuditScopeFormat::Json)]
+        format: AuditScopeFormat,
+        /// Outcome recorded when writing the generated ledger.
+        #[arg(long, default_value = "success")]
+        outcome: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -147,6 +171,24 @@ fn main() -> Result<()> {
         Task::Coverage => run_coverage(),
         Task::Fuzz { time } => run_fuzz(time),
         Task::Audit => run_audit(),
+        Task::AuditScope {
+            base,
+            ledger,
+            write_ledger,
+            all,
+            format,
+            outcome,
+        } => audit_scope::run_audit_scope(
+            &workspace_root()?,
+            AuditScopeOptions {
+                base,
+                ledger,
+                write_ledger,
+                all,
+                format,
+                outcome,
+            },
+        ),
     }
 }
 
@@ -419,25 +461,6 @@ fn git_commit_subjects(root: &Path, rev_range: Option<&str>) -> Result<Vec<Commi
     parse_commit_subjects(&output)
 }
 
-fn run_git(root: &Path, args: &[&str]) -> Result<String> {
-    let display = format!("git -C {} {}", root.display(), args.join(" "));
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to spawn `{display}`"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "`{display}` failed with {}; stderr:\n{}",
-            output.status,
-            stderr.trim_end()
-        );
-    }
-    String::from_utf8(output.stdout).with_context(|| format!("`{display}` emitted non-UTF-8"))
-}
-
 fn parse_commit_subjects(output: &str) -> Result<Vec<CommitSubject>> {
     let mut commits = Vec::new();
     for line in output.lines().filter(|line| !line.is_empty()) {
@@ -560,15 +583,6 @@ fn has_spdx_header(path: &Path) -> Result<bool> {
     let copyright = lines.next().map(str::trim_end);
     Ok(identifier == Some(SPDX_LINE)
         && copyright.is_some_and(|line| line.starts_with(SPDX_COPYRIGHT_PREFIX)))
-}
-
-/// Lowercase hex SHA-256 of `bytes` (via the `sha2` crate), as used in the
-/// spec-mirror `CHECKSUMS` manifest.
-fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }
 
 /// Verifies every committed AV2 spec mirror is byte-for-byte consistent with its
@@ -936,6 +950,18 @@ mod tests {
     fn conventional_title_check_reuses_subject_rules() {
         assert!(check_conventional_title("ci: enforce conventional commits").is_ok());
         assert!(check_conventional_title("Enforce Conventional Commits in CI").is_err());
+    }
+
+    #[test]
+    fn git_commit_subjects_rejects_option_like_revision_range() -> Result<()> {
+        let Err(err) = git_commit_subjects(Path::new("."), Some("--format=%s")) else {
+            bail!("option-like revision range should be rejected before git runs");
+        };
+        assert!(
+            err.to_string()
+                .contains("revision range must not start with `-`")
+        );
+        Ok(())
     }
 
     #[test]
