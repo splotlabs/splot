@@ -161,6 +161,11 @@ fn build_report(root: &Path, options: &AuditScopeOptions) -> Result<AuditScopeRe
     } else {
         None
     };
+    let base_workspace_members = if let Some(base) = &options.base {
+        load_workspace_members_at_revision(root, base)?
+    } else {
+        Vec::new()
+    };
     let existing_ledger = if options.base.is_none() && !options.all {
         read_ledger(root, &ledger_path)?
     } else {
@@ -184,12 +189,27 @@ fn build_report(root: &Path, options: &AuditScopeOptions) -> Result<AuditScopeRe
         options.all,
         !force_wide_review_triggers.is_empty(),
     );
+    if changed_paths.is_none()
+        && !options.all
+        && let Some(ledger) = existing_ledger.as_ref()
+    {
+        append_deleted_ledger_candidates(
+            &mut candidates,
+            ledger,
+            &in_scope,
+            &workspace_members,
+            &feature_index,
+            !force_wide_review_triggers.is_empty(),
+        );
+    }
     if let Some(changed_paths) = changed_paths.as_ref() {
+        let deleted_workspace_members =
+            combined_workspace_members(&workspace_members, &base_workspace_members);
         append_deleted_diff_candidates(
             &mut candidates,
             changed_paths,
             &in_scope,
-            &workspace_members,
+            &deleted_workspace_members,
             &feature_index,
             !force_wide_review_triggers.is_empty(),
         );
@@ -364,21 +384,69 @@ fn append_deleted_diff_candidates(
         let Some(scope_kind) = scope_kind(path, workspace_members) else {
             continue;
         };
-        let mut reasons = BTreeSet::from(["deleted-in-diff".to_owned()]);
-        if force_wide_review {
-            reasons.insert("wide-review-triggered".to_owned());
-        }
-        candidates.push(AuditCandidate {
-            path: path.clone(),
-            sha256: DELETED_FILE_SHA256.to_owned(),
-            scope_kind: scope_kind.clone(),
-            reasons: reasons.into_iter().collect(),
-            feature_ids: feature_ids_for_path(path, feature_index)
-                .into_iter()
-                .collect(),
-            reviewer_lanes: reviewer_lanes(path, &scope_kind).into_iter().collect(),
-        });
+        candidates.push(deleted_candidate(
+            path,
+            scope_kind,
+            BTreeSet::from(["deleted-in-diff".to_owned()]),
+            BTreeSet::new(),
+            feature_index,
+            force_wide_review,
+        ));
         candidate_paths.insert(path.clone());
+    }
+}
+
+fn append_deleted_ledger_candidates(
+    candidates: &mut Vec<AuditCandidate>,
+    ledger: &AuditLedger,
+    files: &[TrackedAuditFile],
+    workspace_members: &[WorkspaceMember],
+    feature_index: &FeatureIndex,
+    force_wide_review: bool,
+) {
+    let current_paths: BTreeSet<&str> = files.iter().map(|file| file.path.as_str()).collect();
+    let mut candidate_paths: BTreeSet<String> = candidates
+        .iter()
+        .map(|candidate| candidate.path.clone())
+        .collect();
+    for entry in &ledger.files {
+        if current_paths.contains(entry.path.as_str()) || candidate_paths.contains(&entry.path) {
+            continue;
+        }
+        let Some(scope_kind) = deleted_path_scope_kind(&entry.path, workspace_members) else {
+            continue;
+        };
+        candidates.push(deleted_candidate(
+            &entry.path,
+            scope_kind,
+            BTreeSet::from(["deleted-since-ledger".to_owned()]),
+            entry.feature_ids.iter().cloned().collect(),
+            feature_index,
+            force_wide_review,
+        ));
+        candidate_paths.insert(entry.path.clone());
+    }
+}
+
+fn deleted_candidate(
+    path: &str,
+    scope_kind: String,
+    mut reasons: BTreeSet<String>,
+    mut feature_ids: BTreeSet<String>,
+    feature_index: &FeatureIndex,
+    force_wide_review: bool,
+) -> AuditCandidate {
+    if force_wide_review {
+        reasons.insert("wide-review-triggered".to_owned());
+    }
+    feature_ids.extend(feature_ids_for_path(path, feature_index));
+    AuditCandidate {
+        path: path.to_owned(),
+        sha256: DELETED_FILE_SHA256.to_owned(),
+        scope_kind: scope_kind.clone(),
+        reasons: reasons.into_iter().collect(),
+        feature_ids: feature_ids.into_iter().collect(),
+        reviewer_lanes: reviewer_lanes(path, &scope_kind).into_iter().collect(),
     }
 }
 
@@ -532,6 +600,17 @@ fn scope_kind(path: &str, workspace_members: &[WorkspaceMember]) -> Option<Strin
     }
 }
 
+fn deleted_path_scope_kind(path: &str, workspace_members: &[WorkspaceMember]) -> Option<String> {
+    scope_kind(path, workspace_members).or_else(|| {
+        let mut segments = path.split('/');
+        if segments.next() == Some("crates") {
+            segments.next().map(|name| format!("workspace:{name}"))
+        } else {
+            None
+        }
+    })
+}
+
 fn reviewer_lanes(path: &str, scope_kind: &str) -> BTreeSet<String> {
     let mut lanes = BTreeSet::new();
     if scope_kind.starts_with("workspace:") {
@@ -656,6 +735,29 @@ fn load_workspace_members(root: &Path) -> Result<Vec<WorkspaceMember>> {
     workspace_members_from_manifest_text(root, &text)
 }
 
+fn load_workspace_members_at_revision(root: &Path, rev: &str) -> Result<Vec<WorkspaceMember>> {
+    validate_revision_argument(rev)?;
+    let spec = format!("{rev}:Cargo.toml");
+    let text = run_git(root, &["show", &spec])
+        .with_context(|| format!("failed to read workspace manifest at {rev}"))?;
+    workspace_members_from_manifest_text(root, &text)
+}
+
+fn combined_workspace_members(
+    current: &[WorkspaceMember],
+    previous: &[WorkspaceMember],
+) -> Vec<WorkspaceMember> {
+    let mut seen_paths = BTreeSet::new();
+    let mut out = Vec::new();
+    for member in current.iter().chain(previous.iter()) {
+        if seen_paths.insert(member.path.clone()) {
+            out.push(member.clone());
+        }
+    }
+    out.sort();
+    out
+}
+
 fn workspace_members_from_manifest_text(root: &Path, text: &str) -> Result<Vec<WorkspaceMember>> {
     let value: toml::Value = toml::from_str(text).context("failed to parse workspace manifest")?;
     let members = value
@@ -735,7 +837,7 @@ fn insert_workspace_member_path(
 }
 
 fn workspace_member_paths(root: &Path, pattern: &str) -> Result<Vec<String>> {
-    if !pattern.contains('*') {
+    if !contains_glob(pattern) {
         return Ok(vec![normalize_workspace_path(root, root, pattern)?]);
     }
 
@@ -766,7 +868,7 @@ fn workspace_exclude_patterns(
         let Some(pattern) = exclude.as_str() else {
             continue;
         };
-        if pattern.contains('*') {
+        if contains_glob(pattern) {
             out.push(normalize_workspace_pattern(pattern));
         } else {
             out.push(normalize_workspace_path(root, root, pattern)?);
@@ -890,7 +992,7 @@ fn expand_workspace_member_pattern(
         return Ok(());
     };
 
-    if segment.contains('*') {
+    if contains_glob(segment) {
         let dir = root.join(prefix);
         if !dir.is_dir() {
             return Ok(());
@@ -923,7 +1025,7 @@ fn expand_workspace_member_pattern(
 
 fn workspace_path_is_excluded(path: &str, exclude_patterns: &[String]) -> bool {
     exclude_patterns.iter().any(|pattern| {
-        if pattern.contains('*') {
+        if contains_glob(pattern) {
             matches_workspace_pattern(pattern, path)
         } else {
             path == pattern || path.starts_with(&format!("{pattern}/"))
@@ -941,33 +1043,43 @@ fn matches_workspace_pattern(pattern: &str, path: &str) -> bool {
             .all(|(pattern, path)| matches_glob_segment(pattern, path))
 }
 
+fn contains_glob(pattern: &str) -> bool {
+    pattern.contains('*') || pattern.contains('?')
+}
+
 fn matches_glob_segment(pattern: &str, candidate: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
+    let pattern = pattern.as_bytes();
+    let candidate = candidate.as_bytes();
+    let mut pattern_index = 0;
+    let mut candidate_index = 0;
+    let mut star_index = None;
+    let mut star_match_index = 0;
 
-    let anchored_start = !pattern.starts_with('*');
-    let anchored_end = !pattern.ends_with('*');
-    let parts: Vec<&str> = pattern.split('*').filter(|part| !part.is_empty()).collect();
-    if parts.is_empty() {
-        return true;
-    }
-
-    let mut cursor = candidate;
-    for (index, part) in parts.iter().enumerate() {
-        if index == 0 && anchored_start {
-            let Some(rest) = cursor.strip_prefix(part) else {
-                return false;
-            };
-            cursor = rest;
-        } else if let Some(position) = cursor.find(part) {
-            cursor = &cursor[position + part.len()..];
+    while candidate_index < candidate.len() {
+        if pattern_index < pattern.len()
+            && (pattern[pattern_index] == b'?'
+                || pattern[pattern_index] == candidate[candidate_index])
+        {
+            pattern_index += 1;
+            candidate_index += 1;
+        } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+            star_index = Some(pattern_index);
+            star_match_index = candidate_index;
+            pattern_index += 1;
+        } else if let Some(star) = star_index {
+            pattern_index = star + 1;
+            star_match_index += 1;
+            candidate_index = star_match_index;
         } else {
             return false;
         }
     }
 
-    !anchored_end || parts.last().is_some_and(|part| candidate.ends_with(part))
+    while pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+        pattern_index += 1;
+    }
+
+    pattern_index == pattern.len()
 }
 
 fn normalize_workspace_pattern(pattern: &str) -> String {
@@ -1047,9 +1159,7 @@ fn package_name_for_member(root: &Path, member: &str) -> Result<String> {
 }
 
 fn changed_paths_from_base(root: &Path, base: &str) -> Result<BTreeSet<String>> {
-    if base.trim().is_empty() || base.starts_with('-') {
-        bail!("audit-scope --base must not be empty or start with `-`");
-    }
+    validate_revision_argument(base)?;
     let mut args = vec![
         "diff",
         "--name-status",
@@ -1080,6 +1190,13 @@ fn changed_paths_from_base(root: &Path, base: &str) -> Result<BTreeSet<String>> 
         }
     }
     Ok(paths)
+}
+
+fn validate_revision_argument(rev: &str) -> Result<()> {
+    if rev.trim().is_empty() || rev.starts_with('-') {
+        bail!("audit-scope --base must not be empty or start with `-`");
+    }
+    Ok(())
 }
 
 fn git_lines(root: &Path, args: &[&str]) -> Result<Vec<String>> {
@@ -1173,6 +1290,45 @@ edition = "2024"
         assert_eq!(
             scope_kind("crates/splot-core/src/lib.rs", &members).as_deref(),
             Some("workspace:splot-core")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_member_question_mark_globs_expand_before_classification() -> Result<()> {
+        let root = temp_root("audit-scope-workspace-question-globs")?;
+        let crate_dir = root.join("crates/splot-decode");
+        std::fs::create_dir_all(crate_dir.join("src"))?;
+        std::fs::write(
+            root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["crates/splot-?ecode"]
+"#,
+        )?;
+        std::fs::write(
+            crate_dir.join("Cargo.toml"),
+            r#"
+[package]
+name = "splot-decode"
+version = "0.0.0"
+edition = "2024"
+"#,
+        )?;
+
+        let members = load_workspace_members(&root)?;
+        assert_eq!(
+            members,
+            vec![WorkspaceMember {
+                package: "splot-decode".to_owned(),
+                path: "crates/splot-decode".to_owned(),
+            }]
+        );
+        assert_eq!(
+            scope_kind("crates/splot-decode/src/lib.rs", &members).as_deref(),
+            Some("workspace:splot-decode")
         );
 
         let _ = std::fs::remove_dir_all(&root);
@@ -1401,6 +1557,88 @@ edition = "2024"
     }
 
     #[test]
+    fn build_report_includes_deleted_ledger_candidates() -> Result<()> {
+        let root = temp_git_repo("audit-scope-deleted-ledger-candidate")?;
+        std::fs::create_dir_all(root.join("crates/splot-core/src"))?;
+        std::fs::create_dir_all(root.join("docs/audits"))?;
+        std::fs::write(
+            root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["crates/splot-core"]
+"#,
+        )?;
+        std::fs::write(
+            root.join("crates/splot-core/Cargo.toml"),
+            r#"
+[package]
+name = "splot-core"
+version = "0.0.0"
+edition = "2024"
+"#,
+        )?;
+        std::fs::write(root.join("docs/IMPLEMENTATION-MATRIX.toml"), "")?;
+        git_commit_all(&root, "test: add current workspace")?;
+        let ledger = AuditLedger {
+            protocol_version: PROTOCOL_VERSION,
+            audited_commit: "old".to_owned(),
+            outcome: "success".to_owned(),
+            files: vec![
+                ledger_file(
+                    "Cargo.toml",
+                    &sha256_hex(&std::fs::read(root.join("Cargo.toml"))?),
+                ),
+                ledger_file(
+                    "docs/IMPLEMENTATION-MATRIX.toml",
+                    &sha256_hex(&std::fs::read(
+                        root.join("docs/IMPLEMENTATION-MATRIX.toml"),
+                    )?),
+                ),
+                AuditLedgerFile {
+                    path: "crates/splot-core/src/deleted.rs".to_owned(),
+                    sha256: "old".to_owned(),
+                    feature_ids: vec!["AV2-5.2.2-OBU-HEADER".to_owned()],
+                    outcome: "success".to_owned(),
+                },
+            ],
+        };
+        let mut ledger_json = serde_json::to_string_pretty(&ledger)?;
+        ledger_json.push('\n');
+        std::fs::write(
+            root.join("docs/audits/av2-conformance-ledger.json"),
+            ledger_json,
+        )?;
+
+        let report = build_report(
+            &root,
+            &AuditScopeOptions {
+                base: None,
+                ledger: None,
+                write_ledger: false,
+                all: false,
+                format: AuditScopeFormat::Json,
+                outcome: "success".to_owned(),
+            },
+        )?;
+        let deleted = report
+            .candidates
+            .iter()
+            .find(|candidate| candidate.path == "crates/splot-core/src/deleted.rs")
+            .ok_or_else(|| anyhow::anyhow!("deleted ledger candidate missing"))?;
+        assert_eq!(deleted.sha256, DELETED_FILE_SHA256);
+        assert_eq!(deleted.scope_kind, "workspace:splot-core");
+        assert_eq!(deleted.reasons, vec!["deleted-since-ledger"]);
+        assert!(
+            deleted
+                .feature_ids
+                .contains(&"AV2-5.2.2-OBU-HEADER".to_owned())
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
     fn changed_paths_from_base_includes_deleted_force_wide_paths() -> Result<()> {
         let root = temp_git_repo("audit-scope-deleted-force-wide")?;
         std::fs::write(root.join("AGENTS.md"), "rules\n")?;
@@ -1484,6 +1722,63 @@ edition = "2024"
         assert_eq!(deleted.sha256, DELETED_FILE_SHA256);
         assert_eq!(deleted.scope_kind, "workspace:splot-core");
         assert_eq!(deleted.reasons, vec!["deleted-in-diff"]);
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn build_report_classifies_deleted_candidates_from_base_workspace() -> Result<()> {
+        let root = temp_git_repo("audit-scope-deleted-base-workspace")?;
+        std::fs::create_dir_all(root.join("crates/splot-decode/src"))?;
+        std::fs::create_dir_all(root.join("docs"))?;
+        std::fs::write(
+            root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["crates/splot-decode"]
+"#,
+        )?;
+        std::fs::write(
+            root.join("crates/splot-decode/Cargo.toml"),
+            r#"
+[package]
+name = "splot-decode"
+version = "0.0.0"
+edition = "2024"
+"#,
+        )?;
+        std::fs::write(root.join("docs/IMPLEMENTATION-MATRIX.toml"), "")?;
+        std::fs::write(root.join("crates/splot-decode/src/lib.rs"), "decoder\n")?;
+        git_commit_all(&root, "test: add decode crate")?;
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = []\n")?;
+        std::fs::remove_dir_all(root.join("crates/splot-decode"))?;
+        git_commit_all(&root, "test: remove decode crate")?;
+
+        let report = build_report(
+            &root,
+            &AuditScopeOptions {
+                base: Some("HEAD~1".to_owned()),
+                ledger: None,
+                write_ledger: false,
+                all: false,
+                format: AuditScopeFormat::Json,
+                outcome: "success".to_owned(),
+            },
+        )?;
+        let deleted = report
+            .candidates
+            .iter()
+            .find(|candidate| candidate.path == "crates/splot-decode/src/lib.rs")
+            .ok_or_else(|| anyhow::anyhow!("deleted base workspace candidate missing"))?;
+        assert_eq!(deleted.sha256, DELETED_FILE_SHA256);
+        assert_eq!(deleted.scope_kind, "workspace:splot-decode");
+        assert!(
+            deleted
+                .reasons
+                .iter()
+                .any(|reason| reason == "deleted-in-diff")
+        );
 
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
