@@ -119,6 +119,8 @@ struct AuditLedger {
 struct AuditLedgerFile {
     path: String,
     sha256: String,
+    #[serde(default)]
+    scope_kind: String,
     feature_ids: Vec<String>,
     outcome: String,
 }
@@ -166,6 +168,13 @@ fn build_report(root: &Path, options: &AuditScopeOptions) -> Result<AuditScopeRe
     } else {
         Vec::new()
     };
+    let base_feature_ids_by_path = if let (Some(base), Some(changed_paths)) =
+        (options.base.as_ref(), changed_paths.as_ref())
+    {
+        feature_ids_in_base_files(root, base, changed_paths, &feature_index.known_ids)?
+    } else {
+        BTreeMap::new()
+    };
     let existing_ledger = if options.base.is_none() && !options.all {
         read_ledger(root, &ledger_path)?
     } else {
@@ -210,6 +219,7 @@ fn build_report(root: &Path, options: &AuditScopeOptions) -> Result<AuditScopeRe
             changed_paths,
             &in_scope,
             &deleted_workspace_members,
+            &base_feature_ids_by_path,
             &feature_index,
             !force_wide_review_triggers.is_empty(),
         );
@@ -290,6 +300,7 @@ fn build_ledger(audited_commit: &str, outcome: &str, files: &[TrackedAuditFile])
         .map(|file| AuditLedgerFile {
             path: file.path.clone(),
             sha256: file.sha256.clone(),
+            scope_kind: file.scope_kind.clone(),
             feature_ids: file.feature_ids.clone(),
             outcome: outcome.to_owned(),
         })
@@ -369,6 +380,7 @@ fn append_deleted_diff_candidates(
     changed_paths: &BTreeSet<String>,
     files: &[TrackedAuditFile],
     workspace_members: &[WorkspaceMember],
+    base_feature_ids_by_path: &BTreeMap<String, BTreeSet<String>>,
     feature_index: &FeatureIndex,
     force_wide_review: bool,
 ) {
@@ -388,7 +400,10 @@ fn append_deleted_diff_candidates(
             path,
             scope_kind,
             BTreeSet::from(["deleted-in-diff".to_owned()]),
-            BTreeSet::new(),
+            base_feature_ids_by_path
+                .get(path)
+                .cloned()
+                .unwrap_or_default(),
             feature_index,
             force_wide_review,
         ));
@@ -413,7 +428,7 @@ fn append_deleted_ledger_candidates(
         if current_paths.contains(entry.path.as_str()) || candidate_paths.contains(&entry.path) {
             continue;
         }
-        let Some(scope_kind) = deleted_path_scope_kind(&entry.path, workspace_members) else {
+        let Some(scope_kind) = deleted_ledger_scope_kind(entry, workspace_members) else {
             continue;
         };
         candidates.push(deleted_candidate(
@@ -458,6 +473,16 @@ fn ledger_files_by_path(ledger: Option<&AuditLedger>) -> Option<BTreeMap<String,
             .map(|file| (file.path.clone(), file.clone()))
             .collect()
     })
+}
+
+fn deleted_ledger_scope_kind(
+    entry: &AuditLedgerFile,
+    workspace_members: &[WorkspaceMember],
+) -> Option<String> {
+    if !entry.scope_kind.is_empty() {
+        return Some(entry.scope_kind.clone());
+    }
+    deleted_path_scope_kind(&entry.path, workspace_members)
 }
 
 fn force_wide_review_triggers(
@@ -737,10 +762,10 @@ fn load_workspace_members(root: &Path) -> Result<Vec<WorkspaceMember>> {
 
 fn load_workspace_members_at_revision(root: &Path, rev: &str) -> Result<Vec<WorkspaceMember>> {
     validate_revision_argument(rev)?;
-    let spec = format!("{rev}:Cargo.toml");
-    let text = run_git(root, &["show", &spec])
+    let text = git_file_at_revision(root, rev, "Cargo.toml")
         .with_context(|| format!("failed to read workspace manifest at {rev}"))?;
-    workspace_members_from_manifest_text(root, &text)
+    let tree_paths = git_lines(root, &["ls-tree", "-r", "--name-only", rev, "--"])?;
+    workspace_members_from_manifest_text_at_revision(root, rev, &text, &tree_paths)
 }
 
 fn combined_workspace_members(
@@ -815,6 +840,74 @@ fn workspace_members_from_manifest_text(root: &Path, text: &str) -> Result<Vec<W
     Ok(out)
 }
 
+fn workspace_members_from_manifest_text_at_revision(
+    root: &Path,
+    rev: &str,
+    text: &str,
+    tree_paths: &[String],
+) -> Result<Vec<WorkspaceMember>> {
+    let value: toml::Value = toml::from_str(text).context("failed to parse workspace manifest")?;
+    let members = value
+        .get("workspace")
+        .and_then(|workspace| workspace.get("members"))
+        .and_then(toml::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let exclude_patterns = workspace_exclude_patterns(root, &value)?;
+    let workspace_dependency_paths = workspace_dependency_paths(root, &value)?;
+    let mut out = Vec::new();
+    let mut seen_paths = BTreeSet::new();
+    for member in members {
+        let Some(path) = member.as_str() else {
+            continue;
+        };
+        for member_path in workspace_member_paths_at_revision(root, path, tree_paths)? {
+            insert_workspace_member_path_at_revision(
+                root,
+                rev,
+                &member_path,
+                &exclude_patterns,
+                &mut seen_paths,
+                &mut out,
+            )?;
+        }
+    }
+    let mut pending_paths: Vec<String> = seen_paths.iter().cloned().collect();
+    for dependency_path in workspace_dependency_paths.values() {
+        if insert_workspace_member_path_at_revision(
+            root,
+            rev,
+            dependency_path,
+            &exclude_patterns,
+            &mut seen_paths,
+            &mut out,
+        )? {
+            pending_paths.push(dependency_path.clone());
+        }
+    }
+    while let Some(member_path) = pending_paths.pop() {
+        for dependency_path in package_path_dependencies_at_revision(
+            root,
+            rev,
+            &member_path,
+            &workspace_dependency_paths,
+        )? {
+            if insert_workspace_member_path_at_revision(
+                root,
+                rev,
+                &dependency_path,
+                &exclude_patterns,
+                &mut seen_paths,
+                &mut out,
+            )? {
+                pending_paths.push(dependency_path);
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
 fn insert_workspace_member_path(
     root: &Path,
     member_path: &str,
@@ -836,6 +929,28 @@ fn insert_workspace_member_path(
     Ok(true)
 }
 
+fn insert_workspace_member_path_at_revision(
+    root: &Path,
+    rev: &str,
+    member_path: &str,
+    exclude_patterns: &[String],
+    seen_paths: &mut BTreeSet<String>,
+    members: &mut Vec<WorkspaceMember>,
+) -> Result<bool> {
+    if workspace_path_is_excluded(member_path, exclude_patterns) {
+        return Ok(false);
+    }
+    if !seen_paths.insert(member_path.to_owned()) {
+        return Ok(false);
+    }
+    let package = package_name_for_member_at_revision(root, rev, member_path)?;
+    members.push(WorkspaceMember {
+        package,
+        path: member_path.to_owned(),
+    });
+    Ok(true)
+}
+
 fn workspace_member_paths(root: &Path, pattern: &str) -> Result<Vec<String>> {
     if !contains_glob(pattern) {
         return Ok(vec![normalize_workspace_path(root, root, pattern)?]);
@@ -848,6 +963,30 @@ fn workspace_member_paths(root: &Path, pattern: &str) -> Result<Vec<String>> {
         .collect();
     let mut paths = Vec::new();
     expand_workspace_member_pattern(root, Path::new(""), &segments, &mut paths)?;
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn workspace_member_paths_at_revision(
+    root: &Path,
+    pattern: &str,
+    tree_paths: &[String],
+) -> Result<Vec<String>> {
+    if !contains_glob(pattern) {
+        return Ok(vec![normalize_workspace_path(root, root, pattern)?]);
+    }
+
+    let normalized_pattern = normalize_workspace_pattern(pattern);
+    let mut paths = Vec::new();
+    for tree_path in tree_paths {
+        let Some(member_path) = tree_path.strip_suffix("/Cargo.toml") else {
+            continue;
+        };
+        if matches_workspace_member_pattern(&normalized_pattern, member_path) {
+            paths.push(member_path.to_owned());
+        }
+    }
     paths.sort();
     paths.dedup();
     Ok(paths)
@@ -913,6 +1052,30 @@ fn package_path_dependencies(
         .with_context(|| format!("failed to read {}", manifest_path.display()))?;
     let value: toml::Value = toml::from_str(&text)
         .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+    let manifest_dir = root.join(member_path);
+    let mut out = BTreeSet::new();
+    collect_package_path_dependencies(
+        root,
+        &manifest_dir,
+        &value,
+        workspace_dependency_paths,
+        &mut out,
+    )?;
+    Ok(out.into_iter().collect())
+}
+
+fn package_path_dependencies_at_revision(
+    root: &Path,
+    rev: &str,
+    member_path: &str,
+    workspace_dependency_paths: &BTreeMap<String, String>,
+) -> Result<Vec<String>> {
+    let manifest_path = format!("{member_path}/Cargo.toml");
+    let Ok(text) = git_file_at_revision(root, rev, &manifest_path) else {
+        return Ok(Vec::new());
+    };
+    let value: toml::Value = toml::from_str(&text)
+        .with_context(|| format!("failed to parse {manifest_path} at {rev}"))?;
     let manifest_dir = root.join(member_path);
     let mut out = BTreeSet::new();
     collect_package_path_dependencies(
@@ -1043,6 +1206,16 @@ fn matches_workspace_pattern(pattern: &str, path: &str) -> bool {
             .all(|(pattern, path)| matches_glob_segment(pattern, path))
 }
 
+fn matches_workspace_member_pattern(pattern: &str, path: &str) -> bool {
+    let pattern_segments: Vec<&str> = pattern.split('/').collect();
+    let path_segments: Vec<&str> = path.split('/').collect();
+    pattern_segments.len() == path_segments.len()
+        && pattern_segments
+            .iter()
+            .zip(path_segments.iter())
+            .all(|(pattern, path)| matches_glob_segment(pattern, path))
+}
+
 fn contains_glob(pattern: &str) -> bool {
     pattern.contains('*') || pattern.contains('?')
 }
@@ -1156,6 +1329,51 @@ fn package_name_for_member(root: &Path, member: &str) -> Result<String> {
         .rsplit_once('/')
         .map_or(member, |(_, name)| name)
         .to_owned())
+}
+
+fn package_name_for_member_at_revision(root: &Path, rev: &str, member: &str) -> Result<String> {
+    let manifest_path = format!("{member}/Cargo.toml");
+    if let Ok(text) = git_file_at_revision(root, rev, &manifest_path) {
+        let value: toml::Value = toml::from_str(&text)
+            .with_context(|| format!("failed to parse {manifest_path} at {rev}"))?;
+        if let Some(name) = value
+            .get("package")
+            .and_then(|package| package.get("name"))
+            .and_then(toml::Value::as_str)
+        {
+            return Ok(name.to_owned());
+        }
+    }
+    Ok(member
+        .rsplit_once('/')
+        .map_or(member, |(_, name)| name)
+        .to_owned())
+}
+
+fn feature_ids_in_base_files(
+    root: &Path,
+    base: &str,
+    paths: &BTreeSet<String>,
+    known_ids: &BTreeSet<String>,
+) -> Result<BTreeMap<String, BTreeSet<String>>> {
+    validate_revision_argument(base)?;
+    let mut out = BTreeMap::new();
+    for path in paths {
+        let Ok(text) = git_file_at_revision(root, base, path) else {
+            continue;
+        };
+        let ids = feature_ids_in_text(&text, known_ids);
+        if !ids.is_empty() {
+            out.insert(path.clone(), ids);
+        }
+    }
+    Ok(out)
+}
+
+fn git_file_at_revision(root: &Path, rev: &str, path: &str) -> Result<String> {
+    validate_revision_argument(rev)?;
+    let spec = format!("{rev}:{path}");
+    run_git(root, &["show", &spec])
 }
 
 fn changed_paths_from_base(root: &Path, base: &str) -> Result<BTreeSet<String>> {
@@ -1454,6 +1672,7 @@ edition = "2024"
                 AuditLedgerFile {
                     path: "crates/splot-core/src/types.rs".to_owned(),
                     sha256: "bbb".to_owned(),
+                    scope_kind: "workspace:splot-core".to_owned(),
                     feature_ids: Vec::new(),
                     outcome: "failure".to_owned(),
                 },
@@ -1597,6 +1816,7 @@ edition = "2024"
                 AuditLedgerFile {
                     path: "crates/splot-core/src/deleted.rs".to_owned(),
                     sha256: "old".to_owned(),
+                    scope_kind: "workspace:splot-core".to_owned(),
                     feature_ids: vec!["AV2-5.2.2-OBU-HEADER".to_owned()],
                     outcome: "success".to_owned(),
                 },
@@ -1633,6 +1853,68 @@ edition = "2024"
                 .feature_ids
                 .contains(&"AV2-5.2.2-OBU-HEADER".to_owned())
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn build_report_preserves_deleted_ledger_scope_kind_outside_crates() -> Result<()> {
+        let root = temp_git_repo("audit-scope-deleted-ledger-outside-crates")?;
+        std::fs::create_dir_all(root.join("docs/audits"))?;
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = []\n")?;
+        std::fs::write(root.join("docs/IMPLEMENTATION-MATRIX.toml"), "")?;
+        git_commit_all(&root, "test: add current workspace")?;
+        let ledger = AuditLedger {
+            protocol_version: PROTOCOL_VERSION,
+            audited_commit: "old".to_owned(),
+            outcome: "success".to_owned(),
+            files: vec![
+                ledger_file(
+                    "Cargo.toml",
+                    &sha256_hex(&std::fs::read(root.join("Cargo.toml"))?),
+                ),
+                ledger_file(
+                    "docs/IMPLEMENTATION-MATRIX.toml",
+                    &sha256_hex(&std::fs::read(
+                        root.join("docs/IMPLEMENTATION-MATRIX.toml"),
+                    )?),
+                ),
+                AuditLedgerFile {
+                    path: "tools/splot-decode/src/lib.rs".to_owned(),
+                    sha256: "old".to_owned(),
+                    scope_kind: "workspace:splot-decode".to_owned(),
+                    feature_ids: Vec::new(),
+                    outcome: "success".to_owned(),
+                },
+            ],
+        };
+        let mut ledger_json = serde_json::to_string_pretty(&ledger)?;
+        ledger_json.push('\n');
+        std::fs::write(
+            root.join("docs/audits/av2-conformance-ledger.json"),
+            ledger_json,
+        )?;
+
+        let report = build_report(
+            &root,
+            &AuditScopeOptions {
+                base: None,
+                ledger: None,
+                write_ledger: false,
+                all: false,
+                format: AuditScopeFormat::Json,
+                outcome: "success".to_owned(),
+            },
+        )?;
+        let deleted = report
+            .candidates
+            .iter()
+            .find(|candidate| candidate.path == "tools/splot-decode/src/lib.rs")
+            .ok_or_else(|| anyhow::anyhow!("deleted outside-crates candidate missing"))?;
+        assert_eq!(deleted.sha256, DELETED_FILE_SHA256);
+        assert_eq!(deleted.scope_kind, "workspace:splot-decode");
+        assert_eq!(deleted.reasons, vec!["deleted-since-ledger"]);
 
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
@@ -1697,8 +1979,17 @@ version = "0.0.0"
 edition = "2024"
 "#,
         )?;
-        std::fs::write(root.join("docs/IMPLEMENTATION-MATRIX.toml"), "")?;
-        std::fs::write(root.join("crates/splot-core/src/deleted.rs"), "parser\n")?;
+        std::fs::write(
+            root.join("docs/IMPLEMENTATION-MATRIX.toml"),
+            r#"
+[[feature]]
+id = "AV2-5.2.2-OBU-HEADER"
+"#,
+        )?;
+        std::fs::write(
+            root.join("crates/splot-core/src/deleted.rs"),
+            "parser AV2-5.2.2-OBU-HEADER\n",
+        )?;
         git_commit_all(&root, "test: add workspace file")?;
         std::fs::remove_file(root.join("crates/splot-core/src/deleted.rs"))?;
         git_commit_all(&root, "test: delete workspace file")?;
@@ -1722,6 +2013,11 @@ edition = "2024"
         assert_eq!(deleted.sha256, DELETED_FILE_SHA256);
         assert_eq!(deleted.scope_kind, "workspace:splot-core");
         assert_eq!(deleted.reasons, vec!["deleted-in-diff"]);
+        assert!(
+            deleted
+                .feature_ids
+                .contains(&"AV2-5.2.2-OBU-HEADER".to_owned())
+        );
 
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
@@ -1736,7 +2032,7 @@ edition = "2024"
             root.join("Cargo.toml"),
             r#"
 [workspace]
-members = ["crates/splot-decode"]
+members = ["crates/*"]
 "#,
         )?;
         std::fs::write(
@@ -1942,6 +2238,7 @@ module = "xtask/src/audit_scope.rs"
         AuditLedgerFile {
             path: path.to_owned(),
             sha256: sha256.to_owned(),
+            scope_kind: "workspace:splot-core".to_owned(),
             feature_ids: Vec::new(),
             outcome: "success".to_owned(),
         }
