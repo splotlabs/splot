@@ -45,13 +45,19 @@ correct only for `metadata_is_suffix == 0`.
 
 ## Non-goals
 
+The § 6.16 metadata *semantic* validation below is out of scope here (stateful or
+decoder/frame-parsing-blocked) and is tracked by the `metadata-semantic-validation`
+change:
+
 - Metadata persistence / cancellation lifetime tracking across OBUs (§ 6.16.3).
 - Decoded-frame-hash verification against decoded pixels (§ 6.16.13) — no decoder.
 - Scan-type cross-check with content interpretation / CVS-wide `mps_pic_struct_type`
   consistency (§ 6.16.10).
 - Detailed prefix/suffix placement of metadata *inside* coded frame units
   (§ 7.3.3 / § 7.3.4) — needs frame/tile parsing.
-- Frame header, tile payload, encoder/writer, and AVM differential testing.
+
+Also out of scope: frame header, tile payload, encoder/writer, and AVM differential
+testing.
 
 ## Feature IDs
 

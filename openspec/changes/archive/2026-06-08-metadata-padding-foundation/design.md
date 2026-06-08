@@ -112,4 +112,5 @@ Parser coverage for padding and the metadata OBUs is complete, but metadata sema
 validation stays `partial`: persistence/cancellation lifetime tracking, decoded-frame-
 hash verification, scan-type CVS-wide consistency, and frame-unit suffix/prefix
 placement are not implemented, so the umbrella `AV2-5.17-METADATA` keeps
-`validate = "partial"`.
+`validate = "partial"`. Those deferred items are tracked by the
+`metadata-semantic-validation` change.

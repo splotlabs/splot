@@ -66,9 +66,13 @@
 - [x] `openspec validate metadata-padding-foundation --strict`
 - [x] Record exact command results in the PR notes.
 
-## 7. Deferred (tracked, not done)
+## 7. Deferred work split out
 
-- [ ] Metadata persistence / cancellation lifetime store (§ 6.16.3).
-- [ ] Decoded-frame-hash verification against decoded pixels (§ 6.16.13).
-- [ ] Scan-type cross-check with content interpretation / CVS-wide consistency (§ 6.16.10).
-- [ ] Full prefix/suffix placement of metadata inside coded frame units (§ 7.3.3 / § 7.3.4).
+The § 6.16 metadata *semantic* validation that is out of scope here (stateful or
+decoder/frame-parsing-blocked) is tracked by its own change so this one is complete:
+
+- [x] Moved to `openspec/changes/metadata-semantic-validation` — persistence/cancellation
+      lifetime (§ 6.16.3), scan-type CVS consistency (§ 6.16.10), decoded-frame-hash
+      verification (§ 6.16.13, blocked on a decoder), and frame-unit suffix/prefix
+      placement (§ 7.3.3 / § 7.3.4, blocked on frame/tile parsing). The
+      `AV2-5.17-METADATA` umbrella stays `validate = "partial"` until that change lands.
