@@ -133,6 +133,17 @@ mod tests {
             }
         }
 
+        /// Appends an `rg(n)` code for `value` (matching `BitReader::read_rg`).
+        fn rg(&mut self, value: u32, n: u32) {
+            let q = value >> n;
+            let remainder = value & ((1 << n) - 1);
+            for _ in 0..q {
+                self.bit(1);
+            }
+            self.bit(0);
+            self.f(remainder, n);
+        }
+
         fn align(&mut self) {
             while !self.bits.len().is_multiple_of(8) {
                 self.bit(0);
@@ -2887,6 +2898,490 @@ mod tests {
                 .errors()
                 .any(|d| d.rule_id == "atlas/duplicate-input-stream-id"),
             "report was: {report}"
+        );
+    }
+
+    // ----- Operating point set + buffer removal timing (ops-brt-hls-foundation) -----
+
+    /// Wraps OPS payload bits with the extensible OBU tail (`obu_extension_flag = 0`
+    /// then `trailing_bits`).
+    fn finish_extensible(mut bits: Bits) -> Vec<u8> {
+        bits.bit(0); // obu_extension_flag
+        bits.bit(1); // trailing_one_bit
+        bits.align();
+        bits.into_bytes()
+    }
+
+    /// Wraps non-extensible (BRT) payload bits with `trailing_bits` only.
+    fn finish_non_extensible(mut bits: Bits) -> Vec<u8> {
+        bits.bit(1); // trailing_one_bit
+        bits.align();
+        bits.into_bytes()
+    }
+
+    /// Appends one minimal global `operating_point_payload()`: a single included
+    /// extended layer (layer 0), no optional fields, `ops_mlayer_info_idc == 0` so no
+    /// PTL or mlayer info is coded. Writes a correct `ops_data_size`.
+    fn append_minimal_global_payload(bits: &mut Bits) {
+        let mut body = Bits::default();
+        body.bit(0); // ops_decoder_model_info_for_this_op_present_flag
+        body.bit(0); // ops_initial_display_delay_present_flag
+        body.f(0b1, 31); // ops_xlayer_map -> layer 0
+        body.align();
+        let body_bytes = (body.bits.len() / 8) as u32;
+        bits.f(body_bytes, 8); // ops_data_size (single-byte leb128)
+        bits.bits.extend_from_slice(&body.bits);
+    }
+
+    /// A global OPS OBU defining or resetting `ops_id` with `ops_cnt` minimal
+    /// operating points.
+    fn global_ops_obu(reset: bool, ops_id: u32, ops_cnt: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.bit(u8::from(reset)); // ops_reset_flag
+        bits.f(ops_id, 4); // ops_id
+        bits.f(ops_cnt, 3); // ops_cnt
+        if ops_cnt > 0 {
+            bits.f(0, 4); // ops_priority
+            bits.f(0, 7); // ops_intent
+            bits.bit(0); // ops_intent_present_flag
+            bits.bit(0); // ops_ptl_present_flag
+            bits.bit(0); // ops_color_info_present_flag
+            bits.f(0, 2); // ops_mlayer_info_idc = 0
+            for _ in 0..ops_cnt {
+                append_minimal_global_payload(&mut bits);
+            }
+        }
+        annex_b_obu_with_header(&layer_obu_header(18, 0, 0, 31), &finish_extensible(bits))
+    }
+
+    /// A global OPS OBU (`ops_cnt == 1`, one included layer) with the given
+    /// `ops_mlayer_info_idc`. Only used with idc values (0 or 3) that code no mlayer
+    /// info for the layer.
+    fn global_ops_idc_obu(idc: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.bit(0); // ops_reset_flag
+        bits.f(0, 4); // ops_id
+        bits.f(1, 3); // ops_cnt
+        bits.f(0, 4); // ops_priority
+        bits.f(0, 7); // ops_intent
+        bits.bit(0); // intent present
+        bits.bit(0); // ptl present
+        bits.bit(0); // color present
+        bits.f(idc, 2); // ops_mlayer_info_idc
+        append_minimal_global_payload(&mut bits);
+        annex_b_obu_with_header(&layer_obu_header(18, 0, 0, 31), &finish_extensible(bits))
+    }
+
+    /// A global OPS OBU (`ops_cnt 1`, `idc 2`) with two included layers, where layer 1
+    /// inherits its mlayer info from `(embedded_ops_id, embedded_op_index)`. With
+    /// `embedded_ops_id == ops_id` this is a same-OPS reference; otherwise it resolves
+    /// against another OPS in the active store.
+    fn global_ops_inherited_obu(
+        ops_id: u32,
+        embedded_ops_id: u32,
+        embedded_op_index: u32,
+    ) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.bit(0); // reset
+        bits.f(ops_id, 4); // ops_id
+        bits.f(1, 3); // ops_cnt = 1
+        bits.f(0, 4); // priority
+        bits.f(0, 7); // intent
+        bits.bit(0); // intent present
+        bits.bit(0); // ptl present
+        bits.bit(0); // color present
+        bits.f(2, 2); // ops_mlayer_info_idc = 2
+        let mut body = Bits::default();
+        body.bit(0); // decoder model present
+        body.bit(0); // initial display delay present
+        body.f(0b11, 31); // ops_xlayer_map -> layers 0 and 1
+        body.bit(1); // layer 0: ops_mlayer_explicit_info_flag = 1
+        body.f(0, 8); // layer 0: ops_mlayer_map = 0
+        body.bit(0); // layer 1: ops_mlayer_explicit_info_flag = 0 -> inherited
+        body.f(embedded_ops_id, 4); // layer 1: ops_embedded_ops_id
+        body.f(embedded_op_index, 3); // layer 1: ops_embedded_op_index
+        body.align();
+        let body_bytes = (body.bits.len() / 8) as u32;
+        bits.f(body_bytes, 8); // ops_data_size
+        bits.bits.extend_from_slice(&body.bits);
+        annex_b_obu_with_header(&layer_obu_header(18, 0, 0, 31), &finish_extensible(bits))
+    }
+
+    /// A local OPS OBU on `xlayer` with `ops_cnt` minimal payloads and the given
+    /// `ops_reserved_2bits`. When `size_delta != 0`, the first payload's
+    /// `ops_data_size` is offset by `size_delta` to force a size mismatch.
+    fn local_ops_obu(
+        xlayer: u8,
+        reset: bool,
+        ops_id: u32,
+        ops_cnt: u32,
+        reserved_2bits: u32,
+        ptl_present: bool,
+        size_delta: i32,
+    ) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.bit(u8::from(reset));
+        bits.f(ops_id, 4);
+        bits.f(ops_cnt, 3);
+        if ops_cnt > 0 {
+            bits.f(0, 4); // priority
+            bits.f(0, 7); // intent
+            bits.bit(0); // intent present
+            bits.bit(u8::from(ptl_present)); // ptl present
+            bits.bit(0); // color present
+            bits.f(reserved_2bits, 2); // ops_reserved_2bits
+            for index in 0..ops_cnt {
+                let mut body = Bits::default();
+                if ptl_present {
+                    // ops_seq_profile_tier_level_info() with nonzero reserved bits.
+                    body.f(0, 5); // seq_profile_idc
+                    body.f(0, 5); // level_idx
+                    body.bit(0); // tier_flag
+                    body.f(0, 3); // mlayer_count
+                    body.f(0b11, 2); // ops_ptl_reserved_2bits (nonzero)
+                }
+                body.bit(0); // decoder model present
+                body.bit(0); // initial display delay present
+                body.f(0, 8); // ops_mlayer_info(): ops_mlayer_map = 0
+                body.align();
+                let body_bytes = (body.bits.len() / 8) as i64;
+                let declared = if index == 0 {
+                    (body_bytes + i64::from(size_delta)).max(0) as u32
+                } else {
+                    body_bytes as u32
+                };
+                bits.f(declared, 8); // ops_data_size
+                bits.bits.extend_from_slice(&body.bits);
+            }
+        }
+        annex_b_obu_with_header(
+            &layer_obu_header(18, 0, 0, xlayer),
+            &finish_extensible(bits),
+        )
+    }
+
+    /// An OPS-dependent BRT OBU on `xlayer` referencing `br_ops_id` with `br_ops_cnt`
+    /// operating points (no per-op times).
+    fn brt_dependent_obu(xlayer: u8, br_ops_id: u32, br_ops_cnt: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.bit(1); // br_ops_dependent_flag
+        bits.f(br_ops_id, 4);
+        bits.f(br_ops_cnt, 3);
+        for _ in 0..br_ops_cnt {
+            bits.bit(0); // br_decoder_model_present_op_flag = 0
+        }
+        annex_b_obu_with_header(
+            &layer_obu_header(15, 0, 0, xlayer),
+            &finish_non_extensible(bits),
+        )
+    }
+
+    /// An extended-layer (non-OPS-dependent) BRT OBU on `xlayer`.
+    fn brt_extended_layer_obu(xlayer: u8) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.bit(0); // br_ops_dependent_flag = 0
+        bits.rg(0, 4); // br_time
+        annex_b_obu_with_header(
+            &layer_obu_header(15, 0, 0, xlayer),
+            &finish_non_extensible(bits),
+        )
+    }
+
+    fn ops_error_count(report: &ValidationReport, rule: &str) -> usize {
+        report.errors().filter(|d| d.rule_id == rule).count()
+    }
+
+    #[test]
+    fn ops_local_reserved_bits_nonzero_is_flagged() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_ops_obu(2, false, 0, 1, 0b10, false, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "ops/local-reserved-bits-nonzero"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ops_mlayer_info_idc_reserved_is_flagged() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_ops_idc_obu(3));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "ops/mlayer-info-idc-reserved"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ops_ptl_reserved_bits_nonzero_is_flagged() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_ops_obu(2, false, 0, 1, 0, true, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "ops/ptl-reserved-bits-nonzero"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ops_payload_size_mismatch_is_flagged() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_ops_obu(2, false, 0, 1, 0, false, 1));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "ops/payload-size-mismatch"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ops_inherited_op_index_out_of_range_is_flagged() {
+        // Same-OPS reference (embedded_ops_id == ops_id 0): op_index 5 >= ops_cnt 1
+        // and >= j (layer 1).
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_ops_inherited_obu(0, 0, 5));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "ops/inherited-op-index-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ops_cross_ops_inherited_op_index_out_of_range_is_flagged() {
+        // OPS 0 inherits from a different, already-defined OPS 1 (ops_cnt 1) at
+        // op_index 5, which is out of range — exercises the cross-OPS resolution
+        // against the prior active OPS state.
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_ops_obu(false, 1, 1)); // define OPS 1 (ops_cnt 1)
+        data.extend(global_ops_inherited_obu(0, 1, 5)); // OPS 0 inherits OPS 1 op 5
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "ops/inherited-op-index-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ops_cross_ops_inherited_op_index_in_range_is_not_flagged() {
+        // OPS 0 inherits from OPS 1 (ops_cnt 3) at op_index 2, which is in range, so
+        // the cross-OPS bound check must not flag it.
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_ops_obu(false, 1, 3)); // define OPS 1 (ops_cnt 3)
+        data.extend(global_ops_inherited_obu(0, 1, 2)); // OPS 0 inherits OPS 1 op 2
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "ops/inherited-op-index-out-of-range"),
+            0,
+            "an in-range cross-OPS inheritance must not be flagged: {report}"
+        );
+    }
+
+    #[test]
+    fn ops_reset_removes_active_ops() {
+        // Define OPS 0 (cnt 2), reference it (resolves), reset it, reference again.
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_ops_obu(false, 0, 2));
+        data.extend(brt_dependent_obu(31, 0, 2)); // matches active ops_cnt 2
+        data.extend(global_ops_obu(true, 0, 0)); // reset (cnt 0)
+        data.extend(brt_dependent_obu(31, 0, 2)); // now unavailable
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "brt/unavailable-operating-point-set"),
+            1,
+            "expected exactly the post-reset BRT to be unavailable: {report}"
+        );
+        assert_eq!(
+            ops_error_count(&report, "brt/ops-count-mismatch"),
+            0,
+            "the pre-reset BRT must resolve and match: {report}"
+        );
+    }
+
+    #[test]
+    fn ops_update_changes_active_ops_count() {
+        // Define OPS 0 (cnt 2), match a BRT, then update to cnt 3 and re-reference.
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_ops_obu(false, 0, 2));
+        data.extend(brt_dependent_obu(31, 0, 2)); // matches cnt 2
+        data.extend(global_ops_obu(false, 0, 3)); // update -> cnt 3
+        data.extend(brt_dependent_obu(31, 0, 2)); // now mismatches cnt 3
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "brt/ops-count-mismatch"),
+            1,
+            "only the post-update BRT should mismatch: {report}"
+        );
+        assert_eq!(
+            ops_error_count(&report, "brt/unavailable-operating-point-set"),
+            0,
+            "the OPS stays available across the update: {report}"
+        );
+    }
+
+    #[test]
+    fn brt_ops_count_mismatch_is_flagged() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_ops_obu(false, 0, 2));
+        data.extend(brt_dependent_obu(31, 0, 3)); // br_ops_cnt 3 != ops_cnt 2
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "brt/ops-count-mismatch"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn brt_missing_ops_is_flagged_when_external_hls_disabled() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(brt_dependent_obu(31, 5, 1)); // no OPS defined
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "brt/unavailable-operating-point-set"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn brt_missing_ops_is_not_hard_error_when_external_ops_declared() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        let mut data = temporal_delimiter_obu();
+        data.extend(brt_dependent_obu(31, 5, 1)); // no in-band OPS (31, 5)
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_operating_point_set(31, 5),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert_eq!(
+            ops_error_count(&report, "brt/unavailable-operating-point-set"),
+            0,
+            "a declared external OPS must suppress the hard missing-OPS error: {report}"
+        );
+    }
+
+    #[test]
+    fn brt_missing_ops_is_flagged_when_external_hls_lacks_the_ops() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        let mut data = temporal_delimiter_obu();
+        data.extend(brt_dependent_obu(31, 5, 1)); // references OPS (31, 5)
+        // External HLS is provided but only declares a sequence header and a
+        // different OPS, so OPS (31, 5) is still unavailable and must be flagged.
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new()
+                    .with_sequence_header_id(0)
+                    .with_operating_point_set(31, 4),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "brt/unavailable-operating-point-set"),
+            "an external HLS set that does not declare the referenced OPS must still flag it: \
+             {report}"
+        );
+    }
+
+    #[test]
+    fn ops_malformed_payload_is_flagged() {
+        // A global OPS header claims ops_cnt=1 but the payload ends immediately, so
+        // the header fields cannot be read. The OPS syntax check must report it.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(18, 0, 0, 31),
+            &[0x01],
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "bitstream/parse-error"),
+            "a malformed OPS payload must be reported: {report}"
+        );
+    }
+
+    #[test]
+    fn brt_malformed_payload_is_flagged() {
+        // br_ops_dependent_flag=1, br_ops_id=0, br_ops_cnt=1 fills the single payload
+        // byte, so the per-op flag read runs past the input. The BRT syntax check
+        // must report it.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(15, 0, 0, 31),
+            &[0x81],
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "bitstream/parse-error"),
+            "a malformed BRT payload must be reported: {report}"
+        );
+    }
+
+    #[test]
+    fn global_brt_before_coded_layers_is_accepted() {
+        // A global BRT before any coded extended layer unit raises no ordering error.
+        let mut data = temporal_delimiter_obu();
+        data.extend(brt_extended_layer_obu(31)); // global BRT, extended-layer form
+        data.extend(local_ops_obu(2, false, 0, 1, 0, false, 0)); // a coded-layer OBU
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "obu-order/global-hls-after-coded-layer"),
+            0,
+            "a global BRT before coded layers must be accepted: {report}"
+        );
+    }
+
+    #[test]
+    fn global_brt_after_coded_layer_is_not_flagged() {
+        // § 7.3.7 does not list BRT among global prefix OBUs and § 7.3.3/§ 7.3.4 place
+        // it in coded frame units, so a global BRT after a coded layer is left
+        // unclassified rather than flagged (sound-over-complete; see
+        // is_global_hls_prefix_obu).
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_ops_obu(2, false, 0, 1, 0, false, 0)); // coded-layer OBU
+        data.extend(brt_extended_layer_obu(31)); // global BRT after the coded layer
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "obu-order/global-hls-after-coded-layer"),
+            0,
+            "a global BRT after a coded layer is not flagged in this phase: {report}"
+        );
+    }
+
+    #[test]
+    fn local_brt_follows_coded_layer_classification() {
+        // A local BRT is a coded extended layer OBU (§ 7.3.3/§ 7.3.4): it starts the
+        // coded-layer phase, so a later global OPS prefix is flagged out of order.
+        let mut data = temporal_delimiter_obu();
+        data.extend(brt_extended_layer_obu(2)); // local BRT -> coded extended layer unit
+        data.extend(global_ops_obu(false, 0, 1)); // global OPS prefix after a coded layer
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "obu-order/global-hls-after-coded-layer"),
+            "a local BRT must start the coded-layer phase: {report}"
         );
     }
 }

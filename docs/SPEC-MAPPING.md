@@ -63,6 +63,8 @@ These documents are planning aids. The canonical status remains
 | `splot-core::segment`               | § 5.4.9 `seg_info(numSegments)`   | implemented |
 | `splot-core::tile`                  | § 5.18.7.3 `tile_params` helpers  | implemented (sequence call site; frame `tile_info` TODO) |
 | `splot-core::hls`                   | § 5.6 MSDO, § 5.7 multi-frame hdr | implemented (syntax incl. MFH `seg_info`) |
+| `splot-core::headers::operating_point_set` | § 5.10 / § 5.11 operating point set | implemented (full syntax; § 6.10 local validation + active-OPS state in `splot-validate`) |
+| `splot-core::headers::buffer_removal_timing` | § 5.12 buffer removal timing      | implemented (syntax; § 6.11 / § 7.3.8.5 OPS references in `splot-validate`) |
 | `splot-core::headers` (frame)       | § 5.18 frame header               | TODO |
 | `splot-core::tables`                | § 9 additional tables             | TODO / codegen (`cargo xtask gen-tables`) |
 

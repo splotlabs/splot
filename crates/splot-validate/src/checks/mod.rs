@@ -21,10 +21,12 @@ use splot_core::error::{
 use splot_core::headers::atlas_segment::{
     AtlasModeInfo, AtlasSegment, AtlasSegmentMode, parse_atlas_segment,
 };
+use splot_core::headers::buffer_removal_timing::parse_buffer_removal_timing;
 use splot_core::headers::content_interpretation::parse_content_interpretation;
 use splot_core::headers::layer_config_record::{
     LayerConfigurationRecord, parse_layer_config_record,
 };
+use splot_core::headers::operating_point_set::parse_operating_point_set;
 use splot_core::headers::sequence::parse_sequence_header;
 use splot_core::hls::{parse_msdo, parse_multi_frame_header};
 use splot_core::obu::{finish_obu_payload, parse_trailing_bits};
@@ -56,6 +58,8 @@ pub fn default_checks() -> Vec<Box<dyn Check>> {
         Box::new(MultiFrameHeaderSyntax),
         Box::new(LayerConfigRecordSyntax),
         Box::new(AtlasSegmentSyntax),
+        Box::new(OperatingPointSetSyntax),
+        Box::new(BufferRemovalTimingSyntax),
         Box::new(ContentInterpretationSyntax),
         Box::new(GlobalXLayerRequired),
         Box::new(GlobalXLayerRequiresBaseLayers),
@@ -735,6 +739,87 @@ fn check_atlas_segment_semantics(
             .with_spec_section("6.9.6")
             .with_byte_offset(obu.offset),
         );
+    }
+}
+
+/// `OBU_OPERATING_POINT_SET` syntax: full `operating_point_set_obu()` parse (including
+/// `operating_point_payload()` and its children) and payload-tail conformance
+/// (AV2 § 5.10 / § 5.11). The locally decidable § 6.10 semantics and cross-OBU OPS
+/// availability are stateful and handled in [`crate::context`].
+struct OperatingPointSetSyntax;
+
+impl Check for OperatingPointSetSyntax {
+    fn id(&self) -> &'static str {
+        // Registry identifier; emitted diagnostics use their own rule ids.
+        "ops/syntax"
+    }
+
+    fn spec_section(&self) -> Option<&'static str> {
+        Some("5.10")
+    }
+
+    fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.header.obu_type != ObuType::OperatingPointSet {
+            return;
+        }
+
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        match parse_operating_point_set(&mut reader, obu.header.extended_layer_id) {
+            Ok(_) => {
+                // AV2 § 5.2.1: the operating point set OBU is extensible, so its
+                // payload tail must be a valid obu_extension_flag / trailing_bits.
+                if let Err(error) = finish_obu_payload(&mut reader, obu.payload, true)
+                    && let Some(diagnostic) = syntax_error_diagnostic(&error)
+                {
+                    report.push(diagnostic);
+                }
+            }
+            Err(error) => {
+                let diagnostic = syntax_error_diagnostic(&error)
+                    .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.10"));
+                report.push(diagnostic);
+            }
+        }
+    }
+}
+
+/// `OBU_BUFFER_REMOVAL_TIMING` syntax: full `buffer_removal_timing_obu()` parse and
+/// payload-tail conformance (AV2 § 5.12). The cross-OBU OPS reference checks are
+/// stateful and handled in [`crate::context`].
+struct BufferRemovalTimingSyntax;
+
+impl Check for BufferRemovalTimingSyntax {
+    fn id(&self) -> &'static str {
+        // Registry identifier; emitted diagnostics use their own rule ids.
+        "brt/syntax"
+    }
+
+    fn spec_section(&self) -> Option<&'static str> {
+        Some("5.12")
+    }
+
+    fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.header.obu_type != ObuType::BufferRemovalTiming {
+            return;
+        }
+
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        match parse_buffer_removal_timing(&mut reader) {
+            Ok(_) => {
+                // AV2 § 5.2.1: OBU_BUFFER_REMOVAL_TIMING is not extensible, so the
+                // remaining payload bits must form valid trailing_bits().
+                if let Err(error) = finish_obu_payload(&mut reader, obu.payload, false)
+                    && let Some(diagnostic) = syntax_error_diagnostic(&error)
+                {
+                    report.push(diagnostic);
+                }
+            }
+            Err(error) => {
+                let diagnostic = syntax_error_diagnostic(&error)
+                    .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.12"));
+                report.push(diagnostic);
+            }
+        }
     }
 }
 

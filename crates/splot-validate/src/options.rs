@@ -22,6 +22,9 @@ use splot_core::headers::sequence::MAX_SEQ_NUM;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExternalHlsSet {
     sequence_header_ids: BTreeSet<u32>,
+    /// `(obu_xlayer_id, ops_id)` of operating point sets declared available externally
+    /// (AV2 § 7.3.8.5).
+    operating_point_sets: BTreeSet<(u8, u8)>,
 }
 
 impl ExternalHlsSet {
@@ -57,6 +60,26 @@ impl ExternalHlsSet {
     #[must_use]
     pub(crate) fn declares_any_sequence_header(&self) -> bool {
         !self.sequence_header_ids.is_empty()
+    }
+
+    /// Declares that an operating point set with `ops_id` for `obu_xlayer_id` is
+    /// available externally (AV2 § 7.3.8.5).
+    ///
+    /// An out-of-range key (`obu_xlayer_id > 31` or `ops_id > 15`) cannot identify a
+    /// valid OPS (`obu_xlayer_id` is `f(5)`, `ops_id` is `f(4)`), so it is ignored.
+    #[must_use]
+    pub fn with_operating_point_set(mut self, obu_xlayer_id: u8, ops_id: u8) -> Self {
+        if obu_xlayer_id <= 31 && ops_id <= 15 {
+            self.operating_point_sets.insert((obu_xlayer_id, ops_id));
+        }
+        self
+    }
+
+    /// Returns `true` if an operating point set with `ops_id` for `obu_xlayer_id` was
+    /// declared available externally (AV2 § 7.3.8.5).
+    #[must_use]
+    pub(crate) fn has_operating_point_set(&self, obu_xlayer_id: u8, ops_id: u8) -> bool {
+        self.operating_point_sets.contains(&(obu_xlayer_id, ops_id))
     }
 }
 
@@ -111,5 +134,19 @@ mod tests {
         let set = ExternalHlsSet::new().with_sequence_header_id(MAX_SEQ_NUM);
         assert!(!set.has_sequence_header(MAX_SEQ_NUM));
         assert!(!set.declares_any_sequence_header());
+    }
+
+    #[test]
+    fn external_hls_set_records_operating_point_sets() {
+        let set = ExternalHlsSet::new()
+            .with_operating_point_set(31, 5)
+            .with_operating_point_set(2, 0);
+        assert!(set.has_operating_point_set(31, 5));
+        assert!(set.has_operating_point_set(2, 0));
+        // A different xlayer or ops_id, and out-of-range keys, are not present.
+        assert!(!set.has_operating_point_set(31, 4));
+        assert!(!set.has_operating_point_set(3, 5));
+        let out_of_range = ExternalHlsSet::new().with_operating_point_set(32, 16);
+        assert!(!out_of_range.has_operating_point_set(32, 16));
     }
 }

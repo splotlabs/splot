@@ -24,8 +24,10 @@ use serde::{Deserialize, Serialize};
 use crate::bitio::BitReader;
 use crate::error::{Error, Result, TrailingBitsErrorKind};
 use crate::headers::atlas_segment::{AtlasSegment, parse_atlas_segment};
+use crate::headers::buffer_removal_timing::{BufferRemovalTiming, parse_buffer_removal_timing};
 use crate::headers::content_interpretation::{ContentInterpretation, parse_content_interpretation};
 use crate::headers::layer_config_record::{LayerConfigurationRecord, parse_layer_config_record};
+use crate::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
 use crate::headers::sequence::{SequenceHeader, parse_sequence_header};
 use crate::hls::{
     MultiFrameHeader, MultistreamDecoderOperation, parse_msdo, parse_multi_frame_header,
@@ -68,6 +70,10 @@ pub enum ParsedObu {
     LayerConfigurationRecord(Box<LayerConfigurationRecord>),
     /// `atlas_segment_info_obu()` (AV2 v1.0.0 § 5.9).
     AtlasSegment(Box<AtlasSegment>),
+    /// `operating_point_set_obu()` (AV2 v1.0.0 § 5.10).
+    OperatingPointSet(Box<OperatingPointSet>),
+    /// `buffer_removal_timing_obu()` (AV2 v1.0.0 § 5.12).
+    BufferRemovalTiming(BufferRemovalTiming),
     /// `content_interpretation_obu()` (AV2 v1.0.0 § 5.15).
     ContentInterpretation(ContentInterpretation),
 }
@@ -83,6 +89,8 @@ impl ParsedObu {
             Self::MultiFrameHeader(_) => "AV2-5.7-MULTI-FRAME-HEADER",
             Self::LayerConfigurationRecord(_) => "AV2-5.8-LAYER-CONFIG-RECORD",
             Self::AtlasSegment(_) => "AV2-5.9-ATLAS-SEGMENT",
+            Self::OperatingPointSet(_) => "AV2-5.10-OPERATING-POINT-SET",
+            Self::BufferRemovalTiming(_) => "AV2-5.12-BUFFER-REMOVAL-TIMING",
             Self::ContentInterpretation(_) => "AV2-5.15-CONTENT-INTERPRETATION",
         }
     }
@@ -97,6 +105,8 @@ impl ParsedObu {
             Self::MultiFrameHeader(_) => "multi_frame_header_obu",
             Self::LayerConfigurationRecord(_) => "layer_config_record_obu",
             Self::AtlasSegment(_) => "atlas_segment_info_obu",
+            Self::OperatingPointSet(_) => "operating_point_set_obu",
+            Self::BufferRemovalTiming(_) => "buffer_removal_timing_obu",
             Self::ContentInterpretation(_) => "content_interpretation_obu",
         }
     }
@@ -181,6 +191,25 @@ pub fn dispatch_obu_payload<'a>(
             Ok(PayloadStatus::Parsed(ParsedObu::AtlasSegment(Box::new(
                 atlas_segment,
             ))))
+        }
+        ObuType::OperatingPointSet => {
+            let mut reader = BitReader::new(payload, payload_offset);
+            let operating_point_set =
+                parse_operating_point_set(&mut reader, header.extended_layer_id)?;
+            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            Ok(PayloadStatus::Parsed(ParsedObu::OperatingPointSet(
+                Box::new(operating_point_set),
+            )))
+        }
+        ObuType::BufferRemovalTiming => {
+            let mut reader = BitReader::new(payload, payload_offset);
+            let buffer_removal_timing = parse_buffer_removal_timing(&mut reader)?;
+            // OBU_BUFFER_REMOVAL_TIMING is not extensible (§ 5.2.1, ObuType::
+            // is_extensible_obu), so finish_obu_payload uses trailing_bits() only.
+            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            Ok(PayloadStatus::Parsed(ParsedObu::BufferRemovalTiming(
+                buffer_removal_timing,
+            )))
         }
         ObuType::ContentInterpretation => {
             let mut reader = BitReader::new(payload, payload_offset);
@@ -610,6 +639,44 @@ mod tests {
         if let PayloadStatus::Parsed(parsed) = &status {
             assert_eq!(parsed.syntax_name(), "atlas_segment_info_obu");
             assert_eq!(parsed.feature_id(), "AV2-5.9-ATLAS-SEGMENT");
+        }
+    }
+
+    #[test]
+    fn dispatch_parses_operating_point_set_payload() {
+        // 0xC8 0x1F -> ext=1, type=18 (OperatingPointSet), xlayer=31 (global).
+        let header = read_obu_header(&[0xC8, 0x1F], ByteOffset::new(0)).unwrap();
+        assert_eq!(header.obu_type, ObuType::OperatingPointSet);
+        // Reset-only OPS (ops_reset_flag=0, ops_id=0, ops_cnt=0) then the extensible
+        // tail: obu_extension_flag(0) + trailing_one_bit.
+        let payload = [0x00, 0x40];
+        let status = dispatch_obu_payload(header, &payload, ByteOffset::new(2)).unwrap();
+        assert!(matches!(
+            &status,
+            PayloadStatus::Parsed(ParsedObu::OperatingPointSet(_))
+        ));
+        if let PayloadStatus::Parsed(parsed) = &status {
+            assert_eq!(parsed.syntax_name(), "operating_point_set_obu");
+            assert_eq!(parsed.feature_id(), "AV2-5.10-OPERATING-POINT-SET");
+        }
+    }
+
+    #[test]
+    fn dispatch_parses_buffer_removal_timing_payload() {
+        // 0x3C -> ext=0, type=15 (BufferRemovalTiming), xlayer inferred 0.
+        let header = read_obu_header(&[0x3C], ByteOffset::new(0)).unwrap();
+        assert_eq!(header.obu_type, ObuType::BufferRemovalTiming);
+        // br_ops_dependent_flag(0) + br_time = rg(4) of 0, then trailing_one_bit
+        // (BRT is non-extensible, so there is no obu_extension_flag).
+        let payload = [0x02];
+        let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
+        assert!(matches!(
+            &status,
+            PayloadStatus::Parsed(ParsedObu::BufferRemovalTiming(_))
+        ));
+        if let PayloadStatus::Parsed(parsed) = &status {
+            assert_eq!(parsed.syntax_name(), "buffer_removal_timing_obu");
+            assert_eq!(parsed.feature_id(), "AV2-5.12-BUFFER-REMOVAL-TIMING");
         }
     }
 }

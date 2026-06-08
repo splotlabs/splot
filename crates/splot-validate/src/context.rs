@@ -9,12 +9,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::atlas_segment::parse_atlas_segment;
+use splot_core::headers::buffer_removal_timing::parse_buffer_removal_timing;
 use splot_core::headers::content_interpretation::{
     ContentInterpretation, parse_content_interpretation,
 };
 use splot_core::headers::frame::{FrameHeaderPrefix, parse_frame_header_prefix};
 use splot_core::headers::layer_config_record::{
     LayerConfigurationRecord, parse_layer_config_record,
+};
+use splot_core::headers::operating_point_set::{
+    OperatingPointSet, OpsMlayerSource, parse_operating_point_set,
 };
 use splot_core::headers::sequence::{
     MAX_SEQ_NUM, SequenceHeaderGeneral, SequenceHeaderId, TimingInfo, parse_sequence_header,
@@ -43,6 +47,10 @@ pub(crate) struct ValidatorContext {
     content_interpretations: BTreeMap<ContentInterpretationKey, ContentInterpretationRecord>,
     /// Availability of in-band HLS objects, for reference checks (AV2 § 7.3.8).
     hls: HlsAvailabilityStore,
+    /// Active in-band operating point sets, with non-monotonic reset/update semantics
+    /// (AV2 § 6.10.1, § 7.3.8.5). Kept separate from [`HlsAvailabilityStore`] because
+    /// OPS state, unlike the other HLS records, is explicitly resettable.
+    ops: OpsAvailabilityStore,
     temporal_unit: TemporalUnitState,
     /// `true` once a frame-bearing OBU has been observed since the most recent global
     /// temporal delimiter. Used to derive `FirstPictureInTU` for parsed frame headers
@@ -169,6 +177,89 @@ impl HlsAvailabilityStore {
     }
 }
 
+/// One active in-band operating point set, keyed by `(obu_xlayer_id, ops_id)`
+/// (AV2 § 6.10, § 7.3.8.5).
+///
+/// The parser produces exactly `ops_cnt` operating point payloads (the § 5.10 loop
+/// runs `ops_cnt` times or the parse fails), so a separate payload count is redundant
+/// and is not stored.
+#[derive(Debug, Clone)]
+struct OperatingPointSetRecord {
+    /// `obu_xlayer_id` of the OBU that defined this OPS (`GLOBAL_XLAYER_ID` for a
+    /// global OPS).
+    xlayer_id: ExtendedLayerId,
+    /// `ops_id`.
+    ops_id: u8,
+    /// `ops_cnt`, compared against a referencing BRT's `br_ops_cnt` (§ 6.11).
+    ops_cnt: u8,
+    /// Source byte offset of the defining OBU, surfaced in referencing diagnostics.
+    offset: ByteOffset,
+}
+
+/// Active in-band operating point sets (AV2 § 6.10.1, § 7.3.8.5).
+///
+/// Unlike [`HlsAvailabilityStore`], this store is **not** monotonic: § 6.10.1 defines
+/// explicit reset/update behavior, so records are removed on reset rather than kept
+/// forever. State is modeled per extended layer; a global (`GLOBAL_XLAYER_ID`) reset
+/// clears every modeled layer.
+#[derive(Debug, Default)]
+struct OpsAvailabilityStore {
+    by_xlayer: BTreeMap<ExtendedLayerId, BTreeMap<u8, OperatingPointSetRecord>>,
+}
+
+impl OpsAvailabilityStore {
+    /// Applies one OPS OBU's reset/update semantics (AV2 § 6.10.1):
+    ///
+    /// | `reset_flag` | `ops_cnt` | behavior |
+    /// |---|---|---|
+    /// | 1 | 0 | reset all OPS for the layer (all layers if global) |
+    /// | 1 | >0 | reset, then define this `(xlayer, ops_id)` |
+    /// | 0 | 0 | reset only this `(xlayer, ops_id)` |
+    /// | 0 | >0 | define/update only this `(xlayer, ops_id)` |
+    fn apply(&mut self, record: OperatingPointSetRecord, reset_flag: bool) {
+        let xlayer = record.xlayer_id;
+        let ops_id = record.ops_id;
+        let defines = record.ops_cnt > 0;
+
+        if reset_flag {
+            if xlayer.is_global() {
+                self.by_xlayer.clear();
+            } else {
+                self.by_xlayer.remove(&xlayer);
+            }
+            if defines {
+                self.by_xlayer
+                    .entry(xlayer)
+                    .or_default()
+                    .insert(ops_id, record);
+            }
+        } else if defines {
+            self.by_xlayer
+                .entry(xlayer)
+                .or_default()
+                .insert(ops_id, record);
+        } else {
+            // Remove only this (xlayer, ops_id), then prune the layer's map if it is
+            // now empty so the store does not accumulate empty inner maps.
+            let now_empty = match self.by_xlayer.get_mut(&xlayer) {
+                Some(map) => {
+                    map.remove(&ops_id);
+                    map.is_empty()
+                }
+                None => false,
+            };
+            if now_empty {
+                self.by_xlayer.remove(&xlayer);
+            }
+        }
+    }
+
+    /// Returns the active OPS record for `(xlayer, ops_id)`, if any.
+    fn get(&self, xlayer: ExtendedLayerId, ops_id: u8) -> Option<&OperatingPointSetRecord> {
+        self.by_xlayer.get(&xlayer).and_then(|map| map.get(&ops_id))
+    }
+}
+
 /// Key identifying a content-interpretation record: `(obu_xlayer_id, obu_mlayer_id)`.
 type ContentInterpretationKey = (ExtendedLayerId, EmbeddedLayerId);
 
@@ -218,6 +309,10 @@ impl ValidatorContext {
                 self.observe_layer_config_record(obu, options, report);
             }
             ObuType::AtlasSegment => self.observe_atlas_segment(obu),
+            ObuType::OperatingPointSet => self.observe_operating_point_set(obu, report),
+            ObuType::BufferRemovalTiming => {
+                self.observe_buffer_removal_timing(obu, options, report);
+            }
             _ => {}
         }
     }
@@ -675,6 +770,268 @@ impl ValidatorContext {
         let xlayer = obu.header.extended_layer_id;
         if !xlayer.is_global() {
             self.hls.record_local_atlas(xlayer, atlas.atlas_segment_id);
+        }
+    }
+
+    /// Observes an operating point set OBU: emits the locally-checkable § 6.10
+    /// conformance diagnostics and then applies the § 6.10.1 reset/update semantics to
+    /// the active OPS state. The local checks run against the *prior* OPS state (before
+    /// this OBU is applied) so cross-OPS inheritance references resolve correctly.
+    /// Acting is gated on a successful parse and a valid § 5.2.1 extensible tail.
+    fn observe_operating_point_set(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        report: &mut ValidationReport,
+    ) {
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        let Ok(ops) = parse_operating_point_set(&mut reader, obu.header.extended_layer_id) else {
+            return;
+        };
+        if finish_obu_payload(
+            &mut reader,
+            obu.payload,
+            obu.header.obu_type.is_extensible_obu(),
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        self.check_operating_point_set_semantics(obu, &ops, report);
+
+        // AV2 § 6.10.1: apply reset/update to the active OPS state after the checks.
+        self.ops.apply(
+            OperatingPointSetRecord {
+                xlayer_id: ops.xlayer_id,
+                ops_id: ops.ops_id,
+                ops_cnt: ops.ops_cnt,
+                offset: obu.offset,
+            },
+            ops.reset_flag,
+        );
+    }
+
+    /// Emits the locally-checkable § 6.10 OPS conformance diagnostics: local reserved
+    /// bits (§ 6.10.2), reserved `ops_mlayer_info_idc` (§ 6.10.2), PTL reserved bits
+    /// (§ 6.10.4), `opsBytes` vs `ops_data_size` mismatch (§ 6.10.2), and inherited
+    /// operating-point-index bounds (§ 6.10.2).
+    fn check_operating_point_set_semantics(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        ops: &OperatingPointSet,
+        report: &mut ValidationReport,
+    ) {
+        if ops.has_nonzero_local_reserved_bits() {
+            report.push(
+                Diagnostic::error(
+                    "ops/local-reserved-bits-nonzero",
+                    format!(
+                        "local operating point set for obu_xlayer_id {} has ops_reserved_2bits {}, \
+                         which must be 0",
+                        ops.xlayer_id.get(),
+                        ops.local_reserved_2bits.unwrap_or(0)
+                    ),
+                )
+                .with_spec_section("6.10.2")
+                .with_byte_offset(obu.offset),
+            );
+        }
+
+        if ops.has_reserved_mlayer_info_idc() {
+            report.push(
+                Diagnostic::error(
+                    "ops/mlayer-info-idc-reserved",
+                    format!(
+                        "global operating point set {} has ops_mlayer_info_idc == 3, which is \
+                         reserved",
+                        ops.ops_id
+                    ),
+                )
+                .with_spec_section("6.10.2")
+                .with_byte_offset(obu.offset),
+            );
+        }
+
+        for payload in &ops.payloads {
+            if payload.has_size_mismatch() {
+                report.push(
+                    Diagnostic::error(
+                        "ops/payload-size-mismatch",
+                        format!(
+                            "ops_data_size declares {} byte(s) for OPS {} payload index {}, but \
+                             {} byte(s) were parsed",
+                            payload.declared_size_bytes,
+                            ops.ops_id,
+                            payload.index,
+                            payload.computed_size_bytes
+                        ),
+                    )
+                    .with_spec_section("6.10.2")
+                    .with_byte_offset(obu.offset),
+                );
+            }
+
+            for entry in &payload.xlayer_entries {
+                if let Some(ptl) = &entry.ptl_info
+                    && ptl.reserved_2bits != 0
+                {
+                    report.push(
+                        Diagnostic::error(
+                            "ops/ptl-reserved-bits-nonzero",
+                            format!(
+                                "ops_ptl_reserved_2bits is {} for OPS {} payload index {} extended \
+                                 layer {}, which must be 0",
+                                ptl.reserved_2bits,
+                                ops.ops_id,
+                                payload.index,
+                                entry.xlayer_id.get()
+                            ),
+                        )
+                        .with_spec_section("6.10.4")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+
+                if let OpsMlayerSource::Inherited {
+                    embedded_ops_id,
+                    embedded_op_index,
+                } = entry.mlayer
+                {
+                    self.check_inherited_op_index(
+                        obu,
+                        ops,
+                        entry.xlayer_id.get(),
+                        embedded_ops_id,
+                        embedded_op_index,
+                        report,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Checks an inherited operating-point reference against the § 6.10.2 bounds:
+    /// `ops_embedded_op_index < ops_cnt[obu_xlayer_id][refID]`, and — when the
+    /// reference is to the current OPS — additionally `ops_embedded_op_index < j` (the
+    /// included extended layer). A cross-OPS reference is resolved against the prior
+    /// active OPS state; an unresolved cross-OPS reference is not flagged here (it may
+    /// be available through external HLS, and the optional
+    /// `ops/inherited-ops-unavailable` check is not emitted).
+    fn check_inherited_op_index(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        ops: &OperatingPointSet,
+        xlayer_index: u8,
+        ref_ops_id: u8,
+        op_index: u8,
+        report: &mut ValidationReport,
+    ) {
+        let out_of_range = if ref_ops_id == ops.ops_id {
+            op_index >= ops.ops_cnt || op_index >= xlayer_index
+        } else if let Some(referenced) = self.ops.get(ops.xlayer_id, ref_ops_id) {
+            op_index >= referenced.ops_cnt
+        } else {
+            return;
+        };
+
+        if out_of_range {
+            report.push(
+                Diagnostic::error(
+                    "ops/inherited-op-index-out-of-range",
+                    format!(
+                        "OPS {} payload extended layer {} inherits from ops_embedded_ops_id {} \
+                         ops_embedded_op_index {}, which is out of range for the referenced \
+                         operating point set",
+                        ops.ops_id, xlayer_index, ref_ops_id, op_index
+                    ),
+                )
+                .with_spec_section("6.10.2")
+                .with_byte_offset(obu.offset),
+            );
+        }
+    }
+
+    /// Observes a buffer removal timing OBU. For the OPS-dependent form (§ 5.12,
+    /// § 6.11), resolves `(obu_xlayer_id, br_ops_id)` against the active OPS state: an
+    /// unavailable OPS under external-HLS-disabled mode is `brt/unavailable-operating-
+    /// point-set`, and a `br_ops_cnt` differing from the active `ops_cnt` is
+    /// `brt/ops-count-mismatch`. The extended-layer form has nothing to resolve here.
+    fn observe_buffer_removal_timing(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        let Ok(brt) = parse_buffer_removal_timing(&mut reader) else {
+            return;
+        };
+        if finish_obu_payload(
+            &mut reader,
+            obu.payload,
+            obu.header.obu_type.is_extensible_obu(),
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        let Some((br_ops_id, br_ops_cnt)) = brt.ops_reference() else {
+            return;
+        };
+        let xlayer = obu.header.extended_layer_id;
+
+        match self.ops.get(xlayer, br_ops_id) {
+            Some(record) => {
+                if br_ops_cnt != record.ops_cnt {
+                    report.push(
+                        Diagnostic::error(
+                            "brt/ops-count-mismatch",
+                            format!(
+                                "OBU_BUFFER_REMOVAL_TIMING references ops_id {} for obu_xlayer_id \
+                                 {} with br_ops_cnt {}, but the active operating point set (defined \
+                                 at byte {}) has ops_cnt {}",
+                                br_ops_id,
+                                xlayer.get(),
+                                br_ops_cnt,
+                                record.offset,
+                                record.ops_cnt
+                            ),
+                        )
+                        .with_spec_section("6.11")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+            }
+            None => {
+                // AV2 § 7.3.8.5: the referenced OPS must be available in-band or by
+                // external means. Suppress the hard error only when the caller has
+                // explicitly declared this `(obu_xlayer_id, ops_id)` as external HLS;
+                // a generic external-HLS mode that declares other objects (e.g. only
+                // sequence headers) does not make this OPS available.
+                let external_ops_declared = match &options.external_hls {
+                    ExternalHlsMode::Provided(set) => {
+                        set.has_operating_point_set(xlayer.get(), br_ops_id)
+                    }
+                    ExternalHlsMode::Disabled => false,
+                };
+                if !external_ops_declared {
+                    report.push(
+                        Diagnostic::error(
+                            "brt/unavailable-operating-point-set",
+                            format!(
+                                "OBU_BUFFER_REMOVAL_TIMING references ops_id {} for obu_xlayer_id \
+                                 {}, but no operating point set with that id is available in-band \
+                                 or declared as external HLS",
+                                br_ops_id,
+                                xlayer.get()
+                            ),
+                        )
+                        .with_spec_section("7.3.8.5")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+            }
         }
     }
 
@@ -1248,9 +1605,18 @@ fn is_padding_obu(obu: &ObuEnvelope<'_>) -> bool {
 }
 
 fn is_global_hls_prefix_obu(obu: &ObuEnvelope<'_>) -> bool {
-    // TODO(spec: AV2-7.3-OBU-ORDERING): BufferRemovalTiming also permits
-    // GLOBAL_XLAYER_ID per § 6.2.2; model its ordering position once
-    // decoder-model state exists.
+    // AV2 § 7.3.7 lists the global temporal-unit prefix OBUs exhaustively: MSDO,
+    // global LCR, global OPS, global atlas segment, and global metadata (is_suffix=0).
+    // OBU_BUFFER_REMOVAL_TIMING is deliberately NOT in this set: § 7.3.7 does not list
+    // it as a global prefix OBU, and § 7.3.3 / § 7.3.4 place a BRT inside a coded
+    // frame unit at the frame's own xlayer (see is_coded_extended_layer_obu). A global
+    // BRT therefore has no § 7.3.7 prefix position to enforce here, so it is left
+    // unclassified rather than flagged — a sound-over-complete choice that avoids
+    // false positives.
+    //
+    // TODO(spec: AV2-7.3-OBU-ORDERING): a hard `brt/global-ordering-position`
+    // diagnostic for a global BRT would need the § 7.3.8 decoder-model / random-access
+    // state that is not yet modeled.
     obu.header.extended_layer_id.is_global()
         && matches!(
             obu.header.obu_type,
@@ -1264,6 +1630,9 @@ fn is_global_hls_prefix_obu(obu: &ObuEnvelope<'_>) -> bool {
 }
 
 fn is_coded_extended_layer_obu(obu: &ObuEnvelope<'_>) -> bool {
+    // A local (non-global) OBU_BUFFER_REMOVAL_TIMING falls here: AV2 § 7.3.3 / § 7.3.4
+    // place it inside a coded output / non-output frame unit at the frame's xlayer, so
+    // it follows the same coded-extended-layer classification as the frame OBUs.
     !obu.header.extended_layer_id.is_global()
         && !matches!(
             obu.header.obu_type,

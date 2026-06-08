@@ -172,7 +172,7 @@ Validator diagnostics use a kebab/slash namespace with a documented prefix:
 `obu-header/`, `obu-reserved/`, `bitstream/`, `trailing-bits/`,
 `byte-alignment/`, `sequence-header/`, `sequence-state/`, `obu-order/`, `hls/`,
 `msdo/`, `mfh/`, `content-interpretation/`, `frame-header/`, `tile-group/`,
-`tile-params/`, `lcr/`, and `atlas/`.
+`tile-params/`, `lcr/`, `atlas/`, `ops/`, and `brt/`.
 Example: `obu-header/global-xlayer-required`.
 
 A diagnostic that corresponds directly to a modeled feature MAY instead use the
