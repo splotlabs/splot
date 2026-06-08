@@ -13,7 +13,9 @@ pub mod content_interpretation;
 pub mod film_grain;
 pub mod frame;
 pub mod layer_config_record;
+pub mod metadata;
 pub mod operating_point_set;
+pub mod padding;
 pub mod quantizer_matrix;
 pub mod sequence;
 pub mod tile_group;
@@ -28,11 +30,19 @@ pub use film_grain::{
 };
 pub use frame::{FrameHeaderPrefix, FrameHeaderPrefixStatus, parse_frame_header_prefix};
 pub use layer_config_record::{LayerConfigurationRecord, parse_layer_config_record};
+pub use metadata::{
+    BandUnits, BandingComponent, BandingHintsDetail, MetadataBandingHints,
+    MetadataDecodedFrameHash, MetadataGroupObu, MetadataGroupUnit, MetadataHdrCll, MetadataHdrMdcv,
+    MetadataIccProfile, MetadataItutT35, MetadataPayload, MetadataScanType, MetadataShortObu,
+    MetadataTemporalPointInfo, MetadataTimecode, MetadataType, MetadataUnit, MetadataUnknownRaw,
+    MetadataUserDataUnregistered, VaryingBandUnits, parse_metadata_group, parse_metadata_short,
+};
 pub use operating_point_set::{
     OperatingPointPayload, OperatingPointSet, OpsAggregateInfo, OpsColorInfo, OpsDecoderModelInfo,
     OpsMlayerInfo, OpsMlayerSource, OpsSeqProfileTierLevelInfo, OpsXlayerEntry,
     parse_operating_point_set,
 };
+pub use padding::{PaddingObu, parse_padding_obu};
 pub use quantizer_matrix::{
     FundamentalQmTransform, QuantizerMatrixLevel, QuantizerMatrixObu, UserDefinedQmPlane,
     UserDefinedQmTransform, parse_quantizer_matrix,

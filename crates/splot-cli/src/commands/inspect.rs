@@ -19,7 +19,9 @@ use splot_core::headers::content_interpretation::{
 };
 use splot_core::headers::film_grain::{FilmGrainObu, parse_film_grain};
 use splot_core::headers::frame::{FrameHeaderPrefix, parse_frame_header_prefix};
+use splot_core::headers::metadata::{MetadataUnit, parse_metadata_group, parse_metadata_short};
 use splot_core::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
+use splot_core::headers::padding::parse_padding_obu;
 use splot_core::headers::quantizer_matrix::{QuantizerMatrixObu, parse_quantizer_matrix};
 use splot_core::headers::sequence::{SequenceHeader, parse_sequence_header};
 use splot_core::headers::tile_group::parse_tile_group_prefix;
@@ -62,6 +64,12 @@ struct InspectRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     film_grain: Option<FilmGrainView>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    padding: Option<PaddingView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata_short: Option<MetadataShortView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata_group: Option<MetadataGroupView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     frame_header_prefix: Option<FrameHeaderPrefixView>,
     header: ObuHeader,
 }
@@ -80,10 +88,135 @@ impl InspectRecord {
             buffer_removal_timing: buffer_removal_timing_view(obu),
             quantizer_matrix: quantizer_matrix_view(obu),
             film_grain: film_grain_view(obu),
+            padding: padding_view(obu),
+            metadata_short: metadata_short_view(obu),
+            metadata_group: metadata_group_view(obu),
             frame_header_prefix: frame_header_prefix_view(obu),
             header: obu.header,
         }
     }
+}
+
+/// Re-parses a `padding_obu()` so `--json` can expose its padding and trailing lengths.
+fn padding_view(obu: &ObuEnvelope<'_>) -> Option<PaddingView> {
+    if obu.header.obu_type != ObuType::Padding {
+        return None;
+    }
+    parse_padding_obu(obu.payload, obu.payload_offset())
+        .ok()
+        .map(|padding| PaddingView {
+            padding_len: padding.padding_len,
+            trailing_len: padding.trailing_len,
+        })
+}
+
+/// A compact, machine-readable view of a parsed `padding_obu()`.
+#[derive(Serialize)]
+struct PaddingView {
+    padding_len: usize,
+    trailing_len: usize,
+}
+
+/// A per-unit metadata summary (`metadata_type` and declared payload size); never dumps
+/// the raw payload bytes.
+#[derive(Serialize)]
+struct MetadataUnitView {
+    metadata_type: u32,
+    metadata_type_name: &'static str,
+    payload_size: usize,
+}
+
+impl MetadataUnitView {
+    fn new(unit: &MetadataUnit) -> Self {
+        Self {
+            metadata_type: unit.metadata_type.value(),
+            metadata_type_name: unit.metadata_type.spec_name(),
+            payload_size: unit.payload_size,
+        }
+    }
+}
+
+/// Re-parses a `metadata_short_obu()` so `--json` can expose its header fields and the
+/// metadata unit summary.
+fn metadata_short_view(obu: &ObuEnvelope<'_>) -> Option<MetadataShortView> {
+    if obu.header.obu_type != ObuType::MetadataShort {
+        return None;
+    }
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    parse_metadata_short(&mut reader, obu.payload.len())
+        .ok()
+        .map(|metadata| MetadataShortView {
+            is_suffix: metadata.metadata_is_suffix,
+            layer_idc: metadata.muh_layer_idc,
+            cancel: metadata.muh_cancel_flag,
+            persistence_idc: metadata.muh_persistence_idc,
+            metadata_type: metadata.metadata_type.value(),
+            metadata_type_name: metadata.metadata_type.spec_name(),
+            unit: metadata.unit.as_ref().map(MetadataUnitView::new),
+        })
+}
+
+/// A compact, machine-readable view of a parsed `metadata_short_obu()`.
+#[derive(Serialize)]
+struct MetadataShortView {
+    is_suffix: bool,
+    layer_idc: u8,
+    cancel: bool,
+    persistence_idc: u8,
+    metadata_type: u32,
+    metadata_type_name: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unit: Option<MetadataUnitView>,
+}
+
+/// Re-parses a `metadata_group_obu()` so `--json` can expose its header fields and a
+/// per-unit summary.
+fn metadata_group_view(obu: &ObuEnvelope<'_>) -> Option<MetadataGroupView> {
+    if obu.header.obu_type != ObuType::MetadataGroup {
+        return None;
+    }
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    parse_metadata_group(&mut reader, obu.header.extended_layer_id)
+        .ok()
+        .map(|group| MetadataGroupView {
+            is_suffix: group.metadata_is_suffix,
+            necessity_idc: group.metadata_necessity_idc,
+            application_id: group.metadata_application_id,
+            unit_count: group.units.len(),
+            units: group
+                .units
+                .iter()
+                .map(|unit| MetadataGroupUnitView {
+                    metadata_type: unit.metadata_type.value(),
+                    metadata_type_name: unit.metadata_type.spec_name(),
+                    cancel: unit.muh_cancel_flag,
+                    payload_size: unit.muh_payload_size,
+                    layer_idc: unit.muh_layer_idc,
+                })
+                .collect(),
+        })
+}
+
+/// A compact, machine-readable view of a parsed `metadata_group_obu()`.
+#[derive(Serialize)]
+struct MetadataGroupView {
+    is_suffix: bool,
+    necessity_idc: u8,
+    application_id: u8,
+    unit_count: usize,
+    units: Vec<MetadataGroupUnitView>,
+}
+
+/// A compact per-unit summary for `MetadataGroupView`.
+#[derive(Serialize)]
+struct MetadataGroupUnitView {
+    metadata_type: u32,
+    metadata_type_name: &'static str,
+    cancel: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload_size: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    layer_idc: Option<u8>,
 }
 
 /// Re-parses an `operating_point_set_obu()` so `--json` can expose its key fields.

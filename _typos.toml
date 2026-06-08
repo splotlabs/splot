@@ -25,3 +25,4 @@ extend-exclude = [
 ist = "ist"  # enable_intra_ist / enable_inter_ist — AV2 Intra/Inter Secondary Transform sequence-header flags
 cll = "cll"  # HDR CLL = Content Light Level metadata (feature AV2-5.17.5-METADATA-HDR-CLL)
 mis = "mis"  # mode-info unit count; uniform_spacing() parameter (AV2 v1.0.0 § 5.18.7.5)
+muh = "muh"  # metadata unit header prefix: muh_layer_idc / muh_payload_size / ... (AV2 v1.0.0 § 5.17.3)
