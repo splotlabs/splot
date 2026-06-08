@@ -13,9 +13,9 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 
 mod feature_status;
-mod sha256;
 
 use feature_status::{CoverageFormat, StatusFormat};
+use sha2::{Digest, Sha256};
 
 /// SPDX identifier line every tracked `.rs` file must begin with.
 const SPDX_LINE: &str = "// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0";
@@ -557,6 +557,15 @@ fn has_spdx_header(path: &Path) -> Result<bool> {
         && copyright.is_some_and(|line| line.starts_with(SPDX_COPYRIGHT_PREFIX)))
 }
 
+/// Lowercase hex SHA-256 of `bytes` (via the `sha2` crate), as used in the
+/// spec-mirror `CHECKSUMS` manifest.
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 /// Verifies every committed AV2 spec mirror is byte-for-byte consistent with its
 /// `CHECKSUMS` manifest and that `provenance.toml` pins the expected PDF sha256.
 ///
@@ -626,7 +635,7 @@ fn verify_spec_mirror_dir(dir: &Path, rel_dir: &str, pinned_pdf_sha: &str) -> Re
             seen.insert(rel.clone());
             let bytes = std::fs::read(&path)
                 .with_context(|| format!("failed to read {}", path.display()))?;
-            let got = sha256::sha256_hex(&bytes);
+            let got = sha256_hex(&bytes);
             match expected.get(&rel) {
                 None => problems.push(format!("not listed in CHECKSUMS: {rel}")),
                 Some(want) if *want != got => problems.push(format!("checksum mismatch: {rel}")),
@@ -917,8 +926,8 @@ mod tests {
         // CHECKSUMS lists every generated file except itself.
         let manifest = format!(
             "{}  01.md\n{}  provenance.toml\n",
-            sha256::sha256_hex(body.as_bytes()),
-            sha256::sha256_hex(provenance.as_bytes()),
+            sha256_hex(body.as_bytes()),
+            sha256_hex(provenance.as_bytes()),
         );
         std::fs::write(dir.join("CHECKSUMS"), manifest)?;
 

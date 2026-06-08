@@ -4106,7 +4106,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["xtask/src/main.rs::tests::spec_mirror_gate_detects_drift", "xtask/src/sha256.rs::tests::matches_known_vectors"]
+tests = ["xtask/src/main.rs::tests::spec_mirror_gate_detects_drift"]
 commands = [
     "cargo xtask check-spec-mirror",
     "cargo test -p xtask spec_mirror",

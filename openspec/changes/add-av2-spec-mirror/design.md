@@ -93,11 +93,14 @@ parameterises cleanly for a future AV2 1.1.0.
 ### D5. Enforcement: `cargo xtask check-spec-mirror`, deterministic, in CI
 
 The CI gate must be stable across poppler versions, so it does **not** re-run
-`pdftotext`. Instead it: (a) recomputes each committed content file's sha256 and
-compares to `CHECKSUMS` (detects hand-edits/drift), and (b) confirms
-`provenance.toml` pins the expected PDF sha256 for v1.0.0. Wired into `run_ci()`
-alongside `check_license_headers` / `check_dependency_direction`. Full
-re-derivation parity remains available locally via the script's `--verify` mode.
+`pdftotext`. Instead it: (a) recomputes each committed content file's sha256
+(using the `sha2` crate) and compares to `CHECKSUMS` (detects hand-edits/drift),
+and (b) confirms `provenance.toml` pins the expected PDF sha256 for v1.0.0. Wired
+into `run_ci()` alongside `check_license_headers` / `check_dependency_direction`.
+Full re-derivation parity remains available locally via the script's `--verify`
+mode. Hashing uses the well-vetted `sha2` crate (a maintainer-approved `xtask`
+dependency) rather than a hand-rolled implementation — crypto primitives are not
+reimplemented in-tree.
 
 _Alternative considered:_ CI re-runs the conversion and diffs (rejected: flaky —
 `-layout` output differs across poppler builds).

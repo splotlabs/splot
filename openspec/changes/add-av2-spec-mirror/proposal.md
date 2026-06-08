@@ -53,8 +53,10 @@ the specification the enforceable single source of truth.
 
 - No AV2 syntax, reconstruction, reference-state, or layer behavior is
   implemented or changed; this is documentation + tooling only.
-- No new Rust crate dependencies and no change to the crate dependency graph
-  (the gate lives in the existing `xtask` crate).
+- No change to the one-way `splot-*` crate dependency direction (the gate lives
+  in the existing `xtask` crate). It adds one external dependency — the
+  well-vetted `sha2` crate — to `xtask` for hashing (maintainer-approved; do not
+  hand-roll crypto primitives).
 - No transformation that could alter normative wording: prose is **not**
   reflowed into prose Markdown; spec bytes are preserved inside fences.
 - No mirror of any AV2 version other than v1.0.0 (future versions are new,
@@ -67,6 +69,7 @@ the specification the enforceable single source of truth.
 - New files under `docs/spec/av2/1.0.0/` (~3.5 MB of spec text across ~25 files),
   `scripts/spec/regenerate-av2-spec.sh`.
 - Modified: `xtask/src/main.rs` (new `check-spec-mirror` subcommand + CI wiring),
+  `xtask/Cargo.toml` + root `Cargo.toml`/`Cargo.lock` (`sha2` dependency),
   `AGENTS.md`, `docs/SPEC-MAPPING.md`, `docs/references/THIRD-PARTY-NOTICES.md`,
   `_typos.toml`, `docs/IMPLEMENTATION-MATRIX.toml` (new `DOC-AV2-SPEC-MIRROR` row).
 - Validator impact: none directly; enables future spec-grounded diagnostics to
