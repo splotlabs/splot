@@ -2015,8 +2015,8 @@ kind = "bitstream-syntax"
 spec_sections = ["5.16", "6.15"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/obu.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/padding.rs"
+openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
@@ -2024,21 +2024,21 @@ notes = "Needed for padding payload validation and ordering exceptions."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "done"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
+tests = ["crates/splot-core/src/headers/padding.rs::tests", "crates/splot-validate/src/validator.rs::tests::padding_all_zero_payload_is_flagged", "crates/splot-validate/src/validator.rs::tests::padding_invalid_trailing_bits_is_flagged"]
+commands = ["cargo test -p splot-core padding", "cargo test -p splot-validate padding"]
+fixtures = ["tests/fixtures/padding.av2"]
+diagnostics = ["padding/all-zero-payload", "padding/invalid-trailing-bits"]
 
 [[feature]]
 id = "AV2-5.17-METADATA"
@@ -2048,8 +2048,8 @@ kind = "bitstream-syntax"
 spec_sections = ["5.17", "6.16"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/metadata.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/metadata.rs"
+openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
@@ -2057,21 +2057,21 @@ notes = "Umbrella for metadata OBUs. Split child rows before implementing type-s
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
+fixtures = ["tests/fixtures/metadata-short.av2", "tests/fixtures/metadata-group.av2"]
+diagnostics = ["metadata/unit-payload-underflow", "metadata/short-layer-idc-out-of-range", "metadata/group-unit-count-too-large", "metadata/group-header-underflow", "metadata/group-reserved-bits-nonzero", "metadata/group-xlayer-map-global-bit-set", "metadata/group-mlayer-map-below-obu-mlayer", "metadata/temporal-point-info-not-short", "metadata/timecode-seconds-out-of-range", "metadata/timecode-minutes-out-of-range", "metadata/timecode-hours-out-of-range", "metadata/scan-type-pic-struct-reserved"]
 
 [[feature]]
 id = "AV2-5.17.1-METADATA-UNIT"
@@ -2081,8 +2081,8 @@ kind = "bitstream-syntax"
 spec_sections = ["5.17.1", "6.16"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/metadata.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/metadata.rs"
+openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
@@ -2090,21 +2090,21 @@ notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until thi
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
 fixtures = []
-diagnostics = []
+diagnostics = ["metadata/unit-payload-underflow"]
 
 [[feature]]
 id = "AV2-5.17.2-METADATA-SHORT"
@@ -2114,8 +2114,8 @@ kind = "bitstream-syntax"
 spec_sections = ["5.17.2", "6.16"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/metadata.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/metadata.rs"
+openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
@@ -2123,21 +2123,21 @@ notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until thi
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
+fixtures = ["tests/fixtures/metadata-short.av2"]
+diagnostics = ["metadata/short-layer-idc-out-of-range", "metadata/unit-payload-underflow"]
 
 [[feature]]
 id = "AV2-5.17.3-METADATA-GROUP"
@@ -2147,8 +2147,8 @@ kind = "bitstream-syntax"
 spec_sections = ["5.17.3", "6.16"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/metadata.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/metadata.rs"
+openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
@@ -2156,21 +2156,21 @@ notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until thi
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
+fixtures = ["tests/fixtures/metadata-group.av2"]
+diagnostics = ["metadata/group-unit-count-too-large", "metadata/group-header-underflow", "metadata/group-reserved-bits-nonzero", "metadata/group-xlayer-map-global-bit-set", "metadata/group-mlayer-map-below-obu-mlayer"]
 
 [[feature]]
 id = "AV2-5.17.4-METADATA-ITUT-T35"
@@ -2180,8 +2180,8 @@ kind = "bitstream-syntax"
 spec_sections = ["5.17.4", "6.16"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/metadata.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/metadata.rs"
+openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
@@ -2189,19 +2189,19 @@ notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until thi
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
 fixtures = []
 diagnostics = []
 
@@ -2213,8 +2213,8 @@ kind = "bitstream-syntax"
 spec_sections = ["5.17.5", "6.16"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/metadata.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/metadata.rs"
+openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
@@ -2222,19 +2222,19 @@ notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until thi
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
 fixtures = []
 diagnostics = []
 
@@ -2246,8 +2246,8 @@ kind = "bitstream-syntax"
 spec_sections = ["5.17.6", "6.16"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/metadata.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/metadata.rs"
+openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
@@ -2255,19 +2255,19 @@ notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until thi
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
 fixtures = []
 diagnostics = []
 
@@ -2279,8 +2279,8 @@ kind = "bitstream-syntax"
 spec_sections = ["5.17.7", "6.16"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/metadata.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/metadata.rs"
+openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
@@ -2288,21 +2288,21 @@ notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until thi
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
 fixtures = []
-diagnostics = []
+diagnostics = ["metadata/timecode-seconds-out-of-range", "metadata/timecode-minutes-out-of-range", "metadata/timecode-hours-out-of-range"]
 
 [[feature]]
 id = "AV2-5.17.8-METADATA-BANDING-HINTS"
@@ -2312,8 +2312,8 @@ kind = "bitstream-syntax"
 spec_sections = ["5.17.8", "6.16"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/metadata.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/metadata.rs"
+openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
@@ -2321,19 +2321,19 @@ notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until thi
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
 fixtures = []
 diagnostics = []
 
@@ -2345,8 +2345,8 @@ kind = "bitstream-syntax"
 spec_sections = ["5.17.9", "6.16"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/metadata.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/metadata.rs"
+openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
@@ -2354,19 +2354,19 @@ notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until thi
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
 fixtures = []
 diagnostics = []
 
@@ -2378,8 +2378,8 @@ kind = "bitstream-syntax"
 spec_sections = ["5.17.10", "6.16"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/metadata.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/metadata.rs"
+openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
@@ -2387,21 +2387,21 @@ notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until thi
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
 fixtures = []
-diagnostics = []
+diagnostics = ["metadata/scan-type-pic-struct-reserved"]
 
 [[feature]]
 id = "AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO"
@@ -2411,8 +2411,8 @@ kind = "bitstream-syntax"
 spec_sections = ["5.17.11", "6.16"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/metadata.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/metadata.rs"
+openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
@@ -2420,21 +2420,21 @@ notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until thi
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
 fixtures = []
-diagnostics = []
+diagnostics = ["metadata/temporal-point-info-not-short"]
 
 [[feature]]
 id = "AV2-5.17.12-METADATA-DECODED-FRAME-HASH"
@@ -2444,8 +2444,8 @@ kind = "bitstream-syntax"
 spec_sections = ["5.17.12", "6.16"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/metadata.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/metadata.rs"
+openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
@@ -2453,19 +2453,19 @@ notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until thi
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
 fixtures = []
 diagnostics = []
 
@@ -2477,8 +2477,8 @@ kind = "bitstream-syntax"
 spec_sections = ["5.17.13", "6.16"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/metadata.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/metadata.rs"
+openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
@@ -2486,19 +2486,19 @@ notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until thi
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
 fixtures = []
 diagnostics = []
 

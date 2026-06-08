@@ -1880,9 +1880,33 @@ impl TemporalUnitState {
 
         if is_padding_obu(obu) {
             self.observe_padding(obu, report);
+        } else if is_metadata_obu(obu) {
+            self.observe_metadata(obu, report);
         } else if is_global_hls_prefix_obu(obu) {
             self.observe_global_hls_prefix(obu, report);
         } else if is_coded_extended_layer_obu(obu) {
+            self.observe_coded_extended_layer_obu(obu, report);
+        }
+    }
+
+    /// Classifies a metadata OBU for temporal-unit ordering from its `metadata_is_suffix`
+    /// bit (AV2 § 6.16.3 / § 7.3.7).
+    ///
+    /// A global *prefix* metadata OBU (`metadata_is_suffix == 0`) is a global temporal-
+    /// unit prefix OBU, so it is flagged if it follows a coded extended layer unit. A
+    /// global *suffix* metadata OBU (`metadata_is_suffix == 1`) is not a prefix and is
+    /// left unclassified (its precise § 7.3.3 / § 7.3.4 placement inside coded frame
+    /// units needs frame/tile parsing, which is deferred). Non-global metadata is a coded
+    /// extended layer OBU. A metadata OBU whose first payload bit cannot be read is left
+    /// unclassified; the structural parse error is reported by the metadata syntax check.
+    fn observe_metadata(&mut self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        if obu.header.extended_layer_id.is_global() {
+            // A global *prefix* (metadata_is_suffix == 0) is a § 7.3.7 global prefix OBU.
+            // A global suffix, or an unreadable first bit, is left unclassified.
+            if metadata_is_suffix(obu) == Some(false) {
+                self.observe_global_hls_prefix(obu, report);
+            }
+        } else {
             self.observe_coded_extended_layer_obu(obu, report);
         }
     }
@@ -2006,9 +2030,27 @@ fn is_padding_obu(obu: &ObuEnvelope<'_>) -> bool {
     obu.header.obu_type == ObuType::Padding
 }
 
+fn is_metadata_obu(obu: &ObuEnvelope<'_>) -> bool {
+    matches!(
+        obu.header.obu_type,
+        ObuType::MetadataShort | ObuType::MetadataGroup
+    )
+}
+
+/// Reads `metadata_is_suffix` (the first payload bit of both metadata OBU types,
+/// AV2 § 5.17.2 / § 5.17.3), returning `None` if the payload is empty.
+fn metadata_is_suffix(obu: &ObuEnvelope<'_>) -> Option<bool> {
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    reader.read_bit().ok().map(|bit| bit != 0)
+}
+
 fn is_global_hls_prefix_obu(obu: &ObuEnvelope<'_>) -> bool {
     // AV2 § 7.3.7 lists the global temporal-unit prefix OBUs exhaustively: MSDO,
-    // global LCR, global OPS, global atlas segment, and global metadata (is_suffix=0).
+    // global LCR, global OPS, global atlas segment, and global *prefix* metadata. The two
+    // metadata OBU types are NOT matched here: global metadata is classified by its
+    // parsed metadata_is_suffix bit in observe_metadata (a suffix is not a prefix), so it
+    // must not be matched as an unconditional global prefix.
+    //
     // OBU_BUFFER_REMOVAL_TIMING is deliberately NOT in this set: § 7.3.7 does not list
     // it as a global prefix OBU, and § 7.3.3 / § 7.3.4 place a BRT inside a coded
     // frame unit at the frame's own xlayer (see is_coded_extended_layer_obu). A global
@@ -2026,8 +2068,6 @@ fn is_global_hls_prefix_obu(obu: &ObuEnvelope<'_>) -> bool {
                 | ObuType::LayerConfigurationRecord
                 | ObuType::OperatingPointSet
                 | ObuType::AtlasSegment
-                | ObuType::MetadataShort
-                | ObuType::MetadataGroup
         )
 }
 

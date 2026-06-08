@@ -263,6 +263,69 @@ fn inspect_json_surfaces_quantizer_matrix() {
 }
 
 #[test]
+fn inspect_json_surfaces_padding() {
+    // TemporalDelimiter then a global padding_obu (one padding byte + trailing_bits).
+    let path = fixture("padding.av2");
+    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let records = json.as_array().expect("inspect output is an array");
+    let padding = records
+        .iter()
+        .find(|r| r.get("padding").is_some())
+        .expect("a padding record");
+    assert_eq!(padding["payload_status"]["status"], "parsed");
+    assert_eq!(padding["payload_status"]["syntax"], "padding_obu");
+    let view = &padding["padding"];
+    assert_eq!(view["padding_len"], 1);
+    assert_eq!(view["trailing_len"], 1);
+}
+
+#[test]
+fn inspect_json_surfaces_metadata_short() {
+    // TemporalDelimiter then a global metadata_short_obu carrying METADATA_TYPE_HDR_CLL.
+    let path = fixture("metadata-short.av2");
+    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let records = json.as_array().expect("inspect output is an array");
+    let metadata = records
+        .iter()
+        .find(|r| r.get("metadata_short").is_some())
+        .expect("a metadata-short record");
+    assert_eq!(metadata["payload_status"]["status"], "parsed");
+    assert_eq!(metadata["payload_status"]["syntax"], "metadata_short_obu");
+    let view = &metadata["metadata_short"];
+    assert_eq!(view["is_suffix"], false);
+    assert_eq!(view["cancel"], false);
+    assert_eq!(view["metadata_type"], 1);
+    assert_eq!(view["metadata_type_name"], "METADATA_TYPE_HDR_CLL");
+    assert_eq!(view["unit"]["payload_size"], 4);
+}
+
+#[test]
+fn inspect_json_surfaces_metadata_group() {
+    // TemporalDelimiter then a global metadata_group_obu with one HDR_CLL unit.
+    let path = fixture("metadata-group.av2");
+    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let records = json.as_array().expect("inspect output is an array");
+    let metadata = records
+        .iter()
+        .find(|r| r.get("metadata_group").is_some())
+        .expect("a metadata-group record");
+    assert_eq!(metadata["payload_status"]["status"], "parsed");
+    assert_eq!(metadata["payload_status"]["syntax"], "metadata_group_obu");
+    let view = &metadata["metadata_group"];
+    assert_eq!(view["is_suffix"], false);
+    assert_eq!(view["unit_count"], 1);
+    assert_eq!(view["units"][0]["metadata_type"], 1);
+    assert_eq!(view["units"][0]["cancel"], false);
+    assert_eq!(view["units"][0]["payload_size"], 4);
+}
+
+#[test]
 fn inspect_json_surfaces_film_grain() {
     // TemporalDelimiter, a sequence header, then a film_grain_obu updating slot 0.
     let path = fixture("film-grain.av2");

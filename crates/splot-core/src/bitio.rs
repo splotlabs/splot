@@ -398,6 +398,44 @@ impl<'a> BitReader<'a> {
         })
     }
 
+    /// Splits off a sub-reader over the next `n` bytes and advances this reader past
+    /// them.
+    ///
+    /// The returned reader is bounded to exactly `n` bytes, so any descriptor that
+    /// reads past `n` bytes returns [`Error::UnexpectedEof`]. This is how a length-
+    /// bounded payload — `metadata_unit(metadataPayloadSize)` (AV2 v1.0.0 § 5.17.1) —
+    /// prevents child syntax from overreading its declared size: the parent advances by
+    /// exactly `n` bytes regardless of how much of the sub-reader the child consumes
+    /// (the trailing `metadata_unit_remaining_bit` bits, § 6.16.1, are skipped).
+    ///
+    /// The reader must be byte-aligned. Every AV2 site that bounds a payload by a byte
+    /// count (`metadata_unit`, `lcr_global_payload`, ...) is byte-aligned because its
+    /// preceding syntax is whole bytes, so this precondition holds for all inputs; it is
+    /// asserted in debug builds.
+    ///
+    /// # Errors
+    /// Returns [`Error::UnexpectedEof`] if fewer than `n` bytes remain.
+    pub fn take_bytes(&mut self, n: usize) -> Result<BitReader<'a>> {
+        debug_assert_eq!(
+            self.bit_pos, 0,
+            "take_bytes requires the reader to be byte-aligned"
+        );
+        let slice = self
+            .byte_pos
+            .checked_add(n)
+            .and_then(|end| self.data.get(self.byte_pos..end));
+        let Some(slice) = slice else {
+            let available = self.data.len().saturating_sub(self.byte_pos);
+            return Err(Error::UnexpectedEof {
+                offset: self.byte_offset(),
+                needed: n.saturating_sub(available),
+            });
+        };
+        let base = self.byte_offset();
+        self.byte_pos = self.byte_pos.saturating_add(n);
+        Ok(BitReader::new(slice, base))
+    }
+
     /// Parses AV2 `byte_alignment()` and validates all alignment bits are zero
     /// (AV2 v1.0.0 § 5.2.4 / § 6.2.4).
     ///
@@ -839,6 +877,49 @@ mod tests {
             Err(Error::BitWidthTooLarge { .. })
         ));
         assert_eq!(wide.byte_offset(), ByteOffset::new(0));
+    }
+
+    #[test]
+    fn take_bytes_bounds_a_sub_reader_and_advances_the_parent() {
+        let data = [0x11, 0x22, 0x33, 0x44];
+        let mut reader = BitReader::new(&data, ByteOffset::new(10));
+        let mut sub = reader.take_bytes(2).unwrap();
+        // The parent advanced past the two taken bytes.
+        assert_eq!(reader.byte_offset(), ByteOffset::new(12));
+        // The sub-reader sees exactly the taken bytes, with the absolute base offset.
+        assert_eq!(sub.byte_offset(), ByteOffset::new(10));
+        assert_eq!(sub.read_bits_u8(8).unwrap(), 0x11);
+        assert_eq!(sub.read_bits_u8(8).unwrap(), 0x22);
+        // Reading past the bound is EOF, not a read into the parent's remaining bytes.
+        assert!(matches!(
+            sub.read_bits_u8(8),
+            Err(Error::UnexpectedEof { .. })
+        ));
+        // The parent continues from where it advanced to.
+        assert_eq!(reader.read_bits_u8(8).unwrap(), 0x33);
+    }
+
+    #[test]
+    fn take_bytes_zero_yields_empty_sub_reader() {
+        let data = [0xAB];
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let mut sub = reader.take_bytes(0).unwrap();
+        assert_eq!(sub.remaining_bits(), 0);
+        assert!(matches!(sub.read_bit(), Err(Error::UnexpectedEof { .. })));
+        // The parent did not advance.
+        assert_eq!(reader.read_bits_u8(8).unwrap(), 0xAB);
+    }
+
+    #[test]
+    fn take_bytes_reports_eof_when_too_few_bytes_remain() {
+        let data = [0x01, 0x02];
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        assert!(matches!(
+            reader.take_bytes(3),
+            Err(Error::UnexpectedEof { .. })
+        ));
+        // A failed take must not advance the reader.
+        assert_eq!(reader.byte_offset(), ByteOffset::new(0));
     }
 
     #[test]

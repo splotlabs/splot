@@ -28,7 +28,11 @@ use crate::headers::buffer_removal_timing::{BufferRemovalTiming, parse_buffer_re
 use crate::headers::content_interpretation::{ContentInterpretation, parse_content_interpretation};
 use crate::headers::film_grain::{FilmGrainObu, parse_film_grain};
 use crate::headers::layer_config_record::{LayerConfigurationRecord, parse_layer_config_record};
+use crate::headers::metadata::{
+    MetadataGroupObu, MetadataShortObu, parse_metadata_group, parse_metadata_short,
+};
 use crate::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
+use crate::headers::padding::{PaddingObu, parse_padding_obu};
 use crate::headers::quantizer_matrix::{QuantizerMatrixObu, parse_quantizer_matrix};
 use crate::headers::sequence::{SequenceHeader, parse_sequence_header};
 use crate::hls::{
@@ -82,6 +86,12 @@ pub enum ParsedObu {
     FilmGrain(Box<FilmGrainObu>),
     /// `content_interpretation_obu()` (AV2 v1.0.0 § 5.15).
     ContentInterpretation(ContentInterpretation),
+    /// `padding_obu()` (AV2 v1.0.0 § 5.16).
+    Padding(PaddingObu),
+    /// `metadata_short_obu()` (AV2 v1.0.0 § 5.17.2).
+    MetadataShort(Box<MetadataShortObu>),
+    /// `metadata_group_obu()` (AV2 v1.0.0 § 5.17.3).
+    MetadataGroup(Box<MetadataGroupObu>),
 }
 
 impl ParsedObu {
@@ -100,6 +110,9 @@ impl ParsedObu {
             Self::QuantizationMatrix(_) => "AV2-5.13-QUANTIZATION-MATRIX",
             Self::FilmGrain(_) => "AV2-5.14-FILM-GRAIN",
             Self::ContentInterpretation(_) => "AV2-5.15-CONTENT-INTERPRETATION",
+            Self::Padding(_) => "AV2-5.16-PADDING",
+            Self::MetadataShort(_) => "AV2-5.17.2-METADATA-SHORT",
+            Self::MetadataGroup(_) => "AV2-5.17.3-METADATA-GROUP",
         }
     }
 
@@ -118,6 +131,9 @@ impl ParsedObu {
             Self::QuantizationMatrix(_) => "quantizer_matrix_obu",
             Self::FilmGrain(_) => "film_grain_obu",
             Self::ContentInterpretation(_) => "content_interpretation_obu",
+            Self::Padding(_) => "padding_obu",
+            Self::MetadataShort(_) => "metadata_short_obu",
+            Self::MetadataGroup(_) => "metadata_group_obu",
         }
     }
 }
@@ -249,6 +265,32 @@ pub fn dispatch_obu_payload<'a>(
                 content_interpretation,
             )))
         }
+        ObuType::Padding => {
+            // padding_obu() consumes the whole payload (padding bytes plus its own
+            // trailing_bits), so it is NOT followed by finish_obu_payload (AV2 § 5.16).
+            let padding = parse_padding_obu(payload, payload_offset)?;
+            Ok(PayloadStatus::Parsed(ParsedObu::Padding(padding)))
+        }
+        ObuType::MetadataShort => {
+            let mut reader = BitReader::new(payload, payload_offset);
+            let metadata = parse_metadata_short(&mut reader, payload.len())?;
+            // OBU_METADATA_SHORT is not extensible (§ 5.2.1), so finish_obu_payload uses
+            // trailing_bits() only.
+            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            Ok(PayloadStatus::Parsed(ParsedObu::MetadataShort(Box::new(
+                metadata,
+            ))))
+        }
+        ObuType::MetadataGroup => {
+            let mut reader = BitReader::new(payload, payload_offset);
+            let metadata = parse_metadata_group(&mut reader, header.extended_layer_id)?;
+            // OBU_METADATA_GROUP is not extensible (§ 5.2.1), so finish_obu_payload uses
+            // trailing_bits() only.
+            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            Ok(PayloadStatus::Parsed(ParsedObu::MetadataGroup(Box::new(
+                metadata,
+            ))))
+        }
         obu_type => Ok(PayloadStatus::Unimplemented {
             feature: unimplemented_payload_feature(obu_type),
             payload,
@@ -313,35 +355,44 @@ fn parse_empty_payload_syntax(payload: &[u8], payload_offset: ByteOffset) -> Res
     parse_trailing_bits(&mut reader, nb_bits)
 }
 
+/// Returns the implementation-matrix feature ID that owns the payload parser for an
+/// `obu_type` that `dispatch_obu_payload` does not yet parse (its catch-all arm).
+///
+/// Only the tile-group and frame-header OBU types currently reach this. Every other
+/// type is either parsed by an explicit dispatch arm or kept opaque (reserved types),
+/// so it can never reach the catch-all; those variants are matched only to keep the
+/// match exhaustive.
 fn unimplemented_payload_feature(obu_type: ObuType) -> &'static str {
     match obu_type {
-        ObuType::SequenceHeader => "AV2-5.4-SEQUENCE-HEADER",
-        ObuType::MultiFrameHeader => "AV2-5.7-MULTI-FRAME-HEADER",
         ObuType::ClosedLoopKey
         | ObuType::OpenLoopKey
         | ObuType::LeadingTileGroup
         | ObuType::RegularTileGroup
         | ObuType::Switch
         | ObuType::RasFrame => "AV2-5.19-TILE-GROUP",
-        ObuType::MetadataShort | ObuType::MetadataGroup => "AV2-5.17-METADATA",
         ObuType::LeadingSef
         | ObuType::RegularSef
         | ObuType::LeadingTip
         | ObuType::RegularTip
         | ObuType::BridgeFrame => "AV2-5.18-FRAME-HEADER",
-        ObuType::BufferRemovalTiming => "AV2-5.12-BUFFER-REMOVAL-TIMING",
-        ObuType::LayerConfigurationRecord => "AV2-5.8-LAYER-CONFIG-RECORD",
-        ObuType::AtlasSegment => "AV2-5.9-ATLAS-SEGMENT",
-        ObuType::OperatingPointSet => "AV2-5.10-OPERATING-POINT-SET",
-        ObuType::Msdo => "AV2-5.6-MSDO",
-        ObuType::QuantizationMatrix => "AV2-5.13-QUANTIZATION-MATRIX",
-        ObuType::FilmGrain => "AV2-5.14-FILM-GRAIN",
-        ObuType::ContentInterpretation => "AV2-5.15-CONTENT-INTERPRETATION",
-        ObuType::Padding => "AV2-5.16-PADDING",
-        ObuType::Reserved0 | ObuType::TemporalDelimiter | ObuType::Reserved(_) => {
-            // Unreachable via dispatch_obu_payload(); present only for match exhaustiveness.
-            "AV2-5.2.1-OBU-DISPATCH"
-        }
+        // Parsed by an explicit dispatch arm (or kept opaque for reserved types), so
+        // these never reach this function; present only for match exhaustiveness.
+        ObuType::Reserved0
+        | ObuType::TemporalDelimiter
+        | ObuType::Reserved(_)
+        | ObuType::SequenceHeader
+        | ObuType::MultiFrameHeader
+        | ObuType::Msdo
+        | ObuType::LayerConfigurationRecord
+        | ObuType::AtlasSegment
+        | ObuType::OperatingPointSet
+        | ObuType::BufferRemovalTiming
+        | ObuType::QuantizationMatrix
+        | ObuType::FilmGrain
+        | ObuType::ContentInterpretation
+        | ObuType::Padding
+        | ObuType::MetadataShort
+        | ObuType::MetadataGroup => "AV2-5.2.1-OBU-DISPATCH",
     }
 }
 
@@ -619,20 +670,56 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_marks_metadata_payload_unimplemented() {
-        // OBU_METADATA_SHORT payload parsing is not implemented; the dispatcher
-        // still preserves the raw payload and names the owning Feature ID.
+    fn dispatch_parses_metadata_short_payload() {
         // 0x20 = 0b0_01000_00 -> ext=0, type=8 (MetadataShort).
         let header = read_obu_header(&[0x20], ByteOffset::new(0)).unwrap();
-        let payload = [0xAB];
+        // Cancelled short metadata: first byte 0x08 (cancel=1, type field follows),
+        // metadata_type=4, then the OBU trailing byte 0x80.
+        let payload = [0x08, 0x04, 0x80];
         let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
-        assert_eq!(
-            status,
-            PayloadStatus::Unimplemented {
-                feature: "AV2-5.17-METADATA",
-                payload: &payload,
-            }
-        );
+        assert!(matches!(
+            &status,
+            PayloadStatus::Parsed(ParsedObu::MetadataShort(_))
+        ));
+        if let PayloadStatus::Parsed(parsed) = &status {
+            assert_eq!(parsed.syntax_name(), "metadata_short_obu");
+            assert_eq!(parsed.feature_id(), "AV2-5.17.2-METADATA-SHORT");
+        }
+    }
+
+    #[test]
+    fn dispatch_parses_metadata_group_payload() {
+        // 0x24 = 0b0_01001_00 -> ext=0, type=9 (MetadataGroup).
+        let header = read_obu_header(&[0x24], ByteOffset::new(0)).unwrap();
+        // Group with one cancelled unit (type=4, header byte 0x01), then trailing 0x80.
+        let payload = [0x00, 0x00, 0x04, 0x01, 0x80];
+        let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
+        assert!(matches!(
+            &status,
+            PayloadStatus::Parsed(ParsedObu::MetadataGroup(_))
+        ));
+        if let PayloadStatus::Parsed(parsed) = &status {
+            assert_eq!(parsed.syntax_name(), "metadata_group_obu");
+            assert_eq!(parsed.feature_id(), "AV2-5.17.3-METADATA-GROUP");
+        }
+    }
+
+    #[test]
+    fn dispatch_parses_padding_payload() {
+        // 0x64 = 0b0_11001_00 -> ext=0, type=25 (Padding).
+        let header = read_obu_header(&[0x64], ByteOffset::new(0)).unwrap();
+        assert_eq!(header.obu_type, ObuType::Padding);
+        // Two arbitrary padding bytes, then a trailing-bits byte (0x80).
+        let payload = [0xDE, 0xAD, 0x80];
+        let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
+        assert!(matches!(
+            &status,
+            PayloadStatus::Parsed(ParsedObu::Padding(_))
+        ));
+        if let PayloadStatus::Parsed(parsed) = &status {
+            assert_eq!(parsed.syntax_name(), "padding_obu");
+            assert_eq!(parsed.feature_id(), "AV2-5.16-PADDING");
+        }
     }
 
     #[test]

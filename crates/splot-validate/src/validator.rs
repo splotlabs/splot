@@ -3829,4 +3829,356 @@ mod tests {
             "a slot reused across a TD with no intervening frame must be flagged: {report}"
         );
     }
+
+    fn has_warning(report: &ValidationReport, rule: &str) -> bool {
+        report.warnings().any(|d| d.rule_id == rule)
+    }
+
+    // --- padding OBU (AV2 § 5.16 / § 6.15) ---
+
+    /// A global `OBU_PADDING` (xlayer 31) carrying `payload`, after a temporal delimiter.
+    fn global_padding_stream(payload: &[u8]) -> Vec<u8> {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(25, 0, 0, 31),
+            payload,
+        ));
+        data
+    }
+
+    #[test]
+    fn padding_all_zero_payload_is_flagged() {
+        let report = Validator::new(false).validate_bytes(&global_padding_stream(&[0x00, 0x00]));
+        assert!(
+            has_error(&report, "padding/all-zero-payload"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn padding_invalid_trailing_bits_is_flagged() {
+        // 0x40 = 0b0100_0000: trailing_one_bit must be 1 but the first bit is 0.
+        let report = Validator::new(false).validate_bytes(&global_padding_stream(&[0x40]));
+        assert!(
+            has_error(&report, "padding/invalid-trailing-bits"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn padding_valid_payload_is_accepted() {
+        // One arbitrary padding byte then a trailing-bits byte.
+        let report = Validator::new(false).validate_bytes(&global_padding_stream(&[0xFF, 0x80]));
+        assert!(
+            !report.errors().any(|d| d.rule_id.starts_with("padding/")),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn padding_empty_payload_is_accepted() {
+        let report = Validator::new(false).validate_bytes(&global_padding_stream(&[]));
+        assert!(
+            !report.errors().any(|d| d.rule_id.starts_with("padding/")),
+            "report was: {report}"
+        );
+    }
+
+    // --- metadata OBUs (AV2 § 5.17 / § 6.16) ---
+
+    /// Builds a `metadata_short_obu()` payload: the 1-byte header, a 1-byte metadata
+    /// type, the metadata unit bytes, and one OBU trailing byte.
+    fn metadata_short_payload(first: u8, metadata_type: u8, unit: &[u8]) -> Vec<u8> {
+        let mut payload = vec![first, metadata_type];
+        payload.extend_from_slice(unit);
+        payload.push(0x80);
+        payload
+    }
+
+    /// A global `OBU_METADATA_SHORT` (xlayer 31) after a temporal delimiter.
+    fn global_metadata_short_stream(payload: &[u8]) -> Vec<u8> {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 31),
+            payload,
+        ));
+        data
+    }
+
+    /// A global `OBU_METADATA_GROUP` (xlayer 31) after a temporal delimiter.
+    fn global_metadata_group_stream(payload: &[u8]) -> Vec<u8> {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(9, 0, 0, 31),
+            payload,
+        ));
+        data
+    }
+
+    #[test]
+    fn metadata_short_layer_idc_out_of_range_is_flagged() {
+        // first byte 0x38 = 0b0_011_1_000: layer_idc=3 (>= 3), cancel=1.
+        let payload = [0x38, 0x04, 0x80];
+        let report = Validator::new(false).validate_bytes(&global_metadata_short_stream(&payload));
+        assert!(
+            has_error(&report, "metadata/short-layer-idc-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_short_payload_underflow_is_flagged() {
+        // obuPayloadSize = 2, leb128 bytes = 1 -> 2 - 2 - 1 underflows.
+        let payload = [0x00, 0x01];
+        let report = Validator::new(false).validate_bytes(&global_metadata_short_stream(&payload));
+        assert!(
+            has_error(&report, "metadata/unit-payload-underflow"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_group_unit_count_too_large_is_flagged() {
+        // metadata_unit_cnt_minus_1 = 16383 (leb128 0xFF 0x7F).
+        let payload = [0x00, 0xFF, 0x7F, 0x80];
+        let report = Validator::new(false).validate_bytes(&global_metadata_group_stream(&payload));
+        assert!(
+            has_error(&report, "metadata/group-unit-count-too-large"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_group_header_underflow_is_flagged() {
+        // Non-cancel unit, muh_header_size = 0: the payload_size leb byte alone makes
+        // headerRemainingBytes negative.
+        let payload = [0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x80];
+        let report = Validator::new(false).validate_bytes(&global_metadata_group_stream(&payload));
+        assert!(
+            has_error(&report, "metadata/group-header-underflow"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_group_reserved_bits_nonzero_is_warned() {
+        // type=0 (UnknownRaw), header_size=3, payload_size=0, reserved bits = 0b01.
+        let payload = [0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x01, 0x80];
+        let report = Validator::new(false).validate_bytes(&global_metadata_group_stream(&payload));
+        assert!(
+            has_warning(&report, "metadata/group-reserved-bits-nonzero"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_group_xlayer_map_global_bit_set_is_flagged() {
+        // Global group, layer_idc=LAYER_VALUES, muh_xlayer_map = 0x8000_0000 (bit 31 set).
+        // header_size = payload_size leb (1) + fixed 2 + 4 (xlayer_map) = 7.
+        let payload = [
+            0x00, 0x00, // group header + cnt
+            0x00, // metadata_type = 0
+            0x0E, // muh_header_size = 7, cancel = 0
+            0x00, // muh_payload_size = 0
+            0x60, 0x00, // layer_idc=LAYER_VALUES(3), persistence=0, priority=0, reserved=0
+            0x80, 0x00, 0x00, 0x00, // muh_xlayer_map = bit 31 set
+            0x80, // OBU trailing byte
+        ];
+        let report = Validator::new(false).validate_bytes(&global_metadata_group_stream(&payload));
+        assert!(
+            has_error(&report, "metadata/group-xlayer-map-global-bit-set"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_group_mlayer_map_below_obu_mlayer_is_flagged() {
+        // Local group at mlayer 1, layer_idc=LAYER_VALUES -> one muh_mlayer_map byte with
+        // bit 0 set (below obu_mlayer_id = 1). header_size = leb(1) + 2 + 1 = 4.
+        let payload = [
+            0x00, 0x00, // group header + cnt
+            0x00, // metadata_type = 0
+            0x08, // muh_header_size = 4, cancel = 0
+            0x00, // muh_payload_size = 0
+            0x60, 0x00, // layer_idc=LAYER_VALUES(3)
+            0x01, // muh_mlayer_map = bit 0 set
+            0x80, // OBU trailing byte
+        ];
+        // A non-global metadata OBU needs an active sequence header for its xlayer.
+        let mut data = temporal_delimiter_obu();
+        data.extend(sequence_header_obu_for_xlayer(2, 1, 1));
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(9, 0, 1, 2),
+            &payload,
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "metadata/group-mlayer-map-below-obu-mlayer"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_temporal_point_info_in_group_is_flagged() {
+        // A group unit with metadata_type = METADATA_TYPE_TEMPORAL_POINT_INFO (9).
+        let payload = [0x00, 0x00, 0x09, 0x01, 0x80]; // one cancelled unit, type 9
+        let report = Validator::new(false).validate_bytes(&global_metadata_group_stream(&payload));
+        assert!(
+            has_error(&report, "metadata/temporal-point-info-not-short"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_timecode_seconds_out_of_range_is_flagged() {
+        let mut bits = Bits::default();
+        bits.f(0, 5); // counting_type
+        bits.bit(1); // full_timestamp_flag
+        bits.bit(0); // discontinuity_flag
+        bits.bit(0); // cnt_dropped_flag
+        bits.f(0, 9); // n_frames
+        bits.f(60, 6); // seconds_value = 60 (> 59)
+        bits.f(0, 6); // minutes_value
+        bits.f(0, 5); // hours_value
+        bits.f(0, 5); // time_offset_length = 0
+        bits.align();
+        let payload = metadata_short_payload(0x00, 4, &bits.into_bytes());
+        let report = Validator::new(false).validate_bytes(&global_metadata_short_stream(&payload));
+        assert!(
+            has_error(&report, "metadata/timecode-seconds-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    /// Builds a full-timestamp `metadata_timecode()` short OBU payload with the given
+    /// seconds/minutes/hours values and no time offset.
+    fn timecode_short_payload(seconds: u32, minutes: u32, hours: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(0, 5); // counting_type
+        bits.bit(1); // full_timestamp_flag
+        bits.bit(0); // discontinuity_flag
+        bits.bit(0); // cnt_dropped_flag
+        bits.f(0, 9); // n_frames
+        bits.f(seconds, 6); // seconds_value
+        bits.f(minutes, 6); // minutes_value
+        bits.f(hours, 5); // hours_value
+        bits.f(0, 5); // time_offset_length = 0
+        bits.align();
+        metadata_short_payload(0x00, 4, &bits.into_bytes())
+    }
+
+    #[test]
+    fn metadata_timecode_minutes_out_of_range_is_flagged() {
+        let payload = timecode_short_payload(0, 60, 0); // minutes_value = 60 (> 59)
+        let report = Validator::new(false).validate_bytes(&global_metadata_short_stream(&payload));
+        assert!(
+            has_error(&report, "metadata/timecode-minutes-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_timecode_hours_out_of_range_is_flagged() {
+        let payload = timecode_short_payload(0, 0, 24); // hours_value = 24 (> 23)
+        let report = Validator::new(false).validate_bytes(&global_metadata_short_stream(&payload));
+        assert!(
+            has_error(&report, "metadata/timecode-hours-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_timecode_in_range_is_accepted() {
+        // Maximum valid full-timestamp values: 59 / 59 / 23.
+        let payload = timecode_short_payload(59, 59, 23);
+        let report = Validator::new(false).validate_bytes(&global_metadata_short_stream(&payload));
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("metadata/timecode-")),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_scan_type_pic_struct_reserved_is_flagged() {
+        // mps_pic_struct_type = 13 (> 12): 0b01101_00_0 = 0x68.
+        let payload = metadata_short_payload(0x00, 8, &[0x68]);
+        let report = Validator::new(false).validate_bytes(&global_metadata_short_stream(&payload));
+        assert!(
+            has_error(&report, "metadata/scan-type-pic-struct-reserved"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_valid_short_is_accepted() {
+        // A cancelled short metadata OBU is well-formed and emits no metadata error.
+        let payload = [0x08, 0x04, 0x80]; // cancel=1, type=4
+        let report = Validator::new(false).validate_bytes(&global_metadata_short_stream(&payload));
+        assert!(
+            !report.errors().any(|d| d.rule_id.starts_with("metadata/")),
+            "report was: {report}"
+        );
+    }
+
+    // --- metadata temporal-unit ordering (AV2 § 6.16.3 / § 7.3.7) ---
+
+    #[test]
+    fn metadata_prefix_global_after_coded_layer_is_flagged() {
+        // Global prefix metadata (metadata_is_suffix == 0) after a coded extended layer
+        // unit is a § 7.3.7 prefix-after-coded-layer violation.
+        let mut data = temporal_delimiter_obu();
+        data.extend(sequence_header_obu_for_xlayer(0, 1, 1));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(6, 0, 0, 0), &[])); // coded layer
+        // first byte 0x08 = is_suffix 0, cancel 1.
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 31),
+            &[0x08, 0x04, 0x80],
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "obu-order/global-hls-after-coded-layer"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_suffix_global_after_coded_layer_is_not_treated_as_prefix() {
+        // Global suffix metadata (metadata_is_suffix == 1) after a coded layer is NOT a
+        // global prefix, so it must not be flagged.
+        let mut data = temporal_delimiter_obu();
+        data.extend(sequence_header_obu_for_xlayer(0, 1, 1));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(6, 0, 0, 0), &[])); // coded layer
+        // first byte 0x88 = is_suffix 1, cancel 1.
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 31),
+            &[0x88, 0x04, 0x80],
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "obu-order/global-hls-after-coded-layer"),
+            "global suffix metadata must not be treated as a prefix; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_non_global_order_uses_coded_xlayer_order() {
+        // Non-global metadata participates in the coded extended layer ascending order:
+        // after coded layers at xlayer 0 then 1, a metadata OBU at xlayer 0 is out of
+        // order.
+        let mut data = temporal_delimiter_obu();
+        data.extend(sequence_header_obu_for_xlayer(0, 1, 1));
+        data.extend(sequence_header_obu_for_xlayer(1, 1, 1));
+        // A cancelled short metadata OBU at xlayer 0 (active sequence 0 is present).
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 0),
+            &[0x08, 0x04, 0x80],
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "obu-order/xlayer-order-not-ascending"),
+            "report was: {report}"
+        );
+    }
 }

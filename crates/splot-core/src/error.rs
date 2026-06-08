@@ -165,6 +165,64 @@ impl fmt::Display for AtlasSegmentErrorKind {
     }
 }
 
+/// Specific structural violations of `padding_obu()` (AV2 § 5.16 / § 6.15) that
+/// prevent further parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaddingErrorKind {
+    /// A non-empty padding payload is entirely zero. AV2 § 5.16 / § 6.15 require at
+    /// least one non-zero byte (the `trailing_bits()` byte) when any payload is present.
+    AllZeroPayload,
+    /// The bytes from the last non-zero payload byte through the payload end are not a
+    /// valid `trailing_bits()` pattern (AV2 § 5.2.3 / § 6.2.3).
+    InvalidTrailingBits,
+}
+
+impl fmt::Display for PaddingErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::AllZeroPayload => {
+                "a non-empty padding OBU payload must contain at least one non-zero byte"
+            }
+            Self::InvalidTrailingBits => {
+                "padding OBU trailing_bits() must start with trailing_one_bit followed by zeros"
+            }
+        };
+        f.write_str(message)
+    }
+}
+
+/// Specific structural violations of the metadata OBUs (AV2 § 5.17 / § 6.16) that
+/// prevent further parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetadataErrorKind {
+    /// A metadata unit's declared payload size is too small to hold the parsed content:
+    /// either `obuPayloadSize - 2 - Leb128Bytes` underflows for a short OBU (§ 5.17.2),
+    /// or the child syntax would read past `metadataPayloadSize` so
+    /// `remainingMuPayloadBits` would be negative (§ 6.16.1).
+    UnitPayloadUnderflow,
+    /// `metadata_unit_cnt_minus_1` is not less than 16383 (AV2 § 6.16.3).
+    GroupUnitCountTooLarge,
+    /// A metadata group unit's `headerRemainingBytes` would go negative: `muh_header_size`
+    /// does not account for `Leb128Bytes`, the fixed header fields, and the layer maps
+    /// (AV2 § 5.17.3 / § 6.16.3).
+    GroupHeaderUnderflow,
+}
+
+impl fmt::Display for MetadataErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::UnitPayloadUnderflow => {
+                "metadata unit payload size is too small for the parsed content"
+            }
+            Self::GroupUnitCountTooLarge => "metadata_unit_cnt_minus_1 must be less than 16383",
+            Self::GroupHeaderUnderflow => {
+                "muh_header_size is too small for the metadata unit header fields"
+            }
+        };
+        f.write_str(message)
+    }
+}
+
 /// Errors produced while parsing AV2 bitstreams.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -356,6 +414,30 @@ pub enum Error {
         bit_offset: BitOffset,
         /// Specific atlas-segment violation.
         kind: AtlasSegmentErrorKind,
+    },
+
+    /// `padding_obu()` violated AV2 § 5.16 / § 6.15 in a way that prevents further
+    /// parsing.
+    #[error("invalid padding_obu() at byte {offset}.{bit_offset}: {kind}")]
+    InvalidPadding {
+        /// Offset of the offending syntax element.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidPadding::offset`].
+        bit_offset: BitOffset,
+        /// Specific padding violation.
+        kind: PaddingErrorKind,
+    },
+
+    /// A metadata OBU (`metadata_short_obu()` / `metadata_group_obu()`) violated AV2
+    /// § 5.17 / § 6.16 in a way that prevents further parsing.
+    #[error("invalid metadata OBU at byte {offset}.{bit_offset}: {kind}")]
+    InvalidMetadata {
+        /// Offset of the offending syntax element.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidMetadata::offset`].
+        bit_offset: BitOffset,
+        /// Specific metadata violation.
+        kind: MetadataErrorKind,
     },
 }
 
