@@ -73,7 +73,10 @@ These documents are planning aids. The canonical status remains
 | `splot-core::hls`                   | § 5.6 MSDO, § 5.7 multi-frame hdr | implemented (syntax incl. MFH `seg_info`) |
 | `splot-core::headers::operating_point_set` | § 5.10 / § 5.11 operating point set | implemented (full syntax; § 6.10 local validation + active-OPS state in `splot-validate`) |
 | `splot-core::headers::buffer_removal_timing` | § 5.12 buffer removal timing      | implemented (syntax; § 6.11 / § 7.3.8.5 OPS references in `splot-validate`) |
-| `splot-core::headers` (frame)       | § 5.18 frame header               | TODO |
+| `splot-core::headers::frame` (info) | § 5.18.2 `frame_header_info()`     | partial (state-aware core parser: frame kind, output control, order hint, refresh flags; stops with explicit status before the inter reference map / deep §5.18.5+; `frame_header_copy()` TODO) |
+| `splot-core::headers::frame` (config) | § 5.18.3 frame configuration     | partial (`screen_content_params()`, `intrabc_params()`; `frame_opfl_refine_type()` / `get_relative_dist()` TODO) |
+| `splot-core::headers::frame` (size) | § 5.18.4 `frame_size()`           | partial (override + direct/default paths; `frame_size_with_refs()` / `frame_size_with_bridge()` TODO) |
+| `splot-validate::context` (frame)   | § 6.17.2 / § 6.17.4 / § 6.4.6     | partial (bridge-ref-index, frame-size-exceeds-max, RAS long-term-id checks; reference-state checks TODO) |
 | `splot-core::tables`                | § 9 additional tables             | TODO / codegen (`cargo xtask gen-tables`) |
 
 ### Implemented § 6.2.2 header checks

@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-07. 123 feature(s).
+Matrix version 1. Last reviewed 2026-06-07. 124 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -83,11 +83,12 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO` | Temporal point info metadata syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/metadata.rs` |
 | `AV2-5.17.12-METADATA-DECODED-FRAME-HASH` | Decoded frame hash metadata syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/metadata.rs` |
 | `AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED` | User data unregistered metadata syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/metadata.rs` |
-| `AV2-5.18-FRAME-HEADER` | Frame header syntax | normative | bitstream-syntax | done | partial | partial | partial | todo | todo | partial | done | pending | `crates/splot-core/src/headers/frame.rs` |
-| `AV2-5.18.1-FRAME-HEADER-GENERAL` | Frame header general syntax | normative | bitstream-syntax | done | partial | partial | partial | todo | todo | partial | done | pending | `crates/splot-core/src/headers/frame.rs` |
-| `AV2-5.18.2-FRAME-HEADER-INFO` | Frame header info syntax | normative | bitstream-syntax | done | partial | partial | partial | todo | todo | partial | done | pending | `crates/splot-core/src/headers/frame.rs` |
-| `AV2-5.18.3-FRAME-CONFIGURATION` | Frame configuration syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
-| `AV2-5.18.4-FRAME-SIZE` | Frame size syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
+| `AV2-5.18-FRAME-HEADER` | Frame header syntax | normative | bitstream-syntax | done | partial | partial | partial | todo | todo | partial | done | pending | `crates/splot-core/src/headers/frame/mod.rs` |
+| `AV2-5.18.1-FRAME-HEADER-GENERAL` | Frame header general syntax | normative | bitstream-syntax | done | partial | partial | partial | todo | todo | partial | done | pending | `crates/splot-core/src/headers/frame/mod.rs` |
+| `AV2-5.18.2-FRAME-HEADER-INFO` | Frame header info syntax | normative | bitstream-syntax | done | partial | partial | partial | todo | todo | partial | done | pending | `crates/splot-core/src/headers/frame/info.rs` |
+| `AV2-5.18.3-FRAME-CONFIGURATION` | Frame configuration syntax | normative | bitstream-syntax | done | partial | partial | n/a | todo | todo | partial | done | pending | `crates/splot-core/src/headers/frame/config.rs` |
+| `AV2-5.18.4-FRAME-SIZE` | Frame size syntax | normative | bitstream-syntax | done | partial | partial | partial | todo | todo | partial | done | pending | `crates/splot-core/src/headers/frame/size.rs` |
+| `AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS` | Frame header info semantics | normative | validator-check | done | n/a | n/a | partial | n/a | n/a | partial | done | pending | `crates/splot-validate/src/context.rs` |
 | `AV2-5.18.5-FILTERING` | Frame filtering syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
 | `AV2-5.18.6-QUANTIZATION` | Frame quantization syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
 | `AV2-5.18.7-SEGMENTATION-TILING` | Frame segmentation and tiling syntax | normative | bitstream-syntax | done | partial | partial | partial | todo | todo | partial | partial | pending | `crates/splot-core/src/headers.rs` |

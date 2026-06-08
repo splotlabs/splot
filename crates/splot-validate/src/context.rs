@@ -16,7 +16,10 @@ use splot_core::headers::content_interpretation::{
 use splot_core::headers::film_grain::{
     FilmGrainObu, FilmGrainScalingPoint, MAX_FILM_GRAIN, parse_film_grain,
 };
-use splot_core::headers::frame::{FrameHeaderPrefix, parse_frame_header_prefix};
+use splot_core::headers::frame::{
+    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderPrefix,
+    FrameReferenceStateView, FrameType, parse_frame_header_core, parse_frame_header_prefix,
+};
 use splot_core::headers::layer_config_record::{
     LayerConfigurationRecord, parse_layer_config_record,
 };
@@ -27,7 +30,7 @@ use splot_core::headers::quantizer_matrix::{
     NUM_CUSTOM_QMS, QuantizerMatrixObu, parse_quantizer_matrix,
 };
 use splot_core::headers::sequence::{
-    MAX_SEQ_NUM, SequenceHeaderGeneral, SequenceHeaderId, TimingInfo, parse_sequence_header,
+    MAX_SEQ_NUM, SequenceHeader, SequenceHeaderId, TimingInfo, parse_sequence_header,
 };
 use splot_core::headers::tile_group::parse_tile_group_prefix;
 use splot_core::hls::{MAX_MFH_NUM, MfhId, MultiFrameHeaderRecord, parse_multi_frame_header};
@@ -45,7 +48,7 @@ const MAX_FILM_GRAIN_SCALING_POINTS: u8 = 14;
 /// Stateful validator data derived from parseable high-level syntax OBUs.
 #[derive(Debug, Default)]
 pub(crate) struct ValidatorContext {
-    sequence_headers: BTreeMap<SequenceHeaderId, SequenceHeaderGeneral>,
+    sequence_headers: BTreeMap<SequenceHeaderId, SequenceHeader>,
     active_sequence_by_xlayer: BTreeMap<ExtendedLayerId, SequenceHeaderId>,
     /// Payload fingerprints for activated sequence headers, keyed by
     /// `(obu_xlayer_id, seq_header_id)`, used to detect non-bit-identical repeats
@@ -500,6 +503,14 @@ impl ValidatorContext {
         if let Some(seq_id) = resolved {
             self.active_sequence_by_xlayer
                 .insert(obu.header.extended_layer_id, seq_id);
+
+            // With the in-band active sequence header available, run the frame-header
+            // core parser and emit the locally decidable § 6.17 diagnostics. Parsing
+            // and the checks are silent on failure or on paths that need reference
+            // state (AV2 § 6.17.2 / § 6.17.4 / § 6.4.6).
+            if let Some(active_sequence) = self.sequence_headers.get(&seq_id) {
+                frame_header_core_checks(obu, first_picture_in_tu, active_sequence, report);
+            }
         }
     }
 
@@ -1597,8 +1608,11 @@ impl ValidatorContext {
         // Store the latest well-formed header per seq_header_id, so a reconfiguration
         // (a later sequence header reusing the id with different layer limits) is the
         // one used for max_tlayer_id / max_mlayer_id checks once a frame header
-        // activates it. A non-identical repeat within a CVS is still flagged above.
-        self.sequence_headers.insert(seq_header_id, general);
+        // activates it. A non-identical repeat within a CVS is still flagged above. The
+        // full header (not just its general fields) is retained so the frame-header
+        // core parser can read OrderHintBits / NumRefFrames / dimensions from its inter
+        // and screen-content configs (AV2 § 5.18.2).
+        self.sequence_headers.insert(seq_header_id, sequence_header);
         // The active sequence header for an extended layer defaults to the first one
         // seen in OBU order; a parsed CLK/OLK frame header overrides this with the
         // sequence header it references (see observe_frame_bearing_obu), which is the
@@ -1670,7 +1684,7 @@ impl ValidatorContext {
             return;
         };
 
-        if obu.header.temporal_layer_id > sequence_header.max_tlayer_id {
+        if obu.header.temporal_layer_id > sequence_header.general.max_tlayer_id {
             report.push(sequence_state_error(
                 "sequence-state/tlayer-exceeds-max",
                 "6.2.2",
@@ -1679,12 +1693,12 @@ impl ValidatorContext {
                 format!(
                     "obu_tlayer_id {} exceeds active sequence max_tlayer_id {}",
                     obu.header.temporal_layer_id.get(),
-                    sequence_header.max_tlayer_id.get()
+                    sequence_header.general.max_tlayer_id.get()
                 ),
             ));
         }
 
-        if obu.header.embedded_layer_id > sequence_header.max_mlayer_id {
+        if obu.header.embedded_layer_id > sequence_header.general.max_mlayer_id {
             let byte_offset = obu.offset.saturating_add(1);
             report.push(
                 Diagnostic::error(
@@ -1692,7 +1706,7 @@ impl ValidatorContext {
                     format!(
                         "obu_mlayer_id {} exceeds active sequence max_mlayer_id {}",
                         obu.header.embedded_layer_id.get(),
-                        sequence_header.max_mlayer_id.get()
+                        sequence_header.general.max_mlayer_id.get()
                     ),
                 )
                 .with_spec_section("6.2.2")
@@ -2163,6 +2177,193 @@ fn parse_frame_prefix(
     } else {
         // SEF / TIP / bridge frames call frame_header( 1 ) directly (AV2 § 5.2.1).
         parse_frame_header_prefix(&mut reader, obu.header.obu_type, first_picture_in_tu).ok()
+    }
+}
+
+/// Parses the frame-header core of a frame-bearing OBU against its active sequence
+/// header (AV2 § 5.18.2), positioning the reader past the `tile_group_obu()` prefix
+/// for tile-group OBUs. Returns `None` when there is no parseable first-tile-group
+/// frame header or the core parse fails (best-effort, never an error).
+fn parse_frame_core(
+    obu: &ObuEnvelope<'_>,
+    first_picture_in_tu: bool,
+    active_sequence: &SequenceHeader,
+) -> Option<FrameHeaderCore> {
+    let obu_type = obu.header.obu_type;
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    if obu_type.is_tile_group() {
+        // tile_group_obu(): only the first tile group carries a parseable frame_header(1);
+        // its frame_header_present_flag is inferred 1 (AV2 § 5.19).
+        if reader.read_bit().ok()? == 0 {
+            return None;
+        }
+    } else if !is_frame_bearing(obu_type) {
+        return None;
+    }
+    let input = FrameHeaderParseInput {
+        obu_type,
+        first_picture_in_tu,
+        active_sequence: Some(active_sequence),
+        mfh_record: None,
+        reference_state: FrameReferenceStateView::unknown(),
+        mode: FrameHeaderParseMode::Core,
+    };
+    parse_frame_header_core(&mut reader, &input).ok()
+}
+
+/// Emits the locally decidable frame-header-info / frame-size diagnostics for a frame
+/// whose active sequence header is available (AV2 § 6.17.2 / § 6.17.4 / § 6.4.6).
+///
+/// Only state-supported checks are emitted; paths that need reference-frame buffer
+/// state (show-existing-frame slot validity, explicit reference maps,
+/// `primary_ref_frame` range) are left to a future phase rather than guessed.
+fn frame_header_core_checks(
+    obu: &ObuEnvelope<'_>,
+    first_picture_in_tu: bool,
+    active_sequence: &SequenceHeader,
+    report: &mut ValidationReport,
+) {
+    // AV2 § 6.4.6: if long_term_frame_id_bits == 0, no OBU_RAS_FRAME shall be present
+    // in the coded video sequence. Decidable from obu_type + the active sequence alone.
+    if obu.header.obu_type == ObuType::RasFrame
+        && let Some(inter) = active_sequence.inter.as_ref()
+        && inter.long_term_frame_id_bits == 0
+    {
+        report.push(frame_header_error(
+            "frame-header/ras-requires-long-term-frame-id-bits",
+            "6.4.6",
+            obu,
+            "OBU_RAS_FRAME is present, but the active sequence header has \
+             long_term_frame_id_bits == 0"
+                .to_owned(),
+        ));
+    }
+
+    let Some(core) = parse_frame_core(obu, first_picture_in_tu, active_sequence) else {
+        return;
+    };
+
+    // AV2 § 6.17.2: bridge_frame_ref_idx must name a valid reference slot, so it must
+    // be less than NumRefFrames.
+    if let Some(idx) = core.bridge_frame_ref_idx
+        && let Some(inter) = active_sequence.inter.as_ref()
+        && idx >= u32::from(inter.num_ref_frames)
+    {
+        report.push(frame_header_error(
+            "frame-header/bridge-ref-index-out-of-range",
+            "6.17.2",
+            obu,
+            format!(
+                "bridge_frame_ref_idx {idx} must be less than NumRefFrames {}",
+                inter.num_ref_frames
+            ),
+        ));
+    }
+
+    // AV2 § 6.17.4.1: frame_width_minus_1 <= max_frame_width_minus_1 and
+    // frame_height_minus_1 <= max_frame_height_minus_1, i.e. FrameWidth/FrameHeight do
+    // not exceed the active sequence maximum.
+    if let Some(size) = core.frame_size {
+        let max_width = active_sequence.general.max_frame_width.get();
+        let max_height = active_sequence.general.max_frame_height.get();
+        if size.width > max_width || size.height > max_height {
+            report.push(frame_header_error(
+                "frame-header/frame-size-exceeds-sequence-max",
+                "6.17.4.1",
+                obu,
+                format!(
+                    "frame_header_info() derives FrameWidth={}, FrameHeight={}, which \
+                     exceeds the active sequence maximum {}x{}",
+                    size.width, size.height, max_width, max_height
+                ),
+            ));
+        }
+    }
+
+    // AV2 § 6.17.2: ref_long_term_id[i] != (1 << long_term_frame_id_bits) - 1.
+    if core.forbidden_ref_long_term_id {
+        report.push(frame_header_error(
+            "frame-header/ref-long-term-id-reserved",
+            "6.17.2",
+            obu,
+            "a ref_long_term_id[i] equals the reserved (1 << long_term_frame_id_bits) - 1"
+                .to_owned(),
+        ));
+    }
+
+    // AV2 § 6.17.2: if immediate_output_frame == 0, refresh_frame_flags must be nonzero
+    // (a deferred-output frame must update at least one reference slot).
+    if core.immediate_output_frame == Some(false) && core.refresh_frame_flags == Some(0) {
+        report.push(frame_header_error(
+            "frame-header/refresh-frame-flags-zero-on-deferred-output",
+            "6.17.2",
+            obu,
+            "immediate_output_frame == 0 requires refresh_frame_flags to be nonzero".to_owned(),
+        ));
+    }
+
+    // AV2 § 6.17.2: still_picture == 1 requires FrameType == KEY_FRAME and
+    // immediate_output_frame == 1.
+    if active_sequence.general.still_picture
+        && (matches!(core.frame_type, Some(frame_type) if frame_type != FrameType::Key)
+            || core.immediate_output_frame == Some(false))
+    {
+        report.push(frame_header_error(
+            "frame-header/still-picture-requires-key-frame",
+            "6.17.2",
+            obu,
+            "a still_picture sequence requires a KEY_FRAME with immediate_output_frame == 1"
+                .to_owned(),
+        ));
+    }
+
+    // The remaining checks compare refresh_frame_flags against NumRefFrames.
+    let Some(num_ref_frames) = active_sequence
+        .inter
+        .as_ref()
+        .map(|inter| u32::from(inter.num_ref_frames))
+    else {
+        return;
+    };
+    let Some(refresh) = core.refresh_frame_flags else {
+        return;
+    };
+    // 1 << NumRefFrames as the exclusive upper bound of a valid refresh mask.
+    let Some(all_slots_plus_1) = 1u32.checked_shl(num_ref_frames) else {
+        return;
+    };
+
+    // AV2 § 6.17.2: frame_to_refresh < NumRefFrames. In the compact refresh mode
+    // refresh_frame_flags == 1 << frame_to_refresh, so an out-of-range slot is exactly a
+    // mask with a bit at or beyond NumRefFrames; the full and all-frames forms are always
+    // below 1 << NumRefFrames.
+    if refresh >= all_slots_plus_1 {
+        report.push(frame_header_error(
+            "frame-header/frame-to-refresh-out-of-range",
+            "6.17.2",
+            obu,
+            format!(
+                "refresh_frame_flags {refresh:#x} sets a reference slot at or beyond \
+                 NumRefFrames {num_ref_frames} (frame_to_refresh must be less than NumRefFrames)"
+            ),
+        ));
+    }
+
+    // AV2 § 6.17.2: an INTRA_ONLY_FRAME with NumRefFrames > 1 must not refresh every slot
+    // (refresh_frame_flags != (1 << NumRefFrames) - 1).
+    if core.frame_type == Some(FrameType::IntraOnly)
+        && num_ref_frames > 1
+        && refresh == all_slots_plus_1 - 1
+    {
+        report.push(frame_header_error(
+            "frame-header/intra-only-refresh-all-slots",
+            "6.17.2",
+            obu,
+            format!(
+                "an INTRA_ONLY_FRAME with NumRefFrames {num_ref_frames} must not set \
+                 refresh_frame_flags to all slots"
+            ),
+        ));
     }
 }
 

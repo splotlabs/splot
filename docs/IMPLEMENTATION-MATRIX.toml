@@ -2510,12 +2510,12 @@ kind = "bitstream-syntax"
 spec_sections = ["5.18", "6.17"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers/frame.rs"
-openspec_change = "frame-activation-hls-skeleton"
+module = "crates/splot-core/src/headers/frame/mod.rs"
+openspec_change = "frame-header-core-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Prefix-only parser for the activation/HLS reference fields (cur_mfh_id, seq_header_id_in_frame_header) of frame_header_info(). Full §5.18 frame header, frame size, segmentation, filtering, quantization, prediction/reference, film grain, and frame_header_copy() coverage remain future."
+notes = "Activation-prefix parser plus a state-aware frame-header core parser that covers selected §5.18.2 / §5.18.3 / §5.18.4 paths (frame kind, output control, order hint, refresh flags, direct/default frame_size(), screen_content_params(), intrabc_params()) and stops with an explicit status before deeper §5.18 syntax. Filtering, quantization, segmentation/tiling, transform/coding modes, global motion, frame film-grain structures, the inter reference map, frame_header_copy(), and tile payload remain future."
 
 [feature.status]
 mapped = "done"
@@ -2530,9 +2530,9 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/frame.rs::tests", "crates/splot-core/src/headers/tile_group.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_frame_header_missing_sequence_header_is_flagged"]
+tests = ["crates/splot-core/src/headers/frame/mod.rs::tests", "crates/splot-core/src/headers/frame/info.rs::tests", "crates/splot-core/src/headers/tile_group.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_frame_header_missing_sequence_header_is_flagged"]
 commands = ["cargo test -p splot-core frame_header", "cargo test -p splot-core tile_group", "cargo test -p splot-validate frame_header"]
-fixtures = []
+fixtures = ["tests/fixtures/frame-header-core.av2"]
 diagnostics = ["hls/unavailable-sequence-header", "hls/unavailable-multi-frame-header", "frame-header/seq-header-id-out-of-range", "frame-header/cur-mfh-id-out-of-range"]
 
 [[feature]]
@@ -2543,12 +2543,12 @@ kind = "bitstream-syntax"
 spec_sections = ["5.18.1", "6.17"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers/frame.rs"
+module = "crates/splot-core/src/headers/frame/mod.rs"
 openspec_change = "frame-activation-hls-skeleton"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Prefix-only frame_header(isFirst) parser: reaches the frame_header_info() activation/reference fields and reports consumed bits and a prefix-only status. frame_header_copy() (the non-first tile-group header bit copy) is not validated yet."
+notes = "Child row of AV2-5.18-FRAME-HEADER. frame_header(isFirst) is parsed beyond the activation fields by the core parser (AV2-5.18.2-FRAME-HEADER-INFO). frame_header_copy() (the non-first tile-group header bit copy) and exact NumFrameHeaderBits accounting remain TODO until a first frame header is fully consumed."
 
 [feature.status]
 mapped = "done"
@@ -2563,7 +2563,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/frame.rs::tests::frame_header_prefix_reads_cur_mfh_id_zero_and_seq_header_id", "crates/splot-core/src/headers/frame.rs::tests::frame_header_prefix_eof_is_structured_error"]
+tests = ["crates/splot-core/src/headers/frame/mod.rs::tests::frame_header_prefix_reads_cur_mfh_id_zero_and_seq_header_id", "crates/splot-core/src/headers/frame/mod.rs::tests::frame_header_prefix_eof_is_structured_error"]
 commands = ["cargo test -p splot-core frame_header"]
 fixtures = []
 diagnostics = []
@@ -2573,15 +2573,15 @@ id = "AV2-5.18.2-FRAME-HEADER-INFO"
 name = "Frame header info syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.18.2", "6.17"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+spec_sections = ["5.18.2", "6.17.2"]
+sources = ["docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2", "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers/frame.rs"
-openspec_change = "frame-activation-hls-skeleton"
+module = "crates/splot-core/src/headers/frame/info.rs"
+openspec_change = "frame-header-core-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Prefix-only: keyFrame / IsRegular / IsBridge are derived from obu_type, startCVS is modeled for CLK paths, cur_mfh_id is read (inferred 0 for bridge frames), and seq_header_id_in_frame_header is read when cur_mfh_id == 0; the referenced sequence id resolves through the MFH record when cur_mfh_id > 0. All deeper frame_header_info() child structures remain todo."
+notes = "Child row of AV2-5.18-FRAME-HEADER. State-aware core parser (FrameHeaderParseMode::Core) over the control region: derived frame-kind flags, bridge_frame_ref_idx, the single-picture / show-existing-frame branch, frame-type determination, long-term id, output-control flags, order_hint, and refresh_frame_flags. It stops with an explicit FrameHeaderParseStatus before reference-state-dependent syntax (inter reference map, bridge remainder) and the deep §5.18.5+ cluster. parse stays partial until all of §5.18.2 is consumed; the explicit reference map, primary-reference range, and frame_header_copy() remain TODO."
 
 [feature.status]
 mapped = "done"
@@ -2596,41 +2596,41 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/frame.rs::tests::frame_header_prefix_reads_nonzero_cur_mfh_id", "crates/splot-validate/src/validator.rs::tests::hls_frame_header_missing_mfh_is_flagged"]
+tests = ["crates/splot-core/src/headers/frame/info.rs::tests", "crates/splot-validate/src/validator.rs::tests::validator_flags_bridge_ref_index_out_of_range", "crates/splot-validate/src/validator.rs::tests::validator_flags_ras_requires_long_term_frame_id_bits"]
 commands = ["cargo test -p splot-core frame_header", "cargo test -p splot-validate frame_header"]
-fixtures = []
-diagnostics = ["hls/unavailable-sequence-header", "hls/unavailable-multi-frame-header", "frame-header/seq-header-id-out-of-range", "frame-header/cur-mfh-id-out-of-range"]
+fixtures = ["tests/fixtures/frame-header-core.av2"]
+diagnostics = ["hls/unavailable-sequence-header", "hls/unavailable-multi-frame-header", "frame-header/seq-header-id-out-of-range", "frame-header/cur-mfh-id-out-of-range", "frame-header/bridge-ref-index-out-of-range", "frame-header/ras-requires-long-term-frame-id-bits"]
 
 [[feature]]
 id = "AV2-5.18.3-FRAME-CONFIGURATION"
 name = "Frame configuration syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.18.3", "6.17"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+spec_sections = ["5.18.3"]
+sources = ["docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-3"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/frame/config.rs"
+openspec_change = "frame-header-core-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation. When implementing, narrow spec_sections to the exact §6.17 subsection if the spec has one."
+notes = "Child row of AV2-5.18-FRAME-HEADER. screen_content_params() (§5.18.3.3) and intrabc_params() (§5.18.3.4) are parsed on the reached intra path. frame_opfl_refine_type() (§5.18.3.2) and get_relative_dist() (§5.18.3.1) belong to inter/TIP paths and remain TODO."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "partial"
+parse = "partial"
+validate = "not-applicable"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "partial"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/frame/config.rs::tests"]
+commands = ["cargo test -p splot-core frame::config"]
 fixtures = []
 diagnostics = []
 
@@ -2639,33 +2639,66 @@ id = "AV2-5.18.4-FRAME-SIZE"
 name = "Frame size syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.18.4", "6.17"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+spec_sections = ["5.18.4", "6.17.4.1"]
+sources = ["docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-4", "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/frame/size.rs"
+openspec_change = "frame-header-core-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation. When implementing, narrow spec_sections to the exact §6.17 subsection if the spec has one."
+notes = "Child row of AV2-5.18-FRAME-HEADER. frame_size() (§5.18.4.1) is modeled for the explicit-override and direct/default (cur_mfh_id == 0) paths, plus the CeilLog2 helper. frame_size_with_refs() (§5.18.4.3) and frame_size_with_bridge() (§5.18.4.2) need reference-frame dimensions and remain TODO. The frame-size-exceeds-sequence-max diagnostic is wired (§6.17.4.1)."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "partial"
+parse = "partial"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "partial"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/frame/size.rs::tests", "crates/splot-validate/src/validator.rs::tests::validator_flags_frame_size_exceeds_sequence_max"]
+commands = ["cargo test -p splot-core frame::size", "cargo test -p splot-validate frame_size"]
+fixtures = ["tests/fixtures/frame-header-core.av2"]
+diagnostics = ["frame-header/frame-size-exceeds-sequence-max"]
+
+[[feature]]
+id = "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS"
+name = "Frame header info semantics"
+category = "normative"
+kind = "validator-check"
+spec_sections = ["6.17.2", "6.17.4.1", "6.4.6"]
+sources = ["docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2", "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2"]
+crate = "splot-validate"
+module = "crates/splot-validate/src/context.rs"
+openspec_change = "frame-header-core-foundation"
+tracking_issue = ""
+owner = "validator"
+risk = "high"
+notes = "Locally decidable, state-supported frame-header-info checks driven by the core parser: bridge_frame_ref_idx range, frame_to_refresh range, reserved ref_long_term_id, refresh_frame_flags-when-output-deferred, still-picture KEY/immediate constraints, and the INTRA_ONLY all-slot-refresh rule (§6.17.2); frame size vs sequence maximum (§6.17.4.1); and the RAS-frame long_term_frame_id_bits requirement (§6.4.6). Reference-frame-buffer and long-term-reference availability checks (show-existing-frame slot validity, explicit reference map, primary_ref_frame range) remain partial until dedicated reference state exists, and are never guessed."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "partial"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-validate/src/validator.rs::tests::validator_flags_bridge_ref_index_out_of_range", "crates/splot-validate/src/validator.rs::tests::validator_flags_frame_size_exceeds_sequence_max", "crates/splot-validate/src/validator.rs::tests::validator_flags_ras_requires_long_term_frame_id_bits", "crates/splot-validate/src/validator.rs::tests::validator_flags_frame_to_refresh_out_of_range", "crates/splot-validate/src/validator.rs::tests::validator_flags_reserved_ref_long_term_id", "crates/splot-validate/src/validator.rs::tests::validator_flags_still_picture_non_key_frame", "crates/splot-validate/src/validator.rs::tests::validator_flags_intra_only_refresh_all_slots"]
+commands = ["cargo test -p splot-validate frame", "cargo test -p splot-validate validator_flags"]
 fixtures = []
-diagnostics = []
+diagnostics = ["frame-header/bridge-ref-index-out-of-range", "frame-header/frame-size-exceeds-sequence-max", "frame-header/ras-requires-long-term-frame-id-bits", "frame-header/frame-to-refresh-out-of-range", "frame-header/ref-long-term-id-reserved", "frame-header/refresh-frame-flags-zero-on-deferred-output", "frame-header/still-picture-requires-key-frame", "frame-header/intra-only-refresh-all-slots"]
 
 [[feature]]
 id = "AV2-5.18.5-FILTERING"
