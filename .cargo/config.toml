@@ -6,5 +6,6 @@
 [alias]
 xtask = "run --package xtask --"
 ci = "run --package xtask -- ci"
+cov = "run --package xtask -- coverage"
 fmt-check = "fmt --all -- --check"
 lint = "clippy --workspace --all-targets --all-features --locked -- -D warnings"
