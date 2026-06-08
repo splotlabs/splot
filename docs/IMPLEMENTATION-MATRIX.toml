@@ -4077,3 +4077,39 @@ tests = []
 commands = []
 fixtures = []
 diagnostics = []
+
+[[feature]]
+id = "DOC-AV2-SPEC-MIRROR"
+name = "AV2 specification mirror"
+category = "docs"
+kind = "docs"
+spec_sections = []
+sources = ["https://av2.aomedia.org/v1.0.0/20260528_38f28e7_AV2_Spec_v1.0.0.pdf"]
+crate = "xtask"
+module = "xtask/src/main.rs"
+openspec_change = "add-av2-spec-mirror"
+tracking_issue = ""
+owner = "docs"
+risk = "low"
+notes = "Commits a byte-faithful, versioned AV2 v1.0.0 spec mirror under docs/spec/av2/1.0.0/ (pdftotext -layout, headings over verbatim fenced bodies) as the single source of truth. Adds scripts/spec/regenerate-av2-spec.sh and a deterministic `cargo xtask check-spec-mirror` integrity gate (CHECKSUMS + pinned PDF sha256) wired into CI. AOM-copyright material, quarantined per THIRD-PARTY-NOTICES.md section 11."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["xtask/src/main.rs::tests::spec_mirror_gate_detects_drift"]
+commands = [
+    "cargo xtask check-spec-mirror",
+    "cargo test -p xtask spec_mirror",
+]
+fixtures = []
+diagnostics = []

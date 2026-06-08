@@ -5,8 +5,16 @@ Normative reference: **AV2 Bitstream & Decoding Process Specification v1.0.0**
 
 ## Sources
 
+- **Committed mirror (single source of truth, offline):**
+  [`docs/spec/av2/1.0.0/`](./spec/av2/1.0.0/) — a byte-faithful `pdftotext -layout`
+  copy of the PDF below, split per chapter with a section index
+  ([`index.md`](./spec/av2/1.0.0/index.md)). Cite `§ N.M` + the mirror path
+  (e.g. `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-16`). The PDF stays
+  normative; the mirror is the citable/greppable copy. Regenerate with
+  `scripts/spec/regenerate-av2-spec.sh`; integrity is gated by
+  `cargo xtask check-spec-mirror`.
 - HTML spec: <https://av2.aomedia.org/v1.0.0/index.html>
-- PDF spec: <https://av2.aomedia.org/v1.0.0/20260528_38f28e7_AV2_Spec_v1.0.0.pdf>
+- PDF spec (upstream, normative): <https://av2.aomedia.org/v1.0.0/20260528_38f28e7_AV2_Spec_v1.0.0.pdf>
 - Syntax browser: <https://av2.aomedia.org/v1.0.0/syntax_browser.html>
 - Additional tables: <https://av2.aomedia.org/v1.0.0/attachments/all_tables.h>
 - AVM reference software (oracle): <https://github.com/AOMediaCodec/avm/tree/v1.0.0>

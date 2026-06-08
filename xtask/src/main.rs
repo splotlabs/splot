@@ -5,7 +5,7 @@
 //!
 //! `xtask` is standalone automation: it depends on no `splot-*` crate.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -15,12 +15,29 @@ use clap::{Parser, Subcommand};
 mod feature_status;
 
 use feature_status::{CoverageFormat, StatusFormat};
+use sha2::{Digest, Sha256};
 
 /// SPDX identifier line every tracked `.rs` file must begin with.
 const SPDX_LINE: &str = "// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0";
 
 /// Prefix the second header line (the copyright line) must start with.
 const SPDX_COPYRIGHT_PREFIX: &str = "// SPDX-FileCopyrightText: ";
+
+/// Committed AV2 spec mirrors, each pinned to `(dir, pdf_sha256, checksums_sha256)`.
+///
+/// `pdf_sha256` is the source PDF the mirror was generated from; `checksums_sha256`
+/// is the sha256 of the mirror's own `CHECKSUMS` manifest. Pinning the manifest
+/// hash here — in source, outside the mirror — is what makes the gate reject
+/// content drift: editing any mirror file requires editing its `CHECKSUMS` line,
+/// which changes the manifest hash and fails this pin, so the only legitimate way
+/// to change the mirror is to regenerate it AND update this constant in a reviewed
+/// commit. Update both hashes when (re)generating a mirror (see
+/// `scripts/spec/regenerate-av2-spec.sh`).
+const SPEC_MIRRORS: &[(&str, &str, &str)] = &[(
+    "docs/spec/av2/1.0.0",
+    "e9916f091e4e83446aad6b4601641c5b292e569c144c4163b26a4497573b533f",
+    "d4c786fcda4c16e1e72005c42f047f67c1b0f66f54a20899234df3f78406350a",
+)];
 
 #[derive(Parser, Debug)]
 #[command(name = "xtask", about = "splot project automation")]
@@ -49,6 +66,8 @@ enum Task {
     CheckLicenseHeaders,
     /// Verify member crates honor the one-way dependency direction.
     CheckDependencyDirection,
+    /// Verify the committed AV2 spec mirror matches its CHECKSUMS and provenance.
+    CheckSpecMirror,
     /// Render the implementation matrix (docs/IMPLEMENTATION-MATRIX.toml).
     FeatureStatus {
         /// Output format.
@@ -102,6 +121,7 @@ fn main() -> Result<()> {
         Task::CheckConventionalTitle { title } => check_conventional_title(&title),
         Task::CheckLicenseHeaders => check_license_headers(&workspace_root()?),
         Task::CheckDependencyDirection => check_dependency_direction(&workspace_root()?),
+        Task::CheckSpecMirror => check_spec_mirror(&workspace_root()?),
         Task::FeatureStatus {
             format,
             category,
@@ -157,6 +177,7 @@ fn run_ci() -> Result<()> {
     let root = workspace_root()?;
     check_license_headers(&root)?;
     check_dependency_direction(&root)?;
+    check_spec_mirror(&root)?;
     feature_status::run_check_feature_status(&root)?;
 
     eprintln!("ci: all checks passed");
@@ -541,6 +562,148 @@ fn has_spdx_header(path: &Path) -> Result<bool> {
         && copyright.is_some_and(|line| line.starts_with(SPDX_COPYRIGHT_PREFIX)))
 }
 
+/// Lowercase hex SHA-256 of `bytes` (via the `sha2` crate), as used in the
+/// spec-mirror `CHECKSUMS` manifest.
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Verifies every committed AV2 spec mirror is byte-for-byte consistent with its
+/// `CHECKSUMS` manifest and that `provenance.toml` pins the expected PDF sha256.
+///
+/// Deterministic and offline: it recomputes sha256 over the committed files and
+/// never re-runs `pdftotext`, so it is stable across poppler versions. Drift
+/// (hand-edits, missing or extra files, a re-pointed PDF) fails the gate.
+fn check_spec_mirror(root: &Path) -> Result<()> {
+    for (rel_dir, pinned_pdf_sha, pinned_checksums_sha) in SPEC_MIRRORS {
+        verify_spec_mirror_dir(
+            &root.join(rel_dir),
+            rel_dir,
+            pinned_pdf_sha,
+            pinned_checksums_sha,
+        )?;
+    }
+    eprintln!("check-spec-mirror: ok");
+    Ok(())
+}
+
+fn verify_spec_mirror_dir(
+    dir: &Path,
+    rel_dir: &str,
+    pinned_pdf_sha: &str,
+    pinned_checksums_sha: &str,
+) -> Result<()> {
+    if !dir.is_dir() {
+        bail!(
+            "spec mirror {rel_dir} is missing (expected directory {})",
+            dir.display()
+        );
+    }
+
+    // 1. Parse the CHECKSUMS manifest: "<hex>  <relpath>" per line. The manifest
+    //    itself is pinned (step 3) so it cannot be edited to launder a file change.
+    let checksums_path = dir.join("CHECKSUMS");
+    let manifest = std::fs::read_to_string(&checksums_path)
+        .with_context(|| format!("failed to read {}", checksums_path.display()))?;
+    let mut expected: HashMap<String, String> = HashMap::new();
+    for (lineno, line) in manifest.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(2, "  ");
+        let hash = parts.next().unwrap_or_default().trim();
+        let rel = parts.next().map(str::trim).unwrap_or_default();
+        if hash.len() != 64 || rel.is_empty() {
+            bail!(
+                "{}: malformed manifest line {}",
+                checksums_path.display(),
+                lineno + 1
+            );
+        }
+        expected.insert(rel.to_string(), hash.to_string());
+    }
+
+    // 2. Walk the mirror, hashing every file except CHECKSUMS itself.
+    let mut problems: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in
+            std::fs::read_dir(&d).with_context(|| format!("failed to read {}", d.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let rel = path
+                .strip_prefix(dir)
+                .map_err(|_| anyhow!("path escaped the mirror directory"))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if rel == "CHECKSUMS" {
+                continue;
+            }
+            seen.insert(rel.clone());
+            let bytes = std::fs::read(&path)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            let got = sha256_hex(&bytes);
+            match expected.get(&rel) {
+                None => problems.push(format!("not listed in CHECKSUMS: {rel}")),
+                Some(want) if *want != got => problems.push(format!("checksum mismatch: {rel}")),
+                Some(_) => {}
+            }
+        }
+    }
+    for rel in expected.keys() {
+        if !seen.contains(rel) {
+            problems.push(format!("listed in CHECKSUMS but missing on disk: {rel}"));
+        }
+    }
+
+    // 3. The CHECKSUMS manifest itself must match the hash pinned in source. This
+    //    anchors the whole mirror outside itself: editing a file forces an edit to
+    //    its CHECKSUMS line, which changes this hash and fails the gate.
+    let manifest_sha = sha256_hex(manifest.as_bytes());
+    if manifest_sha != pinned_checksums_sha {
+        problems.push(format!(
+            "CHECKSUMS sha256 {manifest_sha:?} does not match the pinned {pinned_checksums_sha:?} (regenerate the mirror and update SPEC_MIRRORS)"
+        ));
+    }
+
+    // 4. Provenance must pin the expected PDF sha256.
+    let provenance_path = dir.join("provenance.toml");
+    let provenance = std::fs::read_to_string(&provenance_path)
+        .with_context(|| format!("failed to read {}", provenance_path.display()))?;
+    let table: toml::Table = toml::from_str(&provenance)
+        .with_context(|| format!("failed to parse {}", provenance_path.display()))?;
+    let pdf_sha = table
+        .get("pdf_sha256")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    if pdf_sha != pinned_pdf_sha {
+        problems.push(format!(
+            "provenance.toml pdf_sha256 {pdf_sha:?} does not match the pinned {pinned_pdf_sha:?}"
+        ));
+    }
+
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        for problem in &problems {
+            eprintln!("spec mirror {rel_dir}: {problem}");
+        }
+        bail!(
+            "spec mirror {rel_dir} failed integrity check ({} problem(s)); regenerate via scripts/spec/regenerate-av2-spec.sh",
+            problems.len()
+        )
+    }
+}
+
 fn check_dependency_direction(root: &Path) -> Result<()> {
     let root_manifest = read_manifest(&root.join("Cargo.toml"))?;
     let workspace_deps = workspace_dep_names(&root_manifest);
@@ -773,5 +936,50 @@ mod tests {
     fn conventional_title_check_reuses_subject_rules() {
         assert!(check_conventional_title("ci: enforce conventional commits").is_ok());
         assert!(check_conventional_title("Enforce Conventional Commits in CI").is_err());
+    }
+
+    #[test]
+    fn spec_mirror_gate_detects_drift() -> Result<()> {
+        let base = std::env::temp_dir().join(format!("xtask-spec-mirror-{}", std::process::id()));
+        let dir = base.join("docs/spec/av2/1.0.0");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(dir.join("sub"))?;
+
+        let body = "hello\n";
+        let provenance = "pdf_sha256 = \"PIN\"\n";
+        let write_mirror = |file_body: &str| -> Result<String> {
+            std::fs::write(dir.join("01.md"), file_body)?;
+            std::fs::write(dir.join("provenance.toml"), provenance)?;
+            // CHECKSUMS lists every generated file except itself.
+            let manifest = format!(
+                "{}  01.md\n{}  provenance.toml\n",
+                sha256_hex(file_body.as_bytes()),
+                sha256_hex(provenance.as_bytes()),
+            );
+            std::fs::write(dir.join("CHECKSUMS"), &manifest)?;
+            Ok(sha256_hex(manifest.as_bytes()))
+        };
+
+        let rel = "docs/spec/av2/1.0.0";
+        let manifest_sha = write_mirror(body)?;
+        // Clean mirror passes.
+        verify_spec_mirror_dir(&dir, rel, "PIN", &manifest_sha)?;
+        // Tampered content (CHECKSUMS not updated) fails on the file hash.
+        std::fs::write(dir.join("01.md"), "tampered\n")?;
+        assert!(verify_spec_mirror_dir(&dir, rel, "PIN", &manifest_sha).is_err());
+        // Content edited AND its CHECKSUMS line updated to match still fails,
+        // because the manifest hash no longer matches the pin (the codex P2 hole).
+        let laundered_sha = write_mirror("tampered\n")?;
+        assert_ne!(laundered_sha, manifest_sha);
+        assert!(verify_spec_mirror_dir(&dir, rel, "PIN", &manifest_sha).is_err());
+        // Restored content, but a re-pointed PDF hash fails.
+        let manifest_sha = write_mirror(body)?;
+        assert!(verify_spec_mirror_dir(&dir, rel, "DIFFERENT", &manifest_sha).is_err());
+        // An extra file not listed in CHECKSUMS fails.
+        std::fs::write(dir.join("sub/extra.md"), "x")?;
+        assert!(verify_spec_mirror_dir(&dir, rel, "PIN", &manifest_sha).is_err());
+
+        let _ = std::fs::remove_dir_all(&base);
+        Ok(())
     }
 }

@@ -9,6 +9,8 @@ extend-exclude = [
   "fuzz/Cargo.lock",
   "tests/fixtures/**",
   "docs/IMPLEMENTATION-MATRIX.toml",
+  # Verbatim AOM AV2 specification mirror (third-party text, do not spell-check).
+  "docs/spec/**",
   "*.av2",
   "*.obu",
 ]
