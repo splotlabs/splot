@@ -13,6 +13,7 @@ use crate::git_util::{run_git, sha256_hex};
 
 const PROTOCOL_VERSION: u32 = 1;
 const DEFAULT_LEDGER_PATH: &str = "docs/audits/av2-conformance-ledger.json";
+const DELETED_FILE_SHA256: &str = "<deleted>";
 
 /// Output format for `audit-scope`.
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -176,13 +177,24 @@ fn build_report(root: &Path, options: &AuditScopeOptions) -> Result<AuditScopeRe
 
     let force_wide_review_triggers =
         force_wide_review_triggers(changed_paths.as_ref(), existing_ledger.as_ref(), &in_scope);
-    let candidates = select_candidates(
+    let mut candidates = select_candidates(
         &in_scope,
         changed_paths.as_ref(),
         existing_ledger.as_ref(),
         options.all,
         !force_wide_review_triggers.is_empty(),
     );
+    if let Some(changed_paths) = changed_paths.as_ref() {
+        append_deleted_diff_candidates(
+            &mut candidates,
+            changed_paths,
+            &in_scope,
+            &workspace_members,
+            &feature_index,
+            !force_wide_review_triggers.is_empty(),
+        );
+    }
+    candidates.sort_by(|a, b| a.path.cmp(&b.path));
     let ledger_update = build_ledger(&audited_commit, &options.outcome, &in_scope);
 
     Ok(AuditScopeReport {
@@ -279,6 +291,8 @@ fn select_candidates(
 ) -> Vec<AuditCandidate> {
     let ledger_files = ledger_files_by_path(ledger);
     let ledger_outcome = ledger.map(|ledger| ledger.outcome.as_str());
+    let ledger_protocol_mismatch =
+        ledger.is_some_and(|ledger| ledger.protocol_version != PROTOCOL_VERSION);
     let mut out = Vec::new();
     for file in files {
         let mut reasons = BTreeSet::new();
@@ -300,6 +314,9 @@ fn select_candidates(
                 }
                 Some(entry) if entry.sha256 != file.sha256 => {
                     reasons.insert("content-hash-changed".to_owned());
+                }
+                Some(_) if ledger_protocol_mismatch => {
+                    reasons.insert("ledger-protocol-version-mismatch".to_owned());
                 }
                 Some(_) if ledger_outcome != Some("success") => {
                     reasons.insert("ledger-outcome-not-success".to_owned());
@@ -325,6 +342,44 @@ fn select_candidates(
         }
     }
     out
+}
+
+fn append_deleted_diff_candidates(
+    candidates: &mut Vec<AuditCandidate>,
+    changed_paths: &BTreeSet<String>,
+    files: &[TrackedAuditFile],
+    workspace_members: &[WorkspaceMember],
+    feature_index: &FeatureIndex,
+    force_wide_review: bool,
+) {
+    let current_paths: BTreeSet<&str> = files.iter().map(|file| file.path.as_str()).collect();
+    let mut candidate_paths: BTreeSet<String> = candidates
+        .iter()
+        .map(|candidate| candidate.path.clone())
+        .collect();
+    for path in changed_paths {
+        if current_paths.contains(path.as_str()) || candidate_paths.contains(path) {
+            continue;
+        }
+        let Some(scope_kind) = scope_kind(path, workspace_members) else {
+            continue;
+        };
+        let mut reasons = BTreeSet::from(["deleted-in-diff".to_owned()]);
+        if force_wide_review {
+            reasons.insert("wide-review-triggered".to_owned());
+        }
+        candidates.push(AuditCandidate {
+            path: path.clone(),
+            sha256: DELETED_FILE_SHA256.to_owned(),
+            scope_kind: scope_kind.clone(),
+            reasons: reasons.into_iter().collect(),
+            feature_ids: feature_ids_for_path(path, feature_index)
+                .into_iter()
+                .collect(),
+            reviewer_lanes: reviewer_lanes(path, &scope_kind).into_iter().collect(),
+        });
+        candidate_paths.insert(path.clone());
+    }
 }
 
 fn ledger_files_by_path(ledger: Option<&AuditLedger>) -> Option<BTreeMap<String, AuditLedgerFile>> {
@@ -609,6 +664,8 @@ fn workspace_members_from_manifest_text(root: &Path, text: &str) -> Result<Vec<W
         .and_then(toml::Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let exclude_patterns = workspace_exclude_patterns(root, &value)?;
+    let workspace_dependency_paths = workspace_dependency_paths(root, &value)?;
     let mut out = Vec::new();
     let mut seen_paths = BTreeSet::new();
     for member in members {
@@ -616,26 +673,74 @@ fn workspace_members_from_manifest_text(root: &Path, text: &str) -> Result<Vec<W
             continue;
         };
         for member_path in workspace_member_paths(root, path)? {
-            if !seen_paths.insert(member_path.clone()) {
-                continue;
+            insert_workspace_member_path(
+                root,
+                &member_path,
+                &exclude_patterns,
+                &mut seen_paths,
+                &mut out,
+            )?;
+        }
+    }
+    let mut pending_paths: Vec<String> = seen_paths.iter().cloned().collect();
+    for dependency_path in workspace_dependency_paths.values() {
+        if insert_workspace_member_path(
+            root,
+            dependency_path,
+            &exclude_patterns,
+            &mut seen_paths,
+            &mut out,
+        )? {
+            pending_paths.push(dependency_path.clone());
+        }
+    }
+    while let Some(member_path) = pending_paths.pop() {
+        for dependency_path in
+            package_path_dependencies(root, &member_path, &workspace_dependency_paths)?
+        {
+            if insert_workspace_member_path(
+                root,
+                &dependency_path,
+                &exclude_patterns,
+                &mut seen_paths,
+                &mut out,
+            )? {
+                pending_paths.push(dependency_path);
             }
-            let package = package_name_for_member(root, &member_path)?;
-            out.push(WorkspaceMember {
-                package,
-                path: member_path,
-            });
         }
     }
     out.sort();
     Ok(out)
 }
 
+fn insert_workspace_member_path(
+    root: &Path,
+    member_path: &str,
+    exclude_patterns: &[String],
+    seen_paths: &mut BTreeSet<String>,
+    members: &mut Vec<WorkspaceMember>,
+) -> Result<bool> {
+    if workspace_path_is_excluded(member_path, exclude_patterns) {
+        return Ok(false);
+    }
+    if !seen_paths.insert(member_path.to_owned()) {
+        return Ok(false);
+    }
+    let package = package_name_for_member(root, member_path)?;
+    members.push(WorkspaceMember {
+        package,
+        path: member_path.to_owned(),
+    });
+    Ok(true)
+}
+
 fn workspace_member_paths(root: &Path, pattern: &str) -> Result<Vec<String>> {
     if !pattern.contains('*') {
-        return Ok(vec![pattern.to_owned()]);
+        return Ok(vec![normalize_workspace_path(root, root, pattern)?]);
     }
 
-    let segments: Vec<&str> = pattern
+    let normalized_pattern = normalize_workspace_pattern(pattern);
+    let segments: Vec<&str> = normalized_pattern
         .split('/')
         .filter(|segment| !segment.is_empty())
         .collect();
@@ -644,6 +749,132 @@ fn workspace_member_paths(root: &Path, pattern: &str) -> Result<Vec<String>> {
     paths.sort();
     paths.dedup();
     Ok(paths)
+}
+
+fn workspace_exclude_patterns(
+    root: &Path,
+    workspace_manifest: &toml::Value,
+) -> Result<Vec<String>> {
+    let excludes = workspace_manifest
+        .get("workspace")
+        .and_then(|workspace| workspace.get("exclude"))
+        .and_then(toml::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for exclude in excludes {
+        let Some(pattern) = exclude.as_str() else {
+            continue;
+        };
+        if pattern.contains('*') {
+            out.push(normalize_workspace_pattern(pattern));
+        } else {
+            out.push(normalize_workspace_path(root, root, pattern)?);
+        }
+    }
+    Ok(out)
+}
+
+fn workspace_dependency_paths(
+    root: &Path,
+    workspace_manifest: &toml::Value,
+) -> Result<BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    if let Some(dependencies) = workspace_manifest
+        .get("workspace")
+        .and_then(|workspace| workspace.get("dependencies"))
+        .and_then(toml::Value::as_table)
+    {
+        for (name, value) in dependencies {
+            if let Some(path) = value
+                .as_table()
+                .and_then(|table| table.get("path"))
+                .and_then(toml::Value::as_str)
+            {
+                out.insert(name.clone(), normalize_workspace_path(root, root, path)?);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn package_path_dependencies(
+    root: &Path,
+    member_path: &str,
+    workspace_dependency_paths: &BTreeMap<String, String>,
+) -> Result<Vec<String>> {
+    let manifest_path = root.join(member_path).join("Cargo.toml");
+    if !manifest_path.is_file() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+    let value: toml::Value = toml::from_str(&text)
+        .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+    let manifest_dir = root.join(member_path);
+    let mut out = BTreeSet::new();
+    collect_package_path_dependencies(
+        root,
+        &manifest_dir,
+        &value,
+        workspace_dependency_paths,
+        &mut out,
+    )?;
+    Ok(out.into_iter().collect())
+}
+
+fn collect_package_path_dependencies(
+    root: &Path,
+    manifest_dir: &Path,
+    manifest: &toml::Value,
+    workspace_dependency_paths: &BTreeMap<String, String>,
+    paths: &mut BTreeSet<String>,
+) -> Result<()> {
+    for key in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        if let Some(dependencies) = manifest.get(key).and_then(toml::Value::as_table) {
+            collect_dependency_table_paths(
+                root,
+                manifest_dir,
+                dependencies,
+                workspace_dependency_paths,
+                paths,
+            )?;
+        }
+    }
+    if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
+        for target in targets.values() {
+            collect_package_path_dependencies(
+                root,
+                manifest_dir,
+                target,
+                workspace_dependency_paths,
+                paths,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_dependency_table_paths(
+    root: &Path,
+    manifest_dir: &Path,
+    dependencies: &toml::Table,
+    workspace_dependency_paths: &BTreeMap<String, String>,
+    paths: &mut BTreeSet<String>,
+) -> Result<()> {
+    for (name, value) in dependencies {
+        let Some(table) = value.as_table() else {
+            continue;
+        };
+        if let Some(path) = table.get("path").and_then(toml::Value::as_str) {
+            paths.insert(normalize_workspace_path(root, manifest_dir, path)?);
+        } else if table.get("workspace").and_then(toml::Value::as_bool) == Some(true)
+            && let Some(path) = workspace_dependency_paths.get(name)
+        {
+            paths.insert(path.clone());
+        }
+    }
+    Ok(())
 }
 
 fn expand_workspace_member_pattern(
@@ -690,6 +921,26 @@ fn expand_workspace_member_pattern(
     expand_workspace_member_pattern(root, &prefix.join(segment), rest, paths)
 }
 
+fn workspace_path_is_excluded(path: &str, exclude_patterns: &[String]) -> bool {
+    exclude_patterns.iter().any(|pattern| {
+        if pattern.contains('*') {
+            matches_workspace_pattern(pattern, path)
+        } else {
+            path == pattern || path.starts_with(&format!("{pattern}/"))
+        }
+    })
+}
+
+fn matches_workspace_pattern(pattern: &str, path: &str) -> bool {
+    let pattern_segments: Vec<&str> = pattern.split('/').collect();
+    let path_segments: Vec<&str> = path.split('/').collect();
+    pattern_segments.len() <= path_segments.len()
+        && pattern_segments
+            .iter()
+            .zip(path_segments.iter())
+            .all(|(pattern, path)| matches_glob_segment(pattern, path))
+}
+
 fn matches_glob_segment(pattern: &str, candidate: &str) -> bool {
     if pattern == "*" {
         return true;
@@ -719,6 +970,61 @@ fn matches_glob_segment(pattern: &str, candidate: &str) -> bool {
     !anchored_end || parts.last().is_some_and(|part| candidate.ends_with(part))
 }
 
+fn normalize_workspace_pattern(pattern: &str) -> String {
+    let mut parts = Vec::new();
+    for segment in pattern.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                let _ = parts.pop();
+            }
+            _ => parts.push(segment),
+        }
+    }
+    parts.join("/")
+}
+
+fn normalize_workspace_path(root: &Path, base: &Path, path: &str) -> Result<String> {
+    let root = normalize_path_lexically(root);
+    let path = Path::new(path);
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    };
+    let normalized = normalize_path_lexically(&joined);
+    let relative = normalized.strip_prefix(&root).with_context(|| {
+        format!(
+            "workspace path {} escapes {}",
+            path.display(),
+            root.display()
+        )
+    })?;
+    if relative.as_os_str().is_empty() {
+        bail!(
+            "workspace path {} resolves to the workspace root",
+            path.display()
+        );
+    }
+    Ok(path_to_string(relative))
+}
+
+fn normalize_path_lexically(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => out.push(prefix.as_os_str()),
+            std::path::Component::RootDir => out.push(Path::new("/")),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                let _ = out.pop();
+            }
+            std::path::Component::Normal(segment) => out.push(segment),
+        }
+    }
+    out
+}
+
 fn package_name_for_member(root: &Path, member: &str) -> Result<String> {
     let manifest_path = root.join(member).join("Cargo.toml");
     if manifest_path.is_file() {
@@ -744,10 +1050,36 @@ fn changed_paths_from_base(root: &Path, base: &str) -> Result<BTreeSet<String>> 
     if base.trim().is_empty() || base.starts_with('-') {
         bail!("audit-scope --base must not be empty or start with `-`");
     }
-    let mut args = vec!["diff", "--name-only", "--diff-filter=ACDMRT", base];
+    let mut args = vec![
+        "diff",
+        "--name-status",
+        "--find-renames",
+        "--diff-filter=ACDMRT",
+        base,
+    ];
     args.push("HEAD");
     args.push("--");
-    Ok(git_lines(root, &args)?.into_iter().collect())
+    let mut paths = BTreeSet::new();
+    for line in git_lines(root, &args)? {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let Some(status) = fields.first().copied() else {
+            continue;
+        };
+        match status.as_bytes().first().copied() {
+            Some(b'R') if fields.len() >= 3 => {
+                paths.insert(fields[1].to_owned());
+                paths.insert(fields[2].to_owned());
+            }
+            Some(b'C') if fields.len() >= 3 => {
+                paths.insert(fields[2].to_owned());
+            }
+            Some(_) if fields.len() >= 2 => {
+                paths.insert(fields[1].to_owned());
+            }
+            _ => {}
+        }
+    }
+    Ok(paths)
 }
 
 fn git_lines(root: &Path, args: &[&str]) -> Result<Vec<String>> {
@@ -848,6 +1180,88 @@ edition = "2024"
     }
 
     #[test]
+    fn workspace_member_paths_are_normalized_before_classification() -> Result<()> {
+        let root = temp_root("audit-scope-workspace-normalized")?;
+        let crate_dir = root.join("crates/splot-core");
+        std::fs::create_dir_all(crate_dir.join("src"))?;
+        std::fs::write(
+            root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["./crates/splot-core"]
+"#,
+        )?;
+        std::fs::write(
+            crate_dir.join("Cargo.toml"),
+            r#"
+[package]
+name = "splot-core"
+version = "0.0.0"
+edition = "2024"
+"#,
+        )?;
+
+        let members = load_workspace_members(&root)?;
+        assert_eq!(members[0].path, "crates/splot-core");
+        assert_eq!(
+            scope_kind("crates/splot-core/src/lib.rs", &members).as_deref(),
+            Some("workspace:splot-core")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_path_dependencies_are_discovered_as_auto_members() -> Result<()> {
+        let root = temp_root("audit-scope-workspace-auto-members")?;
+        let core_dir = root.join("crates/splot-core");
+        let decode_dir = root.join("crates/splot-decode");
+        std::fs::create_dir_all(core_dir.join("src"))?;
+        std::fs::create_dir_all(decode_dir.join("src"))?;
+        std::fs::write(
+            root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["crates/splot-core"]
+"#,
+        )?;
+        std::fs::write(
+            core_dir.join("Cargo.toml"),
+            r#"
+[package]
+name = "splot-core"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+splot-decode = { path = "../splot-decode" }
+"#,
+        )?;
+        std::fs::write(
+            decode_dir.join("Cargo.toml"),
+            r#"
+[package]
+name = "splot-decode"
+version = "0.0.0"
+edition = "2024"
+"#,
+        )?;
+
+        let members = load_workspace_members(&root)?;
+        assert!(members.iter().any(|member| {
+            member.package == "splot-decode" && member.path == "crates/splot-decode"
+        }));
+        assert_eq!(
+            scope_kind("crates/splot-decode/src/lib.rs", &members).as_deref(),
+            Some("workspace:splot-decode")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
     fn ledger_selection_skips_unchanged_and_selects_hash_changes() {
         let files = vec![
             tracked("crates/splot-core/src/obu.rs", "aaa"),
@@ -906,6 +1320,24 @@ edition = "2024"
         let candidates = select_candidates(&files[..1], None, Some(&failed_ledger), false, false);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].reasons, vec!["ledger-outcome-not-success"]);
+    }
+
+    #[test]
+    fn ledger_selection_reaudits_protocol_version_mismatches() {
+        let files = vec![tracked("crates/splot-core/src/obu.rs", "aaa")];
+        let ledger = AuditLedger {
+            protocol_version: PROTOCOL_VERSION + 1,
+            audited_commit: "old".to_owned(),
+            outcome: "success".to_owned(),
+            files: vec![ledger_file("crates/splot-core/src/obu.rs", "aaa")],
+        };
+
+        let candidates = select_candidates(&files, None, Some(&ledger), false, false);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].reasons,
+            vec!["ledger-protocol-version-mismatch"]
+        );
     }
 
     #[test]
@@ -981,6 +1413,77 @@ edition = "2024"
         let triggers = force_wide_review_triggers(Some(&changed), None, &[]);
         assert_eq!(triggers.len(), 1);
         assert_eq!(triggers[0].reason, "repository-agent-instructions");
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn changed_paths_from_base_preserves_renamed_force_wide_sources() -> Result<()> {
+        let root = temp_git_repo("audit-scope-renamed-force-wide")?;
+        std::fs::write(root.join("AGENTS.md"), "rules\n")?;
+        git_commit_all(&root, "test: add agents")?;
+        std::fs::rename(root.join("AGENTS.md"), root.join("RULES.md"))?;
+        git_commit_all(&root, "test: rename agents")?;
+
+        let changed = changed_paths_from_base(&root, "HEAD~1")?;
+        assert!(changed.contains("AGENTS.md"));
+        assert!(changed.contains("RULES.md"));
+        let triggers = force_wide_review_triggers(Some(&changed), None, &[]);
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].path, "AGENTS.md");
+        assert_eq!(triggers[0].reason, "repository-agent-instructions");
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn build_report_includes_deleted_workspace_diff_candidates() -> Result<()> {
+        let root = temp_git_repo("audit-scope-deleted-workspace-candidate")?;
+        std::fs::create_dir_all(root.join("crates/splot-core/src"))?;
+        std::fs::create_dir_all(root.join("docs"))?;
+        std::fs::write(
+            root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["crates/splot-core"]
+"#,
+        )?;
+        std::fs::write(
+            root.join("crates/splot-core/Cargo.toml"),
+            r#"
+[package]
+name = "splot-core"
+version = "0.0.0"
+edition = "2024"
+"#,
+        )?;
+        std::fs::write(root.join("docs/IMPLEMENTATION-MATRIX.toml"), "")?;
+        std::fs::write(root.join("crates/splot-core/src/deleted.rs"), "parser\n")?;
+        git_commit_all(&root, "test: add workspace file")?;
+        std::fs::remove_file(root.join("crates/splot-core/src/deleted.rs"))?;
+        git_commit_all(&root, "test: delete workspace file")?;
+
+        let report = build_report(
+            &root,
+            &AuditScopeOptions {
+                base: Some("HEAD~1".to_owned()),
+                ledger: None,
+                write_ledger: false,
+                all: false,
+                format: AuditScopeFormat::Json,
+                outcome: "success".to_owned(),
+            },
+        )?;
+        let deleted = report
+            .candidates
+            .iter()
+            .find(|candidate| candidate.path == "crates/splot-core/src/deleted.rs")
+            .ok_or_else(|| anyhow::anyhow!("deleted candidate missing"))?;
+        assert_eq!(deleted.sha256, DELETED_FILE_SHA256);
+        assert_eq!(deleted.scope_kind, "workspace:splot-core");
+        assert_eq!(deleted.reasons, vec!["deleted-in-diff"]);
 
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
