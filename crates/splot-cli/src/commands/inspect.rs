@@ -17,8 +17,10 @@ use splot_core::headers::buffer_removal_timing::{
 use splot_core::headers::content_interpretation::{
     ContentInterpretation, parse_content_interpretation,
 };
+use splot_core::headers::film_grain::{FilmGrainObu, parse_film_grain};
 use splot_core::headers::frame::{FrameHeaderPrefix, parse_frame_header_prefix};
 use splot_core::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
+use splot_core::headers::quantizer_matrix::{QuantizerMatrixObu, parse_quantizer_matrix};
 use splot_core::headers::sequence::{SequenceHeader, parse_sequence_header};
 use splot_core::headers::tile_group::parse_tile_group_prefix;
 use splot_core::obu::{ObuHeader, PayloadStatus};
@@ -56,6 +58,10 @@ struct InspectRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     buffer_removal_timing: Option<BufferRemovalTimingView>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    quantizer_matrix: Option<QuantizerMatrixView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    film_grain: Option<FilmGrainView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     frame_header_prefix: Option<FrameHeaderPrefixView>,
     header: ObuHeader,
 }
@@ -72,6 +78,8 @@ impl InspectRecord {
             content_interpretation: content_interpretation_view(obu),
             operating_point_set: operating_point_set_view(obu),
             buffer_removal_timing: buffer_removal_timing_view(obu),
+            quantizer_matrix: quantizer_matrix_view(obu),
+            film_grain: film_grain_view(obu),
             frame_header_prefix: frame_header_prefix_view(obu),
             header: obu.header,
         }
@@ -155,6 +163,130 @@ impl BufferRemovalTimingView {
             br_time: brt.extended_layer_time(),
         }
     }
+}
+
+/// Re-parses a `quantizer_matrix_obu()` so `--json` can expose its key fields. Large
+/// matrices are summarized as shape labels only, never dumped by default.
+fn quantizer_matrix_view(obu: &ObuEnvelope<'_>) -> Option<QuantizerMatrixView> {
+    if obu.header.obu_type != ObuType::QuantizationMatrix {
+        return None;
+    }
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    parse_quantizer_matrix(&mut reader)
+        .ok()
+        .map(|qm| QuantizerMatrixView::new(&qm))
+}
+
+/// A compact, machine-readable view of a parsed `quantizer_matrix_obu()`. Coefficient
+/// matrices are summarized by shape, not dumped.
+#[derive(Serialize)]
+struct QuantizerMatrixView {
+    qm_bit_map: u16,
+    num_planes: u8,
+    is_reset: bool,
+    levels: Vec<QuantizerMatrixLevelView>,
+}
+
+impl QuantizerMatrixView {
+    fn new(qm: &QuantizerMatrixObu) -> Self {
+        let levels = qm
+            .levels
+            .iter()
+            .map(|level| QuantizerMatrixLevelView {
+                level: level.level,
+                is_default: level.is_default,
+                matrix_shapes: level
+                    .matrices
+                    .as_ref()
+                    .map(|transforms| {
+                        transforms
+                            .iter()
+                            .map(|transform| transform.transform.shape_label())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            })
+            .collect();
+        Self {
+            qm_bit_map: qm.qm_bit_map,
+            num_planes: qm.num_planes,
+            is_reset: qm.is_reset(),
+            levels,
+        }
+    }
+}
+
+/// A compact per-level summary for `QuantizerMatrixView`.
+#[derive(Serialize)]
+struct QuantizerMatrixLevelView {
+    level: u8,
+    is_default: bool,
+    /// Fundamental transform shapes present for a user-defined level (empty for a
+    /// default level).
+    matrix_shapes: Vec<&'static str>,
+}
+
+/// Re-parses a `film_grain_obu()` so `--json` can expose its key fields. Scaling
+/// points and AR-coefficient arrays are summarized by count, not dumped.
+fn film_grain_view(obu: &ObuEnvelope<'_>) -> Option<FilmGrainView> {
+    if obu.header.obu_type != ObuType::FilmGrain {
+        return None;
+    }
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    parse_film_grain(&mut reader)
+        .ok()
+        .map(|fg| FilmGrainView::new(&fg))
+}
+
+/// A compact, machine-readable view of a parsed `film_grain_obu()`.
+#[derive(Serialize)]
+struct FilmGrainView {
+    fgm_update_flags: u8,
+    fgm_chroma_idc: u32,
+    monochrome: bool,
+    updated_slots: Vec<u8>,
+    models: Vec<FilmGrainModelView>,
+}
+
+impl FilmGrainView {
+    fn new(fg: &FilmGrainObu) -> Self {
+        let models = fg
+            .models
+            .iter()
+            .map(|update| FilmGrainModelView {
+                slot: update.slot,
+                chroma_scaling_from_luma: update.model.chroma_scaling_from_luma,
+                num_y_points: update.model.num_y_points,
+                num_cb_points: update.model.num_cb_points,
+                num_cr_points: update.model.num_cr_points,
+                ar_coeff_lag: update.model.ar_coeff_lag,
+                overlap_flag: update.model.overlap_flag,
+                clip_to_restricted_range: update.model.clip_to_restricted_range,
+                film_grain_block_size: update.model.film_grain_block_size,
+            })
+            .collect();
+        Self {
+            fgm_update_flags: fg.update_flags,
+            fgm_chroma_idc: fg.chroma_idc,
+            monochrome: fg.monochrome,
+            updated_slots: fg.models.iter().map(|update| update.slot).collect(),
+            models,
+        }
+    }
+}
+
+/// A compact per-slot model summary for `FilmGrainView`.
+#[derive(Serialize)]
+struct FilmGrainModelView {
+    slot: u8,
+    chroma_scaling_from_luma: bool,
+    num_y_points: u8,
+    num_cb_points: u8,
+    num_cr_points: u8,
+    ar_coeff_lag: u8,
+    overlap_flag: bool,
+    clip_to_restricted_range: bool,
+    film_grain_block_size: bool,
 }
 
 /// Re-parses a frame-bearing OBU's prefix so `--json` can expose the

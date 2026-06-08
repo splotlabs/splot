@@ -87,6 +87,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "AV2-4.11.4-SVLC"
+name = "Signed variable-length code descriptor"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["4.11.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/bitio.rs"
+openspec_change = "qm-filmgrain-hls-foundation"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Implemented as BitReader::read_svlc() from AV2 §4.11.4: value = uvlc(); half = (value + 1) >> 1; svlc = (value & 1) ? half : -half. EOF and the uvlc() leadingZeros >= 32 conformance bound propagate from read_uvlc() without panics. Needed by the user_defined_qm() helper (AV2-5.4.11-USER-QM)."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "done"
+validate = "not-applicable"
+write = "todo"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests"]
+commands = ["cargo test -p splot-core bitio"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "AV2-4.11.5-LE"
 name = "Little-endian fixed-width descriptor"
 category = "normative"
@@ -794,28 +827,28 @@ kind = "bitstream-syntax"
 spec_sections = ["5.4.11", "6.4.11"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers/sequence.rs"
-openspec_change = "sequence-hls-validator-coverage"
+module = "crates/splot-core/src/headers/quantizer_matrix.rs"
+openspec_change = "qm-filmgrain-hls-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+notes = "Implemented as the shared user_defined_qm(level, t, plane) helper (AV2 §5.4.11) used by quantizer_matrix_obu() (AV2-5.13-QUANTIZATION-MATRIX). Per the current parser it is NOT called directly from sequence_header_obu(); future frame-level quantization can reuse the helper. Covers the three Fundamental_Tx_Size shapes (TX_8X8/TX_8X4/TX_4X8), plane-copy, 8x8 symmetry, 4x8 transpose-from-8x4, the AV2 2D diagonal scan (get_scan, TX_CLASS_2D), svlc() quant deltas, and quant2 == 0 coefficient repeat; scan/transform derivation is from the AV2 spec and the AVM oracle obu_qm.c (no AV1 tables). It enforces the §6.4.11 quant_delta -128..=127 conformance bound (Error::InvalidQuantizerMatrix, surfaced as qm/quant-delta-out-of-range). Depends on AV2-4.11.4-SVLC."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "not-applicable"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/headers/quantizer_matrix.rs::tests", "crates/splot-core/src/headers/quantizer_matrix.rs::proptests"]
+commands = ["cargo test -p splot-core quantizer"]
 fixtures = []
 diagnostics = []
 
@@ -1883,63 +1916,63 @@ kind = "bitstream-syntax"
 spec_sections = ["5.13", "6.12"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/quantizer_matrix.rs"
+openspec_change = "qm-filmgrain-hls-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Needed for sequence/frame quantization matrix references and value checks."
+notes = "Full §5.13 quantizer_matrix_obu() parser (qm_bit_map f(15), qm_chroma_info_present_flag, reset/default path, per-level qm_is_default_flag, user-defined matrices via the AV2-5.4.11-USER-QM helper), dispatched from open_bitstream_unit() with a QuantizationMatrix ParsedObu variant and inspect JSON summary (level/plane/default status; matrices summarized by shape, not dumped). The parser enforces the §6.4.11 quant_delta -128..=127 bound (qm/quant-delta-out-of-range via the QuantizerMatrixSyntax check), and the validator implements the local §6.12 duplicate-reset-between-frames and duplicate-level-between-frames checks and records per-level HLS availability (QmMLayerId/QmTLayerId/QmDataPresent/QmNumPlanes, reset to defaults on a qm_bit_map==0 reset) as foundation. The between-coded-frames window resets at each frame-bearing OBU only (not at temporal-unit boundaries: §6.12 windows close at a coded frame, so a level reused across a bare temporal delimiter is still a duplicate); frame-bearing covers tile groups plus SEF/TIP/bridge, a superset of the AVM tile-group reset point, so no false positives and at most a SEF-only false negative. Frame quantization-reference checks (using_qmatrix/qm_y/qm_u/qm_v, §6.17.6) and the QmProtected key-frame reset remain deferred until the frame header is parsed."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
+tests = ["crates/splot-core/src/headers/quantizer_matrix.rs::tests", "crates/splot-core/src/obu.rs::tests::dispatch_parses_quantizer_matrix_payload", "crates/splot-validate/src/validator.rs::tests::qm_duplicate_reset_between_frames_is_flagged", "crates/splot-validate/src/validator.rs::tests::qm_duplicate_level_between_frames_is_flagged", "crates/splot-validate/src/validator.rs::tests::qm_malformed_payload_is_flagged", "crates/splot-validate/src/validator.rs::tests::qm_quant_delta_out_of_range_is_flagged", "crates/splot-validate/src/validator.rs::tests::qm_duplicate_level_across_temporal_delimiter_is_flagged"]
+commands = ["cargo test -p splot-core quantizer", "cargo test -p splot-validate qm"]
+fixtures = ["tests/fixtures/quantizer-matrix.av2"]
+diagnostics = ["qm/duplicate-reset-between-frames", "qm/duplicate-level-between-frames", "qm/quant-delta-out-of-range"]
 
 [[feature]]
 id = "AV2-5.14-FILM-GRAIN"
 name = "Film grain OBU syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.14", "6.13"]
+spec_sections = ["5.14", "5.18.10.2", "6.13", "6.17.10.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/film_grain.rs"
+openspec_change = "qm-filmgrain-hls-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Needed for film-grain syntax and update flag checks."
+notes = "Full §5.14 film_grain_obu() parser (fgm_update_flags f(8), fgm_chroma_idc uvlc() with subX/subY/monochrome derivation, per-slot film_grain_model()) and the complete §5.18.10.2 film_grain_model() parser (scaling points, grain scaling, AR coefficient arrays, chroma multipliers/offsets, overlap/restricted-range/identity/block-size), dispatched from open_bitstream_unit() with a FilmGrain ParsedObu variant and inspect JSON summary (arrays summarized by count, not dumped). Field order verified against the AVM oracle obu_fgm.c (no AV1 code). Validator implements the local §6.13 update-flags-zero, chroma-idc-out-of-range, and duplicate-slot-in-coded-frame-unit checks, the local §6.17.10.2 film-grain-model checks (scaling-points-out-of-range for num_*_points>14, scaling-point-not-increasing for non-monotonic/>=256 point values, and chroma-points-not-paired for the 4:2:0 cb/cr pairing rule), and records per-slot HLS availability (FgmChromaIdc/FgmMLayerId/FgmTLayerId) as foundation. The coded-frame-unit window resets at each frame-bearing OBU only (not at temporal-unit boundaries: §6.13 windows close at a coded frame, so a slot reused across a bare temporal delimiter is still a duplicate); no false positives and at most a SEF-only false negative. Frame film-grain reference checks (apply_grain/fgm_id, §5.18.10.1) remain deferred until the frame header is parsed."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "done"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "done"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
+tests = ["crates/splot-core/src/headers/film_grain.rs::tests", "crates/splot-core/src/obu.rs::tests::dispatch_parses_film_grain_payload", "crates/splot-validate/src/validator.rs::tests::film_grain_zero_update_flags_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_chroma_idc_out_of_range_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_duplicate_slot_in_coded_frame_unit_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_malformed_payload_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_too_many_scaling_points_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_420_unpaired_chroma_points_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_non_increasing_scaling_point_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_duplicate_slot_across_temporal_delimiter_is_flagged"]
+commands = ["cargo test -p splot-core film", "cargo test -p splot-validate film"]
+fixtures = ["tests/fixtures/film-grain.av2"]
+diagnostics = ["film-grain/update-flags-zero", "film-grain/chroma-idc-out-of-range", "film-grain/duplicate-slot-in-coded-frame-unit", "film-grain/scaling-points-out-of-range", "film-grain/scaling-point-not-increasing", "film-grain/chroma-points-not-paired"]
 
 [[feature]]
 id = "AV2-5.15-CONTENT-INTERPRETATION"
@@ -3175,7 +3208,7 @@ openspec_change = "frame-activation-hls-skeleton"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Active sequence lookup by xlayer, the repeated-identical (bit-fingerprint) check, an in-band sequence-header + multi-frame-header availability store, the multi-frame-header -> sequence-header reference check (mfh_seq_header_id), and the generic frame-header reference checks (seq_header_id_in_frame_header and cur_mfh_id) are implemented, with caller-provided external HLS via ValidationOptions (default disabled; external MFH/LCR/atlas are future). Layer-configuration-record availability (§7.3.8.3: local->global LCR and sequence-header seq_lcr_id resolution incl. lcr_xlayer_map membership) and local atlas-segment availability (§7.3.8.4) are now modeled; the global atlas (can be available) is not flagged. Availability is kept monotonic; the §7.3.8.1 resend-at-RAP requirement and MSDO/OPS reference paths remain bounded. MFH layer-dependency-map checks remain future (TLayerDependencyMap/MLayerDependencyMap are not exposed by the sequence-header model)."
+notes = "Active sequence lookup by xlayer, the repeated-identical (bit-fingerprint) check, an in-band sequence-header + multi-frame-header availability store, the multi-frame-header -> sequence-header reference check (mfh_seq_header_id), and the generic frame-header reference checks (seq_header_id_in_frame_header and cur_mfh_id) are implemented, with caller-provided external HLS via ValidationOptions (default disabled; external MFH/LCR/atlas are future). Layer-configuration-record availability (§7.3.8.3: local->global LCR and sequence-header seq_lcr_id resolution incl. lcr_xlayer_map membership) and local atlas-segment availability (§7.3.8.4) are now modeled; the global atlas (can be available) is not flagged. Availability is kept monotonic; the §7.3.8.1 resend-at-RAP requirement and MSDO/OPS reference paths remain bounded. MFH layer-dependency-map checks remain future (TLayerDependencyMap/MLayerDependencyMap are not exposed by the sequence-header model). The validator also records per-level quantizer-matrix availability (AV2-5.13-QUANTIZATION-MATRIX) and per-slot film-grain availability (AV2-5.14-FILM-GRAIN) as foundation; the corresponding frame quantization/film-grain reference checks (using_qmatrix/qm_* and apply_grain/fgm_id) remain future until the frame header is parsed."
 
 [feature.status]
 mapped = "done"

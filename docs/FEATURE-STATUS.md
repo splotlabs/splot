@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-07. 121 feature(s).
+Matrix version 1. Last reviewed 2026-06-07. 122 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -10,6 +10,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | `AV2-4.11.6-LEB128` | LEB128 descriptor | normative | bitstream-syntax | done | done | done | partial | todo | n/a | done | done | pending | `crates/splot-core/src/leb128.rs` |
 | `AV2-4.11.3-UVLC` | Unsigned variable-length code descriptor | normative | bitstream-syntax | done | n/a | done | n/a | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
+| `AV2-4.11.4-SVLC` | Signed variable-length code descriptor | normative | bitstream-syntax | done | n/a | done | n/a | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
 | `AV2-4.11.5-LE` | Little-endian fixed-width descriptor | normative | bitstream-syntax | done | n/a | done | n/a | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
 | `AV2-4.11.8-NS` | Non-symmetric integer descriptor | normative | bitstream-syntax | done | n/a | done | n/a | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
 | `AV2-4.11.7-SU` | Signed integer descriptor | normative | bitstream-syntax | done | n/a | done | n/a | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
@@ -31,7 +32,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG` | Sequence transform, quantization, and entropy configuration syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/sequence.rs` |
 | `AV2-5.4.9-SEGMENT-INFO` | Segment info syntax | normative | bitstream-syntax | done | done | done | n/a | todo | todo | done | done | pending | `crates/splot-core/src/segment.rs` |
 | `AV2-5.4.10-SEQUENCE-FILTER-CONFIG` | Sequence filter configuration syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/sequence.rs` |
-| `AV2-5.4.11-USER-QM` | Sequence user quantization matrix syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers/sequence.rs` |
+| `AV2-5.4.11-USER-QM` | Sequence user quantization matrix syntax | normative | bitstream-syntax | done | done | done | n/a | todo | todo | done | done | pending | `crates/splot-core/src/headers/quantizer_matrix.rs` |
 | `AV2-5.4.12-TIMING-INFO` | Sequence timing info syntax | normative | bitstream-syntax | done | done | done | done | todo | todo | done | done | pending | `crates/splot-core/src/headers/sequence.rs` |
 | `AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO` | Sequence decoder model info syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/sequence.rs` |
 | `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` | Sequence header OBU semantics | normative | validator-check | done | done | done | partial | todo | todo | partial | done | pending | `crates/splot-validate/src/checks/mod.rs` |
@@ -64,8 +65,8 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-5.11.4-OPS-COLOR-INFO` | Operating point color info syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/operating_point_set.rs` |
 | `AV2-5.11.5-OPS-MLAYER-INFO` | Operating point mlayer info syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/operating_point_set.rs` |
 | `AV2-5.12-BUFFER-REMOVAL-TIMING` | Buffer removal timing OBU syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/buffer_removal_timing.rs` |
-| `AV2-5.13-QUANTIZATION-MATRIX` | Quantization matrix OBU syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
-| `AV2-5.14-FILM-GRAIN` | Film grain OBU syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
+| `AV2-5.13-QUANTIZATION-MATRIX` | Quantization matrix OBU syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/quantizer_matrix.rs` |
+| `AV2-5.14-FILM-GRAIN` | Film grain OBU syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/film_grain.rs` |
 | `AV2-5.15-CONTENT-INTERPRETATION` | Content interpretation OBU syntax | normative | bitstream-syntax | done | done | done | done | todo | todo | done | done | pending | `crates/splot-core/src/headers/content_interpretation.rs` |
 | `AV2-5.16-PADDING` | Padding OBU syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/obu.rs` |
 | `AV2-5.17-METADATA` | Metadata OBU syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/metadata.rs` |

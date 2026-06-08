@@ -193,17 +193,17 @@ mod tests {
 
     #[test]
     fn envelope_payload_status_is_opt_in_and_preserves_raw_payload() {
-        // Film-grain payload parsing is intentionally not implemented yet, but the
+        // Metadata payload parsing is intentionally not implemented yet, but the
         // envelope still preserves the bounded raw payload bytes.
-        // 0x5C = 0b0_10111_00 -> ext=0, type=23 (FilmGrain).
-        let stream = [0x02, 0x5C, 0xAB];
+        // 0x20 = 0b0_01000_00 -> ext=0, type=8 (MetadataShort).
+        let stream = [0x02, 0x20, 0xAB];
         let obus = parse_annex_b_obus(&stream).unwrap();
         assert_eq!(obus[0].payload, &[0xAB]);
         assert_eq!(obus[0].payload_offset(), ByteOffset::new(2));
         assert_eq!(
             obus[0].payload_status().unwrap(),
             PayloadStatus::Unimplemented {
-                feature: "AV2-5.14-FILM-GRAIN",
+                feature: "AV2-5.17-METADATA",
                 payload: obus[0].payload,
             }
         );

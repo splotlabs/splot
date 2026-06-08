@@ -13,12 +13,18 @@ use splot_core::headers::buffer_removal_timing::parse_buffer_removal_timing;
 use splot_core::headers::content_interpretation::{
     ContentInterpretation, parse_content_interpretation,
 };
+use splot_core::headers::film_grain::{
+    FilmGrainObu, FilmGrainScalingPoint, MAX_FILM_GRAIN, parse_film_grain,
+};
 use splot_core::headers::frame::{FrameHeaderPrefix, parse_frame_header_prefix};
 use splot_core::headers::layer_config_record::{
     LayerConfigurationRecord, parse_layer_config_record,
 };
 use splot_core::headers::operating_point_set::{
     OperatingPointSet, OpsMlayerSource, parse_operating_point_set,
+};
+use splot_core::headers::quantizer_matrix::{
+    NUM_CUSTOM_QMS, QuantizerMatrixObu, parse_quantizer_matrix,
 };
 use splot_core::headers::sequence::{
     MAX_SEQ_NUM, SequenceHeaderGeneral, SequenceHeaderId, TimingInfo, parse_sequence_header,
@@ -31,6 +37,10 @@ use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, ObuType};
 
 use crate::diagnostic::{Diagnostic, ValidationReport};
 use crate::options::{ExternalHlsMode, ValidationOptions};
+
+/// Maximum conformant `num_*_points` for a film-grain scaling function
+/// (AV2 v1.0.0 § 6.17.10.2).
+const MAX_FILM_GRAIN_SCALING_POINTS: u8 = 14;
 
 /// Stateful validator data derived from parseable high-level syntax OBUs.
 #[derive(Debug, Default)]
@@ -51,6 +61,12 @@ pub(crate) struct ValidatorContext {
     /// (AV2 § 6.10.1, § 7.3.8.5). Kept separate from [`HlsAvailabilityStore`] because
     /// OPS state, unlike the other HLS records, is explicitly resettable.
     ops: OpsAvailabilityStore,
+    /// Quantizer-matrix `qm_bit_map` reset/level state (§ 6.12) plus per-level
+    /// availability foundation for future frame-reference checks (§ 7.3.8).
+    qm: QuantizerMatrixState,
+    /// Film-grain `fgm_update_flags` slot state (§ 6.13) plus per-slot availability
+    /// foundation for future frame-reference checks (§ 7.3.8).
+    film_grain: FilmGrainState,
     temporal_unit: TemporalUnitState,
     /// `true` once a frame-bearing OBU has been observed since the most recent global
     /// temporal delimiter. Used to derive `FirstPictureInTU` for parsed frame headers
@@ -260,6 +276,84 @@ impl OpsAvailabilityStore {
     }
 }
 
+/// Per-level quantizer-matrix availability, recorded when a QM OBU specifies a level
+/// (AV2 § 6.12 / § 7.3.8 foundation). Kept for future frame-reference checks; this
+/// phase reads it only to cite the conflicting definition in a duplicate-level
+/// diagnostic.
+#[derive(Debug, Clone, Copy)]
+struct QmLevelRecord {
+    /// `QmMLayerId[level]` (`None` models the spec's `-1` for a reset).
+    mlayer_id: Option<u8>,
+    /// `QmTLayerId[level]` (`None` models the spec's `-1` for a reset).
+    tlayer_id: Option<u8>,
+    /// `QmDataPresent[level]`: `true` for user-defined data, `false` for a default.
+    data_present: bool,
+    /// `QmNumPlanes[level]`.
+    num_planes: u8,
+}
+
+/// Quantizer-matrix validator state (AV2 § 6.12).
+///
+/// The window fields (`seen_levels_since_coded_frame`, `qm_obu_seen_since_coded_frame`)
+/// reset at each coded-frame boundary (see [`ValidatorContext::reset_coded_frame_window`])
+/// and drive the § 6.12 duplicate-reset / duplicate-level checks. The `available`
+/// array is monotonic per-level HLS state, foundation for the deferred frame
+/// quantization-reference checks (`using_qmatrix` / `qm_*`, § 7.3.8 / § 6.17.6).
+#[derive(Debug, Default)]
+struct QuantizerMatrixState {
+    /// Levels (`qm_bit_map` bits) specified by a QM OBU since the last coded frame.
+    seen_levels_since_coded_frame: u16,
+    /// `true` once any QM OBU has been observed since the last coded frame. A
+    /// `qm_bit_map == 0` reset is only conformant as the first QM OBU in the window.
+    qm_obu_seen_since_coded_frame: bool,
+    /// Monotonic per-level availability for future frame-reference validation.
+    available: [Option<QmLevelRecord>; NUM_CUSTOM_QMS],
+}
+
+impl QuantizerMatrixState {
+    /// Clears the §6.12 "between coded frames" window at a coded-frame boundary.
+    fn reset_coded_frame_window(&mut self) {
+        self.seen_levels_since_coded_frame = 0;
+        self.qm_obu_seen_since_coded_frame = false;
+    }
+}
+
+/// Per-slot film-grain availability, recorded when a film-grain OBU updates a slot
+/// (AV2 § 6.13 / § 7.3.8 foundation). Kept for future frame-reference checks; this
+/// phase reads it only to cite the conflicting update in a duplicate-slot diagnostic.
+#[derive(Debug, Clone, Copy)]
+struct FgmSlotRecord {
+    /// `FgmChromaIdc[slot]`.
+    chroma_idc: u32,
+    /// `FgmMLayerId[slot]`.
+    mlayer_id: u8,
+    /// `FgmTLayerId[slot]`.
+    tlayer_id: u8,
+}
+
+/// Film-grain validator state (AV2 § 6.13).
+///
+/// `updated_slots_since_coded_frame` resets at each coded-frame-unit boundary (see
+/// [`ValidatorContext::reset_coded_frame_window`]) and drives the § 6.13 duplicate-slot
+/// check. The `available` array is monotonic per-slot HLS state, foundation for the
+/// deferred frame film-grain-reference checks (`apply_grain` / `fgm_id`, § 5.18.10.1 /
+/// § 7.3.8).
+#[derive(Debug, Default)]
+struct FilmGrainState {
+    /// Slots (`fgm_update_flags` bits) updated by a film-grain OBU since the last
+    /// coded frame unit.
+    updated_slots_since_coded_frame: u8,
+    /// Monotonic per-slot availability for future frame-reference validation.
+    available: [Option<FgmSlotRecord>; MAX_FILM_GRAIN],
+}
+
+impl FilmGrainState {
+    /// Clears the §6.13 coded-frame-unit window at a coded-frame boundary.
+    fn reset_coded_frame_window(&mut self) {
+        self.updated_slots_since_coded_frame = 0;
+    }
+}
+
 /// Key identifying a content-interpretation record: `(obu_xlayer_id, obu_mlayer_id)`.
 type ContentInterpretationKey = (ExtendedLayerId, EmbeddedLayerId);
 
@@ -313,8 +407,30 @@ impl ValidatorContext {
             ObuType::BufferRemovalTiming => {
                 self.observe_buffer_removal_timing(obu, options, report);
             }
+            ObuType::QuantizationMatrix => self.observe_quantizer_matrix(obu, report),
+            ObuType::FilmGrain => self.observe_film_grain(obu, report),
             _ => {}
         }
+
+        // AV2 § 6.12 / § 6.13: the quantizer-matrix "between coded frames" and
+        // film-grain "coded frame unit" windows close at a coded frame, so the window
+        // resets after observing each frame-bearing OBU — NOT at a temporal-unit
+        // boundary, since a QM level / film-grain slot reused across a temporal
+        // delimiter with no intervening frame is still a duplicate. is_frame_bearing()
+        // (tile groups plus SEF / TIP / bridge) is a superset of AVM's
+        // reset-before-tile-group point, so it always resets at every coded frame (no
+        // false positive on a conformant stream) and can only ever drop a duplicate
+        // detection across a SEF-only unit (a documented false negative).
+        if is_frame_bearing(obu.header.obu_type) {
+            self.reset_coded_frame_window();
+        }
+    }
+
+    /// Resets the §6.12/§6.13 coded-frame windows for quantizer-matrix and film-grain
+    /// state at a coded-frame boundary.
+    fn reset_coded_frame_window(&mut self) {
+        self.qm.reset_coded_frame_window();
+        self.film_grain.reset_coded_frame_window();
     }
 
     /// Resets the CVS-scoped comparison state at each temporal-unit boundary
@@ -341,6 +457,11 @@ impl ValidatorContext {
             self.sequence_fingerprints.clear();
             self.content_interpretations.clear();
             self.seen_frame_in_tu = false;
+            // NB: the §6.12/§6.13 quantizer-matrix / film-grain duplicate windows are
+            // deliberately NOT reset here. Those windows close at a *coded frame*, not
+            // at a temporal-unit boundary, so a QM level / film-grain slot reused across
+            // a temporal delimiter with no intervening frame is still a duplicate
+            // (see reset_coded_frame_window, called from the frame-bearing branch).
         }
     }
 
@@ -948,6 +1069,287 @@ impl ValidatorContext {
                 .with_spec_section("6.10.2")
                 .with_byte_offset(obu.offset),
             );
+        }
+    }
+
+    /// Observes a quantizer matrix OBU (§ 5.13), running the locally-checkable § 6.12
+    /// duplicate-reset / duplicate-level diagnostics and recording per-level
+    /// availability. A parse failure or malformed payload tail is silent (the OBU is
+    /// not-yet-validated coverage in that case), consistent with the OPS observer.
+    fn observe_quantizer_matrix(&mut self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        let Ok(qm) = parse_quantizer_matrix(&mut reader) else {
+            return;
+        };
+        if finish_obu_payload(
+            &mut reader,
+            obu.payload,
+            obu.header.obu_type.is_extensible_obu(),
+        )
+        .is_err()
+        {
+            return;
+        }
+        // Emit diagnostics against the window/availability captured before this OBU,
+        // then fold this OBU into the state.
+        self.emit_quantizer_matrix_diagnostics(obu, &qm, report);
+        self.check_quantizer_matrix(obu, &qm);
+    }
+
+    /// Emits the § 6.12 quantizer-matrix diagnostics for `qm`, reading the window and
+    /// per-level availability captured before this OBU.
+    fn emit_quantizer_matrix_diagnostics(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        qm: &QuantizerMatrixObu,
+        report: &mut ValidationReport,
+    ) {
+        if qm.qm_bit_map == 0 {
+            // AV2 § 6.12: only the first quantizer matrix OBU between coded frames may
+            // have qm_bit_map == 0.
+            if self.qm.qm_obu_seen_since_coded_frame {
+                report.push(
+                    Diagnostic::error(
+                        "qm/duplicate-reset-between-frames",
+                        "a quantizer matrix OBU with qm_bit_map == 0 is only permitted as the \
+                         first quantizer matrix OBU between coded frames",
+                    )
+                    .with_spec_section("6.12")
+                    .with_byte_offset(obu.offset),
+                );
+            }
+            return;
+        }
+
+        // AV2 § 6.12: the same quantizer matrix level must not be specified twice
+        // between coded frames.
+        let overlap = self.qm.seen_levels_since_coded_frame & qm.qm_bit_map;
+        for level in 0..NUM_CUSTOM_QMS {
+            if overlap & (1 << level) == 0 {
+                continue;
+            }
+            let prior = match self.qm.available[level] {
+                Some(record) => format!(
+                    " (previously specified by a quantizer matrix OBU at embedded layer {}, \
+                     temporal layer {}, data_present={}, num_planes={})",
+                    // QmMLayerId / QmTLayerId are -1 in the spec for a reset.
+                    record
+                        .mlayer_id
+                        .map_or_else(|| "-1".to_owned(), |m| m.to_string()),
+                    record
+                        .tlayer_id
+                        .map_or_else(|| "-1".to_owned(), |t| t.to_string()),
+                    record.data_present,
+                    record.num_planes,
+                ),
+                None => String::new(),
+            };
+            report.push(
+                Diagnostic::error(
+                    "qm/duplicate-level-between-frames",
+                    format!(
+                        "quantizer matrix level {level} is specified twice between coded \
+                         frames{prior}"
+                    ),
+                )
+                .with_spec_section("6.12")
+                .with_byte_offset(obu.offset),
+            );
+        }
+    }
+
+    /// Updates the §6.12 window and per-level availability after the diagnostics.
+    fn check_quantizer_matrix(&mut self, obu: &ObuEnvelope<'_>, qm: &QuantizerMatrixObu) {
+        self.qm.qm_obu_seen_since_coded_frame = true;
+        if qm.qm_bit_map == 0 {
+            // AV2 § 5.13 reset path: every custom level returns to its defaults
+            // (QmDataPresent = 0, QmMLayerId = QmTLayerId = -1, QmNumPlanes = numPlanes),
+            // so a frame-reference check after a reset must not see stale layer/data
+            // state from a previously defined matrix.
+            for record in &mut self.qm.available {
+                *record = Some(QmLevelRecord {
+                    mlayer_id: None,
+                    tlayer_id: None,
+                    data_present: false,
+                    num_planes: qm.num_planes,
+                });
+            }
+            return;
+        }
+        self.qm.seen_levels_since_coded_frame |= qm.qm_bit_map;
+        for level in &qm.levels {
+            let index = level.level as usize;
+            if index < NUM_CUSTOM_QMS {
+                self.qm.available[index] = Some(QmLevelRecord {
+                    mlayer_id: Some(obu.header.embedded_layer_id.get()),
+                    tlayer_id: Some(obu.header.temporal_layer_id.get()),
+                    data_present: !level.is_default,
+                    num_planes: qm.num_planes,
+                });
+            }
+        }
+    }
+
+    /// Observes a film grain OBU (§ 5.14), running the locally-checkable § 6.13
+    /// diagnostics (zero update flags, out-of-range chroma idc, duplicate slot in the
+    /// coded frame unit) and recording per-slot availability. A parse failure or
+    /// malformed payload tail is silent, consistent with the OPS observer.
+    fn observe_film_grain(&mut self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        let Ok(fg) = parse_film_grain(&mut reader) else {
+            return;
+        };
+        if finish_obu_payload(
+            &mut reader,
+            obu.payload,
+            obu.header.obu_type.is_extensible_obu(),
+        )
+        .is_err()
+        {
+            return;
+        }
+        self.emit_film_grain_diagnostics(obu, &fg, report);
+        self.emit_film_grain_model_diagnostics(obu, &fg, report);
+        self.record_film_grain(obu, &fg);
+    }
+
+    /// Emits the locally-decidable § 6.17.10.2 film-grain *model* conformance
+    /// diagnostics for each updated slot: scaling-point counts (`num_*_points <= 14`),
+    /// strictly-increasing-and-`< 256` scaling-point values, and the 4:2:0 chroma
+    /// pairing rule (when `subX == 1 && subY == 1`, `num_cb_points` and `num_cr_points`
+    /// must be both zero or both non-zero).
+    fn emit_film_grain_model_diagnostics(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        fg: &FilmGrainObu,
+        report: &mut ValidationReport,
+    ) {
+        for update in &fg.models {
+            let model = &update.model;
+            let slot = update.slot;
+            for (channel, count) in [
+                ("y", model.num_y_points),
+                ("cb", model.num_cb_points),
+                ("cr", model.num_cr_points),
+            ] {
+                if count > MAX_FILM_GRAIN_SCALING_POINTS {
+                    report.push(
+                        Diagnostic::error(
+                            "film-grain/scaling-points-out-of-range",
+                            format!(
+                                "film grain slot {slot} num_{channel}_points {count} must be less \
+                                 than or equal to {MAX_FILM_GRAIN_SCALING_POINTS}"
+                            ),
+                        )
+                        .with_spec_section("6.17.10.2")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+            }
+
+            for (channel, points) in [
+                ("y", &model.point_y),
+                ("cb", &model.point_cb),
+                ("cr", &model.point_cr),
+            ] {
+                emit_scaling_point_order_diagnostics(channel, points, slot, obu, report);
+            }
+
+            // AV2 § 6.17.10.2: in 4:2:0 (subX == 1 && subY == 1), film grain applies to
+            // both chroma components or neither.
+            if fg.sub_x && fg.sub_y && (model.num_cb_points == 0) != (model.num_cr_points == 0) {
+                report.push(
+                    Diagnostic::error(
+                        "film-grain/chroma-points-not-paired",
+                        format!(
+                            "film grain slot {slot}: in 4:2:0, num_cb_points ({}) and \
+                             num_cr_points ({}) must both be zero or both non-zero",
+                            model.num_cb_points, model.num_cr_points
+                        ),
+                    )
+                    .with_spec_section("6.17.10.2")
+                    .with_byte_offset(obu.offset),
+                );
+            }
+        }
+    }
+
+    /// Emits the § 6.13 film-grain diagnostics for `fg`, reading the coded-frame-unit
+    /// window and per-slot availability captured before this OBU.
+    fn emit_film_grain_diagnostics(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        fg: &FilmGrainObu,
+        report: &mut ValidationReport,
+    ) {
+        // AV2 § 6.13: fgm_update_flags is not equal to 0.
+        if fg.update_flags == 0 {
+            report.push(
+                Diagnostic::error(
+                    "film-grain/update-flags-zero",
+                    "fgm_update_flags must not be 0",
+                )
+                .with_spec_section("6.13")
+                .with_byte_offset(obu.offset),
+            );
+        }
+
+        // AV2 § 6.13: fgm_chroma_idc is less than or equal to 3.
+        if fg.chroma_idc > 3 {
+            report.push(
+                Diagnostic::error(
+                    "film-grain/chroma-idc-out-of-range",
+                    format!(
+                        "fgm_chroma_idc {} must be less than or equal to 3",
+                        fg.chroma_idc
+                    ),
+                )
+                .with_spec_section("6.13")
+                .with_byte_offset(obu.offset),
+            );
+        }
+
+        // AV2 § 6.13: bit i of fgm_update_flags is set in at most one film grain OBU
+        // per coded frame unit.
+        let overlap = self.film_grain.updated_slots_since_coded_frame & fg.update_flags;
+        for slot in 0..MAX_FILM_GRAIN {
+            if overlap & (1 << slot) == 0 {
+                continue;
+            }
+            let prior = match self.film_grain.available[slot] {
+                Some(record) => format!(
+                    " (previously updated by a film grain OBU at embedded layer {}, temporal \
+                     layer {}, fgm_chroma_idc {})",
+                    record.mlayer_id, record.tlayer_id, record.chroma_idc,
+                ),
+                None => String::new(),
+            };
+            report.push(
+                Diagnostic::error(
+                    "film-grain/duplicate-slot-in-coded-frame-unit",
+                    format!(
+                        "film grain slot {slot} is updated more than once in the same coded \
+                         frame unit{prior}"
+                    ),
+                )
+                .with_spec_section("6.13")
+                .with_byte_offset(obu.offset),
+            );
+        }
+    }
+
+    /// Updates the §6.13 coded-frame-unit window and per-slot availability.
+    fn record_film_grain(&mut self, obu: &ObuEnvelope<'_>, fg: &FilmGrainObu) {
+        self.film_grain.updated_slots_since_coded_frame |= fg.update_flags;
+        for update in &fg.models {
+            let index = update.slot as usize;
+            if index < MAX_FILM_GRAIN {
+                self.film_grain.available[index] = Some(FgmSlotRecord {
+                    chroma_idc: fg.chroma_idc,
+                    mlayer_id: obu.header.embedded_layer_id.get(),
+                    tlayer_id: obu.header.temporal_layer_id.get(),
+                });
+            }
         }
     }
 
@@ -1668,6 +2070,35 @@ fn ordering_error(rule_id: &'static str, obu: &ObuEnvelope<'_>, message: String)
 /// Returns `true` if `obu_type`'s payload begins with a `frame_header()` or
 /// `tile_group_obu()` (AV2 v1.0.0 § 5.2.1): the tile-group types, plus the SEF / TIP
 /// / bridge frames that call `frame_header( 1 )` directly.
+/// Emits `film-grain/scaling-point-not-increasing` for any scaling point whose
+/// (cumulative) value is not strictly greater than its predecessor or is not less than
+/// 256 (AV2 v1.0.0 § 6.17.10.2: for `i > 0`, `point_*_value[i] > point_*_value[i - 1]`
+/// and `< 256`).
+fn emit_scaling_point_order_diagnostics(
+    channel: &str,
+    points: &[FilmGrainScalingPoint],
+    slot: u8,
+    obu: &ObuEnvelope<'_>,
+    report: &mut ValidationReport,
+) {
+    for i in 1..points.len() {
+        let value = points[i].value;
+        if value <= points[i - 1].value || value >= 256 {
+            report.push(
+                Diagnostic::error(
+                    "film-grain/scaling-point-not-increasing",
+                    format!(
+                        "film grain slot {slot} {channel} scaling point {i} value {value} must be \
+                         strictly greater than the previous point and less than 256"
+                    ),
+                )
+                .with_spec_section("6.17.10.2")
+                .with_byte_offset(obu.offset),
+            );
+        }
+    }
+}
+
 fn is_frame_bearing(obu_type: ObuType) -> bool {
     obu_type.is_tile_group()
         || obu_type.is_sef()

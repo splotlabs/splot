@@ -233,6 +233,25 @@ impl<'a> BitReader<'a> {
         Ok(suffix + (1u32 << leading_zeros) - 1)
     }
 
+    /// Reads an AV2 `svlc()` signed variable-length descriptor (AV2 v1.0.0 § 4.11.4).
+    ///
+    /// The unsigned [`Self::read_uvlc`] value `v` maps to a signed integer via
+    /// `half = (v + 1) >> 1`; the result is `half` when `v` is odd and `-half` when
+    /// `v` is even, so `0 -> 0`, `1 -> 1`, `2 -> -1`, `3 -> 2`, `4 -> -2`.
+    ///
+    /// # Errors
+    /// Propagates [`Error::UnexpectedEof`] or [`Error::InvalidUvlc`] from
+    /// [`Self::read_uvlc`] (the only failure paths; `svlc()` reads no further bits).
+    pub fn read_svlc(&mut self) -> Result<i32> {
+        let value = self.read_uvlc()?;
+        // AV2 § 4.11.4: half = (value + 1) >> 1; svlc = (value & 1) ? half : -half.
+        // read_uvlc bounds value to at most (1 << 32) - 2 (leadingZeros < 32), so
+        // value + 1 does not overflow u32 and half is at most i32::MAX; -half then
+        // stays within i32 (>= i32::MIN + 1).
+        let half = ((value + 1) >> 1) as i32;
+        if value & 1 == 1 { Ok(half) } else { Ok(-half) }
+    }
+
     /// Reads an arbitrary-width AV2 `le(n)` descriptor (AV2 v1.0.0 § 4.11.5).
     ///
     /// # Errors
@@ -544,6 +563,36 @@ mod tests {
     }
 
     #[test]
+    fn read_svlc_maps_uvlc_to_signed_values() {
+        // AV2 § 4.11.4: uvlc 0,1,2,3,4 -> svlc 0,1,-1,2,-2.
+        // uvlc encodings (MSB-first): 0 -> 1, 1 -> 010, 2 -> 011, 3 -> 00100, 4 -> 00101.
+        let cases: [(&[u8], i32); 5] = [
+            (&[0b1000_0000], 0),
+            (&[0b0100_0000], 1),
+            (&[0b0110_0000], -1),
+            (&[0b0010_0000], 2),
+            (&[0b0010_1000], -2),
+        ];
+        for (data, expected) in cases {
+            let mut reader = BitReader::new(data, ByteOffset::new(0));
+            assert_eq!(reader.read_svlc().unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn read_svlc_reports_eof_and_leading_zero_bound() {
+        let mut eof = BitReader::new(&[], ByteOffset::new(0));
+        assert!(matches!(eof.read_svlc(), Err(Error::UnexpectedEof { .. })));
+
+        // The underlying uvlc() leading-zero conformance bound propagates unchanged.
+        let mut too_many_zeros = BitReader::new(&[0x00, 0x00, 0x00, 0x00], ByteOffset::new(0));
+        assert!(matches!(
+            too_many_zeros.read_svlc(),
+            Err(Error::InvalidUvlc { .. })
+        ));
+    }
+
+    #[test]
     fn read_le_decodes_little_endian_bytes() {
         let mut reader = BitReader::new(&[0x34, 0x12, 0xAB], ByteOffset::new(0));
         let first = reader.read_le(2).unwrap();
@@ -822,6 +871,9 @@ mod proptests {
         ) {
             let mut uvlc_reader = BitReader::new(&data, ByteOffset::new(0));
             let _ = uvlc_reader.read_uvlc();
+
+            let mut svlc_reader = BitReader::new(&data, ByteOffset::new(0));
+            let _ = svlc_reader.read_svlc();
 
             let mut leb128_reader = BitReader::new(&data, ByteOffset::new(0));
             let _ = leb128_reader.read_leb128();

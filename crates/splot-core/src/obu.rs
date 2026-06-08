@@ -26,8 +26,10 @@ use crate::error::{Error, Result, TrailingBitsErrorKind};
 use crate::headers::atlas_segment::{AtlasSegment, parse_atlas_segment};
 use crate::headers::buffer_removal_timing::{BufferRemovalTiming, parse_buffer_removal_timing};
 use crate::headers::content_interpretation::{ContentInterpretation, parse_content_interpretation};
+use crate::headers::film_grain::{FilmGrainObu, parse_film_grain};
 use crate::headers::layer_config_record::{LayerConfigurationRecord, parse_layer_config_record};
 use crate::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
+use crate::headers::quantizer_matrix::{QuantizerMatrixObu, parse_quantizer_matrix};
 use crate::headers::sequence::{SequenceHeader, parse_sequence_header};
 use crate::hls::{
     MultiFrameHeader, MultistreamDecoderOperation, parse_msdo, parse_multi_frame_header,
@@ -74,6 +76,10 @@ pub enum ParsedObu {
     OperatingPointSet(Box<OperatingPointSet>),
     /// `buffer_removal_timing_obu()` (AV2 v1.0.0 § 5.12).
     BufferRemovalTiming(BufferRemovalTiming),
+    /// `quantizer_matrix_obu()` (AV2 v1.0.0 § 5.13).
+    QuantizationMatrix(Box<QuantizerMatrixObu>),
+    /// `film_grain_obu()` (AV2 v1.0.0 § 5.14).
+    FilmGrain(Box<FilmGrainObu>),
     /// `content_interpretation_obu()` (AV2 v1.0.0 § 5.15).
     ContentInterpretation(ContentInterpretation),
 }
@@ -91,6 +97,8 @@ impl ParsedObu {
             Self::AtlasSegment(_) => "AV2-5.9-ATLAS-SEGMENT",
             Self::OperatingPointSet(_) => "AV2-5.10-OPERATING-POINT-SET",
             Self::BufferRemovalTiming(_) => "AV2-5.12-BUFFER-REMOVAL-TIMING",
+            Self::QuantizationMatrix(_) => "AV2-5.13-QUANTIZATION-MATRIX",
+            Self::FilmGrain(_) => "AV2-5.14-FILM-GRAIN",
             Self::ContentInterpretation(_) => "AV2-5.15-CONTENT-INTERPRETATION",
         }
     }
@@ -107,6 +115,8 @@ impl ParsedObu {
             Self::AtlasSegment(_) => "atlas_segment_info_obu",
             Self::OperatingPointSet(_) => "operating_point_set_obu",
             Self::BufferRemovalTiming(_) => "buffer_removal_timing_obu",
+            Self::QuantizationMatrix(_) => "quantizer_matrix_obu",
+            Self::FilmGrain(_) => "film_grain_obu",
             Self::ContentInterpretation(_) => "content_interpretation_obu",
         }
     }
@@ -210,6 +220,26 @@ pub fn dispatch_obu_payload<'a>(
             Ok(PayloadStatus::Parsed(ParsedObu::BufferRemovalTiming(
                 buffer_removal_timing,
             )))
+        }
+        ObuType::QuantizationMatrix => {
+            let mut reader = BitReader::new(payload, payload_offset);
+            let quantizer_matrix = parse_quantizer_matrix(&mut reader)?;
+            // OBU_QUANTIZATION_MATRIX is not extensible (§ 5.2.1, ObuType::
+            // is_extensible_obu), so finish_obu_payload uses trailing_bits() only.
+            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            Ok(PayloadStatus::Parsed(ParsedObu::QuantizationMatrix(
+                Box::new(quantizer_matrix),
+            )))
+        }
+        ObuType::FilmGrain => {
+            let mut reader = BitReader::new(payload, payload_offset);
+            let film_grain = parse_film_grain(&mut reader)?;
+            // OBU_FILM_GRAIN is not extensible (§ 5.2.1), so finish_obu_payload uses
+            // trailing_bits() only.
+            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            Ok(PayloadStatus::Parsed(ParsedObu::FilmGrain(Box::new(
+                film_grain,
+            ))))
         }
         ObuType::ContentInterpretation => {
             let mut reader = BitReader::new(payload, payload_offset);
@@ -677,6 +707,44 @@ mod tests {
         if let PayloadStatus::Parsed(parsed) = &status {
             assert_eq!(parsed.syntax_name(), "buffer_removal_timing_obu");
             assert_eq!(parsed.feature_id(), "AV2-5.12-BUFFER-REMOVAL-TIMING");
+        }
+    }
+
+    #[test]
+    fn dispatch_parses_quantizer_matrix_payload() {
+        // 0x58 -> ext=0, type=22 (QuantizationMatrix), tlayer=0.
+        let header = read_obu_header(&[0x58], ByteOffset::new(0)).unwrap();
+        assert_eq!(header.obu_type, ObuType::QuantizationMatrix);
+        // qm_bit_map=0 (f(15)) + qm_chroma_info_present_flag=0 (f(1)) = 16 zero bits,
+        // then trailing_one_bit (QM is non-extensible).
+        let payload = [0x00, 0x00, 0x80];
+        let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
+        assert!(matches!(
+            &status,
+            PayloadStatus::Parsed(ParsedObu::QuantizationMatrix(_))
+        ));
+        if let PayloadStatus::Parsed(parsed) = &status {
+            assert_eq!(parsed.syntax_name(), "quantizer_matrix_obu");
+            assert_eq!(parsed.feature_id(), "AV2-5.13-QUANTIZATION-MATRIX");
+        }
+    }
+
+    #[test]
+    fn dispatch_parses_film_grain_payload() {
+        // 0x5C -> ext=0, type=23 (FilmGrain), tlayer=0.
+        let header = read_obu_header(&[0x5C], ByteOffset::new(0)).unwrap();
+        assert_eq!(header.obu_type, ObuType::FilmGrain);
+        // fgm_update_flags=0 (f(8)) + fgm_chroma_idc=uvlc(0) (a `1` bit) then
+        // trailing_one_bit: byte 0x00, then 0xC0 = `1`(uvlc) `1`(trailing) padding.
+        let payload = [0x00, 0xC0];
+        let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
+        assert!(matches!(
+            &status,
+            PayloadStatus::Parsed(ParsedObu::FilmGrain(_))
+        ));
+        if let PayloadStatus::Parsed(parsed) = &status {
+            assert_eq!(parsed.syntax_name(), "film_grain_obu");
+            assert_eq!(parsed.feature_id(), "AV2-5.14-FILM-GRAIN");
         }
     }
 }
