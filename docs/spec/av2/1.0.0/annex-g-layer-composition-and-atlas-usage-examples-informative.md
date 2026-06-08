@@ -8,6 +8,13 @@
 
 ```text
 §   Annex G: Layer composition and Atlas usage examples (informative)
+```
+
+<a id="s-annex-g-1"></a>
+
+### Annex G.1 General
+
+```text
 §   G.1.General
     This annex provides detailed examples demonstrating how the Layer Configuration Record (LCR) works
     with Atlas Segments to enable complex multi-layer and multi-view content scenarios. The examples
@@ -26,6 +33,13 @@
     the atlas segment dimensions, resampling is required. When only a portion of the decoded layer should
     be used, cropping is applied before spatial mapping.
 
+```
+
+<a id="s-annex-g-2"></a>
+
+### Annex G.2 360-degree viewport-dependent streaming with subpictures
+
+```text
 §   G.2.360-degree viewport-dependent streaming with subpictures
     This example demonstrates a 360-degree video streaming application using subpicture-based viewport-
     dependent delivery. The equirectangular projection is divided into spatial subpictures, with the viewport
@@ -58,6 +72,13 @@
         gaps
       • The 3×3 grid provides symmetrical coverage with the viewport at the natural center position
 
+```
+
+<a id="s-annex-g-2-1"></a>
+
+#### Annex G.2.1 Layer structure
+
+```text
 §   G.2.1.Layer structure
 
     Each extended layer contains three embedded layers:
@@ -117,6 +138,13 @@
 
 
     AV2 Specification                                                                        Page 1152 of 1169
+```
+
+<a id="s-annex-g-2-2"></a>
+
+#### Annex G.2.2 LCR configuration
+
+```text
 §   G.2.2.LCR configuration
 
     In this example, a global LCR is used, carried in the global layer context
@@ -212,6 +240,13 @@
       • Alpha channels enable smooth blending at subpicture boundaries
       • Depth maps enable motion-parallax and 3D-aware rendering
 
+```
+
+<a id="s-annex-g-2-3"></a>
+
+#### Annex G.2.3 Atlas configuration
+
+```text
 §   G.2.3.Atlas configuration
 
     The atlas uses mode 0 (enhanced atlas) with a 3×3 uniform grid that completely covers the 3840×1920
@@ -261,6 +296,13 @@
     Note that this example uses 9 extended layers, which requires LCR (not MSDO) since MSDO is limited to
     a maximum of 4 independent streams.
 
+```
+
+<a id="s-annex-g-2-4"></a>
+
+#### Annex G.2.4 Viewport-dependent streaming process
+
+```text
 §   G.2.4.Viewport-dependent streaming process
 
      1. Initial state: Client detects user’s head orientation/gaze direction
@@ -307,6 +349,13 @@
            ◦ Complete 3×3 grid coverage with center viewport ensures content available for any viewing
              direction
 
+```
+
+<a id="s-annex-g-2-5"></a>
+
+#### Annex G.2.5 Benefits for 360-degree streaming
+
+```text
 §   G.2.5.Benefits for 360-degree streaming
 
       • Bandwidth efficiency: Only fetch subpictures in or near viewport, reducing bandwidth by 50-80%
@@ -418,6 +467,13 @@ compensation.
 
 
 AV2 Specification                                                                                                                                                                                                       Page 1157 of 1169
+```
+
+<a id="s-annex-g-3"></a>
+
+### Annex G.3 Subpicture composition example
+
+```text
 §   G.3.Subpicture composition example
     This example demonstrates a video conferencing application where multiple video sources (participants)
     are composed into a single virtual canvas. The atlas acts as a virtual screen layout manager, positioning
@@ -428,6 +484,13 @@ AV2 Specification                                                               
       • Extended layer 1: Participant 2 (encoded at 480×360, upsampled to 640×540)
       • Extended layer 2: Participant 3 (medium resolution, 640×540)
 
+```
+
+<a id="s-annex-g-3-1"></a>
+
+#### Annex G.3.1 LCR configuration
+
+```text
 §   G.3.1.LCR configuration
 
     Each extended layer has its own local LCR. The lcr_local_atlas_id_present_flag enables atlas segment
@@ -486,6 +549,13 @@ AV2 Specification                                                               
      lcr_global_atlas_id = 0 // References the global atlas
 
 
+```
+
+<a id="s-annex-g-3-2"></a>
+
+#### Annex G.3.2 Atlas configuration
+
+```text
 §   G.3.2.Atlas configuration
 
     The global atlas (obu_xlayer_id = 31) uses mode 0 (enhanced atlas) to define the layout as a 2-column ×
@@ -541,6 +611,13 @@ AV2 Specification                                                               
     heights. The segment IDs (0, 1, 2) are assigned implicitly by index since ats_signaled_atlas_segment_ids_flag
     is not set. These IDs are what each layer’s lcr_layer_atlas_segment_id references.
 
+```
+
+<a id="s-annex-g-3-3"></a>
+
+#### Annex G.3.3 Rendering and adaptive streaming
+
+```text
 §   G.3.3.Rendering and adaptive streaming
 
     The renderer composes the final view by:
@@ -645,6 +722,13 @@ AV2 Specification                                                               
 
 
 
+```
+
+<a id="s-annex-g-4"></a>
+
+### Annex G.4 Region-of-interest scalability example with encoder padding
+
+```text
 §   G.4.Region-of-interest scalability example with encoder padding
     This example demonstrates a stadium sports broadcast where a high-resolution field-of-play region is
     encoded separately from lower-resolution audience/stadium context. Additionally, this example shows
@@ -661,6 +745,13 @@ AV2 Specification                                                               
 
 
     AV2 Specification                                                                                                                                                                           Page 1161 of 1169
+```
+
+<a id="s-annex-g-4-1"></a>
+
+#### Annex G.4.1 LCR configuration
+
+```text
 §   G.4.1.LCR configuration
 
      // Extended layer 0 (base layer - full stadium with padding and cropping)
@@ -708,6 +799,13 @@ AV2 Specification                                                               
         savings
       • All coded samples (including padding) must be signaled and decoded
 
+```
+
+<a id="s-annex-g-4-2"></a>
+
+#### Annex G.4.2 Atlas configuration
+
+```text
 §   G.4.2.Atlas configuration
 
     The atlas uses mode 0 (enhanced atlas) with a 3-column × 3-row non-uniform grid sized so the center cell
@@ -759,6 +857,13 @@ AV2 Specification                                                               
      ats_bottom_right_region_row_off[0][1] = 0
 
 
+```
+
+<a id="s-annex-g-4-3"></a>
+
+#### Annex G.4.3 Rendering scenarios
+
+```text
 §   G.4.3.Rendering scenarios
 
     Decoding and cropping process for extended layer 0:
@@ -861,7 +966,21 @@ AV2 Specification                                                               
 
 
 
+```
+
+<a id="s-annex-g-5"></a>
+
+### Annex G.5 Implementation considerations
+
+```text
 §   G.5.Implementation considerations
+```
+
+<a id="s-annex-g-5-1"></a>
+
+#### Annex G.5.1 Decoder requirements
+
+```text
 §   G.5.1.Decoder requirements
 
     Decoders implementing LCR and atlas support should:
@@ -893,6 +1012,13 @@ AV2 Specification                                                               
            ◦ Associate auxiliary data (alpha, depth, gain map) with correct texture layers
            ◦ Support stereoscopic display modes when VIEW_LEFT/VIEW_RIGHT layers are present
 
+```
+
+<a id="s-annex-g-5-2"></a>
+
+#### Annex G.5.2 Encoder recommendations
+
+```text
 §   G.5.2.Encoder recommendations
 
     Encoders should:
@@ -920,6 +1046,13 @@ AV2 Specification                                                               
            ◦ Include profile/tier/level information in OPS for conformance checking
            ◦ Reference atlas segments in OPS where applicable
 
+```
+
+<a id="s-annex-g-5-3"></a>
+
+#### Annex G.5.3 Interoperability
+
+```text
 §   G.5.3.Interoperability
 
     For maximum interoperability:
@@ -943,7 +1076,21 @@ AV2 Specification                                                               
            ◦ Include sufficient LCR information for clients to discover available views and auxiliary data types
            ◦ Document expected rendering behavior in supplementary information
 
+```
+
+<a id="s-index"></a>
+
+## Index
+
+```text
 §   Index
+```
+
+<a id="s-terms-defined-by-this-specification"></a>
+
+## Terms defined by this specification
+
+```text
 §   Terms defined by this specification
 
         AC coefficient, in § 2              Coded multistream video            frame_header_info, in § 2
@@ -1045,7 +1192,21 @@ AV2 Specification                                                               
                                                                             WHT, in § 2
 
 
+```
+
+<a id="s-references"></a>
+
+## References
+
+```text
 §   References
+```
+
+<a id="s-normative-references"></a>
+
+## Normative References
+
+```text
 §   Normative References
     [CTA-861]
        A DTV Profile for Uncompressed High Speed Digital Interfaces (ANSI/CTA-861-J). standard. URL:
@@ -1061,6 +1222,13 @@ AV2 Specification                                                               
 
 
     AV2 Specification                                                                            Page 1168 of 1169
+```
+
+<a id="s-informative-references"></a>
+
+## Informative References
+
+```text
 §   Informative References
     [ITU-R-BT.601]
        Recommendation ITU-R BT.601-7 (03/2011), Studio encoding parameters of digital television for

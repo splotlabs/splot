@@ -8,6 +8,13 @@
 
 ```text
 §   Annex C: Error resilience behavior (informative)
+```
+
+<a id="s-annex-c-1"></a>
+
+### Annex C.1 General
+
+```text
 §   C.1.General
     This annex defines additional starting points for decoding.
 
@@ -24,6 +31,13 @@
 
     The consequences for decoders are specified in Annex C.5 Decoder consequences of processable frames.
 
+```
+
+<a id="s-annex-c-2"></a>
+
+### Annex C.2 Definition of processable frames
+
+```text
 §   C.2.Definition of processable frames
     This section defines a property of frames that is called being "processable".
 
@@ -67,6 +81,13 @@
 
     (A frame being "processed" means that the frame was processable and has been decoded.)
 
+```
+
+<a id="s-annex-c-3"></a>
+
+### Annex C.3 Recommendation for processable frames
+
+```text
 §   C.3.Recommendation for processable frames
     It is recommended that decoders should support decoding bitstreams if the first temporal unit contains a
     sequence header and all frames contained in the bitstream are processable according to the definition
@@ -78,6 +99,13 @@
     In certain cases (e.g., when the first frame only contains intra coding), it is possible that correct output is
     produced, but, in general, error concealment techniques may be required.
 
+```
+
+<a id="s-annex-c-4"></a>
+
+### Annex C.4 Encoder consequences of processable frames
+
+```text
 §   C.4.Encoder consequences of processable frames
     If an application chooses to use a non-key frame starting point, then the encoder needs to be careful that
     the resulting bitstream is processable.
@@ -88,6 +116,13 @@
         corresponding conditions
       • found_ref can be cleared to allow the frame resolution to be sent explicitly
 
+```
+
+<a id="s-annex-c-5"></a>
+
+### Annex C.5 Decoder consequences of processable frames
+
+```text
 §   C.5.Decoder consequences of processable frames
     For the decoding process to handle this mode of operation, the following modifications should be used:
 

@@ -30,12 +30,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # A real section heading, as rendered by `pdftotext -layout`, is the section
-# glyph followed by THREE spaces, then either a dotted number with a trailing dot
-# (e.g. "5.16.") or "Annex <L>:". Inline cross-references use a single space and
-# carry no trailing dot, so they are excluded. A leading form-feed (page break)
-# may precede the glyph.
+# glyph followed by THREE spaces (inline cross-references use a single space and
+# are excluded). A leading form-feed (page break) may precede the glyph. Headings
+# come in four forms, matched in order:
+#   - numbered:        "§   5.16. Padding OBU syntax"   (dotted number + ". " + title)
+#   - annex top:       "§   Annex A: Profiles, ..."
+#   - annex subsection:"§   A.1.General"  ("§   D.3.1.Background ...") — note the
+#                      title runs straight after the trailing dot, no space.
+#   - other/back matter:"§   References", "§   Index", ... (unnumbered)
+# RE_OTHER is the catch-all and MUST be tried last; since every "§   " line in the
+# spec is a heading, this guarantees no section is silently dropped from the index.
 RE_NUM_HEADING = re.compile(r"^\x0c?§   (\d+(?:\.\d+)*)\.\s+(\S.*)$")
 RE_ANNEX_HEADING = re.compile(r"^\x0c?§   Annex ([A-Z]):\s+(\S.*)$")
+RE_ANNEX_SUB_HEADING = re.compile(r"^\x0c?§   ([A-Z](?:\.\d+)+)\.(\S.*)$")
+RE_OTHER_HEADING = re.compile(r"^\x0c?§   (\S.*)$")
 RE_FOOTER = re.compile(r"AV2 Specification\s+Page (\d+) of \d+")
 
 FENCE_OPEN = "```text"
@@ -52,20 +60,21 @@ class Heading:
     """A detected section heading and where it lives in the raw line list."""
 
     line_idx: int  # 0-based index into the raw line list
-    kind: str  # "num" or "annex"
-    label: str  # canonical citation label, e.g. "5.16" or "Annex A"
-    number: str  # "5.16" or "A"
+    kind: str  # "num" | "annex" (top or subsection) | "other" (back matter)
+    number: str  # "5.16", "A", "A.1", "D.3.1", or "" for back matter
     title: str
     page: int
 
     @property
     def components(self) -> int:
-        return 1 if self.kind == "annex" else self.number.count(".") + 1
+        return self.number.count(".") + 1 if self.number else 1
 
     @property
     def anchor(self) -> str:
         if self.kind == "annex":
-            return f"s-annex-{self.number.lower()}"
+            return "s-annex-" + self.number.lower().replace(".", "-")
+        if self.kind == "other":
+            return "s-" + slugify(self.title)
         return "s-" + self.number.replace(".", "-")
 
     @property
@@ -76,8 +85,20 @@ class Heading:
     @property
     def heading_text(self) -> str:
         if self.kind == "annex":
-            return f"Annex {self.number}: {self.title}"
+            sep = " " if "." in self.number else ": "  # "Annex A: T" / "Annex A.1 T"
+            return f"Annex {self.number}{sep}{self.title}"
+        if self.kind == "other":
+            return self.title
         return f"§ {self.number} {self.title}"
+
+    @property
+    def index_label(self) -> str:
+        """Short citation label shown in the index 'Section' column."""
+        if self.kind == "annex":
+            return f"Annex {self.number}"
+        if self.kind == "other":
+            return "—"
+        return f"§ {self.number}"
 
 
 @dataclass
@@ -119,21 +140,24 @@ def page_for_line(footers: list[tuple[int, int]], idx: int) -> int:
 def detect_headings(lines: list[str], footers: list[tuple[int, int]]) -> list[Heading]:
     headings: list[Heading] = []
     for i, line in enumerate(lines):
+        page = page_for_line(footers, i)
         m = RE_NUM_HEADING.match(line)
         if m:
-            number, title = m.group(1), m.group(2).rstrip()
-            headings.append(
-                Heading(i, "num", number, number, title, page_for_line(footers, i))
-            )
+            headings.append(Heading(i, "num", m.group(1), m.group(2).rstrip(), page))
             continue
         m = RE_ANNEX_HEADING.match(line)
         if m:
-            letter, title = m.group(1), m.group(2).rstrip()
-            headings.append(
-                Heading(
-                    i, "annex", f"Annex {letter}", letter, title, page_for_line(footers, i)
-                )
-            )
+            headings.append(Heading(i, "annex", m.group(1), m.group(2).rstrip(), page))
+            continue
+        m = RE_ANNEX_SUB_HEADING.match(line)
+        if m:
+            headings.append(Heading(i, "annex", m.group(1), m.group(2).rstrip(), page))
+            continue
+        # Catch-all (tried last): every other "§   " line is a back-matter heading
+        # (References, Index, ...). This keeps every section in the index.
+        m = RE_OTHER_HEADING.match(line)
+        if m:
+            headings.append(Heading(i, "other", "", m.group(1).rstrip(), page))
     return headings
 
 
@@ -146,7 +170,9 @@ def plan_segments(lines: list[str], headings: list[Heading]) -> list[Segment]:
     the ``SPEC_MIRRORS`` pin in ``xtask/src/main.rs``.
     """
     chapters = [h for h in headings if h.kind == "num" and h.components == 1]
-    annexes = [h for h in headings if h.kind == "annex"]
+    # Top-level annexes only (A..G); annex subsections (A.1, D.3.1, ...) are also
+    # kind "annex" but live inside their annex file, not as split boundaries.
+    annexes = [h for h in headings if h.kind == "annex" and h.components == 1]
 
     chapter_numbers = [int(h.number) for h in chapters]
     if chapter_numbers != list(range(1, 10)):
@@ -327,9 +353,8 @@ def render_index(segments: list[Segment], headings: list[Heading], seg_of: dict[
         if seg is None:
             continue
         link = f"[{seg.rel_path}]({seg.rel_path}#{h.anchor})"
-        label = h.label if h.kind == "annex" else f"§ {h.number}"
         title = h.title.replace("|", "\\|")
-        out.append(f"| `{label}` | {title} | {link} | {h.page} |")
+        out.append(f"| `{h.index_label}` | {title} | {link} | {h.page} |")
     out.append("")
     return "\n".join(out)
 

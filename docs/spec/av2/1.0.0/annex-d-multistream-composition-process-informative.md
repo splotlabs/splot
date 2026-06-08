@@ -8,6 +8,13 @@
 
 ```text
 §   Annex D: Multistream composition process (informative)
+```
+
+<a id="s-annex-d-1"></a>
+
+### Annex D.1 General
+
+```text
 §   D.1.General
     This annex describes the composition process for combining two or more decoded frames into a single
     output frame using the spatial layout specified by the ats_multistream_info or
@@ -86,6 +93,13 @@
       bit-depth.
 
 
+```
+
+<a id="s-annex-d-2"></a>
+
+### Annex D.2 Chroma format determination process
+
+```text
 §   D.2.Chroma format determination process
     This section defines the process of determining the chroma subsampling factors.
 
@@ -108,6 +122,13 @@
 
 
     AV2 Specification                                                                               Page 1116 of 1169
+```
+
+<a id="s-annex-d-3"></a>
+
+### Annex D.3 Array initialization process
+
+```text
 §   D.3.Array initialization process
     This section defines the process of initializing a frame array.
 
@@ -134,6 +155,13 @@
         The sample at location x samples across and y samples down is given by initializedFrameV[ y ][ x ] =
         backgroundValueV.
 
+```
+
+<a id="s-annex-d-3-1"></a>
+
+#### Annex D.3.1 Background color determination process
+
+```text
 §   D.3.1.Background color determination process
 
     This section defines the process of determining the background color for the composited frame.
@@ -159,6 +187,13 @@
 
 
     AV2 Specification                                                                            Page 1117 of 1169
+```
+
+<a id="s-annex-d-4"></a>
+
+### Annex D.4 Spatial mapping process
+
+```text
 §   D.4.Spatial mapping process
     This section defines the spatial mapping process.
 
@@ -216,6 +251,13 @@
 
 
     AV2 Specification                                                                               Page 1118 of 1169
+```
+
+<a id="s-annex-d-5"></a>
+
+### Annex D.5 Spatial mapping with alpha process
+
+```text
 §   D.5.Spatial mapping with alpha process
     This section defines the spatial mapping process with an alpha frame.
 
@@ -306,6 +348,13 @@
      }
 
 
+```
+
+<a id="s-annex-d-5-1"></a>
+
+#### Annex D.5.1 Frame resampling process
+
+```text
 §   D.5.1.Frame resampling process
     This section is a placeholder for the frame resampling process. The actual resampling process is outside
     the scope of this annex.
@@ -328,6 +377,13 @@
 
 
     AV2 Specification                                                                              Page 1120 of 1169
+```
+
+<a id="s-annex-d-5-2"></a>
+
+#### Annex D.5.2 Monochrome frame resampling process
+
+```text
 §   D.5.2.Monochrome frame resampling process
     This section is a placeholder for the monochrome frame resampling process. The actual resampling
     process is outside the scope of this annex.

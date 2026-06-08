@@ -95,7 +95,10 @@ parameterises cleanly for a future AV2 1.1.0.
 The CI gate must be stable across poppler versions, so it does **not** re-run
 `pdftotext`. Instead it: (a) recomputes each committed content file's sha256
 (using the `sha2` crate) and compares to `CHECKSUMS` (detects hand-edits/drift),
-and (b) confirms `provenance.toml` pins the expected PDF sha256 for v1.0.0. Wired
+(b) verifies the `CHECKSUMS` manifest's own sha256 against a value pinned in
+source (`SPEC_MIRRORS`) so a content edit cannot be laundered by also editing
+`CHECKSUMS` — the manifest is anchored outside the mirror, and
+(c) confirms `provenance.toml` pins the expected PDF sha256 for v1.0.0. Wired
 into `run_ci()` alongside `check_license_headers` / `check_dependency_direction`.
 Full re-derivation parity remains available locally via the script's `--verify`
 mode. Hashing uses the well-vetted `sha2` crate (a maintainer-approved `xtask`

@@ -8,6 +8,13 @@
 
 ```text
 §   Annex F: Sub-bitstream extraction (informative)
+```
+
+<a id="s-annex-f-1"></a>
+
+### Annex F.1 General
+
+```text
 §   F.1.General
     This annex specifies processes for extracting sub-bitstreams from AV2 bitstreams based on operating
     point selection. The sub-bitstream extraction process allows decoders to selectively decode portions of a
@@ -30,7 +37,21 @@
     The processes defined in this annex are informative and represent one conformant approach to sub-
     bitstream extraction. Decoders may use alternative methods provided they produce equivalent results.
 
+```
+
+<a id="s-annex-f-2"></a>
+
+### Annex F.2 Operating point usage
+
+```text
 §   F.2.Operating point usage
+```
+
+<a id="s-annex-f-2-1"></a>
+
+#### Annex F.2.1 General decoder operation
+
+```text
 §   F.2.1.General decoder operation
 
     When decoding an AV2 bitstream, a decoder can select to decode the entire bitstream or can examine
@@ -48,6 +69,13 @@
       direction from application-level requirements external to this specification, a conformant decoder is
       expected to decode all extended layers and embedded layers present in the bitstream.
 
+```
+
+<a id="s-annex-f-2-2"></a>
+
+#### Annex F.2.2 Multistream bitstream decoder operation
+
+```text
 §   F.2.2.Multistream bitstream decoder operation
 
     When decoding an AV2 bitstream, a decoder first invokes the operating point selection and analysis
@@ -115,6 +143,13 @@
     sub-modes.
 
 
+```
+
+<a id="s-annex-f-2-2-1"></a>
+
+##### Annex F.2.2.1 Full bitstream decoding
+
+```text
 §   F.2.2.1.Full bitstream decoding
 
     Decode the entire bitstream including all extended layers based on the information provided in the
@@ -122,6 +157,13 @@
 
 
     AV2 Specification                                                                                                                                Page 1140 of 1169
+```
+
+<a id="s-annex-f-2-2-2"></a>
+
+##### Annex F.2.2.2 Per-layer operating point selection
+
+```text
 §   F.2.2.2.Per-layer operating point selection
 
     Decode all extended layers associated with the bitstream, but for each extended layer examine if there
@@ -147,6 +189,13 @@
     corresponding entries in OpProfileIdc, OpLevelIdc, OpTierIdc, and OpMlayerCnt will have INVALID
     values.
 
+```
+
+<a id="s-annex-f-2-2-3"></a>
+
+##### Annex F.2.2.3 Global operating point selection
+
+```text
 §   F.2.2.3.Global operating point selection
 
     Examine if one or more global operating point sets (obu_xlayer_id equal to GLOBAL_XLAYER_ID) are
@@ -218,6 +267,13 @@
     corresponding entries in OpProfileIdc, OpLevelIdc, OpTierIdc, and OpMlayerCnt will have INVALID
     values.
 
+```
+
+<a id="s-annex-f-2-3"></a>
+
+#### Annex F.2.3 Singlestream bitstream decoder operation
+
+```text
 §   F.2.3.Singlestream bitstream decoder operation
 
     As described in Annex F.2.2 Multistream bitstream decoder operation, when decoding an AV2 bitstream,
@@ -237,12 +293,26 @@
 
     For singlestream bitstreams, a decoder may operate in one of the following modes:
 
+```
+
+<a id="s-annex-f-2-3-1"></a>
+
+##### Annex F.2.3.1 Full bitstream decoding
+
+```text
 §   F.2.3.1.Full bitstream decoding
 
     Decode the entire bitstream based on its Sequence Header information. No extraction is performed. The
     output is identical to the input bitstream, and the profile, tier, and level information are as indicated in
     the sequence header.
 
+```
+
+<a id="s-annex-f-2-3-2"></a>
+
+##### Annex F.2.3.2 Local operating point selection
+
+```text
 §   F.2.3.2.Local operating point selection
 
     Examine if local OPS information exists, and if so, select a local operating point based on the application
@@ -270,6 +340,13 @@
     extended layer identifier, typically 0) for conformance verification of the extended layer that is still
     present in the subBitstream.
 
+```
+
+<a id="s-annex-f-3"></a>
+
+### Annex F.3 Sub-bitstream extraction processes
+
+```text
 §   F.3.Sub-bitstream extraction processes
     The following examples illustrate the sub-bitstream extraction process for both multistream and
     singlestream scenarios, showing how OBUs are filtered based on the selected operating point.
@@ -412,6 +489,13 @@ AV2 Specification                                                               
 
 
 
+```
+
+<a id="s-annex-f-3-1"></a>
+
+#### Annex F.3.1 Operating point selection and analysis process
+
+```text
 §   F.3.1.Operating point selection and analysis process
 
     This process analyzes an AV2 bitstream to determine which extended layers, embedded layers, and
@@ -597,6 +681,13 @@ AV2 Specification                                                               
 
     Return retentionMap, xLayerIsSelected, profileIdc, levelIdc, tierIdc, and mlayerCnt.
 
+```
+
+<a id="s-annex-f-3-2"></a>
+
+#### Annex F.3.2 Sub-bitstream extraction process
+
+```text
 §   F.3.2.Sub-bitstream extraction process
 
     This process extracts a sub-bitstream from an AV2 bitstream by filtering OBUs based on a 3D layer
@@ -650,6 +741,13 @@ AV2 Specification                                                               
 
     Return subBitstream.
 
+```
+
+<a id="s-annex-f-3-3"></a>
+
+#### Annex F.3.3 Preserved OBU types
+
+```text
 §   F.3.3.Preserved OBU types
 
       NOTE: The extraction processes preserve certain OBU types that contain essential configuration

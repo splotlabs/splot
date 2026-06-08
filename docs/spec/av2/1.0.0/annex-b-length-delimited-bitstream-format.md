@@ -8,6 +8,13 @@
 
 ```text
 §   Annex B: Length delimited bitstream format
+```
+
+<a id="s-annex-b-1"></a>
+
+### Annex B.1 Overview
+
+```text
 §   B.1.Overview
     § 5 Syntax structures define the syntax for OBUs. This annex defines a length-delimited format for
     packing OBUs into a bitstream.
@@ -15,6 +22,13 @@
     In derived specifications, such as container formats enabling storage of AV2 videos together with audio
     or subtitles, other methods of packing OBUs into a bitstream format are also allowed.
 
+```
+
+<a id="s-annex-b-2"></a>
+
+### Annex B.2 Length delimited bitstream syntax
+
+```text
 §   B.2.Length delimited bitstream syntax
 
      bitstream( ) {
@@ -25,6 +39,13 @@
      }
 
 
+```
+
+<a id="s-annex-b-3"></a>
+
+### Annex B.3 Length delimited bitstream semantics
+
+```text
 §   B.3.Length delimited bitstream semantics
     more_data_in_bitstream() is a system-dependent method of determining when the system reaches the
     end of the bitstream. The method returns 1 when there is more data to read, or 0 when at the end of the

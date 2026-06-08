@@ -633,9 +633,98 @@ Canonical map from every AV2 v1.0.0 `§` section to its file, anchor, and PDF pa
 | `§ 9.7` | Secondary transform tables | [09-additional-tables/09-07-secondary-transform-tables.md](09-additional-tables/09-07-secondary-transform-tables.md#s-9-7) | 849 |
 | `§ 9.8` | Loop restoration tables | [09-additional-tables/09-08-loop-restoration-tables.md](09-additional-tables/09-08-loop-restoration-tables.md#s-9-8) | 921 |
 | `Annex A` | Profiles, levels, and tiers | [annex-a-profiles-levels-and-tiers.md](annex-a-profiles-levels-and-tiers.md#s-annex-a) | 1101 |
+| `Annex A.1` | General | [annex-a-profiles-levels-and-tiers.md](annex-a-profiles-levels-and-tiers.md#s-annex-a-1) | 1101 |
+| `Annex A.2` | Profiles | [annex-a-profiles-levels-and-tiers.md](annex-a-profiles-levels-and-tiers.md#s-annex-a-2) | 1101 |
+| `Annex A.3` | Multi-sequence configurations | [annex-a-profiles-levels-and-tiers.md](annex-a-profiles-levels-and-tiers.md#s-annex-a-3) | 1104 |
+| `Annex A.4` | Levels | [annex-a-profiles-levels-and-tiers.md](annex-a-profiles-levels-and-tiers.md#s-annex-a-4) | 1104 |
+| `Annex A.5` | Decoder Conformance | [annex-a-profiles-levels-and-tiers.md](annex-a-profiles-levels-and-tiers.md#s-annex-a-5) | 1111 |
 | `Annex B` | Length delimited bitstream format | [annex-b-length-delimited-bitstream-format.md](annex-b-length-delimited-bitstream-format.md#s-annex-b) | 1112 |
+| `Annex B.1` | Overview | [annex-b-length-delimited-bitstream-format.md](annex-b-length-delimited-bitstream-format.md#s-annex-b-1) | 1112 |
+| `Annex B.2` | Length delimited bitstream syntax | [annex-b-length-delimited-bitstream-format.md](annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | 1112 |
+| `Annex B.3` | Length delimited bitstream semantics | [annex-b-length-delimited-bitstream-format.md](annex-b-length-delimited-bitstream-format.md#s-annex-b-3) | 1112 |
 | `Annex C` | Error resilience behavior (informative) | [annex-c-error-resilience-behavior-informative.md](annex-c-error-resilience-behavior-informative.md#s-annex-c) | 1113 |
+| `Annex C.1` | General | [annex-c-error-resilience-behavior-informative.md](annex-c-error-resilience-behavior-informative.md#s-annex-c-1) | 1113 |
+| `Annex C.2` | Definition of processable frames | [annex-c-error-resilience-behavior-informative.md](annex-c-error-resilience-behavior-informative.md#s-annex-c-2) | 1113 |
+| `Annex C.3` | Recommendation for processable frames | [annex-c-error-resilience-behavior-informative.md](annex-c-error-resilience-behavior-informative.md#s-annex-c-3) | 1114 |
+| `Annex C.4` | Encoder consequences of processable frames | [annex-c-error-resilience-behavior-informative.md](annex-c-error-resilience-behavior-informative.md#s-annex-c-4) | 1114 |
+| `Annex C.5` | Decoder consequences of processable frames | [annex-c-error-resilience-behavior-informative.md](annex-c-error-resilience-behavior-informative.md#s-annex-c-5) | 1114 |
 | `Annex D` | Multistream composition process (informative) | [annex-d-multistream-composition-process-informative.md](annex-d-multistream-composition-process-informative.md#s-annex-d) | 1115 |
+| `Annex D.1` | General | [annex-d-multistream-composition-process-informative.md](annex-d-multistream-composition-process-informative.md#s-annex-d-1) | 1115 |
+| `Annex D.2` | Chroma format determination process | [annex-d-multistream-composition-process-informative.md](annex-d-multistream-composition-process-informative.md#s-annex-d-2) | 1116 |
+| `Annex D.3` | Array initialization process | [annex-d-multistream-composition-process-informative.md](annex-d-multistream-composition-process-informative.md#s-annex-d-3) | 1117 |
+| `Annex D.3.1` | Background color determination process | [annex-d-multistream-composition-process-informative.md](annex-d-multistream-composition-process-informative.md#s-annex-d-3-1) | 1117 |
+| `Annex D.4` | Spatial mapping process | [annex-d-multistream-composition-process-informative.md](annex-d-multistream-composition-process-informative.md#s-annex-d-4) | 1118 |
+| `Annex D.5` | Spatial mapping with alpha process | [annex-d-multistream-composition-process-informative.md](annex-d-multistream-composition-process-informative.md#s-annex-d-5) | 1119 |
+| `Annex D.5.1` | Frame resampling process | [annex-d-multistream-composition-process-informative.md](annex-d-multistream-composition-process-informative.md#s-annex-d-5-1) | 1120 |
+| `Annex D.5.2` | Monochrome frame resampling process | [annex-d-multistream-composition-process-informative.md](annex-d-multistream-composition-process-informative.md#s-annex-d-5-2) | 1121 |
 | `Annex E` | Decoder model | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e) | 1122 |
+| `Annex E.1` | General | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-1) | 1122 |
+| `Annex E.2` | Operating point selection | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-2) | 1123 |
+| `Annex E.3` | Decoder model definitions | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-3) | 1123 |
+| `Annex E.4` | Operating modes | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-4) | 1126 |
+| `Annex E.4.1` | Resource availability mode | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-4-1) | 1126 |
+| `Annex E.4.2` | Decoding schedule mode | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-4-2) | 1127 |
+| `Annex E.4.3` | Establishing bitstream conformance | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-4-3) | 1128 |
+| `Annex E.4.4` | When timing information is not present in the bitstream | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-4-4) | 1128 |
+| `Annex E.5` | Frame timing definitions | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-5) | 1128 |
+| `Annex E.5.1` | Start of DFG bits arrival | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-5-1) | 1128 |
+| `Annex E.5.2` | End of DFG bits arrival | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-5-2) | 1129 |
+| `Annex E.5.3` | Scheduled removal times | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-5-3) | 1129 |
+| `Annex E.5.4` | Removal times in decoding schedule mode | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-5-4) | 1129 |
+| `Annex E.5.5` | Removal times in resource availability mode | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-5-5) | 1130 |
+| `Annex E.5.6` | Frame decode timing | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-5-6) | 1131 |
+| `Annex E.5.7` | Frame presentation timing | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-5-7) | 1131 |
+| `Annex E.6` | Decoder model | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-6) | 1132 |
+| `Annex E.6.1` | Decoder model structure | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-6-1) | 1132 |
+| `Annex E.6.2` | Decoder model functions | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-6-2) | 1133 |
+| `Annex E.6.3` | Decoder model error codes | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-6-3) | 1136 |
+| `Annex E.7` | Bitstream conformance | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-7) | 1136 |
+| `Annex E.7.1` | General | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-7-1) | 1136 |
+| `Annex E.7.2` | Decoder buffer delay consistency across random access points (applies to decoding | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-7-2) | 1137 |
+| `Annex E.7.3` | Smoothing buffer overflow | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-7-3) | 1137 |
+| `Annex E.7.4` | Smoothing buffer underflow | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-7-4) | 1137 |
+| `Annex E.7.5` | Minimum decode time (applies to decoding schedule mode) | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-7-5) | 1137 |
+| `Annex E.7.6` | Minimum presentation interval | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-7-6) | 1138 |
+| `Annex E.7.7` | Decode deadline | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-7-7) | 1138 |
+| `Annex E.7.8` | Level imposed constraints | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-7-8) | 1138 |
+| `Annex E.7.9` | Decode Process constraints | [annex-e-decoder-model.md](annex-e-decoder-model.md#s-annex-e-7-9) | 1138 |
 | `Annex F` | Sub-bitstream extraction (informative) | [annex-f-sub-bitstream-extraction-informative.md](annex-f-sub-bitstream-extraction-informative.md#s-annex-f) | 1139 |
+| `Annex F.1` | General | [annex-f-sub-bitstream-extraction-informative.md](annex-f-sub-bitstream-extraction-informative.md#s-annex-f-1) | 1139 |
+| `Annex F.2` | Operating point usage | [annex-f-sub-bitstream-extraction-informative.md](annex-f-sub-bitstream-extraction-informative.md#s-annex-f-2) | 1139 |
+| `Annex F.2.1` | General decoder operation | [annex-f-sub-bitstream-extraction-informative.md](annex-f-sub-bitstream-extraction-informative.md#s-annex-f-2-1) | 1139 |
+| `Annex F.2.2` | Multistream bitstream decoder operation | [annex-f-sub-bitstream-extraction-informative.md](annex-f-sub-bitstream-extraction-informative.md#s-annex-f-2-2) | 1139 |
+| `Annex F.2.2.1` | Full bitstream decoding | [annex-f-sub-bitstream-extraction-informative.md](annex-f-sub-bitstream-extraction-informative.md#s-annex-f-2-2-1) | 1140 |
+| `Annex F.2.2.2` | Per-layer operating point selection | [annex-f-sub-bitstream-extraction-informative.md](annex-f-sub-bitstream-extraction-informative.md#s-annex-f-2-2-2) | 1141 |
+| `Annex F.2.2.3` | Global operating point selection | [annex-f-sub-bitstream-extraction-informative.md](annex-f-sub-bitstream-extraction-informative.md#s-annex-f-2-2-3) | 1141 |
+| `Annex F.2.3` | Singlestream bitstream decoder operation | [annex-f-sub-bitstream-extraction-informative.md](annex-f-sub-bitstream-extraction-informative.md#s-annex-f-2-3) | 1142 |
+| `Annex F.2.3.1` | Full bitstream decoding | [annex-f-sub-bitstream-extraction-informative.md](annex-f-sub-bitstream-extraction-informative.md#s-annex-f-2-3-1) | 1143 |
+| `Annex F.2.3.2` | Local operating point selection | [annex-f-sub-bitstream-extraction-informative.md](annex-f-sub-bitstream-extraction-informative.md#s-annex-f-2-3-2) | 1143 |
+| `Annex F.3` | Sub-bitstream extraction processes | [annex-f-sub-bitstream-extraction-informative.md](annex-f-sub-bitstream-extraction-informative.md#s-annex-f-3) | 1143 |
+| `Annex F.3.1` | Operating point selection and analysis process | [annex-f-sub-bitstream-extraction-informative.md](annex-f-sub-bitstream-extraction-informative.md#s-annex-f-3-1) | 1145 |
+| `Annex F.3.2` | Sub-bitstream extraction process | [annex-f-sub-bitstream-extraction-informative.md](annex-f-sub-bitstream-extraction-informative.md#s-annex-f-3-2) | 1149 |
+| `Annex F.3.3` | Preserved OBU types | [annex-f-sub-bitstream-extraction-informative.md](annex-f-sub-bitstream-extraction-informative.md#s-annex-f-3-3) | 1150 |
 | `Annex G` | Layer composition and Atlas usage examples (informative) | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g) | 1151 |
+| `Annex G.1` | General | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-1) | 1151 |
+| `Annex G.2` | 360-degree viewport-dependent streaming with subpictures | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-2) | 1151 |
+| `Annex G.2.1` | Layer structure | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-2-1) | 1152 |
+| `Annex G.2.2` | LCR configuration | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-2-2) | 1153 |
+| `Annex G.2.3` | Atlas configuration | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-2-3) | 1154 |
+| `Annex G.2.4` | Viewport-dependent streaming process | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-2-4) | 1155 |
+| `Annex G.2.5` | Benefits for 360-degree streaming | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-2-5) | 1156 |
+| `Annex G.3` | Subpicture composition example | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-3) | 1158 |
+| `Annex G.3.1` | LCR configuration | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-3-1) | 1158 |
+| `Annex G.3.2` | Atlas configuration | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-3-2) | 1159 |
+| `Annex G.3.3` | Rendering and adaptive streaming | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-3-3) | 1159 |
+| `Annex G.4` | Region-of-interest scalability example with encoder padding | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-4) | 1161 |
+| `Annex G.4.1` | LCR configuration | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-4-1) | 1162 |
+| `Annex G.4.2` | Atlas configuration | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-4-2) | 1162 |
+| `Annex G.4.3` | Rendering scenarios | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-4-3) | 1163 |
+| `Annex G.5` | Implementation considerations | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-5) | 1165 |
+| `Annex G.5.1` | Decoder requirements | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-5-1) | 1165 |
+| `Annex G.5.2` | Encoder recommendations | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-5-2) | 1166 |
+| `Annex G.5.3` | Interoperability | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-annex-g-5-3) | 1166 |
+| `—` | Index | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-index) | 1167 |
+| `—` | Terms defined by this specification | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-terms-defined-by-this-specification) | 1167 |
+| `—` | References | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-references) | 1168 |
+| `—` | Normative References | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-normative-references) | 1168 |
+| `—` | Informative References | [annex-g-layer-composition-and-atlas-usage-examples-informative.md](annex-g-layer-composition-and-atlas-usage-examples-informative.md#s-informative-references) | 1169 |

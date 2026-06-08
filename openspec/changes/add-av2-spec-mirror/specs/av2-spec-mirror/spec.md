@@ -61,9 +61,12 @@ abort on mismatch. The conversion SHALL NOT depend on markitdown.
 
 The repository SHALL provide a `cargo xtask check-spec-mirror` command, run as
 part of `cargo xtask ci`, that fails when any committed mirror content file's
-sha256 does not match the committed `CHECKSUMS` manifest, or when
-`provenance.toml` does not pin the expected PDF sha256 for the mirrored version.
-The gate SHALL be deterministic and SHALL NOT require running `pdftotext`.
+sha256 does not match the committed `CHECKSUMS` manifest, when the `CHECKSUMS`
+manifest's own sha256 does not match the value pinned in source
+(`SPEC_MIRRORS`), or when `provenance.toml` does not pin the expected PDF sha256
+for the mirrored version. The gate SHALL be deterministic and SHALL NOT require
+running `pdftotext`. Pinning the manifest hash in source (outside the mirror)
+SHALL prevent a content edit from being laundered by also editing `CHECKSUMS`.
 
 #### Scenario: hand-edited mirror file is rejected
 
@@ -71,9 +74,17 @@ The gate SHALL be deterministic and SHALL NOT require running `pdftotext`.
   `CHECKSUMS` via the regeneration script
 - **THEN** `cargo xtask check-spec-mirror` (and therefore `cargo xtask ci`) fails
 
+#### Scenario: edit laundered through CHECKSUMS is still rejected
+
+- **WHEN** a mirror file is modified **and** its `CHECKSUMS` line is updated to
+  match, but the manifest hash pinned in `SPEC_MIRRORS` is not updated
+- **THEN** `cargo xtask check-spec-mirror` fails because the `CHECKSUMS` sha256 no
+  longer matches the pinned value
+
 #### Scenario: clean mirror passes
 
-- **WHEN** the committed mirror, `CHECKSUMS`, and `provenance.toml` are consistent
+- **WHEN** the committed mirror, `CHECKSUMS` (matching its pinned hash), and
+  `provenance.toml` are consistent
 - **THEN** `cargo xtask check-spec-mirror` succeeds without needing poppler
 
 ### Requirement: third-party license quarantine

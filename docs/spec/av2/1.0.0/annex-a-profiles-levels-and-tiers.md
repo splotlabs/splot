@@ -8,6 +8,13 @@
 
 ```text
 §   Annex A: Profiles, levels, and tiers
+```
+
+<a id="s-annex-a-1"></a>
+
+### Annex A.1 General
+
+```text
 §   A.1.General
     This annex specifies profiles, levels, and tiers that collectively define the conformance requirements for
     AV2 bitstreams and decoders.
@@ -20,6 +27,13 @@
     that a conforming coded video sequence or coded multistream video sequence shall not exceed. Further
     information is provided in Annex A.4 Levels.
 
+```
+
+<a id="s-annex-a-2"></a>
+
+### Annex A.2 Profiles
+
+```text
 §   A.2.Profiles
     The AV2 profiles supported in this version of this specification are defined in Table A.1. A profile specifies
     the allowed coding tools, chroma formats, bit depths, and interoperability point that a conforming coded
@@ -189,6 +203,13 @@ cases.
 
 
 AV2 Specification                                                                                    Page 1103 of 1169
+```
+
+<a id="s-annex-a-3"></a>
+
+### Annex A.3 Multi-sequence configurations
+
+```text
 §   A.3.Multi-sequence configurations
     A multi-sequence configuration specifies the collective minimum requirements for coding tools,
     chroma formats, and bit depths needed to decode all coded video sequences within an AV2 bitstream.
@@ -232,6 +253,13 @@ AV2 Specification                                                               
                                                          CHROMA_FORMAT_444
 
 
+```
+
+<a id="s-annex-a-4"></a>
+
+### Annex A.4 Levels
+
+```text
 §   A.4.Levels
     Each operating point contains a syntax element seq_level_idx.
 
@@ -643,6 +671,13 @@ AV2 Specification                                                               
       • MaxBitrate is equal to MaxMbps multiplied by 1,000,000
       • MaxBufferSize is equal to MaxBitrate multiplied by 1 second
 
+```
+
+<a id="s-annex-a-5"></a>
+
+### Annex A.5 Decoder Conformance
+
+```text
 §   A.5.Decoder Conformance
     A level X.Y conformant decoder shall be capable of decoding all bitstreams (that can be decoded by the
     general decoding process) that conform to that level.

@@ -8,6 +8,13 @@
 
 ```text
 §   Annex E: Decoder model
+```
+
+<a id="s-annex-e-1"></a>
+
+### Annex E.1 General
+
+```text
 §   E.1.General
     The decoder model is used to verify that a bitstream, sub-bitstream or an operating point can be decoded
     within the constraints imposed by one of the coding levels defined in Annex A.4 Levels. The decoder
@@ -63,6 +70,13 @@
     AV2 Specification                                                                          Page 1122 of 1169
     Annex E.7 Bitstream conformance specifies the conformance requirements.
 
+```
+
+<a id="s-annex-e-2"></a>
+
+### Annex E.2 Operating point selection
+
+```text
 §   E.2.Operating point selection
     The decoder model process is performed for an extended layer or for a certain operating point. The
     decoder model is applied to each extended layer independently. If an operating point includes more than
@@ -98,6 +112,13 @@
       • EncoderBufferDelay is assigned the value of ops_encoder_buffer_delay[ xId ][ ops ][ op ].
       • LowDelayMode is assigned the value of ops_low_delay_mode_flag[ xId ][ ops ][ op ].
 
+```
+
+<a id="s-annex-e-3"></a>
+
+### Annex E.3 Decoder model definitions
+
+```text
 §   E.3.Decoder model definitions
     The decoder model uses the following elements to verify bitstream conformance that are not part of the
     decoding process specified in § 7 Decoding process.
@@ -193,7 +214,21 @@ AV2 Specification                                                               
     divisor of the expected times between displaying two consecutive frames if the encoded bitstream has a
     variable display frame rate.
 
+```
+
+<a id="s-annex-e-4"></a>
+
+### Annex E.4 Operating modes
+
+```text
 §   E.4.Operating modes
+```
+
+<a id="s-annex-e-4-1"></a>
+
+#### Annex E.4.1 Resource availability mode
+
+```text
 §   E.4.1.Resource availability mode
 
     In this mode the model simulates the operation of the decoder under the assumption that the complete
@@ -239,6 +274,13 @@ AV2 Specification                                                               
     The decoder writes the decoded frame into one of the available frame buffers. Decoding must be delayed
     until a frame buffer becomes available.
 
+```
+
+<a id="s-annex-e-4-2"></a>
+
+#### Annex E.4.2 Decoding schedule mode
+
+```text
 §   E.4.2.Decoding schedule mode
 
     This mode imposes additional constraints relating to the operation of the smoothing buffer and the timing
@@ -290,6 +332,13 @@ AV2 Specification                                                               
     into this model are not signaled, it is not possible to check conformance of the stream to the claimed level
     with this model.
 
+```
+
+<a id="s-annex-e-4-3"></a>
+
+#### Annex E.4.3 Establishing bitstream conformance
+
+```text
 §   E.4.3.Establishing bitstream conformance
 
     When the parameters necessary for the decoding schedule mode are specified by the bitstream, extended
@@ -301,6 +350,13 @@ AV2 Specification                                                               
     operating point or signaled to the decoder by the application or some other means, the resource
     availability mode shall be used for establishing the bitstream conformance.
 
+```
+
+<a id="s-annex-e-4-4"></a>
+
+#### Annex E.4.4 When timing information is not present in the bitstream
+
+```text
 §   E.4.4.When timing information is not present in the bitstream
 
     When the parameters necessary as the input to at least one of the operating modes specified in Annex E.4
@@ -310,7 +366,21 @@ AV2 Specification                                                               
     information necessary to verify the conformance can be provided by external means. Otherwise,
     conformance cannot be established.
 
+```
+
+<a id="s-annex-e-5"></a>
+
+### Annex E.5 Frame timing definitions
+
+```text
 §   E.5.Frame timing definitions
+```
+
+<a id="s-annex-e-5-1"></a>
+
+#### Annex E.5.1 Start of DFG bits arrival
+
+```text
 §   E.5.1.Start of DFG bits arrival
 
     The bits arrive in the smoothing buffer at a constant bitrate BitRate or the bitrate equal to 0. Hence, the
@@ -337,6 +407,13 @@ AV2 Specification                                                               
                                 90 000
 
 
+```
+
+<a id="s-annex-e-5-2"></a>
+
+#### Annex E.5.2 End of DFG bits arrival
+
+```text
 §   E.5.2.End of DFG bits arrival
 
     For the bits that belong to the DFG i, the time of arrival of the last bit of the DFG i is determined as
@@ -345,6 +422,13 @@ AV2 Specification                                                               
      LastBitArrival[ i ] = FirstBitArrival[ i ] + CodedBits[ i ] ÷ BitRate
 
 
+```
+
+<a id="s-annex-e-5-3"></a>
+
+#### Annex E.5.3 Scheduled removal times
+
+```text
 §   E.5.3.Scheduled removal times
 
     The decoder starts to decode a frame exactly at the moment when the data corresponding to the DFG of
@@ -368,6 +452,13 @@ AV2 Specification                                                               
     Removal times in decoding schedule mode, and derivation of ScheduledRemovalResource[ i ] in the
     resource availability mode is described in Annex E.5.5 Removal times in resource availability mode.
 
+```
+
+<a id="s-annex-e-5-4"></a>
+
+#### Annex E.5.4 Removal times in decoding schedule mode
+
+```text
 §   E.5.4.Removal times in decoding schedule mode
 
     DFG i is scheduled for removal from the smoothing buffer at time ScheduledRemovalTiming [ i ] which is
@@ -418,6 +509,13 @@ AV2 Specification                                                               
      Removal[ i ]       =   ScheduledRemovalTiming[ i ]
 
 
+```
+
+<a id="s-annex-e-5-5"></a>
+
+#### Annex E.5.5 Removal times in resource availability mode
+
+```text
 §   E.5.5.Removal times in resource availability mode
 
     In the resource availability mode, BufferRemovalTime[ i ] are not signaled for the chosen operating point.
@@ -462,6 +560,13 @@ AV2 Specification                                                               
      }
 
 
+```
+
+<a id="s-annex-e-5-6"></a>
+
+#### Annex E.5.6 Frame decode timing
+
+```text
 §   E.5.6.Frame decode timing
 
     The time required to decode a frame (i.e., to process the decodable frame’s DFG), TimeToDecode [ i ], is
@@ -488,6 +593,13 @@ AV2 Specification                                                               
      }
 
 
+```
+
+<a id="s-annex-e-5-7"></a>
+
+#### Annex E.5.7 Frame presentation timing
+
+```text
 §   E.5.7.Frame presentation timing
 
     When the decoder model is applied to the whole extended layer, InitialDisplayDelay is set to
@@ -547,7 +659,21 @@ AV2 Specification                                                               
      PresentationInterval[ j ] = PresentationTime[ j + 1 ] - PresentationTime[ j ]
 
 
+```
+
+<a id="s-annex-e-6"></a>
+
+### Annex E.6 Decoder model
+
+```text
 §   E.6.Decoder model
+```
+
+<a id="s-annex-e-6-1"></a>
+
+#### Annex E.6.1 Decoder model structure
+
+```text
 §   E.6.1.Decoder model structure
 
     The decoder model simulates the values of selected timing points as successive frames are decoded. This
@@ -573,6 +699,13 @@ AV2 Specification                                                               
     standalone approach that derives values of variables used by the decoder model without the use of the
     complete decode process.
 
+```
+
+<a id="s-annex-e-6-2"></a>
+
+#### Annex E.6.2 Decoder model functions
+
+```text
 §   E.6.2.Decoder model functions
 
     This section defines the buffer management functions invoked by the decoder model process.
@@ -768,6 +901,13 @@ AV2 Specification                                                               
       buffer pool reaches InitialDisplayDelay. Depending on the implementation, PresentationTime of
       output frames may need to be updated when the InitialPresentationDelay is known.
 
+```
+
+<a id="s-annex-e-6-3"></a>
+
+#### Annex E.6.3 Decoder model error codes
+
+```text
 §   E.6.3.Decoder model error codes
 
     The various non-conformant error codes are as specified in Table E.1:
@@ -784,7 +924,21 @@ AV2 Specification                                                               
                                            time associated with the frame.
 
 
+```
+
+<a id="s-annex-e-7"></a>
+
+### Annex E.7 Bitstream conformance
+
+```text
 §   E.7.Bitstream conformance
+```
+
+<a id="s-annex-e-7-1"></a>
+
+#### Annex E.7.1 General
+
+```text
 §   E.7.1.General
 
     A conformant coded bitstream shall satisfy the following set of constraints.
@@ -830,6 +984,13 @@ AV2 Specification                                                               
     In addition to these, a conformant bitstream shall satisfy the constraints specified in the following
     sections.
 
+```
+
+<a id="s-annex-e-7-2"></a>
+
+#### Annex E.7.2 Decoder buffer delay consistency across random access points (applies to decoding
+
+```text
 §   E.7.2.Decoder buffer delay consistency across random access points (applies to decoding
     schedule mode)
 
@@ -844,11 +1005,25 @@ AV2 Specification                                                               
      DecoderBufferDelay <= ceil( TimeDelta[ i ] )
 
 
+```
+
+<a id="s-annex-e-7-3"></a>
+
+#### Annex E.7.3 Smoothing buffer overflow
+
+```text
 §   E.7.3.Smoothing buffer overflow
 
     Smoothing buffer overflow is defined as the state where the total number of bits in the smoothing buffer
     exceeds the size of the smoothing buffer BufferSize. The smoothing buffer shall never overflow.
 
+```
+
+<a id="s-annex-e-7-4"></a>
+
+#### Annex E.7.4 Smoothing buffer underflow
+
+```text
 §   E.7.4.Smoothing buffer underflow
 
     Smoothing buffer underflow is defined as the state where a complete DFG is not present in the smoothing
@@ -859,6 +1034,13 @@ AV2 Specification                                                               
 
     When the LowDelayMode is equal to 0, the smoothing buffer shall never underflow.
 
+```
+
+<a id="s-annex-e-7-5"></a>
+
+#### Annex E.7.5 Minimum decode time (applies to decoding schedule mode)
+
+```text
 §   E.7.5.Minimum decode time (applies to decoding schedule mode)
 
     There must be enough time between a DFG being removed from the smoothing buffer, Removal[ i ], and
@@ -873,6 +1055,13 @@ AV2 Specification                                                               
 
 
     AV2 Specification                                                                             Page 1137 of 1169
+```
+
+<a id="s-annex-e-7-6"></a>
+
+#### Annex E.7.6 Minimum presentation interval
+
+```text
 §   E.7.6.Minimum presentation interval
 
     Variable numOutputFramesInTU [ j ] is equal to the number of output frames with the
@@ -891,6 +1080,13 @@ AV2 Specification                                                               
 
     Where MaxNumFrameHeadersPerSec is defined in the level constraints.
 
+```
+
+<a id="s-annex-e-7-7"></a>
+
+#### Annex E.7.7 Decode deadline
+
+```text
 §   E.7.7.Decode deadline
 
     It is a requirement of the bitstream conformance that each frame shall be fully decoded at, or before, the
@@ -899,6 +1095,13 @@ AV2 Specification                                                               
      Removal[ i ] + TimeToDecode[ i ] <= PresentationTime[ i ]
 
 
+```
+
+<a id="s-annex-e-7-8"></a>
+
+#### Annex E.7.8 Level imposed constraints
+
+```text
 §   E.7.8.Level imposed constraints
 
     When operating in the decoding schedule mode, DecoderBufferDelay shall not be equal to 0 and shall not
@@ -909,6 +1112,13 @@ AV2 Specification                                                               
       equal to a constant within a coded video sequence, and for this constant to be equal to BufferSize, but
       these are not strict requirements for bitstream conformance.
 
+```
+
+<a id="s-annex-e-7-9"></a>
+
+#### Annex E.7.9 Decode Process constraints
+
+```text
 §   E.7.9.Decode Process constraints
 
     It is a requirement of bitstream conformance that the decoder model process can be invoked with the
