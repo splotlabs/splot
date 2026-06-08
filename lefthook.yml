@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+#
+# Install: `lefthook install`  (lefthook is an external binary, not a cargo dep)
+#
+# Hooks are intentionally fast: pre-commit is fmt + typos only; the full
+# `cargo xtask ci` gate runs on pre-push.
+pre-commit:
+  parallel: true
+  commands:
+    fmt:
+      run: cargo fmt --all -- --check
+    typos:
+      run: typos
+
+commit-msg:
+  commands:
+    conventional-title:
+      run: subject=$(head -n1 {1}); cargo xtask check-conventional-title "$subject"
+
+pre-push:
+  commands:
+    gate:
+      run: cargo xtask ci

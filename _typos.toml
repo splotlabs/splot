@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+#
+# crate-ci/typos configuration. Check: `typos`   Fix: `typos -w`
+
+[files]
+extend-exclude = [
+  "Cargo.lock",
+  "fuzz/Cargo.lock",
+  "tests/fixtures/**",
+  "docs/IMPLEMENTATION-MATRIX.toml",
+  "*.av2",
+  "*.obu",
+]
+
+[default]
+# Domain terms / intentional spellings. ONLY add entries after confirming a
+# real false positive by running `typos`. Keep this list minimal and justified.
+
+[default.extend-words]
+# AV2 / codec domain terms, each confirmed a false positive against `typos` output.
+# These are real spec identifiers, not misspellings:
+ist = "ist"  # enable_intra_ist / enable_inter_ist — AV2 Intra/Inter Secondary Transform sequence-header flags
+cll = "cll"  # HDR CLL = Content Light Level metadata (feature AV2-5.17.5-METADATA-HDR-CLL)
+mis = "mis"  # mode-info unit count; uniform_spacing() parameter (AV2 v1.0.0 § 5.18.7.5)

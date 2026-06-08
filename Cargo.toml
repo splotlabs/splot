@@ -59,3 +59,17 @@ panic = "deny"
 todo = "deny"
 unimplemented = "deny"
 dbg_macro = "deny"
+
+# Build profiles. `overflow-checks` is declared explicitly on every profile so codec
+# arithmetic traps integer overflow even in optimized builds: the `release` profile
+# would otherwise silently wrap on overflow, a correctness hazard for a codec. `dev`
+# and `test` already default to `true`; declaring them documents the intent and keeps
+# the guarantee robust to future profile edits.
+[profile.release]
+overflow-checks = true
+
+[profile.dev]
+overflow-checks = true
+
+[profile.test]
+overflow-checks = true

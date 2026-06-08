@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
@@ -78,6 +78,18 @@ enum Task {
     FetchVectors,
     /// (stub) Run AVM differential testing.
     Conformance,
+    /// Generate a local HTML coverage report (requires `cargo-llvm-cov`).
+    Coverage,
+    /// Run a short local fuzz smoke session against the `parse_obu` target.
+    ///
+    /// Requires a nightly toolchain and `cargo-fuzz`. Defaults to 30 seconds.
+    Fuzz {
+        /// Maximum fuzzing time in seconds (default 30).
+        #[arg(long, value_name = "SECS")]
+        time: Option<u64>,
+    },
+    /// Run the networked cargo-deny advisory check (requires `cargo-deny`).
+    Audit,
 }
 
 fn main() -> Result<()> {
@@ -112,6 +124,9 @@ fn main() -> Result<()> {
             conformance_stub();
             Ok(())
         }
+        Task::Coverage => run_coverage(),
+        Task::Fuzz { time } => run_fuzz(time),
+        Task::Audit => run_audit(),
     }
 }
 
@@ -129,6 +144,15 @@ fn run_ci() -> Result<()> {
     ])?;
     run_cargo(&["build", "--workspace", "--all-targets", "--locked"])?;
     run_cargo(&["test", "--workspace", "--all-targets", "--locked"])?;
+    // `--all-targets` skips doctests, so run them explicitly: the workspace
+    // `missing_docs` lint implies doc examples that must keep compiling.
+    run_cargo(&["test", "--doc", "--workspace", "--locked"])?;
+
+    // External-binary checks: mandatory in CI (the workflow installs each tool),
+    // run-if-present locally so a fresh checkout can still run `cargo xtask ci`.
+    run_typos()?;
+    run_cargo_machete()?;
+    run_cargo_deny_offline()?;
 
     let root = workspace_root()?;
     check_license_headers(&root)?;
@@ -144,10 +168,11 @@ fn cargo() -> String {
     std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned())
 }
 
-fn run_cargo(args: &[&str]) -> Result<()> {
-    let display = format!("cargo {}", args.join(" "));
+/// Runs `program` with `args`, echoing the command and failing on a non-zero exit.
+fn run_program(program: &str, args: &[&str]) -> Result<()> {
+    let display = format!("{program} {}", args.join(" "));
     eprintln!("> {display}");
-    let status = Command::new(cargo())
+    let status = Command::new(program)
         .args(args)
         .status()
         .with_context(|| format!("failed to spawn `{display}`"))?;
@@ -155,6 +180,142 @@ fn run_cargo(args: &[&str]) -> Result<()> {
         bail!("`{display}` failed with {status}");
     }
     Ok(())
+}
+
+/// Runs `cargo` (honoring the `CARGO` env var) with `args`.
+fn run_cargo(args: &[&str]) -> Result<()> {
+    run_program(&cargo(), args)
+}
+
+/// Returns `true` if `bin --version` runs successfully. Used to gate optional
+/// external checks so a fresh checkout without the tool can still run `xtask ci`.
+fn tool_available(bin: &str) -> bool {
+    Command::new(bin)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Runs an optional external check. If `probe` is not installed, prints an
+/// actionable hint and returns `Ok` so a local `xtask ci` still completes; CI
+/// installs every tool, so CI always enforces these.
+fn run_if_present(probe: &str, program: &str, args: &[&str], install_hint: &str) -> Result<()> {
+    if tool_available(probe) {
+        run_program(program, args)
+    } else {
+        eprintln!(
+            "ci: `{probe}` not installed; skipping `{program} {}`.\n     install: {install_hint}",
+            args.join(" ")
+        );
+        Ok(())
+    }
+}
+
+/// typos spell-check (<https://github.com/crate-ci/typos>), configured by `_typos.toml`.
+fn run_typos() -> Result<()> {
+    run_if_present(
+        "typos",
+        "typos",
+        &[],
+        "`brew install typos-cli` or `cargo install typos-cli`",
+    )
+}
+
+/// cargo-machete unused-dependency check (`--with-metadata` resolves feature usage).
+/// Invoked as the `cargo-machete` binary directly so the call does not depend on
+/// cargo's external-subcommand argument handling.
+fn run_cargo_machete() -> Result<()> {
+    run_if_present(
+        "cargo-machete",
+        "cargo-machete",
+        &["--with-metadata"],
+        "`cargo install cargo-machete`",
+    )
+}
+
+/// cargo-deny deterministic policy (bans, licenses, sources). Advisories need the
+/// network, so they are left to CI and `cargo xtask audit`, not the offline gate.
+fn run_cargo_deny_offline() -> Result<()> {
+    run_if_present(
+        "cargo-deny",
+        "cargo-deny",
+        &["check", "bans", "licenses", "sources"],
+        "`brew install cargo-deny` or `cargo install cargo-deny`",
+    )
+}
+
+/// Returns `true` if the `nightly` toolchain is installed (resolved via rustup).
+fn nightly_available() -> bool {
+    Command::new("rustup")
+        .args(["run", "nightly", "rustc", "--version"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Generates a local HTML coverage report. Report-only: no threshold is enforced here.
+// TODO: once a baseline exists, add `--lcov`/Codecov upload and a
+// `--fail-under-lines N` threshold (mirrors the report-only `coverage` CI job).
+fn run_coverage() -> Result<()> {
+    if !tool_available("cargo-llvm-cov") {
+        eprintln!(
+            "coverage: `cargo-llvm-cov` not installed; skipping.\n     \
+             install: `brew install cargo-llvm-cov` (or `cargo install cargo-llvm-cov`), \
+             then `rustup component add llvm-tools-preview`"
+        );
+        return Ok(());
+    }
+    run_cargo(&[
+        "llvm-cov",
+        "--workspace",
+        "--all-features",
+        "--locked",
+        "--html",
+    ])
+}
+
+/// Runs a short local fuzz smoke session against `parse_obu` (nightly + cargo-fuzz).
+fn run_fuzz(time: Option<u64>) -> Result<()> {
+    if !tool_available("cargo-fuzz") || !nightly_available() {
+        eprintln!(
+            "fuzz: requires a nightly toolchain and cargo-fuzz; skipping.\n     \
+             install: `rustup toolchain install nightly` and `cargo install cargo-fuzz --locked`"
+        );
+        return Ok(());
+    }
+    let secs = time.unwrap_or(30);
+    let max_total_time = format!("-max_total_time={secs}");
+    // `+nightly` is resolved by the rustup cargo proxy, so invoke `cargo` by name.
+    // Mirror the CI fuzz-smoke guard flags so a local smoke catches the same classes
+    // of bug: `-timeout` flags a hanging input, `-rss_limit_mb` an allocation blowup.
+    run_program(
+        "cargo",
+        &[
+            "+nightly",
+            "fuzz",
+            "run",
+            "parse_obu",
+            "--",
+            &max_total_time,
+            "-timeout=10",
+            "-rss_limit_mb=2048",
+        ],
+    )
+}
+
+/// Runs the networked cargo-deny advisory check (separate from the offline gate).
+fn run_audit() -> Result<()> {
+    run_if_present(
+        "cargo-deny",
+        "cargo-deny",
+        &["check", "advisories"],
+        "`brew install cargo-deny` or `cargo install cargo-deny`",
+    )
 }
 
 /// Checks XTASK-CONVENTIONAL-COMMITS: commit subjects follow Conventional Commits.
