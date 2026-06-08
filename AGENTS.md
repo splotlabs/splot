@@ -58,14 +58,28 @@ This is enforced by `cargo xtask check-dependency-direction`.
 ## 4. Commands
 
 ```bash
-cargo xtask ci          # fmt + clippy + build + test + repo checks (the acceptance gate)
+cargo xtask ci          # the acceptance gate: fmt + clippy + build + test + doctests
+                        # + typos + machete + deny + repo checks (external tools run-if-present)
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo build --workspace --all-targets --locked
 cargo test --workspace --all-targets --locked
-cargo xtask check-conventional-commits  # validates the current HEAD commit subject
-cargo +nightly fuzz run parse_obu   # nightly-only (cargo-fuzz); `cargo install cargo-fuzz --locked`; not in CI
+cargo test --doc --workspace --locked      # doctests (not covered by --all-targets)
+typos                                       # spell-check (config: _typos.toml)
+cargo machete --with-metadata               # unused-dependency check
+cargo deny check bans licenses sources      # offline supply-chain policy
+cargo xtask audit                           # networked supply-chain advisories (cargo-deny)
+cargo xtask coverage                        # local HTML coverage report (cargo-llvm-cov)
+cargo xtask fuzz [--time <secs>]            # local fuzz smoke (nightly + cargo-fuzz), default 30s
+cargo xtask check-conventional-commits      # validates the current HEAD commit subject
+cargo +nightly fuzz run parse_obu   # full local fuzz run (nightly-only; `cargo install cargo-fuzz --locked`).
+                                    # CI also runs a blocking 60s parse_obu smoke on every PR.
 ```
+
+The external-tool checks (`typos`, `cargo-machete`, `cargo-deny`, `cargo-llvm-cov`,
+`cargo-fuzz`) are **external binaries, not cargo dependencies**. CI installs them so
+they always gate; locally `cargo xtask ci` runs each one if present and otherwise
+prints an install hint and continues.
 
 ## 5. Coding conventions
 

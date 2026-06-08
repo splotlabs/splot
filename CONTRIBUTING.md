@@ -17,14 +17,32 @@ summary.
 
 ## Acceptance commands
 
-These must all pass before a change is complete:
+`cargo xtask ci` is the single acceptance gate — run it before every change:
+
+```bash
+cargo xtask ci
+```
+
+It runs `fmt`, `clippy`, `build`, `test`, doctests (`cargo test --doc`), and the
+repo checks, plus three external-tool checks: `typos`, `cargo machete
+--with-metadata`, and `cargo deny check bans licenses sources`. Those three are
+**external binaries** (not cargo dependencies). CI installs them so they always
+gate; locally `cargo xtask ci` runs each one if present, otherwise it prints an
+install hint and continues. To install them:
+
+```bash
+brew install typos-cli cargo-deny cargo-llvm-cov   # or the equivalent `cargo install`
+cargo install cargo-machete cargo-fuzz --locked
+```
+
+The individual checks, to run directly:
 
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo build --workspace --all-targets --locked
 cargo test --workspace --all-targets --locked
-cargo xtask ci
+cargo test --doc --workspace --locked
 ```
 
 ## Commit messages
