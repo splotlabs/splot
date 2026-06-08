@@ -47,6 +47,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      # Prebuilt binaries for the external-tool checks — far faster than
+      # `cargo install`, and the same binaries `cargo xtask ci` runs locally.
+      - name: Install typos and cargo-machete
+        uses: taiki-e/install-action@0631aa6515c7d545823c67cfae7ef4fc7f490154 # v2.81.8
+        with:
+          tool: typos,cargo-machete
+
       - name: Check Conventional Commits
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -70,6 +77,10 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo build --workspace --all-targets --locked
       - run: cargo test --workspace --all-targets --locked
+      # `--all-targets` skips doctests, so run them explicitly.
+      - run: cargo test --doc --workspace --locked
+      - run: typos
+      - run: cargo machete --with-metadata
       - run: cargo xtask check-license-headers
       - run: cargo xtask check-dependency-direction
       - run: cargo xtask check-feature-status
