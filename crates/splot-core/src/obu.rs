@@ -355,35 +355,44 @@ fn parse_empty_payload_syntax(payload: &[u8], payload_offset: ByteOffset) -> Res
     parse_trailing_bits(&mut reader, nb_bits)
 }
 
+/// Returns the implementation-matrix feature ID that owns the payload parser for an
+/// `obu_type` that `dispatch_obu_payload` does not yet parse (its catch-all arm).
+///
+/// Only the tile-group and frame-header OBU types currently reach this. Every other
+/// type is either parsed by an explicit dispatch arm or kept opaque (reserved types),
+/// so it can never reach the catch-all; those variants are matched only to keep the
+/// match exhaustive.
 fn unimplemented_payload_feature(obu_type: ObuType) -> &'static str {
     match obu_type {
-        ObuType::SequenceHeader => "AV2-5.4-SEQUENCE-HEADER",
-        ObuType::MultiFrameHeader => "AV2-5.7-MULTI-FRAME-HEADER",
         ObuType::ClosedLoopKey
         | ObuType::OpenLoopKey
         | ObuType::LeadingTileGroup
         | ObuType::RegularTileGroup
         | ObuType::Switch
         | ObuType::RasFrame => "AV2-5.19-TILE-GROUP",
-        ObuType::MetadataShort | ObuType::MetadataGroup => "AV2-5.17-METADATA",
         ObuType::LeadingSef
         | ObuType::RegularSef
         | ObuType::LeadingTip
         | ObuType::RegularTip
         | ObuType::BridgeFrame => "AV2-5.18-FRAME-HEADER",
-        ObuType::BufferRemovalTiming => "AV2-5.12-BUFFER-REMOVAL-TIMING",
-        ObuType::LayerConfigurationRecord => "AV2-5.8-LAYER-CONFIG-RECORD",
-        ObuType::AtlasSegment => "AV2-5.9-ATLAS-SEGMENT",
-        ObuType::OperatingPointSet => "AV2-5.10-OPERATING-POINT-SET",
-        ObuType::Msdo => "AV2-5.6-MSDO",
-        ObuType::QuantizationMatrix => "AV2-5.13-QUANTIZATION-MATRIX",
-        ObuType::FilmGrain => "AV2-5.14-FILM-GRAIN",
-        ObuType::ContentInterpretation => "AV2-5.15-CONTENT-INTERPRETATION",
-        ObuType::Padding => "AV2-5.16-PADDING",
-        ObuType::Reserved0 | ObuType::TemporalDelimiter | ObuType::Reserved(_) => {
-            // Unreachable via dispatch_obu_payload(); present only for match exhaustiveness.
-            "AV2-5.2.1-OBU-DISPATCH"
-        }
+        // Parsed by an explicit dispatch arm (or kept opaque for reserved types), so
+        // these never reach this function; present only for match exhaustiveness.
+        ObuType::Reserved0
+        | ObuType::TemporalDelimiter
+        | ObuType::Reserved(_)
+        | ObuType::SequenceHeader
+        | ObuType::MultiFrameHeader
+        | ObuType::Msdo
+        | ObuType::LayerConfigurationRecord
+        | ObuType::AtlasSegment
+        | ObuType::OperatingPointSet
+        | ObuType::BufferRemovalTiming
+        | ObuType::QuantizationMatrix
+        | ObuType::FilmGrain
+        | ObuType::ContentInterpretation
+        | ObuType::Padding
+        | ObuType::MetadataShort
+        | ObuType::MetadataGroup => "AV2-5.2.1-OBU-DISPATCH",
     }
 }
 
