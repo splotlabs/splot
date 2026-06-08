@@ -413,13 +413,14 @@ impl ValidatorContext {
         }
 
         // AV2 § 6.12 / § 6.13: the quantizer-matrix "between coded frames" and
-        // film-grain "coded frame unit" windows close at a coded frame. The validator
-        // does not model exact coded-frame-unit boundaries, so it resets after
-        // observing each frame-bearing OBU (and at each temporal-unit boundary; see
-        // reset_at_temporal_unit_boundary), giving the next window a clean slate. This
-        // over-resets relative to the AVM reset-before-tile-group point, so it can only
-        // drop a duplicate detection (a documented false negative), never raise a false
-        // positive on a conformant stream.
+        // film-grain "coded frame unit" windows close at a coded frame, so the window
+        // resets after observing each frame-bearing OBU — NOT at a temporal-unit
+        // boundary, since a QM level / film-grain slot reused across a temporal
+        // delimiter with no intervening frame is still a duplicate. is_frame_bearing()
+        // (tile groups plus SEF / TIP / bridge) is a superset of AVM's
+        // reset-before-tile-group point, so it always resets at every coded frame (no
+        // false positive on a conformant stream) and can only ever drop a duplicate
+        // detection across a SEF-only unit (a documented false negative).
         if is_frame_bearing(obu.header.obu_type) {
             self.reset_coded_frame_window();
         }
@@ -456,8 +457,11 @@ impl ValidatorContext {
             self.sequence_fingerprints.clear();
             self.content_interpretations.clear();
             self.seen_frame_in_tu = false;
-            // A new temporal unit also opens a fresh §6.12/§6.13 coded-frame window.
-            self.reset_coded_frame_window();
+            // NB: the §6.12/§6.13 quantizer-matrix / film-grain duplicate windows are
+            // deliberately NOT reset here. Those windows close at a *coded frame*, not
+            // at a temporal-unit boundary, so a QM level / film-grain slot reused across
+            // a temporal delimiter with no intervening frame is still a duplicate
+            // (see reset_coded_frame_window, called from the frame-bearing branch).
         }
     }
 

@@ -3796,4 +3796,37 @@ mod tests {
             "a level definition after a reset is not a duplicate: {report}"
         );
     }
+
+    #[test]
+    fn qm_duplicate_level_across_temporal_delimiter_is_flagged() {
+        // AV2 §6.12: the duplicate-level window closes at a coded frame, NOT at a
+        // temporal-unit boundary. The same level on either side of a bare temporal
+        // delimiter (no intervening frame) is still a duplicate.
+        let mut data = temporal_delimiter_obu();
+        data.extend(active_sequence_header_obu());
+        data.extend(qm_default_level_obu(0));
+        data.extend(temporal_delimiter_obu()); // new temporal unit, but no coded frame
+        data.extend(qm_default_level_obu(0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "qm/duplicate-level-between-frames"),
+            "a level reused across a TD with no intervening frame must be flagged: {report}"
+        );
+    }
+
+    #[test]
+    fn film_grain_duplicate_slot_across_temporal_delimiter_is_flagged() {
+        // AV2 §6.13: the duplicate-slot window closes at a coded frame, NOT at a
+        // temporal-unit boundary.
+        let mut data = temporal_delimiter_obu();
+        data.extend(active_sequence_header_obu());
+        data.extend(film_grain_obu_bytes(0b0000_0001, 0)); // slot 0
+        data.extend(temporal_delimiter_obu()); // new temporal unit, but no coded frame
+        data.extend(film_grain_obu_bytes(0b0000_0001, 0)); // slot 0 again
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "film-grain/duplicate-slot-in-coded-frame-unit"),
+            "a slot reused across a TD with no intervening frame must be flagged: {report}"
+        );
+    }
 }
