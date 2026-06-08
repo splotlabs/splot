@@ -119,3 +119,45 @@ jobs:
           rust-version: "1.96.0"
           command: check advisories
           arguments: --all-features
+
+  # Blocking smoke fuzz: catch a newly-introduced parser panic at PR time. The
+  # parse_obu target exercises read_leb128 / read_obu_header / parse_annex_b_obus.
+  # cargo-fuzz needs a nightly toolchain (ASan + coverage are nightly-only).
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install nightly toolchain
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@0631aa6515c7d545823c67cfae7ef4fc7f490154 # v2.81.8
+        with:
+          tool: cargo-fuzz
+
+      # Speeds up the (otherwise slow) instrumented build across runs.
+      - name: Cache fuzz build
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: fuzz/target
+          key: ${{ runner.os }}-fuzz-${{ hashFiles('fuzz/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-fuzz-
+
+      - name: Seed corpus from curated fixtures
+        run: |
+          mkdir -p fuzz/corpus/parse_obu
+          cp tests/fixtures/*.av2 fuzz/corpus/parse_obu/ 2>/dev/null || true
+
+      - name: Fuzz parse_obu (60s smoke)
+        run: cargo +nightly fuzz run parse_obu -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048
+
+      - name: Upload crash artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/**
+          if-no-files-found: ignore
