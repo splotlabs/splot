@@ -147,8 +147,11 @@ fn build_report(root: &Path, options: &AuditScopeOptions) -> Result<AuditScopeRe
     let workspace_members = load_workspace_members(root)?;
     let feature_index = load_feature_index(root)?;
     let tracked_paths = git_lines(root, &["ls-files", "--cached"])?;
-    let ledger_path_string = path_to_string(&ledger_path);
-    let excluded_paths = BTreeSet::from([ledger_path_string.clone()]);
+    let normalized_ledger_path = repo_relative_path(root, &ledger_path);
+    let ledger_path_string = normalized_ledger_path
+        .clone()
+        .unwrap_or_else(|| path_to_string(&ledger_path));
+    let excluded_paths = normalized_ledger_path.into_iter().collect();
     let in_scope = tracked_audit_files(
         root,
         &tracked_paths,
@@ -171,7 +174,8 @@ fn build_report(root: &Path, options: &AuditScopeOptions) -> Result<AuditScopeRe
     let base_feature_ids_by_path = if let (Some(base), Some(changed_paths)) =
         (options.base.as_ref(), changed_paths.as_ref())
     {
-        feature_ids_in_base_files(root, base, changed_paths, &feature_index.known_ids)?
+        let base_feature_index = load_feature_index_at_revision(root, base)?;
+        feature_ids_in_base_files(root, base, changed_paths, &base_feature_index)?
     } else {
         BTreeMap::new()
     };
@@ -720,6 +724,13 @@ fn load_feature_index(root: &Path) -> Result<FeatureIndex> {
     feature_index_from_matrix_text(&text)
 }
 
+fn load_feature_index_at_revision(root: &Path, rev: &str) -> Result<FeatureIndex> {
+    validate_revision_argument(rev)?;
+    let text = git_file_at_revision(root, rev, "docs/IMPLEMENTATION-MATRIX.toml")
+        .with_context(|| format!("failed to read implementation matrix at {rev}"))?;
+    feature_index_from_matrix_text(&text)
+}
+
 fn feature_index_from_matrix_text(text: &str) -> Result<FeatureIndex> {
     let value: toml::Value =
         toml::from_str(text).context("failed to parse implementation matrix")?;
@@ -1031,8 +1042,9 @@ fn workspace_dependency_paths(
                 .as_table()
                 .and_then(|table| table.get("path"))
                 .and_then(toml::Value::as_str)
+                .and_then(|path| normalize_workspace_path_if_inside(root, root, path))
             {
-                out.insert(name.clone(), normalize_workspace_path(root, root, path)?);
+                out.insert(name.clone(), path);
             }
         }
     }
@@ -1132,7 +1144,9 @@ fn collect_dependency_table_paths(
             continue;
         };
         if let Some(path) = table.get("path").and_then(toml::Value::as_str) {
-            paths.insert(normalize_workspace_path(root, manifest_dir, path)?);
+            if let Some(path) = normalize_workspace_path_if_inside(root, manifest_dir, path) {
+                paths.insert(path);
+            }
         } else if table.get("workspace").and_then(toml::Value::as_bool) == Some(true)
             && let Some(path) = workspace_dependency_paths.get(name)
         {
@@ -1294,6 +1308,37 @@ fn normalize_workspace_path(root: &Path, base: &Path, path: &str) -> Result<Stri
     Ok(path_to_string(relative))
 }
 
+fn normalize_workspace_path_if_inside(root: &Path, base: &Path, path: &str) -> Option<String> {
+    let root = normalize_path_lexically(root);
+    let path = Path::new(path);
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    };
+    let normalized = normalize_path_lexically(&joined);
+    let relative = normalized.strip_prefix(&root).ok()?;
+    if relative.as_os_str().is_empty() {
+        return None;
+    }
+    Some(path_to_string(relative))
+}
+
+fn repo_relative_path(root: &Path, path: &Path) -> Option<String> {
+    let root = normalize_path_lexically(root);
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    let normalized = normalize_path_lexically(&joined);
+    let relative = normalized.strip_prefix(&root).ok()?;
+    if relative.as_os_str().is_empty() {
+        return None;
+    }
+    Some(path_to_string(relative))
+}
+
 fn normalize_path_lexically(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -1354,7 +1399,7 @@ fn feature_ids_in_base_files(
     root: &Path,
     base: &str,
     paths: &BTreeSet<String>,
-    known_ids: &BTreeSet<String>,
+    feature_index: &FeatureIndex,
 ) -> Result<BTreeMap<String, BTreeSet<String>>> {
     validate_revision_argument(base)?;
     let mut out = BTreeMap::new();
@@ -1362,7 +1407,8 @@ fn feature_ids_in_base_files(
         let Ok(text) = git_file_at_revision(root, base, path) else {
             continue;
         };
-        let ids = feature_ids_in_text(&text, known_ids);
+        let mut ids = feature_ids_for_path(path, feature_index);
+        ids.extend(feature_ids_in_text(&text, &feature_index.known_ids));
         if !ids.is_empty() {
             out.insert(path.clone(), ids);
         }
@@ -1629,6 +1675,48 @@ edition = "2024"
         assert_eq!(
             scope_kind("crates/splot-decode/src/lib.rs", &members).as_deref(),
             Some("workspace:splot-decode")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn external_path_dependencies_are_not_auto_members() -> Result<()> {
+        let root = temp_root("audit-scope-external-path-dependencies")?;
+        let core_dir = root.join("crates/splot-core");
+        std::fs::create_dir_all(core_dir.join("src"))?;
+        std::fs::write(
+            root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["crates/splot-core"]
+
+[workspace.dependencies]
+external-workspace = { path = "../external-workspace" }
+"#,
+        )?;
+        std::fs::write(
+            core_dir.join("Cargo.toml"),
+            r#"
+[package]
+name = "splot-core"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+external-direct = { path = "../../../external-direct" }
+external-workspace = { workspace = true }
+"#,
+        )?;
+
+        let members = load_workspace_members(&root)?;
+        assert_eq!(
+            members,
+            vec![WorkspaceMember {
+                package: "splot-core".to_owned(),
+                path: "crates/splot-core".to_owned(),
+            }]
         );
 
         let _ = std::fs::remove_dir_all(&root);
@@ -2024,6 +2112,69 @@ id = "AV2-5.2.2-OBU-HEADER"
     }
 
     #[test]
+    fn build_report_uses_base_matrix_ids_for_deleted_diff_files() -> Result<()> {
+        let root = temp_git_repo("audit-scope-deleted-base-feature-id")?;
+        std::fs::create_dir_all(root.join("crates/splot-core/src"))?;
+        std::fs::create_dir_all(root.join("docs"))?;
+        std::fs::write(
+            root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["crates/splot-core"]
+"#,
+        )?;
+        std::fs::write(
+            root.join("crates/splot-core/Cargo.toml"),
+            r#"
+[package]
+name = "splot-core"
+version = "0.0.0"
+edition = "2024"
+"#,
+        )?;
+        std::fs::write(
+            root.join("docs/IMPLEMENTATION-MATRIX.toml"),
+            r#"
+[[feature]]
+id = "AV2-5.2.2-OBU-HEADER"
+"#,
+        )?;
+        std::fs::write(
+            root.join("crates/splot-core/src/deleted.rs"),
+            "mentions AV2-5.2.2-OBU-HEADER\n",
+        )?;
+        git_commit_all(&root, "test: add feature file")?;
+        std::fs::write(root.join("docs/IMPLEMENTATION-MATRIX.toml"), "")?;
+        std::fs::remove_file(root.join("crates/splot-core/src/deleted.rs"))?;
+        git_commit_all(&root, "test: remove feature row and file")?;
+
+        let report = build_report(
+            &root,
+            &AuditScopeOptions {
+                base: Some("HEAD~1".to_owned()),
+                ledger: None,
+                write_ledger: false,
+                all: false,
+                format: AuditScopeFormat::Json,
+                outcome: "success".to_owned(),
+            },
+        )?;
+        let deleted = report
+            .candidates
+            .iter()
+            .find(|candidate| candidate.path == "crates/splot-core/src/deleted.rs")
+            .ok_or_else(|| anyhow::anyhow!("deleted candidate missing"))?;
+        assert!(
+            deleted
+                .feature_ids
+                .contains(&"AV2-5.2.2-OBU-HEADER".to_owned())
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
     fn build_report_classifies_deleted_candidates_from_base_workspace() -> Result<()> {
         let root = temp_git_repo("audit-scope-deleted-base-workspace")?;
         std::fs::create_dir_all(root.join("crates/splot-decode/src"))?;
@@ -2106,6 +2257,50 @@ edition = "2024"
     #[test]
     fn scope_kind_excludes_default_audit_ledger() {
         assert_eq!(scope_kind(DEFAULT_LEDGER_PATH, &[]), None);
+    }
+
+    #[test]
+    fn build_report_normalizes_custom_ledger_paths_before_exclusion() -> Result<()> {
+        let root = temp_git_repo("audit-scope-custom-ledger-normalized")?;
+        std::fs::create_dir_all(root.join("docs/audits"))?;
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = []\n")?;
+        std::fs::write(root.join("docs/IMPLEMENTATION-MATRIX.toml"), "")?;
+        std::fs::write(root.join("docs/audits/av2-conformance-ledger.json"), "{}\n")?;
+        git_commit_all(&root, "test: add tracked ledger")?;
+
+        for ledger_path in [
+            PathBuf::from("./docs/audits/av2-conformance-ledger.json"),
+            root.join("docs/audits/av2-conformance-ledger.json"),
+        ] {
+            let report = build_report(
+                &root,
+                &AuditScopeOptions {
+                    base: None,
+                    ledger: Some(ledger_path),
+                    write_ledger: false,
+                    all: true,
+                    format: AuditScopeFormat::Json,
+                    outcome: "success".to_owned(),
+                },
+            )?;
+            assert_eq!(report.ledger_path, DEFAULT_LEDGER_PATH);
+            assert!(
+                !report
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.path == DEFAULT_LEDGER_PATH)
+            );
+            assert!(
+                !report
+                    .ledger_update
+                    .files
+                    .iter()
+                    .any(|file| file.path == DEFAULT_LEDGER_PATH)
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     #[test]
