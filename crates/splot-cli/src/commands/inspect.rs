@@ -6,6 +6,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use std::collections::BTreeMap;
+
 use anyhow::{Context as _, Result};
 use clap::Args;
 use serde::Serialize;
@@ -18,7 +20,10 @@ use splot_core::headers::content_interpretation::{
     ContentInterpretation, parse_content_interpretation,
 };
 use splot_core::headers::film_grain::{FilmGrainObu, parse_film_grain};
-use splot_core::headers::frame::{FrameHeaderPrefix, parse_frame_header_prefix};
+use splot_core::headers::frame::{
+    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderPrefix,
+    FrameReferenceStateView, parse_frame_header_core, parse_frame_header_prefix,
+};
 use splot_core::headers::metadata::{MetadataUnit, parse_metadata_group, parse_metadata_short};
 use splot_core::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
 use splot_core::headers::padding::parse_padding_obu;
@@ -71,11 +76,13 @@ struct InspectRecord {
     metadata_group: Option<MetadataGroupView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     frame_header_prefix: Option<FrameHeaderPrefixView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_header_core: Option<FrameHeaderCoreView>,
     header: ObuHeader,
 }
 
 impl InspectRecord {
-    fn new(index: usize, obu: &ObuEnvelope<'_>) -> Self {
+    fn new(index: usize, obu: &ObuEnvelope<'_>, sequences: &BTreeMap<u8, SequenceHeader>) -> Self {
         Self {
             index,
             byte_offset: obu.offset.get(),
@@ -92,6 +99,7 @@ impl InspectRecord {
             metadata_short: metadata_short_view(obu),
             metadata_group: metadata_group_view(obu),
             frame_header_prefix: frame_header_prefix_view(obu),
+            frame_header_core: frame_header_core_view(obu, sequences),
             header: obu.header,
         }
     }
@@ -473,6 +481,113 @@ impl FrameHeaderPrefixView {
     }
 }
 
+/// Resolves the sequence header a frame directly references (`cur_mfh_id == 0`) from
+/// the inspector's running map of seen sequence headers.
+fn resolve_inspect_sequence<'a>(
+    obu: &ObuEnvelope<'_>,
+    sequences: &'a BTreeMap<u8, SequenceHeader>,
+) -> Option<&'a SequenceHeader> {
+    let obu_type = obu.header.obu_type;
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    let prefix = if obu_type.is_tile_group() {
+        parse_tile_group_prefix(&mut reader, obu_type, false)
+            .ok()?
+            .frame_header?
+    } else {
+        parse_frame_header_prefix(&mut reader, obu_type, false).ok()?
+    };
+    let seq_id = prefix.referenced_sequence_header_id?;
+    sequences.get(&seq_id.get())
+}
+
+/// Runs the frame-header **core** parser against the active sequence header (when one
+/// is resolvable) and exposes its parse status and known core fields. Falls back to
+/// the activation-only result when the sequence is unavailable.
+fn frame_header_core_view(
+    obu: &ObuEnvelope<'_>,
+    sequences: &BTreeMap<u8, SequenceHeader>,
+) -> Option<FrameHeaderCoreView> {
+    let obu_type = obu.header.obu_type;
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    if obu_type.is_tile_group() {
+        // Only the first tile group carries a parseable frame_header(1) (AV2 § 5.19).
+        if reader.read_bit().ok()? == 0 {
+            return None;
+        }
+    } else if !(obu_type.is_sef() || obu_type.is_tip_frame() || obu_type == ObuType::BridgeFrame) {
+        return None;
+    }
+    let active_sequence = resolve_inspect_sequence(obu, sequences);
+    let input = FrameHeaderParseInput {
+        obu_type,
+        first_picture_in_tu: false,
+        active_sequence,
+        mfh_record: None,
+        reference_state: FrameReferenceStateView::unknown(),
+        mode: FrameHeaderParseMode::Core,
+    };
+    let core = parse_frame_header_core(&mut reader, &input).ok()?;
+    Some(FrameHeaderCoreView::new(&core))
+}
+
+/// A frame-header core summary for `--json`. `status` makes explicit how far the core
+/// parser reached (AV2 § 5.18.2); only known fields are serialized.
+#[derive(Serialize)]
+struct FrameHeaderCoreView {
+    payload_kind: &'static str,
+    status: &'static str,
+    cur_mfh_id: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seq_header_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    show_existing_frame: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_type: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_is_intra: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    order_hint_lsb: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refresh_frame_flags: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_size: Option<FrameSizeView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bridge_frame_ref_idx: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_to_show_map_idx: Option<u32>,
+    consumed_bits: u64,
+}
+
+/// A frame's parsed luma dimensions for `--json`.
+#[derive(Serialize)]
+struct FrameSizeView {
+    width: u32,
+    height: u32,
+}
+
+impl FrameHeaderCoreView {
+    fn new(core: &FrameHeaderCore) -> Self {
+        Self {
+            payload_kind: "frame_header_core",
+            status: core.status.label(),
+            cur_mfh_id: core.cur_mfh_id.get(),
+            seq_header_id: core.seq_header_id_in_frame_header,
+            show_existing_frame: core.show_existing_frame,
+            frame_type: core.frame_type.map(|frame_type| frame_type.label()),
+            frame_is_intra: core.frame_is_intra,
+            order_hint_lsb: core.order_hint_lsb,
+            refresh_frame_flags: core.refresh_frame_flags,
+            frame_size: core.frame_size.map(|size| FrameSizeView {
+                width: size.width,
+                height: size.height,
+            }),
+            bridge_frame_ref_idx: core.bridge_frame_ref_idx,
+            frame_to_show_map_idx: core.frame_to_show_map_idx,
+            consumed_bits: core.consumed_bits,
+        }
+    }
+}
+
 /// Re-parses a content-interpretation OBU so `--json` can expose its parsed flags
 /// and timing status.
 fn content_interpretation_view(obu: &ObuEnvelope<'_>) -> Option<ContentInterpretationView> {
@@ -636,12 +751,19 @@ pub fn run(args: &InspectArgs) -> Result<ExitCode> {
     let parsed = parse_annex_b_obus_partial(&data);
 
     if args.json {
-        let records: Vec<InspectRecord> = parsed
-            .obus
-            .iter()
-            .enumerate()
-            .map(|(index, obu)| InspectRecord::new(index, obu))
-            .collect();
+        // Track sequence headers in OBU order so a later frame header's core parse can
+        // resolve the sequence state it references (AV2 § 5.18.2 load_sequence_header).
+        let mut sequences: BTreeMap<u8, SequenceHeader> = BTreeMap::new();
+        let mut records: Vec<InspectRecord> = Vec::with_capacity(parsed.obus.len());
+        for (index, obu) in parsed.obus.iter().enumerate() {
+            records.push(InspectRecord::new(index, obu, &sequences));
+            if obu.header.obu_type == ObuType::SequenceHeader {
+                let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+                if let Ok(sequence) = parse_sequence_header(&mut reader) {
+                    sequences.insert(sequence.general.seq_header_id.get(), sequence);
+                }
+            }
+        }
         let json =
             serde_json::to_string_pretty(&records).context("failed to serialize inspection")?;
         println!("{json}");

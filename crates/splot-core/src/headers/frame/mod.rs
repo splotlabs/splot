@@ -33,6 +33,16 @@ use crate::headers::sequence::SequenceHeaderId;
 use crate::hls::MfhId;
 use crate::types::ObuType;
 
+mod config;
+mod info;
+mod size;
+
+pub use info::{
+    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
+    FrameReferenceStateView, FrameType, parse_frame_header_core,
+};
+pub use size::FrameSize;
+
 /// How much of `frame_header()` the prefix parser consumed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]

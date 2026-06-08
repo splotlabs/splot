@@ -2426,6 +2426,260 @@ mod tests {
         );
     }
 
+    // --- Frame-header core diagnostics (AV2 § 6.17.2 / § 6.17.4 / § 6.4.6) --------
+
+    // OBU header bytes: obu_type << 2 (no extension, tlayer/mlayer 0). 0x4C = bridge
+    // frame (type 19), 0x54 = RAS frame (type 21).
+    const BRIDGE_HEADER: u8 = 0x4C;
+    const RAS_HEADER: u8 = 0x54;
+
+    /// A fully-parseable §5.4 sequence header (xlayer 0, max_tlayer/mlayer 0,
+    /// monotonic output) with a tunable inter config and frame dimensions, for
+    /// exercising the frame-header core diagnostics.
+    #[allow(clippy::too_many_arguments)]
+    fn frame_core_seq_payload(
+        seq_id: u32,
+        frame_width_bits_minus_1: u32,
+        frame_height_bits_minus_1: u32,
+        max_frame_width_minus_1: u32,
+        max_frame_height_minus_1: u32,
+        order_hint_bits_minus_1: u32,
+        num_ref_frames_minus_1: u32,
+        long_term_frame_id_bits: u32,
+    ) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.uvlc(seq_id);
+        bits.f(0, 5); // seq_profile_idc
+        bits.bit(0); // single_picture_header_flag
+        bits.f(0, 5); // seq_level_idx
+        bits.uvlc(0); // chroma_format_idc
+        bits.uvlc(0); // bit_depth_idc
+        bits.f(0, 3); // seq_lcr_id
+        bits.bit(0); // still_picture
+        bits.f(0, 2); // max_tlayer_id
+        bits.f(0, 3); // max_mlayer_id == 0
+        bits.bit(1); // monotonic_output_order_flag
+        bits.f(frame_width_bits_minus_1, 4);
+        bits.f(frame_height_bits_minus_1, 4);
+        // max_frame_*_minus_1 are read as f(frame_*_bits_minus_1 + 1).
+        bits.f(max_frame_width_minus_1, frame_width_bits_minus_1 + 1);
+        bits.f(max_frame_height_minus_1, frame_height_bits_minus_1 + 1);
+        bits.bit(0); // seq_cropping_window_present_flag
+        bits.bit(0); // seq_initial_display_delay_present_flag
+        bits.bit(0); // decoder_model_info_present_flag
+        // sequence_partition_config (BLOCK_64X64, SDP off)
+        bits.bit(0); // use_256x256_superblock
+        bits.bit(0); // use_128x128_superblock
+        bits.bit(0); // enable_sdp
+        bits.bit(0); // enable_ext_partitions
+        bits.bit(0); // reduce_pb_aspect_ratio
+        // sequence_segment_config
+        bits.bit(0); // enable_ext_seg
+        bits.bit(0); // seq_seg_info_present_flag
+        // sequence_intra_config
+        bits.bit(0); // enable_dip
+        bits.bit(0); // enable_intra_edge_filter
+        bits.bit(0); // enable_mrls
+        bits.bit(0); // enable_cfl_intra
+        bits.f(0, 2); // cfl_ds_filter_index
+        bits.bit(0); // enable_mhccp
+        bits.bit(0); // enable_ibp
+        // sequence_inter_config (non-single-picture branch)
+        bits.f(0, 4); // seq_enabled_motion_modes
+        bits.bit(0); // enable_masked_compound
+        bits.bit(0); // enable_ref_frame_mvs
+        bits.f(order_hint_bits_minus_1, 4); // order_hint_bits_minus_1
+        bits.bit(0); // enable_refmvbank
+        bits.bit(1); // disable_drl_reorder
+        bits.bit(0); // explicit_ref_frame_map
+        bits.bit(1); // explicit_num_ref_frames
+        bits.f(num_ref_frames_minus_1, 4); // num_ref_frames_minus_1
+        bits.f(long_term_frame_id_bits, 3); // long_term_frame_id_bits
+        bits.f(0, 2); // seq_max_drl_bits_minus_1 (ns(5) -> 0)
+        bits.bit(0); // allow_frame_max_drl_bits
+        bits.bit(0); // seq_max_bvp_drl_bits_minus_1 (ns(3) -> 0)
+        bits.bit(0); // allow_frame_max_bvp_drl_bits
+        bits.f(0, 2); // num_same_ref_compound
+        bits.bit(0); // enable_tip
+        bits.bit(0); // enable_mv_traj
+        bits.bit(0); // enable_bawp
+        bits.bit(0); // enable_cwp
+        bits.bit(0); // enable_imp_msk_bld
+        bits.bit(0); // enable_df_sub_pu
+        bits.f(0, 2); // enable_opfl_refine
+        bits.bit(0); // enable_refinemv
+        bits.bit(0); // enable_bru
+        bits.bit(0); // enable_adaptive_mvd
+        bits.bit(0); // enable_mvd_sign_derive
+        bits.bit(0); // enable_flex_mvres
+        bits.bit(0); // enable_global_motion
+        bits.bit(0); // enable_short_refresh_frame_flags
+        // sequence_scc_config (SELECT both)
+        bits.bit(1); // seq_choose_screen_content_tools
+        bits.bit(1); // seq_choose_integer_mv
+        // sequence_transform_quant_entropy_config
+        bits.bit(0); // enable_fsc
+        bits.bit(0); // enable_idtx_intra
+        bits.bit(0); // enable_intra_ist
+        bits.bit(0); // enable_inter_ist
+        bits.bit(0); // enable_chroma_dctonly
+        bits.bit(0); // enable_inter_ddt
+        bits.bit(0); // reduced_tx_part_set
+        bits.bit(0); // enable_cctx
+        bits.bit(0); // enable_tcq
+        bits.bit(0); // enable_parity_hiding
+        bits.bit(0); // enable_avg_cdf
+        bits.bit(0); // separate_uv_delta_q
+        bits.bit(1); // equal_ac_dc_q
+        bits.f(0, 5); // base_uv_ac_delta_q
+        bits.bit(0); // uv_ac_delta_q_enabled
+        // sequence_filter_config (BLOCK_64X64)
+        bits.bit(0); // disable_loopfilters_across_tiles
+        bits.bit(0); // enable_cdef
+        bits.bit(0); // enable_gdf
+        bits.bit(0); // enable_restoration
+        bits.bit(0); // enable_ccso
+        bits.bit(0); // cdef_on_skip_txfm_always_on
+        bits.bit(0); // cdef_on_skip_txfm_disabled
+        bits.f(0, 2); // df_par_bits_minus_2
+        // sequence_tile_config
+        bits.bit(0); // seq_tile_info_present_flag
+        bits.bit(0); // film_grain_params_present
+        extensible_obu_tail(&mut bits);
+        bits.into_bytes()
+    }
+
+    /// A temporal delimiter followed by a `frame_core_seq_payload` sequence header.
+    #[allow(clippy::too_many_arguments)]
+    fn td_and_frame_core_seq(
+        seq_id: u32,
+        frame_width_bits_minus_1: u32,
+        frame_height_bits_minus_1: u32,
+        max_frame_width_minus_1: u32,
+        max_frame_height_minus_1: u32,
+        order_hint_bits_minus_1: u32,
+        num_ref_frames_minus_1: u32,
+        long_term_frame_id_bits: u32,
+    ) -> Vec<u8> {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(
+            0x04,
+            &frame_core_seq_payload(
+                seq_id,
+                frame_width_bits_minus_1,
+                frame_height_bits_minus_1,
+                max_frame_width_minus_1,
+                max_frame_height_minus_1,
+                order_hint_bits_minus_1,
+                num_ref_frames_minus_1,
+                long_term_frame_id_bits,
+            ),
+        ));
+        data
+    }
+
+    #[test]
+    fn validator_flags_ras_requires_long_term_frame_id_bits() {
+        // The default sequence has long_term_frame_id_bits == 0, so a RAS frame
+        // referencing it violates AV2 § 6.4.6.
+        let mut data = td_and_seq_header(0, 0, 0);
+        data.extend(frame_obu_direct_seq_ref(RAS_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/ras-requires-long-term-frame-id-bits"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_bridge_ref_index_out_of_range() {
+        // NumRefFrames == 6 -> CeilLog2(6) == 3 bits, so bridge_frame_ref_idx can encode
+        // 6 or 7, both >= NumRefFrames (AV2 § 6.17.2).
+        let mut data = td_and_frame_core_seq(0, 3, 3, 15, 7, 0, 5, 0);
+        let mut fb = Bits::default();
+        fb.uvlc(0); // seq_header_id_in_frame_header (bridge infers cur_mfh_id == 0)
+        fb.f(6, 3); // bridge_frame_ref_idx == 6 (>= NumRefFrames 6)
+        data.extend(annex_b_obu(BRIDGE_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/bridge-ref-index-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_frame_size_exceeds_sequence_max() {
+        // frame_width_bits == 8 (FrameWidth up to 256) but max_frame_width == 16; an
+        // override frame size of 256 exceeds the sequence maximum (AV2 § 6.17.4.1).
+        let mut data = td_and_frame_core_seq(0, 7, 7, 15, 15, 0, 7, 0);
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // immediate_output_frame (implicit forced 0 by monotonic)
+        fb.bit(1); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
+        fb.f(256 - 1, 8); // frame_width_minus_1 -> FrameWidth 256 (> max 16)
+        fb.f(8 - 1, 8); // frame_height_minus_1 -> FrameHeight 8
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        data.extend(annex_b_obu(CLK_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/frame-size-exceeds-sequence-max"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_accepts_frame_size_within_sequence_max() {
+        // The same frame with FrameWidth 16 == max must not be flagged.
+        let mut data = td_and_frame_core_seq(0, 7, 7, 15, 15, 0, 7, 0);
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // immediate_output_frame
+        fb.bit(1); // frame_size_override_flag
+        fb.f(0, 1); // order_hint
+        fb.f(16 - 1, 8); // frame_width_minus_1 -> FrameWidth 16 (== max)
+        fb.f(16 - 1, 8); // frame_height_minus_1 -> FrameHeight 16 (== max)
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        data.extend(annex_b_obu(CLK_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/frame-size-exceeds-sequence-max"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_preserves_existing_unavailable_sequence_header_check() {
+        // The frame-header core wiring must not suppress the activation/HLS checks: a
+        // frame referencing an unavailable sequence header still reports it.
+        let mut data = td_and_seq_header(0, 1, 1);
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 5)); // id 5 is unavailable
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "hls/unavailable-sequence-header"),
+            "report was: {report}"
+        );
+    }
+
     // --- HLS LCR / atlas availability (AV2 § 7.3.8.3 / § 7.3.8.4 / § 6.4.1) -------
 
     /// Appends the §5.2.1 extensible-OBU payload tail (`obu_extension_flag = 0` +

@@ -188,6 +188,41 @@ fn inspect_json_exposes_frame_header_prefix() {
 }
 
 #[test]
+fn inspect_json_exposes_frame_header_core() {
+    // The fixture is TemporalDelimiter, a non-single-picture SequenceHeader (id 0),
+    // then an OBU_CLOSED_LOOP_KEY whose first tile group carries a frame header parsed
+    // through frame_size(): a 16x16 key frame. The inspector surfaces the core summary.
+    let path = fixture("frame-header-core.av2");
+    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let records = json.as_array().expect("inspect output is an array");
+    assert!(
+        records.len() >= 3,
+        "stdout was: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    let core = &records[2]["frame_header_core"];
+    assert_eq!(core["payload_kind"], "frame_header_core");
+    assert_eq!(
+        core["status"],
+        "stopped_before_filtering_quant_segmentation"
+    );
+    assert_eq!(core["frame_type"], "key");
+    assert_eq!(core["frame_is_intra"], true);
+    assert_eq!(core["show_existing_frame"], false);
+    assert_eq!(core["frame_size"]["width"], 16);
+    assert_eq!(core["frame_size"]["height"], 16);
+}
+
+#[test]
+fn validate_frame_header_core_fixture_exits_zero() {
+    let out = validate("frame-header-core.av2", &[]);
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
 fn validate_frame_header_prefix_fixture_exits_zero() {
     let out = validate("frame-header-prefix.av2", &[]);
     assert_eq!(out.status.code(), Some(0));
