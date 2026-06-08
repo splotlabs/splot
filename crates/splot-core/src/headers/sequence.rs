@@ -1321,21 +1321,6 @@ pub fn parse_sequence_transform_quant_entropy_config(
     })
 }
 
-/// `user_defined_qm()` (AV2 § 5.4.11), bounded until transform/scan/QM tables are modeled.
-///
-/// This structure is not reached from `sequence_header_obu()`; it is referenced by
-/// later (frame-level) quantization syntax that is out of scope for this phase.
-///
-/// # Errors
-/// Always returns [`Error::Unimplemented`].
-pub fn parse_user_qm(_reader: &mut BitReader<'_>) -> Result<()> {
-    // TODO(spec: AV2-5.4.11-USER-QM): parse user_defined_qm() (needs Fundamental_Tx_Size,
-    // Tx_Width, Tx_Height, get_scan, get_tx_row_col, and the svlc() descriptor).
-    Err(Error::Unimplemented {
-        feature: "AV2-5.4.11-USER-QM",
-    })
-}
-
 /// `CdefOnSkipTxfm` mode derived in `sequence_filter_config()` (AV2 § 5.4.10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CdefOnSkipTxfm {

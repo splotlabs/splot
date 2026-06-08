@@ -166,6 +166,8 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
     "atlas/",
     "ops/",
     "brt/",
+    "qm/",
+    "film-grain/",
 ];
 
 /// Output format for `feature-status`.

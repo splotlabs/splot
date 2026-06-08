@@ -3384,4 +3384,195 @@ mod tests {
             "a local BRT must start the coded-layer phase: {report}"
         );
     }
+
+    // --- Quantizer matrix (§5.13 / §6.12) and film grain (§5.14 / §6.13) ---
+
+    /// `OBU_QUANTIZATION_MATRIX` header byte: ext=0, type=22, tlayer=0.
+    const QM_HEADER: u8 = 0x58;
+    /// `OBU_FILM_GRAIN` header byte: ext=0, type=23, tlayer=0.
+    const FG_HEADER: u8 = 0x5C;
+
+    /// A complete, activating sequence header OBU for `obu_xlayer_id = 0` (so the
+    /// coded-frame-unit QM/FG OBUs that follow have an active sequence header).
+    fn active_sequence_header_obu() -> Vec<u8> {
+        annex_b_obu(0x04, &sequence_header_payload(0, 0))
+    }
+
+    /// A `quantizer_matrix_obu()` with `qm_bit_map == 0` (the reset/default path).
+    fn qm_reset_obu() -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(0, 15); // qm_bit_map = 0
+        bits.bit(0); // qm_chroma_info_present_flag
+        bits.bit(1); // trailing_one_bit (QM is non-extensible)
+        bits.align();
+        annex_b_obu(QM_HEADER, &bits.into_bytes())
+    }
+
+    /// A `quantizer_matrix_obu()` selecting a single `level` with its default matrix.
+    fn qm_default_level_obu(level: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(1 << level, 15); // qm_bit_map: set `level`
+        bits.bit(0); // qm_chroma_info_present_flag = 0 -> 1 plane
+        bits.bit(1); // qm_is_default_flag for `level`
+        bits.bit(1); // trailing_one_bit
+        bits.align();
+        annex_b_obu(QM_HEADER, &bits.into_bytes())
+    }
+
+    /// Appends the smallest non-monochrome `film_grain_model()` (no scaling points,
+    /// `ar_coeff_lag == 0`).
+    fn append_minimal_film_grain_model(bits: &mut Bits) {
+        bits.bit(0); // chroma_scaling_from_luma
+        bits.f(0, 4); // num_y_points
+        bits.f(0, 4); // num_cb_points
+        bits.f(0, 4); // num_cr_points
+        bits.f(0, 2); // grain_scaling_minus_8
+        bits.f(0, 2); // ar_coeff_lag = 0 -> no AR coeffs
+        bits.f(0, 2); // ar_coeff_shift_minus_6
+        bits.f(0, 2); // grain_scale_shift
+        bits.bit(0); // overlap_flag
+        bits.bit(0); // clip_to_restricted_range = 0 -> mc_identity inferred 0
+        bits.bit(0); // film_grain_block_size
+    }
+
+    /// A `film_grain_obu()` with the given `update_flags` and (non-monochrome)
+    /// `chroma_idc`, with one minimal model per set update-flag bit.
+    fn film_grain_obu_bytes(update_flags: u32, chroma_idc: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(update_flags, 8);
+        bits.uvlc(chroma_idc);
+        for _ in 0..update_flags.count_ones() {
+            append_minimal_film_grain_model(&mut bits);
+        }
+        bits.bit(1); // trailing_one_bit (FG is non-extensible)
+        bits.align();
+        annex_b_obu(FG_HEADER, &bits.into_bytes())
+    }
+
+    fn has_error(report: &ValidationReport, rule: &str) -> bool {
+        report.errors().any(|d| d.rule_id == rule)
+    }
+
+    #[test]
+    fn qm_duplicate_reset_between_frames_is_flagged() {
+        // Two reset (qm_bit_map == 0) QM OBUs between coded frames: only the first may
+        // be a reset (§6.12).
+        let mut data = temporal_delimiter_obu();
+        data.extend(active_sequence_header_obu());
+        data.extend(qm_reset_obu());
+        data.extend(qm_reset_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "qm/duplicate-reset-between-frames"),
+            "a second reset QM OBU must be flagged: {report}"
+        );
+    }
+
+    #[test]
+    fn qm_single_reset_between_frames_is_conformant() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(active_sequence_header_obu());
+        data.extend(qm_reset_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "qm/duplicate-reset-between-frames"),
+            "a single reset QM OBU is conformant: {report}"
+        );
+    }
+
+    #[test]
+    fn qm_duplicate_level_between_frames_is_flagged() {
+        // Two QM OBUs both specifying level 0 between coded frames (§6.12).
+        let mut data = temporal_delimiter_obu();
+        data.extend(active_sequence_header_obu());
+        data.extend(qm_default_level_obu(0));
+        data.extend(qm_default_level_obu(0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "qm/duplicate-level-between-frames"),
+            "specifying QM level 0 twice must be flagged: {report}"
+        );
+    }
+
+    #[test]
+    fn qm_distinct_levels_between_frames_is_conformant() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(active_sequence_header_obu());
+        data.extend(qm_default_level_obu(0));
+        data.extend(qm_default_level_obu(1));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "qm/duplicate-level-between-frames"),
+            "two distinct QM levels are conformant: {report}"
+        );
+    }
+
+    #[test]
+    fn qm_duplicate_level_across_coded_frame_is_not_flagged() {
+        // The same level on either side of a coded frame is in two different
+        // "between coded frames" windows, so it is not a duplicate.
+        let mut data = temporal_delimiter_obu();
+        data.extend(active_sequence_header_obu());
+        data.extend(qm_default_level_obu(0));
+        data.extend(annex_b_obu(0x10, &[0xe0])); // OBU_CLOSED_LOOP_KEY (frame-bearing)
+        data.extend(qm_default_level_obu(0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "qm/duplicate-level-between-frames"),
+            "the same level across a coded frame must not be flagged: {report}"
+        );
+    }
+
+    #[test]
+    fn film_grain_zero_update_flags_is_flagged() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(active_sequence_header_obu());
+        data.extend(film_grain_obu_bytes(0, 0)); // fgm_update_flags == 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "film-grain/update-flags-zero"),
+            "fgm_update_flags == 0 must be flagged: {report}"
+        );
+    }
+
+    #[test]
+    fn film_grain_chroma_idc_out_of_range_is_flagged() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(active_sequence_header_obu());
+        data.extend(film_grain_obu_bytes(0b0000_0001, 4)); // fgm_chroma_idc = 4 (> 3)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "film-grain/chroma-idc-out-of-range"),
+            "fgm_chroma_idc > 3 must be flagged: {report}"
+        );
+    }
+
+    #[test]
+    fn film_grain_duplicate_slot_in_coded_frame_unit_is_flagged() {
+        // Two film grain OBUs both updating slot 0 in the same coded frame unit (§6.13).
+        let mut data = temporal_delimiter_obu();
+        data.extend(active_sequence_header_obu());
+        data.extend(film_grain_obu_bytes(0b0000_0001, 0));
+        data.extend(film_grain_obu_bytes(0b0000_0001, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "film-grain/duplicate-slot-in-coded-frame-unit"),
+            "updating slot 0 twice in one coded frame unit must be flagged: {report}"
+        );
+    }
+
+    #[test]
+    fn film_grain_distinct_slots_are_conformant() {
+        let mut data = temporal_delimiter_obu();
+        data.extend(active_sequence_header_obu());
+        data.extend(film_grain_obu_bytes(0b0000_0001, 0)); // slot 0
+        data.extend(film_grain_obu_bytes(0b0000_0010, 0)); // slot 1
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "film-grain/duplicate-slot-in-coded-frame-unit"),
+            "distinct film grain slots are conformant: {report}"
+        );
+        assert!(!has_error(&report, "film-grain/update-flags-zero"));
+        assert!(!has_error(&report, "film-grain/chroma-idc-out-of-range"));
+    }
 }

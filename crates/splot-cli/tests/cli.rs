@@ -240,6 +240,51 @@ fn inspect_json_surfaces_buffer_removal_timing() {
 }
 
 #[test]
+fn inspect_json_surfaces_quantizer_matrix() {
+    // TemporalDelimiter, a sequence header, then a quantizer_matrix_obu selecting
+    // level 0 with its default matrix.
+    let path = fixture("quantizer-matrix.av2");
+    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let records = json.as_array().expect("inspect output is an array");
+    let qm = records
+        .iter()
+        .find(|r| r.get("quantizer_matrix").is_some())
+        .expect("a quantizer-matrix record");
+    assert_eq!(qm["payload_status"]["status"], "parsed");
+    assert_eq!(qm["payload_status"]["syntax"], "quantizer_matrix_obu");
+    let view = &qm["quantizer_matrix"];
+    assert_eq!(view["qm_bit_map"], 1);
+    assert_eq!(view["num_planes"], 1);
+    assert_eq!(view["is_reset"], false);
+    assert_eq!(view["levels"][0]["level"], 0);
+    assert_eq!(view["levels"][0]["is_default"], true);
+}
+
+#[test]
+fn inspect_json_surfaces_film_grain() {
+    // TemporalDelimiter, a sequence header, then a film_grain_obu updating slot 0.
+    let path = fixture("film-grain.av2");
+    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let records = json.as_array().expect("inspect output is an array");
+    let fg = records
+        .iter()
+        .find(|r| r.get("film_grain").is_some())
+        .expect("a film-grain record");
+    assert_eq!(fg["payload_status"]["status"], "parsed");
+    assert_eq!(fg["payload_status"]["syntax"], "film_grain_obu");
+    let view = &fg["film_grain"];
+    assert_eq!(view["fgm_update_flags"], 1);
+    assert_eq!(view["fgm_chroma_idc"], 0);
+    assert_eq!(view["monochrome"], false);
+    assert_eq!(view["updated_slots"][0], 0);
+    assert_eq!(view["models"][0]["slot"], 0);
+}
+
+#[test]
 fn validate_operating_point_set_fixture_exits_zero() {
     let out = validate("operating-point-set.av2", &[]);
     assert_eq!(out.status.code(), Some(0));
@@ -248,6 +293,18 @@ fn validate_operating_point_set_fixture_exits_zero() {
 #[test]
 fn validate_buffer_removal_timing_fixture_exits_zero() {
     let out = validate("buffer-removal-timing.av2", &[]);
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn validate_quantizer_matrix_fixture_exits_zero() {
+    let out = validate("quantizer-matrix.av2", &[]);
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn validate_film_grain_fixture_exits_zero() {
+    let out = validate("film-grain.av2", &[]);
     assert_eq!(out.status.code(), Some(0));
 }
 
