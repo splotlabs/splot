@@ -138,14 +138,21 @@ def detect_headings(lines: list[str], footers: list[tuple[int, int]]) -> list[He
 
 
 def plan_segments(lines: list[str], headings: list[Heading]) -> list[Segment]:
-    """Partition the raw lines into output files, in canonical (raw) order."""
+    """Partition the raw lines into output files, in canonical (raw) order.
+
+    The top-level structure asserted below (chapters 1..9, annexes A..G) is
+    **pinned to AV2 v1.0.0**. A future spec version with a different chapter/annex
+    layout must update these expectations here, alongside the new ``--version`` and
+    the ``SPEC_MIRRORS`` pin in ``xtask/src/main.rs``.
+    """
     chapters = [h for h in headings if h.kind == "num" and h.components == 1]
     annexes = [h for h in headings if h.kind == "annex"]
 
     chapter_numbers = [int(h.number) for h in chapters]
     if chapter_numbers != list(range(1, 10)):
         raise SystemExit(
-            f"expected chapters 1..9 in order, found {chapter_numbers}"
+            "expected AV2 v1.0.0 chapters 1..9 in order (see plan_segments docstring "
+            f"for new spec versions), found {chapter_numbers}"
         )
     annex_letters = [h.number for h in annexes]
     if annex_letters != ["A", "B", "C", "D", "E", "F", "G"]:

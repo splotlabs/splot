@@ -60,6 +60,16 @@ done
 [ -n "$URL" ] || [ -n "$PDF_PATH" ] || die "missing --url (or --pdf)"
 [ -n "$OUTDIR" ] || OUTDIR="$REPO_ROOT/docs/spec/av2/$VERSION"
 
+# If --url was omitted (e.g. regenerating offline from a cached --pdf), default it
+# from the committed mirror's provenance. This keeps the canonical AOM URL in the
+# record instead of a misleading "local:<path>", and lets `--verify` succeed
+# offline (the gate checks pdf_sha256, but a differing pdf_url would otherwise
+# fail the verify diff against the committed mirror).
+if [ -z "$URL" ] && [ -f "$OUTDIR/provenance.toml" ]; then
+  URL="$(sed -n 's/^pdf_url = "\(.*\)"$/\1/p' "$OUTDIR/provenance.toml" | head -1)"
+fi
+[ -n "$URL" ] || echo "regenerate-av2-spec: warning: no --url and no committed provenance at $OUTDIR; pdf_url will record the local path '$PDF_PATH'" >&2
+
 command -v pdftotext >/dev/null 2>&1 || die "pdftotext not found. Install poppler (e.g. 'brew install poppler' or 'apt-get install poppler-utils')."
 command -v python3 >/dev/null 2>&1 || die "python3 not found."
 
