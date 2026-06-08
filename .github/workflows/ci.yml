@@ -76,17 +76,29 @@ jobs:
             echo "openspec not installed; skipping OpenSpec CLI validation"
           fi
 
-  # Optional, non-blocking supply-chain audit. Advisory results can change without
-  # a repo diff, so it must not gate the main pipeline.
-  cargo-deny:
+  # Supply-chain policy. The deterministic checks (bans, licenses, sources) gate the
+  # merge; the advisory DB is informational because it changes without a repo diff,
+  # so a newly published advisory must not retroactively fail an unrelated PR.
+  supply-chain:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
 
-      - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
+      # Deterministic policy — gates the merge.
+      - name: cargo-deny (bans, licenses, sources)
+        uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
         with:
           rust-version: "1.96.0"
+          command: check bans licenses sources
+          arguments: --all-features
+
+      # Advisory DB — informational; changes without a repo diff, must not gate.
+      - name: cargo-deny (advisories)
+        uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
+        continue-on-error: true
+        with:
+          rust-version: "1.96.0"
+          command: check advisories
           arguments: --all-features
