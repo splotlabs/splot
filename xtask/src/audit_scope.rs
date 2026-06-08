@@ -139,10 +139,7 @@ fn build_report(root: &Path, options: &AuditScopeOptions) -> Result<AuditScopeRe
         .unwrap_or_else(|| PathBuf::from(DEFAULT_LEDGER_PATH));
     let workspace_members = load_workspace_members(root)?;
     let feature_index = load_feature_index(root)?;
-    let tracked_paths = git_lines(
-        root,
-        &["ls-files", "--cached", "--others", "--exclude-standard"],
-    )?;
+    let tracked_paths = git_lines(root, &["ls-files", "--cached"])?;
     let in_scope = tracked_audit_files(root, &tracked_paths, &workspace_members, &feature_index)?;
     let audited_commit = git_single_line(root, &["rev-parse", "HEAD"])?;
 
@@ -268,7 +265,8 @@ fn select_candidates(
     all: bool,
     force_wide_review: bool,
 ) -> Vec<AuditCandidate> {
-    let ledger_hashes = ledger_hashes(ledger);
+    let ledger_files = ledger_files_by_path(ledger);
+    let ledger_outcome = ledger.map(|ledger| ledger.outcome.as_str());
     let mut out = Vec::new();
     for file in files {
         let mut reasons = BTreeSet::new();
@@ -281,15 +279,21 @@ fn select_candidates(
             reasons.insert("changed-in-diff".to_owned());
         }
         if changed_paths.is_none() && !all {
-            match ledger_hashes
+            match ledger_files
                 .as_ref()
-                .and_then(|hashes| hashes.get(&file.path))
+                .and_then(|entries| entries.get(&file.path))
             {
                 None => {
                     reasons.insert("ledger-missing".to_owned());
                 }
-                Some(old_hash) if old_hash != &file.sha256 => {
+                Some(entry) if entry.sha256 != file.sha256 => {
                     reasons.insert("content-hash-changed".to_owned());
+                }
+                Some(_) if ledger_outcome != Some("success") => {
+                    reasons.insert("ledger-outcome-not-success".to_owned());
+                }
+                Some(entry) if entry.outcome != "success" => {
+                    reasons.insert("ledger-file-outcome-not-success".to_owned());
                 }
                 Some(_) => {}
             }
@@ -311,12 +315,12 @@ fn select_candidates(
     out
 }
 
-fn ledger_hashes(ledger: Option<&AuditLedger>) -> Option<BTreeMap<String, String>> {
+fn ledger_files_by_path(ledger: Option<&AuditLedger>) -> Option<BTreeMap<String, AuditLedgerFile>> {
     ledger.map(|ledger| {
         ledger
             .files
             .iter()
-            .map(|file| (file.path.clone(), file.sha256.clone()))
+            .map(|file| (file.path.clone(), file.clone()))
             .collect()
     })
 }
@@ -329,10 +333,17 @@ fn force_wide_review_triggers(
     let changed: BTreeSet<String> = if let Some(changed_paths) = changed_paths {
         changed_paths.clone()
     } else if let Some(ledger) = ledger {
-        let hashes = ledger_hashes(Some(ledger)).unwrap_or_default();
+        let ledger_files = ledger_files_by_path(Some(ledger)).unwrap_or_default();
         files
             .iter()
-            .filter(|file| hashes.get(&file.path) != Some(&file.sha256))
+            .filter(|file| {
+                let Some(entry) = ledger_files.get(&file.path) else {
+                    return true;
+                };
+                entry.sha256 != file.sha256
+                    || ledger.outcome != "success"
+                    || entry.outcome != "success"
+            })
             .map(|file| file.path.clone())
             .collect()
     } else {
@@ -610,7 +621,7 @@ fn changed_paths_from_base(root: &Path, base: &str) -> Result<BTreeSet<String>> 
     if base.trim().is_empty() || base.starts_with('-') {
         bail!("audit-scope --base must not be empty or start with `-`");
     }
-    let mut args = vec!["diff", "--name-only", "--diff-filter=ACMRT", base];
+    let mut args = vec!["diff", "--name-only", "--diff-filter=ACDMRT", base];
     args.push("HEAD");
     args.push("--");
     Ok(git_lines(root, &args)?.into_iter().collect())
@@ -696,6 +707,45 @@ edition = "2024"
     }
 
     #[test]
+    fn ledger_selection_reaudits_non_success_outcomes() {
+        let files = vec![
+            tracked("crates/splot-core/src/obu.rs", "aaa"),
+            tracked("crates/splot-core/src/types.rs", "bbb"),
+        ];
+        let ledger = AuditLedger {
+            protocol_version: PROTOCOL_VERSION,
+            audited_commit: "old".to_owned(),
+            outcome: "success".to_owned(),
+            files: vec![
+                ledger_file("crates/splot-core/src/obu.rs", "aaa"),
+                AuditLedgerFile {
+                    path: "crates/splot-core/src/types.rs".to_owned(),
+                    sha256: "bbb".to_owned(),
+                    feature_ids: Vec::new(),
+                    outcome: "failure".to_owned(),
+                },
+            ],
+        };
+
+        let candidates = select_candidates(&files, None, Some(&ledger), false, false);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].path, "crates/splot-core/src/types.rs");
+        assert_eq!(
+            candidates[0].reasons,
+            vec!["ledger-file-outcome-not-success"]
+        );
+
+        let failed_ledger = AuditLedger {
+            outcome: "failure".to_owned(),
+            files: vec![ledger_file("crates/splot-core/src/obu.rs", "aaa")],
+            ..ledger
+        };
+        let candidates = select_candidates(&files[..1], None, Some(&failed_ledger), false, false);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].reasons, vec!["ledger-outcome-not-success"]);
+    }
+
+    #[test]
     fn force_wide_trigger_selects_otherwise_unchanged_files() {
         let files = vec![
             tracked("docs/IMPLEMENTATION-MATRIX.toml", "new"),
@@ -722,6 +772,80 @@ edition = "2024"
                 .iter()
                 .any(|r| r == "wide-review-triggered")
         }));
+    }
+
+    #[test]
+    fn force_wide_trigger_treats_non_success_ledger_as_changed() {
+        let files = vec![tracked("docs/IMPLEMENTATION-MATRIX.toml", "same")];
+        let ledger = AuditLedger {
+            protocol_version: PROTOCOL_VERSION,
+            audited_commit: "old".to_owned(),
+            outcome: "failure".to_owned(),
+            files: vec![ledger_file("docs/IMPLEMENTATION-MATRIX.toml", "same")],
+        };
+
+        let triggers = force_wide_review_triggers(None, Some(&ledger), &files);
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].path, "docs/IMPLEMENTATION-MATRIX.toml");
+        assert_eq!(triggers[0].reason, "implementation-matrix");
+    }
+
+    #[test]
+    fn changed_paths_from_base_includes_deleted_force_wide_paths() -> Result<()> {
+        let root = temp_git_repo("audit-scope-deleted-force-wide")?;
+        std::fs::write(root.join("AGENTS.md"), "rules\n")?;
+        git_commit_all(&root, "test: add agents")?;
+        std::fs::remove_file(root.join("AGENTS.md"))?;
+        git_commit_all(&root, "test: remove agents")?;
+
+        let changed = changed_paths_from_base(&root, "HEAD~1")?;
+        assert!(changed.contains("AGENTS.md"));
+        let triggers = force_wide_review_triggers(Some(&changed), None, &[]);
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].reason, "repository-agent-instructions");
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn build_report_excludes_untracked_files_from_deterministic_scope() -> Result<()> {
+        let root = temp_git_repo("audit-scope-tracked-only")?;
+        std::fs::create_dir_all(root.join("docs"))?;
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = []\n")?;
+        std::fs::write(root.join("docs/IMPLEMENTATION-MATRIX.toml"), "")?;
+        std::fs::write(root.join("docs/tracked.md"), "tracked\n")?;
+        git_commit_all(&root, "test: add tracked docs")?;
+        std::fs::write(root.join("docs/untracked.md"), "untracked\n")?;
+
+        let report = build_report(
+            &root,
+            &AuditScopeOptions {
+                base: None,
+                ledger: None,
+                write_ledger: false,
+                all: false,
+                format: AuditScopeFormat::Json,
+                outcome: "success".to_owned(),
+            },
+        )?;
+        let candidate_paths: BTreeSet<&str> = report
+            .candidates
+            .iter()
+            .map(|candidate| candidate.path.as_str())
+            .collect();
+        assert!(candidate_paths.contains("docs/tracked.md"));
+        assert!(!candidate_paths.contains("docs/untracked.md"));
+        assert!(
+            !report
+                .ledger_update
+                .files
+                .iter()
+                .any(|file| file.path == "docs/untracked.md")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     #[test]
@@ -824,5 +948,19 @@ module = "xtask/src/audit_scope.rs"
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root)?;
         Ok(root)
+    }
+
+    fn temp_git_repo(name: &str) -> Result<PathBuf> {
+        let root = temp_root(name)?;
+        run_git(&root, &["init"])?;
+        run_git(&root, &["config", "user.email", "splot@example.test"])?;
+        run_git(&root, &["config", "user.name", "splot tests"])?;
+        Ok(root)
+    }
+
+    fn git_commit_all(root: &Path, subject: &str) -> Result<()> {
+        run_git(root, &["add", "-A"])?;
+        run_git(root, &["commit", "-m", subject])?;
+        Ok(())
     }
 }
