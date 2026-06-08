@@ -2680,7 +2680,7 @@ openspec_change = "frame-header-core-foundation"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Locally decidable, state-supported frame-header-info checks driven by the core parser: bridge_frame_ref_idx range (§6.17.2), frame size vs sequence maximum (§6.17.4.1), and the RAS-frame long_term_frame_id_bits requirement (§6.4.6). Reference-frame-buffer and long-term-reference availability checks (show-existing-frame slot validity, explicit reference map, primary_ref_frame range) remain partial until dedicated reference state exists, and are never guessed."
+notes = "Locally decidable, state-supported frame-header-info checks driven by the core parser: bridge_frame_ref_idx range, frame_to_refresh range, reserved ref_long_term_id, refresh_frame_flags-when-output-deferred, still-picture KEY/immediate constraints, and the INTRA_ONLY all-slot-refresh rule (§6.17.2); frame size vs sequence maximum (§6.17.4.1); and the RAS-frame long_term_frame_id_bits requirement (§6.4.6). Reference-frame-buffer and long-term-reference availability checks (show-existing-frame slot validity, explicit reference map, primary_ref_frame range) remain partial until dedicated reference state exists, and are never guessed."
 
 [feature.status]
 mapped = "done"
@@ -2695,10 +2695,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-validate/src/validator.rs::tests::validator_flags_bridge_ref_index_out_of_range", "crates/splot-validate/src/validator.rs::tests::validator_flags_frame_size_exceeds_sequence_max", "crates/splot-validate/src/validator.rs::tests::validator_flags_ras_requires_long_term_frame_id_bits"]
-commands = ["cargo test -p splot-validate frame"]
+tests = ["crates/splot-validate/src/validator.rs::tests::validator_flags_bridge_ref_index_out_of_range", "crates/splot-validate/src/validator.rs::tests::validator_flags_frame_size_exceeds_sequence_max", "crates/splot-validate/src/validator.rs::tests::validator_flags_ras_requires_long_term_frame_id_bits", "crates/splot-validate/src/validator.rs::tests::validator_flags_frame_to_refresh_out_of_range", "crates/splot-validate/src/validator.rs::tests::validator_flags_reserved_ref_long_term_id", "crates/splot-validate/src/validator.rs::tests::validator_flags_still_picture_non_key_frame", "crates/splot-validate/src/validator.rs::tests::validator_flags_intra_only_refresh_all_slots"]
+commands = ["cargo test -p splot-validate frame", "cargo test -p splot-validate validator_flags"]
 fixtures = []
-diagnostics = ["frame-header/bridge-ref-index-out-of-range", "frame-header/frame-size-exceeds-sequence-max", "frame-header/ras-requires-long-term-frame-id-bits"]
+diagnostics = ["frame-header/bridge-ref-index-out-of-range", "frame-header/frame-size-exceeds-sequence-max", "frame-header/ras-requires-long-term-frame-id-bits", "frame-header/frame-to-refresh-out-of-range", "frame-header/ref-long-term-id-reserved", "frame-header/refresh-frame-flags-zero-on-deferred-output", "frame-header/still-picture-requires-key-frame", "frame-header/intra-only-refresh-all-slots"]
 
 [[feature]]
 id = "AV2-5.18.5-FILTERING"

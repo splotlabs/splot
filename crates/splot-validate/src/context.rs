@@ -18,7 +18,7 @@ use splot_core::headers::film_grain::{
 };
 use splot_core::headers::frame::{
     FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderPrefix,
-    FrameReferenceStateView, parse_frame_header_core, parse_frame_header_prefix,
+    FrameReferenceStateView, FrameType, parse_frame_header_core, parse_frame_header_prefix,
 };
 use splot_core::headers::layer_config_record::{
     LayerConfigurationRecord, parse_layer_config_record,
@@ -2278,6 +2278,92 @@ fn frame_header_core_checks(
                 ),
             ));
         }
+    }
+
+    // AV2 § 6.17.2: ref_long_term_id[i] != (1 << long_term_frame_id_bits) - 1.
+    if core.forbidden_ref_long_term_id {
+        report.push(frame_header_error(
+            "frame-header/ref-long-term-id-reserved",
+            "6.17.2",
+            obu,
+            "a ref_long_term_id[i] equals the reserved (1 << long_term_frame_id_bits) - 1"
+                .to_owned(),
+        ));
+    }
+
+    // AV2 § 6.17.2: if immediate_output_frame == 0, refresh_frame_flags must be nonzero
+    // (a deferred-output frame must update at least one reference slot).
+    if core.immediate_output_frame == Some(false) && core.refresh_frame_flags == Some(0) {
+        report.push(frame_header_error(
+            "frame-header/refresh-frame-flags-zero-on-deferred-output",
+            "6.17.2",
+            obu,
+            "immediate_output_frame == 0 requires refresh_frame_flags to be nonzero".to_owned(),
+        ));
+    }
+
+    // AV2 § 6.17.2: still_picture == 1 requires FrameType == KEY_FRAME and
+    // immediate_output_frame == 1.
+    if active_sequence.general.still_picture
+        && (matches!(core.frame_type, Some(frame_type) if frame_type != FrameType::Key)
+            || core.immediate_output_frame == Some(false))
+    {
+        report.push(frame_header_error(
+            "frame-header/still-picture-requires-key-frame",
+            "6.17.2",
+            obu,
+            "a still_picture sequence requires a KEY_FRAME with immediate_output_frame == 1"
+                .to_owned(),
+        ));
+    }
+
+    // The remaining checks compare refresh_frame_flags against NumRefFrames.
+    let Some(num_ref_frames) = active_sequence
+        .inter
+        .as_ref()
+        .map(|inter| u32::from(inter.num_ref_frames))
+    else {
+        return;
+    };
+    let Some(refresh) = core.refresh_frame_flags else {
+        return;
+    };
+    // 1 << NumRefFrames as the exclusive upper bound of a valid refresh mask.
+    let Some(all_slots_plus_1) = 1u32.checked_shl(num_ref_frames) else {
+        return;
+    };
+
+    // AV2 § 6.17.2: frame_to_refresh < NumRefFrames. In the compact refresh mode
+    // refresh_frame_flags == 1 << frame_to_refresh, so an out-of-range slot is exactly a
+    // mask with a bit at or beyond NumRefFrames; the full and all-frames forms are always
+    // below 1 << NumRefFrames.
+    if refresh >= all_slots_plus_1 {
+        report.push(frame_header_error(
+            "frame-header/frame-to-refresh-out-of-range",
+            "6.17.2",
+            obu,
+            format!(
+                "refresh_frame_flags {refresh:#x} sets a reference slot at or beyond \
+                 NumRefFrames {num_ref_frames} (frame_to_refresh must be less than NumRefFrames)"
+            ),
+        ));
+    }
+
+    // AV2 § 6.17.2: an INTRA_ONLY_FRAME with NumRefFrames > 1 must not refresh every slot
+    // (refresh_frame_flags != (1 << NumRefFrames) - 1).
+    if core.frame_type == Some(FrameType::IntraOnly)
+        && num_ref_frames > 1
+        && refresh == all_slots_plus_1 - 1
+    {
+        report.push(frame_header_error(
+            "frame-header/intra-only-refresh-all-slots",
+            "6.17.2",
+            obu,
+            format!(
+                "an INTRA_ONLY_FRAME with NumRefFrames {num_ref_frames} must not set \
+                 refresh_frame_flags to all slots"
+            ),
+        ));
     }
 }
 

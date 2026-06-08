@@ -244,6 +244,9 @@ pub struct FrameHeaderCore {
     pub allow_screen_content_tools: Option<bool>,
     /// `allow_intrabc`, when `intrabc_params()` was reached.
     pub allow_intrabc: Option<bool>,
+    /// `true` if any `ref_long_term_id[i]` equals the reserved value
+    /// `(1 << long_term_frame_id_bits) - 1`, which AV2 § 6.17.2 forbids.
+    pub forbidden_ref_long_term_id: bool,
     /// Bits consumed by this parse (not necessarily the whole frame header).
     pub consumed_bits: u64,
 }
@@ -369,6 +372,7 @@ fn init_core_from_prefix(prefix: &FrameHeaderPrefix, obu_type: ObuType) -> Frame
         frame_to_show_map_idx: None,
         allow_screen_content_tools: None,
         allow_intrabc: None,
+        forbidden_ref_long_term_id: false,
         consumed_bits: 0,
     }
 }
@@ -444,9 +448,15 @@ fn parse_core_body(
     if (obu_type == ObuType::RasFrame || obu_type == ObuType::OpenLoopKey)
         && seq.long_term_frame_id_bits != 0
     {
+        // AV2 § 6.17.2: every ref_long_term_id[i] must differ from the reserved
+        // (1 << long_term_frame_id_bits) - 1; record a violation for the validator.
+        let reserved_long_term_id = (1u32 << seq.long_term_frame_id_bits).wrapping_sub(1);
         let num_key_ref_frames = reader.read_bits(3)?;
         for _ in 0..num_key_ref_frames {
-            read_f(reader, seq.long_term_frame_id_bits)?; // ref_long_term_id[i]
+            let ref_long_term_id = read_f(reader, seq.long_term_frame_id_bits)?;
+            if ref_long_term_id == reserved_long_term_id {
+                core.forbidden_ref_long_term_id = true;
+            }
         }
     }
 
@@ -924,6 +934,25 @@ mod tests {
         // uvlc(0)+uvlc(0) (2) + restricted_prediction_switch (1) + num_key_ref (3) +
         // 2 * ref_long_term_id f(4) (8) == 14 bits.
         assert_eq!(consumed, 2 + 1 + 3 + 8);
+        // ref_long_term_id values 5 and 9 are not the reserved (1 << 4) - 1 == 15.
+        assert!(!core.forbidden_ref_long_term_id);
+    }
+
+    #[test]
+    fn frame_header_core_flags_reserved_ref_long_term_id() {
+        // A ref_long_term_id equal to (1 << long_term_frame_id_bits) - 1 is reserved
+        // (AV2 § 6.17.2); the parser records the violation for the validator.
+        let mut seq = base_seq();
+        seq.long_term_frame_id_bits = 4;
+        let mut bits = Bits::default();
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(0); // seq_header_id_in_frame_header
+        bits.bit(0); // restricted_prediction_switch
+        bits.f(1, 3); // num_key_ref_frames == 1
+        bits.f(15, 4); // ref_long_term_id[0] == (1 << 4) - 1 (reserved)
+        let data = bits.into_bytes();
+        let (core, _) = parse_body(&data, ObuType::RasFrame, true, &seq).unwrap();
+        assert!(core.forbidden_ref_long_term_id);
     }
 
     #[test]

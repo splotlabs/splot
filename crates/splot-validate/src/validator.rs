@@ -2433,11 +2433,9 @@ mod tests {
     const BRIDGE_HEADER: u8 = 0x4C;
     const RAS_HEADER: u8 = 0x54;
 
-    /// A fully-parseable §5.4 sequence header (xlayer 0, max_tlayer/mlayer 0,
-    /// monotonic output) with a tunable inter config and frame dimensions, for
-    /// exercising the frame-header core diagnostics.
-    #[allow(clippy::too_many_arguments)]
-    fn frame_core_seq_payload(
+    /// Tunable knobs for [`frame_core_seq_payload`]; defaults from [`FrameCoreSeq::base`].
+    #[derive(Clone, Copy)]
+    struct FrameCoreSeq {
         seq_id: u32,
         frame_width_bits_minus_1: u32,
         frame_height_bits_minus_1: u32,
@@ -2446,24 +2444,50 @@ mod tests {
         order_hint_bits_minus_1: u32,
         num_ref_frames_minus_1: u32,
         long_term_frame_id_bits: u32,
-    ) -> Vec<u8> {
+        still_picture: bool,
+        enable_short_refresh_frame_flags: bool,
+    }
+
+    impl FrameCoreSeq {
+        /// seq 0; 8-bit frame dimensions, 16x16 maximum; OrderHintBits = 1,
+        /// NumRefFrames = 8; no long-term ids; not still-picture; full refresh signaling.
+        fn base() -> Self {
+            Self {
+                seq_id: 0,
+                frame_width_bits_minus_1: 7,
+                frame_height_bits_minus_1: 7,
+                max_frame_width_minus_1: 15,
+                max_frame_height_minus_1: 15,
+                order_hint_bits_minus_1: 0,
+                num_ref_frames_minus_1: 7,
+                long_term_frame_id_bits: 0,
+                still_picture: false,
+                enable_short_refresh_frame_flags: false,
+            }
+        }
+    }
+
+    /// A fully-parseable §5.4 sequence header (xlayer 0, max_tlayer/mlayer 0,
+    /// monotonic output) with a tunable inter config and frame dimensions, for
+    /// exercising the frame-header core diagnostics.
+    fn frame_core_seq_payload(o: FrameCoreSeq) -> Vec<u8> {
         let mut bits = Bits::default();
-        bits.uvlc(seq_id);
+        bits.uvlc(o.seq_id);
         bits.f(0, 5); // seq_profile_idc
         bits.bit(0); // single_picture_header_flag
         bits.f(0, 5); // seq_level_idx
         bits.uvlc(0); // chroma_format_idc
         bits.uvlc(0); // bit_depth_idc
         bits.f(0, 3); // seq_lcr_id
-        bits.bit(0); // still_picture
+        bits.bit(u8::from(o.still_picture)); // still_picture
         bits.f(0, 2); // max_tlayer_id
         bits.f(0, 3); // max_mlayer_id == 0
         bits.bit(1); // monotonic_output_order_flag
-        bits.f(frame_width_bits_minus_1, 4);
-        bits.f(frame_height_bits_minus_1, 4);
+        bits.f(o.frame_width_bits_minus_1, 4);
+        bits.f(o.frame_height_bits_minus_1, 4);
         // max_frame_*_minus_1 are read as f(frame_*_bits_minus_1 + 1).
-        bits.f(max_frame_width_minus_1, frame_width_bits_minus_1 + 1);
-        bits.f(max_frame_height_minus_1, frame_height_bits_minus_1 + 1);
+        bits.f(o.max_frame_width_minus_1, o.frame_width_bits_minus_1 + 1);
+        bits.f(o.max_frame_height_minus_1, o.frame_height_bits_minus_1 + 1);
         bits.bit(0); // seq_cropping_window_present_flag
         bits.bit(0); // seq_initial_display_delay_present_flag
         bits.bit(0); // decoder_model_info_present_flag
@@ -2488,13 +2512,13 @@ mod tests {
         bits.f(0, 4); // seq_enabled_motion_modes
         bits.bit(0); // enable_masked_compound
         bits.bit(0); // enable_ref_frame_mvs
-        bits.f(order_hint_bits_minus_1, 4); // order_hint_bits_minus_1
+        bits.f(o.order_hint_bits_minus_1, 4); // order_hint_bits_minus_1
         bits.bit(0); // enable_refmvbank
         bits.bit(1); // disable_drl_reorder
         bits.bit(0); // explicit_ref_frame_map
         bits.bit(1); // explicit_num_ref_frames
-        bits.f(num_ref_frames_minus_1, 4); // num_ref_frames_minus_1
-        bits.f(long_term_frame_id_bits, 3); // long_term_frame_id_bits
+        bits.f(o.num_ref_frames_minus_1, 4); // num_ref_frames_minus_1
+        bits.f(o.long_term_frame_id_bits, 3); // long_term_frame_id_bits
         bits.f(0, 2); // seq_max_drl_bits_minus_1 (ns(5) -> 0)
         bits.bit(0); // allow_frame_max_drl_bits
         bits.bit(0); // seq_max_bvp_drl_bits_minus_1 (ns(3) -> 0)
@@ -2513,7 +2537,7 @@ mod tests {
         bits.bit(0); // enable_mvd_sign_derive
         bits.bit(0); // enable_flex_mvres
         bits.bit(0); // enable_global_motion
-        bits.bit(0); // enable_short_refresh_frame_flags
+        bits.bit(u8::from(o.enable_short_refresh_frame_flags)); // enable_short_refresh_frame_flags
         // sequence_scc_config (SELECT both)
         bits.bit(1); // seq_choose_screen_content_tools
         bits.bit(1); // seq_choose_integer_mv
@@ -2550,31 +2574,9 @@ mod tests {
     }
 
     /// A temporal delimiter followed by a `frame_core_seq_payload` sequence header.
-    #[allow(clippy::too_many_arguments)]
-    fn td_and_frame_core_seq(
-        seq_id: u32,
-        frame_width_bits_minus_1: u32,
-        frame_height_bits_minus_1: u32,
-        max_frame_width_minus_1: u32,
-        max_frame_height_minus_1: u32,
-        order_hint_bits_minus_1: u32,
-        num_ref_frames_minus_1: u32,
-        long_term_frame_id_bits: u32,
-    ) -> Vec<u8> {
+    fn td_and_frame_core_seq(o: FrameCoreSeq) -> Vec<u8> {
         let mut data = temporal_delimiter_obu();
-        data.extend(annex_b_obu(
-            0x04,
-            &frame_core_seq_payload(
-                seq_id,
-                frame_width_bits_minus_1,
-                frame_height_bits_minus_1,
-                max_frame_width_minus_1,
-                max_frame_height_minus_1,
-                order_hint_bits_minus_1,
-                num_ref_frames_minus_1,
-                long_term_frame_id_bits,
-            ),
-        ));
+        data.extend(annex_b_obu(0x04, &frame_core_seq_payload(o)));
         data
     }
 
@@ -2597,7 +2599,10 @@ mod tests {
     fn validator_flags_bridge_ref_index_out_of_range() {
         // NumRefFrames == 6 -> CeilLog2(6) == 3 bits, so bridge_frame_ref_idx can encode
         // 6 or 7, both >= NumRefFrames (AV2 § 6.17.2).
-        let mut data = td_and_frame_core_seq(0, 3, 3, 15, 7, 0, 5, 0);
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            num_ref_frames_minus_1: 5, // NumRefFrames == 6 (non-power-of-2)
+            ..FrameCoreSeq::base()
+        });
         let mut fb = Bits::default();
         fb.uvlc(0); // seq_header_id_in_frame_header (bridge infers cur_mfh_id == 0)
         fb.f(6, 3); // bridge_frame_ref_idx == 6 (>= NumRefFrames 6)
@@ -2615,7 +2620,7 @@ mod tests {
     fn validator_flags_frame_size_exceeds_sequence_max() {
         // frame_width_bits == 8 (FrameWidth up to 256) but max_frame_width == 16; an
         // override frame size of 256 exceeds the sequence maximum (AV2 § 6.17.4.1).
-        let mut data = td_and_frame_core_seq(0, 7, 7, 15, 15, 0, 7, 0);
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
         let mut fb = Bits::default();
         fb.bit(1); // is_first_tile_group
         fb.uvlc(0); // cur_mfh_id == 0
@@ -2642,7 +2647,7 @@ mod tests {
     #[test]
     fn validator_accepts_frame_size_within_sequence_max() {
         // The same frame with FrameWidth 16 == max must not be flagged.
-        let mut data = td_and_frame_core_seq(0, 7, 7, 15, 15, 0, 7, 0);
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
         let mut fb = Bits::default();
         fb.bit(1); // is_first_tile_group
         fb.uvlc(0); // cur_mfh_id == 0
@@ -2661,6 +2666,154 @@ mod tests {
             !report
                 .errors()
                 .any(|d| d.rule_id == "frame-header/frame-size-exceeds-sequence-max"),
+            "report was: {report}"
+        );
+    }
+
+    // OBU header bytes: obu_type << 2. 0x14 = OBU_OPEN_LOOP_KEY (5), 0x1c =
+    // OBU_REGULAR_TILE_GROUP (7).
+    const OLK_HEADER: u8 = 0x14;
+    const RTG_HEADER: u8 = 0x1c;
+
+    #[test]
+    fn validator_flags_frame_to_refresh_out_of_range() {
+        // Compact refresh with NumRefFrames == 6: frame_to_refresh == 6 (>= 6) yields
+        // refresh_frame_flags == 1 << 6, a slot at/beyond NumRefFrames (AV2 § 6.17.2).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            num_ref_frames_minus_1: 5, // NumRefFrames == 6
+            enable_short_refresh_frame_flags: true,
+            ..FrameCoreSeq::base()
+        });
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // frame_is_inter == 0 -> INTRA_ONLY
+        fb.bit(0); // immediate_output_frame
+        fb.bit(0); // frame_size_override_flag (default dims)
+        fb.f(0, 1); // order_hint
+        fb.bit(1); // has_refresh_frame_flags
+        fb.f(6, 3); // frame_to_refresh == 6 (CeilLog2(6) == 3) -> refresh = 1 << 6
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        data.extend(annex_b_obu(RTG_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/frame-to-refresh-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_reserved_ref_long_term_id() {
+        // RAS with long_term_frame_id_bits == 4 and a ref_long_term_id of 15 == the
+        // reserved (1 << 4) - 1 (AV2 § 6.17.2).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            long_term_frame_id_bits: 4,
+            ..FrameCoreSeq::base()
+        });
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // restricted_prediction_switch
+        fb.f(1, 3); // num_key_ref_frames == 1
+        fb.f(15, 4); // ref_long_term_id[0] == (1 << 4) - 1 (reserved)
+        data.extend(annex_b_obu(RAS_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/ref-long-term-id-reserved"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_zero_refresh_on_deferred_output() {
+        // OLK forces immediate_output_frame == 0; refresh_frame_flags == 0 then violates
+        // AV2 § 6.17.2 (a deferred-output frame must update a reference slot).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        // OLK: long_term_id_plus_1 f(0) (no bits); immediate forced 0; implicit -> 0
+        fb.bit(0); // frame_size_override_flag (default dims)
+        fb.f(0, 1); // order_hint
+        fb.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8) == 0
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        data.extend(annex_b_obu(OLK_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/refresh-frame-flags-zero-on-deferred-output"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_still_picture_non_key_frame() {
+        // still_picture == 1 requires a KEY_FRAME; an INTRA_ONLY frame violates
+        // AV2 § 6.17.2.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            still_picture: true,
+            ..FrameCoreSeq::base()
+        });
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // frame_is_inter == 0 -> INTRA_ONLY (not KEY_FRAME)
+        fb.bit(1); // immediate_output_frame == 1 (isolate the frame-type violation)
+        fb.bit(0); // frame_size_override_flag (default dims)
+        fb.f(0, 1); // order_hint
+        fb.f(1, 8); // refresh_frame_flags f(8) == 1 (nonzero, not all-slots)
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        data.extend(annex_b_obu(RTG_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/still-picture-requires-key-frame"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_intra_only_refresh_all_slots() {
+        // INTRA_ONLY with NumRefFrames == 2 must not refresh every slot
+        // (refresh_frame_flags != (1 << 2) - 1) (AV2 § 6.17.2).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            num_ref_frames_minus_1: 1, // NumRefFrames == 2
+            ..FrameCoreSeq::base()
+        });
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // frame_is_inter == 0 -> INTRA_ONLY
+        fb.bit(1); // immediate_output_frame == 1
+        fb.bit(0); // frame_size_override_flag (default dims)
+        fb.f(0, 1); // order_hint
+        fb.f(0b11, 2); // refresh_frame_flags f(NumRefFrames == 2) == all slots
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        data.extend(annex_b_obu(RTG_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/intra-only-refresh-all-slots"),
             "report was: {report}"
         );
     }
