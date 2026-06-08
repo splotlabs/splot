@@ -1239,7 +1239,7 @@ diagnostics = []
 
     #[test]
     fn invalid_crate_is_rejected() {
-        let bad = SAMPLE.replace(r#"crate = "splot-core""#, r#"crate = "splot-validte""#);
+        let bad = SAMPLE.replace(r#"crate = "splot-core""#, r#"crate = "splot-bogus""#);
         let problems = intrinsic_problems(&bad);
         assert!(problems.iter().any(|p| p.contains("unknown crate")));
     }
@@ -1329,12 +1329,12 @@ diagnostics = []
     #[test]
     fn string_literals_handle_escapes() {
         let src = r#"let a = "obu-header/ok"; let b = "say \"hi\" then frame/sneaky";"#;
-        let lits = string_literals(src);
-        assert!(lits.iter().any(|s| s == "obu-header/ok"));
+        let literals = string_literals(src);
+        assert!(literals.iter().any(|s| s == "obu-header/ok"));
         // The escaped quotes do not split the second literal into pieces of code.
-        assert_eq!(lits.iter().filter(|s| s.contains("say")).count(), 1);
+        assert_eq!(literals.iter().filter(|s| s.contains("say")).count(), 1);
         // ... so a bad-prefix token embedded in prose is not a standalone literal.
-        assert!(!lits.iter().any(|s| s == "frame/sneaky"));
+        assert!(!literals.iter().any(|s| s == "frame/sneaky"));
     }
 
     #[test]

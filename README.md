@@ -41,7 +41,7 @@ splot decode input.av2 -o output.y4m                      # not yet implemented
 ```
 
 Exit codes for `validate`/`inspect`: `0` success/conformant, `1` validation errors
-or unparseable input, `2` I/O or CLI errors.
+or unparsable input, `2` I/O or CLI errors.
 
 ## Project layout
 
