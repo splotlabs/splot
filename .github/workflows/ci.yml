@@ -12,7 +12,13 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-# Both jobs only read the tree; deny the default read/write GITHUB_TOKEN.
+# Cancel superseded runs on the same ref (e.g. rapid pushes to a PR branch) so CI
+# spends its minutes on the latest commit instead of stale ones.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# All jobs only read the tree; deny the default read/write GITHUB_TOKEN.
 permissions:
   contents: read
 
