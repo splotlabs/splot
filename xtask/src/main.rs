@@ -258,7 +258,7 @@ fn nightly_available() -> bool {
         .unwrap_or(false)
 }
 
-/// Opens a local HTML coverage report. Report-only: no threshold is enforced here.
+/// Generates a local HTML coverage report. Report-only: no threshold is enforced here.
 // TODO: once a baseline exists, add `--lcov`/Codecov upload and a
 // `--fail-under-lines N` threshold (mirrors the report-only `coverage` CI job).
 fn run_coverage() -> Result<()> {
@@ -291,6 +291,8 @@ fn run_fuzz(time: Option<u64>) -> Result<()> {
     let secs = time.unwrap_or(30);
     let max_total_time = format!("-max_total_time={secs}");
     // `+nightly` is resolved by the rustup cargo proxy, so invoke `cargo` by name.
+    // Mirror the CI fuzz-smoke guard flags so a local smoke catches the same classes
+    // of bug: `-timeout` flags a hanging input, `-rss_limit_mb` an allocation blowup.
     run_program(
         "cargo",
         &[
@@ -300,6 +302,8 @@ fn run_fuzz(time: Option<u64>) -> Result<()> {
             "parse_obu",
             "--",
             &max_total_time,
+            "-timeout=10",
+            "-rss_limit_mb=2048",
         ],
     )
 }

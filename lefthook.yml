@@ -16,7 +16,7 @@ pre-commit:
 commit-msg:
   commands:
     conventional-title:
-      run: cargo xtask check-conventional-title "$(head -n1 {1})"
+      run: subject=$(head -n1 {1}); cargo xtask check-conventional-title "$subject"
 
 pre-push:
   commands:
