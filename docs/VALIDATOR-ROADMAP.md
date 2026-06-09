@@ -486,6 +486,9 @@ lands, add it to the registry tables there (the CI gate will require it).
 | `obu-order/global-hls-after-metadata-suffix` | error | §7.3.7 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Global HLS appears after suffix metadata. Needs global suffix-metadata classification, which is pending frame/tile parsing. |
 | `obu-order/non-global-hls-before-coded-layer` | error | §7.3.7 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Non-global HLS appears in an invalid temporal-unit region. |
 | `msdo/sub-xlayer-duplicate` | error | §6.6 | `AV2-5.6-MSDO` | Duplicate `sub_xlayer_id` where uniqueness is required. Add only after confirming the exact §6.6 wording in the spec mirror (spec honesty). |
+| `ops/mlayer-dependency-missing` | error | §6.10.7 | `AV2-5.10-OPERATING-POINT-SET` | OPS embedded-layer info disagrees with the activated sequence header's `MLayerDependencyMap`. Deferred: the sequence-header model does not expose the dependency maps (see the intentional non-check in [`VALIDATOR-DIAGNOSTICS.md`](./VALIDATOR-DIAGNOSTICS.md)). |
+| `ops/tlayer-dependency-missing` | error | §6.10.7 | `AV2-5.10-OPERATING-POINT-SET` | As above, for the activated `TLayerDependencyMap`. |
+| `brt/global-ordering-position` | error | §7.3.7 | `AV2-7.3-OBU-ORDERING` | A global BRT in an invalid temporal-unit position. Deferred: §7.3.7 does not list BRT among the global prefix OBUs, so a hard ordering error needs the §7.3.8 decoder-model / random-access state (tracked by a spec TODO under `AV2-7.3-OBU-ORDERING` in `splot-validate`). |
 
 Naming rules: lowercase kebab-case after the slash; prefix by conceptual
 owner, not Rust module name; no numeric values encoded in the ID; never rename

@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "15a7442e887a458e3e36a6f49b0b5ba467b91484",
+  "audited_commit": "35243f2a3c77965b7cf5c9c91ff9cd245c48f799",
   "outcome": "success",
   "files": [
     {
@@ -1170,13 +1170,6 @@
       "outcome": "success"
     },
     {
-      "path": "docs/OPS-BRT-DIAGNOSTICS.md",
-      "sha256": "2cecf4e6ad5c59b66118d59c4879613537ef42c042176b731a534e8d1a04cf76",
-      "scope_kind": "docs",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
       "path": "docs/SPEC-MAPPING.md",
       "sha256": "be2daf43c432c17e1debea11ef8b7d6369855eae61a1a498b9548b5b6de4d685",
       "scope_kind": "docs",
@@ -1192,7 +1185,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "135999ad5621e9254a099bbcd9089f158b29a970537d0c0dc0116a6f17cac092",
+      "sha256": "63a5d23c93c988ea22e426e72a41b0972a866353786887fb4cc5a955a4f3782a",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
@@ -1202,7 +1195,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "24fb4f863c0a92c2d121b3ad93f37d1cfb9ea814fc320eedf2729f959da5ce1a",
+      "sha256": "edf022a6b67fb598ca32216a24e454f08ed2949774aabf36bfc8493af40db257",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",

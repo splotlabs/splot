@@ -11,10 +11,9 @@
 > `XTASK-DIAGNOSTIC-REGISTRY`) fails if any rule-id literal in `crates/splot-validate/src`
 > is missing from these tables, or if a table lists an ID that is not present in the source.
 > The gate enforces the rule-ID *set*; the `Severity` and `Section` columns are maintained by
-> hand. The phase-scoped [`OPS-BRT-DIAGNOSTICS.md`](./OPS-BRT-DIAGNOSTICS.md) and the
-> planned-diagnostics backlog in [`VALIDATOR-ROADMAP.md`](./VALIDATOR-ROADMAP.md) feed into
-> this registry as their diagnostics land. The extractor lives in
-> `xtask/src/diagnostic_registry.rs`.
+> hand. The planned-diagnostics backlog in
+> [`VALIDATOR-ROADMAP.md`](./VALIDATOR-ROADMAP.md) feeds into this registry as its
+> diagnostics land. The extractor lives in `xtask/src/diagnostic_registry.rs`.
 
 Diagnostics are the validator product. Every finding carries:
 
