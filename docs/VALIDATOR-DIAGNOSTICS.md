@@ -4,12 +4,19 @@
 `owner: validator`  
 `purpose: stable rule IDs for missing validator work`
 
-> **Canonical diagnostic registry.** This file is the single home for validator
-> rule IDs. Phase- and design-scoped lists —
+> **Diagnostic registry (consolidation in progress).** This file is the intended
+> home for validator rule IDs, but it is **not yet a complete mirror of every
+> emitted ID**. The `(implemented)` sections (§ 12–§ 15) record landed rule IDs
+> verified against the validator source; the earlier sections (§ 1–§ 11) mix
+> landed examples with design-stage sketches whose names may differ from the
+> shipped IDs (e.g. the §§ 7–8 planning lists predate the landed `ops/*`,
+> `brt/*`, `qm/*`, `padding/*`, `metadata/*`, and `film-grain/*` rule IDs). Until
+> consolidation finishes, the authoritative set of emitted IDs is the `rule_id`
+> strings in `crates/splot-validate/src/`. Phase- and design-scoped lists —
 > [`VALIDATOR-NEXT-DIAGNOSTICS.md`](./VALIDATOR-NEXT-DIAGNOSTICS.md),
 > [`VALIDATOR-HLS-AVAILABILITY-STATE.md`](./VALIDATOR-HLS-AVAILABILITY-STATE.md),
-> and [`OPS-BRT-DIAGNOSTICS.md`](./OPS-BRT-DIAGNOSTICS.md) — feed into this
-> registry; once a diagnostic lands, its stable ID belongs here.
+> and [`OPS-BRT-DIAGNOSTICS.md`](./OPS-BRT-DIAGNOSTICS.md) — feed into the
+> `(implemented)` sections as their diagnostics land.
 
 Diagnostics are the validator product. Every finding must have:
 
