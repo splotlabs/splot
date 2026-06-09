@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "8271f90ad8af49e3d85d7b8abd21d7e224db3347",
+  "audited_commit": "5f389f97ea039d4682e9c2e8156bbf4fe954baf4",
   "outcome": "success",
   "files": [
     {
@@ -807,9 +807,12 @@
     },
     {
       "path": "docs/CURRENT-VALIDATOR-STATE.md",
-      "sha256": "82cfc3bc3761225b0dea7b044f1df1a434d5f0d265e378daba0888557a5db862",
+      "sha256": "63826d4311794302733d085e06bc81acdc49fcaa9f20ec22fc8402fc40954dc0",
       "scope_kind": "docs",
       "feature_ids": [
+        "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.11-OPERATING-POINT-PAYLOAD",
+        "AV2-5.12-BUFFER-REMOVAL-TIMING",
         "AV2-5.18.7-SEGMENTATION-TILING",
         "AV2-5.18.7.3-TILE-PARAMS",
         "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
@@ -817,6 +820,9 @@
         "AV2-5.5-TEMPORAL-DELIMITER",
         "AV2-5.6-MSDO",
         "AV2-5.7-MULTI-FRAME-HEADER",
+        "AV2-5.8.1-LCR-GLOBAL-INFO",
+        "AV2-5.8.9-LCR-XLAYER-COLOR-INFO",
+        "AV2-5.9-ATLAS-SEGMENT",
         "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
         "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
         "AV2-7.3-OBU-ORDERING",
@@ -1163,7 +1169,7 @@
     },
     {
       "path": "docs/OPS-BRT-DIAGNOSTICS.md",
-      "sha256": "82b2691b1cbbcba88991415576c4c7eacdeb80ab1059075948892ee98cf2dfda",
+      "sha256": "2cecf4e6ad5c59b66118d59c4879613537ef42c042176b731a534e8d1a04cf76",
       "scope_kind": "docs",
       "feature_ids": [],
       "outcome": "success"
@@ -1184,10 +1190,12 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "26446bccd68d10b6543c300b43c593f9727f55d2f861c7cc5e2d1804b28acade",
+      "sha256": "f12a5497491b9d1b4138c024536a9c1ff68f923a63e11ac50b1450ecaa6567f2",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.11-OPERATING-POINT-PAYLOAD",
+        "AV2-5.12-BUFFER-REMOVAL-TIMING",
         "AV2-5.13-QUANTIZATION-MATRIX",
         "AV2-5.14-FILM-GRAIN",
         "AV2-5.15-CONTENT-INTERPRETATION",
@@ -1215,14 +1223,16 @@
     },
     {
       "path": "docs/VALIDATOR-GAP-ANALYSIS.md",
-      "sha256": "f27894a67664cc2749b010ce4a77af97d202470b216ab63b850783b11afd64d3",
+      "sha256": "ce03e2abecea0c958a174afa181f5023761088ac0fde0354ed1c118a40ba65c4",
       "scope_kind": "docs",
-      "feature_ids": [],
+      "feature_ids": [
+        "AV2-5.4-SEQUENCE-HEADER"
+      ],
       "outcome": "success"
     },
     {
       "path": "docs/VALIDATOR-HLS-AVAILABILITY-STATE.md",
-      "sha256": "a86210cf92f092a02c8190dc9eb416f7615847db8b3591860b1f7c698ade7509",
+      "sha256": "d577d7305f0552109d721ecad3b55d8ebfc0875aeea6ed100e5df307f42f218f",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.10-OPERATING-POINT-SET",
@@ -1342,7 +1352,7 @@
     },
     {
       "path": "docs/VALIDATOR-NEXT-DIAGNOSTICS.md",
-      "sha256": "5a2dce71b948314c51f033c5a3432652e0998826b68bbd2b74c3231914456b24",
+      "sha256": "b410af17df2fefa5ecca0c304641b2db9d33058bbef775ec54bb5f8f0c8c2c11",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
@@ -1360,7 +1370,7 @@
     },
     {
       "path": "docs/VALIDATOR-NEXT-PHASE.md",
-      "sha256": "80b1a0123d129d0056f33d54b739371025e2793bb6cf5ac7d730db4e6c3057ab",
+      "sha256": "4ef0939906bb7d5ae6b9444320847c31ee112f6457f30c01502b8e0bbfffc4a6",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.7-SU",
@@ -2271,6 +2281,48 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-09-ops-brt-hls-foundation/design.md",
+      "sha256": "1760beb7ea443e42e22a4c779c0b6ff3f98363f3e9e22f8ad22c0ea4ef6e8fef",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-09-ops-brt-hls-foundation/proposal.md",
+      "sha256": "60f0223bf8b6d2ad473725d4423a64935c4a6d4a4aec20a0cc724904c6bf1c51",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.10-OPS-SYNTAX-ELEMENTS",
+        "AV2-5.11-OPERATING-POINT-PAYLOAD",
+        "AV2-5.11.1-OPS-AGGREGATE-INFO",
+        "AV2-5.11.5-OPS-MLAYER-INFO",
+        "AV2-5.12-BUFFER-REMOVAL-TIMING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-09-ops-brt-hls-foundation/specs/bitstream/spec.md",
+      "sha256": "e5975e85dbb879abe8a2fc6a7db15366e98c86bea222f92bf9fab1dcc918b4b6",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-09-ops-brt-hls-foundation/specs/validator/spec.md",
+      "sha256": "2726c62eb9af5c017d51cc8278a334db88b79e10684065657ae6c0d7d96917a8",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-09-ops-brt-hls-foundation/tasks.md",
+      "sha256": "be47443a632759d4f7d4f6ed373dc9c6f978a137893720254ce9ebe8d42fce4e",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/avm-differential-harness/proposal.md",
       "sha256": "ca4e00373763656046a33836c38af7626641afedb9e473897f7ae9b2a3572b5f",
       "scope_kind": "openspec",
@@ -2338,48 +2390,6 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/ops-brt-hls-foundation/design.md",
-      "sha256": "1760beb7ea443e42e22a4c779c0b6ff3f98363f3e9e22f8ad22c0ea4ef6e8fef",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/ops-brt-hls-foundation/proposal.md",
-      "sha256": "60f0223bf8b6d2ad473725d4423a64935c4a6d4a4aec20a0cc724904c6bf1c51",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.10-OPERATING-POINT-SET",
-        "AV2-5.10-OPS-SYNTAX-ELEMENTS",
-        "AV2-5.11-OPERATING-POINT-PAYLOAD",
-        "AV2-5.11.1-OPS-AGGREGATE-INFO",
-        "AV2-5.11.5-OPS-MLAYER-INFO",
-        "AV2-5.12-BUFFER-REMOVAL-TIMING"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/ops-brt-hls-foundation/specs/bitstream/spec.md",
-      "sha256": "e5975e85dbb879abe8a2fc6a7db15366e98c86bea222f92bf9fab1dcc918b4b6",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/ops-brt-hls-foundation/specs/validator/spec.md",
-      "sha256": "2726c62eb9af5c017d51cc8278a334db88b79e10684065657ae6c0d7d96917a8",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/ops-brt-hls-foundation/tasks.md",
-      "sha256": "be47443a632759d4f7d4f6ed373dc9c6f978a137893720254ce9ebe8d42fce4e",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
       "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
       "sha256": "042ad614b48eaa9b6c4009b3a17deee84841b19adfbe86964f48b08f0f0206f5",
       "scope_kind": "openspec",
@@ -2427,7 +2437,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "c44387ecb540742134d696a10c8ef9c116b9d51bad4bcc9f85d22f74e26b673a",
+      "sha256": "9f2241a6df14b8bf795df872bb4ae20a8b77dddc34abe56645d8e386005cffc6",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -2504,7 +2514,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "416ab39e289208959a0ec848aa4dda18eba81f3a6d2d5ac8a5e23fe4486dfbac",
+      "sha256": "4f87a20a8568a74ffb5240cb5dd93e760d1ec72fcb7796ab0dbb76e8c4518b93",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
