@@ -6,7 +6,7 @@
 stateful § 6.4.1 / § 7.3.8 availability rules. No decoder reconstruction, writer, or
 encoder work is in scope.
 
-## 2. `leb128()` descriptor (§ 4.11.4)
+## 2. `leb128()` descriptor (§ 4.11.6)
 
 `lcr_data_size[i]` is a `leb128()` element, so `BitReader` gains `read_leb128()`. It
 reads up to eight 8-bit groups (via `read_bits_u8(8)`), applies the LEB128 continuation
