@@ -13,6 +13,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 
 mod audit_scope;
+mod diagnostic_registry;
 mod feature_status;
 mod git_util;
 
@@ -71,6 +72,8 @@ enum Task {
     CheckDependencyDirection,
     /// Verify the committed AV2 spec mirror matches its CHECKSUMS and provenance.
     CheckSpecMirror,
+    /// Verify docs/VALIDATOR-DIAGNOSTICS.md lists exactly the emitted diagnostic rule ids.
+    CheckDiagnosticRegistry,
     /// Render the implementation matrix (docs/IMPLEMENTATION-MATRIX.toml).
     FeatureStatus {
         /// Output format.
@@ -146,6 +149,9 @@ fn main() -> Result<()> {
         Task::CheckLicenseHeaders => check_license_headers(&workspace_root()?),
         Task::CheckDependencyDirection => check_dependency_direction(&workspace_root()?),
         Task::CheckSpecMirror => check_spec_mirror(&workspace_root()?),
+        Task::CheckDiagnosticRegistry => {
+            diagnostic_registry::check_diagnostic_registry(&workspace_root()?)
+        }
         Task::FeatureStatus {
             format,
             category,
@@ -221,6 +227,7 @@ fn run_ci() -> Result<()> {
     check_dependency_direction(&root)?;
     check_spec_mirror(&root)?;
     feature_status::run_check_feature_status(&root)?;
+    diagnostic_registry::check_diagnostic_registry(&root)?;
 
     eprintln!("ci: all checks passed");
     Ok(())

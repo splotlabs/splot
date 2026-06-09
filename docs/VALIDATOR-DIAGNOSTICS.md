@@ -1,389 +1,342 @@
 # Validator diagnostics registry
 
-`status: draft`  
-`owner: validator`  
-`purpose: stable rule IDs for missing validator work`
+`status: enforced`
+`owner: validator`
+`purpose: the canonical, CI-enforced list of every diagnostic rule id the validator emits`
 
-> **Diagnostic registry (consolidation in progress).** This file is the intended
-> home for validator rule IDs, but it is **not yet a complete mirror of every
-> emitted ID**. The `(implemented)` sections (§ 12–§ 15) record landed rule IDs
-> verified against the validator source; the earlier sections (§ 1–§ 11) mix
-> landed examples with design-stage sketches whose names may differ from the
-> shipped IDs (e.g. the §§ 7–8 planning lists predate the landed `ops/*`,
-> `brt/*`, `qm/*`, `padding/*`, `metadata/*`, and `film-grain/*` rule IDs). Until
-> consolidation finishes, the authoritative set of emitted IDs is the `rule_id`
-> strings in `crates/splot-validate/src/`. Phase- and design-scoped lists —
+> **Canonical diagnostic registry (CI-enforced).** The tables in the marker-delimited
+> region below (between the `diagnostics-registry:begin` and `:end` HTML comments) are the
+> single source of truth for validator diagnostic rule IDs.
+> `cargo xtask check-diagnostic-registry` (run inside `cargo xtask ci`, tracked as
+> `XTASK-DIAGNOSTIC-REGISTRY`) fails if any rule-id literal in `crates/splot-validate/src`
+> is missing from these tables, or if a table lists an ID that is not present in the source.
+> The gate enforces the rule-ID *set*; the `Severity` and `Section` columns are maintained by
+> hand. Phase- and design-scoped lists —
 > [`VALIDATOR-NEXT-DIAGNOSTICS.md`](./VALIDATOR-NEXT-DIAGNOSTICS.md),
-> [`VALIDATOR-HLS-AVAILABILITY-STATE.md`](./VALIDATOR-HLS-AVAILABILITY-STATE.md),
-> and [`OPS-BRT-DIAGNOSTICS.md`](./OPS-BRT-DIAGNOSTICS.md) — feed into the
-> `(implemented)` sections as their diagnostics land.
+> [`VALIDATOR-HLS-AVAILABILITY-STATE.md`](./VALIDATOR-HLS-AVAILABILITY-STATE.md), and
+> [`OPS-BRT-DIAGNOSTICS.md`](./OPS-BRT-DIAGNOSTICS.md) — feed into this registry as their
+> diagnostics land. The extractor lives in `xtask/src/diagnostic_registry.rs`.
 
-Diagnostics are the validator product. Every finding must have:
+Diagnostics are the validator product. Every finding carries:
 
-- stable `rule_id`;
-- `severity` (`error`, `warning`, `info`);
-- optional `spec_section`;
+- a stable `rule_id`;
+- a `severity` (`error`, `warning`, `info`);
+- an optional `spec_section`;
 - optional byte offset and bit offset;
-- human-readable message;
-- test coverage when the diagnostic is marked proven in `docs/IMPLEMENTATION-MATRIX.toml`.
+- a human-readable message;
+- test coverage when the owning feature is marked proven in `docs/IMPLEMENTATION-MATRIX.toml`.
 
-## 1. Existing diagnostic namespaces
+<!-- diagnostics-registry:begin -->
 
-Keep these stable:
+## Emitted diagnostics
 
-| Namespace | Purpose |
-|---|---|
-| `bitstream/` | Envelope, LEB128, OBU size, EOF, parse errors. |
-| `obu-header/` | §6.2.2 OBU header conformance. |
-| `obu-reserved/` | Reserved OBU checks. |
-| `trailing-bits/` | §6.2.3 trailing bit conformance for modeled payload boundaries. |
-| `byte-alignment/` | §6.2.4 byte-alignment zero-bit conformance for modeled syntax. |
-| `sequence-header/` | §6.4 sequence-header local syntax and semantics. |
-| `sequence-state/` | Activated sequence-header availability and max-layer checks. |
-| `obu-order/` | Temporal-unit and coded-extended-layer ordering checks. |
-| `hls/` | §7.3.8 high-level-syntax availability (sequence-header / multi-frame-header references and repeats). |
-| `msdo/` | §6.6 Multi Stream Decoder Operation OBU checks. |
-| `mfh/` | §5.7 / §6.4.1 multi-frame-header local id-range checks. |
-| `content-interpretation/` | §5.15 / §6.14 content interpretation constraints. |
-| `frame-header/` | §5.18 / §6.17 frame-header prefix references and local id ranges. |
-| `tile-group/` | §5.19 tile-group prefix and ordering checks. |
-| `tile-params/` | §6.17.7 sequence tile-params local constraints (tile counts, frame coverage). |
-| `lcr/` | §5.8 / §6.8 / §7.3.8.3 layer-configuration-record syntax and availability. |
-| `atlas/` | §5.9 / §6.9 / §7.3.8.4 atlas-segment syntax and availability. |
+Every rule ID below is emitted by `crates/splot-validate/src`, grouped by namespace. The
+`Section` column cites the AV2 v1.0.0 conformance section the check derives from.
 
-Existing examples:
+### `atlas/`
 
-```text
-bitstream/parse-error
-obu-header/global-xlayer-required
-obu-header/global-xlayer-requires-base-layers
-obu-header/global-xlayer-allowed-types
-obu-header/base-layer-only-types
-obu-header/temporal-layer-zero-only-types
-obu-header/reserved-obu-type
-obu-reserved/all-zero-payload
-trailing-bits/missing-one-bit
-trailing-bits/zero-bit-not-zero
-byte-alignment/zero-bit-not-zero
-sequence-header/chroma-format-out-of-range
-sequence-state/no-active-sequence-header
-sequence-state/tlayer-exceeds-max
-sequence-state/mlayer-exceeds-max
-obu-order/temporal-unit-missing-delimiter
-obu-order/global-hls-after-coded-layer
-obu-order/xlayer-order-not-ascending
-obu-order/padding-non-global-outside-coded-layer
-obu-order/duplicate-temporal-delimiter
-sequence-header/timing-display-tick-zero
-sequence-header/timing-time-scale-zero
-hls/repeated-sequence-header-not-identical
-msdo/non-global-layer-id
-msdo/too-many-streams
-mfh/seq-header-id-out-of-range
-mfh/id-out-of-range
-tile-params/tile-cols-out-of-range
-tile-params/tile-rows-out-of-range
-tile-params/nonuniform-cols-do-not-cover-frame
-tile-params/nonuniform-rows-do-not-cover-frame
-```
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `atlas/duplicate-input-stream-id` | error | § 6.9.6 | ats_input_stream_id / ats_msi_input_stream_id values are not unique |
+| `atlas/local-atlas-unavailable` | error | § 7.3.8.4 | local LCR references lcr_local_atlas_id with no available local atlas (external disabled) |
+| `atlas/multistream-requires-global-xlayer` | error | § 6.9 | multistream atlas mode does not use GLOBAL_XLAYER_ID |
+| `atlas/region-dimension-out-of-range` | error | § 6.9.3.1 | an atlas region dimension is out of range |
+| `atlas/segment-count-out-of-range` | error | § 6.9.6 | atlas segment count is out of range |
+| `atlas/segment-mode-out-of-range` | error | § 6.9 | ats_atlas_segment_mode_idc is out of range |
 
-## 2. New diagnostic namespaces to allow
+### `bitstream/`
 
-Add these namespaces in the xtask diagnostic allowlist when corresponding checks land.
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `bitstream/parse-error` | error | varies | a payload parse / EOF / malformed-descriptor error (spec section set per call site) |
 
-| Namespace | Owner | First features |
+### `brt/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `brt/ops-count-mismatch` | error | § 6.11 | BRT br_ops_cnt differs from the active OPS ops_cnt |
+| `brt/unavailable-operating-point-set` | error | § 7.3.8.5 | BRT references an OPS not available in-band or declared external |
+
+### `byte-alignment/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `byte-alignment/zero-bit-not-zero` | error | § 6.2.4 | a byte_alignment() padding zero bit is non-zero |
+
+### `content-interpretation/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `content-interpretation/aspect-ratio-idc-out-of-range` | error | § 6.14 | ci_aspect_ratio_idc exceeds 16 when not equal to 255 |
+| `content-interpretation/chroma-sample-position-out-of-range` | error | § 6.14 | ci_chroma_sample_position top or bottom exceeds 5 |
+| `content-interpretation/repeated-ci-not-identical` | error | § 6.14 | repeated CI OBU for same xlayer/mlayer in CVS carries different information |
+| `content-interpretation/reserved-bits-nonzero` | warning | § 6.14 | ci_reserved_2bit is non-zero (decoder-ignored producer anomaly) |
+
+### `film-grain/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `film-grain/chroma-idc-out-of-range` | error | § 6.13 | fgm_chroma_idc exceeds 3 |
+| `film-grain/chroma-points-not-paired` | error | § 6.17.10.2 | in 4:2:0, num_cb_points and num_cr_points are not both zero or both non-zero |
+| `film-grain/duplicate-slot-in-coded-frame-unit` | error | § 6.13 | a film grain slot is updated more than once in the same coded frame unit |
+| `film-grain/scaling-point-not-increasing` | error | § 6.17.10.2 | a scaling point value is not strictly increasing or not less than 256 |
+| `film-grain/scaling-points-out-of-range` | error | § 6.17.10.2 | num_y/cb/cr_points exceeds 14 |
+| `film-grain/update-flags-zero` | error | § 6.13 | fgm_update_flags is 0 |
+
+### `frame-header/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `frame-header/bridge-ref-index-out-of-range` | error | § 6.17.2 | bridge_frame_ref_idx is not less than NumRefFrames |
+| `frame-header/cur-mfh-id-out-of-range` | error | § 6.17 | cur_mfh_id is not less than MAX_MFH_NUM |
+| `frame-header/frame-size-exceeds-sequence-max` | error | § 6.17.4.1 | derived FrameWidth/FrameHeight exceeds active sequence maximum |
+| `frame-header/frame-to-refresh-out-of-range` | error | § 6.17.2 | refresh_frame_flags sets a reference slot at or beyond NumRefFrames |
+| `frame-header/intra-only-refresh-all-slots` | error | § 6.17.2 | INTRA_ONLY_FRAME with NumRefFrames>1 refreshes every slot |
+| `frame-header/ras-requires-long-term-frame-id-bits` | error | § 6.4.6 | OBU_RAS_FRAME present but active sequence long_term_frame_id_bits == 0 |
+| `frame-header/ref-long-term-id-reserved` | error | § 6.17.2 | a ref_long_term_id[i] equals the reserved (1<<long_term_frame_id_bits)-1 |
+| `frame-header/refresh-frame-flags-zero-on-deferred-output` | error | § 6.17.2 | immediate_output_frame==0 with refresh_frame_flags==0 |
+| `frame-header/seq-header-id-out-of-range` | error | § 6.17 | seq_header_id_in_frame_header is not less than MAX_SEQ_NUM |
+| `frame-header/still-picture-requires-key-frame` | error | § 6.17.2 | still_picture sequence without KEY_FRAME and immediate_output_frame==1 |
+
+### `hls/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `hls/external-hls-disabled` | warning | § 7.3.8.1 | a referenced sequence header is unavailable in-band and external HLS is disabled (advisory) |
+| `hls/repeated-sequence-header-not-identical` | error | § 7.3.8 | activated sequence header is repeated within CVS with different payload bytes |
+| `hls/unavailable-layer-configuration-record` | error | § 7.3.8.3 | seq_lcr_id resolves to no available local or global LCR (external disabled) |
+| `hls/unavailable-multi-frame-header` | error | § 7.3.8.7 | frame header references a cur_mfh_id with no available multi-frame header (external HLS disabled) |
+| `hls/unavailable-sequence-header` | error | § 7.3.8.6 | frame header references a sequence header id that is unavailable |
+
+### `lcr/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `lcr/dependent-xlayers-flag-nonzero` | warning | § 6.8.2 | lcr_dependent_xlayers_flag is set (decoder-ignored) |
+| `lcr/global-id-out-of-range` | error | § 6.8.2 | lcr_global_config_record_id is 0 (must be 1..7) |
+| `lcr/global-lcr-unavailable` | error | § 7.3.8.3 | local LCR references an unavailable global LCR (external HLS disabled) |
+| `lcr/global-xlayer-map-missing-xlayer` | error | § 6.4.1 | sequence header xlayer is not set in the referenced global LCR lcr_xlayer_map |
+| `lcr/local-id-zero` | error | § 6.8.3 | lcr_local_id equals 0 |
+| `lcr/payload-size-overflow` | error | § 6.8.6 | layer config record declared payload size overflows |
+| `lcr/reserved-bits-nonzero` | warning | § 6.8 | a layer config record reserved-zero field is non-zero (decoder-ignored) |
+| `lcr/xlayer-map-empty` | error | § 6.8.2 | lcr_xlayer_map is 0 (must be 1..(1<<31)-1) |
+
+### `metadata/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `metadata/group-header-underflow` | error | § 6.16.3 | metadata group header underflows the payload |
+| `metadata/group-mlayer-map-below-obu-mlayer` | error | § 6.16.3 | muh_mlayer_map sets a bit below obu_mlayer_id |
+| `metadata/group-reserved-bits-nonzero` | warning | § 6.16.3 | muh_reserved_zero_2bits is non-zero (decoder-ignored) |
+| `metadata/group-unit-count-too-large` | error | § 6.16.3 | metadata group unit count is too large |
+| `metadata/group-xlayer-map-global-bit-set` | error | § 6.16.3 | bit 31 of muh_xlayer_map is set |
+| `metadata/scan-type-pic-struct-reserved` | error | § 6.16.10 | mps_pic_struct_type exceeds 12 (reserved) |
+| `metadata/short-layer-idc-out-of-range` | error | § 6.16.2 | muh_layer_idc >= 3 for OBU_METADATA_SHORT |
+| `metadata/temporal-point-info-not-short` | error | § 6.16.11 | METADATA_TYPE_TEMPORAL_POINT_INFO appears outside OBU_METADATA_SHORT |
+| `metadata/timecode-hours-out-of-range` | error | § 6.16.7 | timecode hours_value exceeds 23 |
+| `metadata/timecode-minutes-out-of-range` | error | § 6.16.7 | timecode minutes_value exceeds 59 |
+| `metadata/timecode-seconds-out-of-range` | error | § 6.16.7 | timecode seconds_value exceeds 59 |
+| `metadata/unit-payload-underflow` | error | § 6.16.1 | metadata unit payload underflows declared size |
+
+### `mfh/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `mfh/id-out-of-range` | error | § 5.7 | mfhId is not less than MAX_MFH_NUM (16) |
+| `mfh/seq-header-id-out-of-range` | error | § 6.4.1 | mfh_seq_header_id is not less than MAX_SEQ_NUM (16) |
+| `mfh/sequence-header-unavailable` | error | § 7.3.8.6 | multi-frame header references an unavailable mfh_seq_header_id |
+
+### `msdo/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `msdo/non-global-layer-id` | error | § 6.6 | OBU_MSDO does not use tlayer==0, mlayer==0, xlayer==GLOBAL_XLAYER_ID |
+| `msdo/too-many-streams` | error | § 6.6 | num_streams_minus_2 exceeds 2 |
+
+### `obu-header/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `obu-header/base-layer-only-types` | error | § 6.2.2 | a base-layer-only OBU type has non-zero obu_tlayer_id or obu_mlayer_id |
+| `obu-header/extension-flag-not-zero` | error | § 6.2.1 | obu_extension_flag is not 0 in this spec version |
+| `obu-header/global-xlayer-allowed-types` | error | § 6.2.2 | GLOBAL_XLAYER_ID used by an OBU type that does not permit it |
+| `obu-header/global-xlayer-required` | error | § 6.2.2 | OBU type requiring GLOBAL_XLAYER_ID uses a non-global obu_xlayer_id |
+| `obu-header/global-xlayer-requires-base-layers` | error | § 6.2.2 | GLOBAL_XLAYER_ID used with non-zero obu_mlayer_id or obu_tlayer_id |
+| `obu-header/reserved-obu-type` | info | § 6.2.2 | a reserved obu_type is present (ignored by conformant decoders) |
+| `obu-header/temporal-layer-zero-only-types` | error | § 6.2.2 | key/switch/RAS frame type has non-zero obu_tlayer_id |
+
+### `obu-order/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `obu-order/duplicate-temporal-delimiter` | error | § 7.3.7 | a second global temporal delimiter with no intervening OBU |
+| `obu-order/global-hls-after-coded-layer` | error | § 7.3.7 | a global HLS prefix OBU appears after a coded extended layer unit |
+| `obu-order/padding-non-global-outside-coded-layer` | error | § 7.3.7 | OBU_PADDING outside a coded extended layer unit is not GLOBAL_XLAYER_ID |
+| `obu-order/temporal-unit-missing-delimiter` | error | § 7.3.7 | an OBU appears before a global temporal delimiter starts the temporal unit |
+| `obu-order/xlayer-order-not-ascending` | error | § 7.3.7 | coded extended layer units are not in ascending obu_xlayer_id order |
+
+### `obu-reserved/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `obu-reserved/all-zero-payload` | error | § 5.3 | reserved OBU has non-empty payload that is entirely zero |
+
+### `ops/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `ops/inherited-op-index-out-of-range` | error | § 6.10.2 | inherited ops_embedded_op_index out of range for referenced OPS |
+| `ops/local-reserved-bits-nonzero` | error | § 6.10.2 | local OPS ops_reserved_2bits is non-zero |
+| `ops/mlayer-info-idc-reserved` | error | § 6.10.2 | global OPS ops_mlayer_info_idc == 3 (reserved) |
+| `ops/payload-size-mismatch` | error | § 6.10.2 | ops_data_size differs from the parsed payload byte count |
+| `ops/ptl-reserved-bits-nonzero` | error | § 6.10.4 | ops_ptl_reserved_2bits is non-zero |
+
+### `padding/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `padding/all-zero-payload` | error | § 5.16 | OBU_PADDING payload is entirely zero (no non-zero byte) |
+| `padding/invalid-trailing-bits` | error | § 5.16 | padding OBU trailing_bits are invalid |
+
+### `qm/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `qm/duplicate-level-between-frames` | error | § 6.12 | same quantizer matrix level specified twice between coded frames |
+| `qm/duplicate-reset-between-frames` | error | § 6.12 | QM OBU with qm_bit_map==0 is not the first QM OBU between coded frames |
+| `qm/quant-delta-out-of-range` | error | § 6.4.11 | a quantizer-matrix quant delta value is out of range |
+
+### `sequence-header/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `sequence-header/bit-depth-out-of-range` | error | § 6.4.1 | coded bit depth is out of range |
+| `sequence-header/chroma-format-out-of-range` | error | § 6.4.1 | chroma format value out of range |
+| `sequence-header/crop-bottom-out-of-range` | error | § 6.4.1 | crop_bottom is out of range |
+| `sequence-header/crop-left-out-of-range` | error | § 6.4.1 | crop_left is out of range |
+| `sequence-header/crop-right-out-of-range` | error | § 6.4.1 | crop_right is out of range |
+| `sequence-header/crop-top-out-of-range` | error | § 6.4.1 | crop_top is out of range |
+| `sequence-header/seq-header-id-out-of-range` | error | § 6.4.1 | seq_header_id is out of its valid range |
+| `sequence-header/seq-max-mlayer-count-out-of-range` | error | § 6.4.1 | seq_max_mlayer_count is out of range |
+| `sequence-header/timing-display-tick-mismatch` | error | § 6.4.12 | num_units_in_display_tick differs across embedded layers in same CVS |
+| `sequence-header/timing-display-tick-zero` | error | § 6.4.12 | num_units_in_display_tick is zero |
+| `sequence-header/timing-equal-picture-interval-mismatch` | error | § 6.4.12 | equal_picture_interval differs across embedded layers in same CVS |
+| `sequence-header/timing-num-ticks-mismatch` | error | § 6.4.12 | num_ticks_per_picture_minus_1 differs across embedded layers in same CVS |
+| `sequence-header/timing-num-ticks-per-picture-out-of-range` | error | § 6.4.12 | num_ticks_per_picture_minus_1 is out of range |
+| `sequence-header/timing-num-units-zero` | error | § 6.4.1 | timing num_units value is zero |
+| `sequence-header/timing-time-scale-mismatch` | error | § 6.4.12 | time_scale differs across embedded layers in same CVS |
+| `sequence-header/timing-time-scale-zero` | error | § 6.4.12 | time_scale is zero |
+
+### `sequence-state/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `sequence-state/mlayer-exceeds-max` | error | § 6.2.2 | obu_mlayer_id exceeds active sequence max_mlayer_id |
+| `sequence-state/no-active-sequence-header` | error | § 7.3.8 | OBU uses an xlayer before an active sequence header is available |
+| `sequence-state/tlayer-exceeds-max` | error | § 6.2.2 | obu_tlayer_id exceeds active sequence max_tlayer_id |
+| `sequence-state/unknown-sequence-header-id` | error | § 7.3.8 | the active seq_header_id for an xlayer is unavailable |
+
+### `tile-params/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `tile-params/nonuniform-cols-do-not-cover-frame` | error | § 6.17.7.3 | non-uniform tile column widths do not sum to sbCols |
+| `tile-params/nonuniform-rows-do-not-cover-frame` | error | § 6.17.7.3 | non-uniform tile row heights do not sum to sbRows |
+| `tile-params/tile-cols-out-of-range` | error | § 6.17.7.2 | TileCols exceeds MAX_TILE_COLS |
+| `tile-params/tile-rows-out-of-range` | error | § 6.17.7.2 | TileRows exceeds MAX_TILE_ROWS |
+
+### `trailing-bits/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `trailing-bits/empty` | error | § 6.2.3 | trailing_bits() found empty payload where a trailing one-bit was required |
+| `trailing-bits/missing-one-bit` | error | § 6.2.3 | trailing_bits() is missing the required leading 1 bit |
+| `trailing-bits/zero-bit-not-zero` | error | § 6.2.3 | a trailing_zero_bit after the one-bit is non-zero |
+
+## Check registry identifiers
+
+These are `Check::id()` registry identifiers, **not** diagnostics emitted verbatim: a failed
+parse of the corresponding OBU surfaces a specific `bitstream/parse-error`,
+`trailing-bits/*`, or `byte-alignment/*` diagnostic via `syntax_error_diagnostic()` instead.
+They are listed here so the registry's documented set equals the rule-id literals present in
+the source (the `Parse §` column is the section the OBU's syntax is parsed from).
+
+| Registry ID | Parse § | Routed through |
 |---|---|---|
-| `obu-payload/` | `AV2-5.2.1-OBU-DISPATCH` | unparsed payload in strict mode, payload overread/underread. |
-| `hls-availability/` | `AV2-7.3.8-HLS-AVAILABILITY` | missing or repeated high-level syntax OBUs. |
-| `msdo/` | `AV2-5.6-MSDO` | multistream decoder operation syntax/semantics. |
-| `ops/` | `AV2-5.10-OPERATING-POINT-SET` | operating point set syntax/semantics. |
-| `metadata/` | `AV2-5.17-METADATA` | metadata unit and type-specific checks. |
-| `padding/` | `AV2-5.16-PADDING` | padding payload constraints. |
-| `film-grain/` | `AV2-5.14-FILM-GRAIN` | film grain field constraints. |
-| `quant-matrix/` | `AV2-5.13-QUANTIZATION-MATRIX` | quantization matrix field constraints. |
-| `content-interpretation/` | `AV2-5.15-CONTENT-INTERPRETATION` | content interpretation constraints. |
-| `frame-header/` | `AV2-5.18-FRAME-HEADER` child rows | frame header syntax/semantics. |
-| `tile-group/` | `AV2-5.19-TILE-GROUP` and `AV2-5.20-TILE-GROUP-PAYLOAD` | tile group syntax/payload boundary checks. |
-| `annex-a/` | Annex A rows | profile/level/tier constraints. |
-| `decoder-model/` | Annex E rows | timing/decoder-model constraints. |
+| `atlas/syntax` | § 5.9 | `syntax_error_diagnostic()` |
+| `brt/syntax` | § 5.12 | `syntax_error_diagnostic()` |
+| `content-interpretation/syntax` | § 5.15 | `syntax_error_diagnostic()` |
+| `film-grain/syntax` | § 5.14 | `syntax_error_diagnostic()` |
+| `lcr/syntax` | § 5.8 | `syntax_error_diagnostic()` |
+| `metadata/syntax` | § 5.17 | `syntax_error_diagnostic()` |
+| `mfh/syntax` | § 5.7 | `syntax_error_diagnostic()` |
+| `msdo/syntax` | § 6.6 | `syntax_error_diagnostic()` |
+| `ops/syntax` | § 5.10 | `syntax_error_diagnostic()` |
+| `padding/syntax` | § 5.16 | `syntax_error_diagnostic()` |
+| `qm/syntax` | § 5.13 | `syntax_error_diagnostic()` |
+| `sequence-header/syntax` | § 5.4 | `syntax_error_diagnostic()` |
+| `trailing-bits/empty-syntax-obu-payload` | § 5.2.3 | `syntax_error_diagnostic()` |
 
-## 3. Phase 1 diagnostics
+<!-- diagnostics-registry:end -->
 
-Feature: `AV2-5.2.3-TRAILING-BITS`
+## Severity guidance
 
-```text
-trailing-bits/empty
-trailing-bits/missing-one-bit
-trailing-bits/zero-bit-not-zero
-trailing-bits/payload-bits-remaining-negative
-trailing-bits/payload-bits-unconsumed
-```
+- `error` — a conformance violation that leaves the bitstream parseable (reserved bits, an
+  out-of-range field, an unavailable referenced HLS object, an ordering violation).
+- `warning` — a decoder-ignored reserved field or a capability-gated condition that is not a
+  hard violation (the `*/reserved-bits-nonzero` checks, `hls/external-hls-disabled`).
+- `info` — informative only (e.g. a reserved `obu_type` a conformant decoder ignores).
 
-Feature: `AV2-5.2.4-BYTE-ALIGNMENT`
+A parse failure — input ending before a required field, a malformed variable-length code, or
+a non-zero closing `byte_alignment()` pad bit — is converted into a `bitstream/parse-error`
+(or a specific `trailing-bits/*` / `byte-alignment/*`) diagnostic rather than a panic, so a
+malformed payload is reported with a byte offset instead of silently accepted.
 
-```text
-byte-alignment/zero-bit-not-zero
-byte-alignment/eof
-```
+## Planned / not yet emitted
 
-Feature: `AV2-5.2.1-OBU-DISPATCH`
+The following namespaces are reserved for future validator work and are intentionally **absent
+from the enforced registry above** because nothing emits them yet:
 
-```text
-obu-payload/unimplemented-in-strict-mode
-obu-payload/parsed-beyond-declared-size
-obu-payload/trailing-bits-invalid
-obu-payload/extensible-obu-extension-data-present
-obu-payload/extensible-obu-extension-data-invalid
-```
+- `tile-group/` — frame-data / tile payload boundary checks (needs full frame/tile parsing).
+- `hls-availability/` — a dedicated high-level-syntax availability namespace; today the landed
+  availability checks live under `hls/` (see the registry above).
+- `obu-payload/`, `decoder-model/`, `annex-a/` — strict-mode payload, decoder-model timing, and
+  Annex A profile/level constraints.
 
-Severity guidance:
+Design sketches and phase plans for these live in
+[`VALIDATOR-NEXT-DIAGNOSTICS.md`](./VALIDATOR-NEXT-DIAGNOSTICS.md) and the validator roadmap.
+When a planned diagnostic lands, add its rule ID to the enforced tables above (the CI gate
+will require it) and update `DIAGNOSTIC_PREFIXES` in `xtask/src/feature_status.rs` if it
+introduces a new namespace.
 
-- malformed payload bits are `error`;
-- extension data in an extensible OBU may be `info` or `warning` if preserved and spec-compliant;
-- unimplemented payload in non-strict partial validator mode may be `warning`, but strict mode should reject once the repository policy says payload parsing is required.
+## Intentional non-checks (spec honesty)
 
-## 4. Sequence header diagnostics
+A few conformance points are deliberately not flagged, to avoid fabricating spec requirements:
 
-Feature: `AV2-6.4-SEQUENCE-HEADER-SEMANTICS`
+- The global atlas (§ 7.3.8.4) is "can be available", so a missing global atlas is not an error.
+- § 6.8 / § 6.9 define no "repeated record must be identical" rule, so no LCR/atlas
+  duplicate-not-identical diagnostic is emitted (unlike `OBU_MSDO` / sequence headers).
+- MFH layer-dependency-map checks and OPS § 6.10.7 dependency-map agreement are deferred:
+  `MLayerDependencyMap` / `TLayerDependencyMap` are not exposed by the sequence-header model,
+  so they are not fabricated from max layer IDs.
+- An unresolved cross-OPS inheritance reference is not flagged (`ops/inherited-ops-unavailable`
+  is reserved) because the reference may be supplied through external HLS.
 
-Initial local checks:
-
-```text
-sequence-header/seq-header-id-out-of-range
-sequence-header/chroma-format-out-of-range
-sequence-header/bit-depth-out-of-range
-sequence-header/seq-max-mlayer-count-out-of-range
-sequence-header/crop-left-out-of-range
-sequence-header/crop-right-out-of-range
-sequence-header/crop-top-out-of-range
-sequence-header/crop-bottom-out-of-range
-sequence-header/timing-num-units-zero
-sequence-header/timing-time-scale-zero
-sequence-header/timing-num-ticks-out-of-range
-sequence-header/timing-fields-change-within-cvs
-sequence-header/decoder-model-fields-change-within-cvs
-sequence-header/long-term-frame-id-bits-required
-sequence-header/user-qm-zero-value
-sequence-header/quant-delta-out-of-range
-sequence-header/monotonic-output-order-mismatch-in-multistream
-```
-
-Activation/state checks:
-
-```text
-sequence-state/no-active-sequence-header
-sequence-state/unknown-sequence-header-id
-sequence-state/sequence-header-changed-within-cvs
-sequence-state/tlayer-exceeds-max
-sequence-state/mlayer-exceeds-max
-sequence-state/mlayer-count-exceeds-sequence-max
-sequence-state/lcr-reference-unavailable
-sequence-state/global-lcr-does-not-include-xlayer
-```
-
-Severity guidance:
-
-- local §6.4 conformance violations are `error`;
-- unavailable external HLS objects should be `error` unless the CLI/API explicitly supplies them;
-- repeated but bit-identical active sequence header can be `info` or no diagnostic;
-- repeated active sequence header with changed content is `error`.
-
-## 5. OBU ordering diagnostics
-
-Feature: `AV2-7.3-OBU-ORDERING` child rows
-
-```text
-obu-order/temporal-unit-missing-delimiter
-obu-order/temporal-unit-duplicate-delimiter
-obu-order/global-hls-after-coded-layer
-obu-order/xlayer-order-not-ascending
-obu-order/padding-non-global-outside-coded-layer
-obu-order/metadata-prefix-after-coded-layer
-obu-order/metadata-suffix-before-coded-layer
-obu-order/frame-unit-mixed-layer-ids
-obu-order/frame-unit-missing-frame-header
-obu-order/tile-group-outside-frame-unit
-obu-order/random-access-msdo-missing
-obu-order/msdo-changed-outside-random-access
-```
-
-Severity guidance:
-
-- direct presence-order violations are `error`;
-- incomplete ordering checks due to missing payload parsers are `warning` with a clear feature ID until the dependent row lands.
-
-## 6. HLS availability diagnostics
-
-Feature: `AV2-7.3.8-HLS-AVAILABILITY`
-
-```text
-hls-availability/sequence-header-unavailable
-hls-availability/msdo-unavailable-at-rap
-hls-availability/msdo-non-identical-repeat
-hls-availability/lcr-global-unavailable
-hls-availability/lcr-local-unavailable
-hls-availability/atlas-unavailable
-hls-availability/ops-unavailable
-hls-availability/external-hls-not-supported
-```
-
-## 7. HLS OBU diagnostics
-
-### MSDO
-
-```text
-msdo/profile-out-of-range
-msdo/level-out-of-range
-msdo/tier-exceeds-stream-tier
-msdo/sub-xlayer-id-duplicate
-msdo/sub-xlayer-id-not-ascending
-msdo/doh-constraint-violated
-```
-
-### LCR
-
-```text
-lcr/global-id-out-of-range
-lcr/local-id-zero
-lcr/xlayer-map-empty
-lcr/xlayer-map-bit31-set
-lcr/dependency-info-invalid
-lcr/profile-tier-level-mismatch
-lcr/max-expected-width-exceeds-sequence
-lcr/max-expected-height-exceeds-sequence
-lcr/computed-payload-bits-negative
-```
-
-### OPS
-
-> Planning names. The landed OPS checks are recorded under
-> **§ 15 (Operating point set and buffer removal timing, implemented)** below and
-> supersede these — e.g. the implemented IDs are `ops/inherited-op-index-out-of-range`
-> and `ops/payload-size-mismatch`, not the `embedded`/`computed` names sketched here.
-
-```text
-ops/mlayer-info-idc-reserved
-ops/embedded-op-index-out-of-range
-ops/computed-payload-size-mismatch
-ops/ptl-missing
-ops/xlayer-map-bit31-set
-ops/mlayer-map-invalid
-ops/tlayer-map-invalid
-```
-
-### Atlas
-
-```text
-atlas/segment-mode-out-of-range
-atlas/region-columns-out-of-range
-atlas/region-rows-out-of-range
-atlas/segment-count-out-of-range
-atlas/lcr-reference-missing
-atlas/region-overlap-invalid
-```
-
-## 8. Non-HLS OBU diagnostics
-
-### Metadata
-
-```text
-metadata/type-out-of-range
-metadata/unit-payload-size-mismatch
-metadata/group-payload-size-mismatch
-metadata/muh-layer-idc-out-of-range
-metadata/muh-xlayer-map-bit31-set
-metadata/muh-metadata-type-mismatch
-metadata/scan-type-invalid
-metadata/pic-struct-invalid
-metadata/display-hash-invalid
-```
-
-### Padding
-
-```text
-padding/non-zero-byte
-padding/global-layer-rule-violated
-```
-
-### Film grain
-
-```text
-film-grain/update-flags-zero
-film-grain/chroma-idc-out-of-range
-film-grain/payload-size-mismatch
-```
-
-### Quantization matrix
-
-```text
-quant-matrix/quant-delta-out-of-range
-quant-matrix/user-qm-zero-value
-quant-matrix/payload-size-mismatch
-```
-
-### Content interpretation
-
-```text
-content-interpretation/field-out-of-range
-content-interpretation/payload-size-mismatch
-```
-
-## 9. Frame and tile diagnostics
-
-Frame header diagnostics should be added only with frame-header child features. Start with these namespaces and split later.
-
-```text
-frame-header/sequence-header-missing
-frame-header/mfh-reference-missing
-frame-header/frame-size-exceeds-sequence-max
-frame-header/crop-exceeds-frame-size
-frame-header/order-hint-inconsistent
-frame-header/reference-map-invalid
-frame-header/long-term-reference-id-invalid
-frame-header/tile-info-invalid
-frame-header/quantizer-out-of-range
-frame-header/filter-param-out-of-range
-frame-header/global-motion-invalid
-frame-header/film-grain-reference-invalid
-```
-
-Tile group diagnostics:
-
-```text
-tile-group/frame-header-missing
-tile-group/tile-count-out-of-range
-tile-group/tile-size-exceeds-payload
-tile-group/arithmetic-stream-overread
-tile-group/exit-symbol-trailing-bits-invalid
-tile-group/tile-payload-unparsed-in-strict-mode
-```
-
-## 10. Testing expectations per diagnostic
+## Testing expectations per diagnostic
 
 Every new diagnostic requires:
 
 1. one positive case that does **not** emit it;
 2. one negative case that emits it;
-3. byte offset when available;
-4. spec section in the diagnostic;
-5. proof entry in `docs/IMPLEMENTATION-MATRIX.toml` when the feature stage is `done`;
-6. CLI JSON test for at least one diagnostic per new namespace.
+3. a byte offset when available;
+4. a spec section in the diagnostic;
+5. a proof entry in `docs/IMPLEMENTATION-MATRIX.toml` when the owning feature stage is `done`;
+6. a CLI JSON test for at least one diagnostic per new namespace.
 
-Suggested test naming:
+## Diagnostic JSON compatibility
 
-```rust
-#[test]
-fn sequence_header_rejects_chroma_format_greater_than_3() { ... }
-
-#[test]
-fn obu_order_rejects_non_ascending_xlayer_units() { ... }
-```
-
-## 11. JSON compatibility rule
-
-Diagnostic JSON is part of the product. Do not rename existing fields without a compatibility plan. Adding fields is acceptable when the CLI tests are updated.
-
-Recommended diagnostic JSON fields:
+Diagnostic JSON is part of the product. Do not rename existing fields without a compatibility
+plan; adding fields is acceptable when the CLI tests are updated. Recommended fields:
 
 ```json
 {
@@ -396,145 +349,3 @@ Recommended diagnostic JSON fields:
   "feature_id": "AV2-6.4-SEQUENCE-HEADER-SEMANTICS"
 }
 ```
-
-`feature_id` can be added later; if added, update all snapshot tests and docs.
-
-## 12. Frame activation HLS skeleton (implemented)
-
-OpenSpec change `frame-activation-hls-skeleton`. The prefix-only frame/tile-group
-parser (`AV2-5.18.2-FRAME-HEADER-INFO`, `AV2-5.19-TILE-GROUP`) drives these
-generic high-level-syntax reference checks.
-
-Emitted (error unless noted):
-
-```text
-hls/unavailable-sequence-header        # §7.3.8.6: cur_mfh_id == 0 references a missing seq header
-hls/unavailable-multi-frame-header     # §7.3.8.7: cur_mfh_id > 0 references a missing MFH
-frame-header/seq-header-id-out-of-range  # §6.17: seq_header_id_in_frame_header >= MAX_SEQ_NUM
-frame-header/cur-mfh-id-out-of-range     # §6.17: cur_mfh_id >= MAX_MFH_NUM
-```
-
-An out-of-range id emits only the `frame-header/*-out-of-range` diagnostic, not the
-matching `hls/unavailable-*` (no double-report). The existing
-`mfh/sequence-header-unavailable`, `hls/external-hls-disabled`,
-`hls/repeated-sequence-header-not-identical`, and
-`content-interpretation/repeated-ci-not-identical` diagnostics are preserved; the
-last two benefit from the new temporal-unit-scoped CVS reset.
-
-Reserved (the `splot-core` prefix parser returns a typed `Error` on EOF / invalid
-descriptors; validator emission is deferred until strict frame/tile payload parsing
-lands, so the current unparsed-frame-payload behavior — and its tests — are
-preserved):
-
-```text
-frame-header/prefix-parse-error
-tile-group/prefix-parse-error
-```
-
-## 13. Sequence tile params (implemented)
-
-OpenSpec change `segmentation-tile-params-foundation`. The sequence `tile_params()`
-helper (`AV2-5.18.7.3-TILE-PARAMS`, used by `AV2-5.4.2-SEQUENCE-TILE-CONFIG`) drives
-these local §6.17.7 tile constraints on a fully parsed sequence tile config.
-
-Emitted (all `error`):
-
-```text
-tile-params/tile-cols-out-of-range            # §6.17.7.2: TileCols > MAX_TILE_COLS (64)
-tile-params/tile-rows-out-of-range            # §6.17.7.2: TileRows > MAX_TILE_ROWS (64)
-tile-params/nonuniform-cols-do-not-cover-frame  # §6.17.7.3: column starts != sbCols
-tile-params/nonuniform-rows-do-not-cover-frame  # §6.17.7.3: row starts != sbRows
-```
-
-The tile-count diagnostics are reachable for a non-uniform config that codes more than
-`MAX_TILE_COLS` / `MAX_TILE_ROWS` tiles. The frame-coverage diagnostics are a defensive
-cross-check: the `ns()`-bounded non-uniform parse caps each tile to the remaining
-superblocks, so coverage is exact for any decodable stream. They are therefore
-**unreachable for a stream that parses without error** (a parse error surfaces first)
-and are unit-tested via a synthetic `TileParams` rather than a bitstream — they only
-guard the invariant should a `TileParams` be produced another way.
-
-Wiring note: with `seg_info()` (`AV2-5.4.9-SEGMENT-INFO`) and `tile_params()` now
-parsed in full, a valid sequence header and a multi-frame header parse completely, so
-the existing §5.2.1 payload-tail checks (`trailing-bits/*`, `byte-alignment/*`,
-`obu-header/extension-flag-not-zero`) now run on them and a malformed tail after the
-segment or tile info is diagnosed. The only residual bounded sequence-header case is a
-reserved (non-conformant) `seq_level_idx` with tile info present, which has no defined
-tile bit layout (`AV2-5.4.2-SEQUENCE-TILE-CONFIG`).
-
-## 14. HLS LCR/atlas foundation (implemented)
-
-OpenSpec change `hls-lcr-atlas-foundation`. The full §5.8 / §5.9 parsers
-(`AV2-5.8-LAYER-CONFIG-RECORD`, `AV2-5.9-ATLAS-SEGMENT`) drive these checks. Syntax
-checks (`LayerConfigRecordSyntax`, `AtlasSegmentSyntax`) run statelessly; the
-availability checks are stateful and live in `crate::context`.
-
-Emitted (error unless noted):
-
-```text
-lcr/reserved-bits-nonzero                 # warning, §6.8: a reserved-zero field is non-zero
-lcr/dependent-xlayers-flag-nonzero        # warning, §6.8.2: lcr_dependent_xlayers_flag must be 0
-lcr/payload-size-overflow                 # §6.8.6: lcr_global_payload parsed bits > lcr_data_size * 8
-lcr/global-id-out-of-range                # §6.8.2: lcr_global_config_record_id must be in 1..7
-lcr/xlayer-map-empty                      # §6.8.2: lcr_xlayer_map must be in 1..(1 << 31) - 1
-lcr/local-id-zero                         # §6.8.3: lcr_local_id must not be 0
-lcr/global-lcr-unavailable                # §7.3.8.3: local LCR lcr_global_id has no global LCR
-lcr/global-xlayer-map-missing-xlayer      # §6.4.1: seq_lcr_id global LCR omits the header xlayer
-atlas/segment-mode-out-of-range           # §6.9: ats_atlas_segment_mode_idc > 4
-atlas/region-dimension-out-of-range       # §6.9.3.1: region columns/rows >= MAX_ATLAS_COLS/ROWS
-atlas/segment-count-out-of-range          # §6.9.6: segment count >= MAX_NUM_ATLAS_SEGMENTS
-atlas/multistream-requires-global-xlayer  # §6.9: MULTISTREAM(_ALPHA) requires GLOBAL_XLAYER_ID
-atlas/duplicate-input-stream-id           # §6.9.4/§6.9.6: ats_input_stream_id / ats_msi_input_stream_id must be unique
-atlas/local-atlas-unavailable             # §7.3.8.4: local LCR lcr_local_atlas_id has no local atlas
-hls/unavailable-layer-configuration-record  # §7.3.8.3/§7.3.8.6: seq_lcr_id resolves to no LCR
-```
-
-Availability errors are gated on external HLS being disabled (matching the
-multi-frame-header path), since an externally-provided LCR/atlas is not modeled. The
-availability store records global-LCR (`id -> lcr_xlayer_map`), local-LCR
-(`xlayer -> {lcr_local_id}`), and local-atlas (`{(xlayer, atlas_segment_id)}`) entries
-after a successful parse and a valid §5.2.1 payload tail, and stays monotonic.
-
-Intentional non-checks (spec honesty):
-
-- The global atlas (§7.3.8.4) uses "can be available", so a missing global atlas is
-  not flagged.
-- §6.8 / §6.9 define no "repeated record must be identical" requirement, so no
-  duplicate-not-identical check is emitted (unlike `OBU_MSDO` / sequence headers).
-- MFH layer-dependency-map checks (`mfh/mlayer-dependency-violation`,
-  `mfh/tlayer-dependency-violation`) remain reserved: `MLayerDependencyMap` /
-  `TLayerDependencyMap` are not exposed by the sequence-header model, so they are not
-  fabricated from max layer ids (`TODO(spec: AV2-5.7-MULTI-FRAME-HEADER)`).
-
-## 15. Operating point set and buffer removal timing (implemented)
-
-OpenSpec change `ops-brt-hls-foundation`. The §5.10 / §5.11 `operating_point_set_obu()`
-parser (`AV2-5.10-OPERATING-POINT-SET`, `AV2-5.11-OPERATING-POINT-PAYLOAD`) and the §5.12
-`OBU_BUFFER_REMOVAL_TIMING` parser (`AV2-5.12-BUFFER-REMOVAL-TIMING`) drive these
-locally-decidable §6.10 / §6.11 / §7.3.8.5 checks. The phase-scoped list and rationale
-live in [`OPS-BRT-DIAGNOSTICS.md`](./OPS-BRT-DIAGNOSTICS.md); the stable IDs are owned
-here.
-
-OPS (all `error`):
-
-| Rule ID | Section | Condition |
-|---|---|---|
-| `ops/local-reserved-bits-nonzero` | 6.10.2 | A local OPS has `ops_reserved_2bits != 0`. |
-| `ops/mlayer-info-idc-reserved` | 6.10.2 | A global OPS has `ops_mlayer_info_idc == 3` (reserved). |
-| `ops/payload-size-mismatch` | 6.10.2 | A payload's computed `opsBytes` differs from its declared `ops_data_size`. |
-| `ops/ptl-reserved-bits-nonzero` | 6.10.4 | An `ops_seq_profile_tier_level_info()` has `ops_ptl_reserved_2bits != 0`. |
-| `ops/inherited-op-index-out-of-range` | 6.10.2 | `ops_embedded_op_index >= ops_cnt[obu_xlayer_id][refID]`, or `>= j` (the included extended layer) for a same-OPS reference. |
-
-BRT (all `error`):
-
-| Rule ID | Section | Condition |
-|---|---|---|
-| `brt/ops-count-mismatch` | 6.11 | An OPS-dependent BRT's `br_ops_cnt` differs from the referenced active OPS `ops_cnt`. |
-| `brt/unavailable-operating-point-set` | 7.3.8.5 | An OPS-dependent BRT's `(obu_xlayer_id, br_ops_id)` resolves to no active in-band OPS and external HLS is disabled. |
-
-Deferred (tracked, not emitted this phase): `ops/inherited-ops-unavailable` (§6.10.2,
-a cross-OPS inheritance reference to an unavailable OPS is not flagged to avoid false
-positives under external HLS), `ops/mlayer-dependency-missing` /
-`ops/tlayer-dependency-missing` (§6.10.7, need the activated `MLayerDependencyMap` /
-`TLayerDependencyMap` the sequence-header model does not expose), and
-`brt/global-ordering-position` (§7.3.7, needs decoder-model / random-access state).

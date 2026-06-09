@@ -4049,6 +4049,42 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "XTASK-DIAGNOSTIC-REGISTRY"
+name = "Validator diagnostic registry enforcement"
+category = "automation"
+kind = "automation"
+spec_sections = []
+sources = []
+crate = "xtask"
+module = "xtask/src/diagnostic_registry.rs"
+openspec_change = "diagnostic-registry-enforcement"
+tracking_issue = ""
+owner = "automation"
+risk = "low"
+notes = "Enforces that docs/VALIDATOR-DIAGNOSTICS.md lists exactly the diagnostic rule ids present in crates/splot-validate/src (between the diagnostics-registry markers). Extracts rule-id string literals from non-test, non-comment validator source and diffs against the documented set, failing on drift in either direction. Strict full-id superset of the prefix-level scan in XTASK-FEATURE-STATUS."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["xtask/src/diagnostic_registry.rs::tests"]
+commands = [
+    "cargo xtask check-diagnostic-registry",
+    "cargo test -p xtask diagnostic_registry",
+]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "DOC-FEATURE-TRACKING"
 name = "Feature tracking documentation"
 category = "docs"
