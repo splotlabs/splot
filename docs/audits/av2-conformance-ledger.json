@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "abb6211ce7133eb64b0ae84d166c8c0e500d51a0",
+  "audited_commit": "eceb2c78e00c436e9d38046d10ebc27c3b409479",
   "outcome": "success",
   "files": [
     {
@@ -871,7 +871,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "55c73ed29f495d20598190f0cf4b85616eb846920a98c6cbba29bd9931037656",
+      "sha256": "6196c1e5303b20cc3fd505527ba27c2f982f236aea012028bac3ca5edb667000",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -999,6 +999,7 @@
         "ENC-Y4M-INPUT",
         "XTASK-AUDIT-SCOPE",
         "XTASK-CONVENTIONAL-COMMITS",
+        "XTASK-DIAGNOSTIC-REGISTRY",
         "XTASK-FEATURE-STATUS"
       ],
       "outcome": "success"
@@ -1035,7 +1036,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "edc2fe9d36df6d5f39be54971b586e14051b92d0667084ad97a263e93d362469",
+      "sha256": "74309be9cac8cc2211497a0b706a6192933a3cff71273e73010c5dbcbae59934",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1163,6 +1164,7 @@
         "ENC-Y4M-INPUT",
         "XTASK-AUDIT-SCOPE",
         "XTASK-CONVENTIONAL-COMMITS",
+        "XTASK-DIAGNOSTIC-REGISTRY",
         "XTASK-FEATURE-STATUS"
       ],
       "outcome": "success"
@@ -1190,34 +1192,11 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "18efbc2c4f1e624db0bb44609e01ae83e3219573eec4ca9e74fcbb1bc4ec3d1e",
+      "sha256": "1dc7fe10de3dc52495c9579af538e8050f5357e3d2d1d0d11acded098ee63415",
       "scope_kind": "docs",
       "feature_ids": [
-        "AV2-5.10-OPERATING-POINT-SET",
-        "AV2-5.11-OPERATING-POINT-PAYLOAD",
-        "AV2-5.12-BUFFER-REMOVAL-TIMING",
-        "AV2-5.13-QUANTIZATION-MATRIX",
-        "AV2-5.14-FILM-GRAIN",
-        "AV2-5.15-CONTENT-INTERPRETATION",
-        "AV2-5.16-PADDING",
-        "AV2-5.17-METADATA",
-        "AV2-5.18-FRAME-HEADER",
-        "AV2-5.18.2-FRAME-HEADER-INFO",
-        "AV2-5.18.7.3-TILE-PARAMS",
-        "AV2-5.19-TILE-GROUP",
-        "AV2-5.2.1-OBU-DISPATCH",
-        "AV2-5.2.3-TRAILING-BITS",
-        "AV2-5.2.4-BYTE-ALIGNMENT",
-        "AV2-5.20-TILE-GROUP-PAYLOAD",
-        "AV2-5.4.2-SEQUENCE-TILE-CONFIG",
-        "AV2-5.4.9-SEGMENT-INFO",
-        "AV2-5.6-MSDO",
-        "AV2-5.7-MULTI-FRAME-HEADER",
-        "AV2-5.8-LAYER-CONFIG-RECORD",
-        "AV2-5.9-ATLAS-SEGMENT",
         "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
-        "AV2-7.3-OBU-ORDERING",
-        "AV2-7.3.8-HLS-AVAILABILITY"
+        "XTASK-DIAGNOSTIC-REGISTRY"
       ],
       "outcome": "success"
     },
@@ -2348,6 +2327,50 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/diagnostic-registry-enforcement/.openspec.yaml",
+      "sha256": "4e4f418579ebfbffbd8c41ee1a2ef52993119960fe15f399381a15987b551d8a",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/diagnostic-registry-enforcement/design.md",
+      "sha256": "c38fb948f10c74e986137053c8e0bc5f65303dfeb3b98dbdeece36474b21907b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-FEATURE-STATUS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/diagnostic-registry-enforcement/proposal.md",
+      "sha256": "33c40303e86ec3eee0afb137c16cec7d430390ef3f09a5fed152161cbd10a575",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-DIAGNOSTIC-REGISTRY",
+        "XTASK-FEATURE-STATUS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/diagnostic-registry-enforcement/specs/process/spec.md",
+      "sha256": "3775aa9a4abf15afceba03ea0855839e3c8df4fd9c7d1b77bbdec80a524fcd34",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-DIAGNOSTIC-REGISTRY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/diagnostic-registry-enforcement/tasks.md",
+      "sha256": "0cceaa402e5980eeed8677da25054c08bd76d4956b8927691f387ec82f1edb51",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-DIAGNOSTIC-REGISTRY"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/metadata-semantic-validation/design.md",
       "sha256": "57bd804fccada141a75cd87f77265d5e2cb365ed0e69c5c19a32df2f6fd90567",
       "scope_kind": "openspec",
@@ -2589,8 +2612,17 @@
       "outcome": "success"
     },
     {
+      "path": "xtask/src/diagnostic_registry.rs",
+      "sha256": "69074fd489e6a883b98f0d2ea45f5c3aa0945b11409e42aa6b1b2ee2f9622442",
+      "scope_kind": "workspace:xtask",
+      "feature_ids": [
+        "XTASK-DIAGNOSTIC-REGISTRY"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "xtask/src/feature_status.rs",
-      "sha256": "93ac98cb939a17cf1868a4e482cf09243bdd9ebb15b1410473c1ff337e1a7902",
+      "sha256": "5533a53ea0b2f87aed19b777caecbc67f5d37eb1aad45995da402027ff98742d",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "AV2-5.2.2-OBU-HEADER",
@@ -2609,7 +2641,7 @@
     },
     {
       "path": "xtask/src/main.rs",
-      "sha256": "5c516116f26561a55cb573272537a6b945cfe71e895646366b49813326265f8e",
+      "sha256": "ba6396caca4d2b42f0d74917c6757ece0ba86e890cb10ca8cefcc510f57f4c7b",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
