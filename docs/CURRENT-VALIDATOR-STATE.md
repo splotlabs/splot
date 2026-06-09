@@ -12,7 +12,7 @@ The current repository is no longer just the original Annex B + OBU header scaff
 |---|---|
 | Repository shape | Public Rust workspace with `.cargo`, `.github`, `crates`, `docs`, `fuzz`, `openspec`, `tests/fixtures`, and `xtask`. |
 | README status | Pre-alpha / validator-first; Annex B envelope parser, AV2 OBU header parser, and structured header-conformance validator are present; decoder/encoder remain reserved shapes. |
-| Matrix size | `docs/IMPLEMENTATION-MATRIX.toml` / generated feature status now track 114 features. |
+| Matrix size | `docs/IMPLEMENTATION-MATRIX.toml` / generated feature status track 127 features as of this snapshot (keep in sync with `docs/FEATURE-STATUS.md`). |
 | Descriptor foundation | `read_uvlc`, `read_le`, `read_ns`, `read_rg`, and `read_su` (§4.11.7) are mapped and tested in `splot-core/src/bitio.rs`. |
 | OBU envelope/header | LEB128, OBU header, OBU type predicates, Annex B envelope, reserved OBU handling, trailing bits, byte alignment, and OBU dispatch skeleton are represented. |
 | Payload dispatch | `open_bitstream_unit` dispatch is partial: temporal delimiter/trailing handling and `PayloadStatus`/inspect JSON are present, but most payload parsers remain unimplemented. |

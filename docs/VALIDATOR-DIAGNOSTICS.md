@@ -55,7 +55,7 @@ Every rule ID below is emitted by `crates/splot-validate/src`, grouped by namesp
 | Rule ID | Severity | Section | Condition |
 |---|---|---|---|
 | `brt/ops-count-mismatch` | error | § 6.11 | BRT br_ops_cnt differs from the active OPS ops_cnt |
-| `brt/unavailable-operating-point-set` | error | § 7.3.8.5 | BRT references an OPS not available in-band or declared external |
+| `brt/unavailable-operating-point-set` | error | § 7.3.8.5 | BRT `(obu_xlayer_id, br_ops_id)` has no active in-band OPS and no matching external-HLS OPS declaration (per-object, unlike the coarse external-disabled gate on the other availability checks) |
 
 ### `byte-alignment/`
 
