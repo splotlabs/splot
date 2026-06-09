@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "15a7442e887a458e3e36a6f49b0b5ba467b91484",
+  "audited_commit": "1b50442738bfef0d02f76a9e2090ce765772f2cb",
   "outcome": "success",
   "files": [
     {
@@ -2396,63 +2396,6 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/frame-tiling-quant-segmentation/.openspec.yaml",
-      "sha256": "4e4f418579ebfbffbd8c41ee1a2ef52993119960fe15f399381a15987b551d8a",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-tiling-quant-segmentation/design.md",
-      "sha256": "d8a2b67370f276b8809f7f39b2cd39fd891ccdaa844824029e83e0aae20e97a8",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18.6-QUANTIZATION",
-        "AV2-5.18.7-SEGMENTATION-TILING",
-        "AV2-5.18.7.3-TILE-PARAMS",
-        "CONF-AVM-DIFF-HARNESS"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-tiling-quant-segmentation/proposal.md",
-      "sha256": "04106a66a899e56a858f9adf7476975461323faf65e7eb5a9212642f35741786",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18-FRAME-HEADER",
-        "AV2-5.18.1-FRAME-HEADER-GENERAL",
-        "AV2-5.18.2-FRAME-HEADER-INFO",
-        "AV2-5.18.6-QUANTIZATION",
-        "AV2-5.18.7-SEGMENTATION-TILING",
-        "AV2-5.18.7.3-TILE-PARAMS"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-tiling-quant-segmentation/specs/bitstream/spec.md",
-      "sha256": "4820168328634a94dbc32b43bd615e98edabaf28e1da1584b3dd63a1363a0bd1",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-tiling-quant-segmentation/specs/validator/spec.md",
-      "sha256": "7548096520aeecec025f4eb07031a90e60323464d3bed53be498417d5c917a77",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-tiling-quant-segmentation/tasks.md",
-      "sha256": "8750e97f7c6f39ad9fae72b8b54a58b34b89a76f4c389ce7b93618e2bc40dfb0",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18.6-QUANTIZATION",
-        "AV2-5.18.7-SEGMENTATION-TILING"
-      ],
-      "outcome": "success"
-    },
-    {
       "path": "openspec/changes/metadata-semantic-validation/design.md",
       "sha256": "57bd804fccada141a75cd87f77265d5e2cb365ed0e69c5c19a32df2f6fd90567",
       "scope_kind": "openspec",
@@ -2542,7 +2485,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "9f2241a6df14b8bf795df872bb4ae20a8b77dddc34abe56645d8e386005cffc6",
+      "sha256": "5688cff503a0f30dd6b60ef1185afe70b4850861a305d2927113c990e3286e9e",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -2619,7 +2562,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "4f87a20a8568a74ffb5240cb5dd93e760d1ec72fcb7796ab0dbb76e8c4518b93",
+      "sha256": "58c255c7eb2a68cd356b8f72e4008c787e5cff46a59e3bc9a5dd5d4c4e0efdb7",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
