@@ -21,8 +21,9 @@ use splot_core::headers::content_interpretation::{
 };
 use splot_core::headers::film_grain::{FilmGrainObu, parse_film_grain};
 use splot_core::headers::frame::{
-    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderPrefix,
-    FrameReferenceStateView, parse_frame_header_core, parse_frame_header_prefix,
+    DeltaQParams, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderPrefix,
+    FrameReferenceStateView, LosslessInfo, QuantizationParams, SegmentationParams, SetupQmParams,
+    TileInfo, parse_frame_header_core, parse_frame_header_prefix,
 };
 use splot_core::headers::metadata::{MetadataUnit, parse_metadata_group, parse_metadata_short};
 use splot_core::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
@@ -559,6 +560,18 @@ struct FrameHeaderCoreView {
     bridge_frame_ref_idx: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     frame_to_show_map_idx: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tile_layout: Option<TileLayoutView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quantization: Option<QuantizationParamsView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    segmentation: Option<SegmentationParamsView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    qm_params: Option<SetupQmParamsView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delta_q: Option<DeltaQParamsView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lossless: Option<LosslessInfoView>,
     consumed_bits: u64,
 }
 
@@ -567,6 +580,186 @@ struct FrameHeaderCoreView {
 struct FrameSizeView {
     width: u32,
     height: u32,
+}
+
+/// A parsed frame `tile_info()` layout for `--json` (AV2 § 5.18.7.2).
+#[derive(Serialize)]
+struct TileLayoutView {
+    reuse_tile_info: bool,
+    tile_cols: u32,
+    tile_rows: u32,
+    tile_cols_log2: u8,
+    tile_rows_log2: u8,
+    context_update_tile_id: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tile_size_bytes: Option<u32>,
+}
+
+impl TileLayoutView {
+    fn new(tile_info: &TileInfo) -> Self {
+        Self {
+            reuse_tile_info: tile_info.reuse_tile_info,
+            tile_cols: tile_info.tile_cols,
+            tile_rows: tile_info.tile_rows,
+            tile_cols_log2: tile_info.tile_cols_log2,
+            tile_rows_log2: tile_info.tile_rows_log2,
+            context_update_tile_id: tile_info.context_update_tile_id,
+            tile_size_bytes: tile_info.tile_size_bytes,
+        }
+    }
+}
+
+/// Parsed `quantization_params()` for `--json` (AV2 § 5.18.6.1).
+#[derive(Serialize)]
+struct QuantizationParamsView {
+    base_q_idx: u32,
+    delta_q_y_dc: i32,
+    delta_q_u_dc: i32,
+    delta_q_u_ac: i32,
+    delta_q_v_dc: i32,
+    delta_q_v_ac: i32,
+    diff_uv_delta: bool,
+}
+
+impl QuantizationParamsView {
+    fn new(params: &QuantizationParams) -> Self {
+        Self {
+            base_q_idx: params.base_q_idx,
+            delta_q_y_dc: params.delta_q_y_dc,
+            delta_q_u_dc: params.delta_q_u_dc,
+            delta_q_u_ac: params.delta_q_u_ac,
+            delta_q_v_dc: params.delta_q_v_dc,
+            delta_q_v_ac: params.delta_q_v_ac,
+            diff_uv_delta: params.diff_uv_delta,
+        }
+    }
+}
+
+/// One enabled `FeatureEnabled[i][j]` / `FeatureData[i][j]` entry for `--json`
+/// (AV2 § 5.18.7.1). Disabled features are omitted to keep the summary compact.
+#[derive(Serialize)]
+struct SegmentFeatureView {
+    segment_id: u8,
+    feature: u8,
+    data: i32,
+}
+
+/// Parsed `segmentation_params()` for `--json` (AV2 § 5.18.7.1).
+#[derive(Serialize)]
+struct SegmentationParamsView {
+    segmentation_enabled: bool,
+    reuse_seg_info: bool,
+    segmentation_update_map: bool,
+    segmentation_temporal_update: bool,
+    seg_id_pre_skip: bool,
+    last_active_seg_id: u8,
+    enabled_features: Vec<SegmentFeatureView>,
+}
+
+impl SegmentationParamsView {
+    fn new(params: &SegmentationParams) -> Self {
+        let enabled_features = params
+            .features
+            .iter()
+            .enumerate()
+            .flat_map(|(segment_id, levels)| {
+                levels.iter().enumerate().filter_map(move |(feature, f)| {
+                    f.enabled.then_some(SegmentFeatureView {
+                        segment_id: segment_id as u8,
+                        feature: feature as u8,
+                        data: f.data,
+                    })
+                })
+            })
+            .collect();
+        Self {
+            segmentation_enabled: params.segmentation_enabled,
+            reuse_seg_info: params.reuse_seg_info,
+            segmentation_update_map: params.segmentation_update_map,
+            segmentation_temporal_update: params.segmentation_temporal_update,
+            seg_id_pre_skip: params.seg_id_pre_skip,
+            last_active_seg_id: params.last_active_seg_id,
+            enabled_features,
+        }
+    }
+}
+
+/// One `(qm_y[i], qm_u[i], qm_v[i])` level set for `--json` (AV2 § 5.18.6.2).
+#[derive(Serialize)]
+struct QmSetLevelsView {
+    qm_y: u8,
+    qm_u: u8,
+    qm_v: u8,
+}
+
+/// Parsed `setup_qm_params()` for `--json` (AV2 § 5.18.6.2). `levels` carries only
+/// the `pic_qm_num_minus_1 + 1` parsed sets, and only when `using_qmatrix`.
+#[derive(Serialize)]
+struct SetupQmParamsView {
+    using_qmatrix: bool,
+    pic_qm_num_minus_1: u8,
+    levels: Vec<QmSetLevelsView>,
+}
+
+impl SetupQmParamsView {
+    fn new(params: &SetupQmParams) -> Self {
+        let qm_num = if params.using_qmatrix {
+            usize::from(params.pic_qm_num_minus_1) + 1
+        } else {
+            0
+        };
+        Self {
+            using_qmatrix: params.using_qmatrix,
+            pic_qm_num_minus_1: params.pic_qm_num_minus_1,
+            levels: params
+                .levels
+                .iter()
+                .take(qm_num)
+                .map(|set| QmSetLevelsView {
+                    qm_y: set.qm_y,
+                    qm_u: set.qm_u,
+                    qm_v: set.qm_v,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Parsed `delta_q_params()` for `--json` (AV2 § 5.18.7.8).
+#[derive(Serialize)]
+struct DeltaQParamsView {
+    delta_q_present: bool,
+    delta_q_res: u8,
+}
+
+impl DeltaQParamsView {
+    fn new(params: &DeltaQParams) -> Self {
+        Self {
+            delta_q_present: params.delta_q_present,
+            delta_q_res: params.delta_q_res,
+        }
+    }
+}
+
+/// The § 5.18.2 per-segment lossless derivation and `allow_tcq` /
+/// `allow_parity_hiding` summary for `--json`.
+#[derive(Serialize)]
+struct LosslessInfoView {
+    coded_lossless: bool,
+    has_lossless_segment: bool,
+    allow_tcq: bool,
+    allow_parity_hiding: bool,
+}
+
+impl LosslessInfoView {
+    fn new(info: &LosslessInfo) -> Self {
+        Self {
+            coded_lossless: info.coded_lossless,
+            has_lossless_segment: info.has_lossless_segment,
+            allow_tcq: info.allow_tcq,
+            allow_parity_hiding: info.allow_parity_hiding,
+        }
+    }
 }
 
 impl FrameHeaderCoreView {
@@ -587,6 +780,18 @@ impl FrameHeaderCoreView {
             }),
             bridge_frame_ref_idx: core.bridge_frame_ref_idx,
             frame_to_show_map_idx: core.frame_to_show_map_idx,
+            tile_layout: core.tile_info.as_ref().map(TileLayoutView::new),
+            quantization: core
+                .quantization_params
+                .as_ref()
+                .map(QuantizationParamsView::new),
+            segmentation: core
+                .segmentation_params
+                .as_ref()
+                .map(SegmentationParamsView::new),
+            qm_params: core.setup_qm_params.as_ref().map(SetupQmParamsView::new),
+            delta_q: core.delta_q_params.as_ref().map(DeltaQParamsView::new),
+            lossless: core.lossless_info.as_ref().map(LosslessInfoView::new),
             consumed_bits: core.consumed_bits,
         }
     }
