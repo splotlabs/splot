@@ -249,6 +249,11 @@ lcr/computed-payload-bits-negative
 
 ### OPS
 
+> Planning names. The landed OPS checks are recorded under
+> **§ 15 (Operating point set and buffer removal timing, implemented)** below and
+> supersede these — e.g. the implemented IDs are `ops/inherited-op-index-out-of-range`
+> and `ops/payload-size-mismatch`, not the `embedded`/`computed` names sketched here.
+
 ```text
 ops/mlayer-info-idc-reserved
 ops/embedded-op-index-out-of-range
@@ -493,3 +498,36 @@ Intentional non-checks (spec honesty):
   `mfh/tlayer-dependency-violation`) remain reserved: `MLayerDependencyMap` /
   `TLayerDependencyMap` are not exposed by the sequence-header model, so they are not
   fabricated from max layer ids (`TODO(spec: AV2-5.7-MULTI-FRAME-HEADER)`).
+
+## 15. Operating point set and buffer removal timing (implemented)
+
+OpenSpec change `ops-brt-hls-foundation`. The §5.10 / §5.11 `operating_point_set_obu()`
+parser (`AV2-5.10-OPERATING-POINT-SET`, `AV2-5.11-OPERATING-POINT-PAYLOAD`) and the §5.12
+`OBU_BUFFER_REMOVAL_TIMING` parser (`AV2-5.12-BUFFER-REMOVAL-TIMING`) drive these
+locally-decidable §6.10 / §6.11 / §7.3.8.5 checks. The phase-scoped list and rationale
+live in [`OPS-BRT-DIAGNOSTICS.md`](./OPS-BRT-DIAGNOSTICS.md); the stable IDs are owned
+here.
+
+OPS (all `error`):
+
+| Rule ID | Section | Condition |
+|---|---|---|
+| `ops/local-reserved-bits-nonzero` | 6.10.2 | A local OPS has `ops_reserved_2bits != 0`. |
+| `ops/mlayer-info-idc-reserved` | 6.10.2 | A global OPS has `ops_mlayer_info_idc == 3` (reserved). |
+| `ops/payload-size-mismatch` | 6.10.2 | A payload's computed `opsBytes` differs from its declared `ops_data_size`. |
+| `ops/ptl-reserved-bits-nonzero` | 6.10.4 | An `ops_seq_profile_tier_level_info()` has `ops_ptl_reserved_2bits != 0`. |
+| `ops/inherited-op-index-out-of-range` | 6.10.2 | `ops_embedded_op_index >= ops_cnt[obu_xlayer_id][refID]`, or `>= j` (the included extended layer) for a same-OPS reference. |
+
+BRT (all `error`):
+
+| Rule ID | Section | Condition |
+|---|---|---|
+| `brt/ops-count-mismatch` | 6.11 | An OPS-dependent BRT's `br_ops_cnt` differs from the referenced active OPS `ops_cnt`. |
+| `brt/unavailable-operating-point-set` | 7.3.8.5 | An OPS-dependent BRT's `(obu_xlayer_id, br_ops_id)` resolves to no active in-band OPS and external HLS is disabled. |
+
+Deferred (tracked, not emitted this phase): `ops/inherited-ops-unavailable` (§6.10.2,
+a cross-OPS inheritance reference to an unavailable OPS is not flagged to avoid false
+positives under external HLS), `ops/mlayer-dependency-missing` /
+`ops/tlayer-dependency-missing` (§6.10.7, need the activated `MLayerDependencyMap` /
+`TLayerDependencyMap` the sequence-header model does not expose), and
+`brt/global-ordering-position` (§7.3.7, needs decoder-model / random-access state).
