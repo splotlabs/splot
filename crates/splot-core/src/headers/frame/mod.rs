@@ -35,13 +35,23 @@ use crate::types::ObuType;
 
 mod config;
 mod info;
+mod quant;
+mod segmentation;
 mod size;
+mod tiling;
 
 pub use info::{
     FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
     FrameReferenceStateView, FrameType, parse_frame_header_core,
 };
+pub use quant::{
+    CoreSeqQuantView, DeltaQParams, LosslessInfo, MAX_PIC_QM_NUM, QmSetLevels, QuantizationParams,
+    SetupQmParams, parse_delta_q_params, parse_lossless_info, parse_quantization_params,
+    parse_setup_qm_params, read_delta_q,
+};
+pub use segmentation::{CoreSeqSegView, SegmentationParams, parse_segmentation_params};
 pub use size::FrameSize;
+pub use tiling::{CoreSeqTileView, TileInfo, parse_tile_info};
 
 /// How much of `frame_header()` the prefix parser consumed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

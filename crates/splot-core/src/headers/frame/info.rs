@@ -25,14 +25,27 @@
 //!   ([`FrameHeaderParseStatus::UnsupportedUntilFeature`]); the inter reference map
 //!   needs reference-frame state.
 //! - **Intra frame (key / intra-only / single-picture)** → reads the full control
-//!   region through `frame_size()`, `screen_content_params()`, `intrabc_params()`, and
-//!   `disable_cdf_update`, stopping before `tile_info()`
-//!   ([`FrameHeaderParseStatus::StoppedBeforeFilteringQuantSegmentation`]).
+//!   region through `frame_size()`, `screen_content_params()`, `intrabc_params()`,
+//!   `disable_cdf_update`, `tile_info()`, `quantization_params()`,
+//!   `segmentation_params()`, `setup_qm_params()`, `delta_q_params()`, and the
+//!   § 5.18.2 lossless/`allow_tcq`/`allow_parity_hiding` tail, stopping before
+//!   `deblocking_filter_params()` (§ 5.18.5.2)
+//!   ([`FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams`]). The
+//!   `cur_mfh_id > 0` branches that need unmodeled multi-frame-header state stop
+//!   with [`FrameHeaderParseStatus::UnsupportedUntilFeature`].
 
 use crate::bitio::BitReader;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::headers::frame::config::{parse_intrabc_params, parse_screen_content_params};
+use crate::headers::frame::quant::{
+    CoreSeqQuantView, DeltaQParams, LosslessInfo, QuantizationParams, SetupQmParams,
+    parse_delta_q_params, parse_lossless_info, parse_quantization_params, parse_setup_qm_params,
+};
+use crate::headers::frame::segmentation::{
+    CoreSeqSegView, SegmentationParams, parse_segmentation_params,
+};
 use crate::headers::frame::size::{FrameSize, ceil_log2, parse_frame_size};
+use crate::headers::frame::tiling::{CoreSeqTileView, TileInfo, parse_tile_info};
 use crate::headers::sequence::{SequenceHeader, SequenceHeaderId};
 use crate::hls::{MfhId, MultiFrameHeaderRecord};
 use crate::types::ObuType;
@@ -70,11 +83,13 @@ pub enum FrameHeaderParseStatus {
     /// `film_grain_config()` (§ 5.18.10) is modeled; the current SEF path returns
     /// [`Self::CoreFieldsOnly`].
     ShowExistingFrameComplete,
-    /// An intra frame's control region was read through `frame_size()`,
-    /// `screen_content_params()`, `intrabc_params()`, and `disable_cdf_update`; the
-    /// parser stopped before `tile_info()` / `quantization_params()` /
-    /// `segmentation_params()` (§ 5.18.5 onward).
-    StoppedBeforeFilteringQuantSegmentation,
+    /// An intra frame's control region was read through `disable_cdf_update`,
+    /// `tile_info()` (§ 5.18.7.2), `quantization_params()` (§ 5.18.6.1),
+    /// `segmentation_params()` (§ 5.18.7.1), `setup_qm_params()` (§ 5.18.6.2),
+    /// `delta_q_params()` (§ 5.18.7.8), and the § 5.18.2 lossless/`allow_tcq`/
+    /// `allow_parity_hiding` tail; the parser stopped before
+    /// `deblocking_filter_params()` (§ 5.18.5.2).
+    StoppedBeforeDeblockingFilterParams,
     /// A branch needs decoder/reference state or syntax this phase does not model
     /// (e.g. the inter reference map, or the rest of a bridge frame). `feature_id` is
     /// the implementation-matrix row that tracks the missing coverage.
@@ -92,9 +107,7 @@ impl FrameHeaderParseStatus {
             Self::ActivationFieldsOnly => "activation_fields_only",
             Self::CoreFieldsOnly => "core_fields_only",
             Self::ShowExistingFrameComplete => "show_existing_frame_complete",
-            Self::StoppedBeforeFilteringQuantSegmentation => {
-                "stopped_before_filtering_quant_segmentation"
-            }
+            Self::StoppedBeforeDeblockingFilterParams => "stopped_before_deblocking_filter_params",
             Self::UnsupportedUntilFeature { .. } => "unsupported_until_feature",
         }
     }
@@ -197,7 +210,7 @@ pub struct FrameHeaderParseInput<'a> {
 /// Fields beyond the activation prefix are `Option`, present only when the
 /// corresponding syntax was reached and exactly determined by parsed state. The
 /// [`status`](Self::status) records where parsing stopped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct FrameHeaderCore {
     /// The OBU type carrying this frame header.
@@ -247,6 +260,20 @@ pub struct FrameHeaderCore {
     /// `true` if any `ref_long_term_id[i]` equals the reserved value
     /// `(1 << long_term_frame_id_bits) - 1`, which AV2 § 6.17.2 forbids.
     pub forbidden_ref_long_term_id: bool,
+    /// Parsed `tile_info()` (AV2 § 5.18.7.2), when reached on the intra path.
+    pub tile_info: Option<TileInfo>,
+    /// Parsed `quantization_params()` (AV2 § 5.18.6.1), when reached.
+    pub quantization_params: Option<QuantizationParams>,
+    /// Parsed `segmentation_params()` (AV2 § 5.18.7.1), when reached.
+    pub segmentation_params: Option<SegmentationParams>,
+    /// Parsed `setup_qm_params()` (AV2 § 5.18.6.2), when reached. Per § 5.18.2 call
+    /// order it is parsed **after** `segmentation_params()`.
+    pub setup_qm_params: Option<SetupQmParams>,
+    /// Parsed `delta_q_params()` (AV2 § 5.18.7.8), when reached.
+    pub delta_q_params: Option<DeltaQParams>,
+    /// The § 5.18.2 per-segment lossless/QM derivation and the `allow_tcq` /
+    /// `allow_parity_hiding` reads, when reached.
+    pub lossless_info: Option<LosslessInfo>,
     /// Bits consumed by this parse (not necessarily the whole frame header).
     pub consumed_bits: u64,
 }
@@ -254,9 +281,20 @@ pub struct FrameHeaderCore {
 /// Matrix Feature ID for the frame-header-info coverage this phase does not model.
 const FRAME_HEADER_INFO_FEATURE: &str = "AV2-5.18.2-FRAME-HEADER-INFO";
 
+/// Matrix Feature ID for the § 5.18.7.1 / § 5.18.7.2 multi-frame-header-gated
+/// branches this phase does not model (`mfh_seg_info_present_flag`,
+/// `mfh_ext_seg_flag`, `mfh_allow_seg_info_change` for `cur_mfh_id > 0`).
+const SEGMENTATION_TILING_FEATURE: &str = "AV2-5.18.7-SEGMENTATION-TILING";
+
 /// Sequence-derived scalars the core parser needs, gathered from a fully parsed
-/// [`SequenceHeader`]. `None` when the inter or screen-content config is absent (the
-/// header was not fully parsed), in which case core parsing degrades to the prefix.
+/// [`SequenceHeader`]. `None` when any required child config (partition, segment,
+/// inter, screen-content, transform/quant/entropy, or tile) is absent — the header
+/// was not fully parsed — in which case core parsing degrades to the prefix.
+///
+/// The § 5.18.6 / § 5.18.7 inputs are grouped into per-structure sub-views
+/// ([`CoreSeqQuantView`], [`CoreSeqSegView`], [`CoreSeqTileView`]) so each child
+/// parser names exactly the state it consumes.
+#[derive(Debug)]
 struct CoreSeqView {
     num_ref_frames: u32,
     order_hint_bits: u32,
@@ -272,12 +310,22 @@ struct CoreSeqView {
     seq_force_screen_content_tools: u8,
     seq_force_integer_mv: u8,
     allow_frame_max_bvp_drl_bits: bool,
+    /// § 5.18.6 / § 5.18.7.8 / § 5.18.2-lossless-tail inputs (AV2 § 5.4.8).
+    quant: CoreSeqQuantView,
+    /// § 5.18.7.1 segmentation inputs (AV2 § 5.4.4).
+    seg: CoreSeqSegView,
+    /// § 5.18.7.2 tile-info inputs (AV2 § 5.4.2 / § 5.4.3 / § 5.4.8).
+    tile: CoreSeqTileView,
 }
 
 impl CoreSeqView {
     fn from_sequence(seq: &SequenceHeader) -> Option<Self> {
+        let partition = seq.partition.as_ref()?;
+        let segment = seq.segment.as_ref()?;
         let inter = seq.inter.as_ref()?;
         let scc = seq.screen_content.as_ref()?;
+        let tq = seq.transform_quant_entropy.as_ref()?;
+        let tile = seq.tile.as_ref()?;
         let general = &seq.general;
         Some(Self {
             num_ref_frames: u32::from(inter.num_ref_frames),
@@ -294,6 +342,9 @@ impl CoreSeqView {
             seq_force_screen_content_tools: scc.seq_force_screen_content_tools,
             seq_force_integer_mv: scc.seq_force_integer_mv,
             allow_frame_max_bvp_drl_bits: inter.allow_frame_max_bvp_drl_bits,
+            quant: CoreSeqQuantView::from_sequence_configs(general, tq),
+            seg: CoreSeqSegView::from_sequence_config(segment),
+            tile: CoreSeqTileView::from_sequence_configs(general, partition, tq, tile),
         })
     }
 }
@@ -373,6 +424,12 @@ fn init_core_from_prefix(prefix: &FrameHeaderPrefix, obu_type: ObuType) -> Frame
         allow_screen_content_tools: None,
         allow_intrabc: None,
         forbidden_ref_long_term_id: false,
+        tile_info: None,
+        quantization_params: None,
+        segmentation_params: None,
+        setup_qm_params: None,
+        delta_q_params: None,
+        lossless_info: None,
         consumed_bits: 0,
     }
 }
@@ -509,8 +566,11 @@ fn parse_show_existing_frame(
 
 /// Parses the intra-frame tail (AV2 § 5.18.2): `frame_size_override_flag`,
 /// `order_hint`, `refresh_frame_flags`, then `frame_size()` /
-/// `screen_content_params()` / `intrabc_params()` and `disable_cdf_update`, stopping
-/// before `tile_info()`.
+/// `screen_content_params()` / `intrabc_params()`, `disable_cdf_update`, and the
+/// § 5.18.2 structure cluster `tile_info()` → `quantization_params()` →
+/// `segmentation_params()` → `setup_qm_params()` → `delta_q_params()` → the
+/// per-segment lossless/QM derivation → `allow_tcq` / `allow_parity_hiding`,
+/// stopping before `deblocking_filter_params()` (§ 5.18.5.2).
 ///
 /// `single_picture` is `single_picture_header_flag` (forces `frame_size_override_flag
 /// = 0`). For an intra frame `primary_ref_frame == PRIMARY_REF_NONE`, so no
@@ -569,10 +629,108 @@ fn parse_intra_tail(
         seq.allow_frame_max_bvp_drl_bits,
     )?);
 
-    // Not a TIP-as-output / bru-inactive / bridge frame -> disable_cdf_update f(1),
-    // then tile_info() (§ 5.18.7), which this phase stops before.
+    // Not a TIP-as-output / bru-inactive / bridge frame -> disable_cdf_update f(1)
+    // (AV2 § 5.18.2 else-branch of `if ( bru_inactive || IsBridge )`).
     reader.read_bit()?; // disable_cdf_update
-    core.status = FrameHeaderParseStatus::StoppedBeforeFilteringQuantSegmentation;
+
+    // AV2 § 5.18.2: on the intra path `bru_inactive == 0` and `!IsBridge` (handled
+    // above), `use_ref_frame_mvs == 0` and `TipFrameMode == TIP_FRAME_DISABLED`
+    // (FrameIsIntra branch), so none of the bru / motion-field / TIP blocks between
+    // `disable_cdf_update` and `tile_info()` read bits or return, and parsing
+    // continues directly at the structure cluster.
+    parse_intra_structures(reader, core, seq)
+}
+
+/// Parses the § 5.18.2 intra-path structure cluster after `disable_cdf_update`:
+/// `tile_info()` (§ 5.18.7.2), `quantization_params()` (§ 5.18.6.1),
+/// `set_primary_ref_frame_and_ctx( 1 )` (no bits), `segmentation_params()`
+/// (§ 5.18.7.1), `setup_qm_params()` (§ 5.18.6.2), `delta_q_params()` (§ 5.18.7.8),
+/// the per-segment lossless/QM derivation, and `allow_tcq` / `allow_parity_hiding`,
+/// in exactly that order (AV2 v1.0.0 § 5.18.2,
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`).
+///
+/// The intra path always has `TipFrameMode == TIP_FRAME_DISABLED` and `!IsBridge`.
+/// Branches that need unmodeled multi-frame-header state (`cur_mfh_id > 0`) stop
+/// with [`FrameHeaderParseStatus::UnsupportedUntilFeature`] instead of guessing.
+fn parse_intra_structures(
+    reader: &mut BitReader<'_>,
+    core: &mut FrameHeaderCore,
+    seq: &CoreSeqView,
+) -> Result<()> {
+    // AV2 § 5.18.7.2: tile_info() derives sbCols/sbRows from MiCols/MiRows, i.e. from
+    // the exact FrameWidth/FrameHeight (§ 5.18.4.4). With cur_mfh_id > 0 and
+    // frame_size_override_flag == 0 the default dimensions come from
+    // mfh_frame_width_minus_1[ cur_mfh_id ], which the MFH record does not model yet.
+    let Some(frame_size) = core.frame_size else {
+        core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+            feature_id: FRAME_HEADER_INFO_FEATURE,
+        };
+        return Ok(());
+    };
+
+    // AV2 § 5.18.2: tile_info() (§ 5.18.7.2). FrameIsIntra here, and the intra path
+    // has IsBridge == 0 and TipFrameMode == TIP_FRAME_DISABLED.
+    core.tile_info = match parse_tile_info(reader, &seq.tile, frame_size, true, false, false) {
+        Ok(tile_info) => Some(tile_info),
+        // The tile layout depends on unmodeled sequence state (reserved
+        // seq_level_idx, or the unrecorded non-uniform sequence start arrays); stop
+        // with the blocking Feature ID rather than guessing bit positions.
+        Err(Error::Unimplemented { feature }) => {
+            core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+                feature_id: feature,
+            };
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+
+    // AV2 § 5.18.2: quantization_params() (§ 5.18.6.1); TIP_FRAME_AS_OUTPUT is
+    // impossible on the intra path.
+    let quantization = parse_quantization_params(reader, &seq.quant, false)?;
+    core.quantization_params = Some(quantization);
+
+    // AV2 § 5.18.2: set_primary_ref_frame_and_ctx( 1 ) reads no bits.
+
+    // AV2 § 5.18.7.1: segmentation_params() consults mfh_seg_info_present_flag /
+    // mfh_ext_seg_flag / mfh_allow_seg_info_change when cur_mfh_id > 0; those MFH
+    // fields are not modeled, so the parser stops before segmentation_params() on
+    // that path (see `headers::frame::segmentation` module docs).
+    if !core.cur_mfh_id.is_zero() {
+        core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+            feature_id: SEGMENTATION_TILING_FEATURE,
+        };
+        return Ok(());
+    }
+    let segmentation = parse_segmentation_params(reader, &seq.seg)?;
+
+    // AV2 § 5.18.2: setup_qm_params() (§ 5.18.6.2) runs after segmentation_params()
+    // and is gated on the frame's parsed segmentation_enabled.
+    let qm = parse_setup_qm_params(reader, &seq.quant, segmentation.segmentation_enabled)?;
+
+    // AV2 § 5.18.2: delta_q_params() (§ 5.18.7.8), gated on base_q_idx.
+    let delta_q = parse_delta_q_params(reader, quantization.base_q_idx)?;
+
+    // AV2 § 5.18.2: init_coeff_cdfs() / load_previous_segment_ids() read no bits
+    // (and the intra path has DerivedPrimaryRefFrame == PRIMARY_REF_NONE).
+
+    // AV2 § 5.18.2: the per-segment lossless/QM derivation loop (qm_index reads),
+    // then allow_tcq and allow_parity_hiding.
+    core.lossless_info = Some(parse_lossless_info(
+        reader,
+        &seq.quant,
+        &quantization,
+        &qm,
+        &delta_q,
+        &segmentation,
+        seq.seg.max_segments,
+    )?);
+    core.segmentation_params = Some(segmentation);
+    core.setup_qm_params = Some(qm);
+    core.delta_q_params = Some(delta_q);
+
+    // AV2 § 5.18.2: deblocking_filter_params() (§ 5.18.5.2) is next; this phase
+    // stops before it.
+    core.status = FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams;
     Ok(())
 }
 
@@ -605,6 +763,53 @@ fn read_refresh_frame_flags(
     } else {
         read_f(reader, seq.num_ref_frames)
     }
+}
+
+/// Arbitrary-but-fixed § 5.18.6 / § 5.18.7 sub-views for tests: an 8-bit, 4:2:0,
+/// no-sequence-tile, no-sequence-segmentation stream with 128×128 superblocks and
+/// every optional quantizer/segmentation/tile read disabled. With these views the
+/// intra tail reads `uniform_tile_spacing_flag` (plus any increment bits),
+/// `base_q_idx` `f(8)`, `segmentation_enabled`, `using_qmatrix`, and
+/// `delta_q_present` (when `base_q_idx > 0`) after `disable_cdf_update`.
+#[cfg(test)]
+fn test_sub_views() -> (CoreSeqQuantView, CoreSeqSegView, CoreSeqTileView) {
+    use crate::headers::sequence::{LevelIdx, SuperblockSize, Tier};
+    (
+        CoreSeqQuantView {
+            bit_depth: 8,
+            num_planes: 3,
+            separate_uv_delta_q: false,
+            equal_ac_dc_q: false,
+            y_dc_delta_q_enabled: false,
+            uv_dc_delta_q_enabled: false,
+            uv_ac_delta_q_enabled: false,
+            base_y_dc_delta_q: 0,
+            base_uv_dc_delta_q: 0,
+            base_uv_ac_delta_q: 0,
+            enable_tcq: false,
+            choose_tcq_per_frame: false,
+            enable_parity_hiding: false,
+        },
+        CoreSeqSegView {
+            seq_seg_info_present_flag: false,
+            seq_allow_seg_info_change: false,
+            enable_ext_seg: false,
+            max_segments: 8,
+            seq_segment_info: None,
+        },
+        CoreSeqTileView {
+            seq_tile_info_present_flag: false,
+            allow_tile_info_change: false,
+            seq_tile_params: None,
+            seq_sb_size: SuperblockSize::Block128x128,
+            use_256x256_superblock: false,
+            use_128x128_superblock: true,
+            enable_avg_cdf: false,
+            avg_cdf_type: 0,
+            seq_tier: Tier::Main,
+            seq_level_idx: LevelIdx::from_bits(0),
+        },
+    )
 }
 
 #[cfg(test)]
@@ -659,6 +864,7 @@ mod tests {
     /// NumRefFrames = 8, no long-term ids, full refresh signaling, screen-content
     /// forced off, 12-bit frame dimensions, 4096x2304 maximum.
     fn base_seq() -> CoreSeqView {
+        let (quant, seg, tile) = test_sub_views();
         CoreSeqView {
             num_ref_frames: 8,
             order_hint_bits: 4,
@@ -674,6 +880,9 @@ mod tests {
             seq_force_screen_content_tools: 0,
             seq_force_integer_mv: 0,
             allow_frame_max_bvp_drl_bits: false,
+            quant,
+            seg,
+            tile,
         }
     }
 
@@ -708,13 +917,26 @@ mod tests {
         bits.f(1080 - 1, 12); // frame_height_minus_1
         bits.bit(0); // allow_intrabc
         bits.bit(0); // disable_cdf_update
+        // tile_info() (§ 5.18.7.2): no sequence tile info -> tile_params(). 1920x1080
+        // with 128x128 superblocks: sbCols = 15, sbRows = 9, single uniform tile.
+        bits.bit(1); // uniform_tile_spacing_flag
+        bits.bit(0); // increment_tile_cols_log2 = 0
+        bits.bit(0); // increment_tile_rows_log2 = 0
+        // quantization_params() (§ 5.18.6.1): 8-bit -> base_q_idx f(8); all delta
+        // reads disabled in the test view.
+        bits.f(90, 8); // base_q_idx
+        bits.bit(0); // segmentation_enabled (§ 5.18.7.1)
+        bits.bit(0); // using_qmatrix (§ 5.18.6.2)
+        bits.bit(0); // delta_q_present (§ 5.18.7.8, base_q_idx > 0)
+        // § 5.18.2 lossless tail: base_q_idx 90 -> CodedLossless = 0; allow_tcq is
+        // inferred enable_tcq (0) and allow_parity_hiding is forced 0 (no bits).
         let data = bits.into_bytes();
         let (core, consumed) =
             parse_body(&data, ObuType::ClosedLoopKey, true, &base_seq()).unwrap();
 
         assert_eq!(
             core.status,
-            FrameHeaderParseStatus::StoppedBeforeFilteringQuantSegmentation
+            FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams
         );
         assert!(core.cur_mfh_id.is_zero());
         assert_eq!(core.seq_header_id_in_frame_header, Some(1));
@@ -727,15 +949,32 @@ mod tests {
         assert_eq!(core.frame_size, Some(FrameSize::new(1920, 1080)));
         assert_eq!(core.allow_screen_content_tools, Some(false));
         assert_eq!(core.allow_intrabc, Some(false));
+        let tile_info = core.tile_info.as_ref().unwrap();
+        assert_eq!(tile_info.tile_cols, 1);
+        assert_eq!(tile_info.tile_rows, 1);
+        assert_eq!(tile_info.context_update_tile_id, 0);
+        assert_eq!(tile_info.tile_size_bytes, None);
+        assert_eq!(core.quantization_params.unwrap().base_q_idx, 90);
+        assert!(!core.segmentation_params.unwrap().segmentation_enabled);
+        assert!(!core.setup_qm_params.unwrap().using_qmatrix);
+        assert!(!core.delta_q_params.unwrap().delta_q_present);
+        let lossless = core.lossless_info.unwrap();
+        assert!(!lossless.coded_lossless);
+        assert!(!lossless.has_lossless_segment);
+        assert!(!lossless.allow_tcq);
+        assert!(!lossless.allow_parity_hiding);
         // uvlc(0)=1 + uvlc(1)=3 prefix bits, then 33 core bits (1+1+1+4 control/output,
-        // 24 frame_size, 1 allow_intrabc, 1 disable_cdf_update).
-        assert_eq!(consumed, 4 + 33);
+        // 24 frame_size, 1 allow_intrabc, 1 disable_cdf_update), then 14 structure
+        // bits (3 tile_info, 8 base_q_idx, 1 segmentation_enabled, 1 using_qmatrix,
+        // 1 delta_q_present).
+        assert_eq!(consumed, 4 + 33 + 14);
     }
 
     #[test]
     fn frame_header_core_reads_mfh_reference_path() {
         // CLK, cur_mfh_id == 2 (resolved via MFH); frame_size_override_flag == 0 leaves
-        // the size unknown because cur_mfh_id > 0 default dims come from the MFH.
+        // the size unknown because cur_mfh_id > 0 default dims come from the MFH, so
+        // the parser stops before tile_info() (§ 5.18.7.2 needs MiCols/MiRows).
         let mut bits = Bits::default();
         bits.uvlc(2); // cur_mfh_id == 2 -> no seq_header_id_in_frame_header
         bits.bit(0); // immediate_output_frame
@@ -758,8 +997,167 @@ mod tests {
         );
         assert_eq!(
             core.status,
-            FrameHeaderParseStatus::StoppedBeforeFilteringQuantSegmentation
+            FrameHeaderParseStatus::UnsupportedUntilFeature {
+                feature_id: "AV2-5.18.2-FRAME-HEADER-INFO"
+            }
         );
+        assert_eq!(core.tile_info, None);
+        assert_eq!(core.quantization_params, None);
+    }
+
+    #[test]
+    fn frame_header_core_mfh_with_explicit_size_stops_before_segmentation() {
+        // CLK, cur_mfh_id == 1 with frame_size_override_flag == 1: tile_info() and
+        // quantization_params() are exactly determined, but segmentation_params()
+        // consults mfh_seg_info_present_flag (§ 5.18.7.1), which is unmodeled, so the
+        // parser stops there with the blocking Feature ID.
+        let mut bits = Bits::default();
+        bits.uvlc(1); // cur_mfh_id == 1 -> no seq_header_id_in_frame_header
+        bits.bit(0); // immediate_output_frame
+        bits.bit(0); // implicit_output_frame
+        bits.bit(1); // frame_size_override_flag == 1 (explicit dims)
+        bits.f(7, 4); // order_hint
+        // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
+        bits.f(1920 - 1, 12); // frame_width_minus_1
+        bits.f(1080 - 1, 12); // frame_height_minus_1
+        bits.bit(0); // allow_intrabc
+        bits.bit(0); // disable_cdf_update
+        bits.bit(1); // uniform_tile_spacing_flag (tile_info, single tile)
+        bits.bit(0); // increment_tile_cols_log2 = 0
+        bits.bit(0); // increment_tile_rows_log2 = 0
+        bits.f(70, 8); // base_q_idx (quantization_params)
+        let data = bits.into_bytes();
+        let (core, consumed) =
+            parse_body(&data, ObuType::ClosedLoopKey, true, &base_seq()).unwrap();
+
+        assert_eq!(core.cur_mfh_id.get(), 1);
+        assert_eq!(core.frame_size, Some(FrameSize::new(1920, 1080)));
+        assert_eq!(core.tile_info.as_ref().unwrap().tile_cols, 1);
+        assert_eq!(core.quantization_params.unwrap().base_q_idx, 70);
+        assert_eq!(core.segmentation_params, None);
+        assert_eq!(core.setup_qm_params, None);
+        assert_eq!(
+            core.status,
+            FrameHeaderParseStatus::UnsupportedUntilFeature {
+                feature_id: "AV2-5.18.7-SEGMENTATION-TILING"
+            }
+        );
+        // uvlc(1)=3 prefix bits, then 33 core bits, then 3 tile_info bits and the
+        // 8-bit base_q_idx; segmentation_params() is not reached.
+        assert_eq!(consumed, 3 + 33 + 3 + 8);
+    }
+
+    #[test]
+    fn frame_header_core_intra_tail_parses_full_structure_cluster() {
+        // The full § 5.18.2 intra tail in spec order: a 2x1-tile tile_info() with
+        // context fields, quantization_params(), segmentation_params() (enabled,
+        // fresh all-disabled seg_info), setup_qm_params() with two QM sets,
+        // delta_q_params(), per-segment qm_index reads, allow_tcq, and
+        // allow_parity_hiding.
+        let mut seq = base_seq();
+        seq.quant.choose_tcq_per_frame = true;
+        seq.quant.enable_parity_hiding = true;
+        let mut bits = Bits::default();
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(0); // seq_header_id_in_frame_header
+        bits.bit(0); // immediate_output_frame
+        bits.bit(0); // implicit_output_frame
+        bits.bit(1); // frame_size_override_flag
+        bits.f(5, 4); // order_hint
+        // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
+        bits.f(1920 - 1, 12); // frame_width_minus_1
+        bits.f(1080 - 1, 12); // frame_height_minus_1
+        bits.bit(0); // allow_intrabc
+        bits.bit(0); // disable_cdf_update
+        // tile_info() (§ 5.18.7.2): 1920x1080 with 128x128 superblocks (sbCols = 15,
+        // sbRows = 9), one column increment -> TileCols = 2 (starts 0, 8), 1 row.
+        bits.bit(1); // uniform_tile_spacing_flag
+        bits.bit(1); // increment_tile_cols_log2 = 1
+        bits.bit(0); // increment_tile_cols_log2 = 0
+        bits.bit(0); // increment_tile_rows_log2 = 0
+        bits.f(1, 1); // context_update_tile_id f(TileRowsLog2 + TileColsLog2 == 1)
+        bits.f(3, 2); // tile_size_bytes_minus_1 -> TileSizeBytes = 4
+        // quantization_params() (§ 5.18.6.1).
+        bits.f(40, 8); // base_q_idx
+        // segmentation_params() (§ 5.18.7.1): enabled, no sequence info ->
+        // reuse_seg_info inferred 0, fresh seg_info(8) with all features disabled.
+        bits.bit(1); // segmentation_enabled
+        for _ in 0..8 {
+            bits.f(0, 3); // seg_info: feature_enabled[i][0..3] = 0
+        }
+        // setup_qm_params() (§ 5.18.6.2): segmentation_enabled gates pic_qm_num.
+        bits.bit(1); // using_qmatrix
+        bits.f(1, 2); // pic_qm_num_minus_1 -> qmNum = 2
+        bits.f(3, 4); // qm_y[0]
+        bits.bit(1); // qm_uv_same_as_y[0]
+        bits.f(5, 4); // qm_y[1]
+        bits.bit(1); // qm_uv_same_as_y[1]
+        // delta_q_params() (§ 5.18.7.8).
+        bits.bit(0); // delta_q_present
+        // § 5.18.2 lossless tail: every segment has qindex 40 (non-lossless), so each
+        // of the 8 segments reads qm_index f(CeilLog2(2) == 1) == 1.
+        for _ in 0..8 {
+            bits.bit(1); // qm_index
+        }
+        bits.bit(0); // allow_tcq (choose_tcq_per_frame)
+        bits.bit(1); // allow_parity_hiding
+        let data = bits.into_bytes();
+        let (core, consumed) = parse_body(&data, ObuType::ClosedLoopKey, true, &seq).unwrap();
+
+        assert_eq!(
+            core.status,
+            FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams
+        );
+        let tile_info = core.tile_info.as_ref().unwrap();
+        assert_eq!(tile_info.tile_cols, 2);
+        assert_eq!(tile_info.tile_rows, 1);
+        assert_eq!(tile_info.tile_cols_log2, 1);
+        assert_eq!(tile_info.mi_col_starts, vec![0, 256, 480]);
+        assert_eq!(tile_info.mi_row_starts, vec![0, 270]);
+        assert_eq!(tile_info.context_update_tile_id, 1);
+        assert_eq!(tile_info.tile_size_bytes, Some(4));
+        assert_eq!(core.quantization_params.unwrap().base_q_idx, 40);
+        let segmentation = core.segmentation_params.unwrap();
+        assert!(segmentation.segmentation_enabled);
+        assert!(segmentation.segmentation_update_map);
+        assert!(!segmentation.segmentation_temporal_update);
+        let qm = core.setup_qm_params.unwrap();
+        assert!(qm.using_qmatrix);
+        assert_eq!(qm.pic_qm_num_minus_1, 1);
+        assert_eq!(qm.levels[0].qm_y, 3);
+        assert_eq!(qm.levels[1].qm_y, 5);
+        assert!(!core.delta_q_params.unwrap().delta_q_present);
+        let lossless = core.lossless_info.unwrap();
+        assert!(!lossless.coded_lossless);
+        assert!(!lossless.has_lossless_segment);
+        // Every segment selected QM set 1 (qm_uv_same_as_y -> [5, 5, 5]).
+        assert!(lossless.seg_qm_levels[..8].iter().all(|l| *l == [5, 5, 5]));
+        assert!(!lossless.allow_tcq);
+        assert!(lossless.allow_parity_hiding);
+        // 2 prefix bits + 33 control/size bits + 64 structure bits (7 tile_info,
+        // 8 base_q_idx, 25 segmentation, 13 setup_qm, 1 delta_q_present,
+        // 8 qm_index, 1 allow_tcq, 1 allow_parity_hiding).
+        assert_eq!(consumed, 2 + 33 + 64);
+    }
+
+    #[test]
+    fn frame_header_core_eof_inside_intra_structures() {
+        // The payload ends right after disable_cdf_update: the § 5.18.2 structure
+        // cluster needs at least 14 more bits, so the parse reports a typed EOF.
+        let mut bits = Bits::default();
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(0); // seq_header_id_in_frame_header
+        bits.bit(0); // immediate_output_frame
+        bits.bit(0); // implicit_output_frame
+        bits.bit(1); // frame_size_override_flag
+        bits.f(5, 4); // order_hint
+        bits.f(1920 - 1, 12); // frame_width_minus_1
+        bits.f(1080 - 1, 12); // frame_height_minus_1
+        bits.bit(0); // allow_intrabc
+        bits.bit(0); // disable_cdf_update
+        let data = bits.into_bytes();
+        let err = parse_body(&data, ObuType::ClosedLoopKey, true, &base_seq()).unwrap_err();
+        assert!(matches!(err, Error::UnexpectedEof { .. }));
     }
 
     #[test]
@@ -777,6 +1175,15 @@ mod tests {
         bits.f(0b0000_0101, 8); // refresh_frame_flags f(NumRefFrames == 8)
         bits.bit(0); // allow_intrabc
         bits.bit(0); // disable_cdf_update
+        // Intra structure cluster (4096x2304, 128x128 superblocks: sbCols = 32,
+        // sbRows = 18, single uniform tile).
+        bits.bit(1); // uniform_tile_spacing_flag
+        bits.bit(0); // increment_tile_cols_log2 = 0
+        bits.bit(0); // increment_tile_rows_log2 = 0
+        bits.f(45, 8); // base_q_idx
+        bits.bit(0); // segmentation_enabled
+        bits.bit(0); // using_qmatrix
+        bits.bit(0); // delta_q_present
         let data = bits.into_bytes();
         let (core, _) = parse_body(&data, ObuType::RegularTileGroup, true, &base_seq()).unwrap();
 
@@ -784,9 +1191,10 @@ mod tests {
         assert_eq!(core.frame_is_intra, Some(true));
         assert_eq!(core.refresh_frame_flags, Some(0b0000_0101));
         assert_eq!(core.frame_size, Some(FrameSize::new(4096, 2304)));
+        assert_eq!(core.quantization_params.unwrap().base_q_idx, 45);
         assert_eq!(
             core.status,
-            FrameHeaderParseStatus::StoppedBeforeFilteringQuantSegmentation
+            FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams
         );
     }
 
@@ -804,6 +1212,14 @@ mod tests {
         // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
         bits.bit(0); // allow_intrabc
         bits.bit(0); // disable_cdf_update
+        // Intra structure cluster (4096x2304 single uniform tile, see above).
+        bits.bit(1); // uniform_tile_spacing_flag
+        bits.bit(0); // increment_tile_cols_log2 = 0
+        bits.bit(0); // increment_tile_rows_log2 = 0
+        bits.f(45, 8); // base_q_idx
+        bits.bit(0); // segmentation_enabled
+        bits.bit(0); // using_qmatrix
+        bits.bit(0); // delta_q_present
         let data = bits.into_bytes();
         let (core, _) = parse_body(&data, ObuType::ClosedLoopKey, true, &seq).unwrap();
 
@@ -815,7 +1231,7 @@ mod tests {
         assert_eq!(core.frame_size, Some(FrameSize::new(4096, 2304)));
         assert_eq!(
             core.status,
-            FrameHeaderParseStatus::StoppedBeforeFilteringQuantSegmentation
+            FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams
         );
     }
 
@@ -992,6 +1408,14 @@ mod tests {
         bits.f(0b0000_0101, 8); // refresh_frame_flags f(NumRefFrames == 8)
         bits.bit(0); // allow_intrabc
         bits.bit(0); // disable_cdf_update
+        // Intra structure cluster (4096x2304 single uniform tile, see above).
+        bits.bit(1); // uniform_tile_spacing_flag
+        bits.bit(0); // increment_tile_cols_log2 = 0
+        bits.bit(0); // increment_tile_rows_log2 = 0
+        bits.f(45, 8); // base_q_idx
+        bits.bit(0); // segmentation_enabled
+        bits.bit(0); // using_qmatrix
+        bits.bit(0); // delta_q_present
         let data = bits.into_bytes();
         let (core, _) = parse_body(&data, ObuType::OpenLoopKey, true, &seq).unwrap();
 
@@ -1004,7 +1428,7 @@ mod tests {
         assert_eq!(core.frame_size, Some(FrameSize::new(4096, 2304)));
         assert_eq!(
             core.status,
-            FrameHeaderParseStatus::StoppedBeforeFilteringQuantSegmentation
+            FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams
         );
     }
 
@@ -1106,8 +1530,169 @@ mod tests {
 #[cfg(test)]
 mod proptests {
     use super::*;
+    use crate::headers::sequence::{LevelIdx, SuperblockSize, Tier};
+    use crate::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature, SegmentInfo};
     use crate::span::ByteOffset;
+    use crate::tile::TileParams;
     use proptest::prelude::*;
+
+    /// Arbitrary [`CoreSeqQuantView`] values across the type ranges (bit depth and
+    /// plane count restricted to the AV2-legal domain, offsets unrestricted).
+    fn arbitrary_quant_view() -> impl Strategy<Value = CoreSeqQuantView> {
+        (
+            prop_oneof![Just(8u8), Just(10u8)],
+            prop_oneof![Just(1u8), Just(3u8)],
+            any::<[bool; 5]>(),
+            any::<[i32; 3]>(),
+            any::<[bool; 3]>(),
+        )
+            .prop_map(
+                |(bit_depth, num_planes, flags, bases, tcq)| CoreSeqQuantView {
+                    bit_depth,
+                    num_planes,
+                    separate_uv_delta_q: flags[0],
+                    equal_ac_dc_q: flags[1],
+                    y_dc_delta_q_enabled: flags[2],
+                    uv_dc_delta_q_enabled: flags[3],
+                    uv_ac_delta_q_enabled: flags[4],
+                    base_y_dc_delta_q: bases[0],
+                    base_uv_dc_delta_q: bases[1],
+                    base_uv_ac_delta_q: bases[2],
+                    enable_tcq: tcq[0],
+                    choose_tcq_per_frame: tcq[1],
+                    enable_parity_hiding: tcq[2],
+                },
+            )
+    }
+
+    /// Arbitrary [`CoreSeqSegView`] values, including internally inconsistent ones
+    /// (hostile `max_segments`, stored info without the present flag).
+    fn arbitrary_seg_view() -> impl Strategy<Value = CoreSeqSegView> {
+        (
+            any::<[bool; 4]>(),
+            any::<u8>(),
+            0..MAX_SEGMENTS,
+            0..SEG_LVL_MAX,
+            any::<i32>(),
+        )
+            .prop_map(|(flags, max_segments, seg_idx, feature_idx, data)| {
+                let mut features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];
+                features[seg_idx][feature_idx] = SegmentFeature {
+                    enabled: true,
+                    data,
+                };
+                CoreSeqSegView {
+                    seq_seg_info_present_flag: flags[0],
+                    seq_allow_seg_info_change: flags[1],
+                    enable_ext_seg: flags[2],
+                    max_segments,
+                    seq_segment_info: flags[3].then_some(SegmentInfo {
+                        num_segments: max_segments.min(MAX_SEGMENTS as u8),
+                        features,
+                    }),
+                }
+            })
+    }
+
+    fn sb_size(idx: u8) -> SuperblockSize {
+        match idx % 3 {
+            0 => SuperblockSize::Block64x64,
+            1 => SuperblockSize::Block128x128,
+            _ => SuperblockSize::Block256x256,
+        }
+    }
+
+    /// Arbitrary [`CoreSeqTileView`] values, including stored layouts that are
+    /// ineligible, non-uniform, or absent despite the present flag.
+    fn arbitrary_tile_view() -> impl Strategy<Value = CoreSeqTileView> {
+        (
+            any::<[bool; 4]>(),
+            (0u32..=64, 0u32..=64, 0u8..=8, 0u8..=8),
+            (0u32..=2048, 0u32..=2048),
+            any::<[u8; 2]>(),
+            (any::<bool>(), 0u8..=3, any::<bool>(), 0u8..=31),
+        )
+            .prop_map(|(flags, counts, grid, sbs, misc)| {
+                let (use_256, use_128) = match sbs[0] % 3 {
+                    0 => (false, false),
+                    1 => (false, true),
+                    _ => (true, false),
+                };
+                CoreSeqTileView {
+                    seq_tile_info_present_flag: flags[0],
+                    allow_tile_info_change: flags[1],
+                    seq_tile_params: flags[2].then_some(TileParams {
+                        tile_cols: counts.0,
+                        tile_rows: counts.1,
+                        tile_cols_log2: counts.2,
+                        tile_rows_log2: counts.3,
+                        sb_cols: grid.0,
+                        sb_rows: grid.1,
+                        uniform_spacing: flags[3],
+                        covers_cols: true,
+                        covers_rows: true,
+                    }),
+                    seq_sb_size: sb_size(sbs[1]),
+                    use_256x256_superblock: use_256,
+                    use_128x128_superblock: use_128,
+                    enable_avg_cdf: misc.0,
+                    avg_cdf_type: misc.1,
+                    seq_tier: if misc.2 { Tier::High } else { Tier::Main },
+                    seq_level_idx: LevelIdx::from_bits(misc.3),
+                }
+            })
+    }
+
+    /// Arbitrary [`CoreSeqView`] values within their type ranges, including the
+    /// § 5.18.6 / § 5.18.7 sub-views consumed by the new intra structure cluster.
+    fn arbitrary_seq_view() -> impl Strategy<Value = CoreSeqView> {
+        (
+            (
+                1u32..=8,
+                0u32..=8,
+                0u32..=5,
+                any::<[bool; 3]>(),
+                0u8..=2,
+                (1u32..=16, 1u32..=16),
+                (1u32..=65536, 1u32..=65536),
+                (0u8..=2, 0u8..=2, any::<bool>()),
+            ),
+            arbitrary_quant_view(),
+            arbitrary_seg_view(),
+            arbitrary_tile_view(),
+        )
+            .prop_map(|(general, quant, seg, tile)| {
+                let (
+                    num_ref_frames,
+                    order_hint_bits,
+                    long_term_frame_id_bits,
+                    flags,
+                    max_mlayer_id,
+                    dim_bits,
+                    max_dims,
+                    scc,
+                ) = general;
+                CoreSeqView {
+                    num_ref_frames,
+                    order_hint_bits,
+                    long_term_frame_id_bits,
+                    enable_short_refresh_frame_flags: flags[0],
+                    monotonic_output_order_flag: flags[1],
+                    single_picture_header_flag: flags[2],
+                    max_mlayer_id,
+                    frame_width_bits: dim_bits.0,
+                    frame_height_bits: dim_bits.1,
+                    max_frame_width: max_dims.0,
+                    max_frame_height: max_dims.1,
+                    seq_force_screen_content_tools: scc.0,
+                    seq_force_integer_mv: scc.1,
+                    allow_frame_max_bvp_drl_bits: scc.2,
+                    quant,
+                    seg,
+                    tile,
+                }
+            })
+    }
 
     proptest! {
         /// The frame-header core parser must never panic on arbitrary input, in either
@@ -1136,39 +1721,23 @@ mod proptests {
             let _ = parse_frame_header_core(&mut reader, &input);
         }
 
-        /// The core body must never panic on arbitrary input when a concrete sequence
-        /// is present — this exercises the bridge / SEF / inter-stop / intra-tail
-        /// branches of `parse_core_body` that the no-sequence proptest never reaches.
-        /// NumRefFrames is non-power-of-2 and the compact-refresh / change-bvp-drl
-        /// flags are on to widen branch coverage.
+        /// The core body — including the full § 5.18.2 intra structure cluster
+        /// (tile_info, quantization, segmentation, QM setup, delta-q, lossless tail)
+        /// — must never panic and never over-read for arbitrary payload bytes and
+        /// arbitrary [`CoreSeqView`] values within their type ranges.
         #[test]
         fn parse_core_body_with_sequence_never_panics(
-            data in proptest::collection::vec(any::<u8>(), 0..64),
+            data in proptest::collection::vec(any::<u8>(), 0..96),
             raw_type in 0u8..=31,
             first_picture in any::<bool>(),
-            single_picture in any::<bool>(),
+            seq in arbitrary_seq_view(),
         ) {
             let obu_type = ObuType::from_raw(raw_type);
-            let seq = CoreSeqView {
-                num_ref_frames: 6,
-                order_hint_bits: 4,
-                long_term_frame_id_bits: 4,
-                enable_short_refresh_frame_flags: true,
-                monotonic_output_order_flag: false,
-                single_picture_header_flag: single_picture,
-                max_mlayer_id: 0,
-                frame_width_bits: 12,
-                frame_height_bits: 12,
-                max_frame_width: 4096,
-                max_frame_height: 2304,
-                seq_force_screen_content_tools: 2,
-                seq_force_integer_mv: 2,
-                allow_frame_max_bvp_drl_bits: true,
-            };
             let mut reader = BitReader::new(&data, ByteOffset::new(0));
             if let Ok(prefix) = parse_frame_header_prefix(&mut reader, obu_type, first_picture) {
                 let mut core = init_core_from_prefix(&prefix, obu_type);
                 let _ = parse_core_body(&mut reader, &mut core, &seq);
+                prop_assert!(reader.consumed_bits() <= (data.len() as u64) * 8);
             }
         }
     }
