@@ -84,6 +84,7 @@ jobs:
       - run: cargo xtask check-license-headers
       - run: cargo xtask check-dependency-direction
       - run: cargo xtask check-feature-status
+      - run: cargo xtask check-diagnostic-registry
 
       - name: OpenSpec validation if available
         run: |
