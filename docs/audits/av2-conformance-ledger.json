@@ -1,0 +1,2616 @@
+{
+  "protocol_version": 1,
+  "audited_commit": "8271f90ad8af49e3d85d7b8abd21d7e224db3347",
+  "outcome": "success",
+  "files": [
+    {
+      "path": ".claude/skills/openspec-apply-change/SKILL.md",
+      "sha256": "da3d97f3ea482cca969981a2079ce7f906ccb4a892728f07bf72f354035d951a",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".claude/skills/openspec-archive-change/SKILL.md",
+      "sha256": "0526054ec891a8a0c0cd0e19a285f285aa111112f2480a3ab365f9bba18a2b9c",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".claude/skills/openspec-explore/SKILL.md",
+      "sha256": "fb359559d93095c81a57760c7739ffbd6d618a03d1810503515f8ae2b5054cd0",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".claude/skills/openspec-propose/SKILL.md",
+      "sha256": "ead4a7b7077ff08607b883ce045b31de3d78189432846c58ae80675eeac5033b",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".claude/skills/openspec-sync-specs/SKILL.md",
+      "sha256": "9c74dad096467f982806ccf33e213f459890e0b79af1f69f6e9f1e790bb2fccf",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".claude/skills/splot-av2-conformance-audit/SKILL.md",
+      "sha256": "952e4143ee5f39dd153ff4b8042a2b767d289ee59366ee911c58054b59749002",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [
+        "DOC-AUDIT-PROTOCOLS",
+        "XTASK-AUDIT-SCOPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": ".claude/skills/splot-doc-audit/SKILL.md",
+      "sha256": "82ddf704271ed83e99f845b0d9fcd62001e3bf034ece27c417ce83c449e0f45a",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [
+        "DOC-AUDIT-PROTOCOLS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": ".codex/skills/openspec-apply-change/SKILL.md",
+      "sha256": "da3d97f3ea482cca969981a2079ce7f906ccb4a892728f07bf72f354035d951a",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".codex/skills/openspec-archive-change/SKILL.md",
+      "sha256": "0526054ec891a8a0c0cd0e19a285f285aa111112f2480a3ab365f9bba18a2b9c",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".codex/skills/openspec-explore/SKILL.md",
+      "sha256": "fb359559d93095c81a57760c7739ffbd6d618a03d1810503515f8ae2b5054cd0",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".codex/skills/openspec-propose/SKILL.md",
+      "sha256": "ead4a7b7077ff08607b883ce045b31de3d78189432846c58ae80675eeac5033b",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".codex/skills/openspec-sync-specs/SKILL.md",
+      "sha256": "9c74dad096467f982806ccf33e213f459890e0b79af1f69f6e9f1e790bb2fccf",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".codex/skills/splot-av2-conformance-audit/SKILL.md",
+      "sha256": "952e4143ee5f39dd153ff4b8042a2b767d289ee59366ee911c58054b59749002",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [
+        "DOC-AUDIT-PROTOCOLS",
+        "XTASK-AUDIT-SCOPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": ".codex/skills/splot-doc-audit/SKILL.md",
+      "sha256": "82ddf704271ed83e99f845b0d9fcd62001e3bf034ece27c417ce83c449e0f45a",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [
+        "DOC-AUDIT-PROTOCOLS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": ".github/PULL_REQUEST_TEMPLATE.md",
+      "sha256": "c4aa9e36a7c40c4c02982e8c0f915fc3d5f1f33085764a1201bcbd4d1cf63da4",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".github/copilot-instructions.md",
+      "sha256": "14305e5c5ea5de04a272363ea87a7c213714f0c958edf9000bb3bd5906d4e169",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [
+        "DOC-AUDIT-PROTOCOLS",
+        "XTASK-AUDIT-SCOPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": ".github/prompts/opsx-apply.prompt.md",
+      "sha256": "2ed526a82d1bf58e36ecf670663a0ba9e125788c03ce806cd89a0c3dd6ecf9da",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".github/prompts/opsx-archive.prompt.md",
+      "sha256": "6a9a7b7fa34761d51b87fc159b53659d552c71c66dfa56895133261e79e021f7",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".github/prompts/opsx-explore.prompt.md",
+      "sha256": "74679f1a6956d2e93d86b6424a349c4bb1e07cbef9056264dff25ebf10b12cae",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".github/prompts/opsx-propose.prompt.md",
+      "sha256": "d409309390ba134712eab89692873cb24a34186c841668c0c07a962fdcab1774",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".github/prompts/opsx-sync.prompt.md",
+      "sha256": "358915ee6f8be43bc888d71f96691d84512520bec68fdfd3f4d4717d1377980e",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".github/skills/openspec-apply-change/SKILL.md",
+      "sha256": "da3d97f3ea482cca969981a2079ce7f906ccb4a892728f07bf72f354035d951a",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".github/skills/openspec-archive-change/SKILL.md",
+      "sha256": "0526054ec891a8a0c0cd0e19a285f285aa111112f2480a3ab365f9bba18a2b9c",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".github/skills/openspec-explore/SKILL.md",
+      "sha256": "fb359559d93095c81a57760c7739ffbd6d618a03d1810503515f8ae2b5054cd0",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".github/skills/openspec-propose/SKILL.md",
+      "sha256": "ead4a7b7077ff08607b883ce045b31de3d78189432846c58ae80675eeac5033b",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".github/skills/openspec-sync-specs/SKILL.md",
+      "sha256": "9c74dad096467f982806ccf33e213f459890e0b79af1f69f6e9f1e790bb2fccf",
+      "scope_kind": "agent-guidance",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "7aad0c428014e306982fe782d7300c519ff39cfb78f98385c51b95d5f447a777",
+      "scope_kind": "automation",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".github/workflows/claude-review.yml",
+      "sha256": "9d5a4d41cbd5a9ad8b254871456969ab8fd47ec96f8455cc8d576d9ee19778c2",
+      "scope_kind": "automation",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": ".github/workflows/zizmor.yml",
+      "sha256": "934b4e9a5865ed5b1994e7eba65144d6915c299cf00a8fb369c2cbf955319f11",
+      "scope_kind": "automation",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "AGENTS.md",
+      "sha256": "1388b5bb921f644697e3d5c54479b5c38a6be81be1be9d201f890f51eee440ee",
+      "scope_kind": "repository-process",
+      "feature_ids": [
+        "DOC-AUDIT-PROTOCOLS",
+        "XTASK-AUDIT-SCOPE",
+        "XTASK-CONVENTIONAL-COMMITS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "CLAUDE.md",
+      "sha256": "8183129a151c2daa2f2858817fac3dd8db3e89d6ad52afda92729d59181b1c72",
+      "scope_kind": "repository-process",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "a0630d8532ac208a06f74cce9048a58e90fbffd5c91a3831081f7b8aa8d36572",
+      "scope_kind": "repository-process",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "7915e82004d63285ac5d9123f94029be22ff475560ede891dcc1592ea45b4e8c",
+      "scope_kind": "repository-process",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "_typos.toml",
+      "sha256": "49abafbe2646d71038de39776be19934aa938c2a6ba5760b905b02da0ef077da",
+      "scope_kind": "repository-process",
+      "feature_ids": [
+        "AV2-5.17.5-METADATA-HDR-CLL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/Cargo.toml",
+      "sha256": "4790304ae418161777a8f268cd68f13cfb110ba740a46a6cf996910e981caa97",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/src/commands/decode.rs",
+      "sha256": "106e1d8842334792c8ba01597e9289a3a9f9a9f44c1171b025c14f02ec0b6243",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/src/commands/encode.rs",
+      "sha256": "1c6b60dfc12846a54556113619fac78b05ca284980fb3d4636415374b86f01b4",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/src/commands/inspect.rs",
+      "sha256": "fd862532e3528c617c14227c4a7568f096b5c24cb6070f57100dbc506e40adc6",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [
+        "AV2-5.2.1-OBU-DISPATCH",
+        "CLI-INSPECT",
+        "CONF-INSPECT-SNAPSHOTS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/src/commands/mod.rs",
+      "sha256": "d3f832d6bdcb2b1429dfb4a889c3fc62079cba926673289d85192ee70c2109fd",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/src/commands/validate.rs",
+      "sha256": "24cdbb9e353233097114f561b8a108a6c8917c4bae13926bc026a3dc06b2d8e0",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [
+        "CLI-VALIDATE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/src/main.rs",
+      "sha256": "890c2509b664bf39213bd067bc1d28f012180c427383d04162585856f606cdcc",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/tests/cli.rs",
+      "sha256": "39e29a2f59391a9ba00a55990f1f0cb69a6c2aa8aac9e62028c2f01b7cbd40d4",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.5-TEMPORAL-DELIMITER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/Cargo.toml",
+      "sha256": "dd537952fdf57092b0ad76402626200d4e3ff05bdfcb9b609fac1dc80954c427",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/annexb.rs",
+      "sha256": "8fd3c82281f0070bbaf37faadcaaa58905c0bd47f3e557242e797ea7925ed579",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.19-TILE-GROUP",
+        "AV2-B-ANNEXB-OBU-ENVELOPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/bitio.rs",
+      "sha256": "d502d8958fb4f939a562080e721d74fdec06c3dedcaf76004212fbe7a18b41e1",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-4.11.3-UVLC",
+        "AV2-4.11.4-SVLC",
+        "AV2-4.11.5-LE",
+        "AV2-4.11.7-SU",
+        "AV2-4.11.8-NS",
+        "AV2-5.2.4-BYTE-ALIGNMENT",
+        "ENC-BITSTREAM-WRITER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/error.rs",
+      "sha256": "a39ba25a3d1310a042c760fca2efff98ce309b94f7c4207f2174bee93ea90c44",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers.rs",
+      "sha256": "3bd0da69338b733751dbd92b880283e0d5116f15e3c46c7982674a3f994b22c9",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
+        "AV2-5.18.5-FILTERING",
+        "AV2-5.18.6-QUANTIZATION",
+        "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.18.8-TRANSFORM-CODING-MODES",
+        "AV2-5.18.9-GLOBAL-MOTION",
+        "AV2-5.20-TILE-GROUP-PAYLOAD",
+        "AV2-5.4-SEQUENCE-HEADER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/atlas_segment.rs",
+      "sha256": "bd7dc87d2b847539e8cee1d1fce02e0b6c10858be5234a153b4d637dd705258d",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.9-ATLAS-SEGMENT",
+        "AV2-5.9.1-ATLAS-LABEL-SEGMENT-INFO",
+        "AV2-5.9.2-ATLAS-ENHANCED-INFO",
+        "AV2-5.9.3-ATLAS-MULTISTREAM-INFO",
+        "AV2-5.9.4-ATLAS-MULTISTREAM-ALPHA-INFO",
+        "AV2-5.9.5-ATLAS-BASIC-INFO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/buffer_removal_timing.rs",
+      "sha256": "6f87630c9ee1fce0bee1e0abd9f9b0e95f5bd91da8fc362d4e8898fc4a28b509",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.12-BUFFER-REMOVAL-TIMING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/content_interpretation.rs",
+      "sha256": "29b1595f194dd42f6311a3af4f6ca3188e6f567920e03a1a5be8302e246479c7",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.15-CONTENT-INTERPRETATION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/film_grain.rs",
+      "sha256": "e870327fcd33e6f43e7f7f893fcdd0d9dd41fdbd3724cfeea2ca79822fac666e",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.14-FILM-GRAIN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/frame/config.rs",
+      "sha256": "2d96d0b8f8bac7cb7dd6bcc5c5238a3948764a9a41abf971e9a3d5186c61fd0d",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.18.3-FRAME-CONFIGURATION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/frame/info.rs",
+      "sha256": "5a7acd18f3af997287498b580910d0b9d7bd375f0c9959b3d21fbdf5f03c9a41",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/frame/mod.rs",
+      "sha256": "96a9a49ddb9493298e592a7897d33af41f465ce652bb5f33e3bb6744a9a4adae",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.18.1-FRAME-HEADER-GENERAL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/frame/size.rs",
+      "sha256": "c731042c62a1971f5a7a8e607706d29399c3ca383e15b9132c7a1c2b35a79e37",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.18.4-FRAME-SIZE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/layer_config_record.rs",
+      "sha256": "c992704e247e06c1f9e2364a32ea692796a41a98cc83eff6700c3b67868a540a",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.8-LAYER-CONFIG-RECORD",
+        "AV2-5.8.1-LCR-GLOBAL-INFO",
+        "AV2-5.8.2-LCR-LOCAL-INFO",
+        "AV2-5.8.3-LCR-AGGREGATE-INFO",
+        "AV2-5.8.4-LCR-SEQ-PTL-INFO",
+        "AV2-5.8.5-LCR-GLOBAL-PAYLOAD",
+        "AV2-5.8.6-LCR-XLAYER-INFO",
+        "AV2-5.8.7-LCR-REP-INFO",
+        "AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO",
+        "AV2-5.8.9-LCR-XLAYER-COLOR-INFO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/metadata.rs",
+      "sha256": "a70105553e31c7f6e455214d3e22d3a851042090b72430cee427e012e2357d7a",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.17-METADATA",
+        "AV2-5.17.1-METADATA-UNIT",
+        "AV2-5.17.10-METADATA-SCAN-TYPE",
+        "AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO",
+        "AV2-5.17.12-METADATA-DECODED-FRAME-HASH",
+        "AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED",
+        "AV2-5.17.2-METADATA-SHORT",
+        "AV2-5.17.3-METADATA-GROUP",
+        "AV2-5.17.4-METADATA-ITUT-T35",
+        "AV2-5.17.5-METADATA-HDR-CLL",
+        "AV2-5.17.6-METADATA-HDR-MDCV",
+        "AV2-5.17.7-METADATA-TIMECODE",
+        "AV2-5.17.8-METADATA-BANDING-HINTS",
+        "AV2-5.17.9-METADATA-ICC-PROFILE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/operating_point_set.rs",
+      "sha256": "906b0e38438359d5ca800f2a2fc6caaf575b473b30ed89849e7bc73bc729dbe1",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.10-OPS-SYNTAX-ELEMENTS",
+        "AV2-5.11-OPERATING-POINT-PAYLOAD",
+        "AV2-5.11.1-OPS-AGGREGATE-INFO",
+        "AV2-5.11.2-OPS-SEQ-PTL-INFO",
+        "AV2-5.11.3-OPS-DECODER-MODEL-INFO",
+        "AV2-5.11.4-OPS-COLOR-INFO",
+        "AV2-5.11.5-OPS-MLAYER-INFO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/padding.rs",
+      "sha256": "f94a5d958b6dbb173ceb9bc991c2ef51268e2a0de42e55984e06ea988a409f93",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.16-PADDING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/quantizer_matrix.rs",
+      "sha256": "bbc11aa0488afbc3746a06b17b776b5fbf2e2c52f4fc5107ede0341e84c9898b",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.13-QUANTIZATION-MATRIX",
+        "AV2-5.4.11-USER-QM"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/sequence.rs",
+      "sha256": "b959f25e219b269dc6fe5b552a5524c09f199d486746e248322a73a63d53229e",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
+        "AV2-5.4.10-SEQUENCE-FILTER-CONFIG",
+        "AV2-5.4.12-TIMING-INFO",
+        "AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO",
+        "AV2-5.4.2-SEQUENCE-TILE-CONFIG",
+        "AV2-5.4.3-SEQUENCE-PARTITION-CONFIG",
+        "AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG",
+        "AV2-5.4.5-SEQUENCE-INTRA-CONFIG",
+        "AV2-5.4.6-SEQUENCE-INTER-CONFIG",
+        "AV2-5.4.7-SEQUENCE-SCC-CONFIG",
+        "AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/tile_group.rs",
+      "sha256": "4423ab878d57199ac7978780ac537bd3573786df26663f5da1b919916d7d8104",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.19-TILE-GROUP"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/hls.rs",
+      "sha256": "c113d70bc22e5301caa807a0ed37755b55c1ccddc084604b52a784e2dd4a2b7a",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.6-MSDO",
+        "AV2-5.7-MULTI-FRAME-HEADER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/leb128.rs",
+      "sha256": "1c558a7c55bffa4c0c29d27e0cf38273e7569a39379e978113335b4f205e85b6",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-4.11.6-LEB128"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/lib.rs",
+      "sha256": "945a8ccf6d78950dd92507c2b509452d80e9ee6a0bb3bc767f53826bf7b6bd3d",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/obu.rs",
+      "sha256": "a1860e1f74bcab4d42231e287290bce40177b12ce0fc20912e89b0f8cfb35b47",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.12-BUFFER-REMOVAL-TIMING",
+        "AV2-5.13-QUANTIZATION-MATRIX",
+        "AV2-5.14-FILM-GRAIN",
+        "AV2-5.15-CONTENT-INTERPRETATION",
+        "AV2-5.16-PADDING",
+        "AV2-5.17.2-METADATA-SHORT",
+        "AV2-5.17.3-METADATA-GROUP",
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.2.1-OBU-DISPATCH",
+        "AV2-5.2.2-OBU-HEADER",
+        "AV2-5.2.3-TRAILING-BITS",
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.5-TEMPORAL-DELIMITER",
+        "AV2-5.6-MSDO",
+        "AV2-5.7-MULTI-FRAME-HEADER",
+        "AV2-5.8-LAYER-CONFIG-RECORD",
+        "AV2-5.9-ATLAS-SEGMENT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/segment.rs",
+      "sha256": "ec05a249f54dc1343b4f69b6110b2cbaee194a997ea13d4fa4be963223e036b1",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.4.9-SEGMENT-INFO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/span.rs",
+      "sha256": "de86704bcf841af4df79826752dd3c4b5b4f31a829d115ce6f03eb42b50dd796",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/tables.rs",
+      "sha256": "feaa45d6172e47c507cc926f090242cb3ad4bfb65ca1324f4b82d044c00cfa8c",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-9-ADDITIONAL-TABLES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/tile.rs",
+      "sha256": "82a06920219f674c50ffc9c22920ba4eff99412e7b3f79e4b126982c5c7a664e",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.18.7.3-TILE-PARAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/types.rs",
+      "sha256": "176b95884772ee5c716ad18e5cccc52eebbbc07ec287392669686845c6d7e1cf",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.2.1-OBU-TYPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/Cargo.toml",
+      "sha256": "dda16cce32a9fe30db400eda8b1493f166fd0cc0291cfcad732de116d9360d9e",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/config.rs",
+      "sha256": "039fda4d137f0a337a529a246a38de66927bfad5c4847ad04ea215b098e25d7e",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [
+        "AV2-5.4-SEQUENCE-HEADER",
+        "ENC-SPEED-PRESETS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/context.rs",
+      "sha256": "6e724cdcaa6a960ee6a00e44d0510933242f3052baa331c444d950f1fc57fd26",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [
+        "ENC-INTRA-TOY-V0",
+        "ENC-RATE-CONTROL-V0",
+        "ENC-Y4M-INPUT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/lib.rs",
+      "sha256": "4e064e060a336eb4f3a1c8042e58a7abbda5be7f23a20c707b9cc2f82d8f6d29",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/Cargo.toml",
+      "sha256": "68ea0fe98e3c7694179c3f49bff3e87a0c8a4036cbbb0adcbcda45c18e883bf1",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/checks/mod.rs",
+      "sha256": "94de8be82396738d777a84d7242cd0919754249afc8ea50c80ce508ead64f85a",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-5.3-RESERVED-OBU",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-A-LEVELS-TIERS",
+        "AV2-A-PROFILES",
+        "AV2-E-DECODER-MODEL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context.rs",
+      "sha256": "f0e2c0ba0d0b7b0969e3a0b5a03520665efb5c230468dd3d1f6479edfa14ba3c",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.7-MULTI-FRAME-HEADER",
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/diagnostic.rs",
+      "sha256": "bd0193b197f4b60e964fc49fe07a3e94cd2c3e38bf59e516261eb414e9b55a04",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/error_location.rs",
+      "sha256": "9c92f6c7f5036365bb9ecc096967ce91df328ac901de8e3a0e100a12507e7a19",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/lib.rs",
+      "sha256": "62e030de2b8a839c63ec72ffa8cad10ad26c43ba7526a3e4782f5f114eac370a",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/options.rs",
+      "sha256": "08e48489685de31405017972dd414915d2d8f576e7698892cbfcbd038c4c3523",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator.rs",
+      "sha256": "5fad6744490a29ce54ecc4ec0aef9c0034e7b9ddbbe5362f14fd339313b3d072",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "deny.toml",
+      "sha256": "39208159597101d7b2634e7e7527ddfd2b4362d7a84f3cfb8d3a6ff8c0814fbe",
+      "scope_kind": "repository-process",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/ARCHITECTURE.md",
+      "sha256": "c3981b341f09facba84a689ee4903c4ce4e1eed4f64cb449783fbcba596aeb56",
+      "scope_kind": "docs",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/CODE_REVIEW.md",
+      "sha256": "ef4e9425a5ff915cc82bef97928e478c9791fe6a8a85174e825d0373fe512e5c",
+      "scope_kind": "docs",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/CONFORMANCE.md",
+      "sha256": "eb61e836157258acc5157c0d45f532e6b1448c784a842911fc628fc848de84d2",
+      "scope_kind": "docs",
+      "feature_ids": [
+        "CLI-INSPECT",
+        "CONF-AVM-DIFF-HARNESS",
+        "CONF-FUZZ-NO-PANIC",
+        "CONF-INSPECT-SNAPSHOTS",
+        "CONF-PUBLIC-VECTOR-LICENSE-REVIEW",
+        "CONF-PUBLIC-VECTORS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/CURRENT-VALIDATOR-STATE.md",
+      "sha256": "82cfc3bc3761225b0dea7b044f1df1a434d5f0d265e378daba0888557a5db862",
+      "scope_kind": "docs",
+      "feature_ids": [
+        "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.18.7.3-TILE-PARAMS",
+        "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
+        "AV2-5.4.9-SEGMENT-INFO",
+        "AV2-5.5-TEMPORAL-DELIMITER",
+        "AV2-5.6-MSDO",
+        "AV2-5.7-MULTI-FRAME-HEADER",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/DECISIONS/0001-feature-tracking.md",
+      "sha256": "c263aba2422c0f65237509d974c0f4014b978be54672ecec2adce2f7ec9efd50",
+      "scope_kind": "docs",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/ENCODER-ROADMAP.md",
+      "sha256": "dd889d31cf4054477db85318b13cf951fc50efd667b9d645cbb00b5e480dde4c",
+      "scope_kind": "docs",
+      "feature_ids": [
+        "AV2-4.11.6-LEB128",
+        "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.2.1-OBU-TYPE",
+        "AV2-5.2.2-OBU-HEADER",
+        "AV2-5.2.3-TRAILING-BITS",
+        "AV2-5.2.4-BYTE-ALIGNMENT",
+        "AV2-5.3-RESERVED-OBU",
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.8-LAYER-CONFIG-RECORD",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-B-ANNEXB-OBU-ENVELOPE",
+        "CLI-INSPECT",
+        "CLI-VALIDATE",
+        "CONF-AVM-DIFF-HARNESS",
+        "CONF-FUZZ-NO-PANIC",
+        "CONF-INSPECT-SNAPSHOTS",
+        "CONF-PUBLIC-VECTORS",
+        "ENC-BITSTREAM-WRITER",
+        "ENC-INTRA-TOY-V0",
+        "ENC-RATE-CONTROL-V0",
+        "ENC-SPEED-PRESETS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/FEATURE-STATUS.md",
+      "sha256": "55c73ed29f495d20598190f0cf4b85616eb846920a98c6cbba29bd9931037656",
+      "scope_kind": "docs",
+      "feature_ids": [
+        "AV2-4.11.3-UVLC",
+        "AV2-4.11.4-SVLC",
+        "AV2-4.11.5-LE",
+        "AV2-4.11.6-LEB128",
+        "AV2-4.11.7-SU",
+        "AV2-4.11.8-NS",
+        "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.10-OPS-SYNTAX-ELEMENTS",
+        "AV2-5.11-OPERATING-POINT-PAYLOAD",
+        "AV2-5.11.1-OPS-AGGREGATE-INFO",
+        "AV2-5.11.2-OPS-SEQ-PTL-INFO",
+        "AV2-5.11.3-OPS-DECODER-MODEL-INFO",
+        "AV2-5.11.4-OPS-COLOR-INFO",
+        "AV2-5.11.5-OPS-MLAYER-INFO",
+        "AV2-5.12-BUFFER-REMOVAL-TIMING",
+        "AV2-5.13-QUANTIZATION-MATRIX",
+        "AV2-5.14-FILM-GRAIN",
+        "AV2-5.15-CONTENT-INTERPRETATION",
+        "AV2-5.16-PADDING",
+        "AV2-5.17-METADATA",
+        "AV2-5.17.1-METADATA-UNIT",
+        "AV2-5.17.10-METADATA-SCAN-TYPE",
+        "AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO",
+        "AV2-5.17.12-METADATA-DECODED-FRAME-HASH",
+        "AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED",
+        "AV2-5.17.2-METADATA-SHORT",
+        "AV2-5.17.3-METADATA-GROUP",
+        "AV2-5.17.4-METADATA-ITUT-T35",
+        "AV2-5.17.5-METADATA-HDR-CLL",
+        "AV2-5.17.6-METADATA-HDR-MDCV",
+        "AV2-5.17.7-METADATA-TIMECODE",
+        "AV2-5.17.8-METADATA-BANDING-HINTS",
+        "AV2-5.17.9-METADATA-ICC-PROFILE",
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.18.1-FRAME-HEADER-GENERAL",
+        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.3-FRAME-CONFIGURATION",
+        "AV2-5.18.4-FRAME-SIZE",
+        "AV2-5.18.5-FILTERING",
+        "AV2-5.18.6-QUANTIZATION",
+        "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.18.7.3-TILE-PARAMS",
+        "AV2-5.18.8-TRANSFORM-CODING-MODES",
+        "AV2-5.18.9-GLOBAL-MOTION",
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.2.1-OBU-DISPATCH",
+        "AV2-5.2.1-OBU-TYPE",
+        "AV2-5.2.2-OBU-HEADER",
+        "AV2-5.2.3-TRAILING-BITS",
+        "AV2-5.2.4-BYTE-ALIGNMENT",
+        "AV2-5.20-TILE-GROUP-PAYLOAD",
+        "AV2-5.3-RESERVED-OBU",
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
+        "AV2-5.4.10-SEQUENCE-FILTER-CONFIG",
+        "AV2-5.4.11-USER-QM",
+        "AV2-5.4.12-TIMING-INFO",
+        "AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO",
+        "AV2-5.4.2-SEQUENCE-TILE-CONFIG",
+        "AV2-5.4.3-SEQUENCE-PARTITION-CONFIG",
+        "AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG",
+        "AV2-5.4.5-SEQUENCE-INTRA-CONFIG",
+        "AV2-5.4.6-SEQUENCE-INTER-CONFIG",
+        "AV2-5.4.7-SEQUENCE-SCC-CONFIG",
+        "AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG",
+        "AV2-5.4.9-SEGMENT-INFO",
+        "AV2-5.5-TEMPORAL-DELIMITER",
+        "AV2-5.6-MSDO",
+        "AV2-5.7-MULTI-FRAME-HEADER",
+        "AV2-5.8-LAYER-CONFIG-RECORD",
+        "AV2-5.8.1-LCR-GLOBAL-INFO",
+        "AV2-5.8.2-LCR-LOCAL-INFO",
+        "AV2-5.8.3-LCR-AGGREGATE-INFO",
+        "AV2-5.8.4-LCR-SEQ-PTL-INFO",
+        "AV2-5.8.5-LCR-GLOBAL-PAYLOAD",
+        "AV2-5.8.6-LCR-XLAYER-INFO",
+        "AV2-5.8.7-LCR-REP-INFO",
+        "AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO",
+        "AV2-5.8.9-LCR-XLAYER-COLOR-INFO",
+        "AV2-5.9-ATLAS-SEGMENT",
+        "AV2-5.9.1-ATLAS-LABEL-SEGMENT-INFO",
+        "AV2-5.9.2-ATLAS-ENHANCED-INFO",
+        "AV2-5.9.3-ATLAS-MULTISTREAM-INFO",
+        "AV2-5.9.4-ATLAS-MULTISTREAM-ALPHA-INFO",
+        "AV2-5.9.5-ATLAS-BASIC-INFO",
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-9-ADDITIONAL-TABLES",
+        "AV2-A-LEVELS-TIERS",
+        "AV2-A-PROFILES",
+        "AV2-B-ANNEXB-OBU-ENVELOPE",
+        "AV2-E-DECODER-MODEL",
+        "CLI-INSPECT",
+        "CLI-VALIDATE",
+        "CONF-AVM-DIFF-HARNESS",
+        "CONF-AVM-INVALID-STREAMS",
+        "CONF-AVM-PARSER-TRACES",
+        "CONF-AVM-VALID-STREAMS",
+        "CONF-FUZZ-NO-PANIC",
+        "CONF-INSPECT-SNAPSHOTS",
+        "CONF-PUBLIC-VECTOR-LICENSE-REVIEW",
+        "CONF-PUBLIC-VECTORS",
+        "DOC-AUDIT-PROTOCOLS",
+        "DOC-AV2-SPEC-MIRROR",
+        "DOC-ENCODER-REFERENCE-GATE",
+        "DOC-FEATURE-TRACKING",
+        "DOC-VALIDATOR-ROADMAP",
+        "ENC-BITSTREAM-WRITER",
+        "ENC-INTRA-TOY-V0",
+        "ENC-RATE-CONTROL-V0",
+        "ENC-SPEED-PRESETS",
+        "ENC-Y4M-INPUT",
+        "XTASK-AUDIT-SCOPE",
+        "XTASK-CONVENTIONAL-COMMITS",
+        "XTASK-FEATURE-STATUS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/FEATURE-TRACKING.md",
+      "sha256": "b9192af90de8fe85ce62dd4c55193083fa40dac5ecce29fb14d8585efbf89304",
+      "scope_kind": "docs",
+      "feature_ids": [
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.2.2-OBU-HEADER",
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-B-ANNEXB-OBU-ENVELOPE",
+        "CLI-INSPECT",
+        "CONF-FUZZ-NO-PANIC",
+        "DOC-FEATURE-TRACKING",
+        "ENC-BITSTREAM-WRITER",
+        "XTASK-FEATURE-STATUS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/IMPLEMENTATION-MATRIX.schema.md",
+      "sha256": "b5aaa7f426c97210ba870e4ee16935b237aae0ead650ac4f04b5e8464450f465",
+      "scope_kind": "docs",
+      "feature_ids": [
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.2.2-OBU-HEADER",
+        "AV2-B-ANNEXB-OBU-ENVELOPE",
+        "CONF-FUZZ-NO-PANIC",
+        "ENC-BITSTREAM-WRITER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/IMPLEMENTATION-MATRIX.toml",
+      "sha256": "edc2fe9d36df6d5f39be54971b586e14051b92d0667084ad97a263e93d362469",
+      "scope_kind": "docs",
+      "feature_ids": [
+        "AV2-4.11.3-UVLC",
+        "AV2-4.11.4-SVLC",
+        "AV2-4.11.5-LE",
+        "AV2-4.11.6-LEB128",
+        "AV2-4.11.7-SU",
+        "AV2-4.11.8-NS",
+        "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.10-OPS-SYNTAX-ELEMENTS",
+        "AV2-5.11-OPERATING-POINT-PAYLOAD",
+        "AV2-5.11.1-OPS-AGGREGATE-INFO",
+        "AV2-5.11.2-OPS-SEQ-PTL-INFO",
+        "AV2-5.11.3-OPS-DECODER-MODEL-INFO",
+        "AV2-5.11.4-OPS-COLOR-INFO",
+        "AV2-5.11.5-OPS-MLAYER-INFO",
+        "AV2-5.12-BUFFER-REMOVAL-TIMING",
+        "AV2-5.13-QUANTIZATION-MATRIX",
+        "AV2-5.14-FILM-GRAIN",
+        "AV2-5.15-CONTENT-INTERPRETATION",
+        "AV2-5.16-PADDING",
+        "AV2-5.17-METADATA",
+        "AV2-5.17.1-METADATA-UNIT",
+        "AV2-5.17.10-METADATA-SCAN-TYPE",
+        "AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO",
+        "AV2-5.17.12-METADATA-DECODED-FRAME-HASH",
+        "AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED",
+        "AV2-5.17.2-METADATA-SHORT",
+        "AV2-5.17.3-METADATA-GROUP",
+        "AV2-5.17.4-METADATA-ITUT-T35",
+        "AV2-5.17.5-METADATA-HDR-CLL",
+        "AV2-5.17.6-METADATA-HDR-MDCV",
+        "AV2-5.17.7-METADATA-TIMECODE",
+        "AV2-5.17.8-METADATA-BANDING-HINTS",
+        "AV2-5.17.9-METADATA-ICC-PROFILE",
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.18.1-FRAME-HEADER-GENERAL",
+        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.3-FRAME-CONFIGURATION",
+        "AV2-5.18.4-FRAME-SIZE",
+        "AV2-5.18.5-FILTERING",
+        "AV2-5.18.6-QUANTIZATION",
+        "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.18.7.3-TILE-PARAMS",
+        "AV2-5.18.8-TRANSFORM-CODING-MODES",
+        "AV2-5.18.9-GLOBAL-MOTION",
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.2.1-OBU-DISPATCH",
+        "AV2-5.2.1-OBU-TYPE",
+        "AV2-5.2.2-OBU-HEADER",
+        "AV2-5.2.3-TRAILING-BITS",
+        "AV2-5.2.4-BYTE-ALIGNMENT",
+        "AV2-5.20-TILE-GROUP-PAYLOAD",
+        "AV2-5.3-RESERVED-OBU",
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
+        "AV2-5.4.10-SEQUENCE-FILTER-CONFIG",
+        "AV2-5.4.11-USER-QM",
+        "AV2-5.4.12-TIMING-INFO",
+        "AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO",
+        "AV2-5.4.2-SEQUENCE-TILE-CONFIG",
+        "AV2-5.4.3-SEQUENCE-PARTITION-CONFIG",
+        "AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG",
+        "AV2-5.4.5-SEQUENCE-INTRA-CONFIG",
+        "AV2-5.4.6-SEQUENCE-INTER-CONFIG",
+        "AV2-5.4.7-SEQUENCE-SCC-CONFIG",
+        "AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG",
+        "AV2-5.4.9-SEGMENT-INFO",
+        "AV2-5.5-TEMPORAL-DELIMITER",
+        "AV2-5.6-MSDO",
+        "AV2-5.7-MULTI-FRAME-HEADER",
+        "AV2-5.8-LAYER-CONFIG-RECORD",
+        "AV2-5.8.1-LCR-GLOBAL-INFO",
+        "AV2-5.8.2-LCR-LOCAL-INFO",
+        "AV2-5.8.3-LCR-AGGREGATE-INFO",
+        "AV2-5.8.4-LCR-SEQ-PTL-INFO",
+        "AV2-5.8.5-LCR-GLOBAL-PAYLOAD",
+        "AV2-5.8.6-LCR-XLAYER-INFO",
+        "AV2-5.8.7-LCR-REP-INFO",
+        "AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO",
+        "AV2-5.8.9-LCR-XLAYER-COLOR-INFO",
+        "AV2-5.9-ATLAS-SEGMENT",
+        "AV2-5.9.1-ATLAS-LABEL-SEGMENT-INFO",
+        "AV2-5.9.2-ATLAS-ENHANCED-INFO",
+        "AV2-5.9.3-ATLAS-MULTISTREAM-INFO",
+        "AV2-5.9.4-ATLAS-MULTISTREAM-ALPHA-INFO",
+        "AV2-5.9.5-ATLAS-BASIC-INFO",
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-9-ADDITIONAL-TABLES",
+        "AV2-A-LEVELS-TIERS",
+        "AV2-A-PROFILES",
+        "AV2-B-ANNEXB-OBU-ENVELOPE",
+        "AV2-E-DECODER-MODEL",
+        "CLI-INSPECT",
+        "CLI-VALIDATE",
+        "CONF-AVM-DIFF-HARNESS",
+        "CONF-AVM-INVALID-STREAMS",
+        "CONF-AVM-PARSER-TRACES",
+        "CONF-AVM-VALID-STREAMS",
+        "CONF-FUZZ-NO-PANIC",
+        "CONF-INSPECT-SNAPSHOTS",
+        "CONF-PUBLIC-VECTOR-LICENSE-REVIEW",
+        "CONF-PUBLIC-VECTORS",
+        "DOC-AUDIT-PROTOCOLS",
+        "DOC-AV2-SPEC-MIRROR",
+        "DOC-ENCODER-REFERENCE-GATE",
+        "DOC-FEATURE-TRACKING",
+        "DOC-VALIDATOR-ROADMAP",
+        "ENC-BITSTREAM-WRITER",
+        "ENC-INTRA-TOY-V0",
+        "ENC-RATE-CONTROL-V0",
+        "ENC-SPEED-PRESETS",
+        "ENC-Y4M-INPUT",
+        "XTASK-AUDIT-SCOPE",
+        "XTASK-CONVENTIONAL-COMMITS",
+        "XTASK-FEATURE-STATUS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/OPS-BRT-DIAGNOSTICS.md",
+      "sha256": "82b2691b1cbbcba88991415576c4c7eacdeb80ab1059075948892ee98cf2dfda",
+      "scope_kind": "docs",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/SPEC-MAPPING.md",
+      "sha256": "44ed7c947c8ceee5d4cf04f0f6c0f0152e517003770be29a93de55e3d431d0d2",
+      "scope_kind": "docs",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/TESTING.md",
+      "sha256": "fd6f8e1a247dd943958071371df657b254db6fb20aa9ad35c9e23b3c0210c2b9",
+      "scope_kind": "docs",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/VALIDATOR-DIAGNOSTICS.md",
+      "sha256": "26446bccd68d10b6543c300b43c593f9727f55d2f861c7cc5e2d1804b28acade",
+      "scope_kind": "docs",
+      "feature_ids": [
+        "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.13-QUANTIZATION-MATRIX",
+        "AV2-5.14-FILM-GRAIN",
+        "AV2-5.15-CONTENT-INTERPRETATION",
+        "AV2-5.16-PADDING",
+        "AV2-5.17-METADATA",
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.7.3-TILE-PARAMS",
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.2.1-OBU-DISPATCH",
+        "AV2-5.2.3-TRAILING-BITS",
+        "AV2-5.2.4-BYTE-ALIGNMENT",
+        "AV2-5.20-TILE-GROUP-PAYLOAD",
+        "AV2-5.4.2-SEQUENCE-TILE-CONFIG",
+        "AV2-5.4.9-SEGMENT-INFO",
+        "AV2-5.6-MSDO",
+        "AV2-5.7-MULTI-FRAME-HEADER",
+        "AV2-5.8-LAYER-CONFIG-RECORD",
+        "AV2-5.9-ATLAS-SEGMENT",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/VALIDATOR-GAP-ANALYSIS.md",
+      "sha256": "f27894a67664cc2749b010ce4a77af97d202470b216ab63b850783b11afd64d3",
+      "scope_kind": "docs",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/VALIDATOR-HLS-AVAILABILITY-STATE.md",
+      "sha256": "a86210cf92f092a02c8190dc9eb416f7615847db8b3591860b1f7c698ade7509",
+      "scope_kind": "docs",
+      "feature_ids": [
+        "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.5-TEMPORAL-DELIMITER",
+        "AV2-5.6-MSDO",
+        "AV2-5.7-MULTI-FRAME-HEADER",
+        "AV2-5.8-LAYER-CONFIG-RECORD",
+        "AV2-5.9-ATLAS-SEGMENT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/VALIDATOR-IMPLEMENTATION-MATRIX-EXPANSION.md",
+      "sha256": "480efc2bddd5acecedea2569b1af8d54a5afde96cbaac866b78cc5a2516dc0e3",
+      "scope_kind": "docs",
+      "feature_ids": [
+        "AV2-4.11.3-UVLC",
+        "AV2-4.11.5-LE",
+        "AV2-4.11.6-LEB128",
+        "AV2-4.11.8-NS",
+        "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.10-OPS-SYNTAX-ELEMENTS",
+        "AV2-5.11-OPERATING-POINT-PAYLOAD",
+        "AV2-5.11.1-OPS-AGGREGATE-INFO",
+        "AV2-5.11.2-OPS-SEQ-PTL-INFO",
+        "AV2-5.11.3-OPS-DECODER-MODEL-INFO",
+        "AV2-5.11.4-OPS-COLOR-INFO",
+        "AV2-5.11.5-OPS-MLAYER-INFO",
+        "AV2-5.12-BUFFER-REMOVAL-TIMING",
+        "AV2-5.13-QUANTIZATION-MATRIX",
+        "AV2-5.14-FILM-GRAIN",
+        "AV2-5.15-CONTENT-INTERPRETATION",
+        "AV2-5.16-PADDING",
+        "AV2-5.17-METADATA",
+        "AV2-5.17.1-METADATA-UNIT",
+        "AV2-5.17.10-METADATA-SCAN-TYPE",
+        "AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO",
+        "AV2-5.17.12-METADATA-DECODED-FRAME-HASH",
+        "AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED",
+        "AV2-5.17.2-METADATA-SHORT",
+        "AV2-5.17.3-METADATA-GROUP",
+        "AV2-5.17.4-METADATA-ITUT-T35",
+        "AV2-5.17.5-METADATA-HDR-CLL",
+        "AV2-5.17.6-METADATA-HDR-MDCV",
+        "AV2-5.17.7-METADATA-TIMECODE",
+        "AV2-5.17.8-METADATA-BANDING-HINTS",
+        "AV2-5.17.9-METADATA-ICC-PROFILE",
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.18.1-FRAME-HEADER-GENERAL",
+        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.3-FRAME-CONFIGURATION",
+        "AV2-5.18.4-FRAME-SIZE",
+        "AV2-5.18.5-FILTERING",
+        "AV2-5.18.6-QUANTIZATION",
+        "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.18.8-TRANSFORM-CODING-MODES",
+        "AV2-5.18.9-GLOBAL-MOTION",
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.2.1-OBU-DISPATCH",
+        "AV2-5.2.1-OBU-TYPE",
+        "AV2-5.2.2-OBU-HEADER",
+        "AV2-5.2.3-TRAILING-BITS",
+        "AV2-5.2.4-BYTE-ALIGNMENT",
+        "AV2-5.20-TILE-GROUP-PAYLOAD",
+        "AV2-5.3-RESERVED-OBU",
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
+        "AV2-5.4.10-SEQUENCE-FILTER-CONFIG",
+        "AV2-5.4.11-USER-QM",
+        "AV2-5.4.12-TIMING-INFO",
+        "AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO",
+        "AV2-5.4.2-SEQUENCE-TILE-CONFIG",
+        "AV2-5.4.3-SEQUENCE-PARTITION-CONFIG",
+        "AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG",
+        "AV2-5.4.5-SEQUENCE-INTRA-CONFIG",
+        "AV2-5.4.6-SEQUENCE-INTER-CONFIG",
+        "AV2-5.4.7-SEQUENCE-SCC-CONFIG",
+        "AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG",
+        "AV2-5.4.9-SEGMENT-INFO",
+        "AV2-5.5-TEMPORAL-DELIMITER",
+        "AV2-5.6-MSDO",
+        "AV2-5.7-MULTI-FRAME-HEADER",
+        "AV2-5.8-LAYER-CONFIG-RECORD",
+        "AV2-5.8.1-LCR-GLOBAL-INFO",
+        "AV2-5.8.2-LCR-LOCAL-INFO",
+        "AV2-5.8.3-LCR-AGGREGATE-INFO",
+        "AV2-5.8.4-LCR-SEQ-PTL-INFO",
+        "AV2-5.8.5-LCR-GLOBAL-PAYLOAD",
+        "AV2-5.8.6-LCR-XLAYER-INFO",
+        "AV2-5.8.7-LCR-REP-INFO",
+        "AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO",
+        "AV2-5.8.9-LCR-XLAYER-COLOR-INFO",
+        "AV2-5.9-ATLAS-SEGMENT",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-9-ADDITIONAL-TABLES",
+        "AV2-A-LEVELS-TIERS",
+        "AV2-A-PROFILES",
+        "AV2-B-ANNEXB-OBU-ENVELOPE",
+        "AV2-E-DECODER-MODEL",
+        "CONF-AVM-INVALID-STREAMS",
+        "CONF-AVM-PARSER-TRACES",
+        "CONF-AVM-VALID-STREAMS",
+        "CONF-PUBLIC-VECTOR-LICENSE-REVIEW"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/VALIDATOR-NEXT-DIAGNOSTICS.md",
+      "sha256": "5a2dce71b948314c51f033c5a3432652e0998826b68bbd2b74c3231914456b24",
+      "scope_kind": "docs",
+      "feature_ids": [
+        "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
+        "AV2-5.4.11-USER-QM",
+        "AV2-5.4.12-TIMING-INFO",
+        "AV2-5.4.2-SEQUENCE-TILE-CONFIG",
+        "AV2-5.4.9-SEGMENT-INFO",
+        "AV2-5.6-MSDO",
+        "AV2-5.7-MULTI-FRAME-HEADER",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/VALIDATOR-NEXT-PHASE.md",
+      "sha256": "80b1a0123d129d0056f33d54b739371025e2793bb6cf5ac7d730db4e6c3057ab",
+      "scope_kind": "docs",
+      "feature_ids": [
+        "AV2-4.11.7-SU",
+        "AV2-5.18.7.3-TILE-PARAMS",
+        "AV2-5.4.10-SEQUENCE-FILTER-CONFIG",
+        "AV2-5.4.11-USER-QM",
+        "AV2-5.4.12-TIMING-INFO",
+        "AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO",
+        "AV2-5.4.2-SEQUENCE-TILE-CONFIG",
+        "AV2-5.4.3-SEQUENCE-PARTITION-CONFIG",
+        "AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG",
+        "AV2-5.4.5-SEQUENCE-INTRA-CONFIG",
+        "AV2-5.4.6-SEQUENCE-INTER-CONFIG",
+        "AV2-5.4.7-SEQUENCE-SCC-CONFIG",
+        "AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG",
+        "AV2-5.4.9-SEGMENT-INFO",
+        "AV2-5.5-TEMPORAL-DELIMITER",
+        "AV2-5.6-MSDO",
+        "AV2-5.7-MULTI-FRAME-HEADER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/VALIDATOR-ROADMAP.md",
+      "sha256": "62eb273fb894122bb39cb0c2145f5bde943a9e45b71f43f68a2aa1ab203f16d6",
+      "scope_kind": "docs",
+      "feature_ids": [
+        "AV2-4.11.3-UVLC",
+        "AV2-4.11.5-LE",
+        "AV2-4.11.8-NS",
+        "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.10-OPS-SYNTAX-ELEMENTS",
+        "AV2-5.11-OPERATING-POINT-PAYLOAD",
+        "AV2-5.11.1-OPS-AGGREGATE-INFO",
+        "AV2-5.11.2-OPS-SEQ-PTL-INFO",
+        "AV2-5.11.3-OPS-DECODER-MODEL-INFO",
+        "AV2-5.11.4-OPS-COLOR-INFO",
+        "AV2-5.11.5-OPS-MLAYER-INFO",
+        "AV2-5.12-BUFFER-REMOVAL-TIMING",
+        "AV2-5.13-QUANTIZATION-MATRIX",
+        "AV2-5.14-FILM-GRAIN",
+        "AV2-5.15-CONTENT-INTERPRETATION",
+        "AV2-5.16-PADDING",
+        "AV2-5.17-METADATA",
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.18.1-FRAME-HEADER-GENERAL",
+        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.3-FRAME-CONFIGURATION",
+        "AV2-5.18.4-FRAME-SIZE",
+        "AV2-5.18.5-FILTERING",
+        "AV2-5.18.6-QUANTIZATION",
+        "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.18.8-TRANSFORM-CODING-MODES",
+        "AV2-5.18.9-GLOBAL-MOTION",
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.2.1-OBU-DISPATCH",
+        "AV2-5.2.3-TRAILING-BITS",
+        "AV2-5.2.4-BYTE-ALIGNMENT",
+        "AV2-5.20-TILE-GROUP-PAYLOAD",
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
+        "AV2-5.4.10-SEQUENCE-FILTER-CONFIG",
+        "AV2-5.4.11-USER-QM",
+        "AV2-5.4.12-TIMING-INFO",
+        "AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO",
+        "AV2-5.4.2-SEQUENCE-TILE-CONFIG",
+        "AV2-5.4.3-SEQUENCE-PARTITION-CONFIG",
+        "AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG",
+        "AV2-5.4.5-SEQUENCE-INTRA-CONFIG",
+        "AV2-5.4.6-SEQUENCE-INTER-CONFIG",
+        "AV2-5.4.7-SEQUENCE-SCC-CONFIG",
+        "AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG",
+        "AV2-5.4.9-SEGMENT-INFO",
+        "AV2-5.6-MSDO",
+        "AV2-5.7-MULTI-FRAME-HEADER",
+        "AV2-5.8-LAYER-CONFIG-RECORD",
+        "AV2-5.8.1-LCR-GLOBAL-INFO",
+        "AV2-5.8.2-LCR-LOCAL-INFO",
+        "AV2-5.8.3-LCR-AGGREGATE-INFO",
+        "AV2-5.8.4-LCR-SEQ-PTL-INFO",
+        "AV2-5.8.5-LCR-GLOBAL-PAYLOAD",
+        "AV2-5.8.6-LCR-XLAYER-INFO",
+        "AV2-5.8.7-LCR-REP-INFO",
+        "AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO",
+        "AV2-5.8.9-LCR-XLAYER-COLOR-INFO",
+        "AV2-5.9-ATLAS-SEGMENT",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "CONF-AVM-DIFF-HARNESS",
+        "CONF-INSPECT-SNAPSHOTS",
+        "CONF-PUBLIC-VECTORS",
+        "DOC-VALIDATOR-ROADMAP"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/VALIDATOR-SEQUENCE-HEADER-COVERAGE.md",
+      "sha256": "9c52be28543dab61cf264532c1504db8ddec0812c43881af9061d793c5fc47e5",
+      "scope_kind": "docs",
+      "feature_ids": [
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
+        "AV2-5.4.10-SEQUENCE-FILTER-CONFIG",
+        "AV2-5.4.11-USER-QM",
+        "AV2-5.4.12-TIMING-INFO",
+        "AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO",
+        "AV2-5.4.2-SEQUENCE-TILE-CONFIG",
+        "AV2-5.4.3-SEQUENCE-PARTITION-CONFIG",
+        "AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG",
+        "AV2-5.4.5-SEQUENCE-INTRA-CONFIG",
+        "AV2-5.4.6-SEQUENCE-INTER-CONFIG",
+        "AV2-5.4.7-SEQUENCE-SCC-CONFIG",
+        "AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG",
+        "AV2-5.4.9-SEGMENT-INFO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/references/ENCODER-RESEARCH-NOTES.md",
+      "sha256": "2370a08f08109f861e1200319e62a9536dec833fc0940ca8cee4cf29ffaeeded",
+      "scope_kind": "docs",
+      "feature_ids": [
+        "DOC-ENCODER-REFERENCE-GATE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/references/RAV1E-SOURCE-MAP.md",
+      "sha256": "171cb21342e7ddc0dd5b7800c800ea51dbdc5c5df7599f518f5e1536e040a062",
+      "scope_kind": "docs",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/references/SVT-AV1-RESEARCH-MAPPING.md",
+      "sha256": "69d18c6cf9b42812656d4b75150ee301e68f445cac4e7c1a650ab819d2fd5845",
+      "scope_kind": "docs",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/references/THIRD-PARTY-NOTICES.md",
+      "sha256": "6ee7d86bee67b982ffdc367097db74364b367d8dd4e4201b96607a99d2387f16",
+      "scope_kind": "docs",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/spec/av2/1.0.0/CHECKSUMS",
+      "sha256": "d4c786fcda4c16e1e72005c42f047f67c1b0f66f54a20899234df3f78406350a",
+      "scope_kind": "spec-mirror-integrity",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/spec/av2/1.0.0/provenance.toml",
+      "sha256": "b3ba78ccaffc74c922f9ff27a9edefeb61bba150239a0fc337526f7b746c10a8",
+      "scope_kind": "spec-mirror-integrity",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "docs/templates/FEATURE_MATRIX_ROW.toml",
+      "sha256": "5a984fc5446c8e3594ace0bdca568dacd752c58d2e5ffb8150cf87a11e3ea807",
+      "scope_kind": "docs",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "fuzz/Cargo.lock",
+      "sha256": "98bcacc24422e768ce88e6e509b5ef13c08cb605cf7cff7783a95de75239a906",
+      "scope_kind": "fuzz",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "fuzz/Cargo.toml",
+      "sha256": "51206c8274d14a0ebfb0b5407580ce20d2c1540c3b20603240fd5ecc0ee547f4",
+      "scope_kind": "fuzz",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "fuzz/fuzz_targets/parse_obu.rs",
+      "sha256": "c93bcc481ed1b98e8d042506a82fe571b7311812787d1cf1589f38346b6e7160",
+      "scope_kind": "fuzz",
+      "feature_ids": [
+        "CONF-FUZZ-NO-PANIC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/README.md",
+      "sha256": "35c1ea8669f091a454d546e173906530adce1631b2b06928341b881f102aca43",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/README.md",
+      "sha256": "6e6454509614587bcf8e3709b89c6c0c772ae0d2bfac201d422f826d94c6f333",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-4.11.6-LEB128",
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.2.2-OBU-HEADER",
+        "AV2-5.2.3-TRAILING-BITS",
+        "AV2-5.2.4-BYTE-ALIGNMENT",
+        "AV2-5.4-SEQUENCE-HEADER",
+        "CONF-AVM-DIFF-HARNESS",
+        "ENC-BITSTREAM-WRITER",
+        "ENC-INTRA-TOY-V0"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/add-bitstream-writer/proposal.md",
+      "sha256": "5fee935b109a4e661b47ef642e8223fdb1b44d2a8754e184c17be5207053eae9",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-4.11.6-LEB128",
+        "AV2-5.2.2-OBU-HEADER",
+        "AV2-5.2.3-TRAILING-BITS",
+        "AV2-5.2.4-BYTE-ALIGNMENT",
+        "ENC-BITSTREAM-WRITER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/add-bitstream-writer/specs/encoder-tools/spec.md",
+      "sha256": "85be6ad9ce5f80b7dad438078021e5854cd6cd2c01fa4b5da4c71829aaa29cf5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/add-bitstream-writer/tasks.md",
+      "sha256": "97c85ff66b0a2d0d4a758dde91626332e3fcf9f75535b054cb3077041753d5ff",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-BITSTREAM-WRITER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-06-encoder-reference-gate/proposal.md",
+      "sha256": "b0a2b015858a5e2ce0f2b5fdeb4adc09841d86aed74e2504838192cbc5ee5327",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-ENCODER-REFERENCE-GATE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-06-encoder-reference-gate/specs/process/spec.md",
+      "sha256": "ef737e3207d10def39c864c49e653fbd743b31c6842dec4292fb7dfea46ba867",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-ENCODER-REFERENCE-GATE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-06-encoder-reference-gate/tasks.md",
+      "sha256": "2524c02a20a4ab04e0810918f018c28c4c98f83a0445fe26bba9057aff994f19",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-ENCODER-REFERENCE-GATE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-06-enforce-conventional-commits/proposal.md",
+      "sha256": "3bdfc1001249bbccb6d7e933caa7eb338146edd1d703f9b33ad163b6e833d28c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-CONVENTIONAL-COMMITS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-06-enforce-conventional-commits/specs/process/spec.md",
+      "sha256": "3de8eb1c41bb216e3464fffec28fa208532a6e3d1baef08ad113b9753be17e75",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-CONVENTIONAL-COMMITS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-06-enforce-conventional-commits/tasks.md",
+      "sha256": "1710788e60e74c9c560b0da42e19ea22d06d7dd2dcadde49cedcb89395855341",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-CONVENTIONAL-COMMITS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-06-feature-tracking-framework/proposal.md",
+      "sha256": "f3328c6917d8785f0700c1212282caca7c409da6f60f4b10b933cd6073d60b40",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-FEATURE-TRACKING",
+        "XTASK-FEATURE-STATUS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-06-feature-tracking-framework/specs/feature-tracking/spec.md",
+      "sha256": "2b7ec87b7408072f9f18773aa142e0e8d6e4ca9a9dc270268c615e6f8ef52325",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-06-feature-tracking-framework/tasks.md",
+      "sha256": "92d83a94a2848f18f6b8cacdd5cb27f005c1f6e1c9d97bedf95a506ac76f51a9",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-FEATURE-STATUS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-06-parse-annexb-and-obu-headers/proposal.md",
+      "sha256": "e09617936ebf098053f011e2587c9d41766ecad4dbcf1dee836fd6285acd952f",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-4.11.6-LEB128",
+        "AV2-5.2.1-OBU-TYPE",
+        "AV2-5.2.2-OBU-HEADER",
+        "AV2-B-ANNEXB-OBU-ENVELOPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-06-parse-annexb-and-obu-headers/specs/bitstream/spec.md",
+      "sha256": "58efa05a3fa59a70ced194b5267462215de0f686f872c96ce1a1ca7193c7cd32",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-06-parse-annexb-and-obu-headers/tasks.md",
+      "sha256": "675e7285d26df04641a7925ff7eaa8b1e1949f1d10fdd1fddf8d7f7228dd0cad",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-frame-activation-hls-skeleton/design.md",
+      "sha256": "e21387c1c567130e53ea581731b90177097e996102bbaf666c4a7557baecbe90",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-frame-activation-hls-skeleton/proposal.md",
+      "sha256": "f65351b875363308ef9154d57a1af52466497a342b7d8a081c0e945c32d8d97e",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.18.1-FRAME-HEADER-GENERAL",
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.7-MULTI-FRAME-HEADER",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-frame-activation-hls-skeleton/specs/bitstream/spec.md",
+      "sha256": "56caca4e3bcf3f0ecc587f9eeaa642356fbba6c01e84a473fab1d5845034b852",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-frame-activation-hls-skeleton/specs/validator/spec.md",
+      "sha256": "a70f6adc702f331a1adfb33cb599894819c5760df378294c2ef5b0365ef1ccae",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-frame-activation-hls-skeleton/tasks.md",
+      "sha256": "bb982caf2eba501ae1bfbc4a692f9dd6b58e5afd53248fd85ac3566a1487fbd9",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-hls-lcr-atlas-foundation/design.md",
+      "sha256": "d5ccf2285465792102b885151c8276a83586bc00cbd140c8f857a45faf490ed2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.7-MULTI-FRAME-HEADER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-hls-lcr-atlas-foundation/proposal.md",
+      "sha256": "8aa41c4e32cbee57d724eb5d34ac7257eefedfd18b2354884420ae03b8877a26",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.8-LAYER-CONFIG-RECORD",
+        "AV2-5.9-ATLAS-SEGMENT",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-hls-lcr-atlas-foundation/specs/bitstream/spec.md",
+      "sha256": "32e463ef3f2c6216473f5e26db8c93ee6f50efd0df5bc4a457cc03f90dafbe1b",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-hls-lcr-atlas-foundation/specs/validator/spec.md",
+      "sha256": "3a4996e0a74705c14016b399822c136e3b27dabe73380f820de7a2d40240c6da",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-hls-lcr-atlas-foundation/tasks.md",
+      "sha256": "05c2f67bd995eaf6a6f1096a95c413139d11dc2d88ca57c504eee5289f66b341",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.8-LAYER-CONFIG-RECORD",
+        "AV2-5.9-ATLAS-SEGMENT",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-segmentation-tile-params-foundation/design.md",
+      "sha256": "241a5a0c4b919b35c66fa0d082de69d1ea65ea75838ca9e3dc3b340094d45214",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.4.2-SEQUENCE-TILE-CONFIG",
+        "AV2-5.4.9-SEGMENT-INFO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-segmentation-tile-params-foundation/proposal.md",
+      "sha256": "9b848226a99bfb7fa90169c677e3965e47714aed3dc8dc6650704b70abbc533c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-4.11.7-SU",
+        "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.18.7.3-TILE-PARAMS",
+        "AV2-5.4.2-SEQUENCE-TILE-CONFIG",
+        "AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG",
+        "AV2-5.4.9-SEGMENT-INFO",
+        "AV2-5.7-MULTI-FRAME-HEADER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-segmentation-tile-params-foundation/specs/bitstream/spec.md",
+      "sha256": "565dba4b2f95337acfebeb2940319194b8b2245b50fcdef5fce00bdb56c100ae",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-segmentation-tile-params-foundation/specs/validator/spec.md",
+      "sha256": "711755b320073b67bc2c4a096d2e9e972b8b9aae2338d5e20252bb3f602840b9",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-segmentation-tile-params-foundation/tasks.md",
+      "sha256": "dcca9a069700207007e6e2cbcd3d8b46069857fb379200a2efd552d52c80a1b1",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-4.11.7-SU",
+        "AV2-5.18.7.3-TILE-PARAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-sequence-hls-validator-coverage/design.md",
+      "sha256": "5f9bf442fac2f66201f544c507f4fbccbfb867956f7c06137a1455afa102f2da",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.4.11-USER-QM"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-sequence-hls-validator-coverage/proposal.md",
+      "sha256": "e56be923ae72722dbaaf144b4e65c1c64fa67a09feccfca1b9777b05a616a379",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-sequence-hls-validator-coverage/specs/bitstream/spec.md",
+      "sha256": "b2a01ad3e3e0b37c437fb281c54fca51128f3a618c9d1c23236df69d2d035782",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-sequence-hls-validator-coverage/specs/validator/spec.md",
+      "sha256": "dbee06865280c40b8b6314a7757d46399486b88114d09ee747168f18460e3513",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-sequence-hls-validator-coverage/tasks.md",
+      "sha256": "98d86aeabf8156afc4daa83315b6e344a940e1c6dd95c03e248637b436079d37",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.4.10-SEQUENCE-FILTER-CONFIG",
+        "AV2-5.4.11-USER-QM",
+        "AV2-5.4.12-TIMING-INFO",
+        "AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO",
+        "AV2-5.4.2-SEQUENCE-TILE-CONFIG",
+        "AV2-5.4.3-SEQUENCE-PARTITION-CONFIG",
+        "AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG",
+        "AV2-5.4.5-SEQUENCE-INTRA-CONFIG",
+        "AV2-5.4.6-SEQUENCE-INTER-CONFIG",
+        "AV2-5.4.7-SEQUENCE-SCC-CONFIG",
+        "AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG",
+        "AV2-5.4.9-SEGMENT-INFO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-sequence-timing-hls-availability/design.md",
+      "sha256": "af1de30c851e4a19c059535b1ec621ac66d25474b0eeb1d953d85fb7a310bc1d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-sequence-timing-hls-availability/proposal.md",
+      "sha256": "fbf34a403132323aa4b3b7bc655b2b91fb905d0b43f62b14708d7905baf8b6bb",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.15-CONTENT-INTERPRETATION",
+        "AV2-5.4.12-TIMING-INFO",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-sequence-timing-hls-availability/specs/bitstream/spec.md",
+      "sha256": "454235da2a01e08d175c05a17f00d4d9a44b57909fe838323374f963d3767259",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-sequence-timing-hls-availability/specs/validator/spec.md",
+      "sha256": "8bbb5624d5ffede49c8407e4b2bf2e39ea228cc0622d3611352d78431c4b93f5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-sequence-timing-hls-availability/tasks.md",
+      "sha256": "c14e8a9a9f3f1446585ad62f2ad95aef66b5c98d5f37f28062621c725aa97bcd",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.15-CONTENT-INTERPRETATION",
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.4.12-TIMING-INFO",
+        "AV2-5.6-MSDO",
+        "AV2-5.7-MULTI-FRAME-HEADER",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-validator-coverage-roadmap/design.md",
+      "sha256": "bf14d6a02d719fff3a81856a0667d1d0d5f35bdcd96e9cc51774cc45cfc8cfbc",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-validator-coverage-roadmap/proposal.md",
+      "sha256": "b7985b6f60b40aa81cd30c5c64f67e196fc4ca3adb4f854e1715888d75b038fc",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-4.11.3-UVLC",
+        "AV2-4.11.5-LE",
+        "AV2-4.11.6-LEB128",
+        "AV2-4.11.8-NS",
+        "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.10-OPS-SYNTAX-ELEMENTS",
+        "AV2-5.11.1-OPS-AGGREGATE-INFO",
+        "AV2-5.11.2-OPS-SEQ-PTL-INFO",
+        "AV2-5.11.3-OPS-DECODER-MODEL-INFO",
+        "AV2-5.11.4-OPS-COLOR-INFO",
+        "AV2-5.11.5-OPS-MLAYER-INFO",
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.2.1-OBU-DISPATCH",
+        "AV2-5.2.1-OBU-TYPE",
+        "AV2-5.2.2-OBU-HEADER",
+        "AV2-5.2.3-TRAILING-BITS",
+        "AV2-5.2.4-BYTE-ALIGNMENT",
+        "AV2-5.3-RESERVED-OBU",
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
+        "AV2-5.4.10-SEQUENCE-FILTER-CONFIG",
+        "AV2-5.4.11-USER-QM",
+        "AV2-5.4.12-TIMING-INFO",
+        "AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO",
+        "AV2-5.4.2-SEQUENCE-TILE-CONFIG",
+        "AV2-5.4.3-SEQUENCE-PARTITION-CONFIG",
+        "AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG",
+        "AV2-5.4.5-SEQUENCE-INTRA-CONFIG",
+        "AV2-5.4.6-SEQUENCE-INTER-CONFIG",
+        "AV2-5.4.7-SEQUENCE-SCC-CONFIG",
+        "AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG",
+        "AV2-5.4.9-SEGMENT-INFO",
+        "AV2-5.8-LAYER-CONFIG-RECORD",
+        "AV2-5.8.1-LCR-GLOBAL-INFO",
+        "AV2-5.8.2-LCR-LOCAL-INFO",
+        "AV2-5.8.3-LCR-AGGREGATE-INFO",
+        "AV2-5.8.4-LCR-SEQ-PTL-INFO",
+        "AV2-5.8.5-LCR-GLOBAL-PAYLOAD",
+        "AV2-5.8.6-LCR-XLAYER-INFO",
+        "AV2-5.8.7-LCR-REP-INFO",
+        "AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO",
+        "AV2-5.8.9-LCR-XLAYER-COLOR-INFO",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-9-ADDITIONAL-TABLES",
+        "AV2-B-ANNEXB-OBU-ENVELOPE",
+        "CONF-AVM-DIFF-HARNESS",
+        "CONF-FUZZ-NO-PANIC",
+        "CONF-INSPECT-SNAPSHOTS",
+        "CONF-PUBLIC-VECTORS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-07-validator-coverage-roadmap/tasks.md",
+      "sha256": "9821a0a029391da94826c5865f4af7d003d2cf2b244572e0295a44b463ad9d0a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-4.11.3-UVLC",
+        "AV2-4.11.5-LE",
+        "AV2-4.11.8-NS",
+        "AV2-5.2.1-OBU-DISPATCH",
+        "AV2-5.2.3-TRAILING-BITS",
+        "AV2-5.2.4-BYTE-ALIGNMENT",
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3-OBU-ORDERING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-add-av2-spec-mirror/.openspec.yaml",
+      "sha256": "db0df5f4231458d1cc245152ae4c9ad34bffe5f4ea75aacc3bb5ae43cd41f6f2",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-add-av2-spec-mirror/design.md",
+      "sha256": "410422338e0bfc8d695217d96d716941af9bab8da80387a4ffe45ef69a36954a",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-add-av2-spec-mirror/proposal.md",
+      "sha256": "b8380c8b2015eb08c266a16a17af32284e5f56f47377afcfe298b4a4cf589dcc",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-AV2-SPEC-MIRROR"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-add-av2-spec-mirror/specs/av2-spec-mirror/spec.md",
+      "sha256": "ff6789a787456bf1dff2dedb0a0bc4bb8610754c357cd2f163c07f8187d05d27",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-AV2-SPEC-MIRROR"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-add-av2-spec-mirror/specs/process/spec.md",
+      "sha256": "77de87c18d0b6eef4ea2f23ee34c008a80dfd507b4d46f722bd46b3b3910d2d2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-AV2-SPEC-MIRROR"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-add-av2-spec-mirror/tasks.md",
+      "sha256": "5aa2d988ae78a39ba49e1aab06719f8c01f3d8bb4e79685e7068fc9757ea6b53",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-AV2-SPEC-MIRROR"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-add-splot-audit-protocols/.openspec.yaml",
+      "sha256": "db0df5f4231458d1cc245152ae4c9ad34bffe5f4ea75aacc3bb5ae43cd41f6f2",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-add-splot-audit-protocols/design.md",
+      "sha256": "2702ae2965243136663614e4ff1e07aafeadf4456e15d7de490ba02a47aa4e93",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-add-splot-audit-protocols/proposal.md",
+      "sha256": "a89ba6a6b34616b25c8f2ba7eca58804ece45b39a1ded95365a8115186b9166a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-AUDIT-PROTOCOLS",
+        "XTASK-AUDIT-SCOPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-add-splot-audit-protocols/specs/process/spec.md",
+      "sha256": "d2f23179d3856973714dff7c1e91d14630349d9d0b8f0ee75f5925588f2a6235",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-add-splot-audit-protocols/tasks.md",
+      "sha256": "35b8b552d1525f02b6504d455c8194480f93f824e9e8992764b444c83381753d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-AUDIT-PROTOCOLS",
+        "XTASK-AUDIT-SCOPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-frame-header-core-foundation/design.md",
+      "sha256": "f82afe6e3ddc5ca5db97d6f1316985cac7882d66810959749212af1e3bc7000c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-frame-header-core-foundation/proposal.md",
+      "sha256": "660b1b34a5ea0a899f155872637423046531995d118e78aac22c20812453ec3b",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-frame-header-core-foundation/specs/bitstream/spec.md",
+      "sha256": "647f00f1a26fd39ca116646dfee73ec39ac6e165812b3c867adf187ec6948159",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-frame-header-core-foundation/specs/validator/spec.md",
+      "sha256": "c80ab693e6151312cedd4ac3035a92bf9d45558ed3e12dce1e9f057146eb093d",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-frame-header-core-foundation/tasks.md",
+      "sha256": "a1ffbeb38d3b3fcbb128a4fc773100a84cd17841b352224b46e15a690a7726ae",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.3-FRAME-CONFIGURATION",
+        "AV2-5.18.4-FRAME-SIZE",
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-metadata-padding-foundation/design.md",
+      "sha256": "3a22a24a7f5d2577ada12d156a62693c79b551d0a37ab21934aea76244d13f36",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.17-METADATA"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-metadata-padding-foundation/proposal.md",
+      "sha256": "f37a1c52ed63958521d273a91d70342df4e2af3bb78191bdf6a038ccccb092e5",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.16-PADDING",
+        "AV2-5.17-METADATA",
+        "AV2-5.17.1-METADATA-UNIT",
+        "AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED",
+        "AV2-5.17.2-METADATA-SHORT",
+        "AV2-5.17.3-METADATA-GROUP",
+        "AV2-5.17.4-METADATA-ITUT-T35"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-metadata-padding-foundation/specs/bitstream/spec.md",
+      "sha256": "96c90b5a115f8a7b1e5d9057da681533478155ab98e8f8f1403a2f7844091521",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-metadata-padding-foundation/specs/validator/spec.md",
+      "sha256": "110faef23aecf3835e5a092001562ef48f3a0b1dc57ae3e9dab01f513c94e9da",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-metadata-padding-foundation/tasks.md",
+      "sha256": "1d5b92381af744c7f3dfac0a716ea331cb2da0758d6b2f87a17906595fae66c9",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.17-METADATA"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-qm-filmgrain-hls-foundation/design.md",
+      "sha256": "f4752b09ee298935f7d43ad31d8f61217c7082240b6f7919c4ace06c68d1f706",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-qm-filmgrain-hls-foundation/proposal.md",
+      "sha256": "056010585cb253466b7ee8573f1b785211006f019ae5e8c267646dd099aa4174",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-qm-filmgrain-hls-foundation/specs/bitstream/spec.md",
+      "sha256": "6bca59dd0e1bfd66ff4672201786cb2b955b757dc741f86f91b5716d44ae6b2b",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-qm-filmgrain-hls-foundation/specs/validator/spec.md",
+      "sha256": "6ef6fa2395a050a03edfb805c975e5c86eb0a615be7c305b5882b757ba8b4ae9",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-08-qm-filmgrain-hls-foundation/tasks.md",
+      "sha256": "30fad31cc885c1f6dc01806ccd3b88e53421971b9b6f4fe5b38570aca9069c80",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-4.11.4-SVLC",
+        "AV2-5.13-QUANTIZATION-MATRIX",
+        "AV2-5.14-FILM-GRAIN",
+        "AV2-5.4.11-USER-QM"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/avm-differential-harness/proposal.md",
+      "sha256": "ca4e00373763656046a33836c38af7626641afedb9e473897f7ae9b2a3572b5f",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-AVM-DIFF-HARNESS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/avm-differential-harness/specs/conformance/spec.md",
+      "sha256": "d75acd9c043c01324ececcf0c1590a833fc0544597288aa8ab99d567e9fa54c6",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/avm-differential-harness/tasks.md",
+      "sha256": "b987bd3c477928efcb6b8c322f4ef51c9779af90573ac8dc161c8335f834e0a0",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-AVM-DIFF-HARNESS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/metadata-semantic-validation/design.md",
+      "sha256": "57bd804fccada141a75cd87f77265d5e2cb365ed0e69c5c19a32df2f6fd90567",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/metadata-semantic-validation/proposal.md",
+      "sha256": "f00a7064fbe35c66ccac51a359f1009db1ebb81042b760e37103cbfa5bddac7b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.17-METADATA",
+        "AV2-5.17.10-METADATA-SCAN-TYPE",
+        "AV2-5.17.12-METADATA-DECODED-FRAME-HASH",
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.19-TILE-GROUP",
+        "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/metadata-semantic-validation/specs/validator/spec.md",
+      "sha256": "b70515aac5a77057888e2abd3b86b75c4d565b0317abb0c78554089ef156d8c4",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/metadata-semantic-validation/tasks.md",
+      "sha256": "f8bb3099b6cf606b2bea5378d0a91ea8475c0f94367dc21aee58376883974918",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.17-METADATA",
+        "AV2-5.17.10-METADATA-SCAN-TYPE",
+        "AV2-5.17.3-METADATA-GROUP",
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.19-TILE-GROUP"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/ops-brt-hls-foundation/design.md",
+      "sha256": "1760beb7ea443e42e22a4c779c0b6ff3f98363f3e9e22f8ad22c0ea4ef6e8fef",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/ops-brt-hls-foundation/proposal.md",
+      "sha256": "60f0223bf8b6d2ad473725d4423a64935c4a6d4a4aec20a0cc724904c6bf1c51",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.10-OPS-SYNTAX-ELEMENTS",
+        "AV2-5.11-OPERATING-POINT-PAYLOAD",
+        "AV2-5.11.1-OPS-AGGREGATE-INFO",
+        "AV2-5.11.5-OPS-MLAYER-INFO",
+        "AV2-5.12-BUFFER-REMOVAL-TIMING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/ops-brt-hls-foundation/specs/bitstream/spec.md",
+      "sha256": "e5975e85dbb879abe8a2fc6a7db15366e98c86bea222f92bf9fab1dcc918b4b6",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/ops-brt-hls-foundation/specs/validator/spec.md",
+      "sha256": "2726c62eb9af5c017d51cc8278a334db88b79e10684065657ae6c0d7d96917a8",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/ops-brt-hls-foundation/tasks.md",
+      "sha256": "be47443a632759d4f7d4f6ed373dc9c6f978a137893720254ce9ebe8d42fce4e",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
+      "sha256": "042ad614b48eaa9b6c4009b3a17deee84841b19adfbe86964f48b08f0f0206f5",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.4-SEQUENCE-HEADER",
+        "CONF-AVM-DIFF-HARNESS",
+        "ENC-BITSTREAM-WRITER",
+        "ENC-INTRA-TOY-V0"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/toy-intra-encoder-v0/specs/encoder-tools/spec.md",
+      "sha256": "b18a949c55e3ddea750c60d4f04ff4cdb0297ee55a8b3cf45515c75397e04d90",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/toy-intra-encoder-v0/tasks.md",
+      "sha256": "e2a1e48d15b44809bd108fc9d81ebdd03e93e56d925260a857000a5e7025eff3",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-TOY-V0"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/config.yaml",
+      "sha256": "715ec2ca3d6815560599b4111ebc64b9ab50133eafce43843c337f985fcb408b",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/specs/av2-spec-mirror/spec.md",
+      "sha256": "aac19d9af7078de772930a1d105b9259e1df5fb123ce8ff987a8680a17a71539",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-AV2-SPEC-MIRROR"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/specs/bitstream/spec.md",
+      "sha256": "c44387ecb540742134d696a10c8ef9c116b9d51bad4bcc9f85d22f74e26b673a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-4.11.6-LEB128",
+        "AV2-4.11.7-SU",
+        "AV2-5.15-CONTENT-INTERPRETATION",
+        "AV2-5.18.1-FRAME-HEADER-GENERAL",
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.7.3-TILE-PARAMS",
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.2.1-OBU-TYPE",
+        "AV2-5.2.2-OBU-HEADER",
+        "AV2-5.4.9-SEGMENT-INFO",
+        "AV2-5.8-LAYER-CONFIG-RECORD",
+        "AV2-5.9-ATLAS-SEGMENT",
+        "AV2-B-ANNEXB-OBU-ENVELOPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/specs/conformance/spec.md",
+      "sha256": "9bdb872cca91c01b76985bb900e4b871f4911042ddff1ad4e4d547fdbd50ff04",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-AVM-DIFF-HARNESS",
+        "CONF-FUZZ-NO-PANIC",
+        "CONF-INSPECT-SNAPSHOTS",
+        "CONF-PUBLIC-VECTORS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/specs/encoder-api/spec.md",
+      "sha256": "7eae6898f330ee2727d29b80b2c9d22b8c88cffda504fc543f6c838ac122e8c6",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-BITSTREAM-WRITER",
+        "ENC-SPEED-PRESETS",
+        "ENC-Y4M-INPUT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/specs/encoder-tools/spec.md",
+      "sha256": "fde73d333ed8dd90ee063cbe002f7a9cf0e10b912532b9fdc752ade398aea33e",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-BITSTREAM-WRITER",
+        "ENC-INTRA-TOY-V0",
+        "ENC-RATE-CONTROL-V0"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/specs/feature-tracking/spec.md",
+      "sha256": "020fbf0054150d1ea29f15e2958764eb3f85741b6047dfe6b978410c987dc921",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-FEATURE-STATUS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/specs/process/spec.md",
+      "sha256": "6a7c2c62fe56679c0652262f17bfc7448d4e7571d3a6f176f2540d46cfa0db2a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-AUDIT-PROTOCOLS",
+        "DOC-AV2-SPEC-MIRROR",
+        "DOC-ENCODER-REFERENCE-GATE",
+        "XTASK-AUDIT-SCOPE",
+        "XTASK-CONVENTIONAL-COMMITS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/specs/validator/spec.md",
+      "sha256": "416ab39e289208959a0ec848aa4dda18eba81f3a6d2d5ac8a5e23fe4486dfbac",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.15-CONTENT-INTERPRETATION",
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.7.3-TILE-PARAMS",
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.2.2-OBU-HEADER",
+        "AV2-5.3-RESERVED-OBU",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/templates/change/design.md",
+      "sha256": "308d0ed79a4294cb6dd017963cc578bd0b35818b6bd36fb477fcf68db64f522d",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/templates/change/proposal.md",
+      "sha256": "a05026ef51c2d67c03601b3a8a20d10fd98b302a0d39ac5fcbbc357e3a3efaee",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/templates/change/specs/bitstream/spec.md",
+      "sha256": "6e255211336c9ba0b1e00ab3fbe35c96fefe11490f7d07a3b2fcc1fa307464fa",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/templates/change/tasks.md",
+      "sha256": "f47ce99352f3bfd454a57741311a2fd017407976e181df29fc56d27f0a70f49d",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "scripts/spec/build_av2_mirror.py",
+      "sha256": "c6dc22145dd41f332c861f4612d46f07f3003379fb46d41efd500f8c4da65cde",
+      "scope_kind": "automation",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "scripts/spec/regenerate-av2-spec.sh",
+      "sha256": "53b53f3e195f43689812ac296aadd531d642572385240dfc531015e42cd88702",
+      "scope_kind": "automation",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "xtask/Cargo.toml",
+      "sha256": "2c33bad65dcfc2a5baefc1766a2ffb7172b4255cabb14807ecfd7022b8c4e8ec",
+      "scope_kind": "workspace:xtask",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "xtask/src/audit_scope.rs",
+      "sha256": "b4aba49efd98ab7775b1ce54717f441ab931fe2f035abbd6b61e9364572de3f2",
+      "scope_kind": "workspace:xtask",
+      "feature_ids": [
+        "AV2-5.2.2-OBU-HEADER",
+        "XTASK-AUDIT-SCOPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "xtask/src/feature_status.rs",
+      "sha256": "93ac98cb939a17cf1868a4e482cf09243bdd9ebb15b1410473c1ff337e1a7902",
+      "scope_kind": "workspace:xtask",
+      "feature_ids": [
+        "AV2-5.2.2-OBU-HEADER",
+        "AV2-B-ANNEXB-OBU-ENVELOPE",
+        "ENC-Y4M-INPUT",
+        "XTASK-FEATURE-STATUS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "xtask/src/git_util.rs",
+      "sha256": "9463297dfcb64c6d04f94384ae9168651ee35beb007280ae89ec7be659b45791",
+      "scope_kind": "workspace:xtask",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "xtask/src/main.rs",
+      "sha256": "5c516116f26561a55cb573272537a6b945cfe71e895646366b49813326265f8e",
+      "scope_kind": "workspace:xtask",
+      "feature_ids": [
+        "CONF-AVM-DIFF-HARNESS",
+        "CONF-AVM-INVALID-STREAMS",
+        "CONF-AVM-PARSER-TRACES",
+        "CONF-AVM-VALID-STREAMS",
+        "CONF-PUBLIC-VECTORS",
+        "DOC-AV2-SPEC-MIRROR",
+        "XTASK-CONVENTIONAL-COMMITS"
+      ],
+      "outcome": "success"
+    }
+  ]
+}
