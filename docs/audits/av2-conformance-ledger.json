@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "e2b37357ad8f29e144683d1775aa53bbf7e48e4b",
+  "audited_commit": "133ab680b6d787c0e865bf018589c3a322e5a148",
   "outcome": "success",
   "files": [
     {
@@ -200,7 +200,7 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "577e3e8b02c3633ded946ac07699cf91903eff2c9d8efde68c95912edc3b891f",
+      "sha256": "be4c5c0864f784050c09c430fe2707826d64099915e514dc6381af8bf502eafe",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
