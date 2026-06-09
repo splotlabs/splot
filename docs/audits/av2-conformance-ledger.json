@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "eceb2c78e00c436e9d38046d10ebc27c3b409479",
+  "audited_commit": "84ed6c21266bf345dd9e11a90d9783a841986740",
   "outcome": "success",
   "files": [
     {
@@ -807,7 +807,7 @@
     },
     {
       "path": "docs/CURRENT-VALIDATOR-STATE.md",
-      "sha256": "63826d4311794302733d085e06bc81acdc49fcaa9f20ec22fc8402fc40954dc0",
+      "sha256": "d2708da39bd3abe0e12f9d4bc8d6f1bff1d5574978fd6e4bf12d2df6377e26f4",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.10-OPERATING-POINT-SET",
@@ -1192,7 +1192,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "1dc7fe10de3dc52495c9579af538e8050f5357e3d2d1d0d11acded098ee63415",
+      "sha256": "7580dc35af0a18952de02957f75d5de00c92fd2ae5cf09505b7bc777480a4a64",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
