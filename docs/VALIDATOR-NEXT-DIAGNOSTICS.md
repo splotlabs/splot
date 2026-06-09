@@ -3,6 +3,10 @@
 `scope: next validator coverage phase`
 `rule: every diagnostic has a stable id, severity, section, offset, and human-readable message`
 
+> **Canonical registry:** [`VALIDATOR-DIAGNOSTICS.md`](./VALIDATOR-DIAGNOSTICS.md).
+> This file lists *planned* additions for the next coverage phase; landed
+> diagnostics are consolidated there.
+
 ## Existing families to preserve
 
 Do not rename existing diagnostic prefixes without a migration note:

@@ -1,8 +1,15 @@
 # Validator next phase: sequence + HLS coverage
 
-`status: proposed`
+`status: superseded`
 `owner: validator`
-`primary change: openspec/changes/sequence-hls-validator-coverage`
+`primary change: openspec/changes/archive/2026-06-07-sequence-hls-validator-coverage`
+
+> **This phase plan has been executed and superseded.** Its primary OpenSpec
+> change (above) is archived; the sequence/HLS **parsing** work landed (Slice 3's
+> table-dependent children are marked **Done** inline), while deeper semantic
+> **validation** continues and is tracked in the matrix. Kept as the historical
+> phase plan; for current status see
+> [`docs/IMPLEMENTATION-MATRIX.toml`](./IMPLEMENTATION-MATRIX.toml) (canonical).
 
 ## Goal
 

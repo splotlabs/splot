@@ -5,7 +5,7 @@
 ### Requirement: `leb128()` descriptor reader
 
 `splot-core` SHALL expose a panic-free `BitReader::read_leb128()` that decodes the AV2
-v1.0.0 § 4.11.4 `leb128()` descriptor (up to eight little-endian 7-bit groups with a
+v1.0.0 § 4.11.6 `leb128()` descriptor (up to eight little-endian 7-bit groups with a
 continuation bit), returning a structured error rather than panicking on a truncated,
 overlong, or out-of-`u32`-range code.
 

@@ -201,7 +201,8 @@ Before merging encoder work, confirm:
 - No AV1 transform/filter/scan tables were copied.
 - No AV1 constants were imported without independent AV2 derivation.
 - No third-party comments or prose were copied.
-- All AV2 names are backed by AV2 spec sections or marked `TODO(spec)`.
+- All AV2 names are backed by AV2 spec sections or marked
+  `TODO(spec: <FEATURE-ID>): <topic>`.
 
 ---
 

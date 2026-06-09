@@ -286,7 +286,7 @@ impl<'a> BitReader<'a> {
         }
     }
 
-    /// Reads an AV2 `leb128()` descriptor (AV2 v1.0.0 § 4.11.4).
+    /// Reads an AV2 `leb128()` descriptor (AV2 v1.0.0 § 4.11.6).
     ///
     /// The value is encoded in up to eight little-endian groups of seven bits, each
     /// group preceded by a continuation bit (the most-significant bit of the byte):

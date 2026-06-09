@@ -1057,7 +1057,7 @@ fn line_of(text: &str, idx: usize) -> usize {
 }
 
 /// Returns the path relative to `root` for display, or the full path.
-fn display_path(root: &Path, path: &Path) -> String {
+pub(crate) fn display_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
         .display()
@@ -1070,7 +1070,7 @@ fn display_path(root: &Path, path: &Path) -> String {
 /// Slash-less ids are recognized too, so an un-namespaced rule id is still checked
 /// against the documented prefixes (and therefore rejected) rather than silently
 /// skipped.
-fn is_diagnostic_id(s: &str) -> bool {
+pub(crate) fn is_diagnostic_id(s: &str) -> bool {
     if !s.bytes().next().is_some_and(|b| b.is_ascii_lowercase()) {
         return false;
     }
@@ -1122,7 +1122,7 @@ fn string_literals(text: &str) -> Vec<String> {
 
 /// Recursively collects files under `dir` with one of `extensions`, skipping
 /// `target`, `.git`, and `corpus` directories.
-fn collect_files(dir: &Path, extensions: &[&str]) -> Result<Vec<PathBuf>> {
+pub(crate) fn collect_files(dir: &Path, extensions: &[&str]) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(current) = stack.pop() {

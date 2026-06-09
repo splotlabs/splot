@@ -105,5 +105,13 @@ agent/tooling directories; see [THIRD-PARTY-NOTICES.md](./docs/references/THIRD-
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) and the canonical agent/contributor guide
+`splot` is a solo-developer, source-available project and is **not accepting
+external code contributions** at this time — please don't open pull requests.
+
+If you hit a bug, a wrong or missing diagnostic, or a conformance gap, **open an
+issue** instead: <https://github.com/splotlabs/splot/issues>. The repo ships issue
+forms for [bug reports](./.github/ISSUE_TEMPLATE/bug.yml), [AV2 features](./.github/ISSUE_TEMPLATE/av2-feature.yml),
+and [conformance/vector/fuzz work](./.github/ISSUE_TEMPLATE/conformance.yml).
+
+Developers and coding agents working in a fork should follow the canonical guide in
 [AGENTS.md](./AGENTS.md).

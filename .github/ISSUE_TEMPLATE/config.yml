@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Commercial license inquiry
+    url: https://github.com/splotlabs/splot#license
+    about: splot is PolyForm Noncommercial. See the License section for commercial-use terms and the contact email.

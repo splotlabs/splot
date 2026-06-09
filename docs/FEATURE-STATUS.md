@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-08. 126 feature(s).
+Matrix version 1. Last reviewed 2026-06-08. 127 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -99,14 +99,14 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-5.19-TILE-GROUP` | Tile group OBU syntax | normative | bitstream-syntax | done | partial | partial | partial | todo | todo | partial | done | pending | `crates/splot-core/src/headers/tile_group.rs` |
 | `AV2-5.20-TILE-GROUP-PAYLOAD` | Tile group payload syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
 | `AV2-7.3-OBU-ORDERING` | Ordering of OBUs | normative | bitstream-semantics | done | partial | n/a | partial | n/a | n/a | partial | done | pending | `crates/splot-validate/src/context.rs` |
-| `AV2-7.3.2-CMVS-BOUNDARIES` | CMVS boundary ordering semantics | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/checks/ordering.rs` |
-| `AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT` | Coded output frame unit ordering semantics | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/checks/ordering.rs` |
-| `AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT` | Coded nonoutput frame unit ordering semantics | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/checks/ordering.rs` |
-| `AV2-7.3.5-CODED-FRAME-UNIT` | Coded frame unit ordering semantics | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/checks/ordering.rs` |
+| `AV2-7.3.2-CMVS-BOUNDARIES` | CMVS boundary ordering semantics | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/context.rs` |
+| `AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT` | Coded output frame unit ordering semantics | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/context.rs` |
+| `AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT` | Coded nonoutput frame unit ordering semantics | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/context.rs` |
+| `AV2-7.3.5-CODED-FRAME-UNIT` | Coded frame unit ordering semantics | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/context.rs` |
 | `AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT` | Coded extended layer unit ordering semantics | normative | bitstream-semantics | done | todo | n/a | partial | n/a | n/a | partial | done | pending | `crates/splot-validate/src/context.rs` |
 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Temporal unit OBU order | normative | bitstream-semantics | done | done | done | partial | todo | todo | partial | done | pending | `crates/splot-validate/src/context.rs` |
 | `AV2-7.3.8-HLS-AVAILABILITY` | High-level syntax availability | normative | bitstream-semantics | done | done | done | partial | todo | todo | partial | done | pending | `crates/splot-validate/src/context.rs` |
-| `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | Long-term reference availability | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/checks/ordering.rs` |
+| `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | Long-term reference availability | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/context.rs` |
 | `AV2-9-ADDITIONAL-TABLES` | Additional spec tables (codegen) | normative | bitstream-semantics | done | todo | todo | n/a | n/a | n/a | todo | todo | pending | `crates/splot-core/src/tables.rs` |
 | `AV2-A-PROFILES` | Annex A profile constraints | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/checks/mod.rs` |
 | `AV2-A-LEVELS-TIERS` | Annex A level and tier constraints | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/checks/mod.rs` |
@@ -129,6 +129,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `XTASK-CONVENTIONAL-COMMITS` | Conventional commit enforcement | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/main.rs` |
 | `XTASK-FEATURE-STATUS` | xtask feature status reporting and checks | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/feature_status.rs` |
 | `XTASK-AUDIT-SCOPE` | Changed-file AV2 audit scope | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/audit_scope.rs` |
+| `XTASK-DIAGNOSTIC-REGISTRY` | Validator diagnostic registry enforcement | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/diagnostic_registry.rs` |
 | `DOC-FEATURE-TRACKING` | Feature tracking documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `docs/FEATURE-TRACKING.md` |
 | `DOC-VALIDATOR-ROADMAP` | Validator coverage roadmap documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `docs/VALIDATOR-ROADMAP.md` |
 | `DOC-ENCODER-REFERENCE-GATE` | Encoder reference gate documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `docs/references/ENCODER-RESEARCH-NOTES.md` |

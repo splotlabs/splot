@@ -5,6 +5,11 @@ Stable diagnostic IDs for the `ops-brt-hls-foundation` phase
 diagnostic carries a stable `rule_id`, a `severity`, a `spec_section`, the OBU byte
 offset, and a concise message with the offending field values.
 
+> **Canonical diagnostic registry:**
+> [`VALIDATOR-DIAGNOSTICS.md`](./VALIDATOR-DIAGNOSTICS.md). This file is the
+> phase-scoped registry for the (now landed) `ops-brt-hls-foundation` work; its
+> IDs are owned by the canonical registry.
+
 ## Implemented OPS diagnostics
 
 | Rule ID | Severity | Section | Condition |
