@@ -724,6 +724,9 @@ fn parse_intra_structures(
         &segmentation,
         seq.seg.max_segments,
     )?);
+    // These were parsed earlier but are stored only after `parse_lossless_info`
+    // releases its borrows; on error the core is never returned, so the deferred
+    // assignment is unobservable.
     core.segmentation_params = Some(segmentation);
     core.setup_qm_params = Some(qm);
     core.delta_q_params = Some(delta_q);

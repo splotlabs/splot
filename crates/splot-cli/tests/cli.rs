@@ -231,6 +231,7 @@ fn inspect_json_exposes_frame_header_core() {
     assert_eq!(quant["diff_uv_delta"], false);
     let seg = &core["segmentation"];
     assert_eq!(seg["segmentation_enabled"], false);
+    assert_eq!(seg["enabled_features"].as_array().map(Vec::len), Some(0));
     let qm = &core["qm_params"];
     assert_eq!(qm["using_qmatrix"], false);
     assert_eq!(qm["levels"].as_array().map(Vec::len), Some(0));

@@ -305,9 +305,10 @@ pub fn parse_tile_info(
     };
 
     // § 5.18.7.2: MiColStarts[i] = sbColStarts[i] << sbShift2 for i < TileCols, then
-    // MiColStarts[TileCols] = MiCols (and likewise for rows). Views built by
-    // `from_sequence_configs` always have sbShift2 <= 6, but hand-built views may
-    // carry larger values, so clamp the shift amount below 32 to keep `<<` defined.
+    // MiColStarts[TileCols] = MiCols (and likewise for rows). `sb_shift2` comes from
+    // `parse_tile_layout` / `reuse_tile_params` and is <= 6 for every valid
+    // `SuperblockSize`; the clamp below 32 only guards hostile direct API usage
+    // against a `<<` shift-overflow panic in debug builds.
     let sb_shift2 = sb_shift2.min(31);
     let mut mi_col_starts: Vec<u32> = sb_col_starts
         .iter()

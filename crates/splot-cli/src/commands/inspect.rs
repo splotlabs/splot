@@ -635,6 +635,15 @@ impl QuantizationParamsView {
     }
 }
 
+/// One enabled `FeatureEnabled[i][j]` / `FeatureData[i][j]` entry for `--json`
+/// (AV2 § 5.18.7.1). Disabled features are omitted to keep the summary compact.
+#[derive(Serialize)]
+struct SegmentFeatureView {
+    segment_id: u8,
+    feature: u8,
+    data: i32,
+}
+
 /// Parsed `segmentation_params()` for `--json` (AV2 § 5.18.7.1).
 #[derive(Serialize)]
 struct SegmentationParamsView {
@@ -644,10 +653,25 @@ struct SegmentationParamsView {
     segmentation_temporal_update: bool,
     seg_id_pre_skip: bool,
     last_active_seg_id: u8,
+    enabled_features: Vec<SegmentFeatureView>,
 }
 
 impl SegmentationParamsView {
     fn new(params: &SegmentationParams) -> Self {
+        let enabled_features = params
+            .features
+            .iter()
+            .enumerate()
+            .flat_map(|(segment_id, levels)| {
+                levels.iter().enumerate().filter_map(move |(feature, f)| {
+                    f.enabled.then_some(SegmentFeatureView {
+                        segment_id: segment_id as u8,
+                        feature: feature as u8,
+                        data: f.data,
+                    })
+                })
+            })
+            .collect();
         Self {
             segmentation_enabled: params.segmentation_enabled,
             reuse_seg_info: params.reuse_seg_info,
@@ -655,6 +679,7 @@ impl SegmentationParamsView {
             segmentation_temporal_update: params.segmentation_temporal_update,
             seg_id_pre_skip: params.seg_id_pre_skip,
             last_active_seg_id: params.last_active_seg_id,
+            enabled_features,
         }
     }
 }
