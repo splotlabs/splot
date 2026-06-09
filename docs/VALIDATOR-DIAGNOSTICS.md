@@ -11,11 +11,10 @@
 > `XTASK-DIAGNOSTIC-REGISTRY`) fails if any rule-id literal in `crates/splot-validate/src`
 > is missing from these tables, or if a table lists an ID that is not present in the source.
 > The gate enforces the rule-ID *set*; the `Severity` and `Section` columns are maintained by
-> hand. Phase- and design-scoped lists —
-> [`VALIDATOR-NEXT-DIAGNOSTICS.md`](./VALIDATOR-NEXT-DIAGNOSTICS.md),
-> [`VALIDATOR-HLS-AVAILABILITY-STATE.md`](./VALIDATOR-HLS-AVAILABILITY-STATE.md), and
-> [`OPS-BRT-DIAGNOSTICS.md`](./OPS-BRT-DIAGNOSTICS.md) — feed into this registry as their
-> diagnostics land. The extractor lives in `xtask/src/diagnostic_registry.rs`.
+> hand. The phase-scoped [`OPS-BRT-DIAGNOSTICS.md`](./OPS-BRT-DIAGNOSTICS.md) and the
+> planned-diagnostics backlog in [`VALIDATOR-ROADMAP.md`](./VALIDATOR-ROADMAP.md) feed into
+> this registry as their diagnostics land. The extractor lives in
+> `xtask/src/diagnostic_registry.rs`.
 
 Diagnostics are the validator product. Every finding carries:
 
@@ -303,8 +302,8 @@ from the enforced registry above** because nothing emits them yet:
 - `obu-payload/`, `decoder-model/`, `annex-a/` — strict-mode payload, decoder-model timing, and
   Annex A profile/level constraints.
 
-Design sketches and phase plans for these live in
-[`VALIDATOR-NEXT-DIAGNOSTICS.md`](./VALIDATOR-NEXT-DIAGNOSTICS.md) and the validator roadmap.
+Design sketches and phase plans for these live in the planned-diagnostics backlog of
+[`VALIDATOR-ROADMAP.md`](./VALIDATOR-ROADMAP.md).
 When a planned diagnostic lands, add its rule ID to the enforced tables above (the CI gate
 will require it) and update `DIAGNOSTIC_PREFIXES` in `xtask/src/feature_status.rs` if it
 introduces a new namespace.
@@ -321,6 +320,12 @@ A few conformance points are deliberately not flagged, to avoid fabricating spec
   so they are not fabricated from max layer IDs.
 - An unresolved cross-OPS inheritance reference is not flagged (`ops/inherited-ops-unavailable`
   is reserved) because the reference may be supplied through external HLS.
+- The § 6.4.11 requirement that no value written into `UserQm` equals 0
+  (`docs/spec/av2/1.0.0/06-syntax-structures-semantics.md`, "User defined QM semantics") is not
+  a diagnostic: the § 5.4.11 parse makes a zero entry unrepresentable — the running quant
+  starts at 32, a computed `quant2 == 0` selects the coefficient-repeat path (writing the
+  prior non-zero value), and mirror/copy paths replicate already non-zero values — so the
+  validator cannot observe a violation.
 
 ## Testing expectations per diagnostic
 

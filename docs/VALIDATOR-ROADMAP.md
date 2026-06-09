@@ -1,8 +1,19 @@
 # Validator implementation roadmap
 
-`status: draft`  
+`status: active`  
 `owner: validator`  
 `scope: AV2 validator/parser/inspector, not encoder`
+
+This is the single forward-looking validator planning document. The earlier
+phase plans and design sketches (`VALIDATOR-GAP-ANALYSIS.md`,
+`VALIDATOR-NEXT-PHASE.md`, `VALIDATOR-SEQUENCE-HEADER-COVERAGE.md`,
+`VALIDATOR-HLS-AVAILABILITY-STATE.md`,
+`VALIDATOR-IMPLEMENTATION-MATRIX-EXPANSION.md`, and
+`VALIDATOR-NEXT-DIAGNOSTICS.md`) were executed and folded into this roadmap,
+the canonical matrix, and the diagnostics registry; their content lives in git
+history. Canonical per-feature status remains
+[`IMPLEMENTATION-MATRIX.toml`](./IMPLEMENTATION-MATRIX.toml); each phase below
+carries a coarse status line as of 2026-06-09.
 
 ## Guiding rule
 
@@ -15,6 +26,11 @@ OpenSpec change -> docs/IMPLEMENTATION-MATRIX.toml -> code/tests/diagnostics -> 
 Do not mark a matrix stage `done` without proof. Do not add a bare `TODO(spec)`. Use `TODO(spec: FEATURE-ID): ...` and make sure the Feature ID exists in the matrix.
 
 ## Phase 0 — matrix and OpenSpec hygiene
+
+**Status: done.** The roadmap is linked from `SPEC-MAPPING.md`,
+`FEATURE-TRACKING.md`, and `README.md`; the OpenSpec change is archived
+(`2026-06-07-validator-coverage-roadmap`); the matrix carries child rows for
+the large features and `FEATURE-STATUS.md` is regenerated.
 
 **Goal:** make missing validator work visible before code expands.
 
@@ -34,6 +50,11 @@ cargo xtask ci
 ```
 
 ## Phase 1 — descriptor and payload-boundary foundation
+
+**Status: done.** All five rows have `parse`/`tests`/`decode_check` done with
+proptest proof; `AV2-4.11.7-SU` and `AV2-4.11.4-SVLC` landed beyond the
+original scope. Trailing-bits/byte-alignment `validate` stays `partial` until
+every payload parser calls the boundary helpers.
 
 **Goal:** make `splot-core` able to parse payload syntax without panics or overreads.
 
@@ -81,6 +102,11 @@ cargo xtask ci
 
 ## Phase 2 — `open_bitstream_unit(sz)` payload dispatch
 
+**Status: done** for this phase's scope: dispatch, `PayloadStatus`, and the
+`inspect --json` `payload_status` object landed with tests. The row's
+`parse = partial` is the declared honest end-state until every payload variant
+exists.
+
 **Goal:** parse the OBU payload selected by `obu_type` instead of treating every payload as opaque bytes.
 
 Feature ID:
@@ -111,6 +137,11 @@ Acceptance:
 - Matrix stages are honest: dispatch can be `partial` while payload variants remain `todo`.
 
 ## Phase 3 — sequence header parser, split by §5.4 child rows
+
+**Status: partial.** All thirteen §5.4 child rows are `parse = done` /
+`tests = done`; a valid sequence header parses in full. Remaining work is
+deeper `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` validation — the umbrella and most
+child `validate` stages are `partial`.
 
 **Goal:** implement the first real OBU payload parser and unlock sequence-activated validation.
 
@@ -184,6 +215,12 @@ Acceptance:
 
 ## Phase 4 — activated sequence state and remaining §6.2.2 checks
 
+**Status: partial.** Activated `max_tlayer_id`/`max_mlayer_id` limits and the
+core HLS availability checks landed with tests
+(`AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` and
+`AV2-7.3.8-HLS-AVAILABILITY` are `validate = partial`, `tests = done`); full
+§7.3.8 availability modeling remains open.
+
 **Goal:** the validator remembers activated sequence headers and uses them to check OBU layer IDs.
 
 Feature IDs:
@@ -217,6 +254,14 @@ Acceptance:
 
 ## Phase 5 — OBU ordering and temporal-unit state machine
 
+**Status: partial.** All eight child rows exist in the matrix;
+temporal-delimiter, duplicate-delimiter, and ascending-xlayer ordering landed
+with tests (`AV2-7.3.7-TEMPORAL-UNIT-ORDER` and
+`AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT` are `validate = partial`,
+`tests = done`). `AV2-7.3.2-CMVS-BOUNDARIES` and the coded-frame-unit rows
+(`AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT`, `AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT`,
+`AV2-7.3.5-CODED-FRAME-UNIT`) are not started.
+
 **Goal:** enforce temporal-unit and coded-extended-layer presence order enough for validator-first conformance.
 
 Feature IDs:
@@ -240,6 +285,13 @@ Initial checks:
 - padding can appear anywhere, but outside coded extended layer units it must be global;
 - global metadata prefix/suffix positions once metadata parsing exists.
 
+Follow-up in this phase: §7.4 random access decoding. Validate random access
+points enough to support HLS availability, coded-video-sequence boundaries, and
+long-term-reference preconditions (§7.4.2 covers random access with and without
+long-term reference frames). Closely coupled to
+`AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` and the `AV2-5.6-MSDO`
+random-access-point detection bound.
+
 Acceptance:
 
 - Small synthetic streams for valid/invalid ordering.
@@ -247,6 +299,11 @@ Acceptance:
 - Matrix child rows prevent the umbrella from pretending complete coverage.
 
 ## Phase 6 — high-level syntax OBUs
+
+**Status: partial.** Every Phase 6 row is `parse = done` / `tests = done` with
+a dedicated parser module. Remaining work is deeper semantic validation
+(`validate = partial` across the board), including the deferred MFH/OPS
+§6.10.7 layer-dependency-map checks.
 
 **Goal:** parse HLS OBUs referenced by sequence/frame validation and OBU ordering.
 
@@ -292,6 +349,10 @@ Acceptance:
 
 ## Phase 7 — non-HLS payload OBUs
 
+**Status: partial.** `AV2-5.15-CONTENT-INTERPRETATION` and `AV2-5.16-PADDING`
+are fully done; quantizer matrix, film grain, and the §5.17 metadata family
+parse with recorded tests but keep `validate = partial`.
+
 **Goal:** parse and validate payload OBUs that are not the full frame/tile syntax yet.
 
 Feature IDs:
@@ -318,6 +379,10 @@ Acceptance:
 - strict validation fails on unsupported payload syntax once corresponding matrix row is `partial`/`done`.
 
 ## Phase 8 — frame header child features
+
+**Status: partial** — see the status note below. Beyond the activation
+skeleton, `AV2-5.18.3-FRAME-CONFIGURATION` and `AV2-5.18.4-FRAME-SIZE` parse
+with tests; the remaining child rows are todo.
 
 **Goal:** split the large frame header into implementable chunks.
 
@@ -360,6 +425,10 @@ Rules:
 
 ## Phase 9 — tile group and arithmetic payload boundary validation
 
+**Status: partial** (barely started): only the `tile_group_obu()` prefix from
+the Phase 8 activation skeleton landed; `AV2-5.20-TILE-GROUP-PAYLOAD` and the
+arithmetic-boundary targets are untouched.
+
 **Goal:** validate tile-group structure without prematurely promising a complete decoder.
 
 Feature IDs:
@@ -383,6 +452,9 @@ Acceptance:
 
 ## Phase 10 — conformance vectors and AVM differential harness
 
+**Status: todo.** Mapping-only; `cargo xtask conformance` is an explicit stub.
+An active OpenSpec change (`avm-differential-harness`) plans the harness.
+
 **Goal:** turn validator confidence into reproducible external proof.
 
 Feature IDs:
@@ -398,6 +470,26 @@ Work items:
 - store failing bitstreams under an ignored local corpus and optionally add minimized redistributable fixtures;
 - document where public AV2 vectors can be fetched and their license status;
 - never require AVM in normal CI until the maintainer opts in.
+
+## Planned diagnostics backlog
+
+Diagnostics proposed in earlier phase plans that have **not** landed yet. The
+canonical registry of emitted IDs is
+[`VALIDATOR-DIAGNOSTICS.md`](./VALIDATOR-DIAGNOSTICS.md); when one of these
+lands, add it to the registry tables there (the CI gate will require it).
+
+| Planned ID | Severity | Section | Feature | Trigger |
+|---|---|---|---|---|
+| `hls/multiple-active-sequence-headers` | error, or warning until CLK parsing exists | §7.3.8 | `AV2-7.3.8-HLS-AVAILABILITY` | More than one active sequence header observed for an extended layer without a modeled reset. |
+| `sequence-state/monotonic-output-order-mismatch` | error | §6.4.1 | `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` | Extended layers in a coded multistream video sequence disagree on `monotonic_output_order_flag`. |
+| `sequence-state/distinct-mlayer-count-exceeds-seq-max` | error | §6.4.1 | `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` | Count of distinct `obu_mlayer_id` values exceeds `SeqMaxMlayerCnt`. Distinct from the landed per-OBU `sequence-state/mlayer-exceeds-max` and the parse-time `sequence-header/seq-max-mlayer-count-out-of-range`. |
+| `obu-order/global-hls-after-metadata-suffix` | error | §7.3.7 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Global HLS appears after suffix metadata. Needs global suffix-metadata classification, which is pending frame/tile parsing. |
+| `obu-order/non-global-hls-before-coded-layer` | error | §7.3.7 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Non-global HLS appears in an invalid temporal-unit region. |
+| `msdo/sub-xlayer-duplicate` | error | §6.6 | `AV2-5.6-MSDO` | Duplicate `sub_xlayer_id` where uniqueness is required. Add only after confirming the exact §6.6 wording in the spec mirror (spec honesty). |
+
+Naming rules: lowercase kebab-case after the slash; prefix by conceptual
+owner, not Rust module name; no numeric values encoded in the ID; never rename
+a landed ID without a migration note.
 
 ## Done criteria for the umbrella validator goal
 
