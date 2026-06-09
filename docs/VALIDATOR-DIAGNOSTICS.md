@@ -4,6 +4,13 @@
 `owner: validator`  
 `purpose: stable rule IDs for missing validator work`
 
+> **Canonical diagnostic registry.** This file is the single home for validator
+> rule IDs. Phase- and design-scoped lists —
+> [`VALIDATOR-NEXT-DIAGNOSTICS.md`](./VALIDATOR-NEXT-DIAGNOSTICS.md),
+> [`VALIDATOR-HLS-AVAILABILITY-STATE.md`](./VALIDATOR-HLS-AVAILABILITY-STATE.md),
+> and [`OPS-BRT-DIAGNOSTICS.md`](./OPS-BRT-DIAGNOSTICS.md) — feed into this
+> registry; once a diagnostic lands, its stable ID belongs here.
+
 Diagnostics are the validator product. Every finding must have:
 
 - stable `rule_id`;

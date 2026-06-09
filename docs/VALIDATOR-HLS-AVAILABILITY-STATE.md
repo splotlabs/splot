@@ -2,6 +2,11 @@
 
 `scope: AV2 §6.2.2, §6.4, §7.3.7, §7.3.8`
 
+> **Canonical diagnostic registry:**
+> [`VALIDATOR-DIAGNOSTICS.md`](./VALIDATOR-DIAGNOSTICS.md). This document is the
+> *design rationale* for HLS availability/sequence state; any diagnostic IDs it
+> proposes are owned by the canonical registry.
+
 ## Purpose
 
 The validator now has enough syntax coverage to maintain real state. The next state model should track which high-level syntax (HLS) OBUs are available, which sequence header is active for each extended layer, and how temporal units are ordered.

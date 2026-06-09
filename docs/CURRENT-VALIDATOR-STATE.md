@@ -1,6 +1,6 @@
 # Current validator state
 
-`observed: 2026-06-07`
+`observed: 2026-06-09`
 `repo: splotlabs/splot main`
 `scope: validator/parser/inspector only`
 
@@ -46,7 +46,7 @@ Do not begin a full frame-header parser, tile-group payload parser, entropy/rang
 | HLS availability | `AV2-7.3.8-HLS-AVAILABILITY` |
 | Temporal-unit ordering completion | `AV2-7.3.7-TEMPORAL-UNIT-ORDER`, then children for §7.3.2 through §7.3.6 as parse dependencies allow |
 | Frame segmentation/tiling live paths | `AV2-5.18.7-SEGMENTATION-TILING` (frame `segmentation_params()` / `tile_info()`), built on the now-implemented `AV2-5.4.9-SEGMENT-INFO` and `AV2-5.18.7.3-TILE-PARAMS` foundations |
-| HLS OBU payload foundations | `AV2-5.5-TEMPORAL-DELIMITER`, `AV2-5.6-MSDO`, and `AV2-5.7-MULTI-FRAME-HEADER` are now fully parsed (including MFH `seg_info()`); LCR/OPS/atlas remain in a later slice |
+| HLS OBU payload foundations | `AV2-5.5-TEMPORAL-DELIMITER`, `AV2-5.6-MSDO`, and `AV2-5.7-MULTI-FRAME-HEADER` (including MFH `seg_info()`), plus the §5.8 layer configuration records (`AV2-5.8.1-LCR-GLOBAL-INFO` through `AV2-5.8.9-LCR-XLAYER-COLOR-INFO`), atlas segments (`AV2-5.9-ATLAS-SEGMENT`), operating point sets (`AV2-5.10-OPERATING-POINT-SET`, `AV2-5.11-OPERATING-POINT-PAYLOAD`), and buffer-removal timing (`AV2-5.12-BUFFER-REMOVAL-TIMING`) are now fully parsed with stable diagnostics. Remaining HLS work is deeper semantic validation (these rows are `validate = partial`) and the deferred MFH/OPS layer-dependency-map checks (§6.10.7) |
 
 ## Current-state check commands for agents
 

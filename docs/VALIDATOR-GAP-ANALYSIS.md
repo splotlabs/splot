@@ -5,6 +5,19 @@
 `primary matrix: docs/IMPLEMENTATION-MATRIX.toml`  
 `primary spec: AV2 Bitstream & Decoding Process Specification v1.0.0`
 
+> **⚠️ Stale baseline snapshot (flagged by the 2026-06-09 doc audit).** The
+> "Current status" / "Feature status today" columns below describe the
+> *pre-Phase-1* baseline and are now out of date — for example §5.2.3
+> `trailing_bits` and §5.2.4 `byte_alignment` are implemented (`parse`/`tests`
+> `done`), and the §5.4 sequence header now parses (its child configs are largely
+> `parse`/`tests` `done`; the `AV2-5.4-SEQUENCE-HEADER` umbrella stays `partial`
+> pending full child and validation coverage) — none are the "todo/partial" shown
+> below. Treat
+> [`docs/IMPLEMENTATION-MATRIX.toml`](./IMPLEMENTATION-MATRIX.toml) (and the
+> generated [`docs/FEATURE-STATUS.md`](./FEATURE-STATUS.md)) as the canonical
+> current status; this document is retained for its gap framing and validator
+> *targets*, not as a status report.
+
 ## 1. Current validator baseline
 
 The repository is in the intended validator-first shape. The current implemented surface is the framing layer:

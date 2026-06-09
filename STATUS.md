@@ -6,6 +6,15 @@ decoder/encoder are reserved API shapes.
 
 Toolchain: Rust 1.96.0, edition 2024, resolver 3. Generated 2026-06-06.
 
+> **This file is a dated changelog (newest section first), not a live status
+> page.** Each section is a point-in-time snapshot from when that phase landed, so
+> an older section can describe features (e.g. `seg_info()` / `tile_params()`) that
+> have since advanced. For current status, treat
+> [`docs/IMPLEMENTATION-MATRIX.toml`](docs/IMPLEMENTATION-MATRIX.toml) as canonical,
+> with the generated [`docs/FEATURE-STATUS.md`](docs/FEATURE-STATUS.md) and
+> [`docs/CURRENT-VALIDATOR-STATE.md`](docs/CURRENT-VALIDATOR-STATE.md) as the
+> readable current-state views.
+
 ## Sequence + HLS validator coverage (2026-06-07)
 
 OpenSpec change `sequence-hls-validator-coverage`. This phase extends the validator
