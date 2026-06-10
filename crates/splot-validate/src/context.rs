@@ -128,6 +128,35 @@ pub(crate) struct ValidatorContext {
     /// the activation-driven re-checks never duplicate a diagnostic for the same
     /// pairing (a different activated sequence header gets a distinct key).
     emitted_dependency_findings: BTreeSet<DependencyFindingKey>,
+    /// Extended layers whose active sequence header was confirmed by a parsed
+    /// frame-header reference (the § 5.18.2 `load_sequence_header` path), as
+    /// opposed to the first-seen OBU-order fallback. The § 6.10.7 / § 6.8.9
+    /// agreement checks treat a fallback activation as decidable only while it
+    /// is the sole in-band candidate (see `agreement_activation_for`).
+    frame_confirmed_xlayers: BTreeSet<ExtendedLayerId>,
+    /// § 6.4.1 LCR-association snapshots keyed by `(xlayer, seq_header_id)`:
+    /// the header's `seq_lcr_id` resolved local-first-then-global against the
+    /// LCRs present prior to the *latest observation* of that header, with the
+    /// resolved record's embedded-layer maps as of that observation. § 6.4.1
+    /// associates an LCR "present prior to this sequence header", so the
+    /// § 6.8.9 agreement check must not re-resolve against the live store at a
+    /// later activation (a post-header redefinition is not the associated
+    /// record).
+    lcr_associations: BTreeMap<(ExtendedLayerId, SequenceHeaderId), LcrAssociation>,
+}
+
+/// The § 6.4.1 LCR association of one observed sequence header; see
+/// [`ValidatorContext::lcr_associations`].
+#[derive(Debug, Clone)]
+struct LcrAssociation {
+    /// `true` when the association resolved to a global LCR (no local record
+    /// with the id existed in the header's extended layer at observation).
+    lcr_is_global: bool,
+    /// The associated record's id (the header's `seq_lcr_id`).
+    lcr_id: u8,
+    /// The record's § 5.8.8 embedded-layer maps at observation time; `None`
+    /// when it carried no embedded-layer info (§ 6.8.9 binds "if present").
+    maps: Option<LcrEmbeddedMaps>,
 }
 
 /// Availability of in-band HLS objects, for the § 7.3.8 reference checks.
@@ -1480,9 +1509,15 @@ impl ValidatorContext {
             let previous = self
                 .active_sequence_by_xlayer
                 .insert(obu.header.extended_layer_id, seq_id);
-            // A newly activated (or re-activated to a different id) sequence header
-            // makes the deferred § 6.10.7 / § 6.8.9 agreement checks decidable.
-            if previous != Some(seq_id) {
+            // A frame-header reference is the § 5.18.2 load_sequence_header path:
+            // it *confirms* the layer's activation (the OBU-order fallback was a
+            // guess), so the deferred § 6.10.7 / § 6.8.9 agreement checks become
+            // decidable on the first confirmation even when the id is unchanged,
+            // and again whenever the id changes.
+            let newly_confirmed = self
+                .frame_confirmed_xlayers
+                .insert(obu.header.extended_layer_id);
+            if previous != Some(seq_id) || newly_confirmed {
                 self.on_sequence_activation(obu.header.extended_layer_id, options, report);
             }
 
@@ -2814,14 +2849,36 @@ impl ValidatorContext {
         Some((id, header.general))
     }
 
+    /// The activated sequence header usable for the § 6.10.7 / § 6.8.9 agreement
+    /// checks: the in-band active header for `xlayer`, but only when the
+    /// activation is *decidable* — confirmed by a parsed frame-header reference
+    /// (§ 5.18.2 `load_sequence_header`), or the OBU-order fallback while it is
+    /// the sole in-band sequence header (any frame must then reference it or
+    /// trip the availability checks). With several in-band candidates and no
+    /// frame yet, the first-seen fallback is a guess a later frame can
+    /// contradict, and an agreement error emitted against the guess could not be
+    /// retracted — so the checks defer to frame-driven activation instead.
+    fn agreement_activation_for(
+        &self,
+        xlayer: ExtendedLayerId,
+    ) -> Option<(SequenceHeaderId, SequenceHeaderGeneral)> {
+        let resolved = self.active_general_for(xlayer)?;
+        if self.frame_confirmed_xlayers.contains(&xlayer) || self.sequence_headers.len() == 1 {
+            Some(resolved)
+        } else {
+            None
+        }
+    }
+
     /// Checks explicitly signalled OPS maps against the sequence header activated
     /// for each entry's extended layer (AV2 § 6.10.7): for any included embedded
     /// layer `cMId` with `MLayerDependencyMap[cMId][rMId] == 1`, embedded layer
     /// `rMId` must also be included, and likewise per temporal-layer map under
-    /// `TLayerDependencyMap`. An entry whose extended layer has no activated
-    /// in-band sequence header is skipped (the maps are never fabricated), the
-    /// whole check is suppressed when external HLS declares any sequence header,
-    /// and the [`DependencyFindingKey`] dedup makes activation-time re-checks
+    /// `TLayerDependencyMap`. An entry whose extended layer has no decidable
+    /// activated in-band sequence header is skipped (the maps are never
+    /// fabricated or guessed; see `agreement_activation_for`), the whole check
+    /// is suppressed when external HLS declares any sequence header, and the
+    /// [`DependencyFindingKey`] dedup makes activation-time re-checks
     /// idempotent.
     fn check_ops_entries_against_active(
         &mut self,
@@ -2835,7 +2892,8 @@ impl ValidatorContext {
             return;
         }
         for entry in entries {
-            let Some((seq_header_id, general)) = self.active_general_for(entry.xlayer_id) else {
+            let Some((seq_header_id, general)) = self.agreement_activation_for(entry.xlayer_id)
+            else {
                 continue;
             };
 
@@ -2939,15 +2997,60 @@ impl ValidatorContext {
         self.check_lcr_dependency_agreement(xlayer, options, report);
     }
 
+    /// Takes the § 6.4.1 LCR-association snapshot for one observed sequence
+    /// header: `seq_lcr_id == 0` or an unresolved reference clears any previous
+    /// snapshot (the latest observation of an id defines its association);
+    /// otherwise the local-first-then-global resolution against the LCRs present
+    /// prior to this header is stored, with the resolved record's embedded-layer
+    /// maps as of this observation.
+    fn snapshot_lcr_association(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        seq_header_id: SequenceHeaderId,
+        seq_lcr_id: u8,
+    ) {
+        let key = (xlayer, seq_header_id);
+        if seq_lcr_id == 0 {
+            // AV2 § 6.4.1: seq_lcr_id == 0 means no LCR is associated.
+            self.lcr_associations.remove(&key);
+            return;
+        }
+        let association = if self.hls.has_local_lcr(xlayer, seq_lcr_id) {
+            Some(LcrAssociation {
+                lcr_is_global: false,
+                lcr_id: seq_lcr_id,
+                maps: self.hls.local_lcr_embedded(xlayer, seq_lcr_id).cloned(),
+            })
+        } else if self.hls.global_lcr_xlayer_map(seq_lcr_id).is_some() {
+            Some(LcrAssociation {
+                lcr_is_global: true,
+                lcr_id: seq_lcr_id,
+                maps: self.hls.global_lcr_embedded(seq_lcr_id, xlayer).cloned(),
+            })
+        } else {
+            None
+        };
+        match association {
+            Some(association) => {
+                self.lcr_associations.insert(key, association);
+            }
+            None => {
+                self.lcr_associations.remove(&key);
+            }
+        }
+    }
+
     /// AV2 § 6.8.9: the activated LCR's `lcr_mlayer_map[isGlobal][xId]` /
     /// `lcr_tlayer_map[isGlobal][xId][cMId]`, if present, must be
     /// dependency-closed under the activated sequence header's maps. The pairing
-    /// is the sequence header activated for `xlayer` and the in-band LCR its
-    /// `seq_lcr_id` resolves to (local-first-then-global, § 6.4.1); only the
+    /// is the sequence header activated for `xlayer` and that header's § 6.4.1
+    /// LCR association — the snapshot taken at the header's latest observation
+    /// (see [`ValidatorContext::lcr_associations`]), NOT a live resolution: a
+    /// record redefined after the header is not the associated one. Only the
     /// `xId == xlayer` entry is constrained by this activation. Unresolved
     /// references are owned by the existing § 7.3.8.3 availability diagnostics,
-    /// and a resolved record without embedded-layer info has nothing to check.
-    /// The diagnostics carry the LCR OBU's byte offset.
+    /// and an association without embedded-layer info has nothing to check. The
+    /// diagnostics carry the associated LCR OBU's byte offset.
     fn check_lcr_dependency_agreement(
         &mut self,
         xlayer: ExtendedLayerId,
@@ -2962,22 +3065,17 @@ impl ValidatorContext {
         if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
             return;
         }
-        let Some((seq_header_id, general)) = self.active_general_for(xlayer) else {
+        let Some((seq_header_id, general)) = self.agreement_activation_for(xlayer) else {
             return;
         };
-        let seq_lcr_id = general.seq_lcr_id.get();
-        if seq_lcr_id == 0 {
-            // AV2 § 6.4.1: seq_lcr_id == 0 means no LCR is associated.
-            return;
-        }
-        let (lcr_is_global, maps) = if self.hls.has_local_lcr(xlayer, seq_lcr_id) {
-            (false, self.hls.local_lcr_embedded(xlayer, seq_lcr_id))
-        } else if self.hls.global_lcr_xlayer_map(seq_lcr_id).is_some() {
-            (true, self.hls.global_lcr_embedded(seq_lcr_id, xlayer))
-        } else {
+        let Some(association) = self.lcr_associations.get(&(xlayer, seq_header_id)) else {
+            // seq_lcr_id == 0 or unresolved at the header's observation (§ 6.4.1:
+            // no OBU is associated).
             return;
         };
-        let Some(maps) = maps.cloned() else {
+        let lcr_is_global = association.lcr_is_global;
+        let seq_lcr_id = association.lcr_id;
+        let Some(maps) = association.maps.clone() else {
             return;
         };
 
@@ -3596,18 +3694,25 @@ impl ValidatorContext {
         // seen in OBU order; a parsed CLK/OLK frame header overrides this with the
         // sequence header it references (see observe_frame_bearing_obu), which is the
         // exact AV2 § 5.18.2 activation point for the paths the skeleton parses.
-        let newly_activated = !self.active_sequence_by_xlayer.contains_key(&xlayer);
         self.active_sequence_by_xlayer
             .entry(xlayer)
             .or_insert(seq_header_id);
+
+        // § 6.4.1 associates "this sequence header" with the LCR present prior to
+        // it, so every observation (first sighting, bit-identical repeat, or
+        // redefinition) re-takes the association snapshot — an LCR that arrived
+        // between two sightings pairs with the later one.
+        self.snapshot_lcr_association(xlayer, seq_header_id, new_general.seq_lcr_id.get());
 
         // § 6.10.7 / § 6.8.9 bind whatever content the activated id currently
         // carries, and a same-id reconfiguration (legal at a coded-video-sequence
         // boundary, § 7.3.6) changes that content without an activation-id change.
         // When the agreement inputs (dependency maps, seq_lcr_id) of an
         // already-stored header are redefined, invalidate the id's dedup keys and
-        // re-run the checks for every extended layer it is active for; a
-        // first-sighting activation re-runs only this layer.
+        // re-run the checks for every extended layer it is active for. The
+        // observed header's own layer is re-run whenever this header is its
+        // active one (covering the first sighting and the repeat-after-LCR case;
+        // the dedup keys keep re-runs idempotent).
         let agreement_inputs_changed = previous_header.is_some_and(|previous| {
             let old = previous.general;
             old.mlayer_dependency_map != new_general.mlayer_dependency_map
@@ -3615,7 +3720,7 @@ impl ValidatorContext {
                 || old.seq_lcr_id != new_general.seq_lcr_id
         });
         let mut layers_to_check = BTreeSet::new();
-        if newly_activated {
+        if self.active_sequence_by_xlayer.get(&xlayer) == Some(&seq_header_id) {
             layers_to_check.insert(xlayer);
         }
         if agreement_inputs_changed {

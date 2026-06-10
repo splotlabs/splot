@@ -346,16 +346,20 @@ Conformance points deliberately not flagged, in two groups.
 
 - The § 6.10.7 / § 6.8.9 / § 7.3.8.7 dependency-map agreement checks (landed as
   `ops/*-dependency-missing`, `lcr/*-dependency-missing`,
-  `frame-header/mfh-*-dependency-missing`) run only against an **activated in-band**
-  sequence header and the maps are never fabricated from defaults or max layer IDs.
-  Each group's no-false-positive gate matches what external HLS could shadow: the
-  OPS checks are suppressed when external HLS declares any sequence header, the LCR
-  checks whenever external HLS is enabled at all (an unmodeled external *local* LCR
-  would win the § 6.4.1 resolution), and the MFH checks are skipped when the
-  referenced sequence header does not resolve in-band. An OPS/LCR entry whose
-  extended layer never activates an in-band header is not checked, and an LCR
-  arriving after the activating sequence header is not retroactively paired
-  (§ 6.4.1 binds an LCR "present prior to this sequence header").
+  `frame-header/mfh-*-dependency-missing`) run only against a **decidable activated
+  in-band** sequence header — one confirmed by a parsed frame-header reference, or
+  the OBU-order fallback while it is the sole in-band header — and the maps are
+  never fabricated from defaults, max layer IDs, or an ambiguous multi-header
+  fallback guess. Each group's no-false-positive gate matches what external HLS
+  could shadow: the OPS checks are suppressed when external HLS declares any
+  sequence header, the LCR checks whenever external HLS is enabled at all (an
+  unmodeled external *local* LCR would win the § 6.4.1 resolution), and the MFH
+  checks are skipped when the referenced sequence header does not resolve in-band.
+  The § 6.8.9 pairing binds the header's § 6.4.1 *association*, snapshotted at each
+  observation of that header (an LCR "present prior to this sequence header"): a
+  later-arriving LCR is not retroactively paired, and a record redefined after the
+  header's latest observation is not the associated one. An OPS/LCR entry whose
+  extended layer never activates a decidable in-band header is not checked.
 - An unresolved cross-OPS inheritance reference is not flagged (`ops/inherited-ops-unavailable`
   is reserved) because the reference may be supplied through external HLS.
 

@@ -7508,4 +7508,93 @@ mod tests {
             "provided external HLS must suppress the LCR agreement check; report was: {report}"
         );
     }
+
+    #[test]
+    fn lcr_repeated_sequence_header_pairs_with_now_present_lcr() {
+        // § 6.4.1 associates "this sequence header" with an LCR present prior to
+        // it: the violating LCR arrives after the first header but before the
+        // bit-identical repeat, so the repeat's association must be evaluated and
+        // flagged exactly once.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_with_lcr(0, 5, 1, 1),
+        ));
+        data.extend(local_lcr_obu_with_embedded(0, 5, 0b10, &[0b1]));
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_with_lcr(0, 5, 1, 1),
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "lcr/mlayer-dependency-missing"),
+            1,
+            "the repeated header must pair with the now-present LCR; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_association_snapshotted_at_header_observation() {
+        // § 6.4.1 associates the header with the LCR present prior to *that
+        // header*: the dependency-closed LCR precedes the header, the violating
+        // redefinition follows it, and the frame-driven activation must check the
+        // header-observation snapshot (the closed maps), not the live store.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(1, 1))); // id 0
+        data.extend(local_lcr_obu_with_embedded(0, 5, 0b11, &[0b11, 0b11]));
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_with_lcr(1, 5, 1, 1), // id 1, seq_lcr_id 5
+        ));
+        data.extend(local_lcr_obu_with_embedded(0, 5, 0b10, &[0b1])); // redefinition
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 1)); // activates id 1
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "lcr/mlayer-dependency-missing")
+                && !has_error(&report, "lcr/tlayer-dependency-missing"),
+            "the post-header redefinition must not be paired with header 1; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ops_not_checked_against_ambiguous_fallback_header() {
+        // Two in-band headers are available before any frame, so the OBU-order
+        // fallback (id 0, default maps) is a guess; the frame then loads id 1,
+        // whose signaled map clears MLayerDependencyMap[1][0]. The OPS must be
+        // paired with the frame-confirmed header — flagging it against the
+        // fallback would be an unretractable false positive.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(1, 1))); // id 0
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_mlayer_dep_cleared(1),
+        ));
+        data.extend(local_ops_mlayer_obu(0, 0, 0b10, &[0b1]));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 1)); // loads id 1
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "ops/mlayer-dependency-missing"),
+            "the OPS pairs with the frame-confirmed header, not the fallback; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ops_checked_when_frame_confirms_the_fallback_header() {
+        // Same ambiguous-fallback stream, but the frame confirms the violating
+        // header 0: the deferred check must fire exactly once at confirmation.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(1, 1))); // id 0
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_mlayer_dep_cleared(1),
+        ));
+        data.extend(local_ops_mlayer_obu(0, 0, 0b10, &[0b1]));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // loads id 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "ops/mlayer-dependency-missing"),
+            1,
+            "frame confirmation of the violating header must fire once; report was: {report}"
+        );
+    }
 }
