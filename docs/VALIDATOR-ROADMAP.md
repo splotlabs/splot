@@ -263,8 +263,11 @@ Landed: the locally-decidable checks listed under `padding/*`, `metadata/*`,
 
 Remaining: the stateful/cross-OBU semantics behind the `validate = partial`
 rows (`AV2-5.13-QUANTIZATION-MATRIX`, `AV2-5.14-FILM-GRAIN`,
-`AV2-5.17-METADATA` and its child rows); the active OpenSpec change
-`metadata-semantic-validation` tracks the metadata portion.
+`AV2-5.17-METADATA` and its child rows). The metadata portion that was
+validator-achievable landed via the archived `metadata-semantic-validation`
+change; the residuals are decoder-blocked (§6.16.13 decoded-frame-hash) or
+frame-parsing-blocked (§7.3.3/§7.3.4 in-frame-unit placement) and stay
+tracked by their matrix rows.
 
 Acceptance:
 

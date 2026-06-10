@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "24a0a4f471cd169f7b4b1842d4a4f6c8378327b5",
+  "audited_commit": "37045daa1a439fd411af50dcfd6c3ee17c3abd70",
   "outcome": "success",
   "files": [
     {
@@ -1312,7 +1312,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "9d6db285e0af000ea69315e239b4ac5ad338146dbc36a6980928f69ff6d4507c",
+      "sha256": "360b54692ccaf82bd32e3739adb256a41bb2a561007ad866ca5743ac6ce1a66d",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -2328,53 +2328,6 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/metadata-semantic-validation/design.md",
-      "sha256": "5045fd7332ad0cc897af8db688ed9621f3295e30ef9fcc583ecaee2ca8f92687",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/metadata-semantic-validation/proposal.md",
-      "sha256": "46fed47e16aae49edf3bfaa65a39c40116b13068ca46c1d734b512e14a8515a1",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.17-METADATA",
-        "AV2-5.17.10-METADATA-SCAN-TYPE",
-        "AV2-5.17.12-METADATA-DECODED-FRAME-HASH",
-        "AV2-5.17.3-METADATA-GROUP",
-        "AV2-5.17.5-METADATA-HDR-CLL",
-        "AV2-5.17.6-METADATA-HDR-MDCV",
-        "AV2-5.18-FRAME-HEADER",
-        "AV2-5.19-TILE-GROUP",
-        "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
-        "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT",
-        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
-        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/metadata-semantic-validation/specs/validator/spec.md",
-      "sha256": "b70515aac5a77057888e2abd3b86b75c4d565b0317abb0c78554089ef156d8c4",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/metadata-semantic-validation/tasks.md",
-      "sha256": "b8246b139fe162f85452c379a66434c84143f0536a5a20d4838652dac984bf47",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.17-METADATA",
-        "AV2-5.17.10-METADATA-SCAN-TYPE",
-        "AV2-5.17.3-METADATA-GROUP",
-        "AV2-5.18-FRAME-HEADER",
-        "AV2-5.19-TILE-GROUP"
-      ],
-      "outcome": "success"
-    },
-    {
       "path": "openspec/changes/spec-coverage-doc/proposal.md",
       "sha256": "2722641e08415381787b0eb717363f67acebb13fd8a190c48cc4169228528bca",
       "scope_kind": "openspec",
@@ -2526,7 +2479,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "58c255c7eb2a68cd356b8f72e4008c787e5cff46a59e3bc9a5dd5d4c4e0efdb7",
+      "sha256": "90afb030f74301d278f2fd55dc28473f4243392afd82e4e7070741dce2b2360f",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
