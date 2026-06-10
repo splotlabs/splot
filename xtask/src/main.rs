@@ -282,10 +282,12 @@ fn run_cargo(args: &[&str]) -> Result<()> {
 fn run_cargo_with_env(envs: &[(&str, &str)], args: &[&str]) -> Result<()> {
     let cargo = cargo();
     // Echo the env assignments too, so a failing step is reproducible by
-    // copy-pasting the displayed line.
+    // copy-pasting the displayed line. Values are single-quoted: an unquoted
+    // space (e.g. `RUSTDOCFLAGS=-D warnings`) would bind the assignment to a
+    // command named `warnings` in a POSIX shell.
     let env_prefix: String = envs
         .iter()
-        .map(|(key, value)| format!("{key}={value} "))
+        .map(|(key, value)| format!("{key}='{value}' "))
         .collect();
     let display = format!("{env_prefix}{cargo} {}", args.join(" "));
     eprintln!("> {display}");
