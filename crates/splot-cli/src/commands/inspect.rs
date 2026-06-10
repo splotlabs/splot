@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context as _, Result};
 use clap::Args;
 use serde::Serialize;
-use splot_core::annexb::{ObuEnvelope, parse_annex_b_obus_partial};
+use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::buffer_removal_timing::{
     BufferRemovalTiming, parse_buffer_removal_timing,
@@ -31,7 +31,9 @@ use splot_core::headers::padding::parse_padding_obu;
 use splot_core::headers::quantizer_matrix::{QuantizerMatrixObu, parse_quantizer_matrix};
 use splot_core::headers::sequence::{SequenceHeader, parse_sequence_header};
 use splot_core::headers::tile_group::parse_tile_group_prefix;
+use splot_core::ivf::{IvfFrame, IvfHeader};
 use splot_core::obu::{ObuHeader, PayloadStatus};
+use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 use splot_core::types::ObuType;
 
 use crate::commands::read_input;
@@ -39,7 +41,7 @@ use crate::commands::read_input;
 /// Arguments for `splot inspect`.
 #[derive(Args, Debug)]
 pub struct InspectArgs {
-    /// Path to the AV2 length-delimited bitstream.
+    /// Path to a raw AV2 Annex B bitstream or IVF-wrapped Annex B stream.
     pub input: PathBuf,
     /// Emit the inspection as JSON.
     #[arg(long)]
@@ -56,6 +58,10 @@ struct InspectRecord {
     byte_offset: u64,
     size: u32,
     payload_len: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ivf_header: Option<InspectIvfHeader>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ivf_frame: Option<InspectIvfFrame>,
     payload_status: InspectPayloadStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     sequence_header: Option<SequenceHeaderView>,
@@ -83,12 +89,20 @@ struct InspectRecord {
 }
 
 impl InspectRecord {
-    fn new(index: usize, obu: &ObuEnvelope<'_>, sequences: &BTreeMap<u8, SequenceHeader>) -> Self {
+    fn new(
+        index: usize,
+        obu: &ObuEnvelope<'_>,
+        sequences: &BTreeMap<u8, SequenceHeader>,
+        ivf_header: Option<IvfHeader>,
+        ivf_frame: Option<IvfFrame<'_>>,
+    ) -> Self {
         Self {
             index,
             byte_offset: obu.offset.get(),
             size: obu.size,
             payload_len: obu.payload.len(),
+            ivf_header: ivf_header.map(InspectIvfHeader::new),
+            ivf_frame: ivf_frame.map(InspectIvfFrame::new),
             payload_status: InspectPayloadStatus::new(obu),
             sequence_header: sequence_header_view(obu),
             content_interpretation: content_interpretation_view(obu),
@@ -104,6 +118,65 @@ impl InspectRecord {
             header: obu.header,
         }
     }
+}
+
+/// IVF header metadata attached to OBU records from an IVF input.
+#[derive(Serialize)]
+struct InspectIvfHeader {
+    fourcc: String,
+    width: u16,
+    height: u16,
+    timebase_denominator: u32,
+    timebase_numerator: u32,
+    declared_frame_count: u32,
+}
+
+impl InspectIvfHeader {
+    fn new(header: IvfHeader) -> Self {
+        Self {
+            fourcc: fourcc_string(header.fourcc),
+            width: header.width,
+            height: header.height,
+            timebase_denominator: header.timebase_denominator,
+            timebase_numerator: header.timebase_numerator,
+            declared_frame_count: header.frame_count,
+        }
+    }
+}
+
+/// IVF frame metadata attached to OBU records from an IVF input.
+#[derive(Serialize)]
+struct InspectIvfFrame {
+    index: usize,
+    header_offset: u64,
+    payload_offset: u64,
+    size: u32,
+    pts: u64,
+}
+
+impl InspectIvfFrame {
+    fn new(frame: IvfFrame<'_>) -> Self {
+        Self {
+            index: frame.index,
+            header_offset: frame.header_offset.get(),
+            payload_offset: frame.payload_offset.get(),
+            size: frame.size,
+            pts: frame.pts,
+        }
+    }
+}
+
+fn fourcc_string(fourcc: [u8; 4]) -> String {
+    fourcc
+        .iter()
+        .map(|byte| {
+            if byte.is_ascii_graphic() || *byte == b' ' {
+                char::from(*byte)
+            } else {
+                '.'
+            }
+        })
+        .collect()
 }
 
 /// Re-parses a `padding_obu()` so `--json` can expose its padding and trailing lengths.
@@ -956,39 +1029,94 @@ impl InspectPayloadStatus {
 /// serialized.
 pub fn run(args: &InspectArgs) -> Result<ExitCode> {
     let data = read_input(&args.input)?;
-    // Use the partial parse so the OBUs before a malformed tail are still shown.
-    let parsed = parse_annex_b_obus_partial(&data);
+    // Use the partial parser so the OBUs before a malformed tail are still shown.
+    let parsed = parse_bitstream_partial(&data);
 
     if args.json {
-        // Track sequence headers in OBU order so a later frame header's core parse can
-        // resolve the sequence state it references (AV2 § 5.18.2 load_sequence_header).
-        let mut sequences: BTreeMap<u8, SequenceHeader> = BTreeMap::new();
-        let mut records: Vec<InspectRecord> = Vec::with_capacity(parsed.obus.len());
-        for (index, obu) in parsed.obus.iter().enumerate() {
-            records.push(InspectRecord::new(index, obu, &sequences));
-            if obu.header.obu_type == ObuType::SequenceHeader {
-                let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-                if let Ok(sequence) = parse_sequence_header(&mut reader) {
-                    sequences.insert(sequence.general.seq_header_id.get(), sequence);
-                }
-            }
-        }
+        let records = inspect_records(&parsed);
         let json =
             serde_json::to_string_pretty(&records).context("failed to serialize inspection")?;
         println!("{json}");
     } else {
-        print_human(&parsed.obus, args.headers);
+        print_human(&parsed, args.headers);
     }
 
-    if let Some(error) = parsed.error {
-        eprintln!("error: failed to parse remainder of bitstream: {error}");
+    if print_parse_errors(&parsed) {
         Ok(ExitCode::from(1))
     } else {
         Ok(ExitCode::from(0))
     }
 }
 
-fn print_human(obus: &[ObuEnvelope<'_>], headers_only: bool) {
+fn inspect_records(parsed: &ParsedBitstream<'_>) -> Vec<InspectRecord> {
+    // Track sequence headers in OBU order so a later frame header's core parse can
+    // resolve the sequence state it references (AV2 § 5.18.2 load_sequence_header).
+    let mut sequences: BTreeMap<u8, SequenceHeader> = BTreeMap::new();
+    let mut records = Vec::new();
+
+    match parsed {
+        ParsedBitstream::AnnexB(parsed) => {
+            records.reserve(parsed.obus.len());
+            for obu in &parsed.obus {
+                push_inspect_record(&mut records, obu, &mut sequences, None, None);
+            }
+        }
+        ParsedBitstream::Ivf(parsed) => {
+            let ivf_header = parsed.header;
+            let capacity = parsed.frames.iter().map(|frame| frame.obus.len()).sum();
+            records.reserve(capacity);
+            for frame in &parsed.frames {
+                for obu in &frame.obus {
+                    push_inspect_record(
+                        &mut records,
+                        obu,
+                        &mut sequences,
+                        ivf_header,
+                        Some(frame.frame),
+                    );
+                }
+            }
+        }
+    }
+
+    records
+}
+
+fn push_inspect_record(
+    records: &mut Vec<InspectRecord>,
+    obu: &ObuEnvelope<'_>,
+    sequences: &mut BTreeMap<u8, SequenceHeader>,
+    ivf_header: Option<IvfHeader>,
+    ivf_frame: Option<IvfFrame<'_>>,
+) {
+    let index = records.len();
+    records.push(InspectRecord::new(
+        index, obu, sequences, ivf_header, ivf_frame,
+    ));
+    if obu.header.obu_type == ObuType::SequenceHeader {
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        if let Ok(sequence) = parse_sequence_header(&mut reader) {
+            sequences.insert(sequence.general.seq_header_id.get(), sequence);
+        }
+    }
+}
+
+fn print_human(parsed: &ParsedBitstream<'_>, headers_only: bool) {
+    if let ParsedBitstream::Ivf(parsed) = parsed
+        && let Some(header) = parsed.header
+    {
+        println!(
+            "IVF fourcc={} {}x{} timebase={}/{} declared_frames={}",
+            fourcc_string(header.fourcc),
+            header.width,
+            header.height,
+            header.timebase_numerator,
+            header.timebase_denominator,
+            header.frame_count
+        );
+    }
+
+    let obus = collect_obus(parsed);
     println!("{} OBU(s)", obus.len());
     for (index, obu) in obus.iter().enumerate() {
         let header = &obu.header;
@@ -1007,4 +1135,43 @@ fn print_human(obus: &[ObuEnvelope<'_>], headers_only: bool) {
             println!("        payload: {} byte(s)", obu.payload.len());
         }
     }
+}
+
+fn collect_obus<'data>(parsed: &ParsedBitstream<'data>) -> Vec<ObuEnvelope<'data>> {
+    match parsed {
+        ParsedBitstream::AnnexB(parsed) => parsed.obus.clone(),
+        ParsedBitstream::Ivf(parsed) => parsed
+            .frames
+            .iter()
+            .flat_map(|frame| frame.obus.iter().copied())
+            .collect(),
+    }
+}
+
+fn print_parse_errors(parsed: &ParsedBitstream<'_>) -> bool {
+    let mut failed = false;
+    match parsed {
+        ParsedBitstream::AnnexB(parsed) => {
+            if let Some(error) = &parsed.error {
+                eprintln!("error: failed to parse remainder of bitstream: {error}");
+                failed = true;
+            }
+        }
+        ParsedBitstream::Ivf(parsed) => {
+            for frame in &parsed.frames {
+                if let Some(error) = &frame.error {
+                    eprintln!(
+                        "error: failed to parse IVF frame {} payload: {error}",
+                        frame.frame.index
+                    );
+                    failed = true;
+                }
+            }
+            if let Some(error) = &parsed.error {
+                eprintln!("error: failed to parse IVF container: {error}");
+                failed = true;
+            }
+        }
+    }
+    failed
 }

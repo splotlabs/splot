@@ -8,7 +8,7 @@
 |---|---|---|---|
 | 0 | Matrix and OpenSpec hygiene | done | — |
 | 1 | Descriptor and payload-boundary foundation | done | `AV2-5.2.3-TRAILING-BITS`, `AV2-5.2.4-BYTE-ALIGNMENT` |
-| 2 | OBU payload dispatch | done | — |
+| 2 | OBU payload dispatch and input containers | done | `AV2-IVF-CONTAINER` |
 | 3 | Sequence header parser (§ 5.4) | partial | `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` |
 | 4 | Activated sequence state (§ 6.2.2) | partial | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS`, `AV2-7.3.8-HLS-AVAILABILITY` |
 | 5 | OBU ordering and temporal-unit state machine | partial | `AV2-7.3.2-CMVS-BOUNDARIES`, `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` |
@@ -79,9 +79,10 @@ docs, and drift gates exist; the OpenSpec change is archived
 ## Phase 2 — `open_bitstream_unit(sz)` payload dispatch
 
 **Status:** done — dispatch, `PayloadStatus`, and the `inspect --json`
-`payload_status` object landed with tests (`AV2-5.2.1-OBU-DISPATCH`). The
-row's `parse = partial` is the declared honest end-state until every payload
-variant exists.
+`payload_status` object landed with tests (`AV2-5.2.1-OBU-DISPATCH`). Raw Annex B
+and IVF-wrapped Annex B inputs are accepted through the shared
+`AV2-IVF-CONTAINER` stream layer. The dispatch row's `parse = partial` is the
+declared honest end-state until every payload variant exists.
 
 ## Phase 3 — sequence header parser, split by §5.4 child rows
 

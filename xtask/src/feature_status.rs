@@ -159,6 +159,7 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
     "sequence-header/",
     "sequence-state/",
     "obu-order/",
+    "ivf/",
     "hls/",
     "msdo/",
     "mfh/",

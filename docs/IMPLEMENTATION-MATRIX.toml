@@ -358,6 +358,45 @@ fixtures = ["tests/fixtures/conformant.av2", "tests/fixtures/truncated.av2", "te
 diagnostics = ["bitstream/parse-error"]
 
 [[feature]]
+id = "AV2-IVF-CONTAINER"
+name = "IVF container support"
+category = "conformance"
+kind = "bitstream-syntax"
+spec_sections = []
+sources = ["https://wiki.multimedia.cx/index.php/Duck_IVF", "https://crates.io/crates/ivf"]
+crate = "splot-core"
+module = "crates/splot-core/src/ivf.rs"
+openspec_change = "add-ivf-container-support"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "IVF is a non-normative container used by common AV bitstream tooling. splot parses and writes the DKIF header/frame envelope locally, then validates each frame payload as AV2 Annex B while preserving original byte offsets. The crates.io ivf crate is BSD-2-Clause and legally usable, but not adopted because the needed surface is small, its writer helpers panic on I/O errors, and it defaults to AV1 fourcc behavior."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "done"
+write = "done"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/ivf.rs::tests", "crates/splot-core/src/stream.rs::tests", "crates/splot-validate/src/validator.rs::tests", "crates/splot-cli/tests/cli.rs"]
+commands = ["cargo test -p splot-core ivf --locked", "cargo test -p splot-core stream --locked", "cargo test -p splot-validate ivf --locked", "cargo test -p splot-cli ivf --locked"]
+fixtures = []
+diagnostics = [
+    "ivf/invalid-header-length",
+    "ivf/invalid-signature",
+    "ivf/truncated-frame-header",
+    "ivf/truncated-frame-payload",
+    "ivf/truncated-header",
+]
+
+[[feature]]
 id = "AV2-5.2.3-TRAILING-BITS"
 name = "Trailing bits syntax and semantics"
 category = "normative"

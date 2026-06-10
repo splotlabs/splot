@@ -1,0 +1,637 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+//! IVF (`DKIF`) container parsing and writing for Annex B payloads.
+//!
+//! IVF is a simple non-normative container used by AV tooling. `splot` treats it
+//! only as a byte envelope (`AV2-IVF-CONTAINER`): each frame payload remains
+//! opaque here and is parsed by the Annex B parser at the stream layer.
+
+use core::fmt;
+use std::io;
+
+use serde::{Deserialize, Serialize};
+
+use crate::span::ByteOffset;
+
+/// IVF file signature.
+pub const IVF_SIGNATURE: [u8; 4] = *b"DKIF";
+
+/// Size of the baseline IVF header in bytes.
+pub const IVF_HEADER_SIZE: u16 = 32;
+
+const IVF_HEADER_SIZE_BYTES: usize = 32;
+
+/// Size of each IVF frame header in bytes.
+pub const IVF_FRAME_HEADER_SIZE: usize = 12;
+
+/// A parsed IVF file header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IvfHeader {
+    /// IVF version field.
+    pub version: u16,
+    /// Declared header length in bytes.
+    pub header_len: u16,
+    /// Codec four-character code.
+    pub fourcc: [u8; 4],
+    /// Coded width in pixels.
+    pub width: u16,
+    /// Coded height in pixels.
+    pub height: u16,
+    /// Timebase denominator.
+    pub timebase_denominator: u32,
+    /// Timebase numerator.
+    pub timebase_numerator: u32,
+    /// Declared number of frames in the file.
+    pub frame_count: u32,
+    /// IVF unused header field.
+    pub unused: u32,
+}
+
+impl IvfHeader {
+    /// Creates a baseline 32-byte IVF header value for writer use.
+    #[must_use]
+    pub const fn new(
+        fourcc: [u8; 4],
+        width: u16,
+        height: u16,
+        timebase_denominator: u32,
+        timebase_numerator: u32,
+        frame_count: u32,
+    ) -> Self {
+        Self {
+            version: 0,
+            header_len: IVF_HEADER_SIZE,
+            fourcc,
+            width,
+            height,
+            timebase_denominator,
+            timebase_numerator,
+            frame_count,
+            unused: 0,
+        }
+    }
+
+    /// Returns the first byte offset after the declared IVF header.
+    #[must_use]
+    pub fn payload_start_offset(self) -> ByteOffset {
+        ByteOffset::new(u64::from(self.header_len))
+    }
+}
+
+/// One IVF frame record and its payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IvfFrame<'a> {
+    /// Zero-based frame index in file order.
+    pub index: usize,
+    /// Absolute offset of the 12-byte IVF frame header.
+    pub header_offset: ByteOffset,
+    /// Absolute offset of the frame payload.
+    pub payload_offset: ByteOffset,
+    /// Declared frame payload size in bytes.
+    pub size: u32,
+    /// Presentation timestamp.
+    pub pts: u64,
+    /// Frame payload bytes.
+    pub payload: &'a [u8],
+}
+
+/// As much of an IVF stream as could be parsed.
+#[derive(Debug)]
+pub struct PartialIvfParse<'a> {
+    /// Parsed header, if a complete valid header was available.
+    pub header: Option<IvfHeader>,
+    /// Frames parsed before the first structural container error.
+    pub frames: Vec<IvfFrame<'a>>,
+    /// Container error that stopped frame parsing, if any.
+    pub error: Option<IvfError>,
+}
+
+/// Errors produced by the IVF container parser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum IvfError {
+    /// The input ended before a complete IVF header could be read.
+    TruncatedHeader {
+        /// First missing byte offset.
+        offset: ByteOffset,
+        /// Number of additional bytes required.
+        needed: usize,
+    },
+    /// The first four bytes were not the IVF `DKIF` signature.
+    InvalidSignature {
+        /// Offset of the signature.
+        offset: ByteOffset,
+        /// Signature bytes that were present.
+        signature: [u8; 4],
+    },
+    /// The header length field was smaller than the baseline 32-byte header.
+    InvalidHeaderLength {
+        /// Offset of the header length field.
+        offset: ByteOffset,
+        /// Declared header length.
+        header_len: u16,
+    },
+    /// The input ended before a complete IVF frame header could be read.
+    TruncatedFrameHeader {
+        /// Zero-based frame index whose header was truncated.
+        frame_index: usize,
+        /// First missing byte offset.
+        offset: ByteOffset,
+        /// Number of additional bytes required.
+        needed: usize,
+    },
+    /// The input ended before the declared frame payload was complete.
+    TruncatedFramePayload {
+        /// Zero-based frame index whose payload was truncated.
+        frame_index: usize,
+        /// First missing byte offset.
+        offset: ByteOffset,
+        /// Declared frame payload size in bytes.
+        size: u32,
+        /// Bytes available after the frame header.
+        remaining: usize,
+    },
+}
+
+impl IvfError {
+    /// Returns the stable validator diagnostic rule id for this error.
+    #[must_use]
+    pub const fn rule_id(&self) -> &'static str {
+        match self {
+            Self::TruncatedHeader { .. } => "ivf/truncated-header",
+            Self::InvalidSignature { .. } => "ivf/invalid-signature",
+            Self::InvalidHeaderLength { .. } => "ivf/invalid-header-length",
+            Self::TruncatedFrameHeader { .. } => "ivf/truncated-frame-header",
+            Self::TruncatedFramePayload { .. } => "ivf/truncated-frame-payload",
+        }
+    }
+
+    /// Returns the byte offset carried by this error.
+    #[must_use]
+    pub const fn offset(&self) -> ByteOffset {
+        match self {
+            Self::TruncatedHeader { offset, .. }
+            | Self::InvalidSignature { offset, .. }
+            | Self::InvalidHeaderLength { offset, .. }
+            | Self::TruncatedFrameHeader { offset, .. }
+            | Self::TruncatedFramePayload { offset, .. } => *offset,
+        }
+    }
+}
+
+impl fmt::Display for IvfError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TruncatedHeader { offset, needed } => write!(
+                f,
+                "truncated IVF header at byte {offset}: needed {needed} more byte(s)"
+            ),
+            Self::InvalidSignature { signature, .. } => write!(
+                f,
+                "invalid IVF signature: expected DKIF, found 0x{:02X}{:02X}{:02X}{:02X}",
+                signature[0], signature[1], signature[2], signature[3]
+            ),
+            Self::InvalidHeaderLength { header_len, .. } => write!(
+                f,
+                "invalid IVF header length: {header_len} byte(s), expected at least {IVF_HEADER_SIZE}"
+            ),
+            Self::TruncatedFrameHeader {
+                frame_index,
+                offset,
+                needed,
+            } => write!(
+                f,
+                "truncated IVF frame {frame_index} header at byte {offset}: needed {needed} more byte(s)"
+            ),
+            Self::TruncatedFramePayload {
+                frame_index,
+                offset,
+                size,
+                remaining,
+            } => write!(
+                f,
+                "truncated IVF frame {frame_index} payload at byte {offset}: declared {size} byte(s), only {remaining} available"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for IvfError {}
+
+/// Returns `true` when `input` starts with the IVF `DKIF` signature.
+#[must_use]
+pub fn is_ivf(input: &[u8]) -> bool {
+    input.starts_with(&IVF_SIGNATURE)
+}
+
+/// Parses a complete IVF header.
+///
+/// # Errors
+/// Returns [`IvfError`] for a truncated header, invalid signature, or header length
+/// smaller than the 32-byte baseline. The parser never panics on malformed input.
+pub fn parse_ivf_header(input: &[u8]) -> Result<IvfHeader, IvfError> {
+    if input.len() < IVF_HEADER_SIZE_BYTES {
+        return Err(IvfError::TruncatedHeader {
+            offset: ByteOffset::new(input.len() as u64),
+            needed: IVF_HEADER_SIZE_BYTES.saturating_sub(input.len()),
+        });
+    }
+
+    let Some(header_bytes) = input
+        .get(..IVF_HEADER_SIZE_BYTES)
+        .and_then(|bytes| <&[u8; IVF_HEADER_SIZE_BYTES]>::try_from(bytes).ok())
+    else {
+        return Err(IvfError::TruncatedHeader {
+            offset: ByteOffset::new(input.len() as u64),
+            needed: IVF_HEADER_SIZE_BYTES.saturating_sub(input.len()),
+        });
+    };
+
+    let signature = [
+        header_bytes[0],
+        header_bytes[1],
+        header_bytes[2],
+        header_bytes[3],
+    ];
+    if signature != IVF_SIGNATURE {
+        return Err(IvfError::InvalidSignature {
+            offset: ByteOffset::new(0),
+            signature,
+        });
+    }
+
+    let version = u16::from_le_bytes([header_bytes[4], header_bytes[5]]);
+    let header_len = u16::from_le_bytes([header_bytes[6], header_bytes[7]]);
+    if header_len < IVF_HEADER_SIZE {
+        return Err(IvfError::InvalidHeaderLength {
+            offset: ByteOffset::new(6),
+            header_len,
+        });
+    }
+    if input.len() < usize::from(header_len) {
+        return Err(IvfError::TruncatedHeader {
+            offset: ByteOffset::new(input.len() as u64),
+            needed: usize::from(header_len).saturating_sub(input.len()),
+        });
+    }
+
+    Ok(IvfHeader {
+        version,
+        header_len,
+        fourcc: [
+            header_bytes[8],
+            header_bytes[9],
+            header_bytes[10],
+            header_bytes[11],
+        ],
+        width: u16::from_le_bytes([header_bytes[12], header_bytes[13]]),
+        height: u16::from_le_bytes([header_bytes[14], header_bytes[15]]),
+        timebase_denominator: u32::from_le_bytes([
+            header_bytes[16],
+            header_bytes[17],
+            header_bytes[18],
+            header_bytes[19],
+        ]),
+        timebase_numerator: u32::from_le_bytes([
+            header_bytes[20],
+            header_bytes[21],
+            header_bytes[22],
+            header_bytes[23],
+        ]),
+        frame_count: u32::from_le_bytes([
+            header_bytes[24],
+            header_bytes[25],
+            header_bytes[26],
+            header_bytes[27],
+        ]),
+        unused: u32::from_le_bytes([
+            header_bytes[28],
+            header_bytes[29],
+            header_bytes[30],
+            header_bytes[31],
+        ]),
+    })
+}
+
+/// Parses an IVF stream, retaining frames parsed before the first structural
+/// container error.
+#[must_use]
+pub fn parse_ivf_partial(input: &[u8]) -> PartialIvfParse<'_> {
+    let header = match parse_ivf_header(input) {
+        Ok(header) => header,
+        Err(error) => {
+            return PartialIvfParse {
+                header: None,
+                frames: Vec::new(),
+                error: Some(error),
+            };
+        }
+    };
+
+    let mut frames = Vec::new();
+    let mut cursor = usize::from(header.header_len);
+    let mut frame_index = 0usize;
+
+    while cursor < input.len() {
+        let remaining_header = input.len().saturating_sub(cursor);
+        if remaining_header < IVF_FRAME_HEADER_SIZE {
+            return PartialIvfParse {
+                header: Some(header),
+                frames,
+                error: Some(IvfError::TruncatedFrameHeader {
+                    frame_index,
+                    offset: ByteOffset::new(input.len() as u64),
+                    needed: IVF_FRAME_HEADER_SIZE.saturating_sub(remaining_header),
+                }),
+            };
+        }
+
+        let Some(size) = read_u32_le(input, cursor) else {
+            return PartialIvfParse {
+                header: Some(header),
+                frames,
+                error: Some(IvfError::TruncatedFrameHeader {
+                    frame_index,
+                    offset: ByteOffset::new(input.len() as u64),
+                    needed: IVF_FRAME_HEADER_SIZE.saturating_sub(remaining_header),
+                }),
+            };
+        };
+        let Some(pts) = read_u64_le(input, cursor.saturating_add(4)) else {
+            return PartialIvfParse {
+                header: Some(header),
+                frames,
+                error: Some(IvfError::TruncatedFrameHeader {
+                    frame_index,
+                    offset: ByteOffset::new(input.len() as u64),
+                    needed: IVF_FRAME_HEADER_SIZE.saturating_sub(remaining_header),
+                }),
+            };
+        };
+
+        let payload_start = cursor.saturating_add(IVF_FRAME_HEADER_SIZE);
+        let remaining_payload = input.len().saturating_sub(payload_start);
+        let size_usize = size as usize;
+        if size_usize > remaining_payload {
+            return PartialIvfParse {
+                header: Some(header),
+                frames,
+                error: Some(IvfError::TruncatedFramePayload {
+                    frame_index,
+                    offset: ByteOffset::new(input.len() as u64),
+                    size,
+                    remaining: remaining_payload,
+                }),
+            };
+        }
+
+        let payload_end = payload_start.saturating_add(size_usize);
+        let Some(payload) = input.get(payload_start..payload_end) else {
+            return PartialIvfParse {
+                header: Some(header),
+                frames,
+                error: Some(IvfError::TruncatedFramePayload {
+                    frame_index,
+                    offset: ByteOffset::new(input.len() as u64),
+                    size,
+                    remaining: remaining_payload,
+                }),
+            };
+        };
+
+        frames.push(IvfFrame {
+            index: frame_index,
+            header_offset: ByteOffset::new(cursor as u64),
+            payload_offset: ByteOffset::new(payload_start as u64),
+            size,
+            pts,
+            payload,
+        });
+        cursor = payload_end;
+        frame_index = frame_index.saturating_add(1);
+    }
+
+    PartialIvfParse {
+        header: Some(header),
+        frames,
+        error: None,
+    }
+}
+
+/// Writes a baseline 32-byte IVF header.
+///
+/// # Errors
+/// Returns any I/O error from `writer`, or [`io::ErrorKind::InvalidInput`] if the
+/// supplied header length is smaller than 32 bytes.
+pub fn write_ivf_header<W: io::Write + ?Sized>(
+    writer: &mut W,
+    header: &IvfHeader,
+) -> io::Result<()> {
+    if header.header_len < IVF_HEADER_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "IVF header length must be at least 32 bytes",
+        ));
+    }
+
+    writer.write_all(&IVF_SIGNATURE)?;
+    writer.write_all(&header.version.to_le_bytes())?;
+    writer.write_all(&header.header_len.to_le_bytes())?;
+    writer.write_all(&header.fourcc)?;
+    writer.write_all(&header.width.to_le_bytes())?;
+    writer.write_all(&header.height.to_le_bytes())?;
+    writer.write_all(&header.timebase_denominator.to_le_bytes())?;
+    writer.write_all(&header.timebase_numerator.to_le_bytes())?;
+    writer.write_all(&header.frame_count.to_le_bytes())?;
+    writer.write_all(&header.unused.to_le_bytes())?;
+
+    let extra = usize::from(header.header_len.saturating_sub(IVF_HEADER_SIZE));
+    if extra > 0 {
+        writer.write_all(&vec![0; extra])?;
+    }
+    Ok(())
+}
+
+/// Writes one IVF frame record and payload.
+///
+/// # Errors
+/// Returns any I/O error from `writer`, or [`io::ErrorKind::InvalidInput`] if the
+/// payload is larger than the IVF 32-bit frame-size field can represent.
+pub fn write_ivf_frame<W: io::Write + ?Sized>(
+    writer: &mut W,
+    pts: u64,
+    payload: &[u8],
+) -> io::Result<()> {
+    let size = u32::try_from(payload.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "IVF frame payload length exceeds u32::MAX",
+        )
+    })?;
+    writer.write_all(&size.to_le_bytes())?;
+    writer.write_all(&pts.to_le_bytes())?;
+    writer.write_all(payload)?;
+    Ok(())
+}
+
+fn read_u32_le(input: &[u8], offset: usize) -> Option<u32> {
+    let bytes = input.get(offset..offset.checked_add(4)?)?;
+    Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn read_u64_le(input: &[u8], offset: usize) -> Option<u64> {
+    let bytes = input.get(offset..offset.checked_add(8)?)?;
+    Some(u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ]))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn header_bytes() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        write_ivf_header(&mut bytes, &IvfHeader::new(*b"AV02", 1920, 1080, 24, 1, 1)).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn parses_valid_header() {
+        let header = parse_ivf_header(&header_bytes()).unwrap();
+        assert_eq!(header.version, 0);
+        assert_eq!(header.header_len, IVF_HEADER_SIZE);
+        assert_eq!(header.fourcc, *b"AV02");
+        assert_eq!(header.width, 1920);
+        assert_eq!(header.height, 1080);
+        assert_eq!(header.timebase_denominator, 24);
+        assert_eq!(header.timebase_numerator, 1);
+        assert_eq!(header.frame_count, 1);
+        assert_eq!(header.payload_start_offset(), ByteOffset::new(32));
+    }
+
+    #[test]
+    fn invalid_signature_is_error() {
+        let mut bytes = header_bytes();
+        bytes[0..4].copy_from_slice(b"FIKD");
+        assert!(matches!(
+            parse_ivf_header(&bytes),
+            Err(IvfError::InvalidSignature { signature, .. }) if signature == *b"FIKD"
+        ));
+    }
+
+    #[test]
+    fn truncated_header_is_error() {
+        assert!(matches!(
+            parse_ivf_header(&header_bytes()[..20]),
+            Err(IvfError::TruncatedHeader {
+                offset,
+                needed: 12
+            }) if offset == ByteOffset::new(20)
+        ));
+    }
+
+    #[test]
+    fn short_header_length_is_error() {
+        let mut bytes = header_bytes();
+        bytes[6..8].copy_from_slice(&31u16.to_le_bytes());
+        assert!(matches!(
+            parse_ivf_header(&bytes),
+            Err(IvfError::InvalidHeaderLength {
+                offset,
+                header_len: 31
+            }) if offset == ByteOffset::new(6)
+        ));
+    }
+
+    #[test]
+    fn parses_frame_payload_and_offsets() {
+        let mut bytes = header_bytes();
+        write_ivf_frame(&mut bytes, 7, &[0x01, 0x08]).unwrap();
+        let parsed = parse_ivf_partial(&bytes);
+        assert!(parsed.error.is_none());
+        assert_eq!(parsed.frames.len(), 1);
+        let frame = parsed.frames[0];
+        assert_eq!(frame.index, 0);
+        assert_eq!(frame.header_offset, ByteOffset::new(32));
+        assert_eq!(frame.payload_offset, ByteOffset::new(44));
+        assert_eq!(frame.size, 2);
+        assert_eq!(frame.pts, 7);
+        assert_eq!(frame.payload, &[0x01, 0x08]);
+    }
+
+    #[test]
+    fn truncated_frame_header_keeps_prefix() {
+        let mut bytes = header_bytes();
+        write_ivf_frame(&mut bytes, 0, &[0x01, 0x08]).unwrap();
+        bytes.extend_from_slice(&[0x05, 0x00]);
+        let parsed = parse_ivf_partial(&bytes);
+        assert_eq!(parsed.frames.len(), 1);
+        assert!(matches!(
+            parsed.error,
+            Some(IvfError::TruncatedFrameHeader {
+                frame_index: 1,
+                offset,
+                needed: 10
+            }) if offset == ByteOffset::new(bytes.len() as u64)
+        ));
+    }
+
+    #[test]
+    fn truncated_frame_payload_keeps_prefix() {
+        let mut bytes = header_bytes();
+        write_ivf_frame(&mut bytes, 0, &[0x01, 0x08]).unwrap();
+        bytes.extend_from_slice(&5u32.to_le_bytes());
+        bytes.extend_from_slice(&3u64.to_le_bytes());
+        bytes.extend_from_slice(&[0x01, 0x08]);
+        let parsed = parse_ivf_partial(&bytes);
+        assert_eq!(parsed.frames.len(), 1);
+        assert!(matches!(
+            parsed.error,
+            Some(IvfError::TruncatedFramePayload {
+                frame_index: 1,
+                offset,
+                size: 5,
+                remaining: 2
+            }) if offset == ByteOffset::new(bytes.len() as u64)
+        ));
+    }
+
+    #[test]
+    fn writer_round_trips() {
+        let mut bytes = Vec::new();
+        let header = IvfHeader::new(*b"AV02", 16, 16, 30, 1, 1);
+        write_ivf_header(&mut bytes, &header).unwrap();
+        write_ivf_frame(&mut bytes, 9, &[0x01, 0x08]).unwrap();
+        let parsed = parse_ivf_partial(&bytes);
+        assert_eq!(parsed.header, Some(header));
+        assert_eq!(parsed.frames[0].pts, 9);
+        assert_eq!(parsed.frames[0].payload, &[0x01, 0x08]);
+    }
+
+    #[test]
+    fn parsers_never_panic_on_short_inputs() {
+        for len in 0..IVF_HEADER_SIZE {
+            let bytes = vec![0; usize::from(len)];
+            let _ = parse_ivf_header(&bytes);
+            let _ = parse_ivf_partial(&bytes);
+        }
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// The IVF parser must never panic on arbitrary input bytes.
+        #[test]
+        fn ivf_parsers_never_panic(data in proptest::collection::vec(any::<u8>(), 0..2048)) {
+            let _ = parse_ivf_header(&data);
+            let _ = parse_ivf_partial(&data);
+        }
+    }
+}

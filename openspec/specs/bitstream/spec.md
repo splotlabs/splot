@@ -12,7 +12,7 @@ Tracked by Feature IDs: `AV2-4.11.6-LEB128`, `AV2-5.2.2-OBU-HEADER`,
 `AV2-5.9-ATLAS-SEGMENT`, `AV2-5.15-CONTENT-INTERPRETATION`,
 `AV2-5.18.7.3-TILE-PARAMS`,
 `AV2-5.18.1-FRAME-HEADER-GENERAL`, `AV2-5.18.2-FRAME-HEADER-INFO`,
-`AV2-5.19-TILE-GROUP`, plus the not-yet-parsed header/syntax rows in
+`AV2-5.19-TILE-GROUP`, `AV2-IVF-CONTAINER`, plus the not-yet-parsed header/syntax rows in
 `docs/IMPLEMENTATION-MATRIX.toml`.
 ## Requirements
 ### Requirement: LEB128 decoding
@@ -857,3 +857,22 @@ structure.
 - **WHEN** the frame-header core parser runs over arbitrary bytes and arbitrary
   sequence-state inputs
 - **THEN** it never panics and never reads past the payload bounds
+
+### Requirement: Container-aware bitstream entry point
+
+`splot-core` SHALL expose a container-aware bitstream entry point that returns raw
+Annex B streams and IVF-wrapped Annex B streams through a single typed result. The
+entry point SHALL preserve the existing Annex B envelope parser behavior and SHALL
+only add format detection and container metadata.
+
+#### Scenario: Existing Annex B parser is unchanged
+
+- **WHEN** callers invoke the raw Annex B parser directly
+- **THEN** it SHALL continue to parse only length-delimited OBUs
+- **AND** SHALL NOT require an IVF header or frame record.
+
+#### Scenario: Container parser preserves offsets
+
+- **WHEN** callers invoke the container-aware parser on an IVF file
+- **THEN** parsed OBU byte offsets SHALL be relative to the original file
+- **AND** SHALL NOT be rebased to frame-payload-local offsets.

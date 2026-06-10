@@ -74,11 +74,23 @@ pub struct PartialParse<'a> {
 /// The parser never panics on malformed input.
 #[must_use]
 pub fn parse_annex_b_obus_partial(input: &[u8]) -> PartialParse<'_> {
+    parse_annex_b_obus_partial_at(input, ByteOffset::new(0))
+}
+
+/// Parses an AV2 Annex B bitstream whose first byte appears at `base_offset` in
+/// a larger container, retaining every OBU parsed before the first structural
+/// error (AV2 v1.0.0 Annex B § B.2).
+///
+/// This is used by container demuxers such as [`crate::ivf`] so OBU offsets in
+/// diagnostics stay relative to the original input rather than the frame-local
+/// payload slice.
+#[must_use]
+pub fn parse_annex_b_obus_partial_at(input: &[u8], base_offset: ByteOffset) -> PartialParse<'_> {
     let mut obus = Vec::new();
     let mut cursor: usize = 0;
 
     while cursor < input.len() {
-        match parse_one_obu(input, cursor) {
+        match parse_one_obu(input, cursor, base_offset) {
             Ok((envelope, next)) => {
                 obus.push(envelope);
                 cursor = next;
@@ -112,23 +124,30 @@ pub fn parse_annex_b_obus(input: &[u8]) -> Result<Vec<ObuEnvelope<'_>>> {
 
 /// Parses a single OBU starting at absolute byte `cursor`, returning the envelope
 /// and the cursor position immediately after it.
-fn parse_one_obu(input: &[u8], cursor: usize) -> Result<(ObuEnvelope<'_>, usize)> {
-    let prefix = read_leb128(input, ByteOffset::new(cursor as u64))?;
+fn parse_one_obu(
+    input: &[u8],
+    cursor: usize,
+    base_offset: ByteOffset,
+) -> Result<(ObuEnvelope<'_>, usize)> {
+    let prefix_offset = base_offset.saturating_add(cursor as u64);
+    let prefix = read_leb128(input, ByteOffset::new(cursor as u64))
+        .map_err(|error| rebase_leb128_error(error, base_offset))?;
     let header_start = cursor.saturating_add(usize::from(prefix.bytes_read));
     let size = prefix.value;
 
     if size == 0 {
         return Err(Error::ObuSizeOutOfRange {
-            offset: ByteOffset::new(cursor as u64),
+            offset: prefix_offset,
             size: 0,
         });
     }
 
     let size_usize = size as usize;
     let remaining = input.len().saturating_sub(header_start);
+    let header_offset = base_offset.saturating_add(header_start as u64);
     if size_usize > remaining {
         return Err(Error::ObuPayloadOutOfRange {
-            offset: ByteOffset::new(header_start as u64),
+            offset: header_offset,
             size,
             remaining,
         });
@@ -140,24 +159,38 @@ fn parse_one_obu(input: &[u8], cursor: usize) -> Result<(ObuEnvelope<'_>, usize)
     let obu_end = header_start.saturating_add(size_usize);
     let Some(obu_bytes) = input.get(header_start..obu_end) else {
         return Err(Error::ObuPayloadOutOfRange {
-            offset: ByteOffset::new(header_start as u64),
+            offset: header_offset,
             size,
             remaining,
         });
     };
 
-    let header = read_obu_header_from_slice(obu_bytes, ByteOffset::new(header_start as u64))?;
+    let header = read_obu_header_from_slice(obu_bytes, header_offset)?;
     let payload = obu_bytes
         .get(usize::from(header.header_size_bytes)..)
         .unwrap_or(&[]);
 
     let envelope = ObuEnvelope {
-        offset: ByteOffset::new(header_start as u64),
+        offset: header_offset,
         size,
         header,
         payload,
     };
     Ok((envelope, obu_end))
+}
+
+fn rebase_leb128_error(error: Error, base_offset: ByteOffset) -> Error {
+    match error {
+        Error::UnexpectedEof { offset, needed } => Error::UnexpectedEof {
+            offset: base_offset.saturating_add(offset.get()),
+            needed,
+        },
+        Error::InvalidLeb128 { offset, message } => Error::InvalidLeb128 {
+            offset: base_offset.saturating_add(offset.get()),
+            message,
+        },
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -252,6 +285,22 @@ mod tests {
         ));
         // The strict wrapper still surfaces the error.
         assert!(parse_annex_b_obus(&stream).is_err());
+    }
+
+    #[test]
+    fn partial_parse_at_preserves_absolute_offsets() {
+        let stream = [0x01, 0x08, 0x05, 0x08];
+        let partial = parse_annex_b_obus_partial_at(&stream, ByteOffset::new(100));
+        assert_eq!(partial.obus.len(), 1);
+        assert_eq!(partial.obus[0].offset, ByteOffset::new(101));
+        assert!(matches!(
+            partial.error,
+            Some(Error::ObuPayloadOutOfRange {
+                offset,
+                size: 5,
+                remaining: 1
+            }) if offset == ByteOffset::new(103)
+        ));
     }
 
     #[test]

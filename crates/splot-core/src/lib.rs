@@ -10,6 +10,8 @@
 //! - [`leb128`] — LEB128 unsigned integers (AV2 § 4.11.6)
 //! - [`obu`] — OBU headers (AV2 § 5.2.2)
 //! - [`annexb`] — Annex B length-delimited envelopes (AV2 Annex B)
+//! - [`ivf`] — IVF container envelopes around Annex B payloads
+//!   (`AV2-IVF-CONTAINER`)
 //! - [`types`] — strongly-typed `obu_type` and layer ids (AV2 Table 6.1, § 6.2.2)
 //!
 //! Design rules enforced here:
@@ -26,10 +28,12 @@ pub mod bitio;
 pub mod error;
 pub mod headers;
 pub mod hls;
+pub mod ivf;
 pub mod leb128;
 pub mod obu;
 pub mod segment;
 pub mod span;
+pub mod stream;
 pub mod tables;
 pub mod tile;
 pub mod types;

@@ -112,6 +112,16 @@ Every rule ID below is emitted by `crates/splot-validate/src`, grouped by namesp
 | `hls/unavailable-multi-frame-header` | error | § 7.3.8.7 | frame header references a cur_mfh_id with no available multi-frame header (external HLS disabled) |
 | `hls/unavailable-sequence-header` | error | § 7.3.8.6 | frame header references a sequence header id that is unavailable |
 
+### `ivf/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `ivf/invalid-header-length` | error | IVF | IVF header length is smaller than the 32-byte baseline header |
+| `ivf/invalid-signature` | error | IVF | container signature is not `DKIF` when parsing as IVF |
+| `ivf/truncated-frame-header` | error | IVF | input ends before a complete 12-byte IVF frame header |
+| `ivf/truncated-frame-payload` | error | IVF | input ends before the declared IVF frame payload is complete |
+| `ivf/truncated-header` | error | IVF | input ends before the declared IVF header is complete |
+
 ### `lcr/`
 
 | Rule ID | Severity | Section | Condition |
@@ -305,8 +315,9 @@ the source (the `Parse §` column is the section the OBU's syntax is parsed from
 
 A parse failure — input ending before a required field, a malformed variable-length code, or
 a non-zero closing `byte_alignment()` pad bit — is converted into a `bitstream/parse-error`
-(or a specific `trailing-bits/*` / `byte-alignment/*`) diagnostic rather than a panic, so a
-malformed payload is reported with a byte offset instead of silently accepted.
+(or a specific `trailing-bits/*` / `byte-alignment/*`) diagnostic rather than a panic. IVF
+container failures use `ivf/*` diagnostics. Malformed payloads and containers are reported
+with byte offsets instead of silently accepted.
 
 ## Planned / not yet emitted
 

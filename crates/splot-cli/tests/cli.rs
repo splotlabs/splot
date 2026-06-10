@@ -8,6 +8,9 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -31,12 +34,57 @@ fn validate(fixture_name: &str, extra: &[&str]) -> Output {
     splot(&args)
 }
 
+fn temp_input(extension: &str, data: &[u8]) -> PathBuf {
+    let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "splot-cli-test-{}-{id}.{extension}",
+        std::process::id()
+    ));
+    std::fs::write(&path, data).expect("write temporary input");
+    path
+}
+
+fn ivf_stream(payloads: &[&[u8]]) -> Vec<u8> {
+    let mut data = Vec::new();
+    let header = splot_core::ivf::IvfHeader::new(*b"AV02", 16, 16, 24, 1, payloads.len() as u32);
+    splot_core::ivf::write_ivf_header(&mut data, &header).expect("write IVF header");
+    for (pts, payload) in payloads.iter().enumerate() {
+        splot_core::ivf::write_ivf_frame(&mut data, pts as u64, payload).expect("write IVF frame");
+    }
+    data
+}
+
 #[test]
 fn validate_conformant_exits_zero() {
     let out = validate("conformant.av2", &[]);
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("conformant"), "stdout was: {stdout}");
+}
+
+#[test]
+fn validate_ivf_conformant_exits_zero() {
+    let path = temp_input("ivf", &ivf_stream(&[&[0x01, 0x08]]));
+    let out = splot(&["validate", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("conformant"), "stdout was: {stdout}");
+}
+
+#[test]
+fn validate_ivf_json_reports_container_diagnostic() {
+    let mut data = ivf_stream(&[&[0x01, 0x08]]);
+    data.extend_from_slice(&5u32.to_le_bytes());
+    data.extend_from_slice(&1u64.to_le_bytes());
+    data.extend_from_slice(&[0x01, 0x08]);
+    let path = temp_input("ivf", &data);
+    let out = splot(&["validate", "--json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"rule_id\": \"ivf/truncated-frame-payload\""),
+        "stdout was: {stdout}"
+    );
 }
 
 #[test]
@@ -82,6 +130,22 @@ fn inspect_lists_obu_headers() {
         stdout.contains("OBU_SEQUENCE_HEADER"),
         "stdout was: {stdout}"
     );
+}
+
+#[test]
+fn inspect_ivf_json_includes_container_metadata() {
+    let path = temp_input("ivf", &ivf_stream(&[&[0x01, 0x08]]));
+    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let records = json.as_array().expect("inspect output is an array");
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record["byte_offset"], 45);
+    assert_eq!(record["ivf_header"]["fourcc"], "AV02");
+    assert_eq!(record["ivf_header"]["width"], 16);
+    assert_eq!(record["ivf_frame"]["index"], 0);
+    assert_eq!(record["ivf_frame"]["payload_offset"], 44);
 }
 
 #[test]

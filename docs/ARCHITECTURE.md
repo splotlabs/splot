@@ -29,13 +29,15 @@ by `cargo xtask check-dependency-direction`):
   model; no I/O, no other `splot-*` dependency.
   - Strong types (`ObuType`, layer ids, `ByteOffset`/`BitOffset`) and a
     panic-free bit reader for the § 4.11 descriptors.
-  - LEB128, the OBU header (§ 5.2.2), Annex B envelopes, and payload dispatch.
+  - LEB128, the OBU header (§ 5.2.2), Annex B envelopes, IVF container parsing
+    and writing (`AV2-IVF-CONTAINER`), and payload dispatch.
   - The implemented § 5 payload parsers, in `crates/splot-core/src/headers/`;
     the generated [SPEC-COVERAGE.md](./SPEC-COVERAGE.md) is the live list.
 - **`splot-validate`** — parser output → user-facing conformance diagnostics. A
-  `Validator` parses with `splot-core`, then runs a registry of `Check`s. Each
-  `Diagnostic` is structured data (rule id, severity, spec section, offset, message).
-  A malformed bitstream is a report, never a process failure.
+  `Validator` parses raw Annex B or IVF-wrapped Annex B with `splot-core`, then
+  runs a registry of `Check`s. Each `Diagnostic` is structured data (rule id,
+  severity, spec section, offset, message). A malformed bitstream or container is
+  a report, never a process failure.
 - **`splot-encode`** — the *shape* of the future encoder API (configuration plus a
   push/pull `Context`). It implements no encoding; every operation returns
   `Error::Unimplemented`.

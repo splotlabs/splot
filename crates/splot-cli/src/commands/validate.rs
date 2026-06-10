@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! `splot validate` — validate an AV2 length-delimited bitstream.
+//! `splot validate` — validate raw AV2 Annex B or IVF-wrapped Annex B bitstreams.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -15,7 +15,7 @@ use crate::commands::read_input;
 /// Arguments for `splot validate`.
 #[derive(Args, Debug)]
 pub struct ValidateArgs {
-    /// Path to the AV2 length-delimited bitstream.
+    /// Path to a raw AV2 Annex B bitstream or IVF-wrapped Annex B stream.
     pub input: PathBuf,
     /// Emit the validation report as JSON.
     #[arg(long)]
