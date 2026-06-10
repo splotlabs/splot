@@ -31,7 +31,10 @@ fuzz_target!(|data: &[u8]| {
     let strict = config & 0b0000_0001 != 0;
     let options = if config & 0b0000_0010 != 0 {
         // Seed a few external-HLS keys from the remaining option bits so the
-        // Provided branch is reachable with non-empty declarations.
+        // Provided branch is reachable with non-empty declarations. The ops-id
+        // argument only spans 0..=3 (bits 2-3 are all that remain after bits 0,
+        // 1, and 4-7 are allocated); the fuzzer reaches the other f(4) values
+        // through mutation of the bitstream itself.
         let set = ExternalHlsSet::new()
             .with_sequence_header_id(u32::from(config >> 4))
             .with_operating_point_set(config & 0b0001_1111, (config >> 2) & 0b0000_0011);

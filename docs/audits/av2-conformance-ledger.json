@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "46ca30d929fd3276740e300248bb2e6a51128e92",
+  "audited_commit": "6eaea7a7e66500bd184ed7c3e9a905956e34ad64",
   "outcome": "success",
   "files": [
     {
@@ -829,7 +829,7 @@
     },
     {
       "path": "crates/splot-validate/tests/validator_never_panics.rs",
-      "sha256": "eacb7008871466751212ff276e0a6397bac101bbae5889a05f02bf126637fb92",
+      "sha256": "79373b0b86de3da7a02b4b74e335b983fc789986fed6dde28b3a73c9ddec09ac",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -1505,7 +1505,7 @@
     },
     {
       "path": "fuzz/fuzz_targets/validate_bytes.rs",
-      "sha256": "be94a8e0bf817d0bd360ceeea839f52fafc359c539f789f5f0b541198e0e3ca1",
+      "sha256": "d3abe98a1f8de43a96cdf2a7fe8e18eb67e69b07a59cbed81802382569e1660e",
       "scope_kind": "fuzz",
       "feature_ids": [],
       "outcome": "success"
@@ -2494,6 +2494,33 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-10-fuzz-validator-targets/proposal.md",
+      "sha256": "6328b4b757a5e76c2bcc6b51701fbec35ba6e361c836b4317c6f57c1f747d951",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-FUZZ-NO-PANIC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-fuzz-validator-targets/specs/conformance/spec.md",
+      "sha256": "2c6fe976f852d83ccdbabfcd91d507d4c5e55ac44a71046b220c3f43fad4fa8c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-FUZZ-NO-PANIC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-fuzz-validator-targets/tasks.md",
+      "sha256": "6e87f2e714327e298b5fb85a64b9d5defb884e7dbc10b8e4b34ba04f5f9a1f2a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-FUZZ-NO-PANIC"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-10-layer-dependency-map-agreement/.openspec.yaml",
       "sha256": "5ada458f25cd6e260a7ac3deb87a5ba5d046aabf964c53260ae6cf7bcb8a5d12",
       "scope_kind": "openspec",
@@ -2938,7 +2965,7 @@
     },
     {
       "path": "xtask/src/main.rs",
-      "sha256": "7db2578bf82e42f90d8f73ea45c96729ce99d3e7d31a3322ab7624cc0b115598",
+      "sha256": "b5ef625bfda6bcb57e498ef6c4cee79a1882bbd82e90c4067f314974fb6ecc45",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",

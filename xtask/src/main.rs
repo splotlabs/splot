@@ -461,7 +461,10 @@ fn run_fuzz(time: Option<u64>) -> Result<()> {
 
 /// Returns the fuzz target names (file stems of `fuzz/fuzz_targets/*.rs`), sorted for
 /// a deterministic run order. Reading the directory avoids depending on a nightly
-/// `cargo fuzz list`.
+/// `cargo fuzz list`. Fails when the directory and the `[[bin]]` entries in
+/// `fuzz/Cargo.toml` disagree: `cargo fuzz list` (used by the CI smoke job) only sees
+/// registered `[[bin]]` targets, so an unregistered `.rs` file would be fuzzed by
+/// neither — drift must be loud, not silently skipped.
 fn fuzz_targets(root: &Path) -> Result<Vec<String>> {
     let dir = root.join("fuzz").join("fuzz_targets");
     let mut targets = Vec::new();
@@ -478,6 +481,32 @@ fn fuzz_targets(root: &Path) -> Result<Vec<String>> {
         }
     }
     targets.sort();
+
+    let manifest_path = root.join("fuzz").join("Cargo.toml");
+    let manifest_text = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+    let manifest: toml::Value = toml::from_str(&manifest_text)
+        .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+    let mut registered: Vec<String> = manifest
+        .get("bin")
+        .and_then(|bins| bins.as_array())
+        .map(|bins| {
+            bins.iter()
+                .filter_map(|bin| bin.get("name").and_then(|name| name.as_str()))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    registered.sort();
+    if targets != registered {
+        bail!(
+            "fuzz target drift: fuzz/fuzz_targets/*.rs has [{}] but fuzz/Cargo.toml \
+             [[bin]] entries are [{}]; register every target so `cargo fuzz list` \
+             (and the CI smoke job) sees it",
+            targets.join(", "),
+            registered.join(", ")
+        );
+    }
     Ok(targets)
 }
 

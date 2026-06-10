@@ -14,6 +14,9 @@ use splot_validate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions
 fn options_from_byte(config: u8) -> (bool, ValidationOptions) {
     let strict = config & 0b0000_0001 != 0;
     let options = if config & 0b0000_0010 != 0 {
+        // The ops-id argument only spans 0..=3 (bits 2-3 are all that remain
+        // after bits 0, 1, and 4-7 are allocated); proptest still generates all
+        // 256 config values and arbitrary bitstreams cover the rest.
         let set = ExternalHlsSet::new()
             .with_sequence_header_id(u32::from(config >> 4))
             .with_operating_point_set(config & 0b0001_1111, (config >> 2) & 0b0000_0011);
