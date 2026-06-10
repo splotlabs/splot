@@ -52,12 +52,12 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-3) | LCR aggregate info syntax | `AV2-5.8.3-LCR-AGGREGATE-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.8.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-4) | LCR sequence profile tier level information syntax | `AV2-5.8.4-LCR-SEQ-PTL-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.8.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-5) | LCR global payload syntax | `AV2-5.8.5-LCR-GLOBAL-PAYLOAD` | ✅ | ✅ | ✅ | ✅ | 1 |
-| [§ 5.8.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-6) | LCR xlayer info syntax | `AV2-5.8.6-LCR-XLAYER-INFO` | ✅ | ✅ | ✅ | ✅ | 2 |
+| [§ 5.8.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-6) | LCR xlayer info syntax | `AV2-5.8.6-LCR-XLAYER-INFO` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 5.8.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-7) | LCR rep info syntax | `AV2-5.8.7-LCR-REP-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.8.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-8) | LCR embedded layer info syntax | `AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
-| [§ 5.8.9](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-9) | LCR xlayer color info syntax | `AV2-5.8.9-LCR-XLAYER-COLOR-INFO` | ✅ | ✅ | ✅ | ✅ | 2 |
+| [§ 5.8.9](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-9) | LCR xlayer color info syntax | `AV2-5.8.9-LCR-XLAYER-COLOR-INFO` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 5.9](./spec/av2/1.0.0/05-syntax-structures.md#s-5-9) | Atlas segment info OBU syntax | `AV2-5.9-ATLAS-SEGMENT` | ✅ | ✅ | 🟡 | ✅ | 6 |
-| [§ 5.9.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-9-1) | Atlas label segment info syntax | `AV2-5.9.1-ATLAS-LABEL-SEGMENT-INFO` | ✅ | ✅ | ✅ | ✅ | 2 |
+| [§ 5.9.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-9-1) | Atlas label segment info syntax | `AV2-5.9.1-ATLAS-LABEL-SEGMENT-INFO` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 5.9.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-9-2) | Atlas enhanced atlas info syntax | `AV2-5.9.2-ATLAS-ENHANCED-INFO` | ✅ | ✅ | ✅ | ✅ | 2 |
 | [§ 5.9.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-9-3) | Atlas multistream info syntax | `AV2-5.9.3-ATLAS-MULTISTREAM-INFO` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 5.9.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-9-4) | Atlas multistream with alpha info syntax | `AV2-5.9.4-ATLAS-MULTISTREAM-ALPHA-INFO` | ✅ | ✅ | ✅ | ✅ | 1 |
@@ -80,16 +80,16 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.17.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-1) | Metadata unit syntax | `AV2-5.17.1-METADATA-UNIT` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 5.17.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-2) | Metadata short OBU syntax | `AV2-5.17.2-METADATA-SHORT` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 5.17.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-3) | Metadata group OBU syntax | `AV2-5.17.3-METADATA-GROUP` | ✅ | ✅ | ✅ | ✅ | 7 |
-| [§ 5.17.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-4) | Metadata ITUT T35 syntax | `AV2-5.17.4-METADATA-ITUT-T35` | ✅ | ✅ | ✅ | ✅ | 2 |
+| [§ 5.17.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-4) | Metadata ITUT T35 syntax | `AV2-5.17.4-METADATA-ITUT-T35` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 5.17.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-5) | Metadata high dynamic range content light level syntax | `AV2-5.17.5-METADATA-HDR-CLL` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 5.17.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-6) | Metadata high dynamic range mastering display color volume syntax | `AV2-5.17.6-METADATA-HDR-MDCV` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 5.17.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-7) | Metadata timecode syntax | `AV2-5.17.7-METADATA-TIMECODE` | ✅ | ✅ | 🟡 | ✅ | 3 |
-| [§ 5.17.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-8) | Metadata banding hints syntax | `AV2-5.17.8-METADATA-BANDING-HINTS` | ✅ | ✅ | ✅ | ✅ | 2 |
-| [§ 5.17.9](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-9) | Metadata ICC profile syntax | `AV2-5.17.9-METADATA-ICC-PROFILE` | ✅ | ✅ | ✅ | ✅ | 2 |
+| [§ 5.17.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-8) | Metadata banding hints syntax | `AV2-5.17.8-METADATA-BANDING-HINTS` | ✅ | ✅ | ✅ | ✅ | 4 |
+| [§ 5.17.9](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-9) | Metadata ICC profile syntax | `AV2-5.17.9-METADATA-ICC-PROFILE` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 5.17.10](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-10) | Metadata scan type syntax | `AV2-5.17.10-METADATA-SCAN-TYPE` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 5.17.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-11) | Metadata temporal point info syntax | `AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 5.17.12](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-12) | Metadata decoded frame hash syntax | `AV2-5.17.12-METADATA-DECODED-FRAME-HASH` | ✅ | ✅ | 🟡 | ✅ | — |
-| [§ 5.17.13](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-13) | Metadata user data unregistered syntax | `AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED` | ✅ | ✅ | ✅ | ✅ | 2 |
+| [§ 5.17.13](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-13) | Metadata user data unregistered syntax | `AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 5.18](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18) | Frame header syntax | `AV2-5.18-FRAME-HEADER` | ✅ | 🟡 | 🟡 | ✅ | 4 |
 | [§ 5.18.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-1) | General frame header syntax | `AV2-5.18.1-FRAME-HEADER-GENERAL` | ✅ | 🟡 | 🟡 | ✅ | — |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `AV2-5.18.2-FRAME-HEADER-INFO` | ✅ | 🟡 | 🟡 | ✅ | 6 |
@@ -146,12 +146,12 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.8.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-4) | LCR aggregate info semantics | `AV2-5.8.3-LCR-AGGREGATE-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.8.5](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-5) | LCR sequence profile tier level information semantics | `AV2-5.8.4-LCR-SEQ-PTL-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.8.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-6) | LCR global payload semantics | `AV2-5.8.5-LCR-GLOBAL-PAYLOAD` | ✅ | ✅ | ✅ | ✅ | 1 |
-| [§ 6.8.7](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-7) | LCR xlayer info semantics | `AV2-5.8.6-LCR-XLAYER-INFO` | ✅ | ✅ | ✅ | ✅ | 2 |
+| [§ 6.8.7](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-7) | LCR xlayer info semantics | `AV2-5.8.6-LCR-XLAYER-INFO` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 6.8.8](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-8) | LCR rep info semantics | `AV2-5.8.7-LCR-REP-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.8.9](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-9) | LCR embedded layer info semantics | `AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
-| [§ 6.8.10](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-10) | LCR xlayer color info semantics | `AV2-5.8.9-LCR-XLAYER-COLOR-INFO` | ✅ | ✅ | ✅ | ✅ | 2 |
+| [§ 6.8.10](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-10) | LCR xlayer color info semantics | `AV2-5.8.9-LCR-XLAYER-COLOR-INFO` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 6.9](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9) | Atlas segment info OBU semantics | `AV2-5.9-ATLAS-SEGMENT` | ✅ | ✅ | 🟡 | ✅ | 6 |
-| [§ 6.9.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-2) | Atlas label segment info semantics | `AV2-5.9.1-ATLAS-LABEL-SEGMENT-INFO` | ✅ | ✅ | ✅ | ✅ | 2 |
+| [§ 6.9.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-2) | Atlas label segment info semantics | `AV2-5.9.1-ATLAS-LABEL-SEGMENT-INFO` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 6.9.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-3) | Atlas enhanced atlas info semantics | `AV2-5.9.2-ATLAS-ENHANCED-INFO` | ✅ | ✅ | ✅ | ✅ | 2 |
 | [§ 6.9.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-4) | Atlas multistream info semantics | `AV2-5.9.3-ATLAS-MULTISTREAM-INFO` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 6.9.5](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-5) | Atlas multistream with alpha info semantics | `AV2-5.9.4-ATLAS-MULTISTREAM-ALPHA-INFO` | ✅ | ✅ | ✅ | ✅ | 1 |
@@ -170,18 +170,18 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.14](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-14) | Content interpretation OBU semantics | `AV2-5.15-CONTENT-INTERPRETATION` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 6.15](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-15) | Padding OBU semantics | `AV2-5.16-PADDING` | ✅ | ✅ | ✅ | ✅ | 2 |
 | [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17-METADATA` | ✅ | ✅ | 🟡 | ✅ | 20 |
-| [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17.1-METADATA-UNIT` | ✅ | ✅ | 🟡 | ✅ | 1 |
-| [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17.2-METADATA-SHORT` | ✅ | ✅ | 🟡 | ✅ | 2 |
-| [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17.7-METADATA-TIMECODE` | ✅ | ✅ | 🟡 | ✅ | 3 |
+| [§ 6.16.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-1) | Metadata unit semantics | `AV2-5.17.1-METADATA-UNIT` | ✅ | ✅ | 🟡 | ✅ | 1 |
+| [§ 6.16.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-2) | Metadata short OBU semantics | `AV2-5.17.2-METADATA-SHORT` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 6.16.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-3) | Metadata group OBU semantics | `AV2-5.17.3-METADATA-GROUP` | ✅ | ✅ | ✅ | ✅ | 7 |
-| [§ 6.16.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-4) | Metadata ITUT T35 semantics | `AV2-5.17.4-METADATA-ITUT-T35` | ✅ | ✅ | ✅ | ✅ | 2 |
+| [§ 6.16.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-4) | Metadata ITUT T35 semantics | `AV2-5.17.4-METADATA-ITUT-T35` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 6.16.5](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-5) | Metadata high dynamic range content light level semantics | `AV2-5.17.5-METADATA-HDR-CLL` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 6.16.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-6) | Metadata high dynamic range mastering display color volume semantics | `AV2-5.17.6-METADATA-HDR-MDCV` | ✅ | ✅ | 🟡 | ✅ | 1 |
-| [§ 6.16.8](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-8) | Metadata banding hints semantics | `AV2-5.17.8-METADATA-BANDING-HINTS` | ✅ | ✅ | ✅ | ✅ | 2 |
-| [§ 6.16.9](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-9) | Metadata ICC profile semantics | `AV2-5.17.9-METADATA-ICC-PROFILE` | ✅ | ✅ | ✅ | ✅ | 2 |
+| [§ 6.16.7](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-7) | Metadata timecode semantics | `AV2-5.17.7-METADATA-TIMECODE` | ✅ | ✅ | 🟡 | ✅ | 3 |
+| [§ 6.16.8](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-8) | Metadata banding hints semantics | `AV2-5.17.8-METADATA-BANDING-HINTS` | ✅ | ✅ | ✅ | ✅ | 4 |
+| [§ 6.16.9](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-9) | Metadata ICC profile semantics | `AV2-5.17.9-METADATA-ICC-PROFILE` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 6.16.10](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-10) | Metadata scan type semantics | `AV2-5.17.10-METADATA-SCAN-TYPE` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 6.16.11](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-11) | Metadata temporal point info semantics | `AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO` | ✅ | ✅ | ✅ | ✅ | 1 |
-| [§ 6.16.12](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-12) | Metadata user data unregistered semantics | `AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED` | ✅ | ✅ | ✅ | ✅ | 2 |
+| [§ 6.16.12](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-12) | Metadata user data unregistered semantics | `AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 6.16.13](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13) | Metadata decoded frame hash semantics | `AV2-5.17.12-METADATA-DECODED-FRAME-HASH` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.17](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17) | Frame header OBU semantics | `AV2-5.18-FRAME-HEADER` | ✅ | 🟡 | 🟡 | ✅ | 4 |
 | [§ 6.17](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17) | Frame header OBU semantics | `AV2-5.18.1-FRAME-HEADER-GENERAL` | ✅ | 🟡 | 🟡 | ✅ | — |
