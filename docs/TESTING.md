@@ -2,17 +2,18 @@
 
 ## Strategy (in priority order)
 
-1. **Parser unit tests** — LEB128, AV2 OBU header, and Annex B envelopes, with
-   positive, negative, and EOF cases. Implemented in each `splot-core` module.
+1. **Parser unit tests** — LEB128, AV2 OBU header, Annex B envelopes, and IVF
+   container records, with positive, negative, and EOF cases. Implemented in each
+   `splot-core` module.
 2. **Property / fuzz tests** — the parsers must never panic on arbitrary input.
    Implemented as `*_never_panic(s)` tests across the `splot-core` parser
    modules (mostly proptests, plus a few exhaustive-truncation unit tests);
    the `cargo fuzz` target `parse_obu` needs a nightly toolchain and runs as
    a blocking 60s smoke in PR CI.
 3. **CLI integration tests** — `crates/splot-cli/tests/cli.rs` runs the `splot`
-   binary against the fixtures in `tests/fixtures/` (exit codes, `--json`,
-   `inspect`). Implemented; snapshot tests for `inspect` output are planned
-   (`insta`).
+   binary against the fixtures in `tests/fixtures/` and generated temporary IVF
+   inputs (exit codes, `--json`, `inspect`). Implemented; snapshot tests for
+   `inspect` output are planned (`insta`).
 4. **Conformance vectors** — from AOMedia. Planned, once vectors are available
    (see [CONFORMANCE.md](./CONFORMANCE.md)).
 5. **Differential testing against AVM** — the reference software is the oracle.

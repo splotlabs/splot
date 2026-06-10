@@ -4,13 +4,23 @@
 //! The AV2 bitstream validator: parse, then run the check registry.
 
 use splot_core::Error;
-use splot_core::annexb::{ObuEnvelope, parse_annex_b_obus_partial};
+use splot_core::annexb::ObuEnvelope;
+use splot_core::ivf::IvfError;
+use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 
 use crate::checks::{Check, default_checks, syntax_error_diagnostic};
 use crate::context::ValidatorContext;
 use crate::diagnostic::{Diagnostic, Severity, ValidationReport};
 use crate::error_location::{error_bit_offset, error_offset};
 use crate::options::ValidationOptions;
+
+const IVF_DIAGNOSTIC_RULE_IDS: [&str; 5] = [
+    "ivf/truncated-header",
+    "ivf/invalid-signature",
+    "ivf/invalid-header-length",
+    "ivf/truncated-frame-header",
+    "ivf/truncated-frame-payload",
+];
 
 /// Validates AV2 length-delimited bitstreams and produces a [`ValidationReport`].
 #[derive(Debug, Clone, Copy)]
@@ -39,7 +49,8 @@ impl Validator {
         report.is_conformant() && !(self.strict && report.warnings().next().is_some())
     }
 
-    /// Validates `data` as an AV2 Annex B bitstream with the default
+    /// Validates `data` as a raw AV2 Annex B bitstream or an IVF-wrapped Annex B
+    /// bitstream with the default
     /// [`ValidationOptions`] (no external HLS).
     ///
     /// A malformed bitstream is reported as one or more [`Severity::Error`]
@@ -49,7 +60,8 @@ impl Validator {
         self.validate_bytes_with_options(data, &ValidationOptions::default())
     }
 
-    /// Validates `data` as an AV2 Annex B bitstream using `options`.
+    /// Validates `data` as a raw AV2 Annex B bitstream or an IVF-wrapped Annex B
+    /// bitstream using `options`.
     ///
     /// `options` supplies caller-provided external HLS availability (AV2 § 7.3.8);
     /// the default ([`Validator::validate_bytes`]) assumes none. A malformed
@@ -64,20 +76,43 @@ impl Validator {
         let mut report = ValidationReport::new();
         // Parse the whole stream, keeping OBUs parsed before any later structural
         // error so their conformance diagnostics are not lost.
-        let parsed = parse_annex_b_obus_partial(data);
+        let parsed = parse_bitstream_partial(data);
         let checks = default_checks();
         let mut context = ValidatorContext::default();
-        for obu in &parsed.obus {
-            context.observe_obu(obu, options, &mut report);
-            run_checks(&checks, obu, &mut report);
+
+        match parsed {
+            ParsedBitstream::AnnexB(parsed) => {
+                for obu in &parsed.obus {
+                    context.observe_obu(obu, options, &mut report);
+                    run_checks(&checks, obu, &mut report);
+                }
+                // The end of the bitstream completes the final temporal unit, flushing
+                // the deferred coded-video-sequence-scoped diagnostics (AV2 § 7.3.6;
+                // see ValidatorContext::finish).
+                context.finish(&mut report);
+                if let Some(error) = parsed.error {
+                    report.push(parse_error_diagnostic(&error));
+                }
+            }
+            ParsedBitstream::Ivf(parsed) => {
+                for frame in &parsed.frames {
+                    for obu in &frame.obus {
+                        context.observe_obu(obu, options, &mut report);
+                        run_checks(&checks, obu, &mut report);
+                    }
+                    if let Some(error) = &frame.error {
+                        report.push(parse_error_diagnostic(error));
+                    }
+                }
+                // The end of the IVF input completes the final temporal unit just like
+                // the end of a raw Annex B bitstream.
+                context.finish(&mut report);
+                if let Some(error) = &parsed.error {
+                    report.push(ivf_error_diagnostic(error));
+                }
+            }
         }
-        // The end of the bitstream completes the final temporal unit, flushing the
-        // deferred coded-video-sequence-scoped diagnostics (AV2 § 7.3.6; see
-        // ValidatorContext::finish).
-        context.finish(&mut report);
-        if let Some(error) = parsed.error {
-            report.push(parse_error_diagnostic(&error));
-        }
+
         report
     }
 }
@@ -103,6 +138,13 @@ fn parse_error_diagnostic(error: &Error) -> Diagnostic {
         diagnostic = diagnostic.with_bit_offset(bit_offset);
     }
     diagnostic
+}
+
+fn ivf_error_diagnostic(error: &IvfError) -> Diagnostic {
+    debug_assert!(IVF_DIAGNOSTIC_RULE_IDS.contains(&error.rule_id()));
+    Diagnostic::new(Severity::Error, error.rule_id(), error.to_string())
+        .with_spec_section("IVF")
+        .with_byte_offset(error.offset())
 }
 
 #[cfg(test)]
@@ -178,6 +220,17 @@ mod tests {
         data.push(size as u8);
         data.extend_from_slice(header);
         data.extend_from_slice(payload);
+        data
+    }
+
+    fn ivf_stream(payloads: &[&[u8]]) -> Vec<u8> {
+        let mut data = Vec::new();
+        let header =
+            splot_core::ivf::IvfHeader::new(*b"AV02", 16, 16, 24, 1, payloads.len() as u32);
+        assert!(splot_core::ivf::write_ivf_header(&mut data, &header).is_ok());
+        for (pts, payload) in payloads.iter().enumerate() {
+            assert!(splot_core::ivf::write_ivf_frame(&mut data, pts as u64, payload).is_ok());
+        }
         data
     }
 
@@ -395,6 +448,45 @@ mod tests {
         let report = Validator::new(false).validate_bytes(&[0x01, 0x08]);
         assert!(report.is_conformant());
         assert_eq!(report.errors().count(), 0);
+    }
+
+    #[test]
+    fn conformant_temporal_delimiter_in_ivf_is_accepted() {
+        let report = Validator::new(false).validate_bytes(&ivf_stream(&[&[0x01, 0x08]]));
+        assert!(report.is_conformant(), "report was: {report}");
+        assert_eq!(report.errors().count(), 0);
+    }
+
+    #[test]
+    fn malformed_ivf_frame_payload_is_a_diagnostic() {
+        let mut data = ivf_stream(&[&[0x01, 0x08]]);
+        data.extend_from_slice(&5u32.to_le_bytes());
+        data.extend_from_slice(&1u64.to_le_bytes());
+        data.extend_from_slice(&[0x01, 0x08]);
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(!report.is_conformant());
+        let diagnostic_offset = report
+            .errors()
+            .find(|d| d.rule_id == "ivf/truncated-frame-payload")
+            .map(|d| d.byte_offset);
+        assert_eq!(
+            diagnostic_offset,
+            Some(Some(splot_core::span::ByteOffset::new(data.len() as u64)))
+        );
+    }
+
+    #[test]
+    fn annex_b_parse_error_inside_ivf_frame_is_a_bitstream_diagnostic() {
+        let report = Validator::new(false).validate_bytes(&ivf_stream(&[&[0x05, 0x08]]));
+        assert!(!report.is_conformant());
+        let diagnostic_offset = report
+            .errors()
+            .find(|d| d.rule_id == "bitstream/parse-error")
+            .map(|d| d.byte_offset);
+        assert_eq!(
+            diagnostic_offset,
+            Some(Some(splot_core::span::ByteOffset::new(45)))
+        );
     }
 
     #[test]

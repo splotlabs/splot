@@ -14,9 +14,10 @@ A validator and inspector for the [AV2 video codec](https://av2.aomedia.org/v1.0
 
 </div>
 
-Think `clippy`, but for AV2 bitstreams. Point `splot` at a bitstream and every
-problem comes back as structured data — a stable rule id, a severity, the AV2
-spec section it violates, and the byte offset where it happens:
+Think `clippy`, but for AV2 bitstreams. Point `splot` at a raw Annex B stream
+or IVF-wrapped Annex B stream and every problem comes back as structured data —
+a stable rule id, a severity, the AV2 spec section it violates, and the byte
+offset where it happens:
 
 ```console
 $ splot validate bad.av2
@@ -47,9 +48,9 @@ same six fields, always:
   stable `rule_id`, severity, spec section, byte/bit offset, message — never a
   log line. Exit codes are part of the contract: `0` conformant, `1` not
   conformant, `2` operational error.
-- **114 diagnostic rules across 22 namespaces**, from `obu-header/` and
-  `obu-order/` to `sequence-header/`, `frame-header/`, `metadata/`, and
-  `film-grain/`. The full registry lives in
+- **CI-enforced diagnostic registry**, from `obu-header/` and `obu-order/` to
+  `sequence-header/`, `frame-header/`, `metadata/`, and `film-grain/`, plus
+  `ivf/` container diagnostics. The full registry lives in
   [docs/VALIDATOR-DIAGNOSTICS.md](./docs/VALIDATOR-DIAGNOSTICS.md) and is
   CI-enforced: if the registry and the source disagree, the build fails.
 - **The spec cannot drift.** A byte-faithful mirror of the AV2 v1.0.0
@@ -59,9 +60,9 @@ same six fields, always:
   section in the source.
 - **Parsers never panic.** `unsafe` is forbidden across the workspace, runtime
   panics are banned in library code, and the never-panic invariant is hammered
-  by 681 tests, property tests across 22 parser modules, and a libFuzzer
+  by over 700 tests, property tests across parser modules, and a libFuzzer
   target — including a blocking 60-second fuzz smoke on every pull request.
-- **Status you can audit, not vibes.** 127 tracked features in
+- **Status you can audit, not vibes.** 128 tracked features in
   [docs/IMPLEMENTATION-MATRIX.toml](./docs/IMPLEMENTATION-MATRIX.toml) render
   into generated, drift-gated coverage docs:
   [SPEC-COVERAGE.md](./docs/SPEC-COVERAGE.md) maps every cited spec section to
@@ -77,9 +78,9 @@ same six fields, always:
 
 | Capability | Today |
 | --- | --- |
-| Annex B envelope, LEB128, AV2 OBU header parsing | working |
+| Annex B envelope, IVF container, LEB128, AV2 OBU header parsing | working |
 | Sequence-header and frame-header parsing (incl. tiling, quantization, segmentation) | working |
-| Header-level conformance validation (114 rules) | working |
+| Header-level and container conformance validation | working |
 | `splot inspect` OBU dump (text and JSON, partial-parse tolerant) | working |
 | Conformance vectors, AVM differential testing | planned |
 | `splot decode` / `splot encode` | stubs — exit with a clear error |
@@ -107,10 +108,10 @@ The toolchain is pinned to Rust **1.96.0**, edition **2024** (see
 `rust-toolchain.toml`).
 
 ```bash
-splot validate sample.av2              # human-readable conformance report
-splot validate sample.av2 --json       # machine-readable report (exit 1 if non-conformant)
+splot validate sample.av2              # raw Annex B or IVF input; human-readable report
+splot validate sample.ivf --json       # machine-readable report (exit 1 if non-conformant)
 splot validate sample.av2 --strict     # treat warnings as conformance failures
-splot inspect sample.av2 --headers     # list OBUs and their headers
+splot inspect sample.ivf --headers     # list OBUs and their headers
 splot inspect sample.av2 --json        # per-OBU JSON records with parsed payload views
 splot encode input.y4m -o output.av2   # not yet implemented (exits 1 with a clear error)
 splot decode input.av2 -o output.y4m   # not yet implemented (exits 1 with a clear error)
@@ -129,7 +130,7 @@ OBU #1  @byte 3  size=11  type=OBU_SEQUENCE_HEADER(1)  ext=false  tlayer=0 mlaye
 ## Project layout
 
 ```text
-crates/splot-core      AV2 bitstream model + parsers (LEB128, OBU header, Annex B, headers)
+crates/splot-core      AV2 bitstream model + parsers (LEB128, OBU header, Annex B, IVF, headers)
 crates/splot-validate  parser-driven conformance diagnostics (the validator)
 crates/splot-encode    future encoder API (stub)
 crates/splot-cli       thin `splot` binary
@@ -159,7 +160,7 @@ documented in [docs/TESTING.md](./docs/TESTING.md).
 
 ## Roadmap
 
-Shipped: the Annex B + OBU header validator, OBU ordering and header-level
+Shipped: the Annex B + IVF + OBU header validator, OBU ordering and header-level
 conformance, and sequence/frame-header parsing. In progress: validator depth
 across the remaining spec sections. Next: inspector snapshots and conformance
 vectors, AVM differential testing (with the

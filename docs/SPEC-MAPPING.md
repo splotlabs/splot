@@ -43,6 +43,15 @@ Every syntax-element implementation carries a doc comment (or a
 `// TODO(spec: <FEATURE-ID>): …` marker) naming the AV2 section it derives from.
 Never invent syntax, constants, or semantics.
 
+## Non-normative containers
+
+IVF support (`AV2-IVF-CONTAINER`) is tracked in the implementation matrix because
+real AV2 workflows often wrap Annex B payloads in an IVF `DKIF` container. IVF is
+not AV2 bitstream syntax and has no AV2 spec section; `splot-core` treats it as a
+container envelope, then parses frame payloads through the normal AV2 Annex B path.
+Use [Duck IVF](https://wiki.multimedia.cx/index.php/Duck_IVF) only for the generic
+container layout (header fields and frame records), not for AV2 semantics.
+
 ## Encoder implementation precondition
 
 Encoder code must not be implemented from rav1e or SVT-AV1 behavior. For every decoder-visible
