@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "1ede6a70b0bf0fdf77596deafbcd39d602785a0d",
+  "audited_commit": "2de56e7295f5dc3c04e2c56a45728fd6147aead3",
   "outcome": "success",
   "files": [
     {
@@ -1519,7 +1519,7 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "f7cd8781958b25b19f1d790fd70f9a28357f527bc27de981506d0e64f2675e0a",
+      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -2856,7 +2856,7 @@
     },
     {
       "path": "openspec/specs/feature-tracking/spec.md",
-      "sha256": "020fbf0054150d1ea29f15e2958764eb3f85741b6047dfe6b978410c987dc921",
+      "sha256": "ea72360b64f1ed5eba51569131cad56e5cf57426ce1506168e736d794c184290",
       "scope_kind": "openspec",
       "feature_ids": [
         "XTASK-FEATURE-STATUS"
