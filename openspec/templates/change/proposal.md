@@ -28,4 +28,3 @@ Explain the problem or missing capability.
 - [ ] Negative/EOF/malformed tests exist where applicable.
 - [ ] Fuzz/property coverage is updated where applicable.
 - [ ] `cargo xtask check-feature-status` passes.
-- [ ] `STATUS.md` is updated.

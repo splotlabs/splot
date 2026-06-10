@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "25683a53689103ba0be36a6937da4fbcc6ee14da",
+  "audited_commit": "843a2cd85e01f6c119ec087368d2a05f48238d31",
   "outcome": "success",
   "files": [
     {
@@ -991,7 +991,7 @@
     },
     {
       "path": "docs/FEATURE-TRACKING.md",
-      "sha256": "02fac988f066233235fa306d17590be2bf34074a109ba0dd37d8622ff81efb4e",
+      "sha256": "d40e3b9ba2d7e0821b8528731ed9104e91fe742e52a21385fa1561a4c799cae6",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -1008,7 +1008,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.schema.md",
-      "sha256": "b5aaa7f426c97210ba870e4ee16935b237aae0ead650ac4f04b5e8464450f465",
+      "sha256": "97070f0074350e86787a2a7c3bc4fce0f3bb1f203bbeaab84d0f7d03314d5f30",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -1021,7 +1021,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "ae10040fff47573d01fdafb00edb1616edc3718b602a30127d95a099c8a7c66e",
+      "sha256": "fccde2a4ff4115036b2ed9e4f635a14da600a80b8820da34374ff2564dbc889a",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2567,7 +2567,7 @@
     },
     {
       "path": "openspec/templates/change/proposal.md",
-      "sha256": "a05026ef51c2d67c03601b3a8a20d10fd98b302a0d39ac5fcbbc357e3a3efaee",
+      "sha256": "7379b6c1a98e10e7d88ac8b6829a3cfd1dc3ac63d196decfed7f4a7787efa7b6",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
@@ -2581,7 +2581,7 @@
     },
     {
       "path": "openspec/templates/change/tasks.md",
-      "sha256": "f47ce99352f3bfd454a57741311a2fd017407976e181df29fc56d27f0a70f49d",
+      "sha256": "bb512e9fcaff67a47b44f83bbf6d6c0533dc05db17d08c0978c0cd9cd7ec4ac1",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"

@@ -5,7 +5,7 @@ implemented in `splot` and how far. This document defines its schema, the allowe
 values, the status model, and the proof rules enforced by
 `cargo xtask check-feature-status`.
 
-GitHub Issues/Projects, README checklists, and `STATUS.md` are **not** canonical —
+GitHub Issues/Projects and README checklists are **not** canonical —
 they are an execution queue and a snapshot, respectively. When they disagree with
 the matrix, the matrix wins.
 
@@ -192,7 +192,7 @@ replaces = ["OLD-ID"]
 ```
 
 The checker treats an ID listed in `replaces` as historical. Document the
-rationale in the relevant OpenSpec change and in `STATUS.md`.
+rationale in the relevant OpenSpec change.
 
 ## 8. Example row
 
