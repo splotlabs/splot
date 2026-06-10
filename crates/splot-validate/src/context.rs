@@ -28,14 +28,14 @@ use splot_core::headers::metadata::{
     MetadataPayload, MetadataScanType, MetadataUnit, parse_metadata_group, parse_metadata_short,
 };
 use splot_core::headers::operating_point_set::{
-    OperatingPointSet, OpsMlayerSource, parse_operating_point_set,
+    OperatingPointSet, OpsMlayerInfo, OpsMlayerSource, parse_operating_point_set,
 };
 use splot_core::headers::quantizer_matrix::{
     NUM_CUSTOM_QMS, QuantizerMatrixObu, parse_quantizer_matrix,
 };
 use splot_core::headers::sequence::{
-    MAX_SEQ_NUM, MLayerDependencyMap, SequenceHeader, SequenceHeaderId, TLayerDependencyMap,
-    TimingInfo, parse_sequence_header,
+    MAX_SEQ_NUM, MLayerDependencyMap, SequenceHeader, SequenceHeaderGeneral, SequenceHeaderId,
+    TLayerDependencyMap, TimingInfo, parse_sequence_header,
 };
 use splot_core::headers::tile_group::parse_tile_group_prefix;
 use splot_core::hls::{MAX_MFH_NUM, MfhId, MultiFrameHeaderRecord, parse_multi_frame_header};
@@ -124,6 +124,10 @@ pub(crate) struct ValidatorContext {
     /// — "the first frame unit in a coded extended layer unit in a temporal unit"
     /// (AV2 § 6.17.2) — for parsed frame headers (AV2 § 5.18.2 `startCVS`).
     frames_seen_in_tu: BTreeSet<ExtendedLayerId>,
+    /// Already-emitted § 6.10.7 / § 6.8.9 layer-dependency agreement findings, so
+    /// the activation-driven re-checks never duplicate a diagnostic for the same
+    /// pairing (a different activated sequence header gets a distinct key).
+    emitted_dependency_findings: BTreeSet<DependencyFindingKey>,
 }
 
 /// Availability of in-band HLS objects, for the § 7.3.8 reference checks.
@@ -151,9 +155,33 @@ struct HlsAvailabilityStore {
     /// `lcr_local_id` values of local LCRs, keyed by their `obu_xlayer_id`, seen
     /// in-band so far (§ 7.3.8.3).
     local_lcr_ids: BTreeMap<ExtendedLayerId, BTreeSet<u8>>,
+    /// § 5.8.8 embedded-layer maps of global LCR payloads, keyed by
+    /// `(lcr_global_config_record_id, xId)`, for the § 6.8.9 dependency-map
+    /// agreement checks. A redefinition overwrites the maps, mirroring
+    /// [`Self::record_global_lcr`].
+    global_lcr_embedded: BTreeMap<(u8, ExtendedLayerId), LcrEmbeddedMaps>,
+    /// § 5.8.8 embedded-layer maps of local LCRs, keyed by
+    /// `(obu_xlayer_id, lcr_local_id)`, for the § 6.8.9 dependency-map agreement
+    /// checks.
+    local_lcr_embedded: BTreeMap<(ExtendedLayerId, u8), LcrEmbeddedMaps>,
     /// `(obu_xlayer_id, atlas_segment_id)` of local atlas segment OBUs seen in-band so
     /// far (§ 7.3.8.4).
     local_atlases: BTreeSet<(ExtendedLayerId, u8)>,
+}
+
+/// The § 5.8.8 embedded-layer maps of one LCR `lcr_xlayer_info` entry, retained for
+/// the § 6.8.9 dependency-map agreement checks, plus the defining LCR OBU's byte
+/// offset — the § 6.8.9 diagnostic points at the LCR OBU, not at the activating
+/// sequence header or frame.
+#[derive(Debug, Clone)]
+struct LcrEmbeddedMaps {
+    /// `lcr_mlayer_map[isGlobal][xId]`.
+    mlayer_map: u8,
+    /// `(embedded layer index, lcr_tlayer_map[isGlobal][xId][j])` pairs, in
+    /// ascending set-bit order of `lcr_mlayer_map`.
+    tlayer_maps: Vec<(u8, u8)>,
+    /// Byte offset of the defining LCR OBU.
+    offset: ByteOffset,
 }
 
 /// How a referenced HLS object resolves against available objects (AV2 § 7.3.8).
@@ -232,6 +260,62 @@ impl HlsAvailabilityStore {
             .is_some_and(|ids| ids.contains(&local_id))
     }
 
+    /// Drops every stored embedded-layer map of the global LCR `global_id`. Called
+    /// before re-recording a redefined global LCR so a payload set that drops an
+    /// xlayer (or its embedded-layer info) cannot leave stale maps behind — the
+    /// § 6.8.9 checks must only ever see the latest definition.
+    fn clear_global_lcr_embedded(&mut self, global_id: u8) {
+        self.global_lcr_embedded
+            .retain(|(id, _), _| *id != global_id);
+    }
+
+    /// Drops the stored embedded-layer maps of the local LCR `(xlayer, local_id)`;
+    /// see [`Self::clear_global_lcr_embedded`].
+    fn clear_local_lcr_embedded(&mut self, xlayer: ExtendedLayerId, local_id: u8) {
+        self.local_lcr_embedded.remove(&(xlayer, local_id));
+    }
+
+    /// Records a global LCR payload's § 5.8.8 embedded-layer maps for extended layer
+    /// `xlayer` (§ 6.8.9 agreement checks).
+    fn record_global_lcr_embedded(
+        &mut self,
+        global_id: u8,
+        xlayer: ExtendedLayerId,
+        maps: LcrEmbeddedMaps,
+    ) {
+        self.global_lcr_embedded.insert((global_id, xlayer), maps);
+    }
+
+    /// Returns the available global LCR's § 5.8.8 embedded-layer maps for
+    /// `(global_id, xlayer)`, if signalled.
+    fn global_lcr_embedded(
+        &self,
+        global_id: u8,
+        xlayer: ExtendedLayerId,
+    ) -> Option<&LcrEmbeddedMaps> {
+        self.global_lcr_embedded.get(&(global_id, xlayer))
+    }
+
+    /// Records a local LCR's § 5.8.8 embedded-layer maps (§ 6.8.9 agreement checks).
+    fn record_local_lcr_embedded(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        local_id: u8,
+        maps: LcrEmbeddedMaps,
+    ) {
+        self.local_lcr_embedded.insert((xlayer, local_id), maps);
+    }
+
+    /// Returns the available local LCR's § 5.8.8 embedded-layer maps for
+    /// `(xlayer, local_id)`, if signalled.
+    fn local_lcr_embedded(
+        &self,
+        xlayer: ExtendedLayerId,
+        local_id: u8,
+    ) -> Option<&LcrEmbeddedMaps> {
+        self.local_lcr_embedded.get(&(xlayer, local_id))
+    }
+
     /// Records a local atlas segment OBU (by `obu_xlayer_id` and `atlas_segment_id`)
     /// as available in-band (AV2 § 7.3.8.4).
     fn record_local_atlas(&mut self, xlayer: ExtendedLayerId, atlas_id: u8) {
@@ -262,6 +346,147 @@ struct OperatingPointSetRecord {
     ops_cnt: u8,
     /// Source byte offset of the defining OBU, surfaced in referencing diagnostics.
     offset: ByteOffset,
+    /// Explicitly signalled `ops_mlayer_info()` entries, retained for the § 6.10.7
+    /// dependency-map agreement checks. Inherited and absent entries are not
+    /// retained — § 6.10.7 binds the maps "if present", and an inherited entry's
+    /// maps are checked when the referenced OPS is itself observed.
+    explicit_entries: Vec<OpsExplicitEntry>,
+}
+
+/// One explicitly signalled `ops_mlayer_info()` entry of an active OPS (§ 5.11.5),
+/// retained for the § 6.10.7 dependency-map agreement checks.
+#[derive(Debug, Clone)]
+struct OpsExplicitEntry {
+    /// Operating-point payload index (`opIndex`).
+    payload_index: u8,
+    /// The included extended layer (`xLId`) whose configuration the maps describe.
+    xlayer_id: ExtendedLayerId,
+    /// `ops_mlayer_map` plus the per-set-bit `ops_tlayer_map`s.
+    info: OpsMlayerInfo,
+}
+
+/// Collects the explicitly signalled `ops_mlayer_info()` entries of a parsed OPS
+/// (§ 5.11.5) for the § 6.10.7 agreement checks.
+fn ops_explicit_entries(ops: &OperatingPointSet) -> Vec<OpsExplicitEntry> {
+    let mut entries = Vec::new();
+    for payload in &ops.payloads {
+        for entry in &payload.xlayer_entries {
+            if let OpsMlayerSource::Explicit(info) = &entry.mlayer {
+                entries.push(OpsExplicitEntry {
+                    payload_index: payload.index,
+                    xlayer_id: entry.xlayer_id,
+                    info: info.clone(),
+                });
+            }
+        }
+    }
+    entries
+}
+
+/// Which dependency map a § 6.10.7 / § 6.8.9 agreement finding concerns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum DependencyMapKind {
+    /// `MLayerDependencyMap` closure of an embedded-layer bitmask.
+    Mlayer,
+    /// `TLayerDependencyMap` closure of the temporal-layer bitmask signalled for
+    /// embedded layer `mlayer`.
+    Tlayer { mlayer: u8 },
+}
+
+/// Dedup key for an emitted layer-dependency agreement finding: the same
+/// `(violating OBU, entry, activated sequence header, map)` pairing fires at most
+/// once even when re-activation re-runs the checks. A different activated
+/// sequence-header *id*, or a different defining OPS/LCR OBU (distinguished by
+/// its byte offset), gets a distinct key; a same-id sequence-header
+/// *redefinition* instead invalidates the id's keys (see
+/// `observe_sequence_header`) so the re-fired checks can report against the new
+/// content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum DependencyFindingKey {
+    /// A § 6.10.7 finding, keyed by the OPS OBU's offset and entry coordinates.
+    Ops {
+        ops_offset: ByteOffset,
+        payload_index: u8,
+        entry_xlayer: ExtendedLayerId,
+        seq_header_id: SequenceHeaderId,
+        map: DependencyMapKind,
+    },
+    /// A § 6.8.9 finding, keyed by the activated pairing coordinates and the
+    /// defining LCR OBU's offset (a redefined LCR is a distinct violating OBU).
+    Lcr {
+        xlayer: ExtendedLayerId,
+        seq_header_id: SequenceHeaderId,
+        lcr_is_global: bool,
+        lcr_id: u8,
+        lcr_offset: ByteOffset,
+        map: DependencyMapKind,
+    },
+}
+
+impl DependencyFindingKey {
+    /// The activated sequence header this finding was paired with.
+    fn seq_header_id(self) -> SequenceHeaderId {
+        match self {
+            Self::Ops { seq_header_id, .. } | Self::Lcr { seq_header_id, .. } => seq_header_id,
+        }
+    }
+}
+
+/// Scans an 8-bit embedded-layer bitmask for the first § 6.10.7 / § 6.8.9 closure
+/// violation under `MLayerDependencyMap`: a set bit `cMId` for which the map
+/// requires a dependency `rMId < cMId` (`MLayerDependencyMap[cMId][rMId] == 1`)
+/// whose bit is not set. Returns the violating `(cMId, rMId)` pair.
+fn mlayer_closure_violation(mask: u8, m_map: &MLayerDependencyMap) -> Option<(u8, u8)> {
+    for curr in 0u8..8 {
+        if mask & (1u8 << curr) == 0 {
+            continue;
+        }
+        for reference in 0..curr {
+            if m_map.depends_on(
+                EmbeddedLayerId::from_bits(curr),
+                EmbeddedLayerId::from_bits(reference),
+            ) && mask & (1u8 << reference) == 0
+            {
+                return Some((curr, reference));
+            }
+        }
+    }
+    None
+}
+
+/// Scans one embedded layer's 4-bit temporal-layer bitmask for the first § 6.10.7
+/// / § 6.8.9 closure violation under `TLayerDependencyMap[mlayer]` — the same
+/// shape as [`mlayer_closure_violation`]. Returns the violating `(cTId, rTId)`
+/// pair.
+fn tlayer_closure_violation(mlayer: u8, mask: u8, t_map: &TLayerDependencyMap) -> Option<(u8, u8)> {
+    for curr in 0u8..4 {
+        if mask & (1u8 << curr) == 0 {
+            continue;
+        }
+        for reference in 0..curr {
+            if t_map.depends_on(
+                EmbeddedLayerId::from_bits(mlayer),
+                TemporalLayerId::from_bits(curr),
+                TemporalLayerId::from_bits(reference),
+            ) && mask & (1u8 << reference) == 0
+            {
+                return Some((curr, reference));
+            }
+        }
+    }
+    None
+}
+
+/// `true` when caller-provided external HLS declares at least one sequence header.
+/// An externally activated sequence header has unmodeled dependency maps, so every
+/// "activated sequence header" agreement check is unreliable and suppressed
+/// (precedent: [`ValidatorContext::validate_active_sequence_limits`]).
+fn external_declares_sequence_header(options: &ValidationOptions) -> bool {
+    if let ExternalHlsMode::Provided(set) = &options.external_hls {
+        set.declares_any_sequence_header()
+    } else {
+        false
+    }
 }
 
 /// Active in-band operating point sets (AV2 § 6.10.1, § 7.3.8.5).
@@ -325,6 +550,18 @@ impl OpsAvailabilityStore {
     /// Returns the active OPS record for `(xlayer, ops_id)`, if any.
     fn get(&self, xlayer: ExtendedLayerId, ops_id: u8) -> Option<&OperatingPointSetRecord> {
         self.by_xlayer.get(&xlayer).and_then(|map| map.get(&ops_id))
+    }
+
+    /// Iterates the active OPS records in the `xlayer` bucket (§ 6.10.7
+    /// activation-time re-checks).
+    fn records_for(
+        &self,
+        xlayer: ExtendedLayerId,
+    ) -> impl Iterator<Item = &OperatingPointSetRecord> {
+        self.by_xlayer
+            .get(&xlayer)
+            .into_iter()
+            .flat_map(BTreeMap::values)
     }
 }
 
@@ -1010,7 +1247,9 @@ impl ValidatorContext {
                 self.observe_layer_config_record(obu, options, report);
             }
             ObuType::AtlasSegment => self.observe_atlas_segment(obu),
-            ObuType::OperatingPointSet => self.observe_operating_point_set(obu, report),
+            ObuType::OperatingPointSet => {
+                self.observe_operating_point_set(obu, options, report);
+            }
             ObuType::BufferRemovalTiming => {
                 self.observe_buffer_removal_timing(obu, options, report);
             }
@@ -1238,8 +1477,14 @@ impl ValidatorContext {
         // are modeled); an external reference already suppresses the layer-limit
         // checks.
         if let Some(seq_id) = resolved {
-            self.active_sequence_by_xlayer
+            let previous = self
+                .active_sequence_by_xlayer
                 .insert(obu.header.extended_layer_id, seq_id);
+            // A newly activated (or re-activated to a different id) sequence header
+            // makes the deferred § 6.10.7 / § 6.8.9 agreement checks decidable.
+            if previous != Some(seq_id) {
+                self.on_sequence_activation(obu.header.extended_layer_id, options, report);
+            }
 
             // With the in-band active sequence header available, run the frame-header
             // core parser and emit the locally decidable § 6.17 diagnostics. Parsing
@@ -1314,15 +1559,73 @@ impl ValidatorContext {
                 }
                 return None;
             };
-            // TODO(spec: AV2-5.7-MULTI-FRAME-HEADER): when cur_mfh_id > 0, also enforce
-            // the §7.3.8.7 layer-dependency constraints
+            let mfh_mlayer_id = record.mfh_mlayer_id;
+            let mfh_tlayer_id = record.mfh_tlayer_id;
+            let seq_raw = u32::from(record.mfh_seq_header_id.get());
+            let resolved = self.resolve_referenced_sequence_header(seq_raw, obu, options, report);
+
+            // AV2 § 7.3.8.7: "the layer dependency constraints TLayerDependencyMap
+            // and MLayerDependencyMap are satisfied for the referenced multi-frame
+            // header OBU", with the concrete predicate from § 6.17.2, evaluated
+            // after the sequence header is loaded:
             // MLayerDependencyMap[obu_mlayer_id][MfhMLayerId[cur_mfh_id]] == 1 and
             // TLayerDependencyMap[obu_mlayer_id][obu_tlayer_id][MfhTLayerId[cur_mfh_id]]
-            // == 1. The sequence-header model now exposes the §5.4.1 dependency maps
-            // (SequenceHeaderGeneral::{m,t}layer_dependency_map), but the §7.3.8.7
-            // check itself is deferred to the multi-frame-header change.
-            let seq_raw = u32::from(record.mfh_seq_header_id.get());
-            self.resolve_referenced_sequence_header(seq_raw, obu, options, report)
+            // == 1, where obu_{m,t}layer_id are the frame header's. Only an
+            // in-band-resolved sequence header has modeled § 5.4.1 maps; an external
+            // or unavailable resolution is skipped (the availability diagnostics own
+            // those cases, and unmodeled maps must not produce false positives).
+            if let Some(seq_id) = resolved
+                && let Some(header) = self.sequence_headers.get(&seq_id)
+            {
+                let general = header.general;
+                let frame_mlayer = obu.header.embedded_layer_id;
+                let frame_tlayer = obu.header.temporal_layer_id;
+                if !general
+                    .mlayer_dependency_map
+                    .depends_on(frame_mlayer, mfh_mlayer_id)
+                {
+                    report.push(frame_header_error(
+                        "frame-header/mfh-mlayer-dependency-missing",
+                        "7.3.8.7",
+                        obu,
+                        format!(
+                            "frame header at obu_mlayer_id {} references multi-frame header {} \
+                             recorded at obu_mlayer_id {}, but the loaded sequence header {}'s \
+                             MLayerDependencyMap[{}][{}] is 0 (§ 6.17.2)",
+                            frame_mlayer.get(),
+                            cur.get(),
+                            mfh_mlayer_id.get(),
+                            seq_id.get(),
+                            frame_mlayer.get(),
+                            mfh_mlayer_id.get(),
+                        ),
+                    ));
+                }
+                if !general.tlayer_dependency_map.depends_on(
+                    frame_mlayer,
+                    frame_tlayer,
+                    mfh_tlayer_id,
+                ) {
+                    report.push(frame_header_error(
+                        "frame-header/mfh-tlayer-dependency-missing",
+                        "7.3.8.7",
+                        obu,
+                        format!(
+                            "frame header at obu_tlayer_id {} references multi-frame header {} \
+                             recorded at obu_tlayer_id {}, but the loaded sequence header {}'s \
+                             TLayerDependencyMap[{}][{}][{}] is 0 (§ 6.17.2)",
+                            frame_tlayer.get(),
+                            cur.get(),
+                            mfh_tlayer_id.get(),
+                            seq_id.get(),
+                            frame_mlayer.get(),
+                            frame_tlayer.get(),
+                            mfh_tlayer_id.get(),
+                        ),
+                    ));
+                }
+            }
+            resolved
         }
     }
 
@@ -2179,6 +2482,28 @@ impl ValidatorContext {
                 // local-LCR and sequence-header references.
                 self.hls
                     .record_global_lcr(info.global_config_record_id, info.xlayer_map);
+                // AV2 § 6.8.9: retain each payload's embedded-layer maps for the
+                // dependency-map agreement checks. A redefinition replaces the maps
+                // wholesale so a dropped payload cannot leave stale entries.
+                self.hls
+                    .clear_global_lcr_embedded(info.global_config_record_id);
+                for payload in &info.payloads {
+                    if let Some(embedded) = &payload.xlayer_info.embedded_layer_info {
+                        self.hls.record_global_lcr_embedded(
+                            info.global_config_record_id,
+                            ExtendedLayerId::from_bits(payload.xlayer_id),
+                            LcrEmbeddedMaps {
+                                mlayer_map: embedded.mlayer_map,
+                                tlayer_maps: embedded
+                                    .layers
+                                    .iter()
+                                    .map(|layer| (layer.mlayer_index, layer.tlayer_map))
+                                    .collect(),
+                                offset: obu.offset,
+                            },
+                        );
+                    }
+                }
             }
             LayerConfigurationRecord::Local(info) => {
                 // AV2 § 7.3.8.3: a local LCR's lcr_global_id (when non-zero) must
@@ -2225,11 +2550,38 @@ impl ValidatorContext {
                     );
                 }
                 self.hls.record_local_lcr(xlayer, info.local_id);
+                // AV2 § 6.8.9: retain the embedded-layer maps for the dependency-map
+                // agreement checks. A redefinition replaces the maps wholesale so a
+                // re-sent record without embedded info cannot leave stale entries.
+                self.hls.clear_local_lcr_embedded(xlayer, info.local_id);
+                if let Some(embedded) = &info.xlayer_info.embedded_layer_info {
+                    self.hls.record_local_lcr_embedded(
+                        xlayer,
+                        info.local_id,
+                        LcrEmbeddedMaps {
+                            mlayer_map: embedded.mlayer_map,
+                            tlayer_maps: embedded
+                                .layers
+                                .iter()
+                                .map(|layer| (layer.mlayer_index, layer.tlayer_map))
+                                .collect(),
+                            offset: obu.offset,
+                        },
+                    );
+                }
             }
             // `LayerConfigurationRecord` is `#[non_exhaustive]`; only global and local
             // scopes exist in AV2 v1.0.0, so any future variant is ignored here.
             _ => {}
         }
+
+        // Deliberately NO § 6.8.9 re-evaluation here: § 6.4.1 associates a sequence
+        // header only with an LCR "present prior to this sequence header" (or
+        // provided externally), so a later-arriving LCR must not be retroactively
+        // paired with an earlier activation — the agreement checks run only from
+        // on_sequence_activation. An LCR redefinition between activations is
+        // likewise evaluated at the next activation event only (sound over
+        // complete).
     }
 
     /// Observes an atlas segment info OBU and records a local atlas segment's in-band
@@ -2267,6 +2619,7 @@ impl ValidatorContext {
     fn observe_operating_point_set(
         &mut self,
         obu: &ObuEnvelope<'_>,
+        options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
@@ -2285,6 +2638,18 @@ impl ValidatorContext {
 
         self.check_operating_point_set_semantics(obu, &ops, report);
 
+        // AV2 § 6.10.7: explicitly signalled maps are checked against the currently
+        // activated sequence headers now, and retained on the record so a later
+        // activation can complete the pairing (see on_sequence_activation).
+        let explicit_entries = ops_explicit_entries(&ops);
+        self.check_ops_entries_against_active(
+            obu.offset,
+            ops.ops_id,
+            &explicit_entries,
+            options,
+            report,
+        );
+
         // AV2 § 6.10.1: apply reset/update to the active OPS state after the checks.
         self.ops.apply(
             OperatingPointSetRecord {
@@ -2292,6 +2657,7 @@ impl ValidatorContext {
                 ops_id: ops.ops_id,
                 ops_cnt: ops.ops_cnt,
                 offset: obu.offset,
+                explicit_entries,
             },
             ops.reset_flag,
         );
@@ -2434,6 +2800,251 @@ impl ValidatorContext {
                 .with_spec_section("6.10.2")
                 .with_byte_offset(obu.offset),
             );
+        }
+    }
+
+    /// Returns the activated in-band sequence header's general fields for `xlayer`,
+    /// if any. The fields are copied out so callers can keep mutating `self`.
+    fn active_general_for(
+        &self,
+        xlayer: ExtendedLayerId,
+    ) -> Option<(SequenceHeaderId, SequenceHeaderGeneral)> {
+        let id = *self.active_sequence_by_xlayer.get(&xlayer)?;
+        let header = self.sequence_headers.get(&id)?;
+        Some((id, header.general))
+    }
+
+    /// Checks explicitly signalled OPS maps against the sequence header activated
+    /// for each entry's extended layer (AV2 § 6.10.7): for any included embedded
+    /// layer `cMId` with `MLayerDependencyMap[cMId][rMId] == 1`, embedded layer
+    /// `rMId` must also be included, and likewise per temporal-layer map under
+    /// `TLayerDependencyMap`. An entry whose extended layer has no activated
+    /// in-band sequence header is skipped (the maps are never fabricated), the
+    /// whole check is suppressed when external HLS declares any sequence header,
+    /// and the [`DependencyFindingKey`] dedup makes activation-time re-checks
+    /// idempotent.
+    fn check_ops_entries_against_active(
+        &mut self,
+        ops_offset: ByteOffset,
+        ops_id: u8,
+        entries: &[OpsExplicitEntry],
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        if external_declares_sequence_header(options) {
+            return;
+        }
+        for entry in entries {
+            let Some((seq_header_id, general)) = self.active_general_for(entry.xlayer_id) else {
+                continue;
+            };
+
+            if let Some((curr, reference)) =
+                mlayer_closure_violation(entry.info.mlayer_map, &general.mlayer_dependency_map)
+            {
+                let key = DependencyFindingKey::Ops {
+                    ops_offset,
+                    payload_index: entry.payload_index,
+                    entry_xlayer: entry.xlayer_id,
+                    seq_header_id,
+                    map: DependencyMapKind::Mlayer,
+                };
+                if self.emitted_dependency_findings.insert(key) {
+                    report.push(
+                        Diagnostic::error(
+                            "ops/mlayer-dependency-missing",
+                            format!(
+                                "OPS {ops_id} operating point {} for extended layer {} includes \
+                                 embedded layer {curr} but not embedded layer {reference}, which \
+                                 the activated sequence header {}'s \
+                                 MLayerDependencyMap[{curr}][{reference}] requires",
+                                entry.payload_index,
+                                entry.xlayer_id.get(),
+                                seq_header_id.get(),
+                            ),
+                        )
+                        .with_spec_section("6.10.7")
+                        .with_byte_offset(ops_offset),
+                    );
+                }
+            }
+
+            for &(mlayer, tlayer_mask) in &entry.info.tlayer_maps {
+                let Some((curr, reference)) =
+                    tlayer_closure_violation(mlayer, tlayer_mask, &general.tlayer_dependency_map)
+                else {
+                    continue;
+                };
+                let key = DependencyFindingKey::Ops {
+                    ops_offset,
+                    payload_index: entry.payload_index,
+                    entry_xlayer: entry.xlayer_id,
+                    seq_header_id,
+                    map: DependencyMapKind::Tlayer { mlayer },
+                };
+                if self.emitted_dependency_findings.insert(key) {
+                    report.push(
+                        Diagnostic::error(
+                            "ops/tlayer-dependency-missing",
+                            format!(
+                                "OPS {ops_id} operating point {} for extended layer {} includes \
+                                 temporal layer {curr} of embedded layer {mlayer} but not \
+                                 temporal layer {reference}, which the activated sequence header \
+                                 {}'s TLayerDependencyMap[{mlayer}][{curr}][{reference}] requires",
+                                entry.payload_index,
+                                entry.xlayer_id.get(),
+                                seq_header_id.get(),
+                            ),
+                        )
+                        .with_spec_section("6.10.7")
+                        .with_byte_offset(ops_offset),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Runs the § 6.10.7 / § 6.8.9 agreement checks that become decidable when a
+    /// sequence header is newly activated (or re-activated to a different id) for
+    /// `xlayer`: the stored explicit maps of active OPS records describing the
+    /// layer (its local bucket plus global-OPS entries), and the § 6.8.9 pairing
+    /// through the activated header's `seq_lcr_id`. The dedup keys make repeated
+    /// activation idempotent.
+    fn on_sequence_activation(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        if external_declares_sequence_header(options) {
+            return;
+        }
+        let mut pending: Vec<(ByteOffset, u8, Vec<OpsExplicitEntry>)> = Vec::new();
+        for bucket in [xlayer, GLOBAL_XLAYER_ID] {
+            for record in self.ops.records_for(bucket) {
+                let relevant: Vec<OpsExplicitEntry> = record
+                    .explicit_entries
+                    .iter()
+                    .filter(|entry| entry.xlayer_id == xlayer)
+                    .cloned()
+                    .collect();
+                if !relevant.is_empty() {
+                    pending.push((record.offset, record.ops_id, relevant));
+                }
+            }
+        }
+        for (offset, ops_id, entries) in pending {
+            self.check_ops_entries_against_active(offset, ops_id, &entries, options, report);
+        }
+        self.check_lcr_dependency_agreement(xlayer, options, report);
+    }
+
+    /// AV2 § 6.8.9: the activated LCR's `lcr_mlayer_map[isGlobal][xId]` /
+    /// `lcr_tlayer_map[isGlobal][xId][cMId]`, if present, must be
+    /// dependency-closed under the activated sequence header's maps. The pairing
+    /// is the sequence header activated for `xlayer` and the in-band LCR its
+    /// `seq_lcr_id` resolves to (local-first-then-global, § 6.4.1); only the
+    /// `xId == xlayer` entry is constrained by this activation. Unresolved
+    /// references are owned by the existing § 7.3.8.3 availability diagnostics,
+    /// and a resolved record without embedded-layer info has nothing to check.
+    /// The diagnostics carry the LCR OBU's byte offset.
+    fn check_lcr_dependency_agreement(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        // Stricter gate than the OPS checks: external HLS cannot declare LCRs, and
+        // per § 6.4.1 an externally-provided *local* LCR would resolve seq_lcr_id
+        // ahead of an in-band global record, so under any Provided mode the
+        // resolved record may not be the activated one — the same rationale as
+        // `check_seq_lcr_reference`'s lcr/global-xlayer-map-missing-xlayer gate.
+        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+            return;
+        }
+        let Some((seq_header_id, general)) = self.active_general_for(xlayer) else {
+            return;
+        };
+        let seq_lcr_id = general.seq_lcr_id.get();
+        if seq_lcr_id == 0 {
+            // AV2 § 6.4.1: seq_lcr_id == 0 means no LCR is associated.
+            return;
+        }
+        let (lcr_is_global, maps) = if self.hls.has_local_lcr(xlayer, seq_lcr_id) {
+            (false, self.hls.local_lcr_embedded(xlayer, seq_lcr_id))
+        } else if self.hls.global_lcr_xlayer_map(seq_lcr_id).is_some() {
+            (true, self.hls.global_lcr_embedded(seq_lcr_id, xlayer))
+        } else {
+            return;
+        };
+        let Some(maps) = maps.cloned() else {
+            return;
+        };
+
+        if let Some((curr, reference)) =
+            mlayer_closure_violation(maps.mlayer_map, &general.mlayer_dependency_map)
+        {
+            let key = DependencyFindingKey::Lcr {
+                xlayer,
+                seq_header_id,
+                lcr_is_global,
+                lcr_id: seq_lcr_id,
+                lcr_offset: maps.offset,
+                map: DependencyMapKind::Mlayer,
+            };
+            if self.emitted_dependency_findings.insert(key) {
+                report.push(
+                    Diagnostic::error(
+                        "lcr/mlayer-dependency-missing",
+                        format!(
+                            "activated {} layer configuration record {seq_lcr_id} includes \
+                             embedded layer {curr} but not embedded layer {reference} for \
+                             extended layer {}, which the activated sequence header {}'s \
+                             MLayerDependencyMap[{curr}][{reference}] requires",
+                            if lcr_is_global { "global" } else { "local" },
+                            xlayer.get(),
+                            seq_header_id.get(),
+                        ),
+                    )
+                    .with_spec_section("6.8.9")
+                    .with_byte_offset(maps.offset),
+                );
+            }
+        }
+
+        for &(mlayer, tlayer_mask) in &maps.tlayer_maps {
+            let Some((curr, reference)) =
+                tlayer_closure_violation(mlayer, tlayer_mask, &general.tlayer_dependency_map)
+            else {
+                continue;
+            };
+            let key = DependencyFindingKey::Lcr {
+                xlayer,
+                seq_header_id,
+                lcr_is_global,
+                lcr_id: seq_lcr_id,
+                lcr_offset: maps.offset,
+                map: DependencyMapKind::Tlayer { mlayer },
+            };
+            if self.emitted_dependency_findings.insert(key) {
+                report.push(
+                    Diagnostic::error(
+                        "lcr/tlayer-dependency-missing",
+                        format!(
+                            "activated {} layer configuration record {seq_lcr_id} includes \
+                             temporal layer {curr} of embedded layer {mlayer} but not temporal \
+                             layer {reference} for extended layer {}, which the activated \
+                             sequence header {}'s \
+                             TLayerDependencyMap[{mlayer}][{curr}][{reference}] requires",
+                            if lcr_is_global { "global" } else { "local" },
+                            xlayer.get(),
+                            seq_header_id.get(),
+                        ),
+                    )
+                    .with_spec_section("6.8.9")
+                    .with_byte_offset(maps.offset),
+                );
+            }
         }
     }
 
@@ -2979,14 +3590,47 @@ impl ValidatorContext {
         // full header (not just its general fields) is retained so the frame-header
         // core parser can read OrderHintBits / NumRefFrames / dimensions from its inter
         // and screen-content configs (AV2 § 5.18.2).
-        self.sequence_headers.insert(seq_header_id, sequence_header);
+        let new_general = sequence_header.general;
+        let previous_header = self.sequence_headers.insert(seq_header_id, sequence_header);
         // The active sequence header for an extended layer defaults to the first one
         // seen in OBU order; a parsed CLK/OLK frame header overrides this with the
         // sequence header it references (see observe_frame_bearing_obu), which is the
         // exact AV2 § 5.18.2 activation point for the paths the skeleton parses.
+        let newly_activated = !self.active_sequence_by_xlayer.contains_key(&xlayer);
         self.active_sequence_by_xlayer
             .entry(xlayer)
             .or_insert(seq_header_id);
+
+        // § 6.10.7 / § 6.8.9 bind whatever content the activated id currently
+        // carries, and a same-id reconfiguration (legal at a coded-video-sequence
+        // boundary, § 7.3.6) changes that content without an activation-id change.
+        // When the agreement inputs (dependency maps, seq_lcr_id) of an
+        // already-stored header are redefined, invalidate the id's dedup keys and
+        // re-run the checks for every extended layer it is active for; a
+        // first-sighting activation re-runs only this layer.
+        let agreement_inputs_changed = previous_header.is_some_and(|previous| {
+            let old = previous.general;
+            old.mlayer_dependency_map != new_general.mlayer_dependency_map
+                || old.tlayer_dependency_map != new_general.tlayer_dependency_map
+                || old.seq_lcr_id != new_general.seq_lcr_id
+        });
+        let mut layers_to_check = BTreeSet::new();
+        if newly_activated {
+            layers_to_check.insert(xlayer);
+        }
+        if agreement_inputs_changed {
+            self.emitted_dependency_findings
+                .retain(|key| key.seq_header_id() != seq_header_id);
+            layers_to_check.extend(
+                self.active_sequence_by_xlayer
+                    .iter()
+                    .filter(|(_, id)| **id == seq_header_id)
+                    .map(|(layer, _)| *layer),
+            );
+        }
+        for layer in layers_to_check {
+            self.on_sequence_activation(layer, options, report);
+        }
     }
 
     fn validate_active_sequence_limits(
@@ -3839,9 +4483,11 @@ fn frame_qm_reference_checks(
     };
     // TODO(spec: AV2-5.18.6-QUANTIZATION): the § 6.17.6.2 layer-dependency
     // constraints (MLayerDependencyMap[obu_mlayer_id][QmMLayerId[...]] == 1 and the
-    // TLayerDependencyMap analogue) need the sequence dependency maps, which the
-    // parsed sequence model does not expose (parse_dependency_map_bits discards the
-    // bits); they are deferred rather than fabricated.
+    // TLayerDependencyMap analogue) are deferred rather than fabricated: the
+    // sequence-header model now exposes the § 5.4.1 dependency maps (consumed by
+    // the § 6.10.7 / § 6.8.9 / § 7.3.8.7 agreement checks), but the QM-side check
+    // also needs the defining QM OBU's layer identity threaded through the
+    // availability state and is not implemented yet.
     let qm_num = usize::from(setup_qm.pic_qm_num_minus_1) + 1;
     // Distinct referenced custom slots: qm_uv_same_as_y / shared-UV copies and
     // repeated levels across the qmNum sets reference the same slot, which violates
@@ -3934,4 +4580,55 @@ fn external_hls_disabled_advisory(seq_header_id: u32, obu: &ObuEnvelope<'_>) -> 
     )
     .with_spec_section("7.3.8.1")
     .with_byte_offset(obu.offset)
+}
+
+#[cfg(test)]
+mod tests {
+    use splot_core::headers::sequence::{MLayerDependencyMap, TLayerDependencyMap};
+    use splot_core::types::{EmbeddedLayerId, TemporalLayerId};
+
+    use super::{mlayer_closure_violation, tlayer_closure_violation};
+
+    /// § 5.4.1 default fill for `max_mlayer_id == 1`: `MLayerDependencyMap[1][0]`
+    /// is 1, so a mask including layer 1 without layer 0 violates the closure.
+    #[test]
+    fn mlayer_closure_violation_reports_missing_required_dependency() {
+        let m_map = MLayerDependencyMap::default_for(EmbeddedLayerId::from_bits(1));
+        assert_eq!(mlayer_closure_violation(0b10, &m_map), Some((1, 0)));
+    }
+
+    #[test]
+    fn mlayer_closure_violation_accepts_closed_and_independent_masks() {
+        let m_map = MLayerDependencyMap::default_for(EmbeddedLayerId::from_bits(1));
+        // Closed mask: every required lower layer is included.
+        assert_eq!(mlayer_closure_violation(0b11, &m_map), None);
+        // Layer 0 has no lower layers to require.
+        assert_eq!(mlayer_closure_violation(0b01, &m_map), None);
+        // Layers above max_mlayer_id have no map dependencies (out of range reads
+        // false), so a high stray bit alone is not a closure violation.
+        assert_eq!(mlayer_closure_violation(0b1000_0000, &m_map), None);
+    }
+
+    /// § 5.4.1 default fill for `max_tlayer_id == 1`: within embedded layer 0,
+    /// `TLayerDependencyMap[0][1][0]` is 1.
+    #[test]
+    fn tlayer_closure_violation_reports_missing_required_dependency() {
+        let t_map = TLayerDependencyMap::default_for(
+            TemporalLayerId::from_bits(1),
+            EmbeddedLayerId::from_bits(1),
+        );
+        assert_eq!(tlayer_closure_violation(0, 0b10, &t_map), Some((1, 0)));
+    }
+
+    #[test]
+    fn tlayer_closure_violation_accepts_closed_masks_and_out_of_range_layers() {
+        let t_map = TLayerDependencyMap::default_for(
+            TemporalLayerId::from_bits(1),
+            EmbeddedLayerId::from_bits(1),
+        );
+        assert_eq!(tlayer_closure_violation(0, 0b11, &t_map), None);
+        assert_eq!(tlayer_closure_violation(0, 0b01, &t_map), None);
+        // An embedded layer above max_mlayer_id has an all-false map row.
+        assert_eq!(tlayer_closure_violation(5, 0b10, &t_map), None);
+    }
 }

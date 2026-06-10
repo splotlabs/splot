@@ -45,8 +45,8 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.4.13](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-13) | Sequence decoder model info syntax | `AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-5) | Temporal delimiter OBU syntax | `AV2-5.5-TEMPORAL-DELIMITER` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 5.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-6) | Multi Stream Decoder Operation OBU syntax | `AV2-5.6-MSDO` | ✅ | ✅ | 🟡 | ✅ | 2 |
-| [§ 5.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-7) | Multi frame header OBU syntax | `AV2-5.7-MULTI-FRAME-HEADER` | ✅ | ✅ | 🟡 | ✅ | 4 |
-| [§ 5.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8) | Layer config record OBU syntax | `AV2-5.8-LAYER-CONFIG-RECORD` | ✅ | ✅ | 🟡 | ✅ | 9 |
+| [§ 5.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-7) | Multi frame header OBU syntax | `AV2-5.7-MULTI-FRAME-HEADER` | ✅ | ✅ | 🟡 | ✅ | 6 |
+| [§ 5.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8) | Layer config record OBU syntax | `AV2-5.8-LAYER-CONFIG-RECORD` | ✅ | ✅ | 🟡 | ✅ | 11 |
 | [§ 5.8.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-1) | LCR global info syntax | `AV2-5.8.1-LCR-GLOBAL-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-2) | LCR local info syntax | `AV2-5.8.2-LCR-LOCAL-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-3) | LCR aggregate info syntax | `AV2-5.8.3-LCR-AGGREGATE-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
@@ -62,9 +62,9 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.9.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-9-3) | Atlas multistream info syntax | `AV2-5.9.3-ATLAS-MULTISTREAM-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.9.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-9-4) | Atlas multistream with alpha info syntax | `AV2-5.9.4-ATLAS-MULTISTREAM-ALPHA-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.9.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-9-5) | Atlas basic info syntax | `AV2-5.9.5-ATLAS-BASIC-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
-| [§ 5.10](./spec/av2/1.0.0/05-syntax-structures.md#s-5-10) | Operating point set OBU syntax | `AV2-5.10-OPERATING-POINT-SET` | ✅ | ✅ | 🟡 | ✅ | 4 |
+| [§ 5.10](./spec/av2/1.0.0/05-syntax-structures.md#s-5-10) | Operating point set OBU syntax | `AV2-5.10-OPERATING-POINT-SET` | ✅ | ✅ | 🟡 | ✅ | 6 |
 | [§ 5.10](./spec/av2/1.0.0/05-syntax-structures.md#s-5-10) | Operating point set OBU syntax | `AV2-5.10-OPS-SYNTAX-ELEMENTS` | ✅ | ✅ | 🟡 | ✅ | 2 |
-| [§ 5.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-11) | Operating point payload syntax | `AV2-5.10-OPERATING-POINT-SET` | ✅ | ✅ | 🟡 | ✅ | 4 |
+| [§ 5.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-11) | Operating point payload syntax | `AV2-5.10-OPERATING-POINT-SET` | ✅ | ✅ | 🟡 | ✅ | 6 |
 | [§ 5.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-11) | Operating point payload syntax | `AV2-5.11-OPERATING-POINT-PAYLOAD` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 5.11.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-11-1) | Operating point set aggregate info syntax | `AV2-5.11.1-OPS-AGGREGATE-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.11.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-11-2) | Operating point set sequence profile tier level information syntax | `AV2-5.11.2-OPS-SEQ-PTL-INFO` | ✅ | ✅ | 🟡 | ✅ | 1 |
@@ -139,8 +139,8 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.4.13](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-13) | Sequence decoder model info semantics | `AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.5](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-5) | Temporal delimiter OBU semantics | `AV2-5.5-TEMPORAL-DELIMITER` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 6.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-6) | Multi Stream Decoder Operation OBU semantics | `AV2-5.6-MSDO` | ✅ | ✅ | 🟡 | ✅ | 2 |
-| [§ 6.7](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-7) | Multi frame header OBU semantics | `AV2-5.7-MULTI-FRAME-HEADER` | ✅ | ✅ | 🟡 | ✅ | 4 |
-| [§ 6.8](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8) | Layer config record OBU semantics | `AV2-5.8-LAYER-CONFIG-RECORD` | ✅ | ✅ | 🟡 | ✅ | 9 |
+| [§ 6.7](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-7) | Multi frame header OBU semantics | `AV2-5.7-MULTI-FRAME-HEADER` | ✅ | ✅ | 🟡 | ✅ | 6 |
+| [§ 6.8](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8) | Layer config record OBU semantics | `AV2-5.8-LAYER-CONFIG-RECORD` | ✅ | ✅ | 🟡 | ✅ | 11 |
 | [§ 6.8.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-2) | LCR global info semantics | `AV2-5.8.1-LCR-GLOBAL-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.8.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-3) | LCR local info semantics | `AV2-5.8.2-LCR-LOCAL-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.8.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-4) | LCR aggregate info semantics | `AV2-5.8.3-LCR-AGGREGATE-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
@@ -156,7 +156,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.9.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-4) | Atlas multistream info semantics | `AV2-5.9.3-ATLAS-MULTISTREAM-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.9.5](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-5) | Atlas multistream with alpha info semantics | `AV2-5.9.4-ATLAS-MULTISTREAM-ALPHA-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.9.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-6) | Atlas basic info semantics | `AV2-5.9.5-ATLAS-BASIC-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
-| [§ 6.10](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-10) | Operating point set OBU semantics | `AV2-5.10-OPERATING-POINT-SET` | ✅ | ✅ | 🟡 | ✅ | 4 |
+| [§ 6.10](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-10) | Operating point set OBU semantics | `AV2-5.10-OPERATING-POINT-SET` | ✅ | ✅ | 🟡 | ✅ | 6 |
 | [§ 6.10](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-10) | Operating point set OBU semantics | `AV2-5.11-OPERATING-POINT-PAYLOAD` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 6.10.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-10-2) | Operating point set OBU syntax elements | `AV2-5.10-OPS-SYNTAX-ELEMENTS` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 6.10.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-10-3) | Operating point set aggregate info semantics | `AV2-5.11.1-OPS-AGGREGATE-INFO` | ✅ | ✅ | 🟡 | ✅ | — |

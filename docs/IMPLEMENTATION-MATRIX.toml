@@ -1063,7 +1063,7 @@ openspec_change = "frame-activation-hls-skeleton"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "multi_frame_header_obu() syntax is now parsed in full, including seg_info() via the shared AV2-5.4.9-SEGMENT-INFO helper (no bounded status). Local id ranges are checked, and the mfh_seq_header_id -> sequence-header reference availability (§7.3.8.6/§7.3.8.7) is validated against the in-band store plus optional external HLS (see AV2-7.3.8-HLS-AVAILABILITY). Fully parsed MFHs run the §5.2.1 payload-tail check and are recorded as MultiFrameHeaderRecord availability, consumed by the frame-header cur_mfh_id reference check (hls/unavailable-multi-frame-header). The MFH layer-dependency-map checks remain future work."
+notes = "multi_frame_header_obu() syntax is now parsed in full, including seg_info() via the shared AV2-5.4.9-SEGMENT-INFO helper (no bounded status). Local id ranges are checked, and the mfh_seq_header_id -> sequence-header reference availability (§7.3.8.6/§7.3.8.7) is validated against the in-band store plus optional external HLS (see AV2-7.3.8-HLS-AVAILABILITY). Fully parsed MFHs run the §5.2.1 payload-tail check and are recorded as MultiFrameHeaderRecord availability, consumed by the frame-header cur_mfh_id reference check (hls/unavailable-multi-frame-header). The §7.3.8.7 layer-dependency constraints are enforced at that reference with the §6.17.2 predicate against the loaded in-band sequence header's maps (frame-header/mfh-mlayer-dependency-missing, frame-header/mfh-tlayer-dependency-missing); the §6.17.2 MFH frame-size override bounds remain future work."
 
 [feature.status]
 mapped = "done"
@@ -1078,10 +1078,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/hls.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_mfh_out_of_range_ids_are_flagged", "crates/splot-validate/src/validator.rs::tests::hls_frame_header_mfh_available_is_accepted"]
-commands = ["cargo test -p splot-core hls", "cargo test -p splot-validate hls", "cargo test -p splot-validate mfh_"]
+tests = ["crates/splot-core/src/hls.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_mfh_out_of_range_ids_are_flagged", "crates/splot-validate/src/validator.rs::tests::hls_frame_header_mfh_available_is_accepted", "crates/splot-validate/src/validator.rs::tests::frame_mfh_mlayer_dependency_missing_is_flagged", "crates/splot-validate/src/validator.rs::tests::frame_mfh_tlayer_dependency_missing_is_flagged"]
+commands = ["cargo test -p splot-core hls", "cargo test -p splot-validate hls", "cargo test -p splot-validate mfh_", "cargo test -p splot-validate frame_mfh"]
 fixtures = []
-diagnostics = ["mfh/seq-header-id-out-of-range", "mfh/id-out-of-range", "mfh/sequence-header-unavailable", "hls/unavailable-multi-frame-header"]
+diagnostics = ["mfh/seq-header-id-out-of-range", "mfh/id-out-of-range", "mfh/sequence-header-unavailable", "hls/unavailable-multi-frame-header", "frame-header/mfh-mlayer-dependency-missing", "frame-header/mfh-tlayer-dependency-missing"]
 
 [[feature]]
 id = "AV2-5.8-LAYER-CONFIG-RECORD"
@@ -1096,7 +1096,7 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Full §5.8 layer_config_record_obu() parser (global/local; lcr_global_info, lcr_local_info, lcr_aggregate_info, lcr_seq_profile_tier_level_info, the length-bounded lcr_global_payload, lcr_xlayer_info, lcr_rep_info, lcr_embedded_layer_info, lcr_xlayer_color_info), dispatched by open_bitstream_unit and surfaced in inspect --json. splot-validate warns on non-zero reserved-zero fields (§6.8) and records in-band LCR availability, checking local->global LCR (§7.3.8.3), local->local-atlas (§7.3.8.4), and sequence-header seq_lcr_id resolution including the global lcr_xlayer_map membership rule (§6.4.1). §6.8 defines no identical-repeated-LCR requirement, so a duplicate-not-identical check is intentionally not emitted. Writer/encoder remain future work."
+notes = "Full §5.8 layer_config_record_obu() parser (global/local; lcr_global_info, lcr_local_info, lcr_aggregate_info, lcr_seq_profile_tier_level_info, the length-bounded lcr_global_payload, lcr_xlayer_info, lcr_rep_info, lcr_embedded_layer_info, lcr_xlayer_color_info), dispatched by open_bitstream_unit and surfaced in inspect --json. splot-validate warns on non-zero reserved-zero fields (§6.8), records in-band LCR availability, checks local->global LCR (§7.3.8.3), local->local-atlas (§7.3.8.4), sequence-header seq_lcr_id resolution including the global lcr_xlayer_map membership rule (§6.4.1), and the §6.8.9 dependency-map agreement of the activated LCR's embedded-layer maps against the activated sequence header (lcr/mlayer-dependency-missing, lcr/tlayer-dependency-missing). §6.8 defines no identical-repeated-LCR requirement, so a duplicate-not-identical check is intentionally not emitted. Writer/encoder remain future work."
 
 [feature.status]
 mapped = "done"
@@ -1114,7 +1114,7 @@ perf = "not-applicable"
 tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_seq_lcr_missing_record_is_flagged", "crates/splot-validate/src/validator.rs::tests::lcr_local_missing_global_is_flagged"]
 commands = ["cargo test -p splot-core lcr", "cargo test -p splot-validate lcr", "cargo test -p splot-validate hls"]
 fixtures = []
-diagnostics = ["lcr/reserved-bits-nonzero", "lcr/payload-size-overflow", "lcr/global-id-out-of-range", "lcr/xlayer-map-empty", "lcr/local-id-zero", "lcr/dependent-xlayers-flag-nonzero", "lcr/global-lcr-unavailable", "lcr/global-xlayer-map-missing-xlayer", "hls/unavailable-layer-configuration-record"]
+diagnostics = ["lcr/reserved-bits-nonzero", "lcr/payload-size-overflow", "lcr/global-id-out-of-range", "lcr/xlayer-map-empty", "lcr/local-id-zero", "lcr/dependent-xlayers-flag-nonzero", "lcr/global-lcr-unavailable", "lcr/global-xlayer-map-missing-xlayer", "hls/unavailable-layer-configuration-record", "lcr/mlayer-dependency-missing", "lcr/tlayer-dependency-missing"]
 
 [[feature]]
 id = "AV2-5.8.1-LCR-GLOBAL-INFO"
@@ -1360,7 +1360,7 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. The §6.8.9 dependency-map agreement of the activated LCR's lcr_mlayer_map/lcr_tlayer_map against the activated sequence header is checked in splot-validate (diagnostics recorded on the umbrella row); the §6.8.9 reserved-value decoder-ignore rules and lcr_max_expected_width/height bounds need frame-size state and stay future, so validate is partial."
 
 [feature.status]
 mapped = "done"
@@ -1375,8 +1375,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
-commands = ["cargo test -p splot-core lcr"]
+tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator.rs::tests::lcr_mlayer_dependency_missing_is_flagged", "crates/splot-validate/src/validator.rs::tests::lcr_tlayer_dependency_missing_is_flagged"]
+commands = ["cargo test -p splot-core lcr", "cargo test -p splot-validate lcr_"]
 fixtures = []
 diagnostics = []
 
@@ -1624,7 +1624,7 @@ openspec_change = "ops-brt-hls-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Full §5.10 operating_point_set_obu() parser including reset/update fields and operating_point_payload() dispatch, surfaced in inspect --json. Validator records non-monotonic active OPS state (§6.10.1) and enforces the locally-decidable §6.10 conformance rules. Annex A/E level/schedule validation and §6.10.7 dependency-map agreement remain future, so validate stays partial."
+notes = "Full §5.10 operating_point_set_obu() parser including reset/update fields and operating_point_payload() dispatch, surfaced in inspect --json. Validator records non-monotonic active OPS state (§6.10.1), enforces the locally-decidable §6.10 conformance rules, and checks the §6.10.7 dependency-map agreement of explicitly signalled maps against the activated in-band sequence header (ops/mlayer-dependency-missing, ops/tlayer-dependency-missing; never fabricated when no header activates). Annex A/E level/schedule validation remains future, so validate stays partial."
 
 [feature.status]
 mapped = "done"
@@ -1642,7 +1642,7 @@ perf = "not-applicable"
 tests = ["crates/splot-core/src/headers/operating_point_set.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
 commands = ["cargo test -p splot-core ops", "cargo test -p splot-validate ops"]
 fixtures = ["tests/fixtures/operating-point-set.av2"]
-diagnostics = ["ops/local-reserved-bits-nonzero", "ops/mlayer-info-idc-reserved", "ops/payload-size-mismatch", "ops/inherited-op-index-out-of-range"]
+diagnostics = ["ops/local-reserved-bits-nonzero", "ops/mlayer-info-idc-reserved", "ops/payload-size-mismatch", "ops/inherited-op-index-out-of-range", "ops/mlayer-dependency-missing", "ops/tlayer-dependency-missing"]
 
 [[feature]]
 id = "AV2-5.10-OPS-SYNTAX-ELEMENTS"
@@ -1657,7 +1657,7 @@ openspec_change = "ops-brt-hls-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.10-OPERATING-POINT-SET. Top-level operating_point_set_obu() syntax elements (reset flag, ops_id, ops_cnt, present flags, global ops_mlayer_info_idc / local ops_reserved_2bits). Validator implements reset/update semantics and reserved-bit checks; full operating-point semantics depend on Annex A/E and §6.10.7, so validate stays partial."
+notes = "Child row of AV2-5.10-OPERATING-POINT-SET. Top-level operating_point_set_obu() syntax elements (reset flag, ops_id, ops_cnt, present flags, global ops_mlayer_info_idc / local ops_reserved_2bits). Validator implements reset/update semantics and reserved-bit checks; the §6.10.7 dependency-map agreement checks are landed on the umbrella row, and full operating-point semantics depend on Annex A/E, so validate stays partial."
 
 [feature.status]
 mapped = "done"
@@ -1855,7 +1855,7 @@ openspec_change = "ops-brt-hls-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.11-OPERATING-POINT-PAYLOAD. Parses ops_mlayer_info() (§5.11.5) mlayer/tlayer maps and retains inherited references. Validator enforces inherited operating-point-index bounds (§6.10.2); §6.10.7 dependency-map agreement needs activated sequence maps and stays future, so validate is partial."
+notes = "Child row of AV2-5.11-OPERATING-POINT-PAYLOAD. Parses ops_mlayer_info() (§5.11.5) mlayer/tlayer maps and retains inherited references. Validator enforces inherited operating-point-index bounds (§6.10.2) and the §6.10.7 dependency-map agreement of explicitly signalled maps against the activated in-band sequence header (diagnostics recorded on AV2-5.10-OPERATING-POINT-SET); entries whose extended layer never activates an in-band header are not checked, and Annex A/E semantics stay future, so validate is partial."
 
 [feature.status]
 mapped = "done"
@@ -3260,7 +3260,7 @@ openspec_change = "frame-activation-hls-skeleton"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Active sequence lookup by xlayer, the repeated-identical (bit-fingerprint) check (normative home: the §7.3.6 bit-identity rule, tracked by AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT; §7.3.8.6 only cross-references it), an in-band sequence-header + multi-frame-header availability store, the multi-frame-header -> sequence-header reference check (mfh_seq_header_id), and the generic frame-header reference checks (seq_header_id_in_frame_header and cur_mfh_id) are implemented, with caller-provided external HLS via ValidationOptions (default disabled; external MFH/LCR/atlas are future). Layer-configuration-record availability (§7.3.8.3: local->global LCR and sequence-header seq_lcr_id resolution incl. lcr_xlayer_map membership) and local atlas-segment availability (§7.3.8.4) are now modeled; the global atlas (can be available) is not flagged. Availability is kept monotonic; the §7.3.8.1 resend-at-RAP requirement and MSDO/OPS reference paths remain bounded. MFH layer-dependency-map checks remain future (TLayerDependencyMap/MLayerDependencyMap are not exposed by the sequence-header model). The validator also records per-level quantizer-matrix availability (AV2-5.13-QUANTIZATION-MATRIX) and per-slot film-grain availability (AV2-5.14-FILM-GRAIN) as foundation; the corresponding frame quantization/film-grain reference checks (using_qmatrix/qm_* and apply_grain/fgm_id) remain future until the frame header is parsed."
+notes = "Active sequence lookup by xlayer, the repeated-identical (bit-fingerprint) check (normative home: the §7.3.6 bit-identity rule, tracked by AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT; §7.3.8.6 only cross-references it), an in-band sequence-header + multi-frame-header availability store, the multi-frame-header -> sequence-header reference check (mfh_seq_header_id), and the generic frame-header reference checks (seq_header_id_in_frame_header and cur_mfh_id) are implemented, with caller-provided external HLS via ValidationOptions (default disabled; external MFH/LCR/atlas are future). Layer-configuration-record availability (§7.3.8.3: local->global LCR and sequence-header seq_lcr_id resolution incl. lcr_xlayer_map membership) and local atlas-segment availability (§7.3.8.4) are now modeled; the global atlas (can be available) is not flagged. Availability is kept monotonic; the §7.3.8.1 resend-at-RAP requirement and MSDO/OPS reference paths remain bounded. The MFH layer-dependency constraints (§7.3.8.7, concrete predicate §6.17.2) are enforced at the frame-header cur_mfh_id reference against the loaded in-band sequence header's §5.4.1 maps (frame-header/mfh-mlayer-dependency-missing, frame-header/mfh-tlayer-dependency-missing; diagnostics recorded on AV2-5.7-MULTI-FRAME-HEADER). The validator also records per-level quantizer-matrix availability (AV2-5.13-QUANTIZATION-MATRIX) and per-slot film-grain availability (AV2-5.14-FILM-GRAIN) as foundation; the corresponding frame quantization/film-grain reference checks (using_qmatrix/qm_* and apply_grain/fgm_id) remain future until the frame header is parsed."
 
 [feature.status]
 mapped = "done"
