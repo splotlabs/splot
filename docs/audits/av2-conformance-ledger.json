@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "6050265edbae034430a7479529223f3e8682ea8d",
+  "audited_commit": "b791f62c5d0e80c0f78c37ff10bac7bcd7ae7df5",
   "outcome": "success",
   "files": [
     {
@@ -760,15 +760,17 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "18adc5787660f00a8ec982df9422837642cf754a04bb8a3e39265341b05912cd",
+      "sha256": "9876c7cb4f24ddcbf94fb39c2a82e08a1335ae5310da3d3f58753d85e522e5b6",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.17.5-METADATA-HDR-CLL",
         "AV2-5.17.6-METADATA-HDR-MDCV",
         "AV2-5.18-FRAME-HEADER",
         "AV2-5.18.6-QUANTIZATION",
+        "AV2-5.6-MSDO",
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
         "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
         "AV2-7.3-OBU-ORDERING",
         "AV2-7.3.2-CMVS-BOUNDARIES",
         "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT",
@@ -820,7 +822,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "05bc2dfe492484b6cca0c8ffcf2463909c5783df6d7a8eef0dae89df9b520b98",
+      "sha256": "6745a09bdc409b570b8da9f22b19ef97e9e581533d14459fb083195494e9fbe5",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -874,7 +876,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "a3d72a2a6eed691c45513189b80761a7c0b69f4a1c9900337299b37e179618ff",
+      "sha256": "ba07e0f77dcea86a4e25ef41037f853618a7614bdc470577446a22143b2304c5",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1040,7 +1042,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "3fe86da5f67ee64f73a15acf5b741704f444578707462a81a747d2fbf6f95f54",
+      "sha256": "4e2d2442f46529e51dd34a807c5db1278d03e30f70a12217a767bf5b1106fbc9",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1176,7 +1178,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "37d45f4af2eab48220951a213e60f78416db56f1be3c703ec417b4fe2d53f1eb",
+      "sha256": "38cb67487a15d0f4af98e9e3a0bb7bd7b3b5327097844a3e5814c99f0f00153d",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1328,7 +1330,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "670d2867b10d3d642483f9c21f6294414e13c88a7f6172284245b942c2b8e7a7",
+      "sha256": "8b4c0c2c9653b5683986696154a416a2e0f4e6d6ebf2ffb2b0925be64ae23c84",
       "scope_kind": "docs",
       "feature_ids": [
         "XTASK-DIAGNOSTIC-REGISTRY"
@@ -1337,7 +1339,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "dd617a0598de03cbcbb8142361ba1fda5350a13d223205c24efff171119c2e06",
+      "sha256": "19cc3d48f27bfbc3f9325134b80919b664cce95dd237a19f5e48ce34012e2d65",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -1486,7 +1488,7 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "6e6454509614587bcf8e3709b89c6c0c772ae0d2bfac201d422f826d94c6f333",
+      "sha256": "d6bcb5535f3b0e4308e8ddc4894a2d664d20f1474947ac332ff9aeafecfcc335",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -1496,6 +1498,10 @@
         "AV2-5.2.3-TRAILING-BITS",
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.8-HLS-AVAILABILITY",
         "CONF-AVM-DIFF-HARNESS",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
@@ -2345,6 +2351,50 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-10-diagnostic-registry-enforcement/.openspec.yaml",
+      "sha256": "4e4f418579ebfbffbd8c41ee1a2ef52993119960fe15f399381a15987b551d8a",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-diagnostic-registry-enforcement/design.md",
+      "sha256": "c38fb948f10c74e986137053c8e0bc5f65303dfeb3b98dbdeece36474b21907b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-FEATURE-STATUS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-diagnostic-registry-enforcement/proposal.md",
+      "sha256": "33c40303e86ec3eee0afb137c16cec7d430390ef3f09a5fed152161cbd10a575",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-DIAGNOSTIC-REGISTRY",
+        "XTASK-FEATURE-STATUS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-diagnostic-registry-enforcement/specs/process/spec.md",
+      "sha256": "3775aa9a4abf15afceba03ea0855839e3c8df4fd9c7d1b77bbdec80a524fcd34",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-DIAGNOSTIC-REGISTRY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-diagnostic-registry-enforcement/tasks.md",
+      "sha256": "d020205b449cf07829a698b9178de70d55dff313bad0e1ec99a033673d2b273f",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-DIAGNOSTIC-REGISTRY"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-10-layer-dependency-map-agreement/.openspec.yaml",
       "sha256": "5ada458f25cd6e260a7ac3deb87a5ba5d046aabf964c53260ae6cf7bcb8a5d12",
       "scope_kind": "openspec",
@@ -2446,6 +2496,33 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-10-spec-coverage-doc/proposal.md",
+      "sha256": "2722641e08415381787b0eb717363f67acebb13fd8a190c48cc4169228528bca",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-FEATURE-STATUS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-spec-coverage-doc/specs/process/spec.md",
+      "sha256": "a399a648c2f2b3874dbb64cfb6caed5c43641da992b8269b491d357d755e9164",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-FEATURE-STATUS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-spec-coverage-doc/tasks.md",
+      "sha256": "0f512a944115dfa0f88e0e79d6a049b4dd2174f2ae2d7165efef5746105a6b5e",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-FEATURE-STATUS"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/avm-differential-harness/proposal.md",
       "sha256": "ca4e00373763656046a33836c38af7626641afedb9e473897f7ae9b2a3572b5f",
       "scope_kind": "openspec",
@@ -2467,6 +2544,53 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/sequence-multistream-semantics/.openspec.yaml",
+      "sha256": "5ada458f25cd6e260a7ac3deb87a5ba5d046aabf964c53260ae6cf7bcb8a5d12",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/sequence-multistream-semantics/design.md",
+      "sha256": "2d2871185715dc444f66a0a0a4c3490a7e3fb892f820148527bfd8d18029a98d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/sequence-multistream-semantics/proposal.md",
+      "sha256": "3e2d01c33afec15d1762e665211bc6fa0755bf791a5b3cc62383eb062791f204",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/sequence-multistream-semantics/specs/validator/spec.md",
+      "sha256": "09e6ba4fa3ad8239302bd68b9db93941a1214c08a3dd7fcccff8ab85a47092d1",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/sequence-multistream-semantics/tasks.md",
+      "sha256": "84c5b6c205ebabf937bf0ba07f6e7c8b305cb35cb2a446227520b0fab7dde37b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.8-HLS-AVAILABILITY"
       ],
       "outcome": "success"
     },

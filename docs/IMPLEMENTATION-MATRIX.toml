@@ -966,11 +966,11 @@ spec_sections = ["6.4"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
 module = "crates/splot-validate/src/checks/mod.rs"
-openspec_change = "sequence-timing-hls-availability"
+openspec_change = "sequence-multistream-semantics"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Maps locally decidable §6.4.1 / §6.4.12 sequence-header and timing violations, plus cross-embedded-layer timing consistency (§6.4.12) compared across content-interpretation OBUs within a modeled CVS scope. Still partial: monotonic-output-order and distinct-mlayer-count checks across a coded multistream video sequence, and exact CVS/embedded-layer scoping, remain blocked on CLK frame-header activation (AV2-5.18-FRAME-HEADER)."
+notes = "Maps locally decidable §6.4.1 / §6.4.12 sequence-header and timing violations, plus cross-embedded-layer timing consistency (§6.4.12) compared across content-interpretation OBUs within a modeled CVS scope. CLK frame-header activation and exact §7.3.6 CVS scoping have landed (AV2-5.18-FRAME-HEADER / AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT), unblocking the distinct-mlayer-count, SWITCH/RAS dependency-self-containment, and monotonic-output-order checks (added under sequence-multistream-semantics). Still partial: the §6.4.1 operating-point consistency and same-output-time constraints remain blocked on reference-frame/OrderHint and decoder-model output-timing state, and §6.4.13 buffer-delay sum constancy is held for a maintainer scope decision (\"video sequence\" vs \"coded video sequence\")."
 
 [feature.status]
 mapped = "done"
@@ -985,10 +985,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_repeated_non_identical_sequence_header_is_flagged", "crates/splot-validate/src/validator.rs::tests::ci_different_time_scale_across_embedded_layers_is_flagged", "crates/splot-validate/src/checks/mod.rs::tests"]
-commands = ["cargo test -p splot-validate sequence_header", "cargo test -p splot-validate hls", "cargo test -p splot-validate ci_"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_repeated_non_identical_sequence_header_is_flagged", "crates/splot-validate/src/validator.rs::tests::ci_different_time_scale_across_embedded_layers_is_flagged", "crates/splot-validate/src/checks/mod.rs::tests", "crates/splot-validate/src/validator.rs::tests::switch_frame_depending_on_another_embedded_layer_is_flagged", "crates/splot-validate/src/validator.rs::tests::ras_frame_depending_on_another_embedded_layer_is_flagged", "crates/splot-validate/src/validator.rs::tests::self_contained_ras_frame_is_not_flagged", "crates/splot-validate/src/validator.rs::tests::switch_frame_at_base_embedded_layer_is_not_flagged", "crates/splot-validate/src/validator.rs::tests::distinct_mlayer_count_exceeds_seqmax_is_flagged", "crates/splot-validate/src/validator.rs::tests::distinct_mlayer_count_within_seqmax_is_conforming", "crates/splot-validate/src/validator.rs::tests::distinct_mlayer_count_resets_at_cvs_boundary", "crates/splot-validate/src/validator.rs::tests::distinct_mlayer_count_before_first_clk_uses_active_header", "crates/splot-validate/src/validator.rs::tests::distinct_mlayer_count_emits_once_per_cvs", "crates/splot-validate/src/validator.rs::tests::monotonic_output_order_disagreement_inside_cmvs_is_flagged", "crates/splot-validate/src/validator.rs::tests::monotonic_output_order_agreement_inside_cmvs_is_conforming", "crates/splot-validate/src/validator.rs::tests::monotonic_output_order_disagreement_outside_cmvs_is_not_flagged", "crates/splot-validate/src/validator.rs::tests::monotonic_output_order_disagreement_in_unknown_cmvs_is_not_flagged"]
+commands = ["cargo test -p splot-validate sequence_header", "cargo test -p splot-validate hls", "cargo test -p splot-validate ci_", "cargo test -p splot-validate distinct_mlayer", "cargo test -p splot-validate monotonic_output_order", "cargo test -p splot-validate ras_frame"]
 fixtures = []
-diagnostics = ["sequence-header/timing-display-tick-zero", "sequence-header/timing-display-tick-mismatch", "sequence-header/timing-time-scale-mismatch", "sequence-header/timing-equal-picture-interval-mismatch", "sequence-header/timing-num-ticks-mismatch", "hls/repeated-sequence-header-not-identical"]
+diagnostics = ["sequence-header/timing-display-tick-zero", "sequence-header/timing-display-tick-mismatch", "sequence-header/timing-time-scale-mismatch", "sequence-header/timing-equal-picture-interval-mismatch", "sequence-header/timing-num-ticks-mismatch", "hls/repeated-sequence-header-not-identical", "frame-header/switch-or-ras-mlayer-dependency-not-self-contained", "sequence-state/distinct-mlayer-count-exceeds-seq-max", "sequence-state/monotonic-output-order-mismatch"]
 
 [[feature]]
 id = "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS"
@@ -3097,27 +3097,27 @@ spec_sections = ["7.3.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
 module = "crates/splot-validate/src/context.rs"
-openspec_change = "validator-coverage-roadmap"
+openspec_change = "sequence-multistream-semantics"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Child row of AV2-7.3-OBU-ORDERING. Add CMVS boundary checks after coded video sequence and frame/random-access state exists."
+notes = "Child row of AV2-7.3-OBU-ORDERING. A minimal §7.3.2 coded-multistream-video-sequence (CMVS) begin/end tracker landed under sequence-multistream-semantics: a three-state Outside/Inside/Unknown machine (CmvsState) fed by a stateful §5.6 MSDO observer (MsdoObserver, the six §7.3.2 condition-2 key fields), CLK observations, and global-LCR presence, with the verbatim §7.3.2 begin/end sentences quoted inline at each transition. It scopes the sequence-state/monotonic-output-order-mismatch check (only fires on CmvsState::Inside) as a sound under-approximation; begin condition 3 and the global-LCR end clause route to Unknown because exact §7.3.8 global-LCR activation is not modeled. No cmvs/* boundary diagnostics are emitted in this change. Residual for validate=done: the cmvs/* boundary-ordering diagnostics and the §7.3.3-§7.3.5 frame-unit segmentation they depend on (AV2-7.3.5-CODED-FRAME-UNIT)."
 
 [feature.status]
 mapped = "done"
-types = "todo"
+types = "partial"
 parse = "not-applicable"
-validate = "todo"
+validate = "partial"
 write = "not-applicable"
 encode = "not-applicable"
 decode_check = "todo"
-tests = "todo"
+tests = "partial"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-validate/src/context.rs::tests::msdo_observer_reports_first_then_unchanged", "crates/splot-validate/src/context.rs::tests::msdo_observer_detects_each_condition_two_key_field_change", "crates/splot-validate/src/context.rs::tests::msdo_observer_ignores_non_key_field_changes", "crates/splot-validate/src/context.rs::tests::cmvs_starts_outside", "crates/splot-validate/src/context.rs::tests::cmvs_begin_condition_1_clk_plus_msdo_enters_inside", "crates/splot-validate/src/context.rs::tests::cmvs_begin_condition_2_changed_msdo_keeps_inside", "crates/splot-validate/src/context.rs::tests::cmvs_begin_condition_3_global_lcr_only_is_unknown", "crates/splot-validate/src/context.rs::tests::cmvs_end_condition_2_clk_without_msdo_exits_inside", "crates/splot-validate/src/context.rs::tests::cmvs_end_condition_2_with_global_lcr_is_unknown", "crates/splot-validate/src/context.rs::tests::cmvs_inside_continues_across_non_boundary_tu", "crates/splot-validate/src/context.rs::tests::cmvs_no_clk_temporal_unit_does_not_begin", "crates/splot-validate/src/context.rs::tests::cmvs_unknown_is_conservative_and_persists"]
+commands = ["cargo test -p splot-validate cmvs", "cargo test -p splot-validate msdo_observer"]
 fixtures = []
 diagnostics = []
 
@@ -3233,7 +3233,7 @@ openspec_change = "metadata-semantic-validation"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Child row of AV2-7.3-OBU-ORDERING. The validator now models the exact §7.3.6 sequential-decoding CVS boundary: a new CVS for an extended layer starts at each temporal unit containing a CLK in that layer's coded extended layer unit (detected from raw OBU headers, per-xlayer per-temporal-unit). Same-temporal-unit records join the new CVS (the CVS starts at the temporal unit, so a sequence header preceding the activating CLK belongs to the new CVS); cross-temporal-unit CVS-scoped comparison diagnostics are deferred to the temporal-unit boundary and dropped when that xlayer's CVS started in the just-completed temporal unit. The former temporal-unit-reset approximation's documented cross-TU false negatives are now true positives. §7.4.4 OLK decode-initiation behavior is out of validator scope (OLK/RAS are not CVS boundary events in sequential decoding); CMVS boundaries are tracked by AV2-7.3.2-CMVS-BOUNDARIES. Documented approximation: global-bucket (GLOBAL_XLAYER_ID) CVS-scoped records are pruned at every CVS boundary event. Residual for validate=done: the §7.3.6 coded-frame-unit constraints (in-unit OBU ordering, output-frame presence, OrderHint agreement and monotonicity, CLK/OLK first-coded-frame-unit rules, leading-frame rule, per-frame-unit content-interpretation placement) need frame-unit parsing (AV2-7.3.5-CODED-FRAME-UNIT)."
+notes = "Child row of AV2-7.3-OBU-ORDERING. The validator now models the exact §7.3.6 sequential-decoding CVS boundary: a new CVS for an extended layer starts at each temporal unit containing a CLK in that layer's coded extended layer unit (detected from raw OBU headers, per-xlayer per-temporal-unit). Same-temporal-unit records join the new CVS (the CVS starts at the temporal unit, so a sequence header preceding the activating CLK belongs to the new CVS); cross-temporal-unit CVS-scoped comparison diagnostics are deferred to the temporal-unit boundary and dropped when that xlayer's CVS started in the just-completed temporal unit. The former temporal-unit-reset approximation's documented cross-TU false negatives are now true positives. §7.4.4 OLK decode-initiation behavior is out of validator scope (OLK/RAS are not CVS boundary events in sequential decoding); CMVS boundaries are tracked by AV2-7.3.2-CMVS-BOUNDARIES. Documented approximation: global-bucket (GLOBAL_XLAYER_ID) CVS-scoped records are pruned at every CVS boundary event. The §7.3.6 single-active-sequence-header rule (\"Within each extended layer, only one sequence header shall remain active for the duration of a coded video sequence\") is the citation home for hls/multiple-active-sequence-headers, landed under sequence-multistream-semantics on the §5.18.2 frame-confirmed activation path (gated on same-CVS-epoch, differing seq_header_id, ExternalHlsMode::Provided suppression); its matrix tracking row is AV2-7.3.8-HLS-AVAILABILITY. Residual for validate=done: the §7.3.6 coded-frame-unit constraints (in-unit OBU ordering, output-frame presence, OrderHint agreement and monotonicity, CLK/OLK first-coded-frame-unit rules, leading-frame rule, per-frame-unit content-interpretation placement) need frame-unit parsing (AV2-7.3.5-CODED-FRAME-UNIT)."
 
 [feature.status]
 mapped = "done"
@@ -3295,11 +3295,11 @@ spec_sections = ["7.3.8"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
 module = "crates/splot-validate/src/context.rs"
-openspec_change = "frame-activation-hls-skeleton"
+openspec_change = "sequence-multistream-semantics"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Active sequence lookup by xlayer, the repeated-identical (bit-fingerprint) check (normative home: the §7.3.6 bit-identity rule, tracked by AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT; §7.3.8.6 only cross-references it), an in-band sequence-header + multi-frame-header availability store, the multi-frame-header -> sequence-header reference check (mfh_seq_header_id), and the generic frame-header reference checks (seq_header_id_in_frame_header and cur_mfh_id) are implemented, with caller-provided external HLS via ValidationOptions (default disabled; external MFH/LCR/atlas are future). Layer-configuration-record availability (§7.3.8.3: local->global LCR and sequence-header seq_lcr_id resolution incl. lcr_xlayer_map membership) and local atlas-segment availability (§7.3.8.4) are now modeled; the global atlas (can be available) is not flagged. Availability is kept monotonic; the §7.3.8.1 resend-at-RAP requirement and MSDO/OPS reference paths remain bounded. The MFH layer-dependency constraints (§7.3.8.7, concrete predicate §6.17.2) are enforced at the frame-header cur_mfh_id reference against the loaded in-band sequence header's §5.4.1 maps (frame-header/mfh-mlayer-dependency-missing, frame-header/mfh-tlayer-dependency-missing; diagnostics recorded on AV2-5.7-MULTI-FRAME-HEADER). The validator also records per-level quantizer-matrix availability (AV2-5.13-QUANTIZATION-MATRIX) and per-slot film-grain availability (AV2-5.14-FILM-GRAIN) as foundation; the corresponding frame quantization/film-grain reference checks (using_qmatrix/qm_* and apply_grain/fgm_id) remain future until the frame header is parsed."
+notes = "Active sequence lookup by xlayer, the repeated-identical (bit-fingerprint) check (normative home: the §7.3.6 bit-identity rule, tracked by AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT; §7.3.8.6 only cross-references it), an in-band sequence-header + multi-frame-header availability store, the multi-frame-header -> sequence-header reference check (mfh_seq_header_id), and the generic frame-header reference checks (seq_header_id_in_frame_header and cur_mfh_id) are implemented, with caller-provided external HLS via ValidationOptions (default disabled; external MFH/LCR/atlas are future). Layer-configuration-record availability (§7.3.8.3: local->global LCR and sequence-header seq_lcr_id resolution incl. lcr_xlayer_map membership) and local atlas-segment availability (§7.3.8.4) are now modeled; the global atlas (can be available) is not flagged. Availability is kept monotonic; the §7.3.8.1 resend-at-RAP requirement and MSDO/OPS reference paths remain bounded. The MFH layer-dependency constraints (§7.3.8.7, concrete predicate §6.17.2) are enforced at the frame-header cur_mfh_id reference against the loaded in-band sequence header's §5.4.1 maps (frame-header/mfh-mlayer-dependency-missing, frame-header/mfh-tlayer-dependency-missing; diagnostics recorded on AV2-5.7-MULTI-FRAME-HEADER). The validator also records per-level quantizer-matrix availability (AV2-5.13-QUANTIZATION-MATRIX) and per-slot film-grain availability (AV2-5.14-FILM-GRAIN) as foundation; the corresponding frame quantization/film-grain reference checks (using_qmatrix/qm_* and apply_grain/fgm_id) remain future until the frame header is parsed. The §7.3.6 single-active-sequence-header rule landed under sequence-multistream-semantics as hls/multiple-active-sequence-headers: it fires when a §5.18.2 frame-confirmed activation of a different seq_header_id follows an earlier frame-confirmed activation within the same coded video sequence (no intervening CLK), suppressed under caller-provided external HLS (the normative sentence lives in §7.3.6, cited on AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT)."
 
 [feature.status]
 mapped = "done"
@@ -3314,10 +3314,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-validate/src/validator.rs::tests::hls_frame_header_missing_sequence_header_is_flagged", "crates/splot-validate/src/validator.rs::tests::hls_frame_header_missing_mfh_is_flagged", "crates/splot-validate/src/validator.rs::tests::hls_frame_header_sequence_header_available_external_is_accepted", "crates/splot-validate/src/validator.rs::tests::hls_repeated_non_identical_sequence_header_is_flagged", "crates/splot-validate/src/options.rs::tests"]
-commands = ["cargo test -p splot-validate hls", "cargo test -p splot-validate frame_header", "cargo test -p splot-validate mfh_"]
+tests = ["crates/splot-validate/src/validator.rs::tests::hls_frame_header_missing_sequence_header_is_flagged", "crates/splot-validate/src/validator.rs::tests::hls_frame_header_missing_mfh_is_flagged", "crates/splot-validate/src/validator.rs::tests::hls_frame_header_sequence_header_available_external_is_accepted", "crates/splot-validate/src/validator.rs::tests::hls_repeated_non_identical_sequence_header_is_flagged", "crates/splot-validate/src/options.rs::tests", "crates/splot-validate/src/validator.rs::tests::second_activation_without_clk_is_flagged", "crates/splot-validate/src/validator.rs::tests::reactivation_across_clk_is_conforming", "crates/splot-validate/src/validator.rs::tests::fallback_guess_then_frame_reference_is_not_flagged", "crates/splot-validate/src/validator.rs::tests::unreferenced_extra_sequence_header_is_conforming", "crates/splot-validate/src/validator.rs::tests::second_activation_under_external_hls_is_not_flagged"]
+commands = ["cargo test -p splot-validate hls", "cargo test -p splot-validate frame_header", "cargo test -p splot-validate mfh_", "cargo test -p splot-validate activation"]
 fixtures = []
-diagnostics = ["hls/repeated-sequence-header-not-identical", "hls/unavailable-sequence-header", "hls/unavailable-multi-frame-header", "hls/unavailable-layer-configuration-record", "lcr/global-lcr-unavailable", "lcr/global-xlayer-map-missing-xlayer", "atlas/local-atlas-unavailable", "frame-header/seq-header-id-out-of-range", "frame-header/cur-mfh-id-out-of-range", "sequence-state/no-active-sequence-header", "mfh/sequence-header-unavailable", "hls/external-hls-disabled"]
+diagnostics = ["hls/repeated-sequence-header-not-identical", "hls/unavailable-sequence-header", "hls/unavailable-multi-frame-header", "hls/unavailable-layer-configuration-record", "lcr/global-lcr-unavailable", "lcr/global-xlayer-map-missing-xlayer", "atlas/local-atlas-unavailable", "frame-header/seq-header-id-out-of-range", "frame-header/cur-mfh-id-out-of-range", "sequence-state/no-active-sequence-header", "mfh/sequence-header-unavailable", "hls/external-hls-disabled", "hls/multiple-active-sequence-headers"]
 
 [[feature]]
 id = "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY"

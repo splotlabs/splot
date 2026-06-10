@@ -99,6 +99,7 @@ Every rule ID below is emitted by `crates/splot-validate/src`, grouped by namesp
 | `frame-header/refresh-frame-flags-zero-on-deferred-output` | error | § 6.17.2 | immediate_output_frame==0 with refresh_frame_flags==0 |
 | `frame-header/seq-header-id-out-of-range` | error | § 6.17 | seq_header_id_in_frame_header is not less than MAX_SEQ_NUM |
 | `frame-header/still-picture-requires-key-frame` | error | § 6.17.2 | still_picture sequence without KEY_FRAME and immediate_output_frame==1 |
+| `frame-header/switch-or-ras-mlayer-dependency-not-self-contained` | error | § 6.4.1 | OBU_SWITCH / OBU_RAS_FRAME has MLayerDependencyMap[obu_mlayer_id][m] != 0 for some embedded layer m != obu_mlayer_id |
 | `frame-header/tile-cols-out-of-range` | error | § 6.17.7.2 | frame tile_info() derives TileCols greater than MAX_TILE_COLS |
 | `frame-header/tile-rows-out-of-range` | error | § 6.17.7.2 | frame tile_info() derives TileRows greater than MAX_TILE_ROWS |
 
@@ -107,6 +108,7 @@ Every rule ID below is emitted by `crates/splot-validate/src`, grouped by namesp
 | Rule ID | Severity | Section | Condition |
 |---|---|---|---|
 | `hls/external-hls-disabled` | warning | § 7.3.8.1 | a referenced sequence header is unavailable in-band and external HLS is disabled (advisory) |
+| `hls/multiple-active-sequence-headers` | error | § 7.3.6 | a frame-confirmed activation of a different seq_header_id follows an earlier frame-confirmed activation within the same coded video sequence (no intervening CLK) |
 | `hls/repeated-sequence-header-not-identical` | error | § 7.3.6 | activated sequence header is repeated within CVS with different payload bytes |
 | `hls/unavailable-layer-configuration-record` | error | § 7.3.8.3 | seq_lcr_id resolves to no available local or global LCR (external disabled) |
 | `hls/unavailable-multi-frame-header` | error | § 7.3.8.7 | frame header references a cur_mfh_id with no available multi-frame header (external HLS disabled) |
@@ -257,7 +259,9 @@ Every rule ID below is emitted by `crates/splot-validate/src`, grouped by namesp
 
 | Rule ID | Severity | Section | Condition |
 |---|---|---|---|
+| `sequence-state/distinct-mlayer-count-exceeds-seq-max` | error | § 6.4.1 | the distinct obu_mlayer_id count in an extended layer's coded video sequence exceeds the active sequence header's SeqMaxMlayerCnt |
 | `sequence-state/mlayer-exceeds-max` | error | § 6.2.2 | obu_mlayer_id exceeds active sequence max_mlayer_id |
+| `sequence-state/monotonic-output-order-mismatch` | error | § 6.4.1 | extended layers inside a coded multistream video sequence disagree on monotonic_output_order_flag |
 | `sequence-state/no-active-sequence-header` | error | § 7.3.8 | OBU uses an xlayer before an active sequence header is available |
 | `sequence-state/tlayer-exceeds-max` | error | § 6.2.2 | obu_tlayer_id exceeds active sequence max_tlayer_id |
 | `sequence-state/unknown-sequence-header-id` | error | § 7.3.8 | the active seq_header_id for an xlayer is unavailable |

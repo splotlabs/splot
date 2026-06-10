@@ -100,7 +100,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-5.19-TILE-GROUP` | Tile group OBU syntax | normative | bitstream-syntax | done | partial | partial | partial | todo | todo | partial | done | pending | `crates/splot-core/src/headers/tile_group.rs` |
 | `AV2-5.20-TILE-GROUP-PAYLOAD` | Tile group payload syntax | normative | bitstream-syntax | done | todo | todo | todo | todo | todo | todo | todo | pending | `crates/splot-core/src/headers.rs` |
 | `AV2-7.3-OBU-ORDERING` | Ordering of OBUs | normative | bitstream-semantics | done | partial | n/a | partial | n/a | n/a | partial | done | pending | `crates/splot-validate/src/context.rs` |
-| `AV2-7.3.2-CMVS-BOUNDARIES` | CMVS boundary ordering semantics | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/context.rs` |
+| `AV2-7.3.2-CMVS-BOUNDARIES` | CMVS boundary ordering semantics | normative | bitstream-semantics | done | partial | n/a | partial | n/a | n/a | todo | partial | pending | `crates/splot-validate/src/context.rs` |
 | `AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT` | Coded output frame unit ordering semantics | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/context.rs` |
 | `AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT` | Coded nonoutput frame unit ordering semantics | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/context.rs` |
 | `AV2-7.3.5-CODED-FRAME-UNIT` | Coded frame unit ordering semantics | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/context.rs` |

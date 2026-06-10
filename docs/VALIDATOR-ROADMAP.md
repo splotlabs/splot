@@ -49,10 +49,10 @@ dependency order:
 
 | Gap | Feature IDs |
 |---|---|
-| Sequence semantics | `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` |
+| Sequence semantics | `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` (the §6.4.1 multistream slice — distinct-mlayer-count, SWITCH/RAS dependency self-containment, monotonic-output-order agreement — landed; operating-point/same-output-time residuals remain) |
 | Activated sequence state | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` |
 | HLS availability | `AV2-7.3.8-HLS-AVAILABILITY` |
-| Temporal-unit ordering completion | `AV2-7.3.7-TEMPORAL-UNIT-ORDER`, then §7.3.2–§7.3.6 children as parse dependencies allow |
+| Temporal-unit ordering completion | `AV2-7.3.7-TEMPORAL-UNIT-ORDER`, then §7.3.2–§7.3.6 children as parse dependencies allow (the minimal §7.3.2 CMVS tracker landed) |
 | Deeper HLS semantics | the `validate = partial` HLS rows (LCR, atlas, OPS/BRT, metadata); the §6.10.7/§6.8.9/§7.3.8.7 dependency-map agreement checks are landed, with Annex A/E operating-point semantics still future |
 | Frame-header continuation | the Phase 8 remaining work below |
 
@@ -123,12 +123,15 @@ Landed: the activation-limit and availability checks listed under
 `sequence-state/*` and `hls/*` in
 [`VALIDATOR-DIAGNOSTICS.md`](./VALIDATOR-DIAGNOSTICS.md).
 
+Landed (sequence-multistream-semantics): the §7.3.6 single-active-sequence-header
+rule `hls/multiple-active-sequence-headers` (cited at §7.3.6, tracked by
+`AV2-7.3.8-HLS-AVAILABILITY`), firing on a frame-confirmed activation of a
+different `seq_header_id` within the same coded video sequence.
+
 Remaining:
 
 - full §7.3.8 availability modeling (MSDO/OPS availability records and the
-  global atlas reference remain deferred);
-- the planned `hls/multiple-active-sequence-headers` check in the backlog
-  table below.
+  global atlas reference remain deferred).
 
 Acceptance:
 
@@ -139,7 +142,9 @@ Acceptance:
 ## Phase 5 — OBU ordering and temporal-unit state machine
 
 **Status:** partial — the core §7.3.7 temporal-unit ordering and §7.3.6
-extended-layer ordering landed; the §7.3.2–§7.3.5 CMVS-boundary and
+extended-layer ordering landed; a minimal §7.3.2 coded-multistream-video-sequence
+(CMVS) begin/end tracker landed (no `cmvs/*` diagnostics yet — it scopes the
+§6.4.1 `monotonic_output_order_flag` agreement check); the §7.3.3–§7.3.5
 coded-frame-unit rows and §7.3.9 long-term-reference availability are not
 started.
 
@@ -167,7 +172,9 @@ Remaining:
 
 - global metadata prefix/suffix positions (pending frame/tile parsing; see
   the backlog table below);
-- `AV2-7.3.2-CMVS-BOUNDARIES` and the coded-frame-unit rows
+- the `cmvs/*` boundary-ordering diagnostics on `AV2-7.3.2-CMVS-BOUNDARIES`
+  (the minimal begin/end tracker landed; only the monotonic-output-order check
+  consumes it so far) and the coded-frame-unit rows
   (`AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT`,
   `AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT`, `AV2-7.3.5-CODED-FRAME-UNIT`).
 
@@ -372,9 +379,6 @@ lands, add it to the registry tables there (the CI gate will require it).
 
 | Planned ID | Severity | Section | Feature | Trigger |
 |---|---|---|---|---|
-| `hls/multiple-active-sequence-headers` | error, or warning until CLK parsing exists | §7.3.8 | `AV2-7.3.8-HLS-AVAILABILITY` | More than one active sequence header observed for an extended layer without a modeled reset. |
-| `sequence-state/monotonic-output-order-mismatch` | error | §6.4.1 | `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` | Extended layers in a coded multistream video sequence disagree on `monotonic_output_order_flag`. |
-| `sequence-state/distinct-mlayer-count-exceeds-seq-max` | error | §6.4.1 | `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` | Count of distinct `obu_mlayer_id` values exceeds `SeqMaxMlayerCnt`. Distinct from the landed per-OBU `sequence-state/mlayer-exceeds-max` and the parse-time `sequence-header/seq-max-mlayer-count-out-of-range`. |
 | `obu-order/global-hls-after-metadata-suffix` | error | §7.3.7 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Global HLS appears after suffix metadata. Needs global suffix-metadata classification, which is pending frame/tile parsing. |
 | `obu-order/non-global-hls-before-coded-layer` | error | §7.3.7 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Non-global HLS appears in an invalid temporal-unit region. |
 | `msdo/sub-xlayer-duplicate` | error | §6.6 | `AV2-5.6-MSDO` | Duplicate `sub_xlayer_id` where uniqueness is required. Add only after confirming the exact §6.6 wording in the spec mirror (spec honesty). |
