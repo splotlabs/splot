@@ -1301,6 +1301,16 @@ struct DistinctMlayerTracker {
     /// current coded video sequence, and whether the § 6.4.1 exceedance has already
     /// been reported for that coded video sequence (emit once per CVS).
     per_xlayer: BTreeMap<ExtendedLayerId, DistinctMlayerState>,
+    /// For each extended layer, the distinct `obu_mlayer_id` values observed so far in
+    /// the *current temporal unit* (cleared at each temporal-unit advance, analogous to
+    /// [`ValidatorContext::frames_seen_in_tu`]). § 7.3.6 (mirror
+    /// `07-decoding-process.md` lines 604-606) starts a new coded video sequence AT the
+    /// temporal unit containing the CLK, so every id of that temporal unit — including a
+    /// § 7.3.8.1 resent-at-RAP sequence header observed before the CLK — belongs to the
+    /// NEW coded video sequence. [`Self::reset_cvs`] re-seeds the new coded video
+    /// sequence from this per-temporal-unit set so those pre-CLK ids are attributed to
+    /// the new CVS (exact re-attribution, not the former whole-state drop).
+    per_xlayer_tu: BTreeMap<ExtendedLayerId, BTreeSet<EmbeddedLayerId>>,
 }
 
 /// One extended layer's distinct-`obu_mlayer_id` count state within its current coded
@@ -1327,17 +1337,63 @@ struct DistinctMlayerState {
 
 impl DistinctMlayerTracker {
     /// Resets `xlayer`'s distinct-`obu_mlayer_id` count at a § 7.3.6 coded-video-sequence
-    /// start, clearing the seen set, the baseline temporal unit, and the once-per-CVS
-    /// report flag. Same-temporal-unit OBUs observed before the activating CLK were
-    /// counted into the ending coded video sequence's set and are dropped here rather than
-    /// re-attributed to the new coded video sequence (single-pass observation never
-    /// re-counts them) — a documented sound under-count: only OBUs re-sent *after* the
-    /// CLK (e.g. the § 7.3.8.1 resend-at-RAP sequence header) are counted into the new
-    /// coded video sequence. The exceedance diagnostic for a set straddling the boundary
-    /// is handled separately by the [`CvsTracker::defer_or_emit`] routing keyed on
-    /// `first_tu`.
-    fn reset_cvs(&mut self, xlayer: ExtendedLayerId) {
-        self.per_xlayer.remove(&xlayer);
+    /// start (CLK), *re-attributing* the same-temporal-unit ids observed before the CLK
+    /// to the new coded video sequence rather than dropping them.
+    ///
+    /// § 7.3.6 (mirror `07-decoding-process.md` lines 604-606): the new coded video
+    /// sequence starts AT the temporal unit containing the CLK, so every id of that
+    /// temporal unit — canonically the § 7.3.8.1 resent-at-RAP sequence header, forced to
+    /// `obu_mlayer_id == 0` (the § 6.4.1 NOTE, mirror
+    /// `06-syntax-structures-semantics.md` lines 450-452) — belongs to the new coded
+    /// video sequence and must count toward `SeqMaxMlayerCnt`. The new state is therefore
+    /// re-seeded from the current temporal unit's seen set (`per_xlayer_tu`) with
+    /// `first_tu == tu_index` (the boundary temporal unit, so an exceedance within the new
+    /// coded video sequence counted in this temporal unit emits eagerly). The once-per-CVS
+    /// `reported` flag is carried only when the old set's first temporal unit *was* this
+    /// boundary temporal unit — meaning the old set was entirely in the boundary temporal
+    /// unit and thus is the same coded video sequence — so an exceedance already reported
+    /// among the pre-CLK ids is not re-reported; when the old set spanned an earlier
+    /// temporal unit, its (deferred) exceedance belonged to the ending coded video
+    /// sequence and the new coded video sequence starts unreported.
+    ///
+    /// Returns `(count, first_tu)` of the re-seeded set when it is non-empty and not
+    /// already reported, so the caller can run the § 6.4.1 exceedance check on the
+    /// re-attributed pre-CLK ids immediately (a set whose pre-CLK members already exceed
+    /// `SeqMaxMlayerCnt` cannot be re-surfaced by [`Self::observe`], which never re-yields
+    /// an already-seen id).
+    fn reset_cvs(&mut self, xlayer: ExtendedLayerId, tu_index: u64) -> Option<(usize, u64)> {
+        let prior_first_tu = self.per_xlayer.get(&xlayer).and_then(|s| s.first_tu);
+        let prior_reported = self.per_xlayer.get(&xlayer).is_some_and(|s| s.reported);
+        let tu_seen = self.per_xlayer_tu.get(&xlayer).cloned().unwrap_or_default();
+        if tu_seen.is_empty() {
+            // No id of this extended layer was observed in the boundary temporal unit:
+            // the new coded video sequence genuinely starts empty.
+            self.per_xlayer.remove(&xlayer);
+            return None;
+        }
+        // Carry `reported` only when the ending set was entirely within this boundary
+        // temporal unit (its first counted id is this temporal unit) — then it is the same
+        // coded video sequence as the re-seeded set and an already-emitted exceedance must
+        // not repeat.
+        let reported = prior_reported && prior_first_tu == Some(tu_index);
+        let count = tu_seen.len();
+        let state = DistinctMlayerState {
+            seen: tu_seen,
+            first_tu: Some(tu_index),
+            reported,
+        };
+        self.per_xlayer.insert(xlayer, state);
+        if reported {
+            return None;
+        }
+        Some((count, tu_index))
+    }
+
+    /// Clears the per-temporal-unit seen sets at a global `OBU_TEMPORAL_DELIMITER`
+    /// (AV2 § 7.3.7), so the next temporal unit's re-attribution at a CLK
+    /// ([`Self::reset_cvs`]) starts from an empty per-temporal-unit set.
+    fn advance_temporal_unit(&mut self) {
+        self.per_xlayer_tu.clear();
     }
 
     /// Records `mlayer` under `xlayer`'s current coded video sequence at temporal unit
@@ -1347,12 +1403,18 @@ impl DistinctMlayerTracker {
     /// set's first counted OBU (the [`CvsTracker::defer_or_emit`] baseline). The caller
     /// compares the returned count against `SeqMaxMlayerCnt` and, on the first exceedance,
     /// marks the coded video sequence reported via [`Self::mark_reported`].
+    ///
+    /// The id is always recorded in the per-temporal-unit set
+    /// ([`DistinctMlayerTracker::per_xlayer_tu`]) regardless of the once-per-CVS report
+    /// state, so [`Self::reset_cvs`] can re-attribute every pre-CLK id of the boundary
+    /// temporal unit to the new coded video sequence.
     fn observe(
         &mut self,
         xlayer: ExtendedLayerId,
         mlayer: EmbeddedLayerId,
         tu_index: u64,
     ) -> Option<(usize, u64)> {
+        self.per_xlayer_tu.entry(xlayer).or_default().insert(mlayer);
         let state = self.per_xlayer.entry(xlayer).or_default();
         if state.reported {
             return None;
@@ -1533,6 +1595,34 @@ struct CmvsTracker {
     state: CmvsState,
     /// Facts accumulated for the temporal unit currently being observed.
     current_tu: CmvsTuFacts,
+    /// § 6.4.1 monotonic-output-order disagreements emitted at sequence-header
+    /// observation time while this temporal unit's CMVS membership is only
+    /// *provisionally* [`CmvsState::Inside`] (committed `Inside`, but no CLK observed
+    /// yet, so a later MSDO-less CLK could end the CMVS for this temporal unit —
+    /// AV2 § 7.3.2 end condition 2, mirror `07-decoding-process.md` lines 335-341).
+    /// They are flushed when the temporal unit completes ([`Self::complete_temporal_unit`]):
+    /// emitted when the completed temporal unit is definitively `Inside`, dropped when a
+    /// CLK turned it `Outside`/`Unknown`. Deferring avoids a false positive on the
+    /// § 7.3.6-permitted same-CVS redefinition that immediately precedes the CLK that
+    /// begins the new coded video sequence (mirror `07-decoding-process.md` lines
+    /// 608-611).
+    pending_monotonic: Vec<Diagnostic>,
+}
+
+/// The disposition of the § 6.4.1 cross-layer monotonic-output-order agreement check at
+/// a sequence-header observation, given the § 7.3.2 CMVS tracker state; see
+/// [`CmvsTracker::monotonic_verdict`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MonotonicVerdict {
+    /// The tracker is not definitively inside a CMVS for the OBUs observed so far; the
+    /// check does not fire.
+    Skip,
+    /// The tracker is definitively inside a CMVS; a disagreement is emitted eagerly.
+    EmitNow,
+    /// The tracker is only *provisionally* inside a CMVS (committed `Inside`, no CLK
+    /// observed yet in this temporal unit, so a later MSDO-less CLK could end the
+    /// CMVS); a disagreement is deferred to the temporal-unit flush.
+    Defer,
 }
 
 impl CmvsTracker {
@@ -1595,6 +1685,37 @@ impl CmvsTracker {
         self.state
     }
 
+    /// The disposition of the § 6.4.1 cross-layer monotonic-output-order agreement check
+    /// at a sequence-header observation, given the OBUs observed so far in the current
+    /// temporal unit.
+    ///
+    /// The check fires only in [`CmvsState::Inside`]. When [`Self::state`] is `Inside`
+    /// *and a CLK has already been observed* this temporal unit, the membership is final
+    /// (§ 7.3.7 places the at-most-one MSDO before every coded extended layer unit, so a
+    /// CLK temporal unit's begin/end membership is decided at the CLK), so a disagreement
+    /// is emitted eagerly ([`MonotonicVerdict::EmitNow`]). When `state()` is `Inside` but
+    /// *no CLK has been observed yet*, the verdict is only provisional: a later MSDO-less
+    /// CLK in this temporal unit would end the CMVS (§ 7.3.2 end condition 2), placing a
+    /// header observed before it — canonically a § 7.3.6-permitted same-CVS redefinition
+    /// immediately preceding the CLK that begins the new coded video sequence (mirror
+    /// `07-decoding-process.md` lines 608-611) — outside the CMVS. A disagreement is then
+    /// deferred ([`MonotonicVerdict::Defer`]) and resolved at temporal-unit completion.
+    /// Any non-`Inside` state skips the check ([`MonotonicVerdict::Skip`]).
+    fn monotonic_verdict(&self) -> MonotonicVerdict {
+        match self.state() {
+            CmvsState::Inside if self.current_tu.has_clk => MonotonicVerdict::EmitNow,
+            CmvsState::Inside => MonotonicVerdict::Defer,
+            CmvsState::Outside | CmvsState::Unknown => MonotonicVerdict::Skip,
+        }
+    }
+
+    /// Queues a provisional-`Inside` § 6.4.1 monotonic-output-order disagreement for
+    /// resolution at temporal-unit completion (see [`Self::monotonic_verdict`] /
+    /// [`Self::complete_temporal_unit`]).
+    fn queue_provisional_monotonic(&mut self, diagnostic: Diagnostic) {
+        self.pending_monotonic.push(diagnostic);
+    }
+
     /// Records that the temporal unit being observed contains an
     /// `OBU_CLOSED_LOOP_KEY` for some extended layer (AV2 § 7.3.2 / § 7.3.6).
     fn note_clk(&mut self) {
@@ -1620,9 +1741,21 @@ impl CmvsTracker {
     /// Completes the temporal unit being observed, applying the § 7.3.2 begin/end
     /// conditions, then resets the per-temporal-unit facts for the next one. Called at
     /// each temporal-unit boundary and at the end of the bitstream.
-    fn complete_temporal_unit(&mut self) {
+    ///
+    /// Provisional-`Inside` § 6.4.1 monotonic disagreements deferred during this temporal
+    /// unit ([`Self::queue_provisional_monotonic`]) are resolved here against the
+    /// temporal unit's final membership: emitted when the completed temporal unit is
+    /// definitively [`CmvsState::Inside`], dropped when a CLK ended the CMVS
+    /// ([`CmvsState::Outside`]/[`CmvsState::Unknown`], § 7.3.2 end condition 2).
+    fn complete_temporal_unit(&mut self, report: &mut ValidationReport) {
         let facts = std::mem::take(&mut self.current_tu);
         self.state = self.next_state(&facts);
+        let pending = std::mem::take(&mut self.pending_monotonic);
+        if matches!(self.state, CmvsState::Inside) {
+            for diagnostic in pending {
+                report.push(diagnostic);
+            }
+        }
     }
 
     /// Computes the § 7.3.2 CMVS state after a completed temporal unit with `facts`,
@@ -1709,7 +1842,7 @@ impl ValidatorContext {
         // temporal delimiter completes the previous temporal unit (flushing deferred
         // CVS-scoped diagnostics) and a CLK starts a new coded video sequence for its
         // extended layer (AV2 § 7.3.6); see observe_cvs_boundary_events.
-        self.observe_cvs_boundary_events(obu, report);
+        self.observe_cvs_boundary_events(obu, options, report);
 
         self.temporal_unit.observe_obu(obu, report);
 
@@ -1814,6 +1947,7 @@ impl ValidatorContext {
     fn observe_cvs_boundary_events(
         &mut self,
         obu: &ObuEnvelope<'_>,
+        options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
         if obu.header.obu_type == ObuType::TemporalDelimiter
@@ -1822,11 +1956,17 @@ impl ValidatorContext {
             self.cvs.advance_temporal_unit(report);
             // AV2 § 7.3.2: the global temporal delimiter ends the just-observed
             // temporal unit, so the accumulated § 7.3.2 begin/end facts are evaluated
-            // now, before the per-temporal-unit facts reset for the next unit.
-            self.cmvs.complete_temporal_unit();
+            // now, before the per-temporal-unit facts reset for the next unit. Any
+            // deferred provisional-Inside § 6.4.1 monotonic disagreements are resolved
+            // here against the completed temporal unit's final CMVS membership.
+            self.cmvs.complete_temporal_unit(report);
             self.frames_seen_in_tu.clear();
+            // AV2 § 7.3.7: clear the per-temporal-unit distinct-`obu_mlayer_id` sets so a
+            // CLK in the next temporal unit re-attributes only that temporal unit's ids
+            // to the new coded video sequence (see DistinctMlayerTracker::reset_cvs).
+            self.distinct_mlayer.advance_temporal_unit();
         } else if obu.header.obu_type == ObuType::ClosedLoopKey {
-            self.start_cvs_for_xlayer(obu.header.extended_layer_id, report);
+            self.start_cvs_for_xlayer(obu.header.extended_layer_id, obu.offset, options, report);
             self.observe_ci_rap(obu.header.extended_layer_id);
             // AV2 § 7.3.2 / § 7.3.6: a CLK makes this temporal unit one that "contains
             // an OBU with obu_type equal to OBU_CLOSED_LOOP_KEY for at least one
@@ -1887,7 +2027,13 @@ impl ValidatorContext {
     /// has no single owner; their deferred diagnostics are filtered at the
     /// temporal-unit flush instead, see [`CvsTracker::flush_completed_tu`]).
     /// Idempotent within a temporal unit.
-    fn start_cvs_for_xlayer(&mut self, xlayer: ExtendedLayerId, report: &mut ValidationReport) {
+    fn start_cvs_for_xlayer(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        clk_offset: ByteOffset,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
         self.cvs.start_cvs(xlayer);
         let tu_index = self.cvs.tu_index;
         // The scan-type scopes flush before the content-interpretation pruning
@@ -1917,17 +2063,43 @@ impl ValidatorContext {
         self.hdr_baselines.retain(|record| {
             !record.association.touches_xlayer(xlayer) || record.tu_index >= tu_index
         });
-        // AV2 § 6.4.1: the distinct-`obu_mlayer_id` count is scoped to "the coded video
-        // sequence associated with this sequence header", so it restarts at this layer's
-        // new coded video sequence. Same-temporal-unit OBUs observed before the activating
-        // CLK were counted into the ending coded video sequence's set; observation is
-        // single-pass, so they are dropped here rather than re-attributed to the new coded
-        // video sequence — a documented sound under-count (only OBUs re-sent after the CLK,
-        // e.g. the § 7.3.8.1 resend-at-RAP sequence header, are counted into the new coded
-        // video sequence). A pending exceedance whose set straddled this boundary is
-        // dropped at the temporal-unit flush via the first_tu deferral (see
-        // count_distinct_mlayer / CvsTracker::flush_completed_tu).
-        self.distinct_mlayer.reset_cvs(xlayer);
+        // AV2 § 6.4.1 / § 7.3.6: the distinct-`obu_mlayer_id` count is scoped to "the coded
+        // video sequence associated with this sequence header", which starts AT this
+        // temporal unit (mirror `07-decoding-process.md` lines 604-606). The
+        // same-temporal-unit OBUs observed before this CLK — canonically the § 7.3.8.1
+        // resent-at-RAP sequence header (forced to obu_mlayer_id 0) — belong to the NEW
+        // coded video sequence, so reset_cvs *re-attributes* the boundary temporal unit's
+        // seen ids to it (exact re-attribution, not the former whole-state drop). A
+        // pending exceedance counted into the ENDING coded video sequence's set whose
+        // members spanned an earlier temporal unit is still dropped at the temporal-unit
+        // flush via the first_tu deferral (see count_distinct_mlayer /
+        // CvsTracker::flush_completed_tu).
+        let reseeded = self.distinct_mlayer.reset_cvs(xlayer, tu_index);
+        // The re-attributed pre-CLK ids may already exceed SeqMaxMlayerCnt on their own
+        // (DistinctMlayerTracker::observe never re-yields an already-seen id, so the
+        // boundary-temporal-unit set cannot be re-surfaced by the later eager count). Run
+        // the § 6.4.1 exceedance check on the re-seeded set now, under the same active-
+        // header and external-HLS gating as the eager check (count_distinct_mlayer).
+        if let Some((count, first_tu)) = reseeded {
+            let external_hls_suppresses = matches!(
+                &options.external_hls,
+                ExternalHlsMode::Provided(set) if set.declares_any_sequence_header()
+            );
+            if !external_hls_suppresses
+                && let Some((seq_header_id, general)) = self.active_general_for(xlayer)
+            {
+                // Anchor to the CLK's extension byte (clk_offset + 1, bit 0), the same
+                // idiom as the eager and retroactive distinct-mlayer checks.
+                let byte_offset = clk_offset.saturating_add(1);
+                self.emit_distinct_mlayer_exceedance(
+                    xlayer,
+                    (count, first_tu),
+                    (seq_header_id, general.seq_max_mlayer_count.get()),
+                    byte_offset,
+                    report,
+                );
+            }
+        }
     }
 
     /// Observes an `OBU_MSDO` (AV2 § 5.6): parses the payload, records its § 7.3.2
@@ -1970,7 +2142,10 @@ impl ValidatorContext {
         // AV2 § 7.3.2 end condition 3: "The end of the bitstream." The final temporal
         // unit (which has no trailing global temporal delimiter) is completed here so
         // its § 7.3.2 begin/end facts are applied exactly as at an internal boundary.
-        self.cmvs.complete_temporal_unit();
+        // Any deferred provisional-Inside § 6.4.1 monotonic disagreements that never saw
+        // a CLK (the temporal unit stayed inside the CMVS until the end of the bitstream)
+        // are emitted here.
+        self.cmvs.complete_temporal_unit(report);
         let scope_keys: Vec<ExtendedLayerId> = self.scan_type.scopes.keys().copied().collect();
         for scope_key in scope_keys {
             self.flush_scan_type_scope(scope_key, u64::MAX, report);
@@ -2113,8 +2288,12 @@ impl ValidatorContext {
     ///    ([`CvsTracker::cvs_epoch`]); a CLK advances the epoch, so a re-activation
     ///    across a CLK (a legal new coded video sequence) does not match;
     /// 3. the newly activated `seq_header_id` differs from the prior one; and
-    /// 4. external HLS is not caller-provided — an externally activated sequence header
-    ///    is not modeled, so the in-band activation history is unreliable.
+    /// 4. caller-provided external HLS does not declare any sequence header — only a
+    ///    *declared* external sequence header can be the out-of-band active header that
+    ///    makes the in-band activation history unreliable. An external channel that
+    ///    declares no sequence header (`Provided(ExternalHlsSet::new())`, or one
+    ///    declaring only operating point sets) cannot supply an active header, so it does
+    ///    not suppress (precedent: [`ValidatorContext::validate_active_sequence_limits`]).
     #[allow(clippy::too_many_arguments)]
     fn check_single_active_sequence_header(
         &self,
@@ -2126,8 +2305,11 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        // Gate 4: external HLS may supply the active sequence header out of band.
-        if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
+        // Gate 4: caller-provided external HLS that declares a sequence header may supply
+        // the active one out of band, making the in-band activation history unreliable.
+        // An external channel that declares no sequence header cannot, so it does not
+        // suppress (mirrors validate_active_sequence_limits' narrow gate).
+        if external_declares_sequence_header(options) {
             return;
         }
         let xlayer = obu.header.extended_layer_id;
@@ -3659,21 +3841,37 @@ impl ValidatorContext {
     /// later frame can contradict is not yet associated with a flag — comparing against
     /// that guess would emit an error a retraction could not undo. The activating layer
     /// `xlayer` is likewise skipped until its own activation is decidable.
+    ///
+    /// The verdict is routed through [`CmvsTracker::monotonic_verdict`]: when the
+    /// activation is observed at a sequence-header OBU *before* any CLK in the temporal
+    /// unit, the committed `Inside` is only provisional (a later MSDO-less CLK could end
+    /// the CMVS, § 7.3.2 end condition 2), so a disagreement is deferred and resolved at
+    /// temporal-unit completion. This defers-and-drops the § 7.3.6-permitted same-CVS
+    /// redefinition that immediately precedes the CLK beginning the new coded video
+    /// sequence (mirror `07-decoding-process.md` lines 608-611), which the eager
+    /// header-time emission would otherwise flag as a false positive.
     fn check_monotonic_output_order_agreement(
-        &self,
+        &mut self,
         xlayer: ExtendedLayerId,
         byte_offset: ByteOffset,
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
         // An externally activated sequence header has an unmodeled
-        // monotonic_output_order_flag, so the cross-layer comparison is unreliable.
-        if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
+        // monotonic_output_order_flag, so the cross-layer comparison is unreliable. Only a
+        // *declared* external sequence header suppresses it: `ExternalHlsSet` cannot
+        // declare external MSDO/LCR objects, but the CmvsTracker enters Inside only on
+        // definitive in-band evidence and missing external MSDO/LCR evidence errs toward
+        // Outside/Unknown (false-negative-only), so undeclared external objects cannot
+        // make Inside spurious — narrowing this gate to declares_any_sequence_header() (as
+        // the sibling gates and validate_active_sequence_limits do) is sound.
+        if external_declares_sequence_header(options) {
             return;
         }
-        // § 6.4.1 scopes the agreement to a coded multistream video sequence; only fire
-        // when the tracker is definitively inside one.
-        if !matches!(self.cmvs.state(), CmvsState::Inside) {
+        // § 6.4.1 scopes the agreement to a coded multistream video sequence. Decide
+        // whether the check fires now, is deferred (provisional Inside), or is skipped.
+        let verdict = self.cmvs.monotonic_verdict();
+        if matches!(verdict, MonotonicVerdict::Skip) {
             return;
         }
         // The activating layer's flag, only when its activation is decidable (a
@@ -3684,6 +3882,7 @@ impl ValidatorContext {
             return;
         };
         let flag = general.monotonic_output_order_flag;
+        let mut disagreements = Vec::new();
         for &other_xlayer in self.active_sequence_by_xlayer.keys() {
             if other_xlayer == xlayer {
                 continue;
@@ -3696,7 +3895,7 @@ impl ValidatorContext {
                 continue;
             };
             if other_general.monotonic_output_order_flag != flag {
-                report.push(
+                disagreements.push(
                     Diagnostic::error(
                         "sequence-state/monotonic-output-order-mismatch",
                         format!(
@@ -3713,6 +3912,13 @@ impl ValidatorContext {
                     .with_spec_section("6.4.1")
                     .with_byte_offset(byte_offset),
                 );
+            }
+        }
+        for diagnostic in disagreements {
+            match verdict {
+                MonotonicVerdict::EmitNow => report.push(diagnostic),
+                MonotonicVerdict::Defer => self.cmvs.queue_provisional_monotonic(diagnostic),
+                MonotonicVerdict::Skip => {}
             }
         }
     }
@@ -5634,8 +5840,8 @@ mod tests {
     use splot_core::types::{EmbeddedLayerId, TemporalLayerId};
 
     use super::{
-        CmvsState, CmvsTracker, MsdoObservation, MsdoObserver, mlayer_closure_violation,
-        tlayer_closure_violation,
+        CmvsState, CmvsTracker, MsdoObservation, MsdoObserver, ValidationReport,
+        mlayer_closure_violation, tlayer_closure_violation,
     };
 
     /// Builds the synthetic `multistream_decoder_operation_obu()` payload bytes with the
@@ -5806,7 +6012,8 @@ mod tests {
         if global_lcr {
             tracker.note_global_lcr_present();
         }
-        tracker.complete_temporal_unit();
+        let mut report = ValidationReport::default();
+        tracker.complete_temporal_unit(&mut report);
         tracker.state()
     }
 

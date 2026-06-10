@@ -9,9 +9,14 @@ extended layer's coded video sequence (AV2 v1.0.0 § 6.4.1: counting applies to 
 OBUs, even non-layer-specific ones) and SHALL emit
 `sequence-state/distinct-mlayer-count-exceeds-seq-max` (severity `error`) when the
 count exceeds the active sequence header's `SeqMaxMlayerCnt`. Counting SHALL reset at
-each § 7.3.6 CVS start for that extended layer, and OBUs whose attribution to the CVS
-is ambiguous under the documented reading SHALL NOT be counted (sound
-under-approximation).
+each § 7.3.6 CVS start (CLK) for that extended layer; because the new coded video
+sequence starts AT the temporal unit containing the CLK, the same-temporal-unit ids
+observed before the CLK (canonically the § 7.3.8.1 resent-at-RAP sequence header,
+forced to `obu_mlayer_id == 0`) SHALL be re-attributed to the new coded video sequence
+and counted toward its `SeqMaxMlayerCnt`. Ids from temporal units before the boundary
+temporal unit SHALL NOT count into the new coded video sequence, and OBUs whose
+attribution to the CVS is ambiguous under the documented reading (global
+`obu_xlayer_id`) SHALL NOT be counted (sound under-approximation).
 
 #### Scenario: distinct mlayer ids exceed SeqMaxMlayerCnt
 
@@ -30,6 +35,16 @@ under-approximation).
   disjoint but equally sized set of `obu_mlayer_id` values
 - **THEN** validation SHALL NOT emit
   `sequence-state/distinct-mlayer-count-exceeds-seq-max`.
+
+#### Scenario: pre-CLK header is re-attributed to the new CVS
+
+- **GIVEN** an active sequence header with `SeqMaxMlayerCnt == 1`
+- **WHEN** a single temporal unit carries a resent sequence header at
+  `obu_mlayer_id == 0` followed by a CLK at `obu_mlayer_id == 1` (the CLK begins a new
+  coded video sequence at that temporal unit)
+- **THEN** validation SHALL count `{0, 1}` toward the new CVS and emit
+  `sequence-state/distinct-mlayer-count-exceeds-seq-max` exactly once with spec section
+  § 6.4.1.
 
 ### Requirement: SWITCH and RAS frame dependency-map self-containment
 
@@ -65,7 +80,9 @@ activation is followed by a non-CLK activation of a different `seq_header_id` wi
 intervening CVS start (AV2 v1.0.0 § 7.3.6: within each extended layer, only one
 sequence header remains active for the duration of a coded video sequence). The check
 SHALL NOT fire when the prior activation was only an OBU-order fallback guess, and
-SHALL be suppressed when external HLS is caller-provided.
+SHALL be suppressed only when caller-provided external HLS declares at least one
+sequence header (an external channel that declares no sequence header cannot supply an
+out-of-band active header, so it SHALL NOT suppress).
 
 #### Scenario: second activation without a CLK
 
@@ -97,7 +114,14 @@ three-state tracker (`Outside` / `Inside` / `Unknown`) and SHALL emit
 `sequence-state/monotonic-output-order-mismatch` (severity `error`) when, definitively
 inside a CMVS, extended layers are associated with active sequence headers that
 disagree on `monotonic_output_order_flag` (AV2 v1.0.0 § 6.4.1). The check SHALL NOT
-fire in the `Outside` or `Unknown` tracker states.
+fire in the `Outside` or `Unknown` tracker states. When a disagreement is observed at a
+sequence-header OBU before any CLK in the temporal unit, the `Inside` membership is only
+provisional (a later MSDO-less CLK could end the CMVS, § 7.3.2 end condition 2), so the
+emission SHALL be deferred to temporal-unit completion and dropped if the temporal unit
+turns out to end the CMVS or become `Unknown`. The check SHALL be suppressed only when
+caller-provided external HLS declares at least one sequence header (consistent with the
+distinct-mlayer and active-sequence-limit gates); an external channel declaring no
+sequence header SHALL NOT suppress it.
 
 #### Scenario: flag disagreement inside a CMVS
 
@@ -114,3 +138,12 @@ fire in the `Outside` or `Unknown` tracker states.
   configuration record in the bitstream
 - **WHEN** their activated sequence headers disagree on `monotonic_output_order_flag`
 - **THEN** validation SHALL NOT emit `sequence-state/monotonic-output-order-mismatch`.
+
+#### Scenario: provisional-Inside redefinition before a CMVS-ending CLK is not flagged
+
+- **GIVEN** a CMVS that is committed `Inside`
+- **WHEN** a temporal unit begins with a same-CVS sequence-header redefinition that
+  disagrees on `monotonic_output_order_flag`, followed by an MSDO-less CLK that ends the
+  CMVS for that temporal unit (§ 7.3.2 end condition 2)
+- **THEN** validation SHALL NOT emit `sequence-state/monotonic-output-order-mismatch`
+  (the provisional verdict is deferred and dropped once the CLK is observed).
