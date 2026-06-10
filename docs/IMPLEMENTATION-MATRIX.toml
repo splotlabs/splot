@@ -2738,52 +2738,19 @@ id = "AV2-5.18.6-QUANTIZATION"
 name = "Frame quantization syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.18.6", "6.17"]
+spec_sections = ["5.18.6", "5.18.7.8", "6.17.6"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/frame/quant.rs"
+openspec_change = "frame-tiling-quant-segmentation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation. When implementing, narrow spec_sections to the exact §6.17 subsection if the spec has one."
+notes = "Child row of AV2-5.18-FRAME-HEADER. quantization_params() (§5.18.6.1), setup_qm_params() (§5.18.6.2), read_delta_q() (§5.18.6.3), delta_q_params() (§5.18.7.8), and the §5.18.2 lossless/allow_tcq/allow_parity_hiding tail are typed and parsed, but only on the intra frame-header path (cur_mfh_id == 0; TipFrameMode gating is a caller input, always false on that path). Inter and MFH-gated paths are unparsed, so parse/tests stay partial. The §6.17.6.2 custom-QM plane-count check is live; QmMLayerId/QmTLayerId layer-dependency constraints are deferred (dependency maps not modeled — TODO(spec: AV2-5.18.6-QUANTIZATION) in splot-validate)."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
-write = "todo"
-encode = "todo"
-decode_check = "todo"
-tests = "todo"
-avm_diff = "pending"
-perf = "not-applicable"
-
-[feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
-
-[[feature]]
-id = "AV2-5.18.7-SEGMENTATION-TILING"
-name = "Frame segmentation and tiling syntax"
-category = "normative"
-kind = "bitstream-syntax"
-spec_sections = ["5.18.7", "6.17"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
-tracking_issue = ""
-owner = "core"
-risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. The reusable tile-partitioning foundation (AV2-5.18.7.3-TILE-PARAMS) and seg_info() (AV2-5.4.9-SEGMENT-INFO) now exist and are used by the sequence header. The frame-level segmentation_params() (§5.18.7.1) and tile_info() (§5.18.7.2) live parser paths are still future work and depend on the full frame header. Do not mark this umbrella done until those land."
-
-[feature.status]
-mapped = "done"
-types = "partial"
+types = "done"
 parse = "partial"
 validate = "partial"
 write = "todo"
@@ -2794,10 +2761,62 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/tile.rs::tests"]
-commands = ["cargo test -p splot-core tile"]
-fixtures = []
-diagnostics = []
+tests = [
+  "crates/splot-core/src/headers/frame/quant.rs::tests",
+  "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_intra_tail_parses_full_structure_cluster",
+  "crates/splot-validate/src/validator.rs::tests",
+]
+commands = [
+  "cargo test -p splot-core headers::frame",
+  "cargo test -p splot-validate",
+]
+fixtures = ["tests/fixtures/frame-header-core.av2"]
+diagnostics = ["frame-header/qm-plane-count-mismatch"]
+
+[[feature]]
+id = "AV2-5.18.7-SEGMENTATION-TILING"
+name = "Frame segmentation and tiling syntax"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["5.18.7", "6.17.7"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/frame/tiling.rs"
+openspec_change = "frame-tiling-quant-segmentation"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "Child row of AV2-5.18-FRAME-HEADER. tile_info() (§5.18.7.2, MiCols/MiRows per §5.18.4.4) and segmentation_params() (§5.18.7.1, reusing seg_info()) are typed and parsed on the intra frame-header path with cur_mfh_id == 0. Bounded residuals keep parse/tests partial: inter paths, MFH-gated branches (mfh_seg_info_present_flag etc. — explicit UnsupportedUntilFeature stop), and the §5.18.7.4 non-uniform sequence-reuse branch (the sequence start arrays are not recorded — see AV2-5.18.7.3-TILE-PARAMS). §6.17.7.2 TileCols/TileRows/context_update_tile_id checks are live."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "partial"
+write = "todo"
+encode = "todo"
+decode_check = "partial"
+tests = "partial"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+  "crates/splot-core/src/headers/frame/tiling.rs::tests",
+  "crates/splot-core/src/headers/frame/segmentation.rs::tests",
+  "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_intra_tail_parses_full_structure_cluster",
+  "crates/splot-validate/src/validator.rs::tests",
+]
+commands = [
+  "cargo test -p splot-core headers::frame",
+  "cargo test -p splot-validate",
+]
+fixtures = ["tests/fixtures/frame-header-core.av2"]
+diagnostics = [
+  "frame-header/tile-cols-out-of-range",
+  "frame-header/tile-rows-out-of-range",
+  "frame-header/context-update-tile-id-out-of-range",
+]
 
 [[feature]]
 id = "AV2-5.18.7.3-TILE-PARAMS"

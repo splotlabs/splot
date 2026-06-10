@@ -2580,6 +2580,26 @@ mod tests {
         data
     }
 
+    /// Appends the § 5.18.2 intra structure cluster the core parser consumes after
+    /// `disable_cdf_update` for a [`frame_core_seq_payload`] sequence (10-bit,
+    /// 4:2:0, BLOCK_64X64, no sequence tile/segmentation info, every optional
+    /// quantizer read disabled): a single-tile `tile_info()` (§ 5.18.7.2;
+    /// `uniform_tile_spacing_flag` plus `col_increment_bits` zero increment bits —
+    /// one for the 256-wide frame, none for the 16x16 default), `base_q_idx` f(9)
+    /// (§ 5.18.6.1), `segmentation_enabled = 0` (§ 5.18.7.1), `using_qmatrix = 0`
+    /// (§ 5.18.6.2), and `delta_q_present = 0` (§ 5.18.7.8). With a nonzero
+    /// `base_q_idx` the § 5.18.2 lossless tail reads no further bits.
+    fn intra_structure_tail(fb: &mut Bits, col_increment_bits: u32) {
+        fb.bit(1); // uniform_tile_spacing_flag (tile_info)
+        for _ in 0..col_increment_bits {
+            fb.bit(0); // increment_tile_cols_log2 = 0
+        }
+        fb.f(100, 9); // base_q_idx f(9) (10-bit sequence)
+        fb.bit(0); // segmentation_enabled
+        fb.bit(0); // using_qmatrix
+        fb.bit(0); // delta_q_present
+    }
+
     #[test]
     fn validator_flags_ras_requires_long_term_frame_id_bits() {
         // The default sequence has long_term_frame_id_bits == 0, so a RAS frame
@@ -2634,6 +2654,8 @@ mod tests {
         fb.bit(0); // allow_screen_content_tools
         fb.bit(0); // allow_intrabc
         fb.bit(0); // disable_cdf_update
+        // 256-wide frame: sbCols == 4, so tile_info() reads one column increment bit.
+        intra_structure_tail(&mut fb, 1);
         data.extend(annex_b_obu(CLK_HEADER, &fb.into_bytes()));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
@@ -2660,6 +2682,7 @@ mod tests {
         fb.bit(0); // allow_screen_content_tools
         fb.bit(0); // allow_intrabc
         fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0);
         data.extend(annex_b_obu(CLK_HEADER, &fb.into_bytes()));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
@@ -2697,6 +2720,7 @@ mod tests {
         fb.bit(0); // allow_screen_content_tools
         fb.bit(0); // allow_intrabc
         fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0);
         data.extend(annex_b_obu(RTG_HEADER, &fb.into_bytes()));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
@@ -2748,6 +2772,7 @@ mod tests {
         fb.bit(0); // allow_screen_content_tools
         fb.bit(0); // allow_intrabc
         fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0);
         data.extend(annex_b_obu(OLK_HEADER, &fb.into_bytes()));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
@@ -2778,6 +2803,7 @@ mod tests {
         fb.bit(0); // allow_screen_content_tools
         fb.bit(0); // allow_intrabc
         fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0);
         data.extend(annex_b_obu(RTG_HEADER, &fb.into_bytes()));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
@@ -2808,6 +2834,7 @@ mod tests {
         fb.bit(0); // allow_screen_content_tools
         fb.bit(0); // allow_intrabc
         fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0);
         data.extend(annex_b_obu(RTG_HEADER, &fb.into_bytes()));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
@@ -2840,6 +2867,7 @@ mod tests {
         fb.bit(0); // allow_screen_content_tools
         fb.bit(0); // allow_intrabc
         fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0);
         data.extend(annex_b_obu(RTG_HEADER, &fb.into_bytes()));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
@@ -2889,6 +2917,7 @@ mod tests {
         fb.bit(0); // allow_screen_content_tools
         fb.bit(0); // allow_intrabc
         fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0);
         data.extend(annex_b_obu(OLK_HEADER, &fb.into_bytes()));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
@@ -2918,6 +2947,7 @@ mod tests {
         fb.bit(0); // allow_screen_content_tools
         fb.bit(0); // allow_intrabc
         fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0);
         data.extend(annex_b_obu(CLK_HEADER, &fb.into_bytes()));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
@@ -2947,12 +2977,290 @@ mod tests {
         fb.bit(0); // allow_screen_content_tools
         fb.bit(0); // allow_intrabc
         fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0);
         data.extend(annex_b_obu(RTG_HEADER, &fb.into_bytes()));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             !report
                 .errors()
                 .any(|d| d.rule_id == "frame-header/intra-only-refresh-all-slots"),
+            "report was: {report}"
+        );
+    }
+
+    // --- Frame tile-info / QM-reference diagnostics (AV2 § 6.17.7.2 / § 6.17.6.2) ---
+
+    /// Appends a CLK frame-header bit fixture from the activation prefix through
+    /// `disable_cdf_update`, with `frame_size_override_flag == 1` and the given
+    /// dimensions, leaving `fb` positioned at `tile_info()` (AV2 § 5.18.2). The
+    /// dimension fields are `f(width_bits)` / `f(height_bits)`
+    /// (`frame_*_bits_minus_1 + 1` from the sequence).
+    fn clk_frame_until_tile_info(fb: &mut Bits, width: u32, height: u32, bits: (u32, u32)) {
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // immediate_output_frame
+        fb.bit(1); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
+        fb.f(width - 1, bits.0); // frame_width_minus_1
+        fb.f(height - 1, bits.1); // frame_height_minus_1
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+    }
+
+    /// Appends the post-`tile_info()` § 5.18.2 structures with every optional read
+    /// disabled: `base_q_idx` f(9) (§ 5.18.6.1), `segmentation_enabled = 0`
+    /// (§ 5.18.7.1), `using_qmatrix = 0` (§ 5.18.6.2), `delta_q_present = 0`
+    /// (§ 5.18.7.8); the lossless tail then reads no bits.
+    fn quant_seg_tail(fb: &mut Bits) {
+        fb.f(100, 9); // base_q_idx f(9) (10-bit sequence)
+        fb.bit(0); // segmentation_enabled
+        fb.bit(0); // using_qmatrix
+        fb.bit(0); // delta_q_present
+    }
+
+    /// Encodes `ns(n)` value `0` (AV2 § 4.11.6): `w = FloorLog2(n) + 1`,
+    /// `m = (1 << w) - n`; `0 < m` always holds, so the encoding is `f(0, w - 1)`.
+    fn ns_zero(fb: &mut Bits, n: u32) {
+        let w = 32 - n.leading_zeros();
+        fb.f(0, w - 1);
+    }
+
+    #[test]
+    fn validator_flags_frame_tile_cols_out_of_range() {
+        // A 4160x16 frame (BLOCK_64X64, level 0 Main: maxTileWidthSb == 64) has
+        // sbCols == 65; a non-uniform tile_params() coding 65 one-superblock columns
+        // derives TileCols == 65 > MAX_TILE_COLS (AV2 § 6.17.7.2).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            frame_width_bits_minus_1: 12, // frame_width_minus_1 f(13)
+            max_frame_width_minus_1: 4159,
+            ..FrameCoreSeq::base()
+        });
+        let mut fb = Bits::default();
+        clk_frame_until_tile_info(&mut fb, 4160, 16, (13, 8));
+        fb.bit(0); // uniform_tile_spacing_flag = 0 (tile_params, § 5.18.7.3)
+        for start in 0..65u32 {
+            // width_in_sbs_minus_1 ns(Min(sbCols - startSb, maxTileWidthSb)) == 0.
+            ns_zero(&mut fb, (65 - start).min(64));
+        }
+        ns_zero(&mut fb, 1); // height_in_sbs_minus_1 (sbRows == 1, 0 bits)
+        fb.f(0, 7); // context_update_tile_id f(TileRowsLog2 0 + TileColsLog2 7)
+        fb.f(0, 2); // tile_size_bytes_minus_1
+        quant_seg_tail(&mut fb);
+        data.extend(annex_b_obu(CLK_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "frame-header/tile-cols-out-of-range"
+                    && d.spec_section.as_deref() == Some("6.17.7.2")
+            }),
+            "report was: {report}"
+        );
+        // context_update_tile_id 0 < 65 stays valid.
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/context-update-tile-id-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_frame_tile_rows_out_of_range() {
+        // The transposed layout: a 16x4160 frame has sbRows == 65; a non-uniform
+        // tile_params() coding 65 one-superblock rows derives TileRows == 65 >
+        // MAX_TILE_ROWS (AV2 § 6.17.7.2).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            frame_height_bits_minus_1: 12, // frame_height_minus_1 f(13)
+            max_frame_height_minus_1: 4159,
+            ..FrameCoreSeq::base()
+        });
+        let mut fb = Bits::default();
+        clk_frame_until_tile_info(&mut fb, 16, 4160, (8, 13));
+        fb.bit(0); // uniform_tile_spacing_flag = 0
+        ns_zero(&mut fb, 1); // width_in_sbs_minus_1 (sbCols == 1, 0 bits)
+        for start in 0..65u32 {
+            // height_in_sbs_minus_1 ns(Min(sbRows - startSb, maxTileHeightSb == 65)).
+            ns_zero(&mut fb, 65 - start);
+        }
+        fb.f(0, 7); // context_update_tile_id f(TileRowsLog2 7 + TileColsLog2 0)
+        fb.f(0, 2); // tile_size_bytes_minus_1
+        quant_seg_tail(&mut fb);
+        data.extend(annex_b_obu(CLK_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "frame-header/tile-rows-out-of-range"
+                    && d.spec_section.as_deref() == Some("6.17.7.2")
+            }),
+            "report was: {report}"
+        );
+    }
+
+    /// Appends the uniform 3x1 tile_info() bits for a 160x16 frame (sbCols == 3:
+    /// increments 1,1 reach maxLog2TileCols == 2, TileCols == 3, TileColsLog2 == 2),
+    /// with the given `context_update_tile_id` f(2) (AV2 § 5.18.7.2 / § 5.18.7.3).
+    fn uniform_3x1_tile_info(fb: &mut Bits, context_update_tile_id: u32) {
+        fb.bit(1); // uniform_tile_spacing_flag
+        fb.bit(1); // increment_tile_cols_log2 = 1
+        fb.bit(1); // increment_tile_cols_log2 = 1 (reaches maxLog2TileCols)
+        fb.f(context_update_tile_id, 2); // f(TileRowsLog2 0 + TileColsLog2 2)
+        fb.f(0, 2); // tile_size_bytes_minus_1
+    }
+
+    #[test]
+    fn validator_flags_frame_context_update_tile_id_out_of_range() {
+        // A 160x16 frame splits into TileCols == 3 (not a power of two), so the
+        // f(2) context_update_tile_id read can encode 3 >= TileCols * TileRows == 3
+        // (AV2 § 6.17.7.2).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            max_frame_width_minus_1: 159,
+            ..FrameCoreSeq::base()
+        });
+        // The diagnostic is located at the frame OBU header, one Annex B leb128
+        // size-prefix byte past the end of the preceding OBUs.
+        let frame_obu_offset = data.len() as u64 + 1;
+        let mut fb = Bits::default();
+        clk_frame_until_tile_info(&mut fb, 160, 16, (8, 8));
+        uniform_3x1_tile_info(&mut fb, 3); // context_update_tile_id == 3 (>= 3 * 1)
+        quant_seg_tail(&mut fb);
+        data.extend(annex_b_obu(CLK_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "frame-header/context-update-tile-id-out-of-range"
+                    && d.spec_section.as_deref() == Some("6.17.7.2")
+                    && d.byte_offset.map(|offset| offset.get()) == Some(frame_obu_offset)
+            }),
+            "expected the § 6.17.7.2 diagnostic at the frame OBU offset \
+             {frame_obu_offset}; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_accepts_conforming_frame_tile_layout() {
+        // The same 3x1 layout with context_update_tile_id == 2 (< 3) is conformant:
+        // none of the § 6.17.7.2 frame tile diagnostics fire.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            max_frame_width_minus_1: 159,
+            ..FrameCoreSeq::base()
+        });
+        let mut fb = Bits::default();
+        clk_frame_until_tile_info(&mut fb, 160, 16, (8, 8));
+        uniform_3x1_tile_info(&mut fb, 2); // context_update_tile_id == 2 (< 3 * 1)
+        quant_seg_tail(&mut fb);
+        data.extend(annex_b_obu(CLK_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        for rule in [
+            "frame-header/tile-cols-out-of-range",
+            "frame-header/tile-rows-out-of-range",
+            "frame-header/context-update-tile-id-out-of-range",
+        ] {
+            assert!(
+                !report.errors().any(|d| d.rule_id == rule),
+                "{rule} must not fire on a conforming layout; report was: {report}"
+            );
+        }
+    }
+
+    /// Appends a 16x16 CLK frame whose `setup_qm_params()` (§ 5.18.6.2) references
+    /// `qm_y[0] == level` with `qm_uv_same_as_y == 1` (so `qm_u[0]` / `qm_v[0]`
+    /// reference the same slot for the 4:2:0 sequence).
+    fn clk_frame_with_qm_reference(level: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        clk_frame_until_tile_info(&mut fb, 16, 16, (8, 8));
+        fb.bit(1); // uniform_tile_spacing_flag (sbCols == 1: no increments)
+        fb.f(100, 9); // base_q_idx f(9) (§ 5.18.6.1)
+        fb.bit(0); // segmentation_enabled (§ 5.18.7.1)
+        fb.bit(1); // using_qmatrix (§ 5.18.6.2)
+        fb.f(level, 4); // qm_y[0]
+        fb.bit(1); // qm_uv_same_as_y (NumPlanes == 3)
+        fb.bit(0); // delta_q_present (§ 5.18.7.8)
+        annex_b_obu(CLK_HEADER, &fb.into_bytes())
+    }
+
+    /// A `quantizer_matrix_obu()` selecting a single default `level` with
+    /// `qm_chroma_info_present_flag == 1` (`QmNumPlanes == 3`, AV2 § 5.13).
+    fn qm_default_level_obu_chroma(level: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(1 << level, 15); // qm_bit_map: set `level`
+        bits.bit(1); // qm_chroma_info_present_flag = 1 -> 3 planes
+        bits.bit(1); // qm_is_default_flag for `level`
+        bits.bit(1); // trailing_one_bit (QM is non-extensible)
+        bits.align();
+        annex_b_obu(QM_HEADER, &bits.into_bytes())
+    }
+
+    #[test]
+    fn validator_flags_frame_qm_plane_count_mismatch() {
+        // A QM OBU defines custom level 0 with QmNumPlanes == 1
+        // (qm_chroma_info_present_flag == 0); the 4:2:0 sequence has NumPlanes == 3,
+        // so a frame referencing level 0 violates AV2 § 6.17.6.2.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(qm_default_level_obu(0));
+        data.extend(clk_frame_with_qm_reference(0));
+        let report = Validator::new(false).validate_bytes(&data);
+        let matches: Vec<_> = report
+            .errors()
+            .filter(|d| d.rule_id == "frame-header/qm-plane-count-mismatch")
+            .collect();
+        assert!(
+            matches
+                .iter()
+                .any(|d| d.spec_section.as_deref() == Some("6.17.6.2")),
+            "report was: {report}"
+        );
+        // qm_y/qm_u/qm_v all reference the same slot: one diagnostic, not three.
+        assert_eq!(matches.len(), 1, "report was: {report}");
+    }
+
+    #[test]
+    fn validator_is_silent_on_frame_qm_reference_without_qm_state() {
+        // No quantizer matrix OBU defines level 0: the § 6.17.6.2 plane-count check
+        // has no recorded QmNumPlanes to compare and must stay silent (the HLS
+        // availability checks own the missing-state case).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_frame_with_qm_reference(0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/qm-plane-count-mismatch"),
+            "missing QM state must not produce a false positive; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_accepts_frame_qm_reference_with_matching_planes() {
+        // A chroma QM OBU records QmNumPlanes == 3 for level 0, matching the 4:2:0
+        // sequence's NumPlanes == 3: conformant per AV2 § 6.17.6.2.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(qm_default_level_obu_chroma(0));
+        data.extend(clk_frame_with_qm_reference(0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/qm-plane-count-mismatch"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_is_silent_on_default_matrix_qm_reference() {
+        // qm_y == 15 == NUM_CUSTOM_QMS selects the default matrix, not a custom
+        // slot: the § 6.17.6.2 plane-count requirement does not apply, even with
+        // mismatched recorded state for other levels.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(qm_default_level_obu(0)); // 1-plane state for (unreferenced) level 0
+        data.extend(clk_frame_with_qm_reference(15));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/qm-plane-count-mismatch"),
             "report was: {report}"
         );
     }

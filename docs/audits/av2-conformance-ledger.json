@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "35243f2a3c77965b7cf5c9c91ff9cd245c48f799",
+  "audited_commit": "6bc924db7c6814d4b35b6ec99864cd821fcb7075",
   "outcome": "success",
   "files": [
     {
@@ -283,7 +283,7 @@
     },
     {
       "path": "crates/splot-cli/src/commands/inspect.rs",
-      "sha256": "fd862532e3528c617c14227c4a7568f096b5c24cb6070f57100dbc506e40adc6",
+      "sha256": "3fd1fd59c707485bb2078268447d5533262148995920cee0627ebdf088821c06",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.2.1-OBU-DISPATCH",
@@ -317,7 +317,7 @@
     },
     {
       "path": "crates/splot-cli/tests/cli.rs",
-      "sha256": "39e29a2f59391a9ba00a55990f1f0cb69a6c2aa8aac9e62028c2f01b7cbd40d4",
+      "sha256": "27cff4be4ceef5660719a9cedb2fa26def62d998475e770a16d472438eff4ee4",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.4-SEQUENCE-HEADER",
@@ -372,8 +372,6 @@
         "AV2-5.18-FRAME-HEADER",
         "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
         "AV2-5.18.5-FILTERING",
-        "AV2-5.18.6-QUANTIZATION",
-        "AV2-5.18.7-SEGMENTATION-TILING",
         "AV2-5.18.8-TRANSFORM-CODING-MODES",
         "AV2-5.18.9-GLOBAL-MOTION",
         "AV2-5.20-TILE-GROUP-PAYLOAD",
@@ -433,16 +431,17 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/info.rs",
-      "sha256": "5a7acd18f3af997287498b580910d0b9d7bd375f0c9959b3d21fbdf5f03c9a41",
+      "sha256": "e60416f96551789364f98c718327d65a2431c741a83b373cc85e9e8241606647",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
-        "AV2-5.18.2-FRAME-HEADER-INFO"
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.7-SEGMENTATION-TILING"
       ],
       "outcome": "success"
     },
     {
       "path": "crates/splot-core/src/headers/frame/mod.rs",
-      "sha256": "96a9a49ddb9493298e592a7897d33af41f465ce652bb5f33e3bb6744a9a4adae",
+      "sha256": "a6fac3b0d54da83245658bd5f42b16e465349683afdd47a5dbf128bc31e6864a",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -451,11 +450,36 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-core/src/headers/frame/quant.rs",
+      "sha256": "cd1af35a82ccbc3245caebb789eae232130eaf8005450244460e3127c99172b1",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.18.6-QUANTIZATION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/frame/segmentation.rs",
+      "sha256": "15744a20108a46152d2236378c1387c5d563c2aa5eaa98fc3196aa46f350b5c4",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-core/src/headers/frame/size.rs",
       "sha256": "c731042c62a1971f5a7a8e607706d29399c3ca383e15b9132c7a1c2b35a79e37",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.4-FRAME-SIZE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/frame/tiling.rs",
+      "sha256": "9d6454adb3d69bb69960789f84a40d33c02efbc055a9e4b9a42a9239824b94f5",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.18.7-SEGMENTATION-TILING"
       ],
       "outcome": "success"
     },
@@ -642,7 +666,7 @@
     },
     {
       "path": "crates/splot-core/src/tile.rs",
-      "sha256": "82a06920219f674c50ffc9c22920ba4eff99412e7b3f79e4b126982c5c7a664e",
+      "sha256": "b8067218b32fa227c4e1f373dcbb0fdcced6469a224e408c7628d11d31e2852b",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.7.3-TILE-PARAMS"
@@ -716,10 +740,11 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "f0e2c0ba0d0b7b0969e3a0b5a03520665efb5c230468dd3d1f6479edfa14ba3c",
+      "sha256": "4095ecf57ef799542b999c107a44f482f68f56d94c6d9bf363f8fe746670499b",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
+        "AV2-5.18.6-QUANTIZATION",
         "AV2-5.7-MULTI-FRAME-HEADER",
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
         "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
@@ -765,7 +790,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "5fad6744490a29ce54ecc4ec0aef9c0034e7b9ddbbe5362f14fd339313b3d072",
+      "sha256": "1fc5ea234b58a416d5b0206e7ed2e1ad2d68bf1aa38a22a196e290d86b4d7b81",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -871,7 +896,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "6196c1e5303b20cc3fd505527ba27c2f982f236aea012028bac3ca5edb667000",
+      "sha256": "4e7f92e1455b92ef34d33fa483cb851cf789e7d0d8bee2081d627dae3848c49c",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1036,7 +1061,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "74309be9cac8cc2211497a0b706a6192933a3cff71273e73010c5dbcbae59934",
+      "sha256": "16c064082beaabe78ba23d09214c1b2f9ada4919b5896c9c76e87fd8b5ad58d9",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1171,7 +1196,7 @@
     },
     {
       "path": "docs/SPEC-MAPPING.md",
-      "sha256": "be2daf43c432c17e1debea11ef8b7d6369855eae61a1a498b9548b5b6de4d685",
+      "sha256": "a6664e40285e87d4912b1c3d1dcc180937994a61dd333d1290d786d44f52ac47",
       "scope_kind": "docs",
       "feature_ids": [],
       "outcome": "success"
@@ -1185,7 +1210,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "63a5d23c93c988ea22e426e72a41b0972a866353786887fb4cc5a955a4f3782a",
+      "sha256": "4303c2b3e20b74372200b7df45c3bb794ce79517e3ead2b3cd9b92082e5c3ef6",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
@@ -1195,7 +1220,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "edf022a6b67fb598ca32216a24e454f08ed2949774aabf36bfc8493af40db257",
+      "sha256": "14a60dc713c451afac0b96fd336871e57fd21673688ebc2b69152c825680cdba",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1226,6 +1251,7 @@
         "AV2-5.18.5-FILTERING",
         "AV2-5.18.6-QUANTIZATION",
         "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.18.7.3-TILE-PARAMS",
         "AV2-5.18.8-TRANSFORM-CODING-MODES",
         "AV2-5.18.9-GLOBAL-MOTION",
         "AV2-5.19-TILE-GROUP",
@@ -2061,6 +2087,63 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-09-frame-tiling-quant-segmentation/.openspec.yaml",
+      "sha256": "4e4f418579ebfbffbd8c41ee1a2ef52993119960fe15f399381a15987b551d8a",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-09-frame-tiling-quant-segmentation/design.md",
+      "sha256": "d8a2b67370f276b8809f7f39b2cd39fd891ccdaa844824029e83e0aae20e97a8",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.6-QUANTIZATION",
+        "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.18.7.3-TILE-PARAMS",
+        "CONF-AVM-DIFF-HARNESS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-09-frame-tiling-quant-segmentation/proposal.md",
+      "sha256": "04106a66a899e56a858f9adf7476975461323faf65e7eb5a9212642f35741786",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.18.1-FRAME-HEADER-GENERAL",
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.6-QUANTIZATION",
+        "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.18.7.3-TILE-PARAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-09-frame-tiling-quant-segmentation/specs/bitstream/spec.md",
+      "sha256": "4820168328634a94dbc32b43bd615e98edabaf28e1da1584b3dd63a1363a0bd1",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-09-frame-tiling-quant-segmentation/specs/validator/spec.md",
+      "sha256": "7548096520aeecec025f4eb07031a90e60323464d3bed53be498417d5c917a77",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-09-frame-tiling-quant-segmentation/tasks.md",
+      "sha256": "8750e97f7c6f39ad9fae72b8b54a58b34b89a76f4c389ce7b93618e2bc40dfb0",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.6-QUANTIZATION",
+        "AV2-5.18.7-SEGMENTATION-TILING"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-09-ops-brt-hls-foundation/design.md",
       "sha256": "1760beb7ea443e42e22a4c779c0b6ff3f98363f3e9e22f8ad22c0ea4ef6e8fef",
       "scope_kind": "openspec",
@@ -2261,7 +2344,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "9f2241a6df14b8bf795df872bb4ae20a8b77dddc34abe56645d8e386005cffc6",
+      "sha256": "5688cff503a0f30dd6b60ef1185afe70b4850861a305d2927113c990e3286e9e",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -2338,7 +2421,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "4f87a20a8568a74ffb5240cb5dd93e760d1ec72fcb7796ab0dbb76e8c4518b93",
+      "sha256": "58c255c7eb2a68cd356b8f72e4008c787e5cff46a59e3bc9a5dd5d4c4e0efdb7",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",

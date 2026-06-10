@@ -380,9 +380,11 @@ Acceptance:
 
 ## Phase 8 — frame header child features
 
-**Status: partial** — see the status note below. Beyond the activation
+**Status: partial** — see the status notes below. Beyond the activation
 skeleton, `AV2-5.18.3-FRAME-CONFIGURATION` and `AV2-5.18.4-FRAME-SIZE` parse
-with tests; the remaining child rows are todo.
+with tests, the intra tail through `AV2-5.18.6-QUANTIZATION` and
+`AV2-5.18.7-SEGMENTATION-TILING` is `partial` (with `AV2-5.18.7.3-TILE-PARAMS`
+done); `AV2-5.18.5-FILTERING` and the §5.18.8–§5.18.10 child rows are todo.
 
 **Goal:** split the large frame header into implementable chunks.
 
@@ -398,6 +400,25 @@ with tests; the remaining child rows are todo.
 > §5.18 / §5.20 syntax or the entropy coder. `AV2-5.18-FRAME-HEADER`,
 > `AV2-5.18.1-FRAME-HEADER-GENERAL`, `AV2-5.18.2-FRAME-HEADER-INFO`, and
 > `AV2-5.19-TILE-GROUP` are therefore `partial`, not `done`.
+
+> **Status (OpenSpec `frame-tiling-quant-segmentation`):** the intra frame-header
+> tail now parses past `disable_cdf_update` in exact § 5.18.2 order:
+> `tile_info()` (§ 5.18.7.2), `quantization_params()` (§ 5.18.6.1),
+> `segmentation_params()` (§ 5.18.7.1), `setup_qm_params()` (§ 5.18.6.2),
+> `delta_q_params()` (§ 5.18.7.8), and the per-segment lossless /
+> `allow_tcq` / `allow_parity_hiding` derivation, then stops with the explicit
+> `stopped_before_deblocking_filter_params` status before § 5.18.5.2
+> `deblocking_filter_params()`. New § 6.17.7.2 tile-bound diagnostics
+> (`frame-header/tile-cols-out-of-range`, `frame-header/tile-rows-out-of-range`,
+> `frame-header/context-update-tile-id-out-of-range`) and the § 6.17.6.2
+> custom-QM plane-count check (`frame-header/qm-plane-count-mismatch`) are live,
+> and `splot inspect` surfaces the parsed tile/quant/segmentation/QM/delta-q/
+> lossless fields. Remaining for this phase: inter frame-header paths, the
+> MFH-gated branches (`cur_mfh_id > 0` stops with `UnsupportedUntilFeature`),
+> the § 5.18.7.4 non-uniform sequence-reuse branch (unrecorded start arrays),
+> § 5.18.5 filtering onward, and the § 6.17.6.2 layer-dependency constraints
+> (dependency maps not modeled). `AV2-5.18.6-QUANTIZATION` and
+> `AV2-5.18.7-SEGMENTATION-TILING` are therefore `partial`, not `done`.
 
 Umbrella:
 

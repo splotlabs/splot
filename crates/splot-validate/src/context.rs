@@ -18,7 +18,8 @@ use splot_core::headers::film_grain::{
 };
 use splot_core::headers::frame::{
     FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderPrefix,
-    FrameReferenceStateView, FrameType, parse_frame_header_core, parse_frame_header_prefix,
+    FrameReferenceStateView, FrameType, SetupQmParams, TileInfo, parse_frame_header_core,
+    parse_frame_header_prefix,
 };
 use splot_core::headers::layer_config_record::{
     LayerConfigurationRecord, parse_layer_config_record,
@@ -36,6 +37,7 @@ use splot_core::headers::tile_group::parse_tile_group_prefix;
 use splot_core::hls::{MAX_MFH_NUM, MfhId, MultiFrameHeaderRecord, parse_multi_frame_header};
 use splot_core::obu::finish_obu_payload;
 use splot_core::span::{BitOffset, ByteOffset};
+use splot_core::tile::{MAX_TILE_COLS, MAX_TILE_ROWS};
 use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, ObuType};
 
 use crate::diagnostic::{Diagnostic, ValidationReport};
@@ -509,7 +511,13 @@ impl ValidatorContext {
             // and the checks are silent on failure or on paths that need reference
             // state (AV2 § 6.17.2 / § 6.17.4 / § 6.4.6).
             if let Some(active_sequence) = self.sequence_headers.get(&seq_id) {
-                frame_header_core_checks(obu, first_picture_in_tu, active_sequence, report);
+                frame_header_core_checks(
+                    obu,
+                    first_picture_in_tu,
+                    active_sequence,
+                    &self.qm,
+                    report,
+                );
             }
         }
     }
@@ -2221,6 +2229,7 @@ fn frame_header_core_checks(
     obu: &ObuEnvelope<'_>,
     first_picture_in_tu: bool,
     active_sequence: &SequenceHeader,
+    qm_state: &QuantizerMatrixState,
     report: &mut ValidationReport,
 ) {
     // AV2 § 6.4.6: if long_term_frame_id_bits == 0, no OBU_RAS_FRAME shall be present
@@ -2317,6 +2326,17 @@ fn frame_header_core_checks(
         ));
     }
 
+    // AV2 § 6.17.7.2: tile-info bounds for a parsed `tile_info()`.
+    if let Some(tile_info) = core.tile_info.as_ref() {
+        frame_tile_info_checks(tile_info, obu, report);
+    }
+
+    // AV2 § 6.17.6.2: custom-QM plane-count references for a parsed
+    // `setup_qm_params()`, gated on recorded quantizer-matrix availability state.
+    if let Some(setup_qm) = core.setup_qm_params.as_ref() {
+        frame_qm_reference_checks(setup_qm, active_sequence, qm_state, obu, report);
+    }
+
     // The remaining checks compare refresh_frame_flags against NumRefFrames.
     let Some(num_ref_frames) = active_sequence
         .inter
@@ -2364,6 +2384,146 @@ fn frame_header_core_checks(
                  refresh_frame_flags to all slots"
             ),
         ));
+    }
+}
+
+/// Emits the locally decidable § 6.17.7.2 tile-info diagnostics for a parsed frame
+/// `tile_info()` (AV2 v1.0.0 § 6.17.7.2,
+/// `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-7-2`):
+/// `TileCols <= MAX_TILE_COLS`, `TileRows <= MAX_TILE_ROWS`, and
+/// `context_update_tile_id < TileCols * TileRows`. `MAX_TILE_COLS` /
+/// `MAX_TILE_ROWS` are 64 (AV2 § 3, `docs/spec/av2/1.0.0/03-symbols.md`).
+fn frame_tile_info_checks(
+    tile_info: &TileInfo,
+    obu: &ObuEnvelope<'_>,
+    report: &mut ValidationReport,
+) {
+    // AV2 § 6.17.7.2: "It is a requirement of bitstream conformance that TileCols is
+    // less than or equal to MAX_TILE_COLS." Reachable for a non-uniform layout that
+    // codes more than MAX_TILE_COLS one-superblock tiles.
+    if tile_info.tile_cols > MAX_TILE_COLS {
+        report.push(frame_header_error(
+            "frame-header/tile-cols-out-of-range",
+            "6.17.7.2",
+            obu,
+            format!(
+                "tile_info() derives TileCols {}, which must be less than or equal to \
+                 MAX_TILE_COLS ({MAX_TILE_COLS})",
+                tile_info.tile_cols
+            ),
+        ));
+    }
+    // AV2 § 6.17.7.2: "It is a requirement of bitstream conformance that TileRows is
+    // less than or equal to MAX_TILE_ROWS."
+    if tile_info.tile_rows > MAX_TILE_ROWS {
+        report.push(frame_header_error(
+            "frame-header/tile-rows-out-of-range",
+            "6.17.7.2",
+            obu,
+            format!(
+                "tile_info() derives TileRows {}, which must be less than or equal to \
+                 MAX_TILE_ROWS ({MAX_TILE_ROWS})",
+                tile_info.tile_rows
+            ),
+        ));
+    }
+    // AV2 § 6.17.7.2: "It is a requirement of bitstream conformance that
+    // context_update_tile_id is less than TileCols * TileRows." Reachable because the
+    // f(TileRowsLog2 + TileColsLog2) read can encode values at or beyond the actual
+    // tile count when the count is not a power of two. The skipped-read paths
+    // (single tile, avg-CDF gating) leave the value 0, which never trips the bound
+    // for the >= 1 tile counts every parsed layout produces.
+    let tile_count = u64::from(tile_info.tile_cols) * u64::from(tile_info.tile_rows);
+    if u64::from(tile_info.context_update_tile_id) >= tile_count {
+        report.push(frame_header_error(
+            "frame-header/context-update-tile-id-out-of-range",
+            "6.17.7.2",
+            obu,
+            format!(
+                "context_update_tile_id {} must be less than TileCols * TileRows ({} * {})",
+                tile_info.context_update_tile_id, tile_info.tile_cols, tile_info.tile_rows
+            ),
+        ));
+    }
+}
+
+/// Emits the locally decidable § 6.17.6.2 custom-QM plane-count diagnostics for a
+/// parsed frame `setup_qm_params()` (AV2 v1.0.0 § 6.17.6.2,
+/// `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-6-2`): each
+/// `qm_y[i]` / `qm_u[i]` / `qm_v[i]` less than `NUM_CUSTOM_QMS` references a custom
+/// quantizer-matrix slot whose `QmNumPlanes` must equal the active sequence's
+/// `NumPlanes`.
+///
+/// Only slots with recorded quantizer-matrix OBU state are checked: a referenced
+/// slot with no available record is silent here (HLS availability is owned by the
+/// deferred § 7.3.8 reference checks), never a guessed false positive.
+fn frame_qm_reference_checks(
+    setup_qm: &SetupQmParams,
+    active_sequence: &SequenceHeader,
+    qm_state: &QuantizerMatrixState,
+    obu: &ObuEnvelope<'_>,
+    report: &mut ValidationReport,
+) {
+    // The qm_y/qm_u/qm_v syntax (and its conformance bullets) exists only when
+    // using_qmatrix == 1 (AV2 § 5.18.6.2).
+    if !setup_qm.using_qmatrix {
+        return;
+    }
+    // AV2 § 6.4.1: NumPlanes = Monochrome ? 1 : 3.
+    let num_planes: u8 = if active_sequence.general.chroma_format_idc.is_monochrome() {
+        1
+    } else {
+        3
+    };
+    // TODO(spec: AV2-5.18.6-QUANTIZATION): the § 6.17.6.2 layer-dependency
+    // constraints (MLayerDependencyMap[obu_mlayer_id][QmMLayerId[...]] == 1 and the
+    // TLayerDependencyMap analogue) need the sequence dependency maps, which the
+    // parsed sequence model does not expose (parse_dependency_map_bits discards the
+    // bits); they are deferred rather than fabricated.
+    let qm_num = usize::from(setup_qm.pic_qm_num_minus_1) + 1;
+    // Distinct referenced custom slots: qm_uv_same_as_y / shared-UV copies and
+    // repeated levels across the qmNum sets reference the same slot, which violates
+    // (or satisfies) § 6.17.6.2 once, not once per syntax element.
+    let mut referenced = [false; NUM_CUSTOM_QMS];
+    for set in setup_qm.levels.iter().take(qm_num) {
+        // qm_y[i] is always present; qm_u[i] / qm_v[i] exist only when NumPlanes > 1
+        // (AV2 § 5.18.6.2) — the parsed zeroed placeholders for a monochrome
+        // sequence are not bitstream references.
+        if let Some(slot) = referenced.get_mut(usize::from(set.qm_y)) {
+            *slot = true;
+        }
+        if num_planes > 1 {
+            if let Some(slot) = referenced.get_mut(usize::from(set.qm_u)) {
+                *slot = true;
+            }
+            if let Some(slot) = referenced.get_mut(usize::from(set.qm_v)) {
+                *slot = true;
+            }
+        }
+    }
+    for (level, _) in referenced
+        .iter()
+        .enumerate()
+        .filter(|(_, referenced)| **referenced)
+    {
+        // Missing per-slot state stays silent (no false positive when no quantizer
+        // matrix OBU has defined or reset this slot).
+        let Some(record) = qm_state.available[level] else {
+            continue;
+        };
+        if record.num_planes != num_planes {
+            report.push(frame_header_error(
+                "frame-header/qm-plane-count-mismatch",
+                "6.17.6.2",
+                obu,
+                format!(
+                    "setup_qm_params() references custom quantizer matrix level {level}, whose \
+                     recorded QmNumPlanes {} differs from the active sequence's NumPlanes \
+                     {num_planes}",
+                    record.num_planes
+                ),
+            ));
+        }
     }
 }
 

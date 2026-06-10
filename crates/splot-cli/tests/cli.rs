@@ -191,7 +191,9 @@ fn inspect_json_exposes_frame_header_prefix() {
 fn inspect_json_exposes_frame_header_core() {
     // The fixture is TemporalDelimiter, a non-single-picture SequenceHeader (id 0),
     // then an OBU_CLOSED_LOOP_KEY whose first tile group carries a frame header parsed
-    // through frame_size(): a 16x16 key frame. The inspector surfaces the core summary.
+    // through the full § 5.18.2 intra structure cluster (tile_info, quantization,
+    // segmentation, QM setup, delta-q, lossless tail): a 16x16 key frame. The
+    // inspector surfaces the core summary.
     let path = fixture("frame-header-core.av2");
     let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0));
@@ -205,15 +207,42 @@ fn inspect_json_exposes_frame_header_core() {
 
     let core = &records[2]["frame_header_core"];
     assert_eq!(core["payload_kind"], "frame_header_core");
-    assert_eq!(
-        core["status"],
-        "stopped_before_filtering_quant_segmentation"
-    );
+    assert_eq!(core["status"], "stopped_before_deblocking_filter_params");
     assert_eq!(core["frame_type"], "key");
     assert_eq!(core["frame_is_intra"], true);
     assert_eq!(core["show_existing_frame"], false);
     assert_eq!(core["frame_size"]["width"], 16);
     assert_eq!(core["frame_size"]["height"], 16);
+
+    // The § 5.18.7.2 / § 5.18.6 / § 5.18.7.1 structure summaries: a single-tile
+    // layout, base_q_idx == 100 with no deltas, segmentation and the quantizer
+    // matrix disabled, no delta-q, and a non-lossless frame.
+    let tile = &core["tile_layout"];
+    assert_eq!(tile["reuse_tile_info"], false);
+    assert_eq!(tile["tile_cols"], 1);
+    assert_eq!(tile["tile_rows"], 1);
+    assert_eq!(tile["tile_cols_log2"], 0);
+    assert_eq!(tile["tile_rows_log2"], 0);
+    assert_eq!(tile["context_update_tile_id"], 0);
+    assert!(tile.get("tile_size_bytes").is_none());
+    let quant = &core["quantization"];
+    assert_eq!(quant["base_q_idx"], 100);
+    assert_eq!(quant["delta_q_y_dc"], 0);
+    assert_eq!(quant["diff_uv_delta"], false);
+    let seg = &core["segmentation"];
+    assert_eq!(seg["segmentation_enabled"], false);
+    assert_eq!(seg["enabled_features"].as_array().map(Vec::len), Some(0));
+    let qm = &core["qm_params"];
+    assert_eq!(qm["using_qmatrix"], false);
+    assert_eq!(qm["levels"].as_array().map(Vec::len), Some(0));
+    let delta_q = &core["delta_q"];
+    assert_eq!(delta_q["delta_q_present"], false);
+    assert_eq!(delta_q["delta_q_res"], 0);
+    let lossless = &core["lossless"];
+    assert_eq!(lossless["coded_lossless"], false);
+    assert_eq!(lossless["has_lossless_segment"], false);
+    assert_eq!(lossless["allow_tcq"], false);
+    assert_eq!(lossless["allow_parity_hiding"], false);
 }
 
 #[test]
