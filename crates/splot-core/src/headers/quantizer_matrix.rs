@@ -10,9 +10,9 @@
 //! - `qm_bit_map == 0` is the reset/default path: no per-level payload follows; the
 //!   validator marks every level protected/default (§ 6.12).
 //! - For each set level bit, `qm_is_default_flag` selects the default matrix or a
-//!   user-defined matrix parsed by the shared [`user_defined_qm`] helper (§ 5.4.11).
+//!   user-defined matrix parsed by the shared `user_defined_qm` helper (§ 5.4.11).
 //!
-//! [`user_defined_qm`] is shared syntax: per the AV2 grammar it is reached only from
+//! `user_defined_qm` is shared syntax: per the AV2 grammar it is reached only from
 //! quantizer-matrix syntax (here via [`parse_quantizer_matrix`]), **not** as a direct
 //! `sequence_header_obu()` child call, and the same helper is reusable by future
 //! frame-level quantization syntax. The three fundamental transform shapes
@@ -151,11 +151,11 @@ pub struct UserDefinedQmPlane {
 /// validator reads them from the OBU envelope instead of threading them through here.
 ///
 /// # Errors
-/// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof),
-/// [`Error::InvalidUvlc`](crate::error::Error::InvalidUvlc), or
-/// [`Error::BitWidthTooLarge`](crate::error::Error::BitWidthTooLarge) from
+/// Returns [`Error::UnexpectedEof`],
+/// [`Error::InvalidUvlc`], or
+/// [`Error::BitWidthTooLarge`] from
 /// [`BitReader`] when the input is truncated or a descriptor is malformed, or
-/// [`Error::InvalidQuantizerMatrix`](crate::error::Error::InvalidQuantizerMatrix) when a
+/// [`Error::InvalidQuantizerMatrix`] when a
 /// `quant_delta` is outside the conformant `-128..=127` range (AV2 § 6.4.11).
 pub fn parse_quantizer_matrix(reader: &mut BitReader<'_>) -> Result<QuantizerMatrixObu> {
     // qm_bit_map fits in 15 bits, so the u32 read never exceeds u16::MAX.

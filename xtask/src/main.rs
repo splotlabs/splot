@@ -27,6 +27,16 @@ const SPDX_LINE: &str = "// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.
 /// Prefix the second header line (the copyright line) must start with.
 const SPDX_COPYRIGHT_PREFIX: &str = "// SPDX-FileCopyrightText: ";
 
+/// `--ignore-filename-regex` excluding every workspace member except
+/// `crates/splot-validate/` from the coverage threshold. The regex is matched
+/// against the full (absolute) path, so xtask/fuzz use a `(^|/)` boundary rather
+/// than a string anchor. Kept in sync with the `coverage` job in
+/// `.github/workflows/ci.yml`. Exclusion is by name: extend this regex when
+/// adding a workspace crate that should not gate here, or it joins the
+/// threshold scope.
+const SPLOT_VALIDATE_COVERAGE_IGNORE_REGEX: &str =
+    r"crates/splot-(core|encode|cli)/|(^|/)xtask/|(^|/)fuzz/";
+
 /// Committed AV2 spec mirrors, each pinned to `(dir, pdf_sha256, checksums_sha256)`.
 ///
 /// `pdf_sha256` is the source PDF the mirror was generated from; `checksums_sha256`
@@ -218,6 +228,12 @@ fn run_ci() -> Result<()> {
     // `--all-targets` skips doctests, so run them explicitly: the workspace
     // `missing_docs` lint implies doc examples that must keep compiling.
     run_cargo(&["test", "--doc", "--workspace", "--locked"])?;
+    // Docs gate: rustdoc warnings (broken/private/redundant intra-doc links) are
+    // denied, so a strict workspace doc build keeps public docs resolvable.
+    run_cargo_with_env(
+        &[("RUSTDOCFLAGS", "-D warnings")],
+        &["doc", "--workspace", "--no-deps", "--locked"],
+    )?;
 
     // External-binary checks: mandatory in CI (the workflow installs each tool),
     // run-if-present locally so a fresh checkout can still run `cargo xtask ci`.
@@ -260,11 +276,46 @@ fn run_cargo(args: &[&str]) -> Result<()> {
     run_program(&cargo(), args)
 }
 
+/// Runs `cargo` with `args` and `envs` set for the child process only, echoing the
+/// command and failing on a non-zero exit. Used to scope `RUSTDOCFLAGS` to the docs
+/// gate without mutating the parent environment.
+fn run_cargo_with_env(envs: &[(&str, &str)], args: &[&str]) -> Result<()> {
+    let cargo = cargo();
+    // Echo the env assignments too, so a failing step is reproducible by
+    // copy-pasting the displayed line. Values are single-quoted: an unquoted
+    // space (e.g. `RUSTDOCFLAGS=-D warnings`) would bind the assignment to a
+    // command named `warnings` in a POSIX shell.
+    let env_prefix: String = envs
+        .iter()
+        .map(|(key, value)| format!("{key}='{value}' "))
+        .collect();
+    let display = format!("{env_prefix}{cargo} {}", args.join(" "));
+    eprintln!("> {display}");
+    let status = Command::new(&cargo)
+        .args(args)
+        .envs(envs.iter().copied())
+        .status()
+        .with_context(|| format!("failed to spawn `{display}`"))?;
+    if !status.success() {
+        bail!("`{display}` failed with {status}");
+    }
+    Ok(())
+}
+
 /// Returns `true` if `bin --version` runs successfully. Used to gate optional
 /// external checks so a fresh checkout without the tool can still run `xtask ci`.
 fn tool_available(bin: &str) -> bool {
+    tool_available_with_args(bin, &["--version"])
+}
+
+/// Returns `true` if `bin args...` runs successfully. Probes a tool's presence with
+/// caller-supplied args because some tools reject a bare `--version`: `cargo-llvm-cov`,
+/// for example, demands the `llvm-cov` subcommand first (`cargo-llvm-cov --version`
+/// errors, `cargo-llvm-cov llvm-cov --version` succeeds), so `tool_available` would
+/// wrongly report it absent.
+fn tool_available_with_args(bin: &str, args: &[&str]) -> bool {
     Command::new(bin)
-        .arg("--version")
+        .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -311,11 +362,13 @@ fn run_cargo_machete() -> Result<()> {
 
 /// cargo-deny deterministic policy (bans, licenses, sources). Advisories need the
 /// network, so they are left to CI and `cargo xtask audit`, not the offline gate.
+/// `--all-features` is a global option (before `check`) and matches the CI
+/// supply-chain job so the local gate cannot pass where CI fails.
 fn run_cargo_deny_offline() -> Result<()> {
     run_if_present(
         "cargo-deny",
         "cargo-deny",
-        &["check", "bans", "licenses", "sources"],
+        &["--all-features", "check", "bans", "licenses", "sources"],
         "`brew install cargo-deny` or `cargo install cargo-deny`",
     )
 }
@@ -331,11 +384,15 @@ fn nightly_available() -> bool {
         .unwrap_or(false)
 }
 
-/// Generates a local HTML coverage report. Report-only: no threshold is enforced here.
-// TODO: once a baseline exists, add `--lcov`/Codecov upload and a
-// `--fail-under-lines N` threshold (mirrors the report-only `coverage` CI job).
+/// Generates a local HTML coverage report and enforces the `splot-validate`
+/// line-coverage threshold (>= 90%) the CI `coverage` job gates on. The `--html` run
+/// instruments the workspace; the follow-up `report` re-renders the same profile data
+/// scoped to `crates/splot-validate/` via `--ignore-filename-regex`.
 fn run_coverage() -> Result<()> {
-    if !tool_available("cargo-llvm-cov") {
+    // Probe with the `llvm-cov` subcommand: `cargo-llvm-cov` rejects a bare `--version`
+    // (it expects the subcommand first), so the plain `tool_available` probe would always
+    // report the tool absent and skip the report even when it is installed.
+    if !tool_available_with_args("cargo-llvm-cov", &["llvm-cov", "--version"]) {
         eprintln!(
             "coverage: `cargo-llvm-cov` not installed; skipping.\n     \
              install: `brew install cargo-llvm-cov` (or `cargo install cargo-llvm-cov`), \
@@ -349,6 +406,16 @@ fn run_coverage() -> Result<()> {
         "--all-features",
         "--locked",
         "--html",
+    ])?;
+    // `--ignore-filename-regex` matches the full (absolute) path, so xtask/fuzz are
+    // excluded with a `(^|/)` boundary rather than a string anchor.
+    run_cargo(&[
+        "llvm-cov",
+        "report",
+        "--fail-under-lines",
+        "90",
+        "--ignore-filename-regex",
+        SPLOT_VALIDATE_COVERAGE_IGNORE_REGEX,
     ])
 }
 
@@ -382,11 +449,12 @@ fn run_fuzz(time: Option<u64>) -> Result<()> {
 }
 
 /// Runs the networked cargo-deny advisory check (separate from the offline gate).
+/// `--all-features` matches the CI advisory job, like the offline gate.
 fn run_audit() -> Result<()> {
     run_if_present(
         "cargo-deny",
         "cargo-deny",
-        &["check", "advisories"],
+        &["--all-features", "check", "advisories"],
         "`brew install cargo-deny` or `cargo install cargo-deny`",
     )
 }

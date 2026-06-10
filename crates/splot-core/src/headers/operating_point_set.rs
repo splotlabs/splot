@@ -16,7 +16,7 @@
 //! alongside the computed `opsBytes`, and the inherited-operating-point references.
 //! Reserved-nonzero values are retained rather than rejected so the validation layer
 //! can report them with byte offsets; only truncated or malformed input produces a
-//! typed [`Error`].
+//! typed [`Error`](crate::error::Error).
 //!
 //! This module models syntax only. Annex A level conformance, Annex E decoder
 //! schedule validation, and active-sequence dependency-map agreement (§ 6.10.7) are
@@ -85,7 +85,7 @@ pub struct OperatingPointSet {
     /// `ops_color_info()`. `false` when `ops_cnt == 0`.
     pub color_info_present: bool,
     /// `ops_mlayer_info_idc` (`f(2)`): present only for a global OPS with
-    /// `ops_cnt > 0`. A value of [`OPS_MLAYER_INFO_IDC_RESERVED`] is reserved.
+    /// `ops_cnt > 0`. A value of `OPS_MLAYER_INFO_IDC_RESERVED` is reserved.
     pub mlayer_info_idc: Option<u8>,
     /// `ops_reserved_2bits` (`f(2)`): present only for a local OPS with
     /// `ops_cnt > 0`. Conformance requires it to be zero (§ 6.10.2).

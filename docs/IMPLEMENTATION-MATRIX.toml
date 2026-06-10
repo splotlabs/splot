@@ -3901,7 +3901,7 @@ openspec_change = "parse-annexb-and-obu-headers"
 tracking_issue = ""
 owner = "conformance"
 risk = "high"
-notes = "Malformed data must return errors/reports, never panic. The stable-toolchain proptest covers the same invariant in CI; the cargo-fuzz target needs nightly and is not in CI. The cargo-fuzz corpus (fuzz/corpus) is gitignored and not committed, so it is not listed as proof."
+notes = "Malformed data must return errors/reports, never panic. The stable-toolchain proptest covers the same invariant in CI; CI also runs a blocking 60-second parse_obu fuzz smoke job on every PR (.github/workflows/ci.yml fuzz-smoke), and cargo-fuzz still needs nightly to run locally. The cargo-fuzz corpus (fuzz/corpus) is gitignored and not committed, so it is not listed as proof."
 
 [feature.status]
 mapped = "done"
@@ -4139,6 +4139,42 @@ tests = ["xtask/src/diagnostic_registry.rs::tests"]
 commands = [
     "cargo xtask check-diagnostic-registry",
     "cargo test -p xtask diagnostic_registry",
+]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "XTASK-CI-QUALITY-GATES"
+name = "CI quality gates (docs build + coverage threshold)"
+category = "automation"
+kind = "automation"
+spec_sections = []
+sources = []
+crate = "xtask"
+module = "xtask/src/main.rs"
+openspec_change = "ci-quality-gates"
+tracking_issue = ""
+owner = "automation"
+risk = "low"
+notes = "Adds the blocking strict-docs gate (RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --locked) and the splot-validate line-coverage threshold (cargo llvm-cov report --fail-under-lines 90, scoped via --ignore-filename-regex) to both cargo xtask ci/coverage and .github/workflows/ci.yml, and fixes local/CI parity by adding --all-features to the offline cargo-deny invocation."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "not-applicable"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = [
+    "RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --locked",
+    "cargo xtask ci",
 ]
 fixtures = []
 diagnostics = []

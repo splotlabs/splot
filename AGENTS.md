@@ -69,6 +69,7 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo build --workspace --all-targets --locked
 cargo test --workspace --all-targets --locked
 cargo test --doc --workspace --locked      # doctests (not covered by --all-targets)
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked   # rustdoc gate (warnings denied)
 typos                                       # spell-check (config: _typos.toml)
 cargo machete --with-metadata               # unused-dependency check
 cargo deny check bans licenses sources      # offline supply-chain policy
