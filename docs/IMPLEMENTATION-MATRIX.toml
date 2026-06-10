@@ -498,11 +498,11 @@ spec_sections = ["5.4.1", "6.4.1"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/sequence.rs"
-openspec_change = "validator-coverage-roadmap"
+openspec_change = "metadata-semantic-validation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Parses the §5.4.1 general fields through dependency maps; the §5.4.2-§5.4.13 child configs are parsed by their own rows' modules."
+notes = "Parses the §5.4.1 general fields through dependency maps; the §5.4.2-§5.4.13 child configs are parsed by their own rows' modules. The §5.4.1 MLayerDependencyMap/TLayerDependencyMap are now derived and stored on SequenceHeaderGeneral (unconditional default fill plus the signaled descending-refLayer overrides, including the multi_tlayer row-0 replication branch) instead of having their bits discarded; depends_on() queries are panic-free. MLayerPresenceMap (§5.4.1) is deliberately not exposed yet (no consumer in metadata-semantic-validation)."
 
 [feature.status]
 mapped = "done"
@@ -517,8 +517,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-validate/src/checks/mod.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
-commands = ["cargo test -p splot-core sequence", "cargo test -p splot-validate sequence_header"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-core/src/headers/sequence.rs::tests::dependency_maps_default_fill_when_flags_absent", "crates/splot-core/src/headers/sequence.rs::tests::mlayer_dependency_override_bit_order", "crates/splot-core/src/headers/sequence.rs::tests::tlayer_dependency_row0_replication", "crates/splot-core/src/headers/sequence.rs::tests::tlayer_dependency_multi_rows_signaled", "crates/splot-core/src/headers/sequence.rs::tests::single_picture_header_collapses_maps", "crates/splot-core/src/headers/sequence.rs::tests::dependency_map_truncation_reports_eof", "crates/splot-validate/src/checks/mod.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-core dependency", "cargo test -p splot-validate sequence_header"]
 fixtures = ["tests/fixtures/conformant.av2"]
 diagnostics = ["sequence-header/seq-header-id-out-of-range", "sequence-header/chroma-format-out-of-range", "sequence-header/bit-depth-out-of-range", "sequence-header/seq-max-mlayer-count-out-of-range", "sequence-header/crop-left-out-of-range", "sequence-header/timing-num-units-zero"]
 
@@ -2049,11 +2049,11 @@ spec_sections = ["5.17", "6.16"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/metadata.rs"
-openspec_change = "metadata-padding-foundation"
+openspec_change = "metadata-semantic-validation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Umbrella for metadata OBUs. Split child rows before implementing type-specific metadata parsing."
+notes = "Umbrella for metadata OBUs; child rows carry the per-type status. The §6.16.3 persistence/cancellation lifetime store and the §6.16.10 scan-type CVS-consistency checks landed via metadata-semantic-validation (over the exact §7.3.6 CVS boundary). validate stays partial pending decoded-frame-hash verification (§6.16.13, blocked on a decoder) and in-frame-unit metadata suffix/prefix placement (§7.3.3/§7.3.4, blocked on frame-unit parsing)."
 
 [feature.status]
 mapped = "done"
@@ -2071,7 +2071,7 @@ perf = "not-applicable"
 tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
 commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
 fixtures = ["tests/fixtures/metadata-short.av2", "tests/fixtures/metadata-group.av2"]
-diagnostics = ["metadata/unit-payload-underflow", "metadata/short-layer-idc-out-of-range", "metadata/group-unit-count-too-large", "metadata/group-header-underflow", "metadata/group-reserved-bits-nonzero", "metadata/group-xlayer-map-global-bit-set", "metadata/group-mlayer-map-below-obu-mlayer", "metadata/temporal-point-info-not-short", "metadata/timecode-seconds-out-of-range", "metadata/timecode-minutes-out-of-range", "metadata/timecode-hours-out-of-range", "metadata/scan-type-pic-struct-reserved"]
+diagnostics = ["metadata/unit-payload-underflow", "metadata/short-layer-idc-out-of-range", "metadata/group-unit-count-too-large", "metadata/group-header-underflow", "metadata/group-reserved-bits-nonzero", "metadata/group-xlayer-map-global-bit-set", "metadata/group-mlayer-map-below-obu-mlayer", "metadata/temporal-point-info-not-short", "metadata/timecode-seconds-out-of-range", "metadata/timecode-minutes-out-of-range", "metadata/timecode-hours-out-of-range", "metadata/scan-type-pic-struct-reserved", "metadata/persistence-idc-reserved", "metadata/group-layer-idc-reserved", "metadata/hdr-cll-repeat-content-differs", "metadata/hdr-mdcv-repeat-content-differs", "metadata/scan-type-ci-scan-type-mismatch", "metadata/scan-type-ci-scan-type-unestablished", "metadata/scan-type-equal-picture-interval-required", "metadata/scan-type-pic-struct-group-inconsistent"]
 
 [[feature]]
 id = "AV2-5.17.1-METADATA-UNIT"
@@ -2144,21 +2144,21 @@ id = "AV2-5.17.3-METADATA-GROUP"
 name = "Metadata group OBU syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.17.3", "6.16"]
+spec_sections = ["5.17.3", "6.16.3"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/metadata.rs"
-openspec_change = "metadata-padding-foundation"
+openspec_change = "metadata-semantic-validation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
+notes = "Child row of AV2-5.17-METADATA. The §6.16.3 group-header conformance requirements (unit count, reserved bits, xlayer/mlayer-map rules) are checked; reserved muh_persistence_idc and group-form muh_layer_idc values (4-7) warn as 'reserved for AOMedia use'; and the §6.16.3 persistence/cancellation lifetime semantics (GLOBAL overwrite and cancel-immunity, BASIC replacement, NO_PERSISTENCE coded-frame expiry, ENHANCED treated as BASIC with a marker, dependency-map propagation as a pure never-flagging query) are modeled by the metadata lifetime store over the exact §7.3.6 CVS boundary. Documented interpretations: a GLOBAL_XLAYER_ID cancel clears the type across all extended layers (group cancel units carry no layer maps per §5.17.3); BASIC/ENHANCED replacement requires an equal layer scope (conservative reading of 'applies to the layer'); cancelling a never-signaled type is not a diagnostic (the §6.16.3 cancel wording is indicative)."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -2167,10 +2167,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
-commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests", "crates/splot-validate/src/validator.rs::tests::metadata_persistence_reserved_idc_warns", "crates/splot-validate/src/validator.rs::tests::metadata_persistence_defined_idc_is_accepted", "crates/splot-validate/src/validator.rs::tests::metadata_group_layer_idc_reserved_warns", "crates/splot-validate/src/validator.rs::tests::metadata_group_layer_idc_defined_values_accepted", "crates/splot-validate/src/validator.rs::tests::basic_persistence_cancel_clears_active", "crates/splot-validate/src/validator.rs::tests::global_persistence_ignores_cancel", "crates/splot-validate/src/validator.rs::tests::global_persistence_overwrites_prior_global", "crates/splot-validate/src/validator.rs::tests::global_xlayer_cancel_clears_all_layers", "crates/splot-validate/src/validator.rs::tests::no_persistence_expires_at_coded_frame", "crates/splot-validate/src/validator.rs::tests::cvs_restart_drops_active_metadata", "crates/splot-validate/src/validator.rs::tests::cancel_unknown_type_emits_nothing", "crates/splot-validate/src/validator.rs::tests::propagation_respects_dependency_maps", "crates/splot-validate/src/validator.rs::tests::metadata_truncated_observer_is_silent"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata", "cargo test -p splot-validate persistence"]
 fixtures = ["tests/fixtures/metadata-group.av2"]
-diagnostics = ["metadata/group-unit-count-too-large", "metadata/group-header-underflow", "metadata/group-reserved-bits-nonzero", "metadata/group-xlayer-map-global-bit-set", "metadata/group-mlayer-map-below-obu-mlayer"]
+diagnostics = ["metadata/group-unit-count-too-large", "metadata/group-header-underflow", "metadata/group-reserved-bits-nonzero", "metadata/group-xlayer-map-global-bit-set", "metadata/group-mlayer-map-below-obu-mlayer", "metadata/persistence-idc-reserved", "metadata/group-layer-idc-reserved"]
 
 [[feature]]
 id = "AV2-5.17.4-METADATA-ITUT-T35"
@@ -2210,15 +2210,15 @@ id = "AV2-5.17.5-METADATA-HDR-CLL"
 name = "HDR CLL metadata syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.17.5", "6.16"]
+spec_sections = ["5.17.5", "6.16.5"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/metadata.rs"
-openspec_change = "metadata-padding-foundation"
+openspec_change = "metadata-semantic-validation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
+notes = "Child row of AV2-5.17-METADATA. The §6.16.5 'shall have the same content' rule for additional HDR CLL units in a CVS is checked per layer scope over the exact §7.3.6 CVS boundary (metadata/hdr-cll-repeat-content-differs). validate stays partial: the §6.16.5 'shall be indicated at the first coded picture of that embedded layer' half needs metadata-to-picture association within the coded frame unit and is deferred to avoid false positives (TODO(spec: AV2-5.17.5-METADATA-HDR-CLL) in crates/splot-validate/src/context.rs)."
 
 [feature.status]
 mapped = "done"
@@ -2233,25 +2233,25 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
-commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests", "crates/splot-validate/src/validator.rs::tests::hdr_cll_repeat_same_content_accepted", "crates/splot-validate/src/validator.rs::tests::hdr_cll_repeat_content_differs_flagged", "crates/splot-validate/src/validator.rs::tests::hdr_cll_after_cvs_restart_new_content_accepted", "crates/splot-validate/src/validator.rs::tests::hdr_cll_cross_tu_repeat_differs_flagged_at_flush"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata", "cargo test -p splot-validate hdr_cll"]
 fixtures = []
-diagnostics = []
+diagnostics = ["metadata/hdr-cll-repeat-content-differs"]
 
 [[feature]]
 id = "AV2-5.17.6-METADATA-HDR-MDCV"
 name = "HDR MDCV metadata syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.17.6", "6.16"]
+spec_sections = ["5.17.6", "6.16.6"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/metadata.rs"
-openspec_change = "metadata-padding-foundation"
+openspec_change = "metadata-semantic-validation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
+notes = "Child row of AV2-5.17-METADATA. The §6.16.6 'shall have the same content' rule for additional HDR MDCV units in a CVS is checked per layer scope over the exact §7.3.6 CVS boundary (metadata/hdr-mdcv-repeat-content-differs). validate stays partial: the §6.16.6 'shall be indicated at the first coded picture of that embedded layer' half needs metadata-to-picture association within the coded frame unit and is deferred to avoid false positives (TODO(spec: AV2-5.17.6-METADATA-HDR-MDCV) in crates/splot-validate/src/context.rs)."
 
 [feature.status]
 mapped = "done"
@@ -2266,10 +2266,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
-commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests", "crates/splot-validate/src/validator.rs::tests::hdr_mdcv_repeat_content_differs_flagged"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata", "cargo test -p splot-validate hdr_mdcv"]
 fixtures = []
-diagnostics = []
+diagnostics = ["metadata/hdr-mdcv-repeat-content-differs"]
 
 [[feature]]
 id = "AV2-5.17.7-METADATA-TIMECODE"
@@ -2375,21 +2375,21 @@ id = "AV2-5.17.10-METADATA-SCAN-TYPE"
 name = "Scan type metadata syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.17.10", "6.16"]
+spec_sections = ["5.17.10", "6.16.10"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/metadata.rs"
-openspec_change = "metadata-padding-foundation"
+openspec_change = "metadata-semantic-validation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
+notes = "Child row of AV2-5.17-METADATA. The Table 6.18 ci_scan_type_idc cross-checks, the equal_picture_interval rule for mps_pic_struct_type 7/8, and the CVS-wide single-pic-struct-group conformance requirement are enforced over the exact §7.3.6 CVS boundary (per-xlayer scopes plus a global bucket; global metadata is compared against each concrete xlayer scope and vice versa). Reserved mps_pic_struct_type values (>12) are excluded from the group/CI state per 'Decoders shall ignore reserved values'. Negative finding (spec honesty): the mirror defines mps_source_scan_type_idc only as having 'the same semantics as for ci_scan_type_idc' (§6.16.10) — no mps_source_scan_type_idc/ci_scan_type_idc consistency rule exists, so none is checked; mps_duplicate_flag is indicative only. metadata/scan-type-ci-scan-type-unestablished is a derived literal-reading warning (the §7.3.8.11 default ci_scan_type_idc 0 satisfies no Table 6.18 row); absent timing_info is silent for the 7/8 equal-picture-interval rule (the mirror gives no absent-case rule)."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -2398,10 +2398,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
-commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests", "crates/splot-validate/src/validator.rs::tests::scan_type_group_mixing_in_cvs_flagged", "crates/splot-validate/src/validator.rs::tests::scan_type_group_mixing_across_tu_flagged", "crates/splot-validate/src/validator.rs::tests::scan_type_group_change_after_clk_accepted", "crates/splot-validate/src/validator.rs::tests::scan_type_group_mixing_between_global_and_xlayer_scopes_flagged", "crates/splot-validate/src/validator.rs::tests::scan_type_reserved_value_excluded_from_group_state", "crates/splot-validate/src/validator.rs::tests::scan_type_ci_mismatch_flagged", "crates/splot-validate/src/validator.rs::tests::scan_type_ci_arrives_after_metadata_mismatch_flagged", "crates/splot-validate/src/validator.rs::tests::scan_type_frame_doubling_requires_equal_picture_interval", "crates/splot-validate/src/validator.rs::tests::scan_type_without_ci_warns_unestablished_at_eos", "crates/splot-validate/src/validator.rs::tests::scan_type_unestablished_warned_at_cvs_restart"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata", "cargo test -p splot-validate scan_type"]
 fixtures = []
-diagnostics = ["metadata/scan-type-pic-struct-reserved"]
+diagnostics = ["metadata/scan-type-pic-struct-reserved", "metadata/scan-type-ci-scan-type-mismatch", "metadata/scan-type-ci-scan-type-unestablished", "metadata/scan-type-equal-picture-interval-required", "metadata/scan-type-pic-struct-group-inconsistent"]
 
 [[feature]]
 id = "AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO"
@@ -3190,11 +3190,11 @@ spec_sections = ["7.3.6"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
 module = "crates/splot-validate/src/context.rs"
-openspec_change = "frame-activation-hls-skeleton"
+openspec_change = "metadata-semantic-validation"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Child row of AV2-7.3-OBU-ORDERING. The frame-header prefix parser (AV2-5.18.2-FRAME-HEADER-INFO) now models CLK/OLK sequence-header references for the activation paths it can parse: a parsed CLK/OLK activates the referenced sequence header for its extended layer, and CVS-scoped sequence-header fingerprints and content-interpretation records reset at the global temporal delimiter so an in-CVS non-identical repeat after the activating CLK is caught. HLS availability stays monotonic. Cross-temporal-unit-within-CVS scoping and unparsed frame paths remain sound-over-complete (documented false negative, never a false positive); exact random-access scoping needs AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY."
+notes = "Child row of AV2-7.3-OBU-ORDERING. The validator now models the exact §7.3.6 sequential-decoding CVS boundary: a new CVS for an extended layer starts at each temporal unit containing a CLK in that layer's coded extended layer unit (detected from raw OBU headers, per-xlayer per-temporal-unit). Same-temporal-unit records join the new CVS (the CVS starts at the temporal unit, so a sequence header preceding the activating CLK belongs to the new CVS); cross-temporal-unit CVS-scoped comparison diagnostics are deferred to the temporal-unit boundary and dropped when that xlayer's CVS started in the just-completed temporal unit. The former temporal-unit-reset approximation's documented cross-TU false negatives are now true positives. §7.4.4 OLK decode-initiation behavior is out of validator scope (OLK/RAS are not CVS boundary events in sequential decoding); CMVS boundaries are tracked by AV2-7.3.2-CMVS-BOUNDARIES. Documented approximation: global-bucket (GLOBAL_XLAYER_ID) CVS-scoped records are pruned at every CVS boundary event. Residual for validate=done: the §7.3.6 coded-frame-unit constraints (in-unit OBU ordering, output-frame presence, OrderHint agreement and monotonicity, CLK/OLK first-coded-frame-unit rules, leading-frame rule, per-frame-unit content-interpretation placement) need frame-unit parsing (AV2-7.3.5-CODED-FRAME-UNIT)."
 
 [feature.status]
 mapped = "done"
@@ -3209,10 +3209,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-validate/src/validator.rs::tests::sequence_activation_uses_clk_referenced_sequence_header", "crates/splot-validate/src/validator.rs::tests::sequence_fingerprint_preserved_for_in_cvs_repeat"]
-commands = ["cargo test -p splot-validate sequence_activation", "cargo test -p splot-validate sequence_fingerprint"]
+tests = ["crates/splot-validate/src/validator.rs::tests::sequence_activation_uses_clk_referenced_sequence_header", "crates/splot-validate/src/validator.rs::tests::sequence_fingerprint_preserved_for_in_cvs_repeat", "crates/splot-validate/src/validator.rs::tests::hls_repeated_sequence_header_across_temporal_units_without_clk_is_flagged", "crates/splot-validate/src/validator.rs::tests::hls_cross_temporal_unit_repeat_is_flushed_at_next_temporal_delimiter", "crates/splot-validate/src/validator.rs::tests::hls_clk_for_other_xlayer_does_not_end_coded_video_sequence", "crates/splot-validate/src/validator.rs::tests::sequence_reconfiguration_in_clk_temporal_unit_is_not_flagged", "crates/splot-validate/src/validator.rs::tests::first_picture_in_tu_is_tracked_per_extended_layer", "crates/splot-validate/src/validator.rs::tests::ci_repeated_non_identical_across_temporal_units_without_clk_is_flagged", "crates/splot-validate/src/validator.rs::tests::ci_repeated_non_identical_in_clk_temporal_unit_is_not_flagged"]
+commands = ["cargo test -p splot-validate sequence_activation", "cargo test -p splot-validate sequence_fingerprint", "cargo test -p splot-validate temporal_unit"]
 fixtures = []
-diagnostics = ["hls/repeated-sequence-header-not-identical", "sequence-state/tlayer-exceeds-max"]
+diagnostics = ["hls/repeated-sequence-header-not-identical", "content-interpretation/repeated-ci-not-identical", "sequence-state/tlayer-exceeds-max"]
 
 [[feature]]
 id = "AV2-7.3.7-TEMPORAL-UNIT-ORDER"
@@ -3260,7 +3260,7 @@ openspec_change = "frame-activation-hls-skeleton"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Active sequence lookup by xlayer, the repeated-identical (bit-fingerprint) check, an in-band sequence-header + multi-frame-header availability store, the multi-frame-header -> sequence-header reference check (mfh_seq_header_id), and the generic frame-header reference checks (seq_header_id_in_frame_header and cur_mfh_id) are implemented, with caller-provided external HLS via ValidationOptions (default disabled; external MFH/LCR/atlas are future). Layer-configuration-record availability (§7.3.8.3: local->global LCR and sequence-header seq_lcr_id resolution incl. lcr_xlayer_map membership) and local atlas-segment availability (§7.3.8.4) are now modeled; the global atlas (can be available) is not flagged. Availability is kept monotonic; the §7.3.8.1 resend-at-RAP requirement and MSDO/OPS reference paths remain bounded. MFH layer-dependency-map checks remain future (TLayerDependencyMap/MLayerDependencyMap are not exposed by the sequence-header model). The validator also records per-level quantizer-matrix availability (AV2-5.13-QUANTIZATION-MATRIX) and per-slot film-grain availability (AV2-5.14-FILM-GRAIN) as foundation; the corresponding frame quantization/film-grain reference checks (using_qmatrix/qm_* and apply_grain/fgm_id) remain future until the frame header is parsed."
+notes = "Active sequence lookup by xlayer, the repeated-identical (bit-fingerprint) check (normative home: the §7.3.6 bit-identity rule, tracked by AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT; §7.3.8.6 only cross-references it), an in-band sequence-header + multi-frame-header availability store, the multi-frame-header -> sequence-header reference check (mfh_seq_header_id), and the generic frame-header reference checks (seq_header_id_in_frame_header and cur_mfh_id) are implemented, with caller-provided external HLS via ValidationOptions (default disabled; external MFH/LCR/atlas are future). Layer-configuration-record availability (§7.3.8.3: local->global LCR and sequence-header seq_lcr_id resolution incl. lcr_xlayer_map membership) and local atlas-segment availability (§7.3.8.4) are now modeled; the global atlas (can be available) is not flagged. Availability is kept monotonic; the §7.3.8.1 resend-at-RAP requirement and MSDO/OPS reference paths remain bounded. MFH layer-dependency-map checks remain future (TLayerDependencyMap/MLayerDependencyMap are not exposed by the sequence-header model). The validator also records per-level quantizer-matrix availability (AV2-5.13-QUANTIZATION-MATRIX) and per-slot film-grain availability (AV2-5.14-FILM-GRAIN) as foundation; the corresponding frame quantization/film-grain reference checks (using_qmatrix/qm_* and apply_grain/fgm_id) remain future until the frame header is parsed."
 
 [feature.status]
 mapped = "done"

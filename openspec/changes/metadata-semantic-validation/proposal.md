@@ -10,8 +10,9 @@ on capabilities `splot` does not have yet (a decoder, full frame/tile parsing). 
 change is the home for that remaining work so `AV2-5.17-METADATA` can eventually move
 from `validate = "partial"` to `validate = "done"`.
 
-This is a tracking proposal: it is **not implemented yet**, and several of its items are
-blocked on other roadmap phases (see Blockers).
+Items 1 and 2 (and their prerequisites — the sequence-header dependency maps and the
+exact coded-video-sequence boundary) are **implemented**. Items 3 and 4 remain
+blocked-tracking entries gated on other roadmap phases (see Blockers).
 
 ## Why
 
@@ -23,30 +24,35 @@ ranges, temporal-point-info placement). The metadata umbrella is therefore hones
 `validate = "partial"`: the per-OBU rules are checked, but the rules that span OBUs or a
 coded video sequence are not. This change collects exactly those.
 
-## What changes (future)
+## What changes
 
-1. **Persistence / cancellation lifetime store (§ 6.16.3).** A CVS-scoped, per-layer
-   state machine that applies `muh_persistence_idc` (GLOBAL / BASIC / NO / ENHANCED) and
-   `muh_cancel_flag`, propagating active metadata across layers via
-   `TLayerDependencyMap` / `MLayerDependencyMap`.
-2. **Scan-type CVS-wide consistency (§ 6.16.10).** Correlate `metadata_scan_type`
-   (`mps_pic_struct_type`, `mps_source_scan_type_idc`) with `ci_scan_type_idc` from the
-   content-interpretation OBU, and enforce the "for all pictures in the current CVS,
-   only one `mps_pic_struct_type` group is used" constraint. (The local
-   `mps_pic_struct_type <= 12` check already shipped.)
-3. **Decoded-frame-hash verification (§ 6.16.13).** Verify `frame_hash` / `plane_hash`
-   (MD5) against the decoded output samples. (The hash is already parsed and surfaced.)
-4. **Frame-unit suffix/prefix placement (§ 7.3.3 / § 7.3.4).** Validate the exact
-   position of prefix vs. suffix metadata *inside* a coded frame unit. (The coarse
+1. **Persistence / cancellation lifetime store (§ 6.16.3) — implemented.** A
+   CVS-scoped, per-layer state machine that applies `muh_persistence_idc`
+   (GLOBAL / BASIC / NO / ENHANCED) and `muh_cancel_flag`, propagating active metadata
+   across layers via `TLayerDependencyMap` / `MLayerDependencyMap` (now exposed by the
+   sequence-header model), plus the reserved-value warnings and the § 6.16.5/§ 6.16.6
+   HDR CLL/MDCV repeat-content checks.
+2. **Scan-type CVS-wide consistency (§ 6.16.10) — implemented.** Correlates
+   `metadata_scan_type` (`mps_pic_struct_type`) with `ci_scan_type_idc` from the
+   content-interpretation OBU per Table 6.18, and enforces the "for all pictures in the
+   current CVS, only one `mps_pic_struct_type` group is used" constraint over the exact
+   § 7.3.6 CVS boundary. (The local `mps_pic_struct_type <= 12` check already shipped;
+   the mirror defines no `mps_source_scan_type_idc` ↔ `ci_scan_type_idc` consistency
+   rule, so none is checked.)
+3. **Decoded-frame-hash verification (§ 6.16.13) — future.** Verify
+   `frame_hash` / `plane_hash` (MD5) against the decoded output samples. (The hash is
+   already parsed and surfaced.)
+4. **Frame-unit suffix/prefix placement (§ 7.3.3 / § 7.3.4) — future.** Validate the
+   exact position of prefix vs. suffix metadata *inside* a coded frame unit. (The coarse
    temporal-unit prefix/suffix/coded-layer classification already shipped.)
 
-## Blockers (why each is not done yet)
+## Blockers (status per item)
 
-- **Item 1** needs a CVS-scoped metadata state machine plus the sequence-header
-  layer-dependency maps, which the sequence-header model does not yet expose.
-- **Item 2** needs CVS-scoped state and cross-OBU correlation over a precisely modeled
-  CVS boundary (the validator currently approximates the boundary at temporal-unit
-  resets, a sound-over-complete choice).
+- **Item 1** — resolved. The sequence-header model now exposes the § 5.4.1 dependency
+  maps, the exact § 7.3.6 CVS boundary replaced the temporal-unit-reset approximation,
+  and the lifetime store landed.
+- **Item 2** — resolved. CVS-scoped state and the content-interpretation ↔ scan-type
+  cross-reference landed over the exact CVS boundary.
 - **Item 3** needs a **decoder**: `splot` has no entropy coder or reconstruction
   (`RangeDecoder` is a stub), so there are no decoded samples to hash. Blocked on the
   Phase 9/10 decoder/conformance work in `docs/VALIDATOR-ROADMAP.md`.
@@ -62,8 +68,14 @@ coded video sequence are not. This change collects exactly those.
 ## Feature IDs
 
 - `AV2-5.17-METADATA` (umbrella; `validate` advances toward `done` as items land)
-- `AV2-5.17.10-METADATA-SCAN-TYPE`, `AV2-5.17.12-METADATA-DECODED-FRAME-HASH`
+- `AV2-5.17.3-METADATA-GROUP`, `AV2-5.17.5-METADATA-HDR-CLL`,
+  `AV2-5.17.6-METADATA-HDR-MDCV` (item 1)
+- `AV2-5.17.10-METADATA-SCAN-TYPE` (item 2)
+- `AV2-5.4.1-SEQUENCE-HEADER-GENERAL`, `AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT`
+  (prerequisites: dependency maps, exact CVS boundary)
+- `AV2-5.17.12-METADATA-DECODED-FRAME-HASH` (item 3, blocked)
 - `AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT`, `AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT`
+  (item 4, blocked)
 
 ## Acceptance criteria
 

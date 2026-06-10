@@ -76,17 +76,17 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.14](./spec/av2/1.0.0/05-syntax-structures.md#s-5-14) | Film grain OBU syntax | `AV2-5.14-FILM-GRAIN` | ✅ | ✅ | 🟡 | ✅ | 6 |
 | [§ 5.15](./spec/av2/1.0.0/05-syntax-structures.md#s-5-15) | Content interpretation OBU syntax | `AV2-5.15-CONTENT-INTERPRETATION` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 5.16](./spec/av2/1.0.0/05-syntax-structures.md#s-5-16) | Padding OBU syntax | `AV2-5.16-PADDING` | ✅ | ✅ | ✅ | ✅ | 2 |
-| [§ 5.17](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17) | Metadata OBU syntax | `AV2-5.17-METADATA` | ✅ | ✅ | 🟡 | ✅ | 12 |
+| [§ 5.17](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17) | Metadata OBU syntax | `AV2-5.17-METADATA` | ✅ | ✅ | 🟡 | ✅ | 20 |
 | [§ 5.17.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-1) | Metadata unit syntax | `AV2-5.17.1-METADATA-UNIT` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 5.17.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-2) | Metadata short OBU syntax | `AV2-5.17.2-METADATA-SHORT` | ✅ | ✅ | 🟡 | ✅ | 2 |
-| [§ 5.17.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-3) | Metadata group OBU syntax | `AV2-5.17.3-METADATA-GROUP` | ✅ | ✅ | 🟡 | ✅ | 5 |
+| [§ 5.17.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-3) | Metadata group OBU syntax | `AV2-5.17.3-METADATA-GROUP` | ✅ | ✅ | ✅ | ✅ | 7 |
 | [§ 5.17.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-4) | Metadata ITUT T35 syntax | `AV2-5.17.4-METADATA-ITUT-T35` | ✅ | ✅ | 🟡 | ✅ | — |
-| [§ 5.17.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-5) | Metadata high dynamic range content light level syntax | `AV2-5.17.5-METADATA-HDR-CLL` | ✅ | ✅ | 🟡 | ✅ | — |
-| [§ 5.17.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-6) | Metadata high dynamic range mastering display color volume syntax | `AV2-5.17.6-METADATA-HDR-MDCV` | ✅ | ✅ | 🟡 | ✅ | — |
+| [§ 5.17.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-5) | Metadata high dynamic range content light level syntax | `AV2-5.17.5-METADATA-HDR-CLL` | ✅ | ✅ | 🟡 | ✅ | 1 |
+| [§ 5.17.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-6) | Metadata high dynamic range mastering display color volume syntax | `AV2-5.17.6-METADATA-HDR-MDCV` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 5.17.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-7) | Metadata timecode syntax | `AV2-5.17.7-METADATA-TIMECODE` | ✅ | ✅ | 🟡 | ✅ | 3 |
 | [§ 5.17.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-8) | Metadata banding hints syntax | `AV2-5.17.8-METADATA-BANDING-HINTS` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.17.9](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-9) | Metadata ICC profile syntax | `AV2-5.17.9-METADATA-ICC-PROFILE` | ✅ | ✅ | 🟡 | ✅ | — |
-| [§ 5.17.10](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-10) | Metadata scan type syntax | `AV2-5.17.10-METADATA-SCAN-TYPE` | ✅ | ✅ | 🟡 | ✅ | 1 |
+| [§ 5.17.10](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-10) | Metadata scan type syntax | `AV2-5.17.10-METADATA-SCAN-TYPE` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 5.17.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-11) | Metadata temporal point info syntax | `AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 5.17.12](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-12) | Metadata decoded frame hash syntax | `AV2-5.17.12-METADATA-DECODED-FRAME-HASH` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.17.13](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-13) | Metadata user data unregistered syntax | `AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED` | ✅ | ✅ | 🟡 | ✅ | — |
@@ -169,20 +169,20 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.13](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-13) | Film grain OBU semantics | `AV2-5.14-FILM-GRAIN` | ✅ | ✅ | 🟡 | ✅ | 6 |
 | [§ 6.14](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-14) | Content interpretation OBU semantics | `AV2-5.15-CONTENT-INTERPRETATION` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 6.15](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-15) | Padding OBU semantics | `AV2-5.16-PADDING` | ✅ | ✅ | ✅ | ✅ | 2 |
-| [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17-METADATA` | ✅ | ✅ | 🟡 | ✅ | 12 |
+| [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17-METADATA` | ✅ | ✅ | 🟡 | ✅ | 20 |
 | [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17.1-METADATA-UNIT` | ✅ | ✅ | 🟡 | ✅ | 1 |
-| [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17.10-METADATA-SCAN-TYPE` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17.12-METADATA-DECODED-FRAME-HASH` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17.2-METADATA-SHORT` | ✅ | ✅ | 🟡 | ✅ | 2 |
-| [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17.3-METADATA-GROUP` | ✅ | ✅ | 🟡 | ✅ | 5 |
 | [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17.4-METADATA-ITUT-T35` | ✅ | ✅ | 🟡 | ✅ | — |
-| [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17.5-METADATA-HDR-CLL` | ✅ | ✅ | 🟡 | ✅ | — |
-| [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17.6-METADATA-HDR-MDCV` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17.7-METADATA-TIMECODE` | ✅ | ✅ | 🟡 | ✅ | 3 |
 | [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17.8-METADATA-BANDING-HINTS` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.16](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16) | Metadata OBU semantics | `AV2-5.17.9-METADATA-ICC-PROFILE` | ✅ | ✅ | 🟡 | ✅ | — |
+| [§ 6.16.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-3) | Metadata group OBU semantics | `AV2-5.17.3-METADATA-GROUP` | ✅ | ✅ | ✅ | ✅ | 7 |
+| [§ 6.16.5](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-5) | Metadata high dynamic range content light level semantics | `AV2-5.17.5-METADATA-HDR-CLL` | ✅ | ✅ | 🟡 | ✅ | 1 |
+| [§ 6.16.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-6) | Metadata high dynamic range mastering display color volume semantics | `AV2-5.17.6-METADATA-HDR-MDCV` | ✅ | ✅ | 🟡 | ✅ | 1 |
+| [§ 6.16.10](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-10) | Metadata scan type semantics | `AV2-5.17.10-METADATA-SCAN-TYPE` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 6.17](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17) | Frame header OBU semantics | `AV2-5.18-FRAME-HEADER` | ✅ | 🟡 | 🟡 | ✅ | 4 |
 | [§ 6.17](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17) | Frame header OBU semantics | `AV2-5.18.1-FRAME-HEADER-GENERAL` | ✅ | 🟡 | 🟡 | ✅ | — |
 | [§ 6.17](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17) | Frame header OBU semantics | `AV2-5.18.10-FILM-GRAIN-STRUCTURES` | ✅ |  |  |  | — |
@@ -210,7 +210,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.3.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-3) | Coded output frame unit | `AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT` | ✅ | — |  |  | — |
 | [§ 7.3.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-4) | Coded non-output frame unit | `AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT` | ✅ | — |  |  | — |
 | [§ 7.3.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-5) | Coded frame unit | `AV2-7.3.5-CODED-FRAME-UNIT` | ✅ | — |  |  | — |
-| [§ 7.3.6](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-6) | Coded extended layer unit | `AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT` | ✅ | — | 🟡 | ✅ | 2 |
+| [§ 7.3.6](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-6) | Coded extended layer unit | `AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT` | ✅ | — | 🟡 | ✅ | 3 |
 | [§ 7.3.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-7) | Temporal unit | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | ✅ | ✅ | 🟡 | ✅ | 3 |
 | [§ 7.3.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-8) | Availability of high level syntax OBUs | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` | ✅ | ✅ | 🟡 | ✅ | 3 |
 | [§ 7.3.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-8) | Availability of high level syntax OBUs | `AV2-7.3.8-HLS-AVAILABILITY` | ✅ | ✅ | 🟡 | ✅ | 12 |

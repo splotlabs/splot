@@ -4,30 +4,41 @@
 
 `metadata-padding-foundation` delivered the metadata parsers and the locally-decidable
 § 6.16 diagnostics. The remaining § 6.16 rules are stateful or capability-blocked. This
-change scopes them and records the intended approach so they can be implemented when
-their dependencies land. It is a tracking design; no code ships with this change.
+change scopes them; items 1 and 2 (with their prerequisites) are **implemented**, while
+items 3 and 4 remain tracking entries for when their dependencies land.
 
-## Item 1 — persistence / cancellation lifetime (§ 6.16.3)
+## Item 1 — persistence / cancellation lifetime (§ 6.16.3) — implemented
 
-A per-`(obu_xlayer_id, metadata_type)` "active metadata" store, scoped to a coded video
-sequence, updated as metadata OBUs are observed:
+A per-`(obu_xlayer_id, metadata_type)` "active metadata" store
+(`crates/splot-validate/src/metadata_lifetime.rs`), scoped to a coded video sequence,
+updated as metadata OBUs are observed:
 
 - `muh_persistence_idc`: GLOBAL (persists for the CVS; `muh_cancel_flag` is a no-op),
   BASIC (persists until same-type metadata for the layer or a cancel), NO (current frame
-  only), ENHANCED (basic with partial update).
+  only), ENHANCED (basic with partial update; modeled as BASIC with a marker — the spec
+  gives no merge algorithm).
 - `muh_cancel_flag`: cancels previously-signaled metadata of the type for the current
-  extended layer (or a set of layers when global).
-- Cross-layer propagation via `TLayerDependencyMap` / `MLayerDependencyMap`.
+  extended layer (or all extended layers when the cancel OBU is global — group cancel
+  units carry no layer maps per § 5.17.3).
+- Cross-layer propagation via `TLayerDependencyMap` / `MLayerDependencyMap` as a pure,
+  never-flagging applicability query (the § 6.16.3 propagation bullets are decoder
+  applicability rules, not conformance requirements).
 
-**Blocker:** the dependency maps are not exposed by the sequence-header model, and the
-exact CVS boundary is only approximated today. Both are prerequisites.
+Alongside the store, the § 6.16.3 reserved-value warnings and the § 6.16.5/§ 6.16.6 HDR
+CLL/MDCV repeat-content checks landed. The former blockers are resolved: the
+sequence-header model now exposes the § 5.4.1 dependency maps, and the exact § 7.3.6
+CVS boundary (CLK per extended layer per temporal unit, with cross-temporal-unit
+comparisons deferred to the temporal-unit boundary) replaced the temporal-unit-reset
+approximation.
 
-## Item 2 — scan-type CVS consistency (§ 6.16.10)
+## Item 2 — scan-type CVS consistency (§ 6.16.10) — implemented
 
-Correlate `metadata_scan_type` with the content-interpretation `ci_scan_type_idc` per
-Table 6.18, and enforce the CVS-wide constraint that `mps_pic_struct_type` stays within
-one of the three permitted groups for all pictures of the CVS. Requires CVS-scoped state
-and a content-interpretation ↔ scan-type cross-reference.
+Correlates `metadata_scan_type` with the content-interpretation `ci_scan_type_idc` per
+Table 6.18, and enforces the CVS-wide constraint that `mps_pic_struct_type` stays within
+one of the three permitted groups for all pictures of the CVS, using per-xlayer scopes
+plus a global bucket over the exact CVS boundary. Reserved `mps_pic_struct_type` values
+are excluded from the state; the mirror defines no `mps_source_scan_type_idc` ↔
+`ci_scan_type_idc` consistency rule, so none is checked.
 
 ## Item 3 — decoded-frame-hash verification (§ 6.16.13)
 
@@ -49,7 +60,6 @@ ships in `metadata-padding-foundation`; this is the precise in-frame-unit refine
 
 ## Sequencing
 
-Items 2 and 1 are the validator-achievable next steps (in roughly that order, gated on
-CVS-boundary modeling and the dependency maps). Items 3 and 4 are gated on the decoder
-and frame/tile parsing phases respectively and may be split out to those phases' changes
-when they begin.
+Items 1 and 2 (and their prerequisites — the dependency maps and the exact CVS
+boundary) have landed. Items 3 and 4 are gated on the decoder and frame/tile parsing
+phases respectively and may be split out to those phases' changes when they begin.

@@ -1088,9 +1088,12 @@ impl Check for PaddingSyntax {
 }
 
 /// Metadata OBU syntax: full `metadata_short_obu()` / `metadata_group_obu()` parse and
-/// the locally-decidable § 6.16 conformance diagnostics (AV2 § 5.17 / § 6.16). Metadata
-/// persistence / cancellation lifetime, decoded-frame-hash verification, scan-type
-/// CVS-wide consistency, and frame-unit suffix/prefix placement are deferred.
+/// the locally-decidable § 6.16 conformance diagnostics (AV2 § 5.17 / § 6.16). The
+/// stateful § 6.16.3 persistence / cancellation lifetime and § 6.16.10 scan-type
+/// CVS-wide consistency checks live in the validator context (`MetadataLifetimeStore`
+/// and `ScanTypeCvsState`). Decoded-frame-hash verification (§ 6.16.13, blocked on a
+/// decoder for the decoded output samples) and frame-unit suffix/prefix placement
+/// (§ 7.3.3 / § 7.3.4, blocked on frame-unit structure parsing) remain deferred.
 struct MetadataSyntax;
 
 impl Check for MetadataSyntax {
@@ -1129,6 +1132,26 @@ fn check_metadata_short(obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
                         ),
                     )
                     .with_spec_section("6.16.2")
+                    .with_byte_offset(obu.offset),
+                );
+            }
+            // AV2 § 6.16.3: muh_persistence_idc values 4..=7 read only "Reserved —
+            // Reserved for AOMedia use", with no "shall"; a reserved value is a
+            // producer anomaly (warning), never a violation. A cancel unit's
+            // muh_persistence_idc is parsed (§ 5.17.2 reads it before the early
+            // return) but carries no persistence semantics, so only non-cancel
+            // units warn.
+            if !metadata.muh_cancel_flag && metadata.muh_persistence_idc >= 4 {
+                report.push(
+                    Diagnostic::warning(
+                        "metadata/persistence-idc-reserved",
+                        format!(
+                            "muh_persistence_idc {} is reserved for AOMedia use; not defined by \
+                             this version of the specification",
+                            metadata.muh_persistence_idc
+                        ),
+                    )
+                    .with_spec_section("6.16.3")
                     .with_byte_offset(obu.offset),
                 );
             }
@@ -1192,6 +1215,46 @@ fn check_metadata_group_unit(
                 format!(
                     "muh_reserved_zero_2bits must be 0 (found {reserved}); the value is ignored \
                      by a decoder"
+                ),
+            )
+            .with_spec_section("6.16.3")
+            .with_byte_offset(obu.offset),
+        );
+    }
+
+    // AV2 § 6.16.3: muh_layer_idc values 4..=7 read only "Reserved — Reserved for
+    // AOMedia use", with no "shall"; a reserved value is a producer anomaly
+    // (warning), never a violation. The short form's stricter muh_layer_idc < 3
+    // rule (§ 6.16.2) is a separate error in check_metadata_short; group cancel
+    // units carry no muh_layer_idc (§ 5.17.3), so the field's presence implies a
+    // non-cancel unit.
+    if let Some(layer_idc) = unit.muh_layer_idc
+        && layer_idc >= 4
+    {
+        report.push(
+            Diagnostic::warning(
+                "metadata/group-layer-idc-reserved",
+                format!(
+                    "muh_layer_idc {layer_idc} is reserved for AOMedia use; not defined by this \
+                     version of the specification"
+                ),
+            )
+            .with_spec_section("6.16.3")
+            .with_byte_offset(obu.offset),
+        );
+    }
+
+    // AV2 § 6.16.3: muh_persistence_idc values 4..=7 are likewise "Reserved for
+    // AOMedia use" (warning, never a violation); absent only on cancel units.
+    if let Some(persistence_idc) = unit.muh_persistence_idc
+        && persistence_idc >= 4
+    {
+        report.push(
+            Diagnostic::warning(
+                "metadata/persistence-idc-reserved",
+                format!(
+                    "muh_persistence_idc {persistence_idc} is reserved for AOMedia use; not \
+                     defined by this version of the specification"
                 ),
             )
             .with_spec_section("6.16.3")

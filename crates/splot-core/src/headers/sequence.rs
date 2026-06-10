@@ -300,6 +300,132 @@ impl EmbeddedLayerCount {
     }
 }
 
+/// Derived `MLayerDependencyMap[currLayer][refLayer]` (AV2 § 5.4.1): `true` when
+/// embedded layer `currLayer` may depend on embedded layer `refLayer`
+/// (`mlayer_dependency_map` "specifies the embedded layer dependencies", § 6.4.1).
+///
+/// The § 5.4.1 default fill is the lower-triangular pattern clipped to
+/// `max_mlayer_id` (`refLayer <= currLayer && currLayer <= max_mlayer_id`). When
+/// `mlayer_dependency_present_flag` is set, signaled bits replace rows
+/// `1..=max_mlayer_id` (the diagonal is itself signaled and may be 0); row 0 keeps
+/// the default. The mirror also spells this variable `MlayerDependencyMap` in
+/// § 6.8.9 / § 6.10.7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MLayerDependencyMap([[bool; MAX_NUM_MLAYERS]; MAX_NUM_MLAYERS]);
+
+impl MLayerDependencyMap {
+    /// Builds the § 5.4.1 default fill:
+    /// `MLayerDependencyMap[currLayer][refLayer] = refLayer <= currLayer &&
+    /// currLayer <= max_mlayer_id` over all `MAX_NUM_MLAYERS x MAX_NUM_MLAYERS`
+    /// entries.
+    #[must_use]
+    pub fn default_for(max_mlayer_id: EmbeddedLayerId) -> Self {
+        let max_mlayer = usize::from(max_mlayer_id.get());
+        let mut map = [[false; MAX_NUM_MLAYERS]; MAX_NUM_MLAYERS];
+        for (curr_layer, row) in map.iter_mut().enumerate() {
+            for (ref_layer, entry) in row.iter_mut().enumerate() {
+                *entry = ref_layer <= curr_layer && curr_layer <= max_mlayer;
+            }
+        }
+        Self(map)
+    }
+
+    /// Returns `MLayerDependencyMap[curr][reference]`. Ids outside the 3-bit
+    /// `obu_mlayer_id` range read as `false`.
+    #[must_use]
+    pub fn depends_on(&self, curr: EmbeddedLayerId, reference: EmbeddedLayerId) -> bool {
+        self.0
+            .get(usize::from(curr.get()))
+            .and_then(|row| row.get(usize::from(reference.get())))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Stores a signaled `mlayer_dependency_map` bit; out-of-range indices (never
+    /// produced by the parser, whose loop bounds come from the 3-bit
+    /// `max_mlayer_id`) are ignored rather than panicking.
+    fn set(&mut self, curr_layer: u8, ref_layer: u8, value: bool) {
+        if let Some(entry) = self
+            .0
+            .get_mut(usize::from(curr_layer))
+            .and_then(|row| row.get_mut(usize::from(ref_layer)))
+        {
+            *entry = value;
+        }
+    }
+}
+
+/// Derived `TLayerDependencyMap[mLayer][currTLayer][refTLayer]` (AV2 § 5.4.1):
+/// `true` when, within embedded layer `mLayer`, temporal layer `currTLayer` may
+/// depend on temporal layer `refTLayer` (`tlayer_dependency_map` "specifies the
+/// temporal layer dependencies", § 6.4.1).
+///
+/// The § 5.4.1 default fill is `refTLayer <= currTLayer && currTLayer <=
+/// max_tlayer_id && mLayer <= max_mlayer_id`. When
+/// `tlayer_dependency_present_flag` is set, signaled bits replace rows
+/// `currTLayer 1..=max_tlayer_id`; with `multi_tlayer_dependency_map_present_flag
+/// == 0` the bits are signaled only for embedded layer 0 and replicated to
+/// embedded layers `1..=max_mlayer_id` (§ 6.4.1: "the same values are used for
+/// all embedded layers"). The mirror also spells this variable
+/// `TlayerDependencyMap` in § 6.8.9 / § 6.10.7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TLayerDependencyMap([[[bool; MAX_NUM_TLAYERS]; MAX_NUM_TLAYERS]; MAX_NUM_MLAYERS]);
+
+impl TLayerDependencyMap {
+    /// Builds the § 5.4.1 default fill:
+    /// `TLayerDependencyMap[mLayer][currTLayer][refTLayer] = refTLayer <=
+    /// currTLayer && currTLayer <= max_tlayer_id && mLayer <= max_mlayer_id` over
+    /// all `MAX_NUM_MLAYERS x MAX_NUM_TLAYERS x MAX_NUM_TLAYERS` entries.
+    #[must_use]
+    pub fn default_for(max_tlayer_id: TemporalLayerId, max_mlayer_id: EmbeddedLayerId) -> Self {
+        let max_tlayer = usize::from(max_tlayer_id.get());
+        let max_mlayer = usize::from(max_mlayer_id.get());
+        let mut map = [[[false; MAX_NUM_TLAYERS]; MAX_NUM_TLAYERS]; MAX_NUM_MLAYERS];
+        for (m_layer, plane) in map.iter_mut().enumerate() {
+            for (curr_tlayer, row) in plane.iter_mut().enumerate() {
+                for (ref_tlayer, entry) in row.iter_mut().enumerate() {
+                    *entry = ref_tlayer <= curr_tlayer
+                        && curr_tlayer <= max_tlayer
+                        && m_layer <= max_mlayer;
+                }
+            }
+        }
+        Self(map)
+    }
+
+    /// Returns `TLayerDependencyMap[mlayer][curr][reference]`. Ids outside the
+    /// 3-bit `obu_mlayer_id` / 2-bit `obu_tlayer_id` ranges read as `false`.
+    #[must_use]
+    pub fn depends_on(
+        &self,
+        mlayer: EmbeddedLayerId,
+        curr: TemporalLayerId,
+        reference: TemporalLayerId,
+    ) -> bool {
+        self.0
+            .get(usize::from(mlayer.get()))
+            .and_then(|plane| plane.get(usize::from(curr.get())))
+            .and_then(|row| row.get(usize::from(reference.get())))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Stores a signaled (or row-0-replicated) `tlayer_dependency_map` bit;
+    /// out-of-range indices (never produced by the parser, whose loop bounds come
+    /// from the 2-bit `max_tlayer_id` and 3-bit `max_mlayer_id`) are ignored
+    /// rather than panicking.
+    fn set(&mut self, m_layer: u8, curr_tlayer: u8, ref_tlayer: u8, value: bool) {
+        if let Some(entry) = self
+            .0
+            .get_mut(usize::from(m_layer))
+            .and_then(|plane| plane.get_mut(usize::from(curr_tlayer)))
+            .and_then(|row| row.get_mut(usize::from(ref_tlayer)))
+        {
+            *entry = value;
+        }
+    }
+}
+
 /// Parsed general sequence-header fields through AV2 § 5.4.1 dependency maps.
 ///
 /// This covers `sequence_header_obu()` up to (but not including) the child config
@@ -354,6 +480,23 @@ pub struct SequenceHeaderGeneral {
     pub seq_decoder_model_info_present_flag: bool,
     /// Parsed `seq_decoder_model_info()` (§ 5.4.13), present when signalled.
     pub decoder_model_info: Option<SequenceDecoderModelInfo>,
+    /// `mlayer_dependency_present_flag` (`f(1)`), read only when
+    /// `max_mlayer_id > 0` and inferred `0` otherwise (AV2 § 5.4.1).
+    pub mlayer_dependency_present_flag: bool,
+    /// `tlayer_dependency_present_flag` (`f(1)`), read only when
+    /// `max_tlayer_id > 0` and inferred `0` otherwise (AV2 § 5.4.1).
+    pub tlayer_dependency_present_flag: bool,
+    /// `multi_tlayer_dependency_map_present_flag` (`f(1)`), read only when
+    /// `tlayer_dependency_present_flag` is set and `max_mlayer_id > 0`; inferred
+    /// `0` otherwise (AV2 § 5.4.1).
+    pub multi_tlayer_dependency_map_present_flag: bool,
+    /// Derived `MLayerDependencyMap` (AV2 § 5.4.1 default fill plus signaled
+    /// overrides).
+    pub mlayer_dependency_map: MLayerDependencyMap,
+    /// Derived `TLayerDependencyMap` (AV2 § 5.4.1 default fill plus signaled
+    /// overrides, with embedded-layer-0 row replication when
+    /// `multi_tlayer_dependency_map_present_flag == 0`).
+    pub tlayer_dependency_map: TLayerDependencyMap,
 }
 
 /// Parses the general sequence-header syntax through dependency maps (AV2 § 5.4.1).
@@ -514,7 +657,7 @@ pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<Seque
         }
     };
 
-    parse_dependency_map_bits(reader, max_tlayer_id, max_mlayer_id)?;
+    let dependency_maps = parse_dependency_maps(reader, max_tlayer_id, max_mlayer_id)?;
 
     Ok(SequenceHeaderGeneral {
         seq_header_id,
@@ -540,6 +683,12 @@ pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<Seque
         num_units_in_decoding_tick,
         seq_decoder_model_info_present_flag,
         decoder_model_info,
+        mlayer_dependency_present_flag: dependency_maps.mlayer_dependency_present_flag,
+        tlayer_dependency_present_flag: dependency_maps.tlayer_dependency_present_flag,
+        multi_tlayer_dependency_map_present_flag: dependency_maps
+            .multi_tlayer_dependency_map_present_flag,
+        mlayer_dependency_map: dependency_maps.mlayer_dependency_map,
+        tlayer_dependency_map: dependency_maps.tlayer_dependency_map,
     })
 }
 
@@ -1670,35 +1819,72 @@ fn read_checked_crop(
     Ok(value)
 }
 
-fn parse_dependency_map_bits(
+/// Parsed § 5.4.1 dependency-map flags plus the two derived maps.
+struct DependencyMaps {
+    /// `mlayer_dependency_present_flag`, inferred `0` when `max_mlayer_id == 0`.
+    mlayer_dependency_present_flag: bool,
+    /// `tlayer_dependency_present_flag`, inferred `0` when `max_tlayer_id == 0`.
+    tlayer_dependency_present_flag: bool,
+    /// `multi_tlayer_dependency_map_present_flag`, inferred `0` when not read.
+    multi_tlayer_dependency_map_present_flag: bool,
+    /// Derived `MLayerDependencyMap`.
+    mlayer_dependency_map: MLayerDependencyMap,
+    /// Derived `TLayerDependencyMap`.
+    tlayer_dependency_map: TLayerDependencyMap,
+}
+
+/// Parses the § 5.4.1 dependency-map region: both maps receive their
+/// unconditional default fill first, then the signaled override bits (when
+/// present) replace entries following the spec's loop structure exactly.
+fn parse_dependency_maps(
     reader: &mut BitReader<'_>,
     max_tlayer_id: TemporalLayerId,
     max_mlayer_id: EmbeddedLayerId,
-) -> Result<()> {
+) -> Result<DependencyMaps> {
+    let mut mlayer_dependency_map = MLayerDependencyMap::default_for(max_mlayer_id);
+    let mut tlayer_dependency_map = TLayerDependencyMap::default_for(max_tlayer_id, max_mlayer_id);
+
+    let mut mlayer_dependency_present_flag = false;
     if max_mlayer_id.get() > 0 {
-        let mlayer_dependency_present_flag = reader.read_bit()? != 0;
+        mlayer_dependency_present_flag = reader.read_bit()? != 0;
         if mlayer_dependency_present_flag {
             for curr_layer in 1..=max_mlayer_id.get() {
-                for _ref_layer in (0..=curr_layer).rev() {
-                    let _ = reader.read_bit()?;
+                // AV2 § 5.4.1: refLayer iterates from currLayer down to 0, so the
+                // diagonal bit is signaled first (and may be 0).
+                for ref_layer in (0..=curr_layer).rev() {
+                    let bit = reader.read_bit()? != 0;
+                    mlayer_dependency_map.set(curr_layer, ref_layer, bit);
                 }
             }
         }
     }
 
+    let mut tlayer_dependency_present_flag = false;
+    let mut multi_tlayer_dependency_map_present_flag = false;
     if max_tlayer_id.get() > 0 {
-        let tlayer_dependency_present_flag = reader.read_bit()? != 0;
+        tlayer_dependency_present_flag = reader.read_bit()? != 0;
         if tlayer_dependency_present_flag {
-            let multi_tlayer_dependency_map_present_flag = if max_mlayer_id.get() > 0 {
+            multi_tlayer_dependency_map_present_flag = if max_mlayer_id.get() > 0 {
                 reader.read_bit()? != 0
             } else {
                 false
             };
             for m_layer in 0..=max_mlayer_id.get() {
                 for curr_tlayer in 1..=max_tlayer_id.get() {
-                    for _ref_tlayer in (0..=curr_tlayer).rev() {
+                    for ref_tlayer in (0..=curr_tlayer).rev() {
                         if multi_tlayer_dependency_map_present_flag || m_layer == 0 {
-                            let _ = reader.read_bit()?;
+                            let bit = reader.read_bit()? != 0;
+                            tlayer_dependency_map.set(m_layer, curr_tlayer, ref_tlayer, bit);
+                        } else {
+                            // AV2 § 5.4.1: with the multi flag clear, embedded
+                            // layers 1..=max_mlayer_id copy embedded layer 0's
+                            // signaled values (not the default fill).
+                            let bit = tlayer_dependency_map.depends_on(
+                                EmbeddedLayerId::from_bits(0),
+                                TemporalLayerId::from_bits(curr_tlayer),
+                                TemporalLayerId::from_bits(ref_tlayer),
+                            );
+                            tlayer_dependency_map.set(m_layer, curr_tlayer, ref_tlayer, bit);
                         }
                     }
                 }
@@ -1706,7 +1892,13 @@ fn parse_dependency_map_bits(
         }
     }
 
-    Ok(())
+    Ok(DependencyMaps {
+        mlayer_dependency_present_flag,
+        tlayer_dependency_present_flag,
+        multi_tlayer_dependency_map_present_flag,
+        mlayer_dependency_map,
+        tlayer_dependency_map,
+    })
 }
 
 fn invalid_sequence_header(
@@ -1858,6 +2050,217 @@ mod tests {
         assert!(!header.decoder_model_info_present_flag);
         assert_eq!(header.num_units_in_decoding_tick, None);
         assert!(!header.seq_decoder_model_info_present_flag);
+        assert!(!header.mlayer_dependency_present_flag);
+        assert!(!header.tlayer_dependency_present_flag);
+        assert!(!header.multi_tlayer_dependency_map_present_flag);
+    }
+
+    /// Appends the general non-single-picture sequence-header fields up to (but
+    /// not including) the § 5.4.1 dependency-map region. `max_tlayer_id` /
+    /// `max_mlayer_id` select the layer bounds; every other optional feature is
+    /// disabled and `seq_max_mlayer_cnt_minus_1` is coded as `max_mlayer_id`.
+    fn push_general_header_until_dependency_maps(
+        bits: &mut Bits,
+        max_tlayer_id: u32,
+        max_mlayer_id: u32,
+    ) {
+        bits.uvlc(0); // seq_header_id
+        bits.f(0, 5); // seq_profile_idc
+        bits.bit(0); // single_picture_header_flag
+        bits.f(0, 5); // seq_level_idx (<= 3 -> seq_tier inferred Main)
+        bits.uvlc(0); // chroma_format_idc
+        bits.uvlc(0); // bit_depth_idc
+        bits.f(0, 3); // seq_lcr_id
+        bits.bit(0); // still_picture
+        bits.f(max_tlayer_id, 2); // max_tlayer_id
+        bits.f(max_mlayer_id, 3); // max_mlayer_id
+        if max_mlayer_id > 0 {
+            // n = CeilLog2(max_mlayer_id + 1)
+            let n = u32::BITS - max_mlayer_id.leading_zeros();
+            bits.f(max_mlayer_id, n); // seq_max_mlayer_cnt_minus_1
+        }
+        bits.bit(0); // monotonic_output_order_flag
+        bits.f(3, 4); // frame_width_bits_minus_1
+        bits.f(3, 4); // frame_height_bits_minus_1
+        bits.f(15, 4); // max_frame_width_minus_1
+        bits.f(7, 4); // max_frame_height_minus_1
+        bits.bit(0); // seq_cropping_window_present_flag
+        bits.bit(0); // seq_initial_display_delay_present_flag
+        bits.bit(0); // decoder_model_info_present_flag
+    }
+
+    fn mlayer(value: u8) -> EmbeddedLayerId {
+        EmbeddedLayerId::from_bits(value)
+    }
+
+    fn tlayer(value: u8) -> TemporalLayerId {
+        TemporalLayerId::from_bits(value)
+    }
+
+    #[test]
+    fn dependency_maps_default_fill_when_flags_absent() {
+        let mut bits = Bits::default();
+        push_general_header_until_dependency_maps(&mut bits, 2, 1);
+        bits.bit(0); // mlayer_dependency_present_flag
+        bits.bit(0); // tlayer_dependency_present_flag
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let header = parse_sequence_header_general(&mut reader).unwrap();
+        assert!(!header.mlayer_dependency_present_flag);
+        assert!(!header.tlayer_dependency_present_flag);
+        assert!(!header.multi_tlayer_dependency_map_present_flag);
+
+        // § 5.4.1 default: refLayer <= currLayer && currLayer <= max_mlayer_id.
+        let m_map = header.mlayer_dependency_map;
+        assert!(m_map.depends_on(mlayer(0), mlayer(0)));
+        assert!(m_map.depends_on(mlayer(1), mlayer(0)));
+        assert!(m_map.depends_on(mlayer(1), mlayer(1)));
+        assert!(!m_map.depends_on(mlayer(0), mlayer(1))); // refLayer > currLayer
+        assert!(!m_map.depends_on(mlayer(2), mlayer(0))); // currLayer 2 > max_mlayer_id 1
+        assert!(!m_map.depends_on(mlayer(2), mlayer(2)));
+
+        // § 5.4.1 default: refTLayer <= currTLayer && currTLayer <= max_tlayer_id
+        // && mLayer <= max_mlayer_id.
+        let t_map = header.tlayer_dependency_map;
+        assert!(t_map.depends_on(mlayer(0), tlayer(2), tlayer(0)));
+        assert!(t_map.depends_on(mlayer(1), tlayer(2), tlayer(0)));
+        assert!(t_map.depends_on(mlayer(1), tlayer(2), tlayer(2)));
+        assert!(!t_map.depends_on(mlayer(0), tlayer(1), tlayer(2))); // refTLayer > currTLayer
+        for reference in 0..MAX_NUM_TLAYERS as u8 {
+            // currTLayer 3 > max_tlayer_id 2: the whole row is false.
+            assert!(!t_map.depends_on(mlayer(0), tlayer(3), tlayer(reference)));
+        }
+        assert!(!t_map.depends_on(mlayer(2), tlayer(1), tlayer(0))); // mLayer 2 > max_mlayer_id 1
+    }
+
+    #[test]
+    fn mlayer_dependency_override_bit_order() {
+        // max_tlayer_id = 0 so no tlayer_dependency_present_flag bit is read.
+        let mut bits = Bits::default();
+        push_general_header_until_dependency_maps(&mut bits, 0, 2);
+        bits.bit(1); // mlayer_dependency_present_flag
+        // § 5.4.1: refLayer runs from currLayer down to 0. The bit patterns are
+        // asymmetric so an ascending-order parse would produce different maps.
+        bits.bit(0); // currLayer 1: [1][1] (diagonal, signaled, zero here)
+        bits.bit(1); // currLayer 1: [1][0]
+        bits.bit(1); // currLayer 2: [2][2]
+        bits.bit(1); // currLayer 2: [2][1]
+        bits.bit(0); // currLayer 2: [2][0]
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let header = parse_sequence_header_general(&mut reader).unwrap();
+        assert!(header.mlayer_dependency_present_flag);
+        assert!(!header.tlayer_dependency_present_flag);
+
+        let m_map = header.mlayer_dependency_map;
+        assert!(!m_map.depends_on(mlayer(1), mlayer(1))); // signaled diagonal zero
+        assert!(m_map.depends_on(mlayer(1), mlayer(0)));
+        assert!(m_map.depends_on(mlayer(2), mlayer(2)));
+        assert!(m_map.depends_on(mlayer(2), mlayer(1)));
+        assert!(!m_map.depends_on(mlayer(2), mlayer(0))); // proves descending order
+        assert!(m_map.depends_on(mlayer(0), mlayer(0))); // row 0 keeps the default
+        // max_tlayer_id = 0: the tlayer map keeps its default fill.
+        assert!(
+            header
+                .tlayer_dependency_map
+                .depends_on(mlayer(2), tlayer(0), tlayer(0))
+        );
+    }
+
+    #[test]
+    fn tlayer_dependency_row0_replication() {
+        let mut bits = Bits::default();
+        push_general_header_until_dependency_maps(&mut bits, 1, 1);
+        bits.bit(0); // mlayer_dependency_present_flag
+        bits.bit(1); // tlayer_dependency_present_flag
+        bits.bit(0); // multi_tlayer_dependency_map_present_flag
+        // Bits are signaled only for mLayer 0; refTLayer descends from currTLayer.
+        bits.bit(1); // mLayer 0, currTLayer 1: [0][1][1]
+        bits.bit(0); // mLayer 0, currTLayer 1: [0][1][0] (default would be 1)
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let header = parse_sequence_header_general(&mut reader).unwrap();
+        assert!(header.tlayer_dependency_present_flag);
+        assert!(!header.multi_tlayer_dependency_map_present_flag);
+
+        let t_map = header.tlayer_dependency_map;
+        assert!(t_map.depends_on(mlayer(0), tlayer(1), tlayer(1)));
+        assert!(!t_map.depends_on(mlayer(0), tlayer(1), tlayer(0)));
+        // § 5.4.1: mLayer 1 copies mLayer 0's signaled values, not the defaults
+        // (the default for [1][1][0] would be true).
+        assert!(t_map.depends_on(mlayer(1), tlayer(1), tlayer(1)));
+        assert!(!t_map.depends_on(mlayer(1), tlayer(1), tlayer(0)));
+        // mLayer 2 > max_mlayer_id stays at the (all-false) default.
+        assert!(!t_map.depends_on(mlayer(2), tlayer(1), tlayer(1)));
+    }
+
+    #[test]
+    fn tlayer_dependency_multi_rows_signaled() {
+        let mut bits = Bits::default();
+        push_general_header_until_dependency_maps(&mut bits, 1, 1);
+        bits.bit(0); // mlayer_dependency_present_flag
+        bits.bit(1); // tlayer_dependency_present_flag
+        bits.bit(1); // multi_tlayer_dependency_map_present_flag
+        // Distinct per-mLayer rows prove each embedded layer is signaled.
+        bits.bit(1); // mLayer 0, currTLayer 1: [0][1][1]
+        bits.bit(0); // mLayer 0, currTLayer 1: [0][1][0]
+        bits.bit(0); // mLayer 1, currTLayer 1: [1][1][1]
+        bits.bit(1); // mLayer 1, currTLayer 1: [1][1][0]
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let header = parse_sequence_header_general(&mut reader).unwrap();
+        assert!(header.tlayer_dependency_present_flag);
+        assert!(header.multi_tlayer_dependency_map_present_flag);
+
+        let t_map = header.tlayer_dependency_map;
+        assert!(t_map.depends_on(mlayer(0), tlayer(1), tlayer(1)));
+        assert!(!t_map.depends_on(mlayer(0), tlayer(1), tlayer(0)));
+        assert!(!t_map.depends_on(mlayer(1), tlayer(1), tlayer(1)));
+        assert!(t_map.depends_on(mlayer(1), tlayer(1), tlayer(0)));
+    }
+
+    #[test]
+    fn single_picture_header_collapses_maps() {
+        let data = valid_single_picture_prefix();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let header = parse_sequence_header_general(&mut reader).unwrap();
+        assert!(!header.mlayer_dependency_present_flag);
+        assert!(!header.tlayer_dependency_present_flag);
+        assert!(!header.multi_tlayer_dependency_map_present_flag);
+        // max_tlayer_id = max_mlayer_id = 0: only the [0][0] / [0][0][0] entries
+        // of the § 5.4.1 default fill survive the clipping.
+        let m_map = header.mlayer_dependency_map;
+        assert!(m_map.depends_on(mlayer(0), mlayer(0)));
+        assert!(!m_map.depends_on(mlayer(1), mlayer(0)));
+        assert!(!m_map.depends_on(mlayer(1), mlayer(1)));
+        let t_map = header.tlayer_dependency_map;
+        assert!(t_map.depends_on(mlayer(0), tlayer(0), tlayer(0)));
+        assert!(!t_map.depends_on(mlayer(0), tlayer(1), tlayer(0)));
+        assert!(!t_map.depends_on(mlayer(1), tlayer(0), tlayer(0)));
+    }
+
+    #[test]
+    fn dependency_map_truncation_reports_eof() {
+        // End the stream right after multi_tlayer_dependency_map_present_flag:
+        // with max ids 3/7 the 72 signaled tlayer bits overrun the zero-bit byte
+        // padding, so the parser must report EOF (never panic).
+        let mut bits = Bits::default();
+        push_general_header_until_dependency_maps(&mut bits, 3, 7);
+        bits.bit(0); // mlayer_dependency_present_flag
+        bits.bit(1); // tlayer_dependency_present_flag
+        bits.bit(1); // multi_tlayer_dependency_map_present_flag
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        assert!(matches!(
+            parse_sequence_header_general(&mut reader),
+            Err(Error::UnexpectedEof { .. })
+        ));
+        // Every shorter prefix truncates earlier in the header and must also
+        // fail without panicking.
+        for len in 0..data.len() {
+            let mut reader = BitReader::new(&data[..len], ByteOffset::new(0));
+            assert!(parse_sequence_header_general(&mut reader).is_err());
+        }
     }
 
     #[test]
