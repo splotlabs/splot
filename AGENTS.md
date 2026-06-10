@@ -75,10 +75,11 @@ cargo machete --with-metadata               # unused-dependency check
 cargo deny check bans licenses sources      # offline supply-chain policy
 cargo xtask audit                           # networked supply-chain advisories (cargo-deny)
 cargo xtask coverage                        # local HTML coverage report (cargo-llvm-cov)
-cargo xtask fuzz [--time <secs>]            # local fuzz smoke (nightly + cargo-fuzz), default 30s
+cargo xtask fuzz [--time <secs>]            # local fuzz smoke over every target (nightly + cargo-fuzz), default 30s each
 cargo xtask check-conventional-commits      # validates the current HEAD commit subject
-cargo +nightly fuzz run parse_obu   # full local fuzz run (nightly-only; `cargo install cargo-fuzz --locked`).
-                                    # CI also runs a blocking 60s parse_obu smoke on every PR.
+cargo +nightly fuzz run parse_obu   # full local fuzz run of one target (nightly-only; `cargo install cargo-fuzz --locked`).
+                                    # Targets: parse_obu, validate_bytes, parse_ivf, parse_bitstream (`cargo +nightly fuzz list`).
+                                    # CI also runs a blocking per-target smoke (~45s each) over every target on every PR.
 ```
 
 The external-tool checks (`typos`, `cargo-machete`, `cargo-deny`, `cargo-llvm-cov`,

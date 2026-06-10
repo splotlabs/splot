@@ -84,6 +84,8 @@ enum Task {
     CheckSpecMirror,
     /// Verify docs/VALIDATOR-DIAGNOSTICS.md lists exactly the emitted diagnostic rule ids.
     CheckDiagnosticRegistry,
+    /// Verify every fuzz_targets/*.rs file has a matching `[[bin]]` entry in fuzz/Cargo.toml.
+    CheckFuzzTargets,
     /// Render the implementation matrix (docs/IMPLEMENTATION-MATRIX.toml).
     FeatureStatus {
         /// Output format.
@@ -118,11 +120,12 @@ enum Task {
     Conformance,
     /// Generate a local HTML coverage report (requires `cargo-llvm-cov`).
     Coverage,
-    /// Run a short local fuzz smoke session against the `parse_obu` target.
+    /// Run a short local fuzz smoke session against every fuzz target.
     ///
-    /// Requires a nightly toolchain and `cargo-fuzz`. Defaults to 30 seconds.
+    /// Requires a nightly toolchain and `cargo-fuzz`. Each target runs for the
+    /// given time (default 30 seconds).
     Fuzz {
-        /// Maximum fuzzing time in seconds (default 30).
+        /// Maximum fuzzing time in seconds, per target (default 30).
         #[arg(long, value_name = "SECS")]
         time: Option<u64>,
     },
@@ -165,6 +168,7 @@ fn main() -> Result<()> {
         Task::CheckDiagnosticRegistry => {
             diagnostic_registry::check_diagnostic_registry(&workspace_root()?)
         }
+        Task::CheckFuzzTargets => check_fuzz_targets(&workspace_root()?),
         Task::FeatureStatus {
             format,
             category,
@@ -245,6 +249,7 @@ fn run_ci() -> Result<()> {
     check_license_headers(&root)?;
     check_dependency_direction(&root)?;
     check_spec_mirror(&root)?;
+    check_fuzz_targets(&root)?;
     feature_status::run_check_feature_status(&root)?;
     diagnostic_registry::check_diagnostic_registry(&root)?;
 
@@ -419,7 +424,9 @@ fn run_coverage() -> Result<()> {
     ])
 }
 
-/// Runs a short local fuzz smoke session against `parse_obu` (nightly + cargo-fuzz).
+/// Runs a short local fuzz smoke session against every fuzz target (nightly +
+/// cargo-fuzz). Targets are enumerated from `fuzz/fuzz_targets/`, so listing needs
+/// no nightly toolchain; each target then runs for `--time` seconds.
 fn run_fuzz(time: Option<u64>) -> Result<()> {
     if !tool_available("cargo-fuzz") || !nightly_available() {
         eprintln!(
@@ -428,24 +435,93 @@ fn run_fuzz(time: Option<u64>) -> Result<()> {
         );
         return Ok(());
     }
+    let root = workspace_root()?;
+    let targets = fuzz_targets(&root)?;
+    if targets.is_empty() {
+        bail!("fuzz: no targets found under fuzz/fuzz_targets/");
+    }
     let secs = time.unwrap_or(30);
     let max_total_time = format!("-max_total_time={secs}");
     // `+nightly` is resolved by the rustup cargo proxy, so invoke `cargo` by name.
     // Mirror the CI fuzz-smoke guard flags so a local smoke catches the same classes
     // of bug: `-timeout` flags a hanging input, `-rss_limit_mb` an allocation blowup.
-    run_program(
-        "cargo",
-        &[
-            "+nightly",
-            "fuzz",
-            "run",
-            "parse_obu",
-            "--",
-            &max_total_time,
-            "-timeout=10",
-            "-rss_limit_mb=2048",
-        ],
-    )
+    for target in &targets {
+        run_program(
+            "cargo",
+            &[
+                "+nightly",
+                "fuzz",
+                "run",
+                target,
+                "--",
+                &max_total_time,
+                "-timeout=10",
+                "-rss_limit_mb=2048",
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Returns the fuzz target names (file stems of `fuzz/fuzz_targets/*.rs`), sorted for
+/// a deterministic run order. Reading the directory avoids depending on a nightly
+/// `cargo fuzz list`. Fails when the directory and the `[[bin]]` entries in
+/// `fuzz/Cargo.toml` disagree: `cargo fuzz list` (used by the CI smoke job) only sees
+/// registered `[[bin]]` targets, so an unregistered `.rs` file would be fuzzed by
+/// neither — drift must be loud, not silently skipped.
+fn fuzz_targets(root: &Path) -> Result<Vec<String>> {
+    let dir = root.join("fuzz").join("fuzz_targets");
+    let mut targets = Vec::new();
+    let entries =
+        std::fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?;
+    for entry in entries {
+        let entry =
+            entry.with_context(|| format!("failed to read an entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("rs")
+            && let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+        {
+            targets.push(stem.to_string());
+        }
+    }
+    targets.sort();
+
+    let manifest_path = root.join("fuzz").join("Cargo.toml");
+    let manifest_text = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+    let manifest: toml::Value = toml::from_str(&manifest_text)
+        .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+    let mut registered: Vec<String> = manifest
+        .get("bin")
+        .and_then(|bins| bins.as_array())
+        .map(|bins| {
+            bins.iter()
+                .filter_map(|bin| bin.get("name").and_then(|name| name.as_str()))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    registered.sort();
+    if targets != registered {
+        bail!(
+            "fuzz target drift: fuzz/fuzz_targets/*.rs has [{}] but fuzz/Cargo.toml \
+             [[bin]] entries are [{}]; register every target so `cargo fuzz list` \
+             (and the CI smoke job) sees it",
+            targets.join(", "),
+            registered.join(", ")
+        );
+    }
+    Ok(targets)
+}
+
+/// Checks fuzz-target registration drift, on stable: the CI fuzz-smoke loop
+/// enumerates registered `[[bin]]` targets only (`cargo fuzz list`), so an
+/// unregistered `fuzz_targets/*.rs` file would be silently skipped there. Run as
+/// `cargo xtask check-fuzz-targets` in the CI `ci` job and inside `cargo xtask ci`.
+fn check_fuzz_targets(root: &Path) -> Result<()> {
+    let targets = fuzz_targets(root)?;
+    eprintln!("check-fuzz-targets: ok ({} target(s))", targets.len());
+    Ok(())
 }
 
 /// Runs the networked cargo-deny advisory check (separate from the offline gate).

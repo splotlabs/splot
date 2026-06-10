@@ -124,7 +124,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `CONF-AVM-INVALID-STREAMS` | AVM invalid stream conformance | conformance | conformance | todo | todo | n/a | n/a | n/a | n/a | todo | todo | todo | `xtask/src/main.rs` |
 | `CONF-PUBLIC-VECTOR-LICENSE-REVIEW` | Public vector license review | conformance | conformance | todo | n/a | n/a | n/a | n/a | n/a | todo | todo | pending | `docs/CONFORMANCE.md` |
 | `CONF-INSPECT-SNAPSHOTS` | Inspector snapshot tests | conformance | conformance | partial | n/a | n/a | n/a | n/a | n/a | partial | todo | n/a | `crates/splot-cli/src/commands/inspect.rs` |
-| `CONF-FUZZ-NO-PANIC` | Parser no-panic fuzzing | conformance | conformance | done | n/a | partial | partial | n/a | n/a | partial | done | n/a | `fuzz/fuzz_targets/parse_obu.rs` |
+| `CONF-FUZZ-NO-PANIC` | Parser no-panic fuzzing | conformance | conformance | done | n/a | done | done | n/a | n/a | partial | done | n/a | `fuzz/fuzz_targets/parse_obu.rs` |
 | `CLI-VALIDATE` | splot validate command | cli | cli | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-cli/src/commands/validate.rs` |
 | `CLI-INSPECT` | splot inspect command | cli | cli | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-cli/src/commands/inspect.rs` |
 | `XTASK-CONVENTIONAL-COMMITS` | Conventional commit enforcement | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/main.rs` |

@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "56641ae1b173c33580693a5f4d6e13fceee54b9f",
+  "audited_commit": "683ca6e4a51a10b193983ac38e07b90671ba9c5d",
   "outcome": "success",
   "files": [
     {
@@ -200,7 +200,7 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "7fdf4d144d8a564c416d8bc83d0b33610a9bd7c0d362052f0af6dd1851434bfb",
+      "sha256": "dd225cc251b65e08c1e39a4db64edaa8ddbdd2e98d0480c1aa781cef1c8d67ce",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
@@ -221,7 +221,7 @@
     },
     {
       "path": "AGENTS.md",
-      "sha256": "dde0ea04e93acbce05d9ac3c7d65dc47d7d55d38fb22971eadbaf4fba3cdb763",
+      "sha256": "2d647b49ac7373fb642efd88a513e16c52ca85ca41e57e7acb057d823b952d3a",
       "scope_kind": "repository-process",
       "feature_ids": [
         "DOC-AUDIT-PROTOCOLS",
@@ -239,7 +239,7 @@
     },
     {
       "path": "Cargo.lock",
-      "sha256": "a0630d8532ac208a06f74cce9048a58e90fbffd5c91a3831081f7b8aa8d36572",
+      "sha256": "e6a205751811f2e6fcbea88ec759f27be8ea0512a403f117d84cbd8357be19fa",
       "scope_kind": "repository-process",
       "feature_ids": [],
       "outcome": "success"
@@ -739,7 +739,7 @@
     },
     {
       "path": "crates/splot-validate/Cargo.toml",
-      "sha256": "68ea0fe98e3c7694179c3f49bff3e87a0c8a4036cbbb0adcbcda45c18e883bf1",
+      "sha256": "7a2c6c8ce97df1eb04cc3c0abf865aa8ee9ad3bb460fa58b636335369e16e305",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -828,6 +828,13 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-validate/tests/validator_never_panics.rs",
+      "sha256": "867fe3a0aaf00933883c18416b5e3db77cd6d82b88b24357a54d1b74e6fbd9d9",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "deny.toml",
       "sha256": "39208159597101d7b2634e7e7527ddfd2b4362d7a84f3cfb8d3a6ff8c0814fbe",
       "scope_kind": "repository-process",
@@ -876,7 +883,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "56c9523e9f2b2bb37298ba2b84c2f0bce247d1131c49698eec1883da26d0ec0e",
+      "sha256": "2a5e9adccfd4f6d2f646bc2e41f2e4331e878807ab30929de9dad78c2bc1acae",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1043,7 +1050,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "4b043705b03aa31f3a1a35b9fe93ef7ff36b22ad2103aef783964c68223f700e",
+      "sha256": "d182d7f41386864ffba1ba9fb102f8c1b90eae9068ac8e7808ba7d6fabf8e0b8",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1326,7 +1333,7 @@
     },
     {
       "path": "docs/TESTING.md",
-      "sha256": "4c145c9d1084d16cadeecaeca5ad48334d1155c62c2910fbc3b801710fa4f4f4",
+      "sha256": "202183ac7a49c5551fb22f402a5dc2f4d1f6b6f3eb4384519c68cdf3ee85a00f",
       "scope_kind": "docs",
       "feature_ids": [],
       "outcome": "success"
@@ -1461,14 +1468,28 @@
     },
     {
       "path": "fuzz/Cargo.lock",
-      "sha256": "98bcacc24422e768ce88e6e509b5ef13c08cb605cf7cff7783a95de75239a906",
+      "sha256": "d4e34d9e69dd627a7d119655b47de4d6c45edc0791c05abbd02aaf1e7ef37170",
       "scope_kind": "fuzz",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "fuzz/Cargo.toml",
-      "sha256": "f556ec380d7c2e9ea81a9e1f172e41f619789acc75ce16b252a0ff4f4f62b003",
+      "sha256": "d5aa10bc0616d077c9e5b17bfa49f296c257568318a07331d5ac1959e958902d",
+      "scope_kind": "fuzz",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "fuzz/fuzz_targets/parse_bitstream.rs",
+      "sha256": "b58b8d0cf054b1acde1ed3b52a41c1c6abb7b1e9c127b2d98520916dd2ea9df0",
+      "scope_kind": "fuzz",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "fuzz/fuzz_targets/parse_ivf.rs",
+      "sha256": "ccb7450c61493fae9cde8dfbec71f2751a12fb642a8c357d86e0d69808c46967",
       "scope_kind": "fuzz",
       "feature_ids": [],
       "outcome": "success"
@@ -1480,6 +1501,13 @@
       "feature_ids": [
         "CONF-FUZZ-NO-PANIC"
       ],
+      "outcome": "success"
+    },
+    {
+      "path": "fuzz/fuzz_targets/validate_bytes.rs",
+      "sha256": "2160f59e05a8a38d1126bd61166f4c02d77025e7228ccb0bb260a774d62ca99a",
+      "scope_kind": "fuzz",
+      "feature_ids": [],
       "outcome": "success"
     },
     {
@@ -2466,6 +2494,33 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-10-fuzz-validator-targets/proposal.md",
+      "sha256": "6328b4b757a5e76c2bcc6b51701fbec35ba6e361c836b4317c6f57c1f747d951",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-FUZZ-NO-PANIC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-fuzz-validator-targets/specs/conformance/spec.md",
+      "sha256": "2c6fe976f852d83ccdbabfcd91d507d4c5e55ac44a71046b220c3f43fad4fa8c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-FUZZ-NO-PANIC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-fuzz-validator-targets/tasks.md",
+      "sha256": "6e87f2e714327e298b5fb85a64b9d5defb884e7dbc10b8e4b34ba04f5f9a1f2a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-FUZZ-NO-PANIC"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-10-layer-dependency-map-agreement/.openspec.yaml",
       "sha256": "5ada458f25cd6e260a7ac3deb87a5ba5d046aabf964c53260ae6cf7bcb8a5d12",
       "scope_kind": "openspec",
@@ -2735,7 +2790,7 @@
     },
     {
       "path": "openspec/specs/conformance/spec.md",
-      "sha256": "9bdb872cca91c01b76985bb900e4b871f4911042ddff1ad4e4d547fdbd50ff04",
+      "sha256": "883a509bd1fbd35d51e2ee2fac40cd8ee2a59f67cf0754cb0318f26114a1d659",
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
@@ -2910,7 +2965,7 @@
     },
     {
       "path": "xtask/src/main.rs",
-      "sha256": "860b1b4797a1e353f70c80e95293cc4621bc65b55e26cf91f29ec26fc559a8f6",
+      "sha256": "134d271d44c1cca7521d8a964af11236d06bbc9c35f438f632a5e61c2c9a7200",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
