@@ -1,6 +1,6 @@
 # Tasks
 
-> Status: **proposed**. Blocked on `add-bitstream-writer` and enough frame/tile header writer support.
+> Status: **parked** (2026-06-11, encoder track behind the VALIDATOR-ROADMAP fence). Blocked on `add-bitstream-writer` and enough frame/tile header writer support; revival means re-proposing.
 
 ## Implementation
 

@@ -1,6 +1,6 @@
 # Tasks
 
-> Status: **proposed**. None started.
+> Status: **parked** (2026-06-11, encoder track behind the VALIDATOR-ROADMAP fence). None started; revival means re-proposing.
 
 ## Implementation
 

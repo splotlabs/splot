@@ -3501,7 +3501,7 @@ openspec_change = "add-bitstream-writer"
 tracking_issue = ""
 owner = "encoder"
 risk = "high"
-notes = "Writer must be symmetric with parsed syntax and validated by round-trip tests where possible. Only the RangeEncoder stub exists today."
+notes = "Writer must be symmetric with parsed syntax and validated by round-trip tests where possible. Only the RangeEncoder stub exists today. Its OpenSpec change is parked (2026-06-11, encoder track behind the VALIDATOR-ROADMAP fence); revival means re-proposing."
 
 [feature.status]
 mapped = "partial"
@@ -3567,7 +3567,7 @@ openspec_change = "toy-intra-encoder-v0"
 tracking_issue = ""
 owner = "encoder"
 risk = "high"
-notes = "Only after writer, headers, and validation are sufficient to produce a deliberately simple legal stream."
+notes = "Only after writer, headers, and validation are sufficient to produce a deliberately simple legal stream. Its OpenSpec change is parked (2026-06-11, encoder track behind the VALIDATOR-ROADMAP fence); revival means re-proposing."
 
 [feature.status]
 mapped = "partial"
@@ -4156,7 +4156,7 @@ openspec_change = "ci-quality-gates"
 tracking_issue = ""
 owner = "automation"
 risk = "low"
-notes = "Adds the blocking strict-docs gate (RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --locked) and the splot-validate line-coverage threshold (cargo llvm-cov report --fail-under-lines 90, scoped via --ignore-filename-regex) to both cargo xtask ci/coverage and .github/workflows/ci.yml, and fixes local/CI parity by adding --all-features to the offline cargo-deny invocation."
+notes = "Adds the blocking strict-docs gate (RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --locked) and the splot-validate line-coverage threshold (cargo llvm-cov report --fail-under-lines 90, scoped via --ignore-filename-regex) to both cargo xtask ci/coverage and .github/workflows/ci.yml, and fixes local/CI parity by adding --all-features to the offline cargo-deny invocation. The openspec-validate parity deferred by this change landed via openspec-matrix-hygiene: cargo xtask ci runs openspec validate --all --no-interactive run-if-present, mirroring the CI conditional step."
 
 [feature.status]
 mapped = "done"

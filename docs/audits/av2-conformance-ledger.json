@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "683ca6e4a51a10b193983ac38e07b90671ba9c5d",
+  "audited_commit": "54a2d3fa43b24341500527ddb06556b3f6aeff1e",
   "outcome": "success",
   "files": [
     {
@@ -221,7 +221,7 @@
     },
     {
       "path": "AGENTS.md",
-      "sha256": "2d647b49ac7373fb642efd88a513e16c52ca85ca41e57e7acb057d823b952d3a",
+      "sha256": "d39f66b918202031876326a46b3c7339b919658e3fdbc65bef4dc8052b9f4a44",
       "scope_kind": "repository-process",
       "feature_ids": [
         "DOC-AUDIT-PROTOCOLS",
@@ -1050,7 +1050,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "d182d7f41386864ffba1ba9fb102f8c1b90eae9068ac8e7808ba7d6fabf8e0b8",
+      "sha256": "206e5842fd1ecdc178ccc2a86ebe1b41bf9ef3ccd23cc08afa394243b868dd21",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1519,7 +1519,7 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "6e6454509614587bcf8e3709b89c6c0c772ae0d2bfac201d422f826d94c6f333",
+      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -1537,7 +1537,7 @@
     },
     {
       "path": "openspec/changes/add-bitstream-writer/proposal.md",
-      "sha256": "5fee935b109a4e661b47ef642e8223fdb1b44d2a8754e184c17be5207053eae9",
+      "sha256": "92570b033f52bc71c9e75822316e8ee600a88d48eff35693f063d70c52824d6b",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -1557,7 +1557,7 @@
     },
     {
       "path": "openspec/changes/add-bitstream-writer/tasks.md",
-      "sha256": "97c85ff66b0a2d0d4a758dde91626332e3fcf9f75535b054cb3077041753d5ff",
+      "sha256": "aa7e74f7aaacb54de296b2855eae5ab304f3cdfbed45355dc58b9b7d703159ea",
       "scope_kind": "openspec",
       "feature_ids": [
         "ENC-BITSTREAM-WRITER"
@@ -2622,6 +2622,37 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-10-openspec-matrix-hygiene/proposal.md",
+      "sha256": "38d82726cf100e2a2384f8ec984db3d33d1b388d31643af8b9b34d0e989fd0d2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-BITSTREAM-WRITER",
+        "ENC-INTRA-TOY-V0",
+        "XTASK-CI-QUALITY-GATES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-openspec-matrix-hygiene/specs/process/spec.md",
+      "sha256": "0705ae28a18d2ee7dd5a0d2105333517dcf5f101b7acd4f5109bfddb823a727c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-CI-QUALITY-GATES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-openspec-matrix-hygiene/tasks.md",
+      "sha256": "3e77c4c2be012edb8400b4502364168c5e772767481224d8a0dc388b55285bc2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-BITSTREAM-WRITER",
+        "ENC-INTRA-TOY-V0",
+        "XTASK-CI-QUALITY-GATES"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-10-sequence-multistream-semantics/.openspec.yaml",
       "sha256": "5ada458f25cd6e260a7ac3deb87a5ba5d046aabf964c53260ae6cf7bcb8a5d12",
       "scope_kind": "openspec",
@@ -2722,7 +2753,7 @@
     },
     {
       "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
-      "sha256": "042ad614b48eaa9b6c4009b3a17deee84841b19adfbe86964f48b08f0f0206f5",
+      "sha256": "ec25589a8a02879087f03de9cc0c8b07e5fedf96f9a48c8f3dd99be91c14d240",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -2743,7 +2774,7 @@
     },
     {
       "path": "openspec/changes/toy-intra-encoder-v0/tasks.md",
-      "sha256": "e2a1e48d15b44809bd108fc9d81ebdd03e93e56d925260a857000a5e7025eff3",
+      "sha256": "e8d9a452a5777be79af8146a2d5715e4da1397af5d622bbcd44e4d74ef666e92",
       "scope_kind": "openspec",
       "feature_ids": [
         "ENC-INTRA-TOY-V0"
@@ -2768,7 +2799,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "f3b12939797257a69be7e615d0efc6741a94cadb7d6e56dd04b05167faaf8f3b",
+      "sha256": "9f9c8d094309962a6ee14e49b66310869d1daa94d38528e163897d07305d2cc8",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -2843,7 +2874,7 @@
     },
     {
       "path": "openspec/specs/process/spec.md",
-      "sha256": "e8aa02c00425dddddde18154149ad48336465eabac8e196017a2d3f6b7843ce2",
+      "sha256": "6b9703eac4d226ea3dd08a4d8513080bae187cd6cfa5d39348d459408edb0ab3",
       "scope_kind": "openspec",
       "feature_ids": [
         "DOC-AUDIT-PROTOCOLS",
@@ -2858,7 +2889,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "33c7633fd25cbc23ef833a92ab26c897468f060452759964cb225cd919a35f95",
+      "sha256": "74fc666dff0f01971e814fcc2339a92a4cd2fa92205891a609d09e7f9a6251fd",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
@@ -2965,7 +2996,7 @@
     },
     {
       "path": "xtask/src/main.rs",
-      "sha256": "134d271d44c1cca7521d8a964af11236d06bbc9c35f438f632a5e61c2c9a7200",
+      "sha256": "282038b82ba306948c636862c96742fce1b6f357044b3773f16e3f547abdb12d",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
