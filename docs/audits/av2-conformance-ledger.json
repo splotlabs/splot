@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "1081b0dd4dc4db5f9424ec59d0d04d9e9f8e7924",
+  "audited_commit": "06adb8b00f35b0a9106b07361598a931ab20cbcf",
   "outcome": "success",
   "files": [
     {
@@ -2496,6 +2496,53 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-10-sequence-multistream-semantics/.openspec.yaml",
+      "sha256": "5ada458f25cd6e260a7ac3deb87a5ba5d046aabf964c53260ae6cf7bcb8a5d12",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-sequence-multistream-semantics/design.md",
+      "sha256": "2160387213401e815e4496552c1582d36a3d2cf895823cd6cfa9083679a3cb4a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-sequence-multistream-semantics/proposal.md",
+      "sha256": "3e2d01c33afec15d1762e665211bc6fa0755bf791a5b3cc62383eb062791f204",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-sequence-multistream-semantics/specs/validator/spec.md",
+      "sha256": "543db71ad15a4e6e27774c1bf829d8086a355fe2a4cf6442ab7aa77c75e1d6f8",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-sequence-multistream-semantics/tasks.md",
+      "sha256": "a507108efc3e94347c51e75052ea89da2f43c03dd1bb3695e79c9578508a5f90",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-10-spec-coverage-doc/proposal.md",
       "sha256": "2722641e08415381787b0eb717363f67acebb13fd8a190c48cc4169228528bca",
       "scope_kind": "openspec",
@@ -2544,53 +2591,6 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/sequence-multistream-semantics/.openspec.yaml",
-      "sha256": "5ada458f25cd6e260a7ac3deb87a5ba5d046aabf964c53260ae6cf7bcb8a5d12",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/sequence-multistream-semantics/design.md",
-      "sha256": "2160387213401e815e4496552c1582d36a3d2cf895823cd6cfa9083679a3cb4a",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/sequence-multistream-semantics/proposal.md",
-      "sha256": "3e2d01c33afec15d1762e665211bc6fa0755bf791a5b3cc62383eb062791f204",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
-        "AV2-7.3.2-CMVS-BOUNDARIES",
-        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
-        "AV2-7.3.8-HLS-AVAILABILITY"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/sequence-multistream-semantics/specs/validator/spec.md",
-      "sha256": "543db71ad15a4e6e27774c1bf829d8086a355fe2a4cf6442ab7aa77c75e1d6f8",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/sequence-multistream-semantics/tasks.md",
-      "sha256": "a507108efc3e94347c51e75052ea89da2f43c03dd1bb3695e79c9578508a5f90",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
-        "AV2-7.3.2-CMVS-BOUNDARIES",
-        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
-        "AV2-7.3.8-HLS-AVAILABILITY"
       ],
       "outcome": "success"
     },
@@ -2732,7 +2732,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "45734dca2270e79d9f2990b091684fedfe8130390e537ed2271d9a77617da69b",
+      "sha256": "020023e3d5a91a3633bbaad54e8bb024efa03c2d6c03a2df2613570bfb3a99cb",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
