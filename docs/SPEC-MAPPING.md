@@ -1,5 +1,9 @@
 # Spec mapping
 
+This document records the AV2 spec sources and citation rules — never
+per-feature status, which lives in
+[IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml).
+
 Normative reference: **AV2 Bitstream & Decoding Process Specification v1.0.0**
 (Final Deliverable, 2026-05-28).
 
@@ -8,9 +12,9 @@ Normative reference: **AV2 Bitstream & Decoding Process Specification v1.0.0**
 - **Committed mirror (single source of truth, offline):**
   [`docs/spec/av2/1.0.0/`](./spec/av2/1.0.0/) — a byte-faithful `pdftotext -layout`
   copy of the PDF below, split per chapter with a section index
-  ([`index.md`](./spec/av2/1.0.0/index.md)). Cite `§ N.M` + the mirror path
-  (e.g. `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-16`). The PDF stays
-  normative; the mirror is the citable/greppable copy. Regenerate with
+  ([`index.md`](./spec/av2/1.0.0/index.md)). Cite `§ N.M` plus the mirror path
+  (e.g. § 5.16 plus `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-16`). The
+  PDF stays normative; the mirror is the citable/greppable copy. Regenerate with
   `scripts/spec/regenerate-av2-spec.sh`; integrity is gated by
   `cargo xtask check-spec-mirror`.
 - HTML spec: <https://av2.aomedia.org/v1.0.0/index.html>
@@ -21,18 +25,19 @@ Normative reference: **AV2 Bitstream & Decoding Process Specification v1.0.0**
 
 ## Canonical status
 
-The **canonical** per-feature status lives in
-[IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml) and is rendered to two
-generated, drift-gated documents: [SPEC-COVERAGE.md](./SPEC-COVERAGE.md) (one row
-per spec section, with parse/validate/test glyphs and mirror links — start there
-to answer "is § X.Y implemented?") and [FEATURE-STATUS.md](./FEATURE-STATUS.md)
-(the full per-feature ledger). Diagnostics are registered in the CI-enforced
-[VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md). The workflow and
-conventions are in [FEATURE-TRACKING.md](./FEATURE-TRACKING.md). This file
-deliberately carries **no per-module status prose** — earlier hand-maintained
-copies drifted and were removed.
+| File | Role | Enforcement |
+|---|---|---|
+| [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml) | Canonical per-feature status | `cargo xtask check-feature-status` |
+| [SPEC-COVERAGE.md](./SPEC-COVERAGE.md) | Generated per-spec-section view — start there for "is § X.Y implemented?" | Drift-gated by `check-feature-status` |
+| [FEATURE-STATUS.md](./FEATURE-STATUS.md) | Generated per-feature ledger | Drift-gated by `check-feature-status` |
+| [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md) | Registry of every emitted diagnostic rule ID | `cargo xtask check-diagnostic-registry` |
+| [VALIDATOR-ROADMAP.md](./VALIDATOR-ROADMAP.md) | Validator phases and the planned-diagnostics backlog | Hand-maintained |
 
-## Rule
+The workflow and ID conventions are in
+[FEATURE-TRACKING.md](./FEATURE-TRACKING.md). This file deliberately carries no
+status prose — earlier hand-maintained copies drifted and were removed.
+
+## Citation rule
 
 Every syntax-element implementation carries a doc comment (or a
 `// TODO(spec: <FEATURE-ID>): …` marker) naming the AV2 section it derives from.
@@ -52,35 +57,9 @@ stub); the first encoder feature adds the first row.
 If the AV2 section or AVM oracle is unknown, use `TODO(spec: <FEATURE-ID>): <section/topic>` in code
 and keep the feature stubbed.
 
-## Validator roadmap
+## AV2 is not AV1
 
-The validator coverage plan is split across:
-
-- [VALIDATOR-ROADMAP.md](./VALIDATOR-ROADMAP.md) — phases, current focus, and the planned-diagnostics backlog
-- [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md) — the CI-enforced registry of every emitted diagnostic
-
-The canonical status remains
-[IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml).
-
-## ⚠️ AV2 is not AV1
-
-The AV2 OBU header (§ 5.2.2) is:
-
-```text
-obu_header() {
-    obu_header_extension_flag  f(1)
-    obu_type                   f(5)
-    obu_tlayer_id              f(2)
-    if ( obu_header_extension_flag == 1 ) {
-        obu_mlayer_id          f(3)
-        obu_xlayer_id          f(5)
-    } else {
-        obu_mlayer_id = 0
-        obu_xlayer_id = ( obu_type == OBU_MSDO || obu_type == OBU_TEMPORAL_DELIMITER )
-            ? GLOBAL_XLAYER_ID : 0
-    }
-}
-```
-
+The AV2 OBU header is defined in § 5.2.2
+([docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2)).
 There is **no** `obu_forbidden_bit`, `obu_has_size_field`, temporal/spatial
 extension header, or AV1 OBU type table. Do not port AV1 assumptions.

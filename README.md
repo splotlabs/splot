@@ -167,8 +167,10 @@ vectors, AVM differential testing (with the
 oracle), then a bitstream writer and encoder experiments.
 
 Details live in [docs/VALIDATOR-ROADMAP.md](./docs/VALIDATOR-ROADMAP.md)
-(validator coverage phases) and
-[docs/ENCODER-ROADMAP.md](./docs/ENCODER-ROADMAP.md) (encoder milestones).
+(validator coverage phases). Encoder milestones will get their own roadmap
+once the validator phases close; until then the `ENC-*` rows in
+[`docs/IMPLEMENTATION-MATRIX.toml`](./docs/IMPLEMENTATION-MATRIX.toml) are the
+canonical encoder plan.
 
 `splot` uses rav1e and SVT-AV1 as engineering references for future AV2
 encoder architecture, not as sources of AV2 syntax or copied implementation

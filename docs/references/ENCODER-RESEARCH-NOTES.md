@@ -43,7 +43,7 @@ agent log:
 - Decoder-visible behavior? yes/no
 - AV2 spec sections read:
 - AVM files, tests, or streams used as oracle:
-- `docs/SPEC-MAPPING.md` entries updated? yes/no
+- Matrix row added/updated in `docs/IMPLEMENTATION-MATRIX.toml`? yes/no
 - Reference docs read:
   - `docs/references/RAV1E-SOURCE-MAP.md`: yes/no/not relevant
   - `docs/references/SVT-AV1-RESEARCH-MAPPING.md`: yes/no/not relevant

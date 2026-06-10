@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "843a2cd85e01f6c119ec087368d2a05f48238d31",
+  "audited_commit": "21f41691e7918ad3cdf3da021e97b3956327b3ad",
   "outcome": "success",
   "files": [
     {
@@ -113,7 +113,7 @@
     },
     {
       "path": ".github/PULL_REQUEST_TEMPLATE.md",
-      "sha256": "c4aa9e36a7c40c4c02982e8c0f915fc3d5f1f33085764a1201bcbd4d1cf63da4",
+      "sha256": "0339f038c1aaf08bfcbbb2406f6fc77af06a1c74238535622bb551760081e0c7",
       "scope_kind": "agent-guidance",
       "feature_ids": [],
       "outcome": "success"
@@ -804,25 +804,28 @@
     },
     {
       "path": "docs/ARCHITECTURE.md",
-      "sha256": "2744b69d80defd3edaf8044ae59c217d840f5743926ecf276d6100815247422a",
+      "sha256": "ec4b5d4726e4d3762f7452fee05457f8caacfca6d33f6076e15a920024301436",
       "scope_kind": "docs",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "docs/CODE_REVIEW.md",
-      "sha256": "ef4e9425a5ff915cc82bef97928e478c9791fe6a8a85174e825d0373fe512e5c",
+      "sha256": "5c90aedd48ea02542a40f616a2eefd57adf780945c3f0484117390e716866e84",
       "scope_kind": "docs",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "docs/CONFORMANCE.md",
-      "sha256": "ac556fc214eb05c4d3b9c96d795238d5d100c7ef2a061798bfdaa33d8011b55f",
+      "sha256": "2db7b38097974c84e2a291b09eddd1ac1142cd03b909fd1e7effcbab2af3017b",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-INSPECT",
         "CONF-AVM-DIFF-HARNESS",
+        "CONF-AVM-INVALID-STREAMS",
+        "CONF-AVM-PARSER-TRACES",
+        "CONF-AVM-VALID-STREAMS",
         "CONF-FUZZ-NO-PANIC",
         "CONF-INSPECT-SNAPSHOTS",
         "CONF-PUBLIC-VECTOR-LICENSE-REVIEW",
@@ -835,23 +838,6 @@
       "sha256": "c263aba2422c0f65237509d974c0f4014b978be54672ecec2adce2f7ec9efd50",
       "scope_kind": "docs",
       "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "docs/ENCODER-ROADMAP.md",
-      "sha256": "3fc973072ccae9c40f957d9feb34cf4815c7e2123aea6f211f8d8ab6e00519c7",
-      "scope_kind": "docs",
-      "feature_ids": [
-        "AV2-5.19-TILE-GROUP",
-        "AV2-5.2.4-BYTE-ALIGNMENT",
-        "CONF-AVM-DIFF-HARNESS",
-        "CONF-INSPECT-SNAPSHOTS",
-        "CONF-PUBLIC-VECTORS",
-        "ENC-BITSTREAM-WRITER",
-        "ENC-INTRA-TOY-V0",
-        "ENC-RATE-CONTROL-V0",
-        "ENC-SPEED-PRESETS"
-      ],
       "outcome": "success"
     },
     {
@@ -991,7 +977,7 @@
     },
     {
       "path": "docs/FEATURE-TRACKING.md",
-      "sha256": "d40e3b9ba2d7e0821b8528731ed9104e91fe742e52a21385fa1561a4c799cae6",
+      "sha256": "f5b4447550e7055a41c579f855e9404ae022ff4601e2e90caf266e644f8d55f4",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -1008,7 +994,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.schema.md",
-      "sha256": "97070f0074350e86787a2a7c3bc4fce0f3bb1f203bbeaab84d0f7d03314d5f30",
+      "sha256": "07737eb434c7e408807b196c2dec3d8e11ccb0b6bbbabdbe5dbf0722e16eb976",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -1291,38 +1277,34 @@
     },
     {
       "path": "docs/SPEC-MAPPING.md",
-      "sha256": "75a4c82f94c02e1ae2f04952c36259662d6e459ab5a1b9dfbe22f9cca6780e55",
+      "sha256": "b6a2a94ebb323d54769e729248c7f996949c170d45ded223869d9af5a35ab613",
       "scope_kind": "docs",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "docs/TESTING.md",
-      "sha256": "0e658ae7b8c6412dbc8b8e56f4e4b53e517801041d59a37dc37a03093a6d5bb9",
+      "sha256": "b114d0951f8d6fe4696d3f41be5d233a155edb8f9cdcddaf4001d4065aa853ac",
       "scope_kind": "docs",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "8239eb758171f1da33f8179cf8093b4464ed8f580a05bdaba84d2adbd7b8bf59",
+      "sha256": "3efd0556671091877d9ac5689130869f82fa39f7505bfc29cccd651d3dcac359",
       "scope_kind": "docs",
       "feature_ids": [
-        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
         "XTASK-DIAGNOSTIC-REGISTRY"
       ],
       "outcome": "success"
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "851ef2d2e0eca6120796d6050097d1b44e5e3a9d7543dc16d72cd545bdd62301",
+      "sha256": "cd2799c4453285a26eeb9af477b7569fab7bff8959e7b8b9bf6f9fb645fde955",
       "scope_kind": "docs",
       "feature_ids": [
-        "AV2-4.11.3-UVLC",
         "AV2-4.11.4-SVLC",
-        "AV2-4.11.5-LE",
         "AV2-4.11.7-SU",
-        "AV2-4.11.8-NS",
         "AV2-5.10-OPERATING-POINT-SET",
         "AV2-5.10-OPS-SYNTAX-ELEMENTS",
         "AV2-5.11-OPERATING-POINT-PAYLOAD",
@@ -1338,36 +1320,18 @@
         "AV2-5.16-PADDING",
         "AV2-5.17-METADATA",
         "AV2-5.18-FRAME-HEADER",
-        "AV2-5.18.1-FRAME-HEADER-GENERAL",
-        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
-        "AV2-5.18.2-FRAME-HEADER-INFO",
         "AV2-5.18.3-FRAME-CONFIGURATION",
         "AV2-5.18.4-FRAME-SIZE",
         "AV2-5.18.5-FILTERING",
         "AV2-5.18.6-QUANTIZATION",
         "AV2-5.18.7-SEGMENTATION-TILING",
         "AV2-5.18.7.3-TILE-PARAMS",
-        "AV2-5.18.8-TRANSFORM-CODING-MODES",
-        "AV2-5.18.9-GLOBAL-MOTION",
         "AV2-5.19-TILE-GROUP",
         "AV2-5.2.1-OBU-DISPATCH",
         "AV2-5.2.3-TRAILING-BITS",
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.20-TILE-GROUP-PAYLOAD",
         "AV2-5.4-SEQUENCE-HEADER",
-        "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
-        "AV2-5.4.10-SEQUENCE-FILTER-CONFIG",
-        "AV2-5.4.11-USER-QM",
-        "AV2-5.4.12-TIMING-INFO",
-        "AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO",
-        "AV2-5.4.2-SEQUENCE-TILE-CONFIG",
-        "AV2-5.4.3-SEQUENCE-PARTITION-CONFIG",
-        "AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG",
-        "AV2-5.4.5-SEQUENCE-INTRA-CONFIG",
-        "AV2-5.4.6-SEQUENCE-INTER-CONFIG",
-        "AV2-5.4.7-SEQUENCE-SCC-CONFIG",
-        "AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG",
-        "AV2-5.4.9-SEGMENT-INFO",
         "AV2-5.6-MSDO",
         "AV2-5.7-MULTI-FRAME-HEADER",
         "AV2-5.8-LAYER-CONFIG-RECORD",
@@ -1401,7 +1365,7 @@
     },
     {
       "path": "docs/references/ENCODER-RESEARCH-NOTES.md",
-      "sha256": "2370a08f08109f861e1200319e62a9536dec833fc0940ca8cee4cf29ffaeeded",
+      "sha256": "94e7038faf74e49d9c2e181c5981e1b5e3a30169399daf7681925a1a6c15ba15",
       "scope_kind": "docs",
       "feature_ids": [
         "DOC-ENCODER-REFERENCE-GATE"

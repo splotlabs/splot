@@ -5,12 +5,12 @@ implemented in `splot` and how far. This document defines its schema, the allowe
 values, the status model, and the proof rules enforced by
 `cargo xtask check-feature-status`.
 
-GitHub Issues/Projects and README checklists are **not** canonical —
-they are an execution queue and a snapshot, respectively. When they disagree with
-the matrix, the matrix wins.
+GitHub Issues/Projects and prose status in other docs are **not** canonical;
+when anything disagrees with the matrix, the matrix wins.
 
 See also: [FEATURE-TRACKING.md](./FEATURE-TRACKING.md) (workflow and conventions),
-[FEATURE-STATUS.md](./FEATURE-STATUS.md) (generated render).
+[FEATURE-STATUS.md](./FEATURE-STATUS.md) and [SPEC-COVERAGE.md](./SPEC-COVERAGE.md)
+(generated renders).
 
 ## 1. The matrix is canonical
 
@@ -22,9 +22,12 @@ check-feature-status` fails the build if the matrix and the tree drift apart.
 ## 2. File-level fields
 
 ```toml
-matrix_version = 1            # integer; the only supported version is 1
-last_reviewed = "YYYY-MM-DD"  # date the matrix was last reviewed (string)
+matrix_version = 1            # integer; required; the only supported version is 1
+last_reviewed = "YYYY-MM-DD"  # string; optional; date the matrix was last reviewed
 ```
+
+Only `matrix_version` is strictly required. `last_reviewed` is optional; the
+generated renders show `unknown` when it is absent.
 
 ## 3. Feature row fields
 
@@ -146,13 +149,16 @@ diagnostics = ["obu-header/global-xlayer-required"]  # diagnostic rule id
 6. `category` / `kind` / `risk` / `crate` / `owner` values are allowed.
 7. The `module` path exists whenever any implementation stage is `partial`,
    `done`, or `experimental`.
-8. A code stage marked `done` has proof (§5.3) — unless it is `not-applicable`.
+8. A code stage marked `done` has proof (§5.3).
 9. Every `TODO(spec: <id>)` in Rust source references a known Feature ID.
 10. Every feature-ID-shaped token (`AV2-…`, `ENC-…`, `CONF-…`, `CLI-…`,
     `XTASK-…`, `DOC-…`) in source/docs is a known Feature ID, a known ID with a
-    `.SUFFIX` (diagnostic sub-rule), or in the checker's documented allowlist.
+    `.SUFFIX` (diagnostic sub-rule), an ID listed in some row's `replaces`
+    (accepted as historical), or in the documented allowlist
+    (`ALLOWLISTED_TOKENS` in `xtask/src/feature_status.rs`).
 11. Validator diagnostic rule ids use a documented prefix or a known Feature ID.
-12. `docs/FEATURE-STATUS.md`, if present, is up to date with the matrix.
+12. The generated renders (`docs/FEATURE-STATUS.md` and
+    `docs/SPEC-COVERAGE.md`), if present, are up to date with the matrix.
 
 ## 6. Feature ID convention
 
@@ -196,37 +202,14 @@ rationale in the relevant OpenSpec change.
 
 ## 8. Example row
 
+The canonical starter row is
+[templates/FEATURE_MATRIX_ROW.toml](./templates/FEATURE_MATRIX_ROW.toml); copy
+it into the matrix as described in §7 rather than hand-writing a row. Its
+trimmed shape:
+
 ```toml
 [[feature]]
-id = "AV2-SECTION-SLUG"
-name = "Human-readable feature name"
-category = "normative"
-kind = "bitstream-syntax"
-spec_sections = ["5.x", "6.x"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-core"
-module = "crates/splot-core/src/example.rs"
-openspec_change = "change-id"
-tracking_issue = ""
-owner = "core"
-risk = "unknown"
-notes = "Short status note."
-
-[feature.status]
-mapped = "todo"
-types = "todo"
-parse = "todo"
-validate = "todo"
-write = "todo"
-encode = "todo"
-decode_check = "todo"
-tests = "todo"
-avm_diff = "pending"
-perf = "not-applicable"
-
-[feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
+id = "AV2-SECTION-SLUG"   # §6 ID convention
+# ...every required field of §3, then the [feature.status] and
+# [feature.proof] sub-tables.
 ```
