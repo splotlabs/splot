@@ -167,6 +167,117 @@ pub(crate) struct ValidatorContext {
     /// re-activation across a CLK does not match. `None` is the implicit pre-first-CLK
     /// coded video sequence.
     frame_confirmed_activation_cvs: BTreeMap<ExtendedLayerId, Option<u64>>,
+    /// Last explicitly signalled `ops_decoder_buffer_delay + ops_encoder_buffer_delay`
+    /// sum per `(obu_xlayer_id, ops_id, operating-point index)`, with the CVS epoch and
+    /// § 6.10.1 reset generation in which it was observed, for the § 6.10.5
+    /// buffer-delay sum-constancy checks. Annex E binds the delays per `(xId, opsID, op)`
+    /// (`annex-e-decoder-model.md` lines 100–112), so the triple is the comparison key.
+    /// Only explicitly signalled values enter this map; absent decoder-model info (and
+    /// the Annex E resource-availability defaults) never write or clear an entry.
+    ops_buffer_delay_sums: BTreeMap<OpsBufferDelayKey, BufferDelayBaseline>,
+    /// Last explicitly signalled `decoder_buffer_delay + encoder_buffer_delay` sum of
+    /// the frame-confirmed activated sequence header per extended layer, with the CVS
+    /// epoch in which it was observed, for the § 6.4.13 cross-CVS advisory. Only
+    /// frame-confirmed activations with explicit `seq_decoder_model_info()` populate
+    /// this map; fallback-guess activations and headers without decoder-model info do
+    /// not participate.
+    seq_buffer_delay_sums: BTreeMap<ExtendedLayerId, SeqBufferDelayBaseline>,
+}
+
+/// Comparison key for the § 6.10.5 operating-point buffer-delay sum-constancy check:
+/// the `(obu_xlayer_id, opsID, op)` triple Annex E binds the delays to
+/// (`annex-e-decoder-model.md` lines 100–112).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct OpsBufferDelayKey {
+    xlayer: ExtendedLayerId,
+    ops_id: u8,
+    op_index: u8,
+}
+
+/// The boundary scope of one § 6.10.5 buffer-delay observation: the per-extended-layer
+/// CVS epoch, the bitstream-wide § 6.10.1 reset generation, and the per-OPS targeted-reset
+/// generation. Two observations share the same scope — and so are subject to the error
+/// tier rather than the cross-boundary advisory — only when all three match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BufferDelayScope {
+    /// [`CvsTracker::cvs_generation_epoch`] of the OPS's extended layer (or the
+    /// multistream-wide global epoch) at the observation.
+    cvs_epoch: u64,
+    /// [`OpsAvailabilityStore::reset_generation`] in effect for the observation,
+    /// including the defining OPS's own `ops_reset_flag`.
+    reset_generation: u64,
+    /// [`OpsAvailabilityStore::targeted_reset_generation`] for the observation's
+    /// `(obu_xlayer_id, opsID)`. A § 6.10.1 case-3 targeted reset of this OPS bumps it,
+    /// re-baselining the comparison for exactly this OPS without disturbing any other.
+    targeted_reset_generation: u64,
+}
+
+/// One stored operating-point buffer-delay baseline (§ 6.10.5): the last explicitly
+/// signalled sum together with the boundary scope and temporal unit that scope the
+/// error-tier comparison.
+#[derive(Debug, Clone, Copy)]
+struct BufferDelayBaseline {
+    /// `ops_decoder_buffer_delay + ops_encoder_buffer_delay`, summed as `u64` so the
+    /// two `u32` `uvlc()` values cannot overflow the comparison.
+    sum: u64,
+    /// The CVS / reset / targeted-reset scope at the baseline observation.
+    scope: BufferDelayScope,
+    /// [`CvsTracker::tu_index`] of the baseline observation. A CVS boundary is
+    /// temporal-unit-granular (§ 7.3.6), so a baseline observed in an earlier temporal
+    /// unit may be split into a different coded video sequence by a CLK later in the
+    /// current temporal unit; the error-tier comparison is therefore routed through
+    /// [`CvsTracker::defer_or_emit`] on this index.
+    tu_index: u64,
+}
+
+/// Builds the § 6.10.5 operating-point cross-boundary advisory
+/// (`decoder-model/buffer-delay-sum-changed-across-cvs`, severity `warning`) for a
+/// change of the explicitly signalled buffer-delay sum from `previous_sum` to `sum` for
+/// the `(obu_xlayer_id, opsID, op)` triple `key`. Shared by the eager cross-boundary
+/// check (`check_ops_buffer_delay_cross_cvs`) and the deferred-error replacement path
+/// (`check_ops_buffer_delay_sums`), where it is the `on_drop` diagnostic emitted when a
+/// late CLK reveals the deferred intra-CVS error to be a genuine cross-CVS change.
+fn ops_buffer_delay_cross_cvs_warning(
+    key: &OpsBufferDelayKey,
+    previous_sum: u64,
+    sum: u64,
+    offset: ByteOffset,
+) -> Diagnostic {
+    Diagnostic::warning(
+        "decoder-model/buffer-delay-sum-changed-across-cvs",
+        format!(
+            "operating point set {} operating point {} for obu_xlayer_id {} changes its \
+             ops_decoder_buffer_delay + ops_encoder_buffer_delay sum from {} to {} across \
+             a coded-video-sequence or OPS-reset boundary; the § 6.4.13 / § 6.10.5 \
+             \"video sequence\" scope is unspecified, so this finding is advisory under \
+             the broad reading",
+            key.ops_id,
+            key.op_index,
+            key.xlayer.get(),
+            previous_sum,
+            sum,
+        ),
+    )
+    // The finding cites the § 6.10.5 OPS variant of the sum-constancy sentence
+    // (§ 6.4.13 is the sequence-header variant, emitted from
+    // `check_seq_buffer_delay_sum`).
+    .with_spec_section("6.10.5")
+    .with_byte_offset(offset)
+}
+
+/// One stored activated-sequence-header buffer-delay baseline (§ 6.4.13): the last
+/// explicitly signalled sum of a frame-confirmed activated header for an extended
+/// layer, with the CVS epoch that scopes the cross-CVS advisory.
+#[derive(Debug, Clone, Copy)]
+struct SeqBufferDelayBaseline {
+    /// `decoder_buffer_delay + encoder_buffer_delay`, summed as `u64`.
+    sum: u64,
+    /// [`CvsTracker::cvs_generation_epoch`] of the extended layer at the baseline
+    /// observation.
+    cvs_epoch: u64,
+    /// `seq_header_id` of the header that established the baseline, cited in the
+    /// advisory message.
+    seq_header_id: SequenceHeaderId,
 }
 
 /// The § 6.4.1 LCR association of one observed sequence header; see
@@ -551,6 +662,24 @@ fn external_declares_sequence_header(options: &ValidationOptions) -> bool {
 #[derive(Debug, Default)]
 struct OpsAvailabilityStore {
     by_xlayer: BTreeMap<ExtendedLayerId, BTreeMap<u8, OperatingPointSetRecord>>,
+    /// Monotonic count of § 6.10.1 OPS resets (`ops_reset_flag == 1`) applied so far.
+    /// The § 6.10.5 buffer-delay sum-constancy error tier scopes its per-triple
+    /// baseline by this generation: a redefinition is compared against the baseline
+    /// only when no reset intervened (the constraint says "with no intervening OPS
+    /// reset"). Any reset — global or local, for any extended layer — bumps the
+    /// counter, so a comparison spanning a reset is dropped (sound: it only suppresses
+    /// comparisons, never invents one; a local reset on an unrelated layer may
+    /// under-report, an accepted soundness trade-off recorded with the check).
+    reset_generation: u64,
+    /// Per-`(obu_xlayer_id, opsID)` count of § 6.10.1 *targeted* resets
+    /// (`ops_reset_flag == 0` and `ops_cnt == 0`: case 3, "Only OPS x is reset"). A
+    /// targeted reset re-baselines exactly that OPS without disturbing any other, so it
+    /// must not bump the bitstream-wide [`Self::reset_generation`] (that would
+    /// over-suppress unrelated triples). The § 6.10.5 buffer-delay error tier includes
+    /// this per-key generation in its scope identity, so a redefinition of the same
+    /// triple after a targeted reset of its OPS is treated like any other reset-spanning
+    /// change: out of the error tier, into the cross-CVS advisory.
+    targeted_reset_generation: BTreeMap<(ExtendedLayerId, u8), u64>,
 }
 
 impl OpsAvailabilityStore {
@@ -568,6 +697,7 @@ impl OpsAvailabilityStore {
         let defines = record.ops_cnt > 0;
 
         if reset_flag {
+            self.reset_generation += 1;
             if xlayer.is_global() {
                 self.by_xlayer.clear();
             } else {
@@ -585,6 +715,14 @@ impl OpsAvailabilityStore {
                 .or_default()
                 .insert(ops_id, record);
         } else {
+            // Case 3 (§ 6.10.1): a targeted reset of only this (xlayer, ops_id). Bump the
+            // per-key targeted-reset generation so the § 6.10.5 error tier re-baselines
+            // this OPS (and only this OPS) like a reset boundary, without touching the
+            // bitstream-wide reset_generation.
+            *self
+                .targeted_reset_generation
+                .entry((xlayer, ops_id))
+                .or_default() += 1;
             // Remove only this (xlayer, ops_id), then prune the layer's map if it is
             // now empty so the store does not accumulate empty inner maps.
             let now_empty = match self.by_xlayer.get_mut(&xlayer) {
@@ -603,6 +741,20 @@ impl OpsAvailabilityStore {
     /// Returns the active OPS record for `(xlayer, ops_id)`, if any.
     fn get(&self, xlayer: ExtendedLayerId, ops_id: u8) -> Option<&OperatingPointSetRecord> {
         self.by_xlayer.get(&xlayer).and_then(|map| map.get(&ops_id))
+    }
+
+    /// The current § 6.10.1 reset generation (see [`Self::reset_generation`]).
+    fn reset_generation(&self) -> u64 {
+        self.reset_generation
+    }
+
+    /// The current § 6.10.1 *targeted*-reset generation for `(xlayer, ops_id)` (see
+    /// [`Self::targeted_reset_generation`]), or 0 before any targeted reset of that OPS.
+    fn targeted_reset_generation(&self, xlayer: ExtendedLayerId, ops_id: u8) -> u64 {
+        self.targeted_reset_generation
+            .get(&(xlayer, ops_id))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Iterates the active OPS records in the `xlayer` bucket (§ 6.10.7
@@ -1181,19 +1333,70 @@ struct CvsTracker {
     /// For each extended layer, the temporal unit in which its most recent coded
     /// video sequence started (§ 7.3.6 CLK boundary events).
     cvs_started_in_tu: BTreeMap<ExtendedLayerId, u64>,
+    /// Monotonic count of coded-video-sequence starts across the whole bitstream,
+    /// incremented once per § 7.3.6 CLK boundary event (idempotent within a temporal
+    /// unit). A global (`GLOBAL_XLAYER_ID`) scope, which spans the whole multistream
+    /// and has no single owning extended layer, uses this counter as its CVS epoch:
+    /// any CLK in any extended layer bumps it, so two observations sharing this value
+    /// are guaranteed to lie within one coded video sequence of every layer (sound —
+    /// it only adds boundaries, never removes one). See [`CvsTracker::cvs_generation_epoch`].
+    cvs_generation: u64,
+    /// For each extended layer, the [`CvsTracker::cvs_generation`] value at which its
+    /// most recent coded video sequence started — the per-layer CVS epoch used to
+    /// scope the § 6.10.5 buffer-delay sum-constancy comparison.
+    cvs_generation_for: BTreeMap<ExtendedLayerId, u64>,
     /// Deferred cross-temporal-unit CVS-scoped diagnostics, tagged with the extended
-    /// layer that scopes the comparison; flushed when the temporal unit completes.
-    pending_cross_tu: Vec<(ExtendedLayerId, Diagnostic)>,
+    /// layer that scopes the comparison; flushed when the temporal unit completes. Each
+    /// entry may carry an optional `on_drop` replacement diagnostic emitted in place of
+    /// the primary when the primary is dropped because a § 7.3.6 coded-video-sequence
+    /// boundary was crossed (the comparison was genuinely cross-CVS after all). The
+    /// mechanism is rule-id-agnostic: a caller that wants no replacement passes `None`.
+    pending_cross_tu: Vec<PendingCrossTu>,
+}
+
+/// One deferred cross-temporal-unit CVS-scoped diagnostic (see
+/// [`CvsTracker::pending_cross_tu`]).
+#[derive(Debug)]
+struct PendingCrossTu {
+    /// The extended layer scoping the comparison; `GLOBAL_XLAYER_ID` for a record with
+    /// no single owning extended layer.
+    xlayer: ExtendedLayerId,
+    /// The primary diagnostic, emitted when the temporal unit completes without the
+    /// layer having started a coded video sequence in it.
+    primary: Diagnostic,
+    /// The replacement emitted instead of `primary` when `primary` is dropped because a
+    /// coded-video-sequence boundary was crossed (the comparison spanned the boundary).
+    /// `None` for callers whose dropped comparison must simply vanish.
+    on_drop: Option<Diagnostic>,
 }
 
 impl CvsTracker {
     /// Records a § 7.3.6 boundary event: a CLK OBU for `xlayer` starts a new coded
     /// video sequence at the current temporal unit. Pending deferred diagnostics for
     /// `xlayer` compare records of the previous coded video sequence against this
-    /// one, so they are dropped. Idempotent within a temporal unit.
-    fn start_cvs(&mut self, xlayer: ExtendedLayerId) {
+    /// one, so the primary is dropped and any `on_drop` replacement is emitted in its
+    /// place (the comparison spanned this CVS boundary). Idempotent within a temporal
+    /// unit.
+    fn start_cvs(&mut self, xlayer: ExtendedLayerId, report: &mut ValidationReport) {
+        // Bump the CVS generation only once per (xlayer, temporal unit): a redundant
+        // CLK in the same temporal unit is the same § 7.3.6 boundary event, so it must
+        // not advance the epoch (matches the idempotent `cvs_started_in_tu` insert).
+        if self.cvs_started_in_tu.get(&xlayer) != Some(&self.tu_index) {
+            self.cvs_generation += 1;
+            self.cvs_generation_for.insert(xlayer, self.cvs_generation);
+        }
         self.cvs_started_in_tu.insert(xlayer, self.tu_index);
-        self.pending_cross_tu.retain(|(x, _)| *x != xlayer);
+        let mut retained = Vec::with_capacity(self.pending_cross_tu.len());
+        for entry in std::mem::take(&mut self.pending_cross_tu) {
+            if entry.xlayer == xlayer {
+                if let Some(replacement) = entry.on_drop {
+                    report.push(replacement);
+                }
+            } else {
+                retained.push(entry);
+            }
+        }
+        self.pending_cross_tu = retained;
     }
 
     /// The temporal unit in which `xlayer`'s current coded video sequence started, or
@@ -1205,6 +1408,33 @@ impl CvsTracker {
     /// sequence.
     fn cvs_epoch(&self, xlayer: ExtendedLayerId) -> Option<u64> {
         self.cvs_started_in_tu.get(&xlayer).copied()
+    }
+
+    /// The generation-counter CVS epoch scoping the § 6.10.5 / § 6.4.13 buffer-delay
+    /// comparisons for `xlayer`: the [`CvsTracker::cvs_generation`] at which the layer's
+    /// current coded video sequence started, or — for the multistream-wide
+    /// `GLOBAL_XLAYER_ID` scope — the running generation counter so any CLK in any layer
+    /// changes the epoch. Returns 0 before any CLK has been observed. Distinct from
+    /// [`CvsTracker::cvs_epoch`], which returns the temporal-unit index used by the
+    /// § 7.3.6 single-active-sequence-header check.
+    fn cvs_generation_epoch(&self, xlayer: ExtendedLayerId) -> u64 {
+        if xlayer.is_global() {
+            self.cvs_generation
+        } else {
+            self.cvs_generation_for.get(&xlayer).copied().unwrap_or(0)
+        }
+    }
+
+    /// Whether a coded video sequence has started for `xlayer` — i.e. its
+    /// [`CvsTracker::cvs_generation_epoch`] is non-zero (§ 7.3.6: a CVS "is defined to
+    /// start at each temporal unit that contains an OBU with obu_type equal to
+    /// OBU_CLOSED_LOOP_KEY"). For the multistream-wide `GLOBAL_XLAYER_ID` scope this is
+    /// true once any extended layer has started a coded video sequence. Before the first
+    /// CLK the layer's OBUs lie in no coded video sequence at all, so the intra-CVS
+    /// error tier (whose constraint binds only "within one coded video sequence") must
+    /// not compare them.
+    fn cvs_started(&self, xlayer: ExtendedLayerId) -> bool {
+        self.cvs_generation_epoch(xlayer) > 0
     }
 
     /// Routes a CVS-scoped comparison diagnostic. `record_tu` is the temporal unit
@@ -1221,31 +1451,58 @@ impl CvsTracker {
         diagnostic: Diagnostic,
         report: &mut ValidationReport,
     ) {
+        self.defer_or_emit_with_replacement(xlayer, record_tu, diagnostic, None, report);
+    }
+
+    /// Like [`CvsTracker::defer_or_emit`], but a deferred primary that is later dropped
+    /// because a coded-video-sequence boundary was crossed is replaced by `on_drop`
+    /// (when `Some`). When the primary is emitted eagerly (same temporal unit) or
+    /// flushed unchanged at the completed temporal unit, `on_drop` is discarded — the
+    /// comparison stayed within one coded video sequence. The mechanism stays
+    /// rule-id-agnostic; the caller decides what the cross-boundary replacement says.
+    fn defer_or_emit_with_replacement(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        record_tu: u64,
+        diagnostic: Diagnostic,
+        on_drop: Option<Diagnostic>,
+        report: &mut ValidationReport,
+    ) {
         if record_tu == self.tu_index {
             report.push(diagnostic);
         } else {
-            self.pending_cross_tu.push((xlayer, diagnostic));
+            self.pending_cross_tu.push(PendingCrossTu {
+                xlayer,
+                primary: diagnostic,
+                on_drop,
+            });
         }
     }
 
     /// Flushes the deferred diagnostics of the just-completed temporal unit: an
-    /// entry is dropped when its extended layer started a new coded video sequence
-    /// in that temporal unit (the compared records then sit in different coded video
-    /// sequences, § 7.3.6) and emitted otherwise. An entry tagged with
-    /// `GLOBAL_XLAYER_ID` scopes records with no single owning extended layer and is
-    /// dropped when ANY extended layer started a coded video sequence in the
-    /// temporal unit (documented approximation, sound: it only drops comparisons).
+    /// entry's primary is dropped when its extended layer started a new coded video
+    /// sequence in that temporal unit (the compared records then sit in different
+    /// coded video sequences, § 7.3.6) and emitted otherwise. When the primary is
+    /// dropped, its `on_drop` replacement (if any) is emitted instead — the comparison
+    /// spanned the boundary. An entry tagged with `GLOBAL_XLAYER_ID` scopes records
+    /// with no single owning extended layer and is dropped when ANY extended layer
+    /// started a coded video sequence in the temporal unit (documented approximation,
+    /// sound: it only drops comparisons).
     fn flush_completed_tu(&mut self, report: &mut ValidationReport) {
         let tu_index = self.tu_index;
         let any_started_this_tu = self.cvs_started_in_tu.values().any(|&tu| tu == tu_index);
-        for (xlayer, diagnostic) in std::mem::take(&mut self.pending_cross_tu) {
-            let started_this_tu = if xlayer.is_global() {
+        for entry in std::mem::take(&mut self.pending_cross_tu) {
+            let started_this_tu = if entry.xlayer.is_global() {
                 any_started_this_tu
             } else {
-                self.cvs_started_in_tu.get(&xlayer) == Some(&tu_index)
+                self.cvs_started_in_tu.get(&entry.xlayer) == Some(&tu_index)
             };
-            if !started_this_tu {
-                report.push(diagnostic);
+            if started_this_tu {
+                if let Some(replacement) = entry.on_drop {
+                    report.push(replacement);
+                }
+            } else {
+                report.push(entry.primary);
             }
         }
     }
@@ -1267,8 +1524,12 @@ impl CvsTracker {
     /// sequence (AV2 § 7.4.4); every other pending diagnostic is CVS-scoped and
     /// must survive.
     fn drop_pending_for_rules(&mut self, xlayer: ExtendedLayerId, rule_ids: &[&str]) {
-        self.pending_cross_tu.retain(|(x, diagnostic)| {
-            !((*x == xlayer || x.is_global()) && rule_ids.contains(&diagnostic.rule_id.as_str()))
+        // The match invalidates the comparison outright — no `on_drop` replacement is
+        // emitted, since the random access point did not cross a coded video sequence
+        // boundary (the pairing diagnostics never carry one anyway).
+        self.pending_cross_tu.retain(|entry| {
+            !((entry.xlayer == xlayer || entry.xlayer.is_global())
+                && rule_ids.contains(&entry.primary.rule_id.as_str()))
         });
     }
 }
@@ -2024,7 +2285,7 @@ impl ValidatorContext {
     /// temporal-unit flush instead, see [`CvsTracker::flush_completed_tu`]).
     /// Idempotent within a temporal unit.
     fn start_cvs_for_xlayer(&mut self, xlayer: ExtendedLayerId, report: &mut ValidationReport) {
-        self.cvs.start_cvs(xlayer);
+        self.cvs.start_cvs(xlayer, report);
         let tu_index = self.cvs.tu_index;
         // The scan-type scopes flush before the content-interpretation pruning
         // below: the § 6.16.10 unestablished-CI warning for the ENDING coded video
@@ -2245,6 +2506,22 @@ impl ValidatorContext {
             // AV2 § 6.4.1: cross-extended-layer monotonic_output_order_flag agreement,
             // gated on the § 7.3.2 CMVS tracker being definitively inside a CMVS.
             self.check_monotonic_output_order_agreement(xlayer, obu.offset, options, report);
+
+            // AV2 § 6.4.13 cross-CVS advisory: evaluate on EVERY frame-confirmed
+            // activation, not only an id change or first confirmation. A same-id
+            // reconfiguration across a coded-video-sequence boundary (legal at the
+            // boundary, § 7.3.6) re-confirms the unchanged id, so the short-circuit above
+            // would skip it; this check must still re-compare. A CLK starts the new coded
+            // video sequence before its own frame header activates (boundary events run
+            // first in `observe_obu`), so by here the CVS epoch is already the new one.
+            // The comparison is idempotent within a coded video sequence (it overwrites
+            // its baseline with the same sum at the same epoch).
+            self.check_seq_buffer_delay_sum(
+                obu.header.extended_layer_id,
+                obu.offset,
+                options,
+                report,
+            );
 
             // With the in-band active sequence header available, run the frame-header
             // core parser and emit the locally decidable § 6.17 diagnostics. Parsing
@@ -3488,6 +3765,12 @@ impl ValidatorContext {
 
         self.check_operating_point_set_semantics(obu, &ops, report);
 
+        // AV2 § 6.10.5: the per-(obu_xlayer_id, opsID, op) buffer-delay sum-constancy
+        // checks, run before the § 6.10.1 reset/update is applied so the defining OPS's
+        // own reset_flag re-baselines its values (the constraint excludes intervening
+        // resets) — see check_ops_buffer_delay_sums.
+        self.check_ops_buffer_delay_sums(obu, &ops, options, report);
+
         // AV2 § 6.10.7: explicitly signalled maps are checked against the currently
         // activated sequence headers now, and retained on the record so a later
         // activation can complete the pairing (see on_sequence_activation).
@@ -3511,6 +3794,222 @@ impl ValidatorContext {
             },
             ops.reset_flag,
         );
+    }
+
+    /// Checks the § 6.10.5 operating-point buffer-delay sum-constancy constraint:
+    ///
+    /// > "For a video sequence that includes one or more random access points the sum
+    /// > of ops_decoder_buffer_delay and ops_encoder_buffer_delay shall be kept
+    /// > constant." (AV2 v1.0.0 § 6.10.5,
+    /// > `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md` lines 2810–2825.)
+    ///
+    /// The error tier (`decoder-model/buffer-delay-sum-changed`) fires only for the
+    /// sub-case that is non-conforming under *every* plausible reading of the
+    /// undefined term "video sequence":
+    ///
+    /// 1. Per coded video sequence (CVS). Every CVS for an extended layer starts at a
+    ///    closed random access point (§ 7.3.6: a CVS "is defined to start at each
+    ///    temporal unit that contains an OBU with obu_type equal to
+    ///    OBU_CLOSED_LOOP_KEY"), so "includes one or more random access points" always
+    ///    holds and the constraint binds within the same CVS epoch.
+    /// 2. Per coded multistream video sequence (CMVS) — a superset of each per-layer
+    ///    CVS; two values in one CVS are also in one CMVS.
+    /// 3. Per whole per-`obu_xlayer_id` sub-bitstream — the broadest reading; two
+    ///    values in one CVS are trivially in one sub-bitstream.
+    ///
+    /// So a change of the explicitly signalled sum for the *same*
+    /// `(obu_xlayer_id, opsID, op)` triple, within one CVS epoch and with no
+    /// intervening § 6.10.1 OPS reset, is non-conforming under all three readings and
+    /// is reported as an error. Changes that only span a CVS or reset boundary are
+    /// conforming under the per-CVS reading; those are the advisory warning tier
+    /// (`decoder-model/buffer-delay-sum-changed-across-cvs`, see
+    /// `check_ops_buffer_delay_cross_cvs`).
+    ///
+    /// Two preconditions keep the error tier sound at the temporal-unit granularity of
+    /// § 7.3.6:
+    ///
+    /// - **A coded video sequence must have started** ([`CvsTracker::cvs_started`]).
+    ///   Before the first CLK for the layer (or, for the `GLOBAL_XLAYER_ID` scope,
+    ///   anywhere) the OBUs lie in *no* coded video sequence, so the per-CVS reading's
+    ///   "video sequence that includes one or more random access points" precondition is
+    ///   unsatisfied and the constraint does not bind. The error tier is silent there;
+    ///   the change is out of scope for both tiers (it spans no CVS boundary either).
+    ///   This silence also covers a narrow under-report: two pre-CLK observations in
+    ///   *different* temporal units share the same epoch-0 [`BufferDelayScope`] (the
+    ///   scope carries no `tu_index`), so a late CLK in the second observation's
+    ///   temporal unit — which retroactively places that observation in a fresh coded
+    ///   video sequence — produces no deferred error (`cvs_started` was false when the
+    ///   pair was compared, so no `on_drop` advisory was armed) and no eager advisory
+    ///   (the scopes were equal, so [`Self::check_ops_buffer_delay_cross_cvs`] returns
+    ///   early). The change only surfaces if a later post-CLK observation repeats it.
+    ///   Reporting it would require retroactively reclassifying an already-emitted
+    ///   comparison at CLK time; leaving it silent is the sound-over-complete choice
+    ///   consistent with the reset-spanning under-report noted below.
+    /// - **The comparison is routed through [`CvsTracker::defer_or_emit`].** A baseline
+    ///   from the same temporal unit is always in the same coded video sequence (a CVS
+    ///   starts *at* a temporal unit, never inside one), so it is emitted eagerly. A
+    ///   baseline from an earlier temporal unit is deferred, because a CLK later in the
+    ///   current temporal unit would split the baseline and the new observation into
+    ///   different coded video sequences — exactly the case the warning tier covers.
+    ///
+    /// Only explicitly signalled values participate: a payload without
+    /// `ops_decoder_model_info_for_this_op_present_flag` contributes nothing and does
+    /// not clear the stored baseline, and the Annex E resource-availability defaults
+    /// (`DecoderBufferDelay = 70000` / `EncoderBufferDelay = 20000`,
+    /// `annex-e-decoder-model.md` lines 261–272) are fallbacks, not signalled values,
+    /// so they never synthesize a comparison.
+    ///
+    /// NB: whether an OPS reset re-baselines a reused `opsID` is itself ambiguous; the
+    /// reset-spanning case stays in the warning tier (sound choice, may under-report),
+    /// so the error tier deliberately requires the reset generation to match.
+    fn check_ops_buffer_delay_sums(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        ops: &OperatingPointSet,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        // External HLS may legitimately supply differing decoder-model parameters, so
+        // both tiers are suppressed under any Provided mode (precedent: the
+        // sequence-state checks and `check_ops_entries_against_active`).
+        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+            return;
+        }
+
+        // The reset generation that scopes this OBU's own values: when this OPS carries
+        // ops_reset_flag, its reset has not been applied yet (the local checks run
+        // first), so account for it here — a value defined by a resetting OPS is in a
+        // fresh reset generation and is never the same-generation continuation of an
+        // earlier baseline.
+        let effective_reset_gen = self.ops.reset_generation() + u64::from(ops.reset_flag);
+        // A § 6.10.1 case-3 targeted reset (ops_cnt == 0) carries no operating-point
+        // payloads, so it never reaches this loop; the count therefore already reflects
+        // every targeted reset of this OPS that preceded this defining OBU. The defining
+        // OBU itself (case 4, ops_cnt > 0) does not bump it, so no in-flight adjustment is
+        // needed here (unlike effective_reset_gen, which must add this OBU's reset_flag).
+        let scope = BufferDelayScope {
+            cvs_epoch: self.cvs.cvs_generation_epoch(ops.xlayer_id),
+            reset_generation: effective_reset_gen,
+            targeted_reset_generation: self
+                .ops
+                .targeted_reset_generation(ops.xlayer_id, ops.ops_id),
+        };
+        let cvs_started = self.cvs.cvs_started(ops.xlayer_id);
+        let tu_index = self.cvs.tu_index;
+
+        for payload in &ops.payloads {
+            let Some(info) = &payload.decoder_model_info else {
+                // Absent ops_decoder_model_info(): contributes nothing and does not
+                // clear the baseline (§ 6.10.5 compares signalled values only).
+                continue;
+            };
+            let sum = u64::from(info.decoder_buffer_delay) + u64::from(info.encoder_buffer_delay);
+            let key = OpsBufferDelayKey {
+                xlayer: ops.xlayer_id,
+                ops_id: ops.ops_id,
+                op_index: payload.index,
+            };
+            // Copied out so the error-tier diagnostic can be routed through
+            // `&mut self.cvs.defer_or_emit` without holding a borrow of the map.
+            let previous = self.ops_buffer_delay_sums.get(&key).copied();
+
+            // Error tier: same triple, same boundary scope (CVS epoch, reset generation,
+            // and per-OPS targeted-reset generation all match), differing sum — and only
+            // once a coded video sequence has actually started for the scope (§ 7.3.6). The
+            // comparison is deferred to temporal-unit granularity: a same-temporal-unit
+            // baseline is emitted eagerly (a CVS boundary cannot fall inside a temporal
+            // unit), while an earlier-temporal-unit baseline is deferred and dropped if a
+            // CLK in the current temporal unit splits it into a different coded video
+            // sequence.
+            if cvs_started
+                && let Some(previous) = previous
+                && previous.scope == scope
+                && previous.sum != sum
+            {
+                let diagnostic = Diagnostic::error(
+                    "decoder-model/buffer-delay-sum-changed",
+                    format!(
+                        "operating point set {} operating point {} for obu_xlayer_id {} \
+                         changes its ops_decoder_buffer_delay + ops_encoder_buffer_delay sum \
+                         from {} to {} within one coded video sequence with no intervening \
+                         OPS reset; § 6.10.5 requires the sum be kept constant",
+                        ops.ops_id,
+                        payload.index,
+                        ops.xlayer_id.get(),
+                        previous.sum,
+                        sum,
+                    ),
+                )
+                .with_spec_section("6.10.5")
+                .with_byte_offset(obu.offset);
+                // When the error is deferred (the baseline came from an earlier temporal
+                // unit) and then dropped because a late CLK starts a new coded video
+                // sequence in this temporal unit, the comparison was genuinely cross-CVS:
+                // emit the cross-boundary advisory in the error's place so the change is
+                // not silently lost (§ 7.3.6 temporal-unit-granular CVS boundary).
+                let on_drop =
+                    ops_buffer_delay_cross_cvs_warning(&key, previous.sum, sum, obu.offset);
+                self.cvs.defer_or_emit_with_replacement(
+                    ops.xlayer_id,
+                    previous.tu_index,
+                    diagnostic,
+                    Some(on_drop),
+                    report,
+                );
+            }
+
+            // The cross-boundary advisory compares the latest explicit sum against the
+            // stored baseline regardless of CVS/reset epoch; run it before overwriting.
+            // It reads the baseline from the map directly (the error path's `&mut cvs`
+            // borrow above has already ended).
+            self.check_ops_buffer_delay_cross_cvs(obu, &key, sum, scope, report);
+
+            self.ops_buffer_delay_sums.insert(
+                key,
+                BufferDelayBaseline {
+                    sum,
+                    scope,
+                    tu_index,
+                },
+            );
+        }
+    }
+
+    /// Emits the § 6.10.5 cross-boundary advisory
+    /// (`decoder-model/buffer-delay-sum-changed-across-cvs`, severity `warning`) when
+    /// the explicitly signalled operating-point buffer-delay sum changes for the same
+    /// `(obu_xlayer_id, opsID, op)` triple across a coded-video-sequence or § 6.10.1
+    /// OPS-reset boundary. Such a change is conforming under the per-CVS reading of the
+    /// § 6.10.5 "video sequence" scope (each CVS re-baselines), so it must stay a
+    /// warning: the scope is unspecified and this finding asserts only the broad
+    /// (whole-sub-bitstream) reading. The same-CVS, same-reset-generation case is the
+    /// error tier (`check_ops_buffer_delay_sums`) and is intentionally not re-reported
+    /// here.
+    fn check_ops_buffer_delay_cross_cvs(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        key: &OpsBufferDelayKey,
+        sum: u64,
+        scope: BufferDelayScope,
+        report: &mut ValidationReport,
+    ) {
+        let Some(previous) = self.ops_buffer_delay_sums.get(key) else {
+            return;
+        };
+        // The advisory covers a CVS, OPS-reset, or targeted-reset boundary-spanning
+        // change. A change sharing the full boundary scope (CVS epoch, reset generation,
+        // and per-OPS targeted-reset generation) is the error tier's domain
+        // (`check_ops_buffer_delay_sums`), and an unchanged sum is conforming under
+        // every reading; both are excluded here.
+        if previous.scope == scope || previous.sum == sum {
+            return;
+        }
+        report.push(ops_buffer_delay_cross_cvs_warning(
+            key,
+            previous.sum,
+            sum,
+            obu.offset,
+        ));
     }
 
     /// Emits the locally-checkable § 6.10 OPS conformance diagnostics: local reserved
@@ -3792,6 +4291,12 @@ impl ValidatorContext {
         if external_declares_sequence_header(options) {
             return;
         }
+        // NB: the § 6.4.13 cross-CVS buffer-delay advisory is NOT run here. It is
+        // evaluated from the frame path (`observe_frame_bearing_obu`) on every
+        // frame-confirmed activation, because this activation event can fire from the
+        // sequence-header-observation path before the temporal unit's CLK has advanced
+        // the CVS epoch — comparing at that stale epoch would overwrite the baseline and
+        // miss a same-id reconfiguration across the boundary.
         let mut pending: Vec<(ByteOffset, u8, Vec<OpsExplicitEntry>)> = Vec::new();
         for bucket in [xlayer, GLOBAL_XLAYER_ID] {
             for record in self.ops.records_for(bucket) {
@@ -3916,6 +4421,97 @@ impl ValidatorContext {
                 MonotonicVerdict::Skip => {}
             }
         }
+    }
+
+    /// Emits the § 6.4.13 cross-CVS buffer-delay advisory
+    /// (`decoder-model/buffer-delay-sum-changed-across-cvs`, severity `warning`) for the
+    /// activated sequence header of `xlayer`:
+    ///
+    /// > "For a video sequence that includes one or more random access points the sum
+    /// > of decoder_buffer_delay and encoder_buffer_delay shall be kept constant."
+    /// > (AV2 v1.0.0 § 6.4.13,
+    /// > `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md` lines 1301–1302.)
+    ///
+    /// Only the *advisory* tier exists for the sequence-header variant: within one
+    /// coded video sequence the activated header is bit-identical (§ 7.3.6,
+    /// `07-decoding-process.md` lines 604–610, already enforced by
+    /// `hls/repeated-sequence-header-not-identical`), so a non-vacuous comparison must
+    /// span a CLK boundary — which is conforming under the per-CVS reading of the
+    /// unspecified "video sequence" scope. The advisory therefore fires only across a
+    /// CLK boundary (a CVS-epoch change) and asserts only the broad reading.
+    ///
+    /// This check is driven only from the frame path
+    /// (`observe_frame_bearing_obu`), so the activation is always frame-confirmed
+    /// (the § 5.18.2 `load_sequence_header` reference): a fallback-guess activation
+    /// resolved by OBU order never establishes or triggers the baseline, matching the
+    /// design's "frame-confirmed activations only". Only an explicit
+    /// `seq_decoder_model_info()` sum is compared; a header without decoder-model info
+    /// contributes nothing and does not clear the stored baseline, and the Annex E
+    /// defaults (`annex-e-decoder-model.md` lines 261–272) are not signalled values.
+    ///
+    /// `ExternalHlsMode::Provided` suppresses the advisory unconditionally (externally
+    /// supplied HLS may legitimately differ), matching the OPS tier
+    /// (`check_ops_buffer_delay_sums`).
+    fn check_seq_buffer_delay_sum(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        activating_offset: ByteOffset,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        // External HLS may legitimately supply differing decoder-model parameters, so
+        // the advisory is suppressed under any Provided mode — the same blanket guard
+        // the OPS tier uses, independent of whether the provided set declares a
+        // sequence header.
+        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+            return;
+        }
+        // Frame-confirmed activation only; a guessed activation is never compared (its
+        // delays could be contradicted by a later frame).
+        let Some((seq_header_id, general)) = self.agreement_activation_for(xlayer) else {
+            return;
+        };
+        let Some(info) = general.decoder_model_info else {
+            // No explicit seq_decoder_model_info(): contributes nothing and does not
+            // clear the baseline.
+            return;
+        };
+        let sum = u64::from(info.decoder_buffer_delay) + u64::from(info.encoder_buffer_delay);
+        let cvs_epoch = self.cvs.cvs_generation_epoch(xlayer);
+
+        if let Some(previous) = self.seq_buffer_delay_sums.get(&xlayer)
+            && previous.cvs_epoch != cvs_epoch
+            && previous.sum != sum
+        {
+            report.push(
+                Diagnostic::warning(
+                    "decoder-model/buffer-delay-sum-changed-across-cvs",
+                    format!(
+                        "the activated sequence header for extended layer {} changes its \
+                         decoder_buffer_delay + encoder_buffer_delay sum from {} (sequence header \
+                         {}) to {} (sequence header {}) across a coded-video-sequence boundary; \
+                         the § 6.4.13 \"video sequence\" scope is unspecified, so this finding is \
+                         advisory under the broad reading",
+                        xlayer.get(),
+                        previous.sum,
+                        previous.seq_header_id.get(),
+                        sum,
+                        seq_header_id.get(),
+                    ),
+                )
+                .with_spec_section("6.4.13")
+                .with_byte_offset(activating_offset),
+            );
+        }
+
+        self.seq_buffer_delay_sums.insert(
+            xlayer,
+            SeqBufferDelayBaseline {
+                sum,
+                cvs_epoch,
+                seq_header_id,
+            },
+        );
     }
 
     /// Takes the § 6.4.1 LCR-association snapshot for one observed sequence

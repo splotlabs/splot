@@ -175,6 +175,7 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
     "film-grain/",
     "padding/",
     "metadata/",
+    "decoder-model/",
 ];
 
 /// Output format for `feature-status`.

@@ -53,7 +53,7 @@ dependency order:
 | Activated sequence state | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` |
 | HLS availability | `AV2-7.3.8-HLS-AVAILABILITY` |
 | Temporal-unit ordering completion | `AV2-7.3.7-TEMPORAL-UNIT-ORDER`, then §7.3.2–§7.3.6 children as parse dependencies allow (the minimal §7.3.2 CMVS tracker landed) |
-| Deeper HLS semantics | the `validate = partial` HLS rows (LCR, atlas, OPS/BRT, metadata); the §6.10.7/§6.8.9/§7.3.8.7 dependency-map agreement checks are landed, with Annex A/E operating-point semantics still future |
+| Deeper HLS semantics | the `validate = partial` HLS rows (LCR, atlas, OPS/BRT, metadata); the §6.10.7/§6.8.9/§7.3.8.7 dependency-map agreement checks and the §6.4.13/§6.10.5 signaled buffer-delay sum-constancy checks (`decoder-model/*`) are landed, with Annex A/E operating-point *semantics* (decoder-schedule simulation) still future |
 | Frame-header continuation | the Phase 8 remaining work below |
 
 **Do not start yet** as a primary task: a full tile-group payload parser,
@@ -194,11 +194,17 @@ Acceptance:
 ## Phase 6 — high-level syntax OBUs
 
 **Status:** partial — every Phase 6 row parses with tests and a dedicated
-parser module, and the §6.10.7/§6.8.9/§7.3.8.7 layer-dependency-map agreement
+parser module, the §6.10.7/§6.8.9/§7.3.8.7 layer-dependency-map agreement
 checks are landed (`ops/*-dependency-missing`, `lcr/*-dependency-missing`,
-`frame-header/mfh-*-dependency-missing`); remaining work is deeper semantic
-validation across the board (Annex A/E operating-point semantics, decoder
-models).
+`frame-header/mfh-*-dependency-missing`), and the §6.4.13/§6.10.5 buffer-delay
+sum-constancy checks landed as a resolved two-tier outcome
+(`decoder-model/buffer-delay-sum-changed` error for the intra-CVS OPS case that is
+non-conforming under every "video sequence" reading, plus the advisory
+`decoder-model/buffer-delay-sum-changed-across-cvs` warning for the
+broad-reading-only seq-header / cross-boundary cases — AVM parses but never
+enforces these values, so there is no differential oracle); remaining work is
+deeper semantic validation across the board (Annex A/E operating-point semantics,
+decoder-schedule simulation).
 
 **Goal:** parse HLS OBUs referenced by sequence/frame validation and OBU ordering.
 

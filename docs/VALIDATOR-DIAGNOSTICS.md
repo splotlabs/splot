@@ -70,6 +70,18 @@ Every rule ID below is emitted by `crates/splot-validate/src`, grouped by namesp
 | `content-interpretation/repeated-ci-not-identical` | error | § 6.14 | repeated CI OBU for same xlayer/mlayer in CVS carries different information |
 | `content-interpretation/reserved-bits-nonzero` | warning | § 6.14 | ci_reserved_2bit is non-zero (decoder-ignored producer anomaly) |
 
+### `decoder-model/`
+
+No AVM differential oracle exists for the `decoder-model/` rules: AVM parses both
+decoder-model syntax sites but never enforces or consumes the signaled buffer-delay
+values (its only consumer hardcodes 70000/20000), so proof for these rules is
+hand-crafted unit vectors only — `avm_diff` is never claimed for them.
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `decoder-model/buffer-delay-sum-changed` | error | § 6.10.5 | the same (obu_xlayer_id, ops_id, operating-point index) is redefined within one coded video sequence with no intervening OPS reset, both signalings explicitly carry decoder-model info, and the ops_decoder_buffer_delay + ops_encoder_buffer_delay sum differs (non-conforming under § 6.4.13 / § 6.10.5 sum-constancy on every candidate "video sequence" reading) |
+| `decoder-model/buffer-delay-sum-changed-across-cvs` | warning | § 6.4.13 / § 6.10.5 | an explicitly signaled buffer-delay sum changes across a coded-video-sequence or OPS-reset boundary — the activated sequence header's seq_decoder_model_info() sum across a CLK boundary (frame-confirmed activations only; emitted with spec_section § 6.4.13) or an OPS sum across a CVS/reset boundary for the same triple (emitted with spec_section § 6.10.5); advisory because the § 6.4.13 / § 6.10.5 "video sequence" scope is unspecified |
+
 ### `film-grain/`
 
 | Rule ID | Severity | Section | Condition |
@@ -331,8 +343,9 @@ from the enforced registry above** because nothing emits them yet:
 - `tile-group/` — frame-data / tile payload boundary checks (needs full frame/tile parsing).
 - `hls-availability/` — a dedicated high-level-syntax availability namespace; today the landed
   availability checks live under `hls/` (see the registry above).
-- `obu-payload/`, `decoder-model/`, `annex-a/` — strict-mode payload, decoder-model timing, and
-  Annex A profile/level constraints.
+- `obu-payload/`, `annex-a/` — strict-mode payload and Annex A profile/level constraints.
+  (The `decoder-model/` namespace has landed — see the registry tables above — but is limited to
+  signaled buffer-delay sum-constancy; Annex E decoder-schedule simulation remains future.)
 
 Design sketches and phase plans for these live in the planned-diagnostics backlog of
 [`VALIDATOR-ROADMAP.md`](./VALIDATOR-ROADMAP.md).

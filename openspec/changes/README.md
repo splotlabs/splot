@@ -26,6 +26,7 @@ same id in the matrix, the OpenSpec folder, and the GitHub issue/PR.
 | Change | Feature IDs | State |
 |---|---|---|
 | `sequence-multistream-semantics` | `AV2-6.4-SEQUENCE-HEADER-SEMANTICS`, `AV2-7.3.8-HLS-AVAILABILITY`, `AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT`, `AV2-7.3.2-CMVS-BOUNDARIES` | proposed |
+| `buffer-delay-sum-constancy` | `AV2-5.11.3-OPS-DECODER-MODEL-INFO`, `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` (+ `AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT` scoping) | proposed |
 | `add-bitstream-writer` | `ENC-BITSTREAM-WRITER` (+ `AV2-4.11.6-LEB128`, `AV2-5.2.2-OBU-HEADER`, `AV2-5.2.3-TRAILING-BITS`, `AV2-5.2.4-BYTE-ALIGNMENT` write stages) | proposed |
 | `avm-differential-harness` | `CONF-AVM-DIFF-HARNESS` | proposed |
 | `toy-intra-encoder-v0` | `ENC-INTRA-TOY-V0` (deps: `ENC-BITSTREAM-WRITER`, `AV2-5.4-SEQUENCE-HEADER`, `AV2-5.18-FRAME-HEADER`, `AV2-5.19-TILE-GROUP`, `CONF-AVM-DIFF-HARNESS`) | proposed |
