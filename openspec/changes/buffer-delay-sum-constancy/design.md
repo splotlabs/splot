@@ -56,11 +56,19 @@ hand-crafted vectors only.
    `seq_decoder_model_info()` and the sums differ across a CLK boundary, emit the
    warning id. Fallback-guess activations never participate.
 
-4. **Absent info is never compared.** A header or OPS entry without explicit
-   decoder-model info contributes nothing and does not clear the stored sum;
-   the Annex E mode defaults (70000/20000) are resource-availability fallbacks,
-   not signaled values, and must not synthesize comparisons. Rationale comment with
-   the `annex-e-decoder-model.md:261-272` citation at the comparison site.
+4. **Absent info is never compared; a dm-less *redefinition* clears the baseline.**
+   A header or OPS entry without explicit decoder-model info contributes no new
+   signaled value; the Annex E mode defaults (70000/20000) are resource-availability
+   fallbacks, not signaled values, and must not synthesize comparisons (rationale
+   comment with the `annex-e-decoder-model.md:261-272` citation at the comparison
+   site). But per Annex E.1 (`annex-e-decoder-model.md:24-27`) the previous parameters
+   do **not persist** when the *new* OPS OBU / Sequence Header OBU omits decoder-model
+   info for an operating point / extended layer: a defining OPS (`ops_cnt > 0`) clears
+   the stored baseline for every op triple of the redefined `(obu_xlayer_id, ops_id)`
+   it no longer signals explicitly (and op indices it no longer covers), and a
+   frame-confirmed activation of a header without `seq_decoder_model_info()` clears that
+   layer's baseline. Clearing — never a default-value comparison — keeps the Annex E
+   defaults out of every comparison.
 
 5. **Suppression mirrors the sibling checks.** `ExternalHlsMode::Provided`
    suppresses both tiers (externally supplied HLS may legitimately differ), same as

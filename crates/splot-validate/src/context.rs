@@ -195,16 +195,19 @@ struct OpsBufferDelayKey {
 }
 
 /// The boundary scope of one § 6.10.5 buffer-delay observation: the per-extended-layer
-/// CVS epoch, the bitstream-wide § 6.10.1 reset generation, and the per-OPS targeted-reset
-/// generation. Two observations share the same scope — and so are subject to the error
-/// tier rather than the cross-boundary advisory — only when all three match.
+/// CVS epoch, the per-extended-layer § 6.10.1 effective reset generation (global resets
+/// plus that layer's local resets), and the per-OPS targeted-reset generation. Two
+/// observations share the same scope — and so are subject to the error tier rather than
+/// the cross-boundary advisory — only when all three match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BufferDelayScope {
     /// [`CvsTracker::cvs_generation_epoch`] of the OPS's extended layer (or the
     /// multistream-wide global epoch) at the observation.
     cvs_epoch: u64,
-    /// [`OpsAvailabilityStore::reset_generation`] in effect for the observation,
-    /// including the defining OPS's own `ops_reset_flag`.
+    /// [`OpsAvailabilityStore::effective_reset_generation`] of the observation's
+    /// extended layer (global resets plus that layer's local resets), including the
+    /// defining OPS's own `ops_reset_flag`. Per-layer (round-2): a reset of an unrelated
+    /// extended layer no longer changes this scope.
     reset_generation: u64,
     /// [`OpsAvailabilityStore::targeted_reset_generation`] for the observation's
     /// `(obu_xlayer_id, opsID)`. A § 6.10.1 case-3 targeted reset of this OPS bumps it,
@@ -662,20 +665,30 @@ fn external_declares_sequence_header(options: &ValidationOptions) -> bool {
 #[derive(Debug, Default)]
 struct OpsAvailabilityStore {
     by_xlayer: BTreeMap<ExtendedLayerId, BTreeMap<u8, OperatingPointSetRecord>>,
-    /// Monotonic count of § 6.10.1 OPS resets (`ops_reset_flag == 1`) applied so far.
-    /// The § 6.10.5 buffer-delay sum-constancy error tier scopes its per-triple
-    /// baseline by this generation: a redefinition is compared against the baseline
-    /// only when no reset intervened (the constraint says "with no intervening OPS
-    /// reset"). Any reset — global or local, for any extended layer — bumps the
-    /// counter, so a comparison spanning a reset is dropped (sound: it only suppresses
-    /// comparisons, never invents one; a local reset on an unrelated layer may
-    /// under-report, an accepted soundness trade-off recorded with the check).
-    reset_generation: u64,
+    /// Monotonic count of § 6.10.1 *global* OPS resets (`ops_reset_flag == 1` on a
+    /// `GLOBAL_XLAYER_ID` OBU): per § 6.10.1 case 1/2 a global reset resets "all layers
+    /// if global", so this generation contributes to the effective reset generation of
+    /// *every* extended layer (see [`Self::effective_reset_generation`]).
+    global_reset_generation: u64,
+    /// Per-extended-layer count of § 6.10.1 *local* OPS resets (`ops_reset_flag == 1` on
+    /// an OBU with `obu_xlayer_id < GLOBAL_XLAYER_ID`): per § 6.10.1 case 1/2 a local
+    /// reset resets only "all OPS for the associated extended layer", so it bumps only
+    /// its own layer's generation. The § 6.10.5 buffer-delay sum-constancy error tier
+    /// scopes its per-triple baseline by the *effective* reset generation
+    /// (`global_reset_generation + local_reset_generation[xlayer]`): a redefinition is
+    /// compared against the baseline only when no reset *of that layer* (local or global)
+    /// intervened (the constraint says "with no intervening OPS reset"). A reset of an
+    /// unrelated extended layer no longer re-baselines this layer (the round-2 fix —
+    /// previously a single bitstream-wide counter over-reset every layer and suppressed
+    /// a required error). Scoping by the effective generation only ever suppresses
+    /// comparisons, never invents one.
+    local_reset_generation: BTreeMap<ExtendedLayerId, u64>,
     /// Per-`(obu_xlayer_id, opsID)` count of § 6.10.1 *targeted* resets
     /// (`ops_reset_flag == 0` and `ops_cnt == 0`: case 3, "Only OPS x is reset"). A
     /// targeted reset re-baselines exactly that OPS without disturbing any other, so it
-    /// must not bump the bitstream-wide [`Self::reset_generation`] (that would
-    /// over-suppress unrelated triples). The § 6.10.5 buffer-delay error tier includes
+    /// must not bump the per-layer effective reset generation (see
+    /// [`Self::effective_reset_generation`]) — that would over-suppress unrelated triples
+    /// of the same layer. The § 6.10.5 buffer-delay error tier includes
     /// this per-key generation in its scope identity, so a redefinition of the same
     /// triple after a targeted reset of its OPS is treated like any other reset-spanning
     /// change: out of the error tier, into the cross-CVS advisory.
@@ -697,10 +710,16 @@ impl OpsAvailabilityStore {
         let defines = record.ops_cnt > 0;
 
         if reset_flag {
-            self.reset_generation += 1;
+            // § 6.10.1 case 1/2: a global reset (GLOBAL_XLAYER_ID) resets "all layers",
+            // so it bumps the global generation that every layer's effective generation
+            // incorporates; a local reset resets only its own layer's OPS, so it bumps
+            // only that layer's generation. Per-layer scoping keeps a reset of one
+            // extended layer from re-baselining the § 6.10.5 comparison of another.
             if xlayer.is_global() {
+                self.global_reset_generation += 1;
                 self.by_xlayer.clear();
             } else {
+                *self.local_reset_generation.entry(xlayer).or_default() += 1;
                 self.by_xlayer.remove(&xlayer);
             }
             if defines {
@@ -718,7 +737,7 @@ impl OpsAvailabilityStore {
             // Case 3 (§ 6.10.1): a targeted reset of only this (xlayer, ops_id). Bump the
             // per-key targeted-reset generation so the § 6.10.5 error tier re-baselines
             // this OPS (and only this OPS) like a reset boundary, without touching the
-            // bitstream-wide reset_generation.
+            // per-layer effective reset generation.
             *self
                 .targeted_reset_generation
                 .entry((xlayer, ops_id))
@@ -743,9 +762,18 @@ impl OpsAvailabilityStore {
         self.by_xlayer.get(&xlayer).and_then(|map| map.get(&ops_id))
     }
 
-    /// The current § 6.10.1 reset generation (see [`Self::reset_generation`]).
-    fn reset_generation(&self) -> u64 {
-        self.reset_generation
+    /// The effective § 6.10.1 reset generation for `xlayer`: the global reset count
+    /// (a global reset resets all layers) plus this layer's own local reset count (a
+    /// local reset resets only its layer). The § 6.10.5 buffer-delay error tier scopes
+    /// a triple's baseline by this value, so only a reset *of this layer* — local or
+    /// global — re-baselines its comparison (see [`Self::local_reset_generation`]).
+    fn effective_reset_generation(&self, xlayer: ExtendedLayerId) -> u64 {
+        self.global_reset_generation
+            + self
+                .local_reset_generation
+                .get(&xlayer)
+                .copied()
+                .unwrap_or(0)
     }
 
     /// The current § 6.10.1 *targeted*-reset generation for `(xlayer, ops_id)` (see
@@ -2287,6 +2315,29 @@ impl ValidatorContext {
     fn start_cvs_for_xlayer(&mut self, xlayer: ExtendedLayerId, report: &mut ValidationReport) {
         self.cvs.start_cvs(xlayer, report);
         let tu_index = self.cvs.tu_index;
+        // AV2 § 7.3.6: "A new coded video sequence for an extended layer is defined to
+        // start at each temporal unit that contains an OBU with obu_type equal to
+        // OBU_CLOSED_LOOP_KEY ..." (mirror `07-decoding-process.md` lines 604–606). The
+        // whole temporal unit containing this CLK lies in the NEW coded video sequence,
+        // so an OPS buffer-delay baseline observed EARLIER in this same temporal unit
+        // (before the CLK) belongs to the new coded video sequence, not the old one: its
+        // stored CVS epoch is migrated to the layer's new epoch. A later OPS in this same
+        // temporal unit then shares the migrated baseline's epoch and the § 6.10.5 error
+        // tier compares them within one coded video sequence (the complementary case to
+        // the deferred-error `on_drop` path: there the comparison's deferred error is
+        // dropped/replaced; here the baseline was stored with no comparison pending).
+        // Baselines from EARLIER temporal units genuinely belong to the old coded video
+        // sequence and are left untouched. Only baselines keyed under this exact extended
+        // layer are migrated; global-keyed (`GLOBAL_XLAYER_ID`) baselines keep the
+        // documented `cvs_generation` approximation (re-stamping them could promote an
+        // intentionally under-reported cross-CMVS advisory to an error). The migration
+        // never compares; it only re-scopes, so it cannot itself emit a diagnostic.
+        let migrated_epoch = self.cvs.cvs_generation_epoch(xlayer);
+        for (key, baseline) in self.ops_buffer_delay_sums.iter_mut() {
+            if key.xlayer == xlayer && baseline.tu_index == tu_index {
+                baseline.scope.cvs_epoch = migrated_epoch;
+            }
+        }
         // The scan-type scopes flush before the content-interpretation pruning
         // below: the § 6.16.10 unestablished-CI warning for the ENDING coded video
         // sequence is evaluated against the records still present (mostly the
@@ -3853,11 +3904,17 @@ impl ValidatorContext {
     ///   different coded video sequences — exactly the case the warning tier covers.
     ///
     /// Only explicitly signalled values participate: a payload without
-    /// `ops_decoder_model_info_for_this_op_present_flag` contributes nothing and does
-    /// not clear the stored baseline, and the Annex E resource-availability defaults
+    /// `ops_decoder_model_info_for_this_op_present_flag` contributes no new signalled
+    /// value, and the Annex E resource-availability defaults
     /// (`DecoderBufferDelay = 70000` / `EncoderBufferDelay = 20000`,
     /// `annex-e-decoder-model.md` lines 261–272) are fallbacks, not signalled values,
-    /// so they never synthesize a comparison.
+    /// so they never synthesize a comparison. Per Annex E.1 (mirror lines 25–27) a
+    /// *redefinition* of a `(obu_xlayer_id, opsID)` that omits the decoder-model info
+    /// for an operating point does not let the previous parameters persist: a defining
+    /// OPS (`ops_cnt > 0`) clears the stored baseline for every op triple of the key it
+    /// no longer signals explicitly (and for op indices it no longer covers), so a later
+    /// explicit value is not compared against vanished parameters. Clearing — never a
+    /// default-value comparison — keeps the Annex E mode defaults out of comparisons.
     ///
     /// NB: whether an OPS reset re-baselines a reused `opsID` is itself ambiguous; the
     /// reset-spanning case stays in the warning tier (sound choice, may under-report),
@@ -3876,12 +3933,17 @@ impl ValidatorContext {
             return;
         }
 
-        // The reset generation that scopes this OBU's own values: when this OPS carries
-        // ops_reset_flag, its reset has not been applied yet (the local checks run
-        // first), so account for it here — a value defined by a resetting OPS is in a
-        // fresh reset generation and is never the same-generation continuation of an
-        // earlier baseline.
-        let effective_reset_gen = self.ops.reset_generation() + u64::from(ops.reset_flag);
+        // The effective reset generation scoping this OBU's own values, for this OBU's
+        // own extended layer (a reset of an unrelated layer no longer re-baselines this
+        // one — round-2 per-layer scoping). When this OPS carries ops_reset_flag, its
+        // reset has not been applied yet (the local checks run first), so account for it
+        // here: the reset it carries (whether it bumps the global counter for a global
+        // OBU or the local counter for a local one) raises this same layer's effective
+        // generation by exactly 1, so a value defined by a resetting OPS is in a fresh
+        // reset generation and is never the same-generation continuation of an earlier
+        // baseline.
+        let effective_reset_gen =
+            self.ops.effective_reset_generation(ops.xlayer_id) + u64::from(ops.reset_flag);
         // A § 6.10.1 case-3 targeted reset (ops_cnt == 0) carries no operating-point
         // payloads, so it never reaches this loop; the count therefore already reflects
         // every targeted reset of this OPS that preceded this defining OBU. The defining
@@ -3897,10 +3959,39 @@ impl ValidatorContext {
         let cvs_started = self.cvs.cvs_started(ops.xlayer_id);
         let tu_index = self.cvs.tu_index;
 
+        // Annex E.1: "If the new Operating Point Set OBU does not signal decoder model
+        // parameters for a given operating point, the previous set of decoder model
+        // parameters does not persist." (mirror `annex-e-decoder-model.md` lines 25–27.)
+        // A defining OPS (ops_cnt > 0) supplies a complete new definition of this
+        // (obu_xlayer_id, ops_id): every op triple of the key whose new payload omits
+        // ops_decoder_model_info(), and every op index the new definition no longer
+        // covers (op >= ops_cnt), loses its previously signalled parameters, so its
+        // baseline is cleared — never compared against a later explicit value. Clearing
+        // (not a default-value comparison) keeps the Annex E mode defaults out of every
+        // comparison. A non-defining OPS (ops_cnt == 0: § 6.10.1 case 1/3 reset) carries
+        // no payloads and never reaches here; its re-baselining is already handled by the
+        // reset and targeted-reset generations. Runs before the comparison loop so an
+        // op the redefinition drops cannot be compared.
+        if ops.ops_cnt > 0 {
+            let ops_explicitly_carries: BTreeSet<u8> = ops
+                .payloads
+                .iter()
+                .filter(|payload| payload.decoder_model_info.is_some())
+                .map(|payload| payload.index)
+                .collect();
+            self.ops_buffer_delay_sums.retain(|key, _| {
+                key.xlayer != ops.xlayer_id
+                    || key.ops_id != ops.ops_id
+                    || ops_explicitly_carries.contains(&key.op_index)
+            });
+        }
+
         for payload in &ops.payloads {
             let Some(info) = &payload.decoder_model_info else {
-                // Absent ops_decoder_model_info(): contributes nothing and does not
-                // clear the baseline (§ 6.10.5 compares signalled values only).
+                // Absent ops_decoder_model_info() for this op: per Annex E.1 the previous
+                // parameters did not persist (the redefinition's clearing above already
+                // dropped any baseline for this triple). Contributes no new signalled
+                // value (§ 6.10.5 compares signalled values only).
                 continue;
             };
             let sum = u64::from(info.decoder_buffer_delay) + u64::from(info.encoder_buffer_delay);
@@ -4445,9 +4536,12 @@ impl ValidatorContext {
     /// (the § 5.18.2 `load_sequence_header` reference): a fallback-guess activation
     /// resolved by OBU order never establishes or triggers the baseline, matching the
     /// design's "frame-confirmed activations only". Only an explicit
-    /// `seq_decoder_model_info()` sum is compared; a header without decoder-model info
-    /// contributes nothing and does not clear the stored baseline, and the Annex E
-    /// defaults (`annex-e-decoder-model.md` lines 261–272) are not signalled values.
+    /// `seq_decoder_model_info()` sum is compared; the Annex E defaults
+    /// (`annex-e-decoder-model.md` lines 261–272) are not signalled values. Per
+    /// Annex E.1 (mirror lines 24–25) a frame-confirmed activation of a header WITHOUT
+    /// explicit decoder-model info clears this layer's stored baseline (the previous
+    /// parameters do not persist), so a later explicit header is not compared against
+    /// vanished parameters.
     ///
     /// `ExternalHlsMode::Provided` suppresses the advisory unconditionally (externally
     /// supplied HLS may legitimately differ), matching the OPS tier
@@ -4472,8 +4566,15 @@ impl ValidatorContext {
             return;
         };
         let Some(info) = general.decoder_model_info else {
-            // No explicit seq_decoder_model_info(): contributes nothing and does not
-            // clear the baseline.
+            // Annex E.1: "If the new Sequence Header OBU does not signal decoder model
+            // parameters for an extended layer, the previous set of decoder model
+            // parameters does not persist." (mirror `annex-e-decoder-model.md` lines
+            // 24–25.) A frame-confirmed activation of a header WITHOUT explicit
+            // seq_decoder_model_info() therefore clears this layer's baseline so a later
+            // explicit header is not compared against vanished parameters. Clearing —
+            // never a default-value comparison — keeps the Annex E mode defaults out of
+            // comparisons.
+            self.seq_buffer_delay_sums.remove(&xlayer);
             return;
         };
         let sum = u64::from(info.decoder_buffer_delay) + u64::from(info.encoder_buffer_delay);

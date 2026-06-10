@@ -4811,9 +4811,13 @@ mod tests {
     }
 
     #[test]
-    fn decoder_model_ops_redefinition_without_explicit_info_is_ignored() {
-        // The redefinition omits ops_decoder_model_info(), so it contributes nothing,
-        // does not clear the baseline, and is never compared against defaults.
+    fn decoder_model_ops_redefinition_without_explicit_info_clears_baseline() {
+        // The defining redefinition (ops_cnt > 0) omits ops_decoder_model_info() for the
+        // op it covers. Per Annex E.1 (`annex-e-decoder-model.md` lines 25–27) the
+        // previous parameters do not persist: the redefinition clears the stored
+        // baseline for that triple rather than reusing it, so it neither compares against
+        // the vanished value nor against the Annex E mode defaults. With nothing to
+        // compare, no diagnostic of either tier is emitted.
         let mut data = temporal_delimiter_obu();
         data.extend(local_ops_obu_with_delays(2, false, 0, 10, 20)); // sum 30, explicit
         data.extend(local_ops_obu(2, false, 0, 1, 0, false, 0)); // no decoder-model info
@@ -4821,7 +4825,7 @@ mod tests {
         assert_eq!(
             ops_error_count(&report, "decoder-model/buffer-delay-sum-changed"),
             0,
-            "an absent-info redefinition must not be compared: {report}"
+            "an absent-info redefinition clears the baseline and must not be compared: {report}"
         );
         assert_eq!(
             decoder_model_warning_count(
@@ -5114,6 +5118,200 @@ mod tests {
             ),
             0,
             "the intra-CVS error must not also raise the cross-CVS advisory: {report}"
+        );
+    }
+
+    #[test]
+    fn decoder_model_ops_dm_less_redefinition_clears_baseline_no_diagnostic() {
+        // FINDING C (Annex E.1, mirror `annex-e-decoder-model.md` lines 25–27): "If the
+        // new Operating Point Set OBU does not signal decoder model parameters for a
+        // given operating point, the previous set of decoder model parameters does not
+        // persist." explicit-30, then a redefinition of the SAME (xlayer, ops_id) that
+        // OMITS ops_decoder_model_info() for that op (so it does not persist), then
+        // explicit-40: the dm-less redefinition clears the baseline, so explicit-40 has
+        // nothing to compare against -> NEITHER the error nor the advisory fires. (All in
+        // one CVS so that without clearing the error tier WOULD fire.)
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
+        data.extend(clk_frame_for_xlayer(0, 0)); // starts CVS 1 for xlayer 0
+        data.extend(local_ops_obu_with_delays(0, false, 0, 10, 20)); // sum 30, explicit
+        data.extend(local_ops_obu(0, false, 0, 1, 0, false, 0)); // redefine OPS 0, no dm info
+        data.extend(local_ops_obu_with_delays(0, false, 0, 25, 15)); // sum 40, explicit
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "decoder-model/buffer-delay-sum-changed"),
+            0,
+            "a dm-less redefinition clears the baseline; explicit-40 must not error: {report}"
+        );
+        assert_eq!(
+            decoder_model_warning_count(
+                &report,
+                "decoder-model/buffer-delay-sum-changed-across-cvs"
+            ),
+            0,
+            "a cleared baseline must not be compared, so no advisory either: {report}"
+        );
+    }
+
+    #[test]
+    fn decoder_model_ops_unrelated_redefinition_still_errors_within_cvs() {
+        // FINDING C control: an UNRELATED other-OPS OBU between the two explicit
+        // definitions of OPS 0 must NOT clear OPS 0's baseline, so the intra-CVS error
+        // still fires. OPS 1 is defined dm-less between the two OPS 0 definitions; the
+        // clearing is keyed on (xlayer, ops_id), so OPS 1's redefinition leaves OPS 0
+        // untouched and explicit-30 vs explicit-40 of OPS 0 is still a single error.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
+        data.extend(clk_frame_for_xlayer(0, 0)); // starts CVS 1 for xlayer 0
+        data.extend(local_ops_obu_with_delays(0, false, 0, 10, 20)); // OPS 0, sum 30
+        data.extend(local_ops_obu(0, false, 1, 1, 0, false, 0)); // unrelated OPS 1, no dm info
+        data.extend(local_ops_obu_with_delays(0, false, 0, 25, 15)); // OPS 0, sum 40
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "decoder-model/buffer-delay-sum-changed"),
+            1,
+            "a dm-less redefinition of a DIFFERENT OPS must not clear OPS 0's baseline: {report}"
+        );
+        assert_eq!(
+            decoder_model_warning_count(
+                &report,
+                "decoder-model/buffer-delay-sum-changed-across-cvs"
+            ),
+            0,
+            "the intra-CVS error must not also raise the cross-CVS advisory: {report}"
+        );
+    }
+
+    #[test]
+    fn decoder_model_seq_header_dm_less_activation_clears_baseline_no_warning() {
+        // FINDING D (Annex E.1, mirror `annex-e-decoder-model.md` lines 24–25): "If the
+        // new Sequence Header OBU does not signal decoder model parameters for an
+        // extended layer, the previous set of decoder model parameters does not persist."
+        // Three coded video sequences: CVS 1 activates an explicit-sum header, CVS 2
+        // activates a header WITHOUT seq_decoder_model_info() (clearing the baseline),
+        // CVS 3 activates an explicit header with a DIFFERENT sum. Because the dm-less
+        // activation cleared the baseline, CVS 3 has no persistent previous parameter set
+        // to compare against -> no cross-CVS advisory.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_with_decoder_model_sum(0, 0, 0),
+        )); // id 0, sum 0
+        data.extend(clk_frame_for_xlayer(0, 0)); // confirm + start CVS 1
+        data.extend(temporal_delimiter_obu());
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(1, 1, 1))); // id 1, no dm info
+        data.extend(clk_frame_for_xlayer(0, 1)); // confirm + start CVS 2 (clears baseline)
+        data.extend(temporal_delimiter_obu());
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_with_decoder_model_sum(2, 5, 7),
+        )); // id 2, sum 12
+        data.extend(clk_frame_for_xlayer(0, 2)); // confirm + start CVS 3
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            decoder_model_warning_count(
+                &report,
+                "decoder-model/buffer-delay-sum-changed-across-cvs"
+            ),
+            0,
+            "a dm-less activation between the two explicit headers clears the baseline; \
+             the later explicit sum must not raise the advisory: {report}"
+        );
+        assert_eq!(
+            ops_error_count(&report, "decoder-model/buffer-delay-sum-changed"),
+            0,
+            "the seq-header tier never emits an error: {report}"
+        );
+    }
+
+    #[test]
+    fn decoder_model_ops_cross_layer_local_reset_does_not_excuse_intra_cvs_error() {
+        // FINDING B (§ 6.10.1 case 1, mirror `06-syntax-structures-semantics.md` lines
+        // 2577–2578): a local reset resets "All OPS for the associated extended layer",
+        // not all layers. xlayer 0 defines sum 30, xlayer 1 sends a LOCAL reset (which
+        // resets only xlayer 1's OPS), then xlayer 0 redefines sum 40 within its own CVS.
+        // No reset of xlayer 0 intervened, so the intra-CVS error must still fire — the
+        // per-layer reset generation no longer lets xlayer 1's reset re-baseline xlayer 0.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
+        data.extend(clk_frame_for_xlayer(0, 0)); // starts CVS 1 for xlayer 0
+        data.extend(local_ops_obu_with_delays(0, false, 0, 10, 20)); // xlayer 0, sum 30
+        data.extend(local_ops_obu(1, true, 0, 0, 0, false, 0)); // LOCAL reset of xlayer 1
+        data.extend(local_ops_obu_with_delays(0, false, 0, 25, 15)); // xlayer 0, sum 40
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "decoder-model/buffer-delay-sum-changed"),
+            1,
+            "a local reset of an unrelated extended layer must not excuse xlayer 0's \
+             intra-CVS sum change: {report}"
+        );
+        assert_eq!(
+            decoder_model_warning_count(
+                &report,
+                "decoder-model/buffer-delay-sum-changed-across-cvs"
+            ),
+            0,
+            "the intra-CVS error must not also raise the cross-CVS advisory: {report}"
+        );
+    }
+
+    #[test]
+    fn decoder_model_ops_global_reset_re_baselines_other_layers() {
+        // FINDING B control (§ 6.10.1 case 1, mirror lines 2577–2578): a GLOBAL reset
+        // resets "all layers if global", so it DOES re-baseline xlayer 0. xlayer 0 sum
+        // 30, then a global (GLOBAL_XLAYER_ID = 31) reset, then xlayer 0 sum 40 within the
+        // CVS: the global reset re-baselines the constraint, so no error, only the
+        // reset-spanning advisory.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
+        data.extend(clk_frame_for_xlayer(0, 0)); // starts CVS 1 for xlayer 0
+        data.extend(local_ops_obu_with_delays(0, false, 0, 10, 20)); // xlayer 0, sum 30
+        data.extend(local_ops_obu(31, true, 0, 0, 0, false, 0)); // GLOBAL reset (all layers)
+        data.extend(local_ops_obu_with_delays(0, false, 0, 25, 15)); // xlayer 0, sum 40
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "decoder-model/buffer-delay-sum-changed"),
+            0,
+            "a global reset re-baselines xlayer 0, so the change is not an error: {report}"
+        );
+        assert_eq!(
+            decoder_model_warning_count(
+                &report,
+                "decoder-model/buffer-delay-sum-changed-across-cvs"
+            ),
+            1,
+            "a global-reset-spanning sum change must raise the advisory: {report}"
+        );
+    }
+
+    #[test]
+    fn decoder_model_ops_pre_clk_baseline_in_same_tu_migrates_to_new_cvs_error() {
+        // FINDING A (§ 7.3.6, mirror `07-decoding-process.md` lines 604–606): "A new
+        // coded video sequence for an extended layer is defined to start at each temporal
+        // unit that contains an OBU with obu_type equal to OBU_CLOSED_LOOP_KEY ...". OPS
+        // sum 30 is observed BEFORE the CLK, but the whole CLK temporal unit lies in the
+        // NEW coded video sequence, so the baseline migrates to the new CVS epoch and the
+        // post-CLK OPS sum 40 (same TU) is compared within ONE coded video sequence ->
+        // the intra-CVS error fires (not merely the advisory).
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
+        data.extend(local_ops_obu_with_delays(0, false, 0, 10, 20)); // sum 30, pre-CLK
+        data.extend(clk_frame_for_xlayer(0, 0)); // CLK -> whole TU is the new CVS
+        data.extend(local_ops_obu_with_delays(0, false, 0, 25, 15)); // sum 40, post-CLK, same TU
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "decoder-model/buffer-delay-sum-changed"),
+            1,
+            "a pre-CLK baseline in the CLK's own TU migrates to the new CVS; the post-CLK \
+             change is intra-CVS and must error: {report}"
+        );
+        assert_eq!(
+            decoder_model_warning_count(
+                &report,
+                "decoder-model/buffer-delay-sum-changed-across-cvs"
+            ),
+            0,
+            "the migrated intra-CVS error must not also raise the cross-CVS advisory: {report}"
         );
     }
 
