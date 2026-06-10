@@ -84,7 +84,7 @@ enum Task {
     CheckSpecMirror,
     /// Verify docs/VALIDATOR-DIAGNOSTICS.md lists exactly the emitted diagnostic rule ids.
     CheckDiagnosticRegistry,
-    /// Verify every fuzz_targets/*.rs file has a matching [[bin]] entry in fuzz/Cargo.toml.
+    /// Verify every fuzz_targets/*.rs file has a matching `[[bin]]` entry in fuzz/Cargo.toml.
     CheckFuzzTargets,
     /// Render the implementation matrix (docs/IMPLEMENTATION-MATRIX.toml).
     FeatureStatus {

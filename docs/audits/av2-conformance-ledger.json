@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "4819fda704c33dcfad1c0da190015e849dbfd1e0",
+  "audited_commit": "84770b0dc9c0377bf0b694f87edc41890a5e584e",
   "outcome": "success",
   "files": [
     {
@@ -2965,7 +2965,7 @@
     },
     {
       "path": "xtask/src/main.rs",
-      "sha256": "17bd7b1b4b7b24e7d1bc1705d5884c525f8b73b8158c4fd0c188745a7fb90884",
+      "sha256": "134d271d44c1cca7521d8a964af11236d06bbc9c35f438f632a5e61c2c9a7200",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
