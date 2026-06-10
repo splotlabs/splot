@@ -84,6 +84,8 @@ enum Task {
     CheckSpecMirror,
     /// Verify docs/VALIDATOR-DIAGNOSTICS.md lists exactly the emitted diagnostic rule ids.
     CheckDiagnosticRegistry,
+    /// Verify every fuzz_targets/*.rs file has a matching [[bin]] entry in fuzz/Cargo.toml.
+    CheckFuzzTargets,
     /// Render the implementation matrix (docs/IMPLEMENTATION-MATRIX.toml).
     FeatureStatus {
         /// Output format.
@@ -166,6 +168,7 @@ fn main() -> Result<()> {
         Task::CheckDiagnosticRegistry => {
             diagnostic_registry::check_diagnostic_registry(&workspace_root()?)
         }
+        Task::CheckFuzzTargets => check_fuzz_targets(&workspace_root()?),
         Task::FeatureStatus {
             format,
             category,
@@ -246,10 +249,7 @@ fn run_ci() -> Result<()> {
     check_license_headers(&root)?;
     check_dependency_direction(&root)?;
     check_spec_mirror(&root)?;
-    // Fuzz-target registration drift gates here, on stable: the CI fuzz-smoke
-    // loop enumerates registered [[bin]] targets only (`cargo fuzz list`), so an
-    // unregistered fuzz_targets/*.rs file would be silently skipped there.
-    fuzz_targets(&root)?;
+    check_fuzz_targets(&root)?;
     feature_status::run_check_feature_status(&root)?;
     diagnostic_registry::check_diagnostic_registry(&root)?;
 
@@ -512,6 +512,16 @@ fn fuzz_targets(root: &Path) -> Result<Vec<String>> {
         );
     }
     Ok(targets)
+}
+
+/// Checks fuzz-target registration drift, on stable: the CI fuzz-smoke loop
+/// enumerates registered `[[bin]]` targets only (`cargo fuzz list`), so an
+/// unregistered `fuzz_targets/*.rs` file would be silently skipped there. Run as
+/// `cargo xtask check-fuzz-targets` in the CI `ci` job and inside `cargo xtask ci`.
+fn check_fuzz_targets(root: &Path) -> Result<()> {
+    let targets = fuzz_targets(root)?;
+    eprintln!("check-fuzz-targets: ok ({} target(s))", targets.len());
+    Ok(())
 }
 
 /// Runs the networked cargo-deny advisory check (separate from the offline gate).

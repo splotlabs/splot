@@ -89,6 +89,10 @@ jobs:
       - run: cargo xtask check-spec-mirror
       - run: cargo xtask check-feature-status
       - run: cargo xtask check-diagnostic-registry
+      # Stable-toolchain drift gate: the fuzz-smoke job's `cargo fuzz list` only
+      # sees registered [[bin]] targets, so an unregistered fuzz_targets/*.rs
+      # file would be fuzzed by neither job without this check.
+      - run: cargo xtask check-fuzz-targets
 
       - name: OpenSpec validation if available
         run: |
