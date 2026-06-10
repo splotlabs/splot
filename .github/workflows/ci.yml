@@ -133,8 +133,9 @@ jobs:
   # fuzz target is enumerated and run for a per-target slice so the whole
   # untrusted-input surface is covered: parse_obu (read_leb128 / read_obu_header /
   # parse_annex_b_obus), parse_ivf (IVF container), parse_bitstream (container
-  # auto-detect + dispatch), validate_bytes (full validator, the highest-coverage
-  # target). cargo-fuzz needs a nightly toolchain (ASan + coverage are nightly-only).
+  # auto-detect + envelope parsing), validate_bytes (full validator + payload
+  # parsers, the highest-coverage target). cargo-fuzz needs a nightly toolchain
+  # (ASan + coverage are nightly-only).
   fuzz-smoke:
     runs-on: ubuntu-latest
     steps:
@@ -158,21 +159,49 @@ jobs:
           key: ${{ runner.os }}-fuzz-${{ hashFiles('fuzz/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-fuzz-
 
+      # Capture the target list first and require it non-empty: inside
+      # `for x in $(cmd)`, bash -e treats a failing `cmd` as an empty list and the
+      # step would pass having fuzzed nothing.
       - name: Seed every target's corpus from curated fixtures
         run: |
-          for target in $(cargo +nightly fuzz list); do
+          targets=$(cargo +nightly fuzz list)
+          test -n "$targets"
+          for target in $targets; do
             mkdir -p "fuzz/corpus/$target"
             cp tests/fixtures/*.av2 "fuzz/corpus/$target/" 2>/dev/null || true
           done
+          # validate_bytes consumes a leading config prefix before the bitstream,
+          # so raw fixtures land shifted; also seed flag-prefixed copies (strict,
+          # and strict+external-HLS with a key byte).
+          for f in tests/fixtures/*.av2; do
+            name=$(basename "$f")
+            printf '\001' | cat - "$f" > "fuzz/corpus/validate_bytes/strict-$name"
+            printf '\003\377' | cat - "$f" > "fuzz/corpus/validate_bytes/hls-$name"
+          done
+          # parse_ivf rejects non-DKIF input at the signature, so raw Annex-B
+          # fixtures only exercise the error path; wrap each one in a minimal
+          # 32-byte IVF header plus one 12-byte frame header for valid-path seeds.
+          python3 -c '
+          import glob, os, struct
+          for path in glob.glob("tests/fixtures/*.av2"):
+              data = open(path, "rb").read()
+              header = struct.pack("<4sHH4sHHIIII", b"DKIF", 0, 32, b"AV02", 64, 64, 30, 1, 1, 0)
+              frame = struct.pack("<IQ", len(data), 0)
+              out = os.path.join("fuzz/corpus/parse_ivf", "ivf-" + os.path.basename(path))
+              open(out, "wb").write(header + frame + data)
+          '
 
       # Force the gnu target. install-action has no cargo-fuzz, so it falls back to
       # a musl-built binary whose default target is musl — and AddressSanitizer
       # cannot link a static musl libc. Building for gnu (the host) keeps ASan working.
       # Run every target for a per-target slice; bash -e fails the job on the first
-      # crash in any target.
+      # crash in any target, and the captured list is required non-empty (see the
+      # seed step) so a broken `cargo fuzz list` cannot skip the smoke silently.
       - name: Fuzz every target (per-target smoke)
         run: |
-          for target in $(cargo +nightly fuzz list); do
+          targets=$(cargo +nightly fuzz list)
+          test -n "$targets"
+          for target in $targets; do
             cargo +nightly fuzz run "$target" --target x86_64-unknown-linux-gnu -- -max_total_time=45 -timeout=10 -rss_limit_mb=2048
           done
 

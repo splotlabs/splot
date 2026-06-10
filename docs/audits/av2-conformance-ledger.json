@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "84770b0dc9c0377bf0b694f87edc41890a5e584e",
+  "audited_commit": "683ca6e4a51a10b193983ac38e07b90671ba9c5d",
   "outcome": "success",
   "files": [
     {
@@ -200,7 +200,7 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "a387749584ff97b38e16451ee1885970521a67ffc81dd4a85414ab4de6e0167c",
+      "sha256": "dd225cc251b65e08c1e39a4db64edaa8ddbdd2e98d0480c1aa781cef1c8d67ce",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
@@ -829,7 +829,7 @@
     },
     {
       "path": "crates/splot-validate/tests/validator_never_panics.rs",
-      "sha256": "79373b0b86de3da7a02b4b74e335b983fc789986fed6dde28b3a73c9ddec09ac",
+      "sha256": "867fe3a0aaf00933883c18416b5e3db77cd6d82b88b24357a54d1b74e6fbd9d9",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -1050,7 +1050,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "33e2cdb4be4f823549c345671f5ba139e3f9e452564d1f570c30d61b590ca17a",
+      "sha256": "d182d7f41386864ffba1ba9fb102f8c1b90eae9068ac8e7808ba7d6fabf8e0b8",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1333,7 +1333,7 @@
     },
     {
       "path": "docs/TESTING.md",
-      "sha256": "7462b62f30ec9065cbedcdfbc83fcc4e3db4d5ff506a0d92e8fc71fcee227071",
+      "sha256": "202183ac7a49c5551fb22f402a5dc2f4d1f6b6f3eb4384519c68cdf3ee85a00f",
       "scope_kind": "docs",
       "feature_ids": [],
       "outcome": "success"
@@ -1505,7 +1505,7 @@
     },
     {
       "path": "fuzz/fuzz_targets/validate_bytes.rs",
-      "sha256": "d3abe98a1f8de43a96cdf2a7fe8e18eb67e69b07a59cbed81802382569e1660e",
+      "sha256": "2160f59e05a8a38d1126bd61166f4c02d77025e7228ccb0bb260a774d62ca99a",
       "scope_kind": "fuzz",
       "feature_ids": [],
       "outcome": "success"

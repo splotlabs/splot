@@ -14,7 +14,8 @@
    - `parse_obu` — `read_leb128`, `read_obu_header`, `parse_annex_b_obus`.
    - `parse_ivf` — `is_ivf`, `parse_ivf_header`, `parse_ivf_partial`.
    - `parse_bitstream` — `parse_bitstream_partial` (container auto-detect +
-     OBU payload dispatch).
+     Annex-B/IVF envelope parsing; OBU payload parsers are reached via
+     `validate_bytes`, not this target).
    - `validate_bytes` — `Validator::validate_bytes_with_options` (the
      highest-coverage target: transitively reaches every OBU payload parser, both
      container formats, and every validator check).

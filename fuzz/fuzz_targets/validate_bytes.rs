@@ -19,30 +19,36 @@ use splot_validate::Validator;
 use splot_validate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
 
 fuzz_target!(|data: &[u8]| {
-    // Derive the strictness flag and validation options deterministically from the
-    // first byte so that option-gated branches (external-HLS resolution,
-    // AV2 § 7.3.8) are exercised; the rest of the input is the bitstream. Empty
-    // input falls back to defaults over an empty slice.
-    let (config, bitstream) = match data.split_first() {
-        Some((config, bitstream)) => (*config, bitstream),
+    // Derive the strictness flag and validation options deterministically from a
+    // leading config prefix so that option-gated branches (external-HLS
+    // resolution, AV2 § 7.3.8) are exercised; the rest of the input is the
+    // bitstream. Byte 0: bit 0 = strict, bit 1 = external-HLS Provided, bit 2 =
+    // xlayer-id MSB, bits 3-7 = sequence-header id. When Provided, byte 1 carries
+    // the full key ranges: bits 0-3 = ops_id (f(4), 0..=15), bits 4-7 plus the
+    // MSB above = obu_xlayer_id (f(5), 0..=31) — the keys are caller-supplied, so
+    // bitstream mutation alone could never reach ids the prefix cannot encode.
+    // Empty input falls back to defaults over an empty slice.
+    let (flags, rest) = match data.split_first() {
+        Some((flags, rest)) => (*flags, rest),
         None => (0, &[][..]),
     };
 
-    let strict = config & 0b0000_0001 != 0;
-    let options = if config & 0b0000_0010 != 0 {
-        // Seed a few external-HLS keys from the remaining option bits so the
-        // Provided branch is reachable with non-empty declarations. The ops-id
-        // argument only spans 0..=3 (bits 2-3 are all that remain after bits 0,
-        // 1, and 4-7 are allocated); the fuzzer reaches the other f(4) values
-        // through mutation of the bitstream itself.
+    let strict = flags & 0b0000_0001 != 0;
+    let (options, bitstream) = if flags & 0b0000_0010 != 0 {
+        let (keys, bitstream) = match rest.split_first() {
+            Some((keys, bitstream)) => (*keys, bitstream),
+            None => (0, &[][..]),
+        };
+        let xlayer_id = ((flags & 0b0000_0100) << 2) | (keys >> 4);
         let set = ExternalHlsSet::new()
-            .with_sequence_header_id(u32::from(config >> 4))
-            .with_operating_point_set(config & 0b0001_1111, (config >> 2) & 0b0000_0011);
-        ValidationOptions {
+            .with_sequence_header_id(u32::from(flags >> 3))
+            .with_operating_point_set(xlayer_id, keys & 0b0000_1111);
+        let options = ValidationOptions {
             external_hls: ExternalHlsMode::Provided(set),
-        }
+        };
+        (options, bitstream)
     } else {
-        ValidationOptions::default()
+        (ValidationOptions::default(), rest)
     };
 
     let validator = Validator::new(strict);
