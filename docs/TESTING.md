@@ -5,9 +5,10 @@
 1. **Parser unit tests** — LEB128, AV2 OBU header, and Annex B envelopes, with
    positive, negative, and EOF cases. Implemented in each `splot-core` module.
 2. **Property / fuzz tests** — the parsers must never panic on arbitrary input.
-   Implemented as `*_never_panic(s)` proptests across the `splot-core` parser
-   modules; the `cargo fuzz` target `parse_obu` needs a nightly toolchain and
-   runs as a blocking 60s smoke in PR CI.
+   Implemented as `*_never_panic(s)` tests across the `splot-core` parser
+   modules (mostly proptests, plus a few exhaustive-truncation unit tests);
+   the `cargo fuzz` target `parse_obu` needs a nightly toolchain and runs as
+   a blocking 60s smoke in PR CI.
 3. **CLI integration tests** — `crates/splot-cli/tests/cli.rs` runs the `splot`
    binary against the fixtures in `tests/fixtures/` (exit codes, `--json`,
    `inspect`). Implemented; snapshot tests for `inspect` output are planned
@@ -26,7 +27,7 @@ cargo xtask ci
 cargo xtask coverage            # local HTML coverage report (cargo-llvm-cov, run-if-present)
 
 # Fuzzing needs a NIGHTLY toolchain (cargo-fuzz uses AddressSanitizer + coverage,
-# which are nightly-only). On stable, the per-module `*_never_panic(s)` proptests
+# which are nightly-only). On stable, the per-module `*_never_panic(s)` tests
 # exercise the same never-panic invariant with bounded random inputs.
 cargo xtask fuzz [--time <secs>]    # local fuzz smoke (nightly + cargo-fuzz, run-if-present), default 30s
 cargo install cargo-fuzz --locked

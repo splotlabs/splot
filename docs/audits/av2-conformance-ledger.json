@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "21f41691e7918ad3cdf3da021e97b3956327b3ad",
+  "audited_commit": "18049305885bf63a724807939ab0af650bc03c38",
   "outcome": "success",
   "files": [
     {
@@ -804,7 +804,7 @@
     },
     {
       "path": "docs/ARCHITECTURE.md",
-      "sha256": "ec4b5d4726e4d3762f7452fee05457f8caacfca6d33f6076e15a920024301436",
+      "sha256": "2fb2a62b741c3c57e1562e21ad12264e9b429000bd5d18ef94fa08e99a29749f",
       "scope_kind": "docs",
       "feature_ids": [],
       "outcome": "success"
@@ -818,7 +818,7 @@
     },
     {
       "path": "docs/CONFORMANCE.md",
-      "sha256": "2db7b38097974c84e2a291b09eddd1ac1142cd03b909fd1e7effcbab2af3017b",
+      "sha256": "7d220702b3bc5aa5fece979066a94439bc645047767b5af15f1361969a82748e",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-INSPECT",
@@ -1284,7 +1284,7 @@
     },
     {
       "path": "docs/TESTING.md",
-      "sha256": "b114d0951f8d6fe4696d3f41be5d233a155edb8f9cdcddaf4001d4065aa853ac",
+      "sha256": "39b6e987bd26fa91ae193a5c62ab617c273f3f3fbd4e7e27c6ab7e426502f045",
       "scope_kind": "docs",
       "feature_ids": [],
       "outcome": "success"

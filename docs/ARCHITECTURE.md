@@ -43,8 +43,9 @@ by `cargo xtask check-dependency-direction`):
   initializes logging (tracing), reads/writes files, and calls library APIs. No
   codec logic: the `inspect`/`validate` text and JSON rendering in
   `crates/splot-cli/src/commands/` are presentation over `splot-core` and
-  `splot-validate` output. Exit codes are part of the contract: `0` conformant,
-  `1` not conformant, `2` operational error.
+  `splot-validate` output. Exit codes are part of the contract: `0` clean;
+  `1` findings (`validate`: validation errors, or warnings under `--strict`;
+  `inspect`: a parse error); `2` operational error.
 - **`xtask`** — project automation: the `ci` pipeline; the repository checks
   (`check-license-headers`, `check-dependency-direction`, `check-spec-mirror`,
   `check-feature-status`, `check-diagnostic-registry`,

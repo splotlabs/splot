@@ -75,8 +75,8 @@ exceptions.
 panic.
 
 - On **stable**, the `splot-core` parser modules carry `*_never_panic(s)`
-  proptests that run in plain `cargo test`, so the invariant gates every CI
-  run.
+  tests (mostly proptests, plus exhaustive-truncation unit tests) that run in
+  plain `cargo test`, so the invariant gates every CI run.
 - On **nightly**, the `parse_obu` cargo-fuzz target covers the same invariant.
   CI runs a **blocking 60-second `parse_obu` smoke on every PR**
   (`.github/workflows/ci.yml`, `fuzz-smoke` job).
