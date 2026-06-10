@@ -28,6 +28,13 @@ closing the stage.
   process) and the stage stays `partial` as documented-blocked rather than
   silently unfinished
 
+#### Scenario: parse-blocked residual
+
+- **WHEN** a check is decidable only after parsing work that another matrix
+  row or backlog change owns (for example frame-header inter-path parsing)
+- **THEN** the row's notes name that blocking feature id and the stage stays
+  `partial` as documented-blocked until the parsing lands
+
 ## MODIFIED Requirements
 
 (none)

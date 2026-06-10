@@ -508,7 +508,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Umbrella for sequence_header_obu(). All §5.4.1-§5.4.13 child configs parse (see the child rows); the umbrella stays partial because its own types/parse/tests stages are partial (deeper §5.4 cluster) per the §7 do-not-close-before-children rule. The §6.4 cross-element semantic-validation residuals (repeated-header identity, §6.4.1 distinct-mlayer count, §6.4.12 cross-embedded-layer timing consistency) live on AV2-6.4-SEQUENCE-HEADER-SEMANTICS; the per-config tool-flag-vs-usage gating residuals are blocked on AV2-5.18.2-FRAME-HEADER-INFO inter-path parsing (see the child rows)."
+notes = "Umbrella for sequence_header_obu(). All §5.4.1-§5.4.13 child configs parse (see the child rows); the umbrella stays partial because its own types/parse/tests stages are partial (deeper §5.4 cluster) per the do-not-close-before-children rule (docs/IMPLEMENTATION-MATRIX.schema.md § 7, not an AV2 section). The §6.4 cross-element semantic-validation residuals (repeated-header identity, §6.4.1 distinct-mlayer count, §6.4.12 cross-embedded-layer timing consistency) live on AV2-6.4-SEQUENCE-HEADER-SEMANTICS; the per-config tool-flag-vs-usage gating residuals are blocked on AV2-5.18.2-FRAME-HEADER-INFO inter-path parsing (see the child rows)."
 
 [feature.status]
 mapped = "done"
@@ -1564,7 +1564,7 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there. §6.9.4 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-4, lines 2430-2465) states no requirement of bitstream conformance of its own: ats_msi_* share the semantics of the §6.9.6 ats_* elements and the background color values are inference-only. The locally decidable segment-count bound is parse-enforced in parse_ats_multistream_info (crates/splot-core/src/headers/atlas_segment.rs:504) as atlas/segment-count-out-of-range; cross-OBU multistream-needs-GLOBAL_XLAYER_ID and duplicate-input-stream-id are validated under AV2-5.9-ATLAS-SEGMENT. Nothing further is locally decidable for §6.9.4."
+notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there. §6.9.4 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-4, lines 2430-2465) states no requirement of bitstream conformance of its own: ats_msi_* share the semantics of the §6.9.6 ats_* elements and the background color values are inference-only. The locally decidable segment-count bound is parse-enforced in parse_ats_multistream_info (crates/splot-core/src/headers/atlas_segment.rs:504) as atlas/segment-count-out-of-range; cross-OBU multistream-needs-GLOBAL_XLAYER_ID and duplicate-input-stream-id are validated under AV2-5.9-ATLAS-SEGMENT. Nothing further is locally decidable for §6.9.4. The atlas_multistream_duplicate_input_stream_id_is_flagged proof test exercises the parent-level atlas/duplicate-input-stream-id check (owned by AV2-5.9-ATLAS-SEGMENT) in the multistream context as a regression guard; this row's own diagnostic is atlas/segment-count-out-of-range."
 
 [feature.status]
 mapped = "done"
