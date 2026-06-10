@@ -58,7 +58,9 @@ review automation:
     `cargo llvm-cov report --fail-under-lines 90` scoped to `splot-validate`
     via `--ignore-filename-regex`.
   - `.github/workflows/claude-review.yml` — correct the cargo-deny gate
-    description.
+    description. (Carved out before merge: any PR modifying this file fails
+    its own claude-review job by anti-tamper design, and review-workflow
+    edits are a maintainer decision; deferred — see tasks.md 4.2.)
   - `fuzz/Cargo.toml` — correct the "not part of normal CI" comment.
 - CLI/docs/tests: `AGENTS.md` § 4 command list gains the docs-build command;
   matrix row `XTASK-CI-QUALITY-GATES` added; `CONF-FUZZ-NO-PANIC` note
@@ -88,7 +90,8 @@ review automation:
   (run-if-present semantics for `cargo-llvm-cov` unchanged).
 - [ ] `cargo xtask ci` cargo-deny invocation matches CI
   (`--all-features`).
-- [ ] The claude-review prompt, `fuzz/Cargo.toml`, and the
-  `CONF-FUZZ-NO-PANIC` matrix note accurately describe the gates.
+- [ ] `fuzz/Cargo.toml` and the `CONF-FUZZ-NO-PANIC` matrix note accurately
+  describe the gates (the claude-review prompt correction is deferred to the
+  maintainer — see tasks.md 4.2).
 - [ ] Implementation matrix row `XTASK-CI-QUALITY-GATES` exists with proof;
   `cargo xtask check-feature-status` and `cargo xtask ci` pass.

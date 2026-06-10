@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "d1e85a4a604f3891c2b964075f17f52d3ca8c547",
+  "audited_commit": "8143f81b51ef406eb065329aecf64649d94d58ee",
   "outcome": "success",
   "files": [
     {
@@ -207,7 +207,7 @@
     },
     {
       "path": ".github/workflows/claude-review.yml",
-      "sha256": "fca8af67a91465f1bb1246e48d53b348ed84ad2d6736391a8d33d56853b3fea0",
+      "sha256": "9d5a4d41cbd5a9ad8b254871456969ab8fd47ec96f8455cc8d576d9ee19778c2",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
@@ -1491,7 +1491,7 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "f685e1d7d9b6802061268e81549704e032e510aab92626e9444e5c1c58979cc4",
+      "sha256": "6e6454509614587bcf8e3709b89c6c0c772ae0d2bfac201d422f826d94c6f333",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -1502,10 +1502,8 @@
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
         "CONF-AVM-DIFF-HARNESS",
-        "CONF-FUZZ-NO-PANIC",
         "ENC-BITSTREAM-WRITER",
-        "ENC-INTRA-TOY-V0",
-        "XTASK-CI-QUALITY-GATES"
+        "ENC-INTRA-TOY-V0"
       ],
       "outcome": "success"
     },
@@ -2391,6 +2389,35 @@
       "feature_ids": [
         "AV2-5.11.3-OPS-DECODER-MODEL-INFO",
         "AV2-6.4-SEQUENCE-HEADER-SEMANTICS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-ci-quality-gates/proposal.md",
+      "sha256": "3a8c064c74db58628ce710cebb65a3c90d3be963960bed84691f2ef9ba5dd742",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-FUZZ-NO-PANIC",
+        "XTASK-CI-QUALITY-GATES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-ci-quality-gates/specs/process/spec.md",
+      "sha256": "4dc0fca94150ba010bdc1b4ee5cfddf4298b895f769b1b8daf49addc59207ad4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-CI-QUALITY-GATES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-ci-quality-gates/tasks.md",
+      "sha256": "c5baa184fd9bb0b71d2a7a887493104ce2c199987fa060c212e9684979e86a54",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-FUZZ-NO-PANIC",
+        "XTASK-CI-QUALITY-GATES"
       ],
       "outcome": "success"
     },

@@ -47,7 +47,14 @@
   match the CI supply-chain job.
 - [x] 4.2 `.github/workflows/claude-review.yml`: correct the cargo-deny gate
   description (bans/licenses/sources block; only the advisory-DB check is
-  informational).
+  informational). **Carved out before merge — deferred to the maintainer.**
+  The claude-code-action's anti-tamper app-token validation requires the
+  workflow file on the PR branch to be byte-identical to the default-branch
+  version, so any PR modifying `claude-review.yml` makes its own claude-review
+  job fail red with an unrunnable review; and edits to the review workflow are
+  a maintainer decision, not an autonomous-agent one. The needed fix (and an
+  optional self-modification skip-guard) is recorded for the maintainer to
+  land directly.
 - [x] 4.3 `fuzz/Cargo.toml`: replace "It is not part of normal CI." with an
   accurate note about the blocking 60s `parse_obu` smoke job in `ci.yml`.
 
