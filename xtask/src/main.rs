@@ -96,6 +96,9 @@ enum Task {
         /// Output format.
         #[arg(long, value_enum, default_value_t = CoverageFormat::Text)]
         format: CoverageFormat,
+        /// Write the rendered output to a file instead of stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     /// (stub) Generate spec tables from the AV2 additional tables.
     GenTables,
@@ -159,8 +162,8 @@ fn main() -> Result<()> {
             output,
         } => feature_status::run_feature_status(&workspace_root()?, format, category, kind, output),
         Task::CheckFeatureStatus => feature_status::run_check_feature_status(&workspace_root()?),
-        Task::SpecCoverage { format } => {
-            feature_status::run_spec_coverage(&workspace_root()?, format)
+        Task::SpecCoverage { format, output } => {
+            feature_status::run_spec_coverage(&workspace_root()?, format, output)
         }
         Task::GenTables => {
             gen_tables_stub();

@@ -103,7 +103,8 @@ cargo xtask spec-coverage                  # coverage summary
 5. Add validator diagnostics      crates/splot-validate/... (stable rule ids)
 6. Add tests + fuzz/property      positive, negative, EOF
 7. Update proof + status          [feature.proof]; bump stages to done only with proof
-8. Regenerate FEATURE-STATUS.md   cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md
+8. Regenerate the generated docs  cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md
+                                  cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md
 9. Run the checks                 cargo xtask check-feature-status && cargo xtask ci
 10. Open a PR                     put the Feature ID in the title/body
 ```

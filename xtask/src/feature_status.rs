@@ -21,6 +21,10 @@ use serde::{Deserialize, Serialize};
 const MATRIX_PATH: &str = "docs/IMPLEMENTATION-MATRIX.toml";
 /// Repo-relative path of the generated status document.
 const STATUS_DOC_PATH: &str = "docs/FEATURE-STATUS.md";
+/// Repo-relative path of the generated per-spec-section coverage document.
+const COVERAGE_DOC_PATH: &str = "docs/SPEC-COVERAGE.md";
+/// Repo-relative path of the spec-mirror section index used to resolve links.
+const MIRROR_INDEX_PATH: &str = "docs/spec/av2/1.0.0/index.md";
 /// The only `matrix_version` this tool understands.
 const SUPPORTED_MATRIX_VERSION: u32 = 1;
 
@@ -188,9 +192,21 @@ pub(crate) enum StatusFormat {
 pub(crate) enum CoverageFormat {
     /// Plain-text summary (default).
     Text,
-    /// Markdown summary.
+    /// The per-spec-section coverage document (`docs/SPEC-COVERAGE.md`).
     Markdown,
 }
+
+/// Columns of the per-spec-section coverage table: `(header, stage)`.
+///
+/// A narrower projection than [`TABLE_COLUMNS`]: the coverage table answers
+/// "is this spec item parsed/validated/tested?" at a glance; the full ledger
+/// stays in `docs/FEATURE-STATUS.md`.
+const COVERAGE_COLUMNS: &[(&str, &str)] = &[
+    ("Mapped", "mapped"),
+    ("Parse", "parse"),
+    ("Validate", "validate"),
+    ("Tests", "tests"),
+];
 
 /// The whole matrix file.
 #[derive(Debug, Deserialize, Serialize)]
@@ -515,15 +531,25 @@ fn render_markdown(matrix: &Matrix, features: &[&Feature]) -> String {
 // ---------------------------------------------------------------------------
 
 /// Implements `cargo xtask spec-coverage`.
-pub(crate) fn run_spec_coverage(root: &Path, format: CoverageFormat) -> Result<()> {
+pub(crate) fn run_spec_coverage(
+    root: &Path,
+    format: CoverageFormat,
+    output: Option<PathBuf>,
+) -> Result<()> {
     let matrix = load_matrix(root)?;
     let report = match format {
         CoverageFormat::Text => coverage_text(&matrix),
-        CoverageFormat::Markdown => coverage_markdown(&matrix),
+        CoverageFormat::Markdown => coverage_markdown(&matrix, &load_mirror_index(root)),
     };
-    print!("{report}");
-    if !report.ends_with('\n') {
-        println!();
+    if let Some(path) = output {
+        std::fs::write(&path, &report)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        eprintln!("spec-coverage: wrote {}", path.display());
+    } else {
+        print!("{report}");
+        if !report.ends_with('\n') {
+            println!();
+        }
     }
     Ok(())
 }
@@ -657,62 +683,238 @@ fn coverage_text(matrix: &Matrix) -> String {
     out
 }
 
-/// Markdown coverage summary.
-fn coverage_markdown(matrix: &Matrix) -> String {
+/// The spec-mirror section index: section id -> (title, `file#anchor` target).
+struct MirrorIndex {
+    entries: BTreeMap<String, (String, String)>,
+}
+
+/// Parses the mirror's `index.md` table into a [`MirrorIndex`].
+///
+/// Tolerant by design: unparsable lines are skipped, so a regenerated mirror
+/// can never break coverage rendering — unresolved sections fall back to plain
+/// text.
+fn parse_mirror_index(text: &str) -> MirrorIndex {
+    let mut entries = BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if !line.starts_with('|') {
+            continue;
+        }
+        let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+        if cells.len() < 3 {
+            continue;
+        }
+        let label = cells[0].trim_matches('`').trim();
+        let section = label.strip_prefix('§').map_or(label, str::trim);
+        // `](` is the markdown separator between link text and target; using it
+        // (rather than the first `(`) tolerates parentheses in the link text.
+        let Some(bracket) = cells[2].find("](") else {
+            continue;
+        };
+        let start = bracket + 1;
+        let Some(end) = cells[2].rfind(')') else {
+            continue;
+        };
+        if start + 1 > end {
+            continue;
+        }
+        let target = &cells[2][start + 1..end];
+        if section.is_empty() || target.is_empty() {
+            continue;
+        }
+        entries.insert(section.to_owned(), (cells[1].to_owned(), target.to_owned()));
+    }
+    MirrorIndex { entries }
+}
+
+/// Loads the mirror index, returning an empty index when the mirror is absent.
+fn load_mirror_index(root: &Path) -> MirrorIndex {
+    std::fs::read_to_string(root.join(MIRROR_INDEX_PATH)).map_or(
+        MirrorIndex {
+            entries: BTreeMap::new(),
+        },
+        |text| parse_mirror_index(&text),
+    )
+}
+
+/// Sort key ordering spec sections numerically (`5.2` before `5.10`), with
+/// annexes after every numbered chapter.
+fn section_sort_key(section: &str) -> (u8, String, Vec<u64>) {
+    if let Some(rest) = section.strip_prefix("Annex ") {
+        let mut parts = rest.splitn(2, '.');
+        let letter = parts.next().unwrap_or_default().to_owned();
+        let nums = parts
+            .next()
+            .map(|tail| tail.split('.').map(|s| s.parse().unwrap_or(0)).collect())
+            .unwrap_or_default();
+        (1, letter, nums)
+    } else {
+        let nums = section.split('.').map(|s| s.parse().unwrap_or(0)).collect();
+        (0, String::new(), nums)
+    }
+}
+
+/// Chapter heading for a section, grounded in the mirror's chapter files.
+fn chapter_heading(section: &str) -> String {
+    if section.starts_with("Annex") {
+        return "Annexes".to_owned();
+    }
+    let lead = section.split('.').next().unwrap_or(section);
+    let title = match lead {
+        "2" => "Terms and definitions",
+        "3" => "Symbols and abbreviated terms",
+        "4" => "Conventions",
+        "5" => "Syntax structures",
+        "6" => "Syntax structures semantics",
+        "7" => "Decoding process",
+        "8" => "Parsing process",
+        "9" => "Additional tables",
+        _ => return format!("Chapter {lead}"),
+    };
+    format!("Chapter {lead} — {title}")
+}
+
+/// Compact glyph for a stage status (the coverage-table legend).
+fn coverage_glyph(status: &str) -> &str {
+    match status {
+        "done" => "✅",
+        "partial" => "🟡",
+        "pending" => "⏳",
+        "blocked" => "⛔",
+        "experimental" => "🧪",
+        "not-applicable" => "—",
+        "todo" => "",
+        _ => "?",
+    }
+}
+
+/// Renders one section cell, hyperlinked into the spec mirror when resolvable.
+fn section_cell(section: &str, index: &MirrorIndex) -> String {
+    let label = if section.starts_with("Annex") {
+        section.to_owned()
+    } else {
+        format!("§ {section}")
+    };
+    match index.entries.get(section) {
+        Some((_, target)) => format!("[{label}](./spec/av2/1.0.0/{target})"),
+        None => label,
+    }
+}
+
+/// Renders the deterministic per-spec-section coverage document
+/// (`docs/SPEC-COVERAGE.md`).
+fn coverage_markdown(matrix: &Matrix, index: &MirrorIndex) -> String {
+    let mut rows: Vec<(&str, &Feature)> = Vec::new();
+    let mut without_section: Vec<&Feature> = Vec::new();
+    for f in &matrix.feature {
+        if f.spec_sections.is_empty() {
+            without_section.push(f);
+        }
+        for section in &f.spec_sections {
+            rows.push((section.as_str(), f));
+        }
+    }
+    rows.sort_by(|a, b| {
+        section_sort_key(a.0)
+            .cmp(&section_sort_key(b.0))
+            .then_with(|| a.1.id.cmp(&b.1.id))
+    });
+    without_section.sort_by(|a, b| a.id.cmp(&b.id));
+
     let mut out = String::new();
-    let reviewed = matrix.last_reviewed.as_deref().unwrap_or("unknown");
     let _ = writeln!(out, "# Spec coverage");
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "Matrix version {}. Last reviewed {}. {} feature(s).",
-        matrix.matrix_version,
-        reviewed,
-        matrix.feature.len()
+        "Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask \
+         spec-coverage --format markdown --output {COVERAGE_DOC_PATH}`. Do not \
+         edit by hand."
     );
     let _ = writeln!(out);
-
-    let _ = writeln!(out, "## By category");
+    let reviewed = matrix.last_reviewed.as_deref().unwrap_or("unknown");
+    let _ = writeln!(
+        out,
+        "Matrix version {}. Last reviewed {}. {} feature(s); {} cite a spec section.",
+        matrix.matrix_version,
+        reviewed,
+        matrix.feature.len(),
+        matrix.feature.len() - without_section.len()
+    );
     let _ = writeln!(out);
-    for (key, n) in count_by(matrix, |f| f.category.as_str()) {
-        let _ = writeln!(out, "- {key}: {n}");
+    let _ = writeln!(
+        out,
+        "One row per (spec section, feature) pair, in spec order; a feature \
+         citing both a syntax and a semantics section appears under both. The \
+         canonical status source is \
+         [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full \
+         per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md)."
+    );
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked \
+         · 🧪 experimental · — not applicable · (blank) todo. Diagnostics \
+         counts the rule IDs recorded in the feature's proof; the registry is \
+         [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md)."
+    );
+
+    let mut current_chapter = String::new();
+    for (section, f) in rows {
+        let chapter = chapter_heading(section);
+        if chapter != current_chapter {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "## {chapter}");
+            let _ = writeln!(out);
+            let mut header = String::from("| Section | Spec item | Feature |");
+            let mut sep = String::from("|---|---|---|");
+            for (label, _) in COVERAGE_COLUMNS {
+                let _ = write!(header, " {label} |");
+                sep.push_str(":-:|");
+            }
+            header.push_str(" Diagnostics |");
+            sep.push_str(":-:|");
+            let _ = writeln!(out, "{header}");
+            let _ = writeln!(out, "{sep}");
+            current_chapter = chapter;
+        }
+        let item = index
+            .entries
+            .get(section)
+            .map_or(f.name.as_str(), |(title, _)| title.as_str());
+        let mut row = format!(
+            "| {} | {} | `{}` |",
+            section_cell(section, index),
+            md_escape(item),
+            f.id
+        );
+        for (_, stage) in COVERAGE_COLUMNS {
+            let _ = write!(
+                row,
+                " {} |",
+                coverage_glyph(f.status.get(stage).unwrap_or("?"))
+            );
+        }
+        if f.proof.diagnostics.is_empty() {
+            row.push_str(" — |");
+        } else {
+            let _ = write!(row, " {} |", f.proof.diagnostics.len());
+        }
+        let _ = writeln!(out, "{row}");
     }
-    let _ = writeln!(out);
 
-    let _ = writeln!(out, "## By kind");
     let _ = writeln!(out);
-    for (key, n) in count_by(matrix, |f| f.kind.as_str()) {
-        let _ = writeln!(out, "- {key}: {n}");
-    }
+    let _ = writeln!(out, "## Features without a spec section");
     let _ = writeln!(out);
-
-    let _ = writeln!(out, "## Stage completion (rows with stage = done)");
+    let _ = writeln!(
+        out,
+        "{} feature(s) track conformance, encoder, CLI, automation, or \
+         documentation work with no single spec section; see \
+         [FEATURE-STATUS.md](./FEATURE-STATUS.md):",
+        without_section.len()
+    );
     let _ = writeln!(out);
-    for (stage, n) in done_counts(matrix) {
-        let _ = writeln!(out, "- {stage}: {n}");
-    }
-    let _ = writeln!(out);
-
-    let _ = writeln!(out, "## Normative features by spec section");
-    let _ = writeln!(out);
-    for (section, ids) in normative_by_section(matrix) {
-        let _ = writeln!(out, "- `{section}`: {}", ids.join(", "));
-    }
-    let _ = writeln!(out);
-
-    let bp = blocked_pending(matrix);
-    let _ = writeln!(out, "## Blocked / pending");
-    let _ = writeln!(out);
-    for (id, stage, status) in bp {
-        let _ = writeln!(out, "- `{id}`: {stage} {status}");
-    }
-    let _ = writeln!(out);
-
-    let mp = missing_proof(matrix);
-    let _ = writeln!(out, "## Rows that progressed but record no proof");
-    let _ = writeln!(out);
-    for id in mp {
-        let _ = writeln!(out, "- `{id}`");
+    for f in without_section {
+        let _ = writeln!(out, "- `{}` — {}", f.id, md_escape(&f.name));
     }
     out
 }
@@ -731,6 +933,7 @@ pub(crate) fn run_check_feature_status(root: &Path) -> Result<()> {
     checker.scan_tokens()?;
     checker.scan_diagnostics()?;
     checker.check_status_doc(&matrix)?;
+    checker.check_coverage_doc(&matrix)?;
 
     if checker.problems.is_empty() {
         eprintln!(
@@ -961,21 +1164,39 @@ impl Checker {
     }
 
     /// Verifies `docs/FEATURE-STATUS.md`, if present, matches the matrix.
-    fn check_status_doc(&mut self, matrix: &Matrix) -> Result<()> {
-        let path = self.root.join(STATUS_DOC_PATH);
+    /// Fails when a committed generated doc no longer matches its render.
+    fn check_generated_doc(&mut self, rel_path: &str, expected: &str, regen: &str) -> Result<()> {
+        let path = self.root.join(rel_path);
         if !path.exists() {
             return Ok(());
         }
         let actual = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        let all: Vec<&Feature> = matrix.feature.iter().collect();
-        let expected = render_markdown(matrix, &all);
         if actual.trim_end() != expected.trim_end() {
             self.problems.push(format!(
-                "{STATUS_DOC_PATH} is out of date; regenerate with `cargo xtask feature-status --format markdown --output {STATUS_DOC_PATH}`"
+                "{rel_path} is out of date; regenerate with `{regen}`"
             ));
         }
         Ok(())
+    }
+
+    fn check_status_doc(&mut self, matrix: &Matrix) -> Result<()> {
+        let all: Vec<&Feature> = matrix.feature.iter().collect();
+        let expected = render_markdown(matrix, &all);
+        self.check_generated_doc(
+            STATUS_DOC_PATH,
+            &expected,
+            &format!("cargo xtask feature-status --format markdown --output {STATUS_DOC_PATH}"),
+        )
+    }
+
+    fn check_coverage_doc(&mut self, matrix: &Matrix) -> Result<()> {
+        let expected = coverage_markdown(matrix, &load_mirror_index(&self.root));
+        self.check_generated_doc(
+            COVERAGE_DOC_PATH,
+            &expected,
+            &format!("cargo xtask spec-coverage --format markdown --output {COVERAGE_DOC_PATH}"),
+        )
     }
 }
 
@@ -1363,6 +1584,144 @@ diagnostics = []
             rendered,
             render_markdown(&matrix, &all),
             "render not deterministic"
+        );
+    }
+
+    /// A two-row mirror index covering one numeric section and one annex.
+    const SAMPLE_INDEX: &str = "\
+| Section | Title | File | Page |
+|---|---|---|---|
+| `§ 5.2.2` | OBU header syntax | [05-syntax-structures.md](05-syntax-structures.md#s-5-2-2) | 53 |
+| `Annex B` | Length delimited bitstream format | [annex-b.md](annex-b.md#s-annex-b) | 1112 |
+";
+
+    #[test]
+    fn section_sort_key_orders_numerically_and_annexes_last() {
+        let mut sections = vec![
+            "5.10",
+            "5.2",
+            "Annex B",
+            "4.11.6",
+            "Annex A.2",
+            "9",
+            "5.4.4",
+        ];
+        sections.sort_by_key(|s| section_sort_key(s));
+        assert_eq!(
+            sections,
+            vec![
+                "4.11.6",
+                "5.2",
+                "5.4.4",
+                "5.10",
+                "9",
+                "Annex A.2",
+                "Annex B"
+            ]
+        );
+    }
+
+    #[test]
+    fn coverage_glyphs_cover_every_allowed_status() {
+        for status in STATUSES {
+            assert_ne!(
+                coverage_glyph(status),
+                "?",
+                "status {status} has no coverage glyph"
+            );
+        }
+        assert_eq!(coverage_glyph("nonsense"), "?");
+    }
+
+    #[test]
+    fn mirror_index_parses_numeric_and_annex_rows() {
+        let index = parse_mirror_index(SAMPLE_INDEX);
+        assert_eq!(
+            index.entries.get("5.2.2"),
+            Some(&(
+                "OBU header syntax".to_owned(),
+                "05-syntax-structures.md#s-5-2-2".to_owned()
+            ))
+        );
+        assert_eq!(
+            index.entries.get("Annex B"),
+            Some(&(
+                "Length delimited bitstream format".to_owned(),
+                "annex-b.md#s-annex-b".to_owned()
+            ))
+        );
+        // Header and separator rows must not leak into the entries.
+        assert_eq!(index.entries.len(), 2);
+    }
+
+    #[test]
+    fn mirror_index_skips_malformed_link_cells_without_panicking() {
+        // Reversed/partial parens and parens in the link text must not panic
+        // or produce bogus entries.
+        let malformed = "\
+| `§ 1.1` | bad | )text( | 1 |
+| `§ 1.2` | bad | [x](no-close | 1 |
+| `§ 1.3` | bad | ) [x]( | 1 |
+| `§ 1.4` | ok (really) | [a (b).md](a-b.md#s-1-4) | 1 |
+";
+        let index = parse_mirror_index(malformed);
+        assert_eq!(
+            index.entries.get("1.4"),
+            Some(&("ok (really)".to_owned(), "a-b.md#s-1-4".to_owned()))
+        );
+        assert_eq!(index.entries.len(), 1);
+    }
+
+    #[test]
+    fn coverage_markdown_renders_linked_rows_and_sectionless_tail() {
+        // SAMPLE plus a second feature without spec sections.
+        let text = format!(
+            "{SAMPLE}\n{}",
+            SAMPLE
+                .trim_start_matches(|c| c != '[')
+                .replace("AV2-5.2.2-OBU-HEADER", "CONF-FUZZ-NO-PANIC")
+                .replace("spec_sections = [\"5.2.2\"]", "spec_sections = []")
+                .replace("category = \"normative\"", "category = \"conformance\"")
+                .replace("kind = \"bitstream-syntax\"", "kind = \"conformance\"")
+        );
+        let matrix = parse_matrix(&text).unwrap();
+        let rendered = coverage_markdown(&matrix, &parse_mirror_index(SAMPLE_INDEX));
+        assert!(
+            rendered.contains("## Chapter 5 — Syntax structures"),
+            "chapter heading missing:\n{rendered}"
+        );
+        assert!(
+            rendered.contains(
+                "| [§ 5.2.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2) | \
+                 OBU header syntax | `AV2-5.2.2-OBU-HEADER` | ✅ | ✅ | 🟡 | ✅ | — |"
+            ),
+            "coverage row changed:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("## Features without a spec section"),
+            "sectionless tail missing"
+        );
+        assert!(
+            rendered.contains("- `CONF-FUZZ-NO-PANIC`"),
+            "sectionless feature missing:\n{rendered}"
+        );
+        assert_eq!(
+            rendered,
+            coverage_markdown(&matrix, &parse_mirror_index(SAMPLE_INDEX)),
+            "render not deterministic"
+        );
+    }
+
+    #[test]
+    fn coverage_markdown_falls_back_to_plain_text_without_mirror() {
+        let matrix = parse_matrix(SAMPLE).unwrap();
+        let empty = MirrorIndex {
+            entries: BTreeMap::new(),
+        };
+        let rendered = coverage_markdown(&matrix, &empty);
+        assert!(
+            rendered.contains("| § 5.2.2 | OBU header syntax |"),
+            "unresolved section should render as plain text with the feature name:\n{rendered}"
         );
     }
 }

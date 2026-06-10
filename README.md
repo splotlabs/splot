@@ -79,6 +79,11 @@ sources of AV2 syntax or copied implementation material. See:
 
 ## Feature tracking
 
+**Looking up a spec section?** The generated
+[docs/SPEC-COVERAGE.md](./docs/SPEC-COVERAGE.md) lists every cited AV2 section
+in spec order with at-a-glance parse/validate/test status and links into the
+committed spec mirror.
+
 Implementation status is tracked in
 [`docs/IMPLEMENTATION-MATRIX.toml`](./docs/IMPLEMENTATION-MATRIX.toml) — the
 canonical source of truth — and rendered with:
@@ -87,6 +92,8 @@ canonical source of truth — and rendered with:
 cargo xtask feature-status            # aligned table
 cargo xtask check-feature-status      # fail on drift (also part of cargo xtask ci)
 cargo xtask spec-coverage             # coverage summary
+cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md
+                                      # regenerate the per-section coverage doc
 ```
 
 OpenSpec changes under [`openspec/`](./openspec/) describe intent; the matrix is the
