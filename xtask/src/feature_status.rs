@@ -706,12 +706,18 @@ fn parse_mirror_index(text: &str) -> MirrorIndex {
         }
         let label = cells[0].trim_matches('`').trim();
         let section = label.strip_prefix('§').map_or(label, str::trim);
-        let Some(start) = cells[2].find('(') else {
+        // `](` is the markdown separator between link text and target; using it
+        // (rather than the first `(`) tolerates parentheses in the link text.
+        let Some(bracket) = cells[2].find("](") else {
             continue;
         };
+        let start = bracket + 1;
         let Some(end) = cells[2].rfind(')') else {
             continue;
         };
+        if start + 1 > end {
+            continue;
+        }
         let target = &cells[2][start + 1..end];
         if section.is_empty() || target.is_empty() {
             continue;
@@ -1646,6 +1652,24 @@ diagnostics = []
         );
         // Header and separator rows must not leak into the entries.
         assert_eq!(index.entries.len(), 2);
+    }
+
+    #[test]
+    fn mirror_index_skips_malformed_link_cells_without_panicking() {
+        // Reversed/partial parens and parens in the link text must not panic
+        // or produce bogus entries.
+        let malformed = "\
+| `§ 1.1` | bad | )text( | 1 |
+| `§ 1.2` | bad | [x](no-close | 1 |
+| `§ 1.3` | bad | ) [x]( | 1 |
+| `§ 1.4` | ok (really) | [a (b).md](a-b.md#s-1-4) | 1 |
+";
+        let index = parse_mirror_index(malformed);
+        assert_eq!(
+            index.entries.get("1.4"),
+            Some(&("ok (really)".to_owned(), "a-b.md#s-1-4".to_owned()))
+        );
+        assert_eq!(index.entries.len(), 1);
     }
 
     #[test]
