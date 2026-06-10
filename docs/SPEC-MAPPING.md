@@ -46,6 +46,9 @@ feature, this mapping must identify:
 | Feature | AV2 spec section | AVM oracle | `splot` module | Reference docs consulted | Status |
 |---|---|---|---|---|---|
 
+The table is intentionally empty until encoder work begins (`splot-encode` is a
+stub); the first encoder feature adds the first row.
+
 If the AV2 section or AVM oracle is unknown, use `TODO(spec: <FEATURE-ID>): <section/topic>` in code
 and keep the feature stubbed.
 

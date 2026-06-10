@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "6ab5c2505eed5901f77506101e21385dadde49c2",
+  "audited_commit": "25683a53689103ba0be36a6937da4fbcc6ee14da",
   "outcome": "success",
   "files": [
     {
@@ -1291,7 +1291,7 @@
     },
     {
       "path": "docs/SPEC-MAPPING.md",
-      "sha256": "2bca373408c7217278bdc21a74e7335aa1ca059617e3c2b40ebf33e3192535fe",
+      "sha256": "75a4c82f94c02e1ae2f04952c36259662d6e459ab5a1b9dfbe22f9cca6780e55",
       "scope_kind": "docs",
       "feature_ids": [],
       "outcome": "success"
