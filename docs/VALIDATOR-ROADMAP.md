@@ -53,7 +53,7 @@ dependency order:
 | Activated sequence state | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` |
 | HLS availability | `AV2-7.3.8-HLS-AVAILABILITY` |
 | Temporal-unit ordering completion | `AV2-7.3.7-TEMPORAL-UNIT-ORDER`, then §7.3.2–§7.3.6 children as parse dependencies allow |
-| Deeper HLS semantics | the `validate = partial` HLS rows (LCR, atlas, OPS/BRT, metadata) and the deferred §6.10.7 dependency-map checks |
+| Deeper HLS semantics | the `validate = partial` HLS rows (LCR, atlas, OPS/BRT, metadata) and the pending §6.10.7 dependency-map agreement checks (the §5.4.1 maps are now exposed by the sequence-header model; the LCR/OPS/MFH agreement checks themselves are still future) |
 | Frame-header continuation | the Phase 8 remaining work below |
 
 **Do not start yet** as a primary task: a full tile-group payload parser,
@@ -187,7 +187,9 @@ Acceptance:
 
 **Status:** partial — every Phase 6 row parses with tests and a dedicated
 parser module; remaining work is deeper semantic validation across the board,
-including the deferred MFH/OPS §6.10.7 layer-dependency-map checks.
+including the pending MFH/OPS §6.10.7 layer-dependency-map agreement checks
+(the sequence-header model now exposes the maps; the agreement checks
+themselves are not implemented yet).
 
 **Goal:** parse HLS OBUs referenced by sequence/frame validation and OBU ordering.
 
@@ -236,7 +238,13 @@ Acceptance:
 **Status:** partial — `AV2-5.15-CONTENT-INTERPRETATION` and `AV2-5.16-PADDING`
 have parse/validate/tests done (their write/encode stages are encoder scope,
 tracked with the `ENC-*` matrix rows); quantizer matrix, film grain, and the
-§5.17 metadata family parse with tests but keep `validate = partial`.
+§5.17 metadata family parse with tests. The §6.16.3 metadata lifetime store
+and the §6.16.10 scan-type CVS-consistency checks landed
+(`metadata-semantic-validation`; `AV2-5.17.3-METADATA-GROUP` and
+`AV2-5.17.10-METADATA-SCAN-TYPE` are `validate = done`), while the metadata
+umbrella and the remaining family rows keep `validate = partial`
+(decoded-frame-hash is decoder-blocked, in-frame-unit placement is
+frame-parsing-blocked).
 
 **Goal:** parse and validate payload OBUs that are not the full frame/tile syntax yet.
 
@@ -255,8 +263,11 @@ Landed: the locally-decidable checks listed under `padding/*`, `metadata/*`,
 
 Remaining: the stateful/cross-OBU semantics behind the `validate = partial`
 rows (`AV2-5.13-QUANTIZATION-MATRIX`, `AV2-5.14-FILM-GRAIN`,
-`AV2-5.17-METADATA` and its child rows); the active OpenSpec change
-`metadata-semantic-validation` tracks the metadata portion.
+`AV2-5.17-METADATA` and its child rows). The metadata portion that was
+validator-achievable landed via the archived `metadata-semantic-validation`
+change; the residuals are decoder-blocked (§6.16.13 decoded-frame-hash) or
+frame-parsing-blocked (§7.3.3/§7.3.4 in-frame-unit placement) and stay
+tracked by their matrix rows.
 
 Acceptance:
 
@@ -285,8 +296,10 @@ and the intra tail through `AV2-5.18.6-QUANTIZATION` and
 - **Remaining:** inter frame-header paths, the MFH-gated branches
   (`cur_mfh_id > 0` stops as unsupported), the § 5.18.7.4 non-uniform
   sequence-reuse branch, § 5.18.5 filtering onward, and the § 6.17.6.2
-  layer-dependency constraints. `AV2-5.18-FRAME-HEADER` and
-  `AV2-5.19-TILE-GROUP` therefore stay `partial`, not `done`.
+  layer-dependency constraints (the §5.4.1 dependency maps are now exposed by
+  the sequence-header model; the checks themselves are not implemented yet).
+  `AV2-5.18-FRAME-HEADER` and `AV2-5.19-TILE-GROUP` therefore stay `partial`,
+  not `done`.
 
 Umbrella: `AV2-5.18-FRAME-HEADER`. The §5.18.1–§5.18.10 child rows and the
 matching §6.17 semantics rows live in the matrix; see the generated
@@ -363,7 +376,7 @@ lands, add it to the registry tables there (the CI gate will require it).
 | `obu-order/global-hls-after-metadata-suffix` | error | §7.3.7 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Global HLS appears after suffix metadata. Needs global suffix-metadata classification, which is pending frame/tile parsing. |
 | `obu-order/non-global-hls-before-coded-layer` | error | §7.3.7 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Non-global HLS appears in an invalid temporal-unit region. |
 | `msdo/sub-xlayer-duplicate` | error | §6.6 | `AV2-5.6-MSDO` | Duplicate `sub_xlayer_id` where uniqueness is required. Add only after confirming the exact §6.6 wording in the spec mirror (spec honesty). |
-| `ops/mlayer-dependency-missing` | error | §6.10.7 | `AV2-5.10-OPERATING-POINT-SET` | OPS embedded-layer info disagrees with the activated sequence header's `MLayerDependencyMap`. Deferred: the sequence-header model does not expose the dependency maps (see the intentional non-check in [`VALIDATOR-DIAGNOSTICS.md`](./VALIDATOR-DIAGNOSTICS.md)). |
+| `ops/mlayer-dependency-missing` | error | §6.10.7 | `AV2-5.10-OPERATING-POINT-SET` | OPS embedded-layer info disagrees with the activated sequence header's `MLayerDependencyMap`. Deferred: the sequence-header model now exposes the dependency maps, but the agreement check is not implemented yet (see the intentional non-check in [`VALIDATOR-DIAGNOSTICS.md`](./VALIDATOR-DIAGNOSTICS.md)). |
 | `ops/tlayer-dependency-missing` | error | §6.10.7 | `AV2-5.10-OPERATING-POINT-SET` | As above, for the activated `TLayerDependencyMap`. |
 | `brt/global-ordering-position` | error | §7.3.7 | `AV2-7.3-OBU-ORDERING` | A global BRT in an invalid temporal-unit position. Deferred: §7.3.7 does not list BRT among the global prefix OBUs, so a hard ordering error needs the §7.3.8 decoder-model / random-access state (tracked by a spec TODO under `AV2-7.3-OBU-ORDERING` in `splot-validate`). |
 

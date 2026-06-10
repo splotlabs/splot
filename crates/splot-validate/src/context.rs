@@ -24,6 +24,9 @@ use splot_core::headers::frame::{
 use splot_core::headers::layer_config_record::{
     LayerConfigurationRecord, parse_layer_config_record,
 };
+use splot_core::headers::metadata::{
+    MetadataPayload, MetadataScanType, MetadataUnit, parse_metadata_group, parse_metadata_short,
+};
 use splot_core::headers::operating_point_set::{
     OperatingPointSet, OpsMlayerSource, parse_operating_point_set,
 };
@@ -31,16 +34,23 @@ use splot_core::headers::quantizer_matrix::{
     NUM_CUSTOM_QMS, QuantizerMatrixObu, parse_quantizer_matrix,
 };
 use splot_core::headers::sequence::{
-    MAX_SEQ_NUM, SequenceHeader, SequenceHeaderId, TimingInfo, parse_sequence_header,
+    MAX_SEQ_NUM, MLayerDependencyMap, SequenceHeader, SequenceHeaderId, TLayerDependencyMap,
+    TimingInfo, parse_sequence_header,
 };
 use splot_core::headers::tile_group::parse_tile_group_prefix;
 use splot_core::hls::{MAX_MFH_NUM, MfhId, MultiFrameHeaderRecord, parse_multi_frame_header};
 use splot_core::obu::finish_obu_payload;
 use splot_core::span::{BitOffset, ByteOffset};
 use splot_core::tile::{MAX_TILE_COLS, MAX_TILE_ROWS};
-use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, ObuType};
+use splot_core::types::{
+    EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID, ObuType, TemporalLayerId,
+};
 
 use crate::diagnostic::{Diagnostic, ValidationReport};
+use crate::metadata_lifetime::{
+    ActiveMetadataUnit, LAYER_CURRENT, LAYER_GLOBAL, LAYER_VALUES, MetadataLifetimeStore,
+    PersistenceMode,
+};
 use crate::options::{ExternalHlsMode, ValidationOptions};
 
 /// Maximum conformant `num_*_points` for a film-grain scaling function
@@ -54,11 +64,15 @@ pub(crate) struct ValidatorContext {
     active_sequence_by_xlayer: BTreeMap<ExtendedLayerId, SequenceHeaderId>,
     /// Payload fingerprints for activated sequence headers, keyed by
     /// `(obu_xlayer_id, seq_header_id)`, used to detect non-bit-identical repeats
-    /// of an activated sequence header (AV2 § 7.3.8).
-    sequence_fingerprints: BTreeMap<(ExtendedLayerId, SequenceHeaderId), u64>,
+    /// of an activated sequence header within a coded video sequence (AV2 § 7.3.6).
+    /// Each value is `(fingerprint, tu_index)` where `tu_index` is the temporal unit
+    /// of the header's latest appearance; the [`CvsTracker`] boundary events scope
+    /// the map to the exact coded video sequence.
+    sequence_fingerprints: BTreeMap<(ExtendedLayerId, SequenceHeaderId), (u64, u64)>,
     /// Content-interpretation records keyed by `(obu_xlayer_id, obu_mlayer_id)`
-    /// within the modeled coded-video-sequence scope, used for cross-embedded-layer
-    /// timing consistency (AV2 § 6.4.12) and repeated-CI identity (AV2 § 6.14).
+    /// within the coded video sequence of the extended layer (exact § 7.3.6
+    /// boundaries via [`CvsTracker`]), used for cross-embedded-layer timing
+    /// consistency (AV2 § 6.4.12) and repeated-CI identity (AV2 § 6.14).
     content_interpretations: BTreeMap<ContentInterpretationKey, ContentInterpretationRecord>,
     /// Availability of in-band HLS objects, for reference checks (AV2 § 7.3.8).
     hls: HlsAvailabilityStore,
@@ -72,11 +86,44 @@ pub(crate) struct ValidatorContext {
     /// Film-grain `fgm_update_flags` slot state (§ 6.13) plus per-slot availability
     /// foundation for future frame-reference checks (§ 7.3.8).
     film_grain: FilmGrainState,
+    /// Active metadata persistence / cancellation state (AV2 § 6.16.3); see
+    /// [`MetadataLifetimeStore`]. Scoped to the coded video sequence via the
+    /// [`CvsTracker`] CLK hook and to the coded frame for `NO_PERSISTENCE` via
+    /// [`ValidatorContext::reset_coded_frame_window`].
+    metadata: MetadataLifetimeStore,
+    /// HDR CLL / MDCV content baselines per coded-video-sequence scope, for the
+    /// § 6.16.5 / § 6.16.6 "shall have the same content" checks: each record
+    /// carries its unit's bitstream-derived embedded-layer association (see
+    /// [`HdrAssociation`]) and a new unit is compared against every baseline of
+    /// the same metadata type whose association intersects it. Independent of the
+    /// § 6.16.3 cancellation state in [`ValidatorContext::metadata`] — the
+    /// same-content rule carries no cancel exception, so a unit re-signaled after a
+    /// cancel is still compared against the earlier content.
+    hdr_baselines: Vec<HdrBaselineRecord>,
+    /// For each extended layer, the temporal unit of its most recent random
+    /// access point (AV2 § 7.3.8.11: the content interpretation parameters are
+    /// initialized to defaults "at each random access point of the extended
+    /// layer (i.e., at each temporal unit containing an OBU in the extended
+    /// layer with obu_type equal to OBU_CLOSED_LOOP_KEY or OBU_OPEN_LOOP_KEY)").
+    /// Scopes the § 6.16.10 Table 6.18 scan-type / CI pairings to the
+    /// CI-parameter epoch; the CVS-scoped state (§ 6.14 repeated-CI identity,
+    /// § 6.4.12 timing, § 7.3.6 stores) deliberately ignores it — an OLK does
+    /// not start a new coded video sequence during sequential decoding
+    /// (§ 7.4.4).
+    ci_rap_started_in_tu: BTreeMap<ExtendedLayerId, u64>,
+    /// Scan-type metadata observations per coded-video-sequence scope, for the
+    /// § 6.16.10 Table 6.18 consistency checks; see [`ScanTypeCvsState`]. Scoped to
+    /// the coded video sequence via the [`CvsTracker`] CLK hook and flushed at the
+    /// end of the bitstream (see [`ValidatorContext::finish`]).
+    scan_type: ScanTypeCvsState,
     temporal_unit: TemporalUnitState,
-    /// `true` once a frame-bearing OBU has been observed since the most recent global
-    /// temporal delimiter. Used to derive `FirstPictureInTU` for parsed frame headers
-    /// (AV2 § 5.18.2 `startCVS`).
-    seen_frame_in_tu: bool,
+    /// Exact coded-video-sequence boundary state (AV2 § 7.3.6); see [`CvsTracker`].
+    cvs: CvsTracker,
+    /// Extended layers that have produced a frame-bearing OBU since the most recent
+    /// global temporal delimiter. Derives the per-extended-layer `FirstPictureInTU`
+    /// — "the first frame unit in a coded extended layer unit in a temporal unit"
+    /// (AV2 § 6.17.2) — for parsed frame headers (AV2 § 5.18.2 `startCVS`).
+    frames_seen_in_tu: BTreeSet<ExtendedLayerId>,
 }
 
 /// Availability of in-band HLS objects, for the § 7.3.8 reference checks.
@@ -362,7 +409,7 @@ impl FilmGrainState {
 /// Key identifying a content-interpretation record: `(obu_xlayer_id, obu_mlayer_id)`.
 type ContentInterpretationKey = (ExtendedLayerId, EmbeddedLayerId);
 
-/// One observed content-interpretation OBU within the modeled CVS scope.
+/// One observed content-interpretation OBU within its coded-video-sequence scope.
 #[derive(Debug)]
 struct ContentInterpretationRecord {
     /// Parsed § 5.15 syntax, used for cross-embedded-layer timing consistency
@@ -370,6 +417,559 @@ struct ContentInterpretationRecord {
     content: ContentInterpretation,
     /// Source byte offset of the OBU that produced this record.
     offset: ByteOffset,
+    /// Temporal unit ([`CvsTracker::tu_index`]) of this record's latest appearance,
+    /// used by the exact § 7.3.6 CVS scoping (CLK pruning and deferral decisions).
+    tu_index: u64,
+}
+
+/// The bitstream-derived embedded-layer association of one HDR CLL / MDCV
+/// metadata unit (AV2 § 6.16.5 / § 6.16.6 bind "metadata units **associated with
+/// an embedded layer** in a coded video sequence"; the association is derivable
+/// per § 6.16.3: "muh_layer_idc is used to signal a mode that specifies the
+/// layers to which the signaled metadata applies").
+///
+/// Two units fall under the § 6.16.5 / § 6.16.6 same-content rule exactly when
+/// their association sets intersect — share at least one embedded layer —
+/// regardless of how the targeting was encoded (a global `LAYER_GLOBAL` unit
+/// "applies to all layers" and a `LAYER_CURRENT` unit for a concrete
+/// `(obu_xlayer_id, obu_mlayer_id)` are both associated with that embedded
+/// layer). Units whose association is not derivable from the bitstream enter no
+/// comparison and no baseline (see [`derive_hdr_association`]):
+///
+/// - `LAYER_UNSPECIFIED` (0) — § 6.16.3: "The current signaling does not specify
+///   to what layers the metadata applies to. This information can potentially be
+///   indicated or determined through external means." Comparing two such units
+///   could manufacture a false positive (their real associations may differ);
+///   skipping them is a documented false negative in the conservative direction.
+/// - `LAYER_CURRENT` on a `GLOBAL_XLAYER_ID` OBU — § 6.2.2 forces
+///   `obu_mlayer_id` to 0 there, but `GLOBAL_XLAYER_ID` is not an extended
+///   layer, so the "current layer" names no concrete embedded layer
+///   (conservative skip).
+/// - Reserved `muh_layer_idc` 4..=7 — no defined association.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HdrAssociation {
+    /// `LAYER_GLOBAL` on a `GLOBAL_XLAYER_ID` OBU: "The metadata applies to all
+    /// layers" (§ 6.16.3) — every embedded layer of every extended layer.
+    Universal,
+    /// `LAYER_GLOBAL` on a concrete OBU: "layers with matching obu_xlayer_id
+    /// only" (§ 6.16.3) — every embedded layer of that extended layer.
+    XLayerWide(ExtendedLayerId),
+    /// An explicit `(obu_xlayer_id, obu_mlayer_id)` pair set: `LAYER_CURRENT`
+    /// (the carrying OBU's own pair) or `LAYER_VALUES` ("The metadata unit is
+    /// intended for an extended layer x if bit x of muh_xlayer_map is equal to
+    /// 1" and "... for an embedded layer m if bit m of muh_mlayer_map is equal
+    /// to 1", § 6.16.3; map layout per § 5.17.3). Never empty.
+    Pairs(Vec<(ExtendedLayerId, EmbeddedLayerId)>),
+}
+
+impl HdrAssociation {
+    /// Returns `true` when the two association sets share at least one embedded
+    /// layer — the condition under which § 6.16.5 / § 6.16.6 require the two
+    /// units to "have the same content".
+    fn intersects(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Universal, _) | (_, Self::Universal) => true,
+            (Self::XLayerWide(a), Self::XLayerWide(b)) => a == b,
+            (Self::XLayerWide(x), Self::Pairs(pairs))
+            | (Self::Pairs(pairs), Self::XLayerWide(x)) => {
+                pairs.iter().any(|(pair_x, _)| pair_x == x)
+            }
+            (Self::Pairs(a), Self::Pairs(b)) => a.iter().any(|pair| b.contains(pair)),
+        }
+    }
+
+    /// Returns `true` when the association includes any embedded layer of
+    /// `xlayer`, i.e. the record belongs to that extended layer's
+    /// coded-video-sequence scope (drives the § 7.3.6 CLK pruning; a `Universal`
+    /// record touches every layer, mirroring the global-record pruning of the
+    /// other CVS-scoped stores).
+    fn touches_xlayer(&self, xlayer: ExtendedLayerId) -> bool {
+        match self {
+            Self::Universal => true,
+            Self::XLayerWide(x) => *x == xlayer,
+            Self::Pairs(pairs) => pairs.iter().any(|(pair_x, _)| *pair_x == xlayer),
+        }
+    }
+
+    /// The concrete extended layers this association enumerates (`Universal`
+    /// applies to all layers and enumerates none).
+    fn concrete_xlayers(&self) -> Vec<ExtendedLayerId> {
+        match self {
+            Self::Universal => Vec::new(),
+            Self::XLayerWide(x) => vec![*x],
+            Self::Pairs(pairs) => pairs.iter().map(|(pair_x, _)| *pair_x).collect(),
+        }
+    }
+}
+
+/// The single concrete extended layer scoping a comparison between two
+/// intersecting [`HdrAssociation`]s, for [`CvsTracker::defer_or_emit`] tagging.
+/// When the intersection spans several extended layers — or only the all-layers
+/// `Universal` pair, which enumerates none — `GLOBAL_XLAYER_ID` tags it instead,
+/// reusing the documented any-CLK-drops approximation of
+/// [`CvsTracker::flush_completed_tu`] (sound: it only drops comparisons).
+fn hdr_intersection_scope(a: &HdrAssociation, b: &HdrAssociation) -> ExtendedLayerId {
+    let xlayers: Vec<ExtendedLayerId> = match (a, b) {
+        (HdrAssociation::Universal, HdrAssociation::Universal) => Vec::new(),
+        (HdrAssociation::Universal, other) | (other, HdrAssociation::Universal) => {
+            other.concrete_xlayers()
+        }
+        (HdrAssociation::XLayerWide(x), _) | (_, HdrAssociation::XLayerWide(x)) => vec![*x],
+        (HdrAssociation::Pairs(a_pairs), HdrAssociation::Pairs(b_pairs)) => a_pairs
+            .iter()
+            .filter(|pair| b_pairs.contains(pair))
+            .map(|(pair_x, _)| *pair_x)
+            .collect(),
+    };
+    match xlayers.as_slice() {
+        [first, rest @ ..] if rest.iter().all(|x| x == first) => *first,
+        _ => GLOBAL_XLAYER_ID,
+    }
+}
+
+/// Describes an embedded-layer association the two intersecting
+/// [`HdrAssociation`]s share, naming a concrete `(obu_xlayer_id, obu_mlayer_id)`
+/// pair whenever one is enumerable so a cross-mode § 6.16.5 / § 6.16.6 finding
+/// is intelligible.
+fn describe_hdr_intersection(a: &HdrAssociation, b: &HdrAssociation) -> String {
+    let common_pair = match (a, b) {
+        (HdrAssociation::Pairs(a_pairs), HdrAssociation::Pairs(b_pairs)) => {
+            a_pairs.iter().find(|pair| b_pairs.contains(pair)).copied()
+        }
+        (HdrAssociation::Pairs(pairs), HdrAssociation::XLayerWide(x))
+        | (HdrAssociation::XLayerWide(x), HdrAssociation::Pairs(pairs)) => {
+            pairs.iter().find(|(pair_x, _)| pair_x == x).copied()
+        }
+        (HdrAssociation::Pairs(pairs), HdrAssociation::Universal)
+        | (HdrAssociation::Universal, HdrAssociation::Pairs(pairs)) => pairs.first().copied(),
+        _ => None,
+    };
+    if let Some((xlayer, mlayer)) = common_pair {
+        return format!(
+            "embedded layer obu_xlayer_id {} / obu_mlayer_id {}",
+            xlayer.get(),
+            mlayer.get()
+        );
+    }
+    match (a, b) {
+        (HdrAssociation::XLayerWide(x), _) | (_, HdrAssociation::XLayerWide(x)) => {
+            format!("every embedded layer of obu_xlayer_id {}", x.get())
+        }
+        _ => "all layers".to_owned(),
+    }
+}
+
+/// One observed HDR CLL / MDCV unit's content within its coded-video-sequence
+/// scope (AV2 § 6.16.5 / § 6.16.6), compared against every later unit of the
+/// same metadata type whose [`HdrAssociation`] intersects this one.
+#[derive(Debug)]
+struct HdrBaselineRecord {
+    /// The unit's bitstream-derived embedded-layer association.
+    association: HdrAssociation,
+    /// `true` for `metadata_hdr_mdcv()`, `false` for `metadata_hdr_cll()` —
+    /// § 6.16.5 and § 6.16.6 state the rule identically but each binds only its
+    /// own metadata type.
+    is_mdcv: bool,
+    /// The parsed `metadata_hdr_cll()` / `metadata_hdr_mdcv()` payload, compared
+    /// field-for-field against every later intersecting unit.
+    payload: MetadataPayload,
+    /// Source byte offset of the OBU that produced this record.
+    offset: ByteOffset,
+    /// Temporal unit ([`CvsTracker::tu_index`]) of this record's latest appearance,
+    /// used by the exact § 7.3.6 CVS scoping (CLK pruning and deferral decisions).
+    tu_index: u64,
+}
+
+/// The parsed `muh_*` unit-header fields the stateful metadata observers consume
+/// for one non-cancel metadata unit (AV2 § 5.17.2 / § 5.17.3 / § 6.16.3).
+struct MetadataUnitHeader<'a> {
+    /// `muh_layer_idc` (short form: parsed from the 1-byte header; group form:
+    /// per-unit).
+    layer_idc: u8,
+    /// `muh_persistence_idc`.
+    persistence_idc: u8,
+    /// The single-byte `muh_mlayer_map` collapse consumed by the § 6.16.3
+    /// lifetime store ([`ActiveMetadataUnit::mlayer_map`]): the local group
+    /// form's one byte, or a global group unit's byte when its `muh_xlayer_map`
+    /// selected exactly one extended layer; `None` otherwise (including the
+    /// short form, which carries no maps).
+    collapsed_mlayer_map: Option<u8>,
+    /// `muh_xlayer_map` (global group-form `LAYER_VALUES` only, § 5.17.3).
+    xlayer_map: Option<u32>,
+    /// Every parsed `muh_mlayer_map` byte: one per set `muh_xlayer_map` bit when
+    /// global, a single byte when local, empty for the short form (§ 5.17.3).
+    mlayer_maps: &'a [u8],
+}
+
+/// Derives the [`HdrAssociation`] of one non-cancel metadata unit from its
+/// carrying OBU's layer ids and its `muh_*` layer targeting (AV2 § 6.16.3
+/// per-`muh_layer_idc` modes; § 5.17.3 map layout). Returns `None` when the
+/// association is not derivable from the bitstream (see [`HdrAssociation`]) or
+/// when explicit `LAYER_VALUES` maps select no layer.
+fn derive_hdr_association(
+    obu: &ObuEnvelope<'_>,
+    header: &MetadataUnitHeader<'_>,
+) -> Option<HdrAssociation> {
+    let xlayer = obu.header.extended_layer_id;
+    match header.layer_idc {
+        LAYER_GLOBAL if xlayer.is_global() => Some(HdrAssociation::Universal),
+        LAYER_GLOBAL => Some(HdrAssociation::XLayerWide(xlayer)),
+        LAYER_CURRENT if !xlayer.is_global() => Some(HdrAssociation::Pairs(vec![(
+            xlayer,
+            obu.header.embedded_layer_id,
+        )])),
+        LAYER_VALUES => {
+            let mut pairs = Vec::new();
+            if xlayer.is_global() {
+                // Global form: one muh_mlayer_map per set muh_xlayer_map bit, in
+                // ascending bit order (§ 5.17.3); bit 31 must be 0 (§ 6.16.3).
+                let xlayer_map = header.xlayer_map?;
+                let mut maps = header.mlayer_maps.iter();
+                for x in 0..31u8 {
+                    if xlayer_map & (1 << x) == 0 {
+                        continue;
+                    }
+                    // The § 5.17.3 parser emits exactly one map per set bit;
+                    // bail on a mismatch rather than misattribute maps to layers.
+                    let &mlayer_map = maps.next()?;
+                    push_mlayer_pairs(&mut pairs, ExtendedLayerId::from_bits(x), mlayer_map);
+                }
+            } else if let [single] = header.mlayer_maps {
+                push_mlayer_pairs(&mut pairs, xlayer, *single);
+            }
+            (!pairs.is_empty()).then_some(HdrAssociation::Pairs(pairs))
+        }
+        // LAYER_UNSPECIFIED (0), LAYER_CURRENT on a global OBU, and the reserved
+        // values 4..=7: no bitstream-derivable association.
+        _ => None,
+    }
+}
+
+/// Appends `(xlayer, m)` for each set bit `m` of one 8-bit `muh_mlayer_map`
+/// (AV2 § 6.16.3: "The metadata unit is intended for an embedded layer m if bit
+/// m of muh_mlayer_map is equal to 1").
+fn push_mlayer_pairs(
+    pairs: &mut Vec<(ExtendedLayerId, EmbeddedLayerId)>,
+    xlayer: ExtendedLayerId,
+    mlayer_map: u8,
+) {
+    for m in 0..8u8 {
+        if mlayer_map >> m & 1 == 1 {
+            pairs.push((xlayer, EmbeddedLayerId::from_bits(m)));
+        }
+    }
+}
+
+/// Table 6.18 picture-output group of a defined `mps_pic_struct_type` value
+/// (AV2 § 6.16.10, `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-10`).
+///
+/// The three groups mirror the § 6.16.10 bitstream-conformance requirement: "It is
+/// a requirement of bitstream conformance that when mps_pic_struct_type is present
+/// that only one of the following conditions, for all pictures in the current CVS,
+/// is true: – The value of mps_pic_struct_type is equal to 0, 7 or 8. – The value
+/// of mps_pic_struct_type is equal to 1, 2, 9, 10, 11 or 12. – The value of
+/// mps_pic_struct_type is equal to 3, 4, 5 or 6."
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PicStructGroup {
+    /// `mps_pic_struct_type` 0, 7 or 8 — frame output. Table 6.18 requires
+    /// "ci_scan_type_idc shall be equal to 1" (and, for values 7 and 8,
+    /// "equal_picture_interval shall be equal to 1").
+    Frame,
+    /// `mps_pic_struct_type` 1, 2, 9, 10, 11 or 12 — single-field output.
+    /// Table 6.18 requires "ci_scan_type_idc shall be equal to 2".
+    SingleField,
+    /// `mps_pic_struct_type` 3, 4, 5 or 6 — field-pair output. Table 6.18 requires
+    /// "ci_scan_type_idc shall be equal to 3".
+    FieldPair,
+}
+
+impl PicStructGroup {
+    /// Classifies a `mps_pic_struct_type` value into its Table 6.18 group; `None`
+    /// for the reserved values above 12, which are excluded from the group state
+    /// ("Decoders shall ignore reserved values of mps_pic_struct_type",
+    /// AV2 § 6.16.10; the stateless `metadata/scan-type-pic-struct-reserved` check
+    /// reports the reserved value itself).
+    fn from_pic_struct(value: u8) -> Option<Self> {
+        match value {
+            0 | 7 | 8 => Some(Self::Frame),
+            1 | 2 | 9..=12 => Some(Self::SingleField),
+            3..=6 => Some(Self::FieldPair),
+            _ => None,
+        }
+    }
+
+    /// The `ci_scan_type_idc` value the Table 6.18 "Restrictions" column requires
+    /// for this group (AV2 § 6.16.10): "ci_scan_type_idc shall be equal to" 1, 2,
+    /// or 3 respectively.
+    fn required_ci_scan_type_idc(self) -> u8 {
+        match self {
+            Self::Frame => 1,
+            Self::SingleField => 2,
+            Self::FieldPair => 3,
+        }
+    }
+
+    /// The group's `mps_pic_struct_type` values, worded as in the § 6.16.10
+    /// conformance requirement, for diagnostic messages.
+    fn describe(self) -> &'static str {
+        match self {
+            Self::Frame => "0, 7 or 8",
+            Self::SingleField => "1, 2, 9, 10, 11 or 12",
+            Self::FieldPair => "3, 4, 5 or 6",
+        }
+    }
+}
+
+/// One defined-`mps_pic_struct_type` scan-type metadata observation within its
+/// coded-video-sequence scope (AV2 § 6.16.10).
+///
+/// The Table 6.18 CI cross-checks pair each observation with each in-scope
+/// content-interpretation record exactly once per distinct decisive CI content:
+/// the metadata-time pass ([`ValidatorContext::check_scan_type_consistency`])
+/// pairs a new observation against every record already in scope, and the
+/// CI-time pass ([`ValidatorContext::recheck_scan_type_after_ci`]) runs only
+/// when the new CI's Table 6.18-decisive content differs from the record it
+/// replaces — so a repeated identical CI (the only legal repeat, § 6.14) never
+/// re-reports, while a CI for a new embedded layer or with changed content is
+/// evaluated against every stored observation.
+#[derive(Debug)]
+struct ScanTypeObservation {
+    /// The observed `mps_pic_struct_type` (defined values 0..=12 only; reserved
+    /// values never enter the state).
+    mps_pic_struct_type: u8,
+    /// Source byte offset of the carrying metadata OBU.
+    offset: ByteOffset,
+    /// Temporal unit ([`CvsTracker::tu_index`]) of the observation, used by the
+    /// exact § 7.3.6 CVS scoping (CLK pruning and deferral decisions) and by the
+    /// § 7.3.8.11 CI-parameter epoch checks.
+    tu_index: u64,
+}
+
+/// Per-scope scan-type observations (AV2 § 6.16.10). Append-only within the coded
+/// video sequence: the group requirement binds the values *present* "for all
+/// pictures in the current CVS", so neither § 6.16.3 cancellation nor persistence
+/// expiry removes an observation — only the § 7.3.6 CVS boundary does (see
+/// [`ValidatorContext::flush_scan_type_scope`]).
+#[derive(Debug, Default)]
+struct ScanTypeScope {
+    observations: Vec<ScanTypeObservation>,
+}
+
+impl ScanTypeScope {
+    /// The scope's group baseline: its first (oldest surviving) observation and
+    /// that observation's Table 6.18 group. Stored observations carry only defined
+    /// values, so the classification always succeeds; it is still expressed as a
+    /// filter to keep the path panic-free.
+    fn group_baseline(&self) -> Option<(&ScanTypeObservation, PicStructGroup)> {
+        self.observations.first().and_then(|observation| {
+            PicStructGroup::from_pic_struct(observation.mps_pic_struct_type)
+                .map(|group| (observation, group))
+        })
+    }
+}
+
+/// Scan-type metadata CVS-consistency state (AV2 § 6.16.10), keyed by the carrying
+/// OBU's `obu_xlayer_id`; [`GLOBAL_XLAYER_ID`] keys the global bucket. Global
+/// scan-type metadata describes every layer's pictures, so the group rule compares
+/// the global bucket against each concrete extended-layer scope and vice versa,
+/// and the global bucket's Table 6.18 CI cross-checks consider every layer's
+/// content-interpretation records.
+#[derive(Debug, Default)]
+struct ScanTypeCvsState {
+    scopes: BTreeMap<ExtendedLayerId, ScanTypeScope>,
+}
+
+/// The pairing context of a § 6.16.10 Table 6.18 scan-type / content-interpretation
+/// diagnostic: the content-interpretation side's layer ids, both OBUs' byte
+/// offsets, and the byte offset to attach the diagnostic at (`at` — whichever OBU
+/// completed the violating pair, the scan-type metadata OBU or the
+/// content-interpretation OBU, whichever came second).
+struct ScanTypeCiPair {
+    ci_xlayer: ExtendedLayerId,
+    ci_mlayer: EmbeddedLayerId,
+    metadata_offset: ByteOffset,
+    ci_offset: ByteOffset,
+    at: ByteOffset,
+}
+
+/// The Table 6.18-decisive content of a content interpretation (AV2 § 6.16.10):
+/// the established `ci_scan_type_idc` ("ci_scan_type_idc shall be equal to"
+/// 1 / 2 / 3 per group) and whether a present `timing_info()` signals
+/// `equal_picture_interval` 0 (the "equal_picture_interval shall be equal to 1"
+/// half binding `mps_pic_struct_type` 7 / 8). Two content interpretations with
+/// equal decisive content decide every Table 6.18 restriction identically.
+fn scan_type_decisive_content(content: &ContentInterpretation) -> (u8, bool) {
+    (
+        content.scan_type_idc.get(),
+        content
+            .timing_info
+            .is_some_and(|timing| !timing.equal_picture_interval),
+    )
+}
+
+/// Builds the § 6.16.10 Table 6.18 `ci_scan_type_idc` mismatch diagnostic
+/// (`metadata/scan-type-ci-scan-type-mismatch`).
+fn scan_type_ci_mismatch_error(
+    pic_struct: u8,
+    required: u8,
+    established: u8,
+    pair: &ScanTypeCiPair,
+) -> Diagnostic {
+    Diagnostic::error(
+        "metadata/scan-type-ci-scan-type-mismatch",
+        format!(
+            "mps_pic_struct_type {pic_struct} (scan-type metadata at byte {}) requires \
+             ci_scan_type_idc equal to {required} per Table 6.18, but the content \
+             interpretation for obu_xlayer_id {} / obu_mlayer_id {} (at byte {}) establishes \
+             ci_scan_type_idc {established} within the coded video sequence",
+            pair.metadata_offset,
+            pair.ci_xlayer.get(),
+            pair.ci_mlayer.get(),
+            pair.ci_offset,
+        ),
+    )
+    .with_spec_section("6.16.10")
+    .with_byte_offset(pair.at)
+}
+
+/// Builds the § 6.16.10 Table 6.18 equal-picture-interval diagnostic
+/// (`metadata/scan-type-equal-picture-interval-required`) for `mps_pic_struct_type`
+/// 7 / 8 ("equal_picture_interval shall be equal to 1").
+fn scan_type_equal_picture_interval_error(pic_struct: u8, pair: &ScanTypeCiPair) -> Diagnostic {
+    Diagnostic::error(
+        "metadata/scan-type-equal-picture-interval-required",
+        format!(
+            "mps_pic_struct_type {pic_struct} (scan-type metadata at byte {}) requires \
+             equal_picture_interval equal to 1 per Table 6.18, but the content interpretation \
+             timing_info() for obu_xlayer_id {} / obu_mlayer_id {} (at byte {}) signals \
+             equal_picture_interval 0",
+            pair.metadata_offset,
+            pair.ci_xlayer.get(),
+            pair.ci_mlayer.get(),
+            pair.ci_offset,
+        ),
+    )
+    .with_spec_section("6.16.10")
+    .with_byte_offset(pair.at)
+}
+
+/// Exact coded-video-sequence boundary tracker (AV2 § 7.3.6,
+/// `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-3-6`).
+///
+/// "A new coded video sequence for an extended layer is defined to start at each
+/// temporal unit that contains an OBU with obu_type equal to OBU_CLOSED_LOOP_KEY in
+/// the coded extended layer unit corresponding to the extended layer" (§ 7.3.6).
+/// Two consequences drive this design:
+///
+/// - The boundary event is per extended layer and per temporal unit: the first
+///   `OBU_CLOSED_LOOP_KEY` observed for an `obu_xlayer_id` within a temporal unit
+///   starts the new coded video sequence (later CLKs in the same temporal unit are
+///   idempotent). The raw OBU header suffices — § 7.3.6 is stated at the OBU level,
+///   so an unparsable CLK payload still starts the sequence. OLK / RAS OBUs do NOT
+///   start one during sequential decoding (§ 2 "Coded video sequence"; § 7.4.4:
+///   "During sequential decoding, the process does not start a new coded video
+///   sequence for the extended layer").
+/// - The new sequence starts *at the temporal unit*, so OBUs of the same extended
+///   layer earlier in that temporal unit (e.g. the sequence header preceding the
+///   activating CLK) already belong to the NEW coded video sequence — and the
+///   validator cannot know a CLK is still coming when it observes them. CVS-scoped
+///   comparisons whose baseline record came from an *earlier* temporal unit are
+///   therefore deferred and flushed when the temporal unit completes: dropped when
+///   the record's extended layer started a coded video sequence in that temporal
+///   unit, emitted otherwise. Same-temporal-unit comparisons are always within one
+///   coded video sequence and are emitted eagerly.
+///
+/// Records keyed under `GLOBAL_XLAYER_ID` have no single owning extended layer; as a
+/// documented approximation their deferred diagnostics are dropped when ANY extended
+/// layer started a coded video sequence in the completed temporal unit (sound — it
+/// only drops comparisons, never inventing one).
+#[derive(Debug, Default)]
+struct CvsTracker {
+    /// Index of the current temporal unit; incremented at each global
+    /// `OBU_TEMPORAL_DELIMITER` (AV2 § 7.3.7).
+    tu_index: u64,
+    /// For each extended layer, the temporal unit in which its most recent coded
+    /// video sequence started (§ 7.3.6 CLK boundary events).
+    cvs_started_in_tu: BTreeMap<ExtendedLayerId, u64>,
+    /// Deferred cross-temporal-unit CVS-scoped diagnostics, tagged with the extended
+    /// layer that scopes the comparison; flushed when the temporal unit completes.
+    pending_cross_tu: Vec<(ExtendedLayerId, Diagnostic)>,
+}
+
+impl CvsTracker {
+    /// Records a § 7.3.6 boundary event: a CLK OBU for `xlayer` starts a new coded
+    /// video sequence at the current temporal unit. Pending deferred diagnostics for
+    /// `xlayer` compare records of the previous coded video sequence against this
+    /// one, so they are dropped. Idempotent within a temporal unit.
+    fn start_cvs(&mut self, xlayer: ExtendedLayerId) {
+        self.cvs_started_in_tu.insert(xlayer, self.tu_index);
+        self.pending_cross_tu.retain(|(x, _)| *x != xlayer);
+    }
+
+    /// Routes a CVS-scoped comparison diagnostic. `record_tu` is the temporal unit
+    /// of the baseline record being compared against: a same-temporal-unit baseline
+    /// is always in the same coded video sequence (§ 7.3.6: a coded video sequence
+    /// starts at a temporal unit, never inside one), so the diagnostic is emitted
+    /// eagerly; a baseline from an earlier temporal unit is deferred, because a CLK
+    /// later in the current temporal unit would put the baseline and the new
+    /// observation in different coded video sequences.
+    fn defer_or_emit(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        record_tu: u64,
+        diagnostic: Diagnostic,
+        report: &mut ValidationReport,
+    ) {
+        if record_tu == self.tu_index {
+            report.push(diagnostic);
+        } else {
+            self.pending_cross_tu.push((xlayer, diagnostic));
+        }
+    }
+
+    /// Flushes the deferred diagnostics of the just-completed temporal unit: an
+    /// entry is dropped when its extended layer started a new coded video sequence
+    /// in that temporal unit (the compared records then sit in different coded video
+    /// sequences, § 7.3.6) and emitted otherwise. An entry tagged with
+    /// `GLOBAL_XLAYER_ID` scopes records with no single owning extended layer and is
+    /// dropped when ANY extended layer started a coded video sequence in the
+    /// temporal unit (documented approximation, sound: it only drops comparisons).
+    fn flush_completed_tu(&mut self, report: &mut ValidationReport) {
+        let tu_index = self.tu_index;
+        let any_started_this_tu = self.cvs_started_in_tu.values().any(|&tu| tu == tu_index);
+        for (xlayer, diagnostic) in std::mem::take(&mut self.pending_cross_tu) {
+            let started_this_tu = if xlayer.is_global() {
+                any_started_this_tu
+            } else {
+                self.cvs_started_in_tu.get(&xlayer) == Some(&tu_index)
+            };
+            if !started_this_tu {
+                report.push(diagnostic);
+            }
+        }
+    }
+
+    /// Completes the current temporal unit at a global `OBU_TEMPORAL_DELIMITER`
+    /// (AV2 § 7.3.7): flushes the deferred diagnostics, then advances `tu_index`.
+    fn advance_temporal_unit(&mut self, report: &mut ValidationReport) {
+        self.flush_completed_tu(report);
+        self.tu_index += 1;
+    }
+
+    /// Drops pending deferred diagnostics carrying one of exactly `rule_ids`
+    /// that are tagged with `xlayer` — or with `GLOBAL_XLAYER_ID`: a
+    /// global-bucket comparison has no single owning extended layer, so dropping
+    /// it at any layer's epoch event is the same documented sound approximation
+    /// as [`CvsTracker::flush_completed_tu`] (it only drops comparisons). Used
+    /// for the § 6.16.10 Table 6.18 pairing rules, whose deferred diagnostics a
+    /// § 7.3.8.11 random access point invalidates without ending the coded video
+    /// sequence (AV2 § 7.4.4); every other pending diagnostic is CVS-scoped and
+    /// must survive.
+    fn drop_pending_for_rules(&mut self, xlayer: ExtendedLayerId, rule_ids: &[&str]) {
+        self.pending_cross_tu.retain(|(x, diagnostic)| {
+            !((*x == xlayer || x.is_global()) && rule_ids.contains(&diagnostic.rule_id.as_str()))
+        });
+    }
 }
 
 impl ValidatorContext {
@@ -380,9 +980,11 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        // A new temporal unit resets CVS-scoped comparison state; see
-        // reset_at_temporal_unit_boundary.
-        self.reset_at_temporal_unit_boundary(obu);
+        // Temporal-unit and coded-video-sequence boundary events run first: a global
+        // temporal delimiter completes the previous temporal unit (flushing deferred
+        // CVS-scoped diagnostics) and a CLK starts a new coded video sequence for its
+        // extended layer (AV2 § 7.3.6); see observe_cvs_boundary_events.
+        self.observe_cvs_boundary_events(obu, report);
 
         self.temporal_unit.observe_obu(obu, report);
 
@@ -414,6 +1016,9 @@ impl ValidatorContext {
             }
             ObuType::QuantizationMatrix => self.observe_quantizer_matrix(obu, report),
             ObuType::FilmGrain => self.observe_film_grain(obu, report),
+            ObuType::MetadataShort | ObuType::MetadataGroup => {
+                self.observe_metadata(obu, report);
+            }
             _ => {}
         }
 
@@ -432,42 +1037,169 @@ impl ValidatorContext {
     }
 
     /// Resets the §6.12/§6.13 coded-frame windows for quantizer-matrix and film-grain
-    /// state at a coded-frame boundary.
+    /// state at a coded-frame boundary, and expires `NO_PERSISTENCE` metadata
+    /// (AV2 § 6.16.3: "Used only for the current frame" — a unit observed before a
+    /// coded frame lapses once that frame has been observed).
     fn reset_coded_frame_window(&mut self) {
         self.qm.reset_coded_frame_window();
         self.film_grain.reset_coded_frame_window();
+        self.metadata.expire_no_persistence();
     }
 
-    /// Resets the CVS-scoped comparison state at each temporal-unit boundary
-    /// (a global `OBU_TEMPORAL_DELIMITER`).
+    /// Tracks the boundary events that scope the coded-video-sequence comparison
+    /// state (sequence-header fingerprints, AV2 § 7.3.6, and content-interpretation
+    /// records, § 6.4.12 / § 6.14).
     ///
-    /// Sequence-header fingerprints (AV2 § 7.3.8) and content-interpretation records
-    /// (§ 6.4.12 / § 6.14) are compared within a coded video sequence. Modeling the
-    /// exact CVS boundary needs the `OBU_CLOSED_LOOP_KEY` frame header that starts a
-    /// CVS together with random-access state, which is out of scope. Resetting at the
-    /// temporal-unit boundary is sound-over-complete: it keeps a CVS-opening sequence
-    /// header's fingerprint across the activating CLK (which follows it in the same
-    /// temporal unit, AV2 § 7.3.6), so a non-identical repeat later in the temporal
-    /// unit is caught; a coded video sequence that spans temporal units yields a
-    /// documented false negative for a repeat crossing a temporal-unit boundary —
-    /// never a false positive (it only drops comparisons). Frame-header activation
-    /// drives the *active* sequence header (see `observe_frame_bearing_obu`); this
-    /// reset drives the fingerprint / content-interpretation scope.
-    // TODO(spec: AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY): scope per-CVS state
-    // exactly once random-access / long-term-reference detection is modeled.
-    fn reset_at_temporal_unit_boundary(&mut self, obu: &ObuEnvelope<'_>) {
+    /// A global `OBU_TEMPORAL_DELIMITER` completes the current temporal unit: the
+    /// deferred cross-temporal-unit diagnostics are flushed (see [`CvsTracker`]) and
+    /// the per-temporal-unit frame set resets. An `OBU_CLOSED_LOOP_KEY` starts a new
+    /// coded video sequence for its extended layer at the *current* temporal unit
+    /// (AV2 § 7.3.6: "A new coded video sequence for an extended layer is defined to
+    /// start at each temporal unit that contains an OBU with obu_type equal to
+    /// OBU_CLOSED_LOOP_KEY in the coded extended layer unit corresponding to the
+    /// extended layer"); see `start_cvs_for_xlayer`. This models the exact § 7.3.6
+    /// boundary for sequential decoding from the raw OBU headers alone — no
+    /// random-access state is needed. The § 7.4.4 treat-as-new-CVS behavior when a
+    /// decoder *initiates* decoding at an OLK applies only to random-access
+    /// decoding, not to the sequential decoding a bitstream validator models
+    /// ("During sequential decoding, the process does not start a new coded video
+    /// sequence for the extended layer", § 7.4.4), so OLK / RAS OBUs are
+    /// deliberately not CVS boundary events here. An OLK (like a CLK) is,
+    /// however, a § 7.3.8.11 random access point that unconditionally
+    /// re-initializes its extended layer's content interpretation parameters, so
+    /// both record the CI-parameter epoch (see `observe_ci_rap`). Frame-header
+    /// activation drives the *active* sequence header (see
+    /// `observe_frame_bearing_obu`); these events drive the fingerprint /
+    /// content-interpretation scope.
+    ///
+    /// NB: the §6.12/§6.13 quantizer-matrix / film-grain duplicate windows are
+    /// deliberately NOT reset here. Those windows close at a *coded frame*, not at a
+    /// temporal-unit or CVS boundary, so a QM level / film-grain slot reused across
+    /// a temporal delimiter with no intervening frame is still a duplicate (see
+    /// reset_coded_frame_window, called from the frame-bearing branch).
+    fn observe_cvs_boundary_events(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        report: &mut ValidationReport,
+    ) {
         if obu.header.obu_type == ObuType::TemporalDelimiter
             && obu.header.extended_layer_id.is_global()
         {
-            self.sequence_fingerprints.clear();
-            self.content_interpretations.clear();
-            self.seen_frame_in_tu = false;
-            // NB: the §6.12/§6.13 quantizer-matrix / film-grain duplicate windows are
-            // deliberately NOT reset here. Those windows close at a *coded frame*, not
-            // at a temporal-unit boundary, so a QM level / film-grain slot reused across
-            // a temporal delimiter with no intervening frame is still a duplicate
-            // (see reset_coded_frame_window, called from the frame-bearing branch).
+            self.cvs.advance_temporal_unit(report);
+            self.frames_seen_in_tu.clear();
+        } else if obu.header.obu_type == ObuType::ClosedLoopKey {
+            self.start_cvs_for_xlayer(obu.header.extended_layer_id, report);
+            self.observe_ci_rap(obu.header.extended_layer_id);
+        } else if obu.header.obu_type == ObuType::OpenLoopKey {
+            // An OLK is NOT a § 7.3.6 CVS boundary during sequential decoding
+            // (§ 7.4.4), but it IS a § 7.3.8.11 random access point that
+            // re-initializes the extended layer's content interpretation
+            // parameters to defaults.
+            self.observe_ci_rap(obu.header.extended_layer_id);
         }
+    }
+
+    /// Records a § 7.3.8.11 random access point (CLK or OLK) for `xlayer` at the
+    /// current temporal unit: "The content interpretation parameters for each
+    /// embedded layer in an extended layer are initialized to default values ...
+    /// at each random access point of the extended layer (i.e., at each temporal
+    /// unit containing an OBU in the extended layer with obu_type equal to
+    /// OBU_CLOSED_LOOP_KEY or OBU_OPEN_LOOP_KEY)". The § 6.16.10 Table 6.18
+    /// scan-type / CI pairing epoch starts here. The epoch starts AT the temporal
+    /// unit, so same-temporal-unit records and observations belong to the new
+    /// epoch (a CI OBU in the random access point's own temporal unit
+    /// re-establishes the parameters, § 7.3.8.11 step 2) — matching the
+    /// `tu_index >= epoch` retention convention of the CVS stores. Pending
+    /// deferred Table 6.18 pairing diagnostics for the extended layer pair
+    /// pre-epoch CI content with post-epoch pictures (or vice versa), so exactly
+    /// those two rules are dropped; every other pending diagnostic (§ 6.14
+    /// repeated-CI identity, § 6.4.12 timing, group consistency) is CVS-scoped
+    /// and survives an OLK.
+    fn observe_ci_rap(&mut self, xlayer: ExtendedLayerId) {
+        self.ci_rap_started_in_tu.insert(xlayer, self.cvs.tu_index);
+        self.cvs.drop_pending_for_rules(
+            xlayer,
+            &[
+                "metadata/scan-type-ci-scan-type-mismatch",
+                "metadata/scan-type-equal-picture-interval-required",
+            ],
+        );
+    }
+
+    /// The temporal unit at which `xlayer`'s current § 7.3.8.11
+    /// content-interpretation-parameter epoch started (its most recent CLK / OLK
+    /// random access point), or 0 when none has been observed.
+    fn ci_rap_epoch(&self, xlayer: ExtendedLayerId) -> u64 {
+        self.ci_rap_started_in_tu.get(&xlayer).copied().unwrap_or(0)
+    }
+
+    /// Starts a new coded video sequence for `xlayer` at the current temporal unit
+    /// (AV2 § 7.3.6): drops the extended layer's CVS-scoped records (sequence
+    /// fingerprints, content interpretations, active metadata, HDR baselines,
+    /// scan-type observations) from earlier temporal units — same-temporal-unit
+    /// records, e.g. the sequence header preceding the activating CLK, joined the
+    /// new coded video sequence and stay — and its pending deferred diagnostics.
+    /// Records keyed under `GLOBAL_XLAYER_ID` belong to no single extended layer,
+    /// so they are pruned at every boundary event as a documented approximation
+    /// (§ 6.16.10-style "current CVS" scoping for layer-nonspecific global records
+    /// has no single owner; their deferred diagnostics are filtered at the
+    /// temporal-unit flush instead, see [`CvsTracker::flush_completed_tu`]).
+    /// Idempotent within a temporal unit.
+    fn start_cvs_for_xlayer(&mut self, xlayer: ExtendedLayerId, report: &mut ValidationReport) {
+        self.cvs.start_cvs(xlayer);
+        let tu_index = self.cvs.tu_index;
+        // The scan-type scopes flush before the content-interpretation pruning
+        // below: the § 6.16.10 unestablished-CI warning for the ENDING coded video
+        // sequence is evaluated against the records still present (mostly the
+        // ending sequence's; a same-temporal-unit record that already joined the
+        // new sequence may suppress the warning — an acceptable lenient
+        // approximation for a warning-severity derived diagnostic).
+        self.flush_scan_type_scope(xlayer, tu_index, report);
+        if !xlayer.is_global() {
+            self.flush_scan_type_scope(GLOBAL_XLAYER_ID, tu_index, report);
+        }
+        self.sequence_fingerprints
+            .retain(|(x, _), &mut (_, record_tu)| {
+                !(*x == xlayer || x.is_global()) || record_tu >= tu_index
+            });
+        self.content_interpretations.retain(|(x, _), record| {
+            !(*x == xlayer || x.is_global()) || record.tu_index >= tu_index
+        });
+        self.metadata.reset_cvs(xlayer, tu_index);
+        // An HDR baseline joins the coded video sequence of every extended layer
+        // its association touches; the CLK drops earlier-temporal-unit baselines
+        // that touch its extended layer (a Universal record touches every layer,
+        // mirroring the global-record pruning of the other stores). Pruning a
+        // multi-xlayer record at any of its layers' boundaries only drops
+        // comparisons, never inventing one.
+        self.hdr_baselines.retain(|record| {
+            !record.association.touches_xlayer(xlayer) || record.tu_index >= tu_index
+        });
+    }
+
+    /// Flushes end-of-stream validator state. The end of the bitstream completes the
+    /// final temporal unit (a coded video sequence continues "until the next closed
+    /// random access point for that extended layer or the end of the bitstream",
+    /// AV2 § 2), so the deferred cross-temporal-unit CVS-scoped diagnostics are
+    /// flushed exactly as at a temporal-unit boundary — no CLK can arrive
+    /// retroactively — and every scan-type scope retires, emitting the § 6.16.10
+    /// unestablished-CI warning for scopes where no in-scope content interpretation
+    /// ever established a non-zero `ci_scan_type_idc` (see
+    /// [`ValidatorContext::flush_scan_type_scope`]). Called once by the validator
+    /// after the last OBU.
+    pub(crate) fn finish(&mut self, report: &mut ValidationReport) {
+        self.cvs.flush_completed_tu(report);
+        let scope_keys: Vec<ExtendedLayerId> = self.scan_type.scopes.keys().copied().collect();
+        for scope_key in scope_keys {
+            self.flush_scan_type_scope(scope_key, u64::MAX, report);
+        }
+    }
+
+    /// Returns the per-extended-layer `FirstPictureInTU` — "the first frame unit in
+    /// a coded extended layer unit in a temporal unit" (AV2 § 6.17.2): `true` until
+    /// a frame-bearing OBU for `xlayer` is observed in the current temporal unit.
+    pub(crate) fn first_picture_in_tu(&self, xlayer: ExtendedLayerId) -> bool {
+        !self.frames_seen_in_tu.contains(&xlayer)
     }
 
     /// Observes a frame-bearing OBU — a tile-group OBU (tile group, switch, RAS
@@ -484,8 +1216,11 @@ impl ValidatorContext {
             return;
         }
 
-        let first_picture_in_tu = !self.seen_frame_in_tu;
-        self.seen_frame_in_tu = true;
+        // AV2 § 6.17.2: FirstPictureInTU is per extended layer ("the first frame
+        // unit in a coded extended layer unit in a temporal unit"), so a frame in
+        // another extended layer earlier in this temporal unit does not clear it.
+        let first_picture_in_tu = self.first_picture_in_tu(obu.header.extended_layer_id);
+        self.frames_seen_in_tu.insert(obu.header.extended_layer_id);
 
         // A parse failure is silent: a frame/tile-group payload the skeleton cannot
         // reach is not-yet-validated coverage, not a conformance error in this phase.
@@ -583,9 +1318,9 @@ impl ValidatorContext {
             // the §7.3.8.7 layer-dependency constraints
             // MLayerDependencyMap[obu_mlayer_id][MfhMLayerId[cur_mfh_id]] == 1 and
             // TLayerDependencyMap[obu_mlayer_id][obu_tlayer_id][MfhTLayerId[cur_mfh_id]]
-            // == 1. The sequence-header model does not expose MLayerDependencyMap /
-            // TLayerDependencyMap (parse_dependency_map_bits discards the bits), so this
-            // check is deferred rather than fabricated from max layer ids.
+            // == 1. The sequence-header model now exposes the §5.4.1 dependency maps
+            // (SequenceHeaderGeneral::{m,t}layer_dependency_map), but the §7.3.8.7
+            // check itself is deferred to the multi-frame-header change.
             let seq_raw = u32::from(record.mfh_seq_header_id.get());
             self.resolve_referenced_sequence_header(seq_raw, obu, options, report)
         }
@@ -633,12 +1368,18 @@ impl ValidatorContext {
 
     /// Observes a content-interpretation OBU: checks cross-embedded-layer timing
     /// consistency (AV2 § 6.4.12) and repeated-CI identity (AV2 § 6.14) within the
-    /// modeled coded-video-sequence scope.
+    /// coded video sequence of the OBU's extended layer (exact § 7.3.6 boundaries:
+    /// a CLK boundary event drops earlier-temporal-unit records, and a comparison
+    /// against an earlier temporal unit's record is deferred to the temporal-unit
+    /// flush; see [`CvsTracker`]).
     ///
-    /// Timing values are compared only between two present `timing_info()` values
-    /// that are both within the same extended layer's modeled CVS scope (a sound
-    /// subset of the spec's "across all embedded layers" requirement; exact
-    /// cross-extended-layer scoping needs CLK frame-header activation).
+    /// Timing values are compared only between two present `timing_info()` values of
+    /// different embedded layers within the same extended layer — exactly the
+    /// § 6.4.12 "within a coded video sequence ... across all embedded layers"
+    /// scope, since a coded video sequence belongs to one extended layer (AV2 § 2).
+    ///
+    /// Also re-evaluates the stored § 6.16.10 scan-type observations against the
+    /// new record (see [`ValidatorContext::recheck_scan_type_after_ci`]).
     fn observe_content_interpretation(
         &mut self,
         obu: &ObuEnvelope<'_>,
@@ -653,24 +1394,59 @@ impl ValidatorContext {
 
         let xlayer = obu.header.extended_layer_id;
         let mlayer = obu.header.embedded_layer_id;
+        let tu_index = self.cvs.tu_index;
 
         // Cross-embedded-layer timing consistency: compare this layer's timing
         // against the first other embedded layer (same extended layer) that already
         // carries present timing within this CVS scope.
         if let Some(new_timing) = content_interpretation.timing_info
-            && let Some((existing_mlayer, existing_timing)) = self
+            && let Some((existing_mlayer, existing_timing, existing_tu)) = self
                 .content_interpretations
                 .iter()
                 .find(|((x, m), record)| {
                     *x == xlayer && *m != mlayer && record.content.timing_info.is_some()
                 })
-                .and_then(|((_, m), record)| record.content.timing_info.map(|t| (*m, t)))
+                .and_then(|((_, m), record)| {
+                    record.content.timing_info.map(|t| (*m, t, record.tu_index))
+                })
         {
-            compare_timing_across_embedded_layers(
+            for diagnostic in compare_timing_across_embedded_layers(
                 existing_mlayer,
                 &existing_timing,
                 &new_timing,
                 obu,
+            ) {
+                self.cvs
+                    .defer_or_emit(xlayer, existing_tu, diagnostic, report);
+            }
+        }
+
+        // A content interpretation can arrive after the scan-type metadata whose
+        // Table 6.18 restrictions it decides (AV2 § 6.16.10); re-evaluate the
+        // stored observations of this scope and the global bucket — unless an
+        // existing record at the same (xlayer, mlayer) key already carries
+        // identical Table 6.18-decisive content. In that case every stored
+        // observation has already been paired against that content (at
+        // metadata-observation time by check_scan_type_consistency, or by the
+        // recheck that ran when the record's decisive content last changed), so
+        // re-evaluating would only duplicate reports for the identical repeats
+        // § 6.14 explicitly allows. A content interpretation for a NEW key, or
+        // one whose decisive content changed (itself flagged by
+        // content-interpretation/repeated-ci-not-identical below), forms
+        // genuinely new (observation, CI-content) pairs and is re-evaluated.
+        let decisive_content_unchanged = self
+            .content_interpretations
+            .get(&(xlayer, mlayer))
+            .is_some_and(|existing| {
+                scan_type_decisive_content(&existing.content)
+                    == scan_type_decisive_content(&content_interpretation)
+            });
+        if !decisive_content_unchanged {
+            self.recheck_scan_type_after_ci(
+                xlayer,
+                mlayer,
+                &content_interpretation,
+                obu.offset,
                 report,
             );
         }
@@ -680,39 +1456,609 @@ impl ValidatorContext {
                 slot.insert(ContentInterpretationRecord {
                     content: content_interpretation,
                     offset: obu.offset,
+                    tu_index,
                 });
             }
-            Entry::Occupied(slot) => {
+            Entry::Occupied(mut slot) => {
                 let existing = slot.get();
                 // AV2 § 6.14: a repeated CI OBU for the same embedded layer within a
                 // CVS must carry the same *information* (a weaker requirement than the
-                // sequence header's bit-identity in § 7.3.8). Each compared field
+                // sequence header's bit-identity in § 7.3.6). Each compared field
                 // resolves to a canonical value (incl. unspecified defaults for absent
-                // color/aspect), so the first record is a complete baseline and is
-                // kept as-is (matching the sequence-header first-wins approximation);
-                // the decoder-ignored ci_reserved_2bit is excluded.
+                // color/aspect), so any observation is a complete baseline; the
+                // decoder-ignored ci_reserved_2bit is excluded.
                 if content_interpretation_information_differs(
                     &existing.content,
                     &content_interpretation,
                 ) {
-                    report.push(
-                        Diagnostic::error(
-                            "content-interpretation/repeated-ci-not-identical",
-                            format!(
-                                "content interpretation OBU for obu_xlayer_id {} / obu_mlayer_id {} \
-                                 is repeated within the coded video sequence with different \
-                                 information (first seen at byte {})",
-                                xlayer.get(),
-                                mlayer.get(),
-                                existing.offset
-                            ),
-                        )
-                        .with_spec_section("6.14")
-                        .with_byte_offset(obu.offset),
+                    let diagnostic = Diagnostic::error(
+                        "content-interpretation/repeated-ci-not-identical",
+                        format!(
+                            "content interpretation OBU for obu_xlayer_id {} / obu_mlayer_id {} \
+                             is repeated within the coded video sequence with different \
+                             information (previous copy at byte {})",
+                            xlayer.get(),
+                            mlayer.get(),
+                            existing.offset
+                        ),
+                    )
+                    .with_spec_section("6.14")
+                    .with_byte_offset(obu.offset);
+                    self.cvs
+                        .defer_or_emit(xlayer, existing.tu_index, diagnostic, report);
+                }
+                // Refresh the record to this latest appearance: § 7.3.6 starts a new
+                // coded video sequence *at the temporal unit*, so a copy re-sent in a
+                // CLK temporal unit must survive the CLK pruning as the new coded
+                // video sequence's baseline (a differing repeat also becomes the new
+                // baseline after being routed above).
+                slot.insert(ContentInterpretationRecord {
+                    content: content_interpretation,
+                    offset: obu.offset,
+                    tu_index,
+                });
+            }
+        }
+    }
+
+    /// Observes a metadata OBU (short or group form), feeding the § 6.16.3
+    /// persistence / cancellation lifetime store and the § 6.16.5 / § 6.16.6 HDR
+    /// repeat-content baselines. A parse failure is silent, matching
+    /// `observe_content_interpretation` — the stateless `MetadataSyntax` check owns
+    /// failure reporting.
+    fn observe_metadata(&mut self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        match obu.header.obu_type {
+            ObuType::MetadataShort => {
+                let Ok(short) = parse_metadata_short(&mut reader, obu.payload.len()) else {
+                    return;
+                };
+                if short.muh_cancel_flag {
+                    // A short-form cancel unit DOES carry muh_layer_idc and
+                    // muh_persistence_idc — § 5.17.2 reads them before the
+                    // muh_cancel_flag early return — unlike the group form, whose
+                    // cancel units skip every muh_* field but metadata_type
+                    // (§ 5.17.3). The asymmetry is syntactic only: § 6.16.3 keys
+                    // cancellation on the metadata type and the OBU's extended
+                    // layer alone, so the extra short-form fields carry no cancel
+                    // semantics.
+                    self.metadata
+                        .cancel(obu.header.extended_layer_id, short.metadata_type.value());
+                    return;
+                }
+                let Some(unit) = short.unit else {
+                    return;
+                };
+                self.observe_metadata_unit(
+                    obu,
+                    MetadataUnitHeader {
+                        layer_idc: short.muh_layer_idc,
+                        persistence_idc: short.muh_persistence_idc,
+                        collapsed_mlayer_map: None,
+                        xlayer_map: None,
+                        mlayer_maps: &[],
+                    },
+                    unit,
+                    report,
+                );
+            }
+            ObuType::MetadataGroup => {
+                let Ok(group) = parse_metadata_group(&mut reader, obu.header.extended_layer_id)
+                else {
+                    return;
+                };
+                for group_unit in group.units {
+                    if group_unit.muh_cancel_flag {
+                        // Group-form cancel units carry only metadata_type
+                        // (§ 5.17.3; see the short-form arm for the asymmetry).
+                        self.metadata.cancel(
+                            obu.header.extended_layer_id,
+                            group_unit.metadata_type.value(),
+                        );
+                        continue;
+                    }
+                    let (Some(layer_idc), Some(persistence_idc), Some(unit)) = (
+                        group_unit.muh_layer_idc,
+                        group_unit.muh_persistence_idc,
+                        group_unit.unit,
+                    ) else {
+                        continue;
+                    };
+                    // Collapsed LAYER_VALUES targeting for the § 6.16.3 lifetime
+                    // store: the single muh_mlayer_map byte of the local form, or
+                    // of a global form whose muh_xlayer_map selected exactly one
+                    // extended layer (§ 5.17.3). A global unit with several
+                    // per-xlayer maps has no single-byte representation, so the
+                    // lifetime store does not model its explicit targeting in
+                    // this phase; the § 6.16.5 / § 6.16.6 HDR association uses
+                    // the full maps instead (see derive_hdr_association).
+                    let collapsed_mlayer_map = match group_unit.muh_mlayer_maps.as_slice() {
+                        [single] => Some(*single),
+                        _ => None,
+                    };
+                    self.observe_metadata_unit(
+                        obu,
+                        MetadataUnitHeader {
+                            layer_idc,
+                            persistence_idc,
+                            collapsed_mlayer_map,
+                            xlayer_map: group_unit.muh_xlayer_map,
+                            mlayer_maps: &group_unit.muh_mlayer_maps,
+                        },
+                        unit,
+                        report,
                     );
                 }
             }
+            _ => {}
         }
+    }
+
+    /// Feeds one parsed non-cancel metadata unit into the § 6.16.3 lifetime store,
+    /// after running the § 6.16.5 / § 6.16.6 HDR repeat-content check.
+    fn observe_metadata_unit(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        header: MetadataUnitHeader<'_>,
+        unit: MetadataUnit,
+        report: &mut ValidationReport,
+    ) {
+        self.check_hdr_repeat_content(obu, &header, &unit, report);
+        if let MetadataPayload::ScanType(scan) = &unit.payload {
+            self.check_scan_type_consistency(obu, scan, report);
+        }
+
+        self.metadata.observe_unit(
+            obu.header.extended_layer_id,
+            ActiveMetadataUnit {
+                metadata_type: unit.metadata_type,
+                persistence: PersistenceMode::from_idc(header.persistence_idc),
+                layer_idc: header.layer_idc,
+                source_mlayer: obu.header.embedded_layer_id,
+                source_tlayer: obu.header.temporal_layer_id,
+                mlayer_map: header.collapsed_mlayer_map,
+                payload: unit.payload,
+                offset: obu.offset,
+                tu_index: self.cvs.tu_index,
+            },
+        );
+    }
+
+    /// Checks the § 6.16.5 / § 6.16.6 repeated-content rule for an HDR CLL / MDCV
+    /// metadata unit: "Any additional metadata_hdr_cll \[metadata_hdr_mdcv\]
+    /// metadata units associated with an embedded layer in a coded video sequence
+    /// shall have the same content." The unit's embedded-layer association set is
+    /// derived from its § 6.16.3 layer targeting (see [`derive_hdr_association`])
+    /// and the unit is compared against every stored baseline of the same
+    /// metadata type whose association set intersects it — sharing an embedded
+    /// layer is exactly when the rule binds the two units, independent of how
+    /// each encoded its targeting (e.g. a global `LAYER_GLOBAL` unit against a
+    /// later `LAYER_CURRENT` unit for one concrete embedded layer). Disjoint
+    /// associations are never compared — the § 6.16.5 / § 6.16.6
+    /// inheritance/override sentence shows different embedded layers may
+    /// legitimately carry different content — and units with no
+    /// bitstream-derivable association (see [`HdrAssociation`]) enter no
+    /// comparison and no baseline. The comparison is independent of § 6.16.3
+    /// cancellation (the rule has no cancel exception); the CVS scope is exact
+    /// per § 7.3.6 (a CLK boundary event prunes earlier-temporal-unit baselines
+    /// touching its extended layer, and a comparison against an earlier temporal
+    /// unit's baseline is deferred to the temporal-unit flush; see
+    /// [`CvsTracker`]).
+    ///
+    /// The other half of § 6.16.5 / § 6.16.6 — "metadata associated with an
+    /// embedded layer, when present, shall be indicated at the first coded picture
+    /// of that embedded layer in the coded video sequence" — is deferred:
+    // TODO(spec: AV2-5.17.5-METADATA-HDR-CLL): first-coded-picture placement needs
+    // metadata<->picture association (prefix/suffix within the coded frame unit)
+    // and the color-inheritance rule; deferred to avoid false positives.
+    // TODO(spec: AV2-5.17.6-METADATA-HDR-MDCV): same first-coded-picture deferral
+    // for metadata_hdr_mdcv (§ 6.16.6 states the rule identically).
+    fn check_hdr_repeat_content(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        header: &MetadataUnitHeader<'_>,
+        unit: &MetadataUnit,
+        report: &mut ValidationReport,
+    ) {
+        let is_mdcv = match unit.payload {
+            MetadataPayload::HdrCll(_) => false,
+            MetadataPayload::HdrMdcv(_) => true,
+            _ => return,
+        };
+        let Some(association) = derive_hdr_association(obu, header) else {
+            return;
+        };
+        let tu_index = self.cvs.tu_index;
+        for record in &self.hdr_baselines {
+            if record.is_mdcv != is_mdcv
+                || record.payload == unit.payload
+                || !record.association.intersects(&association)
+            {
+                continue;
+            }
+            let (rule_id, spec_section, unit_name) = if is_mdcv {
+                (
+                    "metadata/hdr-mdcv-repeat-content-differs",
+                    "6.16.6",
+                    "metadata_hdr_mdcv",
+                )
+            } else {
+                (
+                    "metadata/hdr-cll-repeat-content-differs",
+                    "6.16.5",
+                    "metadata_hdr_cll",
+                )
+            };
+            let diagnostic = Diagnostic::error(
+                rule_id,
+                format!(
+                    "{unit_name} metadata associated with {} is repeated within the coded \
+                     video sequence with different content (previous copy at byte {})",
+                    describe_hdr_intersection(&record.association, &association),
+                    record.offset
+                ),
+            )
+            .with_spec_section(spec_section)
+            .with_byte_offset(obu.offset);
+            self.cvs.defer_or_emit(
+                hdr_intersection_scope(&record.association, &association),
+                record.tu_index,
+                diagnostic,
+                report,
+            );
+        }
+        // Refresh or append the baseline: § 7.3.6 starts a new coded video
+        // sequence *at the temporal unit*, so a unit re-sent in a CLK temporal
+        // unit must survive the CLK pruning as the new coded video sequence's
+        // baseline (a differing repeat also becomes the new baseline after being
+        // routed above), matching the sequence-fingerprint and
+        // content-interpretation stores. A same-association record is overwritten
+        // in place; a new association appends its own baseline.
+        if let Some(record) = self
+            .hdr_baselines
+            .iter_mut()
+            .find(|record| record.is_mdcv == is_mdcv && record.association == association)
+        {
+            record.payload = unit.payload.clone();
+            record.offset = obu.offset;
+            record.tu_index = tu_index;
+        } else {
+            self.hdr_baselines.push(HdrBaselineRecord {
+                association,
+                is_mdcv,
+                payload: unit.payload.clone(),
+                offset: obu.offset,
+                tu_index,
+            });
+        }
+    }
+
+    /// Folds one non-cancel `metadata_scan_type()` unit into the § 6.16.10 CVS
+    /// consistency state and runs the Table 6.18 checks (AV2 § 6.16.10,
+    /// `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-10`):
+    ///
+    /// - **Group consistency**: "It is a requirement of bitstream conformance that
+    ///   when mps_pic_struct_type is present that only one of the following
+    ///   conditions, for all pictures in the current CVS, is true" (the three
+    ///   [`PicStructGroup`] value sets). The new value's group is compared against
+    ///   each in-scope group baseline (the scope's first observation in the coded
+    ///   video sequence); a global-bucket unit is also compared against every
+    ///   concrete extended-layer scope and vice versa, since global metadata
+    ///   describes every layer's pictures.
+    /// - **CI cross-check**: the Table 6.18 "Restrictions" column
+    ///   ("ci_scan_type_idc shall be equal to" 1 / 2 / 3 per group) against every
+    ///   in-scope content-interpretation record with an established non-zero
+    ///   `ci_scan_type_idc`; an established value of 0 is Unspecified and decides
+    ///   nothing (the scope-level absence is the
+    ///   `metadata/scan-type-ci-scan-type-unestablished` warning at the CVS flush
+    ///   instead). For values 7 and 8 additionally "equal_picture_interval shall
+    ///   be equal to 1", checked against records carrying `timing_info()`; a
+    ///   record without `timing_info()` is silently skipped for this half — the
+    ///   mirror attaches the restriction to the signaled element and states no
+    ///   absent-timing rule. A record from before its extended layer's most
+    ///   recent random access point is skipped: § 7.3.8.11 re-initializes the
+    ///   content interpretation parameters to defaults at each CLK / OLK temporal
+    ///   unit, so a pre-epoch record no longer establishes the parameters this
+    ///   picture sees (a record re-sent at or after the random access point
+    ///   refreshes its temporal unit and re-enters pairing).
+    ///
+    /// Reserved values above 12 never enter the state ("Decoders shall ignore
+    /// reserved values of mps_pic_struct_type", § 6.16.10). Comparisons against a
+    /// baseline from an earlier temporal unit are routed through
+    /// [`CvsTracker::defer_or_emit`], tagged with the baseline's owning scope, so
+    /// the exact § 7.3.6 CVS boundary applies.
+    ///
+    /// `mps_source_scan_type_idc` is deliberately NOT cross-checked against
+    /// `ci_scan_type_idc`: the mirror's complete semantics are
+    /// "mps_source_scan_type_idc specifies the scan type with the same semantics
+    /// as for ci_scan_type_idc" (§ 6.16.10) — no consistency requirement exists.
+    fn check_scan_type_consistency(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        scan: &MetadataScanType,
+        report: &mut ValidationReport,
+    ) {
+        let value = scan.mps_pic_struct_type;
+        let Some(group) = PicStructGroup::from_pic_struct(value) else {
+            return;
+        };
+        let scope_key = obu.header.extended_layer_id;
+        let tu_index = self.cvs.tu_index;
+
+        // Group consistency against the unit's own scope plus the paired
+        // global / concrete scopes.
+        for (key, scope) in &self.scan_type.scopes {
+            if !(*key == scope_key || key.is_global() || scope_key.is_global()) {
+                continue;
+            }
+            let Some((baseline, baseline_group)) = scope.group_baseline() else {
+                continue;
+            };
+            if baseline_group != group {
+                let diagnostic = Diagnostic::error(
+                    "metadata/scan-type-pic-struct-group-inconsistent",
+                    format!(
+                        "mps_pic_struct_type {value} falls into Table 6.18 group {{{}}} but \
+                         mps_pic_struct_type {} (at byte {}) established group {{{}}}; only one \
+                         group is allowed for all pictures in the coded video sequence",
+                        group.describe(),
+                        baseline.mps_pic_struct_type,
+                        baseline.offset,
+                        baseline_group.describe(),
+                    ),
+                )
+                .with_spec_section("6.16.10")
+                .with_byte_offset(obu.offset);
+                self.cvs
+                    .defer_or_emit(*key, baseline.tu_index, diagnostic, report);
+            }
+        }
+
+        // Table 6.18 CI cross-check against the in-scope content-interpretation
+        // records already observed (a CI arriving later re-evaluates instead; see
+        // recheck_scan_type_after_ci). Each record applies its own extended
+        // layer's § 7.3.8.11 epoch (for the global bucket too — an epoch only
+        // resets the CI parameters of its own extended layer).
+        let required = group.required_ci_scan_type_idc();
+        for ((ci_xlayer, ci_mlayer), record) in &self.content_interpretations {
+            if !(scope_key.is_global() || *ci_xlayer == scope_key) {
+                continue;
+            }
+            if record.tu_index < self.ci_rap_epoch(*ci_xlayer) {
+                continue;
+            }
+            let pair = ScanTypeCiPair {
+                ci_xlayer: *ci_xlayer,
+                ci_mlayer: *ci_mlayer,
+                metadata_offset: obu.offset,
+                ci_offset: record.offset,
+                at: obu.offset,
+            };
+            let established = record.content.scan_type_idc.get();
+            if established != 0 && established != required {
+                let diagnostic = scan_type_ci_mismatch_error(value, required, established, &pair);
+                self.cvs
+                    .defer_or_emit(*ci_xlayer, record.tu_index, diagnostic, report);
+            }
+            if matches!(value, 7 | 8)
+                && let Some(timing) = record.content.timing_info
+                && !timing.equal_picture_interval
+            {
+                let diagnostic = scan_type_equal_picture_interval_error(value, &pair);
+                self.cvs
+                    .defer_or_emit(*ci_xlayer, record.tu_index, diagnostic, report);
+            }
+        }
+
+        self.scan_type
+            .scopes
+            .entry(scope_key)
+            .or_default()
+            .observations
+            .push(ScanTypeObservation {
+                mps_pic_struct_type: value,
+                offset: obu.offset,
+                tu_index,
+            });
+    }
+
+    /// Re-evaluates the § 6.16.10 Table 6.18 restrictions of the stored scan-type
+    /// observations against a newly observed content-interpretation record — the
+    /// CI may arrive after the scan-type metadata it constrains. The caller
+    /// ([`ValidatorContext::observe_content_interpretation`]) invokes this only
+    /// when the CI's Table 6.18-decisive content differs from the record it
+    /// replaces, so a repeated identical CI never re-reports while every
+    /// genuinely new (observation, CI-content) pair is evaluated exactly once
+    /// (see [`ScanTypeObservation`]). Observations from a temporal unit before
+    /// the CI extended layer's most recent random access point are skipped —
+    /// their pictures' content interpretation parameters belong to the previous
+    /// § 7.3.8.11 epoch, the same epoch mismatch in the other direction as the
+    /// pre-epoch-record skip in
+    /// [`ValidatorContext::check_scan_type_consistency`]. The CI's own
+    /// extended-layer scope and the global bucket are re-evaluated (global
+    /// scan-type metadata describes every layer's pictures); the baseline of
+    /// each comparison is the metadata observation, so
+    /// [`CvsTracker::defer_or_emit`] routes on its temporal unit.
+    fn recheck_scan_type_after_ci(
+        &mut self,
+        ci_xlayer: ExtendedLayerId,
+        ci_mlayer: EmbeddedLayerId,
+        content: &ContentInterpretation,
+        ci_offset: ByteOffset,
+        report: &mut ValidationReport,
+    ) {
+        let (established, bad_interval) = scan_type_decisive_content(content);
+        if established == 0 && !bad_interval {
+            return;
+        }
+        let epoch = self.ci_rap_epoch(ci_xlayer);
+        let scope_keys: &[ExtendedLayerId] = if ci_xlayer.is_global() {
+            &[GLOBAL_XLAYER_ID]
+        } else {
+            &[ci_xlayer, GLOBAL_XLAYER_ID]
+        };
+        for &scope_key in scope_keys {
+            let Some(scope) = self.scan_type.scopes.get(&scope_key) else {
+                continue;
+            };
+            for observation in &scope.observations {
+                if observation.tu_index < epoch {
+                    continue;
+                }
+                let value = observation.mps_pic_struct_type;
+                let Some(group) = PicStructGroup::from_pic_struct(value) else {
+                    continue;
+                };
+                let pair = ScanTypeCiPair {
+                    ci_xlayer,
+                    ci_mlayer,
+                    metadata_offset: observation.offset,
+                    ci_offset,
+                    at: ci_offset,
+                };
+                if established != 0 {
+                    let required = group.required_ci_scan_type_idc();
+                    if established != required {
+                        let diagnostic =
+                            scan_type_ci_mismatch_error(value, required, established, &pair);
+                        self.cvs
+                            .defer_or_emit(scope_key, observation.tu_index, diagnostic, report);
+                    }
+                }
+                if matches!(value, 7 | 8) && bad_interval {
+                    let diagnostic = scan_type_equal_picture_interval_error(value, &pair);
+                    self.cvs
+                        .defer_or_emit(scope_key, observation.tu_index, diagnostic, report);
+                }
+            }
+        }
+    }
+
+    /// Returns whether any in-scope content-interpretation record established a
+    /// non-zero `ci_scan_type_idc` for `scope_key`: a concrete extended layer
+    /// matches its own records, the global bucket matches every record (global
+    /// scan-type metadata describes every layer's pictures).
+    ///
+    /// The § 7.3.8.11 random-access epoch is deliberately NOT applied here: a
+    /// pre-OLK record keeps suppressing the
+    /// `metadata/scan-type-ci-scan-type-unestablished` warning after an OLK
+    /// re-initializes the parameters to `ci_scan_type_idc` 0 — a documented
+    /// lenient false-negative approximation in the conservative direction for a
+    /// warning-severity diagnostic derived from a literal Table 6.18 reading
+    /// (tightening it would make the derived warning fire more often).
+    fn scan_type_ci_established(&self, scope_key: ExtendedLayerId) -> bool {
+        self.content_interpretations
+            .iter()
+            .any(|((ci_xlayer, _), record)| {
+                (scope_key.is_global() || *ci_xlayer == scope_key)
+                    && record.content.scan_type_idc.get() != 0
+            })
+    }
+
+    /// Ends the coded video sequence of `scope_key`'s scan-type scope: emits the
+    /// `metadata/scan-type-ci-scan-type-unestablished` warning when observations
+    /// are being retired and no in-scope content-interpretation record established
+    /// a non-zero `ci_scan_type_idc`, then drops observations with
+    /// `tu_index < keep_from_tu` (pass `u64::MAX` to retire the whole scope at the
+    /// end of the bitstream). One warning per scope, citing the first retiring
+    /// observation.
+    ///
+    /// The warning is a **derived** diagnostic from a literal reading of
+    /// Table 6.18 (AV2 § 6.16.10): every defined `mps_pic_struct_type` row
+    /// restricts `ci_scan_type_idc` to 1, 2 or 3, while the default content
+    /// interpretation parameter — in effect when no content interpretation OBU
+    /// establishes one — is "ci_scan_type_idc = 0 (unspecified)" (AV2 § 7.3.8.11),
+    /// which satisfies no row. The mirror states no explicit
+    /// presence requirement for the content interpretation OBU, so this is a
+    /// warning, never an error.
+    fn flush_scan_type_scope(
+        &mut self,
+        scope_key: ExtendedLayerId,
+        keep_from_tu: u64,
+        report: &mut ValidationReport,
+    ) {
+        let established = self.scan_type_ci_established(scope_key);
+        let Some(scope) = self.scan_type.scopes.get_mut(&scope_key) else {
+            return;
+        };
+        if !established
+            && let Some(first) = scope
+                .observations
+                .iter()
+                .find(|observation| observation.tu_index < keep_from_tu)
+        {
+            report.push(
+                Diagnostic::warning(
+                    "metadata/scan-type-ci-scan-type-unestablished",
+                    format!(
+                        "scan-type metadata with mps_pic_struct_type {} (first at byte {}) was \
+                         signaled, but no content interpretation in scope established a non-zero \
+                         ci_scan_type_idc within the coded video sequence; the default is \
+                         ci_scan_type_idc = 0 (unspecified) per AV2 § 7.3.8.11, which satisfies \
+                         no Table 6.18 restriction — a diagnostic derived from a literal reading \
+                         of Table 6.18",
+                        first.mps_pic_struct_type, first.offset,
+                    ),
+                )
+                .with_spec_section("6.16.10")
+                .with_byte_offset(first.offset),
+            );
+        }
+        scope
+            .observations
+            .retain(|observation| observation.tu_index >= keep_from_tu);
+        if scope.observations.is_empty() {
+            self.scan_type.scopes.remove(&scope_key);
+        }
+    }
+
+    /// Returns the active metadata units for `(xlayer, metadata_type_raw)` from the
+    /// § 6.16.3 lifetime store.
+    ///
+    /// Query surface for the validator test suite and the deferred per-frame
+    /// metadata checks (tasks 8-9 of the `metadata-semantic-validation` change).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn active_metadata_units(
+        &self,
+        xlayer: ExtendedLayerId,
+        metadata_type_raw: u32,
+    ) -> &[ActiveMetadataUnit] {
+        self.metadata.active_units(xlayer, metadata_type_raw)
+    }
+
+    /// Returns whether `record` applies to `(target_mlayer, target_tlayer)` per the
+    /// § 6.16.3 propagation rules (see [`MetadataLifetimeStore::applies_to`]),
+    /// resolving the dependency maps from `xlayer`'s active sequence header
+    /// (`SequenceHeaderGeneral::{m,t}layer_dependency_map`, AV2 § 5.4.1). When no
+    /// sequence header is active for the extended layer (including the
+    /// `GLOBAL_XLAYER_ID` bucket, which never activates one), falls back to the
+    /// § 5.4.1 default fills built from the record's own source layer ids — the
+    /// most conservative read: with `max_mlayer_id = K` and `max_tlayer_id = T` the
+    /// default fills make the metadata apply only at its own `(K, T)` source point,
+    /// never inventing propagation a real sequence header might not permit.
+    ///
+    /// Pure query — never emits diagnostics.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn metadata_applies_to(
+        &self,
+        xlayer: ExtendedLayerId,
+        record: &ActiveMetadataUnit,
+        target_mlayer: EmbeddedLayerId,
+        target_tlayer: TemporalLayerId,
+    ) -> bool {
+        let general = self
+            .active_sequence_by_xlayer
+            .get(&xlayer)
+            .and_then(|id| self.sequence_headers.get(id))
+            .map(|header| header.general);
+        let (m_map, t_map) = match general {
+            Some(general) => (general.mlayer_dependency_map, general.tlayer_dependency_map),
+            None => (
+                MLayerDependencyMap::default_for(record.source_mlayer),
+                TLayerDependencyMap::default_for(record.source_tlayer, record.source_mlayer),
+            ),
+        };
+        MetadataLifetimeStore::applies_to(record, target_mlayer, target_tlayer, &t_map, &m_map)
     }
 
     /// Observes a multi-frame header OBU and checks that the sequence header it
@@ -1580,36 +2926,49 @@ impl ValidatorContext {
         let xlayer = obu.header.extended_layer_id;
         let fingerprint = payload_fingerprint(obu.payload);
 
-        // AV2 § 7.3.8: within a coded video sequence, a repeated activated sequence
-        // header is allowed only if its payload bytes are bit-identical. Compare a
-        // payload fingerprint, not parsed fields, since inferred values can hide
-        // syntax differences. Fingerprints are cleared per extended layer at CVS
-        // boundaries (see maybe_reset_coded_video_sequence).
+        // AV2 § 7.3.6: "Within a particular coded video sequence of an extended
+        // layer, it is allowed to send redundant copies of the activated
+        // sequence_header_obu, but the contents must be bit-identical each time the
+        // activated sequence header appears." Compare a payload fingerprint, not
+        // parsed fields, since inferred values can hide syntax differences.
+        // Fingerprints are scoped per extended layer to the exact coded video
+        // sequence: a CLK boundary event drops records from earlier temporal units
+        // (see start_cvs_for_xlayer), and a comparison against an earlier temporal
+        // unit's record is deferred to the temporal-unit flush (see
+        // CvsTracker::defer_or_emit).
         //
         // NOTE: the fingerprint key is (xlayer, seq_header_id); cross-xlayer identity
         // for the same seq_header_id is not yet enforced.
         // TODO(spec: AV2-7.3.8-HLS-AVAILABILITY): validate cross-xlayer seq_header_id
         // identity once the full HLS availability store exists.
+        let tu_index = self.cvs.tu_index;
         match self.sequence_fingerprints.entry((xlayer, seq_header_id)) {
             Entry::Vacant(slot) => {
-                slot.insert(fingerprint);
+                slot.insert((fingerprint, tu_index));
             }
-            Entry::Occupied(slot) => {
-                if *slot.get() != fingerprint {
-                    report.push(
-                        Diagnostic::error(
-                            "hls/repeated-sequence-header-not-identical",
-                            format!(
-                                "activated sequence header seq_header_id {} for obu_xlayer_id {} \
-                                 is repeated with different payload bytes",
-                                seq_header_id.get(),
-                                xlayer.get()
-                            ),
-                        )
-                        .with_spec_section("7.3.8")
-                        .with_byte_offset(obu.offset),
-                    );
+            Entry::Occupied(mut slot) => {
+                let (stored_fingerprint, stored_tu) = *slot.get();
+                if stored_fingerprint != fingerprint {
+                    let diagnostic = Diagnostic::error(
+                        "hls/repeated-sequence-header-not-identical",
+                        format!(
+                            "activated sequence header seq_header_id {} for obu_xlayer_id {} \
+                             is repeated with different payload bytes",
+                            seq_header_id.get(),
+                            xlayer.get()
+                        ),
+                    )
+                    .with_spec_section("7.3.6")
+                    .with_byte_offset(obu.offset);
+                    self.cvs
+                        .defer_or_emit(xlayer, stored_tu, diagnostic, report);
                 }
+                // Refresh the record to this latest appearance: § 7.3.6 starts a new
+                // coded video sequence *at the temporal unit*, so a copy re-sent in a
+                // CLK temporal unit must survive the CLK pruning as the new coded
+                // video sequence's baseline (a non-identical repeat also becomes the
+                // new baseline after being routed above).
+                slot.insert((fingerprint, tu_index));
             }
         }
 
@@ -1726,22 +3085,24 @@ impl ValidatorContext {
 }
 
 /// Compares two present `timing_info()` values from different embedded layers of
-/// the same coded video sequence and emits a diagnostic per differing field
+/// the same coded video sequence, returning a diagnostic per differing field
 /// (AV2 § 6.4.12: these values, when present, shall be the same across all embedded
 /// layers). `new` is located at `obu` (embedded layer `obu.header.embedded_layer_id`);
 /// `existing` is the value previously seen for `existing_mlayer`. Both embedded-layer
-/// ids are named in each message so the finding is self-contained.
+/// ids are named in each message so the finding is self-contained. The caller routes
+/// each diagnostic through [`CvsTracker::defer_or_emit`], since the comparison is
+/// scoped to the coded video sequence (AV2 § 7.3.6).
 fn compare_timing_across_embedded_layers(
     existing_mlayer: EmbeddedLayerId,
     existing: &TimingInfo,
     new: &TimingInfo,
     obu: &ObuEnvelope<'_>,
-    report: &mut ValidationReport,
-) {
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
     let new_mlayer = obu.header.embedded_layer_id.get();
     let existing_mlayer = existing_mlayer.get();
     if existing.num_units_in_display_tick != new.num_units_in_display_tick {
-        report.push(timing_mismatch_error(
+        diagnostics.push(timing_mismatch_error(
             "sequence-header/timing-display-tick-mismatch",
             obu,
             format!(
@@ -1755,7 +3116,7 @@ fn compare_timing_across_embedded_layers(
         ));
     }
     if existing.time_scale != new.time_scale {
-        report.push(timing_mismatch_error(
+        diagnostics.push(timing_mismatch_error(
             "sequence-header/timing-time-scale-mismatch",
             obu,
             format!(
@@ -1766,7 +3127,7 @@ fn compare_timing_across_embedded_layers(
         ));
     }
     if existing.equal_picture_interval != new.equal_picture_interval {
-        report.push(timing_mismatch_error(
+        diagnostics.push(timing_mismatch_error(
             "sequence-header/timing-equal-picture-interval-mismatch",
             obu,
             format!(
@@ -1783,7 +3144,7 @@ fn compare_timing_across_embedded_layers(
         new.num_ticks_per_picture_minus_1,
     ) && existing_ticks != new_ticks
     {
-        report.push(timing_mismatch_error(
+        diagnostics.push(timing_mismatch_error(
             "sequence-header/timing-num-ticks-mismatch",
             obu,
             format!(
@@ -1793,6 +3154,7 @@ fn compare_timing_across_embedded_layers(
             ),
         ));
     }
+    diagnostics
 }
 
 /// Returns `true` if two content-interpretation OBUs carry different *information*
@@ -1846,7 +3208,7 @@ fn timing_mismatch_error(
 /// Computes a stable 64-bit FNV-1a fingerprint over an OBU payload's bytes.
 ///
 /// Used to compare repeated activated sequence headers for bit identity without
-/// pulling in a hashing dependency (AV2 § 7.3.8).
+/// pulling in a hashing dependency (AV2 § 7.3.6).
 fn payload_fingerprint(payload: &[u8]) -> u64 {
     const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;

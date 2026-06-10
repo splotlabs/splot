@@ -25,9 +25,12 @@ layer-dependency maps.
 ### Requirement: Scan-type CVS-wide consistency
 
 `splot-validate` SHALL enforce the AV2 v1.0.0 § 6.16.10 cross-OBU scan-type constraints:
-`mps_source_scan_type_idc` / `mps_pic_struct_type` consistency with the
-content-interpretation `ci_scan_type_idc`, and the requirement that
-`mps_pic_struct_type` stays within a single permitted group for all pictures of the CVS.
+the Table 6.18 restrictions tying each defined `mps_pic_struct_type` value to a required
+content-interpretation `ci_scan_type_idc` (and to `equal_picture_interval == 1` for the
+frame-doubling/tripling values 7/8), and the requirement that `mps_pic_struct_type`
+stays within a single permitted group for all pictures of the CVS. (The spec mirror
+defines no `mps_source_scan_type_idc` ↔ `ci_scan_type_idc` consistency rule —
+`mps_source_scan_type_idc` only shares its value semantics with `ci_scan_type_idc`.)
 
 #### Scenario: pic-struct group changes within a CVS
 

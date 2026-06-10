@@ -19,6 +19,7 @@ pub mod validator;
 
 mod context;
 mod error_location;
+mod metadata_lifetime;
 
 pub use diagnostic::{Diagnostic, Severity, ValidationReport};
 pub use options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};

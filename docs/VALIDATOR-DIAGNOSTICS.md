@@ -105,7 +105,7 @@ Every rule ID below is emitted by `crates/splot-validate/src`, grouped by namesp
 | Rule ID | Severity | Section | Condition |
 |---|---|---|---|
 | `hls/external-hls-disabled` | warning | § 7.3.8.1 | a referenced sequence header is unavailable in-band and external HLS is disabled (advisory) |
-| `hls/repeated-sequence-header-not-identical` | error | § 7.3.8 | activated sequence header is repeated within CVS with different payload bytes |
+| `hls/repeated-sequence-header-not-identical` | error | § 7.3.6 | activated sequence header is repeated within CVS with different payload bytes |
 | `hls/unavailable-layer-configuration-record` | error | § 7.3.8.3 | seq_lcr_id resolves to no available local or global LCR (external disabled) |
 | `hls/unavailable-multi-frame-header` | error | § 7.3.8.7 | frame header references a cur_mfh_id with no available multi-frame header (external HLS disabled) |
 | `hls/unavailable-sequence-header` | error | § 7.3.8.6 | frame header references a sequence header id that is unavailable |
@@ -128,10 +128,18 @@ Every rule ID below is emitted by `crates/splot-validate/src`, grouped by namesp
 | Rule ID | Severity | Section | Condition |
 |---|---|---|---|
 | `metadata/group-header-underflow` | error | § 6.16.3 | metadata group header underflows the payload |
+| `metadata/group-layer-idc-reserved` | warning | § 6.16.3 | group-unit muh_layer_idc is 4..7 (reserved for AOMedia use) |
 | `metadata/group-mlayer-map-below-obu-mlayer` | error | § 6.16.3 | muh_mlayer_map sets a bit below obu_mlayer_id |
 | `metadata/group-reserved-bits-nonzero` | warning | § 6.16.3 | muh_reserved_zero_2bits is non-zero (decoder-ignored) |
 | `metadata/group-unit-count-too-large` | error | § 6.16.3 | metadata group unit count is too large |
 | `metadata/group-xlayer-map-global-bit-set` | error | § 6.16.3 | bit 31 of muh_xlayer_map is set |
+| `metadata/hdr-cll-repeat-content-differs` | error | § 6.16.5 | HDR CLL metadata units in a CVS associated with a common embedded layer (per § 6.16.3 layer targeting) have different content |
+| `metadata/hdr-mdcv-repeat-content-differs` | error | § 6.16.6 | HDR MDCV metadata units in a CVS associated with a common embedded layer (per § 6.16.3 layer targeting) have different content |
+| `metadata/persistence-idc-reserved` | warning | § 6.16.3 | muh_persistence_idc is 4..7 (reserved for AOMedia use) |
+| `metadata/scan-type-ci-scan-type-mismatch` | error | § 6.16.10 | mps_pic_struct_type requires a ci_scan_type_idc that differs from a non-zero CI value established in the CVS scope at or after the layer's most recent random access point (§ 7.3.8.11) |
+| `metadata/scan-type-ci-scan-type-unestablished` | warning | § 6.16.10 | scan-type metadata present but no CI established a non-zero ci_scan_type_idc in the CVS scope (default is 0, § 7.3.8.11) |
+| `metadata/scan-type-equal-picture-interval-required` | error | § 6.16.10 | mps_pic_struct_type 7/8 while CI timing_info established in the current § 7.3.8.11 epoch signals equal_picture_interval 0 |
+| `metadata/scan-type-pic-struct-group-inconsistent` | error | § 6.16.10 | mps_pic_struct_type values in the same CVS fall into more than one Table 6.18 group |
 | `metadata/scan-type-pic-struct-reserved` | error | § 6.16.10 | mps_pic_struct_type exceeds 12 (reserved) |
 | `metadata/short-layer-idc-out-of-range` | error | § 6.16.2 | muh_layer_idc >= 3 for OBU_METADATA_SHORT |
 | `metadata/temporal-point-info-not-short` | error | § 6.16.11 | METADATA_TYPE_TEMPORAL_POINT_INFO appears outside OBU_METADATA_SHORT |
@@ -331,8 +339,9 @@ Conformance points deliberately not flagged, in two groups.
 [`VALIDATOR-ROADMAP.md`](./VALIDATOR-ROADMAP.md) backlog, not fabricated today:
 
 - MFH layer-dependency-map checks and OPS § 6.10.7 dependency-map agreement:
-  `MLayerDependencyMap` / `TLayerDependencyMap` are not exposed by the sequence-header model,
-  so they are not fabricated from max layer IDs.
+  `MLayerDependencyMap` / `TLayerDependencyMap` are now exposed by the sequence-header
+  model (`AV2-5.4.1-SEQUENCE-HEADER-GENERAL`), but the agreement checks themselves are
+  not implemented yet and are not fabricated from max layer IDs.
 - An unresolved cross-OPS inheritance reference is not flagged (`ops/inherited-ops-unavailable`
   is reserved) because the reference may be supplied through external HLS.
 
