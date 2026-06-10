@@ -68,7 +68,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-11) | Operating point payload syntax | `AV2-5.11-OPERATING-POINT-PAYLOAD` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 5.11.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-11-1) | Operating point set aggregate info syntax | `AV2-5.11.1-OPS-AGGREGATE-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.11.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-11-2) | Operating point set sequence profile tier level information syntax | `AV2-5.11.2-OPS-SEQ-PTL-INFO` | ✅ | ✅ | 🟡 | ✅ | 1 |
-| [§ 5.11.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-11-3) | Operating point set decoder model info syntax | `AV2-5.11.3-OPS-DECODER-MODEL-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
+| [§ 5.11.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-11-3) | Operating point set decoder model info syntax | `AV2-5.11.3-OPS-DECODER-MODEL-INFO` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 5.11.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-11-4) | Operating point set color info syntax | `AV2-5.11.4-OPS-COLOR-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.11.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-11-5) | Operating point set mlayer info syntax | `AV2-5.11.5-OPS-MLAYER-INFO` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 5.12](./spec/av2/1.0.0/05-syntax-structures.md#s-5-12) | Buffer removal timing OBU syntax | `AV2-5.12-BUFFER-REMOVAL-TIMING` | ✅ | ✅ | 🟡 | ✅ | 2 |
@@ -122,7 +122,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.2.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-4) | Byte alignment semantics | `AV2-5.2.4-BYTE-ALIGNMENT` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 6.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4) | Sequence header OBU semantics | `AV2-5.4-SEQUENCE-HEADER` | ✅ | 🟡 | 🟡 | 🟡 | 1 |
 | [§ 6.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4) | Sequence header OBU semantics | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` | ✅ | ✅ | 🟡 | ✅ | 3 |
-| [§ 6.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4) | Sequence header OBU semantics | `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` | ✅ | ✅ | 🟡 | ✅ | 9 |
+| [§ 6.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4) | Sequence header OBU semantics | `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` | ✅ | ✅ | 🟡 | ✅ | 10 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `AV2-5.4.1-SEQUENCE-HEADER-GENERAL` | ✅ | ✅ | ✅ | ✅ | 6 |
 | [§ 6.4.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-2) | Sequence tile config semantics | `AV2-5.4.2-SEQUENCE-TILE-CONFIG` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 6.4.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-3) | Sequence partition config semantics | `AV2-5.4.3-SEQUENCE-PARTITION-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
@@ -161,7 +161,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.10.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-10-2) | Operating point set OBU syntax elements | `AV2-5.10-OPS-SYNTAX-ELEMENTS` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 6.10.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-10-3) | Operating point set aggregate info semantics | `AV2-5.11.1-OPS-AGGREGATE-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.10.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-10-4) | Operating point set sequence profile tier level information semantics | `AV2-5.11.2-OPS-SEQ-PTL-INFO` | ✅ | ✅ | 🟡 | ✅ | 1 |
-| [§ 6.10.5](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-10-5) | Operating point set decoder model info semantics | `AV2-5.11.3-OPS-DECODER-MODEL-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
+| [§ 6.10.5](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-10-5) | Operating point set decoder model info semantics | `AV2-5.11.3-OPS-DECODER-MODEL-INFO` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 6.10.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-10-6) | Operating point set color info semantics | `AV2-5.11.4-OPS-COLOR-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.10.7](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-10-7) | Operating point set mlayer info semantics | `AV2-5.11.5-OPS-MLAYER-INFO` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 6.11](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-11) | Buffer removal timing OBU semantics | `AV2-5.12-BUFFER-REMOVAL-TIMING` | ✅ | ✅ | 🟡 | ✅ | 2 |

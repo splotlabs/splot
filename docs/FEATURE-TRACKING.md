@@ -163,8 +163,9 @@ for this whole tracking system is recorded in
 ## 12. Diagnostic-ID convention
 
 Validator diagnostics use a kebab/slash namespace with a documented prefix,
-for example `obu-header/`, `sequence-header/`, and `frame-header/`. The
-canonical allowlist is the `DIAGNOSTIC_PREFIXES` constant in
+for example `obu-header/`, `sequence-header/`, `frame-header/`, and
+`decoder-model/` (decoder-model buffer-delay sum-constancy, §6.4.13 / §6.10.5).
+The canonical allowlist is the `DIAGNOSTIC_PREFIXES` constant in
 `xtask/src/feature_status.rs`;
 [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md) groups every emitted
 rule by namespace. Example: `obu-header/global-xlayer-required`.
