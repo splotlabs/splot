@@ -978,14 +978,15 @@ SHALL be registered in `docs/VALIDATOR-DIAGNOSTICS.md`.
 - **THEN** no tile-info diagnostics are emitted
 
 ### Requirement: Frame QM reference diagnostics
-For parsed `setup_qm_params()` levels that reference custom quantizer matrices
-(`qm_y`/`qm_u`/`qm_v` less than `NUM_CUSTOM_QMS`), the validator SHALL check
-the locally-decidable § 6.17.6.2 constraints against its existing quantizer
-matrix availability state: the referenced custom QM slot's `QmNumPlanes` SHALL
-equal the active sequence's `NumPlanes`, and layer-dependency constraints SHALL
-only be checked when the required dependency maps are available, never guessed.
-Violations SHALL be error diagnostics citing § 6.17.6.2; unavailable state
-SHALL NOT produce false positives.
+The validator SHALL check the locally-decidable § 6.17.6.2 constraints for
+parsed `setup_qm_params()` levels that reference custom quantizer matrices
+(`qm_y`/`qm_u`/`qm_v` less than `NUM_CUSTOM_QMS`) against its existing
+quantizer matrix availability state: the referenced custom QM slot's
+`QmNumPlanes` SHALL equal the active sequence's `NumPlanes`, and
+layer-dependency constraints SHALL only be checked when the required
+dependency maps are available, never guessed. Violations SHALL be error
+diagnostics citing § 6.17.6.2; unavailable state SHALL NOT produce false
+positives.
 
 #### Scenario: Custom QM plane-count mismatch
 - **WHEN** a frame header references a custom QM whose recorded plane count
@@ -1206,11 +1207,10 @@ diagnostics SHALL carry the associated LCR OBU's byte offset.
   latest definition has nothing to check).
 
 ### Requirement: Frame-header MFH layer-dependency checks
-
-For a parsed frame-header prefix with `cur_mfh_id > 0` whose multi-frame
-header and the MFH's `mfh_seq_header_id` both resolve in-band,
-`splot-validate` SHALL enforce the § 7.3.8.7 layer-dependency constraints
-using the § 6.17.2 predicate evaluated after the sequence header is loaded:
+`splot-validate` SHALL enforce the § 7.3.8.7 layer-dependency constraints for
+a parsed frame-header prefix with `cur_mfh_id > 0` whose multi-frame header
+and the MFH's `mfh_seq_header_id` both resolve in-band, using the § 6.17.2
+predicate evaluated after the sequence header is loaded:
 `MLayerDependencyMap[obu_mlayer_id][MfhMLayerId[cur_mfh_id]]` SHALL be 1 and
 `TLayerDependencyMap[obu_mlayer_id][obu_tlayer_id][MfhTLayerId[cur_mfh_id]]`
 SHALL be 1, where `obu_mlayer_id` / `obu_tlayer_id` are the frame header's and

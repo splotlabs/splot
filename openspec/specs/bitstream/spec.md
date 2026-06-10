@@ -847,9 +847,9 @@ the new partial status.
   `consumed_bits` covers exactly the parsed prefix
 
 ### Requirement: New frame parsers never panic
-All new frame-header parsing paths (tile info, quantization, QM setup,
-segmentation, delta-q, lossless derivation) SHALL return typed errors on
-truncated or malformed input and SHALL be covered by property tests over
+All new frame-header parsing paths SHALL return typed errors on truncated or
+malformed input — tile info, quantization, QM setup, segmentation, delta-q,
+and lossless derivation — and SHALL be covered by property tests over
 arbitrary byte slices, with positive, negative, and EOF unit tests for each
 structure.
 

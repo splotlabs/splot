@@ -73,6 +73,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked   # rustdoc 
 typos                                       # spell-check (config: _typos.toml)
 cargo machete --with-metadata               # unused-dependency check
 cargo deny check bans licenses sources      # offline supply-chain policy
+openspec validate --all --no-interactive    # OpenSpec specs + active changes (optional tool, run-if-present)
 cargo xtask audit                           # networked supply-chain advisories (cargo-deny)
 cargo xtask coverage                        # local HTML coverage report (cargo-llvm-cov)
 cargo xtask fuzz [--time <secs>]            # local fuzz smoke over every target (nightly + cargo-fuzz), default 30s each

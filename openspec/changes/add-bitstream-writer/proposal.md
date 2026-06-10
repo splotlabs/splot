@@ -1,5 +1,11 @@
 # Change: add-bitstream-writer
 
+> **Parked (2026-06-11):** encoder-track change behind the explicit
+> "do not start yet" fence in
+> [`docs/VALIDATOR-ROADMAP.md`](../../../docs/VALIDATOR-ROADMAP.md). This is a
+> bootstrap-era stub predating the current change conventions; reviving it
+> means re-proposing against them.
+
 ## Feature IDs
 
 - `ENC-BITSTREAM-WRITER`
