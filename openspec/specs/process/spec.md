@@ -206,3 +206,65 @@ state updates SHALL be deterministic and SHALL NOT be hand-edited. Tracked by
 
 - **WHEN** the audit-scope tooling runs without an existing ledger
 - **THEN** it treats the run as a bootstrap audit and selects all in-scope files
+
+### Requirement: validator diagnostic registry enforcement
+
+The repository SHALL enforce that `docs/VALIDATOR-DIAGNOSTICS.md` lists exactly the
+diagnostic rule-ID literals present in `crates/splot-validate/src`. A
+`cargo xtask check-diagnostic-registry` gate, run as part of `cargo xtask ci`, SHALL extract
+the rule-ID literals from non-test, non-comment validator source and compare them against the
+IDs documented in the file's enforced registry region. The gate SHALL fail when an emitted ID
+is undocumented or when the registry documents an ID that is not present in the source.
+Tracked by `XTASK-DIAGNOSTIC-REGISTRY`.
+
+#### Scenario: emitted rule ID missing from the registry
+
+- **WHEN** the validator source contains a rule-ID literal that is absent from the registry region
+- **THEN** `cargo xtask check-diagnostic-registry` fails and names the undocumented ID
+
+#### Scenario: registry lists an ID not present in source
+
+- **WHEN** the registry region documents a rule ID that does not appear as a literal in non-test validator source
+- **THEN** `cargo xtask check-diagnostic-registry` fails and names the unemitted ID
+
+#### Scenario: registry matches the source
+
+- **WHEN** the documented registry IDs equal the rule-ID literals in non-test, non-comment validator source
+- **THEN** `cargo xtask check-diagnostic-registry` passes
+
+#### Scenario: registry-only check identifiers are documented
+
+- **WHEN** the validator source contains `Check::id()` registry identifiers (the `<ns>/syntax` literals) that are routed through `syntax_error_diagnostic()` rather than emitted verbatim
+- **THEN** those identifiers are documented in a labeled registry sub-table so the documented set still equals the extracted set
+
+### Requirement: generated spec-coverage document
+
+The repository SHALL provide a generated document `docs/SPEC-COVERAGE.md`,
+rendered from `docs/IMPLEMENTATION-MATRIX.toml` by
+`cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`,
+with one row per (spec section, feature) pair grouped by spec chapter and
+ordered by a numeric-aware section key. Section cells SHALL hyperlink into the
+committed spec mirror when the section resolves through
+`docs/spec/av2/1.0.0/index.md` and SHALL fall back to plain text otherwise.
+Features with no spec section SHALL be listed in a dedicated tail section.
+`cargo xtask check-feature-status` SHALL fail when the committed document does
+not match its render. Tracked by `XTASK-FEATURE-STATUS`.
+
+#### Scenario: looking up a spec section
+
+- **WHEN** a reader opens `docs/SPEC-COVERAGE.md` and finds the row for a
+  section such as § 5.4.4
+- **THEN** the row shows the owning Feature ID and glyph statuses for mapped,
+  parse, validate, and tests, plus a diagnostics count
+
+#### Scenario: committed document drifts from the matrix
+
+- **WHEN** `docs/IMPLEMENTATION-MATRIX.toml` changes without regenerating
+  `docs/SPEC-COVERAGE.md`
+- **THEN** `cargo xtask check-feature-status` (and therefore `cargo xtask ci`)
+  fails and names the regenerate command
+
+#### Scenario: spec mirror is absent or unresolvable
+
+- **WHEN** a cited section cannot be resolved through the mirror index
+- **THEN** the section renders as plain text and generation still succeeds
