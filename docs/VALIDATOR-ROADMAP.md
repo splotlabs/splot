@@ -53,7 +53,7 @@ dependency order:
 | Activated sequence state | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` |
 | HLS availability | `AV2-7.3.8-HLS-AVAILABILITY` |
 | Temporal-unit ordering completion | `AV2-7.3.7-TEMPORAL-UNIT-ORDER`, then §7.3.2–§7.3.6 children as parse dependencies allow |
-| Deeper HLS semantics | the `validate = partial` HLS rows (LCR, atlas, OPS/BRT, metadata) and the pending §6.10.7 dependency-map agreement checks (the §5.4.1 maps are now exposed by the sequence-header model; the LCR/OPS/MFH agreement checks themselves are still future) |
+| Deeper HLS semantics | the `validate = partial` HLS rows (LCR, atlas, OPS/BRT, metadata); the §6.10.7/§6.8.9/§7.3.8.7 dependency-map agreement checks are landed, with Annex A/E operating-point semantics still future |
 | Frame-header continuation | the Phase 8 remaining work below |
 
 **Do not start yet** as a primary task: a full tile-group payload parser,
@@ -186,10 +186,11 @@ Acceptance:
 ## Phase 6 — high-level syntax OBUs
 
 **Status:** partial — every Phase 6 row parses with tests and a dedicated
-parser module; remaining work is deeper semantic validation across the board,
-including the pending MFH/OPS §6.10.7 layer-dependency-map agreement checks
-(the sequence-header model now exposes the maps; the agreement checks
-themselves are not implemented yet).
+parser module, and the §6.10.7/§6.8.9/§7.3.8.7 layer-dependency-map agreement
+checks are landed (`ops/*-dependency-missing`, `lcr/*-dependency-missing`,
+`frame-header/mfh-*-dependency-missing`); remaining work is deeper semantic
+validation across the board (Annex A/E operating-point semantics, decoder
+models).
 
 **Goal:** parse HLS OBUs referenced by sequence/frame validation and OBU ordering.
 
@@ -376,8 +377,6 @@ lands, add it to the registry tables there (the CI gate will require it).
 | `obu-order/global-hls-after-metadata-suffix` | error | §7.3.7 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Global HLS appears after suffix metadata. Needs global suffix-metadata classification, which is pending frame/tile parsing. |
 | `obu-order/non-global-hls-before-coded-layer` | error | §7.3.7 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Non-global HLS appears in an invalid temporal-unit region. |
 | `msdo/sub-xlayer-duplicate` | error | §6.6 | `AV2-5.6-MSDO` | Duplicate `sub_xlayer_id` where uniqueness is required. Add only after confirming the exact §6.6 wording in the spec mirror (spec honesty). |
-| `ops/mlayer-dependency-missing` | error | §6.10.7 | `AV2-5.10-OPERATING-POINT-SET` | OPS embedded-layer info disagrees with the activated sequence header's `MLayerDependencyMap`. Deferred: the sequence-header model now exposes the dependency maps, but the agreement check is not implemented yet (see the intentional non-check in [`VALIDATOR-DIAGNOSTICS.md`](./VALIDATOR-DIAGNOSTICS.md)). |
-| `ops/tlayer-dependency-missing` | error | §6.10.7 | `AV2-5.10-OPERATING-POINT-SET` | As above, for the activated `TLayerDependencyMap`. |
 | `brt/global-ordering-position` | error | §7.3.7 | `AV2-7.3-OBU-ORDERING` | A global BRT in an invalid temporal-unit position. Deferred: §7.3.7 does not list BRT among the global prefix OBUs, so a hard ordering error needs the §7.3.8 decoder-model / random-access state (tracked by a spec TODO under `AV2-7.3-OBU-ORDERING` in `splot-validate`). |
 
 Naming rules live in [`FEATURE-TRACKING.md`](./FEATURE-TRACKING.md) § 12

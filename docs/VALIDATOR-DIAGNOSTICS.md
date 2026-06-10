@@ -91,6 +91,8 @@ Every rule ID below is emitted by `crates/splot-validate/src`, grouped by namesp
 | `frame-header/frame-size-exceeds-sequence-max` | error | § 6.17.4.1 | derived FrameWidth/FrameHeight exceeds active sequence maximum |
 | `frame-header/frame-to-refresh-out-of-range` | error | § 6.17.2 | refresh_frame_flags sets a reference slot at or beyond NumRefFrames |
 | `frame-header/intra-only-refresh-all-slots` | error | § 6.17.2 | INTRA_ONLY_FRAME with NumRefFrames>1 refreshes every slot |
+| `frame-header/mfh-mlayer-dependency-missing` | error | § 7.3.8.7 | frame header references an MFH whose recorded MfhMLayerId the frame's obu_mlayer_id does not depend on (§ 6.17.2: MLayerDependencyMap[obu_mlayer_id][MfhMLayerId] != 1) |
+| `frame-header/mfh-tlayer-dependency-missing` | error | § 7.3.8.7 | frame header references an MFH whose recorded MfhTLayerId the frame's layer does not depend on (§ 6.17.2: TLayerDependencyMap[obu_mlayer_id][obu_tlayer_id][MfhTLayerId] != 1) |
 | `frame-header/qm-plane-count-mismatch` | error | § 6.17.6.2 | a qm_y/qm_u/qm_v custom-QM reference whose recorded QmNumPlanes differs from the sequence NumPlanes |
 | `frame-header/ras-requires-long-term-frame-id-bits` | error | § 6.4.6 | OBU_RAS_FRAME present but active sequence long_term_frame_id_bits == 0 |
 | `frame-header/ref-long-term-id-reserved` | error | § 6.17.2 | a ref_long_term_id[i] equals the reserved (1<<long_term_frame_id_bits)-1 |
@@ -119,8 +121,10 @@ Every rule ID below is emitted by `crates/splot-validate/src`, grouped by namesp
 | `lcr/global-lcr-unavailable` | error | § 7.3.8.3 | local LCR references an unavailable global LCR (external HLS disabled) |
 | `lcr/global-xlayer-map-missing-xlayer` | error | § 6.4.1 | sequence header xlayer is not set in the referenced global LCR lcr_xlayer_map |
 | `lcr/local-id-zero` | error | § 6.8.3 | lcr_local_id equals 0 |
+| `lcr/mlayer-dependency-missing` | error | § 6.8.9 | activated LCR lcr_mlayer_map includes an embedded layer without a layer the activated sequence header's MLayerDependencyMap requires |
 | `lcr/payload-size-overflow` | error | § 6.8.6 | layer config record declared payload size overflows |
 | `lcr/reserved-bits-nonzero` | warning | § 6.8 | a layer config record reserved-zero field is non-zero (decoder-ignored) |
+| `lcr/tlayer-dependency-missing` | error | § 6.8.9 | activated LCR lcr_tlayer_map includes a temporal layer without a layer the activated sequence header's TLayerDependencyMap requires |
 | `lcr/xlayer-map-empty` | error | § 6.8.2 | lcr_xlayer_map is 0 (must be 1..(1<<31)-1) |
 
 ### `metadata/`
@@ -197,9 +201,11 @@ Every rule ID below is emitted by `crates/splot-validate/src`, grouped by namesp
 |---|---|---|---|
 | `ops/inherited-op-index-out-of-range` | error | § 6.10.2 | inherited ops_embedded_op_index out of range for referenced OPS |
 | `ops/local-reserved-bits-nonzero` | error | § 6.10.2 | local OPS ops_reserved_2bits is non-zero |
+| `ops/mlayer-dependency-missing` | error | § 6.10.7 | explicit ops_mlayer_map includes an embedded layer without a layer the activated sequence header's MLayerDependencyMap requires |
 | `ops/mlayer-info-idc-reserved` | error | § 6.10.2 | global OPS ops_mlayer_info_idc == 3 (reserved) |
 | `ops/payload-size-mismatch` | error | § 6.10.2 | ops_data_size differs from the parsed payload byte count |
 | `ops/ptl-reserved-bits-nonzero` | error | § 6.10.4 | ops_ptl_reserved_2bits is non-zero |
+| `ops/tlayer-dependency-missing` | error | § 6.10.7 | explicit ops_tlayer_map includes a temporal layer without a layer the activated sequence header's TLayerDependencyMap requires |
 
 ### `padding/`
 
@@ -338,10 +344,22 @@ Conformance points deliberately not flagged, in two groups.
 **Deferred pending infrastructure** — planned in the
 [`VALIDATOR-ROADMAP.md`](./VALIDATOR-ROADMAP.md) backlog, not fabricated today:
 
-- MFH layer-dependency-map checks and OPS § 6.10.7 dependency-map agreement:
-  `MLayerDependencyMap` / `TLayerDependencyMap` are now exposed by the sequence-header
-  model (`AV2-5.4.1-SEQUENCE-HEADER-GENERAL`), but the agreement checks themselves are
-  not implemented yet and are not fabricated from max layer IDs.
+- The § 6.10.7 / § 6.8.9 / § 7.3.8.7 dependency-map agreement checks (landed as
+  `ops/*-dependency-missing`, `lcr/*-dependency-missing`,
+  `frame-header/mfh-*-dependency-missing`) run only against a **decidable activated
+  in-band** sequence header — one confirmed by a parsed frame-header reference, or
+  the OBU-order fallback while it is the sole in-band header — and the maps are
+  never fabricated from defaults, max layer IDs, or an ambiguous multi-header
+  fallback guess. Each group's no-false-positive gate matches what external HLS
+  could shadow: the OPS checks are suppressed when external HLS declares any
+  sequence header, the LCR checks whenever external HLS is enabled at all (an
+  unmodeled external *local* LCR would win the § 6.4.1 resolution), and the MFH
+  checks are skipped when the referenced sequence header does not resolve in-band.
+  The § 6.8.9 pairing binds the header's § 6.4.1 *association*, snapshotted at each
+  observation of that header (an LCR "present prior to this sequence header"): a
+  later-arriving LCR is not retroactively paired, and a record redefined after the
+  header's latest observation is not the associated one. An OPS/LCR entry whose
+  extended layer never activates a decidable in-band header is not checked.
 - An unresolved cross-OPS inheritance reference is not flagged (`ops/inherited-ops-unavailable`
   is reserved) because the reference may be supplied through external HLS.
 
