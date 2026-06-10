@@ -3897,17 +3897,17 @@ spec_sections = []
 sources = []
 crate = "fuzz"
 module = "fuzz/fuzz_targets/parse_obu.rs"
-openspec_change = "parse-annexb-and-obu-headers"
+openspec_change = "fuzz-validator-targets"
 tracking_issue = ""
 owner = "conformance"
 risk = "high"
-notes = "Malformed data must return errors/reports, never panic. The stable-toolchain proptest covers the same invariant in CI; CI also runs a blocking 60-second parse_obu fuzz smoke job on every PR (.github/workflows/ci.yml fuzz-smoke), and cargo-fuzz still needs nightly to run locally. The cargo-fuzz corpus (fuzz/corpus) is gitignored and not committed, so it is not listed as proof."
+notes = "Malformed data must return errors/reports, never panic. Four fuzz targets cover every public byte-consuming entry point: parse_obu (read_leb128 / read_obu_header / parse_annex_b_obus), parse_ivf (is_ivf / parse_ivf_header / parse_ivf_partial), parse_bitstream (parse_bitstream_partial container auto-detect + OBU payload dispatch), and validate_bytes (Validator::validate_bytes_with_options, which transitively reaches every OBU payload parser, both container formats, and every validator check). Stable-toolchain proptests cover the same invariant in CI (splot-core parser modules plus crates/splot-validate/tests/validator_never_panics.rs); CI also runs a blocking per-target fuzz smoke (~45s each) on every PR (.github/workflows/ci.yml fuzz-smoke), and cargo-fuzz still needs nightly to run locally. The cargo-fuzz corpus (fuzz/corpus) is gitignored and not committed, so it is not listed as proof. parse and validate are done: every parser surface and the validator are now fuzz-reachable and proptest-covered on stable. decode_check stays partial: the no-panic work hardens robustness but does not expand what the inspector/validator can check for conformance, which is what this stage tracks."
 
 [feature.status]
 mapped = "done"
 types = "not-applicable"
-parse = "partial"
-validate = "partial"
+parse = "done"
+validate = "done"
 write = "not-applicable"
 encode = "not-applicable"
 decode_check = "partial"
@@ -3916,8 +3916,8 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/annexb.rs::proptests"]
-commands = ["cargo test -p splot-core", "cargo +nightly fuzz run parse_obu"]
+tests = ["crates/splot-core/src/annexb.rs::proptests", "crates/splot-core/src/ivf.rs::proptests", "crates/splot-core/src/stream.rs::proptests", "crates/splot-validate/tests/validator_never_panics.rs"]
+commands = ["cargo test -p splot-core", "cargo test -p splot-validate", "cargo +nightly fuzz run parse_obu", "cargo +nightly fuzz run parse_ivf", "cargo +nightly fuzz run parse_bitstream", "cargo +nightly fuzz run validate_bytes"]
 fixtures = []
 diagnostics = []
 

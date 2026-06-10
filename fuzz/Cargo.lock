@@ -144,6 +144,15 @@ version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "splot-core",
+ "splot-validate",
+]
+
+[[package]]
+name = "splot-validate"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "splot-core",
 ]
 
 [[package]]

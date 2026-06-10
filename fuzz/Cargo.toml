@@ -3,9 +3,9 @@
 #
 # The fuzz crate is intentionally OUTSIDE the workspace (see the root Cargo.toml
 # `exclude = ["fuzz"]`) so that libFuzzer's `unsafe` usage is not subject to the
-# workspace `unsafe_code = "forbid"` lint. CI runs a blocking 60s parse_obu smoke of
-# this crate on every PR (.github/workflows/ci.yml, fuzz-smoke job); full runs stay
-# local/nightly.
+# workspace `unsafe_code = "forbid"` lint. CI runs a blocking per-target smoke of
+# every target in this crate on every PR (.github/workflows/ci.yml, fuzz-smoke job);
+# full runs stay local/nightly.
 
 [package]
 name = "splot-fuzz"
@@ -22,10 +22,32 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 splot-core = { path = "../crates/splot-core" }
+splot-validate = { path = "../crates/splot-validate" }
 
 [[bin]]
 name = "parse_obu"
 path = "fuzz_targets/parse_obu.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "validate_bytes"
+path = "fuzz_targets/validate_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_ivf"
+path = "fuzz_targets/parse_ivf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_bitstream"
+path = "fuzz_targets/parse_bitstream.rs"
 test = false
 doc = false
 bench = false

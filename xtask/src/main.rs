@@ -118,11 +118,12 @@ enum Task {
     Conformance,
     /// Generate a local HTML coverage report (requires `cargo-llvm-cov`).
     Coverage,
-    /// Run a short local fuzz smoke session against the `parse_obu` target.
+    /// Run a short local fuzz smoke session against every fuzz target.
     ///
-    /// Requires a nightly toolchain and `cargo-fuzz`. Defaults to 30 seconds.
+    /// Requires a nightly toolchain and `cargo-fuzz`. Each target runs for the
+    /// given time (default 30 seconds).
     Fuzz {
-        /// Maximum fuzzing time in seconds (default 30).
+        /// Maximum fuzzing time in seconds, per target (default 30).
         #[arg(long, value_name = "SECS")]
         time: Option<u64>,
     },
@@ -419,7 +420,9 @@ fn run_coverage() -> Result<()> {
     ])
 }
 
-/// Runs a short local fuzz smoke session against `parse_obu` (nightly + cargo-fuzz).
+/// Runs a short local fuzz smoke session against every fuzz target (nightly +
+/// cargo-fuzz). Targets are enumerated from `fuzz/fuzz_targets/`, so listing needs
+/// no nightly toolchain; each target then runs for `--time` seconds.
 fn run_fuzz(time: Option<u64>) -> Result<()> {
     if !tool_available("cargo-fuzz") || !nightly_available() {
         eprintln!(
@@ -428,24 +431,54 @@ fn run_fuzz(time: Option<u64>) -> Result<()> {
         );
         return Ok(());
     }
+    let root = workspace_root()?;
+    let targets = fuzz_targets(&root)?;
+    if targets.is_empty() {
+        bail!("fuzz: no targets found under fuzz/fuzz_targets/");
+    }
     let secs = time.unwrap_or(30);
     let max_total_time = format!("-max_total_time={secs}");
     // `+nightly` is resolved by the rustup cargo proxy, so invoke `cargo` by name.
     // Mirror the CI fuzz-smoke guard flags so a local smoke catches the same classes
     // of bug: `-timeout` flags a hanging input, `-rss_limit_mb` an allocation blowup.
-    run_program(
-        "cargo",
-        &[
-            "+nightly",
-            "fuzz",
-            "run",
-            "parse_obu",
-            "--",
-            &max_total_time,
-            "-timeout=10",
-            "-rss_limit_mb=2048",
-        ],
-    )
+    for target in &targets {
+        run_program(
+            "cargo",
+            &[
+                "+nightly",
+                "fuzz",
+                "run",
+                target,
+                "--",
+                &max_total_time,
+                "-timeout=10",
+                "-rss_limit_mb=2048",
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Returns the fuzz target names (file stems of `fuzz/fuzz_targets/*.rs`), sorted for
+/// a deterministic run order. Reading the directory avoids depending on a nightly
+/// `cargo fuzz list`.
+fn fuzz_targets(root: &Path) -> Result<Vec<String>> {
+    let dir = root.join("fuzz").join("fuzz_targets");
+    let mut targets = Vec::new();
+    let entries =
+        std::fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?;
+    for entry in entries {
+        let entry =
+            entry.with_context(|| format!("failed to read an entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("rs")
+            && let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+        {
+            targets.push(stem.to_string());
+        }
+    }
+    targets.sort();
+    Ok(targets)
 }
 
 /// Runs the networked cargo-deny advisory check (separate from the offline gate).

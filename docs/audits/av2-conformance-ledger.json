@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "56641ae1b173c33580693a5f4d6e13fceee54b9f",
+  "audited_commit": "7317e0d2d1738d6751abdf3812c8f0f4d3f2623b",
   "outcome": "success",
   "files": [
     {
@@ -200,7 +200,7 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "7fdf4d144d8a564c416d8bc83d0b33610a9bd7c0d362052f0af6dd1851434bfb",
+      "sha256": "53c6d451ddf1359a3e0a01aa009340fdd0112cc084eea4bbef03d18676ec4145",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
@@ -221,7 +221,7 @@
     },
     {
       "path": "AGENTS.md",
-      "sha256": "dde0ea04e93acbce05d9ac3c7d65dc47d7d55d38fb22971eadbaf4fba3cdb763",
+      "sha256": "2d647b49ac7373fb642efd88a513e16c52ca85ca41e57e7acb057d823b952d3a",
       "scope_kind": "repository-process",
       "feature_ids": [
         "DOC-AUDIT-PROTOCOLS",
@@ -239,7 +239,7 @@
     },
     {
       "path": "Cargo.lock",
-      "sha256": "a0630d8532ac208a06f74cce9048a58e90fbffd5c91a3831081f7b8aa8d36572",
+      "sha256": "e6a205751811f2e6fcbea88ec759f27be8ea0512a403f117d84cbd8357be19fa",
       "scope_kind": "repository-process",
       "feature_ids": [],
       "outcome": "success"
@@ -739,7 +739,7 @@
     },
     {
       "path": "crates/splot-validate/Cargo.toml",
-      "sha256": "68ea0fe98e3c7694179c3f49bff3e87a0c8a4036cbbb0adcbcda45c18e883bf1",
+      "sha256": "7a2c6c8ce97df1eb04cc3c0abf865aa8ee9ad3bb460fa58b636335369e16e305",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -876,7 +876,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "56c9523e9f2b2bb37298ba2b84c2f0bce247d1131c49698eec1883da26d0ec0e",
+      "sha256": "2a5e9adccfd4f6d2f646bc2e41f2e4331e878807ab30929de9dad78c2bc1acae",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1043,7 +1043,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "4b043705b03aa31f3a1a35b9fe93ef7ff36b22ad2103aef783964c68223f700e",
+      "sha256": "33e2cdb4be4f823549c345671f5ba139e3f9e452564d1f570c30d61b590ca17a",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1326,7 +1326,7 @@
     },
     {
       "path": "docs/TESTING.md",
-      "sha256": "4c145c9d1084d16cadeecaeca5ad48334d1155c62c2910fbc3b801710fa4f4f4",
+      "sha256": "7462b62f30ec9065cbedcdfbc83fcc4e3db4d5ff506a0d92e8fc71fcee227071",
       "scope_kind": "docs",
       "feature_ids": [],
       "outcome": "success"
@@ -1461,14 +1461,14 @@
     },
     {
       "path": "fuzz/Cargo.lock",
-      "sha256": "98bcacc24422e768ce88e6e509b5ef13c08cb605cf7cff7783a95de75239a906",
+      "sha256": "d4e34d9e69dd627a7d119655b47de4d6c45edc0791c05abbd02aaf1e7ef37170",
       "scope_kind": "fuzz",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "fuzz/Cargo.toml",
-      "sha256": "f556ec380d7c2e9ea81a9e1f172e41f619789acc75ce16b252a0ff4f4f62b003",
+      "sha256": "d5aa10bc0616d077c9e5b17bfa49f296c257568318a07331d5ac1959e958902d",
       "scope_kind": "fuzz",
       "feature_ids": [],
       "outcome": "success"
@@ -1491,7 +1491,7 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "6e6454509614587bcf8e3709b89c6c0c772ae0d2bfac201d422f826d94c6f333",
+      "sha256": "e65172fae7186781303322aed3b76277ccc748d7ecddbdfe8001c1d96082c1f6",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -1502,6 +1502,7 @@
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
         "CONF-AVM-DIFF-HARNESS",
+        "CONF-FUZZ-NO-PANIC",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
       ],
@@ -2910,7 +2911,7 @@
     },
     {
       "path": "xtask/src/main.rs",
-      "sha256": "860b1b4797a1e353f70c80e95293cc4621bc65b55e26cf91f29ec26fc559a8f6",
+      "sha256": "7db2578bf82e42f90d8f73ea45c96729ce99d3e7d31a3322ab7624cc0b115598",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
