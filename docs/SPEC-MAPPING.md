@@ -21,11 +21,16 @@ Normative reference: **AV2 Bitstream & Decoding Process Specification v1.0.0**
 
 ## Canonical status
 
-This table is a human-readable narrative. The **canonical** per-feature status
-lives in [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml) and is rendered
-to [FEATURE-STATUS.md](./FEATURE-STATUS.md). The workflow and conventions are in
-[FEATURE-TRACKING.md](./FEATURE-TRACKING.md). Run `cargo xtask feature-status` for
-the live view.
+The **canonical** per-feature status lives in
+[IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml) and is rendered to two
+generated, drift-gated documents: [SPEC-COVERAGE.md](./SPEC-COVERAGE.md) (one row
+per spec section, with parse/validate/test glyphs and mirror links — start there
+to answer "is § X.Y implemented?") and [FEATURE-STATUS.md](./FEATURE-STATUS.md)
+(the full per-feature ledger). Diagnostics are registered in the CI-enforced
+[VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md). The workflow and
+conventions are in [FEATURE-TRACKING.md](./FEATURE-TRACKING.md). This file
+deliberately carries **no per-module status prose** — earlier hand-maintained
+copies drifted and were removed.
 
 ## Rule
 
@@ -48,81 +53,11 @@ and keep the feature stubbed.
 
 The validator coverage plan is split across:
 
-- [VALIDATOR-ROADMAP.md](./VALIDATOR-ROADMAP.md)
-- [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md)
-- [CURRENT-VALIDATOR-STATE.md](./CURRENT-VALIDATOR-STATE.md)
+- [VALIDATOR-ROADMAP.md](./VALIDATOR-ROADMAP.md) — phases, current focus, and the planned-diagnostics backlog
+- [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md) — the CI-enforced registry of every emitted diagnostic
 
-These documents are planning aids. The canonical status remains
+The canonical status remains
 [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml).
-
-## Current mapping
-
-| Module                              | Spec area                         | Status |
-|-------------------------------------|-----------------------------------|--------|
-| `splot-core::leb128`                | § 4.11.6 LEB128                    | implemented |
-| `splot-core::bitio`                 | `f(n)` fixed-width reads          | implemented (entropy coder stubbed) |
-| `splot-core::types` (`ObuType`)     | Table 6.1, § 5.2.1 helpers        | implemented |
-| `splot-core::obu`                   | § 5.2.2 OBU header                 | implemented |
-| `splot-core::annexb`                | Annex B § B.2, § 5.2.1 OBU size   | implemented |
-| `splot-validate::checks`            | § 6.2.2 header constraints        | partial (header-only checks) |
-| `splot-validate::context`           | § 6.2.2 / § 7.3 sequence state    | partial (active sequence + temporal order) |
-| `splot-core::headers::sequence`     | § 5.4 sequence header             | partial (full § 5.4 walk incl. `seg_info`/`tile_params`; `user_qm` bounded; reserved-level tile bounded) |
-| `splot-core::segment`               | § 5.4.9 `seg_info(numSegments)`   | implemented |
-| `splot-core::tile`                  | § 5.18.7.3 `tile_params` helpers  | implemented (sequence + frame `tile_info` call sites; the non-uniform sequence start arrays needed by the § 5.18.7.4 frame reuse path are not recorded yet) |
-| `splot-core::hls`                   | § 5.6 MSDO, § 5.7 multi-frame hdr | implemented (syntax incl. MFH `seg_info`) |
-| `splot-core::headers::operating_point_set` | § 5.10 / § 5.11 operating point set | implemented (full syntax; § 6.10 local validation + active-OPS state in `splot-validate`) |
-| `splot-core::headers::buffer_removal_timing` | § 5.12 buffer removal timing      | implemented (syntax; § 6.11 / § 7.3.8.5 OPS references in `splot-validate`) |
-| `splot-core::headers::frame` (info) | § 5.18.2 `frame_header_info()` (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`) | partial (state-aware core parser: frame kind, output control, order hint, refresh flags, then the § 5.18.6 / § 5.18.7 intra tail below; stops with explicit status before the inter reference map and, on the intra path, before § 5.18.5.2 `deblocking_filter_params()`; `frame_header_copy()` TODO) |
-| `splot-core::headers::frame` (config) | § 5.18.3 frame configuration     | partial (`screen_content_params()`, `intrabc_params()`; `frame_opfl_refine_type()` / `get_relative_dist()` TODO) |
-| `splot-core::headers::frame` (size) | § 5.18.4 `frame_size()`           | partial (override + direct/default paths; `frame_size_with_refs()` / `frame_size_with_bridge()` TODO) |
-| `splot-core::headers::frame` (tiling) | § 5.18.7.2 `tile_info()` (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-2`; `MiCols`/`MiRows` per § 5.18.4.4 `#s-5-18-4-4`; reuses the § 5.18.7.3 helpers in `splot-core::tile`) | partial (intra path with `cur_mfh_id == 0`; the non-uniform § 5.18.7.4 sequence-reuse branch needs the unrecorded start arrays — see the `splot-core::tile` row) |
-| `splot-core::headers::frame` (segmentation) | § 5.18.7.1 `segmentation_params()` (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-1`; reuses § 5.4.9 `seg_info`) | partial (intra path with `cur_mfh_id == 0`: `segmentation_update_map` / `segmentation_temporal_update` inferred per `PRIMARY_REF_NONE`; MFH-gated reuse branches stop with an explicit status) |
-| `splot-core::headers::frame` (quant) | § 5.18.6.1–§ 5.18.6.3 `quantization_params()` / `setup_qm_params()` / `read_delta_q()` (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-6`), § 5.18.7.8 `delta_q_params()` (`#s-5-18-7-8`), and the § 5.18.2 lossless / `allow_tcq` / `allow_parity_hiding` tail (`#s-5-18-2`) | partial (intra path; `TipFrameMode == TIP_FRAME_AS_OUTPUT` gating is an explicit caller input, always false on the intra path) |
-| `splot-validate::context` (frame)   | § 6.17.2 / § 6.17.4 / § 6.4.6     | partial (bridge-ref-index, frame-size-exceeds-max, RAS long-term-id checks; reference-state checks TODO) |
-| `splot-core::tables`                | § 9 additional tables             | TODO / codegen (`cargo xtask gen-tables`) |
-
-### Implemented § 6.2.2 header checks
-
-All are pure functions of the OBU header (no activated sequence header required):
-
-- `obu-header/global-xlayer-required` — `OBU_MSDO` / `OBU_TEMPORAL_DELIMITER` must
-  use `obu_xlayer_id == GLOBAL_XLAYER_ID`.
-- `obu-header/global-xlayer-requires-base-layers` — global xlayer ⇒ `obu_mlayer_id`
-  and `obu_tlayer_id` are `0`.
-- `obu-header/global-xlayer-allowed-types` — only certain types may use the global
-  xlayer.
-- `obu-header/base-layer-only-types` — sequence header, temporal delimiter, LCR,
-  OPS, and atlas segment must have `obu_tlayer_id == obu_mlayer_id == 0`.
-- `obu-header/temporal-layer-zero-only-types` — closed/open-loop key, switch, and
-  RAS frames must have `obu_tlayer_id == 0`.
-- `obu-header/reserved-obu-type` — informational: reserved types are ignored by
-  conformant decoders.
-
-### Implemented stateful sequence checks
-
-These depend on a parseable, active sequence header in the same `obu_xlayer_id`
-context:
-
-- `sequence-state/no-active-sequence-header` — a layer-scoped OBU appears before
-  an active sequence header is available for its `obu_xlayer_id`.
-- `sequence-state/tlayer-exceeds-max` — `obu_tlayer_id` exceeds the active
-  sequence header's `max_tlayer_id`.
-- `sequence-state/mlayer-exceeds-max` — `obu_mlayer_id` exceeds the active
-  sequence header's `max_mlayer_id`.
-
-### Implemented § 7.3 ordering checks
-
-These are header-level ordering checks; deeper frame-unit and metadata suffix
-ordering remains future work until the corresponding payload parsers exist:
-
-- `obu-order/temporal-unit-missing-delimiter` — a non-reserved OBU appears before
-  a global temporal delimiter starts the temporal unit.
-- `obu-order/global-hls-after-coded-layer` — a global HLS prefix OBU appears
-  after a coded extended layer unit in the same temporal unit.
-- `obu-order/xlayer-order-not-ascending` — coded extended layer units regress in
-  `obu_xlayer_id` within one temporal unit.
-- `obu-order/padding-non-global-outside-coded-layer` — non-global padding appears
-  outside the current coded extended layer unit.
 
 ## ⚠️ AV2 is not AV1
 

@@ -469,7 +469,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Umbrella for sequence_header_obu(). General §5.4.1 fields are modeled; child config parsers remain explicit stubs until implemented."
+notes = "Umbrella for sequence_header_obu(). All §5.4.1-§5.4.13 child configs parse (see the child rows); the umbrella stays partial pending deeper §6.4 semantic validation."
 
 [feature.status]
 mapped = "done"
@@ -502,7 +502,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Parses sequence_header_obu() general fields through dependency maps and stops before sequence_partition_config(). Child config parsers remain explicit stubs."
+notes = "Parses the §5.4.1 general fields through dependency maps; the §5.4.2-§5.4.13 child configs are parsed by their own rows' modules."
 
 [feature.status]
 mapped = "done"

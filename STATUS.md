@@ -11,9 +11,9 @@ Toolchain: Rust 1.96.0, edition 2024, resolver 3. Generated 2026-06-06.
 > an older section can describe features (e.g. `seg_info()` / `tile_params()`) that
 > have since advanced. For current status, treat
 > [`docs/IMPLEMENTATION-MATRIX.toml`](docs/IMPLEMENTATION-MATRIX.toml) as canonical,
-> with the generated [`docs/FEATURE-STATUS.md`](docs/FEATURE-STATUS.md) and
-> [`docs/CURRENT-VALIDATOR-STATE.md`](docs/CURRENT-VALIDATOR-STATE.md) as the
-> readable current-state views.
+> with the generated [`docs/SPEC-COVERAGE.md`](docs/SPEC-COVERAGE.md) and
+> [`docs/FEATURE-STATUS.md`](docs/FEATURE-STATUS.md) as the readable
+> current-state views.
 
 ## Sequence + HLS validator coverage (2026-06-07)
 
