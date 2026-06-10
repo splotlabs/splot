@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "2638dd217e14e63be8ca754c626c2492b448dad2",
+  "audited_commit": "54a2d3fa43b24341500527ddb06556b3f6aeff1e",
   "outcome": "success",
   "files": [
     {
@@ -1557,7 +1557,7 @@
     },
     {
       "path": "openspec/changes/add-bitstream-writer/tasks.md",
-      "sha256": "97c85ff66b0a2d0d4a758dde91626332e3fcf9f75535b054cb3077041753d5ff",
+      "sha256": "aa7e74f7aaacb54de296b2855eae5ab304f3cdfbed45355dc58b9b7d703159ea",
       "scope_kind": "openspec",
       "feature_ids": [
         "ENC-BITSTREAM-WRITER"
@@ -2622,6 +2622,37 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-10-openspec-matrix-hygiene/proposal.md",
+      "sha256": "38d82726cf100e2a2384f8ec984db3d33d1b388d31643af8b9b34d0e989fd0d2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-BITSTREAM-WRITER",
+        "ENC-INTRA-TOY-V0",
+        "XTASK-CI-QUALITY-GATES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-openspec-matrix-hygiene/specs/process/spec.md",
+      "sha256": "0705ae28a18d2ee7dd5a0d2105333517dcf5f101b7acd4f5109bfddb823a727c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-CI-QUALITY-GATES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-openspec-matrix-hygiene/tasks.md",
+      "sha256": "3e77c4c2be012edb8400b4502364168c5e772767481224d8a0dc388b55285bc2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-BITSTREAM-WRITER",
+        "ENC-INTRA-TOY-V0",
+        "XTASK-CI-QUALITY-GATES"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-10-sequence-multistream-semantics/.openspec.yaml",
       "sha256": "5ada458f25cd6e260a7ac3deb87a5ba5d046aabf964c53260ae6cf7bcb8a5d12",
       "scope_kind": "openspec",
@@ -2743,7 +2774,7 @@
     },
     {
       "path": "openspec/changes/toy-intra-encoder-v0/tasks.md",
-      "sha256": "e2a1e48d15b44809bd108fc9d81ebdd03e93e56d925260a857000a5e7025eff3",
+      "sha256": "e8d9a452a5777be79af8146a2d5715e4da1397af5d622bbcd44e4d74ef666e92",
       "scope_kind": "openspec",
       "feature_ids": [
         "ENC-INTRA-TOY-V0"
