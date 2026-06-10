@@ -33,13 +33,13 @@ openspec_change = "parse-annexb-and-obu-headers"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "AV2 LEB128 is byte-aligned, up to 8 bytes, bounded to u32, and permits non-minimal encodings. read_leb128 enforces the byte-7-MSB rule and the u32 bound. validate/decode_check are satisfied via the generic bitstream/parse-error diagnostic (no LEB128-specific validator check)."
+notes = "AV2 LEB128 is byte-aligned, up to 8 bytes, bounded to u32, and permits non-minimal encodings. §4.11.6 states exactly two requirements of bitstream conformance (docs/spec/av2/1.0.0/04-conventions.md#s-4-11-6, lines 657-664): the returned value is <= (1 << 32) - 1, and the MSB of leb128_byte is 0 when i == 7. read_leb128 (crates/splot-core/src/leb128.rs) enforces both as Error::InvalidLeb128, which the validator converts into bitstream/parse-error (crates/splot-validate/src/validator.rs::parse_error_diagnostic). No LEB128-specific rule_id remains because the spec carries no further locally-decidable constraint."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "not-applicable"
 decode_check = "done"
@@ -48,10 +48,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/leb128.rs::tests"]
+tests = ["crates/splot-core/src/leb128.rs::tests", "crates/splot-validate/src/validator.rs::tests::parse_error_becomes_a_single_error_diagnostic"]
 commands = ["cargo test -p splot-core leb128"]
 fixtures = []
-diagnostics = []
+diagnostics = ["bitstream/parse-error"]
 
 [[feature]]
 id = "AV2-4.11.3-UVLC"
@@ -271,13 +271,13 @@ openspec_change = "parse-annexb-and-obu-headers"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "ObuType enum (AV2 Table 6.1, raw round-trip for 0..=31, reserved preserved) plus AV2 § 5.2.1 OBU-class predicates (is_tile_group, is_sef, requires_global_xlayer, ...) — citations match crates/splot-core/src/types.rs. No AV1 OBU type table."
+notes = "ObuType enum (AV2 Table 6.1, raw round-trip for 0..=31, reserved preserved) plus AV2 § 5.2.1 OBU-class predicates (is_tile_group, is_sef, requires_global_xlayer, ...) — citations match crates/splot-core/src/types.rs. No AV1 OBU type table. Every §6.2.2 layer-id-vs-obu_type requirement that is decidable from the OBU header and these predicates alone has landed (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2, lines 183-217): GLOBAL_XLAYER_ID base-layer rule (obu-header/global-xlayer-requires-base-layers), MSDO/TD require-global (obu-header/global-xlayer-required), GLOBAL_XLAYER_ID allowed-types (obu-header/global-xlayer-allowed-types), base-layer-only types (obu-header/base-layer-only-types), and tlayer-zero-only types (obu-header/temporal-layer-zero-only-types). The only §6.2.2 residual — obu_tlayer_id/obu_mlayer_id <= max_tlayer_id/max_mlayer_id from an activated sequence header (lines 190-194) — is owned by AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS, not by this predicate row."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "not-applicable"
 encode = "not-applicable"
 decode_check = "done"
@@ -286,10 +286,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/types.rs::tests"]
-commands = ["cargo test -p splot-core types"]
+tests = ["crates/splot-core/src/types.rs::tests", "crates/splot-validate/src/validator.rs::tests::global_xlayer_requires_base_layers_is_flagged", "crates/splot-validate/src/validator.rs::tests::global_xlayer_on_disallowed_type_is_flagged", "crates/splot-validate/src/validator.rs::tests::base_layer_only_type_with_nonzero_layer_is_flagged", "crates/splot-validate/src/validator.rs::tests::temporal_layer_zero_only_type_is_flagged", "crates/splot-validate/src/validator.rs::tests::temporal_delimiter_without_global_xlayer_is_flagged"]
+commands = ["cargo test -p splot-core types", "cargo test -p splot-validate xlayer"]
 fixtures = []
-diagnostics = []
+diagnostics = ["obu-header/global-xlayer-requires-base-layers", "obu-header/global-xlayer-required", "obu-header/global-xlayer-allowed-types", "obu-header/base-layer-only-types", "obu-header/temporal-layer-zero-only-types"]
 
 [[feature]]
 id = "AV2-5.2.1-OBU-DISPATCH"
@@ -409,7 +409,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Implemented parse_trailing_bits(nbBits), enforcing nbBits > 0, trailing_one_bit == 1, and zero padding. Validator diagnostics are wired for temporal delimiter payloads; full payload-boundary coverage waits for OBU dispatch."
+notes = "Implemented parse_trailing_bits(nbBits), enforcing nbBits > 0, trailing_one_bit == 1, and zero padding (§6.2.3, docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-3). The trailing-bits/* diagnostics are emitted via syntax_error_diagnostic() for every OBU type whose check calls finish_obu_payload() (sequence header, temporal delimiter, MFH, LCR, atlas, OPS, BRT, QM, film-grain, content-interpretation, padding, metadata). Residual: the trailing_bits() call sites inside the still-unparsed coded-frame syntax — the §5.19 tile_group_obu() bru_inactive early-return tail (line 8459 of docs/spec/av2/1.0.0/05-syntax-structures.md, owned by AV2-5.19-TILE-GROUP) and the §5.20 tile_group_payload() tail (owned by AV2-5.20-TILE-GROUP-PAYLOAD) — are unreachable until those parsers land; blocked on AV2-5.19-TILE-GROUP / AV2-5.20-TILE-GROUP-PAYLOAD."
 
 [feature.status]
 mapped = "done"
@@ -442,7 +442,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Implemented BitReader::byte_align_zero() for byte_alignment() zero-bit validation. Diagnostic mapping is ready; full validator reachability waits for payload parsers that call byte_alignment()."
+notes = "Implemented BitReader::byte_align_zero() for byte_alignment() zero-bit validation (§6.2.4, docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-4), surfaced as byte-alignment/zero-bit-not-zero through syntax_error_diagnostic(). Residual: the §5.19 tile_group_obu() calls byte_alignment() before the tile_group_payload() handoff (line 8519 of docs/spec/av2/1.0.0/05-syntax-structures.md), and the §5.20 tile-payload boundary uses it likewise; the validator does not yet reach either because the tile-group parser is prefix-only. Blocked on AV2-5.19-TILE-GROUP / AV2-5.20-TILE-GROUP-PAYLOAD (the only OBU sites that call byte_alignment(); all currently-dispatched OBU tails use trailing_bits(), not byte_alignment())."
 
 [feature.status]
 mapped = "done"
@@ -508,7 +508,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Umbrella for sequence_header_obu(). All §5.4.1-§5.4.13 child configs parse (see the child rows); the umbrella stays partial pending deeper §6.4 semantic validation."
+notes = "Umbrella for sequence_header_obu(). All §5.4.1-§5.4.13 child configs parse (see the child rows); the umbrella stays partial because its own types/parse/tests stages are partial (deeper §5.4 cluster) per the do-not-close-before-children rule (docs/IMPLEMENTATION-MATRIX.schema.md § 7, not an AV2 section). The §6.4 cross-element semantic-validation residuals (repeated-header identity, §6.4.1 distinct-mlayer count, §6.4.12 cross-embedded-layer timing consistency) live on AV2-6.4-SEQUENCE-HEADER-SEMANTICS; the per-config tool-flag-vs-usage gating residuals are blocked on AV2-5.18.2-FRAME-HEADER-INFO inter-path parsing (see the child rows)."
 
 [feature.status]
 mapped = "done"
@@ -607,7 +607,7 @@ openspec_change = "sequence-hls-validator-coverage"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. §6.4.3 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-3, lines 664-728) states no requirement of bitstream conformance: every element is a descriptive enable/superblock-size flag. The validate residual is tool-flag-vs-usage gating (e.g. enable_ext_partitions / enable_uneven_4way_partitions consistency with their per-frame use), which is decidable only once frame-header inter-path parsing exists; blocked on AV2-5.18.2-FRAME-HEADER-INFO inter-path parsing. Do not mark the umbrella done until this child is proven."
 
 [feature.status]
 mapped = "done"
@@ -640,7 +640,7 @@ openspec_change = "segmentation-tile-params-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. seg_info(MaxSegments) is now parsed via the shared AV2-5.4.9-SEGMENT-INFO helper, so the config parses fully (no bounded status). Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. seg_info(MaxSegments) is now parsed via the shared AV2-5.4.9-SEGMENT-INFO helper, so the config parses fully (no bounded status). §6.4.4 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-4, lines 730-754) states no requirement of bitstream conformance: enable_ext_seg, seq_seg_info_present_flag, and seq_allow_seg_info_change are descriptive flags. The validate residual is the seq_allow_seg_info_change-vs-frame-level-override gating, decidable only with frame-header parsing; blocked on AV2-5.18.2-FRAME-HEADER-INFO inter-path parsing. Do not mark the umbrella done until this child is proven."
 
 [feature.status]
 mapped = "done"
@@ -673,7 +673,7 @@ openspec_change = "sequence-hls-validator-coverage"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. §6.4.5 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-5, lines 756-806) states no requirement of bitstream conformance: enable_dip, enable_intra_edge_filter, enable_mrls, enable_cfl_intra, cfl_ds_filter_index, enable_mhccp, enable_ibp are descriptive enable flags. The validate residual is tool-flag-vs-per-block-use gating (use_dip / cflAllowed / is_mhccp_allowed), decidable only with frame/tile parsing; blocked on AV2-5.18.2-FRAME-HEADER-INFO inter-path parsing. Do not mark the umbrella done until this child is proven."
 
 [feature.status]
 mapped = "done"
@@ -706,13 +706,13 @@ openspec_change = "sequence-hls-validator-coverage"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. §6.4.6 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-6, lines 809-996) states exactly one requirement of bitstream conformance (lines 872-873): if long_term_frame_id_bits == 0, no OBU_RAS_FRAME shall be present in the coded video sequence. It is decidable from obu_type plus the active sequence header and has landed as frame-header/ras-requires-long-term-frame-id-bits (crates/splot-validate/src/context.rs:6285). All other §6.4.6 elements are descriptive inter-tool enable flags whose per-frame use is gated under AV2-5.18.2-FRAME-HEADER-INFO. Do not mark the umbrella done until this child is proven."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -721,10 +721,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests"]
-commands = ["cargo test -p splot-core sequence"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-validate/src/validator.rs::tests::validator_flags_ras_requires_long_term_frame_id_bits"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-validate ras_requires"]
 fixtures = ["tests/fixtures/conformant.av2"]
-diagnostics = []
+diagnostics = ["frame-header/ras-requires-long-term-frame-id-bits"]
 
 [[feature]]
 id = "AV2-5.4.7-SEQUENCE-SCC-CONFIG"
@@ -739,7 +739,7 @@ openspec_change = "sequence-hls-validator-coverage"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. §6.4.7 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-7, lines 999-1021) states no requirement of bitstream conformance: seq_choose_screen_content_tools / seq_force_screen_content_tools / seq_choose_integer_mv / seq_force_integer_mv only govern whether allow_screen_content_tools and force_integer_mv appear in the frame_header_info. The validate residual is that frame-level vs sequence-forced consistency, decidable only with frame-header parsing; blocked on AV2-5.18.2-FRAME-HEADER-INFO inter-path parsing. Do not mark the umbrella done until this child is proven."
 
 [feature.status]
 mapped = "done"
@@ -772,7 +772,7 @@ openspec_change = "sequence-hls-validator-coverage"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. §6.4.8 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-8, lines 1024-1109) states no requirement of bitstream conformance: it is a block of transform/quant/entropy enable flags and delta-q offsets with inference rules (enable_fsc -> enable_idtx_intra, enable_tcq/choose_tcq_per_frame -> enable_parity_hiding) but no locally-decidable constraint at the sequence level. The validate residual is the tool-flag-vs-frame/coeff-use gating (allow_tcq, allow_parity_hiding, the *_delta_q_enabled offsets), decidable only with frame/coefficient parsing; blocked on AV2-5.18.2-FRAME-HEADER-INFO inter-path parsing. Do not mark the umbrella done until this child is proven."
 
 [feature.status]
 mapped = "done"
@@ -838,7 +838,7 @@ openspec_change = "sequence-hls-validator-coverage"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. §6.4.10 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-10, lines 1126-1198) states no requirement of bitstream conformance: it is loop-filter / CDEF / GDF / loop-restoration / CCSO enable and unit-size flags plus lr_tools_disable and df_par_bits_minus_2, all descriptive (the NOTEs make explicit that enabling a filter without using it is allowed). The validate residual is the filter-flag-vs-per-frame/per-block-use gating (df_delta_q bit width, CodedLossless auto-disable), decidable only with frame/tile parsing; blocked on AV2-5.18.2-FRAME-HEADER-INFO inter-path parsing. Do not mark the umbrella done until this child is proven."
 
 [feature.status]
 mapped = "done"
@@ -937,7 +937,7 @@ openspec_change = "sequence-hls-validator-coverage"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. §6.4.13 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-13, lines 1290-1310) states one locally-citable requirement of bitstream conformance — for a video sequence with random access points the sum decoder_buffer_delay + encoder_buffer_delay shall be kept constant (lines 1301-1302). That seq-header tier landed under buffer-delay-sum-constancy as the advisory decoder-model/buffer-delay-sum-changed-across-cvs and is tracked on AV2-6.4-SEQUENCE-HEADER-SEMANTICS (its proof.diagnostics carry the rule id), not on this syntax row. Residual: the remaining §6.4.13 elements (decoder_buffer_delay / encoder_buffer_delay smoothing-buffer arrival/removal timing and low_delay_mode_flag, lines 1293-1306) are Annex E decoder-model schedule semantics with no locally-decidable bitstream constraint of their own; decoder-model-blocked, owned by AV2-E-DECODER-MODEL. Do not mark the umbrella done until this child is proven."
 
 [feature.status]
 mapped = "done"
@@ -1003,7 +1003,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Tracks parseable sequence headers by seq_header_id and xlayer context, then enforces max_tlayer_id/max_mlayer_id for non-global OBUs with an active sequence. Full HLS activation remains partial until §7.3.8 ordering/availability lands."
+notes = "Tracks parseable sequence headers by seq_header_id and xlayer context, then enforces the §6.2.2 obu_tlayer_id <= max_tlayer_id and obu_mlayer_id <= max_mlayer_id requirements (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2, lines 190-194) for non-global OBUs with an active sequence. Residual: the §6.2.2 NOTE (lines 197-198) restricts these limits to the post-activation window, so a fully correct check needs the §7.3.8 sequence-header activation/availability and OBU-ordering model (resend-at-RAP, MSDO/OPS reference paths) rather than the current parse-order approximation; blocked on AV2-7.3.8-HLS-AVAILABILITY (the row that owns §7.3.8 ordering/availability)."
 
 [feature.status]
 mapped = "done"
@@ -1036,7 +1036,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Payload syntax and validator state effect for temporal-unit boundaries."
+notes = "Payload syntax and validator state effect for temporal-unit boundaries. The locally-decidable temporal-delimiter rules have landed: §6.2.2 obu_xlayer_id == GLOBAL_XLAYER_ID and base-layer obu_tlayer_id/obu_mlayer_id == 0 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2, lines 201-214; obu-header/global-xlayer-required and obu-header/base-layer-only-types) and the §6.2.3 empty payload trailing_bits() tail. §6.5 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-5, lines 1318-1320) defines only the SeenFrameHeader frame-unit state variable. Residual: the temporal-delimiter's SeenFrameHeader reset and temporal-unit boundary effect (global TD, prefix-OBU ordering, ascending-xlayer coded-extended-layer-unit ordering) are modeled by the temporal-unit state machine and owned by AV2-7.3.7-TEMPORAL-UNIT-ORDER; the in-unit metadata-suffix and frame-unit details remain future there."
 
 [feature.status]
 mapped = "done"
@@ -1069,7 +1069,7 @@ openspec_change = "sequence-hls-validator-coverage"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Full syntax parsed; the §6.6 layer-id and num_streams_minus_2 checks are enforced. MSDO availability (§7.3.8.2: a non-RAP OBU_MSDO must be identical to the previous one) is bounded — it needs random-access-point detection (CLK frame-header activation, AV2-5.18-FRAME-HEADER)."
+notes = "Full syntax parsed; the §6.6 layer-id (obu_tlayer_id/obu_mlayer_id == 0, obu_xlayer_id == GLOBAL_XLAYER_ID) and num_streams_minus_2 <= 2 checks are enforced (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-6, lines 1330-1337; msdo/non-global-layer-id, msdo/too-many-streams). Two residual clusters remain. (1) MSDO availability (§7.3.8.2: a non-RAP OBU_MSDO must be identical to the previous one) is bounded — it needs random-access-point detection (CLK frame-header activation, AV2-5.18-FRAME-HEADER). (2) The §6.6 sub-stream PTL floors are not yet enforced: the MSDO-internal multistream_profile_idc >= sub_stream_max_profile[i] for all i (lines 1347-1348) is locally decidable, while seq_profile_idc <= sub_stream_max_profile[i], seq_level_idx <= sub_stream_max_level[i], seq_tier <= sub_stream_max_tier[i] for each sequence header activated by sub-stream i (lines 1362-1378) and the monotonic_output_order_flag==0 => multistream_doh_constraint_flag==1 rule (lines 1391-1393) are cross-OBU and need activated per-sub-stream sequence-header state (planned msdo-substream-constraint-checks change)."
 
 [feature.status]
 mapped = "done"
@@ -1168,7 +1168,7 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. The locally-decidable §6.8.2 requirements have landed (recorded on the umbrella AV2-5.8-LAYER-CONFIG-RECORD): lcr_global_config_record_id in 1..7 (lcr/global-id-out-of-range), lcr_xlayer_map in 1..(1<<31)-1 (lcr/xlayer-map-empty), and lcr_dependent_xlayers_flag==0 decoder-ignore (lcr/dependent-xlayers-flag-nonzero) — docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-2, lines 1543-1579. Residual: the two §6.8.2 cross-OBU rules are not yet enforced — all extended layers present in the multistream shall reference the same activated global LCR (lines 1550-1551, an MSDO/global-LCR agreement needing multistream activation state) and, when monotonic_output_order_flag==0 in any activated sequence header of the CMVS, lcr_doh_constraint_flag shall be 1 (lines 1619-1621). Blocked on §7.3.8 global-LCR activation / CMVS scope (planned msdo-global-lcr-agreement change); AV2-7.3.8-HLS-AVAILABILITY owns the availability model."
 
 [feature.status]
 mapped = "done"
@@ -1201,13 +1201,13 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.3 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-3, lines 1690-1734) has one requirement of bitstream conformance — lcr_local_id != 0 (line 1705) — landed as lcr/local-id-zero, plus the lcr_local_reserved_zero_3bits/5bits decoder-ignore fields landed as lcr/reserved-bits-nonzero (via has_nonzero_reserved_bits). Nothing further is locally decidable for §6.8.3."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -1216,10 +1216,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
-commands = ["cargo test -p splot-core lcr"]
+tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator.rs::tests::lcr_local_id_zero_is_flagged", "crates/splot-validate/src/validator.rs::tests::lcr_reserved_bits_nonzero_is_warned"]
+commands = ["cargo test -p splot-core lcr", "cargo test -p splot-validate lcr_local_id"]
 fixtures = []
-diagnostics = []
+diagnostics = ["lcr/local-id-zero", "lcr/reserved-bits-nonzero"]
 
 [[feature]]
 id = "AV2-5.8.3-LCR-AGGREGATE-INFO"
@@ -1234,7 +1234,7 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.4 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-4, lines 1737-1760) states no requirement of bitstream conformance; its only constraints are that lcr_config_idc, lcr_aggregate_level_idx, and lcr_max_interop shall not take values outside those specified in Annex A. The validate residual is therefore Annex-A range enforcement (Annex A profiles/levels/tiers are not yet modeled); blocked on the Annex A profile/level/tier table backlog and explicitly out of this sweep's scope."
 
 [feature.status]
 mapped = "done"
@@ -1267,7 +1267,7 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.5 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-5, lines 1768-1814) carries real per-child validate residuals, none yet enforced. (1) PTL-vs-activated-sequence-header floors: when lcr_seq_profile_tier_level_info(i) is present in an activated LCR, seq_profile_idc <= lcr_seq_profile_idc[i] (lines 1774-1776), seq_level_idx <= lcr_max_level_idx[i] (1782-1784), seq_tier <= lcr_tier_flag[i] (1793-1795), and seq_max_mlayer_cnt_minus_1+1 <= lcr_max_mlayer_count[i] (1808-1810) for each sequence header activated by the xlayer-i sub-bitstream — blocked on activated per-xlayer sequence-header PTL state (planned lcr-ptl-activated-sequence-agreement change). (2) Annex-A range enforcement on lcr_seq_profile_idc[i]/lcr_max_level_idx[i]/lcr_tier_flag[i]/lcr_max_mlayer_count[i] (each 'shall not contain values outside those specified in Annex A') — blocked on the Annex A profile/level/tier table backlog. (3) lsptli_reserved_2bits==0 (lines 1812-1814) is decoder-ignored, so it is at most a producer-anomaly warning, not yet emitted."
 
 [feature.status]
 mapped = "done"
@@ -1300,13 +1300,13 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.6 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-6, lines 1818-1834) states one requirement of bitstream conformance — RemainingLcrPayloadBits shall not be less than 0 (lines 1833-1834) — parse-enforced in parse_lcr_global_payload (crates/splot-core/src/headers/layer_config_record.rs:563) and surfaced as lcr/payload-size-overflow. lcr_remaining_payload_bit is decoder-ignored, so nothing further is locally decidable for §6.8.6."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -1315,10 +1315,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
+tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests::global_payload_too_small_size_is_overflow"]
 commands = ["cargo test -p splot-core lcr"]
 fixtures = []
-diagnostics = []
+diagnostics = ["lcr/payload-size-overflow"]
 
 [[feature]]
 id = "AV2-5.8.6-LCR-XLAYER-INFO"
@@ -1333,13 +1333,13 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.7 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-7, lines 1838-1915) states no requirement of bitstream conformance: it is a presence-flag / purpose-id / priority / rendering-method container whose only constrained value (lcr_xlayer_rendering_method 5..255) is a reserved interpretation that decoders shall ignore. The structure is validated by the §5.8 syntax parse: the LayerConfigRecordSyntax check (registry id lcr/syntax in crates/splot-validate/src/checks/mod.rs:601) emits no per-field diagnostic for this child, so a malformed payload surfaces the actually-emitted parse-failure rule ids via syntax_error_diagnostic()/payload_parse_error_diagnostic() (bitstream/parse-error, the trailing-bits/* ids, and obu-header/extension-flag-not-zero for the extensible payload tail); nothing further is locally decidable for §6.8.7."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -1351,7 +1351,7 @@ perf = "not-applicable"
 tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
 commands = ["cargo test -p splot-core lcr"]
 fixtures = []
-diagnostics = []
+diagnostics = ["bitstream/parse-error", "obu-header/extension-flag-not-zero", "trailing-bits/empty", "trailing-bits/missing-one-bit", "trailing-bits/zero-bit-not-zero"]
 
 [[feature]]
 id = "AV2-5.8.7-LCR-REP-INFO"
@@ -1366,7 +1366,7 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.8 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-8, lines 1918-1969) carries a real per-child validate residual (contrary to the sweep's container assumption): lcr_max_pic_width/height shall equal max_frame_width/height_minus_1 + 1, lcr_bit_depth_idc shall equal bit_depth_idc, lcr_chroma_format_idc shall equal chroma_format_idc, and the cropping-window flag/offsets shall equal the seq_cropping_* values, each compared against the activated sequence header for the same extended layer. These cross-OBU agreement checks are blocked on activated sequence-header frame-size and color/format state (the §5.4 frame-size and color descriptor cluster on AV2-5.4-SEQUENCE-HEADER is not yet surfaced to the LCR-vs-sequence comparison)."
 
 [feature.status]
 mapped = "done"
@@ -1432,13 +1432,13 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.10 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-10, lines 2151-2167) states no requirement of bitstream conformance: layer_color_* are defined to share the interpretation of the ops_color_* elements with no extra §6.8.10 constraint. The structure is validated by the §5.8 syntax parse: the LayerConfigRecordSyntax check (registry id lcr/syntax in crates/splot-validate/src/checks/mod.rs:601) emits no per-field diagnostic for this child, so a malformed payload surfaces the actually-emitted parse-failure rule ids via syntax_error_diagnostic()/payload_parse_error_diagnostic() (bitstream/parse-error, the trailing-bits/* ids, and obu-header/extension-flag-not-zero for the extensible payload tail); nothing further is locally decidable for §6.8.10."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -1450,7 +1450,7 @@ perf = "not-applicable"
 tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
 commands = ["cargo test -p splot-core lcr"]
 fixtures = []
-diagnostics = []
+diagnostics = ["bitstream/parse-error", "obu-header/extension-flag-not-zero", "trailing-bits/empty", "trailing-bits/missing-one-bit", "trailing-bits/zero-bit-not-zero"]
 
 [[feature]]
 id = "AV2-5.9-ATLAS-SEGMENT"
@@ -1498,13 +1498,13 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there."
+notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there. §6.9.2 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-2, lines 2293-2307) states no requirement of bitstream conformance: ats_signaled_atlas_segment_ids_flag and ats_atlas_segment_id are descriptive id-assignment elements. The structure is validated by the §5.9 syntax parse: the AtlasSegmentSyntax check (registry id atlas/syntax in crates/splot-validate/src/checks/mod.rs:715) emits no per-field diagnostic for this child, so a malformed payload surfaces the actually-emitted parse-failure rule ids via syntax_error_diagnostic()/payload_parse_error_diagnostic() (bitstream/parse-error, the trailing-bits/* ids, and obu-header/extension-flag-not-zero for the extensible payload tail); nothing further is locally decidable for §6.9.2."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -1516,7 +1516,7 @@ perf = "not-applicable"
 tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests"]
 commands = ["cargo test -p splot-core atlas"]
 fixtures = []
-diagnostics = []
+diagnostics = ["bitstream/parse-error", "obu-header/extension-flag-not-zero", "trailing-bits/empty", "trailing-bits/missing-one-bit", "trailing-bits/zero-bit-not-zero"]
 
 [[feature]]
 id = "AV2-5.9.2-ATLAS-ENHANCED-INFO"
@@ -1531,13 +1531,13 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there."
+notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there. The §6.9.3 cluster's requirements of bitstream conformance (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-3-1, lines 2358-2368 and #s-6-9-3-2, lines 2403-2404) are all locally decidable and landed: ats_num_region_columns_minus_1 < MAX_ATLAS_COLS and ats_num_region_rows_minus_1 < MAX_ATLAS_ROWS as atlas/region-dimension-out-of-range, and NumRegionsInAtlas <= MAX_NUM_ATLAS_SEGMENTS (single-region mapping) as atlas/segment-count-out-of-range. The remaining region geometry (column widths / row heights) carries no stated §6.9.3 conformance requirement, so nothing further is locally decidable for this child."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -1546,10 +1546,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests"]
+tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests::rejects_region_dimension_out_of_range", "crates/splot-core/src/headers/atlas_segment.rs::tests::rejects_segment_count_out_of_range"]
 commands = ["cargo test -p splot-core atlas"]
 fixtures = []
-diagnostics = []
+diagnostics = ["atlas/region-dimension-out-of-range", "atlas/segment-count-out-of-range"]
 
 [[feature]]
 id = "AV2-5.9.3-ATLAS-MULTISTREAM-INFO"
@@ -1564,13 +1564,13 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there."
+notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there. §6.9.4 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-4, lines 2430-2465) states no requirement of bitstream conformance of its own: ats_msi_* share the semantics of the §6.9.6 ats_* elements and the background color values are inference-only. The locally decidable segment-count bound is parse-enforced in parse_ats_multistream_info (crates/splot-core/src/headers/atlas_segment.rs:504) as atlas/segment-count-out-of-range; cross-OBU multistream-needs-GLOBAL_XLAYER_ID and duplicate-input-stream-id are validated under AV2-5.9-ATLAS-SEGMENT. Nothing further is locally decidable for §6.9.4. The atlas_multistream_duplicate_input_stream_id_is_flagged proof test exercises the parent-level atlas/duplicate-input-stream-id check (owned by AV2-5.9-ATLAS-SEGMENT) in the multistream context as a regression guard; this row's own diagnostic is atlas/segment-count-out-of-range."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -1579,10 +1579,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests"]
-commands = ["cargo test -p splot-core atlas"]
+tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests::rejects_segment_count_out_of_range", "crates/splot-validate/src/validator.rs::tests::atlas_multistream_duplicate_input_stream_id_is_flagged"]
+commands = ["cargo test -p splot-core atlas", "cargo test -p splot-validate atlas_multistream"]
 fixtures = []
-diagnostics = []
+diagnostics = ["atlas/segment-count-out-of-range"]
 
 [[feature]]
 id = "AV2-5.9.4-ATLAS-MULTISTREAM-ALPHA-INFO"
@@ -1597,13 +1597,13 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there."
+notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there. §6.9.5 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-5, lines 2468-2490) states no requirement of bitstream conformance: ats_msi_alpha_segments_present_flag and ats_msi_alpha_segment_flag are presence/inference-only flags layered on the §6.9.4 multistream info. The locally decidable segment-count bound shared with §6.9.4 is parse-enforced as atlas/segment-count-out-of-range; nothing further is locally decidable for §6.9.5."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -1612,10 +1612,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests"]
+tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests::rejects_segment_count_out_of_range"]
 commands = ["cargo test -p splot-core atlas"]
 fixtures = []
-diagnostics = []
+diagnostics = ["atlas/segment-count-out-of-range"]
 
 [[feature]]
 id = "AV2-5.9.5-ATLAS-BASIC-INFO"
@@ -1630,13 +1630,13 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there."
+notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there. §6.9.6 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-6, lines 2493-2528) states two locally decidable constraints, both landed: ats_num_atlas_segments_minus_1 < MAX_NUM_ATLAS_SEGMENTS (lines 2512-2513) as atlas/segment-count-out-of-range, and 'all values in ats_input_stream_id[] shall be unique' (line 2518) as atlas/duplicate-input-stream-id. The segment top-left/width/height geometry carries no stated §6.9.6 conformance requirement, so nothing further is locally decidable for §6.9.6."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -1645,10 +1645,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests"]
-commands = ["cargo test -p splot-core atlas"]
+tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests::rejects_segment_count_out_of_range", "crates/splot-validate/src/validator.rs::tests::atlas_duplicate_input_stream_id_is_flagged"]
+commands = ["cargo test -p splot-core atlas", "cargo test -p splot-validate atlas_duplicate"]
 fixtures = []
-diagnostics = []
+diagnostics = ["atlas/segment-count-out-of-range", "atlas/duplicate-input-stream-id"]
 
 [[feature]]
 id = "AV2-5.10-OPERATING-POINT-SET"
@@ -1762,7 +1762,7 @@ openspec_change = "ops-brt-hls-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.11-OPERATING-POINT-PAYLOAD. Parses ops_aggregate_info() (§5.11.1) for global OPS payloads. No locally-decidable §6.10.3 conformance rule is enforced yet, so validate stays partial."
+notes = "Child row of AV2-5.11-OPERATING-POINT-PAYLOAD. Parses ops_aggregate_info() (§5.11.1) for global OPS payloads. §6.10.3 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-10-3, lines 2760-2775) states no requirement of bitstream conformance: ops_config_idc, ops_aggregate_level_idx, ops_max_tier_flag, and ops_max_interop are descriptive aggregate profile/level/tier/interoperability indicators for the combined multistream operating point. Residual: enforcing those aggregate constraints (and any consistency against the per-extended-layer §6.10.4 PTL) is Annex-A semantics; blocked on the Annex A profile/level/tier table backlog (AV2-E-DECODER-MODEL / Annex A modeling), so validate stays partial."
 
 [feature.status]
 mapped = "done"
@@ -1861,7 +1861,7 @@ openspec_change = "ops-brt-hls-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.11-OPERATING-POINT-PAYLOAD. Parses ops_color_info() (§5.11.4) including the rg(2) color description idc and the explicit color triple. No locally-decidable §6.10.6 rule is enforced yet, so validate is partial."
+notes = "Child row of AV2-5.11-OPERATING-POINT-PAYLOAD. Parses ops_color_info() (§5.11.4) including the rg(2) color description idc and the explicit color triple. §6.10.6 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-10-6, lines 2842-3005) states one numeric bound — ops_color_description_idc shall be in 0..127 (lines 2867-2869) — which the rg(2) encoding already caps at 127 (BitReader::read_rg, crate test read_rg_two_caps_at_127), so a successful parse satisfies it with no separate diagnostic. The ops_color_primaries / ops_transfer_characteristics / ops_matrix_coefficients / ops_full_range_flag values are defined entirely by ISO/IEC 23091-4 / ITU-T H.273 (Tables 6.14-6.15), an externally specified registry whose unlisted values are 'reserved ... and shall be ignored by decoders'; §6.10.6 states no cross-OBU color-info agreement rule. Residual: there is no further locally-decidable §6.10.6 conformance rule; any color-vs-Annex-A operating-point consistency is Annex-A semantics, blocked on the Annex A backlog, so validate stays partial."
 
 [feature.status]
 mapped = "done"
@@ -2117,7 +2117,7 @@ id = "AV2-5.17.1-METADATA-UNIT"
 name = "Metadata unit syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.17.1", "6.16"]
+spec_sections = ["5.17.1", "6.16.1"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/metadata.rs"
@@ -2125,7 +2125,7 @@ openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
+notes = "Child row of AV2-5.17-METADATA. §6.16.1 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-1, lines 3337-3352) states one requirement of bitstream conformance — remainingMuPayloadBits shall not be less than 0 (lines 3351-3352) — which is parse-enforced: parse_metadata_unit() runs the child payload against a reader bounded to metadataPayloadSize bytes and maps an overrun to MetadataErrorKind::UnitPayloadUnderflow (crates/splot-core/src/headers/metadata.rs:646), surfaced as a metadata bitstream/parse-error. metadata_unit_remaining_bit is decoder-ignored (lines 3341-3344). Residual: the placement of metadata units within a coded frame unit (in-frame-unit suffix vs prefix ordering, §7.3.3/§7.3.4) is frame-parsing-blocked, owned by AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT / AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT. Do not mark the umbrella done until this child is proven."
 
 [feature.status]
 mapped = "done"
@@ -2150,7 +2150,7 @@ id = "AV2-5.17.2-METADATA-SHORT"
 name = "Short metadata OBU syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.17.2", "6.16"]
+spec_sections = ["5.17.2", "6.16.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/metadata.rs"
@@ -2158,7 +2158,7 @@ openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
+notes = "Child row of AV2-5.17-METADATA. §6.16.2 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-2, lines 3361-3398) states one requirement of bitstream conformance — muh_layer_idc < 3 (line 3375) — landed as metadata/short-layer-idc-out-of-range (crates/splot-validate/src/checks/mod.rs:1128). Its other fields (metadata_is_suffix, metadata_necessity_idc, metadata_application_id, muh_cancel_flag, muh_persistence_idc, metadata_type) share the §6.16.3 semantics, validated by the metadata syntax parse, and the §6.16.3 muh_persistence_idc reserved range is surfaced as the metadata/persistence-idc-reserved warning. Residual: the in-frame-unit suffix/prefix placement of the short metadata OBU (§7.3.3/§7.3.4, decided by metadata_is_suffix relative to the surrounding frame unit) is frame-parsing-blocked, owned by AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT / AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT. Do not mark the umbrella done until this child is proven."
 
 [feature.status]
 mapped = "done"
@@ -2216,7 +2216,7 @@ id = "AV2-5.17.4-METADATA-ITUT-T35"
 name = "ITU-T T.35 metadata syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.17.4", "6.16"]
+spec_sections = ["5.17.4", "6.16.4"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/metadata.rs"
@@ -2224,13 +2224,13 @@ openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
+notes = "Child row of AV2-5.17-METADATA. §6.16.4 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-4, lines 3627-3648) states no requirement of bitstream conformance that AV2 can check: itu_t_t35_country_code, its extension byte, and itu_t_t35_payload_bytes are all defined entirely by Recommendation ITU-T T.35 (an externally specified registry), so there is no locally decidable AV2 constraint. The structure is validated by the §5.17 metadata syntax parse: the MetadataSyntax check (registry id metadata/syntax in crates/splot-validate/src/checks/mod.rs:1100) emits no per-field diagnostic for this child, so a malformed payload surfaces the actually-emitted parse-failure rule ids via syntax_error_diagnostic()/payload_parse_error_diagnostic() (bitstream/parse-error and the trailing-bits/* ids; the metadata OBU is non-extensible, so no obu-header/extension-flag check applies)."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -2239,10 +2239,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
-commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
+tests = ["crates/splot-core/src/headers/metadata.rs::tests"]
+commands = ["cargo test -p splot-core metadata"]
 fixtures = []
-diagnostics = []
+diagnostics = ["bitstream/parse-error", "trailing-bits/empty", "trailing-bits/missing-one-bit", "trailing-bits/zero-bit-not-zero"]
 
 [[feature]]
 id = "AV2-5.17.5-METADATA-HDR-CLL"
@@ -2315,7 +2315,7 @@ id = "AV2-5.17.7-METADATA-TIMECODE"
 name = "Timecode metadata syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.17.7", "6.16"]
+spec_sections = ["5.17.7", "6.16.7"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/metadata.rs"
@@ -2323,7 +2323,7 @@ openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
+notes = "Child row of AV2-5.17-METADATA. The locally-decidable §6.16.7 range bounds have landed (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-7): seconds_value 0..59 (lines 3873-3876), minutes_value 0..59 (3882-3885), and hours_value 0..23 (3890-3893) as metadata/timecode-seconds-out-of-range / metadata/timecode-minutes-out-of-range / metadata/timecode-hours-out-of-range (crates/splot-validate/src/checks/mod.rs:1327-1360). Residual, all still partial: (1) the inference-presence rules — when seconds_value/minutes_value/hours_value is not present it is inferred from the previous timecode and 'it is required that such a previous value shall have been present' (lines 3873-3893) — implementable local work that needs per-CVS previous-timecode state (planned metadata-residual-local-semantics change); (2) the output-order timing rules — clockTimestamp monotonicity when discontinuity_flag==0 (lines 3858-3860) and n_frames < maxPicPerSecond when ci_timing_info_present_flag==1 (lines 3865-3867) — which need output-order and §6.4.12 timing state. Do not mark the umbrella done until this child is proven."
 
 [feature.status]
 mapped = "done"
@@ -2348,7 +2348,7 @@ id = "AV2-5.17.8-METADATA-BANDING-HINTS"
 name = "Banding hints metadata syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.17.8", "6.16"]
+spec_sections = ["5.17.8", "6.16.8"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/metadata.rs"
@@ -2356,13 +2356,13 @@ openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
+notes = "Child row of AV2-5.17-METADATA. §6.16.8 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-8, lines 3905-3987) states no requirement of bitstream conformance: it opens by declaring that no normative debanding processing is required for decoder conformance, and every element is a descriptive hint or *_minus_N width/count with no locally decidable AV2 constraint. The structure is validated by the §5.17 metadata syntax parse: the MetadataSyntax check (registry id metadata/syntax in crates/splot-validate/src/checks/mod.rs:1100) emits no per-field diagnostic for this child, so a malformed payload surfaces the actually-emitted parse-failure rule ids via syntax_error_diagnostic()/payload_parse_error_diagnostic() (bitstream/parse-error and the trailing-bits/* ids; the metadata OBU is non-extensible, so no obu-header/extension-flag check applies)."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -2371,17 +2371,17 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
-commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
+tests = ["crates/splot-core/src/headers/metadata.rs::tests"]
+commands = ["cargo test -p splot-core metadata"]
 fixtures = []
-diagnostics = []
+diagnostics = ["bitstream/parse-error", "trailing-bits/empty", "trailing-bits/missing-one-bit", "trailing-bits/zero-bit-not-zero"]
 
 [[feature]]
 id = "AV2-5.17.9-METADATA-ICC-PROFILE"
 name = "ICC profile metadata syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.17.9", "6.16"]
+spec_sections = ["5.17.9", "6.16.9"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/metadata.rs"
@@ -2389,13 +2389,13 @@ openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
+notes = "Child row of AV2-5.17-METADATA. §6.16.9 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-9, lines 3991-4019) states no requirement of bitstream conformance that AV2 can check: icc_profile_data_payload_bytes is defined to be an ICC profile per ISO 15076-1 / ISO 20677, with ICCmajorVer/ICCminorVer interpretations whose unlisted values are explicitly 'unspecified or specified by other means'. There is no locally decidable AV2 constraint; the structure is validated by the §5.17 metadata syntax parse: the MetadataSyntax check (registry id metadata/syntax in crates/splot-validate/src/checks/mod.rs:1100) emits no per-field diagnostic for this child, so a malformed payload surfaces the actually-emitted parse-failure rule ids via syntax_error_diagnostic()/payload_parse_error_diagnostic() (bitstream/parse-error and the trailing-bits/* ids; the metadata OBU is non-extensible, so no obu-header/extension-flag check applies)."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -2404,10 +2404,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
-commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
+tests = ["crates/splot-core/src/headers/metadata.rs::tests"]
+commands = ["cargo test -p splot-core metadata"]
 fixtures = []
-diagnostics = []
+diagnostics = ["bitstream/parse-error", "trailing-bits/empty", "trailing-bits/missing-one-bit", "trailing-bits/zero-bit-not-zero"]
 
 [[feature]]
 id = "AV2-5.17.10-METADATA-SCAN-TYPE"
@@ -2447,7 +2447,7 @@ id = "AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO"
 name = "Temporal point info metadata syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.17.11", "6.16"]
+spec_sections = ["5.17.11", "6.16.11"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/metadata.rs"
@@ -2455,13 +2455,13 @@ openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
+notes = "Child row of AV2-5.17-METADATA. §6.16.11 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-11, lines 4103-4129) states one requirement of bitstream conformance — METADATA_TYPE_TEMPORAL_POINT_INFO shall only appear in OBU_METADATA_SHORT (lines 4110-4112) — landed as metadata/temporal-point-info-not-short (crates/splot-validate/src/checks/mod.rs:1306). The only other element, frame_presentation_time, is a DispCT-counted presentation time relative to random access points: it is a decoder-model quantity (Annex E frame timing) with no locally decidable bitstream constraint, so its semantics are decoder-model-blocked (Annex E, AV2-E-DECODER-MODEL territory) and nothing further is locally decidable for §6.16.11."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -2470,8 +2470,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
-commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests::metadata_temporal_point_info_in_group_is_flagged"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata_temporal"]
 fixtures = []
 diagnostics = ["metadata/temporal-point-info-not-short"]
 
@@ -2480,7 +2480,7 @@ id = "AV2-5.17.12-METADATA-DECODED-FRAME-HASH"
 name = "Decoded frame hash metadata syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.17.12", "6.16"]
+spec_sections = ["5.17.12", "6.16.13"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/metadata.rs"
@@ -2488,7 +2488,7 @@ openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
+notes = "Child row of AV2-5.17-METADATA. §6.16.13 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13, lines 4149-4263) defines the decoded-frame-hash content over OutY/OutU/OutV produced by the §7.21.1 output process (plus §7.21.2 intermediate output preparation and §7.21.7 film-grain synthesis), with the MD5 algorithm of [RFC1321]. The only locally decidable element, the reserved bit, is decoder-ignored. Verifying plane_hash/frame_hash against the decoded output is decoder-blocked: it needs the §7.21 output process (and §7.21.7 film-grain synthesis when has_grain == 1), which is not implemented (no decoder). validate stays partial; tracked behind the decoder/output-process backlog."
 
 [feature.status]
 mapped = "done"
@@ -2513,7 +2513,7 @@ id = "AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED"
 name = "User data unregistered metadata syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.17.13", "6.16"]
+spec_sections = ["5.17.13", "6.16.12"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/metadata.rs"
@@ -2521,13 +2521,13 @@ openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. Do not mark the umbrella done until this child is proven. When implementing, narrow spec_sections to the exact §6.16 subsection if the spec has one."
+notes = "Child row of AV2-5.17-METADATA. §6.16.12 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-12, lines 4133-4145) states no requirement of bitstream conformance that AV2 can check: uuid_iso_iec_11578 conforms to ISO/IEC 11578:1996 and the spec explicitly 'does not specify or restrict the format or interpretation of the user_data_payload_byte payload bytes'. There is no locally decidable AV2 constraint; the structure is validated by the §5.17 metadata syntax parse: the MetadataSyntax check (registry id metadata/syntax in crates/splot-validate/src/checks/mod.rs:1100) emits no per-field diagnostic for this child, so a malformed payload surfaces the actually-emitted parse-failure rule ids via syntax_error_diagnostic()/payload_parse_error_diagnostic() (bitstream/parse-error and the trailing-bits/* ids; the metadata OBU is non-extensible, so no obu-header/extension-flag check applies)."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -2536,10 +2536,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
-commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
+tests = ["crates/splot-core/src/headers/metadata.rs::tests"]
+commands = ["cargo test -p splot-core metadata"]
 fixtures = []
-diagnostics = []
+diagnostics = ["bitstream/parse-error", "trailing-bits/empty", "trailing-bits/missing-one-bit", "trailing-bits/zero-bit-not-zero"]
 
 [[feature]]
 id = "AV2-5.18-FRAME-HEADER"
@@ -3002,7 +3002,7 @@ openspec_change = "frame-activation-hls-skeleton"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Prefix-only §5.19 parser for is_first_tile_group, frame_header_present_flag, and the optional frame-header prefix (parsed only for the first tile group). Tile start/end and tile_group_payload (AV2-5.20-TILE-GROUP-PAYLOAD) remain todo."
+notes = "Prefix-only §5.19 parser for is_first_tile_group, frame_header_present_flag, and the optional frame-header prefix (parsed only for the first tile group). Residual: the §5.19 tile_group_obu() remainder after the frame_header() call (docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19, lines 8429-8529) is unparsed — the bru_inactive headerBits/remainingBits trailing_bits() early-return tail (lines 8453-8463), tile_start_and_end_present_flag and the tg_start/tg_end f(tileBits) read (lines 8467-8493), the use_bru BruTileActives f(1) loop (lines 8495-8517), the closing byte_alignment() (line 8519), and the headerBytes-adjusted tile_group_payload(sz) handoff (lines 8521-8527). These depend on TileCols/TileRows (frame-header tile_info()) and own the §6.2.4 byte_alignment()/§6.2.3 trailing_bits() reachability gaps on AV2-5.2.3-TRAILING-BITS / AV2-5.2.4-BYTE-ALIGNMENT. The tile_group_payload() body itself is owned by AV2-5.20-TILE-GROUP-PAYLOAD; this row remains partial until the §5.19 control region is consumed."
 
 [feature.status]
 mapped = "done"

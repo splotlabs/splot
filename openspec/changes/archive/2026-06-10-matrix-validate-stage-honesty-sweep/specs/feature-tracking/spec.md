@@ -1,35 +1,9 @@
-# feature-tracking Specification
+# feature-tracking delta: matrix-validate-stage-honesty-sweep
 
-## Purpose
+Formalizes the roadmap done-criteria rule the sweep enforces: a partial stage
+must say what remains. No AV2 syntax change.
 
-The repository's canonical AV2 implementation-status model, drift checks, and
-rendered status outputs.
-
-Tracked by Feature ID: `XTASK-FEATURE-STATUS`.
-
-## Requirements
-
-### Requirement: canonical implementation matrix
-
-The repository SHALL track AV2 implementation status in a canonical
-`docs/IMPLEMENTATION-MATRIX.toml`, enforced by `cargo xtask check-feature-status`
-and wired into `cargo xtask ci`.
-
-#### Scenario: drift is rejected
-
-- **WHEN** a `TODO(spec: <id>)`, a feature-id token, or a `done` stage without proof
-  disagrees with the matrix
-- **THEN** `cargo xtask check-feature-status` fails with an actionable message
-
-### Requirement: rendered status
-
-The matrix SHALL be renderable as a table, JSON, and markdown, and summarizable by
-`cargo xtask spec-coverage`.
-
-#### Scenario: regenerate the status doc
-
-- **WHEN** `cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md` runs
-- **THEN** `docs/FEATURE-STATUS.md` reflects the matrix and the drift check passes
+## ADDED Requirements
 
 ### Requirement: partial stages name their residual or blocker
 
@@ -61,3 +35,10 @@ closing the stage.
 - **THEN** the row's notes name that blocking feature id and the stage stays
   `partial` as documented-blocked until the parsing lands
 
+## MODIFIED Requirements
+
+(none)
+
+## REMOVED Requirements
+
+(none)

@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "54a2d3fa43b24341500527ddb06556b3f6aeff1e",
+  "audited_commit": "94020b726ae30ffb879da56438f78fc869067cad",
   "outcome": "success",
   "files": [
     {
@@ -883,7 +883,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "2a5e9adccfd4f6d2f646bc2e41f2e4331e878807ab30929de9dad78c2bc1acae",
+      "sha256": "15dec8fb295dc07c7ae9e6f3d065b492c52284bb45caf365a9fb053b95f9fcf7",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1050,7 +1050,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "206e5842fd1ecdc178ccc2a86ebe1b41bf9ef3ccd23cc08afa394243b868dd21",
+      "sha256": "9836251d399d6cb56744590f9deba59b4f10fa67e7fc7d4102458aa483548583",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1187,7 +1187,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "b12ec256afbfdf6b0321f7d337d4c0ea79c4e370acdcef14e53b24382b77ebce",
+      "sha256": "362c056478b88c76d424f320ffff3d99066e34612c1ec9915699cbf50bd9650f",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2575,6 +2575,47 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-10-matrix-validate-stage-honesty-sweep/proposal.md",
+      "sha256": "7e06a6515d52839c4dc7769b092e63e22da04b1319eb4995402e9a087dde7239",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.2.1-OBU-TYPE",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "DOC-FEATURE-TRACKING",
+        "XTASK-FEATURE-STATUS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-matrix-validate-stage-honesty-sweep/specs/feature-tracking/spec.md",
+      "sha256": "0b66d97eb0138330e8d59446713ceb6969f2af9c90fa4ff8bf302f9a10b843ef",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-matrix-validate-stage-honesty-sweep/tasks.md",
+      "sha256": "a316da5530fd48912a8c70da1eb1c74f2c6c54c433659a6872763552fd0591a4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-4.11.6-LEB128",
+        "AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO",
+        "AV2-5.17.12-METADATA-DECODED-FRAME-HASH",
+        "AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED",
+        "AV2-5.17.4-METADATA-ITUT-T35",
+        "AV2-5.17.8-METADATA-BANDING-HINTS",
+        "AV2-5.17.9-METADATA-ICC-PROFILE",
+        "AV2-5.2.1-OBU-TYPE",
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.4.6-SEQUENCE-INTER-CONFIG",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-10-metadata-semantic-validation/design.md",
       "sha256": "5045fd7332ad0cc897af8db688ed9621f3295e30ef9fcc583ecaee2ca8f92687",
       "scope_kind": "openspec",
@@ -2856,7 +2897,7 @@
     },
     {
       "path": "openspec/specs/feature-tracking/spec.md",
-      "sha256": "020fbf0054150d1ea29f15e2958764eb3f85741b6047dfe6b978410c987dc921",
+      "sha256": "bd1682c31f8d45f828d9c111762618ee1dfcdc3f22127c475ea8d0e162e25f89",
       "scope_kind": "openspec",
       "feature_ids": [
         "XTASK-FEATURE-STATUS"
