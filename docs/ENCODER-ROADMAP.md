@@ -1,32 +1,17 @@
 # Encoder roadmap
 
 `splot` is validator-first; the encoder comes later. This roadmap sequences the
-work and ties each milestone to Feature IDs in
+**encoder-facing** work and ties each milestone to Feature IDs in
 [`docs/IMPLEMENTATION-MATRIX.toml`](./IMPLEMENTATION-MATRIX.toml). Status is tracked
-there, not here — run `cargo xtask feature-status` for the live view.
+there, not here — see the generated [SPEC-COVERAGE.md](./SPEC-COVERAGE.md) /
+[FEATURE-STATUS.md](./FEATURE-STATUS.md) for the live view.
 
-## M0 — Repo + validator scaffold *(done)*
+## M0–M2 — Validator foundation *(see VALIDATOR-ROADMAP.md)*
 
-Annex B, LEB128, AV2 OBU header, structured diagnostics, the `inspect` CLI, and
-no-panic fuzz/property coverage.
-
-- `AV2-4.11.6-LEB128`, `AV2-5.2.2-OBU-HEADER`, `AV2-5.2.1-OBU-TYPE`,
-  `AV2-B-ANNEXB-OBU-ENVELOPE`, `CLI-VALIDATE`, `CLI-INSPECT`, `CONF-FUZZ-NO-PANIC`.
-
-## M1 — Header-level conformance
-
-OBU type table, layer-id rules, trailing bits, reserved OBU handling.
-
-- `AV2-5.2.2-OBU-HEADER` (validate), `AV2-5.2.3-TRAILING-BITS`,
-  `AV2-5.3-RESERVED-OBU`, `AV2-7.3-OBU-ORDERING`.
-
-## M2 — High-level syntax parsing
-
-Sequence header, layer configuration record, operating point set, frame-header
-skeleton.
-
-- `AV2-5.4-SEQUENCE-HEADER`, `AV2-5.8-LAYER-CONFIG-RECORD`,
-  `AV2-5.10-OPERATING-POINT-SET`, `AV2-5.18-FRAME-HEADER`.
+The validator scaffold, header-level conformance, and high-level syntax
+parsing milestones are validator scope: their sequencing, per-phase status,
+and remaining gaps live in [VALIDATOR-ROADMAP.md](./VALIDATOR-ROADMAP.md)
+(Phases 0–7), not here.
 
 ## M3 — Bitstream writer
 
@@ -35,11 +20,12 @@ alignment, and the high-level syntax modeled so far.
 
 - `ENC-BITSTREAM-WRITER`, `AV2-5.2.4-BYTE-ALIGNMENT`.
 
-## M4 — Conformance harness
+## M4 — Conformance harness *(see VALIDATOR-ROADMAP.md Phase 10 and CONFORMANCE.md)*
 
-Public vectors (when available), AVM differential testing, snapshot `inspect` tests.
-
-- `CONF-PUBLIC-VECTORS`, `CONF-AVM-DIFF-HARNESS`, `CONF-INSPECT-SNAPSHOTS`.
+Public vectors, AVM differential testing, and snapshot `inspect` tests
+(`CONF-PUBLIC-VECTORS`, `CONF-AVM-DIFF-HARNESS`, `CONF-INSPECT-SNAPSHOTS`) are
+planned in [VALIDATOR-ROADMAP.md](./VALIDATOR-ROADMAP.md) Phase 10; the
+encoder direction (`splot encode` → `avm decode`) activates once M3/M5 exist.
 
 ## M5 — Minimal experimental encoder path
 

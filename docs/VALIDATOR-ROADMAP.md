@@ -5,15 +5,16 @@
 `scope: AV2 validator/parser/inspector, not encoder`
 
 This is the single forward-looking validator planning document. The earlier
-phase plans and design sketches (`VALIDATOR-GAP-ANALYSIS.md`,
-`VALIDATOR-NEXT-PHASE.md`, `VALIDATOR-SEQUENCE-HEADER-COVERAGE.md`,
-`VALIDATOR-HLS-AVAILABILITY-STATE.md`,
-`VALIDATOR-IMPLEMENTATION-MATRIX-EXPANSION.md`, and
-`VALIDATOR-NEXT-DIAGNOSTICS.md`) were executed and folded into this roadmap,
-the canonical matrix, and the diagnostics registry; their content lives in git
-history. Canonical per-feature status remains
-[`IMPLEMENTATION-MATRIX.toml`](./IMPLEMENTATION-MATRIX.toml); each phase below
-carries a coarse status line as of 2026-06-09.
+phase plans, design sketches, and the dated status snapshot
+(`VALIDATOR-GAP-ANALYSIS.md`, `VALIDATOR-NEXT-PHASE.md`,
+`VALIDATOR-SEQUENCE-HEADER-COVERAGE.md`, `VALIDATOR-HLS-AVAILABILITY-STATE.md`,
+`VALIDATOR-IMPLEMENTATION-MATRIX-EXPANSION.md`, `VALIDATOR-NEXT-DIAGNOSTICS.md`,
+`OPS-BRT-DIAGNOSTICS.md`, and `CURRENT-VALIDATOR-STATE.md`) were executed and
+folded into this roadmap, the canonical matrix, and the diagnostics registry;
+their content lives in git history. Canonical per-feature status remains
+[`IMPLEMENTATION-MATRIX.toml`](./IMPLEMENTATION-MATRIX.toml) — see the
+generated [`SPEC-COVERAGE.md`](./SPEC-COVERAGE.md) for the per-spec-section
+view. Each phase below carries a coarse status line as of 2026-06-10.
 
 ## Guiding rule
 
@@ -25,116 +26,76 @@ OpenSpec change -> docs/IMPLEMENTATION-MATRIX.toml -> code/tests/diagnostics -> 
 
 Do not mark a matrix stage `done` without proof. Do not add a bare `TODO(spec)`. Use `TODO(spec: FEATURE-ID): ...` and make sure the Feature ID exists in the matrix.
 
+## Current focus and guardrails
+
+Before any code edit, orient with:
+
+```bash
+git status --short
+cargo xtask feature-status --format table
+cargo xtask spec-coverage
+cargo xtask ci
+```
+
+**Highest-leverage next work:** deepen sequence/HLS semantics and the
+temporal-unit state machine before frame headers and tile groups. Sequence
+state drives later parser branches; §6.2.2 activated limits and §7.3.8 HLS
+availability are prerequisites for meaningful frame/tile validation; frame
+header and tile group syntax depend on sequence-level dimensions, layer
+limits, tool flags, dependency maps, and timing fields. The open gaps, in
+dependency order:
+
+| Gap | Feature IDs |
+|---|---|
+| Sequence semantics | `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` |
+| Activated sequence state | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` |
+| HLS availability | `AV2-7.3.8-HLS-AVAILABILITY` |
+| Temporal-unit ordering completion | `AV2-7.3.7-TEMPORAL-UNIT-ORDER`, then §7.3.2–§7.3.6 children as parse dependencies allow |
+| Deeper HLS semantics | the `validate = partial` HLS rows (LCR, atlas, OPS/BRT, metadata) and the deferred §6.10.7 dependency-map checks |
+| Frame-header continuation | the Phase 8 child rows below |
+
+**Do not start yet** as a primary task: a full tile-group payload parser,
+entropy/range coding, a decoder, an encoder, a bitstream writer, or the AVM
+differential harness. Prepare hooks and fixtures, but keep the core work
+focused on the gaps above.
+
 ## Phase 0 — matrix and OpenSpec hygiene
 
 **Status: done.** The roadmap is linked from `SPEC-MAPPING.md`,
 `FEATURE-TRACKING.md`, and `README.md`; the OpenSpec change is archived
 (`2026-06-07-validator-coverage-roadmap`); the matrix carries child rows for
-the large features and `FEATURE-STATUS.md` is regenerated.
+the large features and the generated docs are regenerated and drift-gated.
 
-**Goal:** make missing validator work visible before code expands.
-
-Tasks:
-
-- Add this roadmap to `docs/` and link it from `docs/SPEC-MAPPING.md`, `docs/FEATURE-TRACKING.md`, and `README.md` if appropriate.
-- Add or refine `openspec/changes/validator-coverage-roadmap/`.
-- Expand `docs/IMPLEMENTATION-MATRIX.toml` with child rows for large features, especially sequence header and frame header.
-- Regenerate `docs/FEATURE-STATUS.md`.
-
-Acceptance:
-
-```bash
-cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md
-cargo xtask check-feature-status
-cargo xtask ci
-```
+**Goal (executed):** make missing validator work visible before code expands —
+matrix child rows for large features, OpenSpec hygiene, generated status docs.
 
 ## Phase 1 — descriptor and payload-boundary foundation
 
-**Status: done.** All five rows have `parse`/`tests`/`decode_check` done with
-proptest proof; `AV2-4.11.7-SU` and `AV2-4.11.4-SVLC` landed beyond the
-original scope. Trailing-bits/byte-alignment `validate` stays `partial` until
-every payload parser calls the boundary helpers.
+**Status: done.** All five rows (`AV2-4.11.3-UVLC`, `AV2-4.11.5-LE`,
+`AV2-4.11.8-NS`, `AV2-5.2.3-TRAILING-BITS`, `AV2-5.2.4-BYTE-ALIGNMENT`) have
+`parse`/`tests`/`decode_check` done with proptest proof; `AV2-4.11.7-SU` and
+`AV2-4.11.4-SVLC` landed beyond the original scope. Trailing-bits and
+byte-alignment `validate` stays `partial` until every payload parser calls the
+boundary helpers.
 
-**Goal:** make `splot-core` able to parse payload syntax without panics or overreads.
-
-Feature IDs:
-
-- `AV2-4.11.3-UVLC`
-- `AV2-4.11.5-LE`
-- `AV2-4.11.8-NS`
-- `AV2-5.2.3-TRAILING-BITS`
-- `AV2-5.2.4-BYTE-ALIGNMENT`
-
-Implementation shape:
-
-```text
-crates/splot-core/src/bitio.rs
-  BitReader::read_bit()
-  BitReader::read_bits(n)
-  BitReader::read_uvlc()
-  BitReader::read_ns(n)
-  BitReader::read_le(n)
-  BitReader::byte_align_zero()
-  BitReader::remaining_bits_in(payload)
-
-crates/splot-core/src/obu.rs
-  parse_trailing_bits(nb_bits)
-  parse_obu_extension_data(nb_bits)
-```
-
-Validation requirements:
-
-- EOF returns typed `Error`, never panics.
-- `trailing_bits(nbBits)` rejects `nbBits == 0` before reading `trailing_one_bit`.
-- `trailing_one_bit` must be 1.
-- every trailing/alignment zero bit must be 0.
-- property tests cover arbitrary byte slices.
-
-Acceptance:
-
-```bash
-cargo test -p splot-core bitio
-cargo test -p splot-core trailing
-cargo test -p splot-core proptests
-cargo xtask ci
-```
+**Goal (executed):** make `splot-core` able to parse payload syntax without
+panics or overreads — `BitReader` descriptors in `crates/splot-core/src/bitio.rs`,
+trailing-bits/extension handling in `crates/splot-core/src/obu.rs`, typed EOF
+errors, property tests over arbitrary byte slices.
 
 ## Phase 2 — `open_bitstream_unit(sz)` payload dispatch
 
 **Status: done** for this phase's scope: dispatch, `PayloadStatus`, and the
-`inspect --json` `payload_status` object landed with tests. The row's
-`parse = partial` is the declared honest end-state until every payload variant
-exists.
+`inspect --json` `payload_status` object landed with tests
+(`AV2-5.2.1-OBU-DISPATCH`). The row's `parse = partial` is the declared honest
+end-state until every payload variant exists.
 
-**Goal:** parse the OBU payload selected by `obu_type` instead of treating every payload as opaque bytes.
-
-Feature ID:
-
-- `AV2-5.2.1-OBU-DISPATCH`
-
-Implementation shape:
-
-```rust
-pub enum PayloadStatus<'a, T> {
-    Parsed(T),
-    Opaque(&'a [u8]),
-    Unimplemented { feature: &'static str, payload: &'a [u8] },
-}
-
-pub enum ParsedObu<'a> {
-    TemporalDelimiter,
-}
-```
-
-Keep `ParsedObu` `#[non_exhaustive]` and only add concrete variants when the parser exists. Reserved OBU payload bytes remain `PayloadStatus::Opaque` because AV2 §5.3 defines no syntax for them. Until a parser exists, dispatch returns `PayloadStatus::Unimplemented` with the owning Feature ID plus the bounded raw payload bytes. Strict validation should fail on unparsed normative payloads once the feature is marked as required.
-
-Acceptance:
-
-- Existing envelope/header tests still pass.
-- `inspect --headers` remains stable.
-- `inspect --json` includes a `payload_status` object whose `status` is `"opaque"`, `"parsed"`, `"unimplemented"`, or `"invalid"`.
-- Matrix stages are honest: dispatch can be `partial` while payload variants remain `todo`.
+**Goal (executed):** parse the OBU payload selected by `obu_type` instead of
+treating every payload as opaque bytes. `ParsedObu` stays `#[non_exhaustive]`;
+reserved OBU payloads stay `PayloadStatus::Opaque` (AV2 §5.3 defines no syntax
+for them); unimplemented payloads return `PayloadStatus::Unimplemented` with
+the owning Feature ID. Strict validation should fail on unparsed normative
+payloads once the feature is marked as required.
 
 ## Phase 3 — sequence header parser, split by §5.4 child rows
 
@@ -149,7 +110,7 @@ Umbrella:
 
 - `AV2-5.4-SEQUENCE-HEADER`
 
-Child rows to add or implement:
+Child rows (all landed; `validate` depth varies):
 
 - `AV2-5.4.1-SEQUENCE-HEADER-GENERAL`
 - `AV2-5.4.2-SEQUENCE-TILE-CONFIG`
@@ -166,52 +127,13 @@ Child rows to add or implement:
 - `AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO`
 - `AV2-6.4-SEQUENCE-HEADER-SEMANTICS`
 
-Core data shape:
-
-```rust
-pub struct SequenceHeader {
-    pub seq_header_id: SequenceHeaderId,
-    pub seq_profile_idc: ProfileIdc,
-    pub single_picture_header_flag: bool,
-    pub seq_level_idx: LevelIdx,
-    pub seq_tier: Tier,
-    pub chroma_format_idc: ChromaFormatIdc,
-    pub bit_depth_idc: BitDepthIdc,
-    pub seq_lcr_id: LcrId,
-    pub still_picture: bool,
-    pub max_tlayer_id: TemporalLayerId,
-    pub max_mlayer_id: EmbeddedLayerId,
-    pub seq_max_mlayer_count: EmbeddedLayerCount,
-    pub monotonic_output_order_flag: bool,
-    pub max_frame_width: NonZeroU32,
-    pub max_frame_height: NonZeroU32,
-    pub cropping_window: CroppingWindow,
-    // Child structures follow only as implemented.
-}
-```
-
-Do not add AV1 names. Every field must map directly to AV2 syntax or an AV2-derived variable.
-
-Local checks to add first:
-
-- `sequence-header/seq-header-id-out-of-range`
-- `sequence-header/chroma-format-out-of-range`
-- `sequence-header/bit-depth-out-of-range`
-- `sequence-header/seq-max-mlayer-count-out-of-range`
-- `sequence-header/crop-left-out-of-range`
-- `sequence-header/crop-right-out-of-range`
-- `sequence-header/crop-top-out-of-range`
-- `sequence-header/crop-bottom-out-of-range`
-- `sequence-header/timing-num-units-zero`
-- `sequence-header/timing-time-scale-zero`
-
-Acceptance:
-
-- Positive tests for minimal still-picture and non-still sequence headers.
-- Negative tests for every local range check.
-- EOF tests at every field boundary that has variable width.
-- Fuzz/property test: arbitrary sequence-header payload never panics.
-- Matrix proof lists test modules and diagnostic IDs.
+The parser lives in `crates/splot-core/src/headers/sequence.rs` (no AV1 names;
+every field maps directly to AV2 syntax or an AV2-derived variable). The local
+`sequence-header/*` checks proposed by this phase are landed and listed in the
+enforced registry tables of
+[`VALIDATOR-DIAGNOSTICS.md`](./VALIDATOR-DIAGNOSTICS.md). Remaining work is
+the deeper `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` validation noted in the status
+line.
 
 ## Phase 4 — activated sequence state and remaining §6.2.2 checks
 
@@ -267,7 +189,7 @@ with tests (`AV2-7.3.7-TEMPORAL-UNIT-ORDER` and
 Feature IDs:
 
 - `AV2-7.3-OBU-ORDERING` umbrella, already present.
-- Add child rows:
+- Child rows (all in the matrix):
   - `AV2-7.3.2-CMVS-BOUNDARIES`
   - `AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT`
   - `AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT`
@@ -511,9 +433,8 @@ lands, add it to the registry tables there (the CI gate will require it).
 | `ops/tlayer-dependency-missing` | error | §6.10.7 | `AV2-5.10-OPERATING-POINT-SET` | As above, for the activated `TLayerDependencyMap`. |
 | `brt/global-ordering-position` | error | §7.3.7 | `AV2-7.3-OBU-ORDERING` | A global BRT in an invalid temporal-unit position. Deferred: §7.3.7 does not list BRT among the global prefix OBUs, so a hard ordering error needs the §7.3.8 decoder-model / random-access state (tracked by a spec TODO under `AV2-7.3-OBU-ORDERING` in `splot-validate`). |
 
-Naming rules: lowercase kebab-case after the slash; prefix by conceptual
-owner, not Rust module name; no numeric values encoded in the ID; never rename
-a landed ID without a migration note.
+Naming rules live in [`FEATURE-TRACKING.md`](./FEATURE-TRACKING.md) § 12
+(Diagnostic-ID convention); never rename a landed ID without a migration note.
 
 ## Done criteria for the umbrella validator goal
 

@@ -45,13 +45,18 @@ exception may use MIT (see [AGENTS.md](../AGENTS.md) § 9).
 
 `CONF-FUZZ-NO-PANIC`: malformed input must produce errors/reports, never a panic.
 
-- On **stable**, the `parsers_never_panic` proptest in `splot-core::annexb` runs in
-  `cargo test`.
-- On **nightly**, the `parse_obu` cargo-fuzz target covers the same invariant:
+- On **stable**, the no-panic proptests run in `cargo test`
+  (`parsers_never_panic` in `splot-core::annexb`, `hls_parsers_never_panic` in
+  `splot-core::hls`, `metadata_parsers_never_panic` in
+  `splot-core::headers::metadata`).
+- On **nightly**, the `parse_obu` cargo-fuzz target covers the same invariant.
+  CI runs a **blocking 60-second `parse_obu` smoke on every PR**
+  (`.github/workflows/ci.yml` `fuzz-smoke`); locally:
 
   ```bash
   cargo install cargo-fuzz --locked
-  cargo +nightly fuzz run parse_obu
+  cargo +nightly fuzz run parse_obu     # full run
+  cargo xtask fuzz --time 30            # local smoke (skips if tools missing)
   ```
 
 ## Inspector snapshots

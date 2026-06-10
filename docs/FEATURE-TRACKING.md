@@ -150,21 +150,24 @@ children are. See the schema's "splitting" section.
 
 ## 11. How an agent chooses the next task
 
-1. `cargo xtask spec-coverage` — see what is mapped but not implemented.
+1. Scan the generated [SPEC-COVERAGE.md](./SPEC-COVERAGE.md) (or run
+   `cargo xtask spec-coverage`) — blank/partial cells in spec order are the
+   open work.
 2. Prefer **validator-first** rows: `parse`/`validate` on normative bitstream
    syntax with `risk = high`, in dependency order (LEB128 → OBU header → Annex B →
    headers → ordering).
 3. Avoid rows whose dependencies are still `todo` (e.g. tile group before frame
    header).
 4. Pick a row with an existing OpenSpec change, or create one.
-5. Implement, prove, update the matrix, regenerate `FEATURE-STATUS.md`, run
-   `cargo xtask ci`.
+5. Implement, prove, update the matrix, regenerate the generated docs
+   (`FEATURE-STATUS.md`, `SPEC-COVERAGE.md`), run `cargo xtask ci`.
 
 For the current validator expansion plan, start with
-[VALIDATOR-ROADMAP.md](./VALIDATOR-ROADMAP.md),
-[CURRENT-VALIDATOR-STATE.md](./CURRENT-VALIDATOR-STATE.md),
-and [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md). Those files are
-planning aids; the matrix remains canonical.
+[VALIDATOR-ROADMAP.md](./VALIDATOR-ROADMAP.md) (phases, current focus,
+guardrails) and [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md) (the
+CI-enforced diagnostic registry). The matrix remains canonical. The rationale
+for this whole tracking system is recorded in
+[DECISIONS/0001-feature-tracking.md](./DECISIONS/0001-feature-tracking.md).
 
 ## 12. Diagnostic-ID convention
 

@@ -12,7 +12,7 @@
 
 ## 1. Current repository policy
 
-`splot` project code and original documentation are intended to be licensed under:
+`splot` project code and original documentation are licensed under:
 
 ```text
 PolyForm Noncommercial 1.0.0

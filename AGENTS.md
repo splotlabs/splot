@@ -26,8 +26,9 @@ encoder research documentation, read:
 
 rav1e and SVT-AV1 are engineering inspiration only. Do not copy AV1 syntax, source code, tables,
 constants, entropy CDFs, comments, or prose. AV2 behavior must be derived from the AV2 specification
-and AVM. If a feature touches syntax, reconstruction, reference state, or layer behavior, update
-`docs/SPEC-MAPPING.md` before implementation.
+and AVM. If a feature touches syntax, reconstruction, reference state, or layer behavior, find or create
+its row in `docs/IMPLEMENTATION-MATRIX.toml` before implementation (see the Feature tracking
+section); `docs/SPEC-MAPPING.md` holds the spec sources and rules, not per-feature status.
 
 ## 2. Repository map and dependency direction
 
@@ -47,7 +48,10 @@ fuzz                   cargo-fuzz target (outside the workspace)
 - Nothing depends on `splot-encode` except `splot-cli`.
 - `xtask` is standalone.
 
-This is enforced by `cargo xtask check-dependency-direction`.
+This is enforced by `cargo xtask check-dependency-direction`. Crate
+responsibilities, the error model, and the unsafe/SIMD policy are expanded in
+[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md); the review checklist is
+[docs/CODE_REVIEW.md](./docs/CODE_REVIEW.md).
 
 ## 3. Before editing
 

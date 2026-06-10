@@ -313,22 +313,28 @@ introduces a new namespace.
 
 ## Intentional non-checks (spec honesty)
 
-A few conformance points are deliberately not flagged, to avoid fabricating spec requirements:
+Conformance points deliberately not flagged, in two groups.
+
+**Structurally unobservable or not a spec requirement** — these stay non-checks:
 
 - The global atlas (§ 7.3.8.4) is "can be available", so a missing global atlas is not an error.
 - § 6.8 / § 6.9 define no "repeated record must be identical" rule, so no LCR/atlas
   duplicate-not-identical diagnostic is emitted (unlike `OBU_MSDO` / sequence headers).
-- MFH layer-dependency-map checks and OPS § 6.10.7 dependency-map agreement are deferred:
-  `MLayerDependencyMap` / `TLayerDependencyMap` are not exposed by the sequence-header model,
-  so they are not fabricated from max layer IDs.
-- An unresolved cross-OPS inheritance reference is not flagged (`ops/inherited-ops-unavailable`
-  is reserved) because the reference may be supplied through external HLS.
 - The § 6.4.11 requirement that no value written into `UserQm` equals 0
   (`docs/spec/av2/1.0.0/06-syntax-structures-semantics.md`, "User defined QM semantics") is not
   a diagnostic: the § 5.4.11 parse makes a zero entry unrepresentable — the running quant
   starts at 32, a computed `quant2 == 0` selects the coefficient-repeat path (writing the
   prior non-zero value), and mirror/copy paths replicate already non-zero values — so the
   validator cannot observe a violation.
+
+**Deferred pending infrastructure** — planned in the
+[`VALIDATOR-ROADMAP.md`](./VALIDATOR-ROADMAP.md) backlog, not fabricated today:
+
+- MFH layer-dependency-map checks and OPS § 6.10.7 dependency-map agreement:
+  `MLayerDependencyMap` / `TLayerDependencyMap` are not exposed by the sequence-header model,
+  so they are not fabricated from max layer IDs.
+- An unresolved cross-OPS inheritance reference is not flagged (`ops/inherited-ops-unavailable`
+  is reserved) because the reference may be supplied through external HLS.
 
 ## Testing expectations per diagnostic
 
