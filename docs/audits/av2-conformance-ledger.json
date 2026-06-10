@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "b791f62c5d0e80c0f78c37ff10bac7bcd7ae7df5",
+  "audited_commit": "a209d682e10a5498400649fbdbee861f83ce0471",
   "outcome": "success",
   "files": [
     {
@@ -760,7 +760,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "9876c7cb4f24ddcbf94fb39c2a82e08a1335ae5310da3d3f58753d85e522e5b6",
+      "sha256": "fb35019bb6e42ff73598a1111083f18f034aae7f9a6aa9498d3c97087573aa24",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.17.5-METADATA-HDR-CLL",
@@ -822,7 +822,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "6745a09bdc409b570b8da9f22b19ef97e9e581533d14459fb083195494e9fbe5",
+      "sha256": "2cba0b1b0e06e0bfa36e9e4cc08e662170a330faaaedeae637c8be9c2746e144",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"

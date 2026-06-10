@@ -7957,6 +7957,157 @@ mod tests {
         );
     }
 
+    #[test]
+    fn distinct_mlayer_count_accumulated_before_header_activation_is_flagged() {
+        // § 6.4.1: OBUs arriving before any active sequence header for their extended
+        // layer accumulate a distinct-obu_mlayer_id count that the eager per-OBU check
+        // cannot compare (no active header yet, and the activating header's own
+        // already-seen obu_mlayer_id == 0 yields nothing new). Here two pre-header OBUs at
+        // embedded layers 0 and 1 accumulate {0, 1} = 2 before the sequence header
+        // activates with SeqMaxMlayerCnt 1; the activation-path retroactive check must
+        // emit the exceedance, exactly once.
+        let mut data = temporal_delimiter_obu();
+        // Pre-header OBUs at embedded layers 0 and 1 (counted, no header active yet).
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 0, 0), &[]));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 1, 0), &[]));
+        // The sequence header (embedded layer 0, forced by § 6.2.2) now activates with
+        // SeqMaxMlayerCnt 1; its own obu_mlayer_id 0 was already counted above.
+        data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            report
+                .errors()
+                .filter(|d| {
+                    d.rule_id == "sequence-state/distinct-mlayer-count-exceeds-seq-max"
+                        && d.spec_section.as_deref() == Some("6.4.1")
+                })
+                .count(),
+            1,
+            "a pre-header distinct-mlayer count must fire once on activation; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn distinct_mlayer_count_accumulated_before_header_activation_within_seqmax_is_conforming() {
+        // § 6.4.1: the same pre-header accumulation of embedded layers 0 and 1 ({0, 1} =
+        // 2) is within budget when the activating header has SeqMaxMlayerCnt 2
+        // (sequence_header_payload(0, 1)); the retroactive check must NOT fire.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 0, 0), &[]));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 1, 0), &[]));
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/distinct-mlayer-count-exceeds-seq-max"),
+            "a pre-header count within SeqMaxMlayerCnt must not fire; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn distinct_mlayer_count_before_header_activation_under_external_hls_is_not_flagged() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // § 6.4.1: caller-provided external HLS suppresses the retroactive activation-path
+        // check exactly as it suppresses the eager per-OBU check — an out-of-band header
+        // may carry a SeqMaxMlayerCnt this validator does not model.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 0, 0), &[]));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 1, 0), &[]));
+        data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one()));
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(0),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/distinct-mlayer-count-exceeds-seq-max"),
+            "external HLS must suppress the retroactive distinct-mlayer check; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn distinct_mlayer_count_before_frame_header_activation_is_flagged() {
+        // § 6.4.1 / § 5.18.2: the retroactive distinct-mlayer comparison fires on the
+        // frame-header load_sequence_header activation path, not only on an OBU-order
+        // sequence-header activation. Extended layer 1 (which the xlayer-0 sequence
+        // header does NOT activate by OBU order) accumulates {0, 1} = 2 distinct
+        // obu_mlayer_id values before any header is active for it; a non-CLK frame
+        // (OBU_REGULAR_TILE_GROUP) at xlayer 1 then references seq 0 (SeqMaxMlayerCnt 1)
+        // and frame-confirms its activation. The activating frame's own obu_mlayer_id 0
+        // is already in the set, so the eager count_distinct_mlayer yields nothing — only
+        // the activation-path retroactive check can flag the exceedance.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one()));
+        // Pre-header OBUs at xlayer 1, embedded layers 0 and 1 (no header active for
+        // xlayer 1 yet, so they only accumulate the distinct count).
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 0, 1), &[]));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 1, 1), &[]));
+        // A non-CLK frame at xlayer 1, embedded layer 0, references seq 0: the § 5.18.2
+        // activation that makes SeqMaxMlayerCnt available for xlayer 1.
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 1, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            report
+                .errors()
+                .filter(|d| {
+                    d.rule_id == "sequence-state/distinct-mlayer-count-exceeds-seq-max"
+                        && d.spec_section.as_deref() == Some("6.4.1")
+                })
+                .count(),
+            1,
+            "a pre-header count must fire once on frame-header activation; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn distinct_mlayer_count_before_frame_header_activation_within_seqmax_is_conforming() {
+        // § 6.4.1: the same pre-header accumulation at xlayer 1 ({0, 1} = 2) is within
+        // budget when the frame-confirmed activating header has SeqMaxMlayerCnt 2
+        // (sequence_header_payload(0, 1)); the frame-header-path retroactive check must
+        // NOT fire.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 0, 1), &[]));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 1, 1), &[]));
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 1, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/distinct-mlayer-count-exceeds-seq-max"),
+            "a pre-header count within SeqMaxMlayerCnt must not fire; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn distinct_mlayer_count_before_frame_header_activation_under_external_hls_is_not_flagged() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // § 6.4.1: caller-provided external HLS suppresses the frame-header-path
+        // retroactive check exactly as it suppresses the OBU-order-path and eager checks —
+        // an out-of-band header may carry a SeqMaxMlayerCnt this validator does not model.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one()));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 0, 1), &[]));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 1, 1), &[]));
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 1, 0));
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(0),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/distinct-mlayer-count-exceeds-seq-max"),
+            "external HLS must suppress the frame-header-path retroactive check; report was: {report}"
+        );
+    }
+
     // --- § 7.3.6 single active sequence header per extended layer per CVS (3.3) --
 
     #[test]
@@ -8140,6 +8291,62 @@ mod tests {
                     && d.spec_section.as_deref() == Some("6.4.1")
             }),
             "report was: {report}"
+        );
+    }
+
+    /// A single temporal unit that *opens* a § 7.3.2 CMVS (begin condition 1: a CLK
+    /// temporal unit with an MSDO present and no CMVS yet active) and frame-confirms both
+    /// extended layers WITHIN that same opening temporal unit. xlayer 0's CLK references
+    /// seq 0 (`monotonic_x0`); xlayer 1's CLK references seq 1 (`monotonic_x1`). The CMVS
+    /// membership is decidable at the CLK (§ 7.3.7: the at-most-one MSDO precedes every
+    /// coded extended layer unit), so the cross-layer agreement check sees `Inside` when
+    /// the second CLK activates — the begin direction of the boundary that the two-TU
+    /// `cmvs_two_layer_stream` does not exercise.
+    fn cmvs_two_layer_single_tu_stream(monotonic_x0: bool, monotonic_x1: bool) -> Vec<u8> {
+        let mut data = temporal_delimiter_obu(); // single temporal unit
+        data.extend(annex_b_obu(0x50, &msdo_payload(0))); // global MSDO -> opens the CMVS
+        data.extend(seq_header_obu_monotonic(0, 0, monotonic_x0)); // xlayer 0 seq 0
+        data.extend(seq_header_obu_monotonic(1, 1, monotonic_x1)); // xlayer 1 seq 1
+        // Both activations are CLK frame headers in this same opening temporal unit: the
+        // first frame-confirms xlayer 0 (and, as the CLK, begins the CMVS), the second
+        // frame-confirms xlayer 1 — the disagreement fires at the second activation.
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0, ref seq 0
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 1)); // CLK xlayer 1, ref seq 1
+        data
+    }
+
+    #[test]
+    fn monotonic_output_order_disagreement_in_cmvs_opening_tu_is_flagged() {
+        // § 6.4.1 / § 7.3.2: two extended layers activating disagreeing
+        // monotonic_output_order_flag values WITHIN the CMVS-opening temporal unit (MSDO +
+        // CLKs + activations, a single temporal unit). § 7.3.7 makes the begin condition
+        // decidable at the CLK, so the tracker reports `Inside` at the second activation
+        // and the disagreement fires — the begin direction of the boundary (without it the
+        // committed `Outside` of the previous temporal unit would stale-leak and the check
+        // would miss this opening-temporal-unit disagreement).
+        let data = cmvs_two_layer_single_tu_stream(true, false);
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "sequence-state/monotonic-output-order-mismatch"
+                    && d.spec_section.as_deref() == Some("6.4.1")
+            }),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn monotonic_output_order_agreement_in_cmvs_opening_tu_is_conforming() {
+        // § 6.4.1: both extended layers agree (monotonic 1) within the CMVS-opening
+        // temporal unit — no diagnostic. Guards the begin-direction adjustment against a
+        // false positive on a conforming single-temporal-unit CMVS.
+        let data = cmvs_two_layer_single_tu_stream(true, true);
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/monotonic-output-order-mismatch"),
+            "agreeing flags in the CMVS-opening temporal unit must not fire; report was: {report}"
         );
     }
 
