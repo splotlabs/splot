@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "a59a247438809f9b735aa40c0ff1fb230d998dca",
+  "audited_commit": "d1e85a4a604f3891c2b964075f17f52d3ca8c547",
   "outcome": "success",
   "files": [
     {
@@ -2761,7 +2761,7 @@
     },
     {
       "path": "openspec/specs/process/spec.md",
-      "sha256": "c16eb1e4dde49148dc5c5505373ee09a8fc4b96f25f167d190c1b07b0a1279df",
+      "sha256": "e8aa02c00425dddddde18154149ad48336465eabac8e196017a2d3f6b7843ce2",
       "scope_kind": "openspec",
       "feature_ids": [
         "DOC-AUDIT-PROTOCOLS",
@@ -2883,7 +2883,7 @@
     },
     {
       "path": "xtask/src/main.rs",
-      "sha256": "ebf34a0446e04fc5bdb33cb58ef76a380d4f415cc20500ad76d2b2ebcc4eb60b",
+      "sha256": "145e5d840878173df4f799ad63b91896c6a1c9c745dbf678b18281eff959d42e",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
