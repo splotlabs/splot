@@ -7782,8 +7782,15 @@ mod tests {
     /// embedded layer is allowed in the coded video sequence, even though embedded layer
     /// 1 is otherwise within `max_mlayer_id`.
     fn seq_header_payload_seqmaxcnt_one() -> Vec<u8> {
+        seq_header_payload_seqmaxcnt_one_id(0)
+    }
+
+    /// As [`seq_header_payload_seqmaxcnt_one`] but with an explicit `seq_header_id`, so a
+    /// fixture can place two distinct SeqMaxMlayerCnt-1 headers (e.g. an outgoing header
+    /// and a different one a CLK re-references) in the same stream.
+    fn seq_header_payload_seqmaxcnt_one_id(seq_header_id: u32) -> Vec<u8> {
         let mut bits = Bits::default();
-        bits.uvlc(0); // seq_header_id
+        bits.uvlc(seq_header_id); // seq_header_id
         bits.f(0, 5); // seq_profile_idc
         bits.bit(0); // single_picture_header_flag
         bits.f(0, 5); // seq_level_idx
@@ -7794,6 +7801,35 @@ mod tests {
         bits.f(0, 2); // max_tlayer_id
         bits.f(1, 3); // max_mlayer_id = 1
         bits.f(0, 1); // seq_max_mlayer_cnt_minus_1 = 0 -> SeqMaxMlayerCnt = 1
+        bits.bit(1); // monotonic_output_order_flag
+        bits.f(3, 4); // frame_width_bits_minus_1
+        bits.f(3, 4); // frame_height_bits_minus_1
+        bits.f(15, 4); // max_frame_width_minus_1
+        bits.f(7, 4); // max_frame_height_minus_1
+        bits.bit(0); // seq_cropping_window_present_flag
+        bits.bit(0); // seq_initial_display_delay_present_flag
+        bits.bit(0); // decoder_model_info_present_flag
+        bits.bit(0); // mlayer_dependency_present_flag (max_mlayer_id > 0)
+        append_non_single_child_configs(&mut bits);
+        bits.into_bytes()
+    }
+
+    /// A sequence-header payload with `max_mlayer_id == 2` and `SeqMaxMlayerCnt == 2`
+    /// (`seq_max_mlayer_cnt_minus_1 == 1`): the coded video sequence may use embedded
+    /// layers up to 2 but at most two *distinct* `obu_mlayer_id` values (AV2 § 6.4.1).
+    fn seq_header_payload_seqmaxcnt_two() -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.uvlc(0); // seq_header_id
+        bits.f(0, 5); // seq_profile_idc
+        bits.bit(0); // single_picture_header_flag
+        bits.f(0, 5); // seq_level_idx
+        bits.uvlc(0); // chroma_format_idc
+        bits.uvlc(0); // bit_depth_idc
+        bits.f(0, 3); // seq_lcr_id
+        bits.bit(0); // still_picture
+        bits.f(0, 2); // max_tlayer_id
+        bits.f(2, 3); // max_mlayer_id = 2
+        bits.f(1, ceil_log2_u32(3)); // seq_max_mlayer_cnt_minus_1 = 1 -> SeqMaxMlayerCnt = 2
         bits.bit(1); // monotonic_output_order_flag
         bits.f(3, 4); // frame_width_bits_minus_1
         bits.f(3, 4); // frame_height_bits_minus_1
@@ -7909,11 +7945,15 @@ mod tests {
         // contains the CLK, so an OBU of the same extended layer observed earlier in that
         // temporal unit already belongs to the NEW coded video sequence. Here the old CVS
         // (temporal unit 0) carries only embedded layer 0 (the sequence header) — within
-        // SeqMaxMlayerCnt 1. Temporal unit 1 then has a pre-CLK OBU at embedded layer 1
-        // followed by a CLK at embedded layer 1: counting the pre-CLK OBU into the old
-        // set yields {0, 1} = 2 > 1, but that OBU belongs to the new coded video sequence
-        // the CLK begins, so the deferred exceedance must be dropped at the boundary and
-        // NOT emitted.
+        // SeqMaxMlayerCnt 1. Temporal unit 1 has a pre-CLK OBU at embedded layer 1 then a
+        // CLK at embedded layer 1. Under FIX 4 (exact re-attribution), the new CVS is
+        // re-seeded from the boundary temporal unit's seen set {1} (count 1 <= 1), so the
+        // new CVS never exceeds; and the pre-CLK OBU's single-pass count into the *old*
+        // CVS ({0, 1} = 2 > 1, first counted in temporal unit 0 so deferred) is dropped at
+        // the boundary because the extended layer started a new CVS in temporal unit 1.
+        // Both mechanisms leave nothing to emit. (This is also the FIX 4 "still-needed
+        // pending-drop" coverage: the deferred exceedance whose set spanned a
+        // pre-boundary temporal unit is dropped.)
         let mut data = temporal_delimiter_obu(); // temporal unit 0
         data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one()));
         // A frame at embedded layer 0 keeps the old CVS at {0} (count 1, conforming).
@@ -7929,7 +7969,210 @@ mod tests {
                 .errors()
                 .any(|d| d.rule_id == "sequence-state/distinct-mlayer-count-exceeds-seq-max"),
             "a pre-CLK OBU in the CVS-starting temporal unit belongs to the new coded video \
-             sequence; the deferred exceedance must be dropped; report was: {report}"
+             sequence; the new CVS {{1}} does not exceed and the deferred old-CVS exceedance \
+             is dropped; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn distinct_mlayer_count_pre_clk_header_reattributed_to_new_cvs_is_flagged() {
+        // FIX 4 (Codex finding 1) positive case. § 7.3.6 (mirror
+        // `07-decoding-process.md` lines 604-606): the new coded video sequence starts AT
+        // the temporal unit containing the CLK, so the § 7.3.8.1 resent-at-RAP sequence
+        // header observed BEFORE the CLK in that temporal unit (forced to obu_mlayer_id 0,
+        // § 6.4.1 NOTE / § 6.2.2) belongs to the NEW coded video sequence and must count
+        // toward SeqMaxMlayerCnt. A single temporal unit = [seq header @ mlayer 0,
+        // CLK @ mlayer 1] with SeqMaxMlayerCnt 1 truly carries {0, 1} = 2 > 1 in the new
+        // coded video sequence. The former whole-state drop at reset_cvs missed this; the
+        // re-attribution must emit the exceedance exactly once.
+        let mut data = temporal_delimiter_obu();
+        // Resent-at-RAP sequence header (embedded layer 0, SeqMaxMlayerCnt 1).
+        data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one()));
+        // CLK at embedded layer 1 referencing seq 0 begins the new CVS at this temporal
+        // unit; the pre-CLK header (mlayer 0) is re-attributed to it -> {0, 1} = 2 > 1.
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 1, 0, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            report
+                .errors()
+                .filter(|d| {
+                    d.rule_id == "sequence-state/distinct-mlayer-count-exceeds-seq-max"
+                        && d.spec_section.as_deref() == Some("6.4.1")
+                })
+                .count(),
+            1,
+            "the pre-CLK header is re-attributed to the new CVS; {{0, 1}} = 2 > 1 must fire \
+             exactly once; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn distinct_mlayer_count_reattribution_excludes_pre_boundary_tu_ids() {
+        // FIX 4 no-false-positive case. The re-seeded new-CVS set must include ONLY ids
+        // from the boundary temporal unit, never ids from earlier temporal units. With
+        // SeqMaxMlayerCnt 2: temporal unit 0's old CVS carries {0, 2} (count 2 <= 2,
+        // conforming); temporal unit 1 = [header @ mlayer 0, CLK @ mlayer 1] re-attributes
+        // only the boundary temporal unit's ids -> new CVS {0, 1} = 2 <= 2. Neither CVS
+        // exceeds, so no diagnostic. (If reset_cvs wrongly carried temporal unit 0's ids,
+        // the new CVS would be {0, 1, 2} = 3 > 2 and falsely fire.)
+        let mut data = temporal_delimiter_obu(); // temporal unit 0
+        // SeqMaxMlayerCnt 2 (max_mlayer_id 2). sequence_header_payload(0, 2) sets
+        // seq_max_mlayer_cnt_minus_1 = max_mlayer_id = 2 -> SeqMaxMlayerCnt 3; use an
+        // explicit SeqMaxMlayerCnt-2 header instead.
+        data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_two()));
+        // Old CVS ids {0 (header), 2}: a frame at embedded layer 2 (allowed, max_mlayer 2).
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 2, 0, 0));
+        // Temporal unit 1: resent header (mlayer 0) then CLK @ mlayer 1 -> new CVS {0, 1}.
+        data.extend(temporal_delimiter_obu());
+        data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_two())); // resent header, mlayer 0
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 1, 0, 0)); // CLK @ mlayer 1, ref seq 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/distinct-mlayer-count-exceeds-seq-max"),
+            "the new CVS must re-seed only boundary-temporal-unit ids ({{0, 1}} <= 2); \
+             earlier-temporal-unit ids must not count; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn distinct_mlayer_count_reattribution_reports_once_across_clk_in_boundary_tu() {
+        // FIX 4 once-per-CVS guard across the boundary. In a single temporal unit (so the
+        // set's first temporal unit is the boundary temporal unit and the exceedance emits
+        // eagerly), pre-CLK ids {0, 1} already exceed SeqMaxMlayerCnt 1 (emitted once),
+        // then a CLK @ mlayer 1 begins a new CVS re-seeded from {0, 1}. Because the old
+        // state's first temporal unit equals the boundary temporal unit, the `reported`
+        // flag carries into the re-seeded new-CVS state, so a further post-CLK OBU in the
+        // same (now single) CVS does not re-report.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one())); // header, mlayer 0
+        // Pre-CLK frame @ mlayer 1 -> {0, 1} = 2 > 1, first counted this temporal unit ->
+        // eager emit (once).
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 1, 0), &[]));
+        // CLK @ mlayer 1 begins the new CVS, re-seeded from {0, 1} with the reported flag.
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 1, 0, 0));
+        // A further post-CLK OBU @ mlayer 1 in the same new CVS must not re-report.
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 1, 0), &[]));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            report
+                .errors()
+                .filter(|d| d.rule_id == "sequence-state/distinct-mlayer-count-exceeds-seq-max")
+                .count(),
+            1,
+            "the exceedance visible both pre- and post-CLK in the boundary temporal unit \
+             must report exactly once; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn distinct_mlayer_count_reattribution_compares_against_clk_activated_header() {
+        // PR #41 Codex false-positive regression. § 6.4.1 (mirror
+        // `06-syntax-structures-semantics.md` lines 445-447): the distinct-obu_mlayer_id
+        // count is scoped to "the coded video sequence associated with this sequence
+        // header" — for the NEW coded video sequence a CLK begins that is the header the
+        // CLK *activates*, not the outgoing one still active when the § 7.3.6 boundary
+        // event fires. Outgoing header (id 0, SeqMaxMlayerCnt 1) is active and
+        // frame-confirmed; the boundary temporal unit carries a re-sent header (mlayer 0)
+        // and a pre-CLK OBU (mlayer 1) for the per-temporal-unit set {0, 1}, then a CLK
+        // (mlayer 0) referencing a DIFFERENT header (id 1, SeqMaxMlayerCnt 2). The
+        // re-seeded set {0, 1} = 2 conforms to the CLK-activated header's max 2, so
+        // nothing must fire. Comparing 2 against the outgoing max 1 at reset time would
+        // be a false positive.
+        let mut data = temporal_delimiter_obu(); // temporal unit 0
+        data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one())); // header id 0, max 1
+        // Header id 1 with max_mlayer_id 1 -> SeqMaxMlayerCnt 2 (allows mlayer 0 and 1).
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(1, 0, 1)));
+        // A frame at embedded layer 0 referencing seq 0 activates and frame-confirms it.
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0));
+        // Temporal unit 1 (boundary): re-sent header (mlayer 0), a pre-CLK OBU (mlayer 1),
+        // then a CLK (mlayer 0) referencing the DIFFERENT header id 1.
+        data.extend(temporal_delimiter_obu());
+        data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one())); // re-sent header, mlayer 0
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 1, 0), &[])); // pre-CLK OBU, mlayer 1
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 1)); // CLK mlayer 0, ref seq 1
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/distinct-mlayer-count-exceeds-seq-max"),
+            "the re-seeded {{0, 1}} = 2 set must be compared against the CLK-activated header \
+             (id 1, SeqMaxMlayerCnt 2), not the outgoing header (id 0, max 1); report was: \
+             {report}"
+        );
+    }
+
+    #[test]
+    fn distinct_mlayer_count_reattribution_clk_activated_header_lower_max_is_flagged() {
+        // Reverse-direction true positive that the reset-time check direction-masked.
+        // Outgoing header (id 0, SeqMaxMlayerCnt 2) is active and frame-confirmed; the
+        // boundary temporal unit carries a re-sent header (mlayer 0) and a pre-CLK OBU
+        // (mlayer 1) for the per-temporal-unit set {0, 1}, then a CLK (mlayer 0)
+        // referencing a DIFFERENT header (id 1, SeqMaxMlayerCnt 1). The re-seeded set
+        // {0, 1} = 2 exceeds the CLK-activated header's max 1, so the § 6.4.1 exceedance
+        // must fire exactly once, anchored at the CLK's extension byte. The old reset-time
+        // check passed (2 <= outgoing max 2) and the activation-path retroactive check
+        // catches it because the referenced id changes.
+        let mut data = temporal_delimiter_obu(); // temporal unit 0
+        // Header id 0 with max_mlayer_id 1 -> SeqMaxMlayerCnt 2.
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 1)));
+        data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one_id(1))); // header id 1, max 1
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0)); // frame @ mlayer 0, ref seq 0
+        // Temporal unit 1 (boundary): re-sent header (mlayer 0), pre-CLK OBU (mlayer 1),
+        // CLK (mlayer 0) referencing the DIFFERENT header id 1 (max 1).
+        data.extend(temporal_delimiter_obu());
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 1))); // re-sent header id 0, mlayer 0
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 1, 0), &[])); // pre-CLK OBU, mlayer 1
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 1)); // CLK mlayer 0, ref seq 1 (max 1)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            report
+                .errors()
+                .filter(|d| {
+                    d.rule_id == "sequence-state/distinct-mlayer-count-exceeds-seq-max"
+                        && d.spec_section.as_deref() == Some("6.4.1")
+                })
+                .count(),
+            1,
+            "the re-seeded {{0, 1}} = 2 set exceeds the CLK-activated header's max 1 and must \
+             fire exactly once; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn distinct_mlayer_count_reattribution_same_header_exceedance_is_flagged() {
+        // Same-header coverage the immediate reset-time check used to own: when the CLK
+        // re-references the SAME already-frame-confirmed header, the re-seeded pre-CLK set
+        // may already exceed that header's max in a way the eager count_distinct_mlayer
+        // cannot re-surface (it never re-yields an already-seen id). Outgoing header id 0
+        // (SeqMaxMlayerCnt 1) active and frame-confirmed; boundary temporal unit carries a
+        // re-sent header (mlayer 0) and a pre-CLK OBU (mlayer 1) for the per-temporal-unit
+        // set {0, 1} = 2 > 1, then a CLK (mlayer 1) referencing the SAME header id 0. The
+        // CLK's own mlayer 1 is already in the re-seeded set, so the eager path yields
+        // nothing; the post-activation retroactive check must still fire once.
+        let mut data = temporal_delimiter_obu(); // temporal unit 0
+        data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one())); // header id 0, max 1
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0)); // frame @ mlayer 0, ref seq 0
+        // Temporal unit 1 (boundary): re-sent header (mlayer 0), pre-CLK OBU (mlayer 1),
+        // CLK (mlayer 1) referencing the SAME header id 0.
+        data.extend(temporal_delimiter_obu());
+        data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one())); // re-sent header, mlayer 0
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 1, 0), &[])); // pre-CLK OBU, mlayer 1
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 1, 0, 0)); // CLK mlayer 1, ref seq 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            report
+                .errors()
+                .filter(|d| {
+                    d.rule_id == "sequence-state/distinct-mlayer-count-exceeds-seq-max"
+                        && d.spec_section.as_deref() == Some("6.4.1")
+                })
+                .count(),
+            1,
+            "the re-seeded {{0, 1}} = 2 set exceeds the re-referenced header's max 1 and must \
+             fire exactly once even though the CLK's own mlayer is already in the set; report \
+             was: {report}"
         );
     }
 
@@ -8215,6 +8458,85 @@ mod tests {
         );
     }
 
+    /// Builds the otherwise-firing two-activation stream of
+    /// [`second_activation_without_clk_is_flagged`] (frame-confirm seq 0, then a non-CLK
+    /// frame activating seq 1 in the same CVS for xlayer 0).
+    fn two_activation_stream() -> Vec<u8> {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 0)));
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(1, 0, 0)));
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0)); // confirm seq 0
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 1)); // confirm seq 1
+        data
+    }
+
+    #[test]
+    fn second_activation_under_empty_external_hls_is_flagged() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // FIX 2 (Codex finding 3). `ExternalHlsSet::new()` declares an external channel
+        // that declares NO sequence header, so it cannot supply an out-of-band active
+        // sequence header (the validator emits hls/unavailable-sequence-header on that
+        // premise elsewhere). The § 7.3.6 gate must therefore narrow to
+        // declares_any_sequence_header() — an empty set must NOT suppress.
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
+        };
+        let report =
+            Validator::new(false).validate_bytes_with_options(&two_activation_stream(), &options);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "hls/multiple-active-sequence-headers"
+                    && d.spec_section.as_deref() == Some("7.3.6")
+            }),
+            "an empty external set declares no sequence header and must not suppress; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn second_activation_under_sequence_free_external_hls_is_flagged() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // FIX 2: a non-empty external set that declares only an operating point set (no
+        // sequence header) likewise cannot supply an out-of-band active sequence header,
+        // so the § 7.3.6 check must still fire.
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_operating_point_set(0, 0),
+            ),
+        };
+        let report =
+            Validator::new(false).validate_bytes_with_options(&two_activation_stream(), &options);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "hls/multiple-active-sequence-headers"
+                    && d.spec_section.as_deref() == Some("7.3.6")
+            }),
+            "a sequence-header-free external set must not suppress; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn second_activation_under_out_of_range_external_hls_id_is_flagged() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // FIX 2: an out-of-range declared id is ignored (options.rs), so the set declares
+        // no usable sequence header and must not suppress the § 7.3.6 check (mirrors
+        // external_hls_out_of_range_id_does_not_suppress_no_active_sequence_header).
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(16),
+            ),
+        };
+        let report =
+            Validator::new(false).validate_bytes_with_options(&two_activation_stream(), &options);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "hls/multiple-active-sequence-headers"
+                    && d.spec_section.as_deref() == Some("7.3.6")
+            }),
+            "an out-of-range external id is ignored and must not suppress; report was: {report}"
+        );
+    }
+
     // --- § 6.4.1 monotonic_output_order_flag agreement across a CMVS (3.4) -------
 
     /// A sequence-header payload (xlayer-neutral) with the given `seq_header_id`,
@@ -8470,10 +8792,12 @@ mod tests {
     #[test]
     fn monotonic_output_order_disagreement_under_external_hls_is_not_flagged() {
         use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
-        // § 6.4.1: under caller-provided external HLS, an externally-activated sequence
-        // header has an unmodeled monotonic_output_order_flag, so the cross-layer
-        // comparison is unreliable and suppressed even on the otherwise-firing
-        // inside-CMVS disagreement stream.
+        // § 6.4.1: under caller-provided external HLS that declares a sequence header (the
+        // in-use seq 0), an externally-activated sequence header has an unmodeled
+        // monotonic_output_order_flag, so the cross-layer comparison is unreliable and
+        // suppressed even on the otherwise-firing inside-CMVS disagreement stream. This is
+        // the positive coverage for the narrowed (declares_any_sequence_header()) gate's
+        // suppression branch (FIX 3 test 5).
         let data = cmvs_two_layer_stream(true, false);
         let options = ValidationOptions {
             external_hls: ExternalHlsMode::Provided(
@@ -8485,7 +8809,156 @@ mod tests {
             !report
                 .errors()
                 .any(|d| d.rule_id == "sequence-state/monotonic-output-order-mismatch"),
-            "external HLS must suppress the § 6.4.1 monotonic agreement check; report was: {report}"
+            "external HLS declaring a sequence header must suppress the § 6.4.1 monotonic \
+             agreement check; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn monotonic_output_order_disagreement_under_empty_external_hls_is_flagged() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // FIX 3 (Codex finding 4). `ExternalHlsSet::new()` declares an external channel
+        // that declares NO sequence header, so it cannot supply an out-of-band active
+        // sequence header. The § 6.4.1 monotonic gate must narrow to
+        // declares_any_sequence_header() (as validate_active_sequence_limits and the
+        // distinct-mlayer gate do), so an empty set must NOT suppress the inside-CMVS
+        // disagreement. The stream fires mid-CMVS (TU2 has no CLK, so it stays Inside),
+        // exercising the gate rather than the FIX 1 deferral drop.
+        let data = cmvs_two_layer_stream(true, false);
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "sequence-state/monotonic-output-order-mismatch"
+                    && d.spec_section.as_deref() == Some("6.4.1")
+            }),
+            "an empty external set declares no sequence header and must not suppress the \
+             § 6.4.1 monotonic agreement check; report was: {report}"
+        );
+    }
+
+    /// Builds the first two temporal units shared by the
+    /// `monotonic_output_order_*_provisional_*` tests: TU1 opens a CMVS (MSDO + CLK,
+    /// begin condition 1) and frame-confirms xlayer 0 to seq 0 (`monotonic 1`); xlayer 1
+    /// carries seq 1 (`monotonic 1`). TU2 frame-confirms xlayer 1 to seq 1. Both layers
+    /// agree on `monotonic_output_order_flag == 1` and the CMVS is committed `Inside`
+    /// after TU2. The caller appends a TU3 whose shape exercises the provisional-Inside
+    /// deferral.
+    fn cmvs_provisional_inside_prefix() -> Vec<u8> {
+        let mut data = temporal_delimiter_obu(); // temporal unit 1
+        data.extend(annex_b_obu(0x50, &msdo_payload(0))); // global MSDO -> opens the CMVS
+        data.extend(seq_header_obu_monotonic(0, 0, true)); // xlayer 0 seq 0 monotonic 1
+        // CLK xlayer 0 referencing seq 0 begins the CMVS and frame-confirms xlayer 0
+        // (kept before xlayer 1's header so coded extended layer units stay ascending).
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0));
+        data.extend(seq_header_obu_monotonic(1, 1, true)); // xlayer 1 seq 1 monotonic 1
+        data.extend(temporal_delimiter_obu()); // temporal unit 2: CMVS committed Inside
+        // Frame-confirm xlayer 1 (ref seq 1); both layers now agree (monotonic 1).
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 1, 1));
+        data
+    }
+
+    #[test]
+    fn monotonic_output_order_provisional_inside_clk_ending_tu_is_not_flagged() {
+        // FIX 1 false-positive regression (Codex "Defer CMVS agreement until pre-CLK
+        // headers are scoped"). § 7.3.2 end condition 2 (mirror
+        // `07-decoding-process.md` lines 335-341): a temporal unit that begins a new
+        // coded video sequence for an extended layer but contains no OBU_MSDO and no
+        // activated global LCR ENDS the CMVS, so it sits OUTSIDE. When a same-id
+        // reconfiguration of seq 0 (now monotonic 0) is observed at the *top* of such a
+        // temporal unit, the CLK that ends the CMVS has not yet been observed, so the
+        // committed `Inside` is provisional. The agreement check must defer its
+        // header-time verdict and drop it once the CLK confirms the temporal unit ended
+        // the CMVS — emitting at header time would be a false positive on a conformant
+        // redefinition (§ 7.3.6 permits redefinition when a new CVS follows, mirror
+        // `07-decoding-process.md` lines 608-611).
+        let mut data = cmvs_provisional_inside_prefix();
+        data.extend(temporal_delimiter_obu()); // temporal unit 3 (no MSDO)
+        // Same-id reconfiguration of seq 0 with the disagreeing flag, observed BEFORE the
+        // CLK that ends the CMVS for this temporal unit.
+        data.extend(seq_header_obu_monotonic(0, 0, false)); // seq 0 redefined monotonic 0
+        // CLK xlayer 0 referencing seq 0: an MSDO-less CLK temporal unit ends the CMVS.
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/monotonic-output-order-mismatch"),
+            "a header redefinition at the top of a CMVS-ending CLK temporal unit is outside \
+             the CMVS once the CLK is seen; the provisional header-time verdict must be \
+             dropped; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn monotonic_output_order_provisional_inside_mid_cmvs_redefinition_is_flagged() {
+        // FIX 1 deferral-still-emits guard. Same TU3 shape as the false-positive case but
+        // the temporal unit stays *inside* the CMVS (a non-CLK frame replaces the CLK), so
+        // the deferred header-time verdict must be emitted at temporal-unit flush. A
+        // mid-CMVS redefinition that disagrees on monotonic_output_order_flag is a genuine
+        // § 6.4.1 violation.
+        let mut data = cmvs_provisional_inside_prefix();
+        data.extend(temporal_delimiter_obu()); // temporal unit 3 (no MSDO, no CLK)
+        // Same-id reconfiguration of seq 0 with the disagreeing flag; no CLK follows, so
+        // the temporal unit stays inside the CMVS.
+        data.extend(seq_header_obu_monotonic(0, 0, false)); // seq 0 redefined monotonic 0
+        // A non-CLK frame for xlayer 0 keeps the CMVS Inside across this temporal unit.
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "sequence-state/monotonic-output-order-mismatch"
+                    && d.spec_section.as_deref() == Some("6.4.1")
+            }),
+            "a mid-CMVS redefinition disagreeing on monotonic_output_order_flag must be \
+             emitted at temporal-unit flush; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn monotonic_output_order_provisional_inside_flushes_at_end_of_bitstream() {
+        // FIX 1 end-of-bitstream flush. The disagreeing redefinition is the last OBU: the
+        // temporal unit never receives a CLK, so it stays inside the CMVS (§ 7.3.2 end
+        // condition 3 closes the CMVS only at the end of the bitstream). The deferred
+        // verdict must be emitted when `finish` flushes the final temporal unit.
+        let mut data = cmvs_provisional_inside_prefix();
+        data.extend(temporal_delimiter_obu()); // temporal unit 3 (no MSDO)
+        // Same-id reconfiguration disagreeing on the flag, with no following frame at all.
+        data.extend(seq_header_obu_monotonic(0, 0, false)); // seq 0 redefined monotonic 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "sequence-state/monotonic-output-order-mismatch"
+                    && d.spec_section.as_deref() == Some("6.4.1")
+            }),
+            "a disagreeing redefinition with no following CLK stays inside the CMVS and must \
+             be emitted at the end-of-bitstream flush; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn monotonic_output_order_provisional_inside_unknown_clk_is_not_flagged() {
+        // FIX 1 Unknown guard. A CLK temporal unit with an activated-global-LCR candidate
+        // present but no MSDO routes the CMVS tracker to `Unknown` (§ 7.3.2 end condition 2
+        // needs "no activated global layer configuration record"; activation is not
+        // modeled). The check fires only on `Inside`, so the deferred header-time verdict
+        // for a redefinition at the top of such a temporal unit must be dropped.
+        let mut data = cmvs_provisional_inside_prefix();
+        data.extend(temporal_delimiter_obu()); // temporal unit 3 (no MSDO)
+        data.extend(global_lcr_obu(0, 0b11, None)); // global LCR (xlayers 0, 1), no MSDO
+        // Same-id reconfiguration disagreeing on the flag, observed before the CLK.
+        data.extend(seq_header_obu_monotonic(0, 0, false)); // seq 0 redefined monotonic 0
+        // CLK xlayer 0 with the global LCR present and no MSDO -> tracker goes Unknown.
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/monotonic-output-order-mismatch"),
+            "a CLK temporal unit with a global LCR and no MSDO routes the tracker to \
+             Unknown; the provisional verdict must be dropped; report was: {report}"
         );
     }
 }

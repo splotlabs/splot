@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "a209d682e10a5498400649fbdbee861f83ce0471",
+  "audited_commit": "d973e608d2b66070f3ab8b0c99f14cacb6a272c5",
   "outcome": "success",
   "files": [
     {
@@ -760,7 +760,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "fb35019bb6e42ff73598a1111083f18f034aae7f9a6aa9498d3c97087573aa24",
+      "sha256": "82f1296c7e5256e747aaa9bc6714678d4958fedd393026e6393bbc41d1cfc62c",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.17.5-METADATA-HDR-CLL",
@@ -822,7 +822,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "2cba0b1b0e06e0bfa36e9e4cc08e662170a330faaaedeae637c8be9c2746e144",
+      "sha256": "e71484f9979476f6d150f85d92716e63bcdc3f11e1b87dc0688d0cac9cff8053",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -1042,7 +1042,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "4e2d2442f46529e51dd34a807c5db1278d03e30f70a12217a767bf5b1106fbc9",
+      "sha256": "7c45e0e96c496bebe336f19c20d3a41c5018eebdd1436ea96e19e2441ff73d14",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2496,6 +2496,53 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-10-sequence-multistream-semantics/.openspec.yaml",
+      "sha256": "5ada458f25cd6e260a7ac3deb87a5ba5d046aabf964c53260ae6cf7bcb8a5d12",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-sequence-multistream-semantics/design.md",
+      "sha256": "2160387213401e815e4496552c1582d36a3d2cf895823cd6cfa9083679a3cb4a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-sequence-multistream-semantics/proposal.md",
+      "sha256": "3e2d01c33afec15d1762e665211bc6fa0755bf791a5b3cc62383eb062791f204",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-sequence-multistream-semantics/specs/validator/spec.md",
+      "sha256": "543db71ad15a4e6e27774c1bf829d8086a355fe2a4cf6442ab7aa77c75e1d6f8",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-sequence-multistream-semantics/tasks.md",
+      "sha256": "a507108efc3e94347c51e75052ea89da2f43c03dd1bb3695e79c9578508a5f90",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-10-spec-coverage-doc/proposal.md",
       "sha256": "2722641e08415381787b0eb717363f67acebb13fd8a190c48cc4169228528bca",
       "scope_kind": "openspec",
@@ -2544,53 +2591,6 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/sequence-multistream-semantics/.openspec.yaml",
-      "sha256": "5ada458f25cd6e260a7ac3deb87a5ba5d046aabf964c53260ae6cf7bcb8a5d12",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/sequence-multistream-semantics/design.md",
-      "sha256": "2d2871185715dc444f66a0a0a4c3490a7e3fb892f820148527bfd8d18029a98d",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/sequence-multistream-semantics/proposal.md",
-      "sha256": "3e2d01c33afec15d1762e665211bc6fa0755bf791a5b3cc62383eb062791f204",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
-        "AV2-7.3.2-CMVS-BOUNDARIES",
-        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
-        "AV2-7.3.8-HLS-AVAILABILITY"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/sequence-multistream-semantics/specs/validator/spec.md",
-      "sha256": "09e6ba4fa3ad8239302bd68b9db93941a1214c08a3dd7fcccff8ab85a47092d1",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/sequence-multistream-semantics/tasks.md",
-      "sha256": "84c5b6c205ebabf937bf0ba07f6e7c8b305cb35cb2a446227520b0fab7dde37b",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
-        "AV2-7.3.2-CMVS-BOUNDARIES",
-        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
-        "AV2-7.3.8-HLS-AVAILABILITY"
       ],
       "outcome": "success"
     },
@@ -2732,7 +2732,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "45734dca2270e79d9f2990b091684fedfe8130390e537ed2271d9a77617da69b",
+      "sha256": "020023e3d5a91a3633bbaad54e8bb024efa03c2d6c03a2df2613570bfb3a99cb",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",

@@ -69,3 +69,31 @@
   machete, deny, repo checks) with `RUSTUP_TOOLCHAIN=1.96.0-aarch64-apple-darwin`.
 - [x] 5.3 Fuzz smoke: `cargo xtask fuzz --time 30` (run-if-present) shows no panics
   (5,004,469 runs in 31s).
+
+## 6. Review follow-ups (PR #38 Codex findings)
+
+- [x] 6.1 (FIX 1) Defer the `sequence-state/monotonic-output-order-mismatch` check when
+  the §7.3.2 `Inside` membership is only provisional at a sequence-header OBU (no CLK
+  observed yet in the temporal unit), resolving the deferred verdict at temporal-unit
+  completion (`CmvsTracker::monotonic_verdict` / `complete_temporal_unit`). Removes the
+  false positive on a §7.3.6-permitted same-CVS redefinition preceding a CMVS-ending
+  CLK. Tests: `monotonic_output_order_provisional_inside_clk_ending_tu_is_not_flagged`,
+  `_mid_cmvs_redefinition_is_flagged`, `_flushes_at_end_of_bitstream`,
+  `_unknown_clk_is_not_flagged`.
+- [x] 6.2 (FIX 2 + 3) Narrow the `hls/multiple-active-sequence-headers` (Gate 4) and
+  `sequence-state/monotonic-output-order-mismatch` external-HLS gates from
+  `Provided(_)` to `declares_any_sequence_header()`, matching the sibling gates. Tests:
+  `second_activation_under_empty_external_hls_is_flagged`,
+  `_sequence_free_external_hls_is_flagged`, `_out_of_range_external_hls_id_is_flagged`,
+  `monotonic_output_order_disagreement_under_empty_external_hls_is_flagged`; existing
+  suppression tests stay green.
+- [x] 6.3 (FIX 4) Upgrade `DistinctMlayerTracker::reset_cvs` from a whole-state drop to
+  exact re-attribution of the boundary temporal unit's pre-CLK ids to the new CVS
+  (per-temporal-unit seen set + immediate re-seed exceedance check). Tests:
+  `distinct_mlayer_count_pre_clk_header_reattributed_to_new_cvs_is_flagged`,
+  `_reattribution_excludes_pre_boundary_tu_ids`,
+  `_reattribution_reports_once_across_clk_in_boundary_tu`, and the refreshed
+  `_pre_clk_obu_in_boundary_tu_is_not_flagged`.
+- [x] 6.4 Sync the validator spec delta, design decisions 4/5 and risks, and the
+  `AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT` / `AV2-7.3.8-HLS-AVAILABILITY` matrix-row notes
+  to the narrowed gates and re-attribution.

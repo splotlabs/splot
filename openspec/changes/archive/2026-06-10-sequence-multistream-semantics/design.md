@@ -77,25 +77,46 @@ at parse), `mlayer_dependency_map` (indexed `depends_on` access), the per-OBU
    only counts OBUs whose attribution is unambiguous under that reading (documented in
    a code comment with the citation), so an exceedance report is always real. Any
    genuinely ambiguous residue becomes a `TODO(spec:
-   AV2-6.4-SEQUENCE-HEADER-SEMANTICS)`.
+   AV2-6.4-SEQUENCE-HEADER-SEMANTICS)`. **CLK boundary re-attribution (follow-up):**
+   §7.3.6 (mirror `07-decoding-process.md` lines 604-606) starts the new CVS AT the
+   temporal unit containing the CLK, so `DistinctMlayerTracker::reset_cvs` re-attributes
+   the boundary temporal unit's pre-CLK ids (canonically the §7.3.8.1 resent-at-RAP
+   sequence header at `obu_mlayer_id == 0`) to the new CVS rather than dropping them; a
+   per-temporal-unit seen set drives the re-seed, ids from earlier temporal units never
+   enter, and the deferred old-CVS exceedance still drops at the boundary. This replaces
+   the original documented sound under-count with exact re-attribution.
 
 5. **`hls/multiple-active-sequence-headers` gating.** Emit only when (a) the previous
    activation for the xlayer is frame-confirmed (`frame_confirmed_xlayers`), (b) no
    CVS start intervened (`CvsTracker`), (c) the newly activated `seq_header_id`
-   differs, and (d) external HLS mode is not `Provided`. Severity `error` (the
-   roadmap's "warning until CLK parsing exists" hedge is obsolete); the escalation is
-   called out in the proposal for reviewer sign-off.
+   differs, and (d) caller-provided external HLS declares at least one sequence header
+   (`ExternalHlsSet::declares_any_sequence_header()`). Gate (d) is narrowed from the
+   broad `Provided(_)` to the same predicate the sibling gates and
+   `validate_active_sequence_limits` use: only a *declared* external sequence header can
+   be the out-of-band active header that makes the in-band activation history
+   unreliable; an external channel declaring no sequence header (an empty or
+   sequence-free `ExternalHlsSet`) cannot, so it does not suppress. The same narrowing
+   applies to the `sequence-state/monotonic-output-order-mismatch` gate. Severity
+   `error` (the roadmap's "warning until CLK parsing exists" hedge is obsolete); the
+   escalation is called out in the proposal for reviewer sign-off.
 
 ## Risks / Trade-offs
 
 - [CMVS begin/end misinterpretation] → three-state tracker with `Unknown`, checks fire
   only on `Inside`, inline spec quotes at each transition, dedicated begin/end
-  transition tests.
+  transition tests. The monotonic check additionally defers a sequence-header-time
+  `Inside` verdict that no CLK has yet confirmed (provisional `Inside`), resolving it at
+  temporal-unit completion, so a §7.3.6-permitted same-CVS redefinition immediately
+  preceding a CMVS-ending CLK is not a false positive.
 - [distinct-mlayer false positives at CVS boundaries / global-OBU attribution] →
-  conservative attribution (decision 4) plus boundary edge tests (OBUs straddling a
-  CLK, pre-first-CLK OBUs).
+  conservative global-OBU attribution (decision 4) plus exact CLK-boundary
+  re-attribution (decision 4 follow-up) restricted to the boundary temporal unit's ids,
+  with boundary edge tests (pre-CLK header re-attributed and flagged, earlier-temporal-
+  unit ids excluded, once-per-CVS across the boundary, deferred old-CVS exceedance
+  dropped).
 - [multiple-active false positives from fallback activation guesses] → gate on
-  `frame_confirmed_xlayers` and `ExternalHlsMode::Provided` (decision 5).
+  `frame_confirmed_xlayers` and on caller-provided external HLS that declares a sequence
+  header (`declares_any_sequence_header()`, decision 5).
 - [Synthetic-only fixtures] → all multistream tests are `Bits`-built Annex B streams
   (MSDO + per-xlayer CLKs); `avm_diff` stays `pending` in the matrix — no stage is
   marked beyond what synthetic proof supports.
