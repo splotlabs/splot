@@ -7782,8 +7782,15 @@ mod tests {
     /// embedded layer is allowed in the coded video sequence, even though embedded layer
     /// 1 is otherwise within `max_mlayer_id`.
     fn seq_header_payload_seqmaxcnt_one() -> Vec<u8> {
+        seq_header_payload_seqmaxcnt_one_id(0)
+    }
+
+    /// As [`seq_header_payload_seqmaxcnt_one`] but with an explicit `seq_header_id`, so a
+    /// fixture can place two distinct SeqMaxMlayerCnt-1 headers (e.g. an outgoing header
+    /// and a different one a CLK re-references) in the same stream.
+    fn seq_header_payload_seqmaxcnt_one_id(seq_header_id: u32) -> Vec<u8> {
         let mut bits = Bits::default();
-        bits.uvlc(0); // seq_header_id
+        bits.uvlc(seq_header_id); // seq_header_id
         bits.f(0, 5); // seq_profile_idc
         bits.bit(0); // single_picture_header_flag
         bits.f(0, 5); // seq_level_idx
@@ -8056,6 +8063,116 @@ mod tests {
             1,
             "the exceedance visible both pre- and post-CLK in the boundary temporal unit \
              must report exactly once; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn distinct_mlayer_count_reattribution_compares_against_clk_activated_header() {
+        // PR #41 Codex false-positive regression. § 6.4.1 (mirror
+        // `06-syntax-structures-semantics.md` lines 445-447): the distinct-obu_mlayer_id
+        // count is scoped to "the coded video sequence associated with this sequence
+        // header" — for the NEW coded video sequence a CLK begins that is the header the
+        // CLK *activates*, not the outgoing one still active when the § 7.3.6 boundary
+        // event fires. Outgoing header (id 0, SeqMaxMlayerCnt 1) is active and
+        // frame-confirmed; the boundary temporal unit carries a re-sent header (mlayer 0)
+        // and a pre-CLK OBU (mlayer 1) for the per-temporal-unit set {0, 1}, then a CLK
+        // (mlayer 0) referencing a DIFFERENT header (id 1, SeqMaxMlayerCnt 2). The
+        // re-seeded set {0, 1} = 2 conforms to the CLK-activated header's max 2, so
+        // nothing must fire. Comparing 2 against the outgoing max 1 at reset time would
+        // be a false positive.
+        let mut data = temporal_delimiter_obu(); // temporal unit 0
+        data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one())); // header id 0, max 1
+        // Header id 1 with max_mlayer_id 1 -> SeqMaxMlayerCnt 2 (allows mlayer 0 and 1).
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(1, 0, 1)));
+        // A frame at embedded layer 0 referencing seq 0 activates and frame-confirms it.
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0));
+        // Temporal unit 1 (boundary): re-sent header (mlayer 0), a pre-CLK OBU (mlayer 1),
+        // then a CLK (mlayer 0) referencing the DIFFERENT header id 1.
+        data.extend(temporal_delimiter_obu());
+        data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one())); // re-sent header, mlayer 0
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 1, 0), &[])); // pre-CLK OBU, mlayer 1
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 1)); // CLK mlayer 0, ref seq 1
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "sequence-state/distinct-mlayer-count-exceeds-seq-max"),
+            "the re-seeded {{0, 1}} = 2 set must be compared against the CLK-activated header \
+             (id 1, SeqMaxMlayerCnt 2), not the outgoing header (id 0, max 1); report was: \
+             {report}"
+        );
+    }
+
+    #[test]
+    fn distinct_mlayer_count_reattribution_clk_activated_header_lower_max_is_flagged() {
+        // Reverse-direction true positive that the reset-time check direction-masked.
+        // Outgoing header (id 0, SeqMaxMlayerCnt 2) is active and frame-confirmed; the
+        // boundary temporal unit carries a re-sent header (mlayer 0) and a pre-CLK OBU
+        // (mlayer 1) for the per-temporal-unit set {0, 1}, then a CLK (mlayer 0)
+        // referencing a DIFFERENT header (id 1, SeqMaxMlayerCnt 1). The re-seeded set
+        // {0, 1} = 2 exceeds the CLK-activated header's max 1, so the § 6.4.1 exceedance
+        // must fire exactly once, anchored at the CLK's extension byte. The old reset-time
+        // check passed (2 <= outgoing max 2) and the activation-path retroactive check
+        // catches it because the referenced id changes.
+        let mut data = temporal_delimiter_obu(); // temporal unit 0
+        // Header id 0 with max_mlayer_id 1 -> SeqMaxMlayerCnt 2.
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 1)));
+        data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one_id(1))); // header id 1, max 1
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0)); // frame @ mlayer 0, ref seq 0
+        // Temporal unit 1 (boundary): re-sent header (mlayer 0), pre-CLK OBU (mlayer 1),
+        // CLK (mlayer 0) referencing the DIFFERENT header id 1 (max 1).
+        data.extend(temporal_delimiter_obu());
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 1))); // re-sent header id 0, mlayer 0
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 1, 0), &[])); // pre-CLK OBU, mlayer 1
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 1)); // CLK mlayer 0, ref seq 1 (max 1)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            report
+                .errors()
+                .filter(|d| {
+                    d.rule_id == "sequence-state/distinct-mlayer-count-exceeds-seq-max"
+                        && d.spec_section.as_deref() == Some("6.4.1")
+                })
+                .count(),
+            1,
+            "the re-seeded {{0, 1}} = 2 set exceeds the CLK-activated header's max 1 and must \
+             fire exactly once; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn distinct_mlayer_count_reattribution_same_header_exceedance_is_flagged() {
+        // Same-header coverage the immediate reset-time check used to own: when the CLK
+        // re-references the SAME already-frame-confirmed header, the re-seeded pre-CLK set
+        // may already exceed that header's max in a way the eager count_distinct_mlayer
+        // cannot re-surface (it never re-yields an already-seen id). Outgoing header id 0
+        // (SeqMaxMlayerCnt 1) active and frame-confirmed; boundary temporal unit carries a
+        // re-sent header (mlayer 0) and a pre-CLK OBU (mlayer 1) for the per-temporal-unit
+        // set {0, 1} = 2 > 1, then a CLK (mlayer 1) referencing the SAME header id 0. The
+        // CLK's own mlayer 1 is already in the re-seeded set, so the eager path yields
+        // nothing; the post-activation retroactive check must still fire once.
+        let mut data = temporal_delimiter_obu(); // temporal unit 0
+        data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one())); // header id 0, max 1
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0)); // frame @ mlayer 0, ref seq 0
+        // Temporal unit 1 (boundary): re-sent header (mlayer 0), pre-CLK OBU (mlayer 1),
+        // CLK (mlayer 1) referencing the SAME header id 0.
+        data.extend(temporal_delimiter_obu());
+        data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one())); // re-sent header, mlayer 0
+        data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 1, 0), &[])); // pre-CLK OBU, mlayer 1
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 1, 0, 0)); // CLK mlayer 1, ref seq 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            report
+                .errors()
+                .filter(|d| {
+                    d.rule_id == "sequence-state/distinct-mlayer-count-exceeds-seq-max"
+                        && d.spec_section.as_deref() == Some("6.4.1")
+                })
+                .count(),
+            1,
+            "the re-seeded {{0, 1}} = 2 set exceeds the re-referenced header's max 1 and must \
+             fire exactly once even though the CLK's own mlayer is already in the set; report \
+             was: {report}"
         );
     }
 
