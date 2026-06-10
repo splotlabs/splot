@@ -246,6 +246,10 @@ fn run_ci() -> Result<()> {
     check_license_headers(&root)?;
     check_dependency_direction(&root)?;
     check_spec_mirror(&root)?;
+    // Fuzz-target registration drift gates here, on stable: the CI fuzz-smoke
+    // loop enumerates registered [[bin]] targets only (`cargo fuzz list`), so an
+    // unregistered fuzz_targets/*.rs file would be silently skipped there.
+    fuzz_targets(&root)?;
     feature_status::run_check_feature_status(&root)?;
     diagnostic_registry::check_diagnostic_registry(&root)?;
 
