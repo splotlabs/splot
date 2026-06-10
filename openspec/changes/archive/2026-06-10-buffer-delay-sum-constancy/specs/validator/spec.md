@@ -11,7 +11,9 @@
 with § 6.4.13) when the same triple is redefined within one coded video sequence,
 with no intervening OPS reset, both signalings explicitly carrying decoder-model
 info, and a differing sum. Absent decoder-model info (including Annex E
-resource-availability defaults) SHALL NOT participate in any comparison.
+resource-availability defaults) SHALL NOT participate in any comparison, and a
+defining OPS that omits decoder-model info for a previously tracked operating
+point SHALL clear that triple's stored baseline (Annex E.1 non-persistence).
 
 #### Scenario: intra-CVS OPS redefinition changes the sum
 
@@ -48,7 +50,8 @@ across a CLK boundary within the same extended layer (frame-confirmed activation
 only), or an operating point's sum changing across a CVS or OPS-reset boundary for
 the same triple. The diagnostic message SHALL state that the constraint scope is
 ambiguous in the specification and the finding is advisory under the broad
-reading.
+reading. A frame-confirmed activated header that omits `seq_decoder_model_info()`
+SHALL clear that extended layer's stored baseline (Annex E.1 non-persistence).
 
 #### Scenario: activated sequence headers disagree across a CLK
 

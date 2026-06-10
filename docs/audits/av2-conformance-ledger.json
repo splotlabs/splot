@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "d973e608d2b66070f3ab8b0c99f14cacb6a272c5",
+  "audited_commit": "4ef1bce33261c3bb19fba5f981c23f5c15ed6db0",
   "outcome": "success",
   "files": [
     {
@@ -760,7 +760,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "82f1296c7e5256e747aaa9bc6714678d4958fedd393026e6393bbc41d1cfc62c",
+      "sha256": "a82602bf3c85770d15e2d8a4b11426c4ac578c10ea79c7e078f57f3588f6468e",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.17.5-METADATA-HDR-CLL",
@@ -822,7 +822,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "e71484f9979476f6d150f85d92716e63bcdc3f11e1b87dc0688d0cac9cff8053",
+      "sha256": "838159de392160e5de3f71a0e6f090eb5b131c352994386a6f1e843bbf82e3ef",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -1012,7 +1012,7 @@
     },
     {
       "path": "docs/FEATURE-TRACKING.md",
-      "sha256": "f5b4447550e7055a41c579f855e9404ae022ff4601e2e90caf266e644f8d55f4",
+      "sha256": "b8e0a25bbce26a9faeff5bb63c521d01b16ab21ee4343a61d6f5b0ee976552b0",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -1042,7 +1042,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "7c45e0e96c496bebe336f19c20d3a41c5018eebdd1436ea96e19e2441ff73d14",
+      "sha256": "f7ef08585c19c030792551edbc0ccd57ff4241634d30451ba4c1f96de22c0f90",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1178,7 +1178,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "38cb67487a15d0f4af98e9e3a0bb7bd7b3b5327097844a3e5814c99f0f00153d",
+      "sha256": "60da372e1c90492d92dde22538e98ea736ee18c6c91e656e09e74ac3db97acac",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1330,7 +1330,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "8b4c0c2c9653b5683986696154a416a2e0f4e6d6ebf2ffb2b0925be64ae23c84",
+      "sha256": "b574466b8db2bcab68446f4d822a74c2cd801749546eb584835bcfa38e312764",
       "scope_kind": "docs",
       "feature_ids": [
         "XTASK-DIAGNOSTIC-REGISTRY"
@@ -1339,7 +1339,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "19cc3d48f27bfbc3f9325134b80919b664cce95dd237a19f5e48ce34012e2d65",
+      "sha256": "183662a05eacb72e5aefff0c7fdac02eaf853a81b5fdb05f84983ba4cd813b32",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -1488,7 +1488,7 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "d6bcb5535f3b0e4308e8ddc4894a2d664d20f1474947ac332ff9aeafecfcc335",
+      "sha256": "6e6454509614587bcf8e3709b89c6c0c772ae0d2bfac201d422f826d94c6f333",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -1498,10 +1498,6 @@
         "AV2-5.2.3-TRAILING-BITS",
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
-        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
-        "AV2-7.3.2-CMVS-BOUNDARIES",
-        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
-        "AV2-7.3.8-HLS-AVAILABILITY",
         "CONF-AVM-DIFF-HARNESS",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
@@ -2732,7 +2728,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "020023e3d5a91a3633bbaad54e8bb024efa03c2d6c03a2df2613570bfb3a99cb",
+      "sha256": "33c7633fd25cbc23ef833a92ab26c897468f060452759964cb225cd919a35f95",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
@@ -2819,7 +2815,7 @@
     },
     {
       "path": "xtask/src/feature_status.rs",
-      "sha256": "67423d47ef604647d417c59b6db346580eb14ccf258017c133dfd8b2c308d8b4",
+      "sha256": "564243b5f9654d24d69eb343504aa1184d87aa767424d1a7c060c25c14522ea0",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "AV2-5.2.2-OBU-HEADER",
