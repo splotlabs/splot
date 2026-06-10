@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "3d05059b096fd4506b6ca7d71dc2cfc607d6812c",
+  "audited_commit": "2638dd217e14e63be8ca754c626c2492b448dad2",
   "outcome": "success",
   "files": [
     {
@@ -1519,7 +1519,7 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "5cb63573cf091e9b22e1c52555248179c65eba72f3000d4a36c4284a35a52169",
+      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -1531,8 +1531,7 @@
         "AV2-5.4-SEQUENCE-HEADER",
         "CONF-AVM-DIFF-HARNESS",
         "ENC-BITSTREAM-WRITER",
-        "ENC-INTRA-TOY-V0",
-        "XTASK-CI-QUALITY-GATES"
+        "ENC-INTRA-TOY-V0"
       ],
       "outcome": "success"
     },
@@ -2844,7 +2843,7 @@
     },
     {
       "path": "openspec/specs/process/spec.md",
-      "sha256": "e8aa02c00425dddddde18154149ad48336465eabac8e196017a2d3f6b7843ce2",
+      "sha256": "6b9703eac4d226ea3dd08a4d8513080bae187cd6cfa5d39348d459408edb0ab3",
       "scope_kind": "openspec",
       "feature_ids": [
         "DOC-AUDIT-PROTOCOLS",
