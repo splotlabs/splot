@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "8143f81b51ef406eb065329aecf64649d94d58ee",
+  "audited_commit": "1f6ded5ad1a5bcf2ce8ca688d148f4ef8ba76a2c",
   "outcome": "success",
   "files": [
     {
@@ -200,7 +200,7 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "beefc09df6aa14f30bef5881eba4077fde5aab21486d3111fd67ad782d541641",
+      "sha256": "7fdf4d144d8a564c416d8bc83d0b33610a9bd7c0d362052f0af6dd1851434bfb",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
@@ -2910,7 +2910,7 @@
     },
     {
       "path": "xtask/src/main.rs",
-      "sha256": "145e5d840878173df4f799ad63b91896c6a1c9c745dbf678b18281eff959d42e",
+      "sha256": "c68dc07b8d52fef07684f3e494f19a9b72e396e534f99e0d19cd4906064e3861",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",

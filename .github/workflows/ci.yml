@@ -199,6 +199,9 @@ jobs:
           cargo llvm-cov --workspace --all-features --locked --no-report
           cargo llvm-cov report --summary-only
           cargo llvm-cov report --lcov --output-path lcov.info
+      # Exclusion is by name (kept in sync with SPLOT_VALIDATE_COVERAGE_IGNORE_REGEX
+      # in xtask): extend the regex when adding a workspace crate that should not
+      # gate here, or it joins the threshold scope.
       - name: Gate splot-validate line coverage (>= 90%)
         run: cargo llvm-cov report --fail-under-lines 90 --ignore-filename-regex 'crates/splot-(core|encode|cli)/|(^|/)xtask/|(^|/)fuzz/'
 

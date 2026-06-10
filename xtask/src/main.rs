@@ -31,7 +31,9 @@ const SPDX_COPYRIGHT_PREFIX: &str = "// SPDX-FileCopyrightText: ";
 /// `crates/splot-validate/` from the coverage threshold. The regex is matched
 /// against the full (absolute) path, so xtask/fuzz use a `(^|/)` boundary rather
 /// than a string anchor. Kept in sync with the `coverage` job in
-/// `.github/workflows/ci.yml`.
+/// `.github/workflows/ci.yml`. Exclusion is by name: extend this regex when
+/// adding a workspace crate that should not gate here, or it joins the
+/// threshold scope.
 const SPLOT_VALIDATE_COVERAGE_IGNORE_REGEX: &str =
     r"crates/splot-(core|encode|cli)/|(^|/)xtask/|(^|/)fuzz/";
 
@@ -279,7 +281,13 @@ fn run_cargo(args: &[&str]) -> Result<()> {
 /// gate without mutating the parent environment.
 fn run_cargo_with_env(envs: &[(&str, &str)], args: &[&str]) -> Result<()> {
     let cargo = cargo();
-    let display = format!("{cargo} {}", args.join(" "));
+    // Echo the env assignments too, so a failing step is reproducible by
+    // copy-pasting the displayed line.
+    let env_prefix: String = envs
+        .iter()
+        .map(|(key, value)| format!("{key}={value} "))
+        .collect();
+    let display = format!("{env_prefix}{cargo} {}", args.join(" "));
     eprintln!("> {display}");
     let status = Command::new(&cargo)
         .args(args)
@@ -439,11 +447,12 @@ fn run_fuzz(time: Option<u64>) -> Result<()> {
 }
 
 /// Runs the networked cargo-deny advisory check (separate from the offline gate).
+/// `--all-features` matches the CI advisory job, like the offline gate.
 fn run_audit() -> Result<()> {
     run_if_present(
         "cargo-deny",
         "cargo-deny",
-        &["check", "advisories"],
+        &["--all-features", "check", "advisories"],
         "`brew install cargo-deny` or `cargo install cargo-deny`",
     )
 }
