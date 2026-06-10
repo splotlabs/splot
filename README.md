@@ -1,26 +1,101 @@
+<div align="center">
+
 # splot
 
-`splot` is a Rust toolkit for the **AV2** video codec: a bitstream **validator** and
-**inspector** today, and an experimental **encoder** later.
+**Spec-faithful AV2 bitstream validation, in safe Rust.**
 
-> **Status: pre-alpha / validator-first.** The Annex B envelope parser, AV2 OBU
-> header parser, and a structured header-conformance validator work today. The
-> decoder and encoder are reserved API shapes only.
+A validator and inspector for the [AV2 video codec](https://av2.aomedia.org/v1.0.0/index.html) today — an experimental encoder later.
 
-AV2 is tracked against the **AV2 Bitstream & Decoding Process Specification
-v1.0.0** (Final Deliverable, **2026-05-28**): <https://av2.aomedia.org/v1.0.0/index.html>.
+[![CI](https://github.com/splotlabs/splot/actions/workflows/ci.yml/badge.svg)](https://github.com/splotlabs/splot/actions/workflows/ci.yml)
+[![AV2 spec v1.0.0](https://img.shields.io/badge/AV2%20spec-v1.0.0-blueviolet)](https://av2.aomedia.org/v1.0.0/index.html)
+[![Rust 1.96 · edition 2024](https://img.shields.io/badge/rust-1.96%20%C2%B7%20edition%202024-orange)](./rust-toolchain.toml)
+[![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success)](./Cargo.toml)
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](./LICENSE.md)
 
-## Why validator-first?
+</div>
 
-A validator/inspector is independently useful, has a small and verifiable surface,
-and forces an honest, spec-faithful model of the bitstream before any encoder
-decisions are made. Every validator finding is structured data — a stable rule id,
-severity, spec section, byte/bit offset, and message — not a log line.
+Think `clippy`, but for AV2 bitstreams. Point `splot` at a bitstream and every
+problem comes back as structured data — a stable rule id, a severity, the AV2
+spec section it violates, and the byte offset where it happens:
 
-This is **AV2**, not AV1: the OBU header follows AV2 v1.0.0 § 5.2.2 (no
-`obu_forbidden_bit`, no `obu_has_size_field`, no AV1 OBU type table).
+```console
+$ splot validate bad.av2
+[ERROR] obu-order/temporal-unit-missing-delimiter (§7.3.7) @byte 1: OBU_TEMPORAL_DELIMITER appears before a global OBU_TEMPORAL_DELIMITER starts the temporal unit
+[ERROR] obu-header/global-xlayer-required (§6.2.2) @byte 1: OBU_TEMPORAL_DELIMITER requires obu_xlayer_id == GLOBAL_XLAYER_ID (31), found 5
+2 error(s), 0 warning(s), 0 info
+NOT conformant
+```
 
-## Build / install
+Add `--json` and the same report becomes machine-readable (exit code `1` on
+non-conformance), ready for CI pipelines and tooling. Each finding carries the
+same six fields, always:
+
+```json
+{
+  "rule_id": "obu-header/global-xlayer-required",
+  "spec_section": "6.2.2",
+  "severity": "Error",
+  "byte_offset": 1,
+  "bit_offset": null,
+  "message": "OBU_TEMPORAL_DELIMITER requires obu_xlayer_id == GLOBAL_XLAYER_ID (31), found 5"
+}
+```
+
+## Why splot?
+
+- **Diagnostics are the product.** Every finding is a six-field `Diagnostic` —
+  stable `rule_id`, severity, spec section, byte/bit offset, message — never a
+  log line. Exit codes are part of the contract: `0` conformant, `1` not
+  conformant, `2` operational error.
+- **114 diagnostic rules across 22 namespaces**, from `obu-header/` and
+  `obu-order/` to `sequence-header/`, `frame-header/`, `metadata/`, and
+  `film-grain/`. The full registry lives in
+  [docs/VALIDATOR-DIAGNOSTICS.md](./docs/VALIDATOR-DIAGNOSTICS.md) and is
+  CI-enforced: if the registry and the source disagree, the build fails.
+- **The spec cannot drift.** A byte-faithful mirror of the AV2 v1.0.0
+  specification is committed at [docs/spec/av2/1.0.0/](./docs/spec/av2/1.0.0/)
+  — 628 indexed sections, checksum-pinned, with hand-edits rejected by
+  `cargo xtask check-spec-mirror`. Parsed syntax elements cite their spec
+  section in the source.
+- **Parsers never panic.** `unsafe` is forbidden across the workspace, runtime
+  panics are banned in library code, and the never-panic invariant is hammered
+  by 681 tests, property tests across 22 parser modules, and a libFuzzer
+  target — including a blocking 60-second fuzz smoke on every pull request.
+- **Status you can audit, not vibes.** 127 tracked features in
+  [docs/IMPLEMENTATION-MATRIX.toml](./docs/IMPLEMENTATION-MATRIX.toml) render
+  into generated, drift-gated coverage docs:
+  [SPEC-COVERAGE.md](./docs/SPEC-COVERAGE.md) maps every cited spec section to
+  its parse/validate/test status, and
+  [FEATURE-STATUS.md](./docs/FEATURE-STATUS.md) is the per-feature ledger.
+
+## Status
+
+> **Pre-alpha, validator-first.** The validator and inspector work today; the
+> decoder and encoder are reserved API shapes only. Tracked against the **AV2
+> Bitstream & Decoding Process Specification v1.0.0** (Final Deliverable,
+> 2026-05-28).
+
+| Capability | Today |
+| --- | --- |
+| Annex B envelope, LEB128, AV2 OBU header parsing | working |
+| Sequence-header and frame-header parsing (incl. tiling, quantization, segmentation) | working |
+| Header-level conformance validation (114 rules) | working |
+| `splot inspect` OBU dump (text and JSON, partial-parse tolerant) | working |
+| Conformance vectors, AVM differential testing | planned |
+| `splot decode` / `splot encode` | stubs — exit with a clear error |
+
+Validator-first is deliberate: a validator/inspector is independently useful,
+has a small and verifiable surface, and forces an honest, spec-faithful model
+of the bitstream before any encoder decisions are made.
+
+And to be clear about what `splot` is **not** (yet): it is not a decoder — it
+checks syntax and header-level conformance, it does not reconstruct pixels.
+It is not an encoder — `encode`/`decode` exit with a structured error. And it
+is **not AV1**: the OBU header follows AV2 v1.0.0 § 5.2.2 (no
+`obu_forbidden_bit`, no `obu_has_size_field`, no AV1 OBU type table), and AV1
+bitstreams are out of scope.
+
+## Quick start
 
 ```bash
 rustup update stable        # or use the pinned toolchain in rust-toolchain.toml
@@ -28,97 +103,120 @@ cargo build --release
 ./target/release/splot --help
 ```
 
-The toolchain is pinned to Rust **1.96.0**, edition **2024** (see `rust-toolchain.toml`).
-
-## Usage
+The toolchain is pinned to Rust **1.96.0**, edition **2024** (see
+`rust-toolchain.toml`).
 
 ```bash
 splot validate sample.av2              # human-readable conformance report
 splot validate sample.av2 --json       # machine-readable report (exit 1 if non-conformant)
+splot validate sample.av2 --strict     # treat warnings as conformance failures
 splot inspect sample.av2 --headers     # list OBUs and their headers
-splot encode input.y4m -o output.av2 --qp 120 --speed 6   # not yet implemented
-splot decode input.av2 -o output.y4m                      # not yet implemented
+splot inspect sample.av2 --json        # per-OBU JSON records with parsed payload views
+splot encode input.y4m -o output.av2   # not yet implemented (exits 1 with a clear error)
+splot decode input.av2 -o output.y4m   # not yet implemented (exits 1 with a clear error)
 ```
 
-Exit codes for `validate`/`inspect`: `0` success/conformant, `1` validation errors
-or unparsable input, `2` I/O or CLI errors.
+`inspect` keeps stdout clean for machine output (logs go to stderr) and prints
+every OBU it can parse even when the bitstream tail is malformed:
+
+```console
+$ splot inspect --headers conformant.av2
+2 OBU(s)
+OBU #0  @byte 1  size=1  type=OBU_TEMPORAL_DELIMITER(2)  ext=false  tlayer=0 mlayer=0 xlayer=31
+OBU #1  @byte 3  size=11  type=OBU_SEQUENCE_HEADER(1)  ext=false  tlayer=0 mlayer=0 xlayer=0
+```
 
 ## Project layout
 
 ```text
-crates/splot-core      AV2 bitstream model + parsers (LEB128, OBU header, Annex B)
-crates/splot-validate  parser-driven conformance diagnostics
+crates/splot-core      AV2 bitstream model + parsers (LEB128, OBU header, Annex B, headers)
+crates/splot-validate  parser-driven conformance diagnostics (the validator)
 crates/splot-encode    future encoder API (stub)
 crates/splot-cli       thin `splot` binary
-xtask                  project automation (ci, repo checks)
+xtask                  project automation (ci, repo checks, generated docs)
 fuzz                   cargo-fuzz target (outside the workspace)
 ```
 
+Dependencies flow one way (`splot-core` depends on no other `splot-*` crate;
+nothing depends on `splot-cli`), and that rule is itself a CI gate. See
+[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
+
+## Engineering discipline
+
+One command is the acceptance gate:
+
+```bash
+cargo xtask ci
+```
+
+It runs 13 checks: `fmt`, `clippy -D warnings`, build, tests, doctests,
+spell-check (`typos`), unused dependencies (`cargo-machete`), supply-chain
+policy (`cargo-deny`), license headers, dependency direction, spec-mirror
+integrity, feature-status drift, and the diagnostics registry. CI adds
+Conventional Commits enforcement, the blocking per-PR fuzz smoke, a
+supply-chain job, and workflow linting on top. Testing strategy and layers are
+documented in [docs/TESTING.md](./docs/TESTING.md).
+
 ## Roadmap
 
-1. Annex B + OBU header validator. *(done)*
-2. OBU ordering and header-level conformance.
-3. Sequence/frame header parsing.
-4. Inspector snapshots and conformance vectors.
-5. AVM differential testing.
-6. Encoder experiments.
+Shipped: the Annex B + OBU header validator, OBU ordering and header-level
+conformance, and sequence/frame-header parsing. In progress: validator depth
+across the remaining spec sections. Next: inspector snapshots and conformance
+vectors, AVM differential testing (with the
+[AVM reference implementation](https://github.com/AOMediaCodec/avm) as the
+oracle), then a bitstream writer and encoder experiments.
 
-See [docs/VALIDATOR-ROADMAP.md](./docs/VALIDATOR-ROADMAP.md) for validator
-coverage phases and [docs/ENCODER-ROADMAP.md](./docs/ENCODER-ROADMAP.md) for
-encoder milestones tied to Feature IDs.
+Details live in [docs/VALIDATOR-ROADMAP.md](./docs/VALIDATOR-ROADMAP.md)
+(validator coverage phases) and
+[docs/ENCODER-ROADMAP.md](./docs/ENCODER-ROADMAP.md) (encoder milestones).
 
-## Encoder research references
-
-`splot` uses rav1e and SVT-AV1 as engineering references for future AV2 encoder architecture, not as
-sources of AV2 syntax or copied implementation material. See:
-
-- `docs/references/ENCODER-RESEARCH-NOTES.md`
-- `docs/references/RAV1E-SOURCE-MAP.md`
-- `docs/references/SVT-AV1-RESEARCH-MAPPING.md`
-- `docs/references/THIRD-PARTY-NOTICES.md`
+`splot` uses rav1e and SVT-AV1 as engineering references for future AV2
+encoder architecture, not as sources of AV2 syntax or copied implementation
+material. See
+[docs/references/ENCODER-RESEARCH-NOTES.md](./docs/references/ENCODER-RESEARCH-NOTES.md),
+[docs/references/RAV1E-SOURCE-MAP.md](./docs/references/RAV1E-SOURCE-MAP.md),
+[docs/references/SVT-AV1-RESEARCH-MAPPING.md](./docs/references/SVT-AV1-RESEARCH-MAPPING.md),
+and
+[docs/references/THIRD-PARTY-NOTICES.md](./docs/references/THIRD-PARTY-NOTICES.md).
 
 ## Feature tracking
-
-**Looking up a spec section?** The generated
-[docs/SPEC-COVERAGE.md](./docs/SPEC-COVERAGE.md) lists every cited AV2 section
-in spec order with at-a-glance parse/validate/test status and links into the
-committed spec mirror.
 
 Implementation status is tracked in
 [`docs/IMPLEMENTATION-MATRIX.toml`](./docs/IMPLEMENTATION-MATRIX.toml) — the
 canonical source of truth — and rendered with:
 
 ```bash
-cargo xtask feature-status            # aligned table
+cargo xtask feature-status            # aligned status table
 cargo xtask check-feature-status      # fail on drift (also part of cargo xtask ci)
-cargo xtask spec-coverage             # coverage summary
-cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md
-                                      # regenerate the per-section coverage doc
+cargo xtask spec-coverage             # per-spec-section coverage summary
 ```
 
-OpenSpec changes under [`openspec/`](./openspec/) describe intent; the matrix is the
-canonical status. See [docs/FEATURE-TRACKING.md](./docs/FEATURE-TRACKING.md) and the
-generated [docs/FEATURE-STATUS.md](./docs/FEATURE-STATUS.md).
+OpenSpec changes under [`openspec/`](./openspec/) describe intent; the matrix
+is the canonical status. See
+[docs/FEATURE-TRACKING.md](./docs/FEATURE-TRACKING.md).
 
 ## License
 
-`splot` is licensed under **PolyForm Noncommercial 1.0.0** (see [LICENSE.md](./LICENSE.md)).
-It is free for noncommercial use. **Commercial use of any component** — validator,
-inspector, decoder, encoder, CLI, docs, tests — requires a separate commercial
-license: <bartekplus@gmail.com>.
+`splot` is licensed under **PolyForm Noncommercial 1.0.0** (see
+[LICENSE.md](./LICENSE.md)). It is free for noncommercial use. **Commercial
+use of any component** — validator, inspector, decoder, encoder, CLI, docs,
+tests — requires a separate commercial license: <bartekplus@gmail.com>.
 
-OpenSpec-generated assistant integration files are MIT-licensed and isolated to
-agent/tooling directories; see [THIRD-PARTY-NOTICES.md](./docs/references/THIRD-PARTY-NOTICES.md).
+OpenSpec-generated assistant integration files are MIT-licensed and isolated
+to agent/tooling directories; the committed AV2 spec mirror is verbatim
+AOMedia copyright material. See
+[THIRD-PARTY-NOTICES.md](./docs/references/THIRD-PARTY-NOTICES.md).
 
 ## Contributing
 
 `splot` is a solo-developer, source-available project and is **not accepting
 external code contributions** at this time — please don't open pull requests.
 
-If you hit a bug, a wrong or missing diagnostic, or a conformance gap, **open an
-issue** instead: <https://github.com/splotlabs/splot/issues>. The repo ships issue
-forms for [bug reports](./.github/ISSUE_TEMPLATE/bug.yml), [AV2 features](./.github/ISSUE_TEMPLATE/av2-feature.yml),
-and [conformance/vector/fuzz work](./.github/ISSUE_TEMPLATE/conformance.yml).
+If you hit a bug, a wrong or missing diagnostic, or a conformance gap, **open
+an issue** instead: <https://github.com/splotlabs/splot/issues>. The repo
+ships issue forms for [bug reports](./.github/ISSUE_TEMPLATE/bug.yml),
+[AV2 features](./.github/ISSUE_TEMPLATE/av2-feature.yml), and
+[conformance/vector/fuzz work](./.github/ISSUE_TEMPLATE/conformance.yml).
 
-Developers and coding agents working in a fork should follow the canonical guide in
-[AGENTS.md](./AGENTS.md).
+Developers and coding agents working in a fork should follow the canonical
+guide in [AGENTS.md](./AGENTS.md).

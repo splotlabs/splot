@@ -38,7 +38,7 @@ cargo xtask check-feature-status   (also in cargo xtask ci and CI)
 GitHub issue / PR (references the same Feature ID)
 ```
 
-GitHub Issues/Projects, README checklists, and `STATUS.md` are an execution queue
+GitHub Issues/Projects and README checklists are an execution queue
 and snapshots. When they disagree with the matrix, **the matrix wins.**
 
 ## 3. Feature ID convention

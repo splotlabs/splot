@@ -1,7 +1,7 @@
 # Canonical AV2 implementation matrix for `splot`.
 #
 # This file is the SINGLE SOURCE OF TRUTH for what is implemented and how far.
-# GitHub Issues/Projects, README checklists, and STATUS.md are NOT canonical.
+# GitHub Issues/Projects and README checklists are NOT canonical.
 #
 # Schema, status model, and proof rules: docs/IMPLEMENTATION-MATRIX.schema.md
 # Workflow and conventions:               docs/FEATURE-TRACKING.md
