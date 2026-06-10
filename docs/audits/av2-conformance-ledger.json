@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "7317e0d2d1738d6751abdf3812c8f0f4d3f2623b",
+  "audited_commit": "46ca30d929fd3276740e300248bb2e6a51128e92",
   "outcome": "success",
   "files": [
     {
@@ -828,6 +828,13 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-validate/tests/validator_never_panics.rs",
+      "sha256": "eacb7008871466751212ff276e0a6397bac101bbae5889a05f02bf126637fb92",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "deny.toml",
       "sha256": "39208159597101d7b2634e7e7527ddfd2b4362d7a84f3cfb8d3a6ff8c0814fbe",
       "scope_kind": "repository-process",
@@ -1474,12 +1481,33 @@
       "outcome": "success"
     },
     {
+      "path": "fuzz/fuzz_targets/parse_bitstream.rs",
+      "sha256": "b58b8d0cf054b1acde1ed3b52a41c1c6abb7b1e9c127b2d98520916dd2ea9df0",
+      "scope_kind": "fuzz",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "fuzz/fuzz_targets/parse_ivf.rs",
+      "sha256": "ccb7450c61493fae9cde8dfbec71f2751a12fb642a8c357d86e0d69808c46967",
+      "scope_kind": "fuzz",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "fuzz/fuzz_targets/parse_obu.rs",
       "sha256": "c93bcc481ed1b98e8d042506a82fe571b7311812787d1cf1589f38346b6e7160",
       "scope_kind": "fuzz",
       "feature_ids": [
         "CONF-FUZZ-NO-PANIC"
       ],
+      "outcome": "success"
+    },
+    {
+      "path": "fuzz/fuzz_targets/validate_bytes.rs",
+      "sha256": "be94a8e0bf817d0bd360ceeea839f52fafc359c539f789f5f0b541198e0e3ca1",
+      "scope_kind": "fuzz",
+      "feature_ids": [],
       "outcome": "success"
     },
     {
@@ -1491,7 +1519,7 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "e65172fae7186781303322aed3b76277ccc748d7ecddbdfe8001c1d96082c1f6",
+      "sha256": "6e6454509614587bcf8e3709b89c6c0c772ae0d2bfac201d422f826d94c6f333",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -1502,7 +1530,6 @@
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
         "CONF-AVM-DIFF-HARNESS",
-        "CONF-FUZZ-NO-PANIC",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
       ],
@@ -2736,7 +2763,7 @@
     },
     {
       "path": "openspec/specs/conformance/spec.md",
-      "sha256": "9bdb872cca91c01b76985bb900e4b871f4911042ddff1ad4e4d547fdbd50ff04",
+      "sha256": "883a509bd1fbd35d51e2ee2fac40cd8ee2a59f67cf0754cb0318f26114a1d659",
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
