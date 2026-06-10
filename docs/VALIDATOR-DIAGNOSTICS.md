@@ -350,16 +350,22 @@ Every new diagnostic requires:
 ## Diagnostic JSON compatibility
 
 Diagnostic JSON is part of the product. Do not rename existing fields without a compatibility
-plan; adding fields is acceptable when the CLI tests are updated. Recommended fields:
+plan; adding fields is acceptable when the CLI tests are updated. `splot validate --json`
+prints a report object whose `diagnostics` array holds one object per finding, serialized
+from `Diagnostic` in `crates/splot-validate/src/diagnostic.rs`: `severity` is the
+capitalized variant name (`"Error"`, `"Warning"`, `"Info"`), and an unset `spec_section`,
+`byte_offset`, or `bit_offset` serializes as `null`. One finding looks like:
 
 ```json
 {
-  "severity": "error",
   "rule_id": "sequence-header/chroma-format-out-of-range",
   "spec_section": "6.4.1",
+  "severity": "Error",
   "byte_offset": 42,
   "bit_offset": 3,
-  "message": "chroma_format_idc must be <= 3, found 4",
-  "feature_id": "AV2-6.4-SEQUENCE-HEADER-SEMANTICS"
+  "message": "chroma_format_idc must be <= 3, found 4"
 }
 ```
+
+No `feature_id` field is emitted: feature IDs live in code comments, tests, and
+`docs/IMPLEMENTATION-MATRIX.toml`, not in the diagnostic payload.

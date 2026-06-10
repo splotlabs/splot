@@ -1,5 +1,9 @@
 # Architecture
 
+This document covers the workspace split, the dependency rules, the error model,
+and the unsafe/SIMD policy; [AGENTS.md](../AGENTS.md) § 2 and § 5 remain
+canonical for the rules summarized here.
+
 ## Crate dependency graph
 
 ```text
@@ -21,13 +25,13 @@ by `cargo xtask check-dependency-direction`):
 
 ## Crate responsibilities
 
-- **`splot-core`** — the AV2 spec modeled in Rust: strong types (`ObuType`, layer
-  ids, `ByteOffset`/`BitOffset`), the bit reader, and panic-free parsers for the
-  § 4.11 descriptors, OBU headers (§ 5.2.2), Annex B envelopes, payload dispatch,
-  and the implemented § 5 payloads (sequence header, HLS OBUs, metadata/padding,
-  quantizer matrix, film grain, the frame-header subset — see the generated
-  [SPEC-COVERAGE.md](./SPEC-COVERAGE.md) for the live list). It owns the typed
-  `Error` model. No I/O, no other `splot-*` dependency.
+- **`splot-core`** — the AV2 spec modeled in Rust. It owns the typed `Error`
+  model; no I/O, no other `splot-*` dependency.
+  - Strong types (`ObuType`, layer ids, `ByteOffset`/`BitOffset`) and a
+    panic-free bit reader for the § 4.11 descriptors.
+  - LEB128, the OBU header (§ 5.2.2), Annex B envelopes, and payload dispatch.
+  - The implemented § 5 payload parsers, in `crates/splot-core/src/headers/`;
+    the generated [SPEC-COVERAGE.md](./SPEC-COVERAGE.md) is the live list.
 - **`splot-validate`** — parser output → user-facing conformance diagnostics. A
   `Validator` parses with `splot-core`, then runs a registry of `Check`s. Each
   `Diagnostic` is structured data (rule id, severity, spec section, offset, message).
@@ -35,26 +39,27 @@ by `cargo xtask check-dependency-direction`):
 - **`splot-encode`** — the *shape* of the future encoder API (configuration plus a
   push/pull `Context`). It implements no encoding; every operation returns
   `Error::Unimplemented`.
-- **`splot-cli`** — the thin `splot` binary. It parses arguments (clap), initializes
-  logging (tracing), reads/writes files, and calls library APIs. No codec logic.
+- **`splot-cli`** — the thin `splot` binary. It parses arguments (clap),
+  initializes logging (tracing), reads/writes files, and calls library APIs. No
+  codec logic: the `inspect`/`validate` text and JSON rendering in
+  `crates/splot-cli/src/commands/` are presentation over `splot-core` and
+  `splot-validate` output. Exit codes are part of the contract: `0` clean;
+  `1` findings (`validate`: validation errors, or warnings under `--strict`;
+  `inspect`: a parse error); `2` operational error.
 - **`xtask`** — project automation: the `ci` pipeline; the repository checks
   (`check-license-headers`, `check-dependency-direction`, `check-spec-mirror`,
   `check-feature-status`, `check-diagnostic-registry`,
   `check-conventional-commits`/`-title`); matrix reporting (`feature-status`,
   `spec-coverage`); audit scoping (`audit-scope`); `audit`, `coverage`, and
-  `fuzz` wrappers; plus codegen/vector/conformance stubs.
+  `fuzz` wrappers; plus the `gen-tables`, `fetch-vectors`, and `conformance`
+  stubs.
 
 ## Reference-informed encoder architecture
 
-Future `splot-encode` work should combine:
-
-- rav1e-style Rust API, RDO, tile/plane-region, fuzzing, and profiling discipline;
-- SVT-AV1-style production pipeline, resource ownership, mode-decision, ME, RC, and filter-search
-  architecture;
-- AV2-spec and AVM-derived syntax, semantics, reconstruction, and conformance behavior.
-
-Before implementing encoder features, read `docs/references/ENCODER-RESEARCH-NOTES.md` and find or
-create the matrix row for any syntax/reconstruction behavior (see [AGENTS.md](../AGENTS.md) § 1a).
+rav1e and SVT-AV1 are engineering references only, never sources of AV2 syntax,
+code, tables, or constants. The canonical gate before any encoder work is
+[AGENTS.md](../AGENTS.md) § 1a; the research notes live under
+[docs/references/](./references/).
 
 ## Error model
 
@@ -70,3 +75,6 @@ functionality returns `Error::Unimplemented { feature }`.
 `unsafe` only inside narrowly-scoped, individually-documented, individually-tested
 modules, and only when justified by measurements. The `fuzz` crate sits outside the
 workspace so that libFuzzer's `unsafe` runtime is not subject to this lint.
+
+See [CODE_REVIEW.md](./CODE_REVIEW.md) for the review checklist and
+[TESTING.md](./TESTING.md) for the test layers.

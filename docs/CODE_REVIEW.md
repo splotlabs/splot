@@ -4,22 +4,30 @@ A concise checklist for humans and agents reviewing changes to `splot`.
 
 ## Spec correctness
 
-- [ ] Is the AV2 spec section cited (doc comment or `// TODO(spec: <FEATURE-ID>)`)?
+- [ ] Is the AV2 spec section cited as `§ N.M` plus the mirror path (e.g.
+      `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-16`) in the doc comment,
+      or marked with `// TODO(spec: <FEATURE-ID>)`?
 - [ ] No AV1 leakage (OBU header is § 5.2.2; no AV1 OBU type table, forbidden bit,
       or size-field assumptions)?
 - [ ] No invented syntax, constants, or table contents?
+- [ ] Nothing under `docs/spec/av2/` was hand-edited
+      (`cargo xtask check-spec-mirror`)?
 
-## Encoder reference review checklist
+## Encoder reference gate
 
-For encoder or syntax-related PRs, reviewers must check:
+Only for encoder or encoder-facing syntax PRs.
 
-- The PR includes the Encoder research gate from `docs/references/ENCODER-RESEARCH-NOTES.md`.
-- AV2 spec sections and AVM oracle paths are identified for decoder-visible behavior.
-- rav1e/SVT-AV1 are used only as inspiration.
-- No AV1 syntax, code, tables, constants, entropy CDFs, comments, or prose were copied.
-- `docs/SPEC-MAPPING.md` is updated when syntax/reconstruction/reference/layer behavior changes.
-- Tests include edge cases and differential coverage where possible.
-- Scalar correctness and deterministic traces exist before performance work.
+- [ ] Is the "Encoder research gate" block from
+      `.github/PULL_REQUEST_TEMPLATE.md` filled in?
+- [ ] Are AV2 spec sections and AVM oracle paths identified for decoder-visible
+      behavior?
+- [ ] Are rav1e/SVT-AV1 used only as inspiration?
+- [ ] No AV1 syntax, code, tables, constants, entropy CDFs, comments, or prose
+      copied?
+- [ ] Does the feature have a row in `docs/IMPLEMENTATION-MATRIX.toml` when it
+      touches syntax, reconstruction, reference state, or layer behavior?
+- [ ] Do scalar correctness and deterministic traces exist before performance
+      work?
 
 ## Error handling
 
@@ -32,11 +40,14 @@ For encoder or syntax-related PRs, reviewers must check:
 
 - [ ] Does each validator finding have a stable `rule_id`, `severity`, `spec_section`,
       byte/bit offset (where known), and a clear `message`?
+- [ ] Are new or renamed `rule_id` values registered in
+      `docs/VALIDATOR-DIAGNOSTICS.md` (`cargo xtask check-diagnostic-registry`)?
 
 ## Tests
 
 - [ ] Positive, negative, and EOF cases for parser changes?
 - [ ] Property/fuzz coverage where relevant (parsers never panic)?
+- [ ] Differential coverage against the AVM oracle where feasible?
 
 ## Boundaries
 
@@ -45,14 +56,17 @@ For encoder or syntax-related PRs, reviewers must check:
 
 ## Feature tracking
 
-- [ ] Feature ID is present in the PR title/body.
-- [ ] Matrix row is added or updated (`docs/IMPLEMENTATION-MATRIX.toml`).
-- [ ] OpenSpec change exists for non-trivial behavior/design changes.
-- [ ] `cargo xtask check-feature-status` passes.
-- [ ] Any `done` status has proof recorded in `[feature.proof]`.
+- [ ] Is the Feature ID present in the PR title/body?
+- [ ] Is the matrix row added or updated (`docs/IMPLEMENTATION-MATRIX.toml`)?
+- [ ] Does an OpenSpec change exist for non-trivial behavior/design changes?
+- [ ] Does `cargo xtask check-feature-status` pass?
+- [ ] Does every `done` status have proof recorded in `[feature.proof]`?
 
 ## Hygiene
 
 - [ ] SPDX header on every `.rs` file (`cargo xtask check-license-headers`)?
 - [ ] Public items documented?
+- [ ] PR title and commit subjects follow Conventional Commits
+      (`cargo xtask check-conventional-title` /
+      `cargo xtask check-conventional-commits`)?
 - [ ] `cargo xtask ci` passes?

@@ -17,19 +17,11 @@ It is canonical. Everything else points at it.
 ## 2. The five-layer model
 
 ```text
-OpenSpec change      = design intent and acceptance criteria   (openspec/)
-Implementation matrix = canonical source of truth              (docs/IMPLEMENTATION-MATRIX.toml)
-Code / tests / diagnostics = the actual work                   (crates/, fuzz/)
-xtask                = enforcement and reporting               (cargo xtask ...)
-GitHub Issues/Project = execution queue, not canonical truth
-```
-
-```text
-OpenSpec change
+OpenSpec change (openspec/changes/<change-id>/)
       ↓ defines intent for
 Feature ID in docs/IMPLEMENTATION-MATRIX.toml   ← canonical
       ↓ referenced by
-code module / diagnostic rule / test / fuzz target / CLI behavior
+code module / diagnostic rule / test / fuzz target / CLI behavior (crates/, fuzz/)
       ↓ proven by
 proof recorded in the matrix row
       ↓ enforced by
@@ -38,8 +30,8 @@ cargo xtask check-feature-status   (also in cargo xtask ci and CI)
 GitHub issue / PR (references the same Feature ID)
 ```
 
-GitHub Issues/Projects and README checklists are an execution queue
-and snapshots. When they disagree with the matrix, **the matrix wins.**
+GitHub Issues/Projects are an execution queue and the README status table is a
+snapshot. When either disagrees with the matrix, **the matrix wins.**
 
 ## 3. Feature ID convention
 
@@ -57,21 +49,18 @@ and snapshots. When they disagree with the matrix, **the matrix wins.**
 | Docs | `DOC-<SLUG>` | `DOC-FEATURE-TRACKING` |
 | CLI | `CLI-<SLUG>` | `CLI-INSPECT` |
 
-A merged ID is **stable** — do not rename it casually. To replace one, add the new
-row and list the old id in `replaces` (see the schema). The same ID appears in: the
-matrix row, the OpenSpec change, the GitHub issue/PR, the diagnostic rule id (when
-applicable), tests, `TODO(spec: <id>)` comments, and docs.
+The same ID appears in: the matrix row, the OpenSpec change, the GitHub
+issue/PR, the diagnostic rule id (when applicable), tests, `TODO(spec: <id>)`
+comments, and docs. ID stability and the `replaces` mechanism are defined in
+[IMPLEMENTATION-MATRIX.schema.md](./IMPLEMENTATION-MATRIX.schema.md) (§ 6–§ 7).
 
 ## 4. Status model
 
-Ten stages per feature, each one of: `todo`, `partial`, `done`, `blocked`,
-`not-applicable`, `experimental`, `pending`. **Never** percentages.
-
-`mapped`, `types`, `parse`, `validate`, `write`, `encode`, `decode_check`, `tests`,
-`avm_diff`, `perf`. Full definitions: [the schema](./IMPLEMENTATION-MATRIX.schema.md).
-
-Good: `OBU header: parse done, validate done, write todo, encode not-applicable`.
-Bad: `OBU header: 70% complete`.
+Ten stages per feature: `mapped`, `types`, `parse`, `validate`, `write`,
+`encode`, `decode_check`, `tests`, `avm_diff`, `perf`. Each stage is one of
+`todo`, `partial`, `done`, `blocked`, `not-applicable`, `experimental`,
+`pending` — **never** percentages. Full definitions and a good/bad status
+example: [the schema](./IMPLEMENTATION-MATRIX.schema.md).
 
 ## 5. Matrix schema (summary)
 
@@ -81,33 +70,36 @@ Each `[[feature]]` row has `id`, `name`, `category`, `kind`, `spec_sections`,
 (`tests`, `commands`, `fixtures`, `diagnostics`). The full schema, allowed values,
 and proof rules are in [IMPLEMENTATION-MATRIX.schema.md](./IMPLEMENTATION-MATRIX.schema.md).
 
-Render and check it:
+Render, check, and regenerate (the canonical command list — other sections
+point here):
 
 ```bash
 cargo xtask feature-status                 # aligned table
 cargo xtask feature-status --format json   # for tooling
-cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md
 cargo xtask feature-status --category normative
 cargo xtask feature-status --kind bitstream-syntax
-cargo xtask check-feature-status           # fail on drift
 cargo xtask spec-coverage                  # coverage summary
+cargo xtask check-feature-status           # fail on drift
+
+# Regenerate the committed generated docs:
+cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md
+cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md
 ```
 
 ## 6. Workflow: a new AV2 syntax feature
 
-```text
-1. Create an OpenSpec change      openspec/changes/<change-id>/ (proposal + tasks)
-2. Add a matrix row               docs/IMPLEMENTATION-MATRIX.toml (status todo)
-3. Implement strong types         crates/splot-core/src/...
-4. Implement the parser           (panic-free; errors, never panics)
-5. Add validator diagnostics      crates/splot-validate/... (stable rule ids)
-6. Add tests + fuzz/property      positive, negative, EOF
-7. Update proof + status          [feature.proof]; bump stages to done only with proof
-8. Regenerate the generated docs  cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md
-                                  cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md
-9. Run the checks                 cargo xtask check-feature-status && cargo xtask ci
-10. Open a PR                     put the Feature ID in the title/body
-```
+1. Create an OpenSpec change under `openspec/changes/<change-id>/`
+   (proposal + tasks).
+2. Add a row to [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml)
+   with stages at `todo`.
+3. Implement strong types in `crates/splot-core/src/...`.
+4. Implement the parser (panic-free; errors, never panics).
+5. Add validator diagnostics in `crates/splot-validate` (stable rule ids).
+6. Add tests plus fuzz/property coverage: positive, negative, EOF.
+7. Update `[feature.proof]` and status; bump a stage to `done` only with proof.
+8. Regenerate the generated docs with the `--output` commands in § 5.
+9. Run `cargo xtask check-feature-status && cargo xtask ci`.
+10. Open a PR with the Feature ID in the title/body.
 
 For any intentionally unmodeled AV2 detail, leave a marker:
 
@@ -135,24 +127,23 @@ the row's `[feature.proof]`. See [CONFORMANCE.md](./CONFORMANCE.md).
 
 ## 9. When may a stage be `done`?
 
-A **code** stage (`parse`, `validate`, `write`, `encode`, `decode_check`, `tests`,
-`avm_diff`, `perf`) may be `done` only when `[feature.proof]` records at least one
-of: a test module/path, a reproducible command, a fixture/vector, or a diagnostic
-id. `cargo xtask check-feature-status` enforces this. When in doubt, mark `partial`
-and explain in `notes`.
+A code stage may be `done` only when the row's `[feature.proof]` records
+evidence; the exact proof rules, and their enforcement by
+`cargo xtask check-feature-status`, are defined in
+[IMPLEMENTATION-MATRIX.schema.md](./IMPLEMENTATION-MATRIX.schema.md) (§ 5.3).
+When in doubt, mark `partial` and explain in `notes`.
 
 ## 10. Splitting large features
 
-Some rows (for example `AV2-5.18-FRAME-HEADER`) are too big for one PR. Keep the
-umbrella row, add narrower child rows whose ids extend the umbrella id, point each
-child `module` at the real code, and do not mark the umbrella `done` until its
-children are. See the schema's "splitting" section.
+A row too big for one PR (for example `AV2-5.18-FRAME-HEADER`) stays as an
+umbrella with narrower child rows whose ids extend it; the full splitting rules
+are in [IMPLEMENTATION-MATRIX.schema.md](./IMPLEMENTATION-MATRIX.schema.md)
+(§ 7).
 
 ## 11. How an agent chooses the next task
 
-1. Scan the generated [SPEC-COVERAGE.md](./SPEC-COVERAGE.md) (or run
-   `cargo xtask spec-coverage`) — blank/partial cells in spec order are the
-   open work.
+1. Scan the generated [SPEC-COVERAGE.md](./SPEC-COVERAGE.md) — blank/partial
+   cells in spec order are the open work.
 2. Prefer **validator-first** rows: `parse`/`validate` on normative bitstream
    syntax with `risk = high`, in dependency order (LEB128 → OBU header → Annex B →
    headers → ordering).
@@ -160,7 +151,7 @@ children are. See the schema's "splitting" section.
    header).
 4. Pick a row with an existing OpenSpec change, or create one.
 5. Implement, prove, update the matrix, regenerate the generated docs
-   (`FEATURE-STATUS.md`, `SPEC-COVERAGE.md`), run `cargo xtask ci`.
+   (commands in § 5), run `cargo xtask ci`.
 
 For the current validator expansion plan, start with
 [VALIDATOR-ROADMAP.md](./VALIDATOR-ROADMAP.md) (phases, current focus,
@@ -171,13 +162,12 @@ for this whole tracking system is recorded in
 
 ## 12. Diagnostic-ID convention
 
-Validator diagnostics use a kebab/slash namespace with a documented prefix:
-`obu-header/`, `obu-reserved/`, `bitstream/`, `trailing-bits/`,
-`byte-alignment/`, `sequence-header/`, `sequence-state/`, `obu-order/`, `hls/`,
-`msdo/`, `mfh/`, `content-interpretation/`, `frame-header/`, `tile-group/`,
-`tile-params/`, `lcr/`, `atlas/`, `ops/`, `brt/`, `qm/`, `film-grain/`,
-`padding/`, and `metadata/`.
-Example: `obu-header/global-xlayer-required`.
+Validator diagnostics use a kebab/slash namespace with a documented prefix,
+for example `obu-header/`, `sequence-header/`, and `frame-header/`. The
+canonical allowlist is the `DIAGNOSTIC_PREFIXES` constant in
+`xtask/src/feature_status.rs`;
+[VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md) groups every emitted
+rule by namespace. Example: `obu-header/global-xlayer-required`.
 
 A diagnostic that corresponds directly to a modeled feature MAY instead use the
 Feature ID as a base, optionally with a `.SUFFIX` for a narrower rule:
@@ -188,9 +178,8 @@ AV2-5.2.2-OBU-HEADER.MISSING-EXTENSION-BYTE
 AV2-B-ANNEXB-OBU-ENVELOPE.ZERO-LENGTH-OBU
 ```
 
-The base id (before the `.SUFFIX`) must be a known matrix id. New kebab prefixes
-must be added to the documented allowlist in `xtask/src/feature_status.rs` and
-listed here.
-Planned future namespaces are staged in the "Planned / not yet emitted"
-section of [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md) and should
-be moved here when the corresponding xtask allowlist entry lands.
+The base id (before the `.SUFFIX`) must be a known matrix id. A new kebab
+prefix lands by adding it to `DIAGNOSTIC_PREFIXES` and documenting its rules in
+[VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md); planned namespaces stay
+in that registry's "Planned / not yet emitted" section until their first rule
+is emitted.

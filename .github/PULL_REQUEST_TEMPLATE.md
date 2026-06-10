@@ -28,7 +28,7 @@
 - AV2 spec sections read:
 - AVM files/tests/streams used as oracle:
 - Decoder-visible behavior? yes/no
-- `docs/SPEC-MAPPING.md` entries updated? yes/no
+- Matrix row added/updated in `docs/IMPLEMENTATION-MATRIX.toml`? yes/no
 - Reference docs read:
   - [ ] `docs/references/ENCODER-RESEARCH-NOTES.md`
   - [ ] `docs/references/THIRD-PARTY-NOTICES.md`
