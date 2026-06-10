@@ -5711,6 +5711,65 @@ mod tests {
         assert!(context.metadata_applies_to(x0, record, m0, t0));
     }
 
+    #[test]
+    fn propagation_requires_explicit_per_target_map_bit() {
+        // AV2 § 6.16.3: "muh_mlayer_map contains a bitmask. The metadata unit is
+        // intended for an embedded layer m if bit m of muh_mlayer_map is equal
+        // to 1." and LAYER_VALUES means "The metadata applies to a set of
+        // specific layer values, which are explicitly signaled." With the
+        // § 5.4.1 default fill (mlayer_dependency_present_flag 0),
+        // MLayerDependencyMap[1][0] and [2][0] are both 1, so the unit-level and
+        // per-target readings of the multi-layer persistence bullet differ
+        // exactly at embedded layer 1: bit 1 of muh_mlayer_map is clear, so the
+        // metadata must NOT apply there despite the dependency, while the
+        // explicitly targeted embedded layer 2 receives it.
+        use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, TemporalLayerId};
+        let x0 = ExtendedLayerId::from_bits(0);
+        let t0 = TemporalLayerId::from_bits(0);
+
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 2)));
+        // Group unit (HDR CLL, BASIC) at K = 0: muh_layer_idc = LAYER_VALUES
+        // with muh_mlayer_map bits 0 and 2 set, bit 1 clear.
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(9, 0, 0, 0),
+            &[
+                0x00,        // is_suffix=0, necessity=0, application_id=0
+                0x00,        // metadata_unit_cnt_minus_1 = 0
+                0x01,        // metadata_type = HdrCll
+                0x08,        // muh_header_size = 4, cancel = 0
+                0x04,        // muh_payload_size = 4
+                0x64,        // layer_idc=3 (LAYER_VALUES), persistence=1 (BASIC)
+                0x00,        // priority lo + reserved bits
+                0b0000_0101, // muh_mlayer_map: embedded layers 0 and 2, NOT 1
+                0x12,
+                0x34,
+                0x56,
+                0x78, // metadata_hdr_cll
+                0x80, // OBU trailing byte
+            ],
+        ));
+        let (context, _) = context_after_observing(&data);
+
+        let units = context.active_metadata_units(x0, 1);
+        assert_eq!(units.len(), 1);
+        let record = &units[0];
+        // Temporal persistence at the source point (K = 0, T = 0).
+        assert!(context.metadata_applies_to(x0, record, EmbeddedLayerId::from_bits(0), t0));
+        // Bit 2 set + MLayerDependencyMap[2][0] == 1 -> applies to layer 2.
+        assert!(
+            context.metadata_applies_to(x0, record, EmbeddedLayerId::from_bits(2), t0),
+            "bit 2 of muh_mlayer_map is set and MLayerDependencyMap[2][0] is 1"
+        );
+        // Bit 1 clear -> layer 1 was never explicitly signaled, so the metadata
+        // does not apply there even though MLayerDependencyMap[1][0] is 1.
+        assert!(
+            !context.metadata_applies_to(x0, record, EmbeddedLayerId::from_bits(1), t0),
+            "bit 1 of muh_mlayer_map is clear, so embedded layer 1 is never \
+             explicitly signaled (§ 6.16.3) despite MLayerDependencyMap[1][0] == 1"
+        );
+    }
+
     /// A 24-byte `metadata_hdr_mdcv()` unit (§ 5.17.6) with fixed chromaticities
     /// and the given `luminance_min`.
     fn hdr_mdcv_unit(luminance_min: u32) -> Vec<u8> {
@@ -5727,12 +5786,14 @@ mod tests {
     fn hdr_cll_repeat_same_content_accepted() {
         // AV2 § 6.16.5 allows redundant repeats: "Any additional metadata_hdr_cll
         // metadata units associated with an embedded layer in a coded video
-        // sequence shall have the same content."
+        // sequence shall have the same content." Both units are global
+        // LAYER_GLOBAL ("applies to all layers", § 6.16.3) with identical
+        // content.
         let unit = [0x12, 0x34, 0x56, 0x78];
-        let mut data = global_metadata_short_stream(&metadata_short_payload(0x01, 1, &unit));
+        let mut data = global_metadata_short_stream(&metadata_short_payload(0x11, 1, &unit));
         data.extend(annex_b_obu_with_header(
             &layer_obu_header(8, 0, 0, 31),
-            &metadata_short_payload(0x01, 1, &unit),
+            &metadata_short_payload(0x11, 1, &unit),
         ));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
@@ -5743,22 +5804,25 @@ mod tests {
 
     #[test]
     fn hdr_cll_repeat_content_differs_flagged() {
-        // Same scope (same OBU layer ids, same muh_layer_idc), different max_cll
-        // -> a § 6.16.5 violation, emitted eagerly (same temporal unit). A third
-        // unit with a different muh_layer_idc is a different layer scope and is
-        // not compared against either.
+        // Two global LAYER_GLOBAL units share the all-layers association
+        // (§ 6.16.3: "The metadata applies to all layers if obu_xlayer_id is
+        // equal to GLOBAL_XLAYER_ID"), so the differing max_cll violates
+        // § 6.16.5, emitted eagerly (same temporal unit). A third differing unit
+        // with muh_layer_idc LAYER_UNSPECIFIED has no bitstream-derivable
+        // association (§ 6.16.3: it "can potentially be indicated or determined
+        // through external means") and is not compared against either.
         let mut data = global_metadata_short_stream(&metadata_short_payload(
-            0x01,
+            0x11,
             1,
             &[0x12, 0x34, 0x56, 0x78],
         ));
         data.extend(annex_b_obu_with_header(
             &layer_obu_header(8, 0, 0, 31),
-            &metadata_short_payload(0x01, 1, &[0x99, 0x99, 0x56, 0x78]),
+            &metadata_short_payload(0x11, 1, &[0x99, 0x99, 0x56, 0x78]),
         ));
         data.extend(annex_b_obu_with_header(
             &layer_obu_header(8, 0, 0, 31),
-            &metadata_short_payload(0x11, 1, &[0x00, 0x01, 0x56, 0x78]),
+            &metadata_short_payload(0x01, 1, &[0x00, 0x01, 0x56, 0x78]),
         ));
         let report = Validator::new(false).validate_bytes(&data);
         assert_eq!(
@@ -5767,19 +5831,19 @@ mod tests {
                 .filter(|d| d.rule_id == "metadata/hdr-cll-repeat-content-differs")
                 .count(),
             1,
-            "exactly the same-scope differing repeat must be flagged: {report}"
+            "exactly the intersecting differing repeat must be flagged: {report}"
         );
     }
 
     #[test]
     fn hdr_mdcv_repeat_content_differs_flagged() {
         // AV2 § 6.16.6 states the same-content rule identically for
-        // metadata_hdr_mdcv.
+        // metadata_hdr_mdcv; both units are global LAYER_GLOBAL.
         let mut data =
-            global_metadata_short_stream(&metadata_short_payload(0x01, 2, &hdr_mdcv_unit(5)));
+            global_metadata_short_stream(&metadata_short_payload(0x11, 2, &hdr_mdcv_unit(5)));
         data.extend(annex_b_obu_with_header(
             &layer_obu_header(8, 0, 0, 31),
-            &metadata_short_payload(0x01, 2, &hdr_mdcv_unit(9)),
+            &metadata_short_payload(0x11, 2, &hdr_mdcv_unit(9)),
         ));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
@@ -5791,19 +5855,110 @@ mod tests {
     #[test]
     fn hdr_cll_after_cvs_restart_new_content_accepted() {
         // AV2 § 7.3.6: the CLK in temporal unit 2 starts a new coded video
-        // sequence for xlayer 0, pruning the temporal-unit-1 baseline; the
-        // different content in the new coded video sequence is its own baseline,
-        // not a § 6.16.5 violation.
+        // sequence for xlayer 0, pruning the temporal-unit-1 baseline (a
+        // LAYER_GLOBAL unit carried at xlayer 0 is associated with every
+        // embedded layer of that extended layer, § 6.16.3); the different
+        // content in the new coded video sequence is its own baseline, not a
+        // § 6.16.5 violation.
         let mut data = temporal_delimiter_obu();
         data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
-        data.extend(metadata_short_obu_at(0, 0x01, 1, &[0x12, 0x34, 0x56, 0x78]));
+        data.extend(metadata_short_obu_at(0, 0x11, 1, &[0x12, 0x34, 0x56, 0x78]));
         data.extend(temporal_delimiter_obu());
         data.extend(annex_b_obu(0x10, &[])); // OBU_CLOSED_LOOP_KEY, xlayer 0
-        data.extend(metadata_short_obu_at(0, 0x01, 1, &[0x99, 0x99, 0x56, 0x78]));
+        data.extend(metadata_short_obu_at(0, 0x11, 1, &[0x99, 0x99, 0x56, 0x78]));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             !has_error(&report, "metadata/hdr-cll-repeat-content-differs"),
             "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn hdr_cll_global_then_current_layer_differing_content_flagged() {
+        // A global LAYER_GLOBAL unit "applies to all layers" (§ 6.16.3), so it
+        // is associated with embedded layer (xlayer 0, mlayer 0); a later
+        // LAYER_CURRENT unit for exactly that embedded layer with different
+        // content violates § 6.16.5 ("Any additional metadata_hdr_cll metadata
+        // units associated with an embedded layer in a coded video sequence
+        // shall have the same content") even though the two units encode their
+        // layer targeting differently.
+        let mut data = global_metadata_short_stream(&metadata_short_payload(
+            0x11,
+            1,
+            &[0x12, 0x34, 0x56, 0x78],
+        ));
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(metadata_short_obu_at(0, 0x21, 1, &[0x99, 0x99, 0x56, 0x78]));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "metadata/hdr-cll-repeat-content-differs"),
+            "a LAYER_CURRENT unit shares its embedded layer with the global \
+             LAYER_GLOBAL baseline; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn hdr_cll_global_then_current_layer_same_content_accepted() {
+        // The cross-mode twin with identical content: § 6.16.5 allows the
+        // repeat.
+        let unit = [0x12, 0x34, 0x56, 0x78];
+        let mut data = global_metadata_short_stream(&metadata_short_payload(0x11, 1, &unit));
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(metadata_short_obu_at(0, 0x21, 1, &unit));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "metadata/hdr-cll-repeat-content-differs"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn hdr_cll_unspecified_layer_targeting_not_compared() {
+        // LAYER_UNSPECIFIED (§ 6.16.3): "The current signaling does not specify
+        // to what layers the metadata applies to. This information can
+        // potentially be indicated or determined through external means." The
+        // two units' real associations may be disjoint, so no § 6.16.5
+        // comparison is derivable from the bitstream and differing content must
+        // not be flagged (a documented false negative in the conservative
+        // direction).
+        let mut data = global_metadata_short_stream(&metadata_short_payload(
+            0x01,
+            1,
+            &[0x12, 0x34, 0x56, 0x78],
+        ));
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 31),
+            &metadata_short_payload(0x01, 1, &[0x99, 0x99, 0x56, 0x78]),
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "metadata/hdr-cll-repeat-content-differs"),
+            "LAYER_UNSPECIFIED units have no derivable association; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn hdr_cll_cross_mode_deferral_dropped_at_clk() {
+        // The Universal baseline (global LAYER_GLOBAL, temporal unit 1)
+        // intersects the LAYER_CURRENT unit for (xlayer 0, mlayer 0) in temporal
+        // unit 2; the cross-temporal-unit comparison is deferred, tagged with
+        // the intersection's concrete extended layer 0, and the CLK for xlayer 0
+        // later in the same temporal unit starts a new coded video sequence
+        // (§ 7.3.6), so the deferred § 6.16.5 finding is dropped.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 31),
+            &metadata_short_payload(0x11, 1, &[0x12, 0x34, 0x56, 0x78]),
+        ));
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
+        data.extend(temporal_delimiter_obu());
+        data.extend(metadata_short_obu_at(0, 0x21, 1, &[0x99, 0x99, 0x56, 0x78]));
+        data.extend(annex_b_obu(0x10, &[])); // OBU_CLOSED_LOOP_KEY, xlayer 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "metadata/hdr-cll-repeat-content-differs"),
+            "the CLK puts the two units in different coded video sequences; \
+             report was: {report}"
         );
     }
 
@@ -5837,13 +5992,13 @@ mod tests {
         // Two global group-form HDR CLL units with muh_layer_idc == LAYER_VALUES
         // explicitly target DISJOINT extended-layer sets via muh_xlayer_map
         // (§ 5.17.3). § 6.16.5 binds only units "associated with an embedded
-        // layer in a coded video sequence" — disjoint targeting shares no such
-        // association — and HdrBaselineKey cannot represent muh_xlayer_map, so
-        // global LAYER_VALUES units are excluded from the repeat-content state:
-        // differing content must NOT be flagged.
+        // layer in a coded video sequence"; the derived (xlayer, mlayer)
+        // association sets share no embedded layer, so differing content must
+        // NOT be flagged.
 
         // Single-layer disjoint targeting (xlayer 0 vs xlayer 1): the identical
-        // single muh_mlayer_map byte would collide in a collapsed key.
+        // single muh_mlayer_map byte would collide in a collapsed per-key
+        // comparison.
         let mut data = temporal_delimiter_obu();
         data.extend(global_group_cll_obu(0b01, [0x12, 0x34, 0x56, 0x78]));
         data.extend(global_group_cll_obu(0b10, [0x99, 0x99, 0x56, 0x78]));
@@ -5854,8 +6009,7 @@ mod tests {
              report was: {report}"
         );
 
-        // Multi-map disjoint targeting ({0,1} vs {2,3}): both units' several
-        // per-layer maps would collapse to the same `None` in a collapsed key.
+        // Multi-map disjoint targeting ({0,1} vs {2,3}).
         let mut data = temporal_delimiter_obu();
         data.extend(global_group_cll_obu(0b0011, [0x12, 0x34, 0x56, 0x78]));
         data.extend(global_group_cll_obu(0b1100, [0x99, 0x99, 0x56, 0x78]));
@@ -5868,6 +6022,36 @@ mod tests {
     }
 
     #[test]
+    fn hdr_cll_global_group_overlapping_layer_targeting_flagged() {
+        // Explicit LAYER_VALUES targeting {xlayer 0} vs {xlayer 0, xlayer 1}
+        // (each selecting embedded layer 1, § 5.17.3) overlaps at the embedded
+        // layer (0, 1), so differing content violates § 6.16.5; the finding
+        // names the shared embedded layer.
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_group_cll_obu(0b01, [0x12, 0x34, 0x56, 0x78]));
+        data.extend(global_group_cll_obu(0b11, [0x99, 0x99, 0x56, 0x78]));
+        let report = Validator::new(false).validate_bytes(&data);
+        let finding = report
+            .errors()
+            .find(|d| d.rule_id == "metadata/hdr-cll-repeat-content-differs");
+        assert!(
+            finding.is_some_and(|finding| finding
+                .message
+                .contains("obu_xlayer_id 0 / obu_mlayer_id 1")),
+            "overlapping global LAYER_VALUES targeting must be compared and the \
+             finding must name a shared embedded layer; report was: {report}"
+        );
+        assert_eq!(
+            report
+                .errors()
+                .filter(|d| d.rule_id == "metadata/hdr-cll-repeat-content-differs")
+                .count(),
+            1,
+            "one differing baseline yields one finding; report was: {report}"
+        );
+    }
+
+    #[test]
     fn hdr_cll_cross_tu_repeat_differs_flagged_at_flush() {
         // No CLK: temporal units 1 and 2 share xlayer 0's coded video sequence
         // (AV2 § 7.3.6), so the differing repeat violates § 6.16.5. The comparison
@@ -5875,9 +6059,9 @@ mod tests {
         // end-of-stream flush emits it.
         let mut data = temporal_delimiter_obu();
         data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
-        data.extend(metadata_short_obu_at(0, 0x01, 1, &[0x12, 0x34, 0x56, 0x78]));
+        data.extend(metadata_short_obu_at(0, 0x11, 1, &[0x12, 0x34, 0x56, 0x78]));
         data.extend(temporal_delimiter_obu());
-        data.extend(metadata_short_obu_at(0, 0x01, 1, &[0x99, 0x99, 0x56, 0x78]));
+        data.extend(metadata_short_obu_at(0, 0x11, 1, &[0x99, 0x99, 0x56, 0x78]));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             has_error(&report, "metadata/hdr-cll-repeat-content-differs"),
@@ -5943,10 +6127,15 @@ mod tests {
         )
     }
 
-    /// An `OBU_CONTENT_INTERPRETATION` at obu_xlayer_id 0 / obu_mlayer_id 0
-    /// carrying the given `ci_scan_type_idc` and optional timing (all other
-    /// optional branches cleared), plus the § 5.2.1 extensible payload tail.
-    fn content_interpretation_scan_obu(scan_type_idc: u32, timing: Option<CiTiming>) -> Vec<u8> {
+    /// An `OBU_CONTENT_INTERPRETATION` at the given layer ids carrying the given
+    /// `ci_scan_type_idc` and optional timing (all other optional branches
+    /// cleared), plus the § 5.2.1 extensible payload tail.
+    fn content_interpretation_scan_obu_at(
+        xlayer: u8,
+        mlayer: u8,
+        scan_type_idc: u32,
+        timing: Option<CiTiming>,
+    ) -> Vec<u8> {
         let mut bits = Bits::default();
         bits.f(scan_type_idc, 2); // ci_scan_type_idc
         bits.bit(0); // ci_color_description_present_flag
@@ -5964,7 +6153,12 @@ mod tests {
         }
         bits.bit(0); // obu_extension_flag = 0
         bits.bit(1); // trailing_one_bit
-        annex_b_obu_with_header(&layer_obu_header(24, 0, 0, 0), &bits.into_bytes())
+        annex_b_obu_with_header(&layer_obu_header(24, 0, mlayer, xlayer), &bits.into_bytes())
+    }
+
+    /// [`content_interpretation_scan_obu_at`] at obu_xlayer_id 0 / obu_mlayer_id 0.
+    fn content_interpretation_scan_obu(scan_type_idc: u32, timing: Option<CiTiming>) -> Vec<u8> {
+        content_interpretation_scan_obu_at(0, 0, scan_type_idc, timing)
     }
 
     #[test]
@@ -6109,8 +6303,9 @@ mod tests {
     fn scan_type_ci_arrives_after_metadata_mismatch_flagged() {
         // Re-evaluation path: the scan-type metadata precedes the content
         // interpretation that decides its Table 6.18 restriction. A second
-        // identical CI repeat must not re-report (the observation is marked once
-        // evaluated against an established ci_scan_type_idc).
+        // identical CI repeat must not re-report: its Table 6.18-decisive
+        // content is unchanged, so the re-evaluation is skipped (§ 6.14 allows
+        // exactly the identical repeat).
         let mut data = temporal_delimiter_obu();
         data.extend(global_scan_type_obu(0x00, 3));
         data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
@@ -6225,6 +6420,238 @@ mod tests {
                 .count(),
             1,
             "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn scan_type_ci_for_second_embedded_layer_rechecked() {
+        // § 6.14 allows different embedded layers to carry different
+        // ci_scan_type_idc ("No such constraint exists for content
+        // interpretation OBUs in different embedded layers" beyond timing), so a
+        // stream with only conforming CI OBUs can establish a matching value at
+        // mlayer 0 and a mismatching one at mlayer 1: the later CI must still be
+        // paired with the stored observation.
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_scan_type_obu(0x00, 0)); // requires ci_scan_type_idc 1
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_scan_obu_at(0, 0, 1, None)); // match
+        data.extend(content_interpretation_scan_obu_at(0, 1, 2, None)); // mismatch
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "metadata/scan-type-ci-scan-type-mismatch"),
+            1,
+            "the mlayer-1 content interpretation must be paired with the stored \
+             observation; report was: {report}"
+        );
+        assert!(
+            !has_error(&report, "content-interpretation/repeated-ci-not-identical"),
+            "different embedded layers are distinct CI records (§ 6.14); \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn scan_type_ci_mismatch_on_second_xlayer_rechecked() {
+        // The global scan-type bucket pairs with every extended layer's CI
+        // records, and § 6.14 leaves cross-extended-layer CI content
+        // unconstrained (timing aside): a matching CI on xlayer 0 must not stop
+        // the later mismatching CI on xlayer 1 from being paired.
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_scan_type_obu(0x00, 0)); // requires ci_scan_type_idc 1
+        data.extend(sequence_header_obu_for_xlayer(0, 0, 1));
+        data.extend(content_interpretation_scan_obu_at(0, 0, 1, None)); // match
+        data.extend(sequence_header_obu_for_xlayer(1, 0, 1));
+        data.extend(content_interpretation_scan_obu_at(1, 0, 2, None)); // mismatch
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "metadata/scan-type-ci-scan-type-mismatch"),
+            "the xlayer-1 content interpretation must be paired with the global \
+             observation; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn scan_type_equal_picture_interval_rechecked_for_second_layer() {
+        // mps_pic_struct_type 7 (Table 6.18: "ci_scan_type_idc shall be equal to
+        // 1 and equal_picture_interval shall be equal to 1"): the first CI
+        // (matching scan type, no timing) must not stop the later mlayer-1 CI —
+        // whose timing_info() signals equal_picture_interval 0 — from being
+        // paired with the stored observation.
+        let unequal = CiTiming {
+            equal_picture_interval: false,
+            ..BASE_TIMING
+        };
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_scan_type_obu(0x00, 7));
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_scan_obu_at(0, 0, 1, None));
+        data.extend(content_interpretation_scan_obu_at(0, 1, 1, Some(unequal)));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(
+                &report,
+                "metadata/scan-type-equal-picture-interval-required"
+            ),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn scan_type_contradicting_ci_repeat_rechecked_and_co_reported() {
+        // A same-key CI repeat with different information is itself
+        // non-conforming (§ 6.14, content-interpretation/repeated-ci-not-identical)
+        // AND its changed ci_scan_type_idc violates the stored observation's
+        // Table 6.18 restriction — distinct rules from distinct spec sections,
+        // so both are reported.
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_scan_type_obu(0x00, 0)); // requires ci_scan_type_idc 1
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_scan_obu_at(0, 0, 1, None)); // match
+        data.extend(content_interpretation_scan_obu_at(0, 0, 2, None)); // contradiction
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "content-interpretation/repeated-ci-not-identical"),
+            "report was: {report}"
+        );
+        assert_eq!(
+            ops_error_count(&report, "metadata/scan-type-ci-scan-type-mismatch"),
+            1,
+            "the changed decisive content must be re-paired exactly once; \
+             report was: {report}"
+        );
+    }
+
+    // --- § 7.3.8.11 CI-parameter epoch at random access points (CLK / OLK) ---
+
+    /// An `OBU_OPEN_LOOP_KEY` for xlayer 0 with an empty payload (the raw
+    /// OBU-header event is all the § 7.3.8.11 epoch tracking consumes).
+    fn open_loop_key_obu() -> Vec<u8> {
+        annex_b_obu(0x14, &[])
+    }
+
+    #[test]
+    fn scan_type_pre_olk_ci_not_paired_with_post_olk_metadata() {
+        // § 7.3.8.11: the content interpretation parameters re-initialize to
+        // defaults (ci_scan_type_idc = 0, unspecified) "at each temporal unit
+        // containing an OBU in the extended layer with obu_type equal to
+        // OBU_CLOSED_LOOP_KEY or OBU_OPEN_LOOP_KEY". After the OLK with no
+        // re-sent CI, the parameters the metadata's pictures see are the
+        // defaults — never an error (the unestablished case is warning-only) —
+        // so pairing the pre-OLK ci_scan_type_idc 2 against mps_pic_struct_type
+        // 0 would be a false positive.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(annex_b_obu(0x10, &[])); // OBU_CLOSED_LOOP_KEY, xlayer 0
+        data.extend(content_interpretation_scan_obu(2, None));
+        data.extend(temporal_delimiter_obu());
+        data.extend(open_loop_key_obu());
+        data.extend(temporal_delimiter_obu());
+        data.extend(global_scan_type_obu(0x00, 0)); // requires ci_scan_type_idc 1
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "metadata/scan-type-ci-scan-type-mismatch"),
+            "the pre-OLK content interpretation no longer establishes the \
+             parameters (§ 7.3.8.11); report was: {report}"
+        );
+    }
+
+    #[test]
+    fn scan_type_ci_resent_at_olk_pairs_with_post_olk_metadata() {
+        // A CI OBU present in the random access point's own temporal unit
+        // re-establishes the parameters (§ 7.3.8.11 step 2), so the Table 6.18
+        // pairing fires for post-OLK metadata; the identical re-send is also not
+        // a § 6.14 repeated-CI violation.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(annex_b_obu(0x10, &[])); // OBU_CLOSED_LOOP_KEY, xlayer 0
+        data.extend(content_interpretation_scan_obu(2, None));
+        data.extend(temporal_delimiter_obu());
+        data.extend(open_loop_key_obu());
+        data.extend(content_interpretation_scan_obu(2, None)); // re-sent at the OLK
+        data.extend(global_scan_type_obu(0x80, 0)); // suffix; requires idc 1
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "metadata/scan-type-ci-scan-type-mismatch"),
+            "a CI re-sent at the OLK re-establishes ci_scan_type_idc 2 for the \
+             new epoch; report was: {report}"
+        );
+        assert!(
+            !has_error(&report, "content-interpretation/repeated-ci-not-identical"),
+            "the identical re-send is a legal § 6.14 repeat; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn scan_type_pre_olk_metadata_not_paired_with_olk_tu_ci() {
+        // The complementary direction: a pre-OLK picture's parameters belong to
+        // the previous § 7.3.8.11 epoch, so a CI in the OLK's temporal unit must
+        // not be paired with the earlier observation — in either
+        // same-temporal-unit order (a CI before the OLK defers the pairing,
+        // which the OLK then drops; a CI after the OLK is epoch-skipped).
+        for ci_before_olk in [true, false] {
+            let mut data = temporal_delimiter_obu();
+            data.extend(global_scan_type_obu(0x00, 0)); // requires idc 1
+            data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+            data.extend(temporal_delimiter_obu());
+            if ci_before_olk {
+                data.extend(content_interpretation_scan_obu(2, None));
+                data.extend(open_loop_key_obu());
+            } else {
+                data.extend(open_loop_key_obu());
+                data.extend(content_interpretation_scan_obu(2, None));
+            }
+            let report = Validator::new(false).validate_bytes(&data);
+            assert!(
+                !has_error(&report, "metadata/scan-type-ci-scan-type-mismatch"),
+                "ci_before_olk={ci_before_olk}: the observation predates the \
+                 OLK's § 7.3.8.11 epoch; report was: {report}"
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_ci_differs_across_olk_still_flagged() {
+        // § 6.14 / § 7.3.8.10 scope the repeated-CI identity rule to the coded
+        // video sequence ("all instances of a content interpretation OBU in an
+        // embedded layer within a coded video sequence shall contain the same
+        // information"), and an OLK does not start one during sequential
+        // decoding (§ 7.4.4): the differing repeat across the OLK is still
+        // flagged.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_scan_obu(1, None));
+        data.extend(temporal_delimiter_obu());
+        data.extend(open_loop_key_obu());
+        data.extend(content_interpretation_scan_obu(2, None));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "content-interpretation/repeated-ci-not-identical"),
+            "the § 6.14 identity rule is CVS-scoped, not RAP-scoped; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_timing_mismatch_across_olk_still_flagged() {
+        // § 6.4.12 binds the timing values "within a coded video sequence ...
+        // across all embedded layers"; the OLK is not a CVS boundary during
+        // sequential decoding (§ 7.4.4), so the cross-embedded-layer mismatch
+        // across it is still flagged.
+        let other = CiTiming {
+            time_scale: 60000,
+            ..BASE_TIMING
+        };
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING)));
+        data.extend(temporal_delimiter_obu());
+        data.extend(open_loop_key_obu());
+        data.extend(content_interpretation_obu(1, 0, Some(other)));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "sequence-header/timing-time-scale-mismatch"),
+            "the § 6.4.12 timing rule is CVS-scoped, not RAP-scoped; \
+             report was: {report}"
         );
     }
 

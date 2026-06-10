@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "37045daa1a439fd411af50dcfd6c3ee17c3abd70",
+  "audited_commit": "3f4f8b42283d99058a80aee020c149adc6cc7ec6",
   "outcome": "success",
   "files": [
     {
@@ -740,7 +740,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "d14f7209cededef9d251c00eec5d2304b1d80f5cc23a7cfc40ac4acc9abff63e",
+      "sha256": "9c131623a252c842139422958bdcbd175fe911f1f6a988ea9e08b3592ff725df",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.17.5-METADATA-HDR-CLL",
@@ -785,7 +785,7 @@
     },
     {
       "path": "crates/splot-validate/src/metadata_lifetime.rs",
-      "sha256": "1534a211219bc96fa80a6bd6dc08736f7d4cb81344da988ceaedc4bad6a98b6c",
+      "sha256": "2b86f657ef74349bc3995a4aefcd222de545b94ed5dcc26f9fa3eab58e7bef40",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.17-METADATA"
@@ -801,7 +801,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "5a81abb8e940112c42ad89b205a5eeb8a61f09d8004ab10eef20cd7a79b78234",
+      "sha256": "2d514bf03e93e3fef96b3df501da158ed38faf5696c65995e9affaf87e808b65",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -1018,7 +1018,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "eda8e98460d03b85ca1f24ec8cab264942835e7b3a2086f4a0417cb6ab6424e1",
+      "sha256": "1337a3f0d6092fdd279f07b9dc77f16de5f656946e4277041739cd0a88a94338",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1302,7 +1302,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "ea1dbb3b045693c13d3b25e8b6185f63a446b66c278ccd5b32140b9f4ce4b001",
+      "sha256": "034d868cbab2983045926e1ea73bcb81d0c8574b20cabf83eac8d8a6dd34c277",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
@@ -2259,6 +2259,53 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-10-metadata-semantic-validation/design.md",
+      "sha256": "5045fd7332ad0cc897af8db688ed9621f3295e30ef9fcc583ecaee2ca8f92687",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-metadata-semantic-validation/proposal.md",
+      "sha256": "46fed47e16aae49edf3bfaa65a39c40116b13068ca46c1d734b512e14a8515a1",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.17-METADATA",
+        "AV2-5.17.10-METADATA-SCAN-TYPE",
+        "AV2-5.17.12-METADATA-DECODED-FRAME-HASH",
+        "AV2-5.17.3-METADATA-GROUP",
+        "AV2-5.17.5-METADATA-HDR-CLL",
+        "AV2-5.17.6-METADATA-HDR-MDCV",
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
+        "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-metadata-semantic-validation/specs/validator/spec.md",
+      "sha256": "fb2c451c8340ef1dd06f927efa16ada7385406e740c5349d6ecf45429d46bae5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-metadata-semantic-validation/tasks.md",
+      "sha256": "b8246b139fe162f85452c379a66434c84143f0536a5a20d4838652dac984bf47",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.17-METADATA",
+        "AV2-5.17.10-METADATA-SCAN-TYPE",
+        "AV2-5.17.3-METADATA-GROUP",
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.19-TILE-GROUP"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/avm-differential-harness/proposal.md",
       "sha256": "ca4e00373763656046a33836c38af7626641afedb9e473897f7ae9b2a3572b5f",
       "scope_kind": "openspec",
@@ -2479,7 +2526,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "90afb030f74301d278f2fd55dc28473f4243392afd82e4e7070741dce2b2360f",
+      "sha256": "c4fc3a9f7d66914c643c095187983595e5122f70c63662af2a5027fd5ad8bfdb",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",

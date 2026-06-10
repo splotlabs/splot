@@ -29,6 +29,16 @@ use splot_core::headers::sequence::{MLayerDependencyMap, TLayerDependencyMap};
 use splot_core::span::ByteOffset;
 use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, TemporalLayerId};
 
+/// `muh_layer_idc` value `LAYER_GLOBAL` (AV2 § 6.16.3): "The metadata applies to
+/// all layers if obu_xlayer_id is equal to GLOBAL_XLAYER_ID. If obu_xlayer_id is
+/// less than GLOBAL_XLAYER_ID, layers with matching obu_xlayer_id only."
+pub(crate) const LAYER_GLOBAL: u8 = 1;
+
+/// `muh_layer_idc` value `LAYER_CURRENT` (AV2 § 6.16.3): "The metadata applies to
+/// the current layer only as indicated by the specific values for obu_xlayer_id
+/// and obu_mlayer_id in OBU header."
+pub(crate) const LAYER_CURRENT: u8 = 2;
+
 /// `muh_layer_idc` value `LAYER_VALUES` (AV2 § 6.16.3): "The metadata applies to a
 /// set of specific layer values, which are explicitly signaled."
 pub(crate) const LAYER_VALUES: u8 = 3;
@@ -110,16 +120,24 @@ pub(crate) struct ActiveMetadataUnit {
 }
 
 impl ActiveMetadataUnit {
-    /// Returns `true` when this unit has "explicit layer persistence indication"
-    /// (AV2 § 6.16.3 NOTE: "Metadata has explicit layer persistence indication when
-    /// muh_layer_idc is equal to LAYER_VALUES (3) and muh_mlayer_map has bits set
-    /// for embedded layers greater than obu_mlayer_id").
-    fn has_explicit_layer_persistence_indication(&self) -> bool {
+    /// Returns `true` when this unit's `LAYER_VALUES` targeting explicitly names
+    /// embedded layer `target` (AV2 § 6.16.3: "muh_mlayer_map contains a bitmask.
+    /// The metadata unit is intended for an embedded layer m if bit m of
+    /// muh_mlayer_map is equal to 1."; the `LAYER_VALUES` mode itself means "The
+    /// metadata applies to a set of specific layer values, which are explicitly
+    /// signaled").
+    ///
+    /// For a target above the unit's source layer `K`, a set bit also implies the
+    /// § 6.16.3 NOTE's unit-level "explicit layer persistence indication"
+    /// ("muh_layer_idc is equal to LAYER_VALUES (3) and muh_mlayer_map has bits
+    /// set for embedded layers greater than obu_mlayer_id"), so the per-target
+    /// check subsumes the unit-level one.
+    fn explicitly_targets(&self, target: EmbeddedLayerId) -> bool {
         self.layer_idc == LAYER_VALUES
             && self
                 .mlayer_map
-                // u16 keeps the shift in range for source_mlayer 7 (shift by 8).
-                .is_some_and(|map| u16::from(map) >> (self.source_mlayer.get() + 1) != 0)
+                // EmbeddedLayerId is 3-bit (0..=7), so the u8 shift stays in range.
+                .is_some_and(|map| map >> target.get() & 1 == 1)
     }
 
     /// Returns `true` when `other` targets the same layer scope as this unit:
@@ -294,6 +312,19 @@ impl MetadataLifetimeStore {
     ///   embedded layer M, it applies to temporal layer C within embedded layer M
     ///   if TLayerDependencyMap\[M\]\[C\]\[T\] is equal to 1."
     ///
+    /// The multi-layer bullet's "explicit layer persistence indication" is read
+    /// **per target**: the metadata reaches embedded layer `M` only when bit `M`
+    /// of `muh_mlayer_map` is set (§ 6.16.3: "The metadata unit is intended for an
+    /// embedded layer m if bit m of muh_mlayer_map is equal to 1") AND
+    /// `MLayerDependencyMap[M][K]` is 1. Reading the bullet's unit-level NOTE
+    /// alone would propagate metadata to layers whose map bit is 0 — layers never
+    /// "explicitly signaled" — contradicting the § 6.16.3 `LAYER_VALUES`
+    /// definition ("a set of specific layer values, which are explicitly
+    /// signaled") and collapsing it into the all-layers / range modes the
+    /// `muh_layer_idc` intro lists as distinct. A set bit at `M > K` implies the
+    /// NOTE's unit-level indication, so the per-target reading satisfies every
+    /// § 6.16.3 sentence simultaneously.
+    ///
     /// No bullet reaches an embedded layer below `K`, so `M < K` reads `false`.
     /// Pure query — **never emits diagnostics** (the bullets bind decoder
     /// applicability: "Decoders shall ignore metadata that does not apply to the
@@ -314,8 +345,10 @@ impl MetadataLifetimeStore {
             return t_map.depends_on(source_mlayer, target_tlayer, source_tlayer);
         }
         if target_mlayer > source_mlayer {
-            // Multi-layer persistence (K -> M) plus combined persistence for C.
-            return record.has_explicit_layer_persistence_indication()
+            // Multi-layer persistence (K -> M) plus combined persistence for C:
+            // bit M of muh_mlayer_map must explicitly target M (see
+            // ActiveMetadataUnit::explicitly_targets).
+            return record.explicitly_targets(target_mlayer)
                 && m_map.depends_on(target_mlayer, source_mlayer)
                 && t_map.depends_on(target_mlayer, target_tlayer, source_tlayer);
         }

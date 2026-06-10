@@ -724,11 +724,16 @@ emit diagnostics by themselves.
 
 #### Scenario: repeated HDR metadata with different content in a CVS
 
-- **GIVEN** two HDR CLL (or HDR MDCV) metadata units with the same layer scope in the
-  same coded video sequence whose contents differ
+- **GIVEN** two HDR CLL (or HDR MDCV) metadata units in the same coded video sequence
+  whose § 6.16.3 layer targeting associates both with at least one common embedded
+  layer — regardless of how each unit encodes that targeting (`LAYER_GLOBAL`,
+  `LAYER_CURRENT`, or explicit `LAYER_VALUES` maps) — and whose contents differ
 - **WHEN** the validator runs
 - **THEN** it SHALL emit `metadata/hdr-cll-repeat-content-differs` (or
-  `metadata/hdr-mdcv-repeat-content-differs`) (§ 6.16.5 / § 6.16.6).
+  `metadata/hdr-mdcv-repeat-content-differs`) (§ 6.16.5 / § 6.16.6). Units whose
+  association is not derivable from the bitstream (`LAYER_UNSPECIFIED`,
+  `LAYER_CURRENT` on a `GLOBAL_XLAYER_ID` OBU, reserved `muh_layer_idc`) SHALL NOT
+  be compared.
 
 ### Requirement: Scan-type CVS-wide consistency
 
@@ -751,7 +756,10 @@ defines no `mps_source_scan_type_idc` ↔ `ci_scan_type_idc` consistency rule �
 
 - **GIVEN** a defined `mps_pic_struct_type` whose Table 6.18 required `ci_scan_type_idc`
   differs from a non-zero `ci_scan_type_idc` established by a content-interpretation OBU
-  in the same CVS scope
+  in the same CVS scope, where both sides belong to the same § 7.3.8.11
+  content-interpretation-parameter epoch (the CI parameters re-initialize to defaults at
+  each temporal unit containing a CLK or OLK for the extended layer, so a pre-epoch CI no
+  longer establishes the parameters a post-epoch picture sees, and vice versa)
 - **WHEN** the validator runs
 - **THEN** it SHALL emit a `metadata/scan-type-ci-scan-type-mismatch` error.
 

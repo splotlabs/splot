@@ -133,12 +133,12 @@ Every rule ID below is emitted by `crates/splot-validate/src`, grouped by namesp
 | `metadata/group-reserved-bits-nonzero` | warning | § 6.16.3 | muh_reserved_zero_2bits is non-zero (decoder-ignored) |
 | `metadata/group-unit-count-too-large` | error | § 6.16.3 | metadata group unit count is too large |
 | `metadata/group-xlayer-map-global-bit-set` | error | § 6.16.3 | bit 31 of muh_xlayer_map is set |
-| `metadata/hdr-cll-repeat-content-differs` | error | § 6.16.5 | repeated HDR CLL metadata in a CVS with the same layer scope has different content |
-| `metadata/hdr-mdcv-repeat-content-differs` | error | § 6.16.6 | repeated HDR MDCV metadata in a CVS with the same layer scope has different content |
+| `metadata/hdr-cll-repeat-content-differs` | error | § 6.16.5 | HDR CLL metadata units in a CVS associated with a common embedded layer (per § 6.16.3 layer targeting) have different content |
+| `metadata/hdr-mdcv-repeat-content-differs` | error | § 6.16.6 | HDR MDCV metadata units in a CVS associated with a common embedded layer (per § 6.16.3 layer targeting) have different content |
 | `metadata/persistence-idc-reserved` | warning | § 6.16.3 | muh_persistence_idc is 4..7 (reserved for AOMedia use) |
-| `metadata/scan-type-ci-scan-type-mismatch` | error | § 6.16.10 | mps_pic_struct_type requires a ci_scan_type_idc that differs from an established non-zero CI value in the CVS scope |
+| `metadata/scan-type-ci-scan-type-mismatch` | error | § 6.16.10 | mps_pic_struct_type requires a ci_scan_type_idc that differs from a non-zero CI value established in the CVS scope at or after the layer's most recent random access point (§ 7.3.8.11) |
 | `metadata/scan-type-ci-scan-type-unestablished` | warning | § 6.16.10 | scan-type metadata present but no CI established a non-zero ci_scan_type_idc in the CVS scope (default is 0, § 7.3.8.11) |
-| `metadata/scan-type-equal-picture-interval-required` | error | § 6.16.10 | mps_pic_struct_type 7/8 while CI timing_info signals equal_picture_interval 0 |
+| `metadata/scan-type-equal-picture-interval-required` | error | § 6.16.10 | mps_pic_struct_type 7/8 while CI timing_info established in the current § 7.3.8.11 epoch signals equal_picture_interval 0 |
 | `metadata/scan-type-pic-struct-group-inconsistent` | error | § 6.16.10 | mps_pic_struct_type values in the same CVS fall into more than one Table 6.18 group |
 | `metadata/scan-type-pic-struct-reserved` | error | § 6.16.10 | mps_pic_struct_type exceeds 12 (reserved) |
 | `metadata/short-layer-idc-out-of-range` | error | § 6.16.2 | muh_layer_idc >= 3 for OBU_METADATA_SHORT |
