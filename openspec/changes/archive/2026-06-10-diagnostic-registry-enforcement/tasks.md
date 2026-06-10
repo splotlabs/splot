@@ -26,9 +26,12 @@
 
 ## Co-evolution note
 
-- [ ] When a new diagnostic namespace is added, update BOTH `DIAGNOSTIC_PREFIXES`
+- [x] When a new diagnostic namespace is added, update BOTH `DIAGNOSTIC_PREFIXES`
       (`xtask/src/feature_status.rs`) and the registry tables in
       `docs/VALIDATOR-DIAGNOSTICS.md`; the two guards are complementary.
+      (Standing guidance, not a one-off task: recorded durably in
+      `docs/VALIDATOR-DIAGNOSTICS.md` and `docs/FEATURE-TRACKING.md`, so this
+      change carries no open work.)
 
 ## Checks
 

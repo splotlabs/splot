@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "d25b7e44d9f26501c7ae7463884060f96f1528b8",
+  "audited_commit": "6050265edbae034430a7479529223f3e8682ea8d",
   "outcome": "success",
   "files": [
     {
@@ -283,7 +283,7 @@
     },
     {
       "path": "crates/splot-cli/src/commands/inspect.rs",
-      "sha256": "3fd1fd59c707485bb2078268447d5533262148995920cee0627ebdf088821c06",
+      "sha256": "c667065982c381f1d8526236e3368533f3128bf783d4cdf1dd109d9d8d2a5efd",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.2.1-OBU-DISPATCH",
@@ -301,7 +301,7 @@
     },
     {
       "path": "crates/splot-cli/src/commands/validate.rs",
-      "sha256": "24cdbb9e353233097114f561b8a108a6c8917c4bae13926bc026a3dc06b2d8e0",
+      "sha256": "15ca72958d2ac59f4e27316626e712dbf3983445728beda3026609e589a4b2ff",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "CLI-VALIDATE"
@@ -317,7 +317,7 @@
     },
     {
       "path": "crates/splot-cli/tests/cli.rs",
-      "sha256": "27cff4be4ceef5660719a9cedb2fa26def62d998475e770a16d472438eff4ee4",
+      "sha256": "c73eddb08323cd42881184f04ed0fc3ae5f2ebc033ef4827c98467391032de69",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.4-SEQUENCE-HEADER",
@@ -334,7 +334,7 @@
     },
     {
       "path": "crates/splot-core/src/annexb.rs",
-      "sha256": "8fd3c82281f0070bbaf37faadcaaa58905c0bd47f3e557242e797ea7925ed579",
+      "sha256": "ad9a64f2a0549a7be282444665442fca9495bfda93db7c3796c83d23307145fe",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.19-TILE-GROUP",
@@ -597,6 +597,15 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-core/src/ivf.rs",
+      "sha256": "1becf31f9d4dc46d3b9e5b4a3734366e945b3af1e75d7329f599d415e47a2a5d",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-IVF-CONTAINER"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-core/src/leb128.rs",
       "sha256": "1c558a7c55bffa4c0c29d27e0cf38273e7569a39379e978113335b4f205e85b6",
       "scope_kind": "workspace:splot-core",
@@ -607,9 +616,11 @@
     },
     {
       "path": "crates/splot-core/src/lib.rs",
-      "sha256": "945a8ccf6d78950dd92507c2b509452d80e9ee6a0bb3bc767f53826bf7b6bd3d",
+      "sha256": "f986455d5a24873590619ce9a2ae83fdfbda3db3fb2747d7adbc05fbeb97019d",
       "scope_kind": "workspace:splot-core",
-      "feature_ids": [],
+      "feature_ids": [
+        "AV2-IVF-CONTAINER"
+      ],
       "outcome": "success"
     },
     {
@@ -653,6 +664,15 @@
       "sha256": "de86704bcf841af4df79826752dd3c4b5b4f31a829d115ce6f03eb42b50dd796",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/stream.rs",
+      "sha256": "2710bdea1e5ba52610da24848869db44d82125f798d2f9bb31c9705cd848d115",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-IVF-CONTAINER"
+      ],
       "outcome": "success"
     },
     {
@@ -800,7 +820,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "fd348704688f847bdaa1b5e9ffeb24677c2f871fd0fabcc362247824b6b4bbb6",
+      "sha256": "05bc2dfe492484b6cca0c8ffcf2463909c5783df6d7a8eef0dae89df9b520b98",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -814,9 +834,11 @@
     },
     {
       "path": "docs/ARCHITECTURE.md",
-      "sha256": "2fb2a62b741c3c57e1562e21ad12264e9b429000bd5d18ef94fa08e99a29749f",
+      "sha256": "493a80205c505422d707384d1161974833f53e9ee1e80c4954c01901a61ef936",
       "scope_kind": "docs",
-      "feature_ids": [],
+      "feature_ids": [
+        "AV2-IVF-CONTAINER"
+      ],
       "outcome": "success"
     },
     {
@@ -852,7 +874,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "e4f03f7172db4342b7e143559808287624d4a39cd45f49ee080c635381c39bd4",
+      "sha256": "a3d72a2a6eed691c45513189b80761a7c0b69f4a1c9900337299b37e179618ff",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -958,6 +980,7 @@
         "AV2-A-PROFILES",
         "AV2-B-ANNEXB-OBU-ENVELOPE",
         "AV2-E-DECODER-MODEL",
+        "AV2-IVF-CONTAINER",
         "CLI-INSPECT",
         "CLI-VALIDATE",
         "CONF-AVM-DIFF-HARNESS",
@@ -1017,7 +1040,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "f2a9888e64fe94e41b3c79f1b83897cbe5b33b23c2aaa3b7decdc0786c99609c",
+      "sha256": "3fe86da5f67ee64f73a15acf5b741704f444578707462a81a747d2fbf6f95f54",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1123,6 +1146,7 @@
         "AV2-A-PROFILES",
         "AV2-B-ANNEXB-OBU-ENVELOPE",
         "AV2-E-DECODER-MODEL",
+        "AV2-IVF-CONTAINER",
         "CLI-INSPECT",
         "CLI-VALIDATE",
         "CONF-AVM-DIFF-HARNESS",
@@ -1152,7 +1176,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "6e37fd9c60aceb9241cb36dbf7340c3c4a22c2dd20f2ebcd0bddddcb759205ca",
+      "sha256": "37d45f4af2eab48220951a213e60f78416db56f1be3c703ec417b4fe2d53f1eb",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1258,6 +1282,7 @@
         "AV2-A-PROFILES",
         "AV2-B-ANNEXB-OBU-ENVELOPE",
         "AV2-E-DECODER-MODEL",
+        "AV2-IVF-CONTAINER",
         "CLI-INSPECT",
         "CLI-VALIDATE",
         "CONF-AVM-DIFF-HARNESS",
@@ -1287,21 +1312,23 @@
     },
     {
       "path": "docs/SPEC-MAPPING.md",
-      "sha256": "b6a2a94ebb323d54769e729248c7f996949c170d45ded223869d9af5a35ab613",
+      "sha256": "fc007d9035eedd2e8a504c8e209822aca25f514b1574b99c1f1e77a44d28f80d",
       "scope_kind": "docs",
-      "feature_ids": [],
+      "feature_ids": [
+        "AV2-IVF-CONTAINER"
+      ],
       "outcome": "success"
     },
     {
       "path": "docs/TESTING.md",
-      "sha256": "39b6e987bd26fa91ae193a5c62ab617c273f3f3fbd4e7e27c6ab7e426502f045",
+      "sha256": "4c145c9d1084d16cadeecaeca5ad48334d1155c62c2910fbc3b801710fa4f4f4",
       "scope_kind": "docs",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "47856f3cb911c7952a2cd9f46d68f9124b8885e691cceb61afea1ac6966ad7b2",
+      "sha256": "670d2867b10d3d642483f9c21f6294414e13c88a7f6172284245b942c2b8e7a7",
       "scope_kind": "docs",
       "feature_ids": [
         "XTASK-DIAGNOSTIC-REGISTRY"
@@ -1310,7 +1337,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "9e1fc2937f16ba0c1ba36ac09ef5042cc60ab69076fc48c93411389e1aa0b360",
+      "sha256": "dd617a0598de03cbcbb8142361ba1fda5350a13d223205c24efff171119c2e06",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -1368,6 +1395,7 @@
         "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
         "AV2-7.3.8-HLS-AVAILABILITY",
         "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-IVF-CONTAINER",
         "CONF-AVM-DIFF-HARNESS",
         "CONF-INSPECT-SNAPSHOTS",
         "CONF-PUBLIC-VECTORS",
@@ -2257,6 +2285,120 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-10-add-ivf-container-support/.openspec.yaml",
+      "sha256": "5ada458f25cd6e260a7ac3deb87a5ba5d046aabf964c53260ae6cf7bcb8a5d12",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-add-ivf-container-support/design.md",
+      "sha256": "899de2507922f6d06a1957ffeb5c800d5ef874f89423f1a536eeb8a27018e485",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-add-ivf-container-support/proposal.md",
+      "sha256": "c5e77d1eb6deac67d5ffe73b6fcd09be3cd76b8a976b91c8eca197f53ebd9175",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-IVF-CONTAINER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-add-ivf-container-support/specs/bitstream/spec.md",
+      "sha256": "aeb1bddd81713693159077328bdf570b765c9d6df47cf241ce5ceb0d236fd2da",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-add-ivf-container-support/specs/encoder-tools/spec.md",
+      "sha256": "78d629b8dc6c19bc5cc7f44ec6573b0d8b6d258a5ed2d75bd9aa70f67805630b",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-add-ivf-container-support/specs/ivf-container/spec.md",
+      "sha256": "462f81ad6349759e20199e7fdd58e48eeb4342d08ee47370becfe0b1cae14409",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-add-ivf-container-support/specs/validator/spec.md",
+      "sha256": "08f89eb149cdbf06e95bf8819f81fab79213b8abd17060facbb9eac2e3c6f4ce",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-add-ivf-container-support/tasks.md",
+      "sha256": "5a6b69385ccbf969fefc8dfa3e184cf79191134967a55777538fbe0e30f2aab7",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-IVF-CONTAINER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-layer-dependency-map-agreement/.openspec.yaml",
+      "sha256": "5ada458f25cd6e260a7ac3deb87a5ba5d046aabf964c53260ae6cf7bcb8a5d12",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-layer-dependency-map-agreement/design.md",
+      "sha256": "b86683ccfcc14d7941067f67806f55c49f74e69b7a79e04ebfc1d012949a3217",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.7-MULTI-FRAME-HEADER",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-layer-dependency-map-agreement/proposal.md",
+      "sha256": "f66264694b902401077cca629476ccf96addb341e6e56e1b8c9eb670e02550ad",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.11-OPERATING-POINT-PAYLOAD",
+        "AV2-5.11.5-OPS-MLAYER-INFO",
+        "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
+        "AV2-5.7-MULTI-FRAME-HEADER",
+        "AV2-5.8-LAYER-CONFIG-RECORD",
+        "AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-layer-dependency-map-agreement/specs/validator/spec.md",
+      "sha256": "acc67cd19cf4512f63cb0eef1165bf9fe4ce4c2d73db42784e7c1af7537daba4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.7-MULTI-FRAME-HEADER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-layer-dependency-map-agreement/tasks.md",
+      "sha256": "405a7dfa8fea2d406514e3ee49920c5b9aae3750dad39d23d3025714b193a2ab",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.7-MULTI-FRAME-HEADER",
+        "AV2-5.8-LAYER-CONFIG-RECORD",
+        "AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-10-metadata-semantic-validation/design.md",
       "sha256": "5045fd7332ad0cc897af8db688ed9621f3295e30ef9fcc583ecaee2ca8f92687",
       "scope_kind": "openspec",
@@ -2329,77 +2471,6 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/diagnostic-registry-enforcement/.openspec.yaml",
-      "sha256": "4e4f418579ebfbffbd8c41ee1a2ef52993119960fe15f399381a15987b551d8a",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/diagnostic-registry-enforcement/design.md",
-      "sha256": "c38fb948f10c74e986137053c8e0bc5f65303dfeb3b98dbdeece36474b21907b",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "XTASK-FEATURE-STATUS"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/diagnostic-registry-enforcement/proposal.md",
-      "sha256": "33c40303e86ec3eee0afb137c16cec7d430390ef3f09a5fed152161cbd10a575",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "XTASK-DIAGNOSTIC-REGISTRY",
-        "XTASK-FEATURE-STATUS"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/diagnostic-registry-enforcement/specs/process/spec.md",
-      "sha256": "3775aa9a4abf15afceba03ea0855839e3c8df4fd9c7d1b77bbdec80a524fcd34",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "XTASK-DIAGNOSTIC-REGISTRY"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/diagnostic-registry-enforcement/tasks.md",
-      "sha256": "0cceaa402e5980eeed8677da25054c08bd76d4956b8927691f387ec82f1edb51",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "XTASK-DIAGNOSTIC-REGISTRY"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/spec-coverage-doc/proposal.md",
-      "sha256": "2722641e08415381787b0eb717363f67acebb13fd8a190c48cc4169228528bca",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "XTASK-FEATURE-STATUS"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/spec-coverage-doc/specs/process/spec.md",
-      "sha256": "a399a648c2f2b3874dbb64cfb6caed5c43641da992b8269b491d357d755e9164",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "XTASK-FEATURE-STATUS"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/spec-coverage-doc/tasks.md",
-      "sha256": "0f512a944115dfa0f88e0e79d6a049b4dd2174f2ae2d7165efef5746105a6b5e",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "XTASK-FEATURE-STATUS"
-      ],
-      "outcome": "success"
-    },
-    {
       "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
       "sha256": "042ad614b48eaa9b6c4009b3a17deee84841b19adfbe86964f48b08f0f0206f5",
       "scope_kind": "openspec",
@@ -2447,7 +2518,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "5688cff503a0f30dd6b60ef1185afe70b4850861a305d2927113c990e3286e9e",
+      "sha256": "f3b12939797257a69be7e615d0efc6741a94cadb7d6e56dd04b05167faaf8f3b",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -2462,7 +2533,8 @@
         "AV2-5.4.9-SEGMENT-INFO",
         "AV2-5.8-LAYER-CONFIG-RECORD",
         "AV2-5.9-ATLAS-SEGMENT",
-        "AV2-B-ANNEXB-OBU-ENVELOPE"
+        "AV2-B-ANNEXB-OBU-ENVELOPE",
+        "AV2-IVF-CONTAINER"
       ],
       "outcome": "success"
     },
@@ -2491,9 +2563,10 @@
     },
     {
       "path": "openspec/specs/encoder-tools/spec.md",
-      "sha256": "fde73d333ed8dd90ee063cbe002f7a9cf0e10b912532b9fdc752ade398aea33e",
+      "sha256": "f24027611cd947dacce3eb26f0817809b3a57bfe6e16cd2d13886fffaedf273f",
       "scope_kind": "openspec",
       "feature_ids": [
+        "AV2-IVF-CONTAINER",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0",
         "ENC-RATE-CONTROL-V0"
@@ -2510,21 +2583,32 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/specs/ivf-container/spec.md",
+      "sha256": "8b6b69f227d2d486ed835b279ed7c405fde82ff34866048b20605a63c118dcd3",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-IVF-CONTAINER"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/specs/process/spec.md",
-      "sha256": "6a7c2c62fe56679c0652262f17bfc7448d4e7571d3a6f176f2540d46cfa0db2a",
+      "sha256": "c16eb1e4dde49148dc5c5505373ee09a8fc4b96f25f167d190c1b07b0a1279df",
       "scope_kind": "openspec",
       "feature_ids": [
         "DOC-AUDIT-PROTOCOLS",
         "DOC-AV2-SPEC-MIRROR",
         "DOC-ENCODER-REFERENCE-GATE",
         "XTASK-AUDIT-SCOPE",
-        "XTASK-CONVENTIONAL-COMMITS"
+        "XTASK-CONVENTIONAL-COMMITS",
+        "XTASK-DIAGNOSTIC-REGISTRY",
+        "XTASK-FEATURE-STATUS"
       ],
       "outcome": "success"
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "ec7a9b946082ee30c6bebd9b0752fa44e9c0be12c0ad29036d2ce3013ac2785f",
+      "sha256": "45734dca2270e79d9f2990b091684fedfe8130390e537ed2271d9a77617da69b",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
@@ -2536,7 +2620,8 @@
         "AV2-5.7-MULTI-FRAME-HEADER",
         "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
         "AV2-7.3-OBU-ORDERING",
-        "AV2-7.3.8-HLS-AVAILABILITY"
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-IVF-CONTAINER"
       ],
       "outcome": "success"
     },
@@ -2610,7 +2695,7 @@
     },
     {
       "path": "xtask/src/feature_status.rs",
-      "sha256": "8303178769d7824ac77e8782ca9eb5f492874f249b8579947a4add13206e4f10",
+      "sha256": "67423d47ef604647d417c59b6db346580eb14ccf258017c133dfd8b2c308d8b4",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "AV2-5.2.2-OBU-HEADER",
