@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "54a2d3fa43b24341500527ddb06556b3f6aeff1e",
+  "audited_commit": "1ede6a70b0bf0fdf77596deafbcd39d602785a0d",
   "outcome": "success",
   "files": [
     {
@@ -883,7 +883,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "2a5e9adccfd4f6d2f646bc2e41f2e4331e878807ab30929de9dad78c2bc1acae",
+      "sha256": "15dec8fb295dc07c7ae9e6f3d065b492c52284bb45caf365a9fb053b95f9fcf7",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1050,7 +1050,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "206e5842fd1ecdc178ccc2a86ebe1b41bf9ef3ccd23cc08afa394243b868dd21",
+      "sha256": "05e4419faebba848fc8ed0c3476495c72c1825226fbbce1fc5e41f487d108218",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1187,7 +1187,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "b12ec256afbfdf6b0321f7d337d4c0ea79c4e370acdcef14e53b24382b77ebce",
+      "sha256": "5bd881656b0f39de72a647285778e52fb70dccd8ca3f8549b62c526f342083a6",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1519,7 +1519,7 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
+      "sha256": "f7cd8781958b25b19f1d790fd70f9a28357f527bc27de981506d0e64f2675e0a",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
