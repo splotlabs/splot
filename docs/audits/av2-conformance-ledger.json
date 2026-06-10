@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "6bc924db7c6814d4b35b6ec99864cd821fcb7075",
+  "audited_commit": "4703f9e8391680e302ed2a5cb3dfed63cb4829e0",
   "outcome": "success",
   "files": [
     {
@@ -896,7 +896,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "4e7f92e1455b92ef34d33fa483cb851cf789e7d0d8bee2081d627dae3848c49c",
+      "sha256": "c3ad2cfcc7f6016ef27b2acfef0cdc33b10c9712c48a12e20696eef562594965",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1031,7 +1031,7 @@
     },
     {
       "path": "docs/FEATURE-TRACKING.md",
-      "sha256": "a739f09837202c416d6134313b0ddbdb57eeae5e93ee3598f28548a7feeafe84",
+      "sha256": "2d8419a3764786a65fa820a0e2c93bbc9e41a9087c68061d9bfb379fa24aced5",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -1061,7 +1061,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "16c064082beaabe78ba23d09214c1b2f9ada4919b5896c9c76e87fd8b5ad58d9",
+      "sha256": "2146df679f67710f6bc460b28a2ac90fc19d244dae1d9b3df6abdc7e78900859",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2506,11 +2506,12 @@
     },
     {
       "path": "xtask/src/feature_status.rs",
-      "sha256": "5533a53ea0b2f87aed19b777caecbc67f5d37eb1aad45995da402027ff98742d",
+      "sha256": "613ccdfe64b62bb499fca732f598a14b4389a4648548ce406496ac8b533c25c0",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "AV2-5.2.2-OBU-HEADER",
         "AV2-B-ANNEXB-OBU-ENVELOPE",
+        "CONF-FUZZ-NO-PANIC",
         "ENC-Y4M-INPUT",
         "XTASK-FEATURE-STATUS"
       ],
@@ -2525,7 +2526,7 @@
     },
     {
       "path": "xtask/src/main.rs",
-      "sha256": "ba6396caca4d2b42f0d74917c6757ece0ba86e890cb10ca8cefcc510f57f4c7b",
+      "sha256": "050ed1c5ef74d829ee55fe981a042d539e399ff07aa6807f4b8948a0f8eda9e7",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",

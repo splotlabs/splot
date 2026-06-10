@@ -14,7 +14,7 @@
 # Do NOT use percentages.
 
 matrix_version = 1
-last_reviewed = "2026-06-08"
+last_reviewed = "2026-06-10"
 
 # ---------------------------------------------------------------------------
 # Normative AV2 bitstream syntax and semantics
@@ -4002,11 +4002,11 @@ spec_sections = []
 sources = []
 crate = "xtask"
 module = "xtask/src/feature_status.rs"
-openspec_change = "feature-tracking-framework"
+openspec_change = "spec-coverage-doc"
 tracking_issue = ""
 owner = "automation"
 risk = "medium"
-notes = "Implements feature-status (table/json/markdown), check-feature-status (drift guard), and spec-coverage. Wired into `cargo xtask ci`."
+notes = "Implements feature-status (table/json/markdown), check-feature-status (drift guard for the matrix plus the generated docs/FEATURE-STATUS.md and docs/SPEC-COVERAGE.md), and spec-coverage (text summary; markdown renders the per-spec-section coverage document with spec-mirror links). Wired into `cargo xtask ci`."
 
 [feature.status]
 mapped = "done"
@@ -4026,6 +4026,7 @@ commands = [
     "cargo xtask feature-status",
     "cargo xtask check-feature-status",
     "cargo xtask spec-coverage",
+    "cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md",
     "cargo test -p xtask",
 ]
 fixtures = []
