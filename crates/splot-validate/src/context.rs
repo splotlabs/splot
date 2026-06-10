@@ -268,6 +268,38 @@ fn ops_buffer_delay_cross_cvs_warning(
     .with_byte_offset(offset)
 }
 
+/// Builds the § 6.10.5 operating-point intra-CVS error
+/// (`decoder-model/buffer-delay-sum-changed`, severity `error`) for a change of the
+/// explicitly signalled buffer-delay sum from `previous_sum` to `sum` for the
+/// `(obu_xlayer_id, opsID, op)` triple `key`, observed within one coded video sequence
+/// with no intervening OPS reset. Shared by the eager/deferred same-epoch path and the
+/// pre-first-CLK same-temporal-unit path (`check_ops_buffer_delay_sums`), which differ
+/// only in how the comparison is routed across the § 7.3.6 temporal-unit-granular CVS
+/// boundary, not in the diagnostic text.
+fn ops_buffer_delay_intra_cvs_error(
+    key: &OpsBufferDelayKey,
+    previous_sum: u64,
+    sum: u64,
+    offset: ByteOffset,
+) -> Diagnostic {
+    Diagnostic::error(
+        "decoder-model/buffer-delay-sum-changed",
+        format!(
+            "operating point set {} operating point {} for obu_xlayer_id {} changes its \
+             ops_decoder_buffer_delay + ops_encoder_buffer_delay sum from {} to {} within \
+             one coded video sequence with no intervening OPS reset; § 6.10.5 requires the \
+             sum be kept constant",
+            key.ops_id,
+            key.op_index,
+            key.xlayer.get(),
+            previous_sum,
+            sum,
+        ),
+    )
+    .with_spec_section("6.10.5")
+    .with_byte_offset(offset)
+}
+
 /// One stored activated-sequence-header buffer-delay baseline (§ 6.4.13): the last
 /// explicitly signalled sum of a frame-confirmed activated header for an extended
 /// layer, with the CVS epoch that scopes the cross-CVS advisory.
@@ -1382,6 +1414,29 @@ struct CvsTracker {
     pending_cross_tu: Vec<PendingCrossTu>,
 }
 
+/// The flush polarity of a deferred [`PendingCrossTu`] comparison. The two § 7.3.6
+/// boundary events (`CvsTracker::start_cvs` and `CvsTracker::flush_completed_tu`) handle
+/// a pending entry oppositely depending on which side of the CLK boundary the comparison
+/// is sound on; the polarity selects which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingPolarity {
+    /// The comparison's baseline is in an EARLIER temporal unit, so the comparison is an
+    /// intra-CVS assertion that a same-temporal-unit CLK could falsify. Emit the primary
+    /// when the temporal unit completes without a CVS start for the layer; on a CVS start
+    /// drop the primary and emit any `on_drop` replacement (the comparison spanned the
+    /// § 7.3.6 boundary after all). This is the deferred-error polarity.
+    CvsScoped,
+    /// Both observations are in the CURRENT temporal unit but no coded video sequence has
+    /// started for the layer yet (the pre-first-CLK silence path). Per § 7.3.6 the whole
+    /// temporal unit containing a CLK belongs to the NEW coded video sequence, so a CLK
+    /// later in this temporal unit pulls BOTH observations into one coded video sequence
+    /// and the change is intra-CVS — emit the primary on the CVS start. If the temporal
+    /// unit instead completes with no CLK for the layer, the observations remain in no
+    /// coded video sequence (the § 6.10.5 random-access-point precondition is
+    /// unsatisfied), so drop the primary silently. This is the inverse of `CvsScoped`.
+    PreCvs,
+}
+
 /// One deferred cross-temporal-unit CVS-scoped diagnostic (see
 /// [`CvsTracker::pending_cross_tu`]).
 #[derive(Debug)]
@@ -1389,22 +1444,36 @@ struct PendingCrossTu {
     /// The extended layer scoping the comparison; `GLOBAL_XLAYER_ID` for a record with
     /// no single owning extended layer.
     xlayer: ExtendedLayerId,
-    /// The primary diagnostic, emitted when the temporal unit completes without the
-    /// layer having started a coded video sequence in it.
+    /// Which § 7.3.6 boundary event emits this entry's primary (see [`PendingPolarity`]).
+    polarity: PendingPolarity,
+    /// The primary diagnostic. For [`PendingPolarity::CvsScoped`] it is emitted when the
+    /// temporal unit completes without a CVS start for the layer; for
+    /// [`PendingPolarity::PreCvs`] it is emitted on a CVS start for the layer.
     primary: Diagnostic,
     /// The replacement emitted instead of `primary` when `primary` is dropped because a
     /// coded-video-sequence boundary was crossed (the comparison spanned the boundary).
-    /// `None` for callers whose dropped comparison must simply vanish.
+    /// Used only by [`PendingPolarity::CvsScoped`]; a [`PendingPolarity::PreCvs`] entry
+    /// that is dropped (its temporal unit closed with no CLK) leaves the observations in
+    /// no coded video sequence, so its dropped comparison must simply vanish (`None`).
     on_drop: Option<Diagnostic>,
 }
 
 impl CvsTracker {
     /// Records a § 7.3.6 boundary event: a CLK OBU for `xlayer` starts a new coded
     /// video sequence at the current temporal unit. Pending deferred diagnostics for
-    /// `xlayer` compare records of the previous coded video sequence against this
-    /// one, so the primary is dropped and any `on_drop` replacement is emitted in its
-    /// place (the comparison spanned this CVS boundary). Idempotent within a temporal
-    /// unit.
+    /// `xlayer` are resolved by their [`PendingPolarity`]:
+    ///
+    /// - [`PendingPolarity::CvsScoped`]: the comparison spanned this CVS boundary, so the
+    ///   primary is dropped and any `on_drop` replacement is emitted in its place.
+    /// - [`PendingPolarity::PreCvs`]: per § 7.3.6 the whole temporal unit containing this
+    ///   CLK belongs to the new coded video sequence, so both observations are now
+    ///   intra-CVS — the primary is emitted.
+    ///
+    /// Both pending kinds are recorded only in the current temporal unit (a `CvsScoped`
+    /// entry whose baseline came from an earlier temporal unit, a `PreCvs` entry whose
+    /// observations are both in this temporal unit) and are flushed at the temporal-unit
+    /// boundary, so every entry present here is necessarily tagged to this temporal unit.
+    /// Idempotent within a temporal unit.
     fn start_cvs(&mut self, xlayer: ExtendedLayerId, report: &mut ValidationReport) {
         // Bump the CVS generation only once per (xlayer, temporal unit): a redundant
         // CLK in the same temporal unit is the same § 7.3.6 boundary event, so it must
@@ -1417,8 +1486,13 @@ impl CvsTracker {
         let mut retained = Vec::with_capacity(self.pending_cross_tu.len());
         for entry in std::mem::take(&mut self.pending_cross_tu) {
             if entry.xlayer == xlayer {
-                if let Some(replacement) = entry.on_drop {
-                    report.push(replacement);
+                match entry.polarity {
+                    PendingPolarity::CvsScoped => {
+                        if let Some(replacement) = entry.on_drop {
+                            report.push(replacement);
+                        }
+                    }
+                    PendingPolarity::PreCvs => report.push(entry.primary),
                 }
             } else {
                 retained.push(entry);
@@ -1501,36 +1575,89 @@ impl CvsTracker {
         } else {
             self.pending_cross_tu.push(PendingCrossTu {
                 xlayer,
+                polarity: PendingPolarity::CvsScoped,
                 primary: diagnostic,
                 on_drop,
             });
         }
     }
 
-    /// Flushes the deferred diagnostics of the just-completed temporal unit: an
-    /// entry's primary is dropped when its extended layer started a new coded video
-    /// sequence in that temporal unit (the compared records then sit in different
-    /// coded video sequences, § 7.3.6) and emitted otherwise. When the primary is
-    /// dropped, its `on_drop` replacement (if any) is emitted instead — the comparison
-    /// spanned the boundary. An entry tagged with `GLOBAL_XLAYER_ID` scopes records
-    /// with no single owning extended layer and is dropped when ANY extended layer
-    /// started a coded video sequence in the temporal unit (documented approximation,
-    /// sound: it only drops comparisons).
+    /// Records a [`PendingPolarity::PreCvs`] comparison: both observations are in the
+    /// current temporal unit, but no coded video sequence has started for `xlayer` yet
+    /// (the pre-first-CLK silence path). Per § 7.3.6 a CLK later in this temporal unit
+    /// pulls both observations into one coded video sequence, so the captured `diagnostic`
+    /// is emitted on the next [`CvsTracker::start_cvs`] for `xlayer`; if the temporal unit
+    /// closes first with no CLK for the layer, [`CvsTracker::flush_completed_tu`] drops it
+    /// silently (the observations are in no coded video sequence). The caller must have
+    /// already established `cvs_started(xlayer) == false`; `xlayer` must be a concrete
+    /// extended layer (global keys keep the documented cross-CMVS under-report and are not
+    /// deferred here).
+    fn defer_pre_cvs(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        diagnostic: Diagnostic,
+        report: &mut ValidationReport,
+    ) {
+        debug_assert!(
+            !xlayer.is_global(),
+            "PreCvs deferral is for concrete extended layers only",
+        );
+        // Guard against a logic error rather than emit a stray diagnostic in release: a
+        // global key must never reach the per-layer pending machinery. Dropping it here
+        // matches the documented global under-report and cannot fire on the only caller
+        // (which screens out global keys before calling).
+        if xlayer.is_global() {
+            let _ = report;
+            return;
+        }
+        self.pending_cross_tu.push(PendingCrossTu {
+            xlayer,
+            polarity: PendingPolarity::PreCvs,
+            primary: diagnostic,
+            on_drop: None,
+        });
+    }
+
+    /// Flushes the deferred diagnostics of the just-completed temporal unit, resolving
+    /// each entry by its [`PendingPolarity`]:
+    ///
+    /// - [`PendingPolarity::CvsScoped`]: the primary is dropped when its extended layer
+    ///   started a new coded video sequence in this temporal unit (the compared records
+    ///   then sit in different coded video sequences, § 7.3.6) and any `on_drop`
+    ///   replacement is emitted in its place; otherwise the primary is emitted.
+    /// - [`PendingPolarity::PreCvs`]: a CVS start would already have emitted and removed
+    ///   the entry in [`CvsTracker::start_cvs`], so any `PreCvs` entry surviving to this
+    ///   flush is one whose temporal unit closed with no CLK for the layer — its two
+    ///   observations remain in no coded video sequence (the § 6.10.5 random-access-point
+    ///   precondition is unsatisfied), so it is dropped silently (pre-first-CLK silence).
+    ///
+    /// An entry tagged with `GLOBAL_XLAYER_ID` scopes records with no single owning
+    /// extended layer and treats "started a coded video sequence in this temporal unit"
+    /// as ANY extended layer having done so (documented approximation, sound: it only
+    /// drops comparisons).
     fn flush_completed_tu(&mut self, report: &mut ValidationReport) {
         let tu_index = self.tu_index;
         let any_started_this_tu = self.cvs_started_in_tu.values().any(|&tu| tu == tu_index);
         for entry in std::mem::take(&mut self.pending_cross_tu) {
-            let started_this_tu = if entry.xlayer.is_global() {
-                any_started_this_tu
-            } else {
-                self.cvs_started_in_tu.get(&entry.xlayer) == Some(&tu_index)
-            };
-            if started_this_tu {
-                if let Some(replacement) = entry.on_drop {
-                    report.push(replacement);
+            match entry.polarity {
+                PendingPolarity::CvsScoped => {
+                    let started_this_tu = if entry.xlayer.is_global() {
+                        any_started_this_tu
+                    } else {
+                        self.cvs_started_in_tu.get(&entry.xlayer) == Some(&tu_index)
+                    };
+                    if started_this_tu {
+                        if let Some(replacement) = entry.on_drop {
+                            report.push(replacement);
+                        }
+                    } else {
+                        report.push(entry.primary);
+                    }
                 }
-            } else {
-                report.push(entry.primary);
+                // A surviving PreCvs entry means no CLK arrived for the layer this
+                // temporal unit: the observations are in no coded video sequence, so the
+                // comparison is dropped silently (it carries no `on_drop` replacement).
+                PendingPolarity::PreCvs => {}
             }
         }
     }
@@ -4005,48 +4132,59 @@ impl ValidatorContext {
             let previous = self.ops_buffer_delay_sums.get(&key).copied();
 
             // Error tier: same triple, same boundary scope (CVS epoch, reset generation,
-            // and per-OPS targeted-reset generation all match), differing sum — and only
-            // once a coded video sequence has actually started for the scope (§ 7.3.6). The
-            // comparison is deferred to temporal-unit granularity: a same-temporal-unit
-            // baseline is emitted eagerly (a CVS boundary cannot fall inside a temporal
-            // unit), while an earlier-temporal-unit baseline is deferred and dropped if a
-            // CLK in the current temporal unit splits it into a different coded video
-            // sequence.
-            if cvs_started
-                && let Some(previous) = previous
+            // and per-OPS targeted-reset generation all match), differing sum. There are
+            // two routings, both intra-CVS comparisons keyed by the § 7.3.6 boundary, and
+            // they are mutually exclusive on `cvs_started`:
+            //
+            // 1. A coded video sequence has already started for the scope (`cvs_started`):
+            //    the comparison is deferred to temporal-unit granularity. A same-temporal-
+            //    unit baseline is emitted eagerly (a CVS boundary cannot fall inside a
+            //    temporal unit); an earlier-temporal-unit baseline is deferred and, if a
+            //    CLK later in this temporal unit splits it into a different coded video
+            //    sequence, dropped and replaced by the cross-boundary advisory.
+            //
+            // 2. No coded video sequence has started yet (`!cvs_started`) but BOTH
+            //    observations are in the current temporal unit (`previous.tu_index ==
+            //    tu_index`): the pre-first-CLK silence path. Per § 7.3.6 a CLK later in
+            //    this temporal unit pulls both observations into the new coded video
+            //    sequence (which contains the CLK), making the change intra-CVS — so the
+            //    error is deferred PreCvs and emitted on that CLK. If the temporal unit
+            //    closes first with no CLK for the layer, the observations are in no coded
+            //    video sequence and the comparison is dropped silently (preserving the
+            //    documented pre-first-CLK silence). Global-keyed observations keep the
+            //    documented cross-CMVS under-report and are not deferred here (a global
+            //    CLK does not migrate global baselines in `start_cvs_for_xlayer`, so
+            //    deferring would emit a comparison the eager path never re-baselines).
+            if let Some(previous) = previous
                 && previous.scope == scope
                 && previous.sum != sum
             {
-                let diagnostic = Diagnostic::error(
-                    "decoder-model/buffer-delay-sum-changed",
-                    format!(
-                        "operating point set {} operating point {} for obu_xlayer_id {} \
-                         changes its ops_decoder_buffer_delay + ops_encoder_buffer_delay sum \
-                         from {} to {} within one coded video sequence with no intervening \
-                         OPS reset; § 6.10.5 requires the sum be kept constant",
-                        ops.ops_id,
-                        payload.index,
-                        ops.xlayer_id.get(),
-                        previous.sum,
-                        sum,
-                    ),
-                )
-                .with_spec_section("6.10.5")
-                .with_byte_offset(obu.offset);
-                // When the error is deferred (the baseline came from an earlier temporal
-                // unit) and then dropped because a late CLK starts a new coded video
-                // sequence in this temporal unit, the comparison was genuinely cross-CVS:
-                // emit the cross-boundary advisory in the error's place so the change is
-                // not silently lost (§ 7.3.6 temporal-unit-granular CVS boundary).
-                let on_drop =
-                    ops_buffer_delay_cross_cvs_warning(&key, previous.sum, sum, obu.offset);
-                self.cvs.defer_or_emit_with_replacement(
-                    ops.xlayer_id,
-                    previous.tu_index,
-                    diagnostic,
-                    Some(on_drop),
-                    report,
-                );
+                let diagnostic =
+                    ops_buffer_delay_intra_cvs_error(&key, previous.sum, sum, obu.offset);
+                if cvs_started {
+                    // When the error is deferred (the baseline came from an earlier
+                    // temporal unit) and then dropped because a late CLK starts a new
+                    // coded video sequence in this temporal unit, the comparison was
+                    // genuinely cross-CVS: emit the cross-boundary advisory in the
+                    // error's place so the change is not silently lost (§ 7.3.6
+                    // temporal-unit-granular CVS boundary).
+                    let on_drop =
+                        ops_buffer_delay_cross_cvs_warning(&key, previous.sum, sum, obu.offset);
+                    self.cvs.defer_or_emit_with_replacement(
+                        ops.xlayer_id,
+                        previous.tu_index,
+                        diagnostic,
+                        Some(on_drop),
+                        report,
+                    );
+                } else if previous.tu_index == tu_index && !ops.xlayer_id.is_global() {
+                    self.cvs.defer_pre_cvs(ops.xlayer_id, diagnostic, report);
+                }
+                // The remaining `!cvs_started` shapes are intentionally silent: an
+                // earlier-temporal-unit pre-CLK baseline (no CLK has ever started a coded
+                // video sequence and the observations span a temporal-unit boundary) and
+                // every global-keyed pre-CLK pair stay in the documented pre-first-CLK /
+                // cross-CMVS silence.
             }
 
             // The cross-boundary advisory compares the latest explicit sum against the

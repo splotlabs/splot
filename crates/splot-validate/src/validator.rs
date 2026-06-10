@@ -5315,6 +5315,102 @@ mod tests {
         );
     }
 
+    #[test]
+    fn decoder_model_ops_both_definitions_pre_clk_in_same_tu_is_error() {
+        // FINDING (round-3, § 7.3.6, mirror `07-decoding-process.md` lines 604–606): "A
+        // new coded video sequence for an extended layer is defined to start at each
+        // temporal unit that contains an OBU with obu_type equal to OBU_CLOSED_LOOP_KEY
+        // ...". BOTH OPS definitions of the same (obu_xlayer_id, ops_id, op) occur BEFORE
+        // the CLK in the SAME temporal unit, with no coded video sequence started yet for
+        // the layer. The whole CLK temporal unit lies in the new coded video sequence, so
+        // both observations are intra-CVS and the differing sum (30 -> 40) is the error
+        // tier — the comparison is deferred PreCvs at the second OPS and emitted when the
+        // CLK starts the layer's coded video sequence.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
+        data.extend(local_ops_obu_with_delays(0, false, 0, 10, 20)); // sum 30, pre-CLK
+        data.extend(local_ops_obu_with_delays(0, false, 0, 25, 15)); // sum 40, pre-CLK
+        data.extend(clk_frame_for_xlayer(0, 0)); // CLK later in same TU -> whole TU is the new CVS
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "decoder-model/buffer-delay-sum-changed"),
+            1,
+            "both pre-CLK OPS definitions in the CLK's own temporal unit are intra-CVS; \
+             the differing sum must be a single error: {report}"
+        );
+        assert_eq!(
+            decoder_model_warning_count(
+                &report,
+                "decoder-model/buffer-delay-sum-changed-across-cvs"
+            ),
+            0,
+            "the deferred intra-CVS error must not also raise the cross-CVS advisory: {report}"
+        );
+    }
+
+    #[test]
+    fn decoder_model_ops_both_definitions_pre_clk_no_clk_in_tu_stays_silent() {
+        // The same [seq, OPS30, OPS40] pair as the round-3 case but with NO CLK in the
+        // temporal unit (the temporal unit closes at the next temporal delimiter): the
+        // observations are in no coded video sequence (§ 7.3.6), so the § 6.10.5
+        // random-access-point precondition is unsatisfied and the deferred PreCvs error is
+        // dropped silently — preserving the documented pre-first-CLK silence. The second
+        // temporal delimiter completes the first temporal unit and triggers the silent
+        // drop.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
+        data.extend(local_ops_obu_with_delays(0, false, 0, 10, 20)); // sum 30, no CVS yet
+        data.extend(local_ops_obu_with_delays(0, false, 0, 25, 15)); // sum 40, still no CVS
+        data.extend(temporal_delimiter_obu()); // TU closes with no CLK for the layer
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "decoder-model/buffer-delay-sum-changed"),
+            0,
+            "a pre-first-CLK OPS sum change whose temporal unit closes with no CLK is in \
+             no coded video sequence and must stay silent: {report}"
+        );
+        assert_eq!(
+            decoder_model_warning_count(
+                &report,
+                "decoder-model/buffer-delay-sum-changed-across-cvs"
+            ),
+            0,
+            "the dropped pre-CVS comparison spans no boundary and must not warn: {report}"
+        );
+    }
+
+    #[test]
+    fn decoder_model_ops_multiple_pre_clk_changes_same_tu_error_per_change() {
+        // Three pre-CLK definitions 30 -> 40 -> 50 of the same triple in the CLK's own
+        // temporal unit. § 7.3.6 places all three in the new coded video sequence, so each
+        // consecutive change is a distinct intra-CVS comparison: two PreCvs errors are
+        // deferred (30 -> 40 at the second OPS, 40 -> 50 at the third) and both are emitted
+        // when the CLK starts the layer's coded video sequence — exactly one diagnostic
+        // per comparison, matching the eager mid-CVS path (one error per consecutive
+        // change).
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
+        data.extend(local_ops_obu_with_delays(0, false, 0, 10, 20)); // sum 30
+        data.extend(local_ops_obu_with_delays(0, false, 0, 25, 15)); // sum 40
+        data.extend(local_ops_obu_with_delays(0, false, 0, 30, 20)); // sum 50
+        data.extend(clk_frame_for_xlayer(0, 0)); // CLK later in same TU
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "decoder-model/buffer-delay-sum-changed"),
+            2,
+            "two consecutive intra-CVS sum changes must produce two errors, one per \
+             comparison: {report}"
+        );
+        assert_eq!(
+            decoder_model_warning_count(
+                &report,
+                "decoder-model/buffer-delay-sum-changed-across-cvs"
+            ),
+            0,
+            "intra-CVS changes must not raise the cross-CVS advisory: {report}"
+        );
+    }
+
     // --- Quantizer matrix (§5.13 / §6.12) and film grain (§5.14 / §6.13) ---
 
     /// `OBU_QUANTIZATION_MATRIX` header byte: ext=0, type=22, tlayer=0.
