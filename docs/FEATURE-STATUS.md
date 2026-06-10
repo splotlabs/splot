@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-10. 128 feature(s).
+Matrix version 1. Last reviewed 2026-06-10. 129 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -131,6 +131,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `XTASK-FEATURE-STATUS` | xtask feature status reporting and checks | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/feature_status.rs` |
 | `XTASK-AUDIT-SCOPE` | Changed-file AV2 audit scope | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/audit_scope.rs` |
 | `XTASK-DIAGNOSTIC-REGISTRY` | Validator diagnostic registry enforcement | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/diagnostic_registry.rs` |
+| `XTASK-CI-QUALITY-GATES` | CI quality gates (docs build + coverage threshold) | automation | automation | done | n/a | n/a | done | n/a | n/a | n/a | n/a | n/a | `xtask/src/main.rs` |
 | `DOC-FEATURE-TRACKING` | Feature tracking documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `docs/FEATURE-TRACKING.md` |
 | `DOC-VALIDATOR-ROADMAP` | Validator coverage roadmap documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `docs/VALIDATOR-ROADMAP.md` |
 | `DOC-ENCODER-REFERENCE-GATE` | Encoder reference gate documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `docs/references/ENCODER-RESEARCH-NOTES.md` |

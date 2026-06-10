@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "4ef1bce33261c3bb19fba5f981c23f5c15ed6db0",
+  "audited_commit": "a59a247438809f9b735aa40c0ff1fb230d998dca",
   "outcome": "success",
   "files": [
     {
@@ -200,14 +200,14 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "be4c5c0864f784050c09c430fe2707826d64099915e514dc6381af8bf502eafe",
+      "sha256": "beefc09df6aa14f30bef5881eba4077fde5aab21486d3111fd67ad782d541641",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": ".github/workflows/claude-review.yml",
-      "sha256": "9d5a4d41cbd5a9ad8b254871456969ab8fd47ec96f8455cc8d576d9ee19778c2",
+      "sha256": "fca8af67a91465f1bb1246e48d53b348ed84ad2d6736391a8d33d56853b3fea0",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
@@ -221,7 +221,7 @@
     },
     {
       "path": "AGENTS.md",
-      "sha256": "afe8af2b089bc6ed8144869c2d9eb0a104de197601da90fe375e43499751e802",
+      "sha256": "dde0ea04e93acbce05d9ac3c7d65dc47d7d55d38fb22971eadbaf4fba3cdb763",
       "scope_kind": "repository-process",
       "feature_ids": [
         "DOC-AUDIT-PROTOCOLS",
@@ -525,7 +525,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/operating_point_set.rs",
-      "sha256": "906b0e38438359d5ca800f2a2fc6caaf575b473b30ed89849e7bc73bc729dbe1",
+      "sha256": "39e5fc4aa7e28f4ba5ac78b429cd130401a3b03810bf07e26fb5c7e0ca7ed940",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.10-OPERATING-POINT-SET",
@@ -550,7 +550,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/quantizer_matrix.rs",
-      "sha256": "bbc11aa0488afbc3746a06b17b776b5fbf2e2c52f4fc5107ede0341e84c9898b",
+      "sha256": "031bf751e850c4256175017ea1256c332bf8ca9155a05cec4c8a3b70f1ebae50",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.13-QUANTIZATION-MATRIX",
@@ -686,7 +686,7 @@
     },
     {
       "path": "crates/splot-core/src/tile.rs",
-      "sha256": "b8067218b32fa227c4e1f373dcbb0fdcced6469a224e408c7628d11d31e2852b",
+      "sha256": "45426e065deb9774b008fef3813c3d5bef9fc6c98dcee0dafc2f6ae647a0a4cc",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.7.3-TILE-PARAMS"
@@ -876,7 +876,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "ba07e0f77dcea86a4e25ef41037f853618a7614bdc470577446a22143b2304c5",
+      "sha256": "56c9523e9f2b2bb37298ba2b84c2f0bce247d1131c49698eec1883da26d0ec0e",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1004,6 +1004,7 @@
         "ENC-SPEED-PRESETS",
         "ENC-Y4M-INPUT",
         "XTASK-AUDIT-SCOPE",
+        "XTASK-CI-QUALITY-GATES",
         "XTASK-CONVENTIONAL-COMMITS",
         "XTASK-DIAGNOSTIC-REGISTRY",
         "XTASK-FEATURE-STATUS"
@@ -1042,7 +1043,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "f7ef08585c19c030792551edbc0ccd57ff4241634d30451ba4c1f96de22c0f90",
+      "sha256": "4b043705b03aa31f3a1a35b9fe93ef7ff36b22ad2103aef783964c68223f700e",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1170,6 +1171,7 @@
         "ENC-SPEED-PRESETS",
         "ENC-Y4M-INPUT",
         "XTASK-AUDIT-SCOPE",
+        "XTASK-CI-QUALITY-GATES",
         "XTASK-CONVENTIONAL-COMMITS",
         "XTASK-DIAGNOSTIC-REGISTRY",
         "XTASK-FEATURE-STATUS"
@@ -1178,7 +1180,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "60da372e1c90492d92dde22538e98ea736ee18c6c91e656e09e74ac3db97acac",
+      "sha256": "b12ec256afbfdf6b0321f7d337d4c0ea79c4e370acdcef14e53b24382b77ebce",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1306,6 +1308,7 @@
         "ENC-SPEED-PRESETS",
         "ENC-Y4M-INPUT",
         "XTASK-AUDIT-SCOPE",
+        "XTASK-CI-QUALITY-GATES",
         "XTASK-CONVENTIONAL-COMMITS",
         "XTASK-DIAGNOSTIC-REGISTRY",
         "XTASK-FEATURE-STATUS"
@@ -1465,7 +1468,7 @@
     },
     {
       "path": "fuzz/Cargo.toml",
-      "sha256": "51206c8274d14a0ebfb0b5407580ce20d2c1540c3b20603240fd5ecc0ee547f4",
+      "sha256": "f556ec380d7c2e9ea81a9e1f172e41f619789acc75ce16b252a0ff4f4f62b003",
       "scope_kind": "fuzz",
       "feature_ids": [],
       "outcome": "success"
@@ -1488,7 +1491,7 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "6e6454509614587bcf8e3709b89c6c0c772ae0d2bfac201d422f826d94c6f333",
+      "sha256": "f685e1d7d9b6802061268e81549704e032e510aab92626e9444e5c1c58979cc4",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -1499,8 +1502,10 @@
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
         "CONF-AVM-DIFF-HARNESS",
+        "CONF-FUZZ-NO-PANIC",
         "ENC-BITSTREAM-WRITER",
-        "ENC-INTRA-TOY-V0"
+        "ENC-INTRA-TOY-V0",
+        "XTASK-CI-QUALITY-GATES"
       ],
       "outcome": "success"
     },
@@ -2347,6 +2352,49 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-10-buffer-delay-sum-constancy/.openspec.yaml",
+      "sha256": "5ada458f25cd6e260a7ac3deb87a5ba5d046aabf964c53260ae6cf7bcb8a5d12",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-buffer-delay-sum-constancy/design.md",
+      "sha256": "767434231a564ce81aa1f6b6dc90d326b72f18b7714c95c086c1d42b0f3a98a6",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-buffer-delay-sum-constancy/proposal.md",
+      "sha256": "bb5c2953a052dc90aac6685be979db69563d8b47b819539a36374c3009e4c562",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.11.3-OPS-DECODER-MODEL-INFO",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-E-DECODER-MODEL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-buffer-delay-sum-constancy/specs/validator/spec.md",
+      "sha256": "4e0cd9ecb2f8bfd772e2f88ed4f0ccabe34191d676578bfafa410339b41abc14",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-10-buffer-delay-sum-constancy/tasks.md",
+      "sha256": "79e8882023f0ea013796a13098beb40b821bccaa7ac8f4e9d3840ec0f0896fb6",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.11.3-OPS-DECODER-MODEL-INFO",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-10-diagnostic-registry-enforcement/.openspec.yaml",
       "sha256": "4e4f418579ebfbffbd8c41ee1a2ef52993119960fe15f399381a15987b551d8a",
       "scope_kind": "openspec",
@@ -2835,7 +2883,7 @@
     },
     {
       "path": "xtask/src/main.rs",
-      "sha256": "050ed1c5ef74d829ee55fe981a042d539e399ff07aa6807f4b8948a0f8eda9e7",
+      "sha256": "ebf34a0446e04fc5bdb33cb58ef76a380d4f415cc20500ad76d2b2ebcc4eb60b",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
@@ -2844,6 +2892,7 @@
         "CONF-AVM-VALID-STREAMS",
         "CONF-PUBLIC-VECTORS",
         "DOC-AV2-SPEC-MIRROR",
+        "XTASK-CI-QUALITY-GATES",
         "XTASK-CONVENTIONAL-COMMITS"
       ],
       "outcome": "success"

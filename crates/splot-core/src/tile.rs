@@ -238,7 +238,7 @@ pub struct TileLayout {
 /// Returns [`Error::Unimplemented`] when `seq_level_idx` is a reserved level index
 /// (no defined scaling factor, so the bit layout is undefined — a non-conformant
 /// stream). Returns descriptor errors or
-/// [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload ends
+/// [`Error::UnexpectedEof`] if the payload ends
 /// mid-field.
 pub fn parse_tile_params(reader: &mut BitReader<'_>, input: TileParamsInput) -> Result<TileParams> {
     parse_tile_layout(reader, input).map(|layout| layout.params)
@@ -252,7 +252,7 @@ pub fn parse_tile_params(reader: &mut BitReader<'_>, input: TileParamsInput) -> 
 /// Returns [`Error::Unimplemented`] when `seq_level_idx` is a reserved level index
 /// (no defined scaling factor, so the bit layout is undefined — a non-conformant
 /// stream). Returns descriptor errors or
-/// [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload ends
+/// [`Error::UnexpectedEof`] if the payload ends
 /// mid-field.
 pub fn parse_tile_layout(reader: &mut BitReader<'_>, input: TileParamsInput) -> Result<TileLayout> {
     let sb4x4 = num_4x4_blocks_wide(input.sb_size);

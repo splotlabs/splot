@@ -3,7 +3,9 @@
 #
 # The fuzz crate is intentionally OUTSIDE the workspace (see the root Cargo.toml
 # `exclude = ["fuzz"]`) so that libFuzzer's `unsafe` usage is not subject to the
-# workspace `unsafe_code = "forbid"` lint. It is not part of normal CI.
+# workspace `unsafe_code = "forbid"` lint. CI runs a blocking 60s parse_obu smoke of
+# this crate on every PR (.github/workflows/ci.yml, fuzz-smoke job); full runs stay
+# local/nightly.
 
 [package]
 name = "splot-fuzz"
