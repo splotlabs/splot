@@ -560,7 +560,9 @@ impl FrameUnitSegmenter {
                 first_coded_unit_started,
                 coded_frames_opened_for_embedded_layer,
                 None,
-                OutputClass::Output,
+                // Type-decided output (mirror line 417): `type_decided_output` is the single
+                // source of truth shared with the CELU wiring, returning `Some(true)` for a SEF.
+                output_class(type_decided_output(obu.header.obu_type)),
                 true,
                 false, // a SEF is a single-OBU coded frame, judged by the SEF rule
                 true,  // SEF output is decided by type (always output), not a header parse
@@ -588,7 +590,10 @@ impl FrameUnitSegmenter {
                 first_coded_unit_started,
                 coded_frames_opened_for_embedded_layer,
                 None,
-                OutputClass::NonOutput,
+                // Type-decided output (mirror line 470): `type_decided_output` is the single
+                // source of truth shared with the CELU wiring, returning `Some(false)` for a
+                // bridge.
+                output_class(type_decided_output(obu.header.obu_type)),
                 false,
                 true,  // OBU_BRIDGE_FRAME carries no in-band coded-frame delimiter
                 true,  // a bridge frame is non-output by type (mirror line 470), not a header parse
@@ -1153,6 +1158,28 @@ fn output_class(output: Option<bool>) -> OutputClass {
         Some(true) => OutputClass::Output,
         Some(false) => OutputClass::NonOutput,
         None => OutputClass::Unknown,
+    }
+}
+
+/// The **type-decided** output classification of a frame-bearing OBU, when its `obu_type` alone
+/// settles it (AV2 § 7.3.3 / § 7.3.4): `Some(true)` for a SEF (`OBU_LEADING_SEF` /
+/// `OBU_REGULAR_SEF` — the § 7.3.3 "Or" branch makes a SEF a coded *output* frame unit, mirror
+/// line 417), `Some(false)` for `OBU_BRIDGE_FRAME` (it appears only in the § 7.3.4
+/// coded-*non-output*-frame-unit list, mirror line 470). `None` for every other frame type
+/// (CLK / OLK / `*_TILE_GROUP` / `SWITCH` / `RAS` / `*_TIP`), whose class is carried by the
+/// `immediate_output_frame` / `implicit_output_frame` flags — they appear in *both* § 7.3.3 and
+/// § 7.3.4.
+///
+/// This is the single source of truth shared by the [`FrameUnitSegmenter`] (its `SefFrame` /
+/// `BridgeFrame` arms map through here) and the [`CodedExtendedLayerTracker`](crate::celu)
+/// wiring (`frame_celu_facts`), so the two layers never disagree on a type-decided class.
+pub(crate) fn type_decided_output(obu_type: ObuType) -> Option<bool> {
+    if obu_type.is_sef() {
+        Some(true)
+    } else if obu_type == ObuType::BridgeFrame {
+        Some(false)
+    } else {
+        None
     }
 }
 

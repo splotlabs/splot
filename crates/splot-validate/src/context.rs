@@ -57,7 +57,7 @@ use crate::annex_a::{
 };
 use crate::celu::{CeluRole, CodedExtendedLayerTracker, FrameFacts, Leadingness};
 use crate::diagnostic::{Diagnostic, ValidationReport};
-use crate::frame_unit::{FrameBoundary, FrameUnitSegmenter, SegRole};
+use crate::frame_unit::{FrameBoundary, FrameUnitSegmenter, SegRole, type_decided_output};
 use crate::metadata_lifetime::{
     ActiveMetadataUnit, LAYER_CURRENT, LAYER_GLOBAL, LAYER_VALUES, MetadataLifetimeStore,
     PersistenceMode,
@@ -4725,11 +4725,21 @@ impl ValidatorContext {
         // boundary poisons the embedded layer's unit-count-dependent judgments. The
         // per-frame OrderHintBits (from the active sequence header) is threaded separately
         // for the § 7.3.7 same-OrderHintBits-in-TU check, since it spans CELUs.
-        let celu_role = self.celu_role_for(obu, first_picture_in_tu, boundary);
-        if let CeluRole::Frame(_) = celu_role {
-            let bits = self.frame_order_hint_bits(obu);
+        let celu_role = if is_frame_bearing(obu.header.obu_type) {
+            // A frame-bearing OBU: derive its CELU facts AND its OrderHintBits contribution from
+            // ONE core parse + resolution (F4 — no double parse). The OrderHintBits is gated on
+            // the SAME resolution decision the facts use: a frame whose referenced sequence
+            // header did not resolve to the active header contributes no bits (None), rather
+            // than the stale active header's bits, so the § 7.3.7 same-OrderHintBits-in-TU check
+            // is not fed a wrong-bits value. (The CELU tracker filters global frame-bearing OBUs
+            // in `observe`; `note_order_hint_bits` matches the prior behavior of contributing for
+            // every frame-bearing OBU.)
+            let (facts, bits) = self.frame_celu_facts(obu, first_picture_in_tu, boundary);
             self.celu.note_order_hint_bits(bits, obu.offset);
-        }
+            CeluRole::Frame(facts)
+        } else {
+            self.celu_role_for(obu)
+        };
         self.celu.observe(obu, celu_role, report);
 
         // AV2 § 6.16.5 / § 6.16.6: mark this embedded layer's first coded picture
@@ -4856,19 +4866,15 @@ impl ValidatorContext {
         }
     }
 
-    /// Classifies `obu` into its coded-extended-layer-unit [`CeluRole`] (AV2 § 7.3.6),
-    /// parallel to [`Self::seg_role_for`]. The HLS headers (LCR / OPS / atlas / sequence
-    /// header) and content-interpretation map directly; frame-bearing OBUs carry the
-    /// derived [`FrameFacts`]; all other coded-extended-layer-interior OBUs (BRT / QM /
-    /// FGM / metadata / MFH) are `FrameInterior`; padding is position-free.
-    fn celu_role_for(
-        &self,
-        obu: &ObuEnvelope<'_>,
-        first_picture_in_tu: bool,
-        boundary: Option<FrameBoundary>,
-    ) -> CeluRole {
-        let obu_type = obu.header.obu_type;
-        match obu_type {
+    /// Classifies a **non-frame-bearing** `obu` into its coded-extended-layer-unit
+    /// [`CeluRole`] (AV2 § 7.3.6), parallel to [`Self::seg_role_for`]. The HLS headers (LCR /
+    /// OPS / atlas / sequence header) and content-interpretation map directly; all other
+    /// coded-extended-layer-interior OBUs (BRT / QM / FGM / metadata / MFH) are `FrameInterior`;
+    /// padding is position-free. Frame-bearing OBUs are dispatched by the caller (see
+    /// [`Self::observe_frame_bearing_obu`]) so their facts and OrderHintBits come from a single
+    /// shared parse + resolution; if one reaches here it is treated as transparent padding.
+    fn celu_role_for(&self, obu: &ObuEnvelope<'_>) -> CeluRole {
+        match obu.header.obu_type {
             ObuType::Padding => CeluRole::Padding,
             ObuType::LayerConfigurationRecord => CeluRole::LayerConfigurationRecord,
             ObuType::OperatingPointSet => CeluRole::OperatingPointSet,
@@ -4881,9 +4887,6 @@ impl ValidatorContext {
             | ObuType::MetadataShort
             | ObuType::MetadataGroup
             | ObuType::MultiFrameHeader => CeluRole::FrameInterior,
-            _ if is_frame_bearing(obu_type) => {
-                CeluRole::Frame(self.frame_celu_facts(obu, first_picture_in_tu, boundary))
-            }
             // Reserved types (and the global-only temporal delimiter / MSDO, which the
             // tracker filters as global) are ignored by the § 7.3.6 grammar ("OBU types that
             // are not defined in this specification can be ignored", mirror line 618). Map to
@@ -4910,60 +4913,63 @@ impl ValidatorContext {
         obu: &ObuEnvelope<'_>,
         first_picture_in_tu: bool,
         boundary: Option<FrameBoundary>,
-    ) -> FrameFacts {
+    ) -> (FrameFacts, Option<u32>) {
         let obu_type = obu.header.obu_type;
         let leadingness = frame_leadingness(obu_type);
-        let core = self.frame_core_facts(obu, first_picture_in_tu);
-        let (output, order_hint) = match core {
-            Some((output, order_hint)) => (output, order_hint),
-            None => (None, None),
-        };
-        FrameFacts {
-            obu_type,
-            boundary: boundary.unwrap_or(FrameBoundary::OpensNewUnit),
-            output,
-            order_hint,
-            leadingness,
-        }
-    }
 
-    /// Parses the frame-header core of a frame-bearing OBU against its active sequence
-    /// header, returning its `(output class, OrderHint)` pair, or `None` when the active
-    /// sequence header is unavailable, the frame's referenced sequence header is not the
-    /// active header parsed against ([`Self::frame_core_against_referenced_header`] — the
-    /// stale-activation guard), or no parseable first-tile-group frame header exists. The
-    /// output class follows [`Self::frame_output_class`]'s semantics; the OrderHint is the
-    /// parsed `order_hint_lsb` (read only on the intra / SEF-with-`derive_sef_order_hint == 0`
-    /// paths — mirror § 5.18.2 — so it is `None` for inter / bridge / TIP frames and for a SEF
-    /// that derives its order hint). The `order_hint_lsb` is the **LSB proxy** for the decoded
-    /// OrderHint the § 7.3.6 / § 7.3.7 constraints compare (see [`crate::celu`]).
-    fn frame_core_facts(
-        &self,
-        obu: &ObuEnvelope<'_>,
-        first_picture_in_tu: bool,
-    ) -> Option<(Option<bool>, Option<u32>)> {
-        let core = self.frame_core_against_referenced_header(obu, first_picture_in_tu)?;
-        let output = match (core.immediate_output_frame, core.implicit_output_frame) {
-            (Some(immediate), Some(implicit)) => Some(immediate || implicit),
-            (Some(true), _) | (_, Some(true)) => Some(true),
-            _ => None,
-        };
-        Some((output, core.order_hint_lsb))
-    }
+        // F3: the output class is TYPE-DECIDED for a SEF (§ 7.3.3 "Or" branch -> output) and a
+        // BRIDGE (§ 7.3.4 list only -> non-output) by `obu_type` alone, BEFORE consulting any
+        // parsed flag — `type_decided_output` is the single source of truth shared with the
+        // frame-unit segmenter. A bridge parser stops early and would otherwise route to Unknown,
+        // suppressing the § 7.3.6 presence checks; the type decision keeps it decided.
+        let type_decided = type_decided_output(obu_type);
 
-    /// Reads the active sequence header's `OrderHintBits` for `obu`'s extended layer, for
-    /// the § 7.3.7 same-OrderHintBits-in-temporal-unit DOH check (mirror line 655).
-    /// `None` when no in-band sequence header is active for the layer or its inter config
-    /// was not parsed (the Unknown invariant — drops the same-OrderHintBits judgment).
-    fn frame_order_hint_bits(&self, obu: &ObuEnvelope<'_>) -> Option<u32> {
-        let seq_id = *self
-            .active_sequence_by_xlayer
-            .get(&obu.header.extended_layer_id)?;
-        let active_sequence = self.sequence_headers.get(&seq_id)?;
-        active_sequence
-            .inter
-            .as_ref()
-            .map(|inter| u32::from(inter.order_hint_bits))
+        // F4: one core parse + resolution drives BOTH the flag-derived facts AND the OrderHintBits
+        // contribution. `frame_core_against_referenced_header` returns `Some` only when the
+        // frame's referenced sequence header resolved to the active header it parsed against
+        // (the stale-activation guard). When it resolves, the active header IS the referenced
+        // one, so its `OrderHintBits` is this frame's bits; when it does not resolve, the bits
+        // contribution is `None` (not the stale active header's bits) so the § 7.3.7
+        // same-OrderHintBits-in-TU check is never fed a wrong-bits value.
+        let core = self.frame_core_against_referenced_header(obu, first_picture_in_tu);
+        let (flag_output, order_hint, bits) = match &core {
+            Some(core) => {
+                let flag_output = match (core.immediate_output_frame, core.implicit_output_frame) {
+                    (Some(immediate), Some(implicit)) => Some(immediate || implicit),
+                    // One flag known and already true settles output; the other being unreached
+                    // cannot flip an output frame to non-output (mirror § 6.17.2).
+                    (Some(true), _) | (_, Some(true)) => Some(true),
+                    _ => None,
+                };
+                // The resolved frame's OrderHintBits is the active (== referenced) header's,
+                // when its inter config was parsed (the Unknown invariant otherwise).
+                let bits = self
+                    .active_sequence_by_xlayer
+                    .get(&obu.header.extended_layer_id)
+                    .and_then(|seq_id| self.sequence_headers.get(seq_id))
+                    .and_then(|seq| seq.inter.as_ref())
+                    .map(|inter| u32::from(inter.order_hint_bits));
+                (flag_output, core.order_hint_lsb, bits)
+            }
+            None => (None, None, None),
+        };
+
+        // The type decision wins when present; otherwise the flag-derived class (Unknown when
+        // the parse did not resolve / reach the flags). `order_hint` is the parsed `order_hint_lsb`
+        // (the LSB proxy, see [`crate::celu`]); a SEF/bridge with an absent reference keeps its
+        // type-decided output but contributes no order_hint / bits.
+        let output = type_decided.or(flag_output);
+
+        (
+            FrameFacts {
+                obu_type,
+                boundary: boundary.unwrap_or(FrameBoundary::OpensNewUnit),
+                output,
+                order_hint,
+                leadingness,
+            },
+            bits,
+        )
     }
 
     /// Whether the § 7.3.7 / § 7.4.6 DOH constraints are active for the current temporal

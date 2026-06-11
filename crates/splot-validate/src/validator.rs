@@ -16836,6 +16836,67 @@ mod tests {
     }
 
     #[test]
+    fn celu_bridge_only_celu_fires_missing_output() {
+        // F3: a bridge-only CELU. § 7.3.4 type-defines OBU_BRIDGE_FRAME as a coded
+        // NON-OUTPUT frame unit (it appears only in the § 7.3.4 list, mirror line 470). The
+        // CELU therefore has a decided non-output unit and NO coded output frame unit, so
+        // § 7.3.6 line 536 ("at least one coded output frame unit shall be present") fires
+        // celu/missing-output-frame-unit. Pre-fix: the CELU facts derived output only from the
+        // parsed immediate/implicit flags, and a bridge parser stops early -> output routes to
+        // Unknown -> the Unknown invariant suppressed the presence check (false negative).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            num_ref_frames_minus_1: 5, // NumRefFrames == 6 for the bridge ref idx
+            ..FrameCoreSeq::base()
+        });
+        data.extend(bridge_obu());
+        data.extend(temporal_delimiter_obu()); // resolve the CELU
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "celu/missing-output-frame-unit"),
+            "a bridge-only CELU is type-decided non-output with no output unit, so \
+             missing-output-frame-unit must fire; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn celu_bridge_layer_with_output_layer_fires_non_output_without_output() {
+        // F3 (with § 7.3.6 line 537-538): one embedded layer carries only a type-decided
+        // non-output BRIDGE frame; a higher embedded layer carries an output SEF (so the
+        // whole-CELU presence rule is satisfied, isolating the per-layer rule). The bridge
+        // layer has a coded non-output frame unit but no coded output frame unit in that same
+        // layer, so celu/non-output-without-output fires. The BRIDGE (non-output) and SEF
+        // (output) output classes are both TYPE-DECIDED, so neither needs a parseable inter
+        // config. Pre-fix: the bridge routed to Unknown output, dropping the per-layer rule
+        // (false negative).
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1))); // max_mlayer_id == 1
+        // Embedded layer 0: a type-decided non-output BRIDGE (no output unit in layer 0).
+        let mut bridge = Bits::default();
+        bridge.uvlc(0); // seq_header_id_in_frame_header (bridge infers cur_mfh_id == 0)
+        bridge.f(0, 3); // bridge_frame_ref_idx == 0
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(19, 0, 0, 0), // OBU_BRIDGE_FRAME, mlayer 0
+            &bridge.into_bytes(),
+        ));
+        // Embedded layer 1: an output SEF (type-decided output) -> whole-CELU presence ok.
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(12, 0, 1, 0), // OBU_REGULAR_SEF, mlayer 1
+            &[0x80],
+        ));
+        data.extend(temporal_delimiter_obu()); // resolve the CELU
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "celu/non-output-without-output"),
+            "the bridge embedded layer has a non-output unit but no output unit, so \
+             non-output-without-output must fire; report was: {report}"
+        );
+    }
+
+    #[test]
     fn frame_unit_suffix_metadata_before_coded_frame_is_flagged() {
         // AV2 § 7.3.3: suffix metadata (metadata_is_suffix == 1) belongs to the
         // tail, after the coded frame. A suffix metadata appearing before any coded
@@ -18032,6 +18093,73 @@ mod tests {
                 .any(|d| d.rule_id == "celu/missing-output-frame-unit"),
             "an in-band-resolved non-output frame must stay decided and fire missing-output; \
              report was: {report}"
+        );
+    }
+
+    // --- F4: DOH OrderHintBits stale-guard (§ 7.3.7) -----------------------------------
+
+    #[test]
+    fn celu_doh_order_hint_bits_absent_ref_frame_contributes_no_bits() {
+        // F4: under the DOH flag, the per-frame OrderHintBits contribution must be gated on the
+        // SAME resolution decision the output-class derivation uses — only contribute bits when
+        // the frame's parsed prefix resolved to the active header. The two active headers are
+        // established in SEPARATE temporal units so no single temporal unit legitimately carries
+        // two different OrderHintBits: TU1 activates seq 0 (OrderHintBits 1) for xlayer 0; TU2
+        // activates seq 1 (OrderHintBits 2) for xlayer 1. An MSDO with
+        // multistream_doh_constraint_flag == 1 opens a persisting CMVS. TU3 (CMVS still open) is
+        // the test temporal unit: xlayer 0's frame resolves (contributes bits 1); xlayer 1's
+        // frame references the ABSENT seq 5, so it does NOT resolve to its stale active header
+        // (seq 1, bits 2). Post-fix it contributes NO bits (None -> bits_undecidable), dropping
+        // the §7.3.7 same-OrderHintBits judgment, so celu/doh-order-hint-bits-mismatch is SILENT
+        // across every temporal unit. Pre-fix `frame_order_hint_bits` returned the stale active
+        // header's bits (2) regardless of resolution, so TU3 saw bits {1, 2} and false-positived.
+        let mut data = temporal_delimiter_obu(); // TU1: xlayer 0 only (bits 1)
+        data.extend(msdo_obu_configured(0, true, &[(0, 0, 0, 0), (1, 0, 0, 0)]));
+        data.extend(celu_seq_header_obu(0, 0, 1)); // xlayer 0 active: seq 0, OrderHintBits 1
+        data.extend(celu_output_clk_ref(0, 0, 1, 0)); // resolves seq 0
+        data.extend(temporal_delimiter_obu()); // TU2: xlayer 1 only (bits 2)
+        data.extend(celu_seq_header_obu(1, 1, 2)); // xlayer 1 active: seq 1, OrderHintBits 2
+        data.extend(celu_output_clk_ref(1, 1, 2, 0)); // resolves seq 1
+        data.extend(temporal_delimiter_obu()); // TU3: the test temporal unit
+        // xlayer 0 resolves its (resent) active header -> contributes bits 1.
+        data.extend(celu_seq_header_obu(0, 0, 1));
+        data.extend(celu_output_clk_ref(0, 0, 1, 0));
+        // xlayer 1 frame references the ABSENT seq 5 (parsed against the stale seq 1, bits 2);
+        // the referenced-header guard returns Unknown, so post-fix it contributes no bits.
+        data.extend(celu_seq_header_obu(1, 1, 2));
+        data.extend(celu_output_clk_ref(1, 5, 2, 0));
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "celu/doh-order-hint-bits-mismatch"),
+            "a frame referencing an absent header must contribute no OrderHintBits (not the \
+             stale active header's bits), so the bits-mismatch rule must stay silent; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn celu_doh_order_hint_bits_resolved_frames_with_differing_bits_still_fires() {
+        // F4 (negative control): the fix must not over-suppress. Two RESOLVED frames in one
+        // temporal unit under the DOH flag whose active headers declare different OrderHintBits
+        // (1 vs 2) still fire celu/doh-order-hint-bits-mismatch — both frames resolve to their
+        // active headers, so both contribute their (differing) bits.
+        let mut data = temporal_delimiter_obu();
+        data.extend(msdo_obu_configured(0, true, &[(0, 0, 0, 0), (1, 0, 0, 0)]));
+        data.extend(celu_seq_header_obu(0, 0, 1)); // xlayer 0: OrderHintBits 1
+        data.extend(celu_seq_header_obu(1, 1, 2)); // xlayer 1: OrderHintBits 2
+        data.extend(celu_output_clk_ref(0, 0, 1, 0)); // resolves seq 0 -> bits 1
+        data.extend(celu_output_clk_ref(1, 1, 2, 0)); // resolves seq 1 -> bits 2
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "celu/doh-order-hint-bits-mismatch"),
+            "two resolved frames with differing known OrderHintBits must still fire the \
+             bits-mismatch rule; report was: {report}"
         );
     }
 }

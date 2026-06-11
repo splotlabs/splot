@@ -48,11 +48,41 @@
 //! unreadable tile-group delimiter, while a coded frame is open) means the segmenter could
 //! not decide whether the OBU opened a new unit or continued the open one. Its existence as a
 //! new unit is undecided, so it **poisons** the embedded layer's unit-count-dependent
-//! judgments — the within-layer output-slot grammar, the CLK/OLK-first-unit rule, and (it
-//! already rests only on decided units) the missing-output judgment — which are dropped for
-//! that layer rather than guessed (the Unknown invariant). The former
+//! judgments — the within-layer output-slot grammar and the CLK/OLK-first-unit rule — which
+//! are dropped for that layer rather than guessed (the Unknown invariant). The former
 //! "same-type-no-delimiter run is one unit" behaviour is therefore replaced by this
 //! poison-on-ambiguity semantics, keeping zero false positives when in doubt.
+//!
+//! ### Ambiguity-poison precision: only poison what the ambiguity can change
+//!
+//! An ambiguous OBU might open a new coded frame unit whose class *could be output*, so it also
+//! poisons the **output-presence** judgments — the CELU-scoped `celu/missing-output-frame-unit`
+//! rule and the per-layer `celu/non-output-without-output` rule — but **only when its output
+//! class is not type-decided non-output**. The precision boundary: a same-type undecided-class
+//! ambiguous tile-group / TIP (`output == None`) might be the missing output unit, so it
+//! poisons both (CELU-level for missing-output, layer-level for non-output-without-output); an
+//! ambiguous **BRIDGE** is type-decided non-output (`output == Some(false)`) whichever way the
+//! boundary resolves, so it can never satisfy output presence and must **not** poison those
+//! rules — over-poisoning a bridge would hide a genuine missing-output. The CLK/OLK identity
+//! and leading-ness facts are type-decided and therefore recorded *before* the ambiguity drops
+//! the unit-count facts (see [`CodedExtendedLayerTracker::observe_frame`]'s
+//! [`FrameBoundary::Ambiguous`] arm): an OLK plus an ambiguous CLK still fires
+//! `celu/clk-olk-mixed`, and a LEADING frame plus an ambiguous Regular-typed OBU still fires
+//! `celu/leading-frame-mix`.
+//!
+//! ## Ascending-`obu_mlayer_id` ordering counts frame-unit heads
+//!
+//! A coded frame unit's constituents (§ 7.3.3) include not just the coded frame but its head /
+//! pre-frame OBUs (CI, BRT, QM, FGM, prefix metadata, MFH) and its suffix-metadata tail. The
+//! ascending-`obu_mlayer_id` frame-unit ordering rule (`celu/in-unit-order`, mirror line 525)
+//! therefore advances `max_embedded_seen` on **every** frame-unit-constituent OBU at its own
+//! `obu_mlayer_id` — the [`CeluRole::ContentInterpretation`] head and the
+//! [`CeluRole::FrameInterior`] constituents as well as the coded-`Frame` OBU
+//! ([`CodedExtendedLayerTracker::note_embedded_layer_ordering`]) — so a CI heading a higher
+//! embedded layer's unit makes a later lower-mlayer coded frame out of order. A suffix metadata
+//! belongs to the just-closed unit of its **own** mlayer (the same mlayer as the frame it
+//! follows), so it never lowers `max_embedded_seen` and monotonicity is unaffected (no
+//! special-casing needed). `OBU_PADDING` is position-free and stays excluded.
 //!
 //! ## Within-layer output-slot presence grammar (mirror lines 528-529)
 //!
@@ -73,8 +103,9 @@
 //! constituent OBU — an HLS header / CI / frame-interior — and *zero* frame-bearing OBUs)
 //! fires `celu/missing-output-frame-unit`, anchored at the CELU's first constituent OBU. A
 //! padding-only (or reserved-type-only) `obu_xlayer_id` group never constitutes a CELU and is
-//! always silent. A frame-bearing CELU whose output classes are all Unknown still drops the
-//! rule (the Unknown invariant).
+//! always silent. A frame-bearing CELU whose output classes are all Unknown — or which carries
+//! an ambiguous OBU that could itself be an output unit (the ambiguity-poison precision rule
+//! above) — still drops the rule (the Unknown invariant).
 //!
 //! ## Disjointness with the existing § 7.3.6 / § 7.3.7 checks
 //!
@@ -271,10 +302,19 @@ struct EmbeddedLayerState {
     /// `true` once a frame-bearing OBU of this embedded layer reported an
     /// [`FrameBoundary::Ambiguous`] boundary — the segmenter could not decide whether it
     /// opened a new coded frame unit or continued the open one. The unit-count-dependent
-    /// per-layer judgments (the output-slot grammar above, the CLK/OLK first-unit rule, and
-    /// the missing-output judgment, which already rests only on decided units) are then
-    /// dropped for this embedded layer (never guessed — the Unknown invariant).
+    /// per-layer judgments (the output-slot grammar above and the CLK/OLK first-unit rule) are
+    /// then dropped for this embedded layer (never guessed — the Unknown invariant). Set for
+    /// *every* ambiguous boundary in the layer, regardless of output class.
     ambiguous_poisoned: bool,
+    /// `true` once an [`FrameBoundary::Ambiguous`] OBU in this embedded layer could itself be a
+    /// coded *output* frame unit — its output class is not type-decided non-output
+    /// (`facts.output != Some(false)`), so the ambiguous OBU might open the layer's output unit
+    /// whichever way the boundary resolves (F1). The per-layer non-output-implies-output
+    /// judgment (mirror lines 537-538) is then dropped for this layer: the validator cannot
+    /// confirm the layer lacks a coded output frame unit. An ambiguous BRIDGE (type-decided
+    /// non-output) does NOT set this — it can never satisfy output presence, so it must not
+    /// suppress the rule.
+    output_presence_poisoned: bool,
 }
 
 /// One coded extended layer unit's accumulating state, keyed by `obu_xlayer_id` within
@@ -309,6 +349,14 @@ struct CeluState {
     /// output-unit-presence rule is then dropped (the CELU might contain an output unit
     /// the validator could not classify).
     any_output_class_unknown: bool,
+    /// `true` once an [`FrameBoundary::Ambiguous`] OBU in this CELU could itself be a coded
+    /// *output* frame unit — its output class is not type-decided non-output
+    /// (`facts.output != Some(false)`), so the ambiguous OBU might open a coded output frame
+    /// unit whichever way the boundary resolves (F1). The CELU-scoped output-presence rule
+    /// (`celu/missing-output-frame-unit`, mirror line 536) is then dropped: the validator
+    /// cannot confirm the CELU lacks a coded output frame unit. An ambiguous BRIDGE (type-
+    /// decided non-output) does NOT set this — it can never satisfy output presence.
+    missing_output_poisoned: bool,
     /// The shared `OrderHint` (an `order_hint` LSB proxy — see [`FrameFacts::order_hint`]) of
     /// the output units seen so far, plus the offset of the first output unit; `None` until
     /// the first output unit with a readable `order_hint`. Within one CELU all frame units
@@ -364,6 +412,7 @@ impl CeluState {
             saw_frame_bearing_obu: false,
             saw_any_output_unit: false,
             any_output_class_unknown: false,
+            missing_output_poisoned: false,
             output_order_hint: None,
             order_hint_undecidable: false,
             order_hint_mismatch: None,
@@ -479,15 +528,26 @@ impl CodedExtendedLayerTracker {
                 // A content-interpretation OBU is the head of a frame unit (§ 7.3.3), so it
                 // is in the frame region; it does not open the coded frame, so it does not
                 // advance the embedded-layer unit count. The CELU-scoped first-frame-unit CI
-                // rule is judged against the embedded layer's already-opened unit count.
+                // rule is judged against the embedded layer's already-opened unit count. As a
+                // frame-unit constituent it still participates in the ascending-`obu_mlayer_id`
+                // ordering accounting (mirror line 525): a CI heading a higher embedded layer's
+                // unit evidences that unit has begun, so a later lower-mlayer frame unit is out
+                // of order (F2).
                 celu.phase = CeluPhase::Frames;
+                Self::note_embedded_layer_ordering(celu, embedded, obu, report);
                 Self::observe_ci(celu, embedded, obu, report);
             }
             CeluRole::FrameInterior => {
                 // BRT / QM / FGM / metadata / MFH: the frame region has begun, but this OBU
                 // neither opens a coded frame nor is an HLS header. The within-frame-unit
-                // grammar is owned by the FrameUnitSegmenter.
+                // grammar is owned by the FrameUnitSegmenter. As a frame-unit constituent
+                // (§ 7.3.3 head / pre-frame OBU or suffix-metadata tail) it participates in the
+                // ascending-`obu_mlayer_id` ordering accounting with its own `obu_mlayer_id`
+                // (F2). A suffix metadata belongs to the just-closed unit of its own mlayer —
+                // the same mlayer as the frame it follows — so it never lowers
+                // `max_embedded_seen` and leaves monotonicity unaffected (no special-casing).
                 celu.phase = CeluPhase::Frames;
+                Self::note_embedded_layer_ordering(celu, embedded, obu, report);
             }
             CeluRole::Frame(facts) => {
                 celu.phase = CeluPhase::Frames;
@@ -536,6 +596,112 @@ impl CodedExtendedLayerTracker {
         // of an already-passed phase (zero-or-more of each) does not reset progress.
         if phase > celu.phase {
             celu.phase = phase;
+        }
+    }
+
+    /// Threads one frame-unit-constituent OBU's `obu_mlayer_id` into the ascending-mlayer
+    /// frame-unit ordering accounting (mirror line 525), reporting `celu/in-unit-order` when
+    /// the embedded layer is *below* the highest seen so far. A coded frame unit's constituents
+    /// (§ 7.3.3) include its head / pre-frame OBUs (CI, BRT, QM, FGM, prefix metadata, MFH) and
+    /// the coded frame itself, plus the suffix-metadata tail — each evidences its embedded
+    /// layer's frame unit has begun, so every one of them participates with its own mlayer (F2).
+    /// A suffix metadata shares the just-closed unit's mlayer, so it never lowers
+    /// `max_embedded_seen` and monotonicity is unaffected. Padding is excluded (it never reaches
+    /// here — [`Self::observe`] returns early on padding).
+    fn note_embedded_layer_ordering(
+        celu: &mut CeluState,
+        embedded: EmbeddedLayerId,
+        obu: &ObuEnvelope<'_>,
+        report: &mut ValidationReport,
+    ) {
+        if let Some(prev) = celu.max_embedded_seen
+            && embedded < prev
+        {
+            report.push(celu_error(
+                "celu/in-unit-order",
+                obu,
+                format!(
+                    "a frame unit at obu_mlayer_id {} opens after a frame unit at \
+                     obu_mlayer_id {}; § 7.3.6 orders the embedded-layer frame units in \
+                     ascending obu_mlayer_id",
+                    embedded.get(),
+                    prev.get()
+                ),
+            ));
+        }
+        if celu.max_embedded_seen.is_none_or(|prev| embedded > prev) {
+            celu.max_embedded_seen = Some(embedded);
+        }
+    }
+
+    /// Records a frame-bearing OBU's CLK / OLK identity and fires the no-CLK+OLK-mix rule
+    /// (mirror line 554). The identity is **type-decided** from `obu_type`, so it is recorded
+    /// for every frame-bearing OBU regardless of its coded-frame-unit boundary — including an
+    /// [`FrameBoundary::Ambiguous`] one (F5): a CELU contains both a CLK and an OLK whichever
+    /// way the ambiguous boundary resolves, so the mix is a boundary-independent fact.
+    fn record_clk_olk_identity(
+        celu: &mut CeluState,
+        obu_type: ObuType,
+        obu: &ObuEnvelope<'_>,
+        report: &mut ValidationReport,
+    ) {
+        if obu_type == ObuType::ClosedLoopKey {
+            celu.saw_clk = true;
+        }
+        if obu_type == ObuType::OpenLoopKey {
+            celu.saw_olk = true;
+        }
+        if celu.saw_clk && celu.saw_olk && !celu.clk_olk_mix_reported {
+            celu.clk_olk_mix_reported = true;
+            report.push(celu_error(
+                "celu/clk-olk-mixed",
+                obu,
+                "a coded extended layer unit contains both an OBU_CLOSED_LOOP_KEY and an \
+                 OBU_OPEN_LOOP_KEY; § 7.3.6 forbids mixing the two in one coded extended \
+                 layer unit"
+                    .to_owned(),
+            ));
+        }
+    }
+
+    /// Records a frame-bearing OBU's leading-ness for the all-leading-or-none rule (mirror
+    /// lines 555-556). The rule fires only when a decidable [`Leadingness::Leading`] unit and a
+    /// decidable [`Leadingness::Regular`] unit coexist; [`Leadingness::Indeterminate`] (a CLK)
+    /// is excluded entirely (neither a trigger nor an offender — see [`Leadingness`]: the spec
+    /// text and the AVM oracle conflict on whether a CLK is "leading", so the validator
+    /// under-reports per the ambiguous-spec policy). Leading-ness is **type-decided** from
+    /// `obu_type`, so it is recorded for every frame-bearing OBU regardless of its
+    /// coded-frame-unit boundary — including an [`FrameBoundary::Ambiguous`] one (F5): a
+    /// LEADING-/Regular-typed OBU evidences a leading/regular frame unit whichever unit it
+    /// belongs to (frames of one unit share one `obu_type`, so the unit's character is
+    /// evidenced by any constituent).
+    fn record_leadingness(
+        celu: &mut CeluState,
+        leadingness: Leadingness,
+        obu: &ObuEnvelope<'_>,
+        report: &mut ValidationReport,
+    ) {
+        let leading = match leadingness {
+            Leadingness::Leading => Some(true),
+            Leadingness::Regular => Some(false),
+            Leadingness::Indeterminate => None,
+        };
+        if let Some(is_leading) = leading {
+            match celu.leading {
+                None => celu.leading = Some(is_leading),
+                Some(prev) if prev != is_leading && !celu.leading_mismatch_reported => {
+                    celu.leading_mismatch_reported = true;
+                    report.push(celu_error(
+                        "celu/leading-frame-mix",
+                        obu,
+                        "a coded extended layer unit mixes leading and non-leading frame units; \
+                         § 7.3.6 requires all frame units in a coded extended layer unit to be \
+                         leading frames if any is a leading frame"
+                            .to_owned(),
+                    ));
+                }
+                Some(_) => {}
+            }
         }
     }
 
@@ -592,12 +758,28 @@ impl CodedExtendedLayerTracker {
             // or continued the open one (a same-type no-delimiter TIP, or an unreadable
             // tile-group delimiter). Its existence as a new unit is undecided, so the
             // unit-count-dependent per-layer judgments must be dropped — poison the embedded
-            // layer and stop (do not feed the accumulators on a guess).
+            // layer. But boundary-INDEPENDENT type-decided facts are still recorded before
+            // returning (F5): the CLK/OLK identity and the leading-ness are decided by
+            // `obu_type` alone, so a CELU containing an OLK and an ambiguous CLK still mixes
+            // CLK+OLK, and a LEADING-/Regular-typed ambiguous OBU still evidences a leading /
+            // regular frame unit, whichever unit each belongs to. The unit-count-dependent
+            // facts (key-not-in-first-unit, lowest-layer-not-key, output-slot grammar, the
+            // per-unit accounting and accumulators) stay poisoned.
             FrameBoundary::Ambiguous => {
-                celu.embedded
-                    .entry(embedded)
-                    .or_default()
-                    .ambiguous_poisoned = true;
+                Self::record_clk_olk_identity(celu, facts.obu_type, obu, report);
+                Self::record_leadingness(celu, facts.leadingness, obu, report);
+                let layer = celu.embedded.entry(embedded).or_default();
+                layer.ambiguous_poisoned = true;
+                // F1: an ambiguous OBU might open a new coded frame unit whose class could be
+                // OUTPUT, so it poisons the output-presence judgments — UNLESS its output class
+                // is type-decided non-output (`Some(false)`, e.g. a BRIDGE), which can never
+                // satisfy output presence whichever way the boundary resolves. Poison the
+                // CELU-scoped missing-output rule and the per-layer non-output-implies-output
+                // rule only when the ambiguous OBU could itself be an output unit.
+                if facts.output != Some(false) {
+                    layer.output_presence_poisoned = true;
+                    celu.missing_output_poisoned = true;
+                }
                 return;
             }
             // A decided new coded frame unit opens for this embedded layer.
@@ -636,46 +818,12 @@ impl CodedExtendedLayerTracker {
         }
 
         // --- ascending-`obu_mlayer_id` frame-unit ordering (mirror line 525) ---
-        if let Some(prev) = celu.max_embedded_seen
-            && embedded < prev
-        {
-            report.push(celu_error(
-                "celu/in-unit-order",
-                obu,
-                format!(
-                    "a frame unit at obu_mlayer_id {} opens after a frame unit at \
-                     obu_mlayer_id {}; § 7.3.6 orders the embedded-layer frame units in \
-                     ascending obu_mlayer_id",
-                    embedded.get(),
-                    prev.get()
-                ),
-            ));
-        }
-        if celu.max_embedded_seen.is_none_or(|prev| embedded > prev) {
-            celu.max_embedded_seen = Some(embedded);
-        }
+        Self::note_embedded_layer_ordering(celu, embedded, obu, report);
 
         // --- CLK / OLK identity (type-decided) ---
         let is_clk = facts.obu_type == ObuType::ClosedLoopKey;
         let is_olk = facts.obu_type == ObuType::OpenLoopKey;
-        if is_clk {
-            celu.saw_clk = true;
-        }
-        if is_olk {
-            celu.saw_olk = true;
-        }
-        // No CLK+OLK mix in one CELU (mirror line 554).
-        if celu.saw_clk && celu.saw_olk && !celu.clk_olk_mix_reported {
-            celu.clk_olk_mix_reported = true;
-            report.push(celu_error(
-                "celu/clk-olk-mixed",
-                obu,
-                "a coded extended layer unit contains both an OBU_CLOSED_LOOP_KEY and an \
-                 OBU_OPEN_LOOP_KEY; § 7.3.6 forbids mixing the two in one coded extended \
-                 layer unit"
-                    .to_owned(),
-            ));
-        }
+        Self::record_clk_olk_identity(celu, facts.obu_type, obu, report);
 
         // --- per-embedded-layer unit accounting ---
         let layer = celu.embedded.entry(embedded).or_default();
@@ -737,34 +885,8 @@ impl CodedExtendedLayerTracker {
             ));
         }
 
-        // --- leading / non-leading (all-leading-or-none, mirror lines 555-556) --- the rule
-        // fires only when a decidable Leading unit and a decidable Regular unit coexist.
-        // Indeterminate units (CLK) are excluded from the judgment entirely (neither a
-        // trigger nor an offender — see Leadingness): the spec text and the AVM oracle
-        // conflict on whether a CLK is "leading", so the validator under-reports (the
-        // ambiguous-spec policy). Type-decided, so it never routes to Unknown.
-        let leading = match facts.leadingness {
-            Leadingness::Leading => Some(true),
-            Leadingness::Regular => Some(false),
-            Leadingness::Indeterminate => None,
-        };
-        if let Some(is_leading) = leading {
-            match celu.leading {
-                None => celu.leading = Some(is_leading),
-                Some(prev) if prev != is_leading && !celu.leading_mismatch_reported => {
-                    celu.leading_mismatch_reported = true;
-                    report.push(celu_error(
-                        "celu/leading-frame-mix",
-                        obu,
-                        "a coded extended layer unit mixes leading and non-leading frame units; \
-                         § 7.3.6 requires all frame units in a coded extended layer unit to be \
-                         leading frames if any is a leading frame"
-                            .to_owned(),
-                    ));
-                }
-                Some(_) => {}
-            }
-        }
+        // --- leading / non-leading (all-leading-or-none, mirror lines 555-556) ---
+        Self::record_leadingness(celu, facts.leadingness, obu, report);
 
         // --- same-OrderHint across the CELU's output units (mirror lines 539-540) --- the
         // mismatch is detected here but emitted at resolve_celu, so a later undecidable
@@ -814,8 +936,14 @@ impl CodedExtendedLayerTracker {
         // Unknown class to consider); a frame-bearing CELU fires only with a decided unit,
         // no output unit, and no Unknown class.
         let header_only = !celu.saw_frame_bearing_obu;
-        let frame_bearing_without_output =
-            has_decided_unit && !celu.saw_any_output_unit && !celu.any_output_class_unknown;
+        // F1: an ambiguous OBU that could itself be a coded output frame unit (its output class
+        // is not type-decided non-output) poisons the CELU-scoped presence judgment — the
+        // ambiguous OBU might be the missing output unit. A header-only CELU has no
+        // frame-bearing OBU at all, so it can carry no ambiguous boundary and still fires.
+        let frame_bearing_without_output = has_decided_unit
+            && !celu.saw_any_output_unit
+            && !celu.any_output_class_unknown
+            && !celu.missing_output_poisoned;
         if header_only || frame_bearing_without_output {
             report.push(
                 Diagnostic::error(
@@ -831,9 +959,15 @@ impl CodedExtendedLayerTracker {
 
         // --- non-output-implies-output per embedded layer (mirror lines 537-538) --- if a
         // layer has a coded non-output frame unit, it must also have a coded output one.
-        // Dropped for a layer whose output class was ever Unknown.
+        // Dropped for a layer whose output class was ever Unknown, or (F1) poisoned by an
+        // ambiguous OBU that could itself be the layer's coded output frame unit
+        // (`output_presence_poisoned`): the validator cannot then confirm the layer lacks one.
         for (embedded, layer) in &celu.embedded {
-            if layer.saw_nonoutput_unit && !layer.saw_output_unit && !layer.output_class_unknown {
+            if layer.saw_nonoutput_unit
+                && !layer.saw_output_unit
+                && !layer.output_class_unknown
+                && !layer.output_presence_poisoned
+            {
                 report.push(
                     Diagnostic::error(
                         "celu/non-output-without-output",
@@ -2425,6 +2559,388 @@ mod tests {
         assert!(
             r.diagnostics.is_empty(),
             "a fully-Unknown CELU must be silent; report: {r}"
+        );
+    }
+
+    // --- F1: ambiguous boundaries poison output-presence judgments (precision) ---
+
+    #[test]
+    fn ambiguous_undecided_class_obu_poisons_missing_output() {
+        // F1: a CELU whose only DECIDED unit is a non-output unit, followed by an Ambiguous
+        // same-type undecided-output-class OBU. The ambiguous OBU might open a new unit whose
+        // class could be output (its class is undecided, not type-decided non-output), so the
+        // CELU's missing-output presence judgment cannot be confirmed — it must be POISONED
+        // (dropped), not fired. Pre-fix: missing-output fires (the decided non-output unit with
+        // no output unit), a false positive.
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        t.observe(
+            &obu(ObuType::RegularTip, 0, 0, 0),
+            frame_role(
+                ObuType::RegularTip,
+                true,
+                Some(false),
+                Some(0),
+                Leadingness::Regular,
+            ),
+            &mut r,
+        );
+        // Ambiguous same-type TIP, output class UNDECIDED (None) -> might open an output unit.
+        t.observe(
+            &obu(ObuType::RegularTip, 0, 0, 1),
+            ambiguous_role(ObuType::RegularTip, None, None, Leadingness::Regular),
+            &mut r,
+        );
+        t.reset_temporal_unit(&mut r);
+        assert!(
+            !has(&r, "celu/missing-output-frame-unit"),
+            "an ambiguous undecided-class OBU must poison missing-output; report: {r}"
+        );
+    }
+
+    #[test]
+    fn ambiguous_undecided_class_obu_poisons_non_output_without_output() {
+        // F1: an embedded layer with a DECIDED non-output unit plus an Ambiguous same-type
+        // undecided-output-class OBU in that layer. The ambiguous OBU might be the layer's
+        // output unit, so the per-layer non-output-implies-output judgment must be POISONED at
+        // layer scope. A second layer carries a decided output unit so the whole-CELU presence
+        // rule is satisfied (isolating the per-layer rule). Pre-fix: non-output-without-output
+        // fires for layer 1, a false positive.
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        // Layer 0: a decided output unit (whole-CELU presence satisfied).
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 0, 0, 0),
+            output_frame(0),
+            &mut r,
+        );
+        // Layer 1: a decided non-output unit, then an ambiguous undecided-class same-type OBU.
+        t.observe(
+            &obu(ObuType::RegularTip, 0, 1, 1),
+            frame_role(
+                ObuType::RegularTip,
+                true,
+                Some(false),
+                Some(0),
+                Leadingness::Regular,
+            ),
+            &mut r,
+        );
+        t.observe(
+            &obu(ObuType::RegularTip, 0, 1, 2),
+            ambiguous_role(ObuType::RegularTip, None, None, Leadingness::Regular),
+            &mut r,
+        );
+        t.reset_temporal_unit(&mut r);
+        assert!(
+            !has(&r, "celu/non-output-without-output"),
+            "an ambiguous undecided-class OBU in the layer must poison \
+             non-output-without-output; report: {r}"
+        );
+    }
+
+    #[test]
+    fn ambiguous_bridge_does_not_poison_missing_output() {
+        // F1 precision (combined with F3): a bridge-only CELU. A BRIDGE is type-decided
+        // NON-OUTPUT whichever way an ambiguous boundary resolves, so it can NEVER satisfy
+        // output presence and must NOT poison the missing-output judgment. The first BRIDGE
+        // opens a decided non-output unit; a second ambiguous BRIDGE is still non-output by
+        // type. missing-output must still FIRE (no output unit anywhere, and the ambiguous
+        // bridge cannot rescue it). Over-poisoning here would be a false NEGATIVE.
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        t.observe(
+            &obu(ObuType::BridgeFrame, 0, 0, 0),
+            frame_role(
+                ObuType::BridgeFrame,
+                true,
+                Some(false),
+                None,
+                Leadingness::Regular,
+            ),
+            &mut r,
+        );
+        t.observe(
+            &obu(ObuType::BridgeFrame, 0, 0, 1),
+            ambiguous_role(
+                ObuType::BridgeFrame,
+                Some(false),
+                None,
+                Leadingness::Regular,
+            ),
+            &mut r,
+        );
+        t.reset_temporal_unit(&mut r);
+        assert!(
+            has(&r, "celu/missing-output-frame-unit"),
+            "an ambiguous BRIDGE (type-decided non-output) must not poison missing-output; \
+             report: {r}"
+        );
+    }
+
+    #[test]
+    fn ambiguous_bridge_does_not_poison_non_output_without_output() {
+        // F1 precision (with F3): a layer whose only DECIDED unit is a non-output BRIDGE plus
+        // a second ambiguous BRIDGE; another layer supplies a decided output unit. The
+        // ambiguous BRIDGE is type-decided non-output, so it cannot be the layer's output unit
+        // and must NOT poison the per-layer rule: non-output-without-output must still FIRE for
+        // the bridge layer.
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        // Layer 0: a decided output unit (whole-CELU presence satisfied).
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 0, 0, 0),
+            output_frame(0),
+            &mut r,
+        );
+        // Layer 1: a decided non-output BRIDGE, then an ambiguous BRIDGE (still non-output).
+        t.observe(
+            &obu(ObuType::BridgeFrame, 0, 1, 1),
+            frame_role(
+                ObuType::BridgeFrame,
+                true,
+                Some(false),
+                None,
+                Leadingness::Regular,
+            ),
+            &mut r,
+        );
+        t.observe(
+            &obu(ObuType::BridgeFrame, 0, 1, 2),
+            ambiguous_role(
+                ObuType::BridgeFrame,
+                Some(false),
+                None,
+                Leadingness::Regular,
+            ),
+            &mut r,
+        );
+        t.reset_temporal_unit(&mut r);
+        assert!(
+            has(&r, "celu/non-output-without-output"),
+            "an ambiguous BRIDGE (type-decided non-output) must not poison \
+             non-output-without-output; report: {r}"
+        );
+    }
+
+    // --- F2: ascending-mlayer ordering counts frame-unit heads/interiors ---
+
+    #[test]
+    fn ci_at_higher_mlayer_then_frame_at_lower_fires_in_unit_order() {
+        // F2: a CI is the head of its embedded layer's frame unit (§ 7.3.3). A CI@mlayer1
+        // establishes that mlayer1's frame unit has begun; a later coded frame@mlayer0 then
+        // opens a frame unit at a LOWER mlayer, violating the ascending-obu_mlayer_id ordering
+        // (mirror line 525). Pre-fix: silent, because only coded-frame OBUs updated
+        // max_embedded_seen, so the CI@1 head escaped the accounting.
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        t.observe(
+            &obu(ObuType::ContentInterpretation, 0, 1, 0),
+            CeluRole::ContentInterpretation,
+            &mut r,
+        );
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 0, 0, 1),
+            output_frame(0),
+            &mut r,
+        );
+        assert!(
+            has(&r, "celu/in-unit-order"),
+            "a frame unit at a lower mlayer after a CI head at a higher mlayer must fire \
+             in-unit-order; report: {r}"
+        );
+    }
+
+    #[test]
+    fn frame_interior_at_higher_mlayer_then_frame_at_lower_fires_in_unit_order() {
+        // F2: a frame-interior OBU (BRT/QM/FGM/prefix-metadata/MFH) is a constituent of its
+        // embedded layer's frame unit (§ 7.3.3). A QM@mlayer1 establishes that mlayer1's unit
+        // has begun; a later coded frame@mlayer0 opens at a lower mlayer -> in-unit-order.
+        // Pre-fix: silent.
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        t.observe(
+            &obu(ObuType::QuantizationMatrix, 0, 1, 0),
+            CeluRole::FrameInterior,
+            &mut r,
+        );
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 0, 0, 1),
+            output_frame(0),
+            &mut r,
+        );
+        assert!(
+            has(&r, "celu/in-unit-order"),
+            "a frame unit at a lower mlayer after a frame-interior head at a higher mlayer must \
+             fire in-unit-order; report: {r}"
+        );
+    }
+
+    #[test]
+    fn conformant_ascending_with_ci_heads_is_silent() {
+        // F2 conformant: CI@0, frame@0, CI@1, frame@1 — ascending heads and frames, all in
+        // order. The CI heads participate in the accounting but never violate monotonicity.
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        t.observe(
+            &obu(ObuType::ContentInterpretation, 0, 0, 0),
+            CeluRole::ContentInterpretation,
+            &mut r,
+        );
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 0, 0, 1),
+            output_frame(0),
+            &mut r,
+        );
+        t.observe(
+            &obu(ObuType::ContentInterpretation, 0, 1, 2),
+            CeluRole::ContentInterpretation,
+            &mut r,
+        );
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 0, 1, 3),
+            output_frame(0),
+            &mut r,
+        );
+        assert!(
+            !has(&r, "celu/in-unit-order"),
+            "ascending CI heads and frames must be silent; report: {r}"
+        );
+    }
+
+    #[test]
+    fn suffix_interior_same_mlayer_does_not_break_monotonicity() {
+        // F2: a suffix metadata (FrameInterior) belongs to the just-closed unit of its OWN
+        // mlayer — same mlayer as the frame it follows, so it cannot lower max_embedded_seen.
+        // frame@0, suffix-interior@0, frame@1 stays silent (the suffix@0 follows the frame@0
+        // at the same mlayer; the frame@1 ascends).
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 0, 0, 0),
+            output_frame(0),
+            &mut r,
+        );
+        t.observe(
+            &obu(ObuType::MetadataShort, 0, 0, 1),
+            CeluRole::FrameInterior,
+            &mut r,
+        );
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 0, 1, 2),
+            output_frame(0),
+            &mut r,
+        );
+        assert!(
+            !has(&r, "celu/in-unit-order"),
+            "a same-mlayer suffix interior must not break ascending-mlayer monotonicity; \
+             report: {r}"
+        );
+    }
+
+    // --- F5: type-decided per-OBU facts recorded before the Ambiguous return ---
+
+    #[test]
+    fn olk_then_ambiguous_clk_fires_clk_olk_mixed() {
+        // F5: an OLK then an Ambiguous CLK (e.g. a CLK with an unreadable tile-group
+        // delimiter). CLK/OLK identity is a boundary-INDEPENDENT type-decided fact: the CELU
+        // contains both an OLK and a CLK whichever way the ambiguous boundary resolves, so
+        // clk-olk-mixed must FIRE. Pre-fix: the Ambiguous early-return skips recording the
+        // CLK identity, so the mix is missed (false negative).
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        t.observe(
+            &obu(ObuType::OpenLoopKey, 0, 0, 0),
+            frame_role(
+                ObuType::OpenLoopKey,
+                true,
+                Some(true),
+                Some(0),
+                Leadingness::Regular,
+            ),
+            &mut r,
+        );
+        t.observe(
+            &obu(ObuType::ClosedLoopKey, 0, 0, 1),
+            ambiguous_role(
+                ObuType::ClosedLoopKey,
+                Some(true),
+                Some(0),
+                Leadingness::Indeterminate,
+            ),
+            &mut r,
+        );
+        assert!(
+            has(&r, "celu/clk-olk-mixed"),
+            "an OLK then an ambiguous CLK must fire clk-olk-mixed (type-decided identity); \
+             report: {r}"
+        );
+    }
+
+    #[test]
+    fn leading_then_ambiguous_regular_fires_leading_frame_mix() {
+        // F5: a LEADING_* frame then an Ambiguous REGULAR-typed OBU. Leading-ness is a
+        // boundary-INDEPENDENT type-decided fact (a LEADING/Regular-typed OBU evidences a
+        // leading/regular frame unit whichever unit it belongs to), so the all-leading-or-none
+        // mix rule must FIRE. Pre-fix: the Ambiguous early-return skips the leadingness
+        // accounting, so the mix is missed.
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        t.observe(
+            &obu(ObuType::LeadingTileGroup, 0, 0, 0),
+            frame_role(
+                ObuType::LeadingTileGroup,
+                true,
+                Some(true),
+                Some(0),
+                Leadingness::Leading,
+            ),
+            &mut r,
+        );
+        t.observe(
+            &obu(ObuType::RegularTip, 0, 0, 1),
+            ambiguous_role(ObuType::RegularTip, None, None, Leadingness::Regular),
+            &mut r,
+        );
+        assert!(
+            has(&r, "celu/leading-frame-mix"),
+            "a LEADING frame then an ambiguous REGULAR-typed OBU must fire leading-frame-mix \
+             (type-decided leadingness); report: {r}"
+        );
+    }
+
+    #[test]
+    fn ambiguous_clk_indeterminate_leadingness_stays_excluded() {
+        // F5 precision: an ambiguous CLK is Leadingness::Indeterminate; it must NOT introduce
+        // a leading/regular signal. A lone LEADING frame then an ambiguous CLK keeps the CELU
+        // all-leading (the CLK is excluded), so leading-frame-mix stays SILENT.
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        t.observe(
+            &obu(ObuType::LeadingTileGroup, 0, 0, 0),
+            frame_role(
+                ObuType::LeadingTileGroup,
+                true,
+                Some(true),
+                Some(0),
+                Leadingness::Leading,
+            ),
+            &mut r,
+        );
+        t.observe(
+            &obu(ObuType::ClosedLoopKey, 0, 0, 1),
+            ambiguous_role(
+                ObuType::ClosedLoopKey,
+                Some(true),
+                Some(0),
+                Leadingness::Indeterminate,
+            ),
+            &mut r,
+        );
+        assert!(
+            !has(&r, "celu/leading-frame-mix"),
+            "an ambiguous CLK (indeterminate) must stay excluded from leading-frame-mix; \
+             report: {r}"
         );
     }
 }
