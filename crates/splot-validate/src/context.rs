@@ -328,16 +328,24 @@ pub(crate) struct ValidatorContext {
     /// see [`FrameUnitSegmenter`]. Reset at each global temporal delimiter and
     /// flushed at the end of the bitstream.
     frame_unit: FrameUnitSegmenter,
-    /// For each `(xlayer, mlayer)`, whether that embedded layer's first coded
-    /// frame unit of the current coded video sequence has already been observed —
-    /// the § 6.16.5 / § 6.16.6 "first coded picture of that embedded layer in the
-    /// coded video sequence" state. An HDR CLL / MDCV metadata unit associated
-    /// with an embedded layer whose first coded picture has already passed (the
-    /// flag is set and the layer is not currently in its first coded frame unit)
-    /// violates the "shall be indicated at the first coded picture" sentence
-    /// (mirror `06-syntax-structures-semantics.md` lines 3687-3688 / 3736-3737).
-    /// Scoped to the coded video sequence via the [`CvsTracker`] CLK hook.
-    embedded_layer_first_picture_seen: BTreeSet<(ExtendedLayerId, EmbeddedLayerId)>,
+    /// For each `(xlayer, mlayer)`, the **temporal-unit index** of that embedded
+    /// layer's first observed coded picture — the § 6.16.5 / § 6.16.6 "first coded
+    /// picture of that embedded layer in the coded video sequence" state. An HDR CLL
+    /// / MDCV metadata unit associated with an embedded layer whose first coded
+    /// picture has already passed (an entry exists and the layer is not currently in
+    /// its first coded frame unit) violates the "shall be indicated at the first
+    /// coded picture" sentence (mirror `06-syntax-structures-semantics.md` lines
+    /// 3687-3688 / 3736-3737).
+    ///
+    /// The recorded TU index disambiguates CVS membership: an entry from an *earlier*
+    /// temporal unit may belong to a different coded video sequence (a CLK later in
+    /// the current temporal unit starts a new CVS for its extended layer, § 7.3.6), so
+    /// a first-coded-picture finding against an earlier-TU entry is *deferred* to the
+    /// temporal-unit flush via [`CvsTracker::defer_or_emit`] — exactly as the HDR
+    /// repeat-content check defers an earlier-TU baseline. The CLK hook still prunes
+    /// the entries for its extended layer at the boundary so a new CVS re-establishes
+    /// its own first-picture state.
+    embedded_layer_first_picture_seen: BTreeMap<(ExtendedLayerId, EmbeddedLayerId), u64>,
 }
 
 /// One in-band global layer configuration record's § 6.8.2 agreement fields (AV2
@@ -2001,29 +2009,21 @@ fn describe_hdr_intersection(a: &HdrAssociation, b: &HdrAssociation) -> String {
     }
 }
 
-/// Describes a single [`HdrAssociation`]'s embedded-layer targeting, naming a
-/// concrete `(obu_xlayer_id, obu_mlayer_id)` pair for the explicit-pair case so a
-/// § 6.16.5 / § 6.16.6 first-coded-picture finding is intelligible.
-fn describe_hdr_association(association: &HdrAssociation) -> String {
-    match association {
-        HdrAssociation::Universal => "all layers".to_owned(),
-        HdrAssociation::XLayerWide(x) => {
-            format!("every embedded layer of obu_xlayer_id {}", x.get())
-        }
-        HdrAssociation::Pairs(pairs) => {
-            let names: Vec<String> = pairs
-                .iter()
-                .map(|(xlayer, mlayer)| {
-                    format!(
-                        "obu_xlayer_id {} / obu_mlayer_id {}",
-                        xlayer.get(),
-                        mlayer.get()
-                    )
-                })
-                .collect();
-            format!("embedded layer(s) {}", names.join(", "))
-        }
-    }
+/// Names a set of concrete `(obu_xlayer_id, obu_mlayer_id)` embedded-layer pairs for
+/// a § 6.16.5 / § 6.16.6 first-coded-picture finding, so a unit late for a *subset*
+/// of its targeted layers reports exactly which layers.
+fn describe_embedded_pairs(pairs: &[(ExtendedLayerId, EmbeddedLayerId)]) -> String {
+    let names: Vec<String> = pairs
+        .iter()
+        .map(|(xlayer, mlayer)| {
+            format!(
+                "obu_xlayer_id {} / obu_mlayer_id {}",
+                xlayer.get(),
+                mlayer.get()
+            )
+        })
+        .collect();
+    format!("embedded layer(s) {}", names.join(", "))
 }
 
 /// One observed HDR CLL / MDCV unit's content within its coded-video-sequence
@@ -4650,20 +4650,27 @@ impl ValidatorContext {
             _ => {}
         }
 
-        // AV2 § 6.12 / § 6.13: the quantizer-matrix "between coded frames" /
-        // "since the last frame" (QmSeen) and film-grain "same coded frame unit"
-        // windows close at a *decoded* coded frame. A SEF (show-existing-frame)
-        // displays an already-decoded frame and does NOT decode a new one, so it
-        // does not reset QmSeen ("seen since the last frame", § 6.12) nor close a
-        // film-grain unit window — `is_decoding_coded_frame` excludes SEF. This is
-        // the true coded-frame-unit boundary (§ 7.3.5 segmentation) for the
-        // duplicate windows: a QM level / film-grain slot reused across a SEF with
-        // no intervening decoded frame is still a duplicate (AVM resets only at the
-        // tile group, never at a SEF — the former whole-frame-bearing reset, which
-        // included SEF, was the documented SEF-only false negative). The reset is
-        // NOT at a temporal-unit boundary: a level reused across a bare temporal
-        // delimiter with no intervening frame is still a duplicate.
-        if is_decoding_coded_frame(obu.header.obu_type) {
+        // AV2 § 6.12 / § 6.13: both duplicate windows close at *any* coded frame,
+        // including a SEF. The two families are scoped by their own verbatim
+        // sentences, which both treat a SEF as a coded-frame boundary:
+        //
+        // - § 6.13 (film grain) scopes the duplicate-slot rule to the "same coded
+        //   frame unit" and its NOTE permits reuse "in a subsequent coded frame
+        //   unit". § 7.3.3 makes a single OBU_LEADING_SEF / OBU_REGULAR_SEF its own
+        //   coded frame unit, so a SEF ends the current film-grain coded-frame-unit
+        //   window — the next film-grain OBU belongs to a subsequent unit.
+        // - § 6.12 (QM) scopes the duplicate-level rule to "between coded frames" and
+        //   `QmSeen` to levels seen "since the last frame". § 7.3.3 lists a SEF as one
+        //   of the two alternatives for "the coded frame" of a unit and states "Such a
+        //   frame is associated with a decoded display order hint value, OrderHint",
+        //   i.e. the spec calls a SEF a frame. So a SEF is a coded-frame boundary for
+        //   `QmSeen` too.
+        //
+        // The two sentences therefore do not genuinely differ on the SEF boundary, so
+        // `is_frame_bearing` (which includes a SEF) drives a single shared reset. The
+        // reset is NOT at a temporal-unit boundary: a level / slot reused across a bare
+        // temporal delimiter with no intervening frame is still a duplicate.
+        if is_frame_bearing(obu.header.obu_type) {
             self.reset_coded_frame_window();
         }
         // AV2 § 6.16.3: NO_PERSISTENCE metadata is "Used only for the current
@@ -4687,10 +4694,13 @@ impl ValidatorContext {
         // AV2 § 6.16.5 / § 6.16.6: mark this embedded layer's first coded picture
         // seen once its first coded frame (any frame-bearing OBU) is observed, for
         // the "shall be indicated at the first coded picture" check. A SEF is a
-        // coded picture too.
+        // coded picture too. Record the *first* picture's temporal-unit index
+        // (`or_insert`, not `insert`) so a later picture in the same CVS does not
+        // overwrite it; the CLK hook prunes the entry at a new-CVS boundary.
         if is_frame_bearing(obu.header.obu_type) && !obu.header.extended_layer_id.is_global() {
             self.embedded_layer_first_picture_seen
-                .insert((obu.header.extended_layer_id, obu.header.embedded_layer_id));
+                .entry((obu.header.extended_layer_id, obu.header.embedded_layer_id))
+                .or_insert(self.cvs.tu_index);
         }
     }
 
@@ -4763,8 +4773,10 @@ impl ValidatorContext {
     }
 
     /// Resets the §6.12/§6.13 coded-frame windows for quantizer-matrix and film-grain
-    /// state at a *decoded* coded frame (a SEF does not decode a new frame, so it is
-    /// excluded — see [`is_decoding_coded_frame`]).
+    /// state at any coded frame, including a SEF (the § 7.3.3 grammar makes a SEF its
+    /// own coded frame unit and calls it a frame, so it is a coded-frame boundary for
+    /// both the QM between-coded-frames window and the film-grain coded-frame-unit
+    /// window — see [`is_frame_bearing`]).
     fn reset_coded_frame_window(&mut self) {
         self.qm.reset_coded_frame_window();
         self.film_grain.reset_coded_frame_window();
@@ -5262,7 +5274,7 @@ impl ValidatorContext {
         // keyed under GLOBAL_XLAYER_ID never enter this set (frame-bearing OBUs are
         // non-global).
         self.embedded_layer_first_picture_seen
-            .retain(|(record_xlayer, _)| *record_xlayer != xlayer);
+            .retain(|(record_xlayer, _), _| *record_xlayer != xlayer);
         // AV2 § 6.4.1 / § 7.3.6: the distinct-`obu_mlayer_id` count is scoped to "the coded
         // video sequence associated with this sequence header", which starts AT this
         // temporal unit (mirror `07-decoding-process.md` lines 604-606). The
@@ -6376,20 +6388,29 @@ impl ValidatorContext {
     /// sound subset (mirror `06-syntax-structures-semantics.md` lines 3687-3688 /
     /// 3736-3737).
     ///
-    /// Fires only when the unit *first establishes* its content (the caller gates
-    /// on no prior intersecting baseline) AND it carries an **explicit-pair**
-    /// targeting (`LAYER_CURRENT` / `LAYER_VALUES`) whose every named
-    /// `(obu_xlayer_id, obu_mlayer_id)` embedded layer has already had its first
-    /// coded picture of the coded video sequence (the
-    /// [`Self::embedded_layer_first_picture_seen`] flag is set). In that case the
-    /// metadata was not indicated at the first coded picture — there was no copy at
-    /// or before it (else a baseline would exist). `XLayerWide` / `Universal`
+    /// Fires only when the unit *first establishes* its content (the caller gates on
+    /// no prior intersecting baseline) AND it carries an **explicit-pair** targeting
+    /// (`LAYER_CURRENT` / `LAYER_VALUES`). The § 6.16.5 / § 6.16.6 requirement binds
+    /// **independently per associated embedded layer**, so the diagnostic fires when
+    /// **any** named `(obu_xlayer_id, obu_mlayer_id)` pair has already passed its
+    /// first coded picture of the coded video sequence — not only when every pair has
+    /// (finding 6: a unit late for one targeted layer must fire even if another
+    /// targeted layer's first picture has not yet arrived). `XLayerWide` / `Universal`
     /// targeting names no single concrete first coded picture, so it is skipped
-    /// (zero-false-positive). A unit in the pre-frame region of a layer's first
-    /// coded frame unit is observed *before* that picture, so the flag is unset and
-    /// the conforming case never fires.
+    /// (zero-false-positive). A pair observed in the pre-frame region of its layer's
+    /// first coded frame unit has no first-picture entry yet, so it is not late.
+    ///
+    /// Each late pair's first picture carries the temporal-unit index at which it was
+    /// observed. A same-temporal-unit first picture is unambiguously in the current
+    /// coded video sequence (§ 7.3.6: a CVS starts at a temporal unit, never inside
+    /// one), so the finding is emitted eagerly. A first picture from an *earlier*
+    /// temporal unit may belong to a previous CVS — a CLK later in this temporal unit
+    /// would start a new CVS for its extended layer and re-establish its first-picture
+    /// state — so the finding is **deferred** to the temporal-unit flush via
+    /// [`CvsTracker::defer_or_emit`] (finding 2: stale previous-CVS first-picture state
+    /// must not fire on a new CVS's first unit).
     fn check_hdr_first_coded_picture(
-        &self,
+        &mut self,
         obu: &ObuEnvelope<'_>,
         association: &HdrAssociation,
         is_mdcv: bool,
@@ -6398,14 +6419,23 @@ impl ValidatorContext {
         let Some(pairs) = association.explicit_embedded_pairs() else {
             return;
         };
-        // Every named embedded layer must have already passed its first coded
-        // picture; if any has not (e.g. the metadata precedes the layer's first
-        // coded frame), the indication is still at/before the first picture.
-        if pairs.is_empty()
-            || !pairs
-                .iter()
-                .all(|pair| self.embedded_layer_first_picture_seen.contains(pair))
-        {
+        let current_tu = self.cvs.tu_index;
+        // Partition the named pairs that are *late* (their first coded picture has
+        // already passed) into same-TU (eager, definitely the current CVS) and
+        // earlier-TU (deferred, possibly a previous CVS) groups.
+        let mut eager_late: Vec<(ExtendedLayerId, EmbeddedLayerId)> = Vec::new();
+        let mut deferred_late: Vec<((ExtendedLayerId, EmbeddedLayerId), u64)> = Vec::new();
+        for &pair in pairs {
+            let Some(&seen_tu) = self.embedded_layer_first_picture_seen.get(&pair) else {
+                continue;
+            };
+            if seen_tu == current_tu {
+                eager_late.push(pair);
+            } else {
+                deferred_late.push((pair, seen_tu));
+            }
+        }
+        if eager_late.is_empty() && deferred_late.is_empty() {
             return;
         }
         let (rule_id, spec_section, unit_name) = if is_mdcv {
@@ -6421,19 +6451,30 @@ impl ValidatorContext {
                 "metadata_hdr_cll",
             )
         };
-        report.push(
+        let build = |late: &[(ExtendedLayerId, EmbeddedLayerId)]| {
             Diagnostic::error(
                 rule_id,
                 format!(
                     "{unit_name} metadata first establishes content for {} after that embedded \
                      layer's first coded picture of the coded video sequence; it shall be \
                      indicated at the first coded picture",
-                    describe_hdr_association(association)
+                    describe_embedded_pairs(late)
                 ),
             )
             .with_spec_section(spec_section)
-            .with_byte_offset(obu.offset),
-        );
+            .with_byte_offset(obu.offset)
+        };
+        // Same-TU late pairs: emit one eager finding naming them all.
+        if !eager_late.is_empty() {
+            report.push(build(&eager_late));
+        }
+        // Earlier-TU late pairs: defer each on its own extended layer, so a CLK that
+        // starts a new CVS for that layer in the current temporal unit drops the stale
+        // finding at the flush (the pair's first picture was in the previous CVS).
+        for (pair, seen_tu) in deferred_late {
+            self.cvs
+                .defer_or_emit(pair.0, seen_tu, build(std::slice::from_ref(&pair)), report);
+        }
     }
 
     /// Folds one non-cancel `metadata_scan_type()` unit into the § 6.16.10 CVS
@@ -11610,13 +11651,15 @@ struct TemporalUnitState {
     /// coded extended layer units, so a later global HLS prefix OBU is out of
     /// order (§ 7.3.7): `obu-order/global-hls-after-metadata-suffix`.
     saw_global_suffix_metadata: bool,
-    /// The extended layer whose coded *frame* OBUs (frame-bearing or pre-frame
-    /// content) have begun in the current coded extended layer unit. § 7.3.6
+    /// The set of extended layers whose coded *frame* OBUs (frame-bearing or
+    /// pre-frame content) have begun in the current coded extended layer unit. § 7.3.6
     /// orders the coded extended layer unit as LCR → OPS → atlas → sequence header
     /// → frame units, so a non-global HLS *header* OBU (LCR / OPS / atlas /
     /// sequence header) for an extended layer whose frame region has already begun
-    /// is out of order: `obu-order/non-global-hls-before-coded-layer`.
-    coded_frame_started_xlayer: Option<ExtendedLayerId>,
+    /// is out of order: `obu-order/non-global-hls-before-coded-layer`. Tracking a
+    /// *set* (not the last layer alone) catches a reordered header for an earlier
+    /// extended layer after a later layer's frame region has begun.
+    coded_frame_started_xlayer: BTreeSet<ExtendedLayerId>,
 }
 
 impl TemporalUnitState {
@@ -11697,7 +11740,7 @@ impl TemporalUnitState {
         self.reported_missing_delimiter = false;
         self.saw_obu_since_delimiter = false;
         self.saw_global_suffix_metadata = false;
-        self.coded_frame_started_xlayer = None;
+        self.coded_frame_started_xlayer.clear();
     }
 
     fn report_missing_delimiter_once(
@@ -11808,7 +11851,7 @@ impl TemporalUnitState {
                 | ObuType::SequenceHeader
         );
         if is_hls_header {
-            if self.coded_frame_started_xlayer == Some(xlayer) {
+            if self.coded_frame_started_xlayer.contains(&xlayer) {
                 report.push(ordering_error(
                     "obu-order/non-global-hls-before-coded-layer",
                     obu,
@@ -11823,8 +11866,10 @@ impl TemporalUnitState {
             }
         } else {
             // A frame-region OBU for this extended layer: record that the frame
-            // region has begun, so a later HLS header for the same layer fires.
-            self.coded_frame_started_xlayer = Some(xlayer);
+            // region has begun, so a later HLS header for *that* layer fires — tracked
+            // per extended layer so a reordered header for an earlier layer after a
+            // later layer's frame region is not masked by the last-layer-only scalar.
+            self.coded_frame_started_xlayer.insert(xlayer);
         }
     }
 }
@@ -12052,17 +12097,6 @@ fn is_frame_bearing(obu_type: ObuType) -> bool {
         || obu_type.is_sef()
         || obu_type.is_tip_frame()
         || obu_type == ObuType::BridgeFrame
-}
-
-/// Returns `true` for a frame-bearing OBU that *decodes* a coded frame, i.e. every
-/// frame-bearing type except a SEF (`OBU_LEADING_SEF` / `OBU_REGULAR_SEF`). A SEF
-/// shows an already-decoded frame and does not decode a new one, so it does not
-/// reset the § 6.12 `QmSeen` "since the last frame" window nor close a § 6.13
-/// film-grain coded-frame-unit window (AVM resets those at the tile group only,
-/// never at a SEF). Tile groups, SWITCH, RAS, CLK/OLK key frames, TIP frames, and
-/// bridge frames all decode a frame and reset.
-fn is_decoding_coded_frame(obu_type: ObuType) -> bool {
-    is_frame_bearing(obu_type) && !obu_type.is_sef()
 }
 
 /// Parses a frame-bearing OBU's frame-header prefix (best-effort), returning `None`

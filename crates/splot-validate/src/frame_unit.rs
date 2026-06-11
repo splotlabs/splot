@@ -165,6 +165,13 @@ struct UnitState {
     second_brt_offset: Option<ByteOffset>,
     /// The coded frame's identity, once its first frame-bearing OBU is seen.
     coded_frame: Option<CodedFrameState>,
+    /// The byte offset of the unit's first **head** OBU (CI / MFH / pre-frame), the
+    /// anchor for the head-only-unit diagnostic. A unit that accumulates head OBUs
+    /// but never a coded frame (the head run ends at a temporal-unit / bitstream
+    /// boundary) violates the § 7.3.3 / § 7.3.4 requirement that every coded frame
+    /// unit contain a coded frame; this offset anchors the report at the offending
+    /// head run's start.
+    head_offset: Option<ByteOffset>,
     /// `true` once a metadata OBU's `metadata_is_suffix` bit could not be read: the
     /// region pointer is no longer reliable, so region-order structural checks are
     /// suppressed for the rest of this unit (the structural facts that do not depend
@@ -181,20 +188,31 @@ impl UnitState {
             brt_count: 0,
             second_brt_offset: None,
             coded_frame: None,
+            head_offset: None,
             region_blind: false,
         }
     }
+
+    /// Records the offset of the unit's first head OBU (CI / MFH / pre-frame), used
+    /// as the head-only-unit anchor if the unit never receives a coded frame.
+    fn note_head(&mut self, offset: ByteOffset) {
+        self.head_offset.get_or_insert(offset);
+    }
+}
+
+/// Why the segmenter is flushing its open units, selecting the head-only-unit
+/// diagnostic severity (a temporal-unit boundary is a hard error; the end of the
+/// bitstream is a warning, since a trailing head run may be a truncated stream).
+#[derive(Debug, Clone, Copy)]
+enum FlushKind {
+    TemporalUnitBoundary,
+    EndOfStream,
 }
 
 /// Per-layer-triple segmentation state within the current temporal unit.
 #[derive(Debug)]
 struct LayerState {
     unit: UnitState,
-    /// Number of coded frame units completed for this `(xlayer, mlayer)` in the
-    /// current temporal unit. Drives the § 7.3.8.10 first-coded-frame-unit CI rule:
-    /// a CI is allowed only in the first coded frame unit (this count `0` and no
-    /// coded frame yet closed an earlier unit).
-    units_completed_for_embedded_layer: u32,
 }
 
 /// Coded-frame-unit segmenter (AV2 § 7.3.3 / § 7.3.4 / § 7.3.5 / § 7.3.8.10).
@@ -211,6 +229,12 @@ pub(crate) struct FrameUnitSegmenter {
     /// temporal unit has been observed — i.e. whose first coded frame unit has
     /// begun (§ 7.3.8.10 first-coded-frame-unit CI rule).
     first_coded_unit_started: BTreeSet<(ExtendedLayerId, EmbeddedLayerId)>,
+    /// Number of coded frame units completed for each `(xlayer, mlayer)` embedded
+    /// layer in the current temporal unit. The § 7.3.8.10 "first coded frame unit of
+    /// each embedded layer within a temporal unit" scope is *not* keyed by
+    /// `obu_tlayer_id` (mirror line 880), so this count is tracked per embedded layer
+    /// across temporal layers, not per `(xlayer, mlayer, tlayer)` triple.
+    units_completed_for_embedded_layer: BTreeMap<(ExtendedLayerId, EmbeddedLayerId), u32>,
 }
 
 impl FrameUnitSegmenter {
@@ -219,22 +243,69 @@ impl FrameUnitSegmenter {
     /// Any still-open unit's deferred (output-class-dependent) checks are resolved
     /// before the reset; the eager structural checks have already fired.
     pub(crate) fn reset_temporal_unit(&mut self, report: &mut ValidationReport) {
-        self.flush_open_units(report);
+        // A temporal-unit boundary definitively seals every open unit: the temporal
+        // unit has ended (a coded frame unit cannot span it, § 7.3.7), so a head-only
+        // unit is a hard § 7.3.3 / § 7.3.4 violation (it can no longer receive a coded
+        // frame).
+        self.flush_open_units(FlushKind::TemporalUnitBoundary, report);
         self.layers.clear();
         self.first_coded_unit_started.clear();
+        self.units_completed_for_embedded_layer.clear();
     }
 
     /// Flushes the final temporal unit's open units (AV2 § 7.3.2 end condition:
     /// end of bitstream), resolving their deferred checks.
     pub(crate) fn finish(&mut self, report: &mut ValidationReport) {
-        self.flush_open_units(report);
+        // At the end of the bitstream a head-only unit could equally be a truncated
+        // capture (the coded frame's OBUs were cut off) as a malformed unit, so it is
+        // reported at a lower (warning) severity than the same run at an internal
+        // temporal-unit boundary.
+        self.flush_open_units(FlushKind::EndOfStream, report);
     }
 
-    /// Resolves every open unit's deferred (unit-end) checks.
-    fn flush_open_units(&mut self, report: &mut ValidationReport) {
+    /// Resolves every open unit's deferred (unit-end) checks and reports any
+    /// head-only unit (head OBUs with no coded frame) at the `kind`-appropriate
+    /// severity.
+    fn flush_open_units(&mut self, kind: FlushKind, report: &mut ValidationReport) {
         for state in self.layers.values_mut() {
             Self::resolve_unit(&state.unit, report);
+            Self::report_head_only_unit(&state.unit, kind, report);
         }
+    }
+
+    /// Reports a head-only unit — one that accumulated head OBUs (CI / MFH /
+    /// pre-frame) but never a coded frame — at a flush boundary. § 7.3.3 / § 7.3.4
+    /// require every coded frame unit to contain exactly one coded frame, so a head
+    /// run that ends at a temporal-unit / bitstream boundary with no coded frame is
+    /// non-conforming. At a temporal-unit boundary this is a hard error; at the end
+    /// of the bitstream it is reported as a warning, since a trailing head run may be
+    /// a truncated stream rather than a malformed unit.
+    fn report_head_only_unit(unit: &UnitState, kind: FlushKind, report: &mut ValidationReport) {
+        let (Some(offset), None) = (unit.head_offset, unit.coded_frame) else {
+            return;
+        };
+        let diagnostic = match kind {
+            FlushKind::TemporalUnitBoundary => Diagnostic::error(
+                "frame-unit/missing-coded-frame",
+                "a coded frame unit's head OBUs (content-interpretation / multi-frame-header / \
+                 pre-frame) are not followed by a coded frame before the temporal unit ends; \
+                 every coded frame unit must contain exactly one coded frame"
+                    .to_owned(),
+            ),
+            FlushKind::EndOfStream => Diagnostic::warning(
+                "frame-unit/missing-coded-frame",
+                "a coded frame unit's head OBUs (content-interpretation / multi-frame-header / \
+                 pre-frame) are not followed by a coded frame before the end of the bitstream; \
+                 every coded frame unit must contain exactly one coded frame (the stream may be \
+                 truncated)"
+                    .to_owned(),
+            ),
+        };
+        report.push(
+            diagnostic
+                .with_spec_section("7.3.3")
+                .with_byte_offset(offset),
+        );
     }
 
     /// Feeds one OBU to the segmenter in stream order.
@@ -262,15 +333,16 @@ impl FrameUnitSegmenter {
         );
         let embedded_key = (obu.header.extended_layer_id, obu.header.embedded_layer_id);
         let first_coded_unit_started = &mut self.first_coded_unit_started;
+        let units_completed_for_embedded_layer = &mut self.units_completed_for_embedded_layer;
         let state = self.layers.entry(key).or_insert_with(|| LayerState {
             unit: UnitState::new(),
-            units_completed_for_embedded_layer: 0,
         });
 
         Self::observe_in_layer(
             state,
             embedded_key,
             first_coded_unit_started,
+            units_completed_for_embedded_layer,
             obu,
             role,
             report,
@@ -282,6 +354,7 @@ impl FrameUnitSegmenter {
         state: &mut LayerState,
         embedded_key: (ExtendedLayerId, EmbeddedLayerId),
         first_coded_unit_started: &mut BTreeSet<(ExtendedLayerId, EmbeddedLayerId)>,
+        units_completed_for_embedded_layer: &mut BTreeMap<(ExtendedLayerId, EmbeddedLayerId), u32>,
         obu: &ObuEnvelope<'_>,
         role: SegRole,
         report: &mut ValidationReport,
@@ -294,14 +367,43 @@ impl FrameUnitSegmenter {
         // pre-frame OBU after a coded frame is NOT a same-unit misplacement.
         if Self::starts_new_unit(&state.unit, role) {
             Self::resolve_unit(&state.unit, report);
-            state.units_completed_for_embedded_layer =
-                state.units_completed_for_embedded_layer.saturating_add(1);
+            // Count the completed unit per embedded layer (§ 7.3.8.10 scope), across
+            // temporal layers — not per `(xlayer, mlayer, tlayer)` triple.
+            let completed = units_completed_for_embedded_layer
+                .entry(embedded_key)
+                .or_insert(0);
+            *completed = completed.saturating_add(1);
             state.unit = UnitState::new();
+        }
+
+        // A head OBU (CI / MFH / pre-frame BRT / QM / FGM / prefix or unreadable-suffix
+        // metadata) obligates the unit to receive a coded frame (§ 7.3.3 / § 7.3.4);
+        // record its offset so a head-only unit (the head run ends at a temporal-unit /
+        // bitstream boundary with no coded frame) can be reported.
+        if matches!(
+            role,
+            SegRole::ContentInterpretation
+                | SegRole::MultiFrameHeader
+                | SegRole::BufferRemovalTiming
+                | SegRole::QuantizationMatrix
+                | SegRole::FilmGrain
+                | SegRole::Metadata {
+                    is_suffix: Some(false) | None,
+                }
+        ) {
+            state.unit.note_head(obu.offset);
         }
 
         match role {
             SegRole::ContentInterpretation => {
-                Self::observe_ci(state, embedded_key, first_coded_unit_started, obu, report);
+                Self::observe_ci(
+                    state,
+                    embedded_key,
+                    first_coded_unit_started,
+                    units_completed_for_embedded_layer,
+                    obu,
+                    report,
+                );
             }
             SegRole::MultiFrameHeader => Self::observe_mfh(&mut state.unit, obu, report),
             SegRole::BufferRemovalTiming => Self::observe_brt(&mut state.unit, obu),
@@ -363,16 +465,25 @@ impl FrameUnitSegmenter {
     /// region.
     ///
     /// A coded frame consists of *one or more* OBUs (mirror lines 391-393 /
-    /// 459-461), so a frame OBU while still in [`Region::CodedFrame`] is a
+    /// 459-461), so a frame OBU while still in [`Region::CodedFrame`] is normally a
     /// *continuation* of the current coded frame — its same-`obu_type` / SEF /
     /// first-tile-group judgment happens in `observe_frame`, not a new unit. A new
     /// unit begins when:
     ///
     /// - a **head** OBU (CI / MFH / pre-frame) follows a completed coded frame
     ///   ([`Region::CodedFrame`]) or its suffix tail ([`Region::SuffixTail`]); the
-    ///   grammar permits back-to-back units, so this is unambiguous, or
+    ///   grammar permits back-to-back units, so this is unambiguous,
     /// - any **frame** OBU follows the suffix tail ([`Region::SuffixTail`]) — the
-    ///   prior unit is fully complete (coded frame + tail).
+    ///   prior unit is fully complete (coded frame + tail), or
+    /// - a **tile** OBU with `is_first_tile_group == 1` arrives while a coded frame
+    ///   is open ([`Region::CodedFrame`]). § 7.3.6 permits back-to-back coded frame
+    ///   units in one coded extended layer unit, and the first OBU of a coded frame
+    ///   shall have `is_first_tile_group == 1` (mirror lines 413-414 / 486-487), so
+    ///   a tile OBU re-asserting that flag while a frame is open *starts the next
+    ///   unit* (closing the current one) rather than being an out-of-place
+    ///   non-first tile. A tile OBU with `is_first_tile_group == 0` (or an
+    ///   undecidable flag) continues the open coded frame, where the same-type /
+    ///   first-tile-group continuation rules apply.
     ///
     /// Suffix metadata never starts a unit (its placement is judged in
     /// `observe_metadata`).
@@ -388,8 +499,15 @@ impl FrameUnitSegmenter {
                     is_suffix: Some(false) | None,
                 }
         );
+        let starts_next_coded_frame = matches!(
+            role,
+            SegRole::TileFrame {
+                is_first_tile_group: Some(true),
+                ..
+            }
+        );
         match unit.region {
-            Region::CodedFrame => is_unit_head,
+            Region::CodedFrame => is_unit_head || starts_next_coded_frame,
             Region::SuffixTail => is_unit_head || is_frame_role(role),
             _ => false,
         }
@@ -400,18 +518,35 @@ impl FrameUnitSegmenter {
         state: &mut LayerState,
         embedded_key: (ExtendedLayerId, EmbeddedLayerId),
         first_coded_unit_started: &BTreeSet<(ExtendedLayerId, EmbeddedLayerId)>,
+        units_completed_for_embedded_layer: &BTreeMap<(ExtendedLayerId, EmbeddedLayerId), u32>,
         obu: &ObuEnvelope<'_>,
         report: &mut ValidationReport,
     ) {
         let unit = &mut state.unit;
-        // § 7.3.8.10: a CI may appear only in the layer's first coded frame unit of
-        // the temporal unit (mirror line 880). `units_completed > 0` means a coded
-        // frame already closed an earlier unit; a coded frame already started THIS
-        // (later) unit AND the layer's first unit began earlier likewise places this
-        // CI outside the first unit. Independent of region order, so reported even
-        // when region-blind.
-        let in_later_unit = state.units_completed_for_embedded_layer > 0
-            || (unit.coded_frame.is_some() && first_coded_unit_started.contains(&embedded_key));
+        // § 7.3.8.10: a CI may appear only in the *first coded frame unit of each
+        // embedded layer within the temporal unit* (mirror line 880) — a scope not
+        // keyed by `obu_tlayer_id`. This CI is outside that first unit when either:
+        //
+        // - the embedded layer already *completed* a coded frame unit in this temporal
+        //   unit (`units_completed_for_embedded_layer > 0`, tracked across temporal
+        //   layers), or
+        // - the embedded layer's first coded frame has already begun
+        //   (`first_coded_unit_started`) while this CI's *current* unit holds no coded
+        //   frame yet — i.e. the first coded frame lives in a different (earlier or
+        //   other-tlayer) unit, so this CI heads a later unit. (A legitimate first-unit
+        //   CI precedes that layer's first coded frame, so the flag is still unset.)
+        //
+        // A head OBU after a coded frame always splits the unit first (the current
+        // unit's `coded_frame` is therefore `None` by the time `observe_ci` runs), so
+        // the second clause catches a CI that started a fresh later unit even within
+        // the same temporal layer. Independent of region order, so reported even when
+        // region-blind.
+        let completed = units_completed_for_embedded_layer
+            .get(&embedded_key)
+            .copied()
+            .unwrap_or(0);
+        let in_later_unit = completed > 0
+            || (unit.coded_frame.is_none() && first_coded_unit_started.contains(&embedded_key));
         if in_later_unit {
             report.push(frame_unit_error(
                 "frame-unit/ci-not-in-first-frame-unit",
@@ -552,31 +687,23 @@ impl FrameUnitSegmenter {
         );
         // The first-tile-group flag is decidable from the parsed bit alone,
         // independent of the output class (mirror line 413-414 / 486-487): the first
-        // tile OBU of a coded frame shall have is_first_tile_group == 1, the rest 0.
-        // Only meaningful when this OBU joined the coded frame (not when the SEF /
-        // mixed-type branch in `observe_frame` already rejected it).
-        if first_in_frame {
-            if is_first_tile_group == Some(false) {
-                report.push(frame_unit_error(
-                    "frame-unit/first-tile-group-flag",
-                    obu,
-                    "7.3.3",
-                    "the first tile OBU of a coded frame must have is_first_tile_group == 1"
-                        .to_owned(),
-                ));
-            }
-        } else if is_first_tile_group == Some(true)
-            && state
-                .unit
-                .coded_frame
-                .is_some_and(|frame| !frame.is_sef && frame.obu_type == obu_type)
-        {
+        // tile OBU of a coded frame shall have is_first_tile_group == 1.
+        //
+        // Under § 7.3.6 back-to-back-unit splitting, a tile OBU with
+        // `is_first_tile_group == 1` arriving while a coded frame is open *starts the
+        // next coded frame unit* (`starts_new_unit`), so this OBU is always the first
+        // OBU of its (possibly freshly opened) coded frame when the flag is 1. The only
+        // remaining `is_first_tile_group` violation is therefore a *first* tile OBU
+        // carrying flag 0. A non-first tile OBU continuing an open coded frame must
+        // have flag 0 (or an undecidable flag) — a flag-1 continuation cannot reach
+        // here, having split into a new unit — so the former "non-first tile with flag
+        // 1" branch is unreachable and removed.
+        if first_in_frame && is_first_tile_group == Some(false) {
             report.push(frame_unit_error(
                 "frame-unit/first-tile-group-flag",
                 obu,
                 "7.3.3",
-                "a non-first tile OBU of a coded frame must have is_first_tile_group == 0"
-                    .to_owned(),
+                "the first tile OBU of a coded frame must have is_first_tile_group == 1".to_owned(),
             ));
         }
     }

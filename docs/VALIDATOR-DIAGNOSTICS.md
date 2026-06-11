@@ -153,7 +153,8 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 | `frame-unit/buffer-removal-timing-multiplicity` | error | § 7.3.4 | a coded non-output frame unit carries more than one OBU_BUFFER_REMOVAL_TIMING (an output frame unit permits more) |
 | `frame-unit/ci-not-in-first-frame-unit` | error | § 7.3.8.10 | OBU_CONTENT_INTERPRETATION appears outside the first coded frame unit of its embedded layer in the temporal unit |
 | `frame-unit/duplicate-content-interpretation` | error | § 7.3.3 | a coded frame unit carries more than one OBU_CONTENT_INTERPRETATION |
-| `frame-unit/first-tile-group-flag` | error | § 7.3.3 | the first tile OBU of a coded frame has is_first_tile_group != 1, or a non-first tile OBU has is_first_tile_group != 0 |
+| `frame-unit/first-tile-group-flag` | error | § 7.3.3 | the first tile OBU of a coded frame has is_first_tile_group != 1 (a later tile OBU re-asserting is_first_tile_group == 1 starts the next coded frame unit, § 7.3.6) |
+| `frame-unit/missing-coded-frame` | error/warning | § 7.3.3 | a coded frame unit's head OBUs (CI / MFH / pre-frame) are not followed by a coded frame before the temporal unit (error) or bitstream (warning, possible truncation) ends |
 | `frame-unit/mixed-coded-frame-types` | error | § 7.3.3 | the OBUs of one coded frame do not all share a single obu_type |
 | `frame-unit/region-order` | error | § 7.3.3 | a content-interpretation or multi-frame-header OBU appears after a later region of its coded frame unit |
 | `frame-unit/sef-single-obu` | error | § 7.3.3 | a SEF coded frame is not exactly one OBU (a frame OBU follows the SEF in the same coded frame unit) |

@@ -16665,25 +16665,57 @@ mod tests {
     }
 
     #[test]
-    fn frame_unit_non_first_tile_group_flag_one_is_flagged() {
-        // AV2 § 7.3.3: a later tile OBU of the same coded frame must have
-        // is_first_tile_group == 0. Two CLK OBUs (same type), the second with flag 1.
+    fn frame_unit_adjacent_units_split_on_first_tile_group_flag_is_silent() {
+        // AV2 § 7.3.6: a coded extended layer unit may carry back-to-back coded frame
+        // units with no intervening head OBU. A tile OBU with is_first_tile_group == 1
+        // arriving while a coded frame is open STARTS THE NEXT unit (closing the
+        // previous), it is not an out-of-place non-first tile. Two single-OBU output
+        // CLK frames (each flag 1) are two valid units and must be silent. Pre-fix the
+        // state machine forced the second CLK into the first unit and reported it as a
+        // non-first tile (frame-unit/first-tile-group-flag).
         let mut data = seg_td_and_seq();
-        data.extend(clk_frame_decidable(true, true)); // first: flag 1 (ok)
-        data.extend(clk_frame_decidable(true, true)); // second: flag 1 (violation)
+        data.extend(clk_frame_decidable(true, true)); // unit 1: flag 1 (ok)
+        data.extend(clk_frame_decidable(true, true)); // unit 2: flag 1 (new unit, ok)
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
-            has_frame_unit_error(&report, "frame-unit/first-tile-group-flag"),
-            "report was: {report}"
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-unit/")),
+            "two back-to-back flag-1 units must split silently; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_back_to_back_multi_tile_units_are_silent() {
+        // AV2 § 7.3.6 / § 7.3.3: two back-to-back coded frame units, each a multi-OBU
+        // coded frame with the is_first_tile_group 1-then-0 pattern. The flag-1 OBU
+        // opening the second frame splits the first unit; the flag-0 OBUs continue
+        // their own coded frame. The whole run must be silent. Pre-fix the second
+        // flag-1 CLK was a non-first tile (flagged) and the trailing flag-0 CLK was a
+        // first tile with flag 0 of the (never split) unit (also flagged).
+        let mut data = seg_td_and_seq();
+        data.extend(clk_frame_decidable(true, true)); // unit 1, first tile: flag 1
+        data.extend(clk_frame_decidable(false, true)); // unit 1, non-first tile: flag 0
+        data.extend(clk_frame_decidable(true, true)); // unit 2, first tile: flag 1 (split)
+        data.extend(clk_frame_decidable(false, true)); // unit 2, non-first tile: flag 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-unit/")),
+            "two back-to-back 1-then-0 units must be silent; report was: {report}"
         );
     }
 
     #[test]
     fn frame_unit_undecidable_first_tile_group_stays_silent() {
         // A tile-group OBU whose output class is undecidable (the activation-prefix-
-        // only frame stops before the output flags) routes the unit to Unknown, so
-        // even the is_first_tile_group == 0 violation is suppressed (zero false
-        // positives). RTG is inter -> the core parse stops before the output flags.
+        // only frame stops before the output flags) routes the unit to Unknown. This
+        // RTG carries a conformant is_first_tile_group == 1 (the helper's first bit),
+        // so there is no structural first-tile-group violation; the test verifies an
+        // undecidable-output-class tile OBU with a conformant flag emits no frame-unit
+        // diagnostic (the output-class-derived judgments stay silent, and the
+        // structural first-tile-group check finds nothing to report).
         let mut data = td_and_seq_header(0, 0, 0);
         data.extend(frame_obu_direct_seq_ref(REGULAR_TILE_GROUP_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
@@ -16797,11 +16829,17 @@ mod tests {
     #[test]
     fn frame_unit_mixed_coded_frame_types_is_flagged() {
         // AV2 § 7.3.3: the OBUs of one coded frame must share an obu_type. A
-        // decidable-output CLK followed by a regular tile group (different type) in
-        // the same coded frame fires.
+        // decidable-output CLK followed by a *non-first* regular tile group (different
+        // type, is_first_tile_group == 0) continues the same coded frame and fires
+        // mixed-types. (A different-type tile OBU with is_first_tile_group == 1 would
+        // instead start the next coded frame unit, § 7.3.6.)
         let mut data = seg_td_and_seq();
         data.extend(clk_frame_decidable(true, true)); // CLK, output, decidable
-        data.extend(frame_obu_direct_seq_ref(REGULAR_TILE_GROUP_HEADER, 0)); // different type
+        // A regular tile group with is_first_tile_group == 0 (a non-first tile of a
+        // header-copy tile group): continues the CLK coded frame as a mismatched type.
+        let mut rtg = Bits::default();
+        rtg.bit(0); // is_first_tile_group == 0
+        data.extend(annex_b_obu(REGULAR_TILE_GROUP_HEADER, &rtg.into_bytes()));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             has_frame_unit_error(&report, "frame-unit/mixed-coded-frame-types"),
@@ -16822,6 +16860,41 @@ mod tests {
         assert!(
             has_frame_unit_error(&report, "frame-unit/ci-not-in-first-frame-unit"),
             "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_ci_in_later_temporal_layer_unit_is_flagged() {
+        // AV2 § 7.3.8.10: the "first coded frame unit of each embedded layer within a
+        // temporal unit" scope is NOT keyed by obu_tlayer_id (mirror line 880). The
+        // embedded layer (xlayer 0, mlayer 0) has its first coded frame unit in
+        // temporal layer 0 (CI -> SEF); a later unit in temporal layer 1 that starts
+        // with another CI is outside that embedded layer's first coded frame unit and
+        // must fire. Pre-fix the count was stored per (xlayer, mlayer, tlayer) triple
+        // and the first_coded_unit_started clause required the current unit to already
+        // hold a coded frame, so the temporal-layer-1 CI was accepted.
+        let mut data = seg_td_and_seq();
+        data.extend(content_interpretation_obu(0, 0, None)); // tlayer 0: first unit's CI
+        data.extend(annex_b_obu(REGULAR_SEF_HEADER, &[0x80])); // tlayer 0: closes first unit
+        // A content-interpretation OBU at temporal layer 1, same embedded layer.
+        let mut ci_bits = Bits::default();
+        ci_bits.f(0, 2); // ci_scan_type_idc
+        ci_bits.bit(0); // ci_color_description_present_flag
+        ci_bits.bit(0); // ci_chroma_sample_position_present_flag
+        ci_bits.bit(0); // ci_aspect_ratio_info_present_flag
+        ci_bits.bit(0); // ci_timing_info_present_flag
+        ci_bits.f(0, 2); // ci_reserved_2bit
+        ci_bits.bit(0); // obu_extension_flag
+        ci_bits.bit(1); // trailing_one_bit
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(24, 1, 0, 0), // CI at tlayer 1
+            &ci_bits.into_bytes(),
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_frame_unit_error(&report, "frame-unit/ci-not-in-first-frame-unit"),
+            "a CI in a later temporal-layer unit of the same embedded layer must fire; \
+             report was: {report}"
         );
     }
 
@@ -16861,6 +16934,66 @@ mod tests {
                 .errors()
                 .any(|d| d.rule_id.starts_with("frame-unit/")),
             "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_trailing_head_run_at_temporal_unit_end_is_flagged() {
+        // AV2 § 7.3.3 / § 7.3.4: every coded frame unit must contain a coded frame. A
+        // trailing head OBU run (here a BRT) after the last coded frame, ended by a
+        // temporal delimiter with no further coded frame, is a head-only unit and must
+        // fire as an error at the temporal-unit boundary. Pre-fix the open head-only
+        // unit was silently dropped.
+        let mut data = seg_td_and_seq();
+        data.extend(clk_frame_decidable(true, true)); // unit 1 (complete)
+        data.extend(brt_obu()); // starts a head-only unit 2
+        data.extend(temporal_delimiter_obu()); // seals unit 2 with no coded frame
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-unit/missing-coded-frame"),
+            "a head-only unit sealed by a temporal delimiter must error; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_trailing_head_run_at_stream_end_is_a_warning() {
+        // AV2 § 7.3.3: at the end of the bitstream a trailing head run may be a
+        // truncated stream rather than a malformed unit, so the head-only unit is a
+        // warning (not an error). Pre-fix the open unit was silently dropped.
+        let mut data = seg_td_and_seq();
+        data.extend(clk_frame_decidable(true, true)); // unit 1 (complete)
+        data.extend(brt_obu()); // head-only unit 2, no coded frame, stream ends
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .warnings()
+                .any(|d| d.rule_id == "frame-unit/missing-coded-frame"),
+            "a head-only unit at the end of the bitstream must warn; report was: {report}"
+        );
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-unit/missing-coded-frame"),
+            "the end-of-stream head-only unit must not be an error; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_complete_unit_at_stream_end_has_no_missing_coded_frame() {
+        // A unit whose head OBUs are followed by a coded frame is complete; the
+        // end-of-stream flush must not report a missing coded frame for it.
+        let mut data = seg_td_and_seq();
+        data.extend(brt_obu());
+        data.extend(clk_frame_decidable(true, true)); // completes the unit
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .diagnostics
+                .iter()
+                .any(|d| d.rule_id == "frame-unit/missing-coded-frame"),
+            "a complete unit must not report a missing coded frame; report was: {report}"
         );
     }
 
@@ -16925,6 +17058,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn obu_order_non_global_hls_before_earlier_xlayer_frame_is_flagged() {
+        // AV2 § 7.3.6 multi-extended-layer: after xlayer 0's frame region starts AND
+        // xlayer 1's frame region starts, a non-global LCR for xlayer 0 is still out of
+        // order — its coded extended layer unit's frame region has already begun. The
+        // started-xlayer state must be a SET, not the last xlayer alone; pre-fix the
+        // scalar held only xlayer 1, so the xlayer-0 LCR was checked against the wrong
+        // layer and missed. A non-global BRT begins a layer's frame region (§ 7.3.3 /
+        // § 7.3.4) without any deep frame parse, isolating the ordering check.
+        let mut data = td_and_seq_header(0, 1, 1);
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(15, 0, 0, 0),
+            &[0x80],
+        )); // BRT xlayer 0
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(15, 0, 0, 1),
+            &[0x80],
+        )); // BRT xlayer 1
+        data.extend(annex_b_obu_with_header(&layer_obu_header(16, 0, 0, 0), &[])); // LCR xlayer 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "obu-order/non-global-hls-before-coded-layer"),
+            "an LCR for an earlier xlayer whose frame region began must fire even after a \
+             later xlayer's frame region; report was: {report}"
+        );
+    }
+
     // --- § 6.16.5 / § 6.16.6 first-coded-picture half ---
 
     #[test]
@@ -16982,25 +17144,122 @@ mod tests {
         );
     }
 
+    #[test]
+    fn metadata_hdr_cll_first_picture_in_new_cvs_is_conformant() {
+        // AV2 § 6.16.5 / § 7.3.6: the "first coded picture of that embedded layer in
+        // the coded video sequence" state is per CVS. A CLK starts a new CVS for its
+        // extended layer at its temporal unit, but the new CVS's pre-frame HDR CLL is
+        // processed BEFORE the CLK in stream order — when the previous CVS's
+        // first-picture state is still present. The first-picture entry from the prior
+        // CVS carries an earlier temporal-unit index, so the finding defers to the
+        // temporal-unit flush, where the new CVS's CLK drops it. The new CVS's HDR CLL
+        // (at its own first coded picture) must be silent. Pre-fix the stale prior-CVS
+        // entry fired metadata/hdr-cll-first-coded-picture on a valid stream.
+        let mut data = td_and_seq_header(0, 0, 0);
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // CVS 1 first picture (xlayer 0)
+        data.extend(temporal_delimiter_obu()); // temporal-unit boundary (no clear here)
+        data.extend(hdr_cll_unit_layer_current(0, 1000, 200)); // CVS 2 pre-frame HDR CLL
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // CVS 2 first picture (new CVS)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "metadata/hdr-cll-first-coded-picture"),
+            "a new CVS's first-picture HDR CLL must not fire against stale prior-CVS \
+             first-picture state; report was: {report}"
+        );
+    }
+
+    /// A local `OBU_METADATA_GROUP` at extended layer 0 / embedded layer 0 carrying a
+    /// single `LAYER_VALUES` HDR CLL unit (metadata_type 1) whose `muh_mlayer_map`
+    /// targets the embedded layers selected by `mlayer_map`. No temporal-delimiter
+    /// prefix (chainable). A non-global metadata OBU needs an active sequence header
+    /// for its extended layer.
+    fn local_hdr_cll_group_layer_values_obu(
+        mlayer_map: u8,
+        max_cll: u32,
+        max_fall: u32,
+    ) -> Vec<u8> {
+        let mut unit = Bits::default();
+        unit.f(max_cll, 16);
+        unit.f(max_fall, 16);
+        let unit = unit.into_bytes();
+        let payload_size = unit.len() as u8;
+        // Local form: muh_header_size = leb(1) + fixed 2 + one muh_mlayer_map byte = 4,
+        // so the muh_header_size+cancel byte is 4 << 1 = 0x08.
+        let mut payload = vec![
+            0x00, // group header (is_suffix=0, necessity=0, application_id=0)
+            0x00, // metadata_unit_cnt_minus_1 = 0
+            0x01, // metadata_type = 1 (METADATA_TYPE_HDR_CLL)
+            0x08, // muh_header_size = 4, cancel = 0
+            payload_size,
+            0x60,
+            0x00,       // layer_idc=LAYER_VALUES(3), persistence=0, priority=0, reserved=0
+            mlayer_map, // muh_mlayer_map for this extended layer
+        ];
+        payload.extend_from_slice(&unit);
+        payload.push(0x80); // OBU trailing byte
+        annex_b_obu_with_header(&layer_obu_header(9, 0, 0, 0), &payload)
+    }
+
+    #[test]
+    fn metadata_hdr_cll_layer_values_late_for_one_targeted_layer_is_flagged() {
+        // AV2 § 6.16.5: the first-coded-picture rule applies INDEPENDENTLY per
+        // associated embedded layer. A LAYER_VALUES HDR CLL targeting embedded layers
+        // (0, 0) and (0, 1) is late for layer (0, 0) — its first coded picture (a CLK)
+        // already passed — even though layer (0, 1) has no coded picture yet. The
+        // finding must fire for the late layer. Pre-fix the `all targeted layers seen`
+        // gate suppressed it because (0, 1) was unseen.
+        let mut data = td_and_seq_header(0, 0, 1); // max_mlayer_id = 1 allows mlayers 0 and 1
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // layer (0,0) first picture
+        // Local group HDR CLL targeting mlayers 0 and 1 (map 0b011), late for (0,0).
+        data.extend(local_hdr_cll_group_layer_values_obu(0b0000_0011, 1000, 200));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "metadata/hdr-cll-first-coded-picture"),
+            "a LAYER_VALUES unit late for one targeted layer must fire; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_hdr_cll_layer_values_timely_for_all_targeted_layers_is_silent() {
+        // The complement: a LAYER_VALUES HDR CLL indicated BEFORE either targeted
+        // layer's first coded picture (in the pre-frame region) is timely for both and
+        // must be silent.
+        let mut data = td_and_seq_header(0, 0, 1);
+        data.extend(local_hdr_cll_group_layer_values_obu(0b0000_0011, 1000, 200)); // before any picture
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // layer (0,0) first picture
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "metadata/hdr-cll-first-coded-picture"),
+            "a LAYER_VALUES unit at/before the first picture of every targeted layer must \
+             be silent; report was: {report}"
+        );
+    }
+
     // --- task 5.1: QM/FGM SEF false-negative regression ---
 
     #[test]
-    fn qm_duplicate_level_across_sef_is_flagged() {
-        // AV2 § 6.12: QmSeen is "seen since the last frame"; a SEF (show-existing-
-        // frame) does NOT decode a new frame, so it does not reset the window. A
-        // level reused across a SEF (no intervening decoded frame) is still a
-        // duplicate — the former whole-frame-bearing reset (which included SEF) was
-        // the documented SEF-only false negative, now fixed.
+    fn qm_duplicate_level_across_sef_is_not_flagged() {
+        // AV2 § 6.12: the duplicate-level rule is scoped "between coded frames" and
+        // `QmSeen` to levels seen "since the last frame". § 7.3.3 lists a SEF as one of
+        // the two alternatives for "the coded frame" of a unit and calls it a "frame"
+        // ("Such a frame is associated with ... OrderHint"), so a SEF is a coded-frame
+        // boundary that resets the QM window. A level repeated on either side of a SEF
+        // is in two different coded frame units and is not a duplicate.
         let mut data = temporal_delimiter_obu();
         data.extend(active_sequence_header_obu());
         data.extend(qm_default_level_obu(0));
-        data.extend(annex_b_obu(REGULAR_SEF_HEADER, &[0x80])); // SEF: does not reset
-        data.extend(qm_default_level_obu(0)); // same level 0 again
+        data.extend(annex_b_obu(REGULAR_SEF_HEADER, &[0x80])); // SEF: resets the window
+        data.extend(qm_default_level_obu(0)); // same level 0, new coded frame unit
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
-            has_error(&report, "qm/duplicate-level-between-frames"),
-            "a level reused across a SEF with no intervening decoded frame must be \
-             flagged: {report}"
+            !has_error(&report, "qm/duplicate-level-between-frames"),
+            "a SEF is a coded-frame boundary that resets the QM window: {report}"
         );
     }
 
@@ -17023,19 +17282,21 @@ mod tests {
     }
 
     #[test]
-    fn film_grain_duplicate_slot_across_sef_is_flagged() {
-        // AV2 § 6.13: a SEF does not close a coded-frame-unit window, so a slot
-        // reused across a SEF (no intervening decoded frame) is still a duplicate.
+    fn film_grain_duplicate_slot_across_sef_is_not_flagged() {
+        // AV2 § 6.13: the duplicate-slot rule is scoped to the "same coded frame unit"
+        // and its NOTE permits reuse "in a subsequent coded frame unit". § 7.3.3 makes
+        // a single SEF its own coded frame unit, so a SEF ends the film-grain
+        // coded-frame-unit window. A slot updated on either side of a SEF is in two
+        // different coded frame units and must be allowed.
         let mut data = temporal_delimiter_obu();
         data.extend(active_sequence_header_obu());
         data.extend(film_grain_obu_bytes(0b0000_0001, 0)); // slot 0
-        data.extend(annex_b_obu(REGULAR_SEF_HEADER, &[0x80])); // SEF: does not reset
-        data.extend(film_grain_obu_bytes(0b0000_0001, 0)); // slot 0 again
+        data.extend(annex_b_obu(REGULAR_SEF_HEADER, &[0x80])); // SEF: closes the window
+        data.extend(film_grain_obu_bytes(0b0000_0001, 0)); // slot 0, new coded frame unit
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
-            has_error(&report, "film-grain/duplicate-slot-in-coded-frame-unit"),
-            "a slot reused across a SEF with no intervening decoded frame must be \
-             flagged: {report}"
+            !has_error(&report, "film-grain/duplicate-slot-in-coded-frame-unit"),
+            "a SEF is its own coded frame unit, so a slot reused across it is allowed: {report}"
         );
     }
 
