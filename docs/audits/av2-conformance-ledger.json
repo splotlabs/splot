@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "66210dd74b8f62bb0dd8097f4b130ea613105d27",
+  "audited_commit": "eaa2793a2869f44011a498a5cc9d8aef34d9a707",
   "outcome": "success",
   "files": [
     {
@@ -1535,19 +1535,16 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "312ce614066c15ac9fd497a97f3f8e8c200b52c061bf840539f245e30657818a",
+      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
-        "AV2-5.11.2-OPS-SEQ-PTL-INFO",
         "AV2-5.18-FRAME-HEADER",
         "AV2-5.19-TILE-GROUP",
         "AV2-5.2.2-OBU-HEADER",
         "AV2-5.2.3-TRAILING-BITS",
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
-        "AV2-A-LEVELS-TIERS",
-        "AV2-A-PROFILES",
         "CONF-AVM-DIFF-HARNESS",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
@@ -1580,44 +1577,6 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "ENC-BITSTREAM-WRITER"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/annex-a-profile-level-skeleton/design.md",
-      "sha256": "c48d3198ee4ae1ce39ac02963fa367fbcb2428222cc24ce3fe7509abf360f05d",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/annex-a-profile-level-skeleton/proposal.md",
-      "sha256": "373037079cbfe33c16515cc46ac4aa8dc87409a756ac442c82f2a9caf3c3f1ac",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.11.2-OPS-SEQ-PTL-INFO",
-        "AV2-A-LEVELS-TIERS",
-        "AV2-A-PROFILES"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/annex-a-profile-level-skeleton/specs/validator/spec.md",
-      "sha256": "d90bf126bea962609a4b32bba6cc1b7a81cf5a38764d41c4f3e9c01397ea46dd",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-A-LEVELS-TIERS",
-        "AV2-A-PROFILES"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/annex-a-profile-level-skeleton/tasks.md",
-      "sha256": "effc28e7c1f592db4d9a5c06415c562c72dbc977990f7828cc89a740ddf20a18",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-A-LEVELS-TIERS",
-        "AV2-A-PROFILES"
       ],
       "outcome": "success"
     },
@@ -2987,7 +2946,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "74fc666dff0f01971e814fcc2339a92a4cd2fa92205891a609d09e7f9a6251fd",
+      "sha256": "315715958d7a7e52bcff36f972f2372ec062db437455cfa133871e12a41e1228",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
