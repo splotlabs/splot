@@ -6138,6 +6138,22 @@ mod tests {
         minutes: Option<u32>,
         hours: Option<u32>,
     ) -> Vec<u8> {
+        metadata_short_payload(
+            0x00,
+            4,
+            &timecode_unit_bits(n_frames, seconds, minutes, hours),
+        )
+    }
+
+    /// The raw `metadata_timecode()` syntax bytes (no metadata-unit wrapper) for a
+    /// `full_timestamp_flag = 0` set with per-field presence flags. See
+    /// [`timecode_flagged_payload`] for the field semantics.
+    fn timecode_unit_bits(
+        n_frames: u32,
+        seconds: Option<u32>,
+        minutes: Option<u32>,
+        hours: Option<u32>,
+    ) -> Vec<u8> {
         assert!(
             !(minutes.is_some() && seconds.is_none()),
             "minutes_value requires seconds_value present (§ 5.17.7)"
@@ -6166,7 +6182,7 @@ mod tests {
         }
         bits.f(0, 5); // time_offset_length = 0
         bits.align();
-        metadata_short_payload(0x00, 4, &bits.into_bytes())
+        bits.into_bytes()
     }
 
     #[test]
@@ -6374,6 +6390,213 @@ mod tests {
         assert!(
             !has_error(&report, "metadata/timecode-n-frames-exceeds-rate"),
             "n_frames 29 == maxPicPerSecond - 1 must pass; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_timecode_omitted_after_omitted_is_flagged() {
+        // Finding 1 (literal "present" reading): a full-timestamp first timecode carries
+        // every field; a second set omits seconds (inferred cleanly from the present
+        // first set); a THIRD set also omits seconds. Under the literal reading the
+        // second set's seconds_value is INFERRED, not present, so it does not satisfy the
+        // third set's "such a previous seconds_value shall have been present" requirement
+        // — the third omission fires. (A chained-inference reading would stay silent.)
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_metadata_short_obu(&timecode_short_payload(
+            12, 34, 5,
+        )));
+        data.extend(global_metadata_short_obu(&timecode_flagged_payload(
+            0, None, None, None,
+        )));
+        data.extend(global_metadata_short_obu(&timecode_flagged_payload(
+            0, None, None, None,
+        )));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "metadata/timecode-inferred-without-previous"
+                    && d.message.contains("seconds_value")
+            }),
+            "an omitted field whose predecessor only INFERRED it (never coded it) fires \
+             under the literal reading; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_timecode_omitted_then_clk_in_same_tu_seeds_from_new_cvs() {
+        // Finding 2 (same-TU CLK attribution): a prior-CVS timecode carries seconds
+        // (present). A new temporal unit holds, in decoding order, a timecode that omits
+        // seconds and THEN a CLK. Per § 7.3.6 the whole temporal unit containing the CLK
+        // joins the NEW coded video sequence, so the prior-CVS present seconds must not
+        // seed the omitting set's inference — the diagnostic fires.
+        let mut data = global_metadata_short_stream(&timecode_short_payload(0, 0, 0));
+        data.extend(temporal_delimiter_obu());
+        data.extend(global_metadata_short_obu(&timecode_flagged_payload(
+            0, None, None, None,
+        )));
+        data.extend(annex_b_obu(0x10, &[])); // OBU_CLOSED_LOOP_KEY, xlayer 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "metadata/timecode-inferred-without-previous"
+                    && d.message.contains("seconds_value")
+            }),
+            "a same-TU CLK after the omitting timecode pulls it into the new CVS, so the \
+             prior-CVS seed must not satisfy the inference; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_timecode_n_frames_ci_after_metadata_anchors_at_metadata() {
+        // Finding 3: the CI-after re-evaluation path anchors the diagnostic at the
+        // offending timecode metadata OBU (which the message also names), not the later
+        // content interpretation OBU.
+        let mut data = temporal_delimiter_obu();
+        // The timecode metadata OBU starts one Annex B leb128 size-prefix byte past the
+        // preceding OBUs.
+        let timecode_offset = data.len() as u64 + 1;
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 31),
+            &timecode_flagged_payload(15, Some(0), Some(0), Some(0)),
+        ));
+        let ci_offset = data.len() as u64 + 1;
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING)));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "metadata/timecode-n-frames-exceeds-rate"
+                    && d.byte_offset.map(|o| o.get()) == Some(timecode_offset)
+            }),
+            "the diagnostic must anchor at the timecode metadata OBU (byte \
+             {timecode_offset}), not the CI OBU (byte {ci_offset}); report was: {report}"
+        );
+    }
+
+    /// A global `OBU_METADATA_GROUP` (xlayer 31) carrying one non-cancel timecode unit
+    /// (type 4) with `muh_layer_idc = LAYER_VALUES`, `muh_xlayer_map` selecting xlayer 0,
+    /// and a single `muh_mlayer_map` byte targeting the embedded layers in `mlayer_map`.
+    fn global_timecode_group_layer_values(mlayer_map: u8, unit: &[u8]) -> Vec<u8> {
+        // muh_header_size = payload_size leb (1) + fixed 2 + muh_xlayer_map 4 + one
+        // muh_mlayer_map byte (xlayer 0 selected) = 8. The timecode unit is a handful of
+        // bytes, so its length is a single-byte leb128 muh_payload_size.
+        assert!(unit.len() < 128, "timecode unit fits a 1-byte leb128");
+        let payload_size = unit.len() as u8;
+        let mut payload = vec![
+            0x00, // is_suffix=0, necessity=0, application_id=0
+            0x00, // metadata_unit_cnt_minus_1 = 0
+            0x04, // metadata_type = 4 (METADATA_TYPE_TIMECODE)
+            0x10, // muh_header_size = 8, cancel = 0
+            payload_size,
+            0x60,
+            0x00, // layer_idc=LAYER_VALUES(3), persistence=0, priority=0, reserved=0
+            0x00,
+            0x00,
+            0x00,
+            0x01,       // muh_xlayer_map = bit 0 (xlayer 0) set
+            mlayer_map, // muh_mlayer_map for xlayer 0
+        ];
+        payload.extend_from_slice(unit);
+        payload.push(0x80); // OBU trailing byte
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(9, 0, 0, 31),
+            &payload,
+        ));
+        data
+    }
+
+    #[test]
+    fn metadata_timecode_n_frames_targeting_excludes_untargeted_layer_ci() {
+        // Finding 4 (§ 6.16.3 layer targeting): a global LAYER_VALUES timecode targeting
+        // embedded layer 1 only. Embedded layer 0 carries a low-rate CI timing whose
+        // maxPicPerSecond the timecode's n_frames would exceed; embedded layer 1 carries a
+        // CI whose timing makes the n_frames legal. The timecode must pair only with its
+        // targeted layer (1), so no diagnostic — pairing with the untargeted layer 0 CI
+        // (the pre-fix behavior) would wrongly fire.
+        let low_rate = CiTiming {
+            display_tick: 1000,
+            time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
+            equal_picture_interval: true,
+            num_ticks_minus_1: 1,
+        };
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        // Embedded layer 0: low-rate CI (maxPicPerSecond 1); embedded layer 1: BASE_TIMING
+        // (maxPicPerSecond 15). The timecode below targets layer 1 only with n_frames 2,
+        // which is < 15 (legal for layer 1) but >= 1 (would violate layer 0).
+        data.extend(content_interpretation_obu(0, 0, Some(low_rate)));
+        data.extend(content_interpretation_obu(1, 0, Some(BASE_TIMING)));
+        let unit = timecode_unit_bits(2, Some(0), Some(0), Some(0));
+        // muh_mlayer_map bit 1 set -> targets embedded layer 1 only.
+        data.extend(global_timecode_group_layer_values(0x02, &unit));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "metadata/timecode-n-frames-exceeds-rate"),
+            "a LAYER_VALUES timecode targeting layer 1 only must not pair with layer 0's \
+             CI timing; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_timecode_n_frames_targeting_pairs_with_targeted_layer_ci() {
+        // Finding 4 control: the same targeting still pairs with the TARGETED layer's CI.
+        // Embedded layer 1 carries a low-rate CI (maxPicPerSecond 1); the layer-1-targeted
+        // timecode's n_frames 2 exceeds it, so the diagnostic fires.
+        let low_rate = CiTiming {
+            display_tick: 1000,
+            time_scale: 1000, // maxPicPerSecond = 1
+            equal_picture_interval: true,
+            num_ticks_minus_1: 1,
+        };
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING)));
+        data.extend(content_interpretation_obu(1, 0, Some(low_rate)));
+        let unit = timecode_unit_bits(2, Some(0), Some(0), Some(0));
+        data.extend(global_timecode_group_layer_values(0x02, &unit));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "metadata/timecode-n-frames-exceeds-rate"),
+            "a LAYER_VALUES timecode targeting layer 1 must pair with layer 1's CI; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_timecode_n_frames_olk_reinit_drops_deferred_pairing() {
+        // Finding 5 (§ 7.3.8.11 CI reinit): a prior-TU timecode carries n_frames 5. A
+        // later temporal unit holds, in decoding order, a content interpretation OBU whose
+        // low-rate timing (maxPicPerSecond 1) makes the prior-TU timecode violate the
+        // n_frames bound — that pairing is *deferred* (the timecode sits in an earlier
+        // temporal unit) — and then an OLK, a § 7.3.8.11 random access point that
+        // reinitializes ci_timing_info_present_flag to 0. The OLK must drop the deferred
+        // n_frames pairing (its pre-epoch timing no longer constrains the post-epoch
+        // pictures), so no diagnostic survives. (Pre-fix the n_frames rule was not in the
+        // OLK's drop set, so the deferred diagnostic would flush and fire.)
+        let low_rate = CiTiming {
+            display_tick: 1000,
+            time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
+            equal_picture_interval: true,
+            num_ticks_minus_1: 1,
+        };
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        // TU0: timecode with n_frames 5 (no CI yet, so the bound is not decided here).
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 31),
+            &timecode_flagged_payload(5, Some(0), Some(0), Some(0)),
+        ));
+        data.extend(temporal_delimiter_obu()); // -> TU1
+        // TU1: the CI establishes the violating timing -> the recheck DEFERS the n_frames
+        // diagnostic (TU0 observation vs TU1 CI), then the OLK reinit drops it.
+        data.extend(content_interpretation_obu(0, 0, Some(low_rate)));
+        data.extend(open_loop_key_obu()); // OBU_OPEN_LOOP_KEY, xlayer 0 -> § 7.3.8.11 RAP
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "metadata/timecode-n-frames-exceeds-rate"),
+            "the OLK reinitializes ci_timing_info_present_flag to 0, so the deferred \
+             pairing against the prior-TU CI must drop; report was: {report}"
         );
     }
 
