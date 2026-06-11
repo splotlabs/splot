@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "7aaded7dc7ec709109b6e6928f979cc35e06d2f7",
+  "audited_commit": "a0916971746a41ac11f8c718b155a327c2e97b36",
   "outcome": "success",
   "files": [
     {
@@ -769,12 +769,13 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "905b01026d6b67c004e2290e2f4e4ec9df647f72d143d1a89842749d40733e1e",
+      "sha256": "2ae4fbf69c411f928ae76815dabfd7339dd6fed377e0f032e9cedf3ab43b1db6",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
         "AV2-5.17.5-METADATA-HDR-CLL",
         "AV2-5.17.6-METADATA-HDR-MDCV",
+        "AV2-5.17.7-METADATA-TIMECODE",
         "AV2-5.18-FRAME-HEADER",
         "AV2-5.18.6-QUANTIZATION",
         "AV2-5.6-MSDO",
@@ -833,7 +834,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "bcf5df46e8916cffd2699a4837c6afb320605fa0d9e50e1eecd4384b3c3487cc",
+      "sha256": "122a3867422ce61f02fa93606c05ac66eeb41eb82d245bb107b6814806235672",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1065,7 +1066,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "ee59c7931a3eaee8ec8d2e16c26f49cff64b9d30b4d0aedb63aa36e6df91810d",
+      "sha256": "23f860868502d8aaaadfdd69a0d645cf8dcbdb31be707eb3da842a84698f06ad",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2867,7 +2868,7 @@
     },
     {
       "path": "openspec/changes/archive/2026-06-11-metadata-residual-local-semantics/specs/validator/spec.md",
-      "sha256": "07195a8fa07da1d0f397d115e3c4935ad761227622e4c2b63fd58234a2c18ae9",
+      "sha256": "432ff6b9c29dd8f154c9df3f863f3aebd20c715467bca4c58dd0e4415726153e",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.17.7-METADATA-TIMECODE"
@@ -3106,7 +3107,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "5218c01ce71cd7821cb3618ad54b858f53fc8d5c84396ed3bad8cb04bc3b25eb",
+      "sha256": "c3b1eeeda470715c34760dd32eef614afd9b0c31ed6562b9756b51185ae8025d",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
