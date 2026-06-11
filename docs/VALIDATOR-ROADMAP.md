@@ -166,8 +166,15 @@ extended-layer ordering landed; a §7.3.2 coded-multistream-video-sequence
 `monotonic_output_order_flag` agreement check) and the §7.3.2 boundary-set
 identity check landed as the first `cmvs/*` diagnostic
 (`cmvs/boundary-set-mismatch`, decidable-disagreement-only); the §7.3.3–§7.3.5
-coded-frame-unit rows and §7.3.9 long-term-reference availability are not
-started.
+coded-frame-unit **segmentation** landed under `frame-unit-segmentation`
+(`crates/splot-validate/src/frame_unit.rs`): each `(xlayer, mlayer, tlayer)`
+triple's OBUs partition into coded frame units with the §7.3.3/§7.3.4 region
+order, output/non-output classification from the parsed output flags (Unknown
+→ silent), and the eager structural `frame-unit/*` presence-order diagnostics
+plus the §7.3.8.10 first-coded-frame-unit CI rule; the two formerly-backlogged
+§7.3.7/§7.3.6 ordering rows (`obu-order/global-hls-after-metadata-suffix`,
+`obu-order/non-global-hls-before-coded-layer`) landed with it. §7.3.9
+long-term-reference availability is not started.
 
 **Goal:** enforce temporal-unit and coded-extended-layer presence order enough for validator-first conformance.
 
@@ -186,20 +193,24 @@ Feature IDs:
 
 Landed: the §7.3.7 ordering checks listed under `obu-order/*` in
 [`VALIDATOR-DIAGNOSTICS.md`](./VALIDATOR-DIAGNOSTICS.md) — delimiter presence
-and duplication, global-HLS position, ascending xlayer order, and padding
-globality.
+and duplication, global-HLS position, ascending xlayer order, padding
+globality, global-HLS-after-metadata-suffix, and non-global-HLS-before-coded-layer
+— plus the §7.3.3–§7.3.5 coded-frame-unit segmentation and its `frame-unit/*`
+diagnostics.
 
 Remaining:
 
-- global metadata prefix/suffix positions (pending frame/tile parsing; see
-  the backlog table below);
 - the remaining `cmvs/*` boundary-ordering diagnostics on
-  `AV2-7.3.2-CMVS-BOUNDARIES` that depend on §7.3.3–§7.3.5 frame-unit
+  `AV2-7.3.2-CMVS-BOUNDARIES` that depend on the §7.3.3–§7.3.5 frame-unit
   segmentation (the §7.3.2 boundary-set identity check landed as
-  `cmvs/boundary-set-mismatch`; the ordering segmentation residual stays
-  blocked on `AV2-7.3.5-CODED-FRAME-UNIT`) and the coded-frame-unit rows
-  (`AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT`,
-  `AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT`, `AV2-7.3.5-CODED-FRAME-UNIT`).
+  `cmvs/boundary-set-mismatch`; the segmentation foundation they need now
+  exists in `frame_unit.rs`, but the ordering diagnostics themselves are not
+  yet wired);
+- the Unknown-path residual of the coded-frame-unit rows: a coded frame whose
+  output classification is undecidable (an unsupported `FrameHeaderParseStatus`
+  stop, blocked on `AV2-5.18-FRAME-HEADER`) drops its output-class-derived
+  judgment (the grammar branch and the §7.3.4 BRT bound), narrowing as
+  frame-header parsing lands.
 
 Follow-up in this phase: §7.4 random access decoding. Validate random access
 points enough to support HLS availability, coded-video-sequence boundaries, and
@@ -415,8 +426,6 @@ lands, add it to the registry tables there (the CI gate will require it).
 
 | Planned ID | Severity | Section | Feature | Trigger |
 |---|---|---|---|---|
-| `obu-order/global-hls-after-metadata-suffix` | error | §7.3.7 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Global HLS appears after suffix metadata. Needs global suffix-metadata classification, which is pending frame/tile parsing. |
-| `obu-order/non-global-hls-before-coded-layer` | error | §7.3.7 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Non-global HLS appears in an invalid temporal-unit region. |
 | `brt/global-ordering-position` | error | §7.3.7 | `AV2-7.3-OBU-ORDERING` | A global BRT in an invalid temporal-unit position. Deferred: §7.3.7 does not list BRT among the global prefix OBUs, so a hard ordering error needs the §7.3.8 decoder-model / random-access state (tracked by a spec TODO under `AV2-7.3-OBU-ORDERING` in `splot-validate`). |
 | `annex-a/frame-exceeds-ops-level` | error | §A.4/§6.10.4 | `AV2-A-LEVELS-TIERS` | A frame's size / tile geometry exceeds the Annex A.4 Table A.8/A.9 limits for an *operating-point-advertised* level: §6.10.4 requires the operating point's bitstream to satisfy A.4 with `seq_level_idx` set to the OPS-signaled `ops_level_idx`, so the static level-limit checks must also run against OPS levels, not only the activated `seq_level_idx`. Deferred from `annex-a-profile-level-skeleton`: blocked on operating-point-to-frame mapping (which frames belong to which operating point), which the validator does not model yet — `check_ops_level_tier_value_space` currently only checks the OPS-carried value space (reserved-level / high-tier), not per-frame conformance against the advertised level. |
 

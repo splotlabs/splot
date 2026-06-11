@@ -146,6 +146,20 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 | `frame-header/tile-cols-out-of-range` | error | § 6.17.7.2 | frame tile_info() derives TileCols greater than MAX_TILE_COLS |
 | `frame-header/tile-rows-out-of-range` | error | § 6.17.7.2 | frame tile_info() derives TileRows greater than MAX_TILE_ROWS |
 
+### `frame-unit/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `frame-unit/buffer-removal-timing-multiplicity` | error | § 7.3.4 | a coded non-output frame unit carries more than one OBU_BUFFER_REMOVAL_TIMING (an output frame unit permits more) |
+| `frame-unit/ci-not-in-first-frame-unit` | error | § 7.3.8.10 | OBU_CONTENT_INTERPRETATION appears outside the first coded frame unit of its embedded layer in the temporal unit |
+| `frame-unit/duplicate-content-interpretation` | error | § 7.3.3 | a coded frame unit carries more than one OBU_CONTENT_INTERPRETATION |
+| `frame-unit/first-tile-group-flag` | error | § 7.3.3 | the first tile OBU of a coded frame has is_first_tile_group != 1 (a later tile OBU re-asserting is_first_tile_group == 1 starts the next coded frame unit, § 7.3.6) |
+| `frame-unit/missing-coded-frame` | error/warning | § 7.3.3 | a coded frame unit's head OBUs (CI / MFH / pre-frame) are not followed by a coded frame before the temporal unit (error) or bitstream (warning, possible truncation) ends |
+| `frame-unit/mixed-coded-frame-types` | error | § 7.3.3 | the OBUs of one coded frame do not all share a single obu_type |
+| `frame-unit/region-order` | error | § 7.3.3 | a content-interpretation or multi-frame-header OBU appears after a later region of its coded frame unit |
+| `frame-unit/sef-single-obu` | error | § 7.3.3 | a SEF coded frame is not exactly one OBU (a frame OBU follows the SEF in the same coded frame unit) |
+| `frame-unit/suffix-metadata-before-coded-frame` | error | § 7.3.3 | suffix metadata (metadata_is_suffix == 1) appears before the coded frame of its coded frame unit |
+
 ### `hls/`
 
 | Rule ID | Severity | Section | Condition |
@@ -205,7 +219,9 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 | `metadata/group-unit-count-too-large` | error | § 6.16.3 | metadata group unit count is too large |
 | `metadata/group-xlayer-map-global-bit-set` | error | § 6.16.3 | bit 31 of muh_xlayer_map is set |
 | `metadata/decoded-frame-hash-reserved-nonzero` | warning | § 6.16.13 | decoded-frame-hash reserved bit is non-zero (decoder-ignored producer anomaly) |
+| `metadata/hdr-cll-first-coded-picture` | error | § 6.16.5 | an explicit-pair-targeted HDR CLL metadata unit first establishes content for an embedded layer after that layer's first coded picture of the CVS has passed (it shall be indicated at the first coded picture) |
 | `metadata/hdr-cll-repeat-content-differs` | error | § 6.16.5 | HDR CLL metadata units in a CVS associated with a common embedded layer (per § 6.16.3 layer targeting) have different content |
+| `metadata/hdr-mdcv-first-coded-picture` | error | § 6.16.6 | an explicit-pair-targeted HDR MDCV metadata unit first establishes content for an embedded layer after that layer's first coded picture of the CVS has passed (it shall be indicated at the first coded picture) |
 | `metadata/hdr-mdcv-repeat-content-differs` | error | § 6.16.6 | HDR MDCV metadata units in a CVS associated with a common embedded layer (per § 6.16.3 layer targeting) have different content |
 | `metadata/persistence-idc-reserved` | warning | § 6.16.3 | muh_persistence_idc is 4..7 (reserved for AOMedia use) |
 | `metadata/scan-type-ci-scan-type-mismatch` | error | § 6.16.10 | mps_pic_struct_type requires a ci_scan_type_idc that differs from a non-zero CI value established in the CVS scope at or after the layer's most recent random access point (§ 7.3.8.11) |
@@ -262,6 +278,8 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 |---|---|---|---|
 | `obu-order/duplicate-temporal-delimiter` | error | § 7.3.7 | a second global temporal delimiter with no intervening OBU |
 | `obu-order/global-hls-after-coded-layer` | error | § 7.3.7 | a global HLS prefix OBU appears after a coded extended layer unit |
+| `obu-order/global-hls-after-metadata-suffix` | error | § 7.3.7 | a global HLS prefix OBU appears after a global suffix metadata OBU (metadata_is_suffix == 1) |
+| `obu-order/non-global-hls-before-coded-layer` | error | § 7.3.6 | a non-global HLS header OBU (LCR / OPS / atlas / sequence header) appears after the coded frame region of its coded extended layer unit has begun |
 | `obu-order/padding-non-global-outside-coded-layer` | error | § 7.3.7 | OBU_PADDING outside a coded extended layer unit is not GLOBAL_XLAYER_ID |
 | `obu-order/temporal-unit-missing-delimiter` | error | § 7.3.7 | an OBU appears before a global temporal delimiter starts the temporal unit |
 | `obu-order/xlayer-order-not-ascending` | error | § 7.3.7 | coded extended layer units are not in ascending obu_xlayer_id order |

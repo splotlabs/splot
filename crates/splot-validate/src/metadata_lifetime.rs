@@ -239,20 +239,24 @@ impl MetadataLifetimeStore {
     }
 
     /// Expires every `NO_PERSISTENCE` record (AV2 § 6.16.3: "Used only for the
-    /// current frame"). Called from the validator's coded-frame-window hook, so a
-    /// unit observed before a coded frame lapses once that frame has been observed.
+    /// current frame"). Called from the validator's coded-frame hook at each
+    /// frame-bearing OBU, which is the coded frame of its frame unit (§ 7.3.5): the
+    /// first tile-group OBU of a coded frame, a SEF/TIP/bridge OBU, etc. A coded
+    /// frame unit carries at most one such coded frame, so the hook fires exactly
+    /// once per coded frame unit per layer — the coded-frame-unit granularity the
+    /// store needs. A record from a unit's pre-frame region therefore lapses once
+    /// that unit's coded frame has been observed.
     ///
-    /// Granularity caveat: the hook fires per frame-bearing **OBU**, not per coded
-    /// frame unit. A coded frame unit spanning several tile-group OBUs therefore
-    /// expires the record after its first tile-group OBU (mid-frame), and a global
-    /// unit at the start of a temporal unit is already expired for later extended
-    /// layers' frames in the same temporal unit. No consumer reads the store's
-    /// per-frame view yet; the per-frame applicability checks deferred to tasks
-    /// 8-9 of the `metadata-semantic-validation` change must first move this
-    /// expiry to the coded-frame-unit boundary.
-    // TODO(spec: AV2-5.17-METADATA): expire NO_PERSISTENCE at the coded-frame-UNIT
-    // boundary (not per frame-bearing OBU) before the deferred per-frame
-    // applicability checks (tasks 8-9) consume the store.
+    /// Residual: the expiry is per-coded-frame across all layers, not yet scoped to
+    /// the record's own `(xlayer, mlayer)` frame, so a global NO_PERSISTENCE unit at
+    /// the start of a temporal unit lapses at the first layer's coded frame rather
+    /// than once per consuming layer. No consumer reads the store's per-frame view
+    /// yet; the per-frame applicability checks deferred to tasks 8-9 of the
+    /// `metadata-semantic-validation` change will scope the expiry to the consuming
+    /// layer's frame when they land.
+    // TODO(spec: AV2-5.17-METADATA): scope the NO_PERSISTENCE expiry to the
+    // record's own layer's coded frame (per-(xlayer,mlayer) granularity) when the
+    // deferred per-frame applicability checks (tasks 8-9) consume the store.
     pub(crate) fn expire_no_persistence(&mut self) {
         for records in self.active.values_mut() {
             records.retain(|record| !matches!(record.persistence, PersistenceMode::No));
