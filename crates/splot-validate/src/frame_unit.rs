@@ -70,7 +70,14 @@
 //!   coded frame and its output class is set to [`OutputClass::Unknown`] — never a
 //!   split guess, never a structural diagnostic, dropping only the output-class-
 //!   dependent BRT bound (the Unknown-soundness invariant). Tile-group types are
-//!   unaffected: their `is_first_tile_group` flag is the in-band delimiter.
+//!   unaffected: their `is_first_tile_group` flag is the in-band delimiter. A
+//!   **bridge** frame is the exception within this same-type case: its output class
+//!   is NonOutput *by type* (mirror line 470), so the frame-vs-unit ambiguity cannot
+//!   change it — both interpretations are non-output. The type-decided class is kept
+//!   (it is not dropped to Unknown), so the § 7.3.4 non-output BRT bound stays
+//!   evaluable across back-to-back same-type bridge units. Only `OBU_LEADING_TIP` /
+//!   `OBU_REGULAR_TIP`, whose output comes from a per-frame header parse, route to
+//!   Unknown.
 //!
 //! ## Resolution timing
 //!
@@ -246,12 +253,19 @@ pub(crate) struct FrameUnitSegmenter {
     /// temporal unit has been observed — i.e. whose first coded frame unit has
     /// begun (§ 7.3.8.10 first-coded-frame-unit CI rule).
     first_coded_unit_started: BTreeSet<(ExtendedLayerId, EmbeddedLayerId)>,
-    /// Number of coded frame units completed for each `(xlayer, mlayer)` embedded
-    /// layer in the current temporal unit. The § 7.3.8.10 "first coded frame unit of
-    /// each embedded layer within a temporal unit" scope is *not* keyed by
-    /// `obu_tlayer_id` (mirror line 880), so this count is tracked per embedded layer
-    /// across temporal layers, not per `(xlayer, mlayer, tlayer)` triple.
-    units_completed_for_embedded_layer: BTreeMap<(ExtendedLayerId, EmbeddedLayerId), u32>,
+    /// Number of distinct coded frames *opened* for each `(xlayer, mlayer)` embedded
+    /// layer in the current temporal unit, counted when each coded frame's first
+    /// frame-bearing OBU is seen. Each coded frame belongs to its own coded frame unit
+    /// (§ 7.3.3 / § 7.3.4: one coded frame per unit), so the count of *completed* units
+    /// is this minus the currently-open one (see
+    /// [`Self::completed_units_for_embedded_layer`]). Counting at the coded-frame open —
+    /// in `observe_frame`, keyed by `(xlayer, mlayer)` — makes it **tlayer-agnostic**:
+    /// the § 7.3.8.10 "first coded frame unit of each embedded layer within a temporal
+    /// unit" scope is *not* keyed by `obu_tlayer_id` (mirror line 880), so a second
+    /// coded frame at a *different* `obu_tlayer_id` of the same embedded layer counts as
+    /// a later unit even though it opens in a fresh per-triple state that
+    /// `starts_new_unit` never observes.
+    coded_frames_opened_for_embedded_layer: BTreeMap<(ExtendedLayerId, EmbeddedLayerId), u32>,
 }
 
 impl FrameUnitSegmenter {
@@ -267,27 +281,32 @@ impl FrameUnitSegmenter {
         self.flush_open_units(FlushKind::TemporalUnitBoundary, report);
         self.layers.clear();
         self.first_coded_unit_started.clear();
-        self.units_completed_for_embedded_layer.clear();
+        self.coded_frames_opened_for_embedded_layer.clear();
     }
 
     /// Number of coded frame units this `(xlayer, mlayer)` embedded layer has
     /// **completed** in the current temporal unit (AV2 § 7.3.8.10 scope, across
-    /// temporal layers). A coded frame unit completes only when the *next* unit
-    /// begins (`starts_new_unit`), so while a unit's coded frame and its
-    /// suffix-metadata tail (§ 7.3.3) are still open this count does not yet include
-    /// it. Consumers (the § 6.16.5 / § 6.16.6 first-coded-picture lateness predicate)
-    /// use a count of `0` to mean "still within the layer's first coded frame unit of
-    /// this temporal unit" — i.e. a suffix metadata after the frame's OBUs but inside
-    /// the same unit is not yet in a later unit.
+    /// temporal layers). Derived as the number of distinct coded frames opened for the
+    /// embedded layer minus the currently-open one: each coded frame is its own unit
+    /// (§ 7.3.3 / § 7.3.4), so a unit is *completed* once a later coded frame has begun.
+    /// While a unit's coded frame and its suffix-metadata tail (§ 7.3.3) are still open
+    /// — with no later coded frame yet — this count does not include it. Consumers (the
+    /// § 6.16.5 / § 6.16.6 first-coded-picture lateness predicate) use a count of `0` to
+    /// mean "still within the layer's first coded frame unit of this temporal unit": a
+    /// suffix metadata after the frame's OBUs but inside the same unit is not yet in a
+    /// later unit. Because the open is counted per `(xlayer, mlayer)` (not per
+    /// `(xlayer, mlayer, tlayer)` triple), a second coded frame at a different
+    /// `obu_tlayer_id` correctly counts as a later unit (mirror line 880).
     pub(crate) fn completed_units_for_embedded_layer(
         &self,
         xlayer: ExtendedLayerId,
         mlayer: EmbeddedLayerId,
     ) -> u32 {
-        self.units_completed_for_embedded_layer
+        self.coded_frames_opened_for_embedded_layer
             .get(&(xlayer, mlayer))
             .copied()
             .unwrap_or(0)
+            .saturating_sub(1)
     }
 
     /// Flushes the final temporal unit's open units (AV2 § 7.3.2 end condition:
@@ -370,7 +389,8 @@ impl FrameUnitSegmenter {
         );
         let embedded_key = (obu.header.extended_layer_id, obu.header.embedded_layer_id);
         let first_coded_unit_started = &mut self.first_coded_unit_started;
-        let units_completed_for_embedded_layer = &mut self.units_completed_for_embedded_layer;
+        let coded_frames_opened_for_embedded_layer =
+            &mut self.coded_frames_opened_for_embedded_layer;
         let state = self.layers.entry(key).or_insert_with(|| LayerState {
             unit: UnitState::new(),
         });
@@ -379,7 +399,7 @@ impl FrameUnitSegmenter {
             state,
             embedded_key,
             first_coded_unit_started,
-            units_completed_for_embedded_layer,
+            coded_frames_opened_for_embedded_layer,
             obu,
             role,
             report,
@@ -391,7 +411,10 @@ impl FrameUnitSegmenter {
         state: &mut LayerState,
         embedded_key: (ExtendedLayerId, EmbeddedLayerId),
         first_coded_unit_started: &mut BTreeSet<(ExtendedLayerId, EmbeddedLayerId)>,
-        units_completed_for_embedded_layer: &mut BTreeMap<(ExtendedLayerId, EmbeddedLayerId), u32>,
+        coded_frames_opened_for_embedded_layer: &mut BTreeMap<
+            (ExtendedLayerId, EmbeddedLayerId),
+            u32,
+        >,
         obu: &ObuEnvelope<'_>,
         role: SegRole,
         report: &mut ValidationReport,
@@ -401,15 +424,12 @@ impl FrameUnitSegmenter {
         // unit's coded frame and tail are done). § 7.3.3 / § 7.3.4 require every
         // coded frame unit to contain a coded frame, so a head / frame OBU after one
         // is unambiguously a new unit — the grammar permits back-to-back units, so a
-        // pre-frame OBU after a coded frame is NOT a same-unit misplacement.
+        // pre-frame OBU after a coded frame is NOT a same-unit misplacement. (The
+        // per-embedded-layer unit count is incremented at the coded-frame open in
+        // `observe_frame`, not here, so it stays tlayer-agnostic — see
+        // `coded_frames_opened_for_embedded_layer`.)
         if Self::starts_new_unit(&state.unit, role, obu.header.obu_type) {
             Self::resolve_unit(&state.unit, report);
-            // Count the completed unit per embedded layer (§ 7.3.8.10 scope), across
-            // temporal layers — not per `(xlayer, mlayer, tlayer)` triple.
-            let completed = units_completed_for_embedded_layer
-                .entry(embedded_key)
-                .or_insert(0);
-            *completed = completed.saturating_add(1);
             state.unit = UnitState::new();
         }
 
@@ -441,7 +461,7 @@ impl FrameUnitSegmenter {
                     state,
                     embedded_key,
                     first_coded_unit_started,
-                    units_completed_for_embedded_layer,
+                    coded_frames_opened_for_embedded_layer,
                     obu,
                     report,
                 );
@@ -463,6 +483,7 @@ impl FrameUnitSegmenter {
                 state,
                 embedded_key,
                 first_coded_unit_started,
+                coded_frames_opened_for_embedded_layer,
                 is_first_tile_group,
                 output_class(output),
                 obu,
@@ -472,10 +493,13 @@ impl FrameUnitSegmenter {
                 state,
                 embedded_key,
                 first_coded_unit_started,
+                coded_frames_opened_for_embedded_layer,
                 None,
                 OutputClass::Output,
                 true,
                 false, // a SEF is a single-OBU coded frame, judged by the SEF rule
+                true,  // SEF output is decided by type (always output), not a header parse
+                false, // a SEF carries no is_first_tile_group bit to be unreadable
                 obu,
                 report,
             ),
@@ -483,10 +507,13 @@ impl FrameUnitSegmenter {
                 state,
                 embedded_key,
                 first_coded_unit_started,
+                coded_frames_opened_for_embedded_layer,
                 None,
                 output_class(output),
                 false,
-                true, // TIP frames carry no in-band coded-frame delimiter
+                true,  // TIP frames carry no in-band coded-frame delimiter
+                false, // TIP output is derived from the per-frame header, not the type
+                false, // a TIP frame carries no is_first_tile_group bit to be unreadable
                 obu,
                 report,
             ),
@@ -494,10 +521,13 @@ impl FrameUnitSegmenter {
                 state,
                 embedded_key,
                 first_coded_unit_started,
+                coded_frames_opened_for_embedded_layer,
                 None,
                 OutputClass::NonOutput,
                 false,
-                true, // OBU_BRIDGE_FRAME carries no in-band coded-frame delimiter
+                true,  // OBU_BRIDGE_FRAME carries no in-band coded-frame delimiter
+                true,  // a bridge frame is non-output by type (mirror line 470), not a header parse
+                false, // a bridge frame carries no is_first_tile_group bit to be unreadable
                 obu,
                 report,
             ),
@@ -613,7 +643,7 @@ impl FrameUnitSegmenter {
         state: &mut LayerState,
         embedded_key: (ExtendedLayerId, EmbeddedLayerId),
         first_coded_unit_started: &BTreeSet<(ExtendedLayerId, EmbeddedLayerId)>,
-        units_completed_for_embedded_layer: &BTreeMap<(ExtendedLayerId, EmbeddedLayerId), u32>,
+        coded_frames_opened_for_embedded_layer: &BTreeMap<(ExtendedLayerId, EmbeddedLayerId), u32>,
         obu: &ObuEnvelope<'_>,
         report: &mut ValidationReport,
     ) {
@@ -623,8 +653,8 @@ impl FrameUnitSegmenter {
         // keyed by `obu_tlayer_id`. This CI is outside that first unit when either:
         //
         // - the embedded layer already *completed* a coded frame unit in this temporal
-        //   unit (`units_completed_for_embedded_layer > 0`, tracked across temporal
-        //   layers), or
+        //   unit (a later coded frame has begun, so `coded_frames_opened > 1`, tracked
+        //   across temporal layers), or
         // - the embedded layer's first coded frame has already begun
         //   (`first_coded_unit_started`) while this CI's *current* unit holds no coded
         //   frame yet — i.e. the first coded frame lives in a different (earlier or
@@ -636,10 +666,11 @@ impl FrameUnitSegmenter {
         // the second clause catches a CI that started a fresh later unit even within
         // the same temporal layer. Independent of region order, so reported even when
         // region-blind.
-        let completed = units_completed_for_embedded_layer
+        let completed = coded_frames_opened_for_embedded_layer
             .get(&embedded_key)
             .copied()
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .saturating_sub(1);
         let in_later_unit = completed > 0
             || (unit.coded_frame.is_none() && first_coded_unit_started.contains(&embedded_key));
         if in_later_unit {
@@ -759,10 +790,15 @@ impl FrameUnitSegmenter {
     }
 
     /// Observes a tile-group frame OBU (the coded frame; first-tile-group rule).
+    #[allow(clippy::too_many_arguments)]
     fn observe_tile_frame(
         state: &mut LayerState,
         embedded_key: (ExtendedLayerId, EmbeddedLayerId),
         first_coded_unit_started: &mut BTreeSet<(ExtendedLayerId, EmbeddedLayerId)>,
+        coded_frames_opened_for_embedded_layer: &mut BTreeMap<
+            (ExtendedLayerId, EmbeddedLayerId),
+            u32,
+        >,
         is_first_tile_group: Option<bool>,
         class: OutputClass,
         obu: &ObuEnvelope<'_>,
@@ -770,14 +806,25 @@ impl FrameUnitSegmenter {
     ) {
         let obu_type = obu.header.obu_type;
         let first_in_frame = state.unit.coded_frame.is_none();
+        // A tile-group OBU whose is_first_tile_group bit could not be read, arriving
+        // while a coded frame is already open, has an undecidable continue-vs-next-unit
+        // boundary (that bit is the delimiter, mirror lines 413-414 / 486-487). The
+        // structural continuation judgments in `observe_frame` are suppressed and the
+        // open frame routes to Unknown rather than guessing. When this is the *first*
+        // tile of the unit (`first_in_frame`) there is no open frame to continue, so
+        // the flag is just opening a new coded frame and the ambiguity does not arise.
+        let delimiter_unreadable = !first_in_frame && is_first_tile_group.is_none();
         Self::observe_frame(
             state,
             embedded_key,
             first_coded_unit_started,
+            coded_frames_opened_for_embedded_layer,
             Some(obu_type),
             class,
             false,
             false, // tile-group OBUs carry the is_first_tile_group delimiter
+            false, // tile-group output is derived from the per-frame header, not the type
+            delimiter_unreadable,
             obu,
             report,
         );
@@ -811,16 +858,35 @@ impl FrameUnitSegmenter {
     /// class. `obu_type_for_match` is the type used for the same-type rule (`None`
     /// for SEF/TIP/bridge, which use the OBU's own type). `is_no_delimiter_frame`
     /// marks a TIP / bridge OBU (no in-band coded-frame delimiter), so a same-type
-    /// continuation routes the open coded frame's output class to Unknown.
+    /// continuation normally routes the open coded frame's output class to Unknown
+    /// — unless `output_is_type_decided` is set (a bridge frame, always non-output by
+    /// type, mirror line 470), in which case the frame-vs-unit ambiguity cannot change
+    /// the output class, so the type-decided class (and the § 7.3.4 BRT bound it
+    /// gates) is preserved.
+    ///
+    /// `delimiter_unreadable` marks a tile-group OBU whose `is_first_tile_group` bit
+    /// could not be read. While a coded frame is open that bit is *the* cue that would
+    /// decide whether this OBU continues the open coded frame or begins the next coded
+    /// frame unit (mirror lines 413-414 / 486-487); without it the boundary is
+    /// undecidable, so the structural continuation judgments (`sef-single-obu`,
+    /// `mixed-coded-frame-types`) must be suppressed — they would rest on a guess that
+    /// the OBU continues the open frame — and the open frame's output class routes to
+    /// Unknown rather than guessing which frame's output applies.
     #[allow(clippy::too_many_arguments)]
     fn observe_frame(
         state: &mut LayerState,
         embedded_key: (ExtendedLayerId, EmbeddedLayerId),
         first_coded_unit_started: &mut BTreeSet<(ExtendedLayerId, EmbeddedLayerId)>,
+        coded_frames_opened_for_embedded_layer: &mut BTreeMap<
+            (ExtendedLayerId, EmbeddedLayerId),
+            u32,
+        >,
         obu_type_for_match: Option<ObuType>,
         class: OutputClass,
         is_sef: bool,
         is_no_delimiter_frame: bool,
+        output_is_type_decided: bool,
+        delimiter_unreadable: bool,
         obu: &ObuEnvelope<'_>,
         report: &mut ValidationReport,
     ) {
@@ -836,18 +902,48 @@ impl FrameUnitSegmenter {
                     state.unit.region = Region::CodedFrame;
                 }
                 first_coded_unit_started.insert(embedded_key);
+                // A coded frame is opening for this embedded layer. Count it (per
+                // `(xlayer, mlayer)`, tlayer-agnostic — mirror line 880) so the
+                // completed-unit count and the § 7.3.8.10 / § 6.16.5 / § 6.16.6 consumers
+                // see a later coded frame at *any* temporal layer of the embedded layer
+                // as a new unit. The `None` arm is reached once per coded frame (the unit
+                // resets `coded_frame` to `None` between frames), so this counts distinct
+                // coded frames, not their continuation OBUs.
+                let opened = coded_frames_opened_for_embedded_layer
+                    .entry(embedded_key)
+                    .or_insert(0);
+                *opened = opened.saturating_add(1);
             }
             Some(mut frame) => {
-                if frame.is_sef {
+                if delimiter_unreadable {
+                    // A tile-group OBU whose `is_first_tile_group` bit could not be read,
+                    // arriving while a coded frame is open. That bit is exactly the
+                    // delimiter that would decide whether this OBU continues the open
+                    // coded frame or begins the next coded frame unit (mirror lines
+                    // 413-414 / 486-487). With it unreadable the boundary is undecidable,
+                    // so the structural continuation judgments below (`sef-single-obu`,
+                    // `mixed-coded-frame-types`) — which all assume the OBU *continues*
+                    // the open frame — would rest on a guess and must be suppressed. The
+                    // OBU stays in the open coded frame (splitting would equally be a
+                    // guess), and the open frame's output class routes to Unknown: the
+                    // § 7.3.4 BRT bound would otherwise rest on a guess of which frame's
+                    // output applies. The metadata/tile-group syntax check reports the
+                    // unreadable bit itself.
+                    if frame.output != OutputClass::Unknown {
+                        frame.output = OutputClass::Unknown;
+                        state.unit.coded_frame = Some(frame);
+                    }
+                } else if frame.is_sef {
                     // A SEF coded frame is exactly one OBU (mirror line 417), and a SEF
                     // is the complete coded-frame alternative of its unit, so a SEF can
                     // never *continue* an open coded frame: a SEF arriving while a frame
                     // is open already started a new unit (`starts_new_unit`), so the
                     // incoming OBU here is never a SEF. The remaining violation is the
                     // inverse — a *non-SEF* frame OBU (a tile-group continuation claim,
-                    // is_first_tile_group == 0/undecidable) following the SEF in the same
-                    // unit: the SEF is already the unit's complete coded frame, so the
-                    // extra OBU cannot belong to it.
+                    // is_first_tile_group == 0) following the SEF in the same unit: the
+                    // SEF is already the unit's complete coded frame, so the extra OBU
+                    // cannot belong to it. (An *unreadable*-delimiter tile OBU is excluded
+                    // above — it is undecidable, not a continuation claim.)
                     report.push(frame_unit_error(
                         "frame-unit/sef-single-obu",
                         obu,
@@ -863,7 +959,8 @@ impl FrameUnitSegmenter {
                     // here — `starts_new_unit` already split it into its own unit (the
                     // type change is a decidable boundary). So this branch fires only
                     // for a tile-group OBU making an explicit in-band continuation claim
-                    // (is_first_tile_group == 0) against a mismatched open type.
+                    // (is_first_tile_group == 0, a *readable* flag) against a mismatched
+                    // open type; an unreadable flag is undecidable and handled above.
                     report.push(frame_unit_error(
                         "frame-unit/mixed-coded-frame-types",
                         obu,
@@ -874,9 +971,9 @@ impl FrameUnitSegmenter {
                             frame.obu_type.spec_name()
                         ),
                     ));
-                } else if is_no_delimiter_frame {
-                    // Same-`obu_type` no-delimiter (TIP / bridge) OBU continuing an open
-                    // coded frame of that type: the spec gives these types no
+                } else if is_no_delimiter_frame && !output_is_type_decided {
+                    // Same-`obu_type` no-delimiter (TIP) OBU continuing an open coded
+                    // frame of that type: the spec gives these types no
                     // is_first_tile_group flag (mirror lines 404-411 / 473-484 omit
                     // them), so the validator cannot decide whether this OBU is a later
                     // OBU of the one coded frame ("one or more OBUs", mirror lines
@@ -886,6 +983,13 @@ impl FrameUnitSegmenter {
                     // § 7.3.4 non-output BRT bound) would otherwise rest on a guess of
                     // which frame's output applies. (No structural diagnostic fires —
                     // same type, not a SEF.)
+                    //
+                    // A bridge frame (`output_is_type_decided`) is excluded: its output
+                    // class is NonOutput *by type* (mirror line 470), not from an
+                    // ambiguous per-frame header parse, so neither interpretation (one
+                    // bridge coded frame or two back-to-back same-type bridge units)
+                    // changes the class. The § 7.3.4-derived non-output BRT bound stays
+                    // evaluable, so the type-decided class must NOT be dropped to Unknown.
                     if frame.output != OutputClass::Unknown {
                         frame.output = OutputClass::Unknown;
                         state.unit.coded_frame = Some(frame);

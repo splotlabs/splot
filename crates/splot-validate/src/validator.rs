@@ -16766,6 +16766,45 @@ mod tests {
         );
     }
 
+    /// An `OBU_BRIDGE_FRAME` whose `bridge_frame_ref_idx == 0` (in range for
+    /// `NumRefFrames >= 1`). A bridge frame is always a non-output coded frame (mirror
+    /// line 470). Carries no `is_first_tile_group` delimiter.
+    fn bridge_obu() -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.uvlc(0); // seq_header_id_in_frame_header (bridge infers cur_mfh_id == 0)
+        fb.f(0, 3); // bridge_frame_ref_idx == 0 (< NumRefFrames)
+        annex_b_obu(BRIDGE_HEADER, &fb.into_bytes())
+    }
+
+    #[test]
+    fn frame_unit_brt_multiplicity_with_back_to_back_bridge_frames_is_flagged() {
+        // AV2 § 7.3.4: a coded NON-output frame unit allows zero or one BRT. A bridge
+        // frame is always non-output BY TYPE (mirror line 470), independent of any
+        // frame-header parse. Two BRT OBUs followed by two back-to-back same-type bridge
+        // OBUs are non-conforming whether the bridges are one coded frame ("one or more
+        // OBUs") or two back-to-back coded frame units: either way the (single) coded
+        // frame unit holding the two BRTs is non-output. The same-type-no-delimiter
+        // continuation must therefore PRESERVE the type-decided non-output class so the
+        // § 7.3.4 BRT bound stays evaluable. Pre-fix the second bridge downgraded the
+        // open frame's output class to Unknown, which dropped the BRT bound and made
+        // this stream pass silently.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            num_ref_frames_minus_1: 5, // NumRefFrames == 6 for the bridge ref idx
+            ..FrameCoreSeq::base()
+        });
+        data.extend(brt_obu());
+        data.extend(brt_obu());
+        data.extend(bridge_obu()); // bridge coded frame (open)
+        data.extend(bridge_obu()); // same-type continuation -> still non-output by type
+        data.extend(temporal_delimiter_obu()); // resolve the unit
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_frame_unit_error(&report, "frame-unit/buffer-removal-timing-multiplicity"),
+            "back-to-back bridge frames stay non-output by type, so the § 7.3.4 BRT bound \
+             must still fire; report was: {report}"
+        );
+    }
+
     #[test]
     fn frame_unit_suffix_metadata_before_coded_frame_is_flagged() {
         // AV2 § 7.3.3: suffix metadata (metadata_is_suffix == 1) belongs to the
@@ -16829,6 +16868,53 @@ mod tests {
         assert!(
             has_frame_unit_error(&report, "frame-unit/sef-single-obu"),
             "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_unreadable_tile_delimiter_after_sef_is_undecidable_and_silent() {
+        // AV2 § 7.3.3 / § 7.3.5: a tile-group OBU whose is_first_tile_group bit cannot be
+        // read (empty payload) arriving after a completed SEF coded frame is undecidable:
+        // that bit is exactly the delimiter that decides whether this OBU continues the
+        // open coded frame or begins the next coded frame unit (mirror lines 413-414 /
+        // 486-487). The validator must NOT guess — the structural sef-single-obu judgment
+        // (which assumes the OBU continues the SEF) is suppressed. Pre-fix the missing bit
+        // was treated as a continuation claim and fired frame-unit/sef-single-obu.
+        let mut data = seg_td_and_seq();
+        data.extend(annex_b_obu(REGULAR_SEF_HEADER, &[0x80])); // SEF: the complete coded frame
+        // A regular tile group with an EMPTY payload: the is_first_tile_group bit is
+        // unreadable, so seg_role_for derives `is_first_tile_group: None`.
+        data.extend(annex_b_obu(REGULAR_TILE_GROUP_HEADER, &[]));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-unit/")),
+            "an unreadable tile delimiter after a SEF is undecidable and must not fire \
+             sef-single-obu; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_unreadable_tile_delimiter_after_different_type_frame_is_undecidable_and_silent() {
+        // AV2 § 7.3.3 / § 7.3.5: same undecidability after a DIFFERENT-type open coded
+        // frame. A decidable-output CLK coded frame followed by a regular-tile-group OBU
+        // with an unreadable is_first_tile_group bit (empty payload): the missing bit is
+        // the delimiter that would decide continuation (which would be a mixed-types
+        // violation) versus the next coded frame unit (which would be silent). The
+        // validator cannot decide, so frame-unit/mixed-coded-frame-types is suppressed.
+        // Pre-fix the missing bit was treated as a continuation and fired
+        // frame-unit/mixed-coded-frame-types.
+        let mut data = seg_td_and_seq();
+        data.extend(clk_frame_decidable(true, true)); // CLK coded frame (open)
+        data.extend(annex_b_obu(REGULAR_TILE_GROUP_HEADER, &[])); // unreadable flag, different type
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-unit/")),
+            "an unreadable tile delimiter after a different-type coded frame is undecidable \
+             and must not fire mixed-coded-frame-types; report was: {report}"
         );
     }
 
@@ -17396,6 +17482,33 @@ mod tests {
                 .errors()
                 .any(|d| d.rule_id == "metadata/hdr-cll-first-coded-picture"),
             "a suffix HDR CLL in a later coded frame unit is still late; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_hdr_cll_suffix_after_later_temporal_layer_unit_is_flagged() {
+        // AV2 § 6.16.5 / § 7.3.8.10: the suffix-tail grace counts COMPLETED coded frame
+        // units per embedded layer across temporal layers (mirror line 880), not per
+        // (xlayer, mlayer, tlayer) triple. The embedded layer (xlayer 0, mlayer 0) has
+        // its first coded frame unit at obu_tlayer_id 0 (a CLK) and a SECOND coded frame
+        // unit at obu_tlayer_id 1 (another CLK). A suffix HDR CLL after that later-tlayer
+        // frame is in the layer's SECOND unit, past the first coded picture, so it is
+        // late and metadata/hdr-cll-first-coded-picture must fire. Pre-fix the
+        // completed-units count was only incremented when a new unit started within the
+        // SAME triple state, so the cross-tlayer second unit left the count at 0, the
+        // grace mis-fired, and the diagnostic was skipped.
+        let mut data = td_and_seq_header(0, 1, 0); // max_tlayer_id == 1
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // tlayer 0: first coded picture
+        // A CLK (obu_type 4) at obu_tlayer_id 1, same embedded layer (xlayer 0, mlayer 0).
+        data.extend(frame_obu_direct_seq_ref_layer(4, 1, 0, 0, 0)); // tlayer 1: 2nd coded frame unit
+        data.extend(hdr_cll_unit_layer_current_suffix(0, 1000, 200)); // suffix tail in 2nd unit: late
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "metadata/hdr-cll-first-coded-picture"),
+            "a suffix HDR CLL after a later-temporal-layer coded frame unit of the same \
+             embedded layer is past the first coded picture and must fire; report was: {report}"
         );
     }
 
