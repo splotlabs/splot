@@ -2404,12 +2404,8 @@ impl ValidatorContext {
             // to the new coded video sequence (see DistinctMlayerTracker::reset_cvs).
             self.distinct_mlayer.advance_temporal_unit();
         } else if obu.header.obu_type == ObuType::ClosedLoopKey {
-            // Annex A Table A.4: this temporal unit begins a new coded video sequence. The
-            // prior IOP window was already flushed in `observe_obu` when this CLK was found
-            // to start a coded video sequence later than the open window's (so the window
-            // spans the whole prior coded video sequence, not just its random-access
-            // temporal unit); the window's coded-video-sequence start is recorded and
-            // seeded there too.
+            // AV2 § 7.3.6: this temporal unit begins a new coded video sequence for the
+            // CLK's extended layer.
             self.start_cvs_for_xlayer(obu.header.extended_layer_id, report);
             self.observe_ci_rap(obu.header.extended_layer_id);
             // AV2 § 7.3.2 / § 7.3.6: a CLK makes this temporal unit one that "contains
