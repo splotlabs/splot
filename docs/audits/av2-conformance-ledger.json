@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "14a3e4b332cfd1f4e94c4a65e65effa74c3f4d31",
+  "audited_commit": "83ef31e36c12d41f695415c1340a70e1aa28cc2e",
   "outcome": "success",
   "files": [
     {
@@ -1538,7 +1538,7 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "a884a61b9d63a6aa461ca66fc5c4ebf9d1623aa899ab38ce00389c16c223e4e0",
+      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -1548,9 +1548,6 @@
         "AV2-5.2.3-TRAILING-BITS",
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
-        "AV2-5.8-LAYER-CONFIG-RECORD",
-        "AV2-5.8.4-LCR-SEQ-PTL-INFO",
-        "AV2-5.8.7-LCR-REP-INFO",
         "CONF-AVM-DIFF-HARNESS",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
@@ -2915,37 +2912,6 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/lcr-ptl-activated-sequence-agreement/proposal.md",
-      "sha256": "9690f32525ae7fefee83d239d3b9ee17c5f6f211bef8031b359ffba11a9a1e0e",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.8-LAYER-CONFIG-RECORD",
-        "AV2-5.8.4-LCR-SEQ-PTL-INFO",
-        "AV2-5.8.7-LCR-REP-INFO"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/lcr-ptl-activated-sequence-agreement/specs/validator/spec.md",
-      "sha256": "653402784f2a87f26589499fc08d22dc5035c777e7da11be1eb0d60b619798d6",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.8.4-LCR-SEQ-PTL-INFO",
-        "AV2-5.8.7-LCR-REP-INFO"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/lcr-ptl-activated-sequence-agreement/tasks.md",
-      "sha256": "2367e9d5e79c3371f280304b40d1b66d120c48e940ad1c4edf08920a10e7a70e",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.8.4-LCR-SEQ-PTL-INFO",
-        "AV2-5.8.7-LCR-REP-INFO"
-      ],
-      "outcome": "success"
-    },
-    {
       "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
       "sha256": "ec25589a8a02879087f03de9cc0c8b07e5fedf96f9a48c8f3dd99be91c14d240",
       "scope_kind": "openspec",
@@ -3083,7 +3049,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "d4c8d1409bccb9f65b9e2c871c5560b39ebb998738ac5c567f2bcd6e9c5bb48c",
+      "sha256": "5042e0790f824ad1b91053f29535fa83cfb87704c16f94cf5248cb72234899df",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
