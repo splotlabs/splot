@@ -8681,6 +8681,46 @@ mod tests {
     }
 
     #[test]
+    fn scan_type_rap_resent_identical_ci_before_metadata_reports_once() {
+        // The § 6.16.10 Table 6.18 analogue of
+        // `metadata_timecode_n_frames_rap_resent_identical_ci_before_timecode_reports_once`
+        // (the eager-emission-aware RAP re-pair must not duplicate an eagerly-emitted
+        // pairing). A pre-RAP CI at TU0 establishes ci_scan_type_idc 2 (Table 6.18
+        // SingleField). The RAP temporal unit holds, in decoding order, the SAME CI
+        // re-sent identical FIRST, then scan-type metadata mps_pic_struct_type 0 (Frame
+        // group, requires ci_scan_type_idc 1) that violates the established 2, then the
+        // CLK. Because the re-sent CI is recorded BEFORE the scan-type metadata, the
+        // eager metadata-time Table 6.18 check pairs against that same-temporal-unit CI
+        // and emits the diagnostic right away (defer_or_emit emits eagerly within one
+        // temporal unit). The CLK's repair hook re-pairs the suppressed re-send — but
+        // this same-RAP-TU observation was already paired-and-emitted, so it must be
+        // skipped: exactly ONE diagnostic. Pre-fix the repair re-paired every post-epoch
+        // observation, emitting the mismatch TWICE. (Contrast
+        // `scan_type_rap_resent_identical_ci_repairs`, where the metadata precedes the
+        // re-sent CI: there the eager pairing DEFERS against the stale pre-RAP CI and is
+        // dropped at the RAP, so the repair is the sole source of the one diagnostic and
+        // must still fire.)
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        // TU0: the pre-RAP CI establishes ci_scan_type_idc 2.
+        data.extend(content_interpretation_scan_obu(2, None));
+        data.extend(temporal_delimiter_obu()); // -> TU1, the RAP temporal unit
+        // TU1: the SAME CI re-sent identical FIRST -> scan-type metadata (Frame group,
+        // requires idc 1) violating the established idc 2 -> CLK (§ 7.3.8.11 RAP).
+        data.extend(content_interpretation_scan_obu(2, None));
+        data.extend(global_scan_type_obu(0x00, 0));
+        data.extend(annex_b_obu(0x10, &[])); // OBU_CLOSED_LOOP_KEY, xlayer 0 -> RAP
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "metadata/scan-type-ci-scan-type-mismatch"),
+            1,
+            "an identical CI re-sent BEFORE the violating scan-type metadata in the RAP \
+             temporal unit is paired-and-emitted eagerly; the CLK repair hook must not \
+             re-pair it and duplicate the diagnostic; report was: {report}"
+        );
+    }
+
+    #[test]
     fn scan_type_olk_rap_resent_identical_ci_repairs() {
         // The OLK analogue of `scan_type_rap_resent_identical_ci_repairs`. An OLK is also
         // a § 7.3.8.11 random access point whose observe_ci_rap advances the epoch and
