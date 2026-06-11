@@ -3393,30 +3393,30 @@ kind = "bitstream-semantics"
 spec_sections = ["Annex A"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
-module = "crates/splot-validate/src/checks/mod.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-validate/src/annex_a.rs"
+openspec_change = "annex-a-profile-level-skeleton"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Profile constraints become actionable after enough sequence/frame syntax is parsed."
+notes = "Landed (static subset): the Annex A.2 Table A.1 profile value-space checks on the activated sequence header — annex-a/profile-reserved (seq_profile_idc 5-30), annex-a/profile-chroma-format-mismatch (chroma_format_idc outside the profile's set; profile 31 skipped), annex-a/profile-bit-depth-mismatch (defensive; the parsed bit_depth_idc only models 0/1, so unreachable today) — plus the Table A.4 interoperability-point OBU-presence checks (annex-a/msdo-required-for-iop, annex-a/msdo-prohibited-for-iop, annex-a/lcr-required-for-iop) evaluated at coded-video-sequence end with ExternalHlsMode::Provided suppression, using the Table A.3 layer counting. The table data is transcribed verbatim from the mirror in crates/splot-validate/src/annex_a.rs. Remains (partial): the Table A.3 layer-budget bound (combination flag must be 0 for IOP 0/1, TODO(spec: AV2-A-LEVELS-TIERS)), the MultiStreamDecoderMode == 1 substream level scaling (TODO(spec: AV2-A-LEVELS-TIERS)), Configurable-profile (31) constraint derivation, Table A.5/A.6 multi-sequence agreement, and no AVM differential oracle has been run (avm_diff pending)."
 
 [feature.status]
 mapped = "done"
 types = "todo"
 parse = "not-applicable"
-validate = "todo"
+validate = "partial"
 write = "not-applicable"
 encode = "not-applicable"
 decode_check = "todo"
-tests = "todo"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-validate/src/annex_a.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-validate annex_a"]
 fixtures = []
-diagnostics = []
+diagnostics = ["annex-a/profile-reserved", "annex-a/profile-chroma-format-mismatch", "annex-a/profile-bit-depth-mismatch", "annex-a/msdo-required-for-iop", "annex-a/msdo-prohibited-for-iop", "annex-a/lcr-required-for-iop"]
 
 [[feature]]
 id = "AV2-A-LEVELS-TIERS"
@@ -3426,30 +3426,30 @@ kind = "bitstream-semantics"
 spec_sections = ["Annex A"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
-module = "crates/splot-validate/src/checks/mod.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-validate/src/annex_a.rs"
+openspec_change = "annex-a-profile-level-skeleton"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Level and tier checks depend on parsed sequence/frame syntax and stream-level state."
+notes = "Landed (static subset): the Annex A.4 level/tier value-space checks (annex-a/level-reserved on the activated seq_level_idx and on observed ops_level_idx for reserved 22-30; annex-a/high-tier-below-4-0 warning, sourced from the Table A.9 NOTE and unreachable in conformant syntax since seq_tier is only signaled for level_idx > 3) plus the Annex A.4 static level-limit checks on the parsed intra frame path (annex-a/frame-size-exceeds-level for MaxPicSize/MaxHSize/MaxVSize, annex-a/frame-size-below-minimum for the >= 16 rule, annex-a/tile-count-exceeds-level for MaxTiles/MaxTileCols), all skipped at seq_level_idx 31 and for reserved levels. The Table A.7/A.8/A.9 columns (LevelIdx 0-21 -> MaxPicSize, MaxHSize/MaxVSize, MaxTiles, MaxTileCols) are transcribed verbatim from the mirror in crates/splot-validate/src/annex_a.rs with per-row citations; rate columns are NOT transcribed. Remains (partial): the rate-based level constraints (MaxDisplayRate/MaxDecodeRate/MaxHeaderRate, CompressedSize, FrameSymbolCount, MaxLevelRefFrames, buffer model — owned by the Annex E change), the per-tile TileWidth/TileHeight scaling-factor constraints, the MultiStreamDecoderMode == 1 substream level scaling (TODO(spec: AV2-A-LEVELS-TIERS)), still-picture-gated constraints, and no AVM differential oracle has been run (avm_diff pending)."
 
 [feature.status]
 mapped = "done"
 types = "todo"
 parse = "not-applicable"
-validate = "todo"
+validate = "partial"
 write = "not-applicable"
 encode = "not-applicable"
 decode_check = "todo"
-tests = "todo"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-validate/src/annex_a.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+commands = ["cargo test -p splot-validate annex_a"]
 fixtures = []
-diagnostics = []
+diagnostics = ["annex-a/level-reserved", "annex-a/high-tier-below-4-0", "annex-a/frame-size-exceeds-level", "annex-a/frame-size-below-minimum", "annex-a/tile-count-exceeds-level"]
 
 [[feature]]
 id = "AV2-E-DECODER-MODEL"

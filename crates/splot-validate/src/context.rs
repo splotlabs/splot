@@ -35,7 +35,7 @@ use splot_core::headers::quantizer_matrix::{
 };
 use splot_core::headers::sequence::{
     MAX_NUM_MLAYERS, MAX_SEQ_NUM, MLayerDependencyMap, SequenceHeader, SequenceHeaderGeneral,
-    SequenceHeaderId, TLayerDependencyMap, TimingInfo, parse_sequence_header,
+    SequenceHeaderId, TLayerDependencyMap, Tier, TimingInfo, parse_sequence_header,
 };
 use splot_core::headers::tile_group::parse_tile_group_prefix;
 use splot_core::hls::{
@@ -49,6 +49,10 @@ use splot_core::types::{
     EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID, ObuType, TemporalLayerId,
 };
 
+use crate::annex_a::{
+    InteroperabilityPoint, MIN_FRAME_DIMENSION, interoperability_point, is_reserved_level,
+    is_reserved_profile, level_limits, profile_allows_chroma,
+};
 use crate::diagnostic::{Diagnostic, ValidationReport};
 use crate::metadata_lifetime::{
     ActiveMetadataUnit, LAYER_CURRENT, LAYER_GLOBAL, LAYER_VALUES, MetadataLifetimeStore,
@@ -59,6 +63,11 @@ use crate::options::{ExternalHlsMode, ValidationOptions};
 /// Maximum conformant `num_*_points` for a film-grain scaling function
 /// (AV2 v1.0.0 § 6.17.10.2).
 const MAX_FILM_GRAIN_SCALING_POINTS: u8 = 14;
+
+/// Smallest `seq_level_idx` at which the High tier (`seq_tier == 1`) may be signaled
+/// (Annex A.4 Table A.7 maps LevelIdx 4 to level 4.0, mirror line 281; the Table A.9
+/// NOTE, mirror lines 436-437, restricts High tier to "level 4.0 and above").
+const HIGH_TIER_MIN_LEVEL_IDX: u8 = 4;
 
 /// Stateful validator data derived from parseable high-level syntax OBUs.
 #[derive(Debug, Default)]
@@ -182,6 +191,31 @@ pub(crate) struct ValidatorContext {
     /// this map; fallback-guess activations and headers without decoder-model info do
     /// not participate.
     seq_buffer_delay_sums: BTreeMap<ExtendedLayerId, SeqBufferDelayBaseline>,
+    /// Already-emitted Annex A profile/level/tier value-space findings, keyed by
+    /// `(xlayer, seq_header_id, cvs_generation_epoch)`, so the activation-driven
+    /// re-checks emit each finding once per activated header per coded video sequence
+    /// rather than per OBU (Annex A.2 Table A.1 / Annex A.4 Table A.7/A.9).
+    emitted_annex_a_value_space: BTreeSet<(ExtendedLayerId, SequenceHeaderId, u64)>,
+    /// Byte offset of the OBU carrying each stored sequence header, keyed by
+    /// `seq_header_id`, so the Annex A value-space diagnostics — emitted at activation
+    /// time, which may be a frame OBU — anchor at the defining sequence-header OBU.
+    sequence_header_offsets: BTreeMap<SequenceHeaderId, ByteOffset>,
+    /// Per-extended-layer Annex A interoperability-point evidence accumulated within
+    /// the current coded video sequence, for the Table A.4 MSDO/LCR presence checks
+    /// evaluated at coded-video-sequence end; see [`AnnexAIopTracker`].
+    annex_a_iop: AnnexAIopTracker,
+    /// Whether external HLS is provided (`ExternalHlsMode::Provided`), captured during
+    /// observation so the end-of-stream Annex A Table A.4 flush — which runs from
+    /// [`Self::finish`], without access to [`ValidationOptions`] — can suppress the
+    /// in-band MSDO/LCR presence checks when externally-supplied HLS makes in-band
+    /// presence counting unsound (design).
+    external_hls_provided: bool,
+    /// Whether the temporal unit currently being observed contains an
+    /// `OBU_CLOSED_LOOP_KEY`. The Annex A Table A.4 IOP window is evaluated at the next
+    /// global temporal delimiter only when the just-completed temporal unit began a new
+    /// coded video sequence (had a CLK, § 7.3.6), so every extended layer's CLK in one
+    /// temporal unit accumulates into the same window. Reset after each evaluation.
+    annex_a_iop_tu_had_clk: bool,
 }
 
 /// Comparison key for the § 6.10.5 operating-point buffer-delay sum-constancy check:
@@ -1866,6 +1900,202 @@ impl DistinctMlayerTracker {
     }
 }
 
+/// Accumulates the Annex A interoperability-point (Table A.4) evidence for the current
+/// coded-(multistream-)video-sequence window, evaluated at the window's end (a CLK in
+/// any extended layer, or the end of the bitstream).
+///
+/// Table A.4 (mirror lines 178-201) states MSDO/LCR presence requirements for
+/// interoperability points 0-2 as a function of E = "Number of Extended Layers > 1"
+/// and M = "Number of Embedded Layers > 1" (Table A.3 definitions, mirror lines
+/// 144-161). The window scope is the broadest sound one available without modeling the
+/// full § 7.3.2 coded multistream video sequence: it accumulates from the start of the
+/// bitstream (or the most recent CLK in any layer) until the next CLK in any layer or
+/// the end of the bitstream — the same epoch granularity as the `GLOBAL_XLAYER_ID`
+/// coded-video-sequence generation. "Presence" means an OBU of that type occurred in
+/// the window.
+///
+/// What is **not** modeled here (recorded as `TODO(spec: AV2-A-LEVELS-TIERS)` at the
+/// call sites): the `MultiStreamDecoderMode == 1` substream level scaling (mirror lines
+/// 456-523), and the Table A.3 layer-budget bound that the combination flag must be 0
+/// for IOP 0/1 (mirror lines 154-158) — exceeding the IOP layer budget is a separate
+/// interoperability conformance check that needs the full Table A.3 bounds.
+#[derive(Debug, Default)]
+struct AnnexAIopTracker {
+    /// The window's accumulated evidence. `None` before the first observation of the
+    /// current window (so a freshly reset window with no evidence yet flushes nothing).
+    window: Option<AnnexAIopWindow>,
+}
+
+/// One coded-(multistream-)video-sequence window's accumulated Table A.4 evidence; see
+/// [`AnnexAIopTracker`].
+#[derive(Debug)]
+struct AnnexAIopWindow {
+    /// Distinct non-global `obu_xlayer_id` values observed in the window (Table A.3
+    /// "Number of Extended Layers" base case, mirror lines 146-151: "the number of
+    /// distinct values of obu_xlayer_id (excluding GLOBAL_XLAYER_ID)").
+    distinct_xlayers: BTreeSet<ExtendedLayerId>,
+    /// The largest `num_streams_minus_2 + 2` of any MSDO observed in the window, when
+    /// `MultiStreamDecoderMode == 1` (Table A.3, mirror lines 148-149). An MSDO sets
+    /// `MultiStreamDecoderMode == 1` (§ 5.6), so its presence selects this count.
+    msdo_num_streams: Option<u32>,
+    /// The largest activated global LCR `LcrMaxNumXLayerCount` (set-bit count of
+    /// `lcr_xlayer_map`) observed in the window (Table A.3, mirror lines 149-150: "When
+    /// a global layer configuration record is activated, this value is equal to
+    /// LcrMaxNumXLayerCount").
+    global_lcr_xlayer_count: Option<u32>,
+    /// The maximum embedded-layer count (`seq_max_mlayer_cnt_minus_1 + 1`) across the
+    /// sequence headers activated in the window (Table A.3 "Number of Embedded Layers",
+    /// mirror lines 152-153).
+    max_embedded_layers: u32,
+    /// `true` if an `OBU_MSDO` occurred in the window.
+    msdo_present: bool,
+    /// `true` if a global `OBU_LAYER_CONFIGURATION_RECORD` was activated in the window.
+    global_lcr_present: bool,
+    /// `true` if a local `OBU_LAYER_CONFIGURATION_RECORD` was activated in the window.
+    local_lcr_present: bool,
+    /// The interoperability point of the profile activated in the window, when known.
+    /// Derived from the first non-reserved, non-Configurable activated profile; if a
+    /// later activation disagrees, the window is left with mixed IOP and the check is
+    /// skipped (the multistream profile-agreement rules are out of scope here).
+    iop: Option<AnnexAIopState>,
+    /// Byte offset to anchor the Table A.4 diagnostic at — the latest activating OBU's
+    /// offset, the location where the (now-final) layer configuration is known.
+    anchor_offset: ByteOffset,
+}
+
+impl Default for AnnexAIopWindow {
+    fn default() -> Self {
+        Self {
+            distinct_xlayers: BTreeSet::new(),
+            msdo_num_streams: None,
+            global_lcr_xlayer_count: None,
+            max_embedded_layers: 0,
+            msdo_present: false,
+            global_lcr_present: false,
+            local_lcr_present: false,
+            iop: None,
+            anchor_offset: ByteOffset::new(0),
+        }
+    }
+}
+
+/// The interoperability-point state of an Annex A IOP window: a single agreed IOP, or
+/// `Mixed` when activated profiles disagree (the check is then skipped).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnnexAIopState {
+    /// A single agreed interoperability point.
+    Single(InteroperabilityPoint),
+    /// Activated profiles disagree on the interoperability point; skip the check.
+    Mixed,
+}
+
+impl AnnexAIopTracker {
+    fn window_mut(&mut self) -> &mut AnnexAIopWindow {
+        self.window.get_or_insert_with(AnnexAIopWindow::default)
+    }
+
+    /// Records a non-global `obu_xlayer_id` seen in the window (Table A.3 extended-layer
+    /// base count).
+    fn note_xlayer(&mut self, xlayer: ExtendedLayerId) {
+        if !xlayer.is_global() {
+            self.window_mut().distinct_xlayers.insert(xlayer);
+        }
+    }
+
+    /// Records that an `OBU_MSDO` with `num_streams` substreams occurred in the window
+    /// (`MultiStreamDecoderMode == 1`).
+    fn note_msdo(&mut self, num_streams: u32, offset: ByteOffset) {
+        let window = self.window_mut();
+        window.msdo_present = true;
+        window.msdo_num_streams = Some(window.msdo_num_streams.unwrap_or(0).max(num_streams));
+        window.anchor_offset = offset;
+    }
+
+    /// Records that a global LCR with `xlayer_count == LcrMaxNumXLayerCount` was
+    /// activated in the window.
+    fn note_global_lcr(&mut self, xlayer_count: u32, offset: ByteOffset) {
+        let window = self.window_mut();
+        window.global_lcr_present = true;
+        window.global_lcr_xlayer_count = Some(
+            window
+                .global_lcr_xlayer_count
+                .unwrap_or(0)
+                .max(xlayer_count),
+        );
+        window.anchor_offset = offset;
+    }
+
+    /// Records that a local LCR was activated in the window.
+    fn note_local_lcr(&mut self, offset: ByteOffset) {
+        let window = self.window_mut();
+        window.local_lcr_present = true;
+        window.anchor_offset = offset;
+    }
+
+    /// Records an activated sequence header's profile (for the IOP) and embedded-layer
+    /// count, anchoring the window's diagnostic at the activating OBU.
+    fn note_activation(&mut self, profile_idc: u8, embedded_layers: u32, offset: ByteOffset) {
+        let window = self.window_mut();
+        window.max_embedded_layers = window.max_embedded_layers.max(embedded_layers);
+        window.anchor_offset = offset;
+        if let Some(iop) = interoperability_point(profile_idc) {
+            window.iop = Some(match window.iop {
+                None => AnnexAIopState::Single(iop),
+                Some(AnnexAIopState::Single(existing)) if existing == iop => {
+                    AnnexAIopState::Single(existing)
+                }
+                Some(_) => AnnexAIopState::Mixed,
+            });
+        }
+    }
+
+    /// Ends the current window and returns its accumulated evidence for Table A.4
+    /// evaluation, resetting the tracker for the next window. Returns `None` when no
+    /// evidence was accumulated (an empty window flushes nothing).
+    fn take_window(&mut self) -> Option<AnnexAIopWindow> {
+        self.window.take()
+    }
+}
+
+impl AnnexAIopWindow {
+    /// The Table A.3 "Number of Extended Layers" for this window (mirror lines 146-151).
+    ///
+    /// The base case is the count of distinct non-global `obu_xlayer_id` values actually
+    /// present (mirror lines 150-151) — the actual coded structure. This is the value
+    /// the Table A.4 prohibition rows turn on: spec.md's scenario "a single-layer stream
+    /// (one distinct obu_xlayer_id) that contains an OBU_MSDO" must read E == 1 so the
+    /// MSDO is *prohibited*, which would not hold if the MSDO's self-declared
+    /// `num_streams` overrode it. The `num_streams_minus_2 + 2` (MSDO,
+    /// `MultiStreamDecoderMode == 1`) and `LcrMaxNumXLayerCount` (global LCR) values are
+    /// used only as a *fallback* when no concrete `obu_xlayer_id` was observed (a window
+    /// of purely global OBUs) — there the declared count is the only evidence of the
+    /// extended-layer span.
+    ///
+    /// `TODO(spec: AV2-A-LEVELS-TIERS)`: a fuller model would reconcile the declared
+    /// `num_streams` / `LcrMaxNumXLayerCount` with the observed distinct-xlayer count and
+    /// flag a mismatch; this skeleton uses the observed count as authoritative.
+    fn extended_layers(&self) -> u32 {
+        let distinct = self.distinct_xlayers.len() as u32;
+        if distinct > 0 {
+            distinct
+        } else {
+            // No concrete obu_xlayer_id: fall back to the global LCR's
+            // LcrMaxNumXLayerCount, then the MSDO's num_streams; absent both, a single
+            // (base-layer) extended layer (Table A.3: "For a coded video sequence, this
+            // value is equal to 1").
+            self.global_lcr_xlayer_count
+                .or(self.msdo_num_streams)
+                .unwrap_or(1)
+        }
+    }
+
+    /// The Table A.3 "Number of Embedded Layers" for this window (mirror lines 152-153):
+    /// the maximum `seq_max_mlayer_cnt_minus_1 + 1` across activated headers, at least 1.
+    fn embedded_layers(&self) -> u32 {
+        self.max_embedded_layers.max(1)
+    }
+}
+
 /// The six § 7.3.2 condition-2 key fields of a `multistream_decoder_operation_obu()`
 /// (AV2 v1.0.0 § 7.3.2): a change in any of them at a coded-multistream-video-sequence
 /// (CMVS) begin candidate begins a *new* CMVS while one is already active. Carrying
@@ -2255,9 +2485,34 @@ impl ValidatorContext {
         // temporal delimiter completes the previous temporal unit (flushing deferred
         // CVS-scoped diagnostics) and a CLK starts a new coded video sequence for its
         // extended layer (AV2 § 7.3.6); see observe_cvs_boundary_events.
+        // Capture external-HLS state for the end-of-stream Annex A Table A.4 flush,
+        // which runs from `finish` without access to the options.
+        self.external_hls_provided = matches!(options.external_hls, ExternalHlsMode::Provided(_));
+
+        // Annex A Table A.4: a global temporal delimiter ends the just-decoded temporal
+        // unit. If that temporal unit contained an OBU_CLOSED_LOOP_KEY (so it began a new
+        // coded video sequence for at least one extended layer, § 7.3.6), the prior coded
+        // (multistream-)video-sequence window is complete: evaluate its MSDO/LCR presence
+        // requirements before the next window starts. Flushing at the temporal-unit
+        // boundary — not at the CLK itself — lets every extended layer's CLK in one
+        // temporal unit accumulate into the same window (a multistream coded video
+        // sequence has one CLK per extended layer within the temporal unit).
+        if obu.header.obu_type == ObuType::TemporalDelimiter
+            && obu.header.extended_layer_id.is_global()
+            && self.annex_a_iop_tu_had_clk
+        {
+            self.flush_annex_a_iop_window(options, report);
+            self.annex_a_iop_tu_had_clk = false;
+        }
+
         self.observe_cvs_boundary_events(obu, report);
 
         self.temporal_unit.observe_obu(obu, report);
+
+        // Annex A Table A.3: count the distinct non-global obu_xlayer_id values present
+        // in the current Annex A IOP window (mirror lines 146-151). Recorded for every
+        // OBU after the boundary events (so a CLK's own xlayer joins the new window).
+        self.annex_a_iop.note_xlayer(obu.header.extended_layer_id);
 
         if obu.header.obu_type == ObuType::SequenceHeader {
             self.observe_sequence_header(obu, options, report);
@@ -2378,6 +2633,10 @@ impl ValidatorContext {
             // to the new coded video sequence (see DistinctMlayerTracker::reset_cvs).
             self.distinct_mlayer.advance_temporal_unit();
         } else if obu.header.obu_type == ObuType::ClosedLoopKey {
+            // Annex A Table A.4: this temporal unit begins a new coded video sequence, so
+            // the IOP window is evaluated at the temporal unit's end (the next global
+            // temporal delimiter, or the end of the bitstream).
+            self.annex_a_iop_tu_had_clk = true;
             self.start_cvs_for_xlayer(obu.header.extended_layer_id, report);
             self.observe_ci_rap(obu.header.extended_layer_id);
             // AV2 § 7.3.2 / § 7.3.6: a CLK makes this temporal unit one that "contains
@@ -2543,6 +2802,13 @@ impl ValidatorContext {
         {
             return;
         }
+        // Annex A Table A.3 / Table A.4: an MSDO is present in this IOP window and sets
+        // MultiStreamDecoderMode == 1, so num_streams_minus_2 + 2 is the Table A.3
+        // extended-layer count for the window (mirror lines 148-149).
+        // TODO(spec: AV2-A-LEVELS-TIERS): the MultiStreamDecoderMode == 1 substream
+        // level scaling (mirror lines 456-523) is not modeled; only the Table A.4
+        // presence requirements and the Table A.3 extended-layer count are used here.
+        self.annex_a_iop.note_msdo(msdo.num_streams(), obu.offset);
         let observation = self.msdo.observe(&msdo);
         self.cmvs.note_msdo(observation);
     }
@@ -2569,6 +2835,240 @@ impl ValidatorContext {
         let scope_keys: Vec<ExtendedLayerId> = self.scan_type.scopes.keys().copied().collect();
         for scope_key in scope_keys {
             self.flush_scan_type_scope(scope_key, u64::MAX, report);
+        }
+        // Annex A Table A.4: the end of the bitstream ends the final coded
+        // (multistream-)video-sequence window (AV2 § 2: a coded video sequence continues
+        // "until ... the end of the bitstream"), so evaluate its MSDO/LCR presence
+        // requirements. The external-HLS suppression decision was captured during
+        // observation (see `external_hls_provided`).
+        self.flush_annex_a_iop_window_for_finish(report);
+    }
+
+    /// Evaluates and resets the current Annex A Table A.4 IOP window using the
+    /// already-captured external-HLS state, for the end-of-stream flush in
+    /// [`Self::finish`] (which has no [`ValidationOptions`]). See
+    /// [`Self::evaluate_annex_a_iop_window`].
+    fn flush_annex_a_iop_window_for_finish(&mut self, report: &mut ValidationReport) {
+        let suppressed = self.external_hls_provided;
+        self.evaluate_annex_a_iop_window(suppressed, report);
+    }
+
+    /// Evaluates and resets the current Annex A Table A.4 IOP window at a coded video
+    /// sequence boundary (a CLK in any extended layer), suppressing the presence checks
+    /// when external HLS is provided (design: externally-supplied HLS makes in-band
+    /// presence counting unsound).
+    fn flush_annex_a_iop_window(
+        &mut self,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        let suppressed = matches!(options.external_hls, ExternalHlsMode::Provided(_));
+        self.evaluate_annex_a_iop_window(suppressed, report);
+    }
+
+    /// Takes the current Annex A IOP window's accumulated evidence and emits the Table
+    /// A.4 MSDO/LCR presence diagnostics for it (AV2 v1.0.0 Annex A.2 Table A.4, mirror
+    /// lines 178-201). A `None` window (no evidence) or a window with no decidable single
+    /// interoperability point is a no-op. When `suppressed`, the window is still taken
+    /// (so the next window starts clean) but no diagnostic is emitted.
+    ///
+    /// The Table A.4 semantics, by IOP and the booleans `e = extended layers > 1`,
+    /// `m = embedded layers > 1`:
+    ///
+    /// - IOP0 (mirror lines 183-185): MSDO prohibited when `!e`, required when `e`.
+    /// - IOP1 (mirror lines 187-191): `!e && !m` -> MSDO prohibited; `e && !m` -> MSDO
+    ///   required; `!e && m` -> MSDO prohibited and a local LCR required. (`e && m` has
+    ///   no Table A.4 row — outside IOP1's Table A.3 layer budget; see the TODO below.)
+    /// - IOP2 (mirror lines 193-201): `!e && !m` -> MSDO prohibited; `e && !m` -> MSDO
+    ///   **or** a global LCR required (either satisfies); `!e && m` -> MSDO prohibited
+    ///   and an LCR (global or local) required; `e && m` -> (MSDO **and** local LCR)
+    ///   **or** a global LCR required.
+    fn evaluate_annex_a_iop_window(&mut self, suppressed: bool, report: &mut ValidationReport) {
+        let Some(window) = self.annex_a_iop.take_window() else {
+            return;
+        };
+        if suppressed {
+            return;
+        }
+        let Some(AnnexAIopState::Single(iop)) = window.iop else {
+            // No decidable single interoperability point (no profile activated in-band,
+            // a reserved/Configurable profile, or mixed profiles across layers): the
+            // Table A.4 row is not determinable, so no diagnostic.
+            return;
+        };
+        let e = window.extended_layers() > 1;
+        let m = window.embedded_layers() > 1;
+        let offset = window.anchor_offset;
+        // TODO(spec: AV2-A-LEVELS-TIERS): the Table A.3 layer-budget bound (the
+        // combination flag must be 0 for IOP 0/1, mirror lines 154-158) is not enforced
+        // here; an IOP1 window with both e and m exceeds that budget but has no Table A.4
+        // row, so Table A.4 alone makes no presence requirement for it.
+        match iop {
+            InteroperabilityPoint::Iop0 => {
+                // Table A.4 rows 1-2 (mirror lines 183-185): embedded layers are N/A.
+                self.emit_iop_msdo_requirement(e, &window, offset, report);
+            }
+            InteroperabilityPoint::Iop1 => {
+                if !m {
+                    // Rows 3-4 (mirror lines 187-189): MSDO prohibited (!e) / required (e).
+                    self.emit_iop_msdo_requirement(e, &window, offset, report);
+                } else if !e {
+                    // Row 5 (mirror line 191): !e && m -> MSDO prohibited; local LCR
+                    // required.
+                    self.emit_msdo_prohibited(&window, offset, report);
+                    self.emit_local_lcr_required(&window, offset, report);
+                }
+                // e && m: no Table A.4 row (outside IOP1's layer budget); see the TODO.
+            }
+            InteroperabilityPoint::Iop2 => {
+                self.evaluate_iop2(e, m, &window, offset, report);
+            }
+        }
+    }
+
+    /// Table A.4 IOP0 rows and IOP1 `!m` rows: MSDO required when `e`, prohibited when
+    /// `!e`.
+    fn emit_iop_msdo_requirement(
+        &self,
+        e: bool,
+        window: &AnnexAIopWindow,
+        offset: ByteOffset,
+        report: &mut ValidationReport,
+    ) {
+        if e {
+            self.emit_msdo_required(window, offset, report);
+        } else {
+            self.emit_msdo_prohibited(window, offset, report);
+        }
+    }
+
+    /// Table A.4 IOP2 rows (mirror lines 193-201).
+    fn evaluate_iop2(
+        &self,
+        e: bool,
+        m: bool,
+        window: &AnnexAIopWindow,
+        offset: ByteOffset,
+        report: &mut ValidationReport,
+    ) {
+        match (e, m) {
+            // Row "2 N N" (mirror line 193): MSDO prohibited.
+            (false, false) => self.emit_msdo_prohibited(window, offset, report),
+            // Row "2 Y N" (mirror line 195): MSDO or global LCR required (either
+            // satisfies); MSDO is not prohibited here.
+            (true, false) => {
+                if !window.msdo_present && !window.global_lcr_present {
+                    report.push(annex_a_iop_error(
+                        "annex-a/msdo-required-for-iop",
+                        offset,
+                        format!(
+                            "Annex A Table A.4: interoperability point 2 with more than one \
+                             extended layer ({}) requires an OBU_MSDO or a global \
+                             OBU_LAYER_CONFIGURATION_RECORD, but neither is present in the coded \
+                             video sequence",
+                            window.extended_layers()
+                        ),
+                    ));
+                }
+            }
+            // Row "2 N Y" (mirror line 197): MSDO prohibited; LCR (global or local)
+            // required.
+            (false, true) => {
+                self.emit_msdo_prohibited(window, offset, report);
+                if !window.global_lcr_present && !window.local_lcr_present {
+                    report.push(annex_a_iop_error(
+                        "annex-a/lcr-required-for-iop",
+                        offset,
+                        format!(
+                            "Annex A Table A.4: interoperability point 2 with more than one \
+                             embedded layer ({}) requires a global or local \
+                             OBU_LAYER_CONFIGURATION_RECORD, but none is present in the coded video \
+                             sequence",
+                            window.embedded_layers()
+                        ),
+                    ));
+                }
+            }
+            // Row "2 Y Y" (mirror lines 199-200): (MSDO and local LCR) or global LCR
+            // required.
+            (true, true) => {
+                let satisfied =
+                    (window.msdo_present && window.local_lcr_present) || window.global_lcr_present;
+                if !satisfied {
+                    report.push(annex_a_iop_error(
+                        "annex-a/lcr-required-for-iop",
+                        offset,
+                        "Annex A Table A.4: interoperability point 2 with more than one extended \
+                         layer and more than one embedded layer requires either an OBU_MSDO plus a \
+                         local OBU_LAYER_CONFIGURATION_RECORD, or a global \
+                         OBU_LAYER_CONFIGURATION_RECORD, but neither combination is present in the \
+                         coded video sequence"
+                            .to_owned(),
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Emits `annex-a/msdo-required-for-iop` when no MSDO is present in the window.
+    fn emit_msdo_required(
+        &self,
+        window: &AnnexAIopWindow,
+        offset: ByteOffset,
+        report: &mut ValidationReport,
+    ) {
+        if !window.msdo_present {
+            report.push(annex_a_iop_error(
+                "annex-a/msdo-required-for-iop",
+                offset,
+                format!(
+                    "Annex A Table A.4: the coded video sequence has more than one extended layer \
+                     ({}) but contains no OBU_MSDO, which the activated profile's interoperability \
+                     point requires",
+                    window.extended_layers()
+                ),
+            ));
+        }
+    }
+
+    /// Emits `annex-a/msdo-prohibited-for-iop` when an MSDO is present in the window.
+    fn emit_msdo_prohibited(
+        &self,
+        window: &AnnexAIopWindow,
+        offset: ByteOffset,
+        report: &mut ValidationReport,
+    ) {
+        if window.msdo_present {
+            report.push(annex_a_iop_error(
+                "annex-a/msdo-prohibited-for-iop",
+                offset,
+                "Annex A Table A.4: the coded video sequence does not have more than one extended \
+                 layer, so an OBU_MSDO is prohibited for the activated profile's interoperability \
+                 point"
+                    .to_owned(),
+            ));
+        }
+    }
+
+    /// Emits `annex-a/lcr-required-for-iop` when no local LCR is present in the window
+    /// (the IOP1 `!e && m` "Required (Local)" row).
+    fn emit_local_lcr_required(
+        &self,
+        window: &AnnexAIopWindow,
+        offset: ByteOffset,
+        report: &mut ValidationReport,
+    ) {
+        if !window.local_lcr_present {
+            report.push(annex_a_iop_error(
+                "annex-a/lcr-required-for-iop",
+                offset,
+                format!(
+                    "Annex A Table A.4: interoperability point 1 with more than one embedded layer \
+                     ({}) requires a local OBU_LAYER_CONFIGURATION_RECORD, but none is present in \
+                     the coded video sequence",
+                    window.embedded_layers()
+                ),
+            ));
         }
     }
 
@@ -3783,6 +4283,12 @@ impl ValidatorContext {
                 // be ruled out" signal and routes the affected boundary transitions to
                 // CmvsState::Unknown rather than guessing.
                 self.cmvs.note_global_lcr_present();
+                // Annex A Table A.3 / Table A.4: a global LCR is present in this Annex A
+                // IOP window, and its LcrMaxNumXLayerCount is the set-bit count of
+                // lcr_xlayer_map (§ 5.8.1, mirror lines 382-384). "Presence" here is the
+                // Table A.4 sense — an OBU of that type occurred in the window (design).
+                self.annex_a_iop
+                    .note_global_lcr(info.xlayer_map.count_ones(), obu.offset);
                 // AV2 § 7.3.8.3: record the global LCR's id and xlayer map for later
                 // local-LCR and sequence-header references.
                 self.hls
@@ -3854,6 +4360,8 @@ impl ValidatorContext {
                         .with_byte_offset(obu.offset),
                     );
                 }
+                // Annex A Table A.4: a local LCR is present in this IOP window.
+                self.annex_a_iop.note_local_lcr(obu.offset);
                 self.hls.record_local_lcr(xlayer, info.local_id);
                 // AV2 § 6.8.9: retain the embedded-layer maps for the dependency-map
                 // agreement checks. A redefinition replaces the maps wholesale so a
@@ -3942,6 +4450,13 @@ impl ValidatorContext {
         }
 
         self.check_operating_point_set_semantics(obu, &ops, report);
+
+        // Annex A.4: OPS-signaled value-space checks (Annex A applies its constraints
+        // per sub-bitstream using OPS-derived values, mirror lines 443-451) — a reserved
+        // ops_level_idx in 22-30 (Table A.7), and a High ops_tier_flag below level 4.0
+        // (Table A.9 NOTE). The OPS PTL carries ops_tier_flag unconditionally, so the
+        // high-tier-below-4.0 case is reachable here (unlike the seq-header arm).
+        check_ops_level_tier_value_space(obu, &ops, report);
 
         // AV2 § 6.10.5: the per-(obu_xlayer_id, opsID, op) buffer-delay sum-constancy
         // checks, run before the § 6.10.1 reset/update is applied so the defining OPS's
@@ -4544,6 +5059,177 @@ impl ValidatorContext {
             self.check_ops_entries_against_active(offset, ops_id, &entries, options, report);
         }
         self.check_lcr_dependency_agreement(xlayer, options, report);
+        // Annex A.2 / Annex A.4 profile and level/tier value-space checks on the
+        // header just activated for this extended layer. Intrinsic to the header (no
+        // external-HLS shadowing concern beyond the already-applied
+        // external_declares_sequence_header gate above), emitted once per activated
+        // header per coded video sequence.
+        self.check_annex_a_value_space(xlayer, report);
+    }
+
+    /// Emits the Annex A.2 / Annex A.4 profile and level/tier *value-space* diagnostics
+    /// for the sequence header activated for `xlayer`, once per activated header per
+    /// coded video sequence:
+    ///
+    /// - `annex-a/profile-reserved` (error, Annex A.2 Table A.1, mirror line 85):
+    ///   `seq_profile_idc` in the reserved range `5..=30`.
+    /// - `annex-a/profile-chroma-format-mismatch` (error, Annex A.2 Table A.1, mirror
+    ///   lines 61-90): `chroma_format_idc` outside the activated profile's allowed set.
+    ///   Skipped for the Configurable profile (31), whose Table A.1 chroma column is a
+    ///   dash, and for a reserved profile (the reserved-profile error already fires and
+    ///   no allowed set is defined).
+    /// - `annex-a/profile-bit-depth-mismatch` (error, Annex A.2 Table A.1, mirror lines
+    ///   61-90): `bit_depth_idc` not `0` or `1` for profiles `0..=4`. Skipped for the
+    ///   Configurable profile. The parsed [`BitDepthIdc`] only models `0`/`1`, so a
+    ///   sequence header that reaches activation always has an in-range bit depth; this
+    ///   check is defensive and currently never fires (documented below).
+    /// - `annex-a/level-reserved` (error, Annex A.4 Table A.7, mirror line 321):
+    ///   `seq_level_idx` in the reserved range `22..=30`. The Maximum-parameters value
+    ///   31 is valid and not flagged.
+    /// - `annex-a/high-tier-below-4-0` (warning, Annex A.4 Table A.9 NOTE, mirror lines
+    ///   436-437): `seq_tier == High` with `seq_level_idx < 4` (level 4.0). Warning, not
+    ///   error: the only spec statement is the informative Table A.9 NOTE ("seq_tier
+    ///   equal to 1 can only be signaled for level 4.0 and above") plus the undefined
+    ///   HighMbps/HighCR cells, so error severity would overclaim a non-normative source.
+    ///   This sequence-header arm is syntax-*unreachable*: the § 5.4.1 parser only reads
+    ///   `seq_tier` when `seq_level_idx > 3`, so a parseable header below level 4.0
+    ///   always infers `Tier::Main`. The *reachable* arm is the OPS path — a
+    ///   sub-bitstream's `seq_tier`/`seq_level_idx` may be derived from the OPS-signaled
+    ///   `ops_tier_flag`/`ops_level_idx` (mirror lines 443-451), and the OPS PTL syntax
+    ///   carries `ops_tier_flag` unconditionally (§ 5.11.2) — so it is also checked, in
+    ///   [`check_ops_level_tier_value_space`].
+    ///
+    /// Anchored at the defining sequence-header OBU ([`Self::sequence_header_offsets`]),
+    /// not the activating frame OBU.
+    fn check_annex_a_value_space(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        report: &mut ValidationReport,
+    ) {
+        let Some((seq_header_id, general)) = self.active_general_for(xlayer) else {
+            return;
+        };
+        let offset = self
+            .sequence_header_offsets
+            .get(&seq_header_id)
+            .copied()
+            .unwrap_or(ByteOffset::new(0));
+        // Annex A Table A.3 / Table A.4: record this activation's interoperability point
+        // (from the activated profile) and embedded-layer count
+        // (seq_max_mlayer_cnt_minus_1 + 1) for the IOP window, regardless of the
+        // once-per-CVS value-space dedup below — the Table A.4 evaluation accumulates
+        // every activation in the window. Only a *frame-confirmed* activation (the
+        // § 5.18.2 load_sequence_header path) determines the window's interoperability
+        // point: a first-seen OBU-order fallback is a guess a later frame can contradict
+        // (§ 7.3.6), and a Table A.4 presence error emitted against the guess could not
+        // be retracted (matches the decidability gate of `agreement_activation_for`).
+        if self.frame_confirmed_xlayers.contains(&xlayer) {
+            self.annex_a_iop.note_activation(
+                general.seq_profile_idc.get(),
+                u32::from(general.seq_max_mlayer_count.get()),
+                offset,
+            );
+        }
+        // Emit once per activated header per coded video sequence: the same activation
+        // can be re-confirmed by multiple frames in one coded video sequence (and a CLK
+        // re-activation across a coded-video-sequence boundary legitimately re-emits).
+        let epoch = self.cvs.cvs_generation_epoch(xlayer);
+        if !self
+            .emitted_annex_a_value_space
+            .insert((xlayer, seq_header_id, epoch))
+        {
+            return;
+        }
+
+        let profile_idc = general.seq_profile_idc.get();
+        let level_idx = general.seq_level_idx.get();
+        let is_configurable = profile_idc == crate::annex_a::CONFIGURABLE_PROFILE_IDC;
+
+        // Annex A.2 Table A.1: reserved seq_profile_idc (5-30).
+        if is_reserved_profile(profile_idc) {
+            report.push(
+                Diagnostic::error(
+                    "annex-a/profile-reserved",
+                    format!(
+                        "seq_profile_idc {profile_idc} is reserved (5..=30); it conforms to no \
+                         AV2 profile defined in this version of the specification"
+                    ),
+                )
+                .with_spec_section("A.2")
+                .with_byte_offset(offset),
+            );
+        } else if !is_configurable {
+            // Annex A.2 Table A.1: chroma_format_idc must be in the profile's allowed
+            // set. Configurable (31) and reserved profiles have no defined set, so the
+            // mismatch check applies only to profiles 0-4.
+            if !profile_allows_chroma(profile_idc, general.chroma_format_idc) {
+                report.push(
+                    Diagnostic::error(
+                        "annex-a/profile-chroma-format-mismatch",
+                        format!(
+                            "chroma_format_idc {} is not in the allowed set of seq_profile_idc {}",
+                            general.chroma_format_idc.get(),
+                            profile_idc
+                        ),
+                    )
+                    .with_spec_section("A.2")
+                    .with_byte_offset(offset),
+                );
+            }
+            // Annex A.2 Table A.1: bit_depth_idc must be 0 or 1 for profiles 0-4. The
+            // parsed BitDepthIdc enum only represents 0 (10-bit) and 1 (8-bit) — any
+            // other value is rejected at parse time as BitDepthOutOfRange before a
+            // header can be activated — so this branch is defensively never reachable
+            // today; it is kept to make the Table A.1 column explicit and to remain
+            // correct if a future profile widens the bit-depth value space.
+            let bit_depth_value = general.bit_depth_idc.get();
+            if bit_depth_value > 1 {
+                report.push(
+                    Diagnostic::error(
+                        "annex-a/profile-bit-depth-mismatch",
+                        format!(
+                            "bit_depth_idc {bit_depth_value} is not 0 or 1, the only values \
+                             allowed for seq_profile_idc {profile_idc}"
+                        ),
+                    )
+                    .with_spec_section("A.2")
+                    .with_byte_offset(offset),
+                );
+            }
+        }
+
+        // Annex A.4 Table A.7: reserved seq_level_idx (22-30).
+        if is_reserved_level(level_idx) {
+            report.push(
+                Diagnostic::error(
+                    "annex-a/level-reserved",
+                    format!(
+                        "seq_level_idx {level_idx} is reserved (22..=30); it maps to no AV2 level \
+                         defined in this version of the specification"
+                    ),
+                )
+                .with_spec_section("A.4")
+                .with_byte_offset(offset),
+            );
+        }
+
+        // Annex A.4 Table A.9 NOTE (informative): seq_tier == 1 (High) can only be
+        // signaled for level 4.0 (LevelIdx 4) and above. Warning, not error: the source
+        // is a non-normative NOTE plus the undefined HighMbps/HighCR cells below 4.0.
+        if matches!(general.seq_tier, Tier::High) && level_idx < HIGH_TIER_MIN_LEVEL_IDX {
+            report.push(
+                Diagnostic::warning(
+                    "annex-a/high-tier-below-4-0",
+                    format!(
+                        "seq_tier is High (1) with seq_level_idx {level_idx} below level 4.0 \
+                         (LevelIdx 4); the Table A.9 NOTE states High tier can only be signaled \
+                         for level 4.0 and above (advisory: the source is an informative NOTE)"
+                    ),
+                )
+                .with_spec_section("A.4")
+                .with_byte_offset(offset),
+            );
+        }
     }
 
     /// Emits `sequence-state/monotonic-output-order-mismatch` (AV2 § 6.4.1) when, with
@@ -5445,6 +6131,8 @@ impl ValidatorContext {
         // core parser can read OrderHintBits / NumRefFrames / dimensions from its inter
         // and screen-content configs (AV2 § 5.18.2).
         let new_general = sequence_header.general;
+        self.sequence_header_offsets
+            .insert(seq_header_id, obu.offset);
         let previous_header = self.sequence_headers.insert(seq_header_id, sequence_header);
         // The active sequence header for an extended layer defaults to the first one
         // seen in OBU order; a parsed CLK/OLK frame header overrides this with the
@@ -6173,6 +6861,14 @@ fn ordering_error(rule_id: &'static str, obu: &ObuEnvelope<'_>, message: String)
         .with_byte_offset(obu.offset)
 }
 
+/// Builds an Annex A Table A.4 interoperability-point presence diagnostic (error,
+/// spec section `A.2`, anchored at `offset`).
+fn annex_a_iop_error(rule_id: &'static str, offset: ByteOffset, message: String) -> Diagnostic {
+    Diagnostic::error(rule_id, message)
+        .with_spec_section("A.2")
+        .with_byte_offset(offset)
+}
+
 /// Returns `true` if `obu_type`'s payload begins with a `frame_header()` or
 /// `tile_group_obu()` (AV2 v1.0.0 § 5.2.1): the tile-group types, plus the SEF / TIP
 /// / bridge frames that call `frame_header( 1 )` directly.
@@ -6416,6 +7112,10 @@ fn frame_header_core_checks(
         frame_tile_info_checks(tile_info, obu, report);
     }
 
+    // Annex A.4 static level limits for the parsed frame size / tile count against the
+    // active sequence header's seq_level_idx / seq_tier.
+    frame_annex_a_level_checks(&core, active_sequence, obu, report);
+
     // AV2 § 6.17.6.2: custom-QM plane-count references for a parsed
     // `setup_qm_params()`, gated on recorded quantizer-matrix availability state.
     if let Some(setup_qm) = core.setup_qm_params.as_ref() {
@@ -6529,6 +7229,219 @@ fn frame_tile_info_checks(
                 tile_info.context_update_tile_id, tile_info.tile_cols, tile_info.tile_rows
             ),
         ));
+    }
+}
+
+/// Emits the Annex A.4 static level-limit diagnostics for a parsed frame against the
+/// active sequence header's level (AV2 v1.0.0 Annex A.4 static conformance block,
+/// mirror lines 615-629):
+///
+/// - `annex-a/frame-size-exceeds-level` (error): `FrameWidth * FrameHeight >
+///   MaxPicSize` (line 618), `FrameWidth > MaxHSize` (line 619), or
+///   `FrameHeight > MaxVSize` (line 620).
+/// - `annex-a/frame-size-below-minimum` (error): `FrameWidth < 16` (line 628) or
+///   `FrameHeight < 16` (line 629).
+/// - `annex-a/tile-count-exceeds-level` (error): `NumTiles > MaxTiles` (line 621) or
+///   `TileCols > MaxTileCols` (line 622). `NumTiles = TileCols * TileRows` and
+///   `TileCols` come from the parsed `tile_info()`.
+///
+/// All of these are inside the "When the mapped level ID, LevelIdx is contained in the
+/// tables above" block (mirror lines 615-616), so they apply only when `seq_level_idx`
+/// maps to a defined level (`0..=21`). [`level_limits`] returns `None` for the
+/// Maximum-parameters level 31 ("there are no level-based constraints", mirror lines
+/// 659-660) and for the reserved indices `22..=30`, which disables every check here —
+/// the minimum-dimension `>= 16` rule included (it lives in the same gated block).
+fn frame_annex_a_level_checks(
+    core: &FrameHeaderCore,
+    active_sequence: &SequenceHeader,
+    obu: &ObuEnvelope<'_>,
+    report: &mut ValidationReport,
+) {
+    let level_idx = active_sequence.general.seq_level_idx.get();
+    // Annex A.4: level 31 and reserved levels are not in Tables A.8/A.9, so no
+    // level-limit constraint binds. A bounds-checked lookup (no indexing panic).
+    let Some(limits) = level_limits(level_idx) else {
+        return;
+    };
+
+    if let Some(frame_size) = core.frame_size {
+        let width = frame_size.width;
+        let height = frame_size.height;
+        let pic_size = u64::from(width) * u64::from(height);
+
+        // Annex A.4 line 618: FrameWidth * FrameHeight <= MaxPicSize.
+        if pic_size > limits.max_pic_size {
+            report.push(
+                Diagnostic::error(
+                    "annex-a/frame-size-exceeds-level",
+                    format!(
+                        "FrameWidth * FrameHeight ({width} * {height} = {pic_size}) exceeds \
+                         MaxPicSize {} for seq_level_idx {level_idx}",
+                        limits.max_pic_size
+                    ),
+                )
+                .with_spec_section("A.4")
+                .with_byte_offset(obu.offset),
+            );
+        }
+        // Annex A.4 line 619: FrameWidth <= MaxHSize.
+        if width > limits.max_h_v_size {
+            report.push(
+                Diagnostic::error(
+                    "annex-a/frame-size-exceeds-level",
+                    format!(
+                        "FrameWidth {width} exceeds MaxHSize {} for seq_level_idx {level_idx}",
+                        limits.max_h_v_size
+                    ),
+                )
+                .with_spec_section("A.4")
+                .with_byte_offset(obu.offset),
+            );
+        }
+        // Annex A.4 line 620: FrameHeight <= MaxVSize (same shared column value).
+        if height > limits.max_h_v_size {
+            report.push(
+                Diagnostic::error(
+                    "annex-a/frame-size-exceeds-level",
+                    format!(
+                        "FrameHeight {height} exceeds MaxVSize {} for seq_level_idx {level_idx}",
+                        limits.max_h_v_size
+                    ),
+                )
+                .with_spec_section("A.4")
+                .with_byte_offset(obu.offset),
+            );
+        }
+        // Annex A.4 lines 628-629: FrameWidth >= 16 and FrameHeight >= 16.
+        if width < MIN_FRAME_DIMENSION || height < MIN_FRAME_DIMENSION {
+            report.push(
+                Diagnostic::error(
+                    "annex-a/frame-size-below-minimum",
+                    format!(
+                        "FrameWidth {width} / FrameHeight {height} must both be at least \
+                         {MIN_FRAME_DIMENSION} for seq_level_idx {level_idx}"
+                    ),
+                )
+                .with_spec_section("A.4")
+                .with_byte_offset(obu.offset),
+            );
+        }
+    }
+
+    if let Some(tile_info) = core.tile_info.as_ref() {
+        let tile_cols = tile_info.tile_cols;
+        let num_tiles = u64::from(tile_cols) * u64::from(tile_info.tile_rows);
+        // Annex A.4 line 621: NumTiles <= MaxTiles.
+        if num_tiles > u64::from(limits.max_tiles) {
+            report.push(
+                Diagnostic::error(
+                    "annex-a/tile-count-exceeds-level",
+                    format!(
+                        "NumTiles {num_tiles} (TileCols {tile_cols} * TileRows {}) exceeds \
+                         MaxTiles {} for seq_level_idx {level_idx}",
+                        tile_info.tile_rows, limits.max_tiles
+                    ),
+                )
+                .with_spec_section("A.4")
+                .with_byte_offset(obu.offset),
+            );
+        }
+        // Annex A.4 line 622: TileCols <= MaxTileCols.
+        if tile_cols > limits.max_tile_cols {
+            report.push(
+                Diagnostic::error(
+                    "annex-a/tile-count-exceeds-level",
+                    format!(
+                        "TileCols {tile_cols} exceeds MaxTileCols {} for seq_level_idx \
+                         {level_idx}",
+                        limits.max_tile_cols
+                    ),
+                )
+                .with_spec_section("A.4")
+                .with_byte_offset(obu.offset),
+            );
+        }
+    }
+}
+
+/// Emits the OPS-carried Annex A profile/tier/level value-space diagnostics for each
+/// included extended layer's `ops_seq_profile_tier_level_info()` (§ 5.11.2):
+///
+/// - `annex-a/level-reserved` (error, Annex A.4 Table A.7, mirror line 321) when
+///   `ops_level_idx` is in the reserved range `22..=30`; it maps to no defined level,
+///   so it is as non-conformant as a reserved `seq_level_idx`.
+/// - `annex-a/high-tier-below-4-0` (warning, Annex A.4 Table A.9 NOTE, mirror lines
+///   436-437) when `ops_tier_flag == 1` (High) with `ops_level_idx < 4` (level 4.0).
+///   Warning, not error: the only spec statement is the informative Table A.9 NOTE
+///   ("seq_tier equal to 1 can only be signaled for level 4.0 and above") plus the
+///   undefined HighMbps/HighCR cells below 4.0, so error severity would overclaim a
+///   non-normative source. This is the *reachable* high-tier-below-4.0 arm: a
+///   sub-bitstream's `seq_tier`/`seq_level_idx` "may be derived from the corresponding
+///   ops_tier_flag and ops_level_idx values signaled in the operating_point_set_obu()"
+///   (mirror lines 443-451), and the OPS PTL syntax signals both `ops_level_idx` and
+///   `ops_tier_flag` unconditionally (§ 5.11.2) — unlike the sequence-header arm, where
+///   `seq_tier` is only signaled for `seq_level_idx > 3` and the warning is
+///   syntax-unreachable.
+///
+/// Annex A applies its level/tier constraints per sub-bitstream using the OPS-derived
+/// `ops_tier_flag` / `ops_level_idx` values (mirror lines 443-451). Both values live in
+/// each included extended layer's `ops_seq_profile_tier_level_info()`
+/// ([`OpsSeqProfileTierLevelInfo::level_idx`] / [`OpsSeqProfileTierLevelInfo::tier_flag`],
+/// § 5.11.2). The aggregate `ops_aggregate_level_idx` (§ 5.11.1) is a separate value
+/// space tracked by `AV2-5.11.2-OPS-SEQ-PTL-INFO` and is not flagged here. Anchored at
+/// the OPS OBU.
+fn check_ops_level_tier_value_space(
+    obu: &ObuEnvelope<'_>,
+    ops: &OperatingPointSet,
+    report: &mut ValidationReport,
+) {
+    for payload in &ops.payloads {
+        for entry in &payload.xlayer_entries {
+            let Some(ptl) = entry.ptl_info.as_ref() else {
+                continue;
+            };
+            if is_reserved_level(ptl.level_idx) {
+                report.push(
+                    Diagnostic::error(
+                        "annex-a/level-reserved",
+                        format!(
+                            "ops_level_idx {} for extended layer {} in OPS {} operating point {} \
+                             is reserved (22..=30); it maps to no AV2 level defined in this \
+                             version of the specification",
+                            ptl.level_idx,
+                            entry.xlayer_id.get(),
+                            ops.ops_id,
+                            payload.index
+                        ),
+                    )
+                    .with_spec_section("A.4")
+                    .with_byte_offset(obu.offset),
+                );
+            }
+            // Annex A.4 Table A.9 NOTE (informative): a High tier (ops_tier_flag == 1)
+            // can only be signaled for level 4.0 (LevelIdx 4) and above. Unlike the
+            // sequence header (where seq_tier is gated on seq_level_idx > 3), the OPS PTL
+            // syntax carries ops_tier_flag unconditionally, so this is a reachable case.
+            if ptl.tier_flag && ptl.level_idx < HIGH_TIER_MIN_LEVEL_IDX {
+                report.push(
+                    Diagnostic::warning(
+                        "annex-a/high-tier-below-4-0",
+                        format!(
+                            "ops_tier_flag is High (1) with ops_level_idx {} below level 4.0 \
+                             (LevelIdx 4) for extended layer {} in OPS {} operating point {}; the \
+                             Table A.9 NOTE states High tier can only be signaled for level 4.0 \
+                             and above (advisory: the source is an informative NOTE)",
+                            ptl.level_idx,
+                            entry.xlayer_id.get(),
+                            ops.ops_id,
+                            payload.index
+                        ),
+                    )
+                    .with_spec_section("A.4")
+                    .with_byte_offset(obu.offset),
+                );
+            }
+        }
     }
 }
 

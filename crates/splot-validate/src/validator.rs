@@ -9793,4 +9793,938 @@ mod tests {
              Unknown; the provisional verdict must be dropped; report was: {report}"
         );
     }
+
+    // ---------------------------------------------------------------------------
+    // Annex A: profiles, levels, and tiers (AV2-A-PROFILES / AV2-A-LEVELS-TIERS).
+    // ---------------------------------------------------------------------------
+
+    /// Tunable knobs for [`annex_a_seq_payload`], a complete, frame-activatable §5.4
+    /// sequence header (xlayer 0, `max_tlayer_id`/`max_mlayer_id` 0, monotonic output).
+    #[derive(Clone, Copy)]
+    struct AnnexASeq {
+        seq_id: u32,
+        profile_idc: u32,
+        level_idx: u32,
+        /// `seq_tier` bit; only signaled (and thus only meaningful) when
+        /// `level_idx > 3`.
+        high_tier: bool,
+        chroma_format_idc: u32,
+        bit_depth_idc: u32,
+        max_frame_width_minus_1: u32,
+        max_frame_height_minus_1: u32,
+        frame_dim_bits_minus_1: u32,
+    }
+
+    impl AnnexASeq {
+        /// Profile 0, level 0 (2.0), Main tier, 4:2:0, 10-bit, 16x16 maximum frame.
+        fn base() -> Self {
+            Self {
+                seq_id: 0,
+                profile_idc: 0,
+                level_idx: 0,
+                high_tier: false,
+                chroma_format_idc: 0, // CHROMA_FORMAT_420
+                bit_depth_idc: 0,     // 10-bit
+                max_frame_width_minus_1: 15,
+                max_frame_height_minus_1: 15,
+                frame_dim_bits_minus_1: 7, // 8-bit frame dimensions
+            }
+        }
+    }
+
+    /// A complete §5.4 sequence header (non-single-picture, BLOCK_64X64, every tool
+    /// flag cleared) with the profile/level/tier/chroma/bit-depth and frame dimensions
+    /// from `o`, ready to be activated by a frame referencing `o.seq_id`. `seq_tier` is
+    /// read only when `seq_level_idx > 3` (§5.4.1), matching the parser.
+    fn annex_a_seq_payload(o: AnnexASeq) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.uvlc(o.seq_id);
+        bits.f(o.profile_idc, 5); // seq_profile_idc
+        bits.bit(0); // single_picture_header_flag
+        bits.f(o.level_idx, 5); // seq_level_idx
+        if o.level_idx > 3 {
+            bits.bit(u8::from(o.high_tier)); // seq_tier
+        }
+        bits.uvlc(o.chroma_format_idc); // chroma_format_idc
+        bits.uvlc(o.bit_depth_idc); // bit_depth_idc
+        bits.f(0, 3); // seq_lcr_id
+        bits.bit(0); // still_picture
+        bits.f(0, 2); // max_tlayer_id
+        bits.f(0, 3); // max_mlayer_id == 0
+        bits.bit(1); // monotonic_output_order_flag
+        bits.f(o.frame_dim_bits_minus_1, 4); // frame_width_bits_minus_1
+        bits.f(o.frame_dim_bits_minus_1, 4); // frame_height_bits_minus_1
+        bits.f(o.max_frame_width_minus_1, o.frame_dim_bits_minus_1 + 1);
+        bits.f(o.max_frame_height_minus_1, o.frame_dim_bits_minus_1 + 1);
+        bits.bit(0); // seq_cropping_window_present_flag
+        bits.bit(0); // seq_initial_display_delay_present_flag
+        bits.bit(0); // decoder_model_info_present_flag
+        let monochrome = o.chroma_format_idc == 1; // CHROMA_FORMAT_400
+        append_annex_a_child_configs(&mut bits, monochrome);
+        bits.into_bytes()
+    }
+
+    /// A sequence-header OBU (xlayer 0) carrying [`annex_a_seq_payload`].
+    fn annex_a_seq_obu(o: AnnexASeq) -> Vec<u8> {
+        annex_b_obu(0x04, &annex_a_seq_payload(o))
+    }
+
+    /// Temporal delimiter + the [`annex_a_seq_payload`] sequence header for xlayer 0.
+    fn td_and_annex_a_seq(o: AnnexASeq) -> Vec<u8> {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_a_seq_obu(o));
+        data
+    }
+
+    /// Appends the §5.4 child configs for a non-single-picture sequence header with
+    /// every tool flag cleared, gating the chroma-only reads on `monochrome` exactly as
+    /// the parser does, then the §5.2.1 payload tail.
+    fn append_annex_a_child_configs(bits: &mut Bits, monochrome: bool) {
+        // sequence_partition_config (BLOCK_64X64, SDP off)
+        bits.bit(0); // use_256x256_superblock
+        bits.bit(0); // use_128x128_superblock
+        if !monochrome {
+            bits.bit(0); // enable_sdp
+        }
+        bits.bit(0); // enable_ext_partitions
+        bits.bit(0); // reduce_pb_aspect_ratio
+        // sequence_segment_config
+        bits.bit(0); // enable_ext_seg
+        bits.bit(0); // seq_seg_info_present_flag
+        // sequence_intra_config
+        bits.bit(0); // enable_dip
+        bits.bit(0); // enable_intra_edge_filter
+        bits.bit(0); // enable_mrls
+        bits.bit(0); // enable_cfl_intra
+        if !monochrome {
+            bits.f(0, 2); // cfl_ds_filter_index
+        }
+        bits.bit(0); // enable_mhccp
+        bits.bit(0); // enable_ibp
+        // sequence_inter_config (non-single-picture branch)
+        bits.f(0, 4); // seq_enabled_motion_modes
+        bits.bit(0); // enable_masked_compound
+        bits.bit(0); // enable_ref_frame_mvs
+        bits.f(0, 4); // order_hint_bits_minus_1
+        bits.bit(0); // enable_refmvbank
+        bits.bit(1); // disable_drl_reorder
+        bits.bit(0); // explicit_ref_frame_map
+        bits.bit(0); // explicit_num_ref_frames
+        bits.f(0, 3); // long_term_frame_id_bits
+        bits.f(0, 2); // seq_max_drl_bits_minus_1 (ns(5) -> 0)
+        bits.bit(0); // allow_frame_max_drl_bits
+        bits.bit(0); // seq_max_bvp_drl_bits_minus_1 (ns(3) -> 0)
+        bits.bit(0); // allow_frame_max_bvp_drl_bits
+        bits.f(0, 2); // num_same_ref_compound
+        bits.bit(0); // enable_tip
+        bits.bit(0); // enable_mv_traj
+        bits.bit(0); // enable_bawp
+        bits.bit(0); // enable_cwp
+        bits.bit(0); // enable_imp_msk_bld
+        bits.bit(0); // enable_df_sub_pu
+        bits.f(0, 2); // enable_opfl_refine
+        bits.bit(0); // enable_refinemv
+        bits.bit(0); // enable_bru
+        bits.bit(0); // enable_adaptive_mvd
+        bits.bit(0); // enable_mvd_sign_derive
+        bits.bit(0); // enable_flex_mvres
+        bits.bit(0); // enable_global_motion
+        bits.bit(0); // enable_short_refresh_frame_flags
+        // sequence_scc_config (SELECT both)
+        bits.bit(1); // seq_choose_screen_content_tools
+        bits.bit(1); // seq_choose_integer_mv
+        // sequence_transform_quant_entropy_config
+        bits.bit(0); // enable_fsc
+        bits.bit(0); // enable_idtx_intra
+        bits.bit(0); // enable_intra_ist
+        bits.bit(0); // enable_inter_ist
+        if !monochrome {
+            bits.bit(0); // enable_chroma_dctonly
+        }
+        bits.bit(0); // enable_inter_ddt
+        bits.bit(0); // reduced_tx_part_set
+        if !monochrome {
+            bits.bit(0); // enable_cctx
+        }
+        bits.bit(0); // enable_tcq
+        bits.bit(0); // enable_parity_hiding
+        bits.bit(0); // enable_avg_cdf
+        if !monochrome {
+            bits.bit(0); // separate_uv_delta_q
+        }
+        bits.bit(1); // equal_ac_dc_q
+        if !monochrome {
+            bits.f(0, 5); // base_uv_ac_delta_q
+            bits.bit(0); // uv_ac_delta_q_enabled
+        }
+        // sequence_filter_config (BLOCK_64X64)
+        bits.bit(0); // disable_loopfilters_across_tiles
+        bits.bit(0); // enable_cdef
+        bits.bit(0); // enable_gdf
+        bits.bit(0); // enable_restoration
+        bits.bit(0); // enable_ccso
+        bits.bit(0); // cdef_on_skip_txfm_always_on
+        bits.bit(0); // cdef_on_skip_txfm_disabled
+        bits.f(0, 2); // df_par_bits_minus_2
+        // sequence_tile_config
+        bits.bit(0); // seq_tile_info_present_flag
+        bits.bit(0); // film_grain_params_present
+        extensible_obu_tail(bits);
+    }
+
+    /// A CLK frame OBU (xlayer 0) that references `seq_id`, drives `frame_size()` to an
+    /// override `FrameWidth` x `FrameHeight`, and reaches `tile_info()` — the parsed
+    /// intra-frame path the Annex A level-limit checks consume.
+    ///
+    /// `frame_dim_bits` is the active sequence header's `frame_*_bits` (8 for the
+    /// [`AnnexASeq`] defaults). For the single-tile uniform `tile_info()` (§ 5.18.7.2),
+    /// `col_increment_bits` / `row_increment_bits` are the number of
+    /// `increment_tile_cols_log2` / `increment_tile_rows_log2` stop bits the parser
+    /// reads: a single `0` when the frame spans more than one superblock column (resp.
+    /// row) of the BLOCK_64X64 grid and the level allows a wider single tile, else `0`.
+    /// Use [`annex_a_single_tile_increments`] to compute these for a given level/frame.
+    fn annex_a_frame_obu(
+        seq_id: u32,
+        width: u32,
+        height: u32,
+        frame_dim_bits: u32,
+        col_increment_bits: u32,
+        row_increment_bits: u32,
+    ) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(seq_id); // seq_header_id_in_frame_header
+        fb.bit(0); // immediate_output_frame (implicit forced 0 by monotonic)
+        fb.bit(1); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
+        fb.f(width - 1, frame_dim_bits); // frame_width_minus_1
+        fb.f(height - 1, frame_dim_bits); // frame_height_minus_1
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        // tile_info() (§ 5.18.7.2 -> tile_params, § 5.18.7.3) for a single tile.
+        fb.bit(1); // uniform_tile_spacing_flag
+        for _ in 0..col_increment_bits {
+            fb.bit(0); // increment_tile_cols_log2 stop bit
+        }
+        for _ in 0..row_increment_bits {
+            fb.bit(0); // increment_tile_rows_log2 stop bit
+        }
+        fb.f(100, 9); // base_q_idx f(9) (10-bit sequence)
+        fb.bit(0); // segmentation_enabled
+        fb.bit(0); // using_qmatrix
+        fb.bit(0); // delta_q_present
+        annex_b_obu(CLK_HEADER, &fb.into_bytes())
+    }
+
+    /// Computes the single-tile uniform `tile_info()` `increment_tile_cols_log2` /
+    /// `increment_tile_rows_log2` stop-bit counts for `(width, height)` at level 2.0
+    /// (LevelIdx 0), Main tier, BLOCK_64X64 (the [`AnnexASeq`] base). Mirrors
+    /// `parse_tile_layout` (§ 5.18.7.3): a single `0` stop bit when the dimension spans
+    /// more than one superblock and a wider single tile is allowed, else none.
+    fn annex_a_single_tile_increments(width: u32, height: u32) -> (u32, u32) {
+        // BLOCK_64X64: sb4x4 = 16, sbShift = 4 (§ 9.3).
+        let sb_cols = (2 * ((width + 7) >> 3) + 15) >> 4;
+        let sb_rows = (2 * ((height + 7) >> 3) + 15) >> 4;
+        // Level 2.0 Main tier: width_sf = 4, area_sf = 4 (tile.rs scaling tables).
+        let max_tile_width_sb = (4 * 4096) >> (4 + 4); // == 64
+        let max_tile_area_sb = (4u32 * 4096 * 2304) >> (2 * (4 + 2) + 2); // == 2304
+        fn tile_log2(blk: u32, target: u32) -> u32 {
+            let mut k = 0;
+            while (blk << k) < target {
+                k += 1;
+            }
+            k
+        }
+        let min_log2_tile_cols = tile_log2(max_tile_width_sb, sb_cols);
+        let max_log2_tile_cols = tile_log2(1, sb_cols.min(64));
+        let max_log2_tile_rows = tile_log2(1, sb_rows.min(64));
+        let min_log2_tiles = min_log2_tile_cols.max(tile_log2(max_tile_area_sb, sb_rows * sb_cols));
+        // A single column tile: emit one stop bit iff the loop would run (min < max).
+        let col_bits = u32::from(min_log2_tile_cols < max_log2_tile_cols);
+        // After the single column tile, tile_cols_log2 == 0; the row loop starts at
+        // (min_log2_tiles - 0) and reads a stop bit iff it is below max_log2_tile_rows.
+        let min_log2_tile_rows = min_log2_tiles; // tile_cols_log2 == 0 for one column tile
+        let row_bits = u32::from(min_log2_tile_rows < max_log2_tile_rows);
+        (col_bits, row_bits)
+    }
+
+    // --- Profile / chroma / bit-depth value-space (Annex A.2 Table A.1) ---
+
+    #[test]
+    fn annex_a_flags_reserved_profile() {
+        // seq_profile_idc 5 is in the reserved range 5-30 (Table A.1).
+        let data = td_and_annex_a_seq(AnnexASeq {
+            profile_idc: 5,
+            ..AnnexASeq::base()
+        });
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "annex-a/profile-reserved" && d.spec_section.as_deref() == Some("A.2")
+            }),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_accepts_profile_4_and_30_boundary() {
+        // Profile 4 is the last defined profile (not reserved); profile 30 is the last
+        // reserved value, profile 31 is Configurable (not reserved).
+        let ok = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
+            profile_idc: 4,
+            chroma_format_idc: 0, // 4:2:0 is allowed under profile 4
+            ..AnnexASeq::base()
+        }));
+        assert!(
+            !ok.errors().any(|d| d.rule_id == "annex-a/profile-reserved"),
+            "profile 4 is defined, not reserved; report was: {ok}"
+        );
+        let bad = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
+            profile_idc: 30,
+            ..AnnexASeq::base()
+        }));
+        assert!(
+            bad.errors()
+                .any(|d| d.rule_id == "annex-a/profile-reserved"),
+            "profile 30 is reserved; report was: {bad}"
+        );
+    }
+
+    #[test]
+    fn annex_a_flags_chroma_format_mismatch_under_profile() {
+        // Profile 0 allows only CHROMA_FORMAT_400 / CHROMA_FORMAT_420; chroma_format_idc
+        // 3 (CHROMA_FORMAT_422) is outside its set (Table A.1).
+        let data = td_and_annex_a_seq(AnnexASeq {
+            profile_idc: 0,
+            chroma_format_idc: 3, // CHROMA_FORMAT_422
+            ..AnnexASeq::base()
+        });
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "annex-a/profile-chroma-format-mismatch"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_profile_3_allows_422_but_not_444() {
+        // Profile 3 (Main_422) adds CHROMA_FORMAT_422 (idc 3) but not CHROMA_FORMAT_444
+        // (idc 2) (Table A.1).
+        let ok = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
+            profile_idc: 3,
+            chroma_format_idc: 3, // CHROMA_FORMAT_422
+            ..AnnexASeq::base()
+        }));
+        assert!(
+            !ok.errors()
+                .any(|d| d.rule_id == "annex-a/profile-chroma-format-mismatch"),
+            "profile 3 allows 4:2:2; report was: {ok}"
+        );
+        let bad = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
+            profile_idc: 3,
+            chroma_format_idc: 2, // CHROMA_FORMAT_444
+            ..AnnexASeq::base()
+        }));
+        assert!(
+            bad.errors()
+                .any(|d| d.rule_id == "annex-a/profile-chroma-format-mismatch"),
+            "profile 3 does not allow 4:4:4; report was: {bad}"
+        );
+    }
+
+    #[test]
+    fn annex_a_profile_4_allows_444_but_not_422() {
+        // Profile 4 (Main_444) adds CHROMA_FORMAT_444 (idc 2) but not CHROMA_FORMAT_422
+        // (idc 3) (Table A.1).
+        let ok = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
+            profile_idc: 4,
+            chroma_format_idc: 2, // CHROMA_FORMAT_444
+            ..AnnexASeq::base()
+        }));
+        assert!(
+            !ok.errors()
+                .any(|d| d.rule_id == "annex-a/profile-chroma-format-mismatch"),
+            "profile 4 allows 4:4:4; report was: {ok}"
+        );
+        let bad = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
+            profile_idc: 4,
+            chroma_format_idc: 3, // CHROMA_FORMAT_422
+            ..AnnexASeq::base()
+        }));
+        assert!(
+            bad.errors()
+                .any(|d| d.rule_id == "annex-a/profile-chroma-format-mismatch"),
+            "profile 4 does not allow 4:2:2; report was: {bad}"
+        );
+    }
+
+    #[test]
+    fn annex_a_configurable_profile_is_unconstrained() {
+        // Profile 31 (Configurable) leaves chroma/bit-depth unconstrained (Table A.1
+        // dashes): a 4:2:2 sequence under it must not be flagged, and 31 is not reserved.
+        let data = td_and_annex_a_seq(AnnexASeq {
+            profile_idc: 31,
+            chroma_format_idc: 3, // CHROMA_FORMAT_422
+            ..AnnexASeq::base()
+        });
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("annex-a/profile-")),
+            "the Configurable profile is unconstrained; report was: {report}"
+        );
+    }
+
+    // --- Level / tier value-space (Annex A.4 Tables A.7 / A.9 NOTE) ---
+
+    #[test]
+    fn annex_a_flags_reserved_level() {
+        // seq_level_idx 25 is in the reserved range 22-30 (Table A.7).
+        let data = td_and_annex_a_seq(AnnexASeq {
+            level_idx: 25,
+            ..AnnexASeq::base()
+        });
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "annex-a/level-reserved" && d.spec_section.as_deref() == Some("A.4")
+            }),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_accepts_level_21_and_31() {
+        // LevelIdx 21 (8.3) is the last defined level; 31 is Maximum parameters (valid);
+        // 22 is the first reserved value.
+        for level_idx in [21u32, 31] {
+            let report = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
+                level_idx,
+                ..AnnexASeq::base()
+            }));
+            assert!(
+                !report
+                    .errors()
+                    .any(|d| d.rule_id == "annex-a/level-reserved"),
+                "level {level_idx} is valid; report was: {report}"
+            );
+        }
+        let bad = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
+            level_idx: 22,
+            ..AnnexASeq::base()
+        }));
+        assert!(
+            bad.errors().any(|d| d.rule_id == "annex-a/level-reserved"),
+            "level 22 is reserved; report was: {bad}"
+        );
+    }
+
+    #[test]
+    fn annex_a_high_tier_below_level_4_0_is_unreachable_in_syntax() {
+        // Spec-honesty boundary: `annex-a/high-tier-below-4-0` (the Table A.9 NOTE,
+        // mirror lines 436-437) is a warning, but the § 5.4.1 parser only reads seq_tier
+        // when seq_level_idx > 3 (i.e. LevelIdx 4 == level 4.0 and above) — for any lower
+        // level it infers Tier::Main. So a *signaled* High tier below 4.0 cannot occur in
+        // a parseable stream, and the warning never fires. This test pins that: even with
+        // the High-tier knob set at level 0, the parser infers Main and no warning is
+        // emitted. The check is kept as a documented, defensive guard.
+        let report = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
+            level_idx: 0,
+            high_tier: true, // not signaled at level 0; the parser infers Main tier
+            ..AnnexASeq::base()
+        }));
+        assert!(
+            report
+                .warnings()
+                .all(|d| d.rule_id != "annex-a/high-tier-below-4-0"),
+            "seq_tier is not signaled below level_idx 4, so High tier below 4.0 is \
+             unreachable; report was: {report}"
+        );
+        assert!(
+            report.is_conformant(),
+            "a level-0 Main-tier stream is conformant; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_high_tier_at_level_4_0_is_accepted() {
+        // seq_tier High at LevelIdx 4 (level 4.0) is allowed (Table A.9 NOTE: 4.0 and
+        // above), so no high-tier warning.
+        let report = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
+            level_idx: 4,
+            high_tier: true,
+            ..AnnexASeq::base()
+        }));
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "annex-a/high-tier-below-4-0"),
+            "High tier at level 4.0 is allowed; report was: {report}"
+        );
+        assert!(
+            report
+                .warnings()
+                .all(|d| d.rule_id != "annex-a/high-tier-below-4-0"),
+            "no high-tier warning at level 4.0; report was: {report}"
+        );
+    }
+
+    // --- Static level limits on the parsed intra frame path (Annex A.4) ---
+
+    /// A level-2.0 sequence header with 10-bit frame dimensions (max 1024), plus a
+    /// frame of the given size that reaches `tile_info()` with the right single-tile
+    /// increment bits, all wrapped with a temporal delimiter prefix.
+    fn level_2_0_stream(width: u32, height: u32) -> Vec<u8> {
+        let seq = AnnexASeq {
+            level_idx: 0,
+            frame_dim_bits_minus_1: 9, // 10-bit frame dims (max 1024)
+            max_frame_width_minus_1: 1023,
+            max_frame_height_minus_1: 1023,
+            ..AnnexASeq::base()
+        };
+        let mut data = td_and_annex_a_seq(seq);
+        let (col, row) = annex_a_single_tile_increments(width, height);
+        data.extend(annex_a_frame_obu(0, width, height, 10, col, row));
+        data
+    }
+
+    #[test]
+    fn annex_a_frame_width_exceeds_max_h_size() {
+        // Level 2.0 (LevelIdx 0) MaxHSize is 640. FrameWidth 641 (> 640) with a short
+        // height stays under MaxPicSize 147456, isolating the MaxHSize limit (fail-past).
+        let report = Validator::new(false).validate_bytes(&level_2_0_stream(641, 16));
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "annex-a/frame-size-exceeds-level" && d.message.contains("MaxHSize")
+            }),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_frame_at_max_h_size_passes() {
+        // FrameWidth exactly 640 == MaxHSize passes (boundary, pass-at-limit).
+        let report = Validator::new(false).validate_bytes(&level_2_0_stream(640, 16));
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "annex-a/frame-size-exceeds-level"),
+            "FrameWidth 640 == MaxHSize 640 must pass; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_frame_pic_size_exceeds_level() {
+        // Level 2.0 MaxPicSize is 147456. FrameWidth 640 x FrameHeight 640 = 409600 >
+        // 147456 (both dimensions are within MaxHSize/MaxVSize 640, isolating the
+        // pic-size limit).
+        let report = Validator::new(false).validate_bytes(&level_2_0_stream(640, 640));
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "annex-a/frame-size-exceeds-level" && d.message.contains("MaxPicSize")
+            }),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_frame_below_minimum_dimension() {
+        // FrameWidth < 16 violates the Annex A.4 minimum-dimension rule. An 8-wide frame
+        // has sbCols == 1 -> no increment bit.
+        let report = Validator::new(false).validate_bytes(&level_2_0_stream(8, 16));
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "annex-a/frame-size-below-minimum"
+                    && d.spec_section.as_deref() == Some("A.4")
+            }),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_frame_at_minimum_dimension_passes() {
+        // FrameWidth == FrameHeight == 16 is exactly the minimum (boundary).
+        let report = Validator::new(false).validate_bytes(&level_2_0_stream(16, 16));
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "annex-a/frame-size-below-minimum"),
+            "16x16 is the minimum and must pass; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_level_31_disables_level_limits() {
+        // seq_level_idx 31 (Maximum parameters): no level-based constraints, so a huge
+        // frame that would blow past every level-2.0 limit must not be flagged.
+        let seq = AnnexASeq {
+            level_idx: 31,
+            frame_dim_bits_minus_1: 11, // 12-bit dims (max 4096)
+            max_frame_width_minus_1: 4095,
+            max_frame_height_minus_1: 4095,
+            ..AnnexASeq::base()
+        };
+        let mut data = td_and_annex_a_seq(seq);
+        // Level 31 (NO_LEVEL) tile layout: max_tile_width_sb == sbCols, so a single tile
+        // reads one column and one row stop bit for a 4000x4000 (63x63 superblock) frame.
+        data.extend(annex_a_frame_obu(0, 4000, 4000, 12, 1, 1));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("annex-a/frame-size-")),
+            "level 31 disables all level-limit checks; report was: {report}"
+        );
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "annex-a/tile-count-exceeds-level"),
+            "level 31 disables the tile-count check too; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_reserved_level_disables_level_limits() {
+        // A reserved seq_level_idx (22-30) is not in Tables A.8/A.9, so the level-limit
+        // checks are disabled (the reserved-level value-space error still fires).
+        let seq = AnnexASeq {
+            level_idx: 22,
+            frame_dim_bits_minus_1: 9,
+            max_frame_width_minus_1: 1023,
+            max_frame_height_minus_1: 1023,
+            ..AnnexASeq::base()
+        };
+        let mut data = td_and_annex_a_seq(seq);
+        // A reserved seq_level_idx has no defined tile scaling, so the frame's tile_info()
+        // parse stops as Unimplemented and the frame-core checks are skipped — the
+        // level-limit checks never run regardless of the (here unreached) tile bits.
+        data.extend(annex_a_frame_obu(0, 640, 640, 10, 1, 1)); // would exceed level 2.0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "annex-a/frame-size-exceeds-level"),
+            "a reserved level has no level limits; report was: {report}"
+        );
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "annex-a/level-reserved"),
+            "the reserved-level value-space error still fires; report was: {report}"
+        );
+    }
+
+    // --- ops_level_idx reserved (Annex A.4 Table A.7) ---
+
+    #[test]
+    fn annex_a_flags_reserved_ops_level_idx() {
+        // A global OPS carrying ops_level_idx 25 (reserved 22-30) for one extended layer.
+        let mut data = temporal_delimiter_obu();
+        data.extend(ops_obu_with_level(25));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "annex-a/level-reserved"
+                    && d.message.contains("ops_level_idx")
+                    && d.spec_section.as_deref() == Some("A.4")
+            }),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_accepts_valid_ops_level_idx() {
+        // ops_level_idx 4 (level 4.0) is a defined level — no level-reserved error.
+        let mut data = temporal_delimiter_obu();
+        data.extend(ops_obu_with_level(4));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "annex-a/level-reserved"),
+            "ops_level_idx 4 is a defined level; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_flags_high_tier_below_4_0_in_ops() {
+        // The reachable high-tier-below-4.0 arm (mirror lines 443-451 + the Table A.9
+        // NOTE): the OPS PTL signals ops_tier_flag unconditionally (§ 5.11.2), so a High
+        // tier (ops_tier_flag == 1) with ops_level_idx 3 (level 3.1, below 4.0) is a real
+        // case the seq-header arm cannot reach. Exactly one advisory warning fires.
+        let mut data = temporal_delimiter_obu();
+        data.extend(ops_obu_with_level_tier(3, true));
+        let report = Validator::new(false).validate_bytes(&data);
+        let high_tier: Vec<_> = report
+            .warnings()
+            .filter(|d| d.rule_id == "annex-a/high-tier-below-4-0")
+            .collect();
+        assert_eq!(
+            high_tier.len(),
+            1,
+            "exactly one high-tier-below-4.0 warning; report was: {report}"
+        );
+        let warning = high_tier[0];
+        assert_eq!(warning.spec_section.as_deref(), Some("A.4"));
+        assert!(
+            warning.message.contains("ops_tier_flag")
+                && warning.message.contains("ops_level_idx 3"),
+            "message names ops_tier_flag/ops_level_idx; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_accepts_high_tier_at_4_0_in_ops() {
+        // ops_tier_flag == 1 at ops_level_idx 4 (level 4.0) is allowed (Table A.9 NOTE:
+        // 4.0 and above) — no high-tier-below-4.0 diagnostic.
+        let mut data = temporal_delimiter_obu();
+        data.extend(ops_obu_with_level_tier(4, true));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .warnings()
+                .all(|d| d.rule_id != "annex-a/high-tier-below-4-0"),
+            "High tier at level 4.0 is allowed; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_accepts_main_tier_below_4_0_in_ops() {
+        // ops_tier_flag == 0 (Main) at ops_level_idx 3 (below 4.0) is fine — the NOTE
+        // only restricts the High tier — so no high-tier-below-4.0 diagnostic.
+        let mut data = temporal_delimiter_obu();
+        data.extend(ops_obu_with_level_tier(3, false));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .warnings()
+                .all(|d| d.rule_id != "annex-a/high-tier-below-4-0"),
+            "Main tier below 4.0 is fine; report was: {report}"
+        );
+    }
+
+    /// A local OPS OBU (xlayer 0, `ops_cnt == 1`, `ops_ptl_present`) whose single
+    /// operating point's `ops_seq_profile_tier_level_info()` (§ 5.11.2) signals
+    /// `ops_level_idx == level_idx` with `ops_tier_flag == 0` (Main).
+    fn ops_obu_with_level(level_idx: u32) -> Vec<u8> {
+        ops_obu_with_level_tier(level_idx, false)
+    }
+
+    /// A local OPS OBU (xlayer 0, `ops_cnt == 1`, `ops_ptl_present`) whose single
+    /// operating point's `ops_seq_profile_tier_level_info()` (§ 5.11.2) signals
+    /// `ops_level_idx == level_idx` and `ops_tier_flag == high_tier`. Modeled on
+    /// `local_ops_obu` (OBU type 18); the per-op `ops_data_size` is the byte-aligned
+    /// body length. Unlike the sequence header, the OPS PTL carries `ops_tier_flag`
+    /// unconditionally, so High tier can be signaled at any level here.
+    fn ops_obu_with_level_tier(level_idx: u32, high_tier: bool) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.bit(0); // ops_reset_flag
+        bits.f(0, 4); // ops_id
+        bits.f(1, 3); // ops_cnt == 1
+        bits.f(0, 4); // ops_priority
+        bits.f(0, 7); // ops_intent
+        bits.bit(0); // ops_intent_present_flag
+        bits.bit(1); // ops_ptl_present_flag
+        bits.bit(0); // ops_color_info_present_flag
+        bits.f(0, 2); // ops_reserved_2bits (local OPS)
+        // operating_point_payload(0):
+        let mut body = Bits::default();
+        // ops_seq_profile_tier_level_info() (§ 5.11.2).
+        body.f(0, 5); // ops_seq_profile_idc
+        body.f(level_idx, 5); // ops_level_idx
+        body.bit(u8::from(high_tier)); // ops_tier_flag
+        body.f(0, 3); // ops_mlayer_count
+        body.f(0, 2); // ops_ptl_reserved_2bits
+        body.bit(0); // ops_decoder_model_info_for_this_op_present_flag
+        body.bit(0); // ops_initial_display_delay_present_flag
+        body.f(0, 8); // ops_mlayer_info(): ops_mlayer_map = 0
+        body.align();
+        let body_bytes = (body.bits.len() / 8) as u32;
+        bits.f(body_bytes, 8); // ops_data_size (leb128, single byte for len < 128)
+        bits.bits.extend_from_slice(&body.bits);
+        annex_b_obu_with_header(&layer_obu_header(18, 0, 0, 0), &finish_extensible(bits))
+    }
+
+    // --- Table A.4 interoperability-point OBU presence (Annex A.2) ---
+
+    /// A two-extended-layer (IOP from `profile_idc`) coded video sequence: one temporal
+    /// unit with ascending coded-extended-layer units — sequence header then CLK for
+    /// xlayer 0, then for xlayer 1 — optionally preceded by a global MSDO and/or global
+    /// LCR, then a trailing temporal delimiter that closes the IOP window so Table A.4 is
+    /// evaluated. Each CLK frame-confirms its extended layer's activation.
+    fn annex_a_two_xlayer_stream(
+        profile_idc: u32,
+        include_msdo: bool,
+        global_lcr_xlayer_map: Option<u32>,
+    ) -> Vec<u8> {
+        let mut data = temporal_delimiter_obu();
+        if include_msdo {
+            data.extend(annex_b_obu(0x50, &msdo_payload(0))); // global MSDO (2 substreams)
+        }
+        if let Some(map) = global_lcr_xlayer_map {
+            data.extend(global_lcr_obu(0, map, None));
+        }
+        // Ascending coded-extended-layer units: xlayer 0's header + CLK, then xlayer 1's.
+        data.extend(annex_a_seq_obu(AnnexASeq {
+            seq_id: 0,
+            profile_idc,
+            ..AnnexASeq::base()
+        }));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(4, 0, 0, 1),
+            &annex_a_seq_payload(AnnexASeq {
+                seq_id: 1,
+                profile_idc,
+                ..AnnexASeq::base()
+            }),
+        ));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 1)); // CLK xlayer 1
+        data.extend(temporal_delimiter_obu()); // closes the IOP window -> evaluate Table A.4
+        data
+    }
+
+    /// A two-extended-layer profile-0 (IOP0) coded video sequence; convenience over
+    /// [`annex_a_two_xlayer_stream`].
+    fn annex_a_two_xlayer_iop0_stream(include_msdo: bool) -> Vec<u8> {
+        annex_a_two_xlayer_stream(0, include_msdo, None)
+    }
+
+    #[test]
+    fn annex_a_iop0_multi_xlayer_without_msdo_requires_msdo() {
+        // IOP0 with more than one extended layer requires an OBU_MSDO (Table A.4 row 2).
+        let data = annex_a_two_xlayer_iop0_stream(false);
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "annex-a/msdo-required-for-iop"
+                    && d.spec_section.as_deref() == Some("A.2")
+            }),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_iop0_multi_xlayer_with_msdo_is_accepted() {
+        // The same stream with the required MSDO present must not be flagged.
+        let data = annex_a_two_xlayer_iop0_stream(true);
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("annex-a/msdo")),
+            "report was: {report}"
+        );
+    }
+
+    /// A single-extended-layer (xlayer 0) IOP0 coded video sequence: sequence header +
+    /// CLK in one temporal unit, optionally preceded by a global MSDO, then a trailing
+    /// temporal delimiter that closes the IOP window.
+    fn annex_a_single_xlayer_iop0_stream(include_msdo: bool) -> Vec<u8> {
+        let mut data = temporal_delimiter_obu();
+        if include_msdo {
+            data.extend(annex_b_obu(0x50, &msdo_payload(0))); // global MSDO
+        }
+        data.extend(annex_a_seq_obu(AnnexASeq::base()));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0
+        data.extend(temporal_delimiter_obu()); // closes the IOP window
+        data
+    }
+
+    #[test]
+    fn annex_a_iop0_single_xlayer_with_msdo_prohibits_msdo() {
+        // IOP0 with a single extended layer prohibits an OBU_MSDO (Table A.4 row 1).
+        let data = annex_a_single_xlayer_iop0_stream(true);
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "annex-a/msdo-prohibited-for-iop"
+                    && d.spec_section.as_deref() == Some("A.2")
+            }),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_iop0_single_xlayer_without_msdo_is_accepted() {
+        // A single-extended-layer IOP0 stream with no MSDO is conformant (Table A.4 row
+        // 1: MSDO prohibited == not required).
+        let data = annex_a_single_xlayer_iop0_stream(false);
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("annex-a/msdo")),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_iop2_multi_xlayer_global_lcr_satisfies_either_or() {
+        // IOP2 (profile 2) with E (two extended layers) and !M: MSDO OR global LCR
+        // satisfies (Table A.4 row "2 Y N"). Provide a global LCR (xlayers 0, 1) and no
+        // MSDO.
+        let data = annex_a_two_xlayer_stream(2, false, Some(0b11));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("annex-a/msdo")
+                    || d.rule_id == "annex-a/lcr-required-for-iop"),
+            "a global LCR satisfies the IOP2 E,!M either/or; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_iop2_multi_xlayer_msdo_satisfies_either_or() {
+        // IOP2 with E and !M: an MSDO alone also satisfies (Table A.4 row "2 Y N", the
+        // other arm of the either/or). Provide an MSDO and no LCR.
+        let data = annex_a_two_xlayer_stream(2, true, None);
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "annex-a/msdo-required-for-iop"
+                    || d.rule_id == "annex-a/lcr-required-for-iop"),
+            "an MSDO satisfies the IOP2 E,!M either/or; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_iop2_multi_xlayer_neither_msdo_nor_lcr_is_flagged() {
+        // IOP2 with E and !M but neither an MSDO nor a global LCR fails the either/or.
+        let data = annex_a_two_xlayer_stream(2, false, None);
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "annex-a/msdo-required-for-iop"),
+            "neither MSDO nor LCR present for IOP2 E,!M must be flagged; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_table_a4_suppressed_under_external_hls() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // The IOP0 two-xlayer-without-MSDO stream is flagged in-band, but suppressed when
+        // external HLS is provided (in-band presence counting is unsound).
+        let data = annex_a_two_xlayer_iop0_stream(false);
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("annex-a/msdo")
+                    || d.rule_id.starts_with("annex-a/lcr")),
+            "Table A.4 presence checks are suppressed under external HLS; report was: {report}"
+        );
+    }
 }

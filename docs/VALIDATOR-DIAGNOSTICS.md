@@ -31,6 +31,27 @@ Diagnostics are the validator product. Every finding carries:
 Every rule ID below is emitted by `crates/splot-validate/src`, grouped by namespace. The
 `Section` column cites the AV2 v1.0.0 conformance section the check derives from.
 
+### `annex-a/`
+
+Annex A profile/level/tier **static** constraints (`AV2-A-PROFILES` / `AV2-A-LEVELS-TIERS`),
+grounded in `docs/spec/av2/1.0.0/annex-a-profiles-levels-and-tiers.md`. Rate-based and
+decoder-model constraints (Annex E) are out of scope. Hand-crafted unit vectors only —
+`avm_diff` is never claimed for them (no AVM differential oracle has been run yet).
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `annex-a/frame-size-below-minimum` | error | § A.4 | a parsed intra frame's FrameWidth or FrameHeight is below 16 under a table-mapped seq_level_idx (not 31, not reserved) |
+| `annex-a/frame-size-exceeds-level` | error | § A.4 | FrameWidth*FrameHeight > MaxPicSize, FrameWidth > MaxHSize, or FrameHeight > MaxVSize for the activated seq_level_idx (Tables A.8) |
+| `annex-a/high-tier-below-4-0` | warning | § A.4 | a High tier is signaled below level 4.0 (Table A.9 NOTE — informative, hence advisory). The reachable case is an OPS-signaled ops_tier_flag == 1 with ops_level_idx < 4 (the OPS PTL carries ops_tier_flag unconditionally, § 5.11.2). The sequence-header arm (seq_tier High with seq_level_idx < 4) is syntax-unreachable because seq_tier is only signaled for seq_level_idx > 3, and is kept as a defensive guard. |
+| `annex-a/lcr-required-for-iop` | error | § A.2 | a Table A.4 interoperability-point row requires a local/global OBU_LAYER_CONFIGURATION_RECORD (or the MSDO-plus-local-LCR / global-LCR either-or) that is absent in the coded video sequence |
+| `annex-a/level-reserved` | error | § A.4 | an activated seq_level_idx, or an observed ops_level_idx, is in the reserved range 22-30 (Table A.7) |
+| `annex-a/msdo-prohibited-for-iop` | error | § A.2 | a Table A.4 interoperability-point row prohibits an OBU_MSDO (a single-extended-layer coded video sequence) but one is present |
+| `annex-a/msdo-required-for-iop` | error | § A.2 | a Table A.4 interoperability-point row requires an OBU_MSDO (or the IOP2 MSDO-or-global-LCR either-or) for a multi-extended-layer coded video sequence and none is present |
+| `annex-a/profile-bit-depth-mismatch` | error | § A.2 | bit_depth_idc is not 0 or 1 for a profile in 0-4 (Table A.1; defensive — the parsed bit_depth_idc only models 0/1, so unreachable today) |
+| `annex-a/profile-chroma-format-mismatch` | error | § A.2 | chroma_format_idc is outside the activated profile's allowed set (Table A.1; profile 31 / reserved profiles are skipped) |
+| `annex-a/profile-reserved` | error | § A.2 | seq_profile_idc is in the reserved range 5-30 (Table A.1) |
+| `annex-a/tile-count-exceeds-level` | error | § A.4 | a parsed intra frame's NumTiles > MaxTiles or TileCols > MaxTileCols for the activated seq_level_idx (Table A.9) |
+
 ### `atlas/`
 
 | Rule ID | Severity | Section | Condition |
@@ -343,9 +364,12 @@ from the enforced registry above** because nothing emits them yet:
 - `tile-group/` — frame-data / tile payload boundary checks (needs full frame/tile parsing).
 - `hls-availability/` — a dedicated high-level-syntax availability namespace; today the landed
   availability checks live under `hls/` (see the registry above).
-- `obu-payload/`, `annex-a/` — strict-mode payload and Annex A profile/level constraints.
+- `obu-payload/` — strict-mode payload constraints.
   (The `decoder-model/` namespace has landed — see the registry tables above — but is limited to
-  signaled buffer-delay sum-constancy; Annex E decoder-schedule simulation remains future.)
+  signaled buffer-delay sum-constancy; Annex E decoder-schedule simulation remains future. The
+  `annex-a/` namespace has also landed for the static profile/level/tier subset — see the registry
+  tables above — but the rate-based / decoder-model Annex A constraints remain future, tracked by
+  the Annex E change.)
 
 Design sketches and phase plans for these live in the planned-diagnostics backlog of
 [`VALIDATOR-ROADMAP.md`](./VALIDATOR-ROADMAP.md).

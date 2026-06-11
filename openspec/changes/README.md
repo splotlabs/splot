@@ -26,5 +26,6 @@ same id in the matrix, the OpenSpec folder, and the GitHub issue/PR.
 | Change | Feature IDs | State |
 |---|---|---|
 | `add-bitstream-writer` | `ENC-BITSTREAM-WRITER` (+ `AV2-4.11.6-LEB128`, `AV2-5.2.2-OBU-HEADER`, `AV2-5.2.3-TRAILING-BITS`, `AV2-5.2.4-BYTE-ALIGNMENT` write stages) | parked (encoder track, behind the [VALIDATOR-ROADMAP](../../docs/VALIDATOR-ROADMAP.md) fence) |
+| `annex-a-profile-level-skeleton` | `AV2-A-PROFILES`, `AV2-A-LEVELS-TIERS` (+ `AV2-5.11.2-OPS-SEQ-PTL-INFO` value-space note) | in progress (validate todo → partial; static profile/level/tier subset) |
 | `avm-differential-harness` | `CONF-AVM-DIFF-HARNESS` | proposed |
 | `toy-intra-encoder-v0` | `ENC-INTRA-TOY-V0` (deps: `ENC-BITSTREAM-WRITER`, `AV2-5.4-SEQUENCE-HEADER`, `AV2-5.18-FRAME-HEADER`, `AV2-5.19-TILE-GROUP`, `CONF-AVM-DIFF-HARNESS`) | parked (encoder track, behind the [VALIDATOR-ROADMAP](../../docs/VALIDATOR-ROADMAP.md) fence) |
