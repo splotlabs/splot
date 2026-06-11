@@ -2529,6 +2529,15 @@ mod tests {
         annex_b_obu(0x04, &sequence_header_payload_with_id(seq_header_id, 1, 1))
     }
 
+    /// A bare sequence header OBU with `seq_header_id` carried in extended layer `xlayer`
+    /// (a resend by a specific layer; the `seq_header_id` namespace is global, § 7.3.8.6).
+    fn seq_obu_layer(seq_header_id: u32, xlayer: u8) -> Vec<u8> {
+        annex_b_obu_with_header(
+            &layer_obu_header(1, 0, 0, xlayer),
+            &sequence_header_payload_with_id(seq_header_id, 1, 1),
+        )
+    }
+
     const RAP_RULE: &str = "hls/unavailable-at-random-access-point";
 
     #[test]
@@ -2891,6 +2900,48 @@ mod tests {
         );
     }
 
+    // --- cycle-2 finding 1: a same-temporal-unit multi-layer resend must not drop a
+    // qualifying sender behind a later non-qualifying one (§ 7.3.8.1) ---
+
+    #[test]
+    fn rap_replay_same_tu_qualifying_resend_not_overwritten_by_leading_resend() {
+        // Codex cycle-2 finding 1. In one temporal unit the same seq_header_id is resent by
+        // a NON-LEADING layer (qualifies) and then again by a LEADING, non-random-access
+        // layer (does not qualify). § 7.3.8.1 availability is a per-object question — one
+        // qualifying send suffices — so the object must be promoted for this random access
+        // point. (Pre-fix the per-temporal-unit resend map kept only the LAST sender, so the
+        // leading layer's non-qualifying send overwrote the qualifying one, the object was
+        // not promoted, and a later reference fired — a false positive.)
+        //
+        // TU0: seq(3), seq(7) sent (xlayer 0). TU1 is a random access point for xlayer 0
+        // (CLK referencing seq(3), seq(3) resent so its own reference is satisfied) that also
+        // resends seq(7) twice: first at xlayer 0 (non-leading -> qualifies), then at
+        // xlayer 1, with a LEADING frame in xlayer 1 (so xlayer 1's send does NOT qualify).
+        // TU2: a regular frame in xlayer 0 references seq(7) -> governed by xlayer 0's random
+        // access point at TU1, which DID see a qualifying (xlayer 0) resend of seq(7), so it
+        // must stay silent.
+        let mut data = td_and_seq(3);
+        data.extend(seq_obu(7));
+        // TU1: random access point for xlayer 0.
+        data.extend(temporal_delimiter_obu());
+        data.extend(seq_obu(3)); // resend seq(3) -> the CLK's own reference is satisfied
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 3)); // CLK xlayer 0 -> random access point
+        data.extend(seq_obu_layer(7, 0)); // qualifying resend of seq(7) at xlayer 0 (non-leading)
+        data.extend(seq_obu_layer(7, 1)); // later resend of seq(7) at xlayer 1 (overwrites pre-fix)
+        data.extend(frame_obu_direct_seq_ref_layer(6, 0, 0, 1, 7)); // LEADING frame -> xlayer 1 leading
+        // TU2: a regular xlayer-0 reference to seq(7).
+        data.extend(temporal_delimiter_obu());
+        data.extend(frame_obu_direct_seq_ref(REGULAR_TILE_GROUP_HEADER, 7));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == RAP_RULE && d.message.contains("seq_header_id 7")),
+            "a qualifying same-temporal-unit resend must not be discarded because a later \
+             non-qualifying resend of the same object follows it; report was: {report}"
+        );
+    }
+
     // --- finding 2: LCR / local-atlas random-access-point availability replay ---
 
     #[test]
@@ -2940,6 +2991,88 @@ mod tests {
         assert!(
             !report.errors().any(|d| d.rule_id == RAP_RULE),
             "report was: {report}"
+        );
+    }
+
+    // --- cycle-2 finding 2: a global-HLS resend in a temporal unit containing leading
+    // frames must not qualify (§ 7.4.4, mirror `07-decoding-process.md` lines 1184-1185:
+    // "Regular frames that follow leading frames after the OLK temporal unit shall also not
+    // reference ... HLS OBUs that are indicated in temporal units containing leading
+    // frames") unless that temporal unit is itself a random access point ---
+
+    #[test]
+    fn rap_replay_global_lcr_resent_only_in_post_rap_leading_tu_is_flagged() {
+        // Codex cycle-2 finding 2. A global layer configuration record (extended layer
+        // GLOBAL_XLAYER_ID = 31) is never tagged "leading" itself, so pre-fix a global
+        // resend in any temporal unit always qualified. But § 7.4.4 forbids a post-leading
+        // regular reference from relying on an HLS OBU indicated in a temporal unit that
+        // contains leading frames. So a global resend in a post-random-access LEADING,
+        // non-random-access temporal unit must NOT qualify.
+        //
+        // TU0: global LCR 5 (xlayer_map includes xlayer 3) + seq(seq_lcr_id 5)@xlayer 3
+        //   (buffers the § 7.3.8.3 reference) + a no-LCR seq(9)@xlayer 3 (for the random
+        //   access point's own frame reference). TU1: a CLK@xlayer 3 references seq(9)
+        //   (resent so its own reference is satisfied) -> random access point for xlayer 3
+        //   at TU1; the global LCR is NOT resent here, and no LCR reference is made here, so
+        //   nothing fires at TU1. TU2: a POST-random-access LEADING, non-random-access
+        //   temporal unit (a LEADING frame in xlayer 3) that resends the global LCR -> this
+        //   resend must not qualify (§ 7.4.4). TU3: seq(seq_lcr_id 5)@xlayer 3 resent (a
+        //   non-leading unit, so its reference is not moot), re-buffering the § 7.3.8.3
+        //   reference governed by xlayer 3's random access point at TU1 -> the global LCR's
+        //   only qualifying send is TU0 (< TU1), so it fires. (Pre-fix the TU2 global resend
+        //   qualified, leaving the reference silent -> a missed report.)
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_lcr_obu(5, 0b1000, None)); // global LCR id 5, xlayer 3 in map
+        data.extend(sequence_header_obu_with_lcr(3, 5)); // seq(0, seq_lcr_id 5)@xlayer 3
+        data.extend(seq_obu_layer(9, 3)); // a no-LCR seq(9)@xlayer 3 for the RAP frame ref
+        // TU1: random access point for xlayer 3 referencing the no-LCR seq(9); no global LCR
+        // resend and no LCR reference here.
+        data.extend(temporal_delimiter_obu());
+        data.extend(seq_obu_layer(9, 3)); // seq(9) resent -> the CLK's own reference satisfied
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 3, 9)); // CLK@xlayer 3 -> RAP
+        // TU2: a post-random-access LEADING, non-random-access temporal unit that resends
+        // the global LCR -> must not qualify (§ 7.4.4).
+        data.extend(temporal_delimiter_obu());
+        data.extend(global_lcr_obu(5, 0b1000, None)); // global LCR resent in a LEADING TU
+        data.extend(frame_obu_direct_seq_ref_layer(6, 0, 0, 3, 9)); // LEADING frame -> xlayer 3 leading
+        // TU3: a non-leading unit re-buffers the seq_lcr_id 5 reference.
+        data.extend(temporal_delimiter_obu());
+        data.extend(sequence_header_obu_with_lcr(3, 5)); // re-buffers the § 7.3.8.3 reference
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == RAP_RULE
+                    && d.spec_section.as_deref() == Some("7.3.8.1")
+                    && d.message.contains("global layer configuration record")
+                    && d.message.contains("lcr_global_config_record_id 5")
+            }),
+            "a global-HLS resend in a post-random-access leading temporal unit must not \
+             satisfy a post-leading reference (§ 7.4.4); report was: {report}"
+        );
+    }
+
+    #[test]
+    fn rap_replay_global_lcr_resent_in_post_rap_non_leading_tu_passes() {
+        // Control for the previous test: the SAME stream, but TU2 carries no leading frame
+        // (a regular frame instead), so the global resend qualifies and the TU3 reference
+        // stays silent.
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_lcr_obu(5, 0b1000, None));
+        data.extend(sequence_header_obu_with_lcr(3, 5));
+        data.extend(seq_obu_layer(9, 3));
+        data.extend(temporal_delimiter_obu());
+        data.extend(seq_obu_layer(9, 3));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 3, 9)); // CLK@xlayer 3 -> RAP
+        data.extend(temporal_delimiter_obu());
+        data.extend(global_lcr_obu(5, 0b1000, None)); // global LCR resent in a NON-leading TU
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 3, 9)); // REGULAR frame -> not leading
+        data.extend(temporal_delimiter_obu());
+        data.extend(sequence_header_obu_with_lcr(3, 5));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report.errors().any(|d| d.rule_id == RAP_RULE),
+            "a global resend in a non-leading post-random-access temporal unit qualifies; \
+             report was: {report}"
         );
     }
 

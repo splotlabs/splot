@@ -3410,11 +3410,12 @@ struct RapPendingReference {
     /// the sequence-header memory as a global `seq_header_id` namespace). `None` when no
     /// qualifying resend was promoted before this temporal unit.
     promoted_snapshot: Option<u64>,
-    /// The extended layer that (re)sent this object *earlier in this temporal unit*
-    /// (before this reference, in-band order), or `None` if it was not resent before the
-    /// reference. Its leading / random-access-point qualification is deferred to
+    /// The extended layers that (re)sent this object *earlier in this temporal unit*
+    /// (before this reference, in-band order); empty if it was not resent before the
+    /// reference. The before-reference resend counts when *any* of these senders
+    /// qualifies. Their leading / random-access-point qualification is deferred to
     /// temporal-unit completion (see [`RapReplayTracker::complete_temporal_unit`]).
-    this_tu_resend_xlayer: Option<ExtendedLayerId>,
+    this_tu_resend_xlayers: BTreeSet<ExtendedLayerId>,
     /// Byte offset of the referencing OBU, where the diagnostic is anchored.
     offset: ByteOffset,
 }
@@ -3475,16 +3476,17 @@ struct RapReplayTracker {
     /// extended-layer, matching the global `seq_header_id` memory). Monotonic — a resend
     /// only advances the value.
     last_good_resend_tu: BTreeMap<RapHlsKey, u64>,
-    /// Objects (re)sent in the temporal unit currently being observed, mapped to the
-    /// extended layer that sent each (eager, in-band order). Used both to snapshot a
-    /// before-reference resend for the current unit and to promote into
-    /// [`Self::last_good_resend_tu`] at completion (whose qualification needs the sending
+    /// Objects (re)sent in the temporal unit currently being observed, mapped to the *set*
+    /// of extended layers that sent each (eager, in-band order). Used both to snapshot the
+    /// before-reference resends for the current unit and to promote into
+    /// [`Self::last_good_resend_tu`] at completion (whose qualification needs each sending
     /// layer's leading / random-access state). Cleared per unit. When an object is resent
-    /// by several layers in one unit, the last write wins; this is benign — for the per-
-    /// object availability the only question is whether *some* qualifying send exists, and
-    /// the distinct OPS keys / non-global sequence headers make multi-layer same-object
-    /// sends in one unit a non-issue in practice.
-    resent_this_tu: BTreeMap<RapHlsKey, ExtendedLayerId>,
+    /// by several layers in one unit, *all* senders are retained: the object becomes
+    /// available for this random access point if *any* of them qualifies (§ 7.3.8.1 is a
+    /// per-object availability question, so one qualifying send suffices). Accumulating the
+    /// full set — rather than last-writer-wins — avoids dropping a qualifying resend that a
+    /// later non-qualifying (leading, non-random-access) resend would otherwise overwrite.
+    resent_this_tu: BTreeMap<RapHlsKey, BTreeSet<ExtendedLayerId>>,
     /// References buffered in the temporal unit currently being observed, resolved at
     /// completion (see [`Self::complete_temporal_unit`]).
     pending_this_tu: Vec<RapPendingReference>,
@@ -3521,7 +3523,11 @@ impl RapReplayTracker {
     /// is retained so its leading / random-access qualification can be resolved at
     /// completion.
     fn note_resend(&mut self, key: RapHlsKey, xlayer: ExtendedLayerId) {
-        self.resent_this_tu.insert(key, xlayer);
+        // Accumulate every sender in this unit (not last-writer-wins): a qualifying resend
+        // must not be lost when a later non-qualifying (leading, non-random-access) resend
+        // of the same object follows it in the same unit — § 7.3.8.1 availability holds if
+        // *any* same-unit send qualifies.
+        self.resent_this_tu.entry(key).or_default().insert(xlayer);
     }
 
     /// Marks the temporal unit currently being observed as a § 7.4.1 random access point
@@ -3552,24 +3558,50 @@ impl RapReplayTracker {
         offset: ByteOffset,
     ) {
         let promoted_snapshot = self.last_good_resend_tu.get(&key).copied();
-        // A resend earlier in this unit (before this reference, in-band order). Its
-        // qualification is deferred: the random access point's own unit is always decoded,
-        // so a before-reference resend in it counts even when the unit is leading.
-        let this_tu_resend_xlayer = self.resent_this_tu.get(&key).copied();
+        // The senders of this object earlier in this unit (before this reference, in-band
+        // order). Their qualification is deferred: the random access point's own unit is
+        // always decoded, so a before-reference resend in it counts even when the unit is
+        // leading. The full set (not just one sender) is captured so a qualifying resend is
+        // not lost behind a later non-qualifying one.
+        let this_tu_resend_xlayers = self.resent_this_tu.get(&key).cloned().unwrap_or_default();
         self.pending_this_tu.push(RapPendingReference {
             key,
             governing_xlayer,
             promoted_snapshot,
-            this_tu_resend_xlayer,
+            this_tu_resend_xlayers,
             offset,
         });
     }
 
     /// `true` when a (re)send by extended layer `xlayer` in this temporal unit qualifies
-    /// for § 7.3.8.1: it is not in a leading coded extended layer unit, *or* this temporal
-    /// unit is the random access point for that layer (the random access point's own unit
-    /// is always decoded when starting there, so its resends qualify — § 7.4.1).
+    /// for § 7.3.8.1.
+    ///
+    /// **Concrete sending layer.** Qualifies when its coded extended layer unit is not
+    /// leading, *or* this temporal unit is the random access point for that layer (the
+    /// random access point's own unit is always decoded when starting there, so its resends
+    /// qualify — § 7.4.1).
+    ///
+    /// **Global sending layer ([`GLOBAL_XLAYER_ID`]).** A global-layer HLS OBU
+    /// (e.g. a global layer configuration record) has no single owning coded extended layer
+    /// unit, so it is never tagged "leading" itself. But § 7.4.4 ("Open Random Access",
+    /// mirror `07-decoding-process.md` lines 1184-1185) states: "Regular frames that follow
+    /// leading frames after the OLK temporal unit shall also not reference leading frames or
+    /// HLS OBUs that are indicated in temporal units containing leading frames." A global
+    /// resend in a temporal unit that contains *any* leading frame is therefore not a
+    /// dependable supply for a post-leading regular reference — unless that temporal unit is
+    /// itself a random access point for some layer (the random-access-point unit is always
+    /// decoded by whichever layer first random-accesses there, which is exactly the layer
+    /// that decodes the global HLS). So a global send qualifies when this temporal unit
+    /// carries no leading frame in any layer, *or* this temporal unit is a random access
+    /// point for some layer.
     fn this_tu_send_qualifies(&self, xlayer: ExtendedLayerId) -> bool {
+        if xlayer.is_global() {
+            // § 7.4.4: a global HLS resend "indicated in a temporal unit containing leading
+            // frames" must not be relied on by a post-leading regular reference, unless the
+            // unit is itself a random access point (always decoded — § 7.4.1).
+            return self.current_tu_leading_xlayers.is_empty()
+                || !self.current_tu_rap_xlayers.is_empty();
+        }
         !self.current_tu_leading_xlayers.contains(&xlayer)
             || self.current_tu_rap_xlayers.contains(&xlayer)
     }
@@ -3604,8 +3636,15 @@ impl RapReplayTracker {
         // must still promote its own resends for that random access point). A non-
         // qualifying resend (leading, non-random-access) is dropped: those units drop
         // under post-random-access decoding.
-        for (key, xlayer) in std::mem::take(&mut self.resent_this_tu) {
-            if self.this_tu_send_qualifies(xlayer) {
+        for (key, xlayers) in std::mem::take(&mut self.resent_this_tu) {
+            // Promote when *any* sender of this object in this unit qualifies: § 7.3.8.1
+            // availability is satisfied by a single qualifying send, so a qualifying resend
+            // must not be discarded because another (leading, non-random-access) layer also
+            // resent the same object here.
+            if xlayers
+                .iter()
+                .any(|&xlayer| self.this_tu_send_qualifies(xlayer))
+            {
                 self.last_good_resend_tu.insert(key, tu_index);
             }
         }
@@ -3646,9 +3685,10 @@ impl RapReplayTracker {
             // send qualifies — this unit's index. Resolved now that this unit's per-layer
             // leading / random-access state is known.
             let this_tu_good = pending
-                .this_tu_resend_xlayer
-                .filter(|&xlayer| self.this_tu_send_qualifies(xlayer))
-                .map(|_| tu_index);
+                .this_tu_resend_xlayers
+                .iter()
+                .any(|&xlayer| self.this_tu_send_qualifies(xlayer))
+                .then_some(tu_index);
             let good_snapshot = match (pending.promoted_snapshot, this_tu_good) {
                 (Some(a), Some(b)) => Some(a.max(b)),
                 (Some(a), None) => Some(a),

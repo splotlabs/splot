@@ -135,7 +135,11 @@ header / operating point set referenced at or after a §7.4.1 random access poin
 (CLK/OLK/RAS temporal unit) was not (re)sent in or after that point's temporal
 unit — with LEADING_* temporal-unit resends disqualified, undecidable leading
 frames left qualifying (sound under-approximation), per-(object, random access
-point) dedup, and suppression under any external-HLS `Provided` mode. This
+point) dedup, and per-key external-HLS suppression: for a declarable kind
+(sequence header / operating point set) the `ExternalHlsSet` is authoritative, so
+suppression requires the *exact* referenced key to be declared external; for a
+kind the set cannot express (multi-frame header / LCR / atlas) any `Provided` mode
+keeps the blanket suppression (`options.rs`). This
 removes the `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` "blocked on §7.3.8
 availability" framing (the §6.2.2 post-activation-window precision follow-up
 stays on that row).
