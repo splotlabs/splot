@@ -5607,6 +5607,11 @@ impl ValidatorContext {
         // `(x, m0)` is not the "previous set in decoding order" of one on `(x, m1)` and
         // must not seed its inference. For unspecified targeting the carrying OBU's own
         // pair is still the soundest concrete scope (finding 4, documented).
+        // TODO(spec: AV2-5.17.7-METADATA-TIMECODE): a group-form LAYER_VALUES timecode
+        // carries GLOBAL_XLAYER_ID, so two groups targeting disjoint layer sets share
+        // this carrying-pair key and a present value from one set can seed an omitted
+        // field aimed at another -- a known false-negative (never a false positive);
+        // keying chains per derived target set would close it.
         let inference_key = (scope_xlayer, obu.header.embedded_layer_id);
         let tu_index = self.cvs.tu_index;
 
