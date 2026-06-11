@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "e01a4c929c348a5e19d468361af423c97b87b10e",
+  "audited_commit": "7830efd0ae03b7aa7689d4c7722144d90c682839",
   "outcome": "success",
   "files": [
     {
@@ -757,7 +757,7 @@
     },
     {
       "path": "crates/splot-validate/src/checks/mod.rs",
-      "sha256": "6a8c001bdf571f0c1c1055cf90c3b0ce5cbd305724f8453e18412e8ea0fe1047",
+      "sha256": "b4e063dea9a01458dba86db2c984a75b8d0d8d174d53b416e69076166317c508",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.3-RESERVED-OBU",
@@ -769,7 +769,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "4907d31aa546b6a21b6d3e05aa1740a1349af0db90161c1c735ff7b5d05633e4",
+      "sha256": "6b1232cdb2d7c7e396c0c992c37c65842ba5e4e04c2cd21159c9da22d3aa998f",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -833,9 +833,10 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "1288b5cafb9b64fce92b6c78d7f81c2f7387c890f64382a43e25204de2b15994",
+      "sha256": "0713e5817501b1582dc81e6ae51bdc0c2c7a23834b18092574efb9662cfbff6e",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
+        "AV2-5.6-MSDO",
         "AV2-A-LEVELS-TIERS",
         "AV2-A-PROFILES"
       ],
@@ -1064,7 +1065,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "bb93f484b9d9832a8edd5d097fc4a50dd302dc9896ea6b46ffa80fc9d951a4d1",
+      "sha256": "da28693f3a189c24f30487d10365879938c3a0bf187f8c2a17fc1f27042693f3",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1201,7 +1202,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "205447eb69f09bcbb65393dbb87ddb85d85a5a32a88dac7a088084701f3f875b",
+      "sha256": "106b097dc12e3588fc2eae4ca5bd802c0cf4cb701b8ef6420c68988e37306202",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1354,7 +1355,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "9d6f5a324cd558961200a9646c8b6dcc580aab841fe61bb8f2223c226745e75b",
+      "sha256": "97c39b0e213d05e2ba0b0b708e24dd9f61cad42a7b56fad5c50acb280400a138",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-A-LEVELS-TIERS",
@@ -1365,7 +1366,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "83c7283fc3ae05247a0921901468579d384fd99ce3b954faa2c71ad63c0d584b",
+      "sha256": "f16f3c80930ad0d3b4e94bd87603d62a1234d31d0e3ba9d067cc7e5e9d2957e4",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -1537,7 +1538,7 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
+      "sha256": "8fea7f32c9ace1805fb26e3379834874593e59b5061699aef487b963ddf6b2fd",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -1547,6 +1548,8 @@
         "AV2-5.2.3-TRAILING-BITS",
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.6-MSDO",
+        "AV2-7.3.8-HLS-AVAILABILITY",
         "CONF-AVM-DIFF-HARNESS",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
@@ -2845,6 +2848,35 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/msdo-substream-constraint-checks/proposal.md",
+      "sha256": "92ab9df65672caf40fec42f8b588cf33a37f342248dad3ccd55f328a56854170",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.6-MSDO",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-A-LEVELS-TIERS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/msdo-substream-constraint-checks/specs/validator/spec.md",
+      "sha256": "96e26cd3784e3b4ca29f7007c0e73362f1149dd1d35dbbaec64353942399785f",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.6-MSDO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/msdo-substream-constraint-checks/tasks.md",
+      "sha256": "f75b6ee187efe09bfa00d08c6dacf686432d74bc8360eee0d5bef53aaad484af",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.6-MSDO"
       ],
       "outcome": "success"
     },
