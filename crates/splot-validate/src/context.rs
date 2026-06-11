@@ -55,9 +55,9 @@ use crate::annex_a::{
     is_defined_config_idc, is_reserved_level, is_reserved_profile, level_limits,
     profile_allows_chroma,
 };
-use crate::celu::{CeluRole, CodedExtendedLayerTracker, FrameDelimiter, FrameFacts, Leadingness};
+use crate::celu::{CeluRole, CodedExtendedLayerTracker, FrameFacts, Leadingness};
 use crate::diagnostic::{Diagnostic, ValidationReport};
-use crate::frame_unit::{FrameUnitSegmenter, SegRole};
+use crate::frame_unit::{FrameBoundary, FrameUnitSegmenter, SegRole};
 use crate::metadata_lifetime::{
     ActiveMetadataUnit, LAYER_CURRENT, LAYER_GLOBAL, LAYER_VALUES, MetadataLifetimeStore,
     PersistenceMode,
@@ -4709,19 +4709,23 @@ impl ValidatorContext {
         // segmenter. The role (region classification, plus the output class and
         // is_first_tile_group / metadata_is_suffix facts) is computed from the
         // already-parsed state; an undecidable frame-header parse path yields an
-        // unknown output class that routes the unit to Unknown (silent).
+        // unknown output class that routes the unit to Unknown (silent). The segmenter
+        // returns each frame-bearing OBU's coded-frame-unit boundary signal — the CELU
+        // tracker consumes it as the single source of truth for coded-frame-unit
+        // boundaries (§ 7.3.6), rather than re-deriving them from frame-delimiter bits.
         let role = self.seg_role_for(obu, first_picture_in_tu);
-        self.frame_unit.observe(obu, role, report);
+        let boundary = self.frame_unit.observe(obu, role, report);
 
         // AV2 § 7.3.6 / § 7.3.7 / § 7.4.6: feed the coded-extended-layer-unit tracker,
         // which sits above the frame-unit segmenter (keyed per obu_xlayer_id across the
         // temporal unit). The per-frame facts (output class, order_hint, leading-ness,
-        // first-OBU-of-coded-frame, CLK/OLK identity) come from the same best-effort core
-        // parse; any field the parse cannot reach is left undecidable and routes the
-        // dependent judgment to silence. The per-frame OrderHintBits (from the active
-        // sequence header) is threaded separately for the § 7.3.7 same-OrderHintBits-in-TU
-        // check, since it spans CELUs.
-        let celu_role = self.celu_role_for(obu, first_picture_in_tu);
+        // CLK/OLK identity) come from the same best-effort core parse; the coded-frame-unit
+        // boundary comes from the segmenter (above). Any field the parse cannot reach is
+        // left undecidable and routes the dependent judgment to silence; an Ambiguous
+        // boundary poisons the embedded layer's unit-count-dependent judgments. The
+        // per-frame OrderHintBits (from the active sequence header) is threaded separately
+        // for the § 7.3.7 same-OrderHintBits-in-TU check, since it spans CELUs.
+        let celu_role = self.celu_role_for(obu, first_picture_in_tu, boundary);
         if let CeluRole::Frame(_) = celu_role {
             let bits = self.frame_order_hint_bits(obu);
             self.celu.note_order_hint_bits(bits, obu.offset);
@@ -4789,17 +4793,60 @@ impl ValidatorContext {
         reader.read_bit().ok().map(|bit| bit != 0)
     }
 
-    /// Derives a frame-bearing OBU's output class (`immediate_output_frame == 1 ||
-    /// implicit_output_frame == 1`, AV2 § 7.3.3 / § 6.17.2) from a best-effort core
-    /// parse against its active sequence header. `None` (undecidable) when the
-    /// active sequence is unavailable or the core parse stops before the output
-    /// flags — which routes the unit to Unknown rather than guessing.
-    fn frame_output_class(&self, obu: &ObuEnvelope<'_>, first_picture_in_tu: bool) -> Option<bool> {
+    /// Parses a frame-bearing OBU's [`FrameHeaderCore`] against the layer's active sequence
+    /// header, but **only** returns it when the frame's referenced sequence header resolved
+    /// to the very header parsed against (AV2 § 5.18.2). `None` (undecidable → Unknown
+    /// routing) when:
+    ///
+    /// - no sequence header is active for the layer, or its stored header is missing;
+    /// - the core parse failed (a payload the skeleton cannot reach); or
+    /// - the frame's referenced sequence header is **not** the active header parsed against —
+    ///   i.e. `cur_mfh_id != 0` (a multi-frame-header association is not modelled at this
+    ///   layer; codex finding), `seq_header_id_in_frame_header` is out of range, or it names a
+    ///   different header than the parsed-against id (e.g. a sequence header unavailable
+    ///   in-band, while a *stale* earlier activation is still recorded for the layer).
+    ///
+    /// This last guard is the stale-activation safety: the sequence-header-dependent field
+    /// widths (`order_hint` is `f(OrderHintBits)`, etc.) make any post-prefix field a misparse
+    /// when read against the wrong header, so the output class and `order_hint` would be
+    /// garbage. The activation/reference prefix (`cur_mfh_id`,
+    /// `seq_header_id_in_frame_header`, `referenced_sequence_header_id`) is parsed *before* any
+    /// sequence-dependent field, so it stays reliable even when the parse ran against a stale
+    /// header — making it a sound resolution check. The same guard is applied by the
+    /// frame-unit segmenter's output-class derivation ([`Self::frame_output_class`]) so the
+    /// two layers route to Unknown together.
+    fn frame_core_against_referenced_header(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        first_picture_in_tu: bool,
+    ) -> Option<FrameHeaderCore> {
         let seq_id = *self
             .active_sequence_by_xlayer
             .get(&obu.header.extended_layer_id)?;
         let active_sequence = self.sequence_headers.get(&seq_id)?;
         let core = parse_frame_core(obu, first_picture_in_tu, active_sequence)?;
+        // The referenced sequence header must be the one parsed against. `core` carries the
+        // §5.18.2 prefix's `referenced_sequence_header_id`, set only when `cur_mfh_id == 0`
+        // *and* `seq_header_id_in_frame_header` is in range, so this single check enforces all
+        // three resolution conditions. A `cur_mfh_id > 0` frame yields `None` here (its
+        // header association is not modelled — undecidable), and a frame referencing a header
+        // other than the (possibly stale) active one is dropped before its misparsed
+        // post-prefix fields are read.
+        if core.referenced_sequence_header_id != Some(seq_id) {
+            return None;
+        }
+        Some(core)
+    }
+
+    /// Derives a frame-bearing OBU's output class (`immediate_output_frame == 1 ||
+    /// implicit_output_frame == 1`, AV2 § 7.3.3 / § 6.17.2) from a best-effort core
+    /// parse against its active sequence header. `None` (undecidable) when the
+    /// active sequence is unavailable, the frame's referenced sequence header is not the
+    /// active header parsed against ([`Self::frame_core_against_referenced_header`]), or the
+    /// core parse stops before the output flags — which routes the unit to Unknown rather
+    /// than guessing.
+    fn frame_output_class(&self, obu: &ObuEnvelope<'_>, first_picture_in_tu: bool) -> Option<bool> {
+        let core = self.frame_core_against_referenced_header(obu, first_picture_in_tu)?;
         match (core.immediate_output_frame, core.implicit_output_frame) {
             (Some(immediate), Some(implicit)) => Some(immediate || implicit),
             // One flag known and already true settles the output class; the other
@@ -4814,7 +4861,12 @@ impl ValidatorContext {
     /// header) and content-interpretation map directly; frame-bearing OBUs carry the
     /// derived [`FrameFacts`]; all other coded-extended-layer-interior OBUs (BRT / QM /
     /// FGM / metadata / MFH) are `FrameInterior`; padding is position-free.
-    fn celu_role_for(&self, obu: &ObuEnvelope<'_>, first_picture_in_tu: bool) -> CeluRole {
+    fn celu_role_for(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        first_picture_in_tu: bool,
+        boundary: Option<FrameBoundary>,
+    ) -> CeluRole {
         let obu_type = obu.header.obu_type;
         match obu_type {
             ObuType::Padding => CeluRole::Padding,
@@ -4830,7 +4882,7 @@ impl ValidatorContext {
             | ObuType::MetadataGroup
             | ObuType::MultiFrameHeader => CeluRole::FrameInterior,
             _ if is_frame_bearing(obu_type) => {
-                CeluRole::Frame(self.frame_celu_facts(obu, first_picture_in_tu))
+                CeluRole::Frame(self.frame_celu_facts(obu, first_picture_in_tu, boundary))
             }
             // Reserved types (and the global-only temporal delimiter / MSDO, which the
             // tracker filters as global) are ignored by the § 7.3.6 grammar ("OBU types that
@@ -4846,18 +4898,20 @@ impl ValidatorContext {
     /// `obu_type` (see [`frame_leadingness`]), so it never routes to Unknown; the output
     /// class and `order_hint` are `None` when the parse stops before them or the active
     /// sequence header is unavailable (the Unknown invariant).
-    fn frame_celu_facts(&self, obu: &ObuEnvelope<'_>, first_picture_in_tu: bool) -> FrameFacts {
+    ///
+    /// The coded-frame-unit `boundary` is the [`FrameUnitSegmenter`]'s authoritative signal
+    /// for this OBU (the segmenter is the single source of truth for coded-frame-unit
+    /// boundaries, § 7.3.6); the CELU tracker consumes it rather than re-deriving boundaries.
+    /// `boundary` is `None` only for a *global* frame-bearing OBU (the segmenter ignores
+    /// globals), which the CELU tracker also filters before it reads this field — so the
+    /// `OpensNewUnit` fallback is never observed.
+    fn frame_celu_facts(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        first_picture_in_tu: bool,
+        boundary: Option<FrameBoundary>,
+    ) -> FrameFacts {
         let obu_type = obu.header.obu_type;
-        let delimiter = if obu_type.is_tile_group() {
-            FrameDelimiter::TileGroup {
-                is_first_tile_group: self.frame_is_first_tile_group(obu),
-            }
-        } else if obu_type.is_sef() {
-            FrameDelimiter::Sef
-        } else {
-            // TIP / bridge: no in-band coded-frame delimiter.
-            FrameDelimiter::NoDelimiter
-        };
         let leadingness = frame_leadingness(obu_type);
         let core = self.frame_core_facts(obu, first_picture_in_tu);
         let (output, order_hint) = match core {
@@ -4866,7 +4920,7 @@ impl ValidatorContext {
         };
         FrameFacts {
             obu_type,
-            delimiter,
+            boundary: boundary.unwrap_or(FrameBoundary::OpensNewUnit),
             output,
             order_hint,
             leadingness,
@@ -4875,21 +4929,20 @@ impl ValidatorContext {
 
     /// Parses the frame-header core of a frame-bearing OBU against its active sequence
     /// header, returning its `(output class, OrderHint)` pair, or `None` when the active
-    /// sequence header is unavailable or no parseable first-tile-group frame header exists.
-    /// The output class follows [`Self::frame_output_class`]'s semantics; the OrderHint is
-    /// the parsed `order_hint_lsb` (read only on the intra / SEF-with-`derive_sef_order_hint
-    /// == 0` paths — mirror § 5.18.2 — so it is `None` for inter / bridge / TIP frames and
-    /// for a SEF that derives its order hint).
+    /// sequence header is unavailable, the frame's referenced sequence header is not the
+    /// active header parsed against ([`Self::frame_core_against_referenced_header`] — the
+    /// stale-activation guard), or no parseable first-tile-group frame header exists. The
+    /// output class follows [`Self::frame_output_class`]'s semantics; the OrderHint is the
+    /// parsed `order_hint_lsb` (read only on the intra / SEF-with-`derive_sef_order_hint == 0`
+    /// paths — mirror § 5.18.2 — so it is `None` for inter / bridge / TIP frames and for a SEF
+    /// that derives its order hint). The `order_hint_lsb` is the **LSB proxy** for the decoded
+    /// OrderHint the § 7.3.6 / § 7.3.7 constraints compare (see [`crate::celu`]).
     fn frame_core_facts(
         &self,
         obu: &ObuEnvelope<'_>,
         first_picture_in_tu: bool,
     ) -> Option<(Option<bool>, Option<u32>)> {
-        let seq_id = *self
-            .active_sequence_by_xlayer
-            .get(&obu.header.extended_layer_id)?;
-        let active_sequence = self.sequence_headers.get(&seq_id)?;
-        let core = parse_frame_core(obu, first_picture_in_tu, active_sequence)?;
+        let core = self.frame_core_against_referenced_header(obu, first_picture_in_tu)?;
         let output = match (core.immediate_output_frame, core.implicit_output_frame) {
             (Some(immediate), Some(implicit)) => Some(immediate || implicit),
             (Some(true), _) | (_, Some(true)) => Some(true),

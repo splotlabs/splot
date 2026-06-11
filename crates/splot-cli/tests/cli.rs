@@ -55,11 +55,19 @@ fn ivf_stream(payloads: &[&[u8]]) -> Vec<u8> {
 }
 
 #[test]
-fn validate_conformant_exits_zero() {
+fn validate_header_only_sequence_header_reports_missing_output_frame_unit() {
+    // `conformant.av2` is a temporal delimiter plus a sequence header at obu_xlayer_id 0 with
+    // no frame-bearing OBU — a header-only coded extended layer unit. AV2 § 7.3.6 line 536
+    // ("at least one coded output frame unit shall be present") applies to every CELU, so the
+    // validator reports exactly `celu/missing-output-frame-unit` (exit 1). The fixture exercises
+    // the sequence-header parse / inspect paths; this test pins the CELU-completeness finding.
     let out = validate("conformant.av2", &[]);
-    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(out.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("conformant"), "stdout was: {stdout}");
+    assert!(
+        stdout.contains("celu/missing-output-frame-unit"),
+        "stdout was: {stdout}"
+    );
 }
 
 #[test]
@@ -488,15 +496,32 @@ fn validate_buffer_removal_timing_fixture_exits_zero() {
 }
 
 #[test]
-fn validate_quantizer_matrix_fixture_exits_zero() {
+fn validate_quantizer_matrix_fixture_reports_missing_output_frame_unit() {
+    // The quantizer-matrix fixture is a header-only coded extended layer unit at
+    // obu_xlayer_id 0 (sequence header + quantizer_matrix_obu, no frame-bearing OBU), so
+    // § 7.3.6 line 536 fires `celu/missing-output-frame-unit` (exit 1). It exercises the QM
+    // parse / inspect paths.
     let out = validate("quantizer-matrix.av2", &[]);
-    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("celu/missing-output-frame-unit"),
+        "stdout was: {stdout}"
+    );
 }
 
 #[test]
-fn validate_film_grain_fixture_exits_zero() {
+fn validate_film_grain_fixture_reports_missing_output_frame_unit() {
+    // The film-grain fixture is a header-only coded extended layer unit at obu_xlayer_id 0
+    // (sequence header + film_grain_obu, no frame-bearing OBU), so § 7.3.6 line 536 fires
+    // `celu/missing-output-frame-unit` (exit 1). It exercises the FGM parse / inspect paths.
     let out = validate("film-grain.av2", &[]);
-    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("celu/missing-output-frame-unit"),
+        "stdout was: {stdout}"
+    );
 }
 
 #[test]

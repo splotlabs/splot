@@ -457,6 +457,19 @@ mod tests {
         annex_b_obu(0x08, &[])
     }
 
+    /// Whether `report` is conformant once the expected `celu/missing-output-frame-unit`
+    /// finding is set aside. A minimal HLS-only fixture (a sequence header / CI at a concrete
+    /// `obu_xlayer_id` with no frame-bearing OBU) is a *header-only* coded extended layer unit:
+    /// § 7.3.6 line 536 ("at least one coded output frame unit shall be present") applies to
+    /// every CELU, so such a fixture legitimately fires `celu/missing-output-frame-unit`. These
+    /// fixtures exercise an orthogonal concern (HLS parsing / timing / levels), so the helper
+    /// confirms the stream is otherwise conformant without weakening that concern's assertion.
+    fn conformant_apart_from_header_only_celu(report: &ValidationReport) -> bool {
+        report
+            .errors()
+            .all(|d| d.rule_id == "celu/missing-output-frame-unit")
+    }
+
     #[test]
     fn conformant_temporal_delimiter() {
         let report = Validator::new(false).validate_bytes(&[0x01, 0x08]);
@@ -1301,7 +1314,10 @@ mod tests {
                 .any(|d| d.rule_id.starts_with("tile-params/")),
             "report was: {report}"
         );
-        assert!(report.is_conformant(), "report was: {report}");
+        assert!(
+            conformant_apart_from_header_only_celu(&report),
+            "report was: {report}"
+        );
     }
 
     #[test]
@@ -1318,7 +1334,10 @@ mod tests {
                 .any(|d| d.rule_id.starts_with("tile-params/")),
             "report was: {report}"
         );
-        assert!(report.is_conformant(), "report was: {report}");
+        assert!(
+            conformant_apart_from_header_only_celu(&report),
+            "report was: {report}"
+        );
     }
 
     #[test]
@@ -1329,7 +1348,10 @@ mod tests {
             &single_picture_seq_header_payload(true, false, false),
         ));
         let report = Validator::new(false).validate_bytes(&data);
-        assert!(report.is_conformant(), "report was: {report}");
+        assert!(
+            conformant_apart_from_header_only_celu(&report),
+            "report was: {report}"
+        );
     }
 
     #[test]
@@ -1460,7 +1482,10 @@ mod tests {
                 .any(|d| d.rule_id.starts_with("sequence-header/timing-")),
             "report was: {report}"
         );
-        assert!(report.is_conformant(), "report was: {report}");
+        assert!(
+            conformant_apart_from_header_only_celu(&report),
+            "report was: {report}"
+        );
     }
 
     #[test]
@@ -1679,8 +1704,13 @@ mod tests {
                 .any(|d| d.rule_id == "content-interpretation/reserved-bits-nonzero"),
             "report was: {report}"
         );
-        // A reserved-bits anomaly is a warning, not a conformance error.
-        assert!(report.is_conformant(), "report was: {report}");
+        // A reserved-bits anomaly is a warning, not a conformance error. (The minimal
+        // CI-only fixture is a header-only CELU, so set aside the expected
+        // celu/missing-output-frame-unit.)
+        assert!(
+            conformant_apart_from_header_only_celu(&report),
+            "report was: {report}"
+        );
     }
 
     #[test]
@@ -14390,7 +14420,7 @@ mod tests {
              unreachable; report was: {report}"
         );
         assert!(
-            report.is_conformant(),
+            conformant_apart_from_header_only_celu(&report),
             "a level-0 Main-tier stream is conformant; report was: {report}"
         );
     }
@@ -17831,6 +17861,177 @@ mod tests {
                 .errors()
                 .any(|d| d.rule_id == "celu/doh-order-hint-mismatch"),
             "the DOH OrderHint check must stay silent with the flag off; report was: {report}"
+        );
+    }
+
+    /// A full intra output CLK at `xlayer` (mlayer 0) referencing `seq_header_id`, whose
+    /// active sequence header has `OrderHintBits == order_hint_bits`, carrying `order_hint`
+    /// as `f(order_hint_bits)`. Like [`celu_output_clk_at`] but parameterised so a frame can
+    /// reference a sequence header with a different OrderHintBits (Finding B) or an absent
+    /// sequence header (Finding A).
+    fn celu_output_clk_ref(
+        xlayer: u8,
+        seq_header_id: u32,
+        order_hint_bits: u32,
+        order_hint: u32,
+    ) -> Vec<u8> {
+        celu_clk_ref(xlayer, seq_header_id, order_hint_bits, order_hint, true)
+    }
+
+    /// [`celu_output_clk_ref`] with a chosen `immediate_output_frame`. With the sequence's
+    /// `monotonic_output_order_flag == 1`, `immediate_output == false` settles a decided
+    /// NON-output class (no `implicit_output_frame` bit is read).
+    fn celu_clk_ref(
+        xlayer: u8,
+        seq_header_id: u32,
+        order_hint_bits: u32,
+        order_hint: u32,
+        immediate_output: bool,
+    ) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(seq_header_id); // seq_header_id_in_frame_header
+        fb.bit(u8::from(immediate_output)); // immediate_output_frame
+        fb.bit(0); // frame_size_override_flag
+        fb.f(order_hint, order_hint_bits); // order_hint f(OrderHintBits)
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0);
+        annex_b_obu_with_header(&layer_obu_header(4, 0, 0, xlayer), &fb.into_bytes())
+    }
+
+    /// A `frame_core_seq` sequence header on `xlayer` with a chosen `seq_id` and
+    /// `OrderHintBits == order_hint_bits` (else the base config), for the cross-OrderHintBits
+    /// DOH tests.
+    fn celu_seq_header_obu(xlayer: u8, seq_id: u32, order_hint_bits: u32) -> Vec<u8> {
+        let seq = FrameCoreSeq {
+            seq_id,
+            order_hint_bits_minus_1: order_hint_bits - 1,
+            ..FrameCoreSeq::base()
+        };
+        let payload = frame_core_seq_payload(seq);
+        if xlayer == 0 {
+            annex_b_obu(0x04, &payload)
+        } else {
+            annex_b_obu_with_header(&layer_obu_header(1, 0, 0, xlayer), &payload)
+        }
+    }
+
+    #[test]
+    fn celu_doh_cross_celu_order_hint_mismatch_with_different_bits_is_silent() {
+        // Finding B (end-to-end): two CELUs under the DOH flag whose output CLK frames carry
+        // differing `order_hint` LSBs, but whose active sequence headers declare DIFFERENT
+        // (known) OrderHintBits (1 vs 2). The cross-CELU OrderHint comparison is an LSB proxy
+        // and is UNSOUND across different bit widths (equal decoded OrderHints can encode to
+        // different-width LSBs), so it must DROP — only celu/doh-order-hint-bits-mismatch
+        // fires. Pre-fix the OrderHint comparison fired off the raw LSBs (a false positive).
+        let mut data = temporal_delimiter_obu();
+        data.extend(msdo_obu_configured(0, true, &[(0, 0, 0, 0), (1, 0, 0, 0)]));
+        data.extend(celu_seq_header_obu(0, 0, 1)); // xlayer 0 active header: OrderHintBits 1
+        data.extend(celu_seq_header_obu(1, 1, 2)); // xlayer 1 active header: OrderHintBits 2
+        data.extend(celu_output_clk_ref(0, 0, 1, 0)); // CELU xlayer 0, LSB 0
+        data.extend(celu_output_clk_ref(1, 1, 2, 1)); // CELU xlayer 1, LSB 1 (differs)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "celu/doh-order-hint-bits-mismatch"),
+            "differing OrderHintBits across the temporal unit must fire the bits rule; \
+             report was: {report}"
+        );
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "celu/doh-order-hint-mismatch"),
+            "the cross-CELU OrderHint comparison must DROP when OrderHintBits differ (the LSB \
+             proxy is unsound across bit widths); report was: {report}"
+        );
+    }
+
+    #[test]
+    fn celu_doh_cross_celu_order_hint_mismatch_with_equal_bits_is_flagged() {
+        // Finding B (end-to-end): the sound case — two CELUs under the DOH flag with EQUAL,
+        // known OrderHintBits (both 1) and differing `order_hint` LSBs. Same-width differing
+        // LSBs imply different decoded OrderHints, so the cross-CELU OrderHint comparison is a
+        // sound under-approximation and fires (the bits rule stays silent).
+        let mut data = temporal_delimiter_obu();
+        data.extend(msdo_obu_configured(0, true, &[(0, 0, 0, 0), (1, 0, 0, 0)]));
+        data.extend(celu_seq_header_obu(0, 0, 1)); // xlayer 0: OrderHintBits 1
+        data.extend(celu_seq_header_obu(1, 1, 1)); // xlayer 1: OrderHintBits 1 (equal)
+        data.extend(celu_output_clk_ref(0, 0, 1, 0)); // LSB 0
+        data.extend(celu_output_clk_ref(1, 1, 1, 1)); // LSB 1 (differs)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "celu/doh-order-hint-mismatch"),
+            "equal known OrderHintBits with differing LSBs must fire the OrderHint rule; \
+             report was: {report}"
+        );
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "celu/doh-order-hint-bits-mismatch"),
+            "equal OrderHintBits must not fire the bits rule; report was: {report}"
+        );
+    }
+
+    // --- Finding A: stale-activation misparse guard (§ 5.18.2 / § 7.3.6) ---------------
+
+    #[test]
+    fn celu_frame_referencing_absent_seq_header_is_unknown_not_misparsed() {
+        // Finding A: a frame whose referenced sequence header is unavailable in-band must NOT
+        // be parsed against a STALE earlier activation — its sequence-header-dependent fields
+        // (output class, order_hint) would misparse and could fire celu/* judgments off
+        // garbage (a false positive). Here TU1 activates seq 0 (OrderHintBits 1) for xlayer 0.
+        // TU2 carries a single CLK referencing the ABSENT seq 1; built so that parsing it
+        // against the stale seq 0 settles a DECIDED non-output class — which would fire
+        // celu/missing-output-frame-unit (a decided non-output unit, no output unit).
+        // Post-fix the referenced-header guard returns Unknown (the parsed
+        // seq_header_id_in_frame_header != the parsed-against id), so the output class is
+        // undecidable and missing-output-frame-unit DROPS.
+        let mut data = temporal_delimiter_obu();
+        data.extend(celu_seq_header_obu(0, 0, 1)); // seq 0, OrderHintBits 1
+        data.extend(celu_output_clk_ref(0, 0, 1, 0)); // TU1: activates seq 0 for xlayer 0
+        data.extend(temporal_delimiter_obu()); // TU2
+        // CLK referencing the ABSENT seq 1, immediate_output == 0 -> parsed against the stale
+        // seq 0 it is a DECIDED non-output frame; correctly it is Unknown.
+        data.extend(celu_clk_ref(0, 1, 1, 0, false));
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        // The TU2 CELU's only frame must route to Unknown, dropping the output-class judgment.
+        // (The unavailable seq-1 reference still emits its own hls/* diagnostic — orthogonal.)
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "celu/missing-output-frame-unit"),
+            "a frame referencing an absent sequence header must route to Unknown rather than \
+             misparse against the stale activation; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn celu_frame_referencing_inband_seq_header_is_decided() {
+        // Finding A (negative): normal in-band resolution is unchanged. TU2's CLK references
+        // seq 0, which IS available and is the active header it parses against, so the guard
+        // passes and the decided non-output class still fires celu/missing-output-frame-unit
+        // (a single decided non-output unit, no output unit) — proving the guard does not
+        // over-suppress the in-band case.
+        let mut data = temporal_delimiter_obu();
+        data.extend(celu_seq_header_obu(0, 0, 1));
+        data.extend(celu_output_clk_ref(0, 0, 1, 0)); // TU1: activates seq 0
+        data.extend(temporal_delimiter_obu()); // TU2
+        data.extend(celu_clk_ref(0, 0, 1, 0, false)); // references the available seq 0
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "celu/missing-output-frame-unit"),
+            "an in-band-resolved non-output frame must stay decided and fire missing-output; \
+             report was: {report}"
         );
     }
 }
