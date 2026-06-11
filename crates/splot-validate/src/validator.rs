@@ -6716,6 +6716,132 @@ mod tests {
         );
     }
 
+    /// Counts `metadata/timecode-n-frames-exceeds-rate` errors whose message names the
+    /// given `obu_xlayer_id` content interpretation, so a per-layer pairing can be
+    /// asserted independently of the other layer's.
+    fn n_frames_errors_for_xlayer(report: &ValidationReport, xlayer: u8) -> usize {
+        report
+            .errors()
+            .filter(|d| {
+                d.rule_id == "metadata/timecode-n-frames-exceeds-rate"
+                    && d.message
+                        .contains(&format!("obu_xlayer_id {xlayer} / obu_mlayer_id 0"))
+            })
+            .count()
+    }
+
+    #[test]
+    fn metadata_timecode_n_frames_rap_eager_pairing_for_one_layer_does_not_suppress_other() {
+        // Round-9 finding (per-CI eager-emission identity, not a per-observation bool). A
+        // single global LAYER_GLOBAL timecode (one observation, Universal targeting, so it
+        // pairs with every layer's CI) is constrained by two extended layers' low-rate CIs,
+        // and the layers' CIs are re-sent in OPPOSITE orderings relative to the timecode in
+        // one RAP temporal unit that also carries a CLK for each extended layer:
+        //
+        //   - extended layer 0's identical CI is re-sent BEFORE the timecode, so the eager
+        //     timecode-time n_frames check pairs against it and EMITS layer 0's violation
+        //     right away (defer_or_emit emits eagerly within one temporal unit);
+        //   - extended layer 1's identical CI is re-sent AFTER the timecode, so its
+        //     CI-time recheck is suppressed by the epoch-aware dedup guard (the pre-RAP
+        //     record is still present) and DEFERRED; the layer-1 CLK then drops the stale
+        //     pre-RAP pairing, leaving the CLK repair hook as the sole source of layer 1's
+        //     violation.
+        //
+        // Pre-fix `eagerly_emitted` was a per-observation bool: layer 0's eager pairing set
+        // it, and the repair hook then skipped the WHOLE observation, suppressing layer 1's
+        // repair too — layer 1's violation was MISSED. With the bool replaced by a set of
+        // the eagerly-emitted CI identities, the repair skips only the (observation, layer-0
+        // CI) pair already emitted and still re-pairs the (observation, layer-1 CI) pair, so
+        // BOTH layers report exactly once.
+        let low_rate = CiTiming {
+            display_tick: 1000,
+            time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
+            equal_picture_interval: true,
+            num_ticks_minus_1: 1,
+        };
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        // TU0: the pre-RAP CIs for extended layers 0 and 1 establish the low-rate bound.
+        data.extend(content_interpretation_scan_obu_at(0, 0, 0, Some(low_rate)));
+        data.extend(content_interpretation_scan_obu_at(1, 0, 0, Some(low_rate)));
+        data.extend(temporal_delimiter_obu()); // -> TU1, the RAP temporal unit
+        // TU1, in decoding order: extended-layer-0 CI re-sent identical BEFORE the timecode
+        // -> the global LAYER_GLOBAL timecode (n_frames 5 >= maxPicPerSecond 1, Universal)
+        // -> extended-layer-1 CI re-sent identical AFTER the timecode -> a CLK for extended
+        // layer 0 -> a CLK for extended layer 1 (two CLKs, same temporal unit).
+        data.extend(content_interpretation_scan_obu_at(0, 0, 0, Some(low_rate)));
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 31),
+            &timecode_flagged_payload(5, Some(0), Some(0), Some(0)),
+        ));
+        data.extend(content_interpretation_scan_obu_at(1, 0, 0, Some(low_rate)));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(4, 0, 0, 0), &[]));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(4, 0, 0, 1), &[]));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            n_frames_errors_for_xlayer(&report, 0),
+            1,
+            "extended layer 0's violation (paired eagerly before the timecode) must report \
+             exactly once; report was: {report}"
+        );
+        assert_eq!(
+            n_frames_errors_for_xlayer(&report, 1),
+            1,
+            "extended layer 1's violation (re-paired at the CLK after a deferred-and-dropped \
+             pairing) must report exactly once — a per-observation eager flag would wrongly \
+             suppress it; report was: {report}"
+        );
+        assert_eq!(
+            ops_error_count(&report, "metadata/timecode-n-frames-exceeds-rate"),
+            2,
+            "exactly one violation per layer, no duplicates; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_timecode_n_frames_double_clk_same_layer_same_tu_repairs_once() {
+        // Round-9 nit (idempotent repair_post_rap_ci_pairings). Malformed input: a RAP
+        // temporal unit carries TWO CLKs for the SAME extended layer. A pre-RAP CI at TU0
+        // establishes a low-rate bound; in the RAP temporal unit the timecode (n_frames 5)
+        // PRECEDES the re-sent identical CI, so the eager timecode pairing defers against
+        // the stale pre-RAP CI and is dropped at the first CLK, and the repair hook is the
+        // sole source of the one diagnostic (the same shape as
+        // metadata_timecode_n_frames_rap_resent_identical_ci_repairs). The SECOND same-layer
+        // CLK's observe_ci_rap leaves the epoch at this temporal unit and drops nothing new,
+        // so without the idempotent guard repair_post_rap_ci_pairings runs a second time
+        // against the same post-epoch CI snapshot and emits the violation TWICE. The
+        // (extended layer, temporal unit) guard short-circuits the redundant second re-pair,
+        // so the diagnostic fires exactly once.
+        let low_rate = CiTiming {
+            display_tick: 1000,
+            time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
+            equal_picture_interval: true,
+            num_ticks_minus_1: 1,
+        };
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        // TU0: the pre-RAP CI establishes the low-rate bound for extended layer 0.
+        data.extend(content_interpretation_obu(0, 0, Some(low_rate)));
+        data.extend(temporal_delimiter_obu()); // -> TU1, the RAP temporal unit
+        // TU1: timecode (n_frames 5 >= maxPicPerSecond 1) -> the SAME CI re-sent identical
+        // -> TWO CLKs for extended layer 0 (malformed: two random access points for one
+        // extended layer in one temporal unit).
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 31),
+            &timecode_flagged_payload(5, Some(0), Some(0), Some(0)),
+        ));
+        data.extend(content_interpretation_obu(0, 0, Some(low_rate)));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(4, 0, 0, 0), &[]));
+        data.extend(annex_b_obu_with_header(&layer_obu_header(4, 0, 0, 0), &[]));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "metadata/timecode-n-frames-exceeds-rate"),
+            1,
+            "two CLKs for the same extended layer in one temporal unit must not run the RAP \
+             re-pair twice and duplicate the diagnostic; report was: {report}"
+        );
+    }
+
     #[test]
     fn metadata_timecode_n_frames_olk_rap_resent_identical_ci_repairs() {
         // The OLK analogue of `metadata_timecode_n_frames_rap_resent_identical_ci_repairs`.
