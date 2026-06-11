@@ -128,10 +128,29 @@ rule `hls/multiple-active-sequence-headers` (cited at §7.3.6, tracked by
 `AV2-7.3.8-HLS-AVAILABILITY`), firing on a frame-confirmed activation of a
 different `seq_header_id` within the same coded video sequence.
 
+Landed (rap-availability-replay): the §7.3.8.1 random-access-point HLS
+availability replay `hls/unavailable-at-random-access-point` (tracked by
+`AV2-7.3.8-HLS-AVAILABILITY`), firing when a sequence header / multi-frame
+header / operating point set referenced at or after a §7.4.1 random access point
+(CLK/OLK/RAS temporal unit) was not (re)sent in or after that point's temporal
+unit — with LEADING_* temporal-unit resends disqualified, undecidable leading
+frames left qualifying (sound under-approximation), per-(object, random access
+point) dedup, and per-key external-HLS suppression: for a declarable kind
+(sequence header / operating point set) the `ExternalHlsSet` is authoritative, so
+suppression requires the *exact* referenced key to be declared external; for a
+kind the set cannot express (multi-frame header / LCR / atlas) any `Provided` mode
+keeps the blanket suppression (`options.rs`). This
+removes the `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` "blocked on §7.3.8
+availability" framing (the §6.2.2 post-activation-window precision follow-up
+stays on that row).
+
 Remaining:
 
-- full §7.3.8 availability modeling (MSDO/OPS availability records and the
-  global atlas reference remain deferred).
+- the §7.3.8.1 film-grain / quantization-matrix frame references await
+  frame-header parsing; the §7.3.8.2 first-sentence MSDO availability-at-RAP is
+  interop-point-gated (Annex A.2, tracked on `AV2-5.6-MSDO`); the global atlas
+  reference (§7.3.8.4 "can be available") and the `ExternalHlsSet`
+  MFH/LCR/atlas declaration keys remain named non-goals.
 
 Acceptance:
 
