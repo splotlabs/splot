@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "a2f3f52ba36c134a824dc72ae4a2d1d67f78d1e0",
+  "audited_commit": "6865e101b61d742439a794b11ca812a1e307b0c4",
   "outcome": "success",
   "files": [
     {
@@ -756,6 +756,13 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-validate/src/celu.rs",
+      "sha256": "668ae62466c41a3882d4c84d425b76c2ca797c9d5f3dae6a0a5e7de1684730bf",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-validate/src/checks/mod.rs",
       "sha256": "cd8a5356c41972c22ff6d40d81ea90f508ec47ef63fd76ce4fd21a1ff6110e71",
       "scope_kind": "workspace:splot-validate",
@@ -769,7 +776,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "74944098ca7e47aa251ee89f029b6b8553b4493e04d9b0699b61bb21e010c142",
+      "sha256": "1fb718791b238758e2f8df44a6762ce4701626bdd54c86e047835cd22875eb5d",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -817,7 +824,7 @@
     },
     {
       "path": "crates/splot-validate/src/lib.rs",
-      "sha256": "1fb1276ec738c59317df2f744963559ff7e042683fde7747114cf6f245d58632",
+      "sha256": "7d93aabeba91d3228a069991a5987fb56ca1bfbb149c8bf65eae75dbc6b8f510",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -840,7 +847,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "7f1ec89b9a7121e817af103a6817396af1b1b78a0ebf55284f749f4832a090bc",
+      "sha256": "36db92efef0b35a33f4f52da5abc1c9c383031346b532eaded17309e1c29f537",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1072,7 +1079,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "3417de718df5958c7311fdb4ba08c5b03e364ac750144ffa2f5ac2500a5fdb63",
+      "sha256": "90c168b3f4ffc25a6f815ec3a7a581bbfd134c56f3b94c4a74652d90529888a7",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1209,7 +1216,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "1f06ffee34d2f1c90b97ebecf00021a8c0e7d688ac38b0d9e818d84715c385bf",
+      "sha256": "621537a2bc336952d158502ab94852bb6b05d884d7f23809de850576c486694f",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1362,10 +1369,12 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "02bbb99e9fa864082eac0cbb752ef09b69c8b7a128facc537b8676ede9f55ba0",
+      "sha256": "321c369edae56490a555cd7f6e010b5d43b03d8eba321f0fbfd104749e5cae38",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
         "AV2-A-LEVELS-TIERS",
         "AV2-A-PROFILES",
         "XTASK-DIAGNOSTIC-REGISTRY"
@@ -1374,7 +1383,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "d4cdeb8723085583e624db7cf45cb3edc100f9f51386a542e91b6e70dcda3485",
+      "sha256": "6aad4a0028dd7741813a1e16eaf3f0b274a9cc83727776bba8a59f4c8fd14f95",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -1396,6 +1405,7 @@
         "AV2-5.17.10-METADATA-SCAN-TYPE",
         "AV2-5.17.3-METADATA-GROUP",
         "AV2-5.18-FRAME-HEADER",
+        "AV2-5.18.2-FRAME-HEADER-INFO",
         "AV2-5.18.3-FRAME-CONFIGURATION",
         "AV2-5.18.4-FRAME-SIZE",
         "AV2-5.18.5-FILTERING",
@@ -1433,6 +1443,7 @@
         "AV2-7.3.8-HLS-AVAILABILITY",
         "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
         "AV2-A-LEVELS-TIERS",
+        "AV2-E-DECODER-MODEL",
         "AV2-IVF-CONTAINER",
         "CONF-AVM-DIFF-HARNESS",
         "CONF-INSPECT-SNAPSHOTS",
@@ -1545,7 +1556,7 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
+      "sha256": "996bb0becedec0295007742e419e0329659b2d1bd3c8b77cc9d87c4dfedfb2af",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -1555,6 +1566,9 @@
         "AV2-5.2.3-TRAILING-BITS",
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
         "CONF-AVM-DIFF-HARNESS",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
@@ -3043,6 +3057,33 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/celu-orderhint-constraints/proposal.md",
+      "sha256": "2b60ce41144c531d0e7fc675abbb7f26144642212b330675b98214a5d730fa37",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/celu-orderhint-constraints/specs/validator/spec.md",
+      "sha256": "aa6f41e70a6b38935e9339482efc67d34972a36daf5fd47c265f73b6f797d7d1",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/celu-orderhint-constraints/tasks.md",
+      "sha256": "0f47f456c33ac637816076cd77dc7a6e1bbed1f5f00095a4cb495b4ea39730a4",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
       "sha256": "ec25589a8a02879087f03de9cc0c8b07e5fedf96f9a48c8f3dd99be91c14d240",
       "scope_kind": "openspec",
@@ -3267,7 +3308,7 @@
     },
     {
       "path": "xtask/src/feature_status.rs",
-      "sha256": "1af3e8aa51a938f918c41db7cf391a2f7853df02b1747734d1ee0747c395e0eb",
+      "sha256": "fc99efd72caa8b106ac9c9e4c9766534a0c44b6e0fcea66e1a25058465b9dc25",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "AV2-5.2.2-OBU-HEADER",
