@@ -12212,6 +12212,141 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cmvs_boundary_set_silent_when_activated_global_lcr_only_earlier_not_in_boundary_tu() {
+        // Codex finding (3393274375): cmvs/boundary-set-mismatch over-fired. § 7.3.2 end
+        // condition 2's divergence requires the BOUNDARY temporal unit itself to "have an
+        // activated global layer configuration record" — a property of that temporal unit, not
+        // of the whole CMVS window. Pre-fix the resolution found ANY activated global LCR
+        // anywhere in the window, so a CMVS that activated a global LCR EARLIER over-fired at a
+        // later CLK boundary TU that activated none of its own.
+        //
+        // TU1 opens the CMVS: MSDO (substreams 0,1), global LCR id 1 (map 0b11, doh 0) activated
+        // by xlayer 0's header (seq_lcr_id 1, monotonic 1), CLK xlayer 0. xlayer 0's activated
+        // global LCR remains chain-resolvable. TU2 is the boundary: it carries a global LCR OBU
+        // (present → a boundary divergence CANDIDATE) and a CLK on xlayer 1 referencing a header
+        // with seq_lcr_id 0 (NO LCR activation in TU2). xlayer 0 is NOT re-activated in TU2, so
+        // the only global LCR activation lies in TU1, not the boundary TU. Both rule sets end
+        // the CMVS at TU2 → no divergence → cmvs/boundary-set-mismatch must stay silent.
+        let global = global_lcr_obu_agreement(1, 0b11, None, None, false); // doh 0, LcrXLayerID {0,1}
+        let mut data = temporal_delimiter_obu(); // TU1: opens the CMVS, activates global LCR
+        data.extend(msdo_obu_configured(
+            31,
+            false,
+            &[(0, 0, 0, 0), (1, 0, 0, 0)],
+        ));
+        data.extend(global.clone());
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1)); // xlayer 0 activates global LCR 1
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 -> opens CMVS
+        data.extend(temporal_delimiter_obu()); // TU2: boundary — global LCR present but unactivated here
+        data.extend(global); // global LCR present (divergence candidate), re-sent
+        data.extend(seq_header_obu_lcr_ref(1, 1, 0, true, 0)); // xlayer 1 header, seq_lcr_id 0 (no LCR)
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 1)); // CLK xlayer 1, no LCR activation
+        data.extend(temporal_delimiter_obu()); // close TU2 via a boundary
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "cmvs/boundary-set-mismatch"),
+            "the boundary TU activates no global LCR of its own (only an earlier TU did), so \
+             both boundary rule sets end the CMVS here and there is no mismatch; report was: \
+             {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_only_cmvs_window_survives_to_later_frame_confirmed_activation() {
+        // Codex finding (3393274378): an LCR-only CMVS opened via § 7.3.2 begin condition 3
+        // (a CLK temporal unit that activates a global LCR with NO OBU_MSDO) is routed to
+        // CmvsState::Unknown. A LATER temporal unit with no CLK fires no § 7.3.2 end condition
+        // (end conditions 1/2 both require a CLK that "begins a new coded video sequence"), so
+        // the CMVS window must be KEPT — pre-fix the window action returned Close, clearing the
+        // window, and a later frame-confirmed non-monotonic activation in that LCR-only CMVS
+        // was skipped by the deferred § 6.8.2 LCR-DOH check.
+        //
+        // TU1 opens the LCR-only CMVS: global LCR id 1 (lcr_doh_constraint_flag == 0) activated
+        // by xlayer 0's header (seq_lcr_id 1, monotonic 1 → no DOH violation yet), CLK xlayer 0,
+        // no MSDO. TU2 is a continuation (no CLK): xlayer 1's header (seq_lcr_id 1, monotonic 0)
+        // is frame-confirmed by a regular tile group. With the window kept, xlayer 1's activation
+        // lies in the CMVS, so lcr/doh-constraint-required must fire.
+        let global = global_lcr_obu_agreement(1, 0b11, None, None, false); // doh 0, xlayers 0,1
+        let mut data = temporal_delimiter_obu(); // TU1: opens the LCR-only CMVS (begin cond 3)
+        data.extend(global);
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1)); // xlayer 0, monotonic 1, activates LCR 1
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0, no MSDO
+        data.extend(temporal_delimiter_obu()); // TU2: continuation (no CLK) — window must be kept
+        data.extend(seq_header_obu_lcr_ref(1, 1, 0, false, 1)); // xlayer 1, monotonic 0, refs LCR 1
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 1, 1)); // regular tile group confirms xlayer 1
+        data.extend(temporal_delimiter_obu()); // close TU2 via a boundary
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "lcr/doh-constraint-required"
+                    && d.spec_section.as_deref() == Some("6.8.2")
+            }),
+            "the LCR-only CMVS window must survive a non-CLK temporal unit so a later \
+             non-monotonic activation triggers the § 6.8.2 LCR-DOH requirement; report was: \
+             {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_msdo_agreement_flags_earlier_nonconforming_msdo_overwritten_by_later() {
+        // Codex finding (3393274380): § 6.8.2 requires the MSDO↔global-LCR agreement to hold
+        // for EVERY OBU_MSDO present in the CMVS, but the live `msdo_substream_max` is
+        // last-wins. A non-conforming MSDO-A at the first RAP TU, then a conforming MSDO-B at a
+        // later RAP TU of the SAME CMVS, must both be evaluated. Pre-fix the deferred resolution
+        // read only the live (last-wins) MSDO record, so when MSDO-A's TU activates NO global
+        // LCR (the agreement does not resolve there) and the global LCR is only activated LATER
+        // in MSDO-B's TU, MSDO-B has already overwritten the live record — MSDO-A escapes.
+        //
+        // TU1 opens the CMVS (begin condition 1: CLK + MSDO-A) and activates NO global LCR:
+        // xlayer 0's header references seq_lcr_id 0 (no LCR). So `activated_global_lcr()` is None
+        // at TU1's boundary and MSDO-A is not evaluated yet. TU2 stays in the SAME CMVS (MSDO-B
+        // shares every § 7.3.2 condition-2 key field with MSDO-A — only the RAP-permitted
+        // sub_xlayer_id[i] differs — so it does not begin a new CMVS), introduces the global LCR
+        // (map 0b11 → LcrXLayerID {0,1}), and activates it via xlayer 1 (seq_lcr_id 1, CLK). At
+        // TU2's boundary the global LCR is activated and the live record is MSDO-B (conforming),
+        // so pre-fix nothing fires. MSDO-A names sub_xlayer_id 2 (∉ {0,1}); accumulating every
+        // in-window MSDO catches it. MSDO-B sits at TU2's CLK (a RAP), so § 7.3.8.2's non-RAP
+        // identity rule does not fire on the sub_xlayer_id difference.
+        let global = global_lcr_obu_agreement(1, 0b11, None, None, false); // LcrXLayerID {0,1}
+        let mut data = temporal_delimiter_obu(); // TU1: opens the CMVS, NO global LCR activated
+        // MSDO-A: sub_xlayer_ids [0, 2] — sub_xlayer_id 2 ∉ {0,1} → disagrees with the LCR.
+        data.extend(msdo_obu_configured(
+            31,
+            false,
+            &[(0, 0, 0, 0), (2, 0, 0, 0)],
+        ));
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 0)); // xlayer 0, seq_lcr_id 0 (no LCR)
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 -> opens CMVS
+        data.extend(temporal_delimiter_obu()); // TU2: same CMVS, introduces+activates the global LCR
+        // MSDO-B: same key fields, sub_xlayer_ids [0, 1] — all ∈ {0,1} → agrees. Only the
+        // RAP-permitted sub_xlayer_id differs from MSDO-A, so no new CMVS begins.
+        data.extend(msdo_obu_configured(
+            31,
+            false,
+            &[(0, 0, 0, 0), (1, 0, 0, 0)],
+        ));
+        data.extend(global); // global LCR observed before the header that references it
+        data.extend(seq_header_obu_lcr_ref(1, 1, 0, true, 1)); // xlayer 1, seq_lcr_id 1 → global LCR 1
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 1)); // CLK xlayer 1 -> activates LCR 1
+        data.extend(temporal_delimiter_obu()); // close TU2 via a boundary
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "lcr/msdo-sub-xlayer-not-in-lcr"
+                    && d.spec_section.as_deref() == Some("6.8.2")
+                    // sub_xlayer_id 2 is carried ONLY by MSDO-A, so naming it proves the earlier
+                    // non-conforming MSDO-A was evaluated, not just the later conforming MSDO-B.
+                    && d.message.contains("sub_xlayer_id 2")
+            }),
+            "every MSDO in the CMVS must be evaluated, so the earlier non-conforming MSDO-A \
+             (sub_xlayer_id 2 ∉ LcrXLayerID[]) must fire even though the later conforming MSDO-B \
+             overwrote the live MSDO record; report was: {report}"
+        );
+    }
+
     // -- Annex A Table A.4 IOP presence re-land ---------------------------------
 
     #[test]
