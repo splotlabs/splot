@@ -4732,10 +4732,25 @@ impl ValidatorContext {
             // header did not resolve to the active header contributes no bits (None), rather
             // than the stale active header's bits, so the § 7.3.7 same-OrderHintBits-in-TU check
             // is not fed a wrong-bits value. (The CELU tracker filters global frame-bearing OBUs
-            // in `observe`; `note_order_hint_bits` matches the prior behavior of contributing for
-            // every frame-bearing OBU.)
+            // in `observe`.)
             let (facts, bits) = self.frame_celu_facts(obu, first_picture_in_tu, boundary);
-            self.celu.note_order_hint_bits(bits, obu.offset);
+            // AV2 § 7.3.7 (mirror line 655): the same-OrderHintBits judgment is over frame
+            // UNITS, not OBUs (F1). Feed the accumulator per frame-unit boundary, so a
+            // continuation OBU (a non-first tile group of an already-counted coded frame) does
+            // not contribute a redundant — and possibly unresolved-`None` — value that would
+            // poison the whole temporal unit's bits judgment:
+            //
+            // - `OpensNewUnit` notes the unit's resolved bits (`Some` or, when the opener does
+            //   not resolve to its active header, `None` — an unresolved opener still soundly
+            //   poisons, since the unit it opens has unknowable bits);
+            // - `ContinuesUnit` is skipped: the unit's bits came from its opener;
+            // - `Ambiguous` notes `None`: the OBU might open a unit whose bits are unknowable,
+            //   so it soundly poisons (the Unknown invariant).
+            match facts.boundary {
+                FrameBoundary::OpensNewUnit => self.celu.note_order_hint_bits(bits, obu.offset),
+                FrameBoundary::ContinuesUnit => {}
+                FrameBoundary::Ambiguous => self.celu.note_order_hint_bits(None, obu.offset),
+            }
             CeluRole::Frame(facts)
         } else {
             self.celu_role_for(obu)
@@ -4810,21 +4825,35 @@ impl ValidatorContext {
     ///
     /// - no sequence header is active for the layer, or its stored header is missing;
     /// - the core parse failed (a payload the skeleton cannot reach); or
-    /// - the frame's referenced sequence header is **not** the active header parsed against —
-    ///   i.e. `cur_mfh_id != 0` (a multi-frame-header association is not modelled at this
-    ///   layer; codex finding), `seq_header_id_in_frame_header` is out of range, or it names a
-    ///   different header than the parsed-against id (e.g. a sequence header unavailable
-    ///   in-band, while a *stale* earlier activation is still recorded for the layer).
+    /// - the frame's referenced sequence header is **not** the active header parsed against.
     ///
-    /// This last guard is the stale-activation safety: the sequence-header-dependent field
-    /// widths (`order_hint` is `f(OrderHintBits)`, etc.) make any post-prefix field a misparse
-    /// when read against the wrong header, so the output class and `order_hint` would be
-    /// garbage. The activation/reference prefix (`cur_mfh_id`,
-    /// `seq_header_id_in_frame_header`, `referenced_sequence_header_id`) is parsed *before* any
-    /// sequence-dependent field, so it stays reliable even when the parse ran against a stale
-    /// header — making it a sound resolution check. The same guard is applied by the
-    /// frame-unit segmenter's output-class derivation ([`Self::frame_output_class`]) so the
-    /// two layers route to Unknown together.
+    /// A frame's referenced sequence header is the active header when **either**:
+    ///
+    /// - **`cur_mfh_id == 0`** (direct reference) and the §5.18.2 prefix's
+    ///   `referenced_sequence_header_id` (set only when `seq_header_id_in_frame_header` is in
+    ///   range) equals the parsed-against id; or
+    /// - **`cur_mfh_id > 0`** (multi-frame-header reference) and an *in-band* multi-frame
+    ///   header record resolves that `cur_mfh_id` (in range, present in
+    ///   [`HlsAvailabilityStore::multi_frame_header`]) whose `mfh_seq_header_id` equals the
+    ///   parsed-against id (§ 7.3.8.7). The §5.18.2 control region through the output flags is
+    ///   determined by the active (== resolved) sequence header alone, so the output class /
+    ///   `order_hint` are decidable on this path even though `referenced_sequence_header_id` is
+    ///   `None` (the prefix leaves it unset for `cur_mfh_id > 0`).
+    ///
+    /// External-HLS caveat: an MFH only *externally* declared (`ExternalHlsMode::Provided`, not
+    /// in-band) is **not** a verifiable association — `multi_frame_header` returns `None` for
+    /// it — so the frame stays Unknown (the PR #49 partial-declaration policy). An out-of-range
+    /// `cur_mfh_id`, an absent record, or an MFH whose `mfh_seq_header_id` names a different
+    /// header all keep Unknown.
+    ///
+    /// This is the stale-activation safety: the sequence-header-dependent field widths
+    /// (`order_hint` is `f(OrderHintBits)`, etc.) make any post-prefix field a misparse when
+    /// read against the wrong header, so the output class and `order_hint` would be garbage. The
+    /// activation/reference prefix (`cur_mfh_id`, `seq_header_id_in_frame_header`,
+    /// `referenced_sequence_header_id`) is parsed *before* any sequence-dependent field, so it
+    /// stays reliable even when the parse ran against a stale header — making the resolution
+    /// check sound. The same guard is applied by the frame-unit segmenter's output-class
+    /// derivation ([`Self::frame_output_class`]) so the two layers route to Unknown together.
     fn frame_core_against_referenced_header(
         &self,
         obu: &ObuEnvelope<'_>,
@@ -4834,15 +4863,31 @@ impl ValidatorContext {
             .active_sequence_by_xlayer
             .get(&obu.header.extended_layer_id)?;
         let active_sequence = self.sequence_headers.get(&seq_id)?;
-        let core = parse_frame_core(obu, first_picture_in_tu, active_sequence)?;
-        // The referenced sequence header must be the one parsed against. `core` carries the
-        // §5.18.2 prefix's `referenced_sequence_header_id`, set only when `cur_mfh_id == 0`
-        // *and* `seq_header_id_in_frame_header` is in range, so this single check enforces all
-        // three resolution conditions. A `cur_mfh_id > 0` frame yields `None` here (its
-        // header association is not modelled — undecidable), and a frame referencing a header
-        // other than the (possibly stale) active one is dropped before its misparsed
-        // post-prefix fields are read.
-        if core.referenced_sequence_header_id != Some(seq_id) {
+
+        // Resolve the frame's `cur_mfh_id` (> 0) reference to its in-band multi-frame header,
+        // so the parser can be invoked with the resolving record. The lightweight prefix parse
+        // reads only the activation fields (cur_mfh_id is before any sequence-dependent field),
+        // so it is reliable even against a stale active header.
+        let mfh_record = parse_frame_prefix(obu, first_picture_in_tu).and_then(|prefix| {
+            (!prefix.cur_mfh_id.is_zero() && prefix.cur_mfh_id.in_range())
+                .then(|| self.hls.multi_frame_header(prefix.cur_mfh_id))
+                .flatten()
+        });
+
+        let core = parse_frame_core(obu, first_picture_in_tu, active_sequence, mfh_record)?;
+
+        // The referenced sequence header must be the one parsed against. For a `cur_mfh_id == 0`
+        // direct reference, `referenced_sequence_header_id` carries the §5.18.2 prefix's
+        // resolved id (set only when `seq_header_id_in_frame_header` is in range). For a
+        // `cur_mfh_id > 0` reference, the resolved in-band MFH record's `mfh_seq_header_id`
+        // is the referenced id (§ 7.3.8.7); a record only externally declared, out of range, or
+        // absent leaves `mfh_record == None` below and routes to Unknown.
+        let referenced = if core.cur_mfh_id.is_zero() {
+            core.referenced_sequence_header_id
+        } else {
+            mfh_record.map(|record| record.mfh_seq_header_id)
+        };
+        if referenced != Some(seq_id) {
             return None;
         }
         Some(core)
@@ -12447,10 +12492,18 @@ fn parse_frame_prefix(
 /// header (AV2 § 5.18.2), positioning the reader past the `tile_group_obu()` prefix
 /// for tile-group OBUs. Returns `None` when there is no parseable first-tile-group
 /// frame header or the core parse fails (best-effort, never an error).
+///
+/// `mfh_record` is the in-band multi-frame header resolving this frame's `cur_mfh_id`
+/// (`> 0`) reference, or `None` for a `cur_mfh_id == 0` direct reference (or when the
+/// MFH is unavailable). It is threaded into the core parser so the `cur_mfh_id > 0`
+/// paths can resolve their multi-frame-header-derived state as that coverage lands; the
+/// currently-reachable fields (the §5.18.2 control region through the output flags) are
+/// determined by the active sequence header alone.
 fn parse_frame_core(
     obu: &ObuEnvelope<'_>,
     first_picture_in_tu: bool,
     active_sequence: &SequenceHeader,
+    mfh_record: Option<&MultiFrameHeaderRecord>,
 ) -> Option<FrameHeaderCore> {
     let obu_type = obu.header.obu_type;
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
@@ -12467,7 +12520,7 @@ fn parse_frame_core(
         obu_type,
         first_picture_in_tu,
         active_sequence: Some(active_sequence),
-        mfh_record: None,
+        mfh_record,
         reference_state: FrameReferenceStateView::unknown(),
         mode: FrameHeaderParseMode::Core,
     };
@@ -12544,7 +12597,10 @@ fn frame_header_core_checks(
         }
     }
 
-    let Some(core) = parse_frame_core(obu, first_picture_in_tu, active_sequence) else {
+    // This call site emits the §6.17 bridge-ref / frame-size diagnostics, which are
+    // determined by the active sequence header alone (no multi-frame-header-derived field is
+    // consulted), so it threads no MFH record.
+    let Some(core) = parse_frame_core(obu, first_picture_in_tu, active_sequence, None) else {
         return;
     };
 

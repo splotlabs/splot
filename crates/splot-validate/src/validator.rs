@@ -16813,11 +16813,12 @@ mod tests {
         // frame-header parse. Two BRT OBUs followed by two back-to-back same-type bridge
         // OBUs are non-conforming whether the bridges are one coded frame ("one or more
         // OBUs") or two back-to-back coded frame units: either way the (single) coded
-        // frame unit holding the two BRTs is non-output. The same-type-no-delimiter
-        // continuation must therefore PRESERVE the type-decided non-output class so the
-        // § 7.3.4 BRT bound stays evaluable. Pre-fix the second bridge downgraded the
-        // open frame's output class to Unknown, which dropped the BRT bound and made
-        // this stream pass silently.
+        // frame unit holding the two BRTs is non-output. The segmenter's BridgeFrame arm is
+        // type-decided non-output (it was already type-decided before the ecdf4e9 refactor),
+        // so this test guards that `type_decided_output` keeps returning Some(false) for a
+        // bridge — the same-type-no-delimiter continuation preserves the type-decided
+        // non-output class so the § 7.3.4 BRT bound stays evaluable rather than dropping to
+        // Unknown.
         let mut data = td_and_frame_core_seq(FrameCoreSeq {
             num_ref_frames_minus_1: 5, // NumRefFrames == 6 for the bridge ref idx
             ..FrameCoreSeq::base()
@@ -18160,6 +18161,284 @@ mod tests {
                 .any(|d| d.rule_id == "celu/doh-order-hint-bits-mismatch"),
             "two resolved frames with differing known OrderHintBits must still fire the \
              bits-mismatch rule; report was: {report}"
+        );
+    }
+
+    // --- F1: OrderHintBits noted per frame UNIT, not per OBU (§ 7.3.7) ------------------
+
+    /// A non-first tile group (`is_first_tile_group == 0`) CLK on `xlayer` (mlayer 0):
+    /// the continuation of an already-open coded frame. The frame-core parser sees the
+    /// `0` first bit and returns `None`, so this OBU contributes no resolved facts and no
+    /// OrderHintBits — it is a [`FrameBoundary::ContinuesUnit`] of the open unit.
+    fn celu_clk_non_first_tile(xlayer: u8) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(0); // is_first_tile_group == 0 -> non-first tile group (continuation)
+        annex_b_obu_with_header(&layer_obu_header(4, 0, 0, xlayer), &fb.into_bytes())
+    }
+
+    #[test]
+    fn celu_doh_order_hint_bits_continuation_obu_does_not_poison_unit() {
+        // F1: the per-frame OrderHintBits must be fed to the §7.3.7 accumulator per frame
+        // UNIT, not per OBU. A non-first tile group (is_first_tile_group == 0) parses no
+        // frame core, so it contributes None — but it is a CONTINUATION of an already-open
+        // coded frame (FrameBoundary::ContinuesUnit), whose OrderHintBits came from its
+        // opener. Pre-fix the validator noted the continuation's None for every frame-bearing
+        // OBU, setting bits_undecidable and POISONING the whole temporal unit's §7.3.7
+        // same-OrderHintBits judgment — over-suppression that hid a real bits mismatch.
+        //
+        // Two active headers are established in separate temporal units so no single TU
+        // legitimately carries two OrderHintBits: TU1 activates seq 0 (OrderHintBits 1) for
+        // xlayer 0; TU2 activates seq 1 (OrderHintBits 2) for xlayer 1. An MSDO with
+        // multistream_doh_constraint_flag == 1 opens a persisting CMVS. TU3 (CMVS open) is the
+        // test temporal unit: xlayer 0's coded frame is SPLIT into a first tile group (bits 1)
+        // and a non-first tile group (None, the continuation); xlayer 1's frame contributes
+        // bits 2. Post-fix the continuation is skipped, so the TU sees bits {1, 2} and
+        // celu/doh-order-hint-bits-mismatch FIRES. Pre-fix the continuation's None poisoned the
+        // judgment and the mismatch was silent.
+        let mut data = temporal_delimiter_obu(); // TU1: xlayer 0 (bits 1)
+        data.extend(msdo_obu_configured(0, true, &[(0, 0, 0, 0), (1, 0, 0, 0)]));
+        data.extend(celu_seq_header_obu(0, 0, 1)); // xlayer 0 active: seq 0, OrderHintBits 1
+        data.extend(celu_output_clk_ref(0, 0, 1, 0)); // resolves seq 0
+        data.extend(temporal_delimiter_obu()); // TU2: xlayer 1 (bits 2)
+        data.extend(celu_seq_header_obu(1, 1, 2)); // xlayer 1 active: seq 1, OrderHintBits 2
+        data.extend(celu_output_clk_ref(1, 1, 2, 0)); // resolves seq 1
+        data.extend(temporal_delimiter_obu()); // TU3: the test temporal unit
+        data.extend(celu_seq_header_obu(0, 0, 1));
+        // xlayer 0 coded frame: first tile group (bits 1) + non-first tile group (None).
+        data.extend(celu_output_clk_ref(0, 0, 1, 0));
+        data.extend(celu_clk_non_first_tile(0));
+        // xlayer 1 frame: contributes bits 2.
+        data.extend(celu_seq_header_obu(1, 1, 2));
+        data.extend(celu_output_clk_ref(1, 1, 2, 0));
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "celu/doh-order-hint-bits-mismatch"),
+            "a non-first tile group (a continuation) must not poison the temporal unit's \
+             OrderHintBits judgment, so the real bits mismatch must fire; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn celu_doh_order_hint_bits_continuation_only_does_not_poison() {
+        // F1 (negative control): a single coded frame split into first + non-first tile groups
+        // at one xlayer with one OrderHintBits must stay silent — the continuation must not
+        // be noted as a None contribution (which would set bits_undecidable but also, with a
+        // single resolved opener, leave no mismatch to fire), and must not itself fire.
+        let mut data = temporal_delimiter_obu();
+        data.extend(msdo_obu_configured(0, true, &[(0, 0, 0, 0), (1, 0, 0, 0)]));
+        data.extend(celu_seq_header_obu(0, 0, 1)); // xlayer 0 active: OrderHintBits 1
+        data.extend(celu_output_clk_ref(0, 0, 1, 0)); // first tile group
+        data.extend(celu_clk_non_first_tile(0)); // non-first tile group (continuation)
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "celu/doh-order-hint-bits-mismatch"),
+            "a normal split frame (one OrderHintBits) must stay silent; report was: {report}"
+        );
+    }
+
+    // --- F2: MFH-backed frames are decided when the in-band MFH resolves (§ 7.3.6) -----
+
+    /// A CLK frame-bearing OBU on `xlayer` (mlayer 0) whose frame header references the
+    /// multi-frame header `cur_mfh_id` (> 0) and reaches the intra output flags. With
+    /// `monotonic_output_order_flag == 1` and `immediate_output == false` the frame settles
+    /// a DECIDED non-output class. The active sequence header (resolved via the MFH) has
+    /// `OrderHintBits == order_hint_bits`.
+    fn celu_clk_mfh_ref(
+        xlayer: u8,
+        cur_mfh_id: u32,
+        order_hint_bits: u32,
+        order_hint: u32,
+        immediate_output: bool,
+    ) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(cur_mfh_id); // cur_mfh_id > 0 -> no seq_header_id_in_frame_header
+        fb.bit(u8::from(immediate_output)); // immediate_output_frame
+        fb.bit(0); // frame_size_override_flag
+        fb.f(order_hint, order_hint_bits); // order_hint f(OrderHintBits)
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0);
+        annex_b_obu_with_header(&layer_obu_header(4, 0, 0, xlayer), &fb.into_bytes())
+    }
+
+    #[test]
+    fn celu_mfh_backed_frame_is_decided_not_unknown() {
+        // F2: an in-band multi-frame header whose mfh_seq_header_id equals the active header,
+        // plus a cur_mfh_id == 1 frame whose output flags ARE parseable, must let the §7.3.6
+        // presence checks DECIDE rather than route to Unknown. The §5.18.2 core parser reaches
+        // the intra output flags using the active (MFH-resolved) sequence header alone — the
+        // cur_mfh_id > 0 stop is later (segmentation), past the output flags — so the output
+        // class is decidable. Here the cur_mfh_id == 1 CLK is a DECIDED non-output frame
+        // (immediate_output == 0, monotonic order), so its CELU has a decided non-output unit
+        // and no output unit -> celu/missing-output-frame-unit fires.
+        //
+        // Pre-fix frame_core_against_referenced_header required
+        // referenced_sequence_header_id == Some(seq_id), which is None for every cur_mfh_id > 0
+        // frame, so the frame routed to Unknown and the presence check was silently dropped.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1))); // seq 0
+        data.extend(multi_frame_header_obu(0)); // in-band MFH: mfhId 1 -> mfh_seq_header_id 0
+        // cur_mfh_id 1 -> resolves MFH 1 -> seq 0 (== active header); decided non-output.
+        data.extend(celu_clk_mfh_ref(0, 1, 1, 0, false));
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "celu/missing-output-frame-unit"),
+            "an in-band MFH-backed frame whose output flags are parseable must DECIDE the \
+             §7.3.6 presence check rather than route to Unknown; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn celu_mfh_referencing_different_seq_than_active_is_unknown() {
+        // F2 (negative control): the in-band MFH's mfh_seq_header_id resolves to a sequence
+        // header that is NOT the active header the frame parses against, so the resolution check
+        // fails and the frame stays Unknown. TU1 activates seq 0 for xlayer 0 via a direct
+        // cur_mfh_id == 0 CLK. TU2 carries an in-band MFH whose mfh_seq_header_id is 1 — but
+        // seq 1 is never sent in-band, so the frame's MFH reference does NOT activate it and the
+        // stale active header stays seq 0. The cur_mfh_id == 1 frame would, parsed against the
+        // stale seq 0, settle a decided non-output class; but because the MFH's
+        // mfh_seq_header_id (1) != the parsed-against active id (0) the guard returns Unknown,
+        // so celu/missing-output-frame-unit must NOT fire from a misparse.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1))); // seq 0
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // TU1: activates seq 0 for xlayer 0
+        data.extend(temporal_delimiter_obu()); // TU2
+        data.extend(multi_frame_header_obu(1)); // in-band MFH: mfhId 1 -> mfh_seq_header_id 1 (seq 1 absent)
+        // cur_mfh_id 1 -> resolves MFH 1 -> seq 1 (unavailable), so the frame stays on the stale
+        // active seq 0; mfh_seq_header_id (1) != parsed-against id (0) -> Unknown.
+        data.extend(celu_clk_mfh_ref(0, 1, 1, 0, false));
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "celu/missing-output-frame-unit"),
+            "an MFH resolving to a header other than the active one must stay Unknown; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn celu_mfh_out_of_range_or_absent_is_unknown() {
+        // F2 (negative control): a cur_mfh_id whose MFH record is absent in-band (no MFH OBU)
+        // stays Unknown — there is no in-band record to resolve, so the frame's output class is
+        // undecidable and celu/missing-output-frame-unit must not fire. (The unavailable-MFH
+        // diagnostic is orthogonal.)
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1))); // seq 0
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // activate seq 0 for xlayer 0
+        // cur_mfh_id 2: no in-band MFH record -> unavailable, undecidable -> Unknown.
+        data.extend(celu_clk_mfh_ref(0, 2, 1, 0, false));
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "celu/missing-output-frame-unit"),
+            "a frame whose cur_mfh_id has no in-band MFH record must stay Unknown; \
+             report was: {report}"
+        );
+    }
+
+    // --- F3: mlayer ordering covers ContinuesUnit / Ambiguous frame OBUs (§ 7.3.6) -----
+
+    /// A CLK on `(mlayer, xlayer 0)` referencing the directly-resolved `seq_header_id`,
+    /// is_first_tile_group == 1, with no parseable body (activation-prefix only). Used as a
+    /// frame-unit opener at a chosen embedded layer for the ascending-mlayer ordering tests.
+    fn celu_clk_layer_prefix(mlayer: u8, seq_header_id: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(seq_header_id); // seq_header_id_in_frame_header
+        annex_b_obu_with_header(&layer_obu_header(4, 0, mlayer, 0), &fb.into_bytes())
+    }
+
+    /// A non-first tile group (is_first_tile_group == 0) CLK on `(mlayer, xlayer 0)`: a
+    /// continuation of the open coded frame in that embedded layer.
+    fn celu_clk_layer_non_first_tile(mlayer: u8) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(0); // is_first_tile_group == 0 -> continuation
+        annex_b_obu_with_header(&layer_obu_header(4, 0, mlayer, 0), &fb.into_bytes())
+    }
+
+    #[test]
+    fn celu_in_unit_order_continuation_at_lower_mlayer_after_higher_fires() {
+        // F3: a continuation OBU (is_first_tile_group == 0, FrameBoundary::ContinuesUnit) still
+        // belongs to its embedded layer's frame unit and is boundary-independent evidence for
+        // the §7.3.6 ascending-obu_mlayer_id check. Interleave: mlayer 0 first tile, mlayer 1
+        // frame, mlayer 0 NON-first tile. The trailing mlayer-0 continuation arrives after a
+        // mlayer-1 frame unit began, so it is out of ascending order -> celu/in-unit-order.
+        // Pre-fix observe_frame's ContinuesUnit early return skipped note_embedded_layer_ordering,
+        // so the continuation's mlayer was never compared and the violation was silent.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1))); // seq 0, mlayer 0/1 ok
+        data.extend(celu_clk_layer_prefix(0, 0)); // mlayer 0: first tile group (opens unit)
+        data.extend(celu_clk_layer_prefix(1, 0)); // mlayer 1: frame unit begins
+        data.extend(celu_clk_layer_non_first_tile(0)); // mlayer 0: continuation after mlayer 1
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| d.rule_id == "celu/in-unit-order"),
+            "a continuation OBU at a lower mlayer after a higher embedded layer began must \
+             fire the ascending-mlayer order check; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn celu_in_unit_order_normal_split_frame_stays_silent() {
+        // F3 (negative control): a normal split frame at one embedded layer (first + non-first
+        // tile group, no interleaving) must stay silent — the continuation shares its opener's
+        // mlayer, so it never lowers the high-water mark.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
+        data.extend(celu_clk_layer_prefix(0, 0)); // mlayer 0: first tile group
+        data.extend(celu_clk_layer_non_first_tile(0)); // mlayer 0: non-first tile group
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report.errors().any(|d| d.rule_id == "celu/in-unit-order"),
+            "a normal split frame at one embedded layer must stay silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn celu_in_unit_order_ambiguous_obu_at_lower_mlayer_after_higher_fires() {
+        // F3: an Ambiguous frame OBU belongs to SOME layer-m unit either way, so it is also
+        // boundary-independent evidence for the ascending-mlayer check. A same-type, no-in-band-
+        // delimiter TIP OBU following an open same-type TIP coded frame is Ambiguous (the
+        // segmenter cannot decide whether it continues or opens a new unit). Sequence: mlayer 0
+        // TIP (opens), mlayer 1 frame (higher layer begins), mlayer 0 same-type TIP (Ambiguous)
+        // -> the ambiguous OBU is at a lower mlayer after a higher one began -> celu/in-unit-order.
+        // Pre-fix observe_frame's Ambiguous early return skipped note_embedded_layer_ordering.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
+        // OBU_REGULAR_TIP is type 14; it carries no is_first_tile_group delimiter.
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(14, 0, 0, 0),
+            &[0x80],
+        )); // mlayer 0 TIP (opens)
+        data.extend(celu_clk_layer_prefix(1, 0)); // mlayer 1: frame unit begins
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(14, 0, 0, 0),
+            &[0x80],
+        )); // mlayer 0 same-type TIP (ambiguous)
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| d.rule_id == "celu/in-unit-order"),
+            "an ambiguous OBU at a lower mlayer after a higher embedded layer began must fire \
+             the ascending-mlayer order check; report was: {report}"
         );
     }
 }

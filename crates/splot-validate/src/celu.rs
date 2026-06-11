@@ -738,11 +738,18 @@ impl CodedExtendedLayerTracker {
     /// [`FrameUnitSegmenter`](crate::frame_unit) is the single source of truth for
     /// coded-frame-unit boundaries (§ 7.3.6): each OBU carries its segmenter-reported
     /// [`FrameBoundary`]. Only an [`FrameBoundary::OpensNewUnit`] OBU opens a new frame
-    /// unit; an [`FrameBoundary::ContinuesUnit`] OBU is transparent here (a later OBU of an
-    /// already-counted coded frame); an [`FrameBoundary::Ambiguous`] OBU's existence as a
-    /// new unit is undecided, so it neither opens a unit nor feeds the accumulators — it
-    /// only *poisons* the embedded layer's unit-count-dependent judgments (never guessed —
-    /// the Unknown invariant).
+    /// unit; an [`FrameBoundary::ContinuesUnit`] OBU is transparent for the unit-count-
+    /// dependent judgments (a later OBU of an already-counted coded frame); an
+    /// [`FrameBoundary::Ambiguous`] OBU's existence as a new unit is undecided, so it neither
+    /// opens a unit nor feeds the accumulators — it only *poisons* the embedded layer's
+    /// unit-count-dependent judgments (never guessed — the Unknown invariant).
+    ///
+    /// The ascending-`obu_mlayer_id` ordering ([`Self::note_embedded_layer_ordering`]) is
+    /// **boundary-independent** (F3): every frame OBU belongs to *some* frame unit of its
+    /// embedded layer whichever way its boundary resolves — a `ContinuesUnit` OBU belongs to
+    /// its opener's (already-begun) unit, and an `Ambiguous` OBU belongs to *some* layer-m unit
+    /// either way — so each evidences that its embedded layer's frame unit has begun and
+    /// participates in the ordering accounting before the unit-count branch.
     fn observe_frame(
         celu: &mut CeluState,
         embedded: EmbeddedLayerId,
@@ -752,8 +759,14 @@ impl CodedExtendedLayerTracker {
     ) {
         match facts.boundary {
             // A decided continuation of the open coded frame: a later OBU of an
-            // already-counted coded frame unit. Transparent here.
-            FrameBoundary::ContinuesUnit => return,
+            // already-counted coded frame unit. Transparent for the unit-count-dependent
+            // judgments, but it still belongs to its (already-begun) embedded-layer frame unit,
+            // so it participates in the ascending-mlayer ordering (F3): a continuation at a
+            // lower mlayer after a higher embedded layer's unit began is out of order.
+            FrameBoundary::ContinuesUnit => {
+                Self::note_embedded_layer_ordering(celu, embedded, obu, report);
+                return;
+            }
             // The segmenter could not decide whether this OBU opened a new coded frame unit
             // or continued the open one (a same-type no-delimiter TIP, or an unreadable
             // tile-group delimiter). Its existence as a new unit is undecided, so the
@@ -762,10 +775,13 @@ impl CodedExtendedLayerTracker {
             // returning (F5): the CLK/OLK identity and the leading-ness are decided by
             // `obu_type` alone, so a CELU containing an OLK and an ambiguous CLK still mixes
             // CLK+OLK, and a LEADING-/Regular-typed ambiguous OBU still evidences a leading /
-            // regular frame unit, whichever unit each belongs to. The unit-count-dependent
-            // facts (key-not-in-first-unit, lowest-layer-not-key, output-slot grammar, the
-            // per-unit accounting and accumulators) stay poisoned.
+            // regular frame unit, whichever unit each belongs to. The ascending-mlayer ordering
+            // is likewise boundary-independent (F3): an ambiguous OBU belongs to some layer-m
+            // frame unit either way, so a lower mlayer after a higher one began is out of order.
+            // The unit-count-dependent facts (key-not-in-first-unit, lowest-layer-not-key,
+            // output-slot grammar, the per-unit accounting and accumulators) stay poisoned.
             FrameBoundary::Ambiguous => {
+                Self::note_embedded_layer_ordering(celu, embedded, obu, report);
                 Self::record_clk_olk_identity(celu, facts.obu_type, obu, report);
                 Self::record_leadingness(celu, facts.leadingness, obu, report);
                 let layer = celu.embedded.entry(embedded).or_default();
