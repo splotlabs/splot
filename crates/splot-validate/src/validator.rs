@@ -3681,6 +3681,92 @@ mod tests {
     }
 
     #[test]
+    fn rap_replay_sender_rap_in_post_anchor_leading_tu_does_not_enable_layer() {
+        // Round-5 finding: a sending layer L (xlayer 1) random-accesses ONCE, in a post-anchor
+        // MIXED leading temporal unit (it carries L's CLK *and* a leading frame). That random
+        // access point cannot enable L under start-at-the-earlier-xlayer-0-anchor R0, because
+        // the temporal unit that holds it drops wholesale under R0 (§ 7.3.8.1 leading drop) —
+        // L never random-accesses on that decode path. So a LATER xlayer-1 resend of seq(7) in
+        // a non-leading temporal unit is NOT decoded under start-at-R0, and the xlayer-0
+        // reference must fire.
+        //
+        // TU1: seq(3), seq(7) (xlayer 0). TU2: CLK@xlayer 0 ref seq(3) (resent) -> R0 = TU2;
+        //   seq(7) NOT resent. TU3: a MIXED leading temporal unit for xlayer 1 — CLK@xlayer 1
+        //   (xlayer 1's ONLY random access point) ref seq(3) (resent) AND a leading frame@xlayer
+        //   1; seq(7) NOT resent here. TU4: seq(7) resent by xlayer 1 in a NON-leading temporal
+        //   unit (a regular xlayer-1 frame). TU5: an xlayer-0 regular reference to seq(7),
+        //   governed by R0 = TU2.
+        //     sender_decodable_at(xlayer 1, S.tu = TU4, R = R0 = TU2): xlayer 1's only random
+        //     access point is TU3, which is != R0 and leading -> its temporal unit is NOT
+        //     decoded under start-at-R0, so it does not enable xlayer 1 -> the TU4 resend is not
+        //     decoded under R0 -> the reference is unsatisfied and fires.
+        //
+        // (Pre-fix sender_decodable_at only checked that xlayer 1 had *some* random access point
+        // in [R0, TU4] — TU3 qualified regardless of its own leading-ness — so the TU4 resend
+        // wrongly satisfied the xlayer-0 reference -> a missed report.)
+        let mut data = td_and_seq(3);
+        data.extend(seq_obu(7));
+        // TU2: xlayer-0 random access point (R0); seq(7) not resent.
+        data.extend(temporal_delimiter_obu());
+        data.extend(seq_obu(3)); // resent -> the CLK's own reference is satisfied
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 3)); // CLK@xlayer 0 -> R0 = TU2
+        // TU3: xlayer 1's ONLY random access point, in a MIXED leading temporal unit.
+        data.extend(temporal_delimiter_obu());
+        data.extend(seq_obu_layer(3, 1)); // seq(3) resent by xlayer 1 (satisfies the CLK below)
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 3)); // CLK@xlayer 1 -> RAP for xlayer 1
+        data.extend(frame_obu_direct_seq_ref_layer(6, 0, 0, 1, 3)); // + LEADING frame@xlayer 1
+        // TU4: seq(7) resent by xlayer 1 in a NON-leading temporal unit.
+        data.extend(temporal_delimiter_obu());
+        data.extend(seq_obu_layer(7, 1)); // resend by xlayer 1
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 1, 7)); // regular xlayer-1 frame
+        // TU5: an xlayer-0 regular reference to seq(7).
+        data.extend(temporal_delimiter_obu());
+        data.extend(frame_obu_direct_seq_ref(REGULAR_TILE_GROUP_HEADER, 7));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == RAP_RULE && d.message.contains("seq_header_id 7")),
+            "a sender layer whose only random access point sits in a post-anchor leading \
+             temporal unit is not enabled under the earlier anchor, so its later resend cannot \
+             satisfy the reference (§ 7.4.6 + § 7.3.8.1 leading drop); report was: {report}"
+        );
+    }
+
+    #[test]
+    fn rap_replay_sender_rap_in_post_anchor_non_leading_tu_enables_layer() {
+        // Control for the round-5 finding: the SAME shape, but xlayer 1's random access point
+        // temporal unit (TU3) is NON-leading. Its temporal unit IS decoded under start-at-R0
+        // (non-leading, strictly after R0), so it enables xlayer 1 from R0 -> the later TU4
+        // resend of seq(7) by xlayer 1 IS decoded under R0 and satisfies the xlayer-0 reference
+        // -> silent.
+        let mut data = td_and_seq(3);
+        data.extend(seq_obu(7));
+        data.extend(temporal_delimiter_obu());
+        data.extend(seq_obu(3)); // resent -> the CLK's own reference is satisfied
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 3)); // CLK@xlayer 0 -> R0 = TU2
+        // TU3: xlayer 1's only random access point, in a NON-leading temporal unit (no leading
+        // frame this time).
+        data.extend(temporal_delimiter_obu());
+        data.extend(seq_obu_layer(3, 1)); // seq(3) resent by xlayer 1 (satisfies the CLK below)
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 3)); // CLK@xlayer 1 -> RAP for xlayer 1
+        // TU4: seq(7) resent by xlayer 1 in a non-leading temporal unit.
+        data.extend(temporal_delimiter_obu());
+        data.extend(seq_obu_layer(7, 1)); // resend by xlayer 1
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 1, 7)); // regular xlayer-1 frame
+        // TU5: an xlayer-0 regular reference to seq(7).
+        data.extend(temporal_delimiter_obu());
+        data.extend(frame_obu_direct_seq_ref(REGULAR_TILE_GROUP_HEADER, 7));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report.errors().any(|d| d.rule_id == RAP_RULE),
+            "a sender layer whose random access point temporal unit is non-leading is enabled \
+             under the earlier anchor, so its later resend satisfies the reference (§ 7.4.6); \
+             report was: {report}"
+        );
+    }
+
+    #[test]
     fn frame_header_seq_header_id_out_of_range_is_not_double_reported() {
         let mut data = td_and_seq_header(0, 1, 1);
         data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 16)); // == MAX_SEQ_NUM -> out of range

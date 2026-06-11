@@ -3611,10 +3611,15 @@ struct RapReplayTracker {
     /// point `R` with `R <= refTU` (finding 2), not only the most recent — see
     /// [`Self::governing_rap_tus`]. (2) § 7.4.6 sender-decodability — clause (c)/(a) of the
     /// visibility predicate asks whether a (re)send's sending layer had a random access point
-    /// in the closed interval `[R, S.tu]` (so its coded extended layer units are decoded by
-    /// `S.tu` under a decode starting at `R`). A `BTreeSet` makes both queries range scans.
-    /// Pruned of entries strictly below the anchor floor (see [`Self::anchor_floor`]).
-    rap_history: BTreeMap<ExtendedLayerId, BTreeSet<u64>>,
+    /// in the closed interval `[R, S.tu]` whose own temporal unit is decoded under start-at-`R`
+    /// (so its coded extended layer units are decoded by `S.tu` under that decode). A
+    /// `BTreeMap` keyed by temporal unit makes both queries range scans; the `bool` value
+    /// records whether the random-access-point temporal unit carried a LEADING_* frame in any
+    /// layer — a strictly-post-`R` such unit drops under start-at-`R` (§ 7.3.8.1), so its
+    /// random access point does not let the layer decode from `R` (see
+    /// [`Self::sender_decodable_at`]). Pruned of entries strictly below the anchor floor (see
+    /// [`Self::anchor_floor`]).
+    rap_history: BTreeMap<ExtendedLayerId, BTreeMap<u64, bool>>,
     /// The set of temporal units that were a § 7.4.1 random access point for *any* extended
     /// layer (the union of [`Self::rap_history`]'s value sets). These are the governing
     /// anchors of a [`GLOBAL_XLAYER_ID`] reference: a global-layer HLS OBU is decoded by
@@ -3622,8 +3627,12 @@ struct RapReplayTracker {
     /// must be available at *every* such start point at or before the reference (§ 7.3.8.1
     /// "any random access point", finding 2). Maintained explicitly (rather than recomputed
     /// from [`Self::rap_history`]) so the per-reference anchor scan is a single range query.
-    /// Pruned of entries strictly below the anchor floor (see [`Self::anchor_floor`]).
-    rap_history_any: BTreeSet<u64>,
+    /// Keyed by temporal unit; the `bool` value mirrors [`Self::rap_history`]'s
+    /// (whether that random-access-point temporal unit carried a LEADING_* frame in any
+    /// layer) so both histories share a value type, though a global reference's senders are
+    /// always decodable (see [`Self::sender_decodable_at`]) and never consult it. Pruned of
+    /// entries strictly below the anchor floor (see [`Self::anchor_floor`]).
+    rap_history_any: BTreeMap<u64, bool>,
     /// Already-emitted `(object, random-access-point temporal unit)` findings, so one
     /// dangling object reports once per random access point even across several
     /// referencing frames in or after it (proposal dedup requirement).
@@ -3631,7 +3640,7 @@ struct RapReplayTracker {
     /// A permanently-empty random-access-point history, returned by [`Self::governing_rap_tus`]
     /// for a layer with no recorded random access point. Held as a field (rather than a
     /// per-call temporary) so the returned `range(..)` iterator can borrow it.
-    empty_rap_history: BTreeSet<u64>,
+    empty_rap_history: BTreeMap<u64, bool>,
 }
 
 impl RapReplayTracker {
@@ -3715,15 +3724,20 @@ impl RapReplayTracker {
         // `..=ref_tu`: a random access point strictly after the reference cannot be a start
         // point the reference is decoded from. Ascending order is intentional — the caller
         // reports the smallest (earliest) violated start point, which is the most actionable.
-        let history: &BTreeSet<u64> = if governing_xlayer.is_global() {
+        // A governing anchor `R` is a start point a decoder uses; it is itself always decoded
+        // (§ 7.4.1), so its own leading-ness never disqualifies it — only the temporal-unit
+        // keys matter here (leading-ness gates *senders* reached from `R`, in
+        // [`Self::sender_decodable_at`]). For a global reference the keys come from the
+        // any-layer history; for a layer reference from that layer's per-anchor history.
+        let history: &BTreeMap<u64, bool> = if governing_xlayer.is_global() {
             &self.rap_history_any
         } else {
-            // No `BTreeSet` for an unseen layer == no governing anchor.
+            // No history for an unseen layer == no governing anchor.
             self.rap_history
                 .get(&governing_xlayer)
                 .unwrap_or(&self.empty_rap_history)
         };
-        history.range(..=ref_tu).copied()
+        history.range(..=ref_tu).map(|(&tu, _)| tu)
     }
 
     /// § 7.4.6 sender-decodability — clause (c) of the visibility predicate. `true` when a
@@ -3737,7 +3751,16 @@ impl RapReplayTracker {
     /// first random access point at or after `rap_tu` (§ 7.4.6: "the decoder shall not
     /// decode coded extended layer units for an extended layer until a random access point
     /// for that extended layer is encountered"), so the send is decoded iff the layer had a
-    /// random access point in the closed interval `[rap_tu, send_tu]`.
+    /// random access point `T` in the closed interval `[rap_tu, send_tu]` **whose own temporal
+    /// unit is itself decoded under start-at-`rap_tu`** (round-5 finding). `T`'s temporal unit
+    /// is decoded under start-at-`rap_tu` exactly when it is the start unit (`T == rap_tu`,
+    /// always decoded — § 7.4.1) or it carries no leading frame in any layer (a strictly-later
+    /// leading temporal unit drops wholesale under start-at-`rap_tu`, § 7.3.8.1, taking the
+    /// random access point sitting in it with it — so the layer does not random-access on that
+    /// decode path and `T` cannot enable it). This grounds out without further sender checks:
+    /// the enabling random access point's own visibility is exactly "its temporal unit is
+    /// decoded", because a layer random-accessing *at* a decoded temporal unit is decodable
+    /// from there by definition (§ 7.4.1).
     fn sender_decodable_at(
         &self,
         sending_xlayer: ExtendedLayerId,
@@ -3749,7 +3772,13 @@ impl RapReplayTracker {
         }
         self.rap_history
             .get(&sending_xlayer)
-            .is_some_and(|history| history.range(rap_tu..=send_tu).next().is_some())
+            .is_some_and(|history| {
+                history
+                    .range(rap_tu..=send_tu)
+                    .any(|(&rap_t, &rap_t_has_any_leading)| {
+                        rap_t == rap_tu || !rap_t_has_any_leading
+                    })
+            })
     }
 
     /// Anchor-relative visibility (the model). `true` when (re)send event `event` is visible
@@ -3803,7 +3832,7 @@ impl RapReplayTracker {
     /// the live window (streams have few per window). Correctness — never silencing a real
     /// violation for an older anchor — takes priority over a tighter memory bound.
     fn anchor_floor(&self) -> Option<u64> {
-        self.rap_history_any.iter().next().copied()
+        self.rap_history_any.keys().next().copied()
     }
 
     /// Resolves the § 7.3.8.1 replay rule for the just-completed temporal unit `tu_index`
@@ -3836,15 +3865,21 @@ impl RapReplayTracker {
         }
         // Advance the per-extended-layer and global random-access-point anchors and record
         // the per-layer / any-layer random-access-point histories (the governing anchors for
-        // later references, finding 2, and § 7.4.6 sender-decodability). The any-layer history
+        // later references, finding 2, and § 7.4.6 sender-decodability). Each entry carries
+        // this temporal unit's `tu_has_any_leading` so sender-decodability can tell whether a
+        // random access point's own temporal unit is decoded under an earlier start
+        // (round-5 finding; see [`Self::sender_decodable_at`]). The any-layer history
         // (governing GLOBAL_XLAYER_ID references) records this temporal unit whenever *any*
         // layer random-accesses here.
         if !self.current_tu_rap_xlayers.is_empty() {
             self.most_recent_rap_tu_any = Some(tu_index);
-            self.rap_history_any.insert(tu_index);
+            self.rap_history_any.insert(tu_index, tu_has_any_leading);
             for &xlayer in &self.current_tu_rap_xlayers {
                 self.most_recent_rap_tu.insert(xlayer, tu_index);
-                self.rap_history.entry(xlayer).or_default().insert(tu_index);
+                self.rap_history
+                    .entry(xlayer)
+                    .or_default()
+                    .insert(tu_index, tu_has_any_leading);
             }
         }
 
