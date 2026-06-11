@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "bf9abdcaae8d2c0457da524427f379bd21df0d22",
+  "audited_commit": "ff226962f0f346374f1164c85d1d643d54ed0ce5",
   "outcome": "success",
   "files": [
     {
@@ -1545,26 +1545,16 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "a4786e35d078b6741ad1f88be8979b8bf557fd226953004ddebe8a4ec904a84b",
+      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
-        "AV2-5.13-QUANTIZATION-MATRIX",
-        "AV2-5.14-FILM-GRAIN",
-        "AV2-5.17.5-METADATA-HDR-CLL",
-        "AV2-5.17.6-METADATA-HDR-MDCV",
         "AV2-5.18-FRAME-HEADER",
         "AV2-5.19-TILE-GROUP",
         "AV2-5.2.2-OBU-HEADER",
         "AV2-5.2.3-TRAILING-BITS",
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
-        "AV2-5.5-TEMPORAL-DELIMITER",
-        "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT",
-        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
-        "AV2-7.3.5-CODED-FRAME-UNIT",
-        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
-        "AV2-7.3.8-HLS-AVAILABILITY",
         "CONF-AVM-DIFF-HARNESS",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
@@ -3021,38 +3011,6 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/frame-unit-segmentation/proposal.md",
-      "sha256": "c06259cb4f6362db60ab4baa1a5426bf2fa42c6cde4a90b89c40f527d3155172",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.13-QUANTIZATION-MATRIX",
-        "AV2-5.14-FILM-GRAIN",
-        "AV2-5.17-METADATA",
-        "AV2-5.5-TEMPORAL-DELIMITER",
-        "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT",
-        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
-        "AV2-7.3.5-CODED-FRAME-UNIT",
-        "AV2-7.3.7-TEMPORAL-UNIT-ORDER"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-unit-segmentation/specs/validator/spec.md",
-      "sha256": "73aeeae30375f343c724145a10da7a81df2a9924fe1053cd94f9f50368175ee3",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-unit-segmentation/tasks.md",
-      "sha256": "4ce3e5914b2edcded6436052a85cfb0b54801641a6ba4456976b2edb24bd777a",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.5-TEMPORAL-DELIMITER"
-      ],
-      "outcome": "success"
-    },
-    {
       "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
       "sha256": "ec25589a8a02879087f03de9cc0c8b07e5fedf96f9a48c8f3dd99be91c14d240",
       "scope_kind": "openspec",
@@ -3190,7 +3148,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "38489b899cb92e7092409230484e3a1ef2d7c2ecc02728294c07bdfcd8671d13",
+      "sha256": "5af5a6162a661072d7bc5e5f3841158226c69e62f3a8fc9acd491740566a8de7",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
