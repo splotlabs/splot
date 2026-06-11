@@ -161,6 +161,7 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
     "obu-order/",
     "ivf/",
     "hls/",
+    "cmvs/",
     "msdo/",
     "mfh/",
     "content-interpretation/",

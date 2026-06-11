@@ -22,7 +22,7 @@ use splot_core::headers::frame::{
     parse_frame_header_prefix,
 };
 use splot_core::headers::layer_config_record::{
-    LayerConfigurationRecord, parse_layer_config_record,
+    LayerConfigurationRecord, LcrAggregateInfo, parse_layer_config_record,
 };
 use splot_core::headers::metadata::{
     MetadataPayload, MetadataScanType, MetadataUnit, parse_metadata_group, parse_metadata_short,
@@ -50,7 +50,8 @@ use splot_core::types::{
 };
 
 use crate::annex_a::{
-    MIN_FRAME_DIMENSION, is_reserved_level, is_reserved_profile, level_limits,
+    InteroperabilityPoint, MIN_FRAME_DIMENSION, config_idc_allows_profile, interoperability_point,
+    is_defined_config_idc, is_reserved_level, is_reserved_profile, level_limits,
     profile_allows_chroma,
 };
 use crate::diagnostic::{Diagnostic, ValidationReport};
@@ -241,6 +242,374 @@ pub(crate) struct ValidatorContext {
     /// previous OBU_MSDO's payload fingerprint for the pairwise-previous identity
     /// comparison resolved at temporal-unit end. See [`MsdoIdentityTracker`].
     msdo_identity: MsdoIdentityTracker,
+    /// In-band global layer configuration records by `lcr_global_config_record_id`, with
+    /// the § 6.8.2 aggregate / per-substream PTL / DOH fields and the defining OBU offset
+    /// (AV2 § 5.8.1). A redefinition of the same id overwrites the record. The
+    /// [`HlsAvailabilityStore`] keeps only the `lcr_xlayer_map` for the § 7.3.8.3
+    /// availability and § 6.4.1 association checks; this fuller record is what the § 6.8.2
+    /// MSDO↔global-LCR agreement consumes once the chain has resolved an *activated*
+    /// global LCR.
+    global_lcr_records: BTreeMap<u8, GlobalLcrRecord>,
+    /// Already-emitted § 6.8.2 MSDO↔global-LCR agreement findings, keyed by the resolved
+    /// `(global_config_record_id, MSDO/header byte offset, global-LCR byte offset, rule id,
+    /// field discriminant)`, so the deferred CMVS-resolution evaluation does not re-emit the
+    /// same disagreement on every subsequent temporal unit of the CMVS. The MSDO and
+    /// global-LCR offsets change when either record is redefined, so a genuine new
+    /// disagreement re-emits. The field discriminant distinguishes the several
+    /// `lcr/msdo-aggregate-mismatch` sub-fields (config / interop / level / tier) and each
+    /// disagreeing `sub_xlayer_id`, so two distinct disagreements of the same rule are not
+    /// collapsed.
+    emitted_lcr_agreement: BTreeSet<(u8, ByteOffset, ByteOffset, &'static str, u32)>,
+    /// Already-emitted `cmvs/boundary-set-mismatch` findings, keyed by the MSDO offset of
+    /// the disagreeing CMVS, so the deferred resolution emits the boundary-set
+    /// disagreement once per CMVS rather than per temporal unit.
+    emitted_cmvs_boundary: BTreeSet<ByteOffset>,
+    /// The Annex A Table A.4 interoperability-point presence window over the current coded
+    /// (multistream-)video-sequence; see [`AnnexAIopTracker`]. Evaluated at each coded
+    /// video sequence boundary and at the end of the bitstream.
+    annex_a_iop: AnnexAIopTracker,
+}
+
+/// One in-band global layer configuration record's § 6.8.2 agreement fields (AV2
+/// § 5.8.1): the aggregate info, per-substream PTL info indexed by `obu_xlayer_id`, the
+/// DOH-constraint flag, and the defining OBU's byte offset for the diagnostic anchor.
+/// Stored alongside the [`HlsAvailabilityStore`]'s `lcr_xlayer_map` (which the
+/// availability / association chain consumes) so the MSDO↔global-LCR agreement can read
+/// the full record of whichever global LCR the chain resolved as *activated*.
+#[derive(Debug, Clone)]
+struct GlobalLcrRecord {
+    /// `LcrMaxNumXLayerCount` = the set-bit count of `lcr_xlayer_map` (AV2 § 5.8.1,
+    /// mirror `06-syntax-structures-semantics.md` lines 382-384): the § 6.8.2 constraint-1
+    /// stream count and the Table A.3 extended-layer count under an activated global LCR.
+    max_num_xlayer_count: u32,
+    /// `LcrXLayerID[]` = the set-bit indices of `lcr_xlayer_map`, ascending (AV2 § 5.8.1):
+    /// the § 6.8.2 constraint-2 membership set.
+    xlayer_ids: BTreeSet<u8>,
+    /// `lcr_aggregate_info()` when `lcr_aggregate_info_present_flag == 1` (§ 6.8.2
+    /// constraint 3, lines 1657-1664).
+    aggregate_info: Option<LcrAggregateInfo>,
+    /// `lcr_seq_profile_idc[i]` / `lcr_max_level_idx[i]` / `lcr_tier_flag[i]` indexed by
+    /// `obu_xlayer_id` (i), present when `lcr_seq_profile_tier_level_info_present_flag ==
+    /// 1` (§ 6.8.2 constraint 4 (the "1." numbered as constraint 4), lines 1666-1671).
+    seq_ptl_by_xlayer: BTreeMap<u8, LcrSeqPtl>,
+    /// `lcr_seq_profile_tier_level_info_present_flag`.
+    seq_ptl_present: bool,
+    /// `lcr_doh_constraint_flag` (§ 6.8.2 constraint 5 and the § 6.8.2 DOH requirement,
+    /// lines 1619-1621 / 1673).
+    doh_constraint_flag: bool,
+    /// Byte offset of the OBU that defined this record, for the diagnostic anchor.
+    offset: ByteOffset,
+}
+
+/// One global LCR's `lcr_seq_profile_tier_level_info(i)` PTL ceiling, indexed by
+/// `obu_xlayer_id` in [`GlobalLcrRecord::seq_ptl_by_xlayer`] (AV2 § 5.8.4).
+#[derive(Debug, Clone, Copy)]
+struct LcrSeqPtl {
+    /// `lcr_seq_profile_idc[i]`.
+    seq_profile_idc: u8,
+    /// `lcr_max_level_idx[i]`.
+    max_level_idx: u8,
+    /// `lcr_tier_flag[i]` as `0`/`1`.
+    tier_flag: u8,
+}
+
+/// The Annex A Table A.4 interoperability-point OBU-presence tracker (AV2 v1.0.0 Annex A.2
+/// Table A.4, mirror `annex-a-profiles-levels-and-tiers.md` lines 178-201), scoped to a
+/// coded (multistream-)video-sequence window.
+///
+/// The window spans the whole coded video sequence and is evaluated at its end — the start
+/// of the next coded video sequence (a CLK in a *later* temporal unit, § 7.3.6) or the end
+/// of the bitstream. Per-temporal-unit observations accumulate in [`Self::pending`]; at
+/// temporal-unit completion they are committed to the right window (lesson 8): a temporal
+/// unit that begins a new coded video sequence (has a CLK while a window opened in an
+/// earlier temporal unit is still open) first flushes the prior window, then seeds a fresh
+/// window from *this* temporal unit's pending facts — so an OBU_MSDO (or any HLS) observed
+/// BEFORE the CLK in the CLK-bearing temporal unit belongs to the NEW coded video sequence,
+/// not the prior one (§ 7.3.6: the new coded video sequence starts at the temporal unit
+/// containing the CLK).
+///
+/// The presence-requirement evaluation needs frame-confirmed activation state that is only
+/// final at temporal-unit completion (which sequence headers are activated, whether a
+/// global LCR is *activated*, and the MSDO's `multistream_profile_idc`), so the window's
+/// interoperability point, extended/embedded-layer counts, and activated-global-LCR flag
+/// are resolved from the live context at flush time, not accumulated per-OBU.
+#[derive(Debug, Default)]
+struct AnnexAIopTracker {
+    /// The currently-open coded-video-sequence window, or `None` before the first
+    /// observation.
+    window: Option<AnnexAIopWindow>,
+    /// The temporal unit currently being observed, committed to the window at temporal-unit
+    /// completion (see [`Self::commit_pending`]).
+    pending: TuIopFacts,
+}
+
+/// One temporal unit's Annex A Table A.4 facts, accumulated as OBUs are observed and
+/// committed to the [`AnnexAIopTracker`]'s window when the temporal unit completes.
+#[derive(Debug, Default, Clone)]
+struct TuIopFacts {
+    /// Distinct non-global `obu_xlayer_id` values observed in this temporal unit (Table A.3
+    /// extended-layer base count, mirror lines 146-151).
+    distinct_xlayers: BTreeSet<ExtendedLayerId>,
+    /// The largest `num_streams_minus_2 + 2` of any OBU_MSDO in this temporal unit, with
+    /// the OBU offset, when present.
+    msdo: Option<(u32, ByteOffset)>,
+    /// `multistream_profile_idc` of the OBU_MSDO in this temporal unit (the Table A.4 IOP
+    /// source when an MSDO is present), when present.
+    msdo_profile_idc: Option<u8>,
+    /// A local layer configuration record OBU was present in this temporal unit.
+    local_lcr_present: bool,
+    /// A global layer configuration record OBU was present in this temporal unit (raw
+    /// presence; activation is resolved separately at flush).
+    global_lcr_present: bool,
+    /// This temporal unit contains an `OBU_CLOSED_LOOP_KEY` for at least one extended layer
+    /// (§ 7.3.6: begins a new coded video sequence for that layer).
+    has_clk: bool,
+    /// The interoperability point agreed by the *frame-confirmed* sequence headers activated
+    /// in this temporal unit, when no MSDO IOP overrides it (the MSDO's
+    /// `multistream_profile_idc` is the IOP source when an MSDO is present, mirror lines
+    /// 1659-1662). `None` until an activation with a table-mapped profile occurs.
+    iop: Option<AnnexAIopState>,
+    /// The maximum `seq_max_mlayer_cnt_minus_1 + 1` across frame-confirmed activated headers
+    /// in this temporal unit (Table A.3 "Number of Embedded Layers", mirror lines 152-153).
+    max_embedded_layers: u32,
+    /// `LcrMaxNumXLayerCount` of an *activated* global LCR resolved from a frame-confirmed
+    /// activation in this temporal unit, when one resolves (the Table A.3 declared
+    /// extended-layer count under an activated global LCR, mirror lines 149-150, and the
+    /// signal the Table A.4 global-LCR arms require — only an activated global LCR counts).
+    activated_global_count: Option<u32>,
+    /// Byte offset of the latest evidence-bearing OBU in this temporal unit, for the
+    /// diagnostic anchor.
+    anchor_offset: Option<ByteOffset>,
+}
+
+/// The interoperability-point state of an Annex A IOP window: a single agreed IOP, or
+/// `Mixed` when activated profiles disagree (the Table A.4 row is then not determinable,
+/// so the check is skipped).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnnexAIopState {
+    /// A single agreed interoperability point.
+    Single(InteroperabilityPoint),
+    /// Activated profiles disagree on the interoperability point; skip the check.
+    Mixed,
+}
+
+/// One coded-(multistream-)video-sequence window's accumulated Annex A Table A.4 evidence.
+#[derive(Debug, Clone)]
+struct AnnexAIopWindow {
+    /// Distinct non-global `obu_xlayer_id` values observed across the window (Table A.3
+    /// extended-layer base count).
+    distinct_xlayers: BTreeSet<ExtendedLayerId>,
+    /// The largest `num_streams_minus_2 + 2` of any OBU_MSDO in the window, when present —
+    /// the declared Table A.3 extended-layer count under `MultiStreamDecoderMode == 1`
+    /// (mirror lines 148-149).
+    msdo_num_streams: Option<u32>,
+    /// `multistream_profile_idc` of an OBU_MSDO in the window, the Table A.4 interoperability
+    /// point source when an MSDO is present (mirror lines 1659-1662). `None` when no MSDO is
+    /// in the window.
+    msdo_profile_idc: Option<u8>,
+    /// `true` if an `OBU_MSDO` occurred in the window.
+    msdo_present: bool,
+    /// `true` if a local `OBU_LAYER_CONFIGURATION_RECORD` was present in the window.
+    local_lcr_present: bool,
+    /// `LcrMaxNumXLayerCount` of an *activated* global LCR resolved in the window, when one
+    /// resolved. Only an activated global LCR satisfies the Table A.4 global-LCR arms and
+    /// contributes the Table A.3 declared extended-layer count; an observed-but-unactivated
+    /// global LCR leaves this `None`.
+    activated_global_count: Option<u32>,
+    /// The interoperability point agreed by the window's frame-confirmed activated headers,
+    /// or `None`/`Mixed` when undecidable. Overridden by the MSDO's `multistream_profile_idc`
+    /// at evaluation when an MSDO is present (mirror lines 1659-1662).
+    iop: Option<AnnexAIopState>,
+    /// The maximum `seq_max_mlayer_cnt_minus_1 + 1` across the window's activated headers
+    /// (Table A.3 "Number of Embedded Layers", mirror lines 152-153).
+    max_embedded_layers: u32,
+    /// Byte offset anchoring the window's diagnostic — the latest evidence-bearing OBU.
+    anchor_offset: ByteOffset,
+    /// The [`CvsTracker::tu_index`] of the temporal unit in which this window's coded video
+    /// sequence began (the temporal unit carrying its CLKs), or `None` for leading evidence
+    /// before the first CLK. A CLK in a *later* temporal unit begins the next coded video
+    /// sequence and flushes this window (§ 7.3.6).
+    cvs_start_tu: Option<u64>,
+}
+
+impl Default for AnnexAIopWindow {
+    fn default() -> Self {
+        Self {
+            distinct_xlayers: BTreeSet::new(),
+            msdo_num_streams: None,
+            msdo_profile_idc: None,
+            msdo_present: false,
+            local_lcr_present: false,
+            activated_global_count: None,
+            iop: None,
+            max_embedded_layers: 0,
+            anchor_offset: ByteOffset::new(0),
+            cvs_start_tu: None,
+        }
+    }
+}
+
+impl AnnexAIopTracker {
+    /// Records a non-global `obu_xlayer_id` observed in the current temporal unit (Table
+    /// A.3 extended-layer base count).
+    fn note_xlayer(&mut self, xlayer: ExtendedLayerId) {
+        if !xlayer.is_global() {
+            self.pending.distinct_xlayers.insert(xlayer);
+        }
+    }
+
+    /// Records an OBU_MSDO observed in the current temporal unit: its declared substream
+    /// count, `multistream_profile_idc` (the Table A.4 IOP source), and OBU offset.
+    fn note_msdo(&mut self, num_streams: u32, profile_idc: u8, offset: ByteOffset) {
+        let best = self
+            .pending
+            .msdo
+            .map_or(num_streams, |(prev, _)| prev.max(num_streams));
+        self.pending.msdo = Some((best, offset));
+        self.pending.msdo_profile_idc = Some(profile_idc);
+    }
+
+    /// Records that a global LCR OBU was present in the current temporal unit.
+    fn note_global_lcr(&mut self, offset: ByteOffset) {
+        self.pending.global_lcr_present = true;
+        self.pending.anchor_offset = Some(offset);
+    }
+
+    /// Records that a local LCR OBU was present in the current temporal unit.
+    fn note_local_lcr(&mut self) {
+        self.pending.local_lcr_present = true;
+    }
+
+    /// Records that the current temporal unit contains an `OBU_CLOSED_LOOP_KEY`.
+    fn note_clk(&mut self) {
+        self.pending.has_clk = true;
+    }
+
+    /// Records a frame-confirmed sequence-header activation in the current temporal unit:
+    /// its profile's interoperability point (Annex A.2 Table A.1), its embedded-layer count
+    /// (`seq_max_mlayer_cnt_minus_1 + 1`), the `LcrMaxNumXLayerCount` of the *activated*
+    /// global LCR it resolves (if any — only an activated global LCR is recorded here), and
+    /// the activating OBU offset. A reserved / Configurable profile leaves the IOP unset
+    /// (its interoperability point is not table-determined); two activations disagreeing on
+    /// the IOP mark the window [`AnnexAIopState::Mixed`] and the Table A.4 check is then
+    /// skipped (multistream profile-agreement is out of scope here).
+    fn note_activation(
+        &mut self,
+        profile_idc: u8,
+        embedded_layers: u32,
+        activated_global_count: Option<u32>,
+        offset: ByteOffset,
+    ) {
+        self.pending.max_embedded_layers = self.pending.max_embedded_layers.max(embedded_layers);
+        self.pending.anchor_offset = Some(offset);
+        if let Some(count) = activated_global_count {
+            self.pending.activated_global_count =
+                Some(self.pending.activated_global_count.unwrap_or(0).max(count));
+        }
+        if let Some(iop) = interoperability_point(profile_idc) {
+            self.pending.iop = Some(match self.pending.iop {
+                None => AnnexAIopState::Single(iop),
+                Some(AnnexAIopState::Single(existing)) if existing == iop => {
+                    AnnexAIopState::Single(existing)
+                }
+                Some(_) => AnnexAIopState::Mixed,
+            });
+        }
+    }
+
+    /// Whether committing the current temporal unit's pending facts begins a NEW coded
+    /// video sequence relative to the open window — a CLK in this temporal unit while a
+    /// window whose coded video sequence began in an *earlier* temporal unit is open. A CLK
+    /// in the same temporal unit the window's coded video sequence began in (a second
+    /// extended layer's CLK within one multistream random-access temporal unit) continues
+    /// the same window; leading evidence with no recorded coded-video-sequence start
+    /// (`cvs_start_tu == None`) is absorbed by the first coded video sequence.
+    fn pending_starts_new_cvs(&self, tu_index: u64) -> bool {
+        self.pending.has_clk
+            && matches!(
+                self.window.as_ref().and_then(|w| w.cvs_start_tu),
+                Some(start) if start != tu_index
+            )
+    }
+
+    /// Merges the current temporal unit's pending facts into `window` (the same coded video
+    /// sequence continues across this temporal unit), recording the coded-video-sequence
+    /// start temporal unit when this temporal unit carries the window's CLK.
+    fn merge_pending_into(window: &mut AnnexAIopWindow, pending: &TuIopFacts, tu_index: u64) {
+        window
+            .distinct_xlayers
+            .extend(pending.distinct_xlayers.iter().copied());
+        if let Some((num_streams, offset)) = pending.msdo {
+            window.msdo_present = true;
+            window.msdo_num_streams = Some(window.msdo_num_streams.unwrap_or(0).max(num_streams));
+            window.anchor_offset = offset;
+        }
+        if let Some(profile) = pending.msdo_profile_idc {
+            window.msdo_profile_idc = Some(profile);
+        }
+        window.local_lcr_present |= pending.local_lcr_present;
+        if let Some(count) = pending.activated_global_count {
+            window.activated_global_count =
+                Some(window.activated_global_count.unwrap_or(0).max(count));
+        }
+        window.max_embedded_layers = window.max_embedded_layers.max(pending.max_embedded_layers);
+        if let Some(offset) = pending.anchor_offset {
+            window.anchor_offset = offset;
+        }
+        // Combine this temporal unit's IOP into the window's: a single agreed IOP carries
+        // through; a disagreement marks the window Mixed (the Table A.4 row is then not
+        // determinable, so the check is skipped).
+        window.iop = match (window.iop, pending.iop) {
+            (None, p) => p,
+            (w, None) => w,
+            (Some(AnnexAIopState::Single(a)), Some(AnnexAIopState::Single(b))) if a == b => {
+                Some(AnnexAIopState::Single(a))
+            }
+            _ => Some(AnnexAIopState::Mixed),
+        };
+        if pending.has_clk {
+            window.cvs_start_tu.get_or_insert(tu_index);
+        }
+    }
+
+    /// Builds a fresh window from a temporal unit's pending facts (a temporal unit that
+    /// begins a new coded video sequence). The new window's coded-video-sequence start is
+    /// this temporal unit.
+    fn window_from_pending(pending: &TuIopFacts, tu_index: u64) -> AnnexAIopWindow {
+        let mut window = AnnexAIopWindow::default();
+        Self::merge_pending_into(&mut window, pending, tu_index);
+        window
+    }
+
+    /// Resets the per-temporal-unit pending facts for the next temporal unit.
+    fn reset_pending(&mut self) {
+        self.pending = TuIopFacts::default();
+    }
+}
+
+/// The Table A.3 "Number of Extended Layers" for an [`AnnexAIopWindow`] (mirror lines
+/// 146-151), in the mirror's exact definition order — a *declared* count takes precedence
+/// over the observed coded structure:
+///
+/// 1. `MultiStreamDecoderMode == 1` (an OBU_MSDO is present): `num_streams_minus_2 + 2`
+///    (mirror lines 148-149), regardless of how many distinct `obu_xlayer_id` materialize.
+/// 2. else, an *activated* global LCR (`activated_global_lcr` resolved, count passed in):
+///    `LcrMaxNumXLayerCount` (mirror lines 149-150).
+/// 3. else: the distinct non-global `obu_xlayer_id` count actually present, at least 1
+///    (mirror lines 150-151; Table A.3 "For a coded video sequence, this value is equal to
+///    1").
+///
+/// The activated-global-LCR count is `None` when no activated global LCR resolves, so an
+/// observed-but-unactivated global LCR does not contribute a declared count (it falls
+/// through to the observed distinct count).
+fn annex_a_extended_layers(window: &AnnexAIopWindow, activated_global_count: Option<u32>) -> u32 {
+    if let Some(num_streams) = window.msdo_num_streams {
+        return num_streams;
+    }
+    if let Some(count) = activated_global_count {
+        return count;
+    }
+    (window.distinct_xlayers.len() as u32).max(1)
 }
 
 /// The § 6.6 sub-stream PTL ceilings of the most recently observed OBU_MSDO, indexed by
@@ -267,6 +636,54 @@ struct MsdoSubstreamMax {
     /// Byte offset of the OBU_MSDO that declared these ceilings, for the diagnostic
     /// anchor when the violation is detected at sequence-header activation time.
     offset: ByteOffset,
+    /// The recorded MSDO's § 6.6 aggregate fields and per-substream entries in
+    /// declaration order, for the § 6.8.2 MSDO↔global-LCR agreement checks (which need
+    /// `num_streams_minus_2 + 2`, `multistream_profile_idc`/`_level_idx`/`_tier`, and the
+    /// `sub_xlayer_id[i]` / `sub_stream_max_*[i]` arrays) and the Table A.4
+    /// interoperability-point window (which needs `multistream_profile_idc` for the IOP
+    /// and `num_streams_minus_2 + 2` for the extended-layer count). The ceilings above are
+    /// the per-layer merge consumed by § 6.6; this keeps the raw declaration order § 6.8.2
+    /// constraints 1 and 4 require.
+    aggregate: MsdoAggregate,
+}
+
+/// The § 6.6 MSDO aggregate fields and per-substream declaration-order entries kept for
+/// the § 6.8.2 MSDO↔global-LCR agreement and the Table A.4 interoperability-point window
+/// (AV2 § 5.6, mirror `06-syntax-structures-semantics.md` lines 1646-1673). Distinct from
+/// the per-layer [`SubStreamCeiling`] merge: § 6.8.2 constraints 1/2/4 are per-declaration
+/// (`num_streams_minus_2 + 1` entries, each carrying its `sub_xlayer_id[i]`), not the
+/// most-restrictive per-layer view § 6.6 uses.
+#[derive(Debug, Clone)]
+struct MsdoAggregate {
+    /// `num_streams_minus_2 + 2` (AV2 § 5.6); the § 6.8.2 constraint-1 stream count and
+    /// the Table A.3 extended-layer count (mirror lines 148-149).
+    num_streams: u32,
+    /// `multistream_profile_idc` (AV2 § 5.6); the § 6.8.2 constraint-3 aggregate-profile
+    /// value and the Table A.4 interoperability-point source (mirror lines 1659-1662).
+    profile_idc: u8,
+    /// `multistream_level_idx` (AV2 § 5.6); § 6.8.2 constraint-3 level equality (line
+    /// 1663).
+    level_idx: u8,
+    /// `multistream_tier` (AV2 § 5.6); § 6.8.2 constraint-3 tier equality (line 1664).
+    tier: u8,
+    /// The per-declaration `sub_xlayer_id[i]` / `sub_stream_max_*[i]` entries in
+    /// declaration order (`0..=num_streams_minus_2 + 1`), for § 6.8.2 constraints 2 and 4
+    /// (lines 1651-1671).
+    sub_streams: Vec<MsdoSubStream>,
+}
+
+/// One § 5.6 per-substream declaration (`sub_xlayer_id[i]` and the `sub_stream_max_*[i]`
+/// PTL ceiling), kept in declaration order for the § 6.8.2 per-substream equality checks.
+#[derive(Debug, Clone, Copy)]
+struct MsdoSubStream {
+    /// `sub_xlayer_id[i]`.
+    sub_xlayer_id: u8,
+    /// `sub_stream_max_profile[i]`.
+    max_profile: u8,
+    /// `sub_stream_max_level[i]`.
+    max_level: u8,
+    /// `sub_stream_max_tier[i]`.
+    max_tier: u8,
 }
 
 /// One sub-stream's § 6.6 PTL ceiling (`sub_stream_max_profile` / `sub_stream_max_level`
@@ -794,6 +1211,14 @@ fn external_declares_sequence_header(options: &ValidationOptions) -> bool {
     } else {
         false
     }
+}
+
+/// Builds an Annex A Table A.4 interoperability-point presence diagnostic (error, spec
+/// section `A.2`, anchored at `offset`).
+fn annex_a_iop_error(rule_id: &'static str, offset: ByteOffset, message: String) -> Diagnostic {
+    Diagnostic::error(rule_id, message)
+        .with_spec_section("A.2")
+        .with_byte_offset(offset)
 }
 
 /// Active in-band operating point sets (AV2 § 6.10.1, § 7.3.8.5).
@@ -2210,6 +2635,27 @@ struct CmvsTracker {
     /// begins the new coded video sequence (mirror `07-decoding-process.md` lines
     /// 608-611).
     pending_monotonic: Vec<Diagnostic>,
+    /// Facts of the just-completed temporal unit, for the § 7.3.2 boundary-set-identity
+    /// check resolved at the same temporal-unit-completion point (see
+    /// [`ValidatorContext::resolve_deferred_cmvs_boundary`]). Set by
+    /// [`Self::complete_temporal_unit`]; `None` before the first completion.
+    last_completed: Option<CmvsCompletedFacts>,
+}
+
+/// The § 7.3.2 facts of a just-completed temporal unit, captured by
+/// [`CmvsTracker::complete_temporal_unit`] for the boundary-set-identity check.
+#[derive(Debug, Clone, Copy)]
+struct CmvsCompletedFacts {
+    /// The committed CMVS membership *before* this temporal unit's begin/end conditions
+    /// were applied — i.e. whether a CMVS was active when the temporal unit started.
+    was_inside_before: bool,
+    /// The temporal unit contained an `OBU_CLOSED_LOOP_KEY` (§ 7.3.2 / § 7.3.6: begins a
+    /// new coded video sequence for at least one extended layer).
+    has_clk: bool,
+    /// An `OBU_MSDO` was present in the temporal unit.
+    msdo_present: bool,
+    /// A global layer configuration record OBU was present in the temporal unit.
+    global_lcr_present: bool,
 }
 
 /// The disposition of the § 6.4.1 cross-layer monotonic-output-order agreement check at
@@ -2367,6 +2813,13 @@ impl CmvsTracker {
     /// ([`CmvsState::Outside`]/[`CmvsState::Unknown`], § 7.3.2 end condition 2).
     fn complete_temporal_unit(&mut self, report: &mut ValidationReport) {
         let facts = std::mem::take(&mut self.current_tu);
+        let was_inside_before = matches!(self.state, CmvsState::Inside);
+        self.last_completed = Some(CmvsCompletedFacts {
+            was_inside_before,
+            has_clk: facts.has_clk,
+            msdo_present: facts.msdo.is_some(),
+            global_lcr_present: facts.global_lcr_present,
+        });
         self.state = self.next_state(&facts);
         let pending = std::mem::take(&mut self.pending_monotonic);
         if matches!(self.state, CmvsState::Inside) {
@@ -2374,6 +2827,22 @@ impl CmvsTracker {
                 report.push(diagnostic);
             }
         }
+    }
+
+    /// Whether the just-completed temporal unit is the § 7.3.2 boundary-set-identity
+    /// divergence *candidate*: a temporal unit that, while a CMVS was active, begins a new
+    /// coded video sequence (has a CLK) with no OBU_MSDO present but a global layer
+    /// configuration record present. Under the MSDO-alone boundary rules such a temporal
+    /// unit ENDS the CMVS (§ 7.3.2 end condition 2 fires — "does not contain an OBU_MSDO
+    /// and does not have an activated global LCR", and there is no MSDO); under the
+    /// MSDO+activated-global-LCR rules it does NOT end (the activated global LCR makes end
+    /// condition 2 false), so the two boundary sets diverge here. Whether the global LCR is
+    /// genuinely *activated* (making the divergence real and decidable) is confirmed by the
+    /// caller against the association chain; this only reports the structural candidate.
+    fn last_completed_is_boundary_divergence_candidate(&self) -> bool {
+        self.last_completed.is_some_and(|f| {
+            f.was_inside_before && f.has_clk && !f.msdo_present && f.global_lcr_present
+        })
     }
 
     /// Computes the § 7.3.2 CMVS state after a completed temporal unit with `facts`,
@@ -2463,6 +2932,13 @@ impl ValidatorContext {
         self.observe_cvs_boundary_events(obu, options, report);
 
         self.temporal_unit.observe_obu(obu, report);
+
+        // Annex A Table A.3: record this OBU's non-global obu_xlayer_id into the current
+        // temporal unit's Table A.4 pending facts (the distinct extended-layer base count,
+        // mirror lines 146-151). Recorded after the boundary events so a CLK's own xlayer
+        // joins this temporal unit's facts, which the §7.3.6 per-temporal-unit attribution
+        // assigns to the correct coded video sequence at temporal-unit completion.
+        self.annex_a_iop.note_xlayer(obu.header.extended_layer_id);
 
         if obu.header.obu_type == ObuType::SequenceHeader {
             self.observe_sequence_header(obu, options, report);
@@ -2571,6 +3047,11 @@ impl ValidatorContext {
         if obu.header.obu_type == ObuType::TemporalDelimiter
             && obu.header.extended_layer_id.is_global()
         {
+            // The just-completed temporal unit's index, captured before
+            // `advance_temporal_unit` bumps `tu_index` to the next temporal unit. The Annex
+            // A Table A.4 IOP commit (below) needs it to decide whether this temporal unit
+            // begins a new coded video sequence relative to the open window.
+            let completed_tu_index = self.cvs.tu_index;
             self.cvs.advance_temporal_unit(report);
             // AV2 § 7.3.2: the global temporal delimiter ends the just-observed
             // temporal unit, so the accumulated § 7.3.2 begin/end facts are evaluated
@@ -2583,6 +3064,20 @@ impl ValidatorContext {
             // frame-confirmed activations (see resolve_deferred_doh_constraint). Must run
             // after cmvs.complete_temporal_unit so the membership is final.
             self.resolve_deferred_doh_constraint(options, report);
+            // AV2 § 6.8.2: with the just-completed temporal unit's CMVS membership
+            // resolved, evaluate the deferred MSDO↔global-LCR agreement and the LCR
+            // DOH-constraint requirement for its frame-confirmed activations (see
+            // resolve_deferred_lcr_msdo_agreement).
+            self.resolve_deferred_lcr_msdo_agreement(options, report);
+            // AV2 § 7.3.2: evaluate the boundary-set-identity check for the just-completed
+            // temporal unit (a CLK-without-MSDO with an activated global LCR diverges the
+            // MSDO-alone and MSDO+LCR boundary sets; see resolve_deferred_cmvs_boundary).
+            self.resolve_deferred_cmvs_boundary(options, report);
+            // Annex A Table A.4: commit the just-completed temporal unit's IOP pending facts
+            // to the right coded-video-sequence window — flushing and evaluating the prior
+            // window first when this temporal unit begins a new coded video sequence (a CLK
+            // in a temporal unit later than the open window's start, § 7.3.6).
+            self.commit_annex_a_iop_pending(completed_tu_index, options, report);
             // AV2 § 7.3.8.2: the just-completed temporal unit's buffered OBU_MSDO(s) are
             // resolved against the previous OBU_MSDO now that the temporal unit's
             // § 7.4.1 random-access-point-ness is fully known.
@@ -2601,6 +3096,11 @@ impl ValidatorContext {
             // an OBU with obu_type equal to OBU_CLOSED_LOOP_KEY for at least one
             // extended layer" (and begins a new coded video sequence for that layer).
             self.cmvs.note_clk();
+            // AV2 § 7.3.6: a CLK also begins a new coded video sequence for the Annex A
+            // Table A.4 IOP window. Recording it on the per-temporal-unit pending facts
+            // means a same-temporal-unit pre-CLK OBU_MSDO/LCR is attributed to the NEW
+            // coded video sequence when the temporal unit commits (lesson 8).
+            self.annex_a_iop.note_clk();
             // AV2 § 7.4.1: a CLK makes the temporal unit a random access point.
             self.msdo_identity.note_random_access_point();
         } else if obu.header.obu_type == ObuType::OpenLoopKey {
@@ -2780,6 +3280,13 @@ impl ValidatorContext {
         }
         let observation = self.msdo.observe(&msdo);
         self.cmvs.note_msdo(observation);
+        // AV2 § 7.3.2 / Annex A Table A.3: this OBU_MSDO sets MultiStreamDecoderMode == 1,
+        // so num_streams_minus_2 + 2 is the declared Table A.3 extended-layer count and
+        // multistream_profile_idc is the Table A.4 interoperability-point source for the
+        // current temporal unit (committed to the right coded-video-sequence window at
+        // temporal-unit completion).
+        self.annex_a_iop
+            .note_msdo(msdo.num_streams(), msdo.multistream_profile_idc, obu.offset);
 
         // AV2 § 7.3.8.2: buffer this MSDO's full-payload fingerprint and offset for the
         // temporal unit, resolved against the previous OBU_MSDO at temporal-unit end
@@ -2817,10 +3324,30 @@ impl ValidatorContext {
                 })
                 .or_insert(declared);
         }
+        // AV2 § 6.8.2: keep the raw declaration-order substream entries and the aggregate
+        // PTL fields for the MSDO↔global-LCR agreement and the Table A.4 IOP window,
+        // resolved at CMVS / coded-video-sequence boundaries.
+        let aggregate = MsdoAggregate {
+            num_streams: msdo.num_streams(),
+            profile_idc: msdo.multistream_profile_idc,
+            level_idx: msdo.multistream_level_idx,
+            tier: msdo.multistream_tier,
+            sub_streams: msdo
+                .sub_streams()
+                .iter()
+                .map(|sub| MsdoSubStream {
+                    sub_xlayer_id: sub.sub_xlayer_id,
+                    max_profile: sub.sub_stream_max_profile,
+                    max_level: sub.sub_stream_max_level,
+                    max_tier: sub.sub_stream_max_tier,
+                })
+                .collect(),
+        };
         self.msdo_substream_max = Some(MsdoSubstreamMax {
             ceilings,
             doh_constraint_flag: msdo.multistream_doh_constraint_flag,
             offset: obu.offset,
+            aggregate,
         });
 
         // AV2 § 6.6: the MSDO-arrives-after-the-header arrival order — re-run the
@@ -2862,6 +3389,18 @@ impl ValidatorContext {
         // final temporal unit's frame-confirmed activations, exactly as an internal
         // boundary would (see resolve_deferred_doh_constraint).
         self.resolve_deferred_doh_constraint(options, report);
+        // AV2 § 6.8.2: resolve the deferred MSDO↔global-LCR agreement and LCR DOH
+        // requirement for the final temporal unit, exactly as an internal boundary would.
+        self.resolve_deferred_lcr_msdo_agreement(options, report);
+        // AV2 § 7.3.2: resolve the boundary-set-identity check for the final temporal
+        // unit, exactly as an internal boundary would.
+        self.resolve_deferred_cmvs_boundary(options, report);
+        // Annex A Table A.4: commit the final temporal unit's IOP pending facts, then flush
+        // and evaluate the final coded-(multistream-)video-sequence window — the end of the
+        // bitstream ends the final coded video sequence (AV2 § 2 / § 7.3.2 end condition 3),
+        // so its MSDO/LCR presence requirements are evaluated here.
+        self.commit_annex_a_iop_pending(self.cvs.tu_index, options, report);
+        self.flush_annex_a_iop_window(options, report);
         // AV2 § 7.3.8.2: the final temporal unit (which has no trailing global temporal
         // delimiter) is resolved here, exactly as an internal boundary would, so a
         // buffered final-TU OBU_MSDO is compared against the previous one.
@@ -2945,6 +3484,15 @@ impl ValidatorContext {
                 .insert(xlayer, self.cvs.cvs_epoch(xlayer));
             if previous != Some(seq_id) || newly_confirmed {
                 self.on_sequence_activation(xlayer, options, report);
+            } else if obu.header.obu_type == ObuType::ClosedLoopKey {
+                // AV2 § 7.3.6 / Annex A Table A.4: a CLK that re-references the
+                // already-active header opens a new coded video sequence (§ 7.3.6) without
+                // changing the activated id, so `on_sequence_activation` is skipped. Re-seed
+                // the IOP window's pending facts from the active confirmed header so the new
+                // coded video sequence's window is decidable from the header carried across
+                // the boundary (lesson 9), matching the `is_clk` re-run of the distinct-mlayer
+                // check below.
+                self.note_annex_a_iop_activation(xlayer, options);
             }
             // AV2 § 6.4.1: compare this extended layer's accumulated distinct-obu_mlayer_id
             // count against the header that just activated, the moment it activates — the
@@ -4083,10 +4631,46 @@ impl ValidatorContext {
                 // be ruled out" signal and routes the affected boundary transitions to
                 // CmvsState::Unknown rather than guessing.
                 self.cmvs.note_global_lcr_present();
+                // Annex A Table A.4: a global LCR OBU is present in this temporal unit
+                // (raw presence; the *activated*-global-LCR distinction needed by the
+                // Table A.4 global-LCR arms is resolved from the association chain at the
+                // window flush, not here).
+                self.annex_a_iop.note_global_lcr(obu.offset);
                 // AV2 § 7.3.8.3: record the global LCR's id and xlayer map for later
                 // local-LCR and sequence-header references.
                 self.hls
                     .record_global_lcr(info.global_config_record_id, info.xlayer_map);
+                // AV2 § 6.8.2: keep the full aggregate / per-substream PTL / DOH fields of
+                // this global LCR (keyed by id, redefinition overwrites) so the
+                // MSDO↔global-LCR agreement can read whichever record the association chain
+                // later resolves as *activated*. LcrXLayerID[] / LcrMaxNumXLayerCount come
+                // from the set bits of lcr_xlayer_map (§ 5.8.1, mirror lines 382-384).
+                let xlayer_ids: BTreeSet<u8> = (0u8..31)
+                    .filter(|i| info.xlayer_map & (1 << i) != 0)
+                    .collect();
+                let mut seq_ptl_by_xlayer: BTreeMap<u8, LcrSeqPtl> = BTreeMap::new();
+                for ptl in &info.seq_ptl_infos {
+                    seq_ptl_by_xlayer.insert(
+                        ptl.xlayer_id,
+                        LcrSeqPtl {
+                            seq_profile_idc: ptl.seq_profile_idc,
+                            max_level_idx: ptl.max_level_idx,
+                            tier_flag: u8::from(ptl.tier_flag),
+                        },
+                    );
+                }
+                self.global_lcr_records.insert(
+                    info.global_config_record_id,
+                    GlobalLcrRecord {
+                        max_num_xlayer_count: info.xlayer_map.count_ones(),
+                        xlayer_ids,
+                        aggregate_info: info.aggregate_info,
+                        seq_ptl_by_xlayer,
+                        seq_ptl_present: info.seq_ptl_info_present,
+                        doh_constraint_flag: info.doh_constraint_flag,
+                        offset: obu.offset,
+                    },
+                );
                 // AV2 § 6.8.9: retain each payload's embedded-layer maps for the
                 // dependency-map agreement checks. A redefinition replaces the maps
                 // wholesale so a dropped payload cannot leave stale entries.
@@ -4111,6 +4695,9 @@ impl ValidatorContext {
                 }
             }
             LayerConfigurationRecord::Local(info) => {
+                // Annex A Table A.4: a local LCR OBU is present in this temporal unit (the
+                // IOP1 `!e && m` / IOP2 LCR arms can be satisfied by a local LCR).
+                self.annex_a_iop.note_local_lcr();
                 // AV2 § 7.3.8.3: a local LCR's lcr_global_id (when non-zero) must
                 // resolve to an available global LCR.
                 if info.global_id != 0
@@ -4720,6 +5307,42 @@ impl ValidatorContext {
         }
     }
 
+    /// Resolves "the activated global layer configuration record of the coded multistream
+    /// video sequence" (AV2 § 6.8.2 / § 7.3.2) from the existing § 6.4.1 association chain:
+    /// a *frame-confirmed* activated sequence header's `seq_lcr_id` resolves
+    /// local-first-then-global (see [`Self::snapshot_lcr_association`]); an association that
+    /// landed on a global record names an activated global LCR. Returns its
+    /// `lcr_global_config_record_id` and full [`GlobalLcrRecord`], or `None` when no
+    /// frame-confirmed activation resolves one — the Unknown state the § 6.8.2 agreement,
+    /// the § 6.8.2 DOH requirement, and the Table A.4 global-LCR arms all treat as "no
+    /// activated global LCR" (never firing).
+    ///
+    /// Only frame-confirmed activations are consulted (`agreement_activation_for`): a
+    /// staged-but-unreferenced header is not yet an activation (§ 7.3.6), and an
+    /// observed-but-never-activated global LCR therefore satisfies nothing. The
+    /// associations are scanned in ascending `obu_xlayer_id` order, so the first global
+    /// association found is deterministic; the § 6.8.2 "all extended layers reference the
+    /// same activated global LCR" rule (lines 1550-1551) that would reconcile divergent
+    /// resolutions is a separate, out-of-scope residual, so this takes the first resolved
+    /// record and the agreement checks compare the MSDO against it.
+    fn activated_global_lcr(&self) -> Option<(u8, &GlobalLcrRecord)> {
+        for &xlayer in &self.frame_confirmed_xlayers {
+            let Some((seq_header_id, _)) = self.agreement_activation_for(xlayer) else {
+                continue;
+            };
+            let Some(association) = self.lcr_associations.get(&(xlayer, seq_header_id)) else {
+                continue;
+            };
+            if !association.lcr_is_global {
+                continue;
+            }
+            if let Some(record) = self.global_lcr_records.get(&association.lcr_id) {
+                return Some((association.lcr_id, record));
+            }
+        }
+        None
+    }
+
     /// Checks explicitly signalled OPS maps against the sequence header activated
     /// for each entry's extended layer (AV2 § 6.10.7): for any included embedded
     /// layer `cMId` with `MLayerDependencyMap[cMId][rMId] == 1`, embedded layer
@@ -4873,6 +5496,59 @@ impl ValidatorContext {
         // is only final at temporal-unit completion, so it is deferred to
         // `resolve_deferred_doh_constraint` (see that method and check_doh_constraint_required).
         self.check_substream_max_ceilings(xlayer, options, report);
+        // Annex A Table A.4: record this frame-confirmed activation's interoperability
+        // point, embedded-layer count, and activated-global-LCR span into the current
+        // temporal unit's IOP pending facts (committed to the right coded-video-sequence
+        // window at temporal-unit completion). Suppressed under any Provided external HLS
+        // (in-band presence counting is unsound when an external header may shadow the
+        // in-band one — the same gate the window evaluation uses).
+        self.note_annex_a_iop_activation(xlayer, options);
+    }
+
+    /// Records the frame-confirmed sequence-header activation for `xlayer` into the Annex A
+    /// Table A.4 IOP pending facts: the header's profile (for the interoperability point),
+    /// its embedded-layer count (`seq_max_mlayer_cnt_minus_1 + 1`), and the
+    /// `LcrMaxNumXLayerCount` of the *activated* global LCR its `seq_lcr_id` resolves to
+    /// (only an activated global LCR is recorded — the Table A.4 global-LCR arms require an
+    /// activated record, lesson 10). Only a frame-confirmed activation is recorded (a staged
+    /// fallback guess could be contradicted by a later frame, § 7.3.6). Suppressed under any
+    /// Provided external HLS (`matches!(.., Provided(_))`): an external header may shadow the
+    /// in-band one, so in-band presence counting is unsound — the same gate the window
+    /// evaluation uses (`evaluate_annex_a_iop_window`).
+    fn note_annex_a_iop_activation(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        options: &ValidationOptions,
+    ) {
+        if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
+            return;
+        }
+        if !self.frame_confirmed_xlayers.contains(&xlayer) {
+            return;
+        }
+        let Some((seq_header_id, general)) = self.active_general_for(xlayer) else {
+            return;
+        };
+        let offset = self
+            .sequence_header_offsets
+            .get(&seq_header_id)
+            .copied()
+            .unwrap_or(ByteOffset::new(0));
+        // The activated global LCR span for this layer, if its association resolved a
+        // global record. Only an *activated* (associated) global LCR contributes the
+        // Table A.3 declared count / satisfies the Table A.4 global-LCR arms.
+        let activated_global_count = self
+            .lcr_associations
+            .get(&(xlayer, seq_header_id))
+            .filter(|a| a.lcr_is_global)
+            .and_then(|a| self.global_lcr_records.get(&a.lcr_id))
+            .map(|record| record.max_num_xlayer_count);
+        self.annex_a_iop.note_activation(
+            general.seq_profile_idc.get(),
+            u32::from(general.seq_max_mlayer_count.get()),
+            activated_global_count,
+            offset,
+        );
     }
 
     /// Emits the Annex A.2 / Annex A.4 profile and level/tier *value-space* diagnostics
@@ -5309,6 +5985,755 @@ impl ValidatorContext {
         let xlayers: Vec<ExtendedLayerId> = self.frame_confirmed_xlayers.iter().copied().collect();
         for xlayer in xlayers {
             self.check_doh_constraint_required(xlayer, options, report);
+        }
+    }
+
+    /// Resolves the deferred § 6.8.2 MSDO↔global-LCR agreement (mirror
+    /// `06-syntax-structures-semantics.md` lines 1646-1678) and the § 6.8.2 LCR
+    /// DOH-constraint requirement (lines 1619-1621), at temporal-unit-completion time
+    /// (a temporal-delimiter boundary or the end-of-bitstream flush), *after* the
+    /// [`CmvsTracker`] has applied the temporal unit's § 7.3.2 begin/end conditions.
+    ///
+    /// The § 6.8.2 constraints hold "when both an OBU with obu_type equal to OBU_MSDO and
+    /// an activated global layer configuration record OBU are present in the same coded
+    /// multistream video sequence" (mirror lines 1646-1648), so the evaluation fires only
+    /// when:
+    ///
+    /// - the completed temporal unit resolved to a definitive CMVS [`CmvsState::Inside`]
+    ///   ([`CmvsTracker::committed_inside`]) — the same membership-resolution discipline as
+    ///   the landed § 6.6 `msdo/doh-constraint-required` check (an Unknown / Outside
+    ///   membership never fires, lesson 12);
+    /// - a recorded MSDO is present (`msdo_substream_max`); and
+    /// - the association chain resolves an *activated* global LCR
+    ///   ([`Self::activated_global_lcr`]) — an observed-but-never-activated global LCR
+    ///   resolves nothing and triggers no diagnostic.
+    ///
+    /// In-band-only: when external HLS declares any sequence header the activation chain
+    /// (and thus which global LCR, if any, is activated) is not reliably in-band, so the
+    /// agreement is suppressed — the same `external_declares_sequence_header` gate the
+    /// sibling agreement checks use. (The locally-decidable in-band §6.8.2 value-space
+    /// checks are unaffected; they live on the stateless syntax path.)
+    fn resolve_deferred_lcr_msdo_agreement(
+        &mut self,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        if !self.cmvs.committed_inside() {
+            return;
+        }
+        if external_declares_sequence_header(options) {
+            return;
+        }
+        let Some(substream_max) = self.msdo_substream_max.as_ref() else {
+            return;
+        };
+        let Some((global_id, global)) = self.activated_global_lcr() else {
+            return;
+        };
+        // Snapshot the inputs so the borrow on `self` is released before pushing
+        // diagnostics through `&mut self` dedup state.
+        let msdo = substream_max.aggregate.clone();
+        let msdo_offset = substream_max.offset;
+        let global = global.clone();
+        self.check_lcr_msdo_agreement(global_id, &global, &msdo, msdo_offset, report);
+        self.check_lcr_doh_constraint_required(global_id, &global, report);
+    }
+
+    /// Resolves the deferred § 7.3.2 boundary-set-identity check
+    /// (`cmvs/boundary-set-mismatch`, mirror `07-decoding-process.md` line 351) at
+    /// temporal-unit-completion time, *after* the [`CmvsTracker`] has applied the temporal
+    /// unit's begin/end conditions.
+    ///
+    /// > It is a requirement of bitstream conformance that, in a coded multistream video
+    /// > sequence in which both an OBU_MSDO and an activated global layer configuration
+    /// > record are present, the set of coded multistream video sequence boundaries
+    /// > obtained by applying the rules of this section using both the MSDO and the
+    /// > activated global layer configuration record shall be identical to the set of
+    /// > boundaries obtained by applying those rules using the MSDO alone.
+    ///
+    /// **Decidable-disagreement-only (lesson 12 — Unknown never fires).** The only place
+    /// the two boundary sets can diverge is § 7.3.2 end condition 2: a temporal unit that
+    /// begins a new coded video sequence (a CLK) with no OBU_MSDO ENDS the CMVS under the
+    /// MSDO-alone rules, but does NOT end it when it "has an activated global layer
+    /// configuration record". The [`CmvsTracker`] flags this structural candidate
+    /// ([`CmvsTracker::last_completed_is_boundary_divergence_candidate`]); the divergence is
+    /// real, and decidable, only when the chain confirms the global LCR present in that
+    /// temporal unit is genuinely *activated* ([`Self::activated_global_lcr`]) and the CMVS
+    /// it ended contained an MSDO (`msdo_substream_max`). When both hold, the MSDO-alone set
+    /// has a boundary the MSDO+LCR set lacks, so the requirement is violated. When the
+    /// global LCR is only *present* but not activated (the tracker routes that to Unknown),
+    /// nothing fires. The diagnostic anchors at the activated global LCR (the disagreeing
+    /// record) and is deduped by the CMVS's MSDO offset.
+    ///
+    /// Suppressed when external HLS declares any sequence header (the activation chain that
+    /// decides whether the global LCR is activated is then not reliably in-band) — the same
+    /// gate the § 6.8.2 agreement uses.
+    fn resolve_deferred_cmvs_boundary(
+        &mut self,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        if external_declares_sequence_header(options) {
+            return;
+        }
+        if !self.cmvs.last_completed_is_boundary_divergence_candidate() {
+            return;
+        }
+        // The boundary-identity requirement applies only when both an OBU_MSDO and an
+        // activated global LCR are present in the CMVS (mirror line 351). The CMVS being
+        // divergently-ended was definitively Inside, so it was opened by an MSDO; require a
+        // recorded MSDO and a chain-confirmed activated global LCR.
+        let Some(substream_max) = self.msdo_substream_max.as_ref() else {
+            return;
+        };
+        let msdo_offset = substream_max.offset;
+        let Some((global_id, global)) = self.activated_global_lcr() else {
+            return;
+        };
+        let global_offset = global.offset;
+        if !self.emitted_cmvs_boundary.insert(msdo_offset) {
+            return;
+        }
+        report.push(
+            Diagnostic::error(
+                "cmvs/boundary-set-mismatch",
+                format!(
+                    "§ 7.3.2: a temporal unit begins a new coded video sequence with no OBU_MSDO \
+                     but with the activated global layer configuration record {global_id}, so it \
+                     ends the coded multistream video sequence under the MSDO-alone boundary rules \
+                     yet continues it under the MSDO-plus-global-LCR rules; § 7.3.2 requires the \
+                     two boundary sets to be identical in a CMVS containing both an OBU_MSDO and an \
+                     activated global LCR",
+                ),
+            )
+            .with_spec_section("7.3.2")
+            .with_byte_offset(global_offset),
+        );
+    }
+
+    /// Emits the § 6.8.2 MSDO↔global-LCR agreement diagnostics (mirror
+    /// `06-syntax-structures-semantics.md` lines 1646-1673) for the active MSDO `msdo`
+    /// (declared at `msdo_offset`) against the activated global LCR `global` (id
+    /// `global_id`). The caller guarantees CMVS membership is resolved `Inside` and both
+    /// records are present. Each diagnostic anchors at the most informative OBU — the
+    /// disagreeing record — and is deduped by `(global_id, msdo_offset, global.offset,
+    /// rule)` so the deferred resolution does not re-spam across the CMVS's temporal units.
+    ///
+    /// The constraints, in spec order:
+    /// 1. `num_streams_minus_2 + 2 == LcrMaxNumXLayerCount` (line 1650).
+    /// 2. every `sub_xlayer_id[i]` is in `LcrXLayerID[]` (lines 1651-1652).
+    /// 3. when `lcr_aggregate_info_present_flag == 1` (lines 1657-1664):
+    ///    `multistream_profile_idc` consistent with `lcr_config_idc` (Annex A.3 Table A.6),
+    ///    its interoperability point equal to `lcr_max_interop` (Table A.1),
+    ///    `multistream_level_idx == lcr_aggregate_level_idx`, and
+    ///    `multistream_tier == lcr_max_tier_flag`.
+    /// 4. when `lcr_seq_profile_tier_level_info_present_flag == 1` (lines 1666-1671): for
+    ///    each i, `sub_stream_max_profile/level/tier[i] ==
+    ///    lcr_seq_profile_idc/lcr_max_level_idx/lcr_tier_flag[sub_xlayer_id[i]]` (exact
+    ///    equality — unlike the § 6.6 sub-stream ceilings, which are `<=`).
+    /// 5. `multistream_doh_constraint_flag == lcr_doh_constraint_flag` (line 1673).
+    fn check_lcr_msdo_agreement(
+        &mut self,
+        global_id: u8,
+        global: &GlobalLcrRecord,
+        msdo: &MsdoAggregate,
+        msdo_offset: ByteOffset,
+        report: &mut ValidationReport,
+    ) {
+        // Constraint 1: num_streams_minus_2 + 2 == LcrMaxNumXLayerCount (line 1650).
+        if msdo.num_streams != global.max_num_xlayer_count {
+            self.push_lcr_agreement(
+                "lcr/msdo-stream-count-mismatch",
+                global_id,
+                msdo_offset,
+                global.offset,
+                msdo_offset,
+                0,
+                format!(
+                    "§ 6.8.2: the OBU_MSDO declares num_streams_minus_2 + 2 = {} but the activated \
+                     global layer configuration record {global_id} has LcrMaxNumXLayerCount = {} \
+                     (the set-bit count of lcr_xlayer_map); they must be equal",
+                    msdo.num_streams, global.max_num_xlayer_count,
+                ),
+                report,
+            );
+        }
+
+        // Constraint 2: every sub_xlayer_id[i] is in LcrXLayerID[] (lines 1651-1652).
+        for sub in &msdo.sub_streams {
+            if !global.xlayer_ids.contains(&sub.sub_xlayer_id) {
+                self.push_lcr_agreement(
+                    "lcr/msdo-sub-xlayer-not-in-lcr",
+                    global_id,
+                    msdo_offset,
+                    global.offset,
+                    msdo_offset,
+                    u32::from(sub.sub_xlayer_id),
+                    format!(
+                        "§ 6.8.2: the OBU_MSDO names sub_xlayer_id {} but it is not a set bit of \
+                         the activated global layer configuration record {global_id}'s \
+                         lcr_xlayer_map (LcrXLayerID[]); every sub_xlayer_id must be in LcrXLayerID[]",
+                        sub.sub_xlayer_id,
+                    ),
+                    report,
+                );
+            }
+        }
+
+        // Constraint 3: aggregate-info agreement, gated on lcr_aggregate_info_present_flag
+        // (lines 1657-1664).
+        if let Some(agg) = global.aggregate_info {
+            self.check_lcr_aggregate_agreement(
+                global_id,
+                &agg,
+                msdo,
+                msdo_offset,
+                global.offset,
+                report,
+            );
+        }
+
+        // Constraint 4: per-substream PTL equality, gated on
+        // lcr_seq_profile_tier_level_info_present_flag (lines 1666-1671).
+        if global.seq_ptl_present {
+            self.check_lcr_substream_ptl_agreement(global_id, global, msdo, msdo_offset, report);
+        }
+
+        // Constraint 5: multistream_doh_constraint_flag == lcr_doh_constraint_flag (line
+        // 1673). The MSDO's flag travels with the recorded MSDO state.
+        let msdo_doh = self
+            .msdo_substream_max
+            .as_ref()
+            .is_some_and(|m| m.doh_constraint_flag);
+        if msdo_doh != global.doh_constraint_flag {
+            self.push_lcr_agreement(
+                "lcr/msdo-doh-flag-mismatch",
+                global_id,
+                msdo_offset,
+                global.offset,
+                msdo_offset,
+                0,
+                format!(
+                    "§ 6.8.2: multistream_doh_constraint_flag ({}) differs from the activated \
+                     global layer configuration record {global_id}'s lcr_doh_constraint_flag ({}); \
+                     they must be equal",
+                    u8::from(msdo_doh),
+                    u8::from(global.doh_constraint_flag),
+                ),
+                report,
+            );
+        }
+    }
+
+    /// § 6.8.2 constraint 3 (mirror lines 1657-1664): the aggregate-info agreement, each
+    /// disagreeing field named in the `lcr/msdo-aggregate-mismatch` message. Anchored at
+    /// the OBU_MSDO (the disagreeing aggregate-profile/level/tier values it declares).
+    fn check_lcr_aggregate_agreement(
+        &mut self,
+        global_id: u8,
+        agg: &LcrAggregateInfo,
+        msdo: &MsdoAggregate,
+        msdo_offset: ByteOffset,
+        global_offset: ByteOffset,
+        report: &mut ValidationReport,
+    ) {
+        // multistream_profile_idc consistent with lcr_config_idc per Annex A.3 Table A.6
+        // (lines 1659-1660). Only a *defined* configuration (0..=2) has a value space; a
+        // reserved lcr_config_idc is the § 6.8.4 Annex-A range residual, not this check.
+        if is_defined_config_idc(agg.config_idc)
+            && !config_idc_allows_profile(agg.config_idc, msdo.profile_idc)
+        {
+            self.push_lcr_agreement(
+                "lcr/msdo-aggregate-mismatch",
+                global_id,
+                msdo_offset,
+                global_offset,
+                msdo_offset,
+                100,
+                format!(
+                    "§ 6.8.2: multistream_profile_idc ({}) is not consistent with the activated \
+                     global layer configuration record {global_id}'s lcr_config_idc ({}) per \
+                     Annex A.3 Table A.6",
+                    msdo.profile_idc, agg.config_idc,
+                ),
+                report,
+            );
+        }
+
+        // The interoperability point of multistream_profile_idc (Annex A.2 Table A.1) equals
+        // lcr_max_interop (lines 1661-1662). A reserved / Configurable profile has no
+        // table-determined IOP, so the equality is undecidable there and is skipped (the
+        // reserved-profile case is owned by annex-a/profile-reserved).
+        if let Some(iop) = interoperability_point(msdo.profile_idc)
+            && iop.value() != agg.max_interop
+        {
+            self.push_lcr_agreement(
+                "lcr/msdo-aggregate-mismatch",
+                global_id,
+                msdo_offset,
+                global_offset,
+                msdo_offset,
+                101,
+                format!(
+                    "§ 6.8.2: the interoperability point ({}) of multistream_profile_idc ({}) per \
+                     Annex A.2 Table A.1 differs from the activated global layer configuration \
+                     record {global_id}'s lcr_max_interop ({})",
+                    iop.value(),
+                    msdo.profile_idc,
+                    agg.max_interop,
+                ),
+                report,
+            );
+        }
+
+        // multistream_level_idx == lcr_aggregate_level_idx (line 1663).
+        if msdo.level_idx != agg.aggregate_level_idx {
+            self.push_lcr_agreement(
+                "lcr/msdo-aggregate-mismatch",
+                global_id,
+                msdo_offset,
+                global_offset,
+                msdo_offset,
+                102,
+                format!(
+                    "§ 6.8.2: multistream_level_idx ({}) differs from the activated global layer \
+                     configuration record {global_id}'s lcr_aggregate_level_idx ({})",
+                    msdo.level_idx, agg.aggregate_level_idx,
+                ),
+                report,
+            );
+        }
+
+        // multistream_tier == lcr_max_tier_flag (line 1664).
+        let lcr_tier = u8::from(agg.max_tier_flag);
+        if msdo.tier != lcr_tier {
+            self.push_lcr_agreement(
+                "lcr/msdo-aggregate-mismatch",
+                global_id,
+                msdo_offset,
+                global_offset,
+                msdo_offset,
+                103,
+                format!(
+                    "§ 6.8.2: multistream_tier ({}) differs from the activated global layer \
+                     configuration record {global_id}'s lcr_max_tier_flag ({lcr_tier})",
+                    msdo.tier,
+                ),
+                report,
+            );
+        }
+    }
+
+    /// § 6.8.2 constraint 4 (mirror lines 1666-1671): for each i in
+    /// `0..=num_streams_minus_2 + 1`, the MSDO's `sub_stream_max_*[i]` equals the global
+    /// LCR's `lcr_*[sub_xlayer_id[i]]` — exact equality (unlike the § 6.6 `<=` ceilings).
+    /// An i whose `sub_xlayer_id[i]` is not in the global LCR's per-xlayer PTL map is
+    /// skipped here: it is already flagged by constraint 2
+    /// (`lcr/msdo-sub-xlayer-not-in-lcr`), so re-reporting the absent PTL entry would be
+    /// redundant. The diagnostic anchors at the OBU_MSDO (the `sub_stream_max_*` values).
+    fn check_lcr_substream_ptl_agreement(
+        &mut self,
+        global_id: u8,
+        global: &GlobalLcrRecord,
+        msdo: &MsdoAggregate,
+        msdo_offset: ByteOffset,
+        report: &mut ValidationReport,
+    ) {
+        for sub in &msdo.sub_streams {
+            let Some(ptl) = global.seq_ptl_by_xlayer.get(&sub.sub_xlayer_id) else {
+                continue;
+            };
+            if sub.max_profile != ptl.seq_profile_idc
+                || sub.max_level != ptl.max_level_idx
+                || sub.max_tier != ptl.tier_flag
+            {
+                self.push_lcr_agreement(
+                    "lcr/msdo-substream-ptl-mismatch",
+                    global_id,
+                    msdo_offset,
+                    global.offset,
+                    msdo_offset,
+                    u32::from(sub.sub_xlayer_id),
+                    format!(
+                        "§ 6.8.2: for sub_xlayer_id {}, the OBU_MSDO's (sub_stream_max_profile, \
+                         sub_stream_max_level, sub_stream_max_tier) = ({}, {}, {}) must equal the \
+                         activated global layer configuration record {global_id}'s \
+                         (lcr_seq_profile_idc, lcr_max_level_idx, lcr_tier_flag) = ({}, {}, {})",
+                        sub.sub_xlayer_id,
+                        sub.max_profile,
+                        sub.max_level,
+                        sub.max_tier,
+                        ptl.seq_profile_idc,
+                        ptl.max_level_idx,
+                        ptl.tier_flag,
+                    ),
+                    report,
+                );
+            }
+        }
+    }
+
+    /// Emits `lcr/doh-constraint-required` (error, § 6.8.2, mirror lines 1619-1621) when,
+    /// with CMVS membership resolved `Inside`, any frame-confirmed activated sequence
+    /// header of the CMVS has `monotonic_output_order_flag == 0` while the activated global
+    /// LCR's `lcr_doh_constraint_flag == 0`. The same deferred-resolution mechanism as
+    /// `msdo/doh-constraint-required`, but the constrained flag is the global LCR's, not the
+    /// MSDO's. Deduped by `(global_id, global.offset, global.offset, rule)`. Anchored at the
+    /// activating header (the disagreeing record) when its offset is known, else the global
+    /// LCR OBU.
+    fn check_lcr_doh_constraint_required(
+        &mut self,
+        global_id: u8,
+        global: &GlobalLcrRecord,
+        report: &mut ValidationReport,
+    ) {
+        // lcr_doh_constraint_flag == 1 already satisfies the requirement.
+        if global.doh_constraint_flag {
+            return;
+        }
+        let xlayers: Vec<ExtendedLayerId> = self.frame_confirmed_xlayers.iter().copied().collect();
+        for xlayer in xlayers {
+            let Some((seq_header_id, general)) = self.active_general_for(xlayer) else {
+                continue;
+            };
+            if general.monotonic_output_order_flag {
+                continue;
+            }
+            let anchor = self
+                .sequence_header_offsets
+                .get(&seq_header_id)
+                .copied()
+                .unwrap_or(global.offset);
+            self.push_lcr_agreement(
+                "lcr/doh-constraint-required",
+                global_id,
+                // The dedup key uses the activating header offset so each disagreeing
+                // header fires once; the global-LCR offset keeps redefinitions distinct.
+                anchor,
+                global.offset,
+                anchor,
+                u32::from(xlayer.get()),
+                format!(
+                    "§ 6.8.2: the sequence header activated for extended layer {} has \
+                     monotonic_output_order_flag == 0 inside a coded multistream video sequence, \
+                     but the activated global layer configuration record {global_id}'s \
+                     lcr_doh_constraint_flag == 0; § 6.8.2 requires lcr_doh_constraint_flag == 1 \
+                     when any activated sequence header has monotonic_output_order_flag == 0",
+                    xlayer.get(),
+                ),
+                report,
+            );
+        }
+    }
+
+    /// Pushes one § 6.8.2 MSDO↔global-LCR agreement diagnostic (error, spec section
+    /// `6.8.2`) anchored at `anchor`, deduped by `(global_id, key_a, global_offset, rule,
+    /// field)` so the deferred CMVS resolution does not re-spam it across the CMVS's
+    /// temporal units. `key_a` is the MSDO offset for the agreement constraints (a new MSDO
+    /// re-emits) and the activating-header offset for the DOH requirement (each disagreeing
+    /// header fires once). `field` distinguishes the several sub-fields of a shared rule
+    /// (the four `lcr/msdo-aggregate-mismatch` arms, each disagreeing `sub_xlayer_id`) so
+    /// two distinct disagreements are not collapsed into one.
+    #[allow(clippy::too_many_arguments)]
+    fn push_lcr_agreement(
+        &mut self,
+        rule_id: &'static str,
+        global_id: u8,
+        key_a: ByteOffset,
+        global_offset: ByteOffset,
+        anchor: ByteOffset,
+        field: u32,
+        message: String,
+        report: &mut ValidationReport,
+    ) {
+        if !self
+            .emitted_lcr_agreement
+            .insert((global_id, key_a, global_offset, rule_id, field))
+        {
+            return;
+        }
+        report.push(
+            Diagnostic::error(rule_id, message)
+                .with_spec_section("6.8.2")
+                .with_byte_offset(anchor),
+        );
+    }
+
+    /// Commits the just-completed temporal unit's Annex A Table A.4 IOP pending facts to
+    /// the right coded-(multistream-)video-sequence window (AV2 § 7.3.6 per-temporal-unit
+    /// attribution, lesson 8). `completed_tu_index` is the temporal unit's index.
+    ///
+    /// When this temporal unit begins a NEW coded video sequence (it has a CLK and the open
+    /// window's coded video sequence began in an *earlier* temporal unit), the prior window
+    /// is first flushed and evaluated, then a fresh window is seeded from this temporal
+    /// unit's pending facts — so a same-temporal-unit pre-CLK OBU_MSDO/LCR belongs to the
+    /// NEW coded video sequence (§ 7.3.6: the new coded video sequence starts at the
+    /// temporal unit containing the CLK). Otherwise the pending facts merge into the open
+    /// window (the same coded video sequence continues across this temporal unit). The
+    /// pending facts reset for the next temporal unit.
+    fn commit_annex_a_iop_pending(
+        &mut self,
+        completed_tu_index: u64,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        if self.annex_a_iop.pending_starts_new_cvs(completed_tu_index) {
+            // This temporal unit begins the next coded video sequence: flush+evaluate the
+            // ending window, then seed a fresh one from this temporal unit's pending facts.
+            self.flush_annex_a_iop_window(options, report);
+            let pending = std::mem::take(&mut self.annex_a_iop.pending);
+            self.annex_a_iop.window = Some(AnnexAIopTracker::window_from_pending(
+                &pending,
+                completed_tu_index,
+            ));
+        } else {
+            // The same coded video sequence continues (or leading evidence before the first
+            // CLK): merge this temporal unit's pending facts into the open window.
+            let pending = std::mem::take(&mut self.annex_a_iop.pending);
+            let window = self
+                .annex_a_iop
+                .window
+                .get_or_insert_with(AnnexAIopWindow::default);
+            AnnexAIopTracker::merge_pending_into(window, &pending, completed_tu_index);
+        }
+        self.annex_a_iop.reset_pending();
+    }
+
+    /// Takes the current Annex A Table A.4 IOP window and evaluates its MSDO/LCR
+    /// interoperability-point presence requirements, resetting the window for the next coded
+    /// video sequence. Suppressed (the window is taken but no diagnostic is emitted) under
+    /// any Provided external HLS, which makes in-band presence counting unsound.
+    fn flush_annex_a_iop_window(
+        &mut self,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        let Some(window) = self.annex_a_iop.window.take() else {
+            return;
+        };
+        if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
+            return;
+        }
+        self.evaluate_annex_a_iop_window(&window, report);
+    }
+
+    /// Emits the Annex A Table A.4 MSDO/LCR interoperability-point presence diagnostics for
+    /// one coded-(multistream-)video-sequence `window` (AV2 v1.0.0 Annex A.2 Table A.4,
+    /// mirror `annex-a-profiles-levels-and-tiers.md` lines 178-201).
+    ///
+    /// The interoperability point is taken from the window's OBU_MSDO `multistream_profile_idc`
+    /// when an MSDO is present (mirror lines 1659-1662), else from the window's
+    /// frame-confirmed activated headers (lesson; see [`AnnexAIopWindow::iop`]). A window with
+    /// no decidable single interoperability point (no in-band profile, a reserved /
+    /// Configurable profile whose IOP is not table-determined, or mixed IOPs across layers) is
+    /// a no-op — the Table A.4 row is not determinable.
+    ///
+    /// `E = "Number of Extended Layers > 1"` and `M = "Number of Embedded Layers > 1"` are the
+    /// Table A.3 counts ([`annex_a_extended_layers`] in declared precedence, mirror lines
+    /// 146-151; the embedded-layer maximum, lines 152-153). The Table A.4 rows, by IOP:
+    ///
+    /// - IOP0 (lines 183-185): MSDO prohibited when `!E`, required when `E`.
+    /// - IOP1 (lines 187-191): `!E && !M` -> MSDO prohibited; `E && !M` -> MSDO required;
+    ///   `!E && M` -> MSDO prohibited and a local LCR required. (`E && M` exceeds IOP1's Table
+    ///   A.3 layer budget and has no Table A.4 row.)
+    /// - IOP2 (lines 193-201): `!E && !M` -> MSDO prohibited; `E && !M` -> MSDO **or** an
+    ///   activated global LCR required (either satisfies); `!E && M` -> MSDO prohibited and an
+    ///   LCR (local or activated global) required; `E && M` -> (MSDO **and** local LCR) **or**
+    ///   an activated global LCR required.
+    ///
+    /// Only an *activated* global LCR ([`AnnexAIopWindow::activated_global_count`], resolved
+    /// via the association chain) satisfies the global-LCR arms (lesson 10); an
+    /// observed-but-unactivated global LCR does not.
+    fn evaluate_annex_a_iop_window(&self, window: &AnnexAIopWindow, report: &mut ValidationReport) {
+        // The MSDO's multistream_profile_idc determines the IOP when an MSDO is present
+        // (mirror lines 1659-1662); otherwise the activated headers' agreed IOP is used.
+        let iop = match window.msdo_profile_idc {
+            Some(profile) => match interoperability_point(profile) {
+                Some(iop) => iop,
+                // Reserved / Configurable multistream_profile_idc: IOP not table-determined.
+                None => return,
+            },
+            None => match window.iop {
+                Some(AnnexAIopState::Single(iop)) => iop,
+                // No in-band profile, or activated profiles disagree: row not determinable.
+                _ => return,
+            },
+        };
+        let activated_global_count = window.activated_global_count;
+        let extended_layers = annex_a_extended_layers(window, activated_global_count);
+        let e = extended_layers > 1;
+        let m = window.max_embedded_layers.max(1) > 1;
+        let offset = window.anchor_offset;
+        let global_lcr = activated_global_count.is_some();
+        // TODO(spec: AV2-A-LEVELS-TIERS): the Table A.3 layer-budget bound (the combination
+        // flag must be 0 for IOP 0/1, mirror lines 154-158) is not enforced here; an IOP1
+        // window with both E and M exceeds that budget but has no Table A.4 row, so Table A.4
+        // alone makes no presence requirement for it.
+        match iop {
+            InteroperabilityPoint::Iop0 => {
+                // Rows 1-2 (lines 183-185): embedded layers are N/A.
+                self.emit_iop_msdo_presence(e, window, extended_layers, offset, report);
+            }
+            InteroperabilityPoint::Iop1 => {
+                if !m {
+                    // Rows 3-4 (lines 187-189): MSDO prohibited (!E) / required (E).
+                    self.emit_iop_msdo_presence(e, window, extended_layers, offset, report);
+                } else if !e {
+                    // Row 5 (line 191): !E && M -> MSDO prohibited; local LCR required.
+                    self.emit_msdo_prohibited(window, offset, report);
+                    self.emit_iop1_local_lcr_required(window, offset, report);
+                }
+                // E && M: no Table A.4 row (outside IOP1's layer budget); see the TODO.
+            }
+            InteroperabilityPoint::Iop2 => {
+                self.evaluate_iop2(e, m, window, global_lcr, extended_layers, offset, report);
+            }
+        }
+    }
+
+    /// Table A.4 IOP0 rows and IOP1 `!M` rows: MSDO required when `E`, prohibited when `!E`.
+    fn emit_iop_msdo_presence(
+        &self,
+        e: bool,
+        window: &AnnexAIopWindow,
+        extended_layers: u32,
+        offset: ByteOffset,
+        report: &mut ValidationReport,
+    ) {
+        if e {
+            if !window.msdo_present {
+                report.push(annex_a_iop_error(
+                    "annex-a/msdo-required-for-iop",
+                    offset,
+                    format!(
+                        "Annex A Table A.4: the coded video sequence has more than one extended \
+                         layer ({extended_layers}) but contains no OBU_MSDO, which the activated \
+                         profile's interoperability point requires"
+                    ),
+                ));
+            }
+        } else {
+            self.emit_msdo_prohibited(window, offset, report);
+        }
+    }
+
+    /// Table A.4 IOP2 rows (mirror lines 193-201). `global_lcr` is whether an *activated*
+    /// global LCR is present in the window (only an activated one satisfies the global-LCR
+    /// arms).
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_iop2(
+        &self,
+        e: bool,
+        m: bool,
+        window: &AnnexAIopWindow,
+        global_lcr: bool,
+        extended_layers: u32,
+        offset: ByteOffset,
+        report: &mut ValidationReport,
+    ) {
+        match (e, m) {
+            // Row "2 N N" (line 193): MSDO prohibited.
+            (false, false) => self.emit_msdo_prohibited(window, offset, report),
+            // Row "2 Y N" (line 195): MSDO or an activated global LCR required (either
+            // satisfies); MSDO is not prohibited here.
+            (true, false) => {
+                if !window.msdo_present && !global_lcr {
+                    report.push(annex_a_iop_error(
+                        "annex-a/msdo-required-for-iop",
+                        offset,
+                        format!(
+                            "Annex A Table A.4: interoperability point 2 with more than one \
+                             extended layer ({extended_layers}) requires an OBU_MSDO or an \
+                             activated global OBU_LAYER_CONFIGURATION_RECORD, but neither is \
+                             present in the coded video sequence"
+                        ),
+                    ));
+                }
+            }
+            // Row "2 N Y" (line 197): MSDO prohibited; LCR (local or activated global)
+            // required.
+            (false, true) => {
+                self.emit_msdo_prohibited(window, offset, report);
+                if !global_lcr && !window.local_lcr_present {
+                    report.push(annex_a_iop_error(
+                        "annex-a/lcr-required-for-iop",
+                        offset,
+                        "Annex A Table A.4: interoperability point 2 with more than one embedded \
+                         layer requires a local or activated global \
+                         OBU_LAYER_CONFIGURATION_RECORD, but none is present in the coded video \
+                         sequence"
+                            .to_owned(),
+                    ));
+                }
+            }
+            // Row "2 Y Y" (lines 199-200): (MSDO and local LCR) or an activated global LCR
+            // required.
+            (true, true) => {
+                let satisfied = (window.msdo_present && window.local_lcr_present) || global_lcr;
+                if !satisfied {
+                    report.push(annex_a_iop_error(
+                        "annex-a/lcr-required-for-iop",
+                        offset,
+                        "Annex A Table A.4: interoperability point 2 with more than one extended \
+                         layer and more than one embedded layer requires either an OBU_MSDO plus a \
+                         local OBU_LAYER_CONFIGURATION_RECORD, or an activated global \
+                         OBU_LAYER_CONFIGURATION_RECORD, but neither combination is present in the \
+                         coded video sequence"
+                            .to_owned(),
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Emits `annex-a/msdo-prohibited-for-iop` when an MSDO is present in a window whose
+    /// Table A.4 row prohibits one.
+    ///
+    /// This is the documented *defensive* arm. Under the Table A.3 "Number of Extended
+    /// Layers" definition ([`annex_a_extended_layers`], declared precedence), a present
+    /// OBU_MSDO declares `num_streams_minus_2 + 2 >= 2`, so `E = extended_layers > 1` is
+    /// always true when `msdo_present` is true. Every Table A.4 "MSDO Prohibited" row
+    /// requires `E` to be false (`E == 1`), so a caller reaching this method with `!E`
+    /// already has `!msdo_present`, and this body never fires in-band today. The genuine
+    /// violation the prohibition rows would catch — an MSDO declaring substreams that never
+    /// materialize as distinct extended layers — is the declared-vs-observed reconciliation
+    /// owned by the § 6.6 sub-stream change, not this presence window. The id stays emitted
+    /// (and registered) so a future declared-vs-observed model can reach it.
+    fn emit_msdo_prohibited(
+        &self,
+        window: &AnnexAIopWindow,
+        offset: ByteOffset,
+        report: &mut ValidationReport,
+    ) {
+        if window.msdo_present {
+            report.push(annex_a_iop_error(
+                "annex-a/msdo-prohibited-for-iop",
+                offset,
+                "Annex A Table A.4: the coded video sequence does not have more than one extended \
+                 layer, so an OBU_MSDO is prohibited for the activated profile's interoperability \
+                 point"
+                    .to_owned(),
+            ));
+        }
+    }
+
+    /// Emits `annex-a/lcr-required-for-iop` for the IOP1 `!E && M` "Required (Local)" row
+    /// (mirror line 191) when no local LCR is present in the window.
+    fn emit_iop1_local_lcr_required(
+        &self,
+        window: &AnnexAIopWindow,
+        offset: ByteOffset,
+        report: &mut ValidationReport,
+    ) {
+        if !window.local_lcr_present {
+            report.push(annex_a_iop_error(
+                "annex-a/lcr-required-for-iop",
+                offset,
+                "Annex A Table A.4: interoperability point 1 with more than one embedded layer \
+                 requires a local OBU_LAYER_CONFIGURATION_RECORD, but none is present in the coded \
+                 video sequence"
+                    .to_owned(),
+            ));
         }
     }
 
