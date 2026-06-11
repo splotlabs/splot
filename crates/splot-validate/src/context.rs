@@ -6070,6 +6070,24 @@ impl ValidatorContext {
         // fallback-guess staged header that no frame has loaded does not fire (§ 7.3.6
         // allows staged-but-unactivated headers).
         self.check_annex_a_value_space(xlayer, report);
+        // AV2 § 6.8.5 / § 6.8.8 / § 6.8.9: the activated LCR's PTL ceilings, rep-info
+        // equality, and dependency-map closure against the sequence header activated for
+        // this layer. Like the Annex A value-space check above, these run *before* the
+        // external-HLS early return: both operands are in-band-resolved. The activated
+        // header is the in-band one (`agreement_activation_for` → `active_general_for`,
+        // and `resolve_referenced_sequence_header` returns `Some` only for an in-band
+        // `HlsResolution::InBand` — an external sequence header never frame-confirms an
+        // xlayer), and the LCR association is the in-band `snapshot_lcr_association`
+        // (`ExternalHlsSet` declares no LCRs at all, so no external LCR can shift the
+        // § 6.4.1 resolution). They therefore stay locally decidable under any Provided
+        // mode (empty, OPS-only, or sequence-header-declaring). Each gates on a
+        // frame-confirmed activation (or the sole-in-band-header fallback), so a staged
+        // fallback guess does not fire. Contrast the unmodeled external dependency
+        // maps / SeqMaxMlayerCnt that force the OPS / sub-stream / IOP / MSDO agreement
+        // checks below the return — those are not in-band-resolved.
+        self.check_lcr_dependency_agreement(xlayer, report);
+        self.check_lcr_ptl_ceilings(xlayer, report);
+        self.check_lcr_rep_info_agreement(xlayer, report);
         if external_declares_sequence_header(options) {
             return;
         }
@@ -6096,16 +6114,6 @@ impl ValidatorContext {
         for (offset, ops_id, entries) in pending {
             self.check_ops_entries_against_active(offset, ops_id, &entries, options, report);
         }
-        self.check_lcr_dependency_agreement(xlayer, options, report);
-        // AV2 § 6.8.5 / § 6.8.8: the activated LCR's PTL ceilings and rep-info equality
-        // against the sequence header activated for this layer. Same association-snapshot
-        // pairing and frame-confirmed gate as the § 6.8.9 dependency check; the
-        // MSDO-precedes-activation arrival order is not relevant here (the inputs are the
-        // LCR association and the activated header, both re-evaluated on each activation).
-        // An LCR redefinition re-checks at the next activation via the content-fingerprinted
-        // dedup keys.
-        self.check_lcr_ptl_ceilings(xlayer, options, report);
-        self.check_lcr_rep_info_agreement(xlayer, options, report);
         // AV2 § 6.6: the activation-precedes-MSDO arrival order for the sub-stream
         // PTL-ceiling agreement check (the MSDO-precedes-activation order is covered by
         // the re-check loop in `observe_msdo`). It gates on the in-band MSDO state and a
@@ -7711,17 +7719,19 @@ impl ValidatorContext {
     fn check_lcr_dependency_agreement(
         &mut self,
         xlayer: ExtendedLayerId,
-        options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        // Stricter gate than the OPS checks: external HLS cannot declare LCRs, and
-        // per § 6.4.1 an externally-provided *local* LCR would resolve seq_lcr_id
-        // ahead of an in-band global record, so under any Provided mode the
-        // resolved record may not be the activated one — the same rationale as
-        // `check_seq_lcr_reference`'s lcr/global-xlayer-map-missing-xlayer gate.
-        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
-            return;
-        }
+        // No external-HLS gate (run regardless of Provided mode): both operands are
+        // in-band-resolved, so this is locally decidable. The activated header is the
+        // in-band one (`agreement_activation_for` → `active_general_for`; an external
+        // sequence header never frame-confirms an xlayer — `resolve_referenced_sequence_header`
+        // returns `Some` only for `HlsResolution::InBand`), and the LCR association is the
+        // in-band `snapshot_lcr_association` (`ExternalHlsSet` declares no LCRs at all, so
+        // the § 6.4.1 resolution cannot land on an unmodeled external LCR — unlike the
+        // *availability* concern `check_seq_lcr_reference`'s lcr/global-xlayer-map-missing-xlayer
+        // gate guards, which is about whether to flag an in-band reference as a violation,
+        // not about comparing two in-band-resolved operands). Matches the Annex A value-space
+        // precedent (codex finding 3393591655 / PR #46 finding B).
         let Some((seq_header_id, general)) = self.agreement_activation_for(xlayer) else {
             return;
         };
@@ -7820,21 +7830,14 @@ impl ValidatorContext {
     /// PTL info has nothing to check (absent PTL compares nothing), and unresolved
     /// references are owned by the existing § 7.3.8.3 availability diagnostics. The
     /// diagnostics anchor at the associated LCR OBU (its declared maxima are the
-    /// informative source). Suppressed when external HLS declares a sequence header
-    /// (an out-of-band header carries its own PTL values this validator does not model).
-    fn check_lcr_ptl_ceilings(
-        &mut self,
-        xlayer: ExtendedLayerId,
-        options: &ValidationOptions,
-        report: &mut ValidationReport,
-    ) {
-        // Same strict gate as check_lcr_dependency_agreement: external HLS cannot
-        // declare LCRs, and per § 6.4.1 a caller-provided *local* LCR would resolve
-        // seq_lcr_id ahead of an in-band record, so under any Provided mode the resolved
-        // association may not be the activated one.
-        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
-            return;
-        }
+    /// informative source). Runs regardless of external HLS: both the activated header
+    /// (always the in-band one for `xlayer`) and the LCR association (`ExternalHlsSet`
+    /// declares no LCRs) are in-band-resolved, so the comparison is locally decidable —
+    /// the same rationale as the Annex A value-space check.
+    fn check_lcr_ptl_ceilings(&mut self, xlayer: ExtendedLayerId, report: &mut ValidationReport) {
+        // No external-HLS gate; see check_lcr_dependency_agreement (both operands are
+        // in-band-resolved, so Provided mode cannot change the activated header or the
+        // associated LCR).
         let Some((seq_header_id, general)) = self.agreement_activation_for(xlayer) else {
             return;
         };
@@ -7945,13 +7948,11 @@ impl ValidatorContext {
     fn check_lcr_rep_info_agreement(
         &mut self,
         xlayer: ExtendedLayerId,
-        options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        // Same strict gate as check_lcr_dependency_agreement (see check_lcr_ptl_ceilings).
-        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
-            return;
-        }
+        // No external-HLS gate; see check_lcr_dependency_agreement (both operands are
+        // in-band-resolved, so Provided mode cannot change the activated header or the
+        // associated LCR).
         let Some((seq_header_id, general)) = self.agreement_activation_for(xlayer) else {
             return;
         };

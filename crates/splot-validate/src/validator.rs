@@ -8413,12 +8413,14 @@ mod tests {
     }
 
     #[test]
-    fn lcr_dependency_check_suppressed_under_external_hls_provided() {
+    fn lcr_dependency_check_fires_under_external_hls_provided() {
         use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
-        // Under any Provided mode an externally-provided local LCR (not modeled)
-        // could resolve seq_lcr_id ahead of the in-band record (§ 6.4.1), so the
-        // agreement check is suppressed even when the set declares nothing —
-        // mirroring the lcr/global-xlayer-map-missing-xlayer gate.
+        // The § 6.8.9 closure pairs the IN-BAND activated header's dependency maps against
+        // its IN-BAND association-time LCR snapshot — both in-band-resolved (an external
+        // sequence header never frame-confirms an xlayer; `ExternalHlsSet` declares no LCRs).
+        // So an empty Provided set introduces no operand that could shift the § 6.4.1
+        // resolution, and the in-band violation must still fire (aligned with the § 6.8.5 /
+        // § 6.8.8 ceilings; codex 3393591655 / PR #46 finding B).
         let mut data = temporal_delimiter_obu();
         data.extend(local_lcr_obu_with_embedded(0, 5, 0b10, &[0b1]));
         data.extend(annex_b_obu(
@@ -8430,9 +8432,9 @@ mod tests {
         };
         let report = Validator::new(false).validate_bytes_with_options(&data, &options);
         assert!(
-            !has_error(&report, "lcr/mlayer-dependency-missing")
-                && !has_error(&report, "lcr/tlayer-dependency-missing"),
-            "provided external HLS must suppress the LCR agreement check; report was: {report}"
+            has_error(&report, "lcr/mlayer-dependency-missing"),
+            "an empty Provided set must NOT suppress the in-band LCR dependency check; \
+             report was: {report}"
         );
     }
 
@@ -9044,7 +9046,12 @@ mod tests {
     }
 
     #[test]
-    fn lcr_ptl_suppressed_under_external_hls_provided() {
+    fn lcr_ptl_fires_under_external_hls_provided() {
+        // The § 6.8.5 ceiling pairs the IN-BAND activated header against its IN-BAND
+        // association-time LCR snapshot — locally decidable. `ExternalHlsSet` cannot
+        // declare LCRs and an external sequence header never frame-confirms an xlayer,
+        // so an empty Provided set (no external operand exists) must NOT suppress the
+        // in-band finding (codex 3393591655 / PR #46 finding B).
         use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
         let mut data = temporal_delimiter_obu();
         data.extend(local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1));
@@ -9052,7 +9059,7 @@ mod tests {
             seq_header_id: 0,
             seq_lcr_id: 5,
             profile: 0,
-            level: 8,
+            level: 8, // > lcr_max_level_idx 4
             tier: 0,
             max_mlayer_id: 0,
         }));
@@ -9061,8 +9068,39 @@ mod tests {
         };
         let report = Validator::new(false).validate_bytes_with_options(&data, &options);
         assert!(
-            !has_error(&report, "lcr/ptl-level-exceeds-max"),
-            "provided external HLS must suppress the PTL check; report was: {report}"
+            has_error(&report, "lcr/ptl-level-exceeds-max"),
+            "an empty Provided set must NOT suppress the in-band PTL ceiling check; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_ptl_fires_under_ops_only_external_hls_provided() {
+        // An OPS-only Provided set (an `ExternalHlsSet` declaring operating point sets but
+        // no sequence headers) still must not suppress the in-band § 6.8.5 ceiling: the OPS
+        // declaration cannot shift the in-band header activation or the in-band LCR
+        // association, so the violation is still locally decidable.
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1));
+        data.extend(seq_header_ptl_payload(SeqPtl {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            profile: 0,
+            level: 8, // > lcr_max_level_idx 4
+            tier: 0,
+            max_mlayer_id: 0,
+        }));
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_operating_point_set(0, 3),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            has_error(&report, "lcr/ptl-level-exceeds-max"),
+            "an OPS-only Provided set must NOT suppress the in-band PTL ceiling check; \
+             report was: {report}"
         );
     }
 
@@ -9541,14 +9579,17 @@ mod tests {
     }
 
     #[test]
-    fn lcr_rep_info_suppressed_under_external_hls_provided() {
+    fn lcr_rep_info_fires_under_external_hls_provided() {
+        // § 6.8.8 pairs the IN-BAND activated header against its IN-BAND association-time
+        // LCR snapshot; an empty Provided set introduces no external operand, so the
+        // in-band mismatch must still fire (codex 3393591655 / PR #46 finding B).
         use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
         let mut data = temporal_delimiter_obu();
         data.extend(local_lcr_obu_with_rep_info(0, 5, 1920, 8, None, None));
         data.extend(seq_header_rep_payload(SeqRep {
             seq_header_id: 0,
             seq_lcr_id: 5,
-            width_minus_1: 15,
+            width_minus_1: 15, // width 16 != lcr_max_pic_width 1920
             height_minus_1: 7,
             chroma_format_idc: 0,
             bit_depth_idc: 0,
@@ -9559,8 +9600,39 @@ mod tests {
         };
         let report = Validator::new(false).validate_bytes_with_options(&data, &options);
         assert!(
-            !has_error(&report, "lcr/rep-info-mismatch"),
-            "provided external HLS must suppress the rep-info check; report was: {report}"
+            has_error(&report, "lcr/rep-info-mismatch"),
+            "an empty Provided set must NOT suppress the in-band rep-info check; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_rep_info_fires_under_ops_only_external_hls_provided() {
+        // An OPS-only Provided set still must not suppress the in-band § 6.8.8 mismatch:
+        // the OPS declaration cannot change the in-band header activation or the in-band
+        // LCR association the comparison reads.
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_rep_info(0, 5, 1920, 8, None, None));
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15, // width 16 != lcr_max_pic_width 1920
+            height_minus_1: 7,
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: None,
+        }));
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_operating_point_set(0, 3),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            has_error(&report, "lcr/rep-info-mismatch"),
+            "an OPS-only Provided set must NOT suppress the in-band rep-info check; \
+             report was: {report}"
         );
     }
 
