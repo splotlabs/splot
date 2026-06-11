@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "a0916971746a41ac11f8c718b155a327c2e97b36",
+  "audited_commit": "1f4888004d508ee070ef3a965ba519f812800115",
   "outcome": "success",
   "files": [
     {
@@ -757,7 +757,7 @@
     },
     {
       "path": "crates/splot-validate/src/checks/mod.rs",
-      "sha256": "0a94a542efad4388730793f2fcf179ed3478a5b89cc6d7f86fd86544b59e6ceb",
+      "sha256": "cd8a5356c41972c22ff6d40d81ea90f508ec47ef63fd76ce4fd21a1ff6110e71",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.3-RESERVED-OBU",
@@ -769,7 +769,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "2ae4fbf69c411f928ae76815dabfd7339dd6fed377e0f032e9cedf3ab43b1db6",
+      "sha256": "0856b06f2cc16da64fb0e3463e93f2178d47042dc03b0ab010ff1ca613850761",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -834,7 +834,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "122a3867422ce61f02fa93606c05ac66eeb41eb82d245bb107b6814806235672",
+      "sha256": "9ce6cd5f49c01233df9e8af77a4050b4b1123638cf6e6e0f641338d83ecc9bd3",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1066,7 +1066,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "23f860868502d8aaaadfdd69a0d645cf8dcbdb31be707eb3da842a84698f06ad",
+      "sha256": "919939fc88b69ca89025a499fadc44829b8fc2a6e0d6362a5b3c68ae71fd1efc",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1356,7 +1356,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "faf21fa1520fae1c07a42c34c06c73f5ad4568689884051143c1387a618a0963",
+      "sha256": "e1f7207c311470605cde366e6b08dffb5ec4688c6ed5b27ad9409f8bc96bb8b8",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-7.3.2-CMVS-BOUNDARIES",
@@ -2868,7 +2868,7 @@
     },
     {
       "path": "openspec/changes/archive/2026-06-11-metadata-residual-local-semantics/specs/validator/spec.md",
-      "sha256": "432ff6b9c29dd8f154c9df3f863f3aebd20c715467bca4c58dd0e4415726153e",
+      "sha256": "8b908aacfc187f52456271f95e476ac03111f41d8c9a62f6f70a4da223397f0f",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.17.7-METADATA-TIMECODE"
@@ -3107,7 +3107,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "c3b1eeeda470715c34760dd32eef614afd9b0c31ed6562b9756b51185ae8025d",
+      "sha256": "c2e0f3a67f2dfdc9cda3e5be829afc3af45e9c4e23f341d58343fa61ea2848ef",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
