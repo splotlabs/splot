@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "e6d81f67a57cad78f231f69deab7fffa3c4fe981",
+  "audited_commit": "4647c476aac6120ac5b5e8ecb652e5c859dcc390",
   "outcome": "success",
   "files": [
     {
@@ -769,7 +769,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "6b1232cdb2d7c7e396c0c992c37c65842ba5e4e04c2cd21159c9da22d3aa998f",
+      "sha256": "97940bc876cc1675e7fd0853c0ca962ecf436a93503c74487d3524a03fbc3687",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -833,7 +833,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "0713e5817501b1582dc81e6ae51bdc0c2c7a23834b18092574efb9662cfbff6e",
+      "sha256": "f2c81cdab6131efd83927bbb10f84857bc2cd6d898edcd76a7539a8100576315",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -2821,6 +2821,35 @@
       "feature_ids": [
         "AV2-A-LEVELS-TIERS",
         "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-msdo-substream-constraint-checks/proposal.md",
+      "sha256": "92ab9df65672caf40fec42f8b588cf33a37f342248dad3ccd55f328a56854170",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.6-MSDO",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-A-LEVELS-TIERS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-msdo-substream-constraint-checks/specs/validator/spec.md",
+      "sha256": "96e26cd3784e3b4ca29f7007c0e73362f1149dd1d35dbbaec64353942399785f",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.6-MSDO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-msdo-substream-constraint-checks/tasks.md",
+      "sha256": "f75b6ee187efe09bfa00d08c6dacf686432d74bc8360eee0d5bef53aaad484af",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.6-MSDO"
       ],
       "outcome": "success"
     },
