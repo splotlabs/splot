@@ -9876,6 +9876,20 @@ mod tests {
         data
     }
 
+    /// [`td_and_annex_a_seq`] plus a minimal CLK frame (xlayer 0) that references
+    /// `o.seq_id`, *frame-confirming* the header's activation (§ 5.18.2
+    /// load_sequence_header) without driving the frame-core parse. The Annex A
+    /// *value-space* checks fire only for a frame-confirmed activation (a staged
+    /// OBU-order fallback is a guess that defers, § 7.3.6), so these checks need the
+    /// confirming frame; the static *level-limit* checks instead use the fuller
+    /// [`annex_a_frame_obu`], which both confirms and parses the frame core.
+    fn td_seq_and_confirming_frame(o: AnnexASeq) -> Vec<u8> {
+        let seq_id = o.seq_id;
+        let mut data = td_and_annex_a_seq(o);
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, seq_id)); // CLK xlayer 0
+        data
+    }
+
     /// Appends the §5.4 child configs for a non-single-picture sequence header with
     /// every tool flag cleared, gating the chroma-only reads on `monochrome` exactly as
     /// the parser does, then the §5.2.1 payload tail.
@@ -10056,7 +10070,7 @@ mod tests {
     #[test]
     fn annex_a_flags_reserved_profile() {
         // seq_profile_idc 5 is in the reserved range 5-30 (Table A.1).
-        let data = td_and_annex_a_seq(AnnexASeq {
+        let data = td_seq_and_confirming_frame(AnnexASeq {
             profile_idc: 5,
             ..AnnexASeq::base()
         });
@@ -10073,7 +10087,7 @@ mod tests {
     fn annex_a_accepts_profile_4_and_30_boundary() {
         // Profile 4 is the last defined profile (not reserved); profile 30 is the last
         // reserved value, profile 31 is Configurable (not reserved).
-        let ok = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
+        let ok = Validator::new(false).validate_bytes(&td_seq_and_confirming_frame(AnnexASeq {
             profile_idc: 4,
             chroma_format_idc: 0, // 4:2:0 is allowed under profile 4
             ..AnnexASeq::base()
@@ -10082,7 +10096,7 @@ mod tests {
             !ok.errors().any(|d| d.rule_id == "annex-a/profile-reserved"),
             "profile 4 is defined, not reserved; report was: {ok}"
         );
-        let bad = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
+        let bad = Validator::new(false).validate_bytes(&td_seq_and_confirming_frame(AnnexASeq {
             profile_idc: 30,
             ..AnnexASeq::base()
         }));
@@ -10097,7 +10111,7 @@ mod tests {
     fn annex_a_flags_chroma_format_mismatch_under_profile() {
         // Profile 0 allows only CHROMA_FORMAT_400 / CHROMA_FORMAT_420; chroma_format_idc
         // 3 (CHROMA_FORMAT_422) is outside its set (Table A.1).
-        let data = td_and_annex_a_seq(AnnexASeq {
+        let data = td_seq_and_confirming_frame(AnnexASeq {
             profile_idc: 0,
             chroma_format_idc: 3, // CHROMA_FORMAT_422
             ..AnnexASeq::base()
@@ -10115,7 +10129,7 @@ mod tests {
     fn annex_a_profile_3_allows_422_but_not_444() {
         // Profile 3 (Main_422) adds CHROMA_FORMAT_422 (idc 3) but not CHROMA_FORMAT_444
         // (idc 2) (Table A.1).
-        let ok = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
+        let ok = Validator::new(false).validate_bytes(&td_seq_and_confirming_frame(AnnexASeq {
             profile_idc: 3,
             chroma_format_idc: 3, // CHROMA_FORMAT_422
             ..AnnexASeq::base()
@@ -10125,7 +10139,7 @@ mod tests {
                 .any(|d| d.rule_id == "annex-a/profile-chroma-format-mismatch"),
             "profile 3 allows 4:2:2; report was: {ok}"
         );
-        let bad = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
+        let bad = Validator::new(false).validate_bytes(&td_seq_and_confirming_frame(AnnexASeq {
             profile_idc: 3,
             chroma_format_idc: 2, // CHROMA_FORMAT_444
             ..AnnexASeq::base()
@@ -10141,7 +10155,7 @@ mod tests {
     fn annex_a_profile_4_allows_444_but_not_422() {
         // Profile 4 (Main_444) adds CHROMA_FORMAT_444 (idc 2) but not CHROMA_FORMAT_422
         // (idc 3) (Table A.1).
-        let ok = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
+        let ok = Validator::new(false).validate_bytes(&td_seq_and_confirming_frame(AnnexASeq {
             profile_idc: 4,
             chroma_format_idc: 2, // CHROMA_FORMAT_444
             ..AnnexASeq::base()
@@ -10151,7 +10165,7 @@ mod tests {
                 .any(|d| d.rule_id == "annex-a/profile-chroma-format-mismatch"),
             "profile 4 allows 4:4:4; report was: {ok}"
         );
-        let bad = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
+        let bad = Validator::new(false).validate_bytes(&td_seq_and_confirming_frame(AnnexASeq {
             profile_idc: 4,
             chroma_format_idc: 3, // CHROMA_FORMAT_422
             ..AnnexASeq::base()
@@ -10167,7 +10181,7 @@ mod tests {
     fn annex_a_configurable_profile_is_unconstrained() {
         // Profile 31 (Configurable) leaves chroma/bit-depth unconstrained (Table A.1
         // dashes): a 4:2:2 sequence under it must not be flagged, and 31 is not reserved.
-        let data = td_and_annex_a_seq(AnnexASeq {
+        let data = td_seq_and_confirming_frame(AnnexASeq {
             profile_idc: 31,
             chroma_format_idc: 3, // CHROMA_FORMAT_422
             ..AnnexASeq::base()
@@ -10186,7 +10200,7 @@ mod tests {
     #[test]
     fn annex_a_flags_reserved_level() {
         // seq_level_idx 25 is in the reserved range 22-30 (Table A.7).
-        let data = td_and_annex_a_seq(AnnexASeq {
+        let data = td_seq_and_confirming_frame(AnnexASeq {
             level_idx: 25,
             ..AnnexASeq::base()
         });
@@ -10207,20 +10221,23 @@ mod tests {
         // reserved one re-runs the check and flags it — rather than being suppressed by
         // the first (clean) activation's key.
         let mut data = temporal_delimiter_obu();
-        // First activation: seq_header_id 0 at a defined level (0 == 2.0) — clean.
+        // First activation: seq_header_id 0 at a defined level (0 == 2.0) — clean —
+        // frame-confirmed by a CLK that references it.
         data.extend(annex_a_seq_obu(AnnexASeq {
             seq_id: 0,
             level_idx: 0,
             ..AnnexASeq::base()
         }));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // confirm clean activation
         // Redefinition of the SAME seq_header_id 0 (still active for xlayer 0) at a
-        // reserved level (25, in 22-30): re-activates and must re-run the value-space
-        // check.
+        // reserved level (25, in 22-30), re-confirmed by another CLK: re-activates and
+        // must re-run the value-space check (the dedup key's fingerprint changed).
         data.extend(annex_a_seq_obu(AnnexASeq {
             seq_id: 0,
             level_idx: 25,
             ..AnnexASeq::base()
         }));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // confirm redefinition
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             report.errors().any(|d| {
@@ -10232,14 +10249,163 @@ mod tests {
     }
 
     #[test]
+    fn annex_a_value_space_deferred_until_a_frame_confirms_a_staged_header() {
+        // § 7.3.6 allows staging multiple sequence headers before any frame activates
+        // one. With two distinct staged headers and no frame, the OBU-order first-seen
+        // fallback for xlayer 0 is a guess a later frame can contradict — so the Annex A
+        // value-space check must NOT fire for the staged reserved-level header (a
+        // value-space error against the guess could not be retracted). Once a frame
+        // confirms the reserved-level header, the deferred check runs and flags it.
+        let mut staged = temporal_delimiter_obu();
+        // The reserved-level header (id 0, level 25) is seen FIRST, so the OBU-order
+        // fallback makes it the active guess for xlayer 0 — but a second staged header
+        // (id 1, clean) means the activation is NOT yet decidable (a later frame could
+        // reference id 1 instead). The reserved-level value-space error must therefore be
+        // deferred, not fired against the guess.
+        staged.extend(annex_a_seq_obu(AnnexASeq {
+            seq_id: 0,
+            level_idx: 25, // reserved 22-30
+            ..AnnexASeq::base()
+        }));
+        staged.extend(annex_a_seq_obu(AnnexASeq {
+            seq_id: 1,
+            level_idx: 0, // clean — defeats the sole-header decidability shortcut
+            ..AnnexASeq::base()
+        }));
+        let staged_report = Validator::new(false).validate_bytes(&staged);
+        assert!(
+            !staged_report
+                .errors()
+                .any(|d| d.rule_id.starts_with("annex-a/")),
+            "two headers staged before any frame must not fire any Annex A value-space \
+             diagnostic against the OBU-order fallback guess; report was: {staged_report}"
+        );
+
+        // Now a CLK frame on xlayer 0 references the reserved-level id 0, confirming its
+        // activation: the deferred check runs and flags the reserved level.
+        let mut confirmed = staged.clone();
+        confirmed.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0));
+        let confirmed_report = Validator::new(false).validate_bytes(&confirmed);
+        assert!(
+            confirmed_report.errors().any(|d| {
+                d.rule_id == "annex-a/level-reserved" && d.spec_section.as_deref() == Some("A.4")
+            }),
+            "once a frame confirms the reserved-level header, the deferred Annex A check \
+             must fire; report was: {confirmed_report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_value_space_fires_for_in_band_header_under_external_hls() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // External HLS declares an unrelated header (id 5, < MAX_SEQ_NUM). The activating
+        // frame still resolves to an IN-BAND header (id 0) whose seq_level_idx is reserved
+        // — a locally decidable Annex A value-space fact that an external declaration
+        // cannot shadow. The check must fire even under Provided mode (unlike the
+        // agreement checks, which a Provided external header genuinely suppresses).
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_a_seq_obu(AnnexASeq {
+            seq_id: 0,
+            level_idx: 25, // reserved 22-30
+            ..AnnexASeq::base()
+        }));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK ref in-band seq 0
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(5),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "annex-a/level-reserved" && d.spec_section.as_deref() == Some("A.4")
+            }),
+            "an in-band reserved level activated by a frame must be flagged even when \
+             external HLS declares an unrelated header; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_value_space_silent_for_external_only_activation() {
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        // External HLS declares header id 5 and a frame references it via cur_mfh_id /
+        // direct seq ref, but no in-band sequence header exists. The active header is
+        // out-of-band content this validator does not model, so no Annex A value-space
+        // fact is decidable — nothing must fire (unknown content never produces a
+        // value-space diagnostic).
+        let mut data = temporal_delimiter_obu();
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 5)); // ref external-only seq 5
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(5),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !report.errors().any(|d| d.rule_id.starts_with("annex-a/")),
+            "an external-only activation with no in-band header must not produce any \
+             Annex A value-space diagnostic; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_value_space_redefinition_rechecks_all_layers_using_the_id() {
+        // Header id 0 is active for xlayer 0 (CLK frame) and xlayer 1 (a layer frame),
+        // both referencing seq 0 at a clean level. A later same-id redefinition of seq 0
+        // (still active for both layers) flips seq_level_idx to a reserved value: the
+        // Annex A value-space recheck must cover EVERY extended layer the id is active
+        // for, not only the redefinition-activating layer. The diagnostic is anchored at
+        // the (shared) defining sequence-header OBU and deduped per
+        // (xlayer, seq_header_id, cvs_epoch, fingerprint), so it fires once per affected
+        // layer key.
+        // TU 1: clean activation of seq 0, frame-confirmed for xlayer 0 then xlayer 1
+        // (ascending obu_xlayer_id order, § 7.3.7). `frame_confirmed_xlayers` is monotonic,
+        // so both stay confirmed afterward.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_a_seq_obu(AnnexASeq {
+            seq_id: 0,
+            level_idx: 0,
+            ..AnnexASeq::base()
+        }));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 ref seq 0
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 0)); // CLK xlayer 1 ref seq 0
+        // TU 2: same-id redefinition of seq 0 flipping the level to a reserved value (25),
+        // re-confirmed by an xlayer-0 CLK. seq 0 is still active for BOTH xlayer 0 and
+        // xlayer 1, so the value-space-fingerprint-change recheck must cover both even
+        // though only xlayer 0 re-confirms here.
+        data.extend(temporal_delimiter_obu());
+        data.extend(annex_a_seq_obu(AnnexASeq {
+            seq_id: 0,
+            level_idx: 25,
+            ..AnnexASeq::base()
+        }));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // re-activate seq 0 (xlayer 0)
+        let report = Validator::new(false).validate_bytes(&data);
+        let reserved_level_count = report
+            .errors()
+            .filter(|d| {
+                d.rule_id == "annex-a/level-reserved" && d.spec_section.as_deref() == Some("A.4")
+            })
+            .count();
+        assert!(
+            reserved_level_count >= 2,
+            "a redefinition flipping the level to reserved must re-run the Annex A check \
+             for every extended layer (0 and 1) the id is active for, firing once per \
+             affected layer key; got {reserved_level_count} reserved-level diagnostics. \
+             report was: {report}"
+        );
+    }
+
+    #[test]
     fn annex_a_accepts_level_21_and_31() {
         // LevelIdx 21 (8.3) is the last defined level; 31 is Maximum parameters (valid);
         // 22 is the first reserved value.
         for level_idx in [21u32, 31] {
-            let report = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
-                level_idx,
-                ..AnnexASeq::base()
-            }));
+            let report =
+                Validator::new(false).validate_bytes(&td_seq_and_confirming_frame(AnnexASeq {
+                    level_idx,
+                    ..AnnexASeq::base()
+                }));
             assert!(
                 !report
                     .errors()
@@ -10247,7 +10413,7 @@ mod tests {
                 "level {level_idx} is valid; report was: {report}"
             );
         }
-        let bad = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
+        let bad = Validator::new(false).validate_bytes(&td_seq_and_confirming_frame(AnnexASeq {
             level_idx: 22,
             ..AnnexASeq::base()
         }));

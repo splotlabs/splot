@@ -4552,6 +4552,20 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
+        // Annex A.2 / Annex A.4 profile and level/tier value-space facts are intrinsic
+        // to the in-band sequence header just activated for this layer, locally
+        // decidable regardless of any external HLS the caller declares (an externally
+        // activated header would carry its own out-of-band values, but the active header
+        // recorded here is always the in-band one resolved by the § 5.18.2
+        // load_sequence_header path or the OBU-order fallback). Run it *before* the
+        // external-HLS early return below — which correctly suppresses only the
+        // agreement checks that need full HLS knowledge (unmodeled external dependency
+        // maps / SeqMaxMlayerCnt) — so a Provided-mode stream whose activating frame
+        // resolved an in-band reserved level/profile is still flagged. The check itself
+        // gates on a *frame-confirmed* activation (`frame_confirmed_xlayers`), so a
+        // fallback-guess staged header that no frame has loaded does not fire (§ 7.3.6
+        // allows staged-but-unactivated headers).
+        self.check_annex_a_value_space(xlayer, report);
         if external_declares_sequence_header(options) {
             return;
         }
@@ -4579,12 +4593,6 @@ impl ValidatorContext {
             self.check_ops_entries_against_active(offset, ops_id, &entries, options, report);
         }
         self.check_lcr_dependency_agreement(xlayer, options, report);
-        // Annex A.2 / Annex A.4 profile and level/tier value-space checks on the
-        // header just activated for this extended layer. Intrinsic to the header (no
-        // external-HLS shadowing concern beyond the already-applied
-        // external_declares_sequence_header gate above), emitted once per activated
-        // header per coded video sequence.
-        self.check_annex_a_value_space(xlayer, report);
     }
 
     /// Emits the Annex A.2 / Annex A.4 profile and level/tier *value-space* diagnostics
@@ -4621,11 +4629,34 @@ impl ValidatorContext {
     ///
     /// Anchored at the defining sequence-header OBU ([`Self::sequence_header_offsets`]),
     /// not the activating frame OBU.
+    ///
+    /// Emitted only for a *frame-confirmed* in-band activation (`frame_confirmed_xlayers`,
+    /// the § 5.18.2 `load_sequence_header` path): a staged-but-unactivated header that no
+    /// frame has loaded does not fire (§ 7.3.6 permits staging several headers, so the
+    /// OBU-order fallback — even when momentarily the sole candidate — is a guess a later
+    /// frame can contradict). Unlike the agreement checks, this runs even when the caller
+    /// declares external HLS, because the active header recorded for `xlayer` is always
+    /// the in-band one and its value-space facts are locally decidable regardless of any
+    /// external sequence header (see [`Self::on_sequence_activation`]).
     fn check_annex_a_value_space(
         &mut self,
         xlayer: ExtendedLayerId,
         report: &mut ValidationReport,
     ) {
+        // Emit only for a *frame-confirmed* activation — one a parsed frame-header
+        // reference loaded (§ 5.18.2 load_sequence_header). The OBU-order first-seen
+        // fallback is a guess (§ 7.3.6 permits staging headers before any frame
+        // activates one): even while a staged header is momentarily the sole in-band
+        // candidate it can be superseded by a later staged header that a frame then
+        // references instead, and a value-space error already emitted against the guess
+        // could not be retracted. So, unlike the § 6.10.7 / § 6.8.9 agreement checks
+        // (whose `agreement_activation_for` also admits the sole-header shortcut because
+        // they emit nothing without an OPS/LCR present), the Annex A value-space check —
+        // which fires unconditionally on a reserved/mismatched field — defers entirely to
+        // frame-driven activation and re-enters here the moment the frame confirms it.
+        if !self.frame_confirmed_xlayers.contains(&xlayer) {
+            return;
+        }
         let Some((seq_header_id, general)) = self.active_general_for(xlayer) else {
             return;
         };
@@ -5666,25 +5697,47 @@ impl ValidatorContext {
         // observed header's own layer is re-run whenever this header is its
         // active one (covering the first sighting and the repeat-after-LCR case;
         // the dedup keys keep re-runs idempotent).
-        let agreement_inputs_changed = previous_header.is_some_and(|previous| {
+        let agreement_inputs_changed = previous_header.as_ref().is_some_and(|previous| {
             let old = previous.general;
             old.mlayer_dependency_map != new_general.mlayer_dependency_map
                 || old.tlayer_dependency_map != new_general.tlayer_dependency_map
                 || old.seq_lcr_id != new_general.seq_lcr_id
         });
+        // § 7.3.6 also permits a same-`seq_header_id` redefinition that changes only the
+        // Annex A value-space fields (profile / chroma / bit-depth / tier / level). Those
+        // are not agreement inputs, so they do not appear in `agreement_inputs_changed`,
+        // yet they are active for *every* extended layer that references this id — a
+        // redefinition flipping the level to a reserved value must re-run the Annex A
+        // value-space check for all of them, not just the activating layer. Detect the
+        // value-space fingerprint change separately and fold the same active-layer set
+        // into the recheck below (the fingerprint in the
+        // `emitted_annex_a_value_space` dedup key keeps the re-runs idempotent and only
+        // re-emits when a field actually changed).
+        let annex_a_value_space_changed = previous_header.as_ref().is_some_and(|previous| {
+            annex_a_value_space_fingerprint(&previous.general)
+                != annex_a_value_space_fingerprint(&new_general)
+        });
         let mut layers_to_check = BTreeSet::new();
         if self.active_sequence_by_xlayer.get(&xlayer) == Some(&seq_header_id) {
             layers_to_check.insert(xlayer);
         }
-        if agreement_inputs_changed {
-            self.emitted_dependency_findings
-                .retain(|key| key.seq_header_id() != seq_header_id);
+        if agreement_inputs_changed || annex_a_value_space_changed {
+            // Re-run every extended layer this id is active for: the agreement checks
+            // (when their inputs changed) and/or the Annex A value-space check (when its
+            // fingerprint changed) must see the redefinition on all referencing layers.
             layers_to_check.extend(
                 self.active_sequence_by_xlayer
                     .iter()
                     .filter(|(_, id)| **id == seq_header_id)
                     .map(|(layer, _)| *layer),
             );
+        }
+        if agreement_inputs_changed {
+            // Invalidate the agreement-check dedup keys for this id so the re-run above
+            // re-emits (the Annex A dedup key already carries the value-space fingerprint
+            // and re-emits on its own when a checked field changed).
+            self.emitted_dependency_findings
+                .retain(|key| key.seq_header_id() != seq_header_id);
         }
         // AV2 § 6.4.1: a distinct-obu_mlayer_id count accumulated before any active
         // sequence header for an extended layer is only checkable once a header activates
@@ -6937,6 +6990,17 @@ fn check_ops_level_tier_value_space(
     ops: &OperatingPointSet,
     report: &mut ValidationReport,
 ) {
+    // TODO(spec: AV2-A-LEVELS-TIERS): this checks only the OPS-carried *value space*
+    // (reserved ops_level_idx / high-tier-below-4.0). § 6.10.4
+    // (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-10-4) additionally
+    // requires the operating point's bitstream to satisfy the Annex A.4 level limits
+    // (frame size, tile geometry) with seq_level_idx set to ops_level_idx — i.e. the
+    // static level-limit checks now run only against the activated seq_level_idx must
+    // *also* run against each OPS-advertised ops_level_idx. That needs an
+    // operating-point-to-frame mapping (which frames belong to which operating point)
+    // the validator does not model yet, so the planned `annex-a/frame-exceeds-ops-level`
+    // diagnostic is backlogged (see the Planned diagnostics backlog in
+    // docs/VALIDATOR-ROADMAP.md, blocked on operating-point frame mapping).
     for payload in &ops.payloads {
         for entry in &payload.xlayer_entries {
             let Some(ptl) = entry.ptl_info.as_ref() else {
