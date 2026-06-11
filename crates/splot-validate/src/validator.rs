@@ -6672,6 +6672,51 @@ mod tests {
     }
 
     #[test]
+    fn metadata_timecode_n_frames_rap_resent_identical_ci_before_timecode_reports_once() {
+        // Round-7 finding 2 (RAP re-pair must not duplicate an eagerly-emitted pairing).
+        // A pre-RAP CI at TU0 establishes a low-rate timing T (maxPicPerSecond 1). The RAP
+        // temporal unit holds, in decoding order, the SAME CI re-sent identical FIRST, then
+        // a timecode that violates T (n_frames 5), then the CLK. Because the re-sent CI is
+        // recorded BEFORE the timecode, the eager timecode-time n_frames check pairs against
+        // that same-temporal-unit CI and emits the diagnostic right away (defer_or_emit
+        // emits eagerly within one temporal unit). The CLK's repair hook re-pairs the
+        // suppressed re-send — but this same-RAP-TU observation was already paired-and-
+        // emitted, so it must be skipped: exactly ONE diagnostic. Pre-fix the repair re-
+        // paired every post-epoch observation, emitting the violation TWICE. (Contrast
+        // `metadata_timecode_n_frames_rap_resent_identical_ci_repairs`, where the timecode
+        // precedes the re-sent CI: there the eager pairing DEFERS against the stale pre-RAP
+        // CI and is dropped at the RAP, so the repair is the sole source of the one
+        // diagnostic and must still fire.)
+        let low_rate = CiTiming {
+            display_tick: 1000,
+            time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
+            equal_picture_interval: true,
+            num_ticks_minus_1: 1,
+        };
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        // TU0: the pre-RAP CI establishes the low-rate timing.
+        data.extend(content_interpretation_obu(0, 0, Some(low_rate)));
+        data.extend(temporal_delimiter_obu()); // -> TU1, the RAP temporal unit
+        // TU1: the SAME CI re-sent identical FIRST -> timecode (n_frames 5 >=
+        // maxPicPerSecond 1) -> CLK (§ 7.3.8.11 RAP).
+        data.extend(content_interpretation_obu(0, 0, Some(low_rate)));
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 31),
+            &timecode_flagged_payload(5, Some(0), Some(0), Some(0)),
+        ));
+        data.extend(annex_b_obu(0x10, &[])); // OBU_CLOSED_LOOP_KEY, xlayer 0 -> RAP
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "metadata/timecode-n-frames-exceeds-rate"),
+            1,
+            "an identical CI re-sent BEFORE the violating timecode in the RAP temporal unit \
+             is paired-and-emitted eagerly; the CLK repair hook must not re-pair it and \
+             duplicate the diagnostic; report was: {report}"
+        );
+    }
+
+    #[test]
     fn metadata_timecode_n_frames_olk_rap_resent_identical_ci_repairs() {
         // The OLK analogue of `metadata_timecode_n_frames_rap_resent_identical_ci_repairs`.
         // An OLK is also a § 7.3.8.11 random access point whose observe_ci_rap advances
@@ -6920,6 +6965,72 @@ mod tests {
             }),
             "a CLK for the TARGETED extended layer 1 must fire the deferred inference \
              diagnostic; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_timecode_inference_chain_global_layer_values_survives_other_layer_clk() {
+        // Round-7 finding 1 (target-aware inference-CHAIN pruning). A global LAYER_VALUES
+        // timecode targeting extended layer 1 carries a PRESENT seconds_value in TU0 — the
+        // inference chain SEED. A CLK in TU1 then prunes the inference chain
+        // (prune_timecode_scope) BEFORE the omitting timecode in TU2 reads it. In TU2 a
+        // same-targeted global timecode OMITS seconds_value. Whether the seed survives the
+        // TU1 CLK depends on the CLK's extended layer:
+        //
+        //   - CLK for extended layer 0 (negative): does NOT restart extended layer 1's
+        //     coded video sequence, so the layer-1-targeted seed survives the chain prune.
+        //     The TU2 omission is seeded by the earlier-temporal-unit present value — the
+        //     diagnostic is deferred pending TU2's CVS scope and, with no CLK closing TU2,
+        //     dropped silently. NO inference diagnostic. Pre-fix the chain entry, carried on
+        //     a global (obu_xlayer_id 31) OBU, was pruned at ANY CLK (the carrying-scope-
+        //     only `is_global()` predicate), so the seed vanished and the TU2 omission fired
+        //     `inferred-without-previous` for a missing seed.
+        //   - CLK for extended layer 1 (control): restarts extended layer 1's coded video
+        //     sequence, detaching the earlier-temporal-unit seed from the new sequence. The
+        //     TU2 omission has no in-CVS previous present value -> the diagnostic fires
+        //     eagerly (the new-CVS/no-previous behavior), confirming the chain reset is
+        //     still target-aware for the layer it DOES target.
+        let build = |clk_xlayer: u8| {
+            let mut data = temporal_delimiter_obu();
+            data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+            // TU0: global LAYER_VALUES timecode targeting extended layer 1 (xlayer_bit 1),
+            // embedded layer 0 (mlayer_map bit 0), with a PRESENT seconds_value (the seed).
+            let seed = timecode_unit_bits(0, Some(0), Some(0), Some(0));
+            data.extend(global_timecode_group_layer_values_obu(1, 0x01, &seed));
+            data.extend(temporal_delimiter_obu()); // -> TU1
+            // TU1: a CLK for `clk_xlayer` prunes the inference chain BEFORE the omitting
+            // timecode reads it (the chain reset must be target-aware).
+            data.extend(annex_b_obu_with_header(
+                &layer_obu_header(4, 0, 0, clk_xlayer),
+                &[],
+            ));
+            data.extend(temporal_delimiter_obu()); // -> TU2
+            // TU2: the same-targeted global timecode OMITS seconds_value (would be seeded
+            // by TU0's preserved present value when the chain survived).
+            let omitting = timecode_unit_bits(0, None, None, None);
+            data.extend(global_timecode_group_layer_values_obu(1, 0x01, &omitting));
+            data
+        };
+        // Negative: a CLK for extended layer 0 does not restart extended layer 1's coded
+        // video sequence, so the layer-1-targeted chain seed survives -> no diagnostic.
+        let report = Validator::new(false).validate_bytes(&build(0));
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "metadata/timecode-inferred-without-previous"),
+            "a CLK for extended layer 0 must not prune a global LAYER_VALUES inference \
+             chain targeting extended layer 1; report was: {report}"
+        );
+        // Control: a CLK for extended layer 1 restarts that layer's coded video sequence,
+        // detaching the earlier-temporal-unit seed -> the TU2 omission fires.
+        let report = Validator::new(false).validate_bytes(&build(1));
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "metadata/timecode-inferred-without-previous"
+                    && d.message.contains("seconds_value")
+            }),
+            "a CLK for the TARGETED extended layer 1 must reset the inference chain so the \
+             TU2 omission has no previous present value; report was: {report}"
         );
     }
 
