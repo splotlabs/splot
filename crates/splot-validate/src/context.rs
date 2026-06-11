@@ -353,6 +353,26 @@ pub(crate) struct ValidatorContext {
     /// the entries for its extended layer at the boundary so a new CVS re-establishes
     /// its own first-picture state.
     embedded_layer_first_picture_seen: BTreeMap<(ExtendedLayerId, EmbeddedLayerId), u64>,
+    /// Per extended layer, the § 7.3.6 "content interpretation present in any CELU shall also
+    /// be present in the first CELU of the sequence" PRESENCE state (mirror lines 560-562,
+    /// `07-decoding-process.md#s-7-3-6`). For each extended layer it records the embedded
+    /// layers whose CI was observed in the FIRST coded extended layer unit of the current
+    /// coded video sequence (the CELU in the CVS's first temporal unit, § 7.3.6) and dedups
+    /// the diagnostic per embedded layer. A CI in a LATER CELU of the same CVS for an embedded
+    /// layer the first CELU lacked fires `celu/content-interpretation-not-in-first-celu`. Reset
+    /// per coded video sequence in [`Self::start_cvs_for_xlayer`]. The contents-identity half
+    /// of the same sentence is owned by `content-interpretation/repeated-ci-not-identical`
+    /// (§ 6.14); this state owns only the presence half. See [`CiFirstCeluState`].
+    ci_first_celu: BTreeMap<ExtendedLayerId, CiFirstCeluState>,
+    /// The `(xlayer, mlayer)` content-interpretation OBUs observed in the CURRENT temporal
+    /// unit, each with the byte offset of its first appearance (the diagnostic anchor). Cleared
+    /// at every temporal-unit boundary. Resolved against the per-CVS [`Self::ci_first_celu`]
+    /// state at the boundary (and at the end of the bitstream): the whole temporal unit
+    /// containing a CLK belongs to the new coded video sequence (§ 7.3.6), so a CI's CELU
+    /// membership is final only once the temporal unit (with any CLK) is complete — the
+    /// presence judgment is therefore deferred to the boundary rather than fired eagerly at
+    /// CI-observation time (round-6 F3). See [`Self::resolve_ci_first_celu_for_tu`].
+    ci_observed_in_tu: BTreeMap<(ExtendedLayerId, EmbeddedLayerId), ByteOffset>,
 }
 
 /// One in-band global layer configuration record's § 6.8.2 agreement fields (AV2
@@ -1847,6 +1867,42 @@ struct ContentInterpretationRecord {
     /// whether this record's latest appearance had its timecode n_frames CI-time
     /// recheck suppressed by the epoch-aware identical-CI dedup guard (finding 1).
     timecode_recheck_suppressed: bool,
+}
+
+/// Per extended layer, the § 7.3.6 first-CELU CI PRESENCE state (mirror lines 560-562,
+/// `07-decoding-process.md#s-7-3-6`): "If an OBU_CONTENT_INTERPRETATION is present in any
+/// coded extended layer unit, this OBU shall also be present in the first coded extended
+/// layer unit of the sequence ... for a given embedded layer."
+///
+/// The "first coded extended layer unit of the sequence" for an extended layer is its CELU
+/// in the coded video sequence's FIRST temporal unit (a CVS starts at the temporal unit
+/// containing a CLK, § 7.3.6). This state records — scoped to the layer's CVS — the embedded
+/// layers whose first CELU carried a CI, so a later CELU that adds a CI for an embedded layer
+/// the first CELU lacked can be flagged. Reset per coded video sequence in
+/// [`ValidatorContext::start_cvs_for_xlayer`].
+///
+/// **Unknown-first-CELU drop.** If the first CELU of the CVS was not observed — the stream
+/// starts mid-CVS (no CLK seen for the layer, so the implicit CVS began before the first
+/// observed OBU) — `first_celu_tu` is `None` and the presence judgment drops: the first
+/// CELU's CI set is unknowable. An external-HLS `Provided` mode likewise drops the judgment
+/// at the call site (an external CI in the first CELU cannot be enumerated by
+/// [`crate::options::ExternalHlsSet`], which expresses only sequence headers and operating
+/// point sets), consistent with the partial-declaration suppression policy.
+#[derive(Debug, Default)]
+struct CiFirstCeluState {
+    /// The temporal-unit index of the CVS's first temporal unit — the temporal unit whose
+    /// CELU is the "first coded extended layer unit of the sequence" for this layer. `None`
+    /// until a CLK establishes the CVS start for the layer (so a mid-CVS join, where no CLK
+    /// has been observed, leaves it `None` and drops the judgment).
+    first_celu_tu: Option<u64>,
+    /// The embedded layers (`obu_mlayer_id`) whose CI was observed in the first CELU of the
+    /// CVS. A CI in a later CELU for an embedded layer absent from this set fires
+    /// `celu/content-interpretation-not-in-first-celu`.
+    first_celu_ci_mlayers: BTreeSet<EmbeddedLayerId>,
+    /// The embedded layers already reported, so the diagnostic dedups per
+    /// `(xlayer, mlayer, CVS epoch)` — a repeated later CI for the same missing embedded
+    /// layer fires once per coded video sequence.
+    reported: BTreeSet<EmbeddedLayerId>,
 }
 
 /// The bitstream-derived embedded-layer association of one HDR CLL / MDCV
@@ -5022,31 +5078,30 @@ impl ValidatorContext {
                 boundary: boundary.unwrap_or(FrameBoundary::OpensNewUnit),
                 output,
                 order_hint,
+                // Round-6 F2: carry the per-frame OrderHintBits into the facts so the CELU
+                // tracker can gate the cross-CELU §7.3.7 OrderHint comparison on only the two
+                // COMPARED output units' bits being known and equal — the SAME resolved bits
+                // value also threaded TU-wide to `note_order_hint_bits` for the same-bits
+                // judgment (constraint 1). A frame whose referenced header did not resolve
+                // contributes `None` here too (the stale-activation guard).
+                order_hint_bits: bits,
                 leadingness,
             },
             bits,
         )
     }
 
-    /// Whether the § 7.3.7 / § 7.4.6 DOH constraints are active for the current temporal
-    /// unit (mirror lines 650-657 / 1316-1320): `multistream_doh_constraint_flag` in the
-    /// preceding MSDO equals 1, or `lcr_doh_constraint_flag` in the activated global LCR
-    /// equals 1. The preceding MSDO is the live recorded multistream operation
-    /// ([`Self::msdo_substream_max`], § 7.3.8.2 keeps a non-RAP MSDO identical to its
-    /// predecessor); the activated global LCR is resolved from the § 6.4.1 association
-    /// chain within the current CMVS window ([`Self::activated_global_lcr`]). Either source
-    /// being absent contributes `false` (its flag is simply not set), so the gate is a
-    /// disjunction over the present sources — when neither source declares the constraint,
-    /// the flag-gated checks stay silent.
-    fn doh_constraint_flag_active(&self) -> bool {
-        self.doh_constraint_flag_active_in_window(self.cmvs.current_cmvs_start_tu_index())
-    }
-
     /// Whether the § 7.3.7 / § 7.4.6 DOH constraints are active for the *just-completed*
-    /// temporal unit at a global-temporal-delimiter boundary (round-5 F1). Identical to
-    /// [`Self::doh_constraint_flag_active`], but resolves the LCR side against the GOVERNING
-    /// CMVS window of the completed unit rather than the live window the
-    /// [`CmvsTracker`](CmvsTracker) has just mutated.
+    /// temporal unit at a global-temporal-delimiter boundary or at the end of the bitstream
+    /// (round-5 F1 / round-6 F1). Resolves the LCR side against the GOVERNING CMVS window of
+    /// the completed unit rather than the live window the [`CmvsTracker`](CmvsTracker) has
+    /// just mutated.
+    ///
+    /// The base disjunction (see [`Self::doh_constraint_flag_active_in_window`]) is:
+    /// `multistream_doh_constraint_flag` in the preceding MSDO equals 1, or
+    /// `lcr_doh_constraint_flag` in the activated global LCR equals 1. Either source being
+    /// absent contributes `false`, so when neither source declares the constraint the
+    /// flag-gated checks stay silent.
     ///
     /// Per § 7.3.2 the completed unit is *contained* in whichever CMVS it belongs to:
     ///
@@ -5076,9 +5131,13 @@ impl ValidatorContext {
         self.doh_constraint_flag_active_in_window(governing_window)
     }
 
-    /// As [`Self::doh_constraint_flag_active`], but resolves the activated-global-LCR side
-    /// against an explicit CMVS-window start (`None` → no window → no activated global LCR).
-    /// The MSDO side is window-independent (the live last-wins preceding MSDO).
+    /// The base § 7.3.7 / § 7.4.6 DOH constraint-active disjunction (mirror lines 650-657 /
+    /// 1316-1320), resolving the activated-global-LCR side against an explicit CMVS-window
+    /// start (`None` → no window → no activated global LCR, via
+    /// [`Self::activated_global_lcr_in_window`]). The MSDO side is window-independent (the
+    /// live last-wins preceding MSDO, [`Self::msdo_substream_max`]; § 7.3.8.2 keeps a non-RAP
+    /// MSDO identical to its predecessor). The DOH flag is active iff either source declares
+    /// the constraint.
     fn doh_constraint_flag_active_in_window(&self, cmvs_window_start: Option<u64>) -> bool {
         let msdo_flag = self
             .msdo_substream_max
@@ -5221,6 +5280,13 @@ impl ValidatorContext {
                 self.doh_constraint_flag_active_for_completed_tu(cmvs_window_before_completion),
             );
             self.celu.reset_temporal_unit(report);
+            // AV2 § 7.3.6 (round-6 F3): resolve the just-completed temporal unit's CIs against
+            // the first-coded-extended-layer-unit-of-the-sequence presence rule (mirror lines
+            // 560-562). Runs after the CLK boundary events of the temporal unit have been
+            // applied (they are processed at the CLK OBU, earlier in the same temporal unit, so
+            // `start_cvs_for_xlayer` already re-seeded the first-CELU state), so each CI's CVS
+            // membership is final.
+            self.resolve_ci_first_celu_for_tu(completed_tu_index, options, report);
             // AV2 § 7.3.7: clear the per-temporal-unit distinct-`obu_mlayer_id` sets so a
             // CLK in the next temporal unit re-attributes only that temporal unit's ids
             // to the new coded video sequence (see DistinctMlayerTracker::reset_cvs).
@@ -5545,6 +5611,20 @@ impl ValidatorContext {
     fn start_cvs_for_xlayer(&mut self, xlayer: ExtendedLayerId, report: &mut ValidationReport) {
         self.cvs.start_cvs(xlayer, report);
         let tu_index = self.cvs.tu_index;
+        // AV2 § 7.3.6 (mirror lines 560-562, round-6 F3): this CLK starts a new coded video
+        // sequence for `xlayer` at this temporal unit, whose CELU is the "first coded extended
+        // layer unit of the sequence". Reset the first-CELU CI presence state so the new
+        // sequence judges its own first CELU. Idempotent within a temporal unit (a redundant
+        // CLK in the same temporal unit is the same boundary event, so it must not drop CI
+        // presence already recorded for this first CELU): only re-seed when the recorded first
+        // CELU temporal unit differs from this one.
+        let ci_state = self.ci_first_celu.entry(xlayer).or_default();
+        if ci_state.first_celu_tu != Some(tu_index) {
+            *ci_state = CiFirstCeluState {
+                first_celu_tu: Some(tu_index),
+                ..CiFirstCeluState::default()
+            };
+        }
         // AV2 § 7.3.6: "A new coded video sequence for an extended layer is defined to
         // start at each temporal unit that contains an OBU with obu_type equal to
         // OBU_CLOSED_LOOP_KEY ..." (mirror `07-decoding-process.md` lines 604–606). The
@@ -5801,6 +5881,17 @@ impl ValidatorContext {
         // are emitted here. `cvs.tu_index` is the final temporal unit's index (no
         // advance_temporal_unit runs at the end of the bitstream), stamping the CMVS-window
         // start if this final temporal unit begins one.
+        //
+        // The CMVS-window start of the FINAL temporal unit, captured BEFORE
+        // `complete_temporal_unit` applies this unit's § 7.3.2 begin/end conditions and
+        // mutates the live window (round-6 F1, mirroring the internal-boundary capture). The
+        // § 7.3.7 DOH flag for the final unit must be sampled against the CMVS that CONTAINS
+        // it: when the end of the bitstream (end condition 3) ends a CMVS this final unit
+        // CLOSED (a CLK with no MSDO, no activated global LCR — end condition 2), it is the
+        // LAST temporal unit of the ENDING CMVS, so its governing window is this pre-completion
+        // start — not the live window `complete_temporal_unit` is about to clear (see
+        // [`Self::doh_constraint_flag_active_for_completed_tu`]).
+        let cmvs_window_before_completion = self.cmvs.current_cmvs_start_tu_index();
         self.cmvs.complete_temporal_unit(self.cvs.tu_index, report);
         // AV2 § 6.6: resolve the deferred `msdo/doh-constraint-required` check for the
         // final temporal unit's frame-confirmed activations, exactly as an internal
@@ -5843,10 +5934,22 @@ impl ValidatorContext {
         // temporal unit, so resolve its coded-extended-layer-unit constraints and the
         // flag-gated DOH OrderHint / OrderHintBits checks exactly as an internal boundary
         // would. The DOH flag is recorded from the final temporal unit's activated global
-        // LCR / preceding MSDO before resolution.
-        self.celu
-            .set_doh_flag_active(self.doh_constraint_flag_active());
+        // LCR / preceding MSDO before resolution. The LCR side is sampled against the
+        // GOVERNING window of the final unit (captured before `complete_temporal_unit` cleared
+        // the live window, round-6 F1) — symmetric with the internal-boundary path — so a CLK
+        // final unit that ends the CMVS at the end of the bitstream is still governed by the
+        // activated global LCR of the CMVS that contained it (the MSDO side is window-
+        // independent live last-wins state).
+        self.celu.set_doh_flag_active(
+            self.doh_constraint_flag_active_for_completed_tu(cmvs_window_before_completion),
+        );
         self.celu.finish(report);
+        // AV2 § 7.3.6 (round-6 F3): resolve the final temporal unit's CIs against the
+        // first-coded-extended-layer-unit-of-the-sequence presence rule, exactly as an
+        // internal boundary would. `cvs.tu_index` is the final temporal unit's index (no
+        // advance runs at the end of the bitstream); its CLK boundary events were already
+        // applied at the CLK OBU, so each CI's CVS membership is final.
+        self.resolve_ci_first_celu_for_tu(self.cvs.tu_index, options, report);
     }
 
     /// Returns the per-extended-layer `FirstPictureInTU` — "the first frame unit in
@@ -6297,6 +6400,18 @@ impl ValidatorContext {
         let mlayer = obu.header.embedded_layer_id;
         let tu_index = self.cvs.tu_index;
 
+        // AV2 § 7.3.6 (mirror lines 560-562): record this CI's `(xlayer, mlayer)` presence in
+        // the current temporal unit for the first-CELU-of-the-sequence presence judgment,
+        // resolved at the temporal-unit boundary (round-6 F3). A CI belongs to a coded
+        // extended layer unit, which is per non-global extended layer (§ 7.3.6); a global CI
+        // is not part of any CELU, so it is excluded. The first appearance's offset anchors
+        // the diagnostic.
+        if !xlayer.is_global() {
+            self.ci_observed_in_tu
+                .entry((xlayer, mlayer))
+                .or_insert(obu.offset);
+        }
+
         // Cross-embedded-layer timing consistency: compare this layer's timing
         // against the first other embedded layer (same extended layer) that already
         // carries present timing within this CVS scope.
@@ -6481,6 +6596,80 @@ impl ValidatorContext {
                     scan_type_recheck_suppressed,
                     timecode_recheck_suppressed,
                 });
+            }
+        }
+    }
+
+    /// Resolves the § 7.3.6 first-CELU-of-the-sequence CI PRESENCE judgment (mirror lines
+    /// 560-562, round-6 F3) for the just-completed temporal unit `completed_tu_index`. Called
+    /// at each global-temporal-delimiter boundary and at the end of the bitstream, after the
+    /// CLK boundary events of the temporal unit have been applied (so the CVS the temporal
+    /// unit belongs to is final — the whole temporal unit containing a CLK belongs to the new
+    /// coded video sequence, § 7.3.6). Drains [`Self::ci_observed_in_tu`].
+    ///
+    /// For each `(xlayer, mlayer)` CI observed in the temporal unit:
+    ///
+    /// - Under an external-HLS `Provided` mode the judgment DROPS: an external CI in the first
+    ///   CELU cannot be enumerated by [`crate::options::ExternalHlsSet`] (it expresses only
+    ///   sequence headers and operating point sets), so the validator cannot prove the first
+    ///   CELU lacked the CI — consistent with the partial-declaration suppression policy.
+    /// - If the layer's coded video sequence start was not observed (`first_celu_tu` is `None`
+    ///   — a mid-CVS join, no CLK seen) the judgment DROPS: the first CELU's CI set is
+    ///   unknowable (documented Unknown-first-CELU drop, see [`CiFirstCeluState`]).
+    /// - If this temporal unit IS the CVS's first temporal unit (`completed_tu_index ==
+    ///   first_celu_tu`), the CI is in the first CELU — record `mlayer` as present there.
+    /// - Otherwise the CI is in a LATER CELU: if `mlayer` was absent from the first CELU's CI
+    ///   set (and not already reported this CVS), fire `celu/content-interpretation-not-in-
+    ///   first-celu`, anchored at the offending CI, and dedup per `(xlayer, mlayer, CVS epoch)`.
+    fn resolve_ci_first_celu_for_tu(
+        &mut self,
+        completed_tu_index: u64,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        let observed = std::mem::take(&mut self.ci_observed_in_tu);
+        // External HLS (any Provided mode): an external CI the set cannot enumerate may be the
+        // first CELU's CI, so the presence judgment is not decidable — drop wholesale. The
+        // per-TU buffer is still drained above so it does not leak into the next temporal unit.
+        if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
+            return;
+        }
+        for ((xlayer, mlayer), offset) in observed {
+            let state = self.ci_first_celu.entry(xlayer).or_default();
+            let Some(first_celu_tu) = state.first_celu_tu else {
+                // No CLK established the CVS start for this layer (mid-CVS join): the first
+                // coded extended layer unit of the sequence was not observed, so the presence
+                // judgment is undecidable — drop (documented Unknown-first-CELU drop).
+                continue;
+            };
+            if completed_tu_index == first_celu_tu {
+                // This temporal unit is the CVS's first temporal unit, so this CI is in the
+                // first coded extended layer unit of the sequence — record the embedded layer.
+                state.first_celu_ci_mlayers.insert(mlayer);
+            } else if !state.first_celu_ci_mlayers.contains(&mlayer)
+                && state.reported.insert(mlayer)
+            {
+                // A later coded extended layer unit carries a CI for an embedded layer the
+                // sequence's first CELU lacked (§ 7.3.6 lines 560-562). Dedup per
+                // (xlayer, mlayer, CVS epoch) via `reported`.
+                report.push(
+                    Diagnostic::error(
+                        "celu/content-interpretation-not-in-first-celu",
+                        format!(
+                            "OBU_CONTENT_INTERPRETATION is present for obu_xlayer_id {} / \
+                             obu_mlayer_id {} in a coded extended layer unit that is not the \
+                             first coded extended layer unit of the coded video sequence, but \
+                             the first coded extended layer unit of the sequence carried no \
+                             content interpretation for that embedded layer; § 7.3.6 requires a \
+                             CI present in any coded extended layer unit to also be present in \
+                             the first coded extended layer unit of the sequence",
+                            xlayer.get(),
+                            mlayer.get()
+                        ),
+                    )
+                    .with_spec_section("7.3.6")
+                    .with_byte_offset(offset),
+                );
             }
         }
     }

@@ -148,6 +148,44 @@
 //! CLK from the all-leading-or-none judgment entirely — a documented sound under-approximation
 //! that keeps the rule silent on the CLK-plus-regular structure the § 7.3.6 CLK rule
 //! explicitly contemplates (mirror lines 541-549).
+//!
+//! ## The two § 7.3.7 DOH constraints are independently gated (round-6 F2)
+//!
+//! When a DOH constraint flag is set (mirror lines 650-657), § 7.3.7 imposes **two distinct**
+//! requirements, each gated separately in [`DohTuAccumulator`]:
+//!
+//! 1. **All frame units in the temporal unit share one `OrderHintBits`** (line 655). Judged
+//!    over **every** frame unit of the temporal unit; an unknown-bits frame unit (output or
+//!    not) drops this judgment (the Unknown invariant) — `celu/doh-order-hint-bits-mismatch`.
+//! 2. **Coded output frame units in multiple CELUs share one `OrderHint`** (lines 656-657).
+//!    The validator compares the `order_hint` LSB **proxy** for the decoded OrderHint, which is
+//!    sound only when the two **compared** output units share one known `OrderHintBits` (equal
+//!    decoded OrderHints can carry different-width LSB encodings). The soundness gate is applied
+//!    **per compared pair** on the two output CELUs' own bits (carried alongside each output
+//!    sample in [`FrameFacts::order_hint_bits`]) — **not** via constraint (1)'s
+//!    temporal-unit-wide same-bits judgment. So an unknown-bits non-output (or unrelated) frame
+//!    unit elsewhere in the temporal unit drops constraint (1) but does **not** suppress a
+//!    decidable constraint (2) mismatch between two output CELUs whose own bits are known and
+//!    equal — `celu/doh-order-hint-mismatch`. When two compared output units have known but
+//!    **unequal** bits, constraint (1) fires the bits-mismatch and constraint (2) drops for that
+//!    pair (unsound cross-width proxy).
+//!
+//! ## The § 7.3.6 first-CELU-of-the-sequence CI presence rule lives in `context` (round-6 F3)
+//!
+//! Mirror lines 560-562: "If an OBU_CONTENT_INTERPRETATION is present in any coded extended
+//! layer unit, this OBU shall also be present in the first coded extended layer unit of the
+//! sequence ... for a given embedded layer." The **contents-identity** half ("the same contents
+//! in all its repetitions") is owned by `content-interpretation/repeated-ci-not-identical`
+//! (§ 6.14). The **presence** half — a later CELU carries a CI for an embedded layer the coded
+//! video sequence's first CELU lacked — is **coded-video-sequence-scoped**, so it cannot live in
+//! this per-temporal-unit tracker; it is implemented in [`crate::context`]
+//! (`ValidatorContext::resolve_ci_first_celu_for_tu`, `celu/content-interpretation-not-in-first-celu`),
+//! which holds the per-extended-layer CVS epoch and the external-HLS surface. It drops when the
+//! first CELU of the sequence was not observed (a mid-CVS join, or an external-HLS `Provided`
+//! mode whose unenumerable external CI could be the first CELU's). The CELU-scoped
+//! first-*frame-unit* CI rule (mirror lines 557-559, `celu/content-interpretation-not-in-first-unit`)
+//! and the § 7.3.8.10 temporal-unit form (`frame-unit/ci-not-in-first-frame-unit`) remain
+//! distinct.
 
 use std::collections::BTreeMap;
 
@@ -218,6 +256,17 @@ pub(crate) struct FrameFacts {
     /// equal known OrderHintBits (see [`DohTuAccumulator`]). Decoded-OrderHint comparison is a
     /// named residual blocked on reference-state modelling (AV2-5.18.2-FRAME-HEADER-INFO).
     pub order_hint: Option<u32>,
+    /// The `OrderHintBits` of this frame (from its active sequence header), when the core
+    /// parse resolved it against the referenced header (the stale-activation guard); `None`
+    /// otherwise. This is the SAME value the validator threads to the temporal-unit-wide
+    /// [`CodedExtendedLayerTracker::note_order_hint_bits`] for the § 7.3.7 same-bits judgment
+    /// (constraint 1), but here it is carried PER OUTPUT UNIT so the cross-CELU OrderHint
+    /// comparison (constraint 2, mirror lines 656-657) can be gated on only the two COMPARED
+    /// output units' bits being known and equal — independent of an unrelated non-output /
+    /// unknown-bits frame unit elsewhere in the temporal unit (round-6 F2). The cross-CELU
+    /// `order_hint` LSB proxy is sound exactly when the compared units share one known
+    /// OrderHintBits (equal-width LSBs that differ imply different decoded OrderHints).
+    pub order_hint_bits: Option<u32>,
     /// The leading-ness of the frame for the § 7.3.6 all-leading-or-none rule. Always
     /// type-decided from `obu_type` (never routed from a parse failure), so the rule never
     /// reaches the Unknown path; an [`Leadingness::Indeterminate`] unit (a CLK) is excluded
@@ -358,11 +407,13 @@ struct CeluState {
     /// decided non-output) does NOT set this — it can never satisfy output presence.
     missing_output_poisoned: bool,
     /// The shared `OrderHint` (an `order_hint` LSB proxy — see [`FrameFacts::order_hint`]) of
-    /// the output units seen so far, plus the offset of the first output unit; `None` until
-    /// the first output unit with a readable `order_hint`. Within one CELU all frame units
-    /// share one active header, hence one OrderHintBits, so the LSB comparison is a sound
-    /// under-approximation here (no cross-width gate needed — unlike the cross-CELU check).
-    output_order_hint: Option<(u32, ByteOffset)>,
+    /// the output units seen so far, the `OrderHintBits` of the first output unit (for the
+    /// cross-CELU §7.3.7 comparison gate, round-6 F2), and the offset of the first output
+    /// unit; `None` until the first output unit with a readable `order_hint`. Within one CELU
+    /// all frame units share one active header, hence one OrderHintBits, so the LSB comparison
+    /// is a sound under-approximation here (no cross-width gate needed — unlike the cross-CELU
+    /// check, which gates on the COMPARED CELUs' output-unit bits being known and equal).
+    output_order_hint: Option<(u32, Option<u32>, ByteOffset)>,
     /// `true` once an output unit's `order_hint` could not be read — the
     /// same-OrderHint-across-output-units judgment is then dropped (it would rest on a
     /// partial set), so the deferred mismatch is suppressed.
@@ -437,21 +488,34 @@ impl CeluState {
 /// (`get_disp_order_hint`'s output, the MSB extension for non-CLK frames); the validator
 /// compares the raw `order_hint` LSB syntax as a proxy (decoded-OrderHint comparison is a
 /// named residual blocked on reference-state modelling — AV2-5.18.2-FRAME-HEADER-INFO).
-/// The cross-CELU comparison is gated in [`Self::resolve`] on the participating frame units
-/// sharing one KNOWN OrderHintBits: across different bit widths equal decoded OrderHints can
-/// carry different-width LSB encodings, so the proxy would false-positive.
+/// The cross-CELU comparison is gated in [`Self::note_celu_output_order_hint`] on the two
+/// COMPARED output units sharing one KNOWN OrderHintBits: across different bit widths equal
+/// decoded OrderHints can carry different-width LSB encodings, so the proxy would
+/// false-positive. The gate is over the *compared* output units' own bits (carried alongside
+/// each output sample, round-6 F2) — NOT the temporal-unit-wide same-bits judgment, which
+/// also covers non-output and unrelated frame units. §7.3.7 has two distinct constraints:
+/// (1) all frame units in the temporal unit share one OrderHintBits (the
+/// [`Self::bits_undecidable`] / [`Self::bits_mismatch`] judgment over EVERY frame unit), and
+/// (2) coded OUTPUT frame units in multiple CELUs share one OrderHint (this cross-CELU
+/// comparison, sound when only the compared output units' bits agree). An unknown-bits
+/// non-output frame unit drops constraint (1) but must NOT suppress a decidable constraint
+/// (2) mismatch between two output CELUs whose own bits are known and equal.
 #[derive(Debug, Default)]
 struct DohTuAccumulator {
     /// The first CELU's resolved output OrderHint (an `order_hint` LSB proxy, see the type
-    /// doc) and its anchor offset; `None` until a CELU resolves a decidable output OrderHint.
-    first_output_order_hint: Option<(u32, ByteOffset)>,
+    /// doc), the OrderHintBits of that CELU's output units, and its anchor offset; `None`
+    /// until a CELU resolves a decidable output OrderHint. The per-sample bits gate each
+    /// cross-CELU comparison pair (round-6 F2).
+    first_output_order_hint: Option<(u32, Option<u32>, ByteOffset)>,
     /// `true` once a CELU's output OrderHint was undecidable — the cross-CELU agreement
     /// judgment is then dropped (it would rest on a partial set).
     undecidable: bool,
     /// The (value, anchor) of the first CELU output OrderHint (LSB proxy) that disagreed with
-    /// [`Self::first_output_order_hint`], if any — emitted at [`Self::resolve`] only when the
-    /// temporal unit's OrderHintBits are known and uniform (else the LSB proxy is unsound and
-    /// the comparison is dropped).
+    /// [`Self::first_output_order_hint`] AND whose own bits and the first sample's bits were
+    /// both known and equal (so the LSB proxy is sound for that pair), if any — emitted at
+    /// [`Self::resolve`]. A pair whose compared bits are unknown or unequal does NOT record a
+    /// mismatch here (the proxy is unsound across widths; a known-but-unequal pair is instead
+    /// covered by `celu/doh-order-hint-bits-mismatch` from constraint (1)).
     order_hint_mismatch: Option<(u32, u32, ByteOffset)>,
     /// The first frame's OrderHintBits and its anchor offset; `None` until the first frame
     /// with a readable OrderHintBits.
@@ -922,8 +986,15 @@ impl CodedExtendedLayerTracker {
         if facts.output == Some(true) {
             match facts.order_hint {
                 Some(order_hint) => match celu.output_order_hint {
-                    None => celu.output_order_hint = Some((order_hint, obu.offset)),
-                    Some((first, _)) => {
+                    // The CELU's output OrderHint and the OrderHintBits of its first output
+                    // unit are captured together (round-6 F2): all output units of one CELU
+                    // share one active header, so the first output unit's bits represent the
+                    // CELU for the cross-CELU §7.3.7 comparison gate.
+                    None => {
+                        celu.output_order_hint =
+                            Some((order_hint, facts.order_hint_bits, obu.offset));
+                    }
+                    Some((first, _, _)) => {
                         if first != order_hint && celu.order_hint_mismatch.is_none() {
                             celu.order_hint_mismatch = Some((first, order_hint, obu.offset));
                         }
@@ -1081,8 +1152,8 @@ impl CodedExtendedLayerTracker {
         // undecidable signal, dropping the cross-CELU agreement judgment.
         if celu.order_hint_undecidable {
             doh.undecidable = true;
-        } else if let Some((order_hint, offset)) = celu.output_order_hint {
-            doh.note_celu_output_order_hint(order_hint, offset);
+        } else if let Some((order_hint, order_hint_bits, offset)) = celu.output_order_hint {
+            doh.note_celu_output_order_hint(order_hint, order_hint_bits, offset);
         }
     }
 
@@ -1142,14 +1213,39 @@ impl CodedExtendedLayerTracker {
 }
 
 impl DohTuAccumulator {
-    /// Notes one CELU's resolved output OrderHint for the cross-CELU agreement check.
-    /// Records the first disagreement; emission is deferred to [`Self::resolve`] so the
-    /// check stays flag-gated.
-    fn note_celu_output_order_hint(&mut self, order_hint: u32, offset: ByteOffset) {
+    /// Notes one CELU's resolved output OrderHint (and the OrderHintBits of its output units)
+    /// for the cross-CELU §7.3.7 agreement check (constraint 2, mirror lines 656-657). Records
+    /// the first disagreement; emission is deferred to [`Self::resolve`] so the check stays
+    /// flag-gated.
+    ///
+    /// The `order_hint` LSB comparison is a proxy for the decoded OrderHint and is sound only
+    /// when the two COMPARED output units share one KNOWN OrderHintBits (round-6 F2). So a
+    /// disagreement is recorded only when both this CELU's bits and the first CELU's bits are
+    /// known and equal: across different (or unknown) bit widths equal decoded OrderHints can
+    /// carry different-width LSB encodings, so the proxy would false-positive. A known-but-
+    /// unequal-bits pair is instead covered by `celu/doh-order-hint-bits-mismatch` (constraint
+    /// 1); an unknown-bits pair simply drops (the Unknown invariant for THIS pair). Crucially,
+    /// the gate is over the compared output units' own bits — not the temporal-unit-wide
+    /// same-bits judgment — so an unrelated non-output / unknown-bits frame unit elsewhere in
+    /// the temporal unit no longer suppresses a decidable mismatch between two output CELUs.
+    fn note_celu_output_order_hint(
+        &mut self,
+        order_hint: u32,
+        order_hint_bits: Option<u32>,
+        offset: ByteOffset,
+    ) {
         match self.first_output_order_hint {
-            None => self.first_output_order_hint = Some((order_hint, offset)),
-            Some((first, _)) => {
-                if first != order_hint && self.order_hint_mismatch.is_none() {
+            None => self.first_output_order_hint = Some((order_hint, order_hint_bits, offset)),
+            Some((first, first_bits, _)) => {
+                // Gate the LSB-proxy comparison on the two compared output units sharing one
+                // KNOWN OrderHintBits (round-6 F2). Across different / unknown widths the
+                // proxy is unsound, so the comparison drops for that pair.
+                let bits_known_and_equal = match (first_bits, order_hint_bits) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => false,
+                };
+                if bits_known_and_equal && first != order_hint && self.order_hint_mismatch.is_none()
+                {
                     self.order_hint_mismatch = Some((first, order_hint, offset));
                 }
             }
@@ -1193,24 +1289,27 @@ impl DohTuAccumulator {
             );
         }
         // § 7.3.7 / § 7.4.6: coded output frame units present in multiple CELUs within the
-        // temporal unit shall share the same OrderHint.
+        // temporal unit shall share the same OrderHint (constraint 2).
         //
         // The validator compares the raw `order_hint` LSB syntax as a proxy for the DECODED
         // OrderHint (the §7.3.6/§7.3.7 quantity is `get_disp_order_hint`'s output, the MSB
         // extension for non-CLK frames, which needs reference-state modelling — see
-        // AV2-5.18.2-FRAME-HEADER-INFO). The cross-CELU proxy is only sound when every
-        // participating frame unit shares ONE KNOWN OrderHintBits: differing decoded
-        // OrderHints with equal-width LSBs still differ in the low bits, but EQUAL decoded
-        // OrderHints can be encoded with different-width LSBs when the bit widths differ, so a
-        // cross-width comparison can FALSE-POSITIVE. When the widths differ the
-        // `celu/doh-order-hint-bits-mismatch` rule above already fires; this OrderHint
-        // comparison must then DROP. Gate it on the bits being known (at least one recorded)
-        // and uniform (no undecidable, no mismatch).
-        let bits_known_and_uniform = self.first_order_hint_bits.is_some()
-            && !self.bits_undecidable
-            && self.bits_mismatch.is_none();
+        // AV2-5.18.2-FRAME-HEADER-INFO). The cross-CELU proxy is only sound when the two
+        // COMPARED output units share ONE KNOWN OrderHintBits: differing decoded OrderHints
+        // with equal-width LSBs still differ in the low bits, but EQUAL decoded OrderHints can
+        // be encoded with different-width LSBs when the bit widths differ, so a cross-width
+        // comparison can FALSE-POSITIVE.
+        //
+        // Round-6 F2: the soundness gate is now applied PER COMPARED PAIR in
+        // [`Self::note_celu_output_order_hint`] (on the two output CELUs' own bits), NOT via
+        // the temporal-unit-wide `bits_undecidable` / `bits_mismatch` judgment — which also
+        // covers non-output and unrelated frame units (constraint 1). An unknown-bits non-
+        // output frame unit elsewhere in the temporal unit drops constraint (1) but must not
+        // suppress a decidable constraint (2) mismatch between two output CELUs whose own bits
+        // are known and equal. So `order_hint_mismatch` is recorded ONLY when its pair's bits
+        // were known and equal; it is emitted here gated solely on the cross-CELU
+        // `undecidable` signal (an undecidable CELU output OrderHint drops the whole judgment).
         if !self.undecidable
-            && bits_known_and_uniform
             && let Some((first, found, offset)) = self.order_hint_mismatch
         {
             report.push(
@@ -1282,17 +1381,21 @@ mod tests {
             },
             output,
             order_hint,
+            None,
             leadingness,
         )
     }
 
-    /// A frame `CeluRole` carrying an explicit segmenter [`FrameBoundary`] — the tracker
-    /// consumes the segmenter's boundary verbatim (§ 7.3.6), so the tests drive it directly.
+    /// A frame `CeluRole` carrying an explicit segmenter [`FrameBoundary`] and per-frame
+    /// `order_hint_bits` (round-6 F2: the cross-CELU §7.3.7 comparison gate reads the output
+    /// units' own bits) — the tracker consumes the segmenter's boundary verbatim (§ 7.3.6),
+    /// so the tests drive both directly.
     fn frame_role_with_boundary(
         obu_type: ObuType,
         boundary: FrameBoundary,
         output: Option<bool>,
         order_hint: Option<u32>,
+        order_hint_bits: Option<u32>,
         leadingness: Leadingness,
     ) -> CeluRole {
         CeluRole::Frame(FrameFacts {
@@ -1300,6 +1403,7 @@ mod tests {
             boundary,
             output,
             order_hint,
+            order_hint_bits,
             leadingness,
         })
     }
@@ -1317,17 +1421,36 @@ mod tests {
             FrameBoundary::Ambiguous,
             output,
             order_hint,
+            None,
             leadingness,
         )
     }
 
-    /// A simple output tile-group frame at (xlayer, mlayer) with a given OrderHint.
+    /// A simple output tile-group frame at (xlayer, mlayer) with a given OrderHint and no
+    /// declared OrderHintBits — for tests that exercise the OrderHint judgments without the
+    /// cross-CELU §7.3.7 bits gate (the gate drops a pair with unknown bits, so a cross-CELU
+    /// mismatch test must use [`output_frame_bits`] to declare equal known bits).
     fn output_frame(order_hint: u32) -> CeluRole {
         frame_role(
             ObuType::RegularTileGroup,
             true,
             Some(true),
             Some(order_hint),
+            Leadingness::Regular,
+        )
+    }
+
+    /// An output tile-group frame with a given OrderHint and explicit `OrderHintBits`
+    /// (round-6 F2): the cross-CELU §7.3.7 OrderHint comparison is gated on the two compared
+    /// output units' own bits being known and equal, so a cross-CELU mismatch/agreement test
+    /// declares those bits here rather than only via the TU-wide `note_order_hint_bits`.
+    fn output_frame_bits(order_hint: u32, order_hint_bits: u32) -> CeluRole {
+        frame_role_with_boundary(
+            ObuType::RegularTileGroup,
+            FrameBoundary::OpensNewUnit,
+            Some(true),
+            Some(order_hint),
+            Some(order_hint_bits),
             Leadingness::Regular,
         )
     }
@@ -2170,6 +2293,7 @@ mod tests {
                 FrameBoundary::OpensNewUnit,
                 Some(true),
                 Some(0),
+                None,
                 Leadingness::Leading,
             ),
             &mut r,
@@ -2228,18 +2352,20 @@ mod tests {
         let mut t = fresh();
         let mut r = ValidationReport::new();
         // xlayer 0 output OrderHint 1; xlayer 1 output OrderHint 2; DOH flag active. Both
-        // frames carry the SAME, KNOWN OrderHintBits, so the cross-CELU OrderHint comparison
-        // (an LSB proxy) is sound: same-width LSBs that differ imply different OrderHints.
+        // OUTPUT units carry the SAME, KNOWN OrderHintBits, so the cross-CELU OrderHint
+        // comparison (an LSB proxy) is sound: same-width LSBs that differ imply different
+        // OrderHints. The per-unit bits gate the comparison (round-6 F2); the matching TU-wide
+        // `note_order_hint_bits` keeps constraint (1)'s same-bits judgment fed.
         t.note_order_hint_bits(Some(4), ByteOffset::new(0));
         t.observe(
             &obu(ObuType::RegularTileGroup, 0, 0, 0),
-            output_frame(1),
+            output_frame_bits(1, 4),
             &mut r,
         );
         t.note_order_hint_bits(Some(4), ByteOffset::new(1));
         t.observe(
             &obu(ObuType::RegularTileGroup, 1, 0, 1),
-            output_frame(2),
+            output_frame_bits(2, 4),
             &mut r,
         );
         t.set_doh_flag_active(true);
@@ -2260,13 +2386,13 @@ mod tests {
         t.note_order_hint_bits(Some(4), ByteOffset::new(0));
         t.observe(
             &obu(ObuType::RegularTileGroup, 0, 0, 0),
-            output_frame(1),
+            output_frame_bits(1, 4),
             &mut r,
         );
         t.note_order_hint_bits(Some(5), ByteOffset::new(1)); // different OrderHintBits
         t.observe(
             &obu(ObuType::RegularTileGroup, 1, 0, 1),
-            output_frame(2),
+            output_frame_bits(2, 5), // different OrderHintBits on the output unit too
             &mut r,
         );
         t.set_doh_flag_active(true);
@@ -2284,28 +2410,31 @@ mod tests {
 
     #[test]
     fn doh_cross_celu_order_hint_mismatch_drops_when_bits_unknown() {
-        // Finding B gate: when one participating frame's OrderHintBits is unknown, the
+        // Finding B gate: when one COMPARED output unit's OrderHintBits is unknown, the
         // cross-CELU OrderHint comparison cannot be confirmed sound (the LSB widths may
-        // differ), so it DROPS — even though the LSBs differ and the flag is set.
+        // differ), so it DROPS — even though the LSBs differ and the flag is set. The unknown
+        // bits are on the OUTPUT unit being compared (round-6 F2: the gate is per compared
+        // output unit, not the TU-wide same-bits judgment).
         let mut t = fresh();
         let mut r = ValidationReport::new();
         t.note_order_hint_bits(Some(4), ByteOffset::new(0));
         t.observe(
             &obu(ObuType::RegularTileGroup, 0, 0, 0),
-            output_frame(1),
+            output_frame_bits(1, 4),
             &mut r,
         );
         t.note_order_hint_bits(None, ByteOffset::new(1)); // unknown OrderHintBits
         t.observe(
             &obu(ObuType::RegularTileGroup, 1, 0, 1),
-            output_frame(2),
+            output_frame(2), // output unit with UNKNOWN OrderHintBits (no declared bits)
             &mut r,
         );
         t.set_doh_flag_active(true);
         t.reset_temporal_unit(&mut r);
         assert!(
             !has(&r, "celu/doh-order-hint-mismatch"),
-            "an unknown OrderHintBits must drop the cross-CELU OrderHint comparison; report: {r}"
+            "an unknown OrderHintBits on a compared output unit must drop the cross-CELU \
+             OrderHint comparison; report: {r}"
         );
     }
 
@@ -2378,6 +2507,102 @@ mod tests {
         assert!(
             !has(&r, "celu/doh-order-hint-mismatch"),
             "an undecidable CELU OrderHint must drop the cross-CELU rule; report: {r}"
+        );
+    }
+
+    #[test]
+    fn doh_cross_celu_order_hint_mismatch_fires_despite_unknown_bits_nonoutput_unit() {
+        // Round-6 F2: §7.3.7 has TWO distinct constraints. (1) ALL frame units in the temporal
+        // unit share one OrderHintBits — rightly DROPS when any frame unit's bits are unknown.
+        // (2) coded OUTPUT frame units in multiple CELUs share one OrderHint — the LSB-proxy
+        // soundness for (2) needs only the COMPARED output units' bits to be known and equal.
+        //
+        // Two output CELUs (xlayer 0 OrderHint 1, xlayer 1 OrderHint 2) carry KNOWN EQUAL
+        // OrderHintBits (4) and differing OrderHints — a genuine constraint (2) violation. A
+        // THIRD, non-output frame unit (xlayer 2) carries UNKNOWN OrderHintBits. Pre-fix the
+        // unknown-bits non-output unit set the TU-wide `bits_undecidable`, which gated the
+        // cross-CELU comparison off and SILENTLY suppressed the decidable output-unit mismatch.
+        // After the fix the comparison is gated per pair on the two compared output units' own
+        // (known, equal) bits, so `celu/doh-order-hint-mismatch` FIRES, while
+        // `celu/doh-order-hint-bits-mismatch` correctly DROPS (an unknown participant in
+        // constraint (1)).
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        // xlayer 0 output unit: OrderHint 1, OrderHintBits 4.
+        t.note_order_hint_bits(Some(4), ByteOffset::new(0));
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 0, 0, 0),
+            output_frame_bits(1, 4),
+            &mut r,
+        );
+        // xlayer 1 output unit: OrderHint 2, OrderHintBits 4 (equal known bits -> sound proxy).
+        t.note_order_hint_bits(Some(4), ByteOffset::new(1));
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 1, 0, 2),
+            output_frame_bits(2, 4),
+            &mut r,
+        );
+        // xlayer 2 NON-output frame unit with UNKNOWN OrderHintBits — drops constraint (1) but
+        // must not suppress the constraint (2) mismatch above (it carries an output OrderHint
+        // for neither CELU compared above; its own bits are None).
+        t.note_order_hint_bits(None, ByteOffset::new(2)); // TU-wide bits become undecidable
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 2, 0, 3),
+            frame_role(
+                ObuType::RegularTileGroup,
+                true,
+                Some(false), // non-output
+                Some(0),
+                Leadingness::Regular,
+            ),
+            &mut r,
+        );
+        t.set_doh_flag_active(true);
+        t.reset_temporal_unit(&mut r);
+        assert!(
+            has(&r, "celu/doh-order-hint-mismatch"),
+            "the two output CELUs share known equal OrderHintBits and carry differing \
+             OrderHints, so the cross-CELU §7.3.7 mismatch must fire despite an unrelated \
+             non-output frame unit with unknown bits; report: {r}"
+        );
+        assert!(
+            !has(&r, "celu/doh-order-hint-bits-mismatch"),
+            "constraint (1) (all frame units share one OrderHintBits) must DROP because a \
+             non-output frame unit's bits are unknown; report: {r}"
+        );
+    }
+
+    #[test]
+    fn doh_cross_celu_order_hint_mismatch_drops_for_unequal_bits_pair_despite_third_match() {
+        // Round-6 F2 (careful case from the finding): when two OUTPUT units have KNOWN but
+        // UNEQUAL bits, constraint (1) fires `celu/doh-order-hint-bits-mismatch`, and the
+        // cross-CELU OrderHint comparison for THAT pair must DROP (unequal widths -> unsound
+        // proxy). Two output CELUs with OrderHints 1 and 2 but OrderHintBits 4 and 5: the
+        // bits-mismatch fires and the OrderHint comparison stays silent.
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        t.note_order_hint_bits(Some(4), ByteOffset::new(0));
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 0, 0, 0),
+            output_frame_bits(1, 4),
+            &mut r,
+        );
+        t.note_order_hint_bits(Some(5), ByteOffset::new(1));
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 1, 0, 1),
+            output_frame_bits(2, 5),
+            &mut r,
+        );
+        t.set_doh_flag_active(true);
+        t.reset_temporal_unit(&mut r);
+        assert!(
+            has(&r, "celu/doh-order-hint-bits-mismatch"),
+            "two output units with known unequal bits fire the bits-mismatch; report: {r}"
+        );
+        assert!(
+            !has(&r, "celu/doh-order-hint-mismatch"),
+            "the cross-CELU OrderHint comparison must DROP for a known-but-unequal-bits pair \
+             (the LSB proxy is unsound across widths); report: {r}"
         );
     }
 
@@ -2576,6 +2801,7 @@ mod tests {
             frame_role_with_boundary(
                 ObuType::RegularTileGroup,
                 FrameBoundary::OpensNewUnit,
+                None,
                 None,
                 None,
                 Leadingness::Regular,

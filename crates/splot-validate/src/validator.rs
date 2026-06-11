@@ -1692,6 +1692,143 @@ mod tests {
         );
     }
 
+    // --- Round-6 F3: § 7.3.6 first-CELU-of-the-sequence CI PRESENCE rule (lines 560-562) ----
+
+    #[test]
+    fn ci_in_later_celu_absent_from_first_celu_of_sequence_is_flagged() {
+        // Round-6 F3: § 7.3.6 (mirror lines 560-562) requires a CI present in any coded
+        // extended layer unit to ALSO be present in the FIRST coded extended layer unit of the
+        // sequence. TU0 starts the coded video sequence for xlayer 0 with a CLK frame and NO
+        // content interpretation (the first CELU of the sequence lacks a CI for mlayer 0). TU1
+        // (same CVS — no CLK) carries a CI for mlayer 0 in a LATER CELU. The presence half is
+        // violated and must fire `celu/content-interpretation-not-in-first-celu`. The
+        // contents-identity half (§ 6.14) is owned by `repeated-ci-not-identical` and is not
+        // exercised here (no earlier copy to compare against).
+        let mut data = temporal_delimiter_obu(); // TU0: the CVS's first temporal unit
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1))); // seq xlayer 0, mlayer 0,1
+        data.extend(clk_frame_for_xlayer(0, 0)); // CLK frame -> starts the CVS, no CI in first CELU
+        data.extend(temporal_delimiter_obu()); // TU1: continues the same CVS (no CLK)
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1))); // resend the header
+        data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING))); // CI for mlayer 0
+        data.extend(frame_obu_direct_seq_ref(0x1C, 0)); // a frame so the later CELU has an output
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "celu/content-interpretation-not-in-first-celu"),
+            "a later CELU carries a CI for an embedded layer the sequence's first CELU lacked, \
+             so § 7.3.6 lines 560-562 must fire; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_in_first_celu_of_sequence_then_repeated_later_is_silent() {
+        // Round-6 F3 control: the CI IS present in the first CELU of the sequence (TU0), then
+        // repeated identically in a later CELU (TU1). The presence half is satisfied, so
+        // `celu/content-interpretation-not-in-first-celu` must stay SILENT (and the identical
+        // repeat does not trip `repeated-ci-not-identical` either).
+        let mut data = temporal_delimiter_obu(); // TU0: the CVS's first temporal unit
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING))); // CI in the first CELU
+        data.extend(clk_frame_for_xlayer(0, 0)); // CLK frame -> starts the CVS
+        data.extend(temporal_delimiter_obu()); // TU1: continues the same CVS
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING))); // identical repeat
+        data.extend(frame_obu_direct_seq_ref(0x1C, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "celu/content-interpretation-not-in-first-celu"),
+            "the CI is present in the first CELU of the sequence, so the presence rule must \
+             stay silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_in_later_celu_with_mid_cvs_join_is_silent() {
+        // Round-6 F3 drop: the stream starts MID-CVS — no CLK for xlayer 0 is ever observed, so
+        // the first coded extended layer unit of the sequence was not observed. The presence
+        // judgment is undecidable (the first CELU's CI set is unknowable), so a CI in a later
+        // CELU must NOT fire `celu/content-interpretation-not-in-first-celu`.
+        let mut data = temporal_delimiter_obu(); // TU0 (no CLK -> implicit CVS, first CELU unseen)
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(frame_obu_direct_seq_ref(0x1C, 0)); // a non-key frame, no CVS start
+        data.extend(temporal_delimiter_obu()); // TU1 (still no CLK)
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING))); // CI in a later CELU
+        data.extend(frame_obu_direct_seq_ref(0x1C, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "celu/content-interpretation-not-in-first-celu"),
+            "a mid-CVS join (no observed first CELU) must drop the presence judgment; report \
+             was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_first_celu_presence_judgment_resets_at_new_cvs() {
+        // Round-6 F3: a CLK starting a NEW coded video sequence resets the first-CELU CI
+        // presence state. The first CVS (TU0–TU1) is CONFORMING: its first CELU (TU0) carries
+        // the CI, repeated in TU1 — no fire. The second CVS begins at TU2's CLK whose first
+        // CELU carries NO CI; TU3 (same second CVS) then adds a CI for mlayer 0 in a later CELU
+        // -> the presence rule fires for the SECOND CVS only. This proves the judgment is reset
+        // per CVS (the first CVS's first-CELU CI does not excuse the second CVS).
+        let mut data = temporal_delimiter_obu(); // TU0: first CVS start
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING))); // CI in first CVS's first CELU
+        data.extend(clk_frame_for_xlayer(0, 0)); // CLK -> first CVS
+        data.extend(temporal_delimiter_obu()); // TU1: continues first CVS
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING))); // identical repeat (ok)
+        data.extend(frame_obu_direct_seq_ref(0x1C, 0));
+        data.extend(temporal_delimiter_obu()); // TU2: SECOND CVS start, no CI in its first CELU
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(clk_frame_for_xlayer(0, 0)); // CLK -> second CVS (resets the judgment)
+        data.extend(temporal_delimiter_obu()); // TU3: continues second CVS, adds a CI in a later CELU
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING))); // CI absent from 2nd CVS's first CELU
+        data.extend(frame_obu_direct_seq_ref(0x1C, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "celu/content-interpretation-not-in-first-celu"),
+            "the second coded video sequence's first CELU lacks the CI a later CELU adds, so \
+             the per-CVS-reset presence rule must fire for it; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ci_in_later_celu_under_external_hls_is_silent() {
+        // Round-6 F3 drop: under an external-HLS Provided mode an external CI in the first CELU
+        // cannot be enumerated by ExternalHlsSet (it expresses only sequence headers and
+        // operating point sets), so the presence judgment drops. The same stream as
+        // `…_absent_from_first_celu_of_sequence_is_flagged` validated with a Provided set must
+        // NOT fire `celu/content-interpretation-not-in-first-celu`.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(clk_frame_for_xlayer(0, 0));
+        data.extend(temporal_delimiter_obu());
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING)));
+        data.extend(frame_obu_direct_seq_ref(0x1C, 0));
+        use crate::options::{ExternalHlsMode, ExternalHlsSet};
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "celu/content-interpretation-not-in-first-celu"),
+            "an external-HLS Provided mode cannot enumerate an external first-CELU CI, so the \
+             presence judgment must drop; report was: {report}"
+        );
+    }
+
     #[test]
     fn ci_reserved_bits_nonzero_is_warned() {
         let mut data = temporal_delimiter_obu();
@@ -18399,6 +18536,80 @@ mod tests {
             "with lcr_doh_constraint_flag == 0 the boundary unit's governing CMVS declares no \
              DOH constraint, so the cross-CELU OrderHint check must stay silent; report was: \
              {report}"
+        );
+    }
+
+    #[test]
+    fn celu_doh_flag_via_lcr_survives_eof_close_at_boundary_tu() {
+        // Round-6 F1: the END-OF-STREAM analogue of
+        // `…_survives_cmvs_close_at_boundary_tu`. Identical stream EXCEPT the boundary
+        // temporal unit (the CLK-with-no-MSDO TU that ENDS the CMVS) is the FINAL temporal
+        // unit — there is no trailing global temporal delimiter, so the validator's
+        // end-of-stream `finish` path (not the internal temporal-delimiter path) completes
+        // it. § 7.3.2 end condition 3 ("the end of the bitstream") ends the CMVS, so this
+        // final unit is the LAST temporal unit of the ENDING CMVS and is governed by that
+        // CMVS's activated global LCR (lcr_doh_constraint_flag 1). The § 7.3.7 cross-CELU
+        // OrderHint check must therefore FIRE. Pre-fix the EOF path sampled the DOH flag
+        // against the LIVE window AFTER `cmvs.complete_temporal_unit` cleared it (end
+        // condition 3 closes the live window), so the flag read false and the mismatch was
+        // silently suppressed — the internal-boundary governing-window capture (round-5 F1)
+        // was never mirrored to the EOF path.
+        let global = global_lcr_obu_agreement(1, 0b11, None, None, true); // doh flag 1, xlayers 0,1
+        let mut data = temporal_delimiter_obu(); // TU0: opens an Inside CMVS (begin condition 1)
+        data.extend(global);
+        data.extend(msdo_obu_configured(0, false, &[(0, 0, 0, 0), (1, 0, 0, 0)])); // MSDO doh 0
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1)); // seq 0 xlayer 0, seq_lcr_id 1
+        data.extend(celu_output_clk_ref(0, 0, 1, 0)); // CLK xlayer 0 -> activates seq 0 / LCR 1
+        data.extend(seq_header_obu_lcr_ref(1, 1, 0, true, 1)); // seq 1 xlayer 1, seq_lcr_id 1
+        data.extend(celu_output_clk_ref(1, 1, 1, 0)); // CLK xlayer 1 -> activates seq 1 / LCR 1
+        data.extend(temporal_delimiter_obu()); // TU1: the FINAL TU that ends the CMVS at EOF
+        // No MSDO in TU1 -> a CLK-with-no-MSDO temporal unit ends the CMVS (end condition 2),
+        // and the end of the bitstream ends it (end condition 3) with NO trailing delimiter.
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1));
+        data.extend(celu_output_clk_ref(0, 0, 1, 0)); // CELU xlayer 0, OrderHint 0
+        data.extend(seq_header_obu_lcr_ref(1, 1, 0, true, 1));
+        data.extend(celu_output_clk_ref(1, 1, 1, 1)); // CELU xlayer 1, OrderHint 1 -> mismatch
+        // NO trailing temporal delimiter: the stream ENDS on the boundary TU.
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "celu/doh-order-hint-mismatch"),
+            "the activated global LCR (lcr_doh_constraint_flag 1) governs the CMVS-ending \
+             FINAL temporal unit, so the § 7.3.7 cross-CELU OrderHint check must fire even \
+             though the end of the bitstream closes the live CMVS window; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn celu_doh_flag_via_lcr_off_at_eof_boundary_tu_stays_silent() {
+        // Round-6 F1 (precision): the EOF governing-window capture must NOT blanket-enable
+        // the DOH checks. Identical to `…_survives_eof_close_at_boundary_tu` but the
+        // activated global LCR's lcr_doh_constraint_flag == 0 (MSDO flag also 0), so the
+        // final temporal unit's governing CMVS declares NO DOH constraint — the cross-CELU
+        // OrderHint disagreement is conforming and celu/doh-order-hint-mismatch must stay
+        // SILENT.
+        let global = global_lcr_obu_agreement(1, 0b11, None, None, false); // doh flag 0
+        let mut data = temporal_delimiter_obu();
+        data.extend(global);
+        data.extend(msdo_obu_configured(0, false, &[(0, 0, 0, 0), (1, 0, 0, 0)])); // MSDO doh 0
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1));
+        data.extend(celu_output_clk_ref(0, 0, 1, 0));
+        data.extend(seq_header_obu_lcr_ref(1, 1, 0, true, 1));
+        data.extend(celu_output_clk_ref(1, 1, 1, 0));
+        data.extend(temporal_delimiter_obu()); // FINAL TU ends the CMVS (no MSDO), no trailing TD
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1));
+        data.extend(celu_output_clk_ref(0, 0, 1, 0)); // OrderHint 0
+        data.extend(seq_header_obu_lcr_ref(1, 1, 0, true, 1));
+        data.extend(celu_output_clk_ref(1, 1, 1, 1)); // OrderHint 1 (would mismatch if flagged)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "celu/doh-order-hint-mismatch"),
+            "with lcr_doh_constraint_flag == 0 the final boundary unit's governing CMVS \
+             declares no DOH constraint, so the cross-CELU OrderHint check must stay silent; \
+             report was: {report}"
         );
     }
 
