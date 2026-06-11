@@ -17737,4 +17737,100 @@ mod tests {
         let payload = metadata_short_payload(0xA0, 1, &unit.into_bytes()); // suffix, type 1 = HDR_CLL
         annex_b_obu_with_header(&layer_obu_header(8, 0, mlayer, 0), &payload)
     }
+
+    // --- § 7.3.6 / § 7.3.7 / § 7.4.6 coded-extended-layer-unit + DOH integration ---
+
+    /// A full intra output CLK frame at `xlayer` (mlayer 0) referencing seq 0, with a
+    /// chosen `order_hint` (OrderHintBits == 1, so order_hint is f(1)). The body reaches
+    /// `intra_structure_tail`, so the core parser settles `immediate_output_frame == 1`
+    /// (output) and reads `order_hint` — giving the CELU tracker a decidable output class
+    /// and OrderHint. Built like `clk_frame_decidable` but layered.
+    fn celu_output_clk_at(xlayer: u8, order_hint: u8) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header -> seq 0
+        fb.bit(1); // immediate_output_frame == 1 (output)
+        fb.bit(0); // frame_size_override_flag
+        fb.f(u32::from(order_hint), 1); // order_hint f(OrderHintBits == 1)
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0);
+        annex_b_obu_with_header(&layer_obu_header(4, 0, 0, xlayer), &fb.into_bytes())
+    }
+
+    #[test]
+    fn celu_same_celu_output_order_hint_mismatch_is_flagged() {
+        // Two output CLK frames in one coded extended layer unit (xlayer 0, mlayer 0) with
+        // different OrderHint values violate the § 7.3.6 same-OrderHint rule. The order_hint
+        // is read from the real frame-header core parse.
+        let mut data = seg_td_and_seq();
+        data.extend(celu_output_clk_at(0, 0)); // OrderHint 0
+        data.extend(celu_output_clk_at(0, 1)); // OrderHint 1 -> mismatch
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "celu/output-order-hint-mismatch"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn celu_same_celu_output_order_hint_agreement_is_silent() {
+        let mut data = seg_td_and_seq();
+        data.extend(celu_output_clk_at(0, 1));
+        data.extend(celu_output_clk_at(0, 1)); // same OrderHint
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "celu/output-order-hint-mismatch"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn celu_doh_cross_celu_order_hint_mismatch_under_msdo_flag_is_flagged() {
+        // A temporal unit with an MSDO whose multistream_doh_constraint_flag == 1, then two
+        // CELUs (xlayer 0 and xlayer 1) whose output CLK frames carry different OrderHints —
+        // the § 7.3.7 / § 7.4.6 cross-CELU DOH OrderHint constraint fires.
+        let mut data = temporal_delimiter_obu();
+        data.extend(msdo_obu_configured(0, true, &[(0, 0, 0, 0), (1, 0, 0, 0)]));
+        data.extend(annex_b_obu(
+            0x04,
+            &frame_core_seq_payload(FrameCoreSeq::base()),
+        ));
+        data.extend(celu_output_clk_at(0, 0)); // CELU xlayer 0, OrderHint 0
+        data.extend(celu_output_clk_at(1, 1)); // CELU xlayer 1, OrderHint 1 -> cross-CELU mismatch
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "celu/doh-order-hint-mismatch"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn celu_doh_cross_celu_order_hint_mismatch_without_flag_is_silent() {
+        // The same cross-CELU OrderHint disagreement with multistream_doh_constraint_flag == 0
+        // (and no activated global LCR) is conforming — the DOH constraint is flag-gated.
+        let mut data = temporal_delimiter_obu();
+        data.extend(msdo_obu_configured(0, false, &[(0, 0, 0, 0), (1, 0, 0, 0)]));
+        data.extend(annex_b_obu(
+            0x04,
+            &frame_core_seq_payload(FrameCoreSeq::base()),
+        ));
+        data.extend(celu_output_clk_at(0, 0));
+        data.extend(celu_output_clk_at(1, 1));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "celu/doh-order-hint-mismatch"),
+            "the DOH OrderHint check must stay silent with the flag off; report was: {report}"
+        );
+    }
 }

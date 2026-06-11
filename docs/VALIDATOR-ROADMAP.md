@@ -173,8 +173,15 @@ order, output/non-output classification from the parsed output flags (Unknown
 → silent), and the eager structural `frame-unit/*` presence-order diagnostics
 plus the §7.3.8.10 first-coded-frame-unit CI rule; the two formerly-backlogged
 §7.3.7/§7.3.6 ordering rows (`obu-order/global-hls-after-metadata-suffix`,
-`obu-order/non-global-hls-before-coded-layer`) landed with it. §7.3.9
-long-term-reference availability is not started.
+`obu-order/non-global-hls-before-coded-layer`) landed with it. The §7.3.6
+coded-extended-layer-unit constraint family and the §7.3.7/§7.4.6
+display-order-hint (DOH) constraints landed under `celu-orderhint-constraints`
+(`crates/splot-validate/src/celu.rs`, the `CodedExtendedLayerTracker` above the
+segmenter, keyed per `obu_xlayer_id`): the `celu/*` in-unit ordering,
+output-frame presence, same-OrderHint, CLK/OLK first-unit and lowest-layer,
+no-CLK+OLK-mix, all-leading-or-none, and CELU-scoped CI rules, plus the
+flag-gated `celu/doh-order-hint-mismatch` / `celu/doh-order-hint-bits-mismatch`
+checks. §7.3.9 long-term-reference availability is not started.
 
 **Goal:** enforce temporal-unit and coded-extended-layer presence order enough for validator-first conformance.
 
@@ -196,7 +203,12 @@ Landed: the §7.3.7 ordering checks listed under `obu-order/*` in
 and duplication, global-HLS position, ascending xlayer order, padding
 globality, global-HLS-after-metadata-suffix, and non-global-HLS-before-coded-layer
 — plus the §7.3.3–§7.3.5 coded-frame-unit segmentation and its `frame-unit/*`
-diagnostics.
+diagnostics, and the §7.3.6 coded-extended-layer-unit constraint family and
+§7.3.7/§7.4.6 DOH OrderHint/OrderHintBits checks under `celu/*`. The `celu/*`
+predicates are disjoint from `obu-order/non-global-hls-before-coded-layer` (which
+owns the HLS-header-after-frame-region case) and from
+`frame-unit/ci-not-in-first-frame-unit` (the §7.3.8.10 temporal-unit CI form vs
+the §7.3.6 CELU-scoped `celu/content-interpretation-not-in-first-unit`).
 
 Remaining:
 
@@ -210,7 +222,16 @@ Remaining:
   output classification is undecidable (an unsupported `FrameHeaderParseStatus`
   stop, blocked on `AV2-5.18-FRAME-HEADER`) drops its output-class-derived
   judgment (the grammar branch and the §7.3.4 BRT bound), narrowing as
-  frame-header parsing lands.
+  frame-header parsing lands;
+- the §7.3.6 monotonic_output_order_flag==0 OrderHint regression rule's full
+  form (mirror lines 579–584) stays a named residual on
+  `AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT`: it needs output-order and MSB-extended
+  OrderHint state (`AV2-5.18.2-FRAME-HEADER-INFO`); the §7.3.6 bit-identity
+  cross-layer fingerprint baseline ships as
+  `hls/repeated-sequence-header-not-identical` and the §6.4.1 same-output-time /
+  operating-point-consistency residuals are documented-blocked on
+  `AV2-E-DECODER-MODEL` / `AV2-5.18.2-FRAME-HEADER-INFO` (see
+  `AV2-6.4-SEQUENCE-HEADER-SEMANTICS`).
 
 Follow-up in this phase: §7.4 random access decoding. Validate random access
 points enough to support HLS availability, coded-video-sequence boundaries, and

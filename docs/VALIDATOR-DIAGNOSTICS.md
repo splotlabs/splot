@@ -82,6 +82,31 @@ decoder-model constraints (Annex E) are out of scope. Hand-crafted unit vectors 
 |---|---|---|---|
 | `byte-alignment/zero-bit-not-zero` | error | § 6.2.4 | a byte_alignment() padding zero bit is non-zero |
 
+### `celu/`
+
+Coded-extended-layer-unit (§7.3.6) constraints and the §7.3.7/§7.4.6 display-order-hint (DOH)
+constraints (`AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT`, `AV2-7.3.7-TEMPORAL-UNIT-ORDER`). Built above
+the FrameUnitSegmenter (`crates/splot-validate/src/celu.rs`), keyed per `obu_xlayer_id` across a
+temporal unit. Disjoint from `obu-order/non-global-hls-before-coded-layer` (which owns the
+HLS-header-after-frame-region case) and `frame-unit/ci-not-in-first-frame-unit` (the §7.3.8.10
+temporal-unit-scoped CI form). Output-class- and OrderHint-derived judgments drop to silence when
+undecidable (the Unknown invariant); the DOH checks fire only when the temporal unit's
+`lcr_doh_constraint_flag` / `multistream_doh_constraint_flag` is 1. Hand-crafted unit vectors only.
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `celu/clk-olk-mixed` | error | § 7.3.6 | a coded extended layer unit contains both an OBU_CLOSED_LOOP_KEY and an OBU_OPEN_LOOP_KEY (mirror line 554) |
+| `celu/content-interpretation-not-in-first-unit` | error | § 7.3.6 | an OBU_CONTENT_INTERPRETATION appears outside the first frame unit of its embedded layer within the coded extended layer unit (the CELU-scoped form; the §7.3.8.10 temporal-unit form is `frame-unit/ci-not-in-first-frame-unit`) |
+| `celu/doh-order-hint-bits-mismatch` | error | § 7.3.7 | with a DOH constraint flag set, frame units in one temporal unit carry different OrderHintBits (mirror line 655) |
+| `celu/doh-order-hint-mismatch` | error | § 7.3.7 | with a DOH constraint flag set, coded output frame units in different coded extended layer units of one temporal unit carry different OrderHint (mirror lines 656-657 / 1316-1320) |
+| `celu/in-unit-order` | error | § 7.3.6 | an HLS header appears after a later HLS-header phase (LCR → OPS → atlas → sequence header), or a frame unit opens at a lower obu_mlayer_id than an earlier one, within a coded extended layer unit (mirror lines 521-525). Disjoint from `obu-order/non-global-hls-before-coded-layer` (the HLS-header-after-frame-region case) |
+| `celu/key-not-in-first-unit` | error | § 7.3.6 | an OBU_CLOSED_LOOP_KEY / OBU_OPEN_LOOP_KEY opens a frame unit that is not the first coded frame unit of its embedded layer within the coded extended layer unit (mirror lines 543-545 / 551-553) |
+| `celu/leading-frame-mix` | error | § 7.3.6 | a coded extended layer unit mixes leading and non-leading frame units (mirror lines 555-556). Leading-ness is the tri-state Leadingness (mirror AVM is_leading_picture, av2/decoder/obu.c:2544-2549): LEADING_* is Leading, the IsRegular==1 set (OLK / REGULAR_* / SWITCH / RAS / BRIDGE) is Regular, a CLK is Indeterminate and is excluded from the judgment entirely (the § 6.4.1 gloss at 06-syntax-structures-semantics.md:4546 would class a CLK as leading, but the oracle does not — documented sound under-report). Fires only when a Leading unit and a Regular unit coexist |
+| `celu/lowest-layer-not-key` | error | § 7.3.6 | a coded extended layer unit contains a CLK (resp. OLK) but the lowest embedded layer's first coded frame unit is not a CLK (resp. OLK) (mirror lines 543-545 / 551-553) |
+| `celu/missing-output-frame-unit` | error | § 7.3.6 | a coded extended layer unit (with at least one output-class-decided frame unit) contains no coded output frame unit (mirror line 536) |
+| `celu/non-output-without-output` | error | § 7.3.6 | an embedded layer of a coded extended layer unit has a coded non-output frame unit but no coded output frame unit (mirror lines 537-538) |
+| `celu/output-order-hint-mismatch` | error | § 7.3.6 | coded output frame units in one coded extended layer unit carry different OrderHint (mirror lines 539-540) |
+
 ### `content-interpretation/`
 
 | Rule ID | Severity | Section | Condition |
