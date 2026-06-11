@@ -6600,6 +6600,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn metadata_timecode_n_frames_rap_resent_identical_ci_repairs() {
+        // Round-2 finding 1 (epoch-aware identical-CI guard): a pre-RAP CI at TU0
+        // establishes a low-rate timing T (maxPicPerSecond 1). A later RAP temporal unit
+        // holds, in decoding order, a timecode that violates T (n_frames 5), then the SAME
+        // CI re-sent with timing IDENTICAL to the pre-RAP copy, then the CLK (a § 7.3.8.11
+        // random access point). The eager timecode pairing against the stale pre-RAP CI is
+        // deferred. When the identical CI is re-sent the pre-RAP record is still present
+        // (the CLK has not yet pruned it), so the timing-equality dedup guard skips the
+        // recheck; the CLK then drops the deferred pre-RAP pairing — and with the recheck
+        // skipped, nothing re-pairs the timecode against the post-epoch CI, so the
+        // violation vanishes. The re-sent CI is the § 7.3.8.11 authority for this RAP
+        // temporal unit's pictures and MUST re-pair the timecode regardless of the timing
+        // matching the pre-epoch copy's: the epoch-aware guard re-pairs and the diagnostic
+        // fires, anchored at the timecode metadata OBU.
+        let low_rate = CiTiming {
+            display_tick: 1000,
+            time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
+            equal_picture_interval: true,
+            num_ticks_minus_1: 1,
+        };
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        // TU0: the pre-RAP CI establishes the low-rate timing.
+        data.extend(content_interpretation_obu(0, 0, Some(low_rate)));
+        data.extend(temporal_delimiter_obu()); // -> TU1, the RAP temporal unit
+        // TU1: timecode (n_frames 5 >= maxPicPerSecond 1) -> the SAME CI re-sent with
+        // identical timing (still before the RAP, so the pre-RAP record is the dedup
+        // baseline) -> CLK (§ 7.3.8.11 RAP, drops the deferred pre-RAP pairing).
+        let timecode_offset = data.len() as u64 + 1;
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 31),
+            &timecode_flagged_payload(5, Some(0), Some(0), Some(0)),
+        ));
+        data.extend(content_interpretation_obu(0, 0, Some(low_rate)));
+        data.extend(annex_b_obu(0x10, &[])); // OBU_CLOSED_LOOP_KEY, xlayer 0 -> RAP
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "metadata/timecode-n-frames-exceeds-rate"
+                    && d.byte_offset.map(|o| o.get()) == Some(timecode_offset)
+            }),
+            "the post-RAP re-sent CI must re-pair the RAP-temporal-unit timecode even \
+             though its timing equals the pre-RAP copy's; report was: {report}"
+        );
+    }
+
     /// Builds a `metadata_decoded_frame_hash()` short OBU payload (type 5) with a single
     /// frame hash (per_plane 0) and the given reserved bit.
     fn frame_hash_payload(reserved: u8) -> Vec<u8> {
@@ -8046,6 +8093,52 @@ mod tests {
                  OLK's § 7.3.8.11 epoch; report was: {report}"
             );
         }
+    }
+
+    #[test]
+    fn scan_type_rap_resent_identical_ci_repairs() {
+        // The § 6.16.10 Table 6.18 analogue of
+        // `metadata_timecode_n_frames_rap_resent_identical_ci_repairs`: the
+        // `decisive_content_unchanged` CI dedup guard must be temporal-unit-identity
+        // aware, not content-equality-only. A pre-RAP CI at TU0 establishes
+        // ci_scan_type_idc 2 (Table 6.18 SingleField). A later RAP temporal unit
+        // holds, in decoding order, scan-type metadata mps_pic_struct_type 0 (Frame
+        // group, requires ci_scan_type_idc 1) that violates the established 2, then
+        // the SAME CI re-sent with ci_scan_type_idc IDENTICAL to the pre-RAP copy,
+        // then the CLK (a § 7.3.8.11 random access point). The eager Table 6.18
+        // pairing of the metadata against the stale pre-RAP CI is deferred. When the
+        // identical CI is re-sent the pre-RAP record is still present (the CLK has
+        // not yet pruned it), so a content-equality-only dedup guard would skip the
+        // recheck; the CLK then drops the deferred pre-RAP pairing
+        // (`drop_pending_for_rules`) — and with the recheck skipped, nothing re-pairs
+        // the observation against the post-epoch CI, so the violation vanishes. The
+        // re-sent CI is the § 7.3.8.11 authority for this RAP temporal unit's
+        // pictures and MUST re-pair the metadata regardless of the idc matching the
+        // pre-epoch copy's: the temporal-unit-identity guard re-pairs and the
+        // diagnostic fires.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        // TU0: the pre-RAP CI establishes ci_scan_type_idc 2.
+        data.extend(content_interpretation_scan_obu(2, None));
+        data.extend(temporal_delimiter_obu()); // -> TU1, the RAP temporal unit
+        // TU1: scan-type metadata (Frame group, requires idc 1) violating the
+        // established idc 2 -> the SAME CI re-sent identical (still before the RAP, so
+        // the pre-RAP record is the dedup baseline) -> CLK (§ 7.3.8.11 RAP, drops the
+        // deferred pre-RAP pairing).
+        data.extend(global_scan_type_obu(0x00, 0));
+        data.extend(content_interpretation_scan_obu(2, None));
+        data.extend(annex_b_obu(0x10, &[])); // OBU_CLOSED_LOOP_KEY, xlayer 0 -> RAP
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "metadata/scan-type-ci-scan-type-mismatch"),
+            "the post-RAP re-sent CI must re-pair the RAP-temporal-unit scan-type \
+             metadata even though its ci_scan_type_idc equals the pre-RAP copy's; \
+             report was: {report}"
+        );
+        assert!(
+            !has_error(&report, "content-interpretation/repeated-ci-not-identical"),
+            "the identical re-send is a legal § 6.14 repeat; report was: {report}"
+        );
     }
 
     #[test]

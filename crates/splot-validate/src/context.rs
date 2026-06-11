@@ -2387,6 +2387,33 @@ impl TimecodeFieldPresence {
 /// concrete extended layer with its own CIs. This keeps the conservative
 /// "applies to every in-scope CI" reading whenever the bitstream does not pin the
 /// targeting down.
+///
+/// **§ 7.3.8.11 inheritance residual (round-2 finding 2, NOT modeled — honest
+/// narrowing).** A `LAYER_VALUES` timecode targeting embedded layer `m` is governed
+/// by the content interpretation parameters of layer `m`; but § 7.3.8.11 step 3
+/// (mirror `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-3-8-11`, lines 925-929)
+/// says that when no content interpretation OBU is present for `m`, its parameters
+/// are *inherited* from "the highest such embedded layer `k` less than `m`" with
+/// `MLayerPresenceMap[m][k] == 1`. Resolving that inheritance requires
+/// `MLayerPresenceMap` — the transitive closure of `MLayerDependencyMap` derived in
+/// § 5.4.1 (mirror `05-syntax-structures.md` lines 583-607) — which this validator
+/// does NOT model (`splot-core` carries `MLayerDependencyMap` but never derives the
+/// presence closure, and no `mlayer_presence` / `MLayerPresenceMap` state exists).
+/// Rather than guess the closure, the gate stays exact: when the timecode targets
+/// `m` and the only in-scope CI is at a lower layer `k != m`,
+/// [`HdrAssociation::associated_with_ci`]'s `Pairs` arm returns `false` and this
+/// pairing compares NOTHING — an honest false-negative, not a silent in-scope-clean
+/// pass. The unresolved inheritance is treated as not-pairable so the bound is never
+/// evaluated against a CI whose governance over `m` cannot be confirmed from modeled
+/// state. Resolving it (deriving `MLayerPresenceMap` and pairing a layer-`m` timecode
+/// with its inherited layer-`k` CI) is deferred.
+// TODO(spec: AV2-5.17.7-METADATA-TIMECODE): resolve § 7.3.8.11 step-3 content
+// interpretation inheritance through MLayerPresenceMap so a LAYER_VALUES timecode
+// targeting embedded layer m pairs with the n_frames bound of the inherited CI from
+// the highest lower layer k with MLayerPresenceMap[m][k] == 1 when no CI exists for
+// m. Blocked on modeling MLayerPresenceMap (§ 5.4.1 transitive closure of the
+// already-modeled MLayerDependencyMap); until then an exact-pair miss with possible
+// inheritance compares nothing.
 fn timecode_ci_in_scope(
     targeting: &Option<HdrAssociation>,
     scope_key: ExtendedLayerId,
@@ -4600,12 +4627,31 @@ impl ValidatorContext {
         // one whose decisive content changed (itself flagged by
         // content-interpretation/repeated-ci-not-identical below), forms
         // genuinely new (observation, CI-content) pairs and is re-evaluated.
+        //
+        // The dedup must be temporal-unit-identity aware, not content-equality only
+        // — the same § 7.3.8.11 epoch hazard fixed in the timecode guard below. A CI
+        // re-sent at or after the layer's random-access-point epoch is the authority
+        // for THIS epoch's pictures; a stale record from an EARLIER temporal unit
+        // carries the previous epoch's pictures, which a random access point will
+        // drop (`drop_pending_for_rules`). The failure mode: a RAP temporal unit
+        // re-sends an identical CI BEFORE its CLK, so when the re-sent CI is observed
+        // the still-present pre-RAP record (same decisive content) would suppress the
+        // recheck; the CLK that follows then discards the deferred pre-RAP Table 6.18
+        // pairing, and with the recheck skipped nothing ever pairs this temporal
+        // unit's scan-type observations against the re-sent CI. Only a record re-sent
+        // within the SAME temporal unit it last appeared in is a § 6.14 repeat whose
+        // observations were already paired at observation time, so only that case
+        // deduplicates; a record from an earlier temporal unit re-paired here covers
+        // this temporal unit's freshly observed scan-type metadata (the recheck
+        // itself still filters observations to `tu_index >= ci_rap_epoch`, so a
+        // genuinely pre-epoch observation is excluded once the epoch advances).
         let decisive_content_unchanged = self
             .content_interpretations
             .get(&(xlayer, mlayer))
             .is_some_and(|existing| {
-                scan_type_decisive_content(&existing.content)
-                    == scan_type_decisive_content(&content_interpretation)
+                existing.tu_index == tu_index
+                    && scan_type_decisive_content(&existing.content)
+                        == scan_type_decisive_content(&content_interpretation)
             });
         if !decisive_content_unchanged {
             self.recheck_scan_type_after_ci(
@@ -4623,11 +4669,30 @@ impl ValidatorContext {
         // global bucket — but only when the n_frames-decisive content (the timing_info)
         // differs from the record this CI replaces, mirroring the scan-type dedup so a
         // repeated identical CI (the only legal repeat, § 6.14) never re-reports.
+        //
+        // The dedup must be epoch-aware (round-2 finding 1). A CI re-sent at or after the
+        // layer's § 7.3.8.11 random-access-point epoch is the authority for THIS epoch's
+        // pictures; a stale record from an EARLIER temporal unit carries the previous
+        // epoch's pictures, which a random access point will drop (`drop_pending_for_rules`).
+        // The failure mode: a RAP temporal unit re-sends an identical CI BEFORE its CLK, so
+        // when the re-sent CI is observed `ci_rap_epoch` has not yet advanced and the still-
+        // present pre-RAP record (same timing) would suppress the recheck; the CLK that
+        // follows then discards the deferred pre-RAP timecode pairing, and with the recheck
+        // skipped nothing ever pairs this temporal unit's timecodes against the re-sent CI.
+        //
+        // The robust invariant is therefore temporal-unit identity, not the lagging epoch:
+        // only a record re-sent within the SAME temporal unit it last appeared in is a
+        // § 6.14 repeat whose observations were already paired at observation time, so only
+        // that case deduplicates. A record from an earlier temporal unit re-paired here
+        // covers this temporal unit's freshly observed timecodes (the recheck itself still
+        // filters observations to `tu_index >= ci_rap_epoch`, so a genuinely pre-epoch
+        // observation is excluded once the epoch advances).
         let timing_unchanged = self
             .content_interpretations
             .get(&(xlayer, mlayer))
             .is_some_and(|existing| {
-                existing.content.timing_info == content_interpretation.timing_info
+                existing.tu_index == tu_index
+                    && existing.content.timing_info == content_interpretation.timing_info
             });
         if !timing_unchanged {
             self.recheck_timecode_n_frames_after_ci(
