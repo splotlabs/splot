@@ -8553,9 +8553,9 @@ mod tests {
         cropping: Option<(u32, u32, u32, u32)>,
     }
 
-    /// A sequence header carrying the given § 6.8.8 rep-info fields (no embedded layers,
-    /// `max_tlayer_id == 1`, `max_mlayer_id == 0`).
-    fn seq_header_rep_payload(p: SeqRep) -> Vec<u8> {
+    /// The raw `sequence_header_obu()` payload bytes carrying the given § 6.8.8 rep-info
+    /// fields (no embedded layers, `max_tlayer_id == 1`, `max_mlayer_id == 0`).
+    fn seq_header_rep_payload_bytes(p: SeqRep) -> Vec<u8> {
         let mut bits = Bits::default();
         bits.uvlc(p.seq_header_id);
         bits.f(0, 5); // seq_profile_idc
@@ -8586,7 +8586,25 @@ mod tests {
         bits.bit(0); // decoder_model_info_present_flag
         bits.bit(0); // tlayer_dependency_present_flag (max_tlayer_id == 1)
         append_non_single_child_configs(&mut bits);
-        annex_b_obu(0x04, &bits.into_bytes())
+        bits.into_bytes()
+    }
+
+    /// A sequence header carrying the given § 6.8.8 rep-info fields (no embedded layers,
+    /// `max_tlayer_id == 1`, `max_mlayer_id == 0`), on extended layer 0.
+    fn seq_header_rep_payload(p: SeqRep) -> Vec<u8> {
+        annex_b_obu(0x04, &seq_header_rep_payload_bytes(p))
+    }
+
+    /// As [`seq_header_rep_payload`], but on the given `xlayer` (a § 6.2.2 base-layer
+    /// sequence header — `tlayer == 0`, `mlayer == 0` — that can activate seq id `p` for
+    /// that extended layer).
+    fn seq_header_rep_obu_for_xlayer(xlayer: u8, p: SeqRep) -> Vec<u8> {
+        let payload = seq_header_rep_payload_bytes(p);
+        if xlayer == 0 {
+            annex_b_obu(0x04, &payload)
+        } else {
+            annex_b_obu_with_header(&layer_obu_header(1, 0, 0, xlayer), &payload)
+        }
     }
 
     /// A local LCR OBU at `xlayer` carrying `lcr_seq_profile_tier_level_info(xlayer)`
@@ -8709,6 +8727,10 @@ mod tests {
         append_lcr_rep_info(&mut body, width, height, format, cropping);
         body.align(); // byte_alignment()
         let body_bytes = (body.bits.len() / 8) as u32;
+        debug_assert!(
+            body_bytes < 128,
+            "lcr_global_data_size must fit a single-byte leb128"
+        );
         bits.f(body_bytes, 8); // lcr_global_data_size (single-byte leb128)
         bits.bits.extend_from_slice(&body.bits);
         extensible_obu_tail(&mut bits);
@@ -9145,6 +9167,46 @@ mod tests {
     }
 
     #[test]
+    fn lcr_rep_info_cropping_present_flag_mismatch_also_reports_offsets() {
+        // The LCR carries a cropping window with a non-zero left offset; the header has
+        // no window (present flag 0, offsets inferred to 0). Per the § 6.8.8 "shall match"
+        // sentences, both the present-flag disagreement AND the offset disagreement fire:
+        // the offset comparison runs against the header's inferred-0 values regardless of
+        // the present-flag mismatch (see the rationale comment in
+        // `context.rs` around the `seq_cropping_win_*` inference, lines 8046-8050).
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_rep_info(
+            0,
+            5,
+            16,
+            8,
+            None,
+            Some((1, 0, 0, 0)), // left offset 1, window present
+        ));
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15,
+            height_minus_1: 7,
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: None, // present flag 0, offsets inferred 0
+        }));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| d.rule_id == "lcr/rep-info-mismatch"
+                && d.message.contains("lcr_cropping_window_present_flag")),
+            "the present-flag disagreement must fire; report was: {report}"
+        );
+        assert!(
+            report.errors().any(|d| d.rule_id == "lcr/rep-info-mismatch"
+                && d.message.contains("lcr_cropping_win_left_offset")),
+            "the left-offset disagreement must also fire (spec-correct over-reporting); \
+             report was: {report}"
+        );
+    }
+
+    #[test]
     fn lcr_rep_info_cropping_offset_mismatch_is_flagged() {
         // Both present, but a top offset disagrees.
         let mut data = temporal_delimiter_obu();
@@ -9270,6 +9332,60 @@ mod tests {
     }
 
     #[test]
+    fn lcr_rep_info_not_duplicated_across_reactivation() {
+        // The activation-driven re-check (frame re-references the same header) must not
+        // duplicate the finding.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_rep_info(0, 5, 1920, 8, None, None));
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15, // width 16 != lcr 1920
+            height_minus_1: 7,
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: None,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "lcr/rep-info-mismatch"),
+            1,
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_rep_info_diagnostic_points_at_lcr_obu() {
+        // The diagnostic anchors at the LCR OBU (its declared rep info is the source),
+        // which precedes the activating sequence header here.
+        let td = temporal_delimiter_obu();
+        let lcr = local_lcr_obu_with_rep_info(0, 5, 1920, 8, None, None);
+        let seq_start = (td.len() + lcr.len()) as u64;
+        let mut data = td;
+        data.extend(lcr);
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15, // width 16 != lcr 1920
+            height_minus_1: 7,
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: None,
+        }));
+        let report = Validator::new(false).validate_bytes(&data);
+        let offsets: Vec<_> = report
+            .errors()
+            .filter(|d| d.rule_id == "lcr/rep-info-mismatch")
+            .map(|d| d.byte_offset)
+            .collect();
+        assert!(
+            matches!(offsets.as_slice(), [Some(offset)] if offset.get() < seq_start),
+            "the diagnostic must point at the LCR OBU (before byte {seq_start}); report: {report}"
+        );
+    }
+
+    #[test]
     fn lcr_rep_info_unconfirmed_activation_is_silent_then_fires_on_frame() {
         // The violating header (id 1) is staged behind a non-violating header (id 0);
         // only the frame-confirmed activation fires.
@@ -9336,6 +9452,91 @@ mod tests {
             ops_error_count(&report, "lcr/rep-info-mismatch"),
             1,
             "the redefinition must re-check exactly once; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_rep_info_redefinition_of_only_dims_rechecks_all_layers_using_the_id() {
+        // Regression for the § 6.8.8 LCR-agreement re-check widener. Header id 0 is active
+        // for xlayer 0 AND xlayer 1, each associated with its own local LCR 5 whose rep
+        // info matches the header (width 16). A later same-id redefinition (via the
+        // xlayer-0 header OBU) changes ONLY max_frame_width to 8, which disagrees with
+        // both LCRs. max_frame_width is not in the agreement-input set nor the Annex A
+        // value-space fingerprint, so before the LCR-agreement fingerprint widener the
+        // redefinition would only re-check the redefinition's own xlayer 0 and miss the
+        // other layer (xlayer 1) the id is active for. The recheck must cover every
+        // extended layer the id is active for, so the mismatch fires for BOTH (or at
+        // minimum the non-activating xlayer 1).
+        //
+        // TU 1: both xlayers' local LCR 5 and their seq-0 headers (width 16, agree), then
+        // frame-confirm xlayer 0 then xlayer 1 (ascending obu_xlayer_id, § 7.3.7;
+        // frame_confirmed_xlayers is monotonic, so both stay confirmed).
+        // OBUs are kept in ascending obu_xlayer_id order within each temporal unit
+        // (§ 7.3.7): each xlayer's LCR and its seq-0 header are grouped, xlayer 0 then
+        // xlayer 1; the frame confirmations live in their own temporal unit.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_rep_info(0, 5, 16, 8, None, None)); // xlayer 0 LCR, width 16
+        data.extend(seq_header_rep_obu_for_xlayer(
+            0,
+            SeqRep {
+                seq_header_id: 0,
+                seq_lcr_id: 5,
+                width_minus_1: 15, // width 16 (agrees with xlayer 0 LCR)
+                height_minus_1: 7,
+                chroma_format_idc: 0,
+                bit_depth_idc: 0,
+                cropping: None,
+            },
+        ));
+        data.extend(local_lcr_obu_with_rep_info(1, 5, 16, 8, None, None)); // xlayer 1 LCR, width 16
+        data.extend(seq_header_rep_obu_for_xlayer(
+            1,
+            SeqRep {
+                seq_header_id: 0,
+                seq_lcr_id: 5,
+                width_minus_1: 15, // width 16 (agrees with xlayer 1 LCR)
+                height_minus_1: 7,
+                chroma_format_idc: 0,
+                bit_depth_idc: 0,
+                cropping: None,
+            },
+        ));
+        // TU 2: frame-confirm xlayer 0 then xlayer 1 (ascending; frame_confirmed_xlayers
+        // is monotonic, so both stay confirmed afterward).
+        data.extend(temporal_delimiter_obu());
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 ref seq 0
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 0)); // CLK xlayer 1 ref seq 0
+        // TU 3: redefinition of seq 0 (via the xlayer-0 header OBU) changing ONLY
+        // max_frame_width to 8 — disagreeing with both LCRs' width 16. seq 0 is still
+        // active for BOTH xlayer 0 and xlayer 1, so the LCR-agreement fingerprint-change
+        // recheck must cover both even though only xlayer 0 re-confirms here. (The 4-bit
+        // frame-width field caps the value at 15+1=16, so the disagreement is encoded by
+        // shrinking the width rather than enlarging it.)
+        data.extend(temporal_delimiter_obu());
+        data.extend(seq_header_rep_obu_for_xlayer(
+            0,
+            SeqRep {
+                seq_header_id: 0,
+                seq_lcr_id: 5,
+                width_minus_1: 7, // width 8 != LCR width 16
+                height_minus_1: 7,
+                chroma_format_idc: 0,
+                bit_depth_idc: 0,
+                cropping: None,
+            },
+        ));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // re-activate seq 0 (xlayer 0)
+        let report = Validator::new(false).validate_bytes(&data);
+        let xlayer_1_mismatch = report.errors().any(|d| {
+            d.rule_id == "lcr/rep-info-mismatch"
+                && d.spec_section.as_deref() == Some("6.8.8")
+                && d.message.contains("extended layer 1")
+        });
+        assert!(
+            xlayer_1_mismatch,
+            "a redefinition changing only max_frame_width must re-run the § 6.8.8 \
+             agreement check for every extended layer the id is active for, including the \
+             non-activating xlayer 1; report was: {report}"
         );
     }
 

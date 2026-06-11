@@ -2019,6 +2019,7 @@ mod tests {
         assert_eq!(header.frame_height_bits.get(), 4);
         assert_eq!(header.max_frame_width.get(), 16);
         assert_eq!(header.max_frame_height.get(), 8);
+        assert!(!header.seq_cropping_window_present_flag);
         assert_eq!(header.cropping_window, CroppingWindow::default());
     }
 
@@ -2062,6 +2063,7 @@ mod tests {
         assert_eq!(header.max_mlayer_id.get(), 0);
         assert_eq!(header.seq_max_mlayer_count.get(), 1);
         assert!(!header.monotonic_output_order_flag);
+        assert!(!header.seq_cropping_window_present_flag);
         assert_eq!(header.seq_initial_display_delay_minus_1, Some(2));
         assert!(!header.decoder_model_info_present_flag);
         assert_eq!(header.num_units_in_decoding_tick, None);

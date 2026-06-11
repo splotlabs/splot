@@ -8694,14 +8694,30 @@ impl ValidatorContext {
             annex_a_value_space_fingerprint(&previous.general)
                 != annex_a_value_space_fingerprint(&new_general)
         });
+        // § 7.3.6 likewise permits a same-`seq_header_id` redefinition that changes only
+        // the § 6.8.5 / § 6.8.8 LCR-agreement operands the Annex A fingerprint does not
+        // track — `SeqMaxMlayerCnt`, the frame dimensions, and the cropping window. Those
+        // are not agreement inputs and not in the value-space fingerprint, yet they are
+        // active for *every* extended layer referencing this id, so a redefinition flipping
+        // (say) max_frame_width to disagree with the activated LCR must re-run the LCR
+        // checks for all of them, not just the activating layer. Detect this fingerprint
+        // change separately and fold the same active-layer set into the recheck below (the
+        // `lcr/ptl-*` and `lcr/rep-info-mismatch` dedup keys keep the re-runs idempotent and
+        // only re-emit when a checked field actually changed).
+        let lcr_agreement_values_changed = previous_header.as_ref().is_some_and(|previous| {
+            lcr_agreement_value_fingerprint(&previous.general)
+                != lcr_agreement_value_fingerprint(&new_general)
+        });
         let mut layers_to_check = BTreeSet::new();
         if self.active_sequence_by_xlayer.get(&xlayer) == Some(&seq_header_id) {
             layers_to_check.insert(xlayer);
         }
-        if agreement_inputs_changed || annex_a_value_space_changed {
+        if agreement_inputs_changed || annex_a_value_space_changed || lcr_agreement_values_changed {
             // Re-run every extended layer this id is active for: the agreement checks
-            // (when their inputs changed) and/or the Annex A value-space check (when its
-            // fingerprint changed) must see the redefinition on all referencing layers.
+            // (when their inputs changed), the Annex A value-space check (when its
+            // fingerprint changed), and/or the § 6.8.5 / § 6.8.8 LCR-agreement checks (when
+            // the LCR-agreement fingerprint changed) must see the redefinition on all
+            // referencing layers.
             layers_to_check.extend(
                 self.active_sequence_by_xlayer
                     .iter()
@@ -9424,6 +9440,57 @@ fn annex_a_value_space_fingerprint(general: &SequenceHeaderGeneral) -> AnnexAVal
         bit_depth_idc: general.bit_depth_idc.get(),
         tier: u8::from(matches!(general.seq_tier, Tier::High)),
         level_idx: general.seq_level_idx.get(),
+    }
+}
+
+/// A fingerprint of the sequence-header fields the § 6.8.5 LCR PTL-ceiling and § 6.8.8
+/// LCR rep-info agreement checks ([`ValidatorContext::check_lcr_ptl_ceilings`] /
+/// [`ValidatorContext::check_lcr_rep_info_agreement`]) compare against the activated LCR
+/// **but** that the [`AnnexAValueSpaceFingerprint`] does not already track. The Annex A
+/// fingerprint covers profile / chroma / bit-depth / tier / level (the § 6.8.5 PTL
+/// operands plus the § 6.8.8 format-info operands), so this fingerprint covers the
+/// remainder both checks read: `seq_max_mlayer_cnt_minus_1 + 1` (the § 6.8.5
+/// mlayer-count ceiling operand), `max_frame_width/height_minus_1 + 1`, and the
+/// cropping window (present flag + the four offsets, the § 6.8.8 rep-info operands).
+///
+/// A § 7.3.6 same-`seq_header_id` redefinition that changes only these fields does not
+/// move the value-space fingerprint, so without this it would not widen
+/// `layers_to_check` in [`ValidatorContext::observe_sequence_header`] — leaving other
+/// extended layers with this id active unre-checked against their LCRs. Detecting a
+/// change here folds those layers into the recheck (the `lcr/ptl-*` and
+/// `lcr/rep-info-mismatch` dedup keys keep the re-runs idempotent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct LcrAgreementValueFingerprint {
+    /// `SeqMaxMlayerCnt` (`seq_max_mlayer_cnt_minus_1 + 1`), the § 6.8.5 mlayer-count
+    /// ceiling operand.
+    max_mlayer_count: u8,
+    /// `max_frame_width_minus_1 + 1`, the § 6.8.8 `lcr_max_pic_width` operand.
+    max_frame_width: u32,
+    /// `max_frame_height_minus_1 + 1`, the § 6.8.8 `lcr_max_pic_height` operand.
+    max_frame_height: u32,
+    /// `seq_cropping_window_present_flag`, the § 6.8.8 cropping-present operand.
+    cropping_present: bool,
+    /// `seq_cropping_win_{left,right,top,bottom}_offset`, the § 6.8.8 cropping offsets
+    /// (inferred to 0 when the window is absent).
+    cropping_offsets: (u32, u32, u32, u32),
+}
+
+/// Projects the LCR-agreement dedup fingerprint out of an activated sequence header's
+/// general fields (see [`LcrAgreementValueFingerprint`]).
+fn lcr_agreement_value_fingerprint(
+    general: &SequenceHeaderGeneral,
+) -> LcrAgreementValueFingerprint {
+    LcrAgreementValueFingerprint {
+        max_mlayer_count: general.seq_max_mlayer_count.get(),
+        max_frame_width: general.max_frame_width.get(),
+        max_frame_height: general.max_frame_height.get(),
+        cropping_present: general.seq_cropping_window_present_flag,
+        cropping_offsets: (
+            general.cropping_window.left,
+            general.cropping_window.right,
+            general.cropping_window.top,
+            general.cropping_window.bottom,
+        ),
     }
 }
 
