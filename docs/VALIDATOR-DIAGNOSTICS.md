@@ -184,6 +184,11 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 | `lcr/msdo-sub-xlayer-not-in-lcr` | error | § 6.8.2 | an MSDO sub_xlayer_id[i] is not in the activated global LCR's LcrXLayerID[] (mirror lines 1651-1652) |
 | `lcr/msdo-substream-ptl-mismatch` | error | § 6.8.2 | with lcr_seq_profile_tier_level_info_present_flag == 1, sub_stream_max_*[i] != lcr_*[sub_xlayer_id[i]] (exact equality, mirror lines 1666-1671) |
 | `lcr/payload-size-overflow` | error | § 6.8.6 | layer config record declared payload size overflows |
+| `lcr/ptl-level-exceeds-max` | error | § 6.8.5 | with lcr_seq_profile_tier_level_info(i) present in the activated LCR, an activated sequence header's seq_level_idx exceeds lcr_max_level_idx[i] (mirror lines 1782-1784) |
+| `lcr/ptl-mlayer-count-exceeds-max` | error | § 6.8.5 | with lcr_seq_profile_tier_level_info(i) present in the activated LCR, an activated sequence header's seq_max_mlayer_cnt_minus_1 + 1 exceeds lcr_max_mlayer_count[i] (mirror lines 1808-1810) |
+| `lcr/ptl-profile-exceeds-max` | error | § 6.8.5 | with lcr_seq_profile_tier_level_info(i) present in the activated LCR, an activated sequence header's seq_profile_idc exceeds lcr_seq_profile_idc[i] (mirror lines 1774-1776) |
+| `lcr/ptl-tier-exceeds-max` | error | § 6.8.5 | with lcr_seq_profile_tier_level_info(i) present in the activated LCR, an activated sequence header's seq_tier exceeds lcr_tier_flag[i] (mirror lines 1793-1795) |
+| `lcr/rep-info-mismatch` | error | § 6.8.8 | an activated LCR's rep info (lcr_max_pic_width/height, lcr_bit_depth_idc, lcr_chroma_format_idc, or the cropping window flag/offsets) disagrees with the sequence header activated for the same extended layer (mirror lines 1925-1968) |
 | `lcr/reserved-bits-nonzero` | warning | § 6.8 | a layer config record reserved-zero field is non-zero (decoder-ignored) |
 | `lcr/tlayer-dependency-missing` | error | § 6.8.9 | activated LCR lcr_tlayer_map includes a temporal layer without a layer the activated sequence header's TLayerDependencyMap requires |
 | `lcr/xlayer-map-empty` | error | § 6.8.2 | lcr_xlayer_map is 0 (must be 1..(1<<31)-1) |
@@ -421,14 +426,18 @@ Conformance points deliberately not flagged, in two groups.
 - The § 6.10.7 / § 6.8.9 / § 7.3.8.7 dependency-map agreement checks (landed as
   `ops/*-dependency-missing`, `lcr/*-dependency-missing`,
   `frame-header/mfh-*-dependency-missing`) run only against a **decidable activated
-  in-band** sequence header — one confirmed by a parsed frame-header reference, or
-  the OBU-order fallback while it is the sole in-band header — and the maps are
-  never fabricated from defaults, max layer IDs, or an ambiguous multi-header
-  fallback guess. Each group's no-false-positive gate matches what external HLS
-  could shadow: the OPS checks are suppressed when external HLS declares any
-  sequence header, the LCR checks whenever external HLS is enabled at all (an
-  unmodeled external *local* LCR would win the § 6.4.1 resolution), and the MFH
-  checks are skipped when the referenced sequence header does not resolve in-band.
+  in-band** sequence header, and the maps are never fabricated from defaults, max
+  layer IDs, or an ambiguous multi-header fallback guess. Each group's
+  no-false-positive gate matches what external HLS could shadow: the OPS checks
+  (decidable via a parsed frame-header reference or the OBU-order sole-header
+  fallback) are suppressed when external HLS declares any sequence header; the LCR
+  agreement checks (§ 6.8.5 ceilings, § 6.8.8 rep-info, § 6.8.9 dependency closure)
+  require a **strict frame-confirmed** activation — no sole-header fallback, since
+  they fire unconditionally on a violation — and are suppressed whenever external HLS
+  is enabled at all, because a Provided declaration is partial (it cannot enumerate
+  external LCRs) and an unmodeled external *local* LCR would win the local-first
+  § 6.4.1 resolution; the MFH checks are skipped when the referenced sequence header
+  does not resolve in-band.
   The § 6.8.9 pairing binds the header's § 6.4.1 *association*, snapshotted at each
   observation of that header (an LCR "present prior to this sequence header"): a
   later-arriving LCR is not retroactively paired, and a record redefined after the

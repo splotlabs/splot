@@ -1263,11 +1263,11 @@ spec_sections = ["5.8.4", "6.8.5"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/layer_config_record.rs"
-openspec_change = "hls-lcr-atlas-foundation"
+openspec_change = "lcr-ptl-activated-sequence-agreement"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.5 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-5, lines 1768-1814) carries real per-child validate residuals, none yet enforced. (1) PTL-vs-activated-sequence-header floors: when lcr_seq_profile_tier_level_info(i) is present in an activated LCR, seq_profile_idc <= lcr_seq_profile_idc[i] (lines 1774-1776), seq_level_idx <= lcr_max_level_idx[i] (1782-1784), seq_tier <= lcr_tier_flag[i] (1793-1795), and seq_max_mlayer_cnt_minus_1+1 <= lcr_max_mlayer_count[i] (1808-1810) for each sequence header activated by the xlayer-i sub-bitstream — blocked on activated per-xlayer sequence-header PTL state (planned lcr-ptl-activated-sequence-agreement change). (2) Annex-A range enforcement on lcr_seq_profile_idc[i]/lcr_max_level_idx[i]/lcr_tier_flag[i]/lcr_max_mlayer_count[i] (each 'shall not contain values outside those specified in Annex A') — blocked on the Annex A profile/level/tier table backlog. (3) lsptli_reserved_2bits==0 (lines 1812-1814) is decoder-ignored, so it is at most a producer-anomaly warning, not yet emitted."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.5 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-5, lines 1768-1814) PTL-vs-activated-sequence-header ceilings now LAND under lcr-ptl-activated-sequence-agreement in splot-validate (crates/splot-validate/src/context.rs, check_lcr_ptl_ceilings): when lcr_seq_profile_tier_level_info(i) is present in the LCR activated by extended layer i's frame-confirmed sequence header, seq_profile_idc <= lcr_seq_profile_idc[i] (lcr/ptl-profile-exceeds-max, lines 1774-1776), seq_level_idx <= lcr_max_level_idx[i] (lcr/ptl-level-exceeds-max, 1782-1784), seq_tier <= lcr_tier_flag[i] (lcr/ptl-tier-exceeds-max, 1793-1795), and seq_max_mlayer_cnt_minus_1+1 <= lcr_max_mlayer_count[i] (lcr/ptl-mlayer-count-exceeds-max, 1808-1810), for each sequence header activated by the xlayer-i sub-bitstream (<= semantics, equality passes; absent PTL info compares nothing). The §6.8.5 sentence keys the PTL on the *local* LCR (\"associated with the local LCR ... indicated in an extended layer with obu_xlayer_id equal to i\"), so the local record's lcr_seq_profile_tier_level_info(xlayerId) is snapshotted into the §6.4.1 association at association time (LcrAssociation.local_ptl); a global record carrying lcr_seq_profile_tier_level_info(i) for that xlayer is used as the fallback when the association resolved a global record. Comparisons run from on_sequence_activation against the frame-confirmed activated header; a non-identical LCR redefinition re-checks at the next activation via the content-fingerprinted dedup key (LcrPtlFindingKey); suppressed under ExternalHlsMode::Provided that declares a sequence header. Residual (partial): (2) Annex-A range enforcement on the LCR-declared maxima lcr_seq_profile_idc[i]/lcr_max_level_idx[i]/lcr_tier_flag[i]/lcr_max_mlayer_count[i] (each 'shall not contain values outside those specified in Annex A') is NOT in this change — only lcr_max_level_idx[i] maps onto Table A.7's value space (annex-a/level-reserved territory), and the profile/tier/mlayer-count value spaces and the lcr_max_level_idx wiring stay on the Annex A profile/level/tier table backlog; (3) lsptli_reserved_2bits==0 (lines 1812-1814) is decoder-ignored, so it is at most a producer-anomaly warning, not yet emitted; and no AVM differential oracle has been run (avm_diff pending)."
 
 [feature.status]
 mapped = "done"
@@ -1282,10 +1282,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
-commands = ["cargo test -p splot-core lcr"]
+tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator.rs::tests::lcr_ptl_level_exceeds_max_is_flagged", "crates/splot-validate/src/validator.rs::tests::lcr_ptl_profile_exceeds_max_is_flagged", "crates/splot-validate/src/validator.rs::tests::lcr_ptl_tier_exceeds_max_is_flagged", "crates/splot-validate/src/validator.rs::tests::lcr_ptl_mlayer_count_exceeds_max_is_flagged", "crates/splot-validate/src/validator.rs::tests::lcr_ptl_equality_passes", "crates/splot-validate/src/validator.rs::tests::lcr_ptl_absent_info_compares_nothing", "crates/splot-validate/src/validator.rs::tests::lcr_ptl_unconfirmed_activation_is_silent_then_fires_on_frame", "crates/splot-validate/src/validator.rs::tests::lcr_ptl_redefinition_rechecks_affected_layer", "crates/splot-validate/src/validator.rs::tests::lcr_ptl_global_record_ceiling_is_checked"]
+commands = ["cargo test -p splot-core lcr", "cargo test -p splot-validate lcr_ptl"]
 fixtures = []
-diagnostics = []
+diagnostics = ["lcr/ptl-profile-exceeds-max", "lcr/ptl-level-exceeds-max", "lcr/ptl-tier-exceeds-max", "lcr/ptl-mlayer-count-exceeds-max"]
 
 [[feature]]
 id = "AV2-5.8.5-LCR-GLOBAL-PAYLOAD"
@@ -1362,17 +1362,17 @@ spec_sections = ["5.8.7", "6.8.8"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/layer_config_record.rs"
-openspec_change = "hls-lcr-atlas-foundation"
+openspec_change = "lcr-ptl-activated-sequence-agreement"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.8 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-8, lines 1918-1969) carries a real per-child validate residual (contrary to the sweep's container assumption): lcr_max_pic_width/height shall equal max_frame_width/height_minus_1 + 1, lcr_bit_depth_idc shall equal bit_depth_idc, lcr_chroma_format_idc shall equal chroma_format_idc, and the cropping-window flag/offsets shall equal the seq_cropping_* values, each compared against the activated sequence header for the same extended layer. These cross-OBU agreement checks are blocked on activated sequence-header frame-size and color/format state (the §5.4 frame-size and color descriptor cluster on AV2-5.4-SEQUENCE-HEADER is not yet surfaced to the LCR-vs-sequence comparison)."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.8 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-8, lines 1918-1969) rep-info equality now LANDS under lcr-ptl-activated-sequence-agreement in splot-validate (crates/splot-validate/src/context.rs, check_lcr_rep_info_agreement), resolving the honesty-sweep (PR #45) residual note: for the LCR activated by extended layer j's frame-confirmed sequence header, lcr_max_pic_width[i][j] == max_frame_width_minus_1 + 1, lcr_max_pic_height[i][j] == max_frame_height_minus_1 + 1 (lines 1925-1933, always present), lcr_bit_depth_idc == bit_depth_idc and lcr_chroma_format_idc == chroma_format_idc (lines 1950-1958, gated on lcr_format_info_present_flag), lcr_cropping_window_present_flag == seq_cropping_window_present_flag and (when the LCR cropping window is present) lcr_cropping_win_*_offset == seq_cropping_win_*_offset (lines 1943-1968). Single rule lcr/rep-info-mismatch (error, exact equality), the disagreeing field named in the message; absent rep-info / absent format-info compares nothing for those fields. seq_cropping_window_present_flag is now retained on SequenceHeaderGeneral (it was previously collapsed to a default cropping window) so the flag-equality sentence is exact. The rep-info lives on the *local* record at LcrLocalInfo.xlayer_info.rep_info (isGlobal=0) and on the *global* payload at LcrGlobalPayload.xlayer_info.rep_info (isGlobal=1); the association-time snapshot (LcrAssociation.local_rep_info / global_rep_info_by_xlayer) keeps the comparison pinned to the revision the header associated to. Comparisons run from on_sequence_activation against the frame-confirmed activated header; a non-identical LCR redefinition re-checks at the next activation via the content-fingerprinted dedup key (LcrRepInfoFindingKey); suppressed under ExternalHlsMode::Provided that declares a sequence header. Residual (partial): no AVM differential oracle has been run (avm_diff pending)."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -1381,10 +1381,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
-commands = ["cargo test -p splot-core lcr"]
+tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator.rs::tests::lcr_rep_info_width_mismatch_is_flagged", "crates/splot-validate/src/validator.rs::tests::lcr_rep_info_height_bit_depth_chroma_mismatches_are_flagged", "crates/splot-validate/src/validator.rs::tests::lcr_rep_info_cropping_present_flag_mismatch_is_flagged", "crates/splot-validate/src/validator.rs::tests::lcr_rep_info_cropping_offset_mismatch_is_flagged", "crates/splot-validate/src/validator.rs::tests::lcr_rep_info_full_agreement_passes", "crates/splot-validate/src/validator.rs::tests::lcr_rep_info_absent_format_info_compares_nothing", "crates/splot-validate/src/validator.rs::tests::lcr_rep_info_absent_rep_info_compares_nothing", "crates/splot-validate/src/validator.rs::tests::lcr_rep_info_global_record_is_checked", "crates/splot-validate/src/validator.rs::tests::lcr_rep_info_unconfirmed_activation_is_silent_then_fires_on_frame", "crates/splot-validate/src/validator.rs::tests::lcr_rep_info_redefinition_rechecks_affected_layer"]
+commands = ["cargo test -p splot-core lcr", "cargo test -p splot-validate lcr_rep_info"]
 fixtures = []
-diagnostics = []
+diagnostics = ["lcr/rep-info-mismatch"]
 
 [[feature]]
 id = "AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO"

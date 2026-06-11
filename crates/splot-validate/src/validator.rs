@@ -8048,15 +8048,18 @@ mod tests {
 
     #[test]
     fn lcr_mlayer_dependency_missing_is_flagged() {
-        // The sequence header activates for xlayer 0 (OBU-order fallback) and its
-        // seq_lcr_id resolves to the local LCR, whose lcr_mlayer_map[0][0] includes
-        // embedded layer 1 without layer 0 against default MLayerDependencyMap[1][0].
+        // The sequence header activates for xlayer 0 and its seq_lcr_id resolves to the
+        // local LCR, whose lcr_mlayer_map[0][0] includes embedded layer 1 without layer 0
+        // against default MLayerDependencyMap[1][0]. A CLK frame referencing seq id 0
+        // frame-confirms the activation (the § 6.8.9 check uses the strict
+        // frame-confirmed gate, no sole-header fallback).
         let mut data = temporal_delimiter_obu();
         data.extend(local_lcr_obu_with_embedded(0, 5, 0b10, &[0b1]));
         data.extend(annex_b_obu(
             0x04,
             &sequence_header_payload_with_lcr(0, 5, 1, 1),
         ));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             has_error(&report, "lcr/mlayer-dependency-missing"),
@@ -8067,13 +8070,15 @@ mod tests {
     #[test]
     fn lcr_tlayer_dependency_missing_is_flagged() {
         // The activated global LCR's lcr_tlayer_map[1][3][0] includes tlayer 1
-        // without tlayer 0 against the default TLayerDependencyMap[0][1][0].
+        // without tlayer 0 against the default TLayerDependencyMap[0][1][0]. A CLK frame
+        // on xlayer 3 referencing seq id 0 frame-confirms the activation.
         let mut data = temporal_delimiter_obu();
         data.extend(global_lcr_obu_with_embedded(5, 3, 0b1, &[0b10]));
         data.extend(annex_b_obu_with_header(
             &layer_obu_header(1, 0, 0, 3),
             &sequence_header_payload_with_lcr(0, 5, 1, 1),
         ));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 3, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             has_error(&report, "lcr/tlayer-dependency-missing"),
@@ -8114,7 +8119,9 @@ mod tests {
     #[test]
     fn lcr_dependency_diagnostic_points_at_lcr_obu() {
         // The activating sequence header is not the violator: the diagnostic must
-        // carry the LCR OBU's offset, which precedes the sequence header here.
+        // carry the LCR OBU's offset, which precedes the sequence header here. The CLK
+        // frame appended after the header frame-confirms the activation without moving
+        // the LCR or sequence-header offsets.
         let td = temporal_delimiter_obu();
         let lcr = local_lcr_obu_with_embedded(0, 5, 0b10, &[0b1]);
         let seq_start = (td.len() + lcr.len()) as u64;
@@ -8124,6 +8131,7 @@ mod tests {
             0x04,
             &sequence_header_payload_with_lcr(0, 5, 1, 1),
         ));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         let offsets: Vec<_> = report
             .errors()
@@ -8300,13 +8308,15 @@ mod tests {
     #[test]
     fn lcr_local_tlayer_dependency_missing_is_flagged() {
         // Local LCR × tlayer map: lcr_tlayer_map[0][0][0] includes temporal layer 1
-        // without temporal layer 0 against the default TLayerDependencyMap[0][1][0].
+        // without temporal layer 0 against the default TLayerDependencyMap[0][1][0]. The
+        // CLK frame referencing seq id 0 frame-confirms the xlayer-0 activation.
         let mut data = temporal_delimiter_obu();
         data.extend(local_lcr_obu_with_embedded(0, 5, 0b1, &[0b10]));
         data.extend(annex_b_obu(
             0x04,
             &sequence_header_payload_with_lcr(0, 5, 1, 1),
         ));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             has_error(&report, "lcr/tlayer-dependency-missing"),
@@ -8317,13 +8327,15 @@ mod tests {
     #[test]
     fn lcr_global_mlayer_dependency_missing_is_flagged() {
         // Global LCR × mlayer map: lcr_mlayer_map[1][3] includes embedded layer 1
-        // without embedded layer 0 against the default MLayerDependencyMap[1][0].
+        // without embedded layer 0 against the default MLayerDependencyMap[1][0]. A CLK
+        // frame on xlayer 3 referencing seq id 0 frame-confirms the activation.
         let mut data = temporal_delimiter_obu();
         data.extend(global_lcr_obu_with_embedded(5, 3, 0b10, &[0b1]));
         data.extend(annex_b_obu_with_header(
             &layer_obu_header(1, 0, 0, 3),
             &sequence_header_payload_with_lcr(0, 5, 1, 1),
         ));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 3, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             has_error(&report, "lcr/mlayer-dependency-missing"),
@@ -8415,16 +8427,29 @@ mod tests {
     #[test]
     fn lcr_dependency_check_suppressed_under_external_hls_provided() {
         use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
-        // Under any Provided mode an externally-provided local LCR (not modeled)
-        // could resolve seq_lcr_id ahead of the in-band record (§ 6.4.1), so the
-        // agreement check is suppressed even when the set declares nothing —
-        // mirroring the lcr/global-xlayer-map-missing-xlayer gate.
+        // The § 6.8.9 closure pairs the in-band activated header against the LCR its
+        // seq_lcr_id resolves to under § 6.4.1 (local-first). A Provided declaration is
+        // PARTIAL (`ExternalHlsMode::Provided` — it cannot enumerate external LCRs), so an
+        // unmodeled external *local* LCR with this seq_lcr_id could win the resolution
+        // ahead of the in-band record; the in-band association may not be the activated
+        // one, so the check is suppressed under ANY Provided mode (even an empty set) to
+        // avoid a false positive — the same local-first-shadowing reasoning as the
+        // lcr/global-xlayer-map-missing-xlayer gate. The stream WOULD fire under Disabled
+        // (the trailing CLK frame frame-confirms the activation), confirming the
+        // suppression is the only reason it is silent here.
         let mut data = temporal_delimiter_obu();
         data.extend(local_lcr_obu_with_embedded(0, 5, 0b10, &[0b1]));
         data.extend(annex_b_obu(
             0x04,
             &sequence_header_payload_with_lcr(0, 5, 1, 1),
         ));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        // Sanity: under Disabled this in-band violation fires.
+        let baseline = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&baseline, "lcr/mlayer-dependency-missing"),
+            "the in-band violation must fire under Disabled; report was: {baseline}"
+        );
         let options = ValidationOptions {
             external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
         };
@@ -8432,7 +8457,114 @@ mod tests {
         assert!(
             !has_error(&report, "lcr/mlayer-dependency-missing")
                 && !has_error(&report, "lcr/tlayer-dependency-missing"),
-            "provided external HLS must suppress the LCR agreement check; report was: {report}"
+            "any Provided external HLS must suppress the association-dependent LCR \
+             dependency check (an unmodeled external local LCR could shadow the in-band \
+             association); report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_dependency_uses_strict_frame_confirmation() {
+        // Finding-1 regression (codex 3393669703): the § 6.8.5 / § 6.8.8 / § 6.8.9 LCR
+        // agreement checks must use the STRICT frame-confirmed gate — never the
+        // sole-in-band-header OBU-order fallback — so they fire only against a frame-loaded
+        // activation, matching the Annex A value-space precedent. A sole staged header with
+        // NO frame is a guess (§ 7.3.6 permits staging), so the dependency check stays
+        // silent until a frame confirms the activation.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_embedded(0, 5, 0b10, &[0b1]));
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_with_lcr(0, 5, 1, 1),
+        ));
+        // Sole staged header, NO frame: strict gate keeps the check silent.
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "lcr/mlayer-dependency-missing")
+                && !has_error(&report, "lcr/tlayer-dependency-missing"),
+            "a sole staged header (no frame) must not fire the LCR dependency check via the \
+             sole-header fallback; report was: {report}"
+        );
+        // Adding a frame that loads the staged header confirms the activation -> fires.
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "lcr/mlayer-dependency-missing"),
+            "the frame-confirmed activation must fire the LCR dependency check; report was: \
+             {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_ptl_uses_strict_frame_confirmation() {
+        // Finding-1 regression for § 6.8.5: a sole staged header (no frame) is silent;
+        // the frame-confirmed activation fires.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1));
+        data.extend(seq_header_ptl_payload(SeqPtl {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            profile: 0,
+            level: 8, // > lcr_max_level_idx 4
+            tier: 0,
+            max_mlayer_id: 0,
+        }));
+        assert!(
+            !has_error(
+                &Validator::new(false).validate_bytes(&data),
+                "lcr/ptl-level-exceeds-max"
+            ),
+            "a sole staged header (no frame) must not fire the § 6.8.5 ceiling via the \
+             sole-header fallback"
+        );
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        assert!(
+            has_error(
+                &Validator::new(false).validate_bytes(&data),
+                "lcr/ptl-level-exceeds-max"
+            ),
+            "the frame-confirmed activation must fire the § 6.8.5 ceiling"
+        );
+    }
+
+    #[test]
+    fn lcr_agreement_silent_when_external_header_could_be_the_activator() {
+        // Finding-1 regression (codex 3393669703), the worst case the strict gate guards:
+        // an external sequence header is DECLARED, and an in-band header is staged but NO
+        // frame has loaded it. The OBU-order sole-header fallback would guess the staged
+        // in-band header is active and fire the LCR checks against it — but the real
+        // activated header could be the external one, so firing would be a false positive.
+        // The checks must stay silent. (They also stay silent WITH a confirming frame here,
+        // because any Provided mode suppresses the association-dependent LCR checks per the
+        // partial-declaration policy — both paths are silent, neither fires against a guess.)
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_embedded(0, 5, 0b10, &[0b1]));
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_with_lcr(0, 5, 1, 1),
+        ));
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(9),
+            ),
+        };
+        // No frame: the strict gate alone keeps it silent (no activation to fire against).
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !has_error(&report, "lcr/mlayer-dependency-missing")
+                && !has_error(&report, "lcr/tlayer-dependency-missing"),
+            "with an external header declared and no frame, the LCR check must not fire \
+             against a guessed in-band activation; report was: {report}"
+        );
+        // Even with a confirming frame the Provided gate suppresses the check.
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !has_error(&report, "lcr/mlayer-dependency-missing")
+                && !has_error(&report, "lcr/tlayer-dependency-missing"),
+            "under any Provided mode the association-dependent LCR check stays suppressed; \
+             report was: {report}"
         );
     }
 
@@ -8441,7 +8573,7 @@ mod tests {
         // § 6.4.1 associates "this sequence header" with an LCR present prior to
         // it: the violating LCR arrives after the first header but before the
         // bit-identical repeat, so the repeat's association must be evaluated and
-        // flagged exactly once.
+        // flagged exactly once. The trailing CLK frame frame-confirms the activation.
         let mut data = temporal_delimiter_obu();
         data.extend(annex_b_obu(
             0x04,
@@ -8452,6 +8584,7 @@ mod tests {
             0x04,
             &sequence_header_payload_with_lcr(0, 5, 1, 1),
         ));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert_eq!(
             ops_error_count(&report, "lcr/mlayer-dependency-missing"),
@@ -8480,6 +8613,1205 @@ mod tests {
             !has_error(&report, "lcr/mlayer-dependency-missing")
                 && !has_error(&report, "lcr/tlayer-dependency-missing"),
             "the post-header redefinition must not be paired with header 1; report was: {report}"
+        );
+    }
+
+    // ----------------------------------------------------------------------------------
+    // § 6.8.5 PTL ceilings and § 6.8.8 rep-info equality
+    // (lcr-ptl-activated-sequence-agreement)
+    // ----------------------------------------------------------------------------------
+
+    /// Parameters for a § 6.8.5 PTL-bearing sequence header.
+    #[derive(Clone, Copy)]
+    struct SeqPtl {
+        seq_header_id: u32,
+        seq_lcr_id: u32,
+        profile: u32,
+        level: u32,
+        /// `seq_tier` — only signalled (and so only != Main) when `level > 3`.
+        tier: u32,
+        /// `max_mlayer_id`; `SeqMaxMlayerCnt == max_mlayer_id + 1`.
+        max_mlayer_id: u32,
+    }
+
+    /// A sequence header carrying the given § 6.8.5 PTL fields (`max_tlayer_id == 1`),
+    /// otherwise identical to [`sequence_header_payload_with_lcr`]. `seq_tier` is only
+    /// signalled in the bitstream when `seq_level_idx > 3` (§ 5.4.1).
+    fn seq_header_ptl_payload(p: SeqPtl) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.uvlc(p.seq_header_id);
+        bits.f(p.profile, 5); // seq_profile_idc
+        bits.bit(0); // single_picture_header_flag
+        bits.f(p.level, 5); // seq_level_idx
+        if p.level > 3 {
+            bits.bit(p.tier as u8); // seq_tier
+        }
+        bits.uvlc(0); // chroma_format_idc
+        bits.uvlc(0); // bit_depth_idc
+        bits.f(p.seq_lcr_id, 3); // seq_lcr_id
+        bits.bit(0); // still_picture
+        bits.f(1, 2); // max_tlayer_id
+        bits.f(p.max_mlayer_id, 3); // max_mlayer_id
+        if p.max_mlayer_id > 0 {
+            bits.f(p.max_mlayer_id, ceil_log2_u32(p.max_mlayer_id + 1)); // seq_max_mlayer_cnt_minus_1
+        }
+        bits.bit(1); // monotonic_output_order_flag
+        bits.f(3, 4); // frame_width_bits_minus_1
+        bits.f(3, 4); // frame_height_bits_minus_1
+        bits.f(15, 4); // max_frame_width_minus_1 -> width 16
+        bits.f(7, 4); // max_frame_height_minus_1 -> height 8
+        bits.bit(0); // seq_cropping_window_present_flag
+        bits.bit(0); // seq_initial_display_delay_present_flag
+        bits.bit(0); // decoder_model_info_present_flag
+        if p.max_mlayer_id > 0 {
+            bits.bit(0); // mlayer_dependency_present_flag
+        }
+        bits.bit(0); // tlayer_dependency_present_flag (max_tlayer_id == 1 > 0)
+        append_non_single_child_configs(&mut bits);
+        annex_b_obu(0x04, &bits.into_bytes())
+    }
+
+    /// Parameters for a § 6.8.8 rep-info-bearing sequence header.
+    #[derive(Clone, Copy)]
+    struct SeqRep {
+        seq_header_id: u32,
+        seq_lcr_id: u32,
+        /// `max_frame_width_minus_1` (`f(4)`), so the width is this + 1.
+        width_minus_1: u32,
+        /// `max_frame_height_minus_1` (`f(4)`).
+        height_minus_1: u32,
+        chroma_format_idc: u32,
+        bit_depth_idc: u32,
+        /// `seq_cropping_window_present_flag` and the four offsets when present.
+        cropping: Option<(u32, u32, u32, u32)>,
+    }
+
+    /// The raw `sequence_header_obu()` payload bytes carrying the given § 6.8.8 rep-info
+    /// fields (no embedded layers, `max_tlayer_id == 1`, `max_mlayer_id == 0`).
+    fn seq_header_rep_payload_bytes(p: SeqRep) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.uvlc(p.seq_header_id);
+        bits.f(0, 5); // seq_profile_idc
+        bits.bit(0); // single_picture_header_flag
+        bits.f(0, 5); // seq_level_idx
+        bits.uvlc(p.chroma_format_idc); // chroma_format_idc
+        bits.uvlc(p.bit_depth_idc); // bit_depth_idc
+        bits.f(p.seq_lcr_id, 3); // seq_lcr_id
+        bits.bit(0); // still_picture
+        bits.f(1, 2); // max_tlayer_id
+        bits.f(0, 3); // max_mlayer_id == 0
+        bits.bit(1); // monotonic_output_order_flag
+        bits.f(3, 4); // frame_width_bits_minus_1 (4-bit dims)
+        bits.f(3, 4); // frame_height_bits_minus_1
+        bits.f(p.width_minus_1, 4); // max_frame_width_minus_1
+        bits.f(p.height_minus_1, 4); // max_frame_height_minus_1
+        match p.cropping {
+            Some((left, right, top, bottom)) => {
+                bits.bit(1); // seq_cropping_window_present_flag
+                bits.uvlc(left); // seq_cropping_win_left_offset
+                bits.uvlc(right);
+                bits.uvlc(top);
+                bits.uvlc(bottom);
+            }
+            None => bits.bit(0), // seq_cropping_window_present_flag
+        }
+        bits.bit(0); // seq_initial_display_delay_present_flag
+        bits.bit(0); // decoder_model_info_present_flag
+        bits.bit(0); // tlayer_dependency_present_flag (max_tlayer_id == 1)
+        append_non_single_child_configs(&mut bits);
+        bits.into_bytes()
+    }
+
+    /// A sequence header carrying the given § 6.8.8 rep-info fields (no embedded layers,
+    /// `max_tlayer_id == 1`, `max_mlayer_id == 0`), on extended layer 0.
+    fn seq_header_rep_payload(p: SeqRep) -> Vec<u8> {
+        annex_b_obu(0x04, &seq_header_rep_payload_bytes(p))
+    }
+
+    /// As [`seq_header_rep_payload`], but on the given `xlayer` (a § 6.2.2 base-layer
+    /// sequence header — `tlayer == 0`, `mlayer == 0` — that can activate seq id `p` for
+    /// that extended layer).
+    fn seq_header_rep_obu_for_xlayer(xlayer: u8, p: SeqRep) -> Vec<u8> {
+        let payload = seq_header_rep_payload_bytes(p);
+        if xlayer == 0 {
+            annex_b_obu(0x04, &payload)
+        } else {
+            annex_b_obu_with_header(&layer_obu_header(1, 0, 0, xlayer), &payload)
+        }
+    }
+
+    /// A local LCR OBU at `xlayer` carrying `lcr_seq_profile_tier_level_info(xlayer)`
+    /// with the given declared maxima (no rep info, no embedded info).
+    fn local_lcr_obu_with_ptl(
+        xlayer: u8,
+        local_id: u32,
+        max_profile: u32,
+        max_level: u32,
+        max_tier: u32,
+        max_mlayer_count: u32,
+    ) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(0, 3); // lcr_global_id
+        bits.f(local_id, 3); // lcr_local_id
+        bits.bit(1); // lcr_profile_tier_level_info_present_flag
+        bits.bit(0); // lcr_local_atlas_id_present_flag
+        // lcr_seq_profile_tier_level_info(xId)
+        bits.f(max_profile, 5); // lcr_seq_profile_idc
+        bits.f(max_level, 5); // lcr_max_level_idx
+        bits.bit(max_tier as u8); // lcr_tier_flag
+        bits.f(max_mlayer_count, 3); // lcr_max_mlayer_count
+        bits.f(0, 2); // lsptli_reserved_2bits
+        bits.f(0, 3); // reserved_zero_3bits (no atlas)
+        bits.f(0, 5); // lcr_local_reserved_zero_5bits
+        // lcr_xlayer_info(0, xId): all present flags clear.
+        bits.bit(0); // lcr_rep_info_present_flag
+        bits.bit(0); // lcr_xlayer_purpose_present_flag
+        bits.bit(0); // lcr_xlayer_color_info_present_flag
+        bits.bit(0); // lcr_embedded_layer_info_present_flag
+        bits.align(); // byte_alignment()
+        extensible_obu_tail(&mut bits);
+        annex_b_obu_with_header(&layer_obu_header(16, 0, 0, xlayer), &bits.into_bytes())
+    }
+
+    /// Appends an `lcr_rep_info()` body with the given width/height, optional
+    /// format info `(bit_depth, chroma)`, and optional cropping window
+    /// `(left, right, top, bottom)`.
+    fn append_lcr_rep_info(
+        bits: &mut Bits,
+        width: u32,
+        height: u32,
+        format: Option<(u32, u32)>,
+        cropping: Option<(u32, u32, u32, u32)>,
+    ) {
+        bits.uvlc(width); // lcr_max_pic_width
+        bits.uvlc(height); // lcr_max_pic_height
+        bits.bit(u8::from(format.is_some())); // lcr_format_info_present_flag
+        bits.bit(u8::from(cropping.is_some())); // lcr_cropping_window_present_flag
+        if let Some((bit_depth, chroma)) = format {
+            bits.uvlc(bit_depth); // lcr_bit_depth_idc
+            bits.uvlc(chroma); // lcr_chroma_format_idc
+        }
+        if let Some((left, right, top, bottom)) = cropping {
+            bits.uvlc(left); // lcr_cropping_win_left_offset
+            bits.uvlc(right);
+            bits.uvlc(top);
+            bits.uvlc(bottom);
+        }
+    }
+
+    /// A local LCR OBU at `xlayer` carrying `lcr_rep_info(0, xId)` (no PTL, no embedded
+    /// info).
+    fn local_lcr_obu_with_rep_info(
+        xlayer: u8,
+        local_id: u32,
+        width: u32,
+        height: u32,
+        format: Option<(u32, u32)>,
+        cropping: Option<(u32, u32, u32, u32)>,
+    ) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(0, 3); // lcr_global_id
+        bits.f(local_id, 3); // lcr_local_id
+        bits.bit(0); // lcr_profile_tier_level_info_present_flag
+        bits.bit(0); // lcr_local_atlas_id_present_flag
+        bits.f(0, 3); // reserved_zero_3bits
+        bits.f(0, 5); // lcr_local_reserved_zero_5bits
+        // lcr_xlayer_info(0, xId): only rep info present.
+        bits.bit(1); // lcr_rep_info_present_flag
+        bits.bit(0); // lcr_xlayer_purpose_present_flag
+        bits.bit(0); // lcr_xlayer_color_info_present_flag
+        bits.bit(0); // lcr_embedded_layer_info_present_flag
+        append_lcr_rep_info(&mut bits, width, height, format, cropping);
+        bits.align(); // byte_alignment()
+        extensible_obu_tail(&mut bits);
+        annex_b_obu_with_header(&layer_obu_header(16, 0, 0, xlayer), &bits.into_bytes())
+    }
+
+    /// A global LCR OBU whose `lcr_xlayer_map` includes only `target_xlayer` and whose
+    /// single global payload carries `lcr_rep_info(1, xId)` with the given fields (no
+    /// PTL, no embedded info).
+    fn global_lcr_obu_with_rep_info(
+        global_id: u32,
+        target_xlayer: u8,
+        width: u32,
+        height: u32,
+        format: Option<(u32, u32)>,
+        cropping: Option<(u32, u32, u32, u32)>,
+    ) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(global_id, 3); // lcr_global_config_record_id
+        bits.f(1u32 << target_xlayer, 31); // lcr_xlayer_map
+        bits.bit(0); // lcr_aggregate_info_present_flag
+        bits.bit(0); // lcr_seq_profile_tier_level_info_present_flag
+        bits.bit(1); // lcr_global_payload_present_flag
+        bits.bit(0); // lcr_dependent_xlayers_flag
+        bits.bit(0); // lcr_global_atlas_id_present_flag
+        bits.f(0, 7); // lcr_global_purpose_id
+        bits.bit(0); // lcr_doh_constraint_flag
+        bits.bit(0); // lcr_enforce_tile_alignment_flag
+        bits.f(0, 3); // reserved_zero_3bits
+        bits.f(0, 5); // lcr_global_reserved_zero_5bits
+        // One lcr_global_payload for target_xlayer: lcr_xlayer_info(1, xId).
+        let mut body = Bits::default();
+        body.bit(1); // lcr_rep_info_present_flag
+        body.bit(0); // lcr_xlayer_purpose_present_flag
+        body.bit(0); // lcr_xlayer_color_info_present_flag
+        body.bit(0); // lcr_embedded_layer_info_present_flag
+        append_lcr_rep_info(&mut body, width, height, format, cropping);
+        body.align(); // byte_alignment()
+        let body_bytes = (body.bits.len() / 8) as u32;
+        debug_assert!(
+            body_bytes < 128,
+            "lcr_global_data_size must fit a single-byte leb128"
+        );
+        bits.f(body_bytes, 8); // lcr_global_data_size (single-byte leb128)
+        bits.bits.extend_from_slice(&body.bits);
+        extensible_obu_tail(&mut bits);
+        annex_b_obu_with_header(&layer_obu_header(16, 0, 0, 31), &bits.into_bytes())
+    }
+
+    /// A global LCR OBU whose `lcr_xlayer_map` includes only `target_xlayer` and that
+    /// carries `lcr_seq_profile_tier_level_info(target_xlayer)` with the given maxima
+    /// (no payload).
+    fn global_lcr_obu_with_ptl(
+        global_id: u32,
+        target_xlayer: u8,
+        max_profile: u32,
+        max_level: u32,
+        max_tier: u32,
+        max_mlayer_count: u32,
+    ) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(global_id, 3); // lcr_global_config_record_id
+        bits.f(1u32 << target_xlayer, 31); // lcr_xlayer_map
+        bits.bit(0); // lcr_aggregate_info_present_flag
+        bits.bit(1); // lcr_seq_profile_tier_level_info_present_flag
+        bits.bit(0); // lcr_global_payload_present_flag
+        bits.bit(0); // lcr_dependent_xlayers_flag
+        bits.bit(0); // lcr_global_atlas_id_present_flag
+        bits.f(0, 7); // lcr_global_purpose_id
+        bits.bit(0); // lcr_doh_constraint_flag
+        bits.bit(0); // lcr_enforce_tile_alignment_flag
+        bits.f(0, 3); // reserved_zero_3bits
+        bits.f(0, 5); // lcr_global_reserved_zero_5bits
+        // One lcr_seq_profile_tier_level_info per set bit of lcr_xlayer_map.
+        bits.f(max_profile, 5); // lcr_seq_profile_idc
+        bits.f(max_level, 5); // lcr_max_level_idx
+        bits.bit(max_tier as u8); // lcr_tier_flag
+        bits.f(max_mlayer_count, 3); // lcr_max_mlayer_count
+        bits.f(0, 2); // lsptli_reserved_2bits
+        extensible_obu_tail(&mut bits);
+        annex_b_obu_with_header(&layer_obu_header(16, 0, 0, 31), &bits.into_bytes())
+    }
+
+    // --- § 6.8.5 PTL ceilings ---------------------------------------------------------
+
+    #[test]
+    fn lcr_ptl_level_exceeds_max_is_flagged() {
+        // Header seq_level_idx 8 > local LCR lcr_max_level_idx 4. The trailing CLK frame
+        // frame-confirms the xlayer-0 activation (§ 6.8.5 uses the strict gate).
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1));
+        data.extend(seq_header_ptl_payload(SeqPtl {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            profile: 0,
+            level: 8,
+            tier: 0,
+            max_mlayer_id: 0,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "lcr/ptl-level-exceeds-max"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_ptl_profile_exceeds_max_is_flagged() {
+        // Header seq_profile_idc 3 > local LCR lcr_seq_profile_idc 1.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_ptl(0, 5, 1, 31, 0, 7));
+        data.extend(seq_header_ptl_payload(SeqPtl {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            profile: 3,
+            level: 0,
+            tier: 0,
+            max_mlayer_id: 0,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "lcr/ptl-profile-exceeds-max"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_ptl_tier_exceeds_max_is_flagged() {
+        // Header seq_tier 1 (High, level 5 > 3) > local LCR lcr_tier_flag 0.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_ptl(0, 5, 0, 31, 0, 7));
+        data.extend(seq_header_ptl_payload(SeqPtl {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            profile: 0,
+            level: 5,
+            tier: 1,
+            max_mlayer_id: 0,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "lcr/ptl-tier-exceeds-max"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_ptl_mlayer_count_exceeds_max_is_flagged() {
+        // Header SeqMaxMlayerCnt = max_mlayer_id 1 + 1 = 2 > lcr_max_mlayer_count 1.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_ptl(0, 5, 0, 31, 0, 1));
+        data.extend(seq_header_ptl_payload(SeqPtl {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            profile: 0,
+            level: 0,
+            tier: 0,
+            max_mlayer_id: 1,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "lcr/ptl-mlayer-count-exceeds-max"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_ptl_equality_passes() {
+        // Every header value equals its LCR-declared maximum: <= passes, no finding.
+        let mut data = temporal_delimiter_obu();
+        // lcr_max_mlayer_count 2 == SeqMaxMlayerCnt (max_mlayer_id 1 + 1).
+        data.extend(local_lcr_obu_with_ptl(0, 5, 2, 5, 1, 2));
+        data.extend(seq_header_ptl_payload(SeqPtl {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            profile: 2,
+            level: 5,
+            tier: 1,
+            max_mlayer_id: 1,
+        }));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "lcr/ptl-profile-exceeds-max")
+                && !has_error(&report, "lcr/ptl-level-exceeds-max")
+                && !has_error(&report, "lcr/ptl-tier-exceeds-max")
+                && !has_error(&report, "lcr/ptl-mlayer-count-exceeds-max"),
+            "equality must pass; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_ptl_absent_info_compares_nothing() {
+        // The associated local LCR carries no PTL info (present flag 0): § 6.8.5 gates
+        // on "lcr_seq_profile_tier_level_info(i) present", so nothing is compared even
+        // though the header level would exceed any plausible ceiling.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu(0, 0, 5, None)); // no PTL, no rep info
+        data.extend(seq_header_ptl_payload(SeqPtl {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            profile: 4,
+            level: 20,
+            tier: 0,
+            max_mlayer_id: 0,
+        }));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "lcr/ptl-level-exceeds-max")
+                && !has_error(&report, "lcr/ptl-profile-exceeds-max"),
+            "absent PTL info must compare nothing; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_ptl_unconfirmed_activation_is_silent_then_fires_on_frame() {
+        // Two staged headers for xlayer 0: the OBU-order fallback is a guess (§ 7.3.6),
+        // so nothing fires until a frame confirms one. The violating header (id 1) is
+        // the one the frame loads.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1));
+        data.extend(seq_header_ptl_payload(SeqPtl {
+            seq_header_id: 0,
+            seq_lcr_id: 0, // no LCR -> not violating
+            profile: 0,
+            level: 0,
+            tier: 0,
+            max_mlayer_id: 0,
+        }));
+        data.extend(seq_header_ptl_payload(SeqPtl {
+            seq_header_id: 1,
+            seq_lcr_id: 5,
+            profile: 0,
+            level: 8, // > lcr_max_level_idx 4
+            tier: 0,
+            max_mlayer_id: 0,
+        }));
+        // Before any frame, the fallback is ambiguous: silent.
+        let staged = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&staged, "lcr/ptl-level-exceeds-max"),
+            "an unconfirmed activation must be silent; report was: {staged}"
+        );
+        // A frame confirming header 1 makes the violation decidable.
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 1));
+        let confirmed = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&confirmed, "lcr/ptl-level-exceeds-max"),
+            "the frame-confirmed activation must fire; report was: {confirmed}"
+        );
+    }
+
+    #[test]
+    fn lcr_ptl_global_record_ceiling_is_checked() {
+        // The association resolves a global LCR carrying PTL for xlayer 0; its
+        // lcr_max_level_idx 4 < header seq_level_idx 8. The trailing CLK frame
+        // frame-confirms the xlayer-0 activation.
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_lcr_obu_with_ptl(5, 0, 0, 4, 0, 1));
+        data.extend(seq_header_ptl_payload(SeqPtl {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            profile: 0,
+            level: 8,
+            tier: 0,
+            max_mlayer_id: 0,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "lcr/ptl-level-exceeds-max"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_ptl_not_duplicated_across_reactivation() {
+        // The activation-driven re-check (frame re-references the same header) must not
+        // duplicate the finding.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1));
+        data.extend(seq_header_ptl_payload(SeqPtl {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            profile: 0,
+            level: 8,
+            tier: 0,
+            max_mlayer_id: 0,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "lcr/ptl-level-exceeds-max"),
+            1,
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_ptl_redefinition_rechecks_affected_layer() {
+        // First LCR 5 is conformant (ceiling 31); a non-identical redefinition lowers
+        // lcr_max_level_idx to 4, and the bit-identical repeated header re-associates
+        // to the new revision. The trailing CLK frame frame-confirms the activation
+        // against the ceiling-4 revision and is flagged exactly once.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_ptl(0, 5, 0, 31, 0, 7));
+        data.extend(seq_header_ptl_payload(SeqPtl {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            profile: 0,
+            level: 8,
+            tier: 0,
+            max_mlayer_id: 0,
+        }));
+        data.extend(local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 7)); // redefinition: ceiling 4
+        data.extend(seq_header_ptl_payload(SeqPtl {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            profile: 0,
+            level: 8,
+            tier: 0,
+            max_mlayer_id: 0,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "lcr/ptl-level-exceeds-max"),
+            1,
+            "the redefinition's lowered ceiling must re-check exactly once; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_ptl_diagnostic_points_at_lcr_obu() {
+        // The diagnostic anchors at the LCR OBU (its declared maxima are the source),
+        // which precedes the activating sequence header here. The CLK frame appended
+        // after the header frame-confirms the activation without moving the offsets.
+        let td = temporal_delimiter_obu();
+        let lcr = local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1);
+        let seq_start = (td.len() + lcr.len()) as u64;
+        let mut data = td;
+        data.extend(lcr);
+        data.extend(seq_header_ptl_payload(SeqPtl {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            profile: 0,
+            level: 8,
+            tier: 0,
+            max_mlayer_id: 0,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        let offsets: Vec<_> = report
+            .errors()
+            .filter(|d| d.rule_id == "lcr/ptl-level-exceeds-max")
+            .map(|d| d.byte_offset)
+            .collect();
+        assert!(
+            matches!(offsets.as_slice(), [Some(offset)] if offset.get() < seq_start),
+            "the diagnostic must point at the LCR OBU (before byte {seq_start}); report: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_ptl_suppressed_under_external_hls_provided() {
+        // The § 6.8.5 ceiling pairs the in-band activated header against the LCR its
+        // seq_lcr_id resolves to under § 6.4.1. A Provided declaration is PARTIAL (it
+        // cannot enumerate external LCRs), so an unmodeled external *local* LCR could win
+        // the local-first resolution ahead of the in-band record; the check is suppressed
+        // under any Provided mode (even an empty set) to avoid a false positive against an
+        // association a real decoder may not use. The stream WOULD fire under Disabled (the
+        // trailing CLK frame frame-confirms the activation).
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1));
+        data.extend(seq_header_ptl_payload(SeqPtl {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            profile: 0,
+            level: 8, // > lcr_max_level_idx 4
+            tier: 0,
+            max_mlayer_id: 0,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        assert!(
+            has_error(
+                &Validator::new(false).validate_bytes(&data),
+                "lcr/ptl-level-exceeds-max"
+            ),
+            "the in-band ceiling violation must fire under Disabled"
+        );
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !has_error(&report, "lcr/ptl-level-exceeds-max"),
+            "an empty Provided set must suppress the association-dependent PTL ceiling \
+             check; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_ptl_suppressed_under_ops_only_external_hls_provided() {
+        // An OPS-only Provided set (operating point sets declared but no sequence headers)
+        // also suppresses the § 6.8.5 ceiling. This is the key cycle-2/cycle-3 point: the
+        // suppression is NOT about declared sequence headers — ANY Provided mode may imply
+        // unenumerated external LCRs (the set cannot express them), so an external local
+        // LCR could still shadow the in-band § 6.4.1 association even when only OPS are
+        // declared. The gate is `!Disabled`, not `declares_any_sequence_header`.
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1));
+        data.extend(seq_header_ptl_payload(SeqPtl {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            profile: 0,
+            level: 8, // > lcr_max_level_idx 4
+            tier: 0,
+            max_mlayer_id: 0,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_operating_point_set(0, 3),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !has_error(&report, "lcr/ptl-level-exceeds-max"),
+            "an OPS-only Provided set must suppress the association-dependent PTL ceiling \
+             check; report was: {report}"
+        );
+    }
+
+    // --- § 6.8.8 rep-info equality ----------------------------------------------------
+
+    #[test]
+    fn lcr_rep_info_width_mismatch_is_flagged() {
+        // lcr_max_pic_width 1920 != max_frame_width_minus_1 + 1 = 16. The trailing CLK
+        // frame frame-confirms the xlayer-0 activation (§ 6.8.8 uses the strict gate).
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_rep_info(0, 5, 1920, 8, None, None));
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15, // width 16
+            height_minus_1: 7, // height 8
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: None,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "lcr/rep-info-mismatch"),
+            "report was: {report}"
+        );
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "lcr/rep-info-mismatch"
+                    && d.message.contains("lcr_max_pic_width")),
+            "the message must name the width field; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_rep_info_height_bit_depth_chroma_mismatches_are_flagged() {
+        // Height, bit depth, and chroma all disagree.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_rep_info(
+            0,
+            5,
+            16,
+            999,          // wrong height
+            Some((1, 2)), // wrong bit depth + chroma
+            None,
+        ));
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15, // width 16 (agrees)
+            height_minus_1: 7, // height 8
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: None,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| d.rule_id == "lcr/rep-info-mismatch"
+                && d.message.contains("lcr_max_pic_height")),
+            "height mismatch must be named; report was: {report}"
+        );
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "lcr/rep-info-mismatch"
+                    && d.message.contains("lcr_bit_depth_idc")),
+            "bit-depth mismatch must be named; report was: {report}"
+        );
+        assert!(
+            report.errors().any(|d| d.rule_id == "lcr/rep-info-mismatch"
+                && d.message.contains("lcr_chroma_format_idc")),
+            "chroma mismatch must be named; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_rep_info_cropping_present_flag_mismatch_is_flagged() {
+        // LCR has a cropping window present; the header does not.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_rep_info(
+            0,
+            5,
+            16,
+            8,
+            None,
+            Some((0, 0, 0, 0)),
+        ));
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15,
+            height_minus_1: 7,
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: None, // present flag 0
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| d.rule_id == "lcr/rep-info-mismatch"
+                && d.message.contains("lcr_cropping_window_present_flag")),
+            "the present-flag disagreement must be named; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_rep_info_cropping_present_flag_mismatch_also_reports_offsets() {
+        // The LCR carries a cropping window with a non-zero left offset; the header has
+        // no window (present flag 0, offsets inferred to 0). Per the § 6.8.8 "shall match"
+        // sentences, both the present-flag disagreement AND the offset disagreement fire:
+        // the offset comparison runs against the header's inferred-0 values regardless of
+        // the present-flag mismatch (see the rationale comment in
+        // `context.rs` around the `seq_cropping_win_*` inference, lines 8046-8050).
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_rep_info(
+            0,
+            5,
+            16,
+            8,
+            None,
+            Some((1, 0, 0, 0)), // left offset 1, window present
+        ));
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15,
+            height_minus_1: 7,
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: None, // present flag 0, offsets inferred 0
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| d.rule_id == "lcr/rep-info-mismatch"
+                && d.message.contains("lcr_cropping_window_present_flag")),
+            "the present-flag disagreement must fire; report was: {report}"
+        );
+        assert!(
+            report.errors().any(|d| d.rule_id == "lcr/rep-info-mismatch"
+                && d.message.contains("lcr_cropping_win_left_offset")),
+            "the left-offset disagreement must also fire (spec-correct over-reporting); \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_rep_info_cropping_offset_mismatch_is_flagged() {
+        // Both present, but a top offset disagrees.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_rep_info(
+            0,
+            5,
+            16,
+            8,
+            None,
+            Some((1, 2, 9, 4)), // top 9
+        ));
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15,
+            height_minus_1: 7,
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: Some((1, 2, 3, 4)), // top 3
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| d.rule_id == "lcr/rep-info-mismatch"
+                && d.message.contains("lcr_cropping_win_top_offset")),
+            "the offset disagreement must be named; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_rep_info_full_agreement_passes() {
+        // Width/height/format/cropping all agree: no finding.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_rep_info(
+            0,
+            5,
+            16,
+            8,
+            Some((0, 0)),
+            Some((1, 2, 3, 4)),
+        ));
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15,
+            height_minus_1: 7,
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: Some((1, 2, 3, 4)),
+        }));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "lcr/rep-info-mismatch"),
+            "full agreement must be silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_rep_info_absent_format_info_compares_nothing() {
+        // The LCR rep info omits format info (present flag 0): the bit-depth / chroma
+        // sentences gate on lcr_format_info_present_flag, so a header with any format is
+        // not compared on those fields (width/height still agree here).
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_rep_info(0, 5, 16, 8, None, None));
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15,
+            height_minus_1: 7,
+            chroma_format_idc: 2, // would mismatch if compared
+            bit_depth_idc: 1,     // would mismatch if compared
+            cropping: None,
+        }));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "lcr/rep-info-mismatch"),
+            "absent format info must compare nothing; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_rep_info_absent_rep_info_compares_nothing() {
+        // The associated local LCR carries no rep info at all: nothing is compared.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu(0, 0, 5, None)); // no rep info
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15,
+            height_minus_1: 7,
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: None,
+        }));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "lcr/rep-info-mismatch"),
+            "absent rep info must compare nothing; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_rep_info_global_record_is_checked() {
+        // A global LCR payload carrying rep info for xlayer 0 with a mismatched width.
+        // The trailing CLK frame frame-confirms the xlayer-0 activation.
+        let mut data = temporal_delimiter_obu();
+        data.extend(global_lcr_obu_with_rep_info(5, 0, 1920, 8, None, None));
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15,
+            height_minus_1: 7,
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: None,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "lcr/rep-info-mismatch"
+                    && d.message.contains("lcr_max_pic_width")),
+            "the global rep info must be checked; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_rep_info_not_duplicated_across_reactivation() {
+        // The activation-driven re-check (frame re-references the same header) must not
+        // duplicate the finding.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_rep_info(0, 5, 1920, 8, None, None));
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15, // width 16 != lcr 1920
+            height_minus_1: 7,
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: None,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "lcr/rep-info-mismatch"),
+            1,
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_rep_info_diagnostic_points_at_lcr_obu() {
+        // The diagnostic anchors at the LCR OBU (its declared rep info is the source),
+        // which precedes the activating sequence header here. The CLK frame appended
+        // after the header frame-confirms the activation without moving the offsets.
+        let td = temporal_delimiter_obu();
+        let lcr = local_lcr_obu_with_rep_info(0, 5, 1920, 8, None, None);
+        let seq_start = (td.len() + lcr.len()) as u64;
+        let mut data = td;
+        data.extend(lcr);
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15, // width 16 != lcr 1920
+            height_minus_1: 7,
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: None,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        let offsets: Vec<_> = report
+            .errors()
+            .filter(|d| d.rule_id == "lcr/rep-info-mismatch")
+            .map(|d| d.byte_offset)
+            .collect();
+        assert!(
+            matches!(offsets.as_slice(), [Some(offset)] if offset.get() < seq_start),
+            "the diagnostic must point at the LCR OBU (before byte {seq_start}); report: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_rep_info_unconfirmed_activation_is_silent_then_fires_on_frame() {
+        // The violating header (id 1) is staged behind a non-violating header (id 0);
+        // only the frame-confirmed activation fires.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_rep_info(0, 5, 1920, 8, None, None));
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 0, // no LCR association -> not violating
+            width_minus_1: 15,
+            height_minus_1: 7,
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: None,
+        }));
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 1,
+            seq_lcr_id: 5,
+            width_minus_1: 15, // width 16 != lcr 1920
+            height_minus_1: 7,
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: None,
+        }));
+        let staged = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&staged, "lcr/rep-info-mismatch"),
+            "an unconfirmed activation must be silent; report was: {staged}"
+        );
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 1));
+        let confirmed = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&confirmed, "lcr/rep-info-mismatch"),
+            "the frame-confirmed activation must fire; report was: {confirmed}"
+        );
+    }
+
+    #[test]
+    fn lcr_rep_info_redefinition_rechecks_affected_layer() {
+        // A conformant LCR 5 is redefined with a mismatched width; the repeated header
+        // re-associates to the new revision. The trailing CLK frame frame-confirms the
+        // activation against the redefined (width-1920) revision, flagged exactly once.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_rep_info(0, 5, 16, 8, None, None)); // agrees
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15,
+            height_minus_1: 7,
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: None,
+        }));
+        data.extend(local_lcr_obu_with_rep_info(0, 5, 1920, 8, None, None)); // redefinition: width 1920
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15,
+            height_minus_1: 7,
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: None,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "lcr/rep-info-mismatch"),
+            1,
+            "the redefinition must re-check exactly once; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_rep_info_redefinition_of_only_dims_rechecks_all_layers_using_the_id() {
+        // Regression for the § 6.8.8 LCR-agreement re-check widener. Header id 0 is active
+        // for xlayer 0 AND xlayer 1, each associated with its own local LCR 5 whose rep
+        // info matches the header (width 16). A later same-id redefinition (via the
+        // xlayer-0 header OBU) changes ONLY max_frame_width to 8, which disagrees with
+        // both LCRs. max_frame_width is not in the agreement-input set nor the Annex A
+        // value-space fingerprint, so before the LCR-agreement fingerprint widener the
+        // redefinition would only re-check the redefinition's own xlayer 0 and miss the
+        // other layer (xlayer 1) the id is active for. The recheck must cover every
+        // extended layer the id is active for, so the mismatch fires for BOTH (or at
+        // minimum the non-activating xlayer 1).
+        //
+        // TU 1: both xlayers' local LCR 5 and their seq-0 headers (width 16, agree), then
+        // frame-confirm xlayer 0 then xlayer 1 (ascending obu_xlayer_id, § 7.3.7;
+        // frame_confirmed_xlayers is monotonic, so both stay confirmed).
+        // OBUs are kept in ascending obu_xlayer_id order within each temporal unit
+        // (§ 7.3.7): each xlayer's LCR and its seq-0 header are grouped, xlayer 0 then
+        // xlayer 1; the frame confirmations live in their own temporal unit.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_rep_info(0, 5, 16, 8, None, None)); // xlayer 0 LCR, width 16
+        data.extend(seq_header_rep_obu_for_xlayer(
+            0,
+            SeqRep {
+                seq_header_id: 0,
+                seq_lcr_id: 5,
+                width_minus_1: 15, // width 16 (agrees with xlayer 0 LCR)
+                height_minus_1: 7,
+                chroma_format_idc: 0,
+                bit_depth_idc: 0,
+                cropping: None,
+            },
+        ));
+        data.extend(local_lcr_obu_with_rep_info(1, 5, 16, 8, None, None)); // xlayer 1 LCR, width 16
+        data.extend(seq_header_rep_obu_for_xlayer(
+            1,
+            SeqRep {
+                seq_header_id: 0,
+                seq_lcr_id: 5,
+                width_minus_1: 15, // width 16 (agrees with xlayer 1 LCR)
+                height_minus_1: 7,
+                chroma_format_idc: 0,
+                bit_depth_idc: 0,
+                cropping: None,
+            },
+        ));
+        // TU 2: frame-confirm xlayer 0 then xlayer 1 (ascending; frame_confirmed_xlayers
+        // is monotonic, so both stay confirmed afterward).
+        data.extend(temporal_delimiter_obu());
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 ref seq 0
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 0)); // CLK xlayer 1 ref seq 0
+        // TU 3: redefinition of seq 0 (via the xlayer-0 header OBU) changing ONLY
+        // max_frame_width to 8 — disagreeing with both LCRs' width 16. seq 0 is still
+        // active for BOTH xlayer 0 and xlayer 1, so the LCR-agreement fingerprint-change
+        // recheck must cover both even though only xlayer 0 re-confirms here. (The 4-bit
+        // frame-width field caps the value at 15+1=16, so the disagreement is encoded by
+        // shrinking the width rather than enlarging it.)
+        data.extend(temporal_delimiter_obu());
+        data.extend(seq_header_rep_obu_for_xlayer(
+            0,
+            SeqRep {
+                seq_header_id: 0,
+                seq_lcr_id: 5,
+                width_minus_1: 7, // width 8 != LCR width 16
+                height_minus_1: 7,
+                chroma_format_idc: 0,
+                bit_depth_idc: 0,
+                cropping: None,
+            },
+        ));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // re-activate seq 0 (xlayer 0)
+        let report = Validator::new(false).validate_bytes(&data);
+        let xlayer_1_mismatch = report.errors().any(|d| {
+            d.rule_id == "lcr/rep-info-mismatch"
+                && d.spec_section.as_deref() == Some("6.8.8")
+                && d.message.contains("extended layer 1")
+        });
+        assert!(
+            xlayer_1_mismatch,
+            "a redefinition changing only max_frame_width must re-run the § 6.8.8 \
+             agreement check for every extended layer the id is active for, including the \
+             non-activating xlayer 1; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_rep_info_suppressed_under_external_hls_provided() {
+        // § 6.8.8 pairs the in-band activated header against the LCR its seq_lcr_id
+        // resolves to under § 6.4.1. A Provided declaration is PARTIAL (it cannot
+        // enumerate external LCRs), so an unmodeled external *local* LCR could shadow the
+        // in-band association; the check is suppressed under any Provided mode to avoid a
+        // false positive. The stream WOULD fire under Disabled (trailing CLK frame
+        // frame-confirms the activation).
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_rep_info(0, 5, 1920, 8, None, None));
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15, // width 16 != lcr_max_pic_width 1920
+            height_minus_1: 7,
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: None,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        assert!(
+            has_error(
+                &Validator::new(false).validate_bytes(&data),
+                "lcr/rep-info-mismatch"
+            ),
+            "the in-band rep-info mismatch must fire under Disabled"
+        );
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !has_error(&report, "lcr/rep-info-mismatch"),
+            "an empty Provided set must suppress the association-dependent rep-info check; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_rep_info_suppressed_under_ops_only_external_hls_provided() {
+        // An OPS-only Provided set also suppresses the § 6.8.8 mismatch: ANY Provided mode
+        // may imply unenumerated external LCRs, so the suppression is not about declared
+        // sequence headers. The gate is `!Disabled`, not `declares_any_sequence_header`.
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_rep_info(0, 5, 1920, 8, None, None));
+        data.extend(seq_header_rep_payload(SeqRep {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            width_minus_1: 15, // width 16 != lcr_max_pic_width 1920
+            height_minus_1: 7,
+            chroma_format_idc: 0,
+            bit_depth_idc: 0,
+            cropping: None,
+        }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_operating_point_set(0, 3),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !has_error(&report, "lcr/rep-info-mismatch"),
+            "an OPS-only Provided set must suppress the association-dependent rep-info \
+             check; report was: {report}"
         );
     }
 

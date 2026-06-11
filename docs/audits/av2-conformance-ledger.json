@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "a4d65ee820deb16635f47ca345aac5321e99414c",
+  "audited_commit": "58fea1ebb25de4180c84be3d8d3a99fe9116231f",
   "outcome": "success",
   "files": [
     {
@@ -560,7 +560,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/sequence.rs",
-      "sha256": "c1697b1a4ed44588a99ef0979345e7db0da9dd2d0800f49a9c0d0a1e00f742d5",
+      "sha256": "d4df762649244f57bb1fa39de167c1da0f3faed5deacc6a6bcdcaf11a23ad142",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
@@ -769,7 +769,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "f9601606152336612bbdac6e89f4fe082648efaa960c28f74e7735afb9a00626",
+      "sha256": "c7148c2fc28463f676817ea718fe7c730189eb6680e061fa38ae6b0f244d964b",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -826,14 +826,14 @@
     },
     {
       "path": "crates/splot-validate/src/options.rs",
-      "sha256": "08e48489685de31405017972dd414915d2d8f576e7698892cbfcbd038c4c3523",
+      "sha256": "8335df2f5c3a6d9ae5559006a54f5bd5f3a9210b93006191e74538e5474cb232",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "bc99971806d58609a1032ec970f2661f6de64e60591d9f5bbe7507281ffad79d",
+      "sha256": "8bb9079e8668465ba28ec5da99915693b668dc5a41b4e1c7a624f735417b1263",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -898,7 +898,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "fb5d1098a78f42a471148abb0906bb3793703ba5cda7d6fa8e65816f1bc67406",
+      "sha256": "39658a16b477bba19d6f947df3e61061cdb3d7eb0399aa1a5401e57dc9ceabc0",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1065,7 +1065,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "1da9e16626d072c3cfedff3575e403e9a85ca015bb42916cd10a596d1135a2f0",
+      "sha256": "6f51f61bdb0786217f43456fb8fda5006e9c5126eb6962b4532d3ac9d889d542",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1202,7 +1202,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "f58bf5c444704e173e68e6073cb93eb0c025ba9c95f47276d4687d5275209506",
+      "sha256": "23093619fb84dcb1312c6cb5d1beca7440c001aa5dc84ded191e3a721119a572",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1355,7 +1355,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "30b4a7823c790b5afe09fbdca076655c97acf2429b3f10333da510c2b914e56b",
+      "sha256": "7b96b06e07f51485c59b69af69bc76e788f554ee3b9e2e6452da4d8bfeb182aa",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-7.3.2-CMVS-BOUNDARIES",
@@ -1367,7 +1367,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "eceafcbaa65828c109f228300a9192023129ed14e721c77b3e617509534b6263",
+      "sha256": "2c78b10f707c31eceb6a54c96295387c244dc35414fb6af0946156dad04e17da",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -2825,6 +2825,37 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-11-lcr-ptl-activated-sequence-agreement/proposal.md",
+      "sha256": "9690f32525ae7fefee83d239d3b9ee17c5f6f211bef8031b359ffba11a9a1e0e",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.8-LAYER-CONFIG-RECORD",
+        "AV2-5.8.4-LCR-SEQ-PTL-INFO",
+        "AV2-5.8.7-LCR-REP-INFO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-lcr-ptl-activated-sequence-agreement/specs/validator/spec.md",
+      "sha256": "653402784f2a87f26589499fc08d22dc5035c777e7da11be1eb0d60b619798d6",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.8.4-LCR-SEQ-PTL-INFO",
+        "AV2-5.8.7-LCR-REP-INFO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-lcr-ptl-activated-sequence-agreement/tasks.md",
+      "sha256": "2367e9d5e79c3371f280304b40d1b66d120c48e940ad1c4edf08920a10e7a70e",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.8.4-LCR-SEQ-PTL-INFO",
+        "AV2-5.8.7-LCR-REP-INFO"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-11-msdo-global-lcr-agreement/proposal.md",
       "sha256": "487788012a354cfc597cfd4e22f4eb2c11cbea0f3e30812a3ed57328bed5ed71",
       "scope_kind": "openspec",
@@ -3049,7 +3080,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "d4c8d1409bccb9f65b9e2c871c5560b39ebb998738ac5c567f2bcd6e9c5bb48c",
+      "sha256": "5042e0790f824ad1b91053f29535fa83cfb87704c16f94cf5248cb72234899df",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",

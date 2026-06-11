@@ -22,7 +22,7 @@ use splot_core::headers::frame::{
     parse_frame_header_prefix,
 };
 use splot_core::headers::layer_config_record::{
-    LayerConfigurationRecord, LcrAggregateInfo, parse_layer_config_record,
+    LayerConfigurationRecord, LcrAggregateInfo, LcrRepInfo, parse_layer_config_record,
 };
 use splot_core::headers::metadata::{
     MetadataPayload, MetadataScanType, MetadataUnit, parse_metadata_group, parse_metadata_short,
@@ -141,6 +141,15 @@ pub(crate) struct ValidatorContext {
     /// the activation-driven re-checks never duplicate a diagnostic for the same
     /// pairing (a different activated sequence header gets a distinct key).
     emitted_dependency_findings: BTreeSet<DependencyFindingKey>,
+    /// Already-emitted § 6.8.5 PTL-ceiling findings, so the activation-driven re-checks
+    /// never duplicate a diagnostic. The key carries the LCR snapshot's content and the
+    /// activated header's compared PTL values, so a non-identical LCR redefinition or a
+    /// same-id sequence-header reconfiguration re-emits while an identical re-evaluation
+    /// is idempotent (mirrors [`SubstreamMaxFindingKey`]).
+    emitted_lcr_ptl_findings: BTreeSet<LcrPtlFindingKey>,
+    /// Already-emitted § 6.8.8 rep-info mismatch findings; see
+    /// [`Self::emitted_lcr_ptl_findings`] for the dedup discipline.
+    emitted_lcr_rep_info_findings: BTreeSet<LcrRepInfoFindingKey>,
     /// Extended layers whose active sequence header was confirmed by a parsed
     /// frame-header reference (the § 5.18.2 `load_sequence_header` path), as
     /// opposed to the first-seen OBU-order fallback. The § 6.10.7 / § 6.8.9
@@ -903,6 +912,23 @@ struct LcrAssociation {
     /// the agreement at the later revision (codex finding 3393129741) — mirroring the
     /// existing § 6.8.9 dependency path, which also snapshots its associated maps.
     global_record: Option<GlobalLcrRecord>,
+    /// The § 5.8.4 PTL declared maxima of the associated LCR for this extended layer,
+    /// snapshotted at association time for the § 6.8.5 ceiling checks. A *local*
+    /// association reads the local record's `lcr_seq_profile_tier_level_info(xlayerId)`
+    /// (the § 6.8.5 keying record — the sentence names the local LCR); a *global*
+    /// association reads the global record's `lcr_seq_profile_tier_level_info(i)` for
+    /// this xlayer. `None` when the associated record carried no PTL info for the layer
+    /// (§ 6.8.5 "when ... present in an activated LCR"; absent PTL compares nothing).
+    /// Snapshotting (rather than a live lookup) keeps the comparison pinned to the
+    /// record revision this header associated to, exactly like [`Self::global_record`]
+    /// and [`Self::maps`].
+    ptl: Option<LcrPtlSnapshot>,
+    /// The § 5.8.7 rep info of the associated LCR for this extended layer, snapshotted
+    /// at association time for the § 6.8.8 equality checks (local record's
+    /// `lcr_rep_info(0, xId)` for a local association, the global payload's
+    /// `lcr_rep_info(1, xId)` for a global one). `None` when the associated record
+    /// carried no rep info for the layer (absent rep-info compares nothing).
+    rep_info: Option<LcrRepInfoSnapshot>,
 }
 
 /// Availability of in-band HLS objects, for the § 7.3.8 reference checks.
@@ -939,6 +965,31 @@ struct HlsAvailabilityStore {
     /// `(obu_xlayer_id, lcr_local_id)`, for the § 6.8.9 dependency-map agreement
     /// checks.
     local_lcr_embedded: BTreeMap<(ExtendedLayerId, u8), LcrEmbeddedMaps>,
+    /// § 5.8.4 `lcr_seq_profile_tier_level_info(xlayerId)` declared maxima of local
+    /// LCRs, keyed by `(obu_xlayer_id, lcr_local_id)`, for the § 6.8.5 PTL-ceiling
+    /// agreement checks. The § 6.8.5 sentences key the ceiling on the *local* LCR
+    /// ("associated with the local LCR ... indicated in an extended layer with
+    /// obu_xlayer_id equal to i"). Present only when the local record carried
+    /// `lcr_profile_tier_level_info_present_flag == 1`; a redefinition replaces the
+    /// entry wholesale (see [`Self::clear_local_lcr_extras`]).
+    local_lcr_ptl: BTreeMap<(ExtendedLayerId, u8), LcrPtlSnapshot>,
+    /// § 5.8.4 `lcr_seq_profile_tier_level_info(i)` declared maxima of global LCRs,
+    /// keyed by `(lcr_global_config_record_id, obu_xlayer_id)`, for the § 6.8.5
+    /// PTL-ceiling agreement checks when the activated record is a global LCR. Present
+    /// only when the global record carried `lcr_seq_profile_tier_level_info_present_flag
+    /// == 1` for that xlayer; a redefinition clears and re-records this id's entries.
+    global_lcr_ptl: BTreeMap<(u8, ExtendedLayerId), LcrPtlSnapshot>,
+    /// § 5.8.7 `lcr_rep_info(0, xId)` of local LCRs, keyed by
+    /// `(obu_xlayer_id, lcr_local_id)`, for the § 6.8.8 rep-info equality agreement
+    /// checks. Present only when the local record's `lcr_xlayer_info` carried rep info;
+    /// a redefinition replaces the entry wholesale.
+    local_lcr_rep_info: BTreeMap<(ExtendedLayerId, u8), LcrRepInfoSnapshot>,
+    /// § 5.8.7 `lcr_rep_info(1, xId)` of global LCR payloads, keyed by
+    /// `(lcr_global_config_record_id, obu_xlayer_id)`, for the § 6.8.8 rep-info
+    /// equality agreement checks when the activated record is a global LCR. Present only
+    /// for an xlayer whose global payload carried rep info; a redefinition clears and
+    /// re-records this id's entries.
+    global_lcr_rep_info: BTreeMap<(u8, ExtendedLayerId), LcrRepInfoSnapshot>,
     /// `(obu_xlayer_id, atlas_segment_id)` of local atlas segment OBUs seen in-band so
     /// far (§ 7.3.8.4).
     local_atlases: BTreeSet<(ExtendedLayerId, u8)>,
@@ -955,6 +1006,48 @@ struct LcrEmbeddedMaps {
     /// `(embedded layer index, lcr_tlayer_map[isGlobal][xId][j])` pairs, in
     /// ascending set-bit order of `lcr_mlayer_map`.
     tlayer_maps: Vec<(u8, u8)>,
+    /// Byte offset of the defining LCR OBU.
+    offset: ByteOffset,
+}
+
+/// One LCR's `lcr_seq_profile_tier_level_info(i)` declared maxima (AV2 § 5.8.4 /
+/// § 6.8.5), snapshotted for the § 6.8.5 PTL-ceiling agreement plus the defining LCR
+/// OBU's byte offset (the diagnostic anchors at the LCR OBU when more informative than
+/// the activating header). All four maxima are the LCR-declared ceilings the activated
+/// sequence header's PTL must not exceed (`<=`, equality passes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LcrPtlSnapshot {
+    /// `lcr_seq_profile_idc[i]`.
+    seq_profile_idc: u8,
+    /// `lcr_max_level_idx[i]`.
+    max_level_idx: u8,
+    /// `lcr_tier_flag[i]` as `0`/`1`.
+    tier_flag: u8,
+    /// `lcr_max_mlayer_count[i]`.
+    max_mlayer_count: u8,
+    /// Byte offset of the defining LCR OBU.
+    offset: ByteOffset,
+}
+
+/// One LCR `lcr_rep_info(isGlobal, xId)` entry's representation info (AV2 § 5.8.7 /
+/// § 6.8.8), snapshotted for the § 6.8.8 rep-info equality agreement plus the defining
+/// LCR OBU's byte offset. `format` / `cropping` mirror the parsed `Option`s: a missing
+/// `lcr_format_info_present_flag` / `lcr_cropping_window_present_flag` leaves the
+/// corresponding field `None`, and the § 6.8.8 comparisons that gate on those flags
+/// compare nothing when absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LcrRepInfoSnapshot {
+    /// `lcr_max_pic_width[isGlobal][xId]` (always present).
+    max_pic_width: u32,
+    /// `lcr_max_pic_height[isGlobal][xId]` (always present).
+    max_pic_height: u32,
+    /// `(lcr_bit_depth_idc, lcr_chroma_format_idc)`, present when
+    /// `lcr_format_info_present_flag == 1`.
+    format: Option<(u32, u32)>,
+    /// The four `lcr_cropping_win_*_offset` values, present when
+    /// `lcr_cropping_window_present_flag == 1` (the present flag itself is the
+    /// `Option::is_some`). Order: `(left, right, top, bottom)`.
+    cropping: Option<(u32, u32, u32, u32)>,
     /// Byte offset of the defining LCR OBU.
     offset: ByteOffset,
 }
@@ -1091,6 +1184,93 @@ impl HlsAvailabilityStore {
         self.local_lcr_embedded.get(&(xlayer, local_id))
     }
 
+    /// Drops the stored § 6.8.5 PTL and § 6.8.8 rep-info snapshots of the local LCR
+    /// `(xlayer, local_id)` before re-recording a redefinition, mirroring
+    /// [`Self::clear_local_lcr_embedded`] — a re-sent record that drops the PTL or
+    /// rep-info must not leave stale entries for the § 6.8.5/§ 6.8.8 checks.
+    fn clear_local_lcr_extras(&mut self, xlayer: ExtendedLayerId, local_id: u8) {
+        self.local_lcr_ptl.remove(&(xlayer, local_id));
+        self.local_lcr_rep_info.remove(&(xlayer, local_id));
+    }
+
+    /// Drops every stored § 6.8.5 PTL and § 6.8.8 rep-info snapshot of the global LCR
+    /// `global_id` before re-recording a redefinition, mirroring
+    /// [`Self::clear_global_lcr_embedded`].
+    fn clear_global_lcr_extras(&mut self, global_id: u8) {
+        self.global_lcr_ptl.retain(|(id, _), _| *id != global_id);
+        self.global_lcr_rep_info
+            .retain(|(id, _), _| *id != global_id);
+    }
+
+    /// Records a local LCR's § 5.8.4 PTL declared maxima (§ 6.8.5 ceiling checks).
+    fn record_local_lcr_ptl(&mut self, xlayer: ExtendedLayerId, local_id: u8, ptl: LcrPtlSnapshot) {
+        self.local_lcr_ptl.insert((xlayer, local_id), ptl);
+    }
+
+    /// Returns the available local LCR's § 5.8.4 PTL declared maxima for
+    /// `(xlayer, local_id)`, if signalled.
+    fn local_lcr_ptl(&self, xlayer: ExtendedLayerId, local_id: u8) -> Option<&LcrPtlSnapshot> {
+        self.local_lcr_ptl.get(&(xlayer, local_id))
+    }
+
+    /// Records a global LCR's § 5.8.4 PTL declared maxima for extended layer `xlayer`
+    /// (§ 6.8.5 ceiling checks).
+    fn record_global_lcr_ptl(
+        &mut self,
+        global_id: u8,
+        xlayer: ExtendedLayerId,
+        ptl: LcrPtlSnapshot,
+    ) {
+        self.global_lcr_ptl.insert((global_id, xlayer), ptl);
+    }
+
+    /// Returns the available global LCR's § 5.8.4 PTL declared maxima for
+    /// `(global_id, xlayer)`, if signalled.
+    fn global_lcr_ptl(&self, global_id: u8, xlayer: ExtendedLayerId) -> Option<&LcrPtlSnapshot> {
+        self.global_lcr_ptl.get(&(global_id, xlayer))
+    }
+
+    /// Records a local LCR's § 5.8.7 rep info (§ 6.8.8 equality checks).
+    fn record_local_lcr_rep_info(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        local_id: u8,
+        rep: LcrRepInfoSnapshot,
+    ) {
+        self.local_lcr_rep_info.insert((xlayer, local_id), rep);
+    }
+
+    /// Returns the available local LCR's § 5.8.7 rep info for `(xlayer, local_id)`, if
+    /// signalled.
+    fn local_lcr_rep_info(
+        &self,
+        xlayer: ExtendedLayerId,
+        local_id: u8,
+    ) -> Option<&LcrRepInfoSnapshot> {
+        self.local_lcr_rep_info.get(&(xlayer, local_id))
+    }
+
+    /// Records a global LCR payload's § 5.8.7 rep info for extended layer `xlayer`
+    /// (§ 6.8.8 equality checks).
+    fn record_global_lcr_rep_info(
+        &mut self,
+        global_id: u8,
+        xlayer: ExtendedLayerId,
+        rep: LcrRepInfoSnapshot,
+    ) {
+        self.global_lcr_rep_info.insert((global_id, xlayer), rep);
+    }
+
+    /// Returns the available global LCR's § 5.8.7 rep info for `(global_id, xlayer)`, if
+    /// signalled.
+    fn global_lcr_rep_info(
+        &self,
+        global_id: u8,
+        xlayer: ExtendedLayerId,
+    ) -> Option<&LcrRepInfoSnapshot> {
+        self.global_lcr_rep_info.get(&(global_id, xlayer))
+    }
+
     /// Records a local atlas segment OBU (by `obu_xlayer_id` and `atlas_segment_id`)
     /// as available in-band (AV2 § 7.3.8.4).
     fn record_local_atlas(&mut self, xlayer: ExtendedLayerId, atlas_id: u8) {
@@ -1207,6 +1387,81 @@ impl DependencyFindingKey {
     }
 }
 
+/// Which § 6.8.5 PTL ceiling a finding constrains; part of [`LcrPtlFindingKey`] so the
+/// four sub-rules are deduped independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum LcrPtlField {
+    /// `lcr/ptl-profile-exceeds-max`.
+    Profile,
+    /// `lcr/ptl-level-exceeds-max`.
+    Level,
+    /// `lcr/ptl-tier-exceeds-max`.
+    Tier,
+    /// `lcr/ptl-mlayer-count-exceeds-max`.
+    MlayerCount,
+}
+
+/// Dedup key for an emitted § 6.8.5 PTL-ceiling finding: the activated pairing
+/// coordinates, the defining LCR OBU's offset (a redefined LCR is a distinct violating
+/// OBU), the ceiling sub-field, and a content fingerprint of both the LCR-declared
+/// maximum and the activated header's value. A non-identical LCR redefinition (new
+/// offset / changed maximum) or a same-id sequence-header reconfiguration (changed
+/// header value) yields a distinct key and re-emits; an identical re-evaluation is
+/// idempotent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct LcrPtlFindingKey {
+    xlayer: ExtendedLayerId,
+    seq_header_id: SequenceHeaderId,
+    lcr_is_global: bool,
+    lcr_id: u8,
+    lcr_offset: ByteOffset,
+    field: LcrPtlField,
+    /// The LCR-declared maximum in force (a redefinition with a new offset already
+    /// yields a distinct key; this is kept for content symmetry with the header value).
+    lcr_max: u32,
+    /// The activated header's compared value.
+    header_value: u32,
+}
+
+/// Which § 6.8.8 rep-info field a finding constrains; part of [`LcrRepInfoFindingKey`]
+/// so the sub-fields are deduped independently and named in the message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum LcrRepInfoField {
+    /// `lcr_max_pic_width` vs `max_frame_width_minus_1 + 1`.
+    Width,
+    /// `lcr_max_pic_height` vs `max_frame_height_minus_1 + 1`.
+    Height,
+    /// `lcr_bit_depth_idc` vs `bit_depth_idc`.
+    BitDepth,
+    /// `lcr_chroma_format_idc` vs `chroma_format_idc`.
+    ChromaFormat,
+    /// `lcr_cropping_window_present_flag` vs `seq_cropping_window_present_flag`.
+    CroppingPresent,
+    /// `lcr_cropping_win_left_offset` vs `seq_cropping_win_left_offset`.
+    CropLeft,
+    /// `lcr_cropping_win_right_offset` vs `seq_cropping_win_right_offset`.
+    CropRight,
+    /// `lcr_cropping_win_top_offset` vs `seq_cropping_win_top_offset`.
+    CropTop,
+    /// `lcr_cropping_win_bottom_offset` vs `seq_cropping_win_bottom_offset`.
+    CropBottom,
+}
+
+/// Dedup key for an emitted § 6.8.8 rep-info mismatch finding; see
+/// [`LcrPtlFindingKey`] for the dedup discipline. The LCR value and header value fold a
+/// content change into a distinct key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct LcrRepInfoFindingKey {
+    xlayer: ExtendedLayerId,
+    seq_header_id: SequenceHeaderId,
+    lcr_is_global: bool,
+    lcr_id: u8,
+    lcr_offset: ByteOffset,
+    field: LcrRepInfoField,
+    lcr_value: u64,
+    header_value: u64,
+}
+
 /// Scans an 8-bit embedded-layer bitmask for the first § 6.10.7 / § 6.8.9 closure
 /// violation under `MLayerDependencyMap`: a set bit `cMId` for which the map
 /// requires a dependency `rMId < cMId` (`MLayerDependencyMap[cMId][rMId] == 1`)
@@ -1250,6 +1505,25 @@ fn tlayer_closure_violation(mlayer: u8, mask: u8, t_map: &TLayerDependencyMap) -
         }
     }
     None
+}
+
+/// Builds an [`LcrRepInfoSnapshot`] from a parsed `lcr_rep_info()` and the defining LCR
+/// OBU's byte offset (AV2 § 5.8.7), mapping the parsed `format_info` / `cropping_window`
+/// `Option`s straight through — a missing `lcr_format_info_present_flag` /
+/// `lcr_cropping_window_present_flag` leaves the snapshot field `None`, and the § 6.8.8
+/// comparisons gated on those flags compare nothing when absent.
+fn rep_info_snapshot(rep_info: &LcrRepInfo, offset: ByteOffset) -> LcrRepInfoSnapshot {
+    LcrRepInfoSnapshot {
+        max_pic_width: rep_info.max_pic_width,
+        max_pic_height: rep_info.max_pic_height,
+        format: rep_info
+            .format_info
+            .map(|f| (f.bit_depth_idc, f.chroma_format_idc)),
+        cropping: rep_info
+            .cropping_window
+            .map(|c| (c.left_offset, c.right_offset, c.top_offset, c.bottom_offset)),
+        offset,
+    }
 }
 
 /// `true` when caller-provided external HLS declares at least one sequence header.
@@ -4860,11 +5134,33 @@ impl ValidatorContext {
                 // wholesale so a dropped payload cannot leave stale entries.
                 self.hls
                     .clear_global_lcr_embedded(info.global_config_record_id);
+                // AV2 § 6.8.5/§ 6.8.8: retain this global LCR's per-xlayer PTL declared
+                // maxima and rep info for the ceiling / equality agreement checks. A
+                // redefinition clears and re-records so a dropped PTL/rep-info cannot
+                // leave stale entries.
+                self.hls
+                    .clear_global_lcr_extras(info.global_config_record_id);
+                // § 5.8.4: lcr_seq_profile_tier_level_info(i) is present per xlayer in
+                // the map only when lcr_seq_profile_tier_level_info_present_flag == 1.
+                for ptl in &info.seq_ptl_infos {
+                    self.hls.record_global_lcr_ptl(
+                        info.global_config_record_id,
+                        ExtendedLayerId::from_bits(ptl.xlayer_id),
+                        LcrPtlSnapshot {
+                            seq_profile_idc: ptl.seq_profile_idc,
+                            max_level_idx: ptl.max_level_idx,
+                            tier_flag: u8::from(ptl.tier_flag),
+                            max_mlayer_count: ptl.max_mlayer_count,
+                            offset: obu.offset,
+                        },
+                    );
+                }
                 for payload in &info.payloads {
+                    let xlayer_id = ExtendedLayerId::from_bits(payload.xlayer_id);
                     if let Some(embedded) = &payload.xlayer_info.embedded_layer_info {
                         self.hls.record_global_lcr_embedded(
                             info.global_config_record_id,
-                            ExtendedLayerId::from_bits(payload.xlayer_id),
+                            xlayer_id,
                             LcrEmbeddedMaps {
                                 mlayer_map: embedded.mlayer_map,
                                 tlayer_maps: embedded
@@ -4874,6 +5170,14 @@ impl ValidatorContext {
                                     .collect(),
                                 offset: obu.offset,
                             },
+                        );
+                    }
+                    // § 5.8.7: lcr_rep_info(1, xId) is present only when its flag is set.
+                    if let Some(rep_info) = &payload.xlayer_info.rep_info {
+                        self.hls.record_global_lcr_rep_info(
+                            info.global_config_record_id,
+                            xlayer_id,
+                            rep_info_snapshot(rep_info, obu.offset),
                         );
                     }
                 }
@@ -4930,6 +5234,11 @@ impl ValidatorContext {
                 // agreement checks. A redefinition replaces the maps wholesale so a
                 // re-sent record without embedded info cannot leave stale entries.
                 self.hls.clear_local_lcr_embedded(xlayer, info.local_id);
+                // AV2 § 6.8.5/§ 6.8.8: retain this local LCR's PTL declared maxima and
+                // rep info for the ceiling / equality agreement checks (the § 6.8.5
+                // sentences key the ceiling on the local LCR). Cleared first so a
+                // re-sent record that drops them cannot leave stale entries.
+                self.hls.clear_local_lcr_extras(xlayer, info.local_id);
                 if let Some(embedded) = &info.xlayer_info.embedded_layer_info {
                     self.hls.record_local_lcr_embedded(
                         xlayer,
@@ -4943,6 +5252,29 @@ impl ValidatorContext {
                                 .collect(),
                             offset: obu.offset,
                         },
+                    );
+                }
+                // § 5.8.4: lcr_seq_profile_tier_level_info(xlayerId) is present only when
+                // lcr_profile_tier_level_info_present_flag[xlayerId] == 1.
+                if let Some(ptl) = &info.seq_ptl_info {
+                    self.hls.record_local_lcr_ptl(
+                        xlayer,
+                        info.local_id,
+                        LcrPtlSnapshot {
+                            seq_profile_idc: ptl.seq_profile_idc,
+                            max_level_idx: ptl.max_level_idx,
+                            tier_flag: u8::from(ptl.tier_flag),
+                            max_mlayer_count: ptl.max_mlayer_count,
+                            offset: obu.offset,
+                        },
+                    );
+                }
+                // § 5.8.7: lcr_rep_info(0, xId) is present only when its flag is set.
+                if let Some(rep_info) = &info.xlayer_info.rep_info {
+                    self.hls.record_local_lcr_rep_info(
+                        xlayer,
+                        info.local_id,
+                        rep_info_snapshot(rep_info, obu.offset),
                     );
                 }
             }
@@ -5517,6 +5849,30 @@ impl ValidatorContext {
         }
     }
 
+    /// The activated sequence header for `xlayer`, but *only* when a parsed
+    /// frame-header reference confirmed it (§ 5.18.2 `load_sequence_header`) — the
+    /// strict variant of [`Self::agreement_activation_for`] that does *not* admit the
+    /// sole-in-band-header OBU-order fallback.
+    ///
+    /// The fallback (`sequence_headers.len() == 1`) is a guess: § 7.3.6 permits staging a
+    /// header before any frame activates one, and with external HLS declared the *real*
+    /// activated header could be the external one (the in-band staged header may never be
+    /// referenced). Checks that fire unconditionally on a violation (the Annex A
+    /// value-space check, and the § 6.8.5 / § 6.8.8 / § 6.8.9 LCR-agreement checks)
+    /// therefore use this strict gate so they never emit against a fallback guess; they
+    /// re-enter the moment a frame confirms the activation. Contrast the OPS / § 6.8.2
+    /// resolutions that tolerate the fallback because they emit nothing without an
+    /// OPS/global-LCR present and are otherwise suppressed under external HLS.
+    fn frame_confirmed_activation_for(
+        &self,
+        xlayer: ExtendedLayerId,
+    ) -> Option<(SequenceHeaderId, SequenceHeaderGeneral)> {
+        if !self.frame_confirmed_xlayers.contains(&xlayer) {
+            return None;
+        }
+        self.active_general_for(xlayer)
+    }
+
     /// Resolves "the activated global layer configuration record of the coded multistream
     /// video sequence" (AV2 § 6.8.2 / § 7.3.2) from the existing § 6.4.1 association chain:
     /// a *frame-confirmed* activated sequence header's `seq_lcr_id` resolves
@@ -5729,15 +6085,34 @@ impl ValidatorContext {
         // decidable regardless of any external HLS the caller declares (an externally
         // activated header would carry its own out-of-band values, but the active header
         // recorded here is always the in-band one resolved by the § 5.18.2
-        // load_sequence_header path or the OBU-order fallback). Run it *before* the
-        // external-HLS early return below — which correctly suppresses only the
-        // agreement checks that need full HLS knowledge (unmodeled external dependency
-        // maps / SeqMaxMlayerCnt) — so a Provided-mode stream whose activating frame
-        // resolved an in-band reserved level/profile is still flagged. The check itself
-        // gates on a *frame-confirmed* activation (`frame_confirmed_xlayers`), so a
-        // fallback-guess staged header that no frame has loaded does not fire (§ 7.3.6
-        // allows staged-but-unactivated headers).
+        // load_sequence_header path). This is a *header-only* check — it reads nothing
+        // from the § 6.4.1 LCR association — so it runs *before* the external-HLS early
+        // return below and is never suppressed under a Provided mode (contrast the LCR
+        // agreement checks below, which read an association an unmodeled external LCR
+        // could shadow). The check gates on a *frame-confirmed* activation
+        // (`frame_confirmed_xlayers`), so a fallback-guess staged header that no frame
+        // has loaded does not fire (§ 7.3.6 allows staged-but-unactivated headers).
         self.check_annex_a_value_space(xlayer, report);
+        // AV2 § 6.8.5 / § 6.8.8 / § 6.8.9: the activated LCR's PTL ceilings, rep-info
+        // equality, and dependency-map closure against the sequence header activated for
+        // this layer. Unlike the header-only Annex A check above, each of these is
+        // *association-dependent*: it pairs the in-band header against the LCR its
+        // `seq_lcr_id` resolves to under § 6.4.1 (local-LCR-first, then global). Under a
+        // Provided external-HLS mode an unmodeled external *local* LCR with the same
+        // `seq_lcr_id` could win that resolution ahead of the in-band record, so the
+        // association the validator paired may not be the one a real decoder uses — the
+        // in-band "violation" would then be a false positive against the wrong operand
+        // (zero-false-positive principle, AGENTS.md § 7). Each check therefore restores
+        // its own "suppress under any Provided mode" gate (see the per-check rationale and
+        // `check_seq_lcr_reference`'s lcr/global-xlayer-map-missing-xlayer gate, which
+        // suppresses on the identical local-first-shadowing reasoning). They use the
+        // strict `frame_confirmed_activation_for` gate (no sole-in-band-header fallback),
+        // matching the Annex A value-space precedent: a check that fires unconditionally
+        // on a violation must never emit against a guessed activation, least of all when
+        // an external header could be the real one.
+        self.check_lcr_dependency_agreement(xlayer, options, report);
+        self.check_lcr_ptl_ceilings(xlayer, options, report);
+        self.check_lcr_rep_info_agreement(xlayer, options, report);
         if external_declares_sequence_header(options) {
             return;
         }
@@ -5764,7 +6139,6 @@ impl ValidatorContext {
         for (offset, ops_id, entries) in pending {
             self.check_ops_entries_against_active(offset, ops_id, &entries, options, report);
         }
-        self.check_lcr_dependency_agreement(xlayer, options, report);
         // AV2 § 6.6: the activation-precedes-MSDO arrival order for the sub-stream
         // PTL-ceiling agreement check (the MSDO-precedes-activation order is covered by
         // the re-check loop in `observe_msdo`). It gates on the in-band MSDO state and a
@@ -7321,6 +7695,12 @@ impl ValidatorContext {
                 maps: self.hls.local_lcr_embedded(xlayer, seq_lcr_id).cloned(),
                 // A local association carries no § 6.8.2 global-agreement record.
                 global_record: None,
+                // § 6.8.5/§ 6.8.8 snapshot the local record's PTL / rep-info present
+                // *prior to this header* (the same discipline as `maps`), so a later
+                // same-id local redefinition cannot retarget the ceiling/equality
+                // comparison. The § 6.8.5 sentences key the ceiling on the *local* LCR.
+                ptl: self.hls.local_lcr_ptl(xlayer, seq_lcr_id).copied(),
+                rep_info: self.hls.local_lcr_rep_info(xlayer, seq_lcr_id).copied(),
             })
         } else if self.hls.global_lcr_xlayer_map(seq_lcr_id).is_some() {
             Some(LcrAssociation {
@@ -7332,6 +7712,10 @@ impl ValidatorContext {
                 // finding 3393129741). `has_local_lcr` failing and the xlayer map being
                 // present means the chain resolved to this in-band global record.
                 global_record: self.global_lcr_records.get(&seq_lcr_id).cloned(),
+                // § 6.8.5/§ 6.8.8: a global association reads the global record's PTL /
+                // rep-info for this xlayer, snapshotted alongside `global_record`.
+                ptl: self.hls.global_lcr_ptl(seq_lcr_id, xlayer).copied(),
+                rep_info: self.hls.global_lcr_rep_info(seq_lcr_id, xlayer).copied(),
             })
         } else {
             None
@@ -7363,15 +7747,27 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        // Stricter gate than the OPS checks: external HLS cannot declare LCRs, and
-        // per § 6.4.1 an externally-provided *local* LCR would resolve seq_lcr_id
-        // ahead of an in-band global record, so under any Provided mode the
-        // resolved record may not be the activated one — the same rationale as
-        // `check_seq_lcr_reference`'s lcr/global-xlayer-map-missing-xlayer gate.
+        // Suppressed under any Provided external-HLS mode. This check pairs the in-band
+        // header's dependency maps against the LCR its `seq_lcr_id` resolves to under
+        // § 6.4.1, which is *association-dependent*: `ExternalHlsSet` cannot enumerate an
+        // external LCR (it models only sequence-header ids and operating-point sets), but
+        // a Provided declaration is a *partial* one — other external HLS OBUs, including
+        // local LCRs, MAY exist unenumerated (see `ExternalHlsMode::Provided`). An external
+        // *local* LCR with this `seq_lcr_id` would win the local-first § 6.4.1 resolution
+        // ahead of the in-band record, so the association the validator paired may not be
+        // the one a real decoder uses, and an in-band "violation" against it would be a
+        // false positive (zero-false-positive principle). This is the identical
+        // local-first-shadowing reasoning `check_seq_lcr_reference` uses to suppress
+        // lcr/global-xlayer-map-missing-xlayer. The gate is "any Provided mode", not
+        // "declares a sequence header": an external LCR can be shadowing even when the set
+        // enumerates only OPS or nothing at all, so the suppression is not about sequence
+        // headers.
         if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
             return;
         }
-        let Some((seq_header_id, general)) = self.agreement_activation_for(xlayer) else {
+        // Strict frame-confirmed activation (no sole-in-band-header fallback): a check that
+        // fires unconditionally on a violation must not emit against a guessed activation.
+        let Some((seq_header_id, general)) = self.frame_confirmed_activation_for(xlayer) else {
             return;
         };
         let Some(association) = self.lcr_associations.get(&(xlayer, seq_header_id)) else {
@@ -7449,6 +7845,313 @@ impl ValidatorContext {
                     .with_byte_offset(maps.offset),
                 );
             }
+        }
+    }
+
+    /// AV2 § 6.8.5: when `lcr_seq_profile_tier_level_info(i)` is present in the LCR
+    /// activated by extended layer `i`'s frame-confirmed sequence header, the header's
+    /// `seq_profile_idc`, `seq_level_idx`, `seq_tier`, and `seq_max_mlayer_cnt_minus_1 +
+    /// 1` must each be less than or equal to the corresponding LCR-declared maximum
+    /// (`lcr_seq_profile_idc[i]` / `lcr_max_level_idx[i]` / `lcr_tier_flag[i]` /
+    /// `lcr_max_mlayer_count[i]`), with equality passing
+    /// (mirror `06-syntax-structures-semantics.md#s-6-8-5`, lines 1774-1810).
+    ///
+    /// The pairing is the sequence header activated for `xlayer` and that header's
+    /// § 6.4.1 LCR association (the [`LcrAssociation::ptl`] snapshot taken at the
+    /// header's latest observation, NOT a live resolution — a record redefined after the
+    /// header is not the associated one). The § 6.8.5 sentence keys the ceiling on the
+    /// *local* LCR; the snapshot reads the local record's PTL for a local association and
+    /// the global record's PTL for that xlayer for a global one. An association without
+    /// PTL info has nothing to check (absent PTL compares nothing), and unresolved
+    /// references are owned by the existing § 7.3.8.3 availability diagnostics. The
+    /// diagnostics anchor at the associated LCR OBU (its declared maxima are the
+    /// informative source). Suppressed under any Provided external-HLS mode (the
+    /// association is § 6.4.1-resolved and an unmodeled external local LCR could shadow
+    /// the in-band record) and gated on a strict frame-confirmed activation — see
+    /// [`Self::check_lcr_dependency_agreement`] for the full rationale.
+    fn check_lcr_ptl_ceilings(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        // Suppress under any Provided mode and gate on a strict frame-confirmed
+        // activation; see check_lcr_dependency_agreement for the full rationale (the
+        // § 6.4.1 association an unmodeled external local LCR could shadow, plus the
+        // no-emit-against-a-guess requirement).
+        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+            return;
+        }
+        let Some((seq_header_id, general)) = self.frame_confirmed_activation_for(xlayer) else {
+            return;
+        };
+        let Some(association) = self.lcr_associations.get(&(xlayer, seq_header_id)) else {
+            return;
+        };
+        let Some(ptl) = association.ptl else {
+            // § 6.8.5 "when lcr_seq_profile_tier_level_info(i) is present": absent PTL
+            // info compares nothing.
+            return;
+        };
+        let lcr_is_global = association.lcr_is_global;
+        let lcr_id = association.lcr_id;
+        let lcr_offset = ptl.offset;
+        let scope = if lcr_is_global { "global" } else { "local" };
+
+        // The activated header's compared PTL values.
+        let seq_profile = u32::from(general.seq_profile_idc.get());
+        let seq_level = u32::from(general.seq_level_idx.get());
+        let seq_tier = u32::from(u8::from(matches!(general.seq_tier, Tier::High)));
+        let seq_mlayer_count = u32::from(general.seq_max_mlayer_count.get());
+
+        // Each ceiling: header value <= LCR-declared maximum (equality passes).
+        let checks = [
+            (
+                LcrPtlField::Profile,
+                "lcr/ptl-profile-exceeds-max",
+                seq_profile,
+                u32::from(ptl.seq_profile_idc),
+                "seq_profile_idc",
+                "lcr_seq_profile_idc",
+            ),
+            (
+                LcrPtlField::Level,
+                "lcr/ptl-level-exceeds-max",
+                seq_level,
+                u32::from(ptl.max_level_idx),
+                "seq_level_idx",
+                "lcr_max_level_idx",
+            ),
+            (
+                LcrPtlField::Tier,
+                "lcr/ptl-tier-exceeds-max",
+                seq_tier,
+                u32::from(ptl.tier_flag),
+                "seq_tier",
+                "lcr_tier_flag",
+            ),
+            (
+                LcrPtlField::MlayerCount,
+                "lcr/ptl-mlayer-count-exceeds-max",
+                seq_mlayer_count,
+                u32::from(ptl.max_mlayer_count),
+                "seq_max_mlayer_cnt_minus_1 + 1",
+                "lcr_max_mlayer_count",
+            ),
+        ];
+
+        for (field, rule_id, header_value, lcr_max, header_name, lcr_name) in checks {
+            if header_value <= lcr_max {
+                continue;
+            }
+            let key = LcrPtlFindingKey {
+                xlayer,
+                seq_header_id,
+                lcr_is_global,
+                lcr_id,
+                lcr_offset,
+                field,
+                lcr_max,
+                header_value,
+            };
+            if !self.emitted_lcr_ptl_findings.insert(key) {
+                continue;
+            }
+            report.push(
+                Diagnostic::error(
+                    rule_id,
+                    format!(
+                        "sequence header {} activated for extended layer {} has {header_name} \
+                         {header_value}, exceeding the activated {scope} layer configuration \
+                         record {lcr_id}'s {lcr_name}[{}] = {lcr_max} (§ 6.8.5)",
+                        seq_header_id.get(),
+                        xlayer.get(),
+                        xlayer.get(),
+                    ),
+                )
+                .with_spec_section("6.8.5")
+                .with_byte_offset(lcr_offset),
+            );
+        }
+    }
+
+    /// AV2 § 6.8.8: the activated LCR's `lcr_rep_info(isGlobal, j)`, when present, must
+    /// agree with each sequence header activated by extended layer `j` — `lcr_max_pic_width`
+    /// / `lcr_max_pic_height` equal `max_frame_width/height_minus_1 + 1`,
+    /// `lcr_bit_depth_idc` / `lcr_chroma_format_idc` (when
+    /// `lcr_format_info_present_flag == 1`) equal `bit_depth_idc` / `chroma_format_idc`,
+    /// `lcr_cropping_window_present_flag` equals `seq_cropping_window_present_flag`, and
+    /// (when the LCR cropping window is present) the four `lcr_cropping_win_*_offset`
+    /// equal the `seq_cropping_win_*_offset` (mirror
+    /// `06-syntax-structures-semantics.md#s-6-8-8`, lines 1925-1968). Each disagreement
+    /// emits `lcr/rep-info-mismatch` (error) naming the field.
+    ///
+    /// Same pairing discipline as [`Self::check_lcr_ptl_ceilings`]: the [`LcrAssociation::rep_info`]
+    /// snapshot, a strict frame-confirmed activation, absent rep-info (or absent
+    /// format-info / cropping window) comparing nothing, and the LCR OBU as the diagnostic
+    /// anchor. Likewise suppressed under any Provided external-HLS mode — see
+    /// [`Self::check_lcr_dependency_agreement`].
+    fn check_lcr_rep_info_agreement(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        // Suppress under any Provided mode and gate on a strict frame-confirmed
+        // activation; see check_lcr_dependency_agreement for the full rationale.
+        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+            return;
+        }
+        let Some((seq_header_id, general)) = self.frame_confirmed_activation_for(xlayer) else {
+            return;
+        };
+        let Some(association) = self.lcr_associations.get(&(xlayer, seq_header_id)) else {
+            return;
+        };
+        let Some(rep) = association.rep_info else {
+            // Absent rep-info compares nothing.
+            return;
+        };
+        let lcr_is_global = association.lcr_is_global;
+        let lcr_id = association.lcr_id;
+        let lcr_offset = rep.offset;
+        let scope = if lcr_is_global { "global" } else { "local" };
+
+        // Collect (field, lcr_value, header_value, message-fragment) for each
+        // disagreeing comparison. lcr_value / header_value also feed the dedup key.
+        let mut mismatches: Vec<(LcrRepInfoField, u64, u64, String)> = Vec::new();
+
+        // § 6.8.8 lines 1925-1933: lcr_max_pic_width/height shall equal
+        // max_frame_width/height_minus_1 + 1 (always present in the rep info).
+        let header_width = general.max_frame_width.get();
+        if rep.max_pic_width != header_width {
+            mismatches.push((
+                LcrRepInfoField::Width,
+                u64::from(rep.max_pic_width),
+                u64::from(header_width),
+                format!(
+                    "lcr_max_pic_width {} != max_frame_width_minus_1 + 1 = {header_width}",
+                    rep.max_pic_width
+                ),
+            ));
+        }
+        let header_height = general.max_frame_height.get();
+        if rep.max_pic_height != header_height {
+            mismatches.push((
+                LcrRepInfoField::Height,
+                u64::from(rep.max_pic_height),
+                u64::from(header_height),
+                format!(
+                    "lcr_max_pic_height {} != max_frame_height_minus_1 + 1 = {header_height}",
+                    rep.max_pic_height
+                ),
+            ));
+        }
+
+        // § 6.8.8 lines 1950-1958: lcr_bit_depth_idc / lcr_chroma_format_idc shall equal
+        // bit_depth_idc / chroma_format_idc — present only when
+        // lcr_format_info_present_flag == 1 (absent compares nothing).
+        if let Some((lcr_bit_depth, lcr_chroma)) = rep.format {
+            let header_bit_depth = u32::from(general.bit_depth_idc.get());
+            if lcr_bit_depth != header_bit_depth {
+                mismatches.push((
+                    LcrRepInfoField::BitDepth,
+                    u64::from(lcr_bit_depth),
+                    u64::from(header_bit_depth),
+                    format!(
+                        "lcr_bit_depth_idc {lcr_bit_depth} != bit_depth_idc {header_bit_depth}"
+                    ),
+                ));
+            }
+            let header_chroma = u32::from(general.chroma_format_idc.get());
+            if lcr_chroma != header_chroma {
+                mismatches.push((
+                    LcrRepInfoField::ChromaFormat,
+                    u64::from(lcr_chroma),
+                    u64::from(header_chroma),
+                    format!(
+                        "lcr_chroma_format_idc {lcr_chroma} != chroma_format_idc {header_chroma}"
+                    ),
+                ));
+            }
+        }
+
+        // § 6.8.8 lines 1943-1968: lcr_cropping_window_present_flag shall equal
+        // seq_cropping_window_present_flag; the offsets shall match the seq_cropping_*
+        // offsets (the LCR offsets are present only when the LCR cropping window is).
+        let lcr_cropping_present = rep.cropping.is_some();
+        let header_cropping_present = general.seq_cropping_window_present_flag;
+        if lcr_cropping_present != header_cropping_present {
+            mismatches.push((
+                LcrRepInfoField::CroppingPresent,
+                u64::from(lcr_cropping_present),
+                u64::from(header_cropping_present),
+                format!(
+                    "lcr_cropping_window_present_flag {} != seq_cropping_window_present_flag {}",
+                    u8::from(lcr_cropping_present),
+                    u8::from(header_cropping_present),
+                ),
+            ));
+        }
+        if let Some((lcr_left, lcr_right, lcr_top, lcr_bottom)) = rep.cropping {
+            // The header's seq_cropping_win_* offsets are 0 when the window is absent
+            // (§ 6.4.1 inference). The present-flag mismatch above already fires in that
+            // case; the offset comparisons still run against the header's effective
+            // (possibly inferred-0) values per the § 6.8.8 "shall match" sentence.
+            let crop = general.cropping_window;
+            for (field, lcr_value, header_value, name) in [
+                (LcrRepInfoField::CropLeft, lcr_left, crop.left, "left"),
+                (LcrRepInfoField::CropRight, lcr_right, crop.right, "right"),
+                (LcrRepInfoField::CropTop, lcr_top, crop.top, "top"),
+                (
+                    LcrRepInfoField::CropBottom,
+                    lcr_bottom,
+                    crop.bottom,
+                    "bottom",
+                ),
+            ] {
+                if lcr_value != header_value {
+                    mismatches.push((
+                        field,
+                        u64::from(lcr_value),
+                        u64::from(header_value),
+                        format!(
+                            "lcr_cropping_win_{name}_offset {lcr_value} != \
+                             seq_cropping_win_{name}_offset {header_value}"
+                        ),
+                    ));
+                }
+            }
+        }
+
+        for (field, lcr_value, header_value, fragment) in mismatches {
+            let key = LcrRepInfoFindingKey {
+                xlayer,
+                seq_header_id,
+                lcr_is_global,
+                lcr_id,
+                lcr_offset,
+                field,
+                lcr_value,
+                header_value,
+            };
+            if !self.emitted_lcr_rep_info_findings.insert(key) {
+                continue;
+            }
+            report.push(
+                Diagnostic::error(
+                    "lcr/rep-info-mismatch",
+                    format!(
+                        "activated {scope} layer configuration record {lcr_id}'s rep info for \
+                         extended layer {} disagrees with sequence header {} activated for that \
+                         layer: {fragment} (§ 6.8.8)",
+                        xlayer.get(),
+                        seq_header_id.get(),
+                    ),
+                )
+                .with_spec_section("6.8.8")
+                .with_byte_offset(lcr_offset),
+            );
         }
     }
 
@@ -7843,11 +8546,15 @@ impl ValidatorContext {
         }
         if let Some(xlayer_map) = self.hls.global_lcr_xlayer_map(seq_lcr_id) {
             // AV2 § 6.4.1: the activated global LCR's lcr_xlayer_map must include the
-            // sequence header's obu_xlayer_id. This is suppressed under external HLS:
-            // an externally-provided local LCR (not modeled) could resolve seq_lcr_id
-            // ahead of this in-band global, making the global's map irrelevant, so
-            // flagging it would be a false positive — consistent with the unavailable
-            // branch below and the multi-frame-header precedent.
+            // sequence header's obu_xlayer_id. Suppressed under any Provided external-HLS
+            // mode: a Provided declaration is *partial* (`ExternalHlsMode::Provided` —
+            // unenumerated external LCRs MAY exist), so an externally-provided local LCR
+            // with this seq_lcr_id could resolve ahead of this in-band global by the
+            // local-first § 6.4.1 order, making the global's map irrelevant; flagging it
+            // would be a false positive. This is the same local-first-shadowing reasoning
+            // that suppresses the § 6.8.5 / § 6.8.8 / § 6.8.9 association-dependent
+            // agreement checks (`check_lcr_dependency_agreement` and friends) — consistent
+            // with the unavailable branch below and the multi-frame-header precedent.
             let xlayer_bit = xlayer.get();
             if matches!(options.external_hls, ExternalHlsMode::Disabled)
                 && xlayer_bit < 31
@@ -8041,14 +8748,30 @@ impl ValidatorContext {
             annex_a_value_space_fingerprint(&previous.general)
                 != annex_a_value_space_fingerprint(&new_general)
         });
+        // § 7.3.6 likewise permits a same-`seq_header_id` redefinition that changes only
+        // the § 6.8.5 / § 6.8.8 LCR-agreement operands the Annex A fingerprint does not
+        // track — `SeqMaxMlayerCnt`, the frame dimensions, and the cropping window. Those
+        // are not agreement inputs and not in the value-space fingerprint, yet they are
+        // active for *every* extended layer referencing this id, so a redefinition flipping
+        // (say) max_frame_width to disagree with the activated LCR must re-run the LCR
+        // checks for all of them, not just the activating layer. Detect this fingerprint
+        // change separately and fold the same active-layer set into the recheck below (the
+        // `lcr/ptl-*` and `lcr/rep-info-mismatch` dedup keys keep the re-runs idempotent and
+        // only re-emit when a checked field actually changed).
+        let lcr_agreement_values_changed = previous_header.as_ref().is_some_and(|previous| {
+            lcr_agreement_value_fingerprint(&previous.general)
+                != lcr_agreement_value_fingerprint(&new_general)
+        });
         let mut layers_to_check = BTreeSet::new();
         if self.active_sequence_by_xlayer.get(&xlayer) == Some(&seq_header_id) {
             layers_to_check.insert(xlayer);
         }
-        if agreement_inputs_changed || annex_a_value_space_changed {
+        if agreement_inputs_changed || annex_a_value_space_changed || lcr_agreement_values_changed {
             // Re-run every extended layer this id is active for: the agreement checks
-            // (when their inputs changed) and/or the Annex A value-space check (when its
-            // fingerprint changed) must see the redefinition on all referencing layers.
+            // (when their inputs changed), the Annex A value-space check (when its
+            // fingerprint changed), and/or the § 6.8.5 / § 6.8.8 LCR-agreement checks (when
+            // the LCR-agreement fingerprint changed) must see the redefinition on all
+            // referencing layers.
             layers_to_check.extend(
                 self.active_sequence_by_xlayer
                     .iter()
@@ -8771,6 +9494,57 @@ fn annex_a_value_space_fingerprint(general: &SequenceHeaderGeneral) -> AnnexAVal
         bit_depth_idc: general.bit_depth_idc.get(),
         tier: u8::from(matches!(general.seq_tier, Tier::High)),
         level_idx: general.seq_level_idx.get(),
+    }
+}
+
+/// A fingerprint of the sequence-header fields the § 6.8.5 LCR PTL-ceiling and § 6.8.8
+/// LCR rep-info agreement checks ([`ValidatorContext::check_lcr_ptl_ceilings`] /
+/// [`ValidatorContext::check_lcr_rep_info_agreement`]) compare against the activated LCR
+/// **but** that the [`AnnexAValueSpaceFingerprint`] does not already track. The Annex A
+/// fingerprint covers profile / chroma / bit-depth / tier / level (the § 6.8.5 PTL
+/// operands plus the § 6.8.8 format-info operands), so this fingerprint covers the
+/// remainder both checks read: `seq_max_mlayer_cnt_minus_1 + 1` (the § 6.8.5
+/// mlayer-count ceiling operand), `max_frame_width/height_minus_1 + 1`, and the
+/// cropping window (present flag + the four offsets, the § 6.8.8 rep-info operands).
+///
+/// A § 7.3.6 same-`seq_header_id` redefinition that changes only these fields does not
+/// move the value-space fingerprint, so without this it would not widen
+/// `layers_to_check` in [`ValidatorContext::observe_sequence_header`] — leaving other
+/// extended layers with this id active unre-checked against their LCRs. Detecting a
+/// change here folds those layers into the recheck (the `lcr/ptl-*` and
+/// `lcr/rep-info-mismatch` dedup keys keep the re-runs idempotent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct LcrAgreementValueFingerprint {
+    /// `SeqMaxMlayerCnt` (`seq_max_mlayer_cnt_minus_1 + 1`), the § 6.8.5 mlayer-count
+    /// ceiling operand.
+    max_mlayer_count: u8,
+    /// `max_frame_width_minus_1 + 1`, the § 6.8.8 `lcr_max_pic_width` operand.
+    max_frame_width: u32,
+    /// `max_frame_height_minus_1 + 1`, the § 6.8.8 `lcr_max_pic_height` operand.
+    max_frame_height: u32,
+    /// `seq_cropping_window_present_flag`, the § 6.8.8 cropping-present operand.
+    cropping_present: bool,
+    /// `seq_cropping_win_{left,right,top,bottom}_offset`, the § 6.8.8 cropping offsets
+    /// (inferred to 0 when the window is absent).
+    cropping_offsets: (u32, u32, u32, u32),
+}
+
+/// Projects the LCR-agreement dedup fingerprint out of an activated sequence header's
+/// general fields (see [`LcrAgreementValueFingerprint`]).
+fn lcr_agreement_value_fingerprint(
+    general: &SequenceHeaderGeneral,
+) -> LcrAgreementValueFingerprint {
+    LcrAgreementValueFingerprint {
+        max_mlayer_count: general.seq_max_mlayer_count.get(),
+        max_frame_width: general.max_frame_width.get(),
+        max_frame_height: general.max_frame_height.get(),
+        cropping_present: general.seq_cropping_window_present_flag,
+        cropping_offsets: (
+            general.cropping_window.left,
+            general.cropping_window.right,
+            general.cropping_window.top,
+            general.cropping_window.bottom,
+        ),
     }
 }
 
