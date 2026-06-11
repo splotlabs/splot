@@ -6076,8 +6076,19 @@ mod tests {
         );
     }
 
-    /// Builds a full-timestamp `metadata_timecode()` short OBU payload with the given
-    /// seconds/minutes/hours values and no time offset.
+    /// The short-form `metadata_short_obu()` first byte for a non-cancel timecode unit
+    /// with `muh_layer_idc = LAYER_GLOBAL (1)`: `metadata_is_suffix 0`, `muh_layer_idc
+    /// 1` (`f(3)`), `muh_cancel_flag 0`, `muh_persistence_idc 0` -> `0b0_001_0_000`.
+    /// LAYER_GLOBAL on a global (`obu_xlayer_id == GLOBAL_XLAYER_ID`) OBU derives to
+    /// `HdrAssociation::Universal` ("The metadata applies to all layers", § 6.16.3), so
+    /// the n_frames bound pairs with every in-scope content interpretation — the
+    /// "global timecode describes every layer" intent these helpers model. (A
+    /// LAYER_UNSPECIFIED 0x00 first byte would leave the targeting unspecified, which
+    /// the n_frames bound now compares NOTHING against — finding 4.)
+    const TIMECODE_SHORT_LAYER_GLOBAL: u8 = 0x10;
+
+    /// Builds a full-timestamp `metadata_timecode()` short OBU payload (LAYER_GLOBAL)
+    /// with the given seconds/minutes/hours values and no time offset.
     fn timecode_short_payload(seconds: u32, minutes: u32, hours: u32) -> Vec<u8> {
         let mut bits = Bits::default();
         bits.f(0, 5); // counting_type
@@ -6090,7 +6101,7 @@ mod tests {
         bits.f(hours, 5); // hours_value
         bits.f(0, 5); // time_offset_length = 0
         bits.align();
-        metadata_short_payload(0x00, 4, &bits.into_bytes())
+        metadata_short_payload(TIMECODE_SHORT_LAYER_GLOBAL, 4, &bits.into_bytes())
     }
 
     #[test]
@@ -6139,7 +6150,7 @@ mod tests {
         hours: Option<u32>,
     ) -> Vec<u8> {
         metadata_short_payload(
-            0x00,
+            TIMECODE_SHORT_LAYER_GLOBAL,
             4,
             &timecode_unit_bits(n_frames, seconds, minutes, hours),
         )
@@ -6474,14 +6485,27 @@ mod tests {
     }
 
     /// A global `OBU_METADATA_GROUP` (xlayer 31) carrying one non-cancel timecode unit
-    /// (type 4) with `muh_layer_idc = LAYER_VALUES`, `muh_xlayer_map` selecting xlayer 0,
-    /// and a single `muh_mlayer_map` byte targeting the embedded layers in `mlayer_map`.
-    fn global_timecode_group_layer_values(mlayer_map: u8, unit: &[u8]) -> Vec<u8> {
+    /// (type 4) with `muh_layer_idc = LAYER_VALUES`, `muh_xlayer_map` selecting the
+    /// single extended layer `xlayer_bit`, and a single `muh_mlayer_map` byte targeting
+    /// the embedded layers in `mlayer_map`. No temporal-delimiter prefix (chainable).
+    fn global_timecode_group_layer_values_obu(
+        xlayer_bit: u8,
+        mlayer_map: u8,
+        unit: &[u8],
+    ) -> Vec<u8> {
         // muh_header_size = payload_size leb (1) + fixed 2 + muh_xlayer_map 4 + one
-        // muh_mlayer_map byte (xlayer 0 selected) = 8. The timecode unit is a handful of
-        // bytes, so its length is a single-byte leb128 muh_payload_size.
+        // muh_mlayer_map byte (one extended layer selected) = 8. The timecode unit is a
+        // handful of bytes, so its length is a single-byte leb128 muh_payload_size.
         assert!(unit.len() < 128, "timecode unit fits a 1-byte leb128");
+        assert!(
+            xlayer_bit < 31,
+            "muh_xlayer_map bit 31 must be 0 (§ 6.16.3)"
+        );
         let payload_size = unit.len() as u8;
+        // muh_xlayer_map is f(32), MSB-first: the selected bit lands in the big-endian
+        // 4-byte field, so bit x sets value (1 << x).
+        let xlayer_map = 1u32 << xlayer_bit;
+        let xlayer_map_bytes = xlayer_map.to_be_bytes();
         let mut payload = vec![
             0x00, // is_suffix=0, necessity=0, application_id=0
             0x00, // metadata_unit_cnt_minus_1 = 0
@@ -6490,19 +6514,19 @@ mod tests {
             payload_size,
             0x60,
             0x00, // layer_idc=LAYER_VALUES(3), persistence=0, priority=0, reserved=0
-            0x00,
-            0x00,
-            0x00,
-            0x01,       // muh_xlayer_map = bit 0 (xlayer 0) set
-            mlayer_map, // muh_mlayer_map for xlayer 0
         ];
+        payload.extend_from_slice(&xlayer_map_bytes); // muh_xlayer_map (4 bytes)
+        payload.push(mlayer_map); // muh_mlayer_map for the selected extended layer
         payload.extend_from_slice(unit);
         payload.push(0x80); // OBU trailing byte
+        annex_b_obu_with_header(&layer_obu_header(9, 0, 0, 31), &payload)
+    }
+
+    /// [`global_timecode_group_layer_values_obu`] for extended layer 0, with a
+    /// temporal-delimiter prefix.
+    fn global_timecode_group_layer_values(mlayer_map: u8, unit: &[u8]) -> Vec<u8> {
         let mut data = temporal_delimiter_obu();
-        data.extend(annex_b_obu_with_header(
-            &layer_obu_header(9, 0, 0, 31),
-            &payload,
-        ));
+        data.extend(global_timecode_group_layer_values_obu(0, mlayer_map, unit));
         data
     }
 
@@ -6644,6 +6668,260 @@ mod tests {
             }),
             "the post-RAP re-sent CI must re-pair the RAP-temporal-unit timecode even \
              though its timing equals the pre-RAP copy's; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_timecode_n_frames_identical_ci_repeat_no_rap_reports_once() {
+        // Cycle-3 finding 1 (epoch-aware dedup, not temporal-unit identity). TU0
+        // establishes a low-rate CI (maxPicPerSecond 1) and then a timecode whose
+        // n_frames 5 violates it -> exactly one diagnostic. TU1 re-sends the IDENTICAL
+        // CI with NO random access point between. The re-sent CI is content-identical
+        // and the existing TU0 record is still the post-epoch authority (no RAP advanced
+        // the epoch past TU0), so it must NOT replay the recheck and re-report the
+        // already-reported TU0 observation. Pre-fix the temporal-unit-identity guard
+        // (existing.tu_index == tu_index) treated the later-TU repeat as "changed" and
+        // replayed the recheck -> a DUPLICATE second diagnostic.
+        let low_rate = CiTiming {
+            display_tick: 1000,
+            time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
+            equal_picture_interval: true,
+            num_ticks_minus_1: 1,
+        };
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        // TU0: CI establishes the low-rate timing, then the violating timecode pairs
+        // against it eagerly -> diagnostic #1.
+        data.extend(content_interpretation_obu(0, 0, Some(low_rate)));
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 31),
+            &timecode_flagged_payload(5, Some(0), Some(0), Some(0)),
+        ));
+        data.extend(temporal_delimiter_obu()); // -> TU1, no CLK / OLK (no RAP)
+        // TU1: the identical CI re-sent. No RAP, so the epoch did not advance past TU0.
+        data.extend(content_interpretation_obu(0, 0, Some(low_rate)));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "metadata/timecode-n-frames-exceeds-rate"),
+            1,
+            "an identical CI repeat in a later temporal unit with no random access point \
+             must not re-report the already-paired observation; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn scan_type_identical_ci_repeat_no_rap_reports_once() {
+        // Cycle-3 finding 1, the § 6.16.10 Table 6.18 analogue of
+        // `metadata_timecode_n_frames_identical_ci_repeat_no_rap_reports_once`. TU0
+        // establishes ci_scan_type_idc 2 and then scan-type metadata
+        // mps_pic_struct_type 0 (Frame group, requires idc 1) that violates it -> one
+        // diagnostic. TU1 re-sends the IDENTICAL CI with NO random access point. The
+        // re-sent CI must not replay the recheck and re-report the already-reported TU0
+        // observation. Pre-fix the temporal-unit-identity guard replayed it -> duplicate.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        // TU0: CI establishes idc 2, then the violating scan-type metadata pairs
+        // against it eagerly -> diagnostic #1.
+        data.extend(content_interpretation_scan_obu(2, None));
+        data.extend(global_scan_type_obu(0x00, 0)); // Frame group, requires idc 1
+        data.extend(temporal_delimiter_obu()); // -> TU1, no CLK / OLK (no RAP)
+        data.extend(content_interpretation_scan_obu(2, None)); // identical re-send
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            ops_error_count(&report, "metadata/scan-type-ci-scan-type-mismatch"),
+            1,
+            "an identical CI repeat in a later temporal unit with no random access point \
+             must not re-report the already-paired observation; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_timecode_n_frames_global_layer_values_survives_other_layer_clk() {
+        // Cycle-3 finding 2 (§ 7.3.6 per-extended-layer CVS boundaries). A global
+        // LAYER_VALUES timecode targeting extended layer 1 only is observed in TU0
+        // (n_frames 5). TU1 holds a CLK for extended layer 0 ONLY — which restarts
+        // extended layer 0's coded video sequence, NOT extended layer 1's. The
+        // layer-1-targeted observation must survive that CLK, so when a low-rate CI for
+        // extended layer 1 (maxPicPerSecond 1) arrives in TU1 the preserved observation
+        // re-pairs and the n_frames bound fires. Pre-fix the global-bucket timecode
+        // scope was pruned at EVERY CLK (including the unrelated extended-layer-0 CLK),
+        // dropping the observation, so nothing re-paired and the violation vanished.
+        let low_rate = CiTiming {
+            display_tick: 1000,
+            time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
+            equal_picture_interval: true,
+            num_ticks_minus_1: 1,
+        };
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        // TU0: global LAYER_VALUES timecode targeting extended layer 1 (xlayer_bit 1),
+        // embedded layer 0 (mlayer_map bit 0), n_frames 5. No CI yet, so the bound is
+        // not decided here.
+        let unit = timecode_unit_bits(5, Some(0), Some(0), Some(0));
+        data.extend(global_timecode_group_layer_values_obu(1, 0x01, &unit));
+        data.extend(temporal_delimiter_obu()); // -> TU1
+        // TU1: a CLK for extended layer 0 ONLY (must not prune the layer-1 observation).
+        data.extend(annex_b_obu_with_header(&layer_obu_header(4, 0, 0, 0), &[]));
+        // TU1: a low-rate CI for extended layer 1 / embedded layer 0 establishes
+        // maxPicPerSecond 1, which the preserved n_frames 5 observation exceeds.
+        data.extend(content_interpretation_scan_obu_at(1, 0, 0, Some(low_rate)));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "metadata/timecode-n-frames-exceeds-rate"),
+            "a CLK for extended layer 0 must not prune a global timecode observation \
+             targeting extended layer 1; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_timecode_inference_keyed_per_targeted_embedded_layer() {
+        // Cycle-3 finding 3 (inference keyed per targeted (xlayer, mlayer), not just
+        // obu_xlayer_id). A full-timestamp LAYER_CURRENT timecode on (xlayer 0,
+        // mlayer 0) carries every field. A following LAYER_CURRENT timecode on (xlayer
+        // 0, mlayer 1) that omits seconds_value must NOT be seeded by the (0, 0)
+        // timecode — METADATA_TYPE_TIMECODE is layer-specific (§ 6.16.3 Table 6.17),
+        // so the (0, 0) set is not the "previous set in decoding order" for (0, 1). The
+        // inference-without-previous diagnostic must fire. Pre-fix the chain was keyed
+        // only by obu_xlayer_id, so the (0, 0) set wrongly seeded the (0, 1) inference
+        // and the diagnostic was suppressed.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        // LAYER_CURRENT (muh_layer_idc 2) short-form first byte: is_suffix 0,
+        // muh_layer_idc 2 (f(3)), cancel 0, persistence 0 -> 0b0_010_0_000 = 0x20.
+        const LAYER_CURRENT_FIRST: u8 = 0x20;
+        // (xlayer 0, mlayer 0): full-timestamp, all fields present.
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 0),
+            &metadata_short_payload(LAYER_CURRENT_FIRST, 4, &{
+                let mut bits = Bits::default();
+                bits.f(0, 5); // counting_type
+                bits.bit(1); // full_timestamp_flag
+                bits.bit(0); // discontinuity_flag
+                bits.bit(0); // cnt_dropped_flag
+                bits.f(0, 9); // n_frames
+                bits.f(0, 6); // seconds_value
+                bits.f(0, 6); // minutes_value
+                bits.f(0, 5); // hours_value
+                bits.f(0, 5); // time_offset_length = 0
+                bits.align();
+                bits.into_bytes()
+            }),
+        ));
+        // (xlayer 0, mlayer 1): omits seconds_value (seconds_flag 0).
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 1, 0),
+            &metadata_short_payload(
+                LAYER_CURRENT_FIRST,
+                4,
+                &timecode_unit_bits(0, None, None, None),
+            ),
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "metadata/timecode-inferred-without-previous"
+                    && d.message.contains("seconds_value")
+            }),
+            "a (xlayer 0, mlayer 0) timecode must not seed the inference of a (xlayer 0, \
+             mlayer 1) timecode (per-targeted-layer keying); report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_timecode_n_frames_unspecified_targeting_compares_nothing() {
+        // Cycle-3 finding 4 (zero-false-positive for underivable targeting). A
+        // LAYER_UNSPECIFIED short-form timecode (first byte 0x00) "does not specify to
+        // what layers the metadata applies to" (§ 6.16.3), so no CI's rate can be
+        // soundly bound to it — the n_frames bound must compare NOTHING. Here an
+        // extended-layer-0 CI establishes a low-rate timing (maxPicPerSecond 1) that the
+        // timecode's n_frames 5 would exceed; with the underivable targeting the bound
+        // must not fire. Pre-fix the coarse fallback paired a global LAYER_UNSPECIFIED
+        // timecode with EVERY CI, firing a hard error against an unrelated layer.
+        let low_rate = CiTiming {
+            display_tick: 1000,
+            time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
+            equal_picture_interval: true,
+            num_ticks_minus_1: 1,
+        };
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        data.extend(content_interpretation_obu(0, 0, Some(low_rate)));
+        // LAYER_UNSPECIFIED short-form (first byte 0x00) carrying a timecode with
+        // n_frames 5 (>= maxPicPerSecond 1 for layer 0's CI).
+        let mut bits = Bits::default();
+        bits.f(0, 5); // counting_type
+        bits.bit(1); // full_timestamp_flag
+        bits.bit(0); // discontinuity_flag
+        bits.bit(0); // cnt_dropped_flag
+        bits.f(5, 9); // n_frames
+        bits.f(0, 6); // seconds_value
+        bits.f(0, 6); // minutes_value
+        bits.f(0, 5); // hours_value
+        bits.f(0, 5); // time_offset_length = 0
+        bits.align();
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 31),
+            &metadata_short_payload(0x00, 4, &bits.into_bytes()),
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "metadata/timecode-n-frames-exceeds-rate"),
+            "a LAYER_UNSPECIFIED timecode does not specify its layers, so the n_frames \
+             bound must compare nothing (no false positive against layer 0's CI); \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_timecode_counting_type_reserved_is_warned() {
+        // Cycle-3 finding 5 (§ 6.16.7 counting_type table marks 7..31 reserved, with no
+        // "shall"). A reserved counting_type is a decoder-ignored producer anomaly
+        // (warning), matching the established reserved-value pattern for
+        // table-"reserved"-without-"shall" fields (metadata/persistence-idc-reserved).
+        let mut bits = Bits::default();
+        bits.f(7, 5); // counting_type = 7 (reserved)
+        bits.bit(1); // full_timestamp_flag
+        bits.bit(0); // discontinuity_flag
+        bits.bit(0); // cnt_dropped_flag
+        bits.f(0, 9); // n_frames
+        bits.f(0, 6); // seconds_value
+        bits.f(0, 6); // minutes_value
+        bits.f(0, 5); // hours_value
+        bits.f(0, 5); // time_offset_length = 0
+        bits.align();
+        let payload = metadata_short_payload(0x00, 4, &bits.into_bytes());
+        let report = Validator::new(false).validate_bytes(&global_metadata_short_stream(&payload));
+        assert!(
+            has_warning(&report, "metadata/timecode-counting-type-reserved"),
+            "report was: {report}"
+        );
+        // It is a warning, not a conformance error.
+        assert!(
+            report.is_conformant(),
+            "a reserved counting_type is decoder-ignored, not a violation; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_timecode_counting_type_defined_is_silent() {
+        // counting_type 6 is the highest DEFINED value (§ 6.16.7 table), so no warning.
+        let mut bits = Bits::default();
+        bits.f(6, 5); // counting_type = 6 (defined)
+        bits.bit(1); // full_timestamp_flag
+        bits.bit(0); // discontinuity_flag
+        bits.bit(0); // cnt_dropped_flag
+        bits.f(0, 9); // n_frames
+        bits.f(0, 6); // seconds_value
+        bits.f(0, 6); // minutes_value
+        bits.f(0, 5); // hours_value
+        bits.f(0, 5); // time_offset_length = 0
+        bits.align();
+        let payload = metadata_short_payload(0x00, 4, &bits.into_bytes());
+        let report = Validator::new(false).validate_bytes(&global_metadata_short_stream(&payload));
+        assert!(
+            !has_warning(&report, "metadata/timecode-counting-type-reserved"),
+            "counting_type 6 is defined; report was: {report}"
         );
     }
 

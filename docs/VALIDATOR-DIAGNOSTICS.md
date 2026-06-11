@@ -214,6 +214,7 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 | `metadata/scan-type-pic-struct-reserved` | error | § 6.16.10 | mps_pic_struct_type exceeds 12 (reserved) |
 | `metadata/short-layer-idc-out-of-range` | error | § 6.16.2 | muh_layer_idc >= 3 for OBU_METADATA_SHORT |
 | `metadata/temporal-point-info-not-short` | error | § 6.16.11 | METADATA_TYPE_TEMPORAL_POINT_INFO appears outside OBU_METADATA_SHORT |
+| `metadata/timecode-counting-type-reserved` | warning | § 6.16.7 | counting_type is 7..31 (reserved for AOMedia use; decoder-ignored producer anomaly) |
 | `metadata/timecode-hours-out-of-range` | error | § 6.16.7 | timecode hours_value exceeds 23 |
 | `metadata/timecode-inferred-without-previous` | error | § 6.16.7 | timecode omits seconds_value/minutes_value/hours_value but no previous timecode in the CVS scope (decoding order) carried that field for the inference to draw from |
 | `metadata/timecode-minutes-out-of-range` | error | § 6.16.7 | timecode minutes_value exceeds 59 |

@@ -2251,45 +2251,85 @@ struct TimecodeObservation {
     /// Temporal unit ([`CvsTracker::tu_index`]) of the observation, for the exact
     /// § 7.3.6 CVS scoping and the § 7.3.8.11 CI-parameter epoch filter.
     tu_index: u64,
+    /// The carrying OBU's `obu_xlayer_id` ([`GLOBAL_XLAYER_ID`] for a global OBU),
+    /// used by the § 7.3.6 pruning when the unit's targeting is not derivable (finding
+    /// 2 / finding 4).
+    scope_xlayer: ExtendedLayerId,
     /// The unit's § 6.16.3 layer targeting, when derivable from the bitstream
     /// (finding 4): the n_frames bound pairs this timecode only with a content
     /// interpretation OBU for a layer it targets (see
     /// [`HdrAssociation::associated_with_ci`]). `None` when the targeting is not
     /// bitstream-derivable (LAYER_UNSPECIFIED, etc., see [`derive_hdr_association`]),
-    /// in which case the coarser `obu_xlayer_id` scope is used — the conservative
-    /// "applies to every in-scope CI" fallback.
+    /// in which case the n_frames bound compares NOTHING (the spec leaves the layer
+    /// association unspecified, so no CI's rate binds this timecode — see
+    /// [`timecode_ci_in_scope`]).
     targeting: Option<HdrAssociation>,
 }
 
-/// Per coded-video-sequence-scope timecode state (AV2 § 6.16.7), keyed by the
-/// carrying OBU's `obu_xlayer_id`; [`GLOBAL_XLAYER_ID`] keys the global bucket.
+impl TimecodeObservation {
+    /// Whether this observation belongs to the coded video sequence of extended layer
+    /// `xlayer` — i.e. a § 7.3.6 CVS restart for `xlayer` should drop it (finding 2).
+    /// A derivable targeting decides it exactly (the layers the timecode describes); an
+    /// underivable targeting (which compares nothing for the bound) falls back to the
+    /// carrying `obu_xlayer_id` scope, with a global carrying scope touching every
+    /// layer (the documented harmless any-CLK approximation for an inert observation).
+    fn belongs_to_cvs_of(&self, xlayer: ExtendedLayerId) -> bool {
+        match &self.targeting {
+            Some(association) => association.touches_xlayer(xlayer),
+            None => self.scope_xlayer.is_global() || self.scope_xlayer == xlayer,
+        }
+    }
+}
+
+/// Per coded-video-sequence-scope timecode state (AV2 § 6.16.7).
 ///
-/// Two § 6.16.7 facts are decidable from metadata alone and tracked here:
+/// Two § 6.16.7 facts are decidable from metadata alone and tracked here, each with
+/// the keying the per-layer § 6.16.3 semantics demand:
 ///
-/// - **Inference-presence** (the mirror's "When seconds_value \[minutes_value,
-///   hours_value\] is not present, its value is inferred to be equal to the value of
-///   \[that element\] for the previous set of clock timestamp syntax elements **in
-///   decoding order**, and it is required that such a previous \[element\] shall have
-///   been present",
+/// - **Inference-presence** ([`inference`], the mirror's "When seconds_value
+///   \[minutes_value, hours_value\] is not present, its value is inferred to be equal
+///   to the value of \[that element\] for the previous set of clock timestamp syntax
+///   elements **in decoding order**, and it is required that such a previous
+///   \[element\] shall have been present",
 ///   `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-7`, lines
-///   3873-3893): [`prev`] records whether each of the three fields was present in the
-///   previous timecode *in decoding order* within this scope.
+///   3873-3893). The chain is keyed by the carrying OBU's concrete
+///   `(obu_xlayer_id, obu_mlayer_id)` (finding 3): § 6.16.3 marks
+///   METADATA_TYPE_TIMECODE as layer-specific (Table 6.17, "Y"), so a timecode on
+///   embedded layer `(x, m0)` is NOT the "previous set" of one on `(x, m1)` and must
+///   not seed its inference. For a timecode whose targeting is unspecified
+///   (`LAYER_UNSPECIFIED`, § 6.16.3 lines 3520-3521: "does not specify to what layers
+///   the metadata applies to"), the chain still keys by the carrying OBU's own
+///   `(obu_xlayer_id, obu_mlayer_id)` — the only concrete scope the bitstream pins
+///   down (finding 4, documented sound choice: the "previous set in decoding order"
+///   is read as the previous set carried at the same physical stream scope, which is
+///   always derivable and never compares across unrelated targets).
 /// - **n_frames bound re-check** ([`observations`]): observed timecodes' n_frames,
 ///   kept so a later content interpretation can re-evaluate the bound (the eager
-///   metadata-time direction reads the already-stored CI timing).
+///   metadata-time direction reads the already-stored CI timing). Each observation
+///   carries its carrying-OBU `obu_xlayer_id` scope and its § 6.16.3 `targeting`, so
+///   the § 7.3.6 per-extended-layer CVS pruning drops an observation only when a CLK
+///   restarts the coded video sequence of a layer the observation actually targets
+///   (finding 2 — a CLK for one extended layer no longer prunes a global-bucket
+///   observation aimed at another).
 ///
-/// **Scope choice (documented):** the mirror's "previous set of clock timestamp
-/// syntax elements in decoding order" carries no layer qualifier, but § 6.16.3 binds
-/// metadata to layers and the timecode is a layer-associated metadata unit. The state
-/// is therefore scoped per `obu_xlayer_id` within the coded video sequence — the same
-/// CVS / extended-layer scoping the landed § 6.16.10 scan-type state
-/// ([`ScanTypeCvsState`]) and § 6.16.3 lifetime store
-/// ([`crate::metadata_lifetime::MetadataLifetimeStore`]) use — and reset at each
-/// § 7.3.6 CVS boundary (a CLK starts a new coded video sequence, breaking the
-/// decoding-order inference chain) via [`ValidatorContext::reset_cvs`].
+/// Both facts reset at the § 7.3.6 per-extended-layer CVS boundary (a CLK starts a
+/// new coded video sequence, breaking the decoding-order inference chain) via the
+/// [`ValidatorContext::prune_timecode_scope`] call sites in
+/// [`ValidatorContext::start_cvs_for_xlayer`].
 #[derive(Debug, Default)]
 struct TimecodeCvsState {
-    scopes: BTreeMap<ExtendedLayerId, TimecodeScope>,
+    /// Inference-presence state per carrying-OBU `(obu_xlayer_id, obu_mlayer_id)`:
+    /// the previous-set field presence and the temporal unit of that previous set
+    /// (finding 3). `None`-keyed entries do not exist — every timecode has a concrete
+    /// carrying scope. The temporal unit lets the § 7.3.6 CVS boundary reset the chain
+    /// (a previous set from an earlier temporal unit belongs to the ending coded video
+    /// sequence and no longer seeds the new one).
+    inference: BTreeMap<(ExtendedLayerId, EmbeddedLayerId), (TimecodeFieldPresence, u64)>,
+    /// n_frames observations, flat and self-describing (each carries its
+    /// carrying-`obu_xlayer_id` scope, § 7.3.8.11 epoch tu, and § 6.16.3 targeting),
+    /// for the CI-after re-check of the n_frames bound and the target-aware § 7.3.6
+    /// pruning (finding 2).
+    observations: Vec<TimecodeObservation>,
     /// Inference-presence diagnostics whose firing depends on whether a § 7.3.6
     /// CVS boundary is crossed later in the current temporal unit (AV2 § 6.16.7).
     ///
@@ -2306,8 +2346,9 @@ struct TimecodeCvsState {
     /// [`ValidatorContext::drop_pending_timecode_inference`] drops the survivors
     /// silently at the temporal-unit flush. This mirrors the
     /// [`PendingPolarity::PreCvs`] machinery, but is kept dedicated to the timecode
-    /// state because it must also key the global bucket (`GLOBAL_XLAYER_ID`), which
-    /// the per-layer [`CvsTracker::defer_pre_cvs`] path screens out.
+    /// state because it keys the carrying OBU's exact `(obu_xlayer_id,
+    /// obu_mlayer_id)`, which the per-layer [`CvsTracker::defer_pre_cvs`] path does
+    /// not model.
     pending_inference: Vec<PendingTimecodeInference>,
 }
 
@@ -2315,30 +2356,13 @@ struct TimecodeCvsState {
 /// unit's § 7.3.6 CVS scope is resolved (see [`TimecodeCvsState::pending_inference`]).
 #[derive(Debug)]
 struct PendingTimecodeInference {
-    /// The timecode scope that produced it: a concrete `obu_xlayer_id`, or
-    /// [`GLOBAL_XLAYER_ID`] for the global bucket. A CLK for this exact extended
-    /// layer — or any CLK, when this is the global bucket (the global timecode
-    /// scope is pruned at every § 7.3.6 boundary, mirroring
-    /// [`ValidatorContext::prune_timecode_scope`]) — fires the diagnostic.
-    scope_key: ExtendedLayerId,
+    /// The carrying OBU's `obu_xlayer_id` of the omitting timecode: a CLK that starts
+    /// a new coded video sequence for this extended layer detaches the
+    /// earlier-temporal-unit seed and fires the diagnostic.
+    xlayer: ExtendedLayerId,
     /// The inference-without-previous diagnostic to emit if the seed turns out to
     /// belong to the ending coded video sequence.
     diagnostic: Diagnostic,
-}
-
-/// Per-scope timecode tracking: the previous-timecode field presence and the n_frames
-/// observations (AV2 § 6.16.7); see [`TimecodeCvsState`].
-#[derive(Debug, Default)]
-struct TimecodeScope {
-    /// Presence of `seconds_value` / `minutes_value` / `hours_value` in the previous
-    /// `metadata_timecode()` set in decoding order within this scope, with the temporal
-    /// unit of that previous set; `None` when no previous timecode has been seen in the
-    /// current coded video sequence. The temporal unit lets the § 7.3.6 CVS boundary
-    /// reset the inference chain (a previous set from an earlier temporal unit belongs
-    /// to the ending coded video sequence and no longer seeds the new one).
-    prev: Option<(TimecodeFieldPresence, u64)>,
-    /// n_frames observations, for the CI-after re-check of the n_frames bound.
-    observations: Vec<TimecodeObservation>,
 }
 
 /// Whether each clock-timestamp field carried a *present* value in a
@@ -2381,19 +2405,30 @@ impl TimecodeFieldPresence {
 /// When the timecode's § 6.16.3 `targeting` is bitstream-derivable, it decides the
 /// pairing exactly (see [`HdrAssociation::associated_with_ci`]): a global
 /// `LAYER_VALUES` timecode that names only some layers does not pair with a CI for
-/// an untargeted layer. When the targeting is not derivable (`None` —
-/// LAYER_UNSPECIFIED and the other [`derive_hdr_association`] gaps), fall back to
-/// the coarser `obu_xlayer_id` scope: the global bucket pairs with every CI, a
-/// concrete extended layer with its own CIs. This keeps the conservative
-/// "applies to every in-scope CI" reading whenever the bitstream does not pin the
-/// targeting down.
+/// an untargeted layer; a `LAYER_GLOBAL` global unit ([`HdrAssociation::Universal`])
+/// pairs with every CI ("The metadata applies to all layers", § 6.16.3).
 ///
-/// **§ 7.3.8.11 inheritance residual (round-2 finding 2, NOT modeled — honest
-/// narrowing).** A `LAYER_VALUES` timecode targeting embedded layer `m` is governed
-/// by the content interpretation parameters of layer `m`; but § 7.3.8.11 step 3
-/// (mirror `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-3-8-11`, lines 925-929)
-/// says that when no content interpretation OBU is present for `m`, its parameters
-/// are *inherited* from "the highest such embedded layer `k` less than `m`" with
+/// **Underivable targeting compares NOTHING (zero-false-positive rule, finding 4).**
+/// When the targeting is not bitstream-derivable (`None` — `LAYER_UNSPECIFIED` and
+/// the other [`derive_hdr_association`] gaps), the pairing compares nothing. § 6.16.3
+/// is explicit that `LAYER_UNSPECIFIED` "does not specify to what layers the metadata
+/// applies to. This information can potentially be indicated or determined through
+/// external means" (mirror
+/// `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-3`, lines
+/// 3520-3521). The earlier coarse fallback — pair with every CI in the carrying OBU's
+/// `obu_xlayer_id` scope, and with EVERY CI for the global bucket — could fire a hard
+/// `metadata/timecode-n-frames-exceeds-rate` error against a CI for a layer the
+/// timecode never claims to describe. Since the spec leaves the association
+/// unspecified, the validator cannot soundly bind the n_frames rate of any particular
+/// layer's CI to this timecode, so it compares nothing: an honest false-negative, never
+/// a false positive against an unrelated layer.
+///
+/// **§ 7.3.8.11 inheritance residual (NOT modeled — honest narrowing).** A
+/// `LAYER_VALUES` timecode targeting embedded layer `m` is governed by the content
+/// interpretation parameters of layer `m`; but § 7.3.8.11 step 3 (mirror
+/// `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-3-8-11`, lines 925-929) says that
+/// when no content interpretation OBU is present for `m`, its parameters are
+/// *inherited* from "the highest such embedded layer `k` less than `m`" with
 /// `MLayerPresenceMap[m][k] == 1`. Resolving that inheritance requires
 /// `MLayerPresenceMap` — the transitive closure of `MLayerDependencyMap` derived in
 /// § 5.4.1 (mirror `05-syntax-structures.md` lines 583-607) — which this validator
@@ -2416,13 +2451,14 @@ impl TimecodeFieldPresence {
 // inheritance compares nothing.
 fn timecode_ci_in_scope(
     targeting: &Option<HdrAssociation>,
-    scope_key: ExtendedLayerId,
     ci_xlayer: ExtendedLayerId,
     ci_mlayer: EmbeddedLayerId,
 ) -> bool {
     match targeting {
         Some(association) => association.associated_with_ci(ci_xlayer, ci_mlayer),
-        None => scope_key.is_global() || ci_xlayer == scope_key,
+        // Underivable targeting (LAYER_UNSPECIFIED, ...): the spec does not say which
+        // layers the metadata applies to, so no CI's rate can be soundly bound to it.
+        None => false,
     }
 }
 
@@ -3791,6 +3827,16 @@ impl ValidatorContext {
             // CLK's extended layer.
             self.start_cvs_for_xlayer(obu.header.extended_layer_id, report);
             self.observe_ci_rap(obu.header.extended_layer_id);
+            // AV2 § 6.16.7 / § 6.16.10 / § 7.3.8.11 (finding 1, CLK re-pair). The
+            // epoch-aware CI dedup deduplicates a CI re-sent in this RAP temporal unit
+            // BEFORE the CLK (the lagging epoch could not tell it apart from an ordinary
+            // identical repeat at CI-time, so the recheck was skipped). observe_ci_rap
+            // has now advanced the epoch and dropped the stale pre-RAP timecode /
+            // scan-type pairings; the CI re-sent in this temporal unit is the
+            // § 7.3.8.11 authority for the new coded video sequence's pictures, so
+            // re-pair the new epoch's observations against it now — once, with no
+            // duplicate (the pre-RAP pairing was dropped, not reported).
+            self.repair_post_rap_ci_pairings(obu.header.extended_layer_id, report);
             // AV2 § 7.3.2 / § 7.3.6: a CLK makes this temporal unit one that "contains
             // an OBU with obu_type equal to OBU_CLOSED_LOOP_KEY for at least one
             // extended layer" (and begins a new coded video sequence for that layer).
@@ -3859,6 +3905,61 @@ impl ValidatorContext {
         self.ci_rap_started_in_tu.get(&xlayer).copied().unwrap_or(0)
     }
 
+    /// Re-pairs the § 6.16.7 n_frames bound and the § 6.16.10 Table 6.18 scan-type
+    /// restrictions of the new coded video sequence's observations against the content
+    /// interpretation OBUs re-sent in this CLK's temporal unit (finding 1, the CLK side
+    /// of the epoch-aware dedup).
+    ///
+    /// A content interpretation re-sent in a § 7.3.8.11 random-access-point temporal
+    /// unit re-establishes the parameters for the new coded video sequence (§ 7.3.8.11
+    /// step 2). When it repeats the pre-RAP content the epoch-aware dedup
+    /// ([`Self::observe_content_interpretation`]) skipped its CI-time recheck — at
+    /// CI-time the epoch had not advanced past the still-present pre-RAP record, so the
+    /// re-sent CI could not be told apart from an ordinary identical repeat. By the time
+    /// the CLK runs, [`Self::observe_ci_rap`] has advanced the epoch to this temporal
+    /// unit and dropped the stale pre-RAP pairings. Re-running the rechecks now pairs the
+    /// new epoch's observations (`tu_index >= epoch`, i.e. this temporal unit's
+    /// metadata, since the epoch filter inside the rechecks excludes the dropped
+    /// previous-epoch observations) against the re-sent CI exactly once — the
+    /// authoritative pairing, with no duplicate because the pre-RAP pairing was dropped
+    /// rather than reported.
+    ///
+    /// Only the content interpretations re-sent IN this temporal unit (at/after the
+    /// epoch) for the CLK's extended layer (or a global-keyed CI, which describes every
+    /// layer) drive the re-pair; a CI from an earlier temporal unit belongs to the
+    /// ending coded video sequence and is excluded by the epoch.
+    fn repair_post_rap_ci_pairings(
+        &mut self,
+        clk_xlayer: ExtendedLayerId,
+        report: &mut ValidationReport,
+    ) {
+        let epoch = self.ci_rap_epoch(clk_xlayer);
+        // Snapshot the re-sent (post-epoch) CI records for this extended layer to avoid
+        // holding the content_interpretations borrow across the rechecks (which mutate
+        // the deferral state). ContentInterpretation is Copy, so this is cheap.
+        let resent: Vec<(
+            ExtendedLayerId,
+            EmbeddedLayerId,
+            ContentInterpretation,
+            ByteOffset,
+        )> = self
+            .content_interpretations
+            .iter()
+            .filter(|((ci_xlayer, _), record)| {
+                (*ci_xlayer == clk_xlayer || ci_xlayer.is_global()) && record.tu_index >= epoch
+            })
+            .map(|((ci_xlayer, ci_mlayer), record)| {
+                (*ci_xlayer, *ci_mlayer, record.content, record.offset)
+            })
+            .collect();
+        for (ci_xlayer, ci_mlayer, content, ci_offset) in resent {
+            self.recheck_scan_type_after_ci(ci_xlayer, ci_mlayer, &content, ci_offset, report);
+            self.recheck_timecode_n_frames_after_ci(
+                ci_xlayer, ci_mlayer, &content, ci_offset, report,
+            );
+        }
+    }
+
     /// Starts a new coded video sequence for `xlayer` at the current temporal unit
     /// (AV2 § 7.3.6): drops the extended layer's CVS-scoped records (sequence
     /// fingerprints, content interpretations, active metadata, HDR baselines,
@@ -3907,18 +4008,19 @@ impl ValidatorContext {
         if !xlayer.is_global() {
             self.flush_scan_type_scope(GLOBAL_XLAYER_ID, tu_index, report);
         }
-        // § 6.16.7 timecode state: a CLK starts a new coded video sequence at this
-        // temporal unit (§ 7.3.6), so observations and the decoding-order inference
-        // chain from earlier temporal units belong to the ending sequence and are
-        // dropped — same-temporal-unit observations joined the new sequence and stay.
-        // (No flush: the timecode checks are eager, never deferred to a flush.)
+        // § 6.16.7 timecode state: a CLK starts a new coded video sequence for THIS
+        // extended layer at this temporal unit (§ 7.3.6). The prune is target-aware
+        // (finding 2): it drops only the earlier-temporal-unit n_frames observations
+        // and inference chains whose coded video sequence actually restarted — a CLK
+        // for one extended layer leaves a global-bucket observation aimed at another
+        // extended layer untouched. Same-temporal-unit observations joined the new
+        // sequence and stay. (No flush: the timecode checks are eager, never deferred
+        // to a flush.) Run BEFORE the content-interpretation migration below so the
+        // re-pair afterwards sees the post-RAP observations only.
         self.prune_timecode_scope(xlayer, tu_index);
-        if !xlayer.is_global() {
-            self.prune_timecode_scope(GLOBAL_XLAYER_ID, tu_index);
-        }
         // A deferred inference-presence diagnostic whose seed came from an earlier
         // temporal unit now fires: this CLK put the omitting timecode in a new coded
-        // video sequence, detaching the seed (§ 7.3.6 / finding 2).
+        // video sequence, detaching the seed (§ 7.3.6 / finding 2/3).
         self.emit_pending_timecode_inference(xlayer, report);
         self.sequence_fingerprints
             .retain(|(x, _), &mut (_, record_tu)| {
@@ -4615,41 +4717,44 @@ impl ValidatorContext {
         }
 
         // A content interpretation can arrive after the scan-type metadata whose
-        // Table 6.18 restrictions it decides (AV2 § 6.16.10); re-evaluate the
-        // stored observations of this scope and the global bucket — unless an
-        // existing record at the same (xlayer, mlayer) key already carries
-        // identical Table 6.18-decisive content. In that case every stored
-        // observation has already been paired against that content (at
-        // metadata-observation time by check_scan_type_consistency, or by the
-        // recheck that ran when the record's decisive content last changed), so
-        // re-evaluating would only duplicate reports for the identical repeats
-        // § 6.14 explicitly allows. A content interpretation for a NEW key, or
-        // one whose decisive content changed (itself flagged by
-        // content-interpretation/repeated-ci-not-identical below), forms
-        // genuinely new (observation, CI-content) pairs and is re-evaluated.
+        // Table 6.18 restrictions it decides (AV2 § 6.16.10); re-evaluate the stored
+        // observations of this scope and the global bucket — unless an existing record
+        // at the same (xlayer, mlayer) key already carries identical Table 6.18-decisive
+        // content AND is still the post-epoch authority for it. In that case every
+        // stored observation has already been paired against that content (at
+        // metadata-observation time by check_scan_type_consistency, or by the recheck
+        // that ran when the record's decisive content last changed), so re-evaluating
+        // would only duplicate reports for the identical repeats § 6.14 explicitly
+        // allows. A content interpretation for a NEW key, or one whose decisive content
+        // changed (itself flagged by content-interpretation/repeated-ci-not-identical
+        // below), forms genuinely new (observation, CI-content) pairs and is
+        // re-evaluated.
         //
-        // The dedup must be temporal-unit-identity aware, not content-equality only
-        // — the same § 7.3.8.11 epoch hazard fixed in the timecode guard below. A CI
-        // re-sent at or after the layer's random-access-point epoch is the authority
-        // for THIS epoch's pictures; a stale record from an EARLIER temporal unit
-        // carries the previous epoch's pictures, which a random access point will
-        // drop (`drop_pending_for_rules`). The failure mode: a RAP temporal unit
-        // re-sends an identical CI BEFORE its CLK, so when the re-sent CI is observed
-        // the still-present pre-RAP record (same decisive content) would suppress the
-        // recheck; the CLK that follows then discards the deferred pre-RAP Table 6.18
-        // pairing, and with the recheck skipped nothing ever pairs this temporal
-        // unit's scan-type observations against the re-sent CI. Only a record re-sent
-        // within the SAME temporal unit it last appeared in is a § 6.14 repeat whose
-        // observations were already paired at observation time, so only that case
-        // deduplicates; a record from an earlier temporal unit re-paired here covers
-        // this temporal unit's freshly observed scan-type metadata (the recheck
-        // itself still filters observations to `tu_index >= ci_rap_epoch`, so a
-        // genuinely pre-epoch observation is excluded once the epoch advances).
+        // EPOCH-AWARE dedup (finding 1, unified model). The predicate is
+        // content-identical AND no § 7.3.8.11 random-access-point reinit occurred
+        // *after* the existing record's temporal unit (`existing.tu_index >=
+        // ci_rap_epoch`). Two cases the prior temporal-unit-identity predicate got
+        // wrong:
+        //
+        //   - An ORDINARY identical repeat in a LATER temporal unit with no intervening
+        //     RAP: the existing record is still the post-epoch authority that already
+        //     paired (and reported) the observations, so re-running the recheck would
+        //     re-report them. `existing.tu_index >= ci_rap_epoch` holds (no RAP since),
+        //     so this dedups — the over-correction the temporal-unit-only predicate
+        //     caused is gone.
+        //   - A RAP temporal unit re-sends an identical CI BEFORE its CLK: the pre-RAP
+        //     record is stale (its observations belong to the ending epoch). At CI-time
+        //     the epoch has not advanced yet (the CLK follows), so this predicate ALSO
+        //     dedups here — but the re-pair of the new epoch's observations is then done
+        //     at the CLK, once observe_ci_rap has advanced the epoch and dropped the
+        //     stale deferred pairings (see repair_post_rap_ci_pairings). That keeps the
+        //     RAP-resent re-pair correct without an eager re-pair that the lagging epoch
+        //     cannot soundly authorize.
         let decisive_content_unchanged = self
             .content_interpretations
             .get(&(xlayer, mlayer))
             .is_some_and(|existing| {
-                existing.tu_index == tu_index
+                existing.tu_index >= self.ci_rap_epoch(xlayer)
                     && scan_type_decisive_content(&existing.content)
                         == scan_type_decisive_content(&content_interpretation)
             });
@@ -4665,33 +4770,28 @@ impl ValidatorContext {
 
         // AV2 § 6.16.7: a content interpretation establishing ci_timing_info_present_flag
         // / timing may arrive after the timecode metadata whose n_frames bound it
-        // decides; re-evaluate the stored timecode observations of this scope and the
-        // global bucket — but only when the n_frames-decisive content (the timing_info)
-        // differs from the record this CI replaces, mirroring the scan-type dedup so a
-        // repeated identical CI (the only legal repeat, § 6.14) never re-reports.
+        // decides; re-evaluate the stored timecode observations — but only when the
+        // n_frames-decisive content (the timing_info) differs from the record this CI
+        // replaces OR the existing record is no longer the post-epoch authority,
+        // mirroring the scan-type dedup so a repeated identical CI (the only legal
+        // repeat, § 6.14) never re-reports.
         //
-        // The dedup must be epoch-aware (round-2 finding 1). A CI re-sent at or after the
-        // layer's § 7.3.8.11 random-access-point epoch is the authority for THIS epoch's
-        // pictures; a stale record from an EARLIER temporal unit carries the previous
-        // epoch's pictures, which a random access point will drop (`drop_pending_for_rules`).
-        // The failure mode: a RAP temporal unit re-sends an identical CI BEFORE its CLK, so
-        // when the re-sent CI is observed `ci_rap_epoch` has not yet advanced and the still-
-        // present pre-RAP record (same timing) would suppress the recheck; the CLK that
-        // follows then discards the deferred pre-RAP timecode pairing, and with the recheck
-        // skipped nothing ever pairs this temporal unit's timecodes against the re-sent CI.
-        //
-        // The robust invariant is therefore temporal-unit identity, not the lagging epoch:
-        // only a record re-sent within the SAME temporal unit it last appeared in is a
-        // § 6.14 repeat whose observations were already paired at observation time, so only
-        // that case deduplicates. A record from an earlier temporal unit re-paired here
-        // covers this temporal unit's freshly observed timecodes (the recheck itself still
-        // filters observations to `tu_index >= ci_rap_epoch`, so a genuinely pre-epoch
-        // observation is excluded once the epoch advances).
+        // EPOCH-AWARE dedup (finding 1, unified model — identical to the scan-type guard
+        // above). `existing.tu_index >= ci_rap_epoch` means no § 7.3.8.11 random access
+        // point reinitialized the parameters after the existing record's temporal unit,
+        // so the existing record is still the authority that already paired (and
+        // reported) every observation against this timing: re-running the recheck would
+        // duplicate those reports for an ordinary identical repeat in a later temporal
+        // unit (the over-correction the temporal-unit-only predicate caused). When a RAP
+        // re-sends an identical CI BEFORE its CLK the epoch has not advanced yet, so this
+        // dedups at CI-time too; the new epoch's observations are re-paired at the CLK
+        // (see repair_post_rap_ci_pairings) after observe_ci_rap advances the epoch and
+        // drops the stale deferred pairings.
         let timing_unchanged = self
             .content_interpretations
             .get(&(xlayer, mlayer))
             .is_some_and(|existing| {
-                existing.tu_index == tu_index
+                existing.tu_index >= self.ci_rap_epoch(xlayer)
                     && existing.content.timing_info == content_interpretation.timing_info
             });
         if !timing_unchanged {
@@ -5272,36 +5372,53 @@ impl ValidatorContext {
         }
     }
 
-    /// Prunes the § 6.16.7 timecode scope `scope_key` at a § 7.3.6 CVS boundary that
-    /// starts a new coded video sequence at `keep_from_tu`: n_frames observations from
-    /// earlier temporal units are dropped, and the decoding-order inference chain is
-    /// reset when its previous timecode came from an earlier temporal unit (a
-    /// previous set in the same temporal unit joined the new coded video sequence and
-    /// still seeds it).
-    fn prune_timecode_scope(&mut self, scope_key: ExtendedLayerId, keep_from_tu: u64) {
-        let Some(scope) = self.timecode.scopes.get_mut(&scope_key) else {
-            return;
-        };
-        scope
-            .observations
-            .retain(|observation| observation.tu_index >= keep_from_tu);
-        if scope
-            .prev
-            .is_some_and(|(_, prev_tu)| prev_tu < keep_from_tu)
-        {
-            scope.prev = None;
-        }
-        if scope.observations.is_empty() && scope.prev.is_none() {
-            self.timecode.scopes.remove(&scope_key);
-        }
+    /// Prunes the § 6.16.7 timecode state at a § 7.3.6 CVS boundary: a CLK for
+    /// `clk_xlayer` starts a new coded video sequence for THAT extended layer at
+    /// `keep_from_tu` (mirror `07-decoding-process.md` lines 604-606, "A new coded
+    /// video sequence for an extended layer is defined to start ... in the coded
+    /// extended layer unit corresponding to the extended layer").
+    ///
+    /// § 7.3.6 CVS boundaries are per extended layer (finding 2), so this prunes only
+    /// the state whose coded video sequence actually restarted:
+    ///
+    /// - **n_frames observations**: an observation belongs to the coded video sequences
+    ///   of the extended layers it targets (its § 6.16.3 `targeting`), so it is dropped
+    ///   only when `clk_xlayer` is one of them and it predates `keep_from_tu`. An
+    ///   observation whose targeting is not bitstream-derivable (`None`) never fires the
+    ///   bound (see [`timecode_ci_in_scope`]); it is keyed by its carrying
+    ///   `obu_xlayer_id` scope and dropped when that scope's CVS restarts (a global
+    ///   carrying scope keeps the documented any-CLK approximation, harmless because it
+    ///   compares nothing). A global LAYER_VALUES observation aimed at extended layer 1
+    ///   therefore survives a CLK for extended layer 0 and is still in scope for layer
+    ///   1's later n_frames re-checks.
+    /// - **inference chain**: each `(obu_xlayer_id, obu_mlayer_id)` entry whose carrying
+    ///   `obu_xlayer_id` equals `clk_xlayer` — or is global (a global timecode spans
+    ///   every layer, so any CLK restarts a coded video sequence it participates in) —
+    ///   and whose previous set predates `keep_from_tu` is reset (the seed belongs to
+    ///   the ending coded video sequence; a same-temporal-unit predecessor joined the
+    ///   new sequence and still seeds it).
+    fn prune_timecode_scope(&mut self, clk_xlayer: ExtendedLayerId, keep_from_tu: u64) {
+        self.timecode.observations.retain(|observation| {
+            // Keep observations at/after the boundary, and observations whose coded
+            // video sequence did NOT restart at this CLK (the CLK is for a different
+            // extended layer than any the observation belongs to).
+            observation.tu_index >= keep_from_tu || !observation.belongs_to_cvs_of(clk_xlayer)
+        });
+        self.timecode.inference.retain(|(xlayer, _), (_, prev_tu)| {
+            !(*xlayer == clk_xlayer || xlayer.is_global()) || *prev_tu >= keep_from_tu
+        });
     }
 
     /// Emits the deferred § 6.16.7 inference-presence diagnostics whose seed now
     /// belongs to an ending coded video sequence because a CLK started a new coded
-    /// video sequence for `xlayer` at this temporal unit (§ 7.3.6). An entry fires
-    /// when its scope is exactly `xlayer` or the global bucket — the global timecode
-    /// scope is pruned at every § 7.3.6 boundary (see [`Self::prune_timecode_scope`]
-    /// call sites), so any CLK detaches its earlier-temporal-unit seed. Survivors
+    /// video sequence for `xlayer` at this temporal unit (§ 7.3.6). A pending entry
+    /// fires when its carrying `obu_xlayer_id` is exactly `xlayer` — § 7.3.6 CVS
+    /// boundaries are per extended layer, so a CLK for one extended layer detaches the
+    /// seed of a timecode carried on that same concrete extended layer only (finding
+    /// 2/3) — OR when the pending entry was carried on a global OBU
+    /// ([`GLOBAL_XLAYER_ID`]): a global timecode spans every layer, so any CLK (always
+    /// for a concrete extended layer) restarts a coded video sequence the global
+    /// timecode participates in and detaches its earlier-temporal-unit seed. Survivors
     /// are left for [`Self::drop_pending_timecode_inference`] at the temporal-unit
     /// flush. See [`TimecodeCvsState::pending_inference`].
     fn emit_pending_timecode_inference(
@@ -5311,7 +5428,7 @@ impl ValidatorContext {
     ) {
         let mut retained = Vec::with_capacity(self.timecode.pending_inference.len());
         for entry in std::mem::take(&mut self.timecode.pending_inference) {
-            if entry.scope_key == xlayer || entry.scope_key.is_global() {
+            if entry.xlayer == xlayer || entry.xlayer.is_global() {
                 report.push(entry.diagnostic);
             } else {
                 retained.push(entry);
@@ -5387,24 +5504,35 @@ impl ValidatorContext {
         targeting: Option<HdrAssociation>,
         report: &mut ValidationReport,
     ) {
-        let scope_key = obu.header.extended_layer_id;
+        let scope_xlayer = obu.header.extended_layer_id;
+        // The inference chain is keyed by the carrying OBU's concrete
+        // `(obu_xlayer_id, obu_mlayer_id)` (finding 3): METADATA_TYPE_TIMECODE is
+        // layer-specific (§ 6.16.3 Table 6.17), so a timecode on embedded layer
+        // `(x, m0)` is not the "previous set in decoding order" of one on `(x, m1)` and
+        // must not seed its inference. For unspecified targeting the carrying OBU's own
+        // pair is still the soundest concrete scope (finding 4, documented).
+        let inference_key = (scope_xlayer, obu.header.embedded_layer_id);
         let tu_index = self.cvs.tu_index;
 
-        // 1. Inference-presence (decoding-order, CVS-scoped). The "previous set in
-        // decoding order" is the immediate predecessor; its presence is read literally
-        // (finding 1): an inferred value in the predecessor does NOT make the element
-        // present, so the chain never seeds itself from an inference.
-        let scope = self.timecode.scopes.entry(scope_key).or_default();
-        let prev = scope.prev;
-        // Record this set's own literal field presence as the new previous set (finding
-        // 1: no OR with the predecessor's inferred state). Also append the n_frames
-        // observation (carrying the § 6.16.3 targeting) for the CI-after re-check.
+        // 1. Inference-presence (decoding-order, per carrying-layer scope). The
+        // "previous set in decoding order" is the immediate predecessor for THIS
+        // carrying layer; its presence is read literally (round-1 finding): an inferred
+        // value in the predecessor does NOT make the element present, so the chain never
+        // seeds itself from an inference.
+        let prev = self.timecode.inference.get(&inference_key).copied();
+        // Record this set's own literal field presence as the new previous set (no OR
+        // with the predecessor's inferred state). Also append the n_frames observation
+        // (carrying the § 6.16.3 targeting and the carrying scope) for the CI-after
+        // re-check and the target-aware § 7.3.6 pruning.
         let this = TimecodeFieldPresence::of(timecode);
-        scope.prev = Some((this, tu_index));
-        scope.observations.push(TimecodeObservation {
+        self.timecode
+            .inference
+            .insert(inference_key, (this, tu_index));
+        self.timecode.observations.push(TimecodeObservation {
             n_frames: timecode.n_frames,
             offset: obu.offset,
             tu_index,
+            scope_xlayer,
             targeting: targeting.clone(),
         });
 
@@ -5445,7 +5573,7 @@ impl ValidatorContext {
                     .timecode
                     .pending_inference
                     .push(PendingTimecodeInference {
-                        scope_key,
+                        xlayer: scope_xlayer,
                         diagnostic,
                     }),
             }
@@ -5454,9 +5582,10 @@ impl ValidatorContext {
         // 2. n_frames bound against the already-observed in-scope content
         // interpretations (a later CI re-evaluates via
         // recheck_timecode_n_frames_after_ci). The § 6.16.3 targeting scopes the
-        // pairing to the CIs of the layers this timecode describes (finding 4).
+        // pairing to the CIs of the layers this timecode describes; an underivable
+        // targeting compares nothing (finding 4, see timecode_ci_in_scope).
         for ((ci_xlayer, ci_mlayer), record) in &self.content_interpretations {
-            if !timecode_ci_in_scope(&targeting, scope_key, *ci_xlayer, *ci_mlayer) {
+            if !timecode_ci_in_scope(&targeting, *ci_xlayer, *ci_mlayer) {
                 continue;
             }
             if record.tu_index < self.ci_rap_epoch(*ci_xlayer) {
@@ -5505,56 +5634,44 @@ impl ValidatorContext {
         };
         let max_pic = max_pic_per_second(&timing);
         let epoch = self.ci_rap_epoch(ci_xlayer);
-        // Global scan-type / CI scopes describe every layer; the timecode bound is
-        // per the timecode's own extended-layer scope plus the global bucket.
-        let scope_keys: &[ExtendedLayerId] = if ci_xlayer.is_global() {
-            &[GLOBAL_XLAYER_ID]
-        } else {
-            &[ci_xlayer, GLOBAL_XLAYER_ID]
-        };
-        for &scope_key in scope_keys {
-            let Some(scope) = self.timecode.scopes.get(&scope_key) else {
-                continue;
-            };
-            // Snapshot the violating observations first to avoid borrowing self twice.
-            // The § 6.16.3 targeting scopes each observation to the CIs of the layers it
-            // describes, so an untargeted layer's CI cannot pair with it (finding 4).
-            let violations: Vec<(u16, ByteOffset, u64)> = scope
-                .observations
-                .iter()
-                .filter(|observation| {
-                    observation.tu_index >= epoch
-                        && u64::from(observation.n_frames) >= max_pic
-                        && timecode_ci_in_scope(
-                            &observation.targeting,
-                            scope_key,
-                            ci_xlayer,
-                            ci_mlayer,
-                        )
-                })
-                .map(|observation| {
-                    (
-                        observation.n_frames,
-                        observation.offset,
-                        observation.tu_index,
-                    )
-                })
-                .collect();
-            for (n_frames, metadata_offset, observation_tu) in violations {
-                let diagnostic = timecode_n_frames_error(
-                    n_frames,
-                    max_pic,
-                    ci_xlayer,
-                    ci_mlayer,
-                    ci_offset,
-                    metadata_offset,
-                    // Anchor at the offending timecode metadata OBU (the message also
-                    // names it), not the CI OBU — finding 3.
-                    metadata_offset,
-                );
-                self.cvs
-                    .defer_or_emit(scope_key, observation_tu, diagnostic, report);
-            }
+        // The observations are a single flat list now; the § 6.16.3 targeting decides
+        // which of them this CI's layer can bind, so an untargeted layer's CI cannot
+        // pair with an observation aimed elsewhere, and an underivable-targeting
+        // observation binds to nothing (finding 4, see timecode_ci_in_scope). The
+        // § 7.3.8.11 epoch filter (tu_index >= epoch) drops observations whose pictures
+        // belong to a previous content-interpretation-parameter epoch. Snapshot first
+        // to avoid borrowing self twice.
+        let violations: Vec<(u16, ByteOffset, u64)> = self
+            .timecode
+            .observations
+            .iter()
+            .filter(|observation| {
+                observation.tu_index >= epoch
+                    && u64::from(observation.n_frames) >= max_pic
+                    && timecode_ci_in_scope(&observation.targeting, ci_xlayer, ci_mlayer)
+            })
+            .map(|observation| {
+                (
+                    observation.n_frames,
+                    observation.offset,
+                    observation.tu_index,
+                )
+            })
+            .collect();
+        for (n_frames, metadata_offset, observation_tu) in violations {
+            let diagnostic = timecode_n_frames_error(
+                n_frames,
+                max_pic,
+                ci_xlayer,
+                ci_mlayer,
+                ci_offset,
+                metadata_offset,
+                // Anchor at the offending timecode metadata OBU (the message also
+                // names it), not the CI OBU.
+                metadata_offset,
+            );
+            self.cvs
+                .defer_or_emit(ci_xlayer, observation_tu, diagnostic, report);
         }
     }
 
