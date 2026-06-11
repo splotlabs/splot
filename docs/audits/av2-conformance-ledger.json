@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "52546b1fb1d9acf3d0508b315399041312eee031",
+  "audited_commit": "ecdf4e9c74a5450dc2ab069229d2651fb26dfc6c",
   "outcome": "success",
   "files": [
     {
@@ -757,7 +757,7 @@
     },
     {
       "path": "crates/splot-validate/src/celu.rs",
-      "sha256": "bde73e06fb17a110d4f745c9c89793dfb850562cd55139b4547b69d4c0a15032",
+      "sha256": "ad53a3d1c8c219829abe06625a940a273e420f38848ee1b96b2bedeca702808a",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO"
@@ -778,7 +778,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "23c6d291d8d3ba91cce6a08b5b858b4b25b8c6d8cdf82b8bd9dd2764cf6671b0",
+      "sha256": "2a3eaa5f813ee74fa83cbc922d00d81be50be48fcd03285fa46aa6c1932da4d4",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -817,7 +817,7 @@
     },
     {
       "path": "crates/splot-validate/src/frame_unit.rs",
-      "sha256": "1defdf682c0a5c41ced2a57f48dc0b9b8b76287af502ef1abea2601a6b01f89f",
+      "sha256": "5007eaeb2a57f8edf6523071b5f18e4c4bf23fe4650fcda1089ab53e9da5b126",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT"
@@ -849,7 +849,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "9810c16eda5a3b42030e5b67d5bc41d8fe5cd6d401341f330195d8a8c69b0ac7",
+      "sha256": "98c68960394f30301dd688de9e694b5da683420d41ae5c3f457ba4477083a38d",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1081,7 +1081,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "979b5712c891a73dd38d06f1cdd041811b765162959d965fdf194b983b8ce116",
+      "sha256": "e36fbf9dbc01011280877d1738e96925dd748606bd257e12a60fbc2b6055584a",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1371,7 +1371,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "6ea306e899c152d3c6b9674fdb38056c9ae2a7f809e84fa431d13890044c48dd",
+      "sha256": "d16efaf60fef353407b0ae103b590316819082f99058c099b77ca5c425b335d7",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
