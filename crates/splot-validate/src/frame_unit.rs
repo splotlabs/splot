@@ -65,19 +65,24 @@
 //!   coded frame have the same obu_type", mirror lines 392-393 / 459-461), so it
 //!   begins a new coded frame unit (`starts_new_unit`) — silently, not a
 //!   `mixed-coded-frame-types` finding,
-//! - a **same** `obu_type` is genuinely undecidable (a later OBU of the one coded
-//!   frame, or the first of a new same-type one), so the OBU stays in the open
-//!   coded frame and its output class is set to [`OutputClass::Unknown`] — never a
-//!   split guess, never a structural diagnostic, dropping only the output-class-
-//!   dependent BRT bound (the Unknown-soundness invariant). Tile-group types are
-//!   unaffected: their `is_first_tile_group` flag is the in-band delimiter. A
-//!   **bridge** frame is the exception within this same-type case: its output class
-//!   is NonOutput *by type* (mirror line 470), so the frame-vs-unit ambiguity cannot
-//!   change it — both interpretations are non-output. The type-decided class is kept
-//!   (it is not dropped to Unknown), so the § 7.3.4 non-output BRT bound stays
-//!   evaluable across back-to-back same-type bridge units. Only `OBU_LEADING_TIP` /
-//!   `OBU_REGULAR_TIP`, whose output comes from a per-frame header parse, route to
-//!   Unknown.
+//! - a **same** `obu_type` is genuinely undecidable as to UNIT COUNT (a later OBU of
+//!   the one coded frame, or the first of a new same-type one). The OBU stays in the
+//!   open coded frame (never a split guess, never a structural diagnostic) and
+//!   reports [`FrameBoundary::Ambiguous`] so the CELU layer poisons its
+//!   unit-count-dependent judgments rather than silently under-counting the run as one
+//!   unit (round-7 F2). Tile-group types are unaffected: their `is_first_tile_group`
+//!   flag is the in-band delimiter.
+//!
+//!   This boundary ambiguity (about unit count) is **independent of output-class
+//!   decidability**, which is handled separately: `OBU_LEADING_TIP` /
+//!   `OBU_REGULAR_TIP`, whose output comes from a per-frame header parse, route the
+//!   open frame's class to [`OutputClass::Unknown`] (which frame's output applies is
+//!   unknowable), dropping only the output-class-dependent BRT bound. A **bridge**
+//!   frame keeps its class: it is NonOutput *by type* (mirror line 470), so the
+//!   frame-vs-unit ambiguity cannot change it — both interpretations are non-output —
+//!   and the § 7.3.4 non-output BRT bound stays evaluable across back-to-back same-type
+//!   bridge units. (The Ambiguous boundary does not poison output-presence for a
+//!   bridge: it is non-output either way — round-3 precision.)
 //!
 //! ## Resolution timing
 //!
@@ -928,12 +933,15 @@ impl FrameUnitSegmenter {
     /// are structural (type / SEF identity), so they fire independent of the output
     /// class. `obu_type_for_match` is the type used for the same-type rule (`None`
     /// for SEF/TIP/bridge, which use the OBU's own type). `is_no_delimiter_frame`
-    /// marks a TIP / bridge OBU (no in-band coded-frame delimiter), so a same-type
-    /// continuation normally routes the open coded frame's output class to Unknown
-    /// — unless `output_is_type_decided` is set (a bridge frame, always non-output by
-    /// type, mirror line 470), in which case the frame-vs-unit ambiguity cannot change
-    /// the output class, so the type-decided class (and the § 7.3.4 BRT bound it
-    /// gates) is preserved.
+    /// marks a TIP / bridge OBU (no in-band coded-frame delimiter): a same-type
+    /// no-delimiter adjacency is unit-count-ambiguous and so reports
+    /// [`FrameBoundary::Ambiguous`] (round-7 F2), independent of the output class.
+    /// The output class is handled separately and DOES depend on
+    /// `output_is_type_decided`: a TIP routes the open coded frame's class to Unknown
+    /// (which frame's output applies is unknowable), while a bridge
+    /// (`output_is_type_decided`, always non-output by type, mirror line 470) keeps its
+    /// type-decided class — the frame-vs-unit ambiguity cannot change it, so the
+    /// § 7.3.4 BRT bound it gates stays evaluable.
     ///
     /// `delimiter_unreadable` marks a tile-group OBU whose `is_first_tile_group` bit
     /// could not be read. While a coded frame is open that bit is *the* cue that would
@@ -947,11 +955,11 @@ impl FrameUnitSegmenter {
     /// Returns this OBU's [`FrameBoundary`]: [`FrameBoundary::OpensNewUnit`] when it is
     /// the first OBU of a coded frame (the `None` arm), [`FrameBoundary::Ambiguous`]
     /// when the continue-vs-next-unit boundary is undecidable (the same-type
-    /// no-delimiter TIP case, or an unreadable tile-group delimiter), and
+    /// no-delimiter TIP **or bridge** case, or an unreadable tile-group delimiter), and
     /// [`FrameBoundary::ContinuesUnit`] for every decided continuation of the open
-    /// coded frame (including the out-of-order `sef-single-obu` / `mixed-coded-frame-types`
-    /// OBUs the segmenter keeps in the open frame, and a same-type bridge whose output is
-    /// type-decided).
+    /// coded frame (the out-of-order `sef-single-obu` / `mixed-coded-frame-types` OBUs
+    /// the segmenter keeps in the open frame, and a readable `is_first_tile_group == 0`
+    /// same-type tile OBU).
     #[allow(clippy::too_many_arguments)]
     fn observe_frame(
         state: &mut LayerState,
@@ -1062,38 +1070,48 @@ impl FrameUnitSegmenter {
                     // The mismatched OBU is kept in the open coded frame (the explicit
                     // in-band flag-0 claim), so for the CELU layer it continues the unit.
                     FrameBoundary::ContinuesUnit
-                } else if is_no_delimiter_frame && !output_is_type_decided {
-                    // Same-`obu_type` no-delimiter (TIP) OBU continuing an open coded
-                    // frame of that type: the spec gives these types no
-                    // is_first_tile_group flag (mirror lines 404-411 / 473-484 omit
-                    // them), so the validator cannot decide whether this OBU is a later
+                } else if is_no_delimiter_frame {
+                    // Same-`obu_type` no-delimiter (TIP / bridge) OBU adjacent to an open
+                    // coded frame of that type: the spec gives these types no
+                    // is_first_tile_group flag (mirror lines 404-411 / 473-484 omit them),
+                    // so the bitstream carries no cue deciding whether this OBU is a later
                     // OBU of the one coded frame ("one or more OBUs", mirror lines
                     // 391-393 / 459-461) or the first OBU of a new same-type coded frame.
-                    // It stays in the open coded frame (no false split), but the output
-                    // class becomes Unknown: an output-class-dependent judgment (the
-                    // § 7.3.4 non-output BRT bound) would otherwise rest on a guess of
-                    // which frame's output applies. (No structural diagnostic fires —
-                    // same type, not a SEF.)
+                    // The UNIT COUNT is therefore genuinely ambiguous (one frame or two),
+                    // and that boundary ambiguity is INDEPENDENT of output-class
+                    // decidability — so the OBU reports [`FrameBoundary::Ambiguous`]
+                    // regardless of `output_is_type_decided` (round-7 F2). The CELU layer
+                    // then poisons its unit-count-dependent judgments for this embedded
+                    // layer rather than silently under-counting the run as one unit. (No
+                    // structural diagnostic fires — same type, not a SEF.)
                     //
-                    // A bridge frame (`output_is_type_decided`) is excluded: its output
-                    // class is NonOutput *by type* (mirror line 470), not from an
-                    // ambiguous per-frame header parse, so neither interpretation (one
-                    // bridge coded frame or two back-to-back same-type bridge units)
-                    // changes the class. The § 7.3.4-derived non-output BRT bound stays
-                    // evaluable, so the type-decided class must NOT be dropped to Unknown.
-                    if frame.output != OutputClass::Unknown {
+                    // The output-class handling, by contrast, DOES depend on
+                    // `output_is_type_decided`:
+                    //
+                    // - A TIP's class comes from an ambiguous per-frame header parse, so
+                    //   which frame's output applies is unknowable: route the open frame's
+                    //   class to Unknown, dropping the output-class-dependent § 7.3.4
+                    //   non-output BRT bound (it would otherwise rest on a guess).
+                    // - A BRIDGE is non-output BY TYPE (mirror line 470) whichever way the
+                    //   boundary resolves — both "one bridge coded frame" and "two
+                    //   back-to-back same-type bridge units" are non-output — so the
+                    //   type-decided class must NOT be dropped to Unknown: the § 7.3.4 BRT
+                    //   bound stays evaluable across the run. (The Ambiguous boundary is
+                    //   about unit count, not class, so it leaves the type-decided class
+                    //   intact. The class facts the CELU layer reads are recorded from this
+                    //   same type-decided output before the boundary poisons unit-count —
+                    //   round-3 precision: an ambiguous BRIDGE does not poison
+                    //   output-presence because it is non-output either way.)
+                    if !output_is_type_decided && frame.output != OutputClass::Unknown {
                         frame.output = OutputClass::Unknown;
                         state.unit.coded_frame = Some(frame);
                     }
-                    // The same-type no-delimiter boundary is undecidable (one coded frame
-                    // vs two back-to-back same-type units), so the CELU layer poisons its
-                    // unit-count-dependent judgments for this embedded layer.
                     FrameBoundary::Ambiguous
                 } else {
                     // A decided continuation of the open coded frame: a readable
-                    // `is_first_tile_group == 0` same-type tile OBU, or a same-type bridge
-                    // whose output class is type-decided (so the frame-vs-unit ambiguity is
-                    // moot). It does not open a new CELU frame unit.
+                    // `is_first_tile_group == 0` same-type tile OBU. It does not open a new
+                    // CELU frame unit. (A same-type no-delimiter bridge / TIP is handled
+                    // above as Ambiguous — round-7 F2.)
                     FrameBoundary::ContinuesUnit
                 }
             }
@@ -1193,4 +1211,118 @@ fn frame_unit_error(
     Diagnostic::error(rule_id, message)
         .with_spec_section(spec_section)
         .with_byte_offset(obu.offset)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use splot_core::obu::ObuHeader;
+
+    /// A synthetic OBU envelope at (xlayer 0, mlayer 0, tlayer 0) for driving the
+    /// segmenter directly. The payload is unused (the segmenter consumes the
+    /// pre-parsed [`SegRole`]); the offset is the running OBU index so boundaries are
+    /// distinguishable.
+    fn obu(obu_type: ObuType, offset: u64) -> ObuEnvelope<'static> {
+        ObuEnvelope {
+            offset: ByteOffset::new(offset),
+            size: 1,
+            header: ObuHeader {
+                has_header_extension: true,
+                obu_type,
+                temporal_layer_id: TemporalLayerId::from_bits(0),
+                embedded_layer_id: EmbeddedLayerId::from_bits(0),
+                extended_layer_id: ExtendedLayerId::from_bits(0),
+                header_size_bytes: 2,
+            },
+            payload: &[],
+        }
+    }
+
+    #[test]
+    fn same_type_adjacent_bridge_reports_ambiguous_boundary() {
+        // Round-7 F2: two adjacent same-type OBU_BRIDGE_FRAME OBUs with no in-band
+        // delimiter. The bridge's output CLASS is type-decided (non-output either way),
+        // but the UNIT COUNT is genuinely ambiguous — one coded frame ("one or more OBUs")
+        // or two back-to-back same-type bridge units — and that boundary ambiguity is
+        // independent of class decidability. Pre-fix the segmenter reported ContinuesUnit
+        // (treating the run as one unit and silently under-counting); the second bridge
+        // must instead report FrameBoundary::Ambiguous so the CELU layer poisons its
+        // unit-count-dependent judgments rather than guessing.
+        let mut seg = FrameUnitSegmenter::default();
+        let mut r = ValidationReport::new();
+        let first = seg.observe(&obu(ObuType::BridgeFrame, 0), SegRole::BridgeFrame, &mut r);
+        let second = seg.observe(&obu(ObuType::BridgeFrame, 1), SegRole::BridgeFrame, &mut r);
+        assert_eq!(
+            first,
+            Some(FrameBoundary::OpensNewUnit),
+            "the first bridge opens a coded frame unit"
+        );
+        assert_eq!(
+            second,
+            Some(FrameBoundary::Ambiguous),
+            "a same-type no-delimiter bridge adjacency is unit-count-ambiguous, so the \
+             second bridge must report Ambiguous (not ContinuesUnit)"
+        );
+        assert!(
+            r.errors().next().is_none(),
+            "the ambiguous bridge adjacency emits no structural diagnostic (same type, no \
+             SEF); report: {r}"
+        );
+    }
+
+    #[test]
+    fn same_type_adjacent_bridge_keeps_type_decided_non_output_class() {
+        // Round-7 F2 (class preservation): the Ambiguous boundary must NOT drop the open
+        // bridge frame's output class to Unknown. A BRIDGE is non-output BY TYPE (mirror
+        // line 470) whichever way the boundary resolves, so the § 7.3.4 non-output BRT
+        // multiplicity bound stays evaluable. Two BRTs in the bridge unit plus the
+        // ambiguous same-type bridge must still resolve as a non-output unit and fire the
+        // bound. (Contrast: a TIP routes its undecidable class to Unknown, dropping the
+        // bound.)
+        let mut seg = FrameUnitSegmenter::default();
+        let mut r = ValidationReport::new();
+        // Two BRT heads, then a bridge coded frame, then a same-type ambiguous bridge.
+        seg.observe(
+            &obu(ObuType::BufferRemovalTiming, 0),
+            SegRole::BufferRemovalTiming,
+            &mut r,
+        );
+        seg.observe(
+            &obu(ObuType::BufferRemovalTiming, 1),
+            SegRole::BufferRemovalTiming,
+            &mut r,
+        );
+        seg.observe(&obu(ObuType::BridgeFrame, 2), SegRole::BridgeFrame, &mut r);
+        let second = seg.observe(&obu(ObuType::BridgeFrame, 3), SegRole::BridgeFrame, &mut r);
+        assert_eq!(second, Some(FrameBoundary::Ambiguous));
+        seg.finish(&mut r);
+        assert!(
+            r.errors()
+                .any(|d| d.rule_id == "frame-unit/buffer-removal-timing-multiplicity"),
+            "the bridge unit keeps its type-decided non-output class across the ambiguous \
+             boundary, so the § 7.3.4 BRT multiplicity bound must still fire; report: {r}"
+        );
+    }
+
+    #[test]
+    fn different_type_adjacent_no_delimiter_frames_split_decidedly() {
+        // Round-7 F2 control: a different-type no-delimiter adjacency (a TIP after a
+        // bridge) is a DECIDABLE coded-frame boundary (the type change), so the second
+        // frame OPENS a new unit rather than reporting Ambiguous. Boundary ambiguity is
+        // only for the SAME-type no-delimiter case.
+        let mut seg = FrameUnitSegmenter::default();
+        let mut r = ValidationReport::new();
+        seg.observe(&obu(ObuType::BridgeFrame, 0), SegRole::BridgeFrame, &mut r);
+        let second = seg.observe(
+            &obu(ObuType::RegularTip, 1),
+            SegRole::TipFrame { output: Some(true) },
+            &mut r,
+        );
+        assert_eq!(
+            second,
+            Some(FrameBoundary::OpensNewUnit),
+            "a different-type no-delimiter frame is a decidable boundary, so it opens a \
+             new unit (not Ambiguous)"
+        );
+    }
 }

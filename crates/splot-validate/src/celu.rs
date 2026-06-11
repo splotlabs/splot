@@ -44,14 +44,17 @@
 //! (a second coded frame at a different `obu_tlayer_id` opens a fresh triple state, hence a
 //! new unit — mirror line 880).
 //!
-//! An [`FrameBoundary::Ambiguous`] boundary (a same-`obu_type` no-delimiter TIP, or an
-//! unreadable tile-group delimiter, while a coded frame is open) means the segmenter could
-//! not decide whether the OBU opened a new unit or continued the open one. Its existence as a
-//! new unit is undecided, so it **poisons** the embedded layer's unit-count-dependent
-//! judgments — the within-layer output-slot grammar and the CLK/OLK-first-unit rule — which
-//! are dropped for that layer rather than guessed (the Unknown invariant). The former
-//! "same-type-no-delimiter run is one unit" behaviour is therefore replaced by this
-//! poison-on-ambiguity semantics, keeping zero false positives when in doubt.
+//! An [`FrameBoundary::Ambiguous`] boundary (a same-`obu_type` no-delimiter TIP **or
+//! bridge**, or an unreadable tile-group delimiter, while a coded frame is open) means the
+//! segmenter could not decide whether the OBU opened a new unit or continued the open one. Its
+//! existence as a new unit is undecided, so it **poisons** the embedded layer's
+//! unit-count-dependent judgments — the within-layer output-slot grammar and the
+//! CLK/OLK-first-unit rule — which are dropped for that layer rather than guessed (the Unknown
+//! invariant). The former "same-type-no-delimiter run is one unit" behaviour is therefore
+//! replaced by this poison-on-ambiguity semantics, keeping zero false positives when in doubt.
+//! A same-type bridge adjacency is included here (round-7 F2): the unit count is ambiguous even
+//! though the bridge's output class is type-decided non-output (the boundary ambiguity is about
+//! unit count, not class).
 //!
 //! ### Ambiguity-poison precision: only poison what the ambiguity can change
 //!
@@ -414,16 +417,17 @@ struct CeluState {
     /// is a sound under-approximation here (no cross-width gate needed — unlike the cross-CELU
     /// check, which gates on the COMPARED CELUs' output-unit bits being known and equal).
     output_order_hint: Option<(u32, Option<u32>, ByteOffset)>,
-    /// `true` once an output unit's `order_hint` could not be read — the
-    /// same-OrderHint-across-output-units judgment is then dropped (it would rest on a
-    /// partial set), so the deferred mismatch is suppressed.
+    /// `true` once an output unit's `order_hint` could not be read. The CELU's single
+    /// "associated order hint" cannot then be confirmed, so the CELU is **not contributed** to
+    /// the cross-CELU DOH accumulator (feeding the known units' value would be a guess —
+    /// round-7 F5). It does **not** suppress this CELU's own in-CELU
+    /// [`Self::order_hint_mismatch`], which is already proven between two known output units.
     order_hint_undecidable: bool,
     /// The (first, found, anchor) of the first output unit whose `OrderHint` disagreed with
-    /// [`Self::output_order_hint`], if any. Detected eagerly but **emitted** at
-    /// [`CodedExtendedLayerTracker::resolve_celu`], so a later undecidable output unit can
-    /// still drop the whole judgment (the Unknown invariant): the same-OrderHint rule rests
-    /// on the *full* set of the CELU's output units, so an undecidable member retroactively
-    /// invalidates a mismatch detected among the decidable ones.
+    /// [`Self::output_order_hint`], if any. Detected eagerly between two KNOWN output units and
+    /// **emitted** at [`CodedExtendedLayerTracker::resolve_celu`] regardless of whether another
+    /// output unit's `order_hint` was undecidable (round-7 F3): an undecidable member can only
+    /// prevent proving agreement, never excuse a pair already proven to differ.
     order_hint_mismatch: Option<(u32, u32, ByteOffset)>,
     /// The leading-ness shared by the *decidable* frame units seen so far (`Some(true)` all
     /// [`Leadingness::Leading`], `Some(false)` all [`Leadingness::Regular`]); `None` until
@@ -495,11 +499,20 @@ impl CeluState {
 /// each output sample, round-6 F2) — NOT the temporal-unit-wide same-bits judgment, which
 /// also covers non-output and unrelated frame units. §7.3.7 has two distinct constraints:
 /// (1) all frame units in the temporal unit share one OrderHintBits (the
-/// [`Self::bits_undecidable`] / [`Self::bits_mismatch`] judgment over EVERY frame unit), and
+/// [`Self::bits_mismatch`] judgment over EVERY frame unit), and
 /// (2) coded OUTPUT frame units in multiple CELUs share one OrderHint (this cross-CELU
 /// comparison, sound when only the compared output units' bits agree). An unknown-bits
 /// non-output frame unit drops constraint (1) but must NOT suppress a decidable constraint
 /// (2) mismatch between two output CELUs whose own bits are known and equal.
+///
+/// **Proven mismatches ignore undecidable participants (round-7 F3/F4/F5).** Both
+/// [`Self::bits_mismatch`] and [`Self::order_hint_mismatch`] are recorded ONLY between two
+/// KNOWN samples (constraint (2)'s additionally between a known-and-equal-bits pair). An
+/// undecidable frame / CELU is never recorded as a mismatch and no longer suppresses one
+/// already proven: an unknown can prevent proving AGREEMENT (never reported) but cannot make
+/// a proven differing pair conforming. So [`Self::resolve`] emits a recorded mismatch
+/// unconditionally (still flag-gated by the caller); the dropped per-temporal-unit
+/// "undecidable" flags are gone.
 #[derive(Debug, Default)]
 struct DohTuAccumulator {
     /// The first CELU's resolved output OrderHint (an `order_hint` LSB proxy, see the type
@@ -507,9 +520,6 @@ struct DohTuAccumulator {
     /// until a CELU resolves a decidable output OrderHint. The per-sample bits gate each
     /// cross-CELU comparison pair (round-6 F2).
     first_output_order_hint: Option<(u32, Option<u32>, ByteOffset)>,
-    /// `true` once a CELU's output OrderHint was undecidable — the cross-CELU agreement
-    /// judgment is then dropped (it would rest on a partial set).
-    undecidable: bool,
     /// The (value, anchor) of the first CELU output OrderHint (LSB proxy) that disagreed with
     /// [`Self::first_output_order_hint`] AND whose own bits and the first sample's bits were
     /// both known and equal (so the LSB proxy is sound for that pair), if any — emitted at
@@ -520,9 +530,6 @@ struct DohTuAccumulator {
     /// The first frame's OrderHintBits and its anchor offset; `None` until the first frame
     /// with a readable OrderHintBits.
     first_order_hint_bits: Option<(u32, ByteOffset)>,
-    /// `true` once a frame's OrderHintBits could not be read — the same-OrderHintBits
-    /// judgment is then dropped.
-    bits_undecidable: bool,
     /// The (value, anchor) of the first frame OrderHintBits that disagreed with
     /// [`Self::first_order_hint_bits`], if any — emitted at [`Self::resolve`].
     bits_mismatch: Option<(u32, u32, ByteOffset)>,
@@ -1120,15 +1127,15 @@ impl CodedExtendedLayerTracker {
         }
 
         // --- same-OrderHint across the CELU's output units (mirror lines 539-540) --- the
-        // mismatch was detected eagerly; emit it now only if no output unit's order_hint was
-        // undecidable (an undecidable member drops the whole judgment — the Unknown
-        // invariant). The comparison is over the `order_hint` LSB proxy
+        // mismatch was detected eagerly between two KNOWN output units; emit it now regardless
+        // of whether some other output unit's order_hint was undecidable (round-7 F3). An
+        // undecidable member can only prevent proving AGREEMENT (which the validator never
+        // reports); it cannot make a pair already proven to differ conforming, so it no longer
+        // gates emission. The comparison is over the `order_hint` LSB proxy
         // ([`FrameFacts::order_hint`]); within one CELU all output units share one active
         // header (one OrderHintBits), so it is a sound under-approximation with no cross-width
         // gate needed (unlike the cross-CELU §7.3.7 check, which gates on equal known bits).
-        if !celu.order_hint_undecidable
-            && let Some((first, found, offset)) = celu.order_hint_mismatch
-        {
+        if let Some((first, found, offset)) = celu.order_hint_mismatch {
             report.push(
                 Diagnostic::error(
                     "celu/output-order-hint-mismatch",
@@ -1146,13 +1153,17 @@ impl CodedExtendedLayerTracker {
 
         // --- contribute this CELU's output OrderHint to the cross-CELU DOH accumulator ---
         // The CELU's "associated order hint" is the OrderHint shared by its coded output
-        // frame units (mirror lines 571-576). It resolves only when the CELU had at least
-        // one output unit with a decidable order_hint and the same-OrderHint judgment was
-        // not dropped (no undecidable output unit). Otherwise the CELU contributes an
-        // undecidable signal, dropping the cross-CELU agreement judgment.
-        if celu.order_hint_undecidable {
-            doh.undecidable = true;
-        } else if let Some((order_hint, order_hint_bits, offset)) = celu.output_order_hint {
+        // frame units (mirror lines 571-576). It is well-defined for the cross-CELU comparison
+        // only when the CELU had at least one output unit with a decidable order_hint AND no
+        // output unit's order_hint was undecidable: with an undecidable output unit the CELU's
+        // single associated hint cannot be confirmed, so feeding the known units' value to the
+        // cross-CELU comparison would be a GUESS that could false-positive. Such a CELU is
+        // therefore simply NOT contributed (round-7 F5): cross-CELU sees only fully-decidable
+        // CELUs, so any recorded cross-CELU mismatch is proven between two such CELUs and is
+        // emitted regardless of other, undecidable CELUs (see [`DohTuAccumulator::resolve`]).
+        if !celu.order_hint_undecidable
+            && let Some((order_hint, order_hint_bits, offset)) = celu.output_order_hint
+        {
             doh.note_celu_output_order_hint(order_hint, order_hint_bits, offset);
         }
     }
@@ -1160,16 +1171,17 @@ impl CodedExtendedLayerTracker {
     /// Threads one frame's `OrderHintBits` into the temporal-unit DOH accumulator (mirror
     /// line 655: all frame units in the temporal unit share one `OrderHintBits`). Called by
     /// the validator for every frame-bearing OBU, since the bits come from the active
-    /// sequence header rather than the per-frame parse and span CELUs. `None` drops the
-    /// same-OrderHintBits judgment for the temporal unit.
+    /// sequence header rather than the per-frame parse and span CELUs. A `None` (undecidable)
+    /// frame is simply not recorded: it cannot establish a mismatch (those are proven only
+    /// between two KNOWN values) and, round-7 F4, no longer suppresses a mismatch already
+    /// proven between two known frames.
     pub(crate) fn note_order_hint_bits(
         &mut self,
         order_hint_bits: Option<u32>,
         offset: ByteOffset,
     ) {
-        match order_hint_bits {
-            Some(bits) => self.doh.note_order_hint_bits(bits, offset),
-            None => self.doh.bits_undecidable = true,
+        if let Some(bits) = order_hint_bits {
+            self.doh.note_order_hint_bits(bits, offset);
         }
     }
 
@@ -1224,10 +1236,13 @@ impl DohTuAccumulator {
     /// known and equal: across different (or unknown) bit widths equal decoded OrderHints can
     /// carry different-width LSB encodings, so the proxy would false-positive. A known-but-
     /// unequal-bits pair is instead covered by `celu/doh-order-hint-bits-mismatch` (constraint
-    /// 1); an unknown-bits pair simply drops (the Unknown invariant for THIS pair). Crucially,
-    /// the gate is over the compared output units' own bits — not the temporal-unit-wide
-    /// same-bits judgment — so an unrelated non-output / unknown-bits frame unit elsewhere in
-    /// the temporal unit no longer suppresses a decidable mismatch between two output CELUs.
+    /// 1); an unknown-bits pair records no mismatch (the Unknown invariant for THIS pair —
+    /// nothing is proven). Crucially, the gate is over the compared output units' own bits —
+    /// not the temporal-unit-wide same-bits judgment — so an unrelated non-output /
+    /// unknown-bits frame unit elsewhere in the temporal unit no longer suppresses a decidable
+    /// mismatch between two output CELUs. A CELU whose own output OrderHint is undecidable is
+    /// never contributed here (see [`CodedExtendedLayerTracker::resolve_celu`]), so a recorded
+    /// mismatch is always proven between two fully-decidable CELUs (round-7 F5).
     fn note_celu_output_order_hint(
         &mut self,
         order_hint: u32,
@@ -1268,13 +1283,16 @@ impl DohTuAccumulator {
     /// Resolves the per-temporal-unit § 7.3.7 / § 7.4.6 DOH OrderHint / OrderHintBits
     /// checks. The caller gates this on the active DOH constraint flag, so a mismatch under
     /// a flag-off temporal unit is never reported (the DOH constraints are flag-gated,
-    /// mirror lines 650-657). The undecidable signals drop their respective judgments
-    /// (Unknown invariant).
+    /// mirror lines 650-657). Each recorded mismatch is a disagreement PROVEN between two
+    /// known samples, so it is emitted regardless of any undecidable frame / CELU (round-7
+    /// F3/F4/F5): an undecidable participant only prevents proving agreement, never excuses a
+    /// proven mismatch.
     fn resolve(&mut self, report: &mut ValidationReport) {
-        // § 7.3.7: all frame units in the temporal unit shall use the same OrderHintBits.
-        if !self.bits_undecidable
-            && let Some((first, found, offset)) = self.bits_mismatch
-        {
+        // § 7.3.7: all frame units in the temporal unit shall use the same OrderHintBits. The
+        // mismatch was recorded between two KNOWN OrderHintBits; emit it regardless of whether
+        // another frame unit's bits were undecidable (round-7 F4). An undecidable participant
+        // only prevents proving agreement, never excuses a pair already proven to differ.
+        if let Some((first, found, offset)) = self.bits_mismatch {
             report.push(
                 Diagnostic::error(
                     "celu/doh-order-hint-bits-mismatch",
@@ -1300,18 +1318,21 @@ impl DohTuAccumulator {
         // be encoded with different-width LSBs when the bit widths differ, so a cross-width
         // comparison can FALSE-POSITIVE.
         //
-        // Round-6 F2: the soundness gate is now applied PER COMPARED PAIR in
+        // Round-6 F2: the soundness gate is applied PER COMPARED PAIR in
         // [`Self::note_celu_output_order_hint`] (on the two output CELUs' own bits), NOT via
-        // the temporal-unit-wide `bits_undecidable` / `bits_mismatch` judgment — which also
+        // the temporal-unit-wide `bits_mismatch` judgment — which also
         // covers non-output and unrelated frame units (constraint 1). An unknown-bits non-
         // output frame unit elsewhere in the temporal unit drops constraint (1) but must not
         // suppress a decidable constraint (2) mismatch between two output CELUs whose own bits
         // are known and equal. So `order_hint_mismatch` is recorded ONLY when its pair's bits
-        // were known and equal; it is emitted here gated solely on the cross-CELU
-        // `undecidable` signal (an undecidable CELU output OrderHint drops the whole judgment).
-        if !self.undecidable
-            && let Some((first, found, offset)) = self.order_hint_mismatch
-        {
+        // were known and equal — a mismatch PROVEN between two known CELUs.
+        //
+        // Round-7 F5: that proven mismatch is emitted regardless of the cross-CELU
+        // `undecidable` signal. An undecidable CELU output OrderHint can only prevent proving
+        // AGREEMENT among the CELUs (which the validator never reports); it cannot make a pair
+        // already proven to differ conforming. The per-pair bits gate above still keeps an
+        // unknown-or-unequal-bits PAIR from recording a mismatch in the first place.
+        if let Some((first, found, offset)) = self.order_hint_mismatch {
             report.push(
                 Diagnostic::error(
                     "celu/doh-order-hint-mismatch",
@@ -2002,10 +2023,12 @@ mod tests {
     }
 
     #[test]
-    fn output_order_hint_mismatch_drops_when_an_output_unit_hint_is_unknown() {
-        // Unknown invariant: an output unit whose order_hint could not be read drops the
-        // same-OrderHint judgment for the CELU — even when the decidable output units already
-        // disagreed (the rule rests on the full set of output units).
+    fn output_order_hint_mismatch_fires_despite_a_third_unit_with_unknown_hint() {
+        // Round-7 F3: a mismatch PROVEN between two KNOWN output units (3 and 7) must fire even
+        // when a THIRD output unit's order_hint is undecidable. An undecidable participant can
+        // only prevent proving AGREEMENT (which the validator never reports); it cannot make a
+        // proven pair conforming — the §7.3.6 same-OrderHint requirement is already violated by
+        // the two known, differing units. The undecidable flag no longer gates emission.
         let mut t = fresh();
         let mut r = ValidationReport::new();
         t.observe(
@@ -2031,8 +2054,40 @@ mod tests {
         );
         t.reset_temporal_unit(&mut r);
         assert!(
+            has(&r, "celu/output-order-hint-mismatch"),
+            "a mismatch proven between two known output units must fire despite a third \
+             undecidable output unit; report: {r}"
+        );
+    }
+
+    #[test]
+    fn output_order_hint_no_proven_mismatch_with_unknown_hint_is_silent() {
+        // Round-7 F3 control: when there is NO proven mismatch among the KNOWN output units (one
+        // known hint plus one undecidable hint), the rule stays silent. The undecidable unit
+        // could equally agree or disagree, so nothing is proven and the validator reports
+        // nothing (zero false positives).
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 0, 0, 0),
+            output_frame(3),
+            &mut r,
+        );
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 0, 1, 1),
+            frame_role(
+                ObuType::RegularTileGroup,
+                true,
+                Some(true),
+                None,
+                Leadingness::Regular,
+            ),
+            &mut r,
+        );
+        t.reset_temporal_unit(&mut r);
+        assert!(
             !has(&r, "celu/output-order-hint-mismatch"),
-            "an undecidable output order_hint must drop the rule; report: {r}"
+            "a single known hint plus an undecidable hint proves no mismatch; report: {r}"
         );
     }
 
@@ -2481,8 +2536,10 @@ mod tests {
 
     #[test]
     fn doh_cross_celu_order_hint_drops_when_a_celu_hint_is_unknown() {
-        // Unknown invariant: a CELU whose output OrderHint is undecidable drops the
-        // cross-CELU agreement judgment even under the flag.
+        // Unknown invariant (round-7 F5 control): with only ONE known CELU output OrderHint and
+        // one undecidable CELU, NO mismatch is proven among the known samples, so the cross-CELU
+        // rule stays silent even under the flag. (Contrast with the round-7 F5 firing case: two
+        // known, differing CELUs prove a mismatch that a third undecidable CELU cannot excuse.)
         let mut t = fresh();
         let mut r = ValidationReport::new();
         t.observe(
@@ -2511,6 +2568,51 @@ mod tests {
     }
 
     #[test]
+    fn doh_cross_celu_order_hint_mismatch_fires_despite_a_third_undecidable_celu() {
+        // Round-7 F5: a mismatch PROVEN between two output CELUs with KNOWN EQUAL OrderHintBits
+        // and differing OrderHints (1 and 2, bits 4) must fire even when a THIRD output CELU's
+        // OrderHint is undecidable. The third CELU sets the cross-CELU `undecidable` flag, but
+        // an undecidable participant can only prevent proving agreement — it cannot make the
+        // already-proven pair conforming. The §7.3.7 / §7.4.6 same-OrderHint requirement is
+        // violated by the two known, equal-bits, differing-hint CELUs regardless.
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        t.note_order_hint_bits(Some(4), ByteOffset::new(0));
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 0, 0, 0),
+            output_frame_bits(1, 4),
+            &mut r,
+        );
+        t.note_order_hint_bits(Some(4), ByteOffset::new(1));
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 1, 0, 1),
+            output_frame_bits(2, 4), // proven mismatch vs CELU 0 (known equal bits)
+            &mut r,
+        );
+        // xlayer 2 output unit with an unreadable order_hint -> its CELU's output OrderHint is
+        // undecidable, setting the cross-CELU `undecidable` flag.
+        t.note_order_hint_bits(Some(4), ByteOffset::new(2));
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 2, 0, 2),
+            frame_role(
+                ObuType::RegularTileGroup,
+                true,
+                Some(true),
+                None, // unreadable order_hint -> undecidable CELU output OrderHint
+                Leadingness::Regular,
+            ),
+            &mut r,
+        );
+        t.set_doh_flag_active(true);
+        t.reset_temporal_unit(&mut r);
+        assert!(
+            has(&r, "celu/doh-order-hint-mismatch"),
+            "a mismatch proven between two known equal-bits output CELUs must fire despite a \
+             third undecidable output CELU; report: {r}"
+        );
+    }
+
+    #[test]
     fn doh_cross_celu_order_hint_mismatch_fires_despite_unknown_bits_nonoutput_unit() {
         // Round-6 F2: §7.3.7 has TWO distinct constraints. (1) ALL frame units in the temporal
         // unit share one OrderHintBits — rightly DROPS when any frame unit's bits are unknown.
@@ -2519,10 +2621,10 @@ mod tests {
         //
         // Two output CELUs (xlayer 0 OrderHint 1, xlayer 1 OrderHint 2) carry KNOWN EQUAL
         // OrderHintBits (4) and differing OrderHints — a genuine constraint (2) violation. A
-        // THIRD, non-output frame unit (xlayer 2) carries UNKNOWN OrderHintBits. Pre-fix the
-        // unknown-bits non-output unit set the TU-wide `bits_undecidable`, which gated the
+        // THIRD, non-output frame unit (xlayer 2) carries UNKNOWN OrderHintBits. Pre-round-6 the
+        // unknown-bits non-output unit set a TU-wide undecidable-bits flag that gated the
         // cross-CELU comparison off and SILENTLY suppressed the decidable output-unit mismatch.
-        // After the fix the comparison is gated per pair on the two compared output units' own
+        // The comparison is now gated per pair on the two compared output units' own
         // (known, equal) bits, so `celu/doh-order-hint-mismatch` FIRES, while
         // `celu/doh-order-hint-bits-mismatch` correctly DROPS (an unknown participant in
         // constraint (1)).
@@ -2640,17 +2742,60 @@ mod tests {
     }
 
     #[test]
-    fn doh_order_hint_bits_drops_when_undecidable() {
+    fn doh_order_hint_bits_mismatch_fires_despite_an_undecidable_frame() {
+        // Round-7 F4: a mismatch PROVEN between two KNOWN OrderHintBits (4 and 5) must fire even
+        // when a later frame unit's OrderHintBits is undecidable. §7.3.7 requires all frame
+        // units in a temporal unit to share one OrderHintBits; two known differing values
+        // already violate that. An undecidable participant can only prevent proving agreement,
+        // never make a proven pair conforming, so it no longer gates emission. (Ordering here:
+        // two known, differing bits first, then a later unresolved frame unit.)
         let mut t = fresh();
         let mut r = ValidationReport::new();
         t.note_order_hint_bits(Some(4), ByteOffset::new(0));
-        t.note_order_hint_bits(None, ByteOffset::new(1)); // undecidable -> drop
+        t.note_order_hint_bits(Some(5), ByteOffset::new(1)); // proven mismatch among known bits
+        t.note_order_hint_bits(None, ByteOffset::new(2)); // later unresolved frame unit
+        t.set_doh_flag_active(true);
+        t.reset_temporal_unit(&mut r);
+        assert!(
+            has(&r, "celu/doh-order-hint-bits-mismatch"),
+            "a mismatch proven between two known OrderHintBits must fire despite a later \
+             undecidable frame unit; report: {r}"
+        );
+    }
+
+    #[test]
+    fn doh_order_hint_bits_mismatch_fires_with_undecidable_between_known() {
+        // Round-7 F4 (interleaved ordering): an undecidable OrderHintBits sandwiched between
+        // two known, differing values must NOT suppress the proven mismatch. The mismatch is
+        // recorded only between the two known samples (4 and 5); the undecidable one in the
+        // middle changes nothing.
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        t.note_order_hint_bits(Some(4), ByteOffset::new(0));
+        t.note_order_hint_bits(None, ByteOffset::new(1)); // undecidable in the middle
         t.note_order_hint_bits(Some(5), ByteOffset::new(2));
         t.set_doh_flag_active(true);
         t.reset_temporal_unit(&mut r);
         assert!(
+            has(&r, "celu/doh-order-hint-bits-mismatch"),
+            "an undecidable bits value between two known differing values must not suppress \
+             the proven mismatch; report: {r}"
+        );
+    }
+
+    #[test]
+    fn doh_order_hint_bits_no_proven_mismatch_with_undecidable_is_silent() {
+        // Round-7 F4 control: a single known OrderHintBits plus an undecidable one proves no
+        // mismatch, so the rule stays silent (zero false positives).
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        t.note_order_hint_bits(Some(4), ByteOffset::new(0));
+        t.note_order_hint_bits(None, ByteOffset::new(1)); // undecidable -> nothing proven
+        t.set_doh_flag_active(true);
+        t.reset_temporal_unit(&mut r);
+        assert!(
             !has(&r, "celu/doh-order-hint-bits-mismatch"),
-            "an undecidable OrderHintBits must drop the rule; report: {r}"
+            "one known bits value plus an undecidable one proves no mismatch; report: {r}"
         );
     }
 
