@@ -19,6 +19,15 @@ use splot_core::headers::sequence::MAX_SEQ_NUM;
 /// Only declared availability *keys* are modeled (not the object contents), which is
 /// enough to resolve in-band-vs-external availability of a reference without
 /// fabricating the external object's syntax.
+///
+/// **Partial-declaration semantics (important for validator suppression).** This set
+/// enumerates only the external HLS object kinds the caller can describe — sequence
+/// headers ([`Self::with_sequence_header_id`]) and operating point sets
+/// ([`Self::with_operating_point_set`]). It is **not** an exhaustive declaration of all
+/// external HLS: other external HLS OBU kinds the API cannot express — notably layer
+/// configuration records (LCRs) — MAY still exist externally even when the set does not
+/// (and cannot) enumerate them. The set is "what the caller knows", not "the complete
+/// external HLS". See [`ExternalHlsMode::Provided`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExternalHlsSet {
     sequence_header_ids: BTreeSet<u32>,
@@ -92,7 +101,22 @@ pub enum ExternalHlsMode {
     /// caller supplies it.
     #[default]
     Disabled,
-    /// Caller-declared external HLS objects, available in addition to in-band ones.
+    /// External HLS exists, available in addition to in-band ones. The carried
+    /// [`ExternalHlsSet`] is a **partial** declaration: it enumerates only the object
+    /// kinds the caller can describe (sequence headers and operating point sets), so
+    /// other external HLS OBUs the set cannot express — notably layer configuration
+    /// records (LCRs) — MAY exist externally without being listed. The set is "what the
+    /// caller knows", not "the complete external HLS".
+    ///
+    /// This drives validator suppression policy (zero-false-positive principle,
+    /// AGENTS.md § 7): because an unenumerated external *local* LCR could win the
+    /// local-first § 6.4.1 `seq_lcr_id` resolution ahead of an in-band record, *any*
+    /// Provided mode suppresses the association-dependent § 6.4.1 / § 6.8.5 / § 6.8.8 /
+    /// § 6.8.9 LCR checks — even an empty or OPS-only set, since the suppression is about
+    /// possibly-unenumerated external LCRs, not about declared sequence headers. Checks
+    /// that read no LCR association (e.g. the Annex A header value-space checks) stay
+    /// active under Provided, as they remain locally decidable from the in-band header
+    /// alone.
     Provided(ExternalHlsSet),
 }
 

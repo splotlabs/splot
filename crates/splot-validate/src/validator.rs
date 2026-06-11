@@ -8048,15 +8048,18 @@ mod tests {
 
     #[test]
     fn lcr_mlayer_dependency_missing_is_flagged() {
-        // The sequence header activates for xlayer 0 (OBU-order fallback) and its
-        // seq_lcr_id resolves to the local LCR, whose lcr_mlayer_map[0][0] includes
-        // embedded layer 1 without layer 0 against default MLayerDependencyMap[1][0].
+        // The sequence header activates for xlayer 0 and its seq_lcr_id resolves to the
+        // local LCR, whose lcr_mlayer_map[0][0] includes embedded layer 1 without layer 0
+        // against default MLayerDependencyMap[1][0]. A CLK frame referencing seq id 0
+        // frame-confirms the activation (the § 6.8.9 check uses the strict
+        // frame-confirmed gate, no sole-header fallback).
         let mut data = temporal_delimiter_obu();
         data.extend(local_lcr_obu_with_embedded(0, 5, 0b10, &[0b1]));
         data.extend(annex_b_obu(
             0x04,
             &sequence_header_payload_with_lcr(0, 5, 1, 1),
         ));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             has_error(&report, "lcr/mlayer-dependency-missing"),
@@ -8067,13 +8070,15 @@ mod tests {
     #[test]
     fn lcr_tlayer_dependency_missing_is_flagged() {
         // The activated global LCR's lcr_tlayer_map[1][3][0] includes tlayer 1
-        // without tlayer 0 against the default TLayerDependencyMap[0][1][0].
+        // without tlayer 0 against the default TLayerDependencyMap[0][1][0]. A CLK frame
+        // on xlayer 3 referencing seq id 0 frame-confirms the activation.
         let mut data = temporal_delimiter_obu();
         data.extend(global_lcr_obu_with_embedded(5, 3, 0b1, &[0b10]));
         data.extend(annex_b_obu_with_header(
             &layer_obu_header(1, 0, 0, 3),
             &sequence_header_payload_with_lcr(0, 5, 1, 1),
         ));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 3, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             has_error(&report, "lcr/tlayer-dependency-missing"),
@@ -8114,7 +8119,9 @@ mod tests {
     #[test]
     fn lcr_dependency_diagnostic_points_at_lcr_obu() {
         // The activating sequence header is not the violator: the diagnostic must
-        // carry the LCR OBU's offset, which precedes the sequence header here.
+        // carry the LCR OBU's offset, which precedes the sequence header here. The CLK
+        // frame appended after the header frame-confirms the activation without moving
+        // the LCR or sequence-header offsets.
         let td = temporal_delimiter_obu();
         let lcr = local_lcr_obu_with_embedded(0, 5, 0b10, &[0b1]);
         let seq_start = (td.len() + lcr.len()) as u64;
@@ -8124,6 +8131,7 @@ mod tests {
             0x04,
             &sequence_header_payload_with_lcr(0, 5, 1, 1),
         ));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         let offsets: Vec<_> = report
             .errors()
@@ -8300,13 +8308,15 @@ mod tests {
     #[test]
     fn lcr_local_tlayer_dependency_missing_is_flagged() {
         // Local LCR × tlayer map: lcr_tlayer_map[0][0][0] includes temporal layer 1
-        // without temporal layer 0 against the default TLayerDependencyMap[0][1][0].
+        // without temporal layer 0 against the default TLayerDependencyMap[0][1][0]. The
+        // CLK frame referencing seq id 0 frame-confirms the xlayer-0 activation.
         let mut data = temporal_delimiter_obu();
         data.extend(local_lcr_obu_with_embedded(0, 5, 0b1, &[0b10]));
         data.extend(annex_b_obu(
             0x04,
             &sequence_header_payload_with_lcr(0, 5, 1, 1),
         ));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             has_error(&report, "lcr/tlayer-dependency-missing"),
@@ -8317,13 +8327,15 @@ mod tests {
     #[test]
     fn lcr_global_mlayer_dependency_missing_is_flagged() {
         // Global LCR × mlayer map: lcr_mlayer_map[1][3] includes embedded layer 1
-        // without embedded layer 0 against the default MLayerDependencyMap[1][0].
+        // without embedded layer 0 against the default MLayerDependencyMap[1][0]. A CLK
+        // frame on xlayer 3 referencing seq id 0 frame-confirms the activation.
         let mut data = temporal_delimiter_obu();
         data.extend(global_lcr_obu_with_embedded(5, 3, 0b10, &[0b1]));
         data.extend(annex_b_obu_with_header(
             &layer_obu_header(1, 0, 0, 3),
             &sequence_header_payload_with_lcr(0, 5, 1, 1),
         ));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 3, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             has_error(&report, "lcr/mlayer-dependency-missing"),
@@ -8413,14 +8425,119 @@ mod tests {
     }
 
     #[test]
-    fn lcr_dependency_check_fires_under_external_hls_provided() {
+    fn lcr_dependency_check_suppressed_under_external_hls_provided() {
         use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
-        // The § 6.8.9 closure pairs the IN-BAND activated header's dependency maps against
-        // its IN-BAND association-time LCR snapshot — both in-band-resolved (an external
-        // sequence header never frame-confirms an xlayer; `ExternalHlsSet` declares no LCRs).
-        // So an empty Provided set introduces no operand that could shift the § 6.4.1
-        // resolution, and the in-band violation must still fire (aligned with the § 6.8.5 /
-        // § 6.8.8 ceilings; codex 3393591655 / PR #46 finding B).
+        // The § 6.8.9 closure pairs the in-band activated header against the LCR its
+        // seq_lcr_id resolves to under § 6.4.1 (local-first). A Provided declaration is
+        // PARTIAL (`ExternalHlsMode::Provided` — it cannot enumerate external LCRs), so an
+        // unmodeled external *local* LCR with this seq_lcr_id could win the resolution
+        // ahead of the in-band record; the in-band association may not be the activated
+        // one, so the check is suppressed under ANY Provided mode (even an empty set) to
+        // avoid a false positive — the same local-first-shadowing reasoning as the
+        // lcr/global-xlayer-map-missing-xlayer gate. The stream WOULD fire under Disabled
+        // (the trailing CLK frame frame-confirms the activation), confirming the
+        // suppression is the only reason it is silent here.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_embedded(0, 5, 0b10, &[0b1]));
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_with_lcr(0, 5, 1, 1),
+        ));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        // Sanity: under Disabled this in-band violation fires.
+        let baseline = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&baseline, "lcr/mlayer-dependency-missing"),
+            "the in-band violation must fire under Disabled; report was: {baseline}"
+        );
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !has_error(&report, "lcr/mlayer-dependency-missing")
+                && !has_error(&report, "lcr/tlayer-dependency-missing"),
+            "any Provided external HLS must suppress the association-dependent LCR \
+             dependency check (an unmodeled external local LCR could shadow the in-band \
+             association); report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_dependency_uses_strict_frame_confirmation() {
+        // Finding-1 regression (codex 3393669703): the § 6.8.5 / § 6.8.8 / § 6.8.9 LCR
+        // agreement checks must use the STRICT frame-confirmed gate — never the
+        // sole-in-band-header OBU-order fallback — so they fire only against a frame-loaded
+        // activation, matching the Annex A value-space precedent. A sole staged header with
+        // NO frame is a guess (§ 7.3.6 permits staging), so the dependency check stays
+        // silent until a frame confirms the activation.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_embedded(0, 5, 0b10, &[0b1]));
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_with_lcr(0, 5, 1, 1),
+        ));
+        // Sole staged header, NO frame: strict gate keeps the check silent.
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "lcr/mlayer-dependency-missing")
+                && !has_error(&report, "lcr/tlayer-dependency-missing"),
+            "a sole staged header (no frame) must not fire the LCR dependency check via the \
+             sole-header fallback; report was: {report}"
+        );
+        // Adding a frame that loads the staged header confirms the activation -> fires.
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "lcr/mlayer-dependency-missing"),
+            "the frame-confirmed activation must fire the LCR dependency check; report was: \
+             {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_ptl_uses_strict_frame_confirmation() {
+        // Finding-1 regression for § 6.8.5: a sole staged header (no frame) is silent;
+        // the frame-confirmed activation fires.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1));
+        data.extend(seq_header_ptl_payload(SeqPtl {
+            seq_header_id: 0,
+            seq_lcr_id: 5,
+            profile: 0,
+            level: 8, // > lcr_max_level_idx 4
+            tier: 0,
+            max_mlayer_id: 0,
+        }));
+        assert!(
+            !has_error(
+                &Validator::new(false).validate_bytes(&data),
+                "lcr/ptl-level-exceeds-max"
+            ),
+            "a sole staged header (no frame) must not fire the § 6.8.5 ceiling via the \
+             sole-header fallback"
+        );
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        assert!(
+            has_error(
+                &Validator::new(false).validate_bytes(&data),
+                "lcr/ptl-level-exceeds-max"
+            ),
+            "the frame-confirmed activation must fire the § 6.8.5 ceiling"
+        );
+    }
+
+    #[test]
+    fn lcr_agreement_silent_when_external_header_could_be_the_activator() {
+        // Finding-1 regression (codex 3393669703), the worst case the strict gate guards:
+        // an external sequence header is DECLARED, and an in-band header is staged but NO
+        // frame has loaded it. The OBU-order sole-header fallback would guess the staged
+        // in-band header is active and fire the LCR checks against it — but the real
+        // activated header could be the external one, so firing would be a false positive.
+        // The checks must stay silent. (They also stay silent WITH a confirming frame here,
+        // because any Provided mode suppresses the association-dependent LCR checks per the
+        // partial-declaration policy — both paths are silent, neither fires against a guess.)
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
         let mut data = temporal_delimiter_obu();
         data.extend(local_lcr_obu_with_embedded(0, 5, 0b10, &[0b1]));
         data.extend(annex_b_obu(
@@ -8428,12 +8545,25 @@ mod tests {
             &sequence_header_payload_with_lcr(0, 5, 1, 1),
         ));
         let options = ValidationOptions {
-            external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(9),
+            ),
         };
+        // No frame: the strict gate alone keeps it silent (no activation to fire against).
         let report = Validator::new(false).validate_bytes_with_options(&data, &options);
         assert!(
-            has_error(&report, "lcr/mlayer-dependency-missing"),
-            "an empty Provided set must NOT suppress the in-band LCR dependency check; \
+            !has_error(&report, "lcr/mlayer-dependency-missing")
+                && !has_error(&report, "lcr/tlayer-dependency-missing"),
+            "with an external header declared and no frame, the LCR check must not fire \
+             against a guessed in-band activation; report was: {report}"
+        );
+        // Even with a confirming frame the Provided gate suppresses the check.
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !has_error(&report, "lcr/mlayer-dependency-missing")
+                && !has_error(&report, "lcr/tlayer-dependency-missing"),
+            "under any Provided mode the association-dependent LCR check stays suppressed; \
              report was: {report}"
         );
     }
@@ -8443,7 +8573,7 @@ mod tests {
         // § 6.4.1 associates "this sequence header" with an LCR present prior to
         // it: the violating LCR arrives after the first header but before the
         // bit-identical repeat, so the repeat's association must be evaluated and
-        // flagged exactly once.
+        // flagged exactly once. The trailing CLK frame frame-confirms the activation.
         let mut data = temporal_delimiter_obu();
         data.extend(annex_b_obu(
             0x04,
@@ -8454,6 +8584,7 @@ mod tests {
             0x04,
             &sequence_header_payload_with_lcr(0, 5, 1, 1),
         ));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert_eq!(
             ops_error_count(&report, "lcr/mlayer-dependency-missing"),
@@ -8777,7 +8908,8 @@ mod tests {
 
     #[test]
     fn lcr_ptl_level_exceeds_max_is_flagged() {
-        // Header seq_level_idx 8 > local LCR lcr_max_level_idx 4.
+        // Header seq_level_idx 8 > local LCR lcr_max_level_idx 4. The trailing CLK frame
+        // frame-confirms the xlayer-0 activation (§ 6.8.5 uses the strict gate).
         let mut data = temporal_delimiter_obu();
         data.extend(local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1));
         data.extend(seq_header_ptl_payload(SeqPtl {
@@ -8788,6 +8920,7 @@ mod tests {
             tier: 0,
             max_mlayer_id: 0,
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             has_error(&report, "lcr/ptl-level-exceeds-max"),
@@ -8808,6 +8941,7 @@ mod tests {
             tier: 0,
             max_mlayer_id: 0,
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             has_error(&report, "lcr/ptl-profile-exceeds-max"),
@@ -8828,6 +8962,7 @@ mod tests {
             tier: 1,
             max_mlayer_id: 0,
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             has_error(&report, "lcr/ptl-tier-exceeds-max"),
@@ -8848,6 +8983,7 @@ mod tests {
             tier: 0,
             max_mlayer_id: 1,
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             has_error(&report, "lcr/ptl-mlayer-count-exceeds-max"),
@@ -8943,7 +9079,8 @@ mod tests {
     #[test]
     fn lcr_ptl_global_record_ceiling_is_checked() {
         // The association resolves a global LCR carrying PTL for xlayer 0; its
-        // lcr_max_level_idx 4 < header seq_level_idx 8.
+        // lcr_max_level_idx 4 < header seq_level_idx 8. The trailing CLK frame
+        // frame-confirms the xlayer-0 activation.
         let mut data = temporal_delimiter_obu();
         data.extend(global_lcr_obu_with_ptl(5, 0, 0, 4, 0, 1));
         data.extend(seq_header_ptl_payload(SeqPtl {
@@ -8954,6 +9091,7 @@ mod tests {
             tier: 0,
             max_mlayer_id: 0,
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             has_error(&report, "lcr/ptl-level-exceeds-max"),
@@ -8988,7 +9126,8 @@ mod tests {
     fn lcr_ptl_redefinition_rechecks_affected_layer() {
         // First LCR 5 is conformant (ceiling 31); a non-identical redefinition lowers
         // lcr_max_level_idx to 4, and the bit-identical repeated header re-associates
-        // to the new revision and is flagged exactly once.
+        // to the new revision. The trailing CLK frame frame-confirms the activation
+        // against the ceiling-4 revision and is flagged exactly once.
         let mut data = temporal_delimiter_obu();
         data.extend(local_lcr_obu_with_ptl(0, 5, 0, 31, 0, 7));
         data.extend(seq_header_ptl_payload(SeqPtl {
@@ -9008,6 +9147,7 @@ mod tests {
             tier: 0,
             max_mlayer_id: 0,
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert_eq!(
             ops_error_count(&report, "lcr/ptl-level-exceeds-max"),
@@ -9019,7 +9159,8 @@ mod tests {
     #[test]
     fn lcr_ptl_diagnostic_points_at_lcr_obu() {
         // The diagnostic anchors at the LCR OBU (its declared maxima are the source),
-        // which precedes the activating sequence header here.
+        // which precedes the activating sequence header here. The CLK frame appended
+        // after the header frame-confirms the activation without moving the offsets.
         let td = temporal_delimiter_obu();
         let lcr = local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1);
         let seq_start = (td.len() + lcr.len()) as u64;
@@ -9033,6 +9174,7 @@ mod tests {
             tier: 0,
             max_mlayer_id: 0,
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         let offsets: Vec<_> = report
             .errors()
@@ -9046,12 +9188,14 @@ mod tests {
     }
 
     #[test]
-    fn lcr_ptl_fires_under_external_hls_provided() {
-        // The § 6.8.5 ceiling pairs the IN-BAND activated header against its IN-BAND
-        // association-time LCR snapshot — locally decidable. `ExternalHlsSet` cannot
-        // declare LCRs and an external sequence header never frame-confirms an xlayer,
-        // so an empty Provided set (no external operand exists) must NOT suppress the
-        // in-band finding (codex 3393591655 / PR #46 finding B).
+    fn lcr_ptl_suppressed_under_external_hls_provided() {
+        // The § 6.8.5 ceiling pairs the in-band activated header against the LCR its
+        // seq_lcr_id resolves to under § 6.4.1. A Provided declaration is PARTIAL (it
+        // cannot enumerate external LCRs), so an unmodeled external *local* LCR could win
+        // the local-first resolution ahead of the in-band record; the check is suppressed
+        // under any Provided mode (even an empty set) to avoid a false positive against an
+        // association a real decoder may not use. The stream WOULD fire under Disabled (the
+        // trailing CLK frame frame-confirms the activation).
         use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
         let mut data = temporal_delimiter_obu();
         data.extend(local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1));
@@ -9063,23 +9207,33 @@ mod tests {
             tier: 0,
             max_mlayer_id: 0,
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        assert!(
+            has_error(
+                &Validator::new(false).validate_bytes(&data),
+                "lcr/ptl-level-exceeds-max"
+            ),
+            "the in-band ceiling violation must fire under Disabled"
+        );
         let options = ValidationOptions {
             external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
         };
         let report = Validator::new(false).validate_bytes_with_options(&data, &options);
         assert!(
-            has_error(&report, "lcr/ptl-level-exceeds-max"),
-            "an empty Provided set must NOT suppress the in-band PTL ceiling check; \
-             report was: {report}"
+            !has_error(&report, "lcr/ptl-level-exceeds-max"),
+            "an empty Provided set must suppress the association-dependent PTL ceiling \
+             check; report was: {report}"
         );
     }
 
     #[test]
-    fn lcr_ptl_fires_under_ops_only_external_hls_provided() {
-        // An OPS-only Provided set (an `ExternalHlsSet` declaring operating point sets but
-        // no sequence headers) still must not suppress the in-band § 6.8.5 ceiling: the OPS
-        // declaration cannot shift the in-band header activation or the in-band LCR
-        // association, so the violation is still locally decidable.
+    fn lcr_ptl_suppressed_under_ops_only_external_hls_provided() {
+        // An OPS-only Provided set (operating point sets declared but no sequence headers)
+        // also suppresses the § 6.8.5 ceiling. This is the key cycle-2/cycle-3 point: the
+        // suppression is NOT about declared sequence headers — ANY Provided mode may imply
+        // unenumerated external LCRs (the set cannot express them), so an external local
+        // LCR could still shadow the in-band § 6.4.1 association even when only OPS are
+        // declared. The gate is `!Disabled`, not `declares_any_sequence_header`.
         use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
         let mut data = temporal_delimiter_obu();
         data.extend(local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1));
@@ -9091,6 +9245,7 @@ mod tests {
             tier: 0,
             max_mlayer_id: 0,
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let options = ValidationOptions {
             external_hls: ExternalHlsMode::Provided(
                 ExternalHlsSet::new().with_operating_point_set(0, 3),
@@ -9098,9 +9253,9 @@ mod tests {
         };
         let report = Validator::new(false).validate_bytes_with_options(&data, &options);
         assert!(
-            has_error(&report, "lcr/ptl-level-exceeds-max"),
-            "an OPS-only Provided set must NOT suppress the in-band PTL ceiling check; \
-             report was: {report}"
+            !has_error(&report, "lcr/ptl-level-exceeds-max"),
+            "an OPS-only Provided set must suppress the association-dependent PTL ceiling \
+             check; report was: {report}"
         );
     }
 
@@ -9108,7 +9263,8 @@ mod tests {
 
     #[test]
     fn lcr_rep_info_width_mismatch_is_flagged() {
-        // lcr_max_pic_width 1920 != max_frame_width_minus_1 + 1 = 16.
+        // lcr_max_pic_width 1920 != max_frame_width_minus_1 + 1 = 16. The trailing CLK
+        // frame frame-confirms the xlayer-0 activation (§ 6.8.8 uses the strict gate).
         let mut data = temporal_delimiter_obu();
         data.extend(local_lcr_obu_with_rep_info(0, 5, 1920, 8, None, None));
         data.extend(seq_header_rep_payload(SeqRep {
@@ -9120,6 +9276,7 @@ mod tests {
             bit_depth_idc: 0,
             cropping: None,
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             has_error(&report, "lcr/rep-info-mismatch"),
@@ -9155,6 +9312,7 @@ mod tests {
             bit_depth_idc: 0,
             cropping: None,
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             report.errors().any(|d| d.rule_id == "lcr/rep-info-mismatch"
@@ -9196,6 +9354,7 @@ mod tests {
             bit_depth_idc: 0,
             cropping: None, // present flag 0
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             report.errors().any(|d| d.rule_id == "lcr/rep-info-mismatch"
@@ -9230,6 +9389,7 @@ mod tests {
             bit_depth_idc: 0,
             cropping: None, // present flag 0, offsets inferred 0
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             report.errors().any(|d| d.rule_id == "lcr/rep-info-mismatch"
@@ -9265,6 +9425,7 @@ mod tests {
             bit_depth_idc: 0,
             cropping: Some((1, 2, 3, 4)), // top 3
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             report.errors().any(|d| d.rule_id == "lcr/rep-info-mismatch"
@@ -9348,6 +9509,7 @@ mod tests {
     #[test]
     fn lcr_rep_info_global_record_is_checked() {
         // A global LCR payload carrying rep info for xlayer 0 with a mismatched width.
+        // The trailing CLK frame frame-confirms the xlayer-0 activation.
         let mut data = temporal_delimiter_obu();
         data.extend(global_lcr_obu_with_rep_info(5, 0, 1920, 8, None, None));
         data.extend(seq_header_rep_payload(SeqRep {
@@ -9359,6 +9521,7 @@ mod tests {
             bit_depth_idc: 0,
             cropping: None,
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             report
@@ -9396,7 +9559,8 @@ mod tests {
     #[test]
     fn lcr_rep_info_diagnostic_points_at_lcr_obu() {
         // The diagnostic anchors at the LCR OBU (its declared rep info is the source),
-        // which precedes the activating sequence header here.
+        // which precedes the activating sequence header here. The CLK frame appended
+        // after the header frame-confirms the activation without moving the offsets.
         let td = temporal_delimiter_obu();
         let lcr = local_lcr_obu_with_rep_info(0, 5, 1920, 8, None, None);
         let seq_start = (td.len() + lcr.len()) as u64;
@@ -9411,6 +9575,7 @@ mod tests {
             bit_depth_idc: 0,
             cropping: None,
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         let offsets: Vec<_> = report
             .errors()
@@ -9463,7 +9628,8 @@ mod tests {
     #[test]
     fn lcr_rep_info_redefinition_rechecks_affected_layer() {
         // A conformant LCR 5 is redefined with a mismatched width; the repeated header
-        // re-associates to the new revision and is flagged exactly once.
+        // re-associates to the new revision. The trailing CLK frame frame-confirms the
+        // activation against the redefined (width-1920) revision, flagged exactly once.
         let mut data = temporal_delimiter_obu();
         data.extend(local_lcr_obu_with_rep_info(0, 5, 16, 8, None, None)); // agrees
         data.extend(seq_header_rep_payload(SeqRep {
@@ -9485,6 +9651,7 @@ mod tests {
             bit_depth_idc: 0,
             cropping: None,
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let report = Validator::new(false).validate_bytes(&data);
         assert_eq!(
             ops_error_count(&report, "lcr/rep-info-mismatch"),
@@ -9579,10 +9746,13 @@ mod tests {
     }
 
     #[test]
-    fn lcr_rep_info_fires_under_external_hls_provided() {
-        // § 6.8.8 pairs the IN-BAND activated header against its IN-BAND association-time
-        // LCR snapshot; an empty Provided set introduces no external operand, so the
-        // in-band mismatch must still fire (codex 3393591655 / PR #46 finding B).
+    fn lcr_rep_info_suppressed_under_external_hls_provided() {
+        // § 6.8.8 pairs the in-band activated header against the LCR its seq_lcr_id
+        // resolves to under § 6.4.1. A Provided declaration is PARTIAL (it cannot
+        // enumerate external LCRs), so an unmodeled external *local* LCR could shadow the
+        // in-band association; the check is suppressed under any Provided mode to avoid a
+        // false positive. The stream WOULD fire under Disabled (trailing CLK frame
+        // frame-confirms the activation).
         use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
         let mut data = temporal_delimiter_obu();
         data.extend(local_lcr_obu_with_rep_info(0, 5, 1920, 8, None, None));
@@ -9595,22 +9765,30 @@ mod tests {
             bit_depth_idc: 0,
             cropping: None,
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        assert!(
+            has_error(
+                &Validator::new(false).validate_bytes(&data),
+                "lcr/rep-info-mismatch"
+            ),
+            "the in-band rep-info mismatch must fire under Disabled"
+        );
         let options = ValidationOptions {
             external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
         };
         let report = Validator::new(false).validate_bytes_with_options(&data, &options);
         assert!(
-            has_error(&report, "lcr/rep-info-mismatch"),
-            "an empty Provided set must NOT suppress the in-band rep-info check; \
+            !has_error(&report, "lcr/rep-info-mismatch"),
+            "an empty Provided set must suppress the association-dependent rep-info check; \
              report was: {report}"
         );
     }
 
     #[test]
-    fn lcr_rep_info_fires_under_ops_only_external_hls_provided() {
-        // An OPS-only Provided set still must not suppress the in-band § 6.8.8 mismatch:
-        // the OPS declaration cannot change the in-band header activation or the in-band
-        // LCR association the comparison reads.
+    fn lcr_rep_info_suppressed_under_ops_only_external_hls_provided() {
+        // An OPS-only Provided set also suppresses the § 6.8.8 mismatch: ANY Provided mode
+        // may imply unenumerated external LCRs, so the suppression is not about declared
+        // sequence headers. The gate is `!Disabled`, not `declares_any_sequence_header`.
         use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
         let mut data = temporal_delimiter_obu();
         data.extend(local_lcr_obu_with_rep_info(0, 5, 1920, 8, None, None));
@@ -9623,6 +9801,7 @@ mod tests {
             bit_depth_idc: 0,
             cropping: None,
         }));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
         let options = ValidationOptions {
             external_hls: ExternalHlsMode::Provided(
                 ExternalHlsSet::new().with_operating_point_set(0, 3),
@@ -9630,9 +9809,9 @@ mod tests {
         };
         let report = Validator::new(false).validate_bytes_with_options(&data, &options);
         assert!(
-            has_error(&report, "lcr/rep-info-mismatch"),
-            "an OPS-only Provided set must NOT suppress the in-band rep-info check; \
-             report was: {report}"
+            !has_error(&report, "lcr/rep-info-mismatch"),
+            "an OPS-only Provided set must suppress the association-dependent rep-info \
+             check; report was: {report}"
         );
     }
 
