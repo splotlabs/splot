@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "868dbe93be35fb94e6e598b615ef12e8d5ddc883",
+  "audited_commit": "ce998aa4184a7a318085c7e2b9144b04539bec08",
   "outcome": "success",
   "files": [
     {
@@ -769,7 +769,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "f9e2e756ed6923fa75be047c3ee2e48a9c272a4dcac4ba9dea1b4e757c3b0878",
+      "sha256": "4b8ce903da4090d1799ae8adfbf9264264aaec56c960f2d8561e3c7fd975a31c",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -834,7 +834,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "04676c2c475e1032ce08f5f99135d0689f3f612bf43e9a14fa809f1ffb98074e",
+      "sha256": "6655ce624b887d6042ec66457eb1581d5b478c563e4b9dbfdb65e4f0e0e5cb19",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
