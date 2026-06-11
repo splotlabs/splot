@@ -3313,6 +3313,18 @@ enum RapHlsKey {
     /// Operating point set `(obu_xlayer_id, ops_id)` (§ 7.3.8.5), referenced by a
     /// buffer-removal-timing OBU's `br_ops_id`.
     OperatingPointSet { xlayer: u8, ops_id: u8 },
+    /// Layer configuration record (§ 7.3.8.3). When `xlayer == GLOBAL_XLAYER_ID` (31) the
+    /// `id` is a global LCR's `lcr_global_config_record_id`, referenced by a local LCR's
+    /// `lcr_global_id` or by a sequence header's `seq_lcr_id` that resolves to a global
+    /// record; otherwise the `id` is a local LCR's `lcr_local_id` in that extended layer,
+    /// referenced by a sequence header's `seq_lcr_id` that resolves to a local record.
+    /// Matches the linear LCR availability stores' keying.
+    LayerConfigurationRecord { xlayer: u8, id: u8 },
+    /// Local atlas segment OBU `(obu_xlayer_id, atlas_segment_id)` (§ 7.3.8.4), referenced
+    /// by a local LCR's `lcr_local_atlas_id`. Only *local* atlas segments participate: a
+    /// global atlas "can be available" (§ 7.3.8.4 is permissive, not "shall"), so — like
+    /// the linear checks — it is excluded from the replay.
+    Atlas { xlayer: u8, id: u8 },
 }
 
 impl RapHlsKey {
@@ -3322,6 +3334,11 @@ impl RapHlsKey {
             Self::SequenceHeader(_) => "sequence header",
             Self::MultiFrameHeader(_) => "multi-frame header",
             Self::OperatingPointSet { .. } => "operating point set",
+            Self::LayerConfigurationRecord { xlayer, .. } if xlayer == GLOBAL_XLAYER_ID.get() => {
+                "global layer configuration record"
+            }
+            Self::LayerConfigurationRecord { .. } => "local layer configuration record",
+            Self::Atlas { .. } => "local atlas segment",
         }
     }
 
@@ -3332,6 +3349,8 @@ impl RapHlsKey {
             Self::SequenceHeader(_) => "7.3.8.6",
             Self::MultiFrameHeader(_) => "7.3.8.7",
             Self::OperatingPointSet { .. } => "7.3.8.5",
+            Self::LayerConfigurationRecord { .. } => "7.3.8.3",
+            Self::Atlas { .. } => "7.3.8.4",
         }
     }
 
@@ -3343,6 +3362,15 @@ impl RapHlsKey {
             Self::OperatingPointSet { xlayer, ops_id } => {
                 format!("ops_id {ops_id} for obu_xlayer_id {xlayer}")
             }
+            Self::LayerConfigurationRecord { xlayer, id } if xlayer == GLOBAL_XLAYER_ID.get() => {
+                format!("lcr_global_config_record_id {id}")
+            }
+            Self::LayerConfigurationRecord { xlayer, id } => {
+                format!("lcr_local_id {id} for obu_xlayer_id {xlayer}")
+            }
+            Self::Atlas { xlayer, id } => {
+                format!("atlas_segment_id {id} for obu_xlayer_id {xlayer}")
+            }
         }
     }
 }
@@ -3351,23 +3379,42 @@ impl RapHlsKey {
 ///
 /// Buffered only when the reference resolved linearly (the object was available in-band
 /// at reference time, so the linear `hls/unavailable-*` check did not fire — the two
-/// predicates are disjoint by construction) and external HLS did not suppress it. The
-/// snapshot captures the object's last qualifying (re)send temporal unit *as of the
-/// reference* (in-band order), so a same-temporal-unit (re)send that follows the
-/// reference does not retroactively satisfy "available ... prior to being referenced"
-/// (matching the linear checks' intra-temporal-unit ordering).
+/// predicates are disjoint by construction) and external HLS did not suppress it.
+///
+/// The before-reference same-temporal-unit (re)send is captured *eagerly* (in-band
+/// order) so a (re)send that follows the reference does not retroactively satisfy
+/// "available ... prior to being referenced" (matching the linear checks' intra-temporal-
+/// unit ordering). Its qualification (leading vs. random-access-point, § 7.3.8.1) is
+/// resolved at temporal-unit completion, when this unit's per-extended-layer leading-ness
+/// and random-access-point-ness are fully known.
 #[derive(Debug, Clone)]
 struct RapPendingReference {
     /// The referenced object.
     key: RapHlsKey,
-    /// The most recent *qualifying* (re)send temporal unit observed at-or-before this
-    /// reference (in-band order): the max of the object's promoted last-good-resend
-    /// temporal unit and — if the object was (re)sent earlier in this temporal unit —
-    /// this temporal unit's index. `None` when no qualifying resend preceded the
-    /// reference. (A "qualifying" resend is one not in a leading temporal unit; the
-    /// reference's own temporal unit is always decoded, so a before-reference resend in
-    /// it counts.)
-    good_snapshot: Option<u64>,
+    /// The governing extended layer for this reference: the referencing OBU's
+    /// `obu_xlayer_id`. § 7.4 random access initiates *per extended layer* (§ 7.4.6
+    /// Multistream Random Access, mirror `07-decoding-process.md` lines 1314-1318: "a
+    /// temporal unit may be a random access point for some extended layers but not for
+    /// others" and "the decoder shall not decode coded extended layer units for an
+    /// extended layer until a random access point for that extended layer is
+    /// encountered"), so a reference answers to *its own* layer's most recent random
+    /// access point. [`GLOBAL_XLAYER_ID`] references (e.g. a global-layer
+    /// buffer-removal-timing OBU) are governed by the global anchor — the most recent
+    /// random access point across *any* extended layer — since a global-layer HLS OBU is
+    /// decoded by whichever layer first random-accesses at that temporal unit, so the
+    /// referenced object must be available at any random access point a decoder might
+    /// start from.
+    governing_xlayer: ExtendedLayerId,
+    /// The most recent promoted *qualifying* (re)send temporal unit of the object as of
+    /// the prior temporal units (object-keyed, cross-extended-layer — § 7.3.8.6 models
+    /// the sequence-header memory as a global `seq_header_id` namespace). `None` when no
+    /// qualifying resend was promoted before this temporal unit.
+    promoted_snapshot: Option<u64>,
+    /// The extended layer that (re)sent this object *earlier in this temporal unit*
+    /// (before this reference, in-band order), or `None` if it was not resent before the
+    /// reference. Its leading / random-access-point qualification is deferred to
+    /// temporal-unit completion (see [`RapReplayTracker::complete_temporal_unit`]).
+    this_tu_resend_xlayer: Option<ExtendedLayerId>,
     /// Byte offset of the referencing OBU, where the diagnostic is anchored.
     offset: ByteOffset,
 }
@@ -3384,47 +3431,83 @@ struct RapPendingReference {
 /// while failing real random access. This tracker adds the replay dimension.
 ///
 /// **Why temporal-unit-end resolution.** A temporal unit's § 7.4.1 random-access-point-
-/// ness (it contains a CLK / OLK / RAS OBU) and its leading-frame-ness (it contains a
-/// LEADING_* OBU) are only fully known once the temporal unit ends. § 7.3.7 places global
-/// HLS before the frame OBUs of a temporal unit, so an object (re)sent in a random access
-/// point's temporal unit is recorded before the frame references in that unit; the
-/// reference resolution is nonetheless deferred to temporal-unit completion (mirroring
-/// [`MsdoIdentityTracker`]) so the unit's random-access-point-ness and leading-ness drive
-/// the verdict.
+/// ness (a coded extended layer unit contains a CLK / OLK / RAS OBU) and its leading-
+/// frame-ness (it contains a LEADING_* OBU) are only fully known once the temporal unit
+/// ends. § 7.3.7 places global HLS before the frame OBUs of a temporal unit, so an object
+/// (re)sent in a random access point's temporal unit is recorded before the frame
+/// references in that unit; the reference resolution is nonetheless deferred to temporal-
+/// unit completion (mirroring [`MsdoIdentityTracker`]) so the unit's random-access-point-
+/// ness and leading-ness drive the verdict.
+///
+/// **Per-extended-layer random access (§ 7.4.6).** § 7.4 random access initiates *per
+/// extended layer*: a temporal unit "may be a random access point for some extended
+/// layers but not for others", and "the decoder shall not decode coded extended layer
+/// units for an extended layer until a random access point for that extended layer is
+/// encountered" (mirror `07-decoding-process.md` lines 1314-1318). So a CLK in extended
+/// layer 0 makes the temporal unit a random access point for layer 0 *only* — a frame in
+/// layer 1 still answers to layer 1's own most recent random access point. Random-access-
+/// point-ness, leading-ness, and the governing anchor are therefore tracked per extended
+/// layer (keyed by `obu_xlayer_id`); a [`GLOBAL_XLAYER_ID`] reference is governed by the
+/// global anchor (the most recent random access point across *any* layer), since a
+/// global-layer HLS OBU is decoded by whichever layer first random-accesses there.
 ///
 /// **Soundness (never a false positive).** Only references that resolved *linearly* are
 /// buffered, so the replay predicate is disjoint from the linear unavailability checks: a
 /// reference with no availability at all is the linear check's job. A resend in a leading
-/// temporal unit does not count (those units drop under random access); a temporal unit
-/// whose leading-ness is undecidable from OBU types alone never disqualifies a resend
-/// (the type-detectable LEADING_* subset is a sound under-approximation — at worst a
-/// missed report, never a false positive). The object's promoted *last-good* resend (the
-/// most recent non-leading (re)send) is compared against the governing random access
-/// point: a later resend in a leading temporal unit cannot mask an earlier qualifying one.
+/// temporal unit does not count (those units drop under random access) *unless* that
+/// temporal unit is itself the governing random access point for the resend's layer — the
+/// random access point's own temporal unit is always decoded when starting there, so its
+/// resends qualify for that random access point (a leading frame in it is a *post*-random-
+/// access drop, not a drop of the random access point's own unit). A temporal unit whose
+/// leading-ness is undecidable from OBU types alone never disqualifies a resend (the type-
+/// detectable LEADING_* subset is a sound under-approximation — at worst a missed report,
+/// never a false positive). Availability is tracked object-keyed (cross-extended-layer):
+/// § 7.3.8.6 models the sequence-header memory as a global `seq_header_id` namespace, so a
+/// resend in any layer makes the object available — a *more permissive* (sound) over-
+/// approximation versus a strict per-layer decode of the resend's own layer.
 #[derive(Debug, Default)]
 struct RapReplayTracker {
-    /// Per object, the temporal-unit index of its most recent *non-leading* in-band
-    /// (re)send, promoted at temporal-unit completion (a leading temporal unit's resends
-    /// are not promoted). Monotonic — a resend only advances the value.
+    /// Per object, the temporal-unit index of its most recent *qualifying* in-band
+    /// (re)send, promoted at temporal-unit completion. A (re)send qualifies when its
+    /// sending extended layer's coded extended layer unit is not leading in that temporal
+    /// unit, OR that temporal unit is the random access point for the sending layer (the
+    /// random access point's own unit is always decoded — § 7.4.1). Object-keyed (cross-
+    /// extended-layer, matching the global `seq_header_id` memory). Monotonic — a resend
+    /// only advances the value.
     last_good_resend_tu: BTreeMap<RapHlsKey, u64>,
-    /// Objects (re)sent in the temporal unit currently being observed (eager, in-band
-    /// order), used both to snapshot a before-reference resend for the current unit and
-    /// to promote into [`Self::last_good_resend_tu`] at completion. Cleared per unit.
-    resent_this_tu: BTreeSet<RapHlsKey>,
+    /// Objects (re)sent in the temporal unit currently being observed, mapped to the
+    /// extended layer that sent each (eager, in-band order). Used both to snapshot a
+    /// before-reference resend for the current unit and to promote into
+    /// [`Self::last_good_resend_tu`] at completion (whose qualification needs the sending
+    /// layer's leading / random-access state). Cleared per unit. When an object is resent
+    /// by several layers in one unit, the last write wins; this is benign — for the per-
+    /// object availability the only question is whether *some* qualifying send exists, and
+    /// the distinct OPS keys / non-global sequence headers make multi-layer same-object
+    /// sends in one unit a non-issue in practice.
+    resent_this_tu: BTreeMap<RapHlsKey, ExtendedLayerId>,
     /// References buffered in the temporal unit currently being observed, resolved at
     /// completion (see [`Self::complete_temporal_unit`]).
     pending_this_tu: Vec<RapPendingReference>,
-    /// Whether the temporal unit currently being observed is a § 7.4.1 random access
-    /// point (it contains a CLK / OLK / RAS OBU). Resolved at completion.
-    current_tu_is_rap: bool,
-    /// Whether the temporal unit currently being observed contains a LEADING_* frame OBU
-    /// (§ 7.3.8.1: such units drop under random access, so their resends do not qualify).
-    current_tu_is_leading: bool,
-    /// The temporal-unit index of the most recent random access point completed so far,
-    /// or `None` before any random access point. The governing random access point for a
-    /// reference: an object must have a qualifying (re)send in or after this temporal
-    /// unit to satisfy § 7.3.8.1.
-    most_recent_rap_tu: Option<u64>,
+    /// Extended layers for which the temporal unit currently being observed is a § 7.4.1
+    /// random access point (a CLK / OLK / RAS OBU in that layer's coded extended layer
+    /// unit). Resolved at completion.
+    current_tu_rap_xlayers: BTreeSet<ExtendedLayerId>,
+    /// Extended layers whose coded extended layer unit in the temporal unit currently
+    /// being observed contains a LEADING_* frame OBU (§ 7.3.8.1: such units drop under
+    /// random access, so their resends do not qualify — unless the unit is itself that
+    /// layer's random access point).
+    current_tu_leading_xlayers: BTreeSet<ExtendedLayerId>,
+    /// Per extended layer, the temporal-unit index of its most recent random access point
+    /// completed so far. The governing random access point for a reference from that
+    /// layer: the object must have a qualifying (re)send in or after this temporal unit to
+    /// satisfy § 7.3.8.1.
+    most_recent_rap_tu: BTreeMap<ExtendedLayerId, u64>,
+    /// The temporal-unit index of the most recent random access point across *any*
+    /// extended layer, or `None` before any random access point. Governs
+    /// [`GLOBAL_XLAYER_ID`] references (a global-layer HLS OBU is decoded by whichever
+    /// layer first random-accesses at that temporal unit, so its references must be
+    /// satisfied at the earliest such start point).
+    most_recent_rap_tu_any: Option<u64>,
     /// Already-emitted `(object, random-access-point temporal unit)` findings, so one
     /// dangling object reports once per random access point even across several
     /// referencing frames in or after it (proposal dedup requirement).
@@ -3432,100 +3515,163 @@ struct RapReplayTracker {
 }
 
 impl RapReplayTracker {
-    /// Records an in-band (re)send of `key` in the temporal unit currently being
-    /// observed (§ 7.3.8.1 / § 7.3.7: global HLS precedes the unit's frame OBUs, so this
-    /// runs before any reference in the same unit).
-    fn note_resend(&mut self, key: RapHlsKey) {
-        self.resent_this_tu.insert(key);
+    /// Records an in-band (re)send of `key` by extended layer `xlayer` in the temporal
+    /// unit currently being observed (§ 7.3.8.1 / § 7.3.7: global HLS precedes the unit's
+    /// frame OBUs, so this runs before any reference in the same unit). The sending layer
+    /// is retained so its leading / random-access qualification can be resolved at
+    /// completion.
+    fn note_resend(&mut self, key: RapHlsKey, xlayer: ExtendedLayerId) {
+        self.resent_this_tu.insert(key, xlayer);
     }
 
-    /// Marks the temporal unit currently being observed as a § 7.4.1 random access point.
-    fn note_random_access_point(&mut self) {
-        self.current_tu_is_rap = true;
+    /// Marks the temporal unit currently being observed as a § 7.4.1 random access point
+    /// for extended layer `xlayer` (a CLK / OLK / RAS OBU in that layer's coded extended
+    /// layer unit).
+    fn note_random_access_point(&mut self, xlayer: ExtendedLayerId) {
+        self.current_tu_rap_xlayers.insert(xlayer);
     }
 
-    /// Marks the temporal unit currently being observed as containing a LEADING_* frame
-    /// OBU (§ 7.3.8.1).
-    fn note_leading_frame(&mut self) {
-        self.current_tu_is_leading = true;
+    /// Marks extended layer `xlayer`'s coded extended layer unit in the temporal unit
+    /// currently being observed as containing a LEADING_* frame OBU (§ 7.3.8.1).
+    fn note_leading_frame(&mut self, xlayer: ExtendedLayerId) {
+        self.current_tu_leading_xlayers.insert(xlayer);
     }
 
     /// Buffers a linearly-resolved reference to `key` from the OBU at `offset` in the
-    /// temporal unit currently being observed, snapshotting the object's qualifying
-    /// resend state as of this reference (in-band order). Resolved at temporal-unit
-    /// completion (see [`Self::complete_temporal_unit`]).
-    ///
-    /// `current_tu_index` is the temporal unit currently being observed; a resend earlier
-    /// in this unit (before this reference) is captured by [`Self::resent_this_tu`] and
-    /// counts toward the snapshot, since this unit is always decoded under random access.
-    fn note_reference(&mut self, key: RapHlsKey, current_tu_index: u64, offset: ByteOffset) {
-        let promoted = self.last_good_resend_tu.get(&key).copied();
-        let this_tu = self
-            .resent_this_tu
-            .contains(&key)
-            .then_some(current_tu_index);
-        let good_snapshot = match (promoted, this_tu) {
-            (Some(a), Some(b)) => Some(a.max(b)),
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
-        };
+    /// temporal unit currently being observed. `governing_xlayer` is the referencing
+    /// OBU's `obu_xlayer_id` (the layer whose random access point governs this reference;
+    /// a [`GLOBAL_XLAYER_ID`] reference is governed by the global anchor). The reference's
+    /// promoted resend snapshot and any before-reference same-unit resend are captured
+    /// eagerly (in-band order); their qualification is resolved at temporal-unit
+    /// completion (see [`Self::complete_temporal_unit`]), once this unit's per-extended-
+    /// layer leading-ness and random-access-point-ness are known.
+    fn note_reference(
+        &mut self,
+        key: RapHlsKey,
+        governing_xlayer: ExtendedLayerId,
+        offset: ByteOffset,
+    ) {
+        let promoted_snapshot = self.last_good_resend_tu.get(&key).copied();
+        // A resend earlier in this unit (before this reference, in-band order). Its
+        // qualification is deferred: the random access point's own unit is always decoded,
+        // so a before-reference resend in it counts even when the unit is leading.
+        let this_tu_resend_xlayer = self.resent_this_tu.get(&key).copied();
         self.pending_this_tu.push(RapPendingReference {
             key,
-            good_snapshot,
+            governing_xlayer,
+            promoted_snapshot,
+            this_tu_resend_xlayer,
             offset,
         });
     }
 
+    /// `true` when a (re)send by extended layer `xlayer` in this temporal unit qualifies
+    /// for § 7.3.8.1: it is not in a leading coded extended layer unit, *or* this temporal
+    /// unit is the random access point for that layer (the random access point's own unit
+    /// is always decoded when starting there, so its resends qualify — § 7.4.1).
+    fn this_tu_send_qualifies(&self, xlayer: ExtendedLayerId) -> bool {
+        !self.current_tu_leading_xlayers.contains(&xlayer)
+            || self.current_tu_rap_xlayers.contains(&xlayer)
+    }
+
+    /// The governing random access point temporal unit for a reference from
+    /// `governing_xlayer`: that layer's most recent random access point, or — for a
+    /// [`GLOBAL_XLAYER_ID`] reference — the most recent random access point across any
+    /// layer. `None` when no random access point governs the reference yet.
+    fn governing_rap_tu(&self, governing_xlayer: ExtendedLayerId) -> Option<u64> {
+        if governing_xlayer.is_global() {
+            self.most_recent_rap_tu_any
+        } else {
+            self.most_recent_rap_tu.get(&governing_xlayer).copied()
+        }
+    }
+
     /// Resolves the § 7.3.8.1 replay rule for the just-completed temporal unit `tu_index`
-    /// and resets the per-temporal-unit working state, returning the diagnostics to emit.
+    /// and resets the per-temporal-unit working state, returning the diagnostics to emit
+    /// each paired with its dangling object's [`RapHlsKey`] (so the caller can apply the
+    /// per-kind external-HLS suppression policy — see `complete_rap_replay_tu`).
     ///
     /// Order matters and is sound regardless of intra-unit OBU order: promote this unit's
-    /// non-leading resends, advance the random-access-point anchor, then resolve this
-    /// unit's buffered references against the governing random access point (which now
-    /// includes this unit when it is itself a random access point — a same-unit before-
-    /// reference resend already entered each reference's `good_snapshot` at buffer time).
-    fn complete_temporal_unit(&mut self, tu_index: u64) -> Vec<Diagnostic> {
-        // Promote this unit's resends into the last-good map, unless the unit is a leading
-        // temporal unit (its resends drop under random access, § 7.3.8.1).
-        if !self.current_tu_is_leading {
-            for key in std::mem::take(&mut self.resent_this_tu) {
+    /// qualifying resends, advance the per-extended-layer random-access-point anchors,
+    /// then resolve this unit's buffered references against each reference's governing
+    /// random access point (which now includes this unit when it is itself that layer's
+    /// random access point).
+    fn complete_temporal_unit(&mut self, tu_index: u64) -> Vec<(RapHlsKey, Diagnostic)> {
+        // Promote this unit's resends into the last-good map. A resend qualifies when its
+        // sending layer's unit is not leading, OR this unit is that layer's random access
+        // point (the random access point's own unit is always decoded — § 7.4.1; finding
+        // 4: a temporal unit that is both a random access point and carries leading frames
+        // must still promote its own resends for that random access point). A non-
+        // qualifying resend (leading, non-random-access) is dropped: those units drop
+        // under post-random-access decoding.
+        for (key, xlayer) in std::mem::take(&mut self.resent_this_tu) {
+            if self.this_tu_send_qualifies(xlayer) {
                 self.last_good_resend_tu.insert(key, tu_index);
             }
         }
-        self.resent_this_tu.clear();
-        if self.current_tu_is_rap {
-            self.most_recent_rap_tu = Some(tu_index);
+        // Advance the per-extended-layer and global random-access-point anchors. The
+        // global anchor (governing GLOBAL_XLAYER_ID references) advances whenever *any*
+        // layer random-accesses here.
+        if !self.current_tu_rap_xlayers.is_empty() {
+            self.most_recent_rap_tu_any = Some(tu_index);
+            for &xlayer in &self.current_tu_rap_xlayers {
+                self.most_recent_rap_tu.insert(xlayer, tu_index);
+            }
         }
 
         let mut diagnostics = Vec::new();
-        // A reference made by a frame in a leading temporal unit is in a frame that itself
-        // drops under random access, so its availability requirement is moot — never
-        // emit for a leading temporal unit's references (§ 7.3.8.1: random access drops
-        // temporal units carrying leading frames).
-        if !self.current_tu_is_leading
-            && let Some(rap_tu) = self.most_recent_rap_tu
-        {
-            for pending in std::mem::take(&mut self.pending_this_tu) {
-                // A qualifying (re)send in or after the governing random access point
-                // satisfies § 7.3.8.1; otherwise the object was only available from before
-                // the random access point and is unavailable on real random access.
-                let satisfied = pending.good_snapshot.is_some_and(|good| good >= rap_tu);
-                if satisfied {
-                    continue;
-                }
-                if !self.emitted.insert((pending.key, rap_tu)) {
-                    continue;
-                }
-                diagnostics.push(rap_replay_unavailable(pending.key, rap_tu, pending.offset));
+        for pending in std::mem::take(&mut self.pending_this_tu) {
+            // A reference from a frame in a leading coded extended layer unit is in a frame
+            // that itself drops under random access, so its availability requirement is
+            // moot — unless that unit is itself the layer's random access point, where the
+            // unit is always decoded (a global-layer reference is never "leading"). Skip a
+            // moot reference. (`governing_xlayer` is the referencing OBU's own layer.)
+            let reference_unit_drops = !pending.governing_xlayer.is_global()
+                && self
+                    .current_tu_leading_xlayers
+                    .contains(&pending.governing_xlayer)
+                && !self
+                    .current_tu_rap_xlayers
+                    .contains(&pending.governing_xlayer);
+            if reference_unit_drops {
+                continue;
             }
+            let Some(rap_tu) = self.governing_rap_tu(pending.governing_xlayer) else {
+                // No random access point governs this reference yet (decoding from the
+                // bitstream start needs no resend).
+                continue;
+            };
+            // The qualifying resend snapshot: the max of the object's promoted last-good
+            // resend and — if it was resent before this reference in this unit and that
+            // send qualifies — this unit's index. Resolved now that this unit's per-layer
+            // leading / random-access state is known.
+            let this_tu_good = pending
+                .this_tu_resend_xlayer
+                .filter(|&xlayer| self.this_tu_send_qualifies(xlayer))
+                .map(|_| tu_index);
+            let good_snapshot = match (pending.promoted_snapshot, this_tu_good) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
+            // A qualifying (re)send in or after the governing random access point satisfies
+            // § 7.3.8.1; otherwise the object was only available from before the random
+            // access point and is unavailable on real random access.
+            let satisfied = good_snapshot.is_some_and(|good| good >= rap_tu);
+            if satisfied {
+                continue;
+            }
+            if !self.emitted.insert((pending.key, rap_tu)) {
+                continue;
+            }
+            diagnostics.push((
+                pending.key,
+                rap_replay_unavailable(pending.key, rap_tu, pending.offset),
+            ));
         }
-        // Drop any remaining buffered references for this unit — either no random access
-        // point governs them yet (decoding from the bitstream start needs no resend) or
-        // they belong to a dropped leading temporal unit.
-        self.pending_this_tu.clear();
-        self.current_tu_is_rap = false;
-        self.current_tu_is_leading = false;
+        self.current_tu_rap_xlayers.clear();
+        self.current_tu_leading_xlayers.clear();
         diagnostics
     }
 }
@@ -3550,6 +3696,33 @@ fn rap_replay_unavailable(key: RapHlsKey, rap_tu: u64, offset: ByteOffset) -> Di
     )
     .with_spec_section("7.3.8.1")
     .with_byte_offset(offset)
+}
+
+/// Whether a § 7.3.8.1 replay finding for `key` is suppressed by `external_hls` (finding
+/// 3 — per-key external-HLS suppression). See `complete_rap_replay_tu` for the policy.
+///
+/// For an externally-*declarable* kind ([`RapHlsKey::SequenceHeader`],
+/// [`RapHlsKey::OperatingPointSet`]) the caller's [`crate::options::ExternalHlsSet`] is
+/// authoritative: suppress only when the *exact* referenced key is declared external. For
+/// a kind the set cannot express ([`RapHlsKey::MultiFrameHeader`], and — once wired —
+/// LCRs / atlas segments), any `Provided` mode keeps the blanket suppression, since such
+/// an OBU may exist externally without being (or being expressible as) declared.
+fn rap_replay_suppressed_by_external_hls(key: RapHlsKey, external_hls: &ExternalHlsMode) -> bool {
+    let ExternalHlsMode::Provided(set) = external_hls else {
+        // Disabled: the caller asserts no external provision, so nothing is suppressed.
+        return false;
+    };
+    match key {
+        // Declarable kinds: authoritative exact-key match.
+        RapHlsKey::SequenceHeader(id) => set.has_sequence_header(id),
+        RapHlsKey::OperatingPointSet { xlayer, ops_id } => {
+            set.has_operating_point_set(xlayer, ops_id)
+        }
+        // Inexpressible kinds: any Provided mode suppresses (partial-declaration policy).
+        RapHlsKey::MultiFrameHeader(_)
+        | RapHlsKey::LayerConfigurationRecord { .. }
+        | RapHlsKey::Atlas { .. } => true,
+    }
 }
 
 /// Stateful § 5.6 MSDO observer (AV2 v1.0.0 § 5.6 / § 7.3.2).
@@ -4072,7 +4245,8 @@ impl ValidatorContext {
             obu.header.obu_type,
             ObuType::LeadingTileGroup | ObuType::LeadingSef | ObuType::LeadingTip
         ) {
-            self.rap_replay.note_leading_frame();
+            self.rap_replay
+                .note_leading_frame(obu.header.extended_layer_id);
         }
 
         if obu.header.obu_type == ObuType::SequenceHeader {
@@ -4261,9 +4435,11 @@ impl ValidatorContext {
             self.annex_a_iop.note_clk();
             // AV2 § 7.4.1: a CLK makes the temporal unit a random access point.
             self.msdo_identity.note_random_access_point();
-            // AV2 § 7.3.8.1: the same random access point drives the HLS availability
-            // replay (see RapReplayTracker).
-            self.rap_replay.note_random_access_point();
+            // AV2 § 7.3.8.1 / § 7.4.6: the same random access point drives the HLS
+            // availability replay (see RapReplayTracker), scoped to the CLK's own extended
+            // layer — random access initiates per extended layer.
+            self.rap_replay
+                .note_random_access_point(obu.header.extended_layer_id);
         } else if obu.header.obu_type == ObuType::OpenLoopKey {
             // An OLK is NOT a § 7.3.6 CVS boundary during sequential decoding
             // (§ 7.4.4), but it IS a § 7.3.8.11 random access point that
@@ -4282,16 +4458,20 @@ impl ValidatorContext {
             self.repair_post_rap_ci_pairings(obu.header.extended_layer_id, report);
             // AV2 § 7.4.1: an OLK makes the temporal unit a random access point.
             self.msdo_identity.note_random_access_point();
-            // AV2 § 7.3.8.1: the same random access point drives the HLS availability
-            // replay (see RapReplayTracker).
-            self.rap_replay.note_random_access_point();
+            // AV2 § 7.3.8.1 / § 7.4.6: the same random access point drives the HLS
+            // availability replay (see RapReplayTracker), scoped to the OLK's own extended
+            // layer — random access initiates per extended layer.
+            self.rap_replay
+                .note_random_access_point(obu.header.extended_layer_id);
         } else if obu.header.obu_type == ObuType::RasFrame {
             // AV2 § 7.4.1: a RAS frame (OBU_RAS_FRAME) makes the temporal unit a random
             // access point. It is not a § 7.3.6 sequential-decoding CVS boundary, so it
             // touches only the § 7.3.8.2 identity tracker and § 7.3.8.1 replay tracker
-            // here.
+            // here. The replay anchor is scoped to the RAS frame's own extended layer
+            // (§ 7.4.6: random access initiates per extended layer).
             self.msdo_identity.note_random_access_point();
-            self.rap_replay.note_random_access_point();
+            self.rap_replay
+                .note_random_access_point(obu.header.extended_layer_id);
         }
     }
 
@@ -4337,18 +4517,20 @@ impl ValidatorContext {
     }
 
     /// Buffers a linearly-resolved § 7.3.8.1 HLS reference for the random-access-point
-    /// availability replay, stamping it with the current temporal-unit index (resolved at
-    /// temporal-unit completion; see [`RapReplayTracker`]). The caller buffers only
-    /// references whose object was available in-band at reference time and not suppressed
-    /// by external HLS, keeping the replay predicate disjoint from the linear
-    /// `hls/unavailable-*` checks.
-    fn note_rap_reference(&mut self, key: RapHlsKey, offset: ByteOffset) {
-        self.rap_replay
-            .note_reference(key, self.cvs.tu_index, offset);
+    /// availability replay, governed by the referencing OBU's extended layer `xlayer`
+    /// (resolved at temporal-unit completion; see [`RapReplayTracker`]). § 7.4 random
+    /// access initiates per extended layer (§ 7.4.6), so a reference answers to its own
+    /// layer's most recent random access point (a [`GLOBAL_XLAYER_ID`] reference answers
+    /// to the global anchor). The caller buffers only references whose object was available
+    /// in-band at reference time and not suppressed by external HLS, keeping the replay
+    /// predicate disjoint from the linear `hls/unavailable-*` checks.
+    fn note_rap_reference(&mut self, key: RapHlsKey, xlayer: ExtendedLayerId, offset: ByteOffset) {
+        self.rap_replay.note_reference(key, xlayer, offset);
     }
 
     /// Buffers a frame-bearing OBU's in-band-resolved § 7.3.8.1 HLS references for the
-    /// random-access-point availability replay (AV2 § 7.3.8.6 / § 7.3.8.7).
+    /// random-access-point availability replay (AV2 § 7.3.8.6 / § 7.3.8.7), governed by
+    /// the frame's extended layer `xlayer`.
     ///
     /// `resolved` is the in-band sequence-header id the frame activates (`None` when the
     /// reference was out of range, external, or unavailable — those cases are owned by the
@@ -4359,16 +4541,25 @@ impl ValidatorContext {
         &mut self,
         prefix: &FrameHeaderPrefix,
         resolved: Option<SequenceHeaderId>,
+        xlayer: ExtendedLayerId,
         offset: ByteOffset,
     ) {
         if !prefix.cur_mfh_id.is_zero()
             && prefix.cur_mfh_id.in_range()
             && self.hls.multi_frame_header(prefix.cur_mfh_id).is_some()
         {
-            self.note_rap_reference(RapHlsKey::MultiFrameHeader(prefix.cur_mfh_id.get()), offset);
+            self.note_rap_reference(
+                RapHlsKey::MultiFrameHeader(prefix.cur_mfh_id.get()),
+                xlayer,
+                offset,
+            );
         }
         if let Some(seq_id) = resolved {
-            self.note_rap_reference(RapHlsKey::SequenceHeader(u32::from(seq_id.get())), offset);
+            self.note_rap_reference(
+                RapHlsKey::SequenceHeader(u32::from(seq_id.get())),
+                xlayer,
+                offset,
+            );
         }
     }
 
@@ -4376,19 +4567,29 @@ impl ValidatorContext {
     /// just-completed temporal unit `completed_tu_index` and emits any replay
     /// diagnostics, gated on the partial-declaration external-HLS suppression policy.
     ///
-    /// **External-HLS suppression (PR #49 policy).** § 7.3.8.1's external-means escape —
-    /// "When HLS OBUs are provided through external means, they remain available to the
-    /// decoding process until superseded" — means an externally-provided object need not
-    /// be resent at a random access point. Under any `ExternalHlsMode::Provided`, the
-    /// suppression follows the documented partial-declaration policy: the externally-
-    /// *declarable* kinds (sequence headers, operating point sets) could be the active
-    /// one supplied out of band, and the kinds the set cannot express (multi-frame
-    /// headers, LCRs, atlas) MAY still exist externally — both reasons suppress the replay
-    /// check. So *any* Provided mode suppresses the whole replay (the conservative, zero-
-    /// false-positive choice the policy doc prescribes when in doubt); only the default
-    /// `Disabled` mode, where the caller asserts no external provision, lets the replay
-    /// fire. The pending references for the unit are still drained so the per-unit working
-    /// state resets cleanly.
+    /// **External-HLS suppression (PR #49 policy, refined per-key — finding 3).**
+    /// § 7.3.8.1's external-means escape — "When HLS OBUs are provided through external
+    /// means, they remain available to the decoding process until superseded" — means an
+    /// externally-provided object need not be resent at a random access point. The
+    /// suppression under `ExternalHlsMode::Provided` is *per referenced key*, because
+    /// [`ExternalHlsSet`] is authoritative for the kinds it can express:
+    ///
+    /// - For an externally-*declarable* kind — sequence headers
+    ///   ([`ExternalHlsSet::with_sequence_header_id`]) and operating point sets
+    ///   ([`ExternalHlsSet::with_operating_point_set`]) — the replay is suppressed only
+    ///   when the *exact* referenced key is declared external. The caller's declaration is
+    ///   authoritative for these kinds: a Provided set that does NOT list this
+    ///   `seq_header_id` (resp. `(obu_xlayer_id, ops_id)`) is asserting it is not external,
+    ///   so an in-band-only object dangling at a random access point still fires.
+    /// - For a kind the set *cannot* express — multi-frame headers, LCRs, atlas segments —
+    ///   any Provided mode keeps the blanket suppression: such an OBU MAY exist externally
+    ///   unenumerated (`ExternalHlsMode::Provided` is a *partial* declaration), so firing
+    ///   could be a false positive (zero-false-positive principle, AGENTS.md § 7).
+    ///
+    /// The default `Disabled` mode (the caller asserts no external provision) lets every
+    /// replay fire. The pending references for the unit are always drained inside
+    /// [`RapReplayTracker::complete_temporal_unit`], so the per-unit working state resets
+    /// cleanly regardless of suppression.
     fn complete_rap_replay_tu(
         &mut self,
         completed_tu_index: u64,
@@ -4396,10 +4597,10 @@ impl ValidatorContext {
         report: &mut ValidationReport,
     ) {
         let diagnostics = self.rap_replay.complete_temporal_unit(completed_tu_index);
-        if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
-            return;
-        }
-        for diagnostic in diagnostics {
+        for (key, diagnostic) in diagnostics {
+            if rap_replay_suppressed_by_external_hls(key, &options.external_hls) {
+                continue;
+            }
             report.push(diagnostic);
         }
     }
@@ -4853,7 +5054,7 @@ impl ValidatorContext {
         // `cur_mfh_id > 0` that resolves to an in-band multi-frame header is the frame's
         // § 7.3.8.7 MFH reference. The resolution captures each object's qualifying-resend
         // snapshot as of this reference (intra-temporal-unit order).
-        self.note_frame_rap_references(&prefix, resolved, obu.offset);
+        self.note_frame_rap_references(&prefix, resolved, obu.header.extended_layer_id, obu.offset);
 
         // AV2 § 5.18.2: frame_header_info() calls load_sequence_header() for EVERY
         // frame (both cur_mfh_id == 0 and cur_mfh_id > 0), before the `if (keyFrame)`
@@ -6524,13 +6725,19 @@ impl ValidatorContext {
             // external HLS did not suppress) — buffer the § 7.3.8.6 sequence-header
             // reference this MFH makes (a MFH at a random access point references a
             // sequence header that must itself be available at that point).
-            self.rap_replay
-                .note_resend(RapHlsKey::MultiFrameHeader(mfh_id_value));
+            self.rap_replay.note_resend(
+                RapHlsKey::MultiFrameHeader(mfh_id_value),
+                obu.header.extended_layer_id,
+            );
             if matches!(
                 self.hls.resolve_sequence_header(id, options),
                 HlsResolution::InBand
             ) {
-                self.note_rap_reference(RapHlsKey::SequenceHeader(id), obu.offset);
+                self.note_rap_reference(
+                    RapHlsKey::SequenceHeader(id),
+                    obu.header.extended_layer_id,
+                    obu.offset,
+                );
             }
         }
     }
@@ -6583,6 +6790,17 @@ impl ValidatorContext {
                 // local-LCR and sequence-header references.
                 self.hls
                     .record_global_lcr(info.global_config_record_id, info.xlayer_map);
+                // AV2 § 7.3.8.1: note this global LCR's in-band (re)send (global extended
+                // layer) for the random-access-point availability replay, so a local LCR's
+                // lcr_global_id or a sequence header's seq_lcr_id referencing it at a
+                // random access point must find it resent there.
+                self.rap_replay.note_resend(
+                    RapHlsKey::LayerConfigurationRecord {
+                        xlayer: GLOBAL_XLAYER_ID.get(),
+                        id: info.global_config_record_id,
+                    },
+                    obu.header.extended_layer_id,
+                );
                 // AV2 § 6.8.2: keep the full aggregate / per-substream PTL / DOH fields of
                 // this global LCR (keyed by id, redefinition overwrites) so the
                 // MSDO↔global-LCR agreement can read whichever record the association chain
@@ -6679,48 +6897,82 @@ impl ValidatorContext {
                 self.annex_a_iop.note_local_lcr();
                 // AV2 § 7.3.8.3: a local LCR's lcr_global_id (when non-zero) must
                 // resolve to an available global LCR.
-                if info.global_id != 0
-                    && self.hls.global_lcr_xlayer_map(info.global_id).is_none()
-                    && external_disabled
-                {
-                    report.push(
-                        Diagnostic::error(
-                            "lcr/global-lcr-unavailable",
-                            format!(
-                                "local layer configuration record for obu_xlayer_id {} references \
-                                 lcr_global_id {}, but no global layer configuration record with \
-                                 that id is available in-band (external HLS is disabled)",
-                                xlayer.get(),
-                                info.global_id
-                            ),
-                        )
-                        .with_spec_section("7.3.8.3")
-                        .with_byte_offset(obu.offset),
-                    );
+                if info.global_id != 0 {
+                    if self.hls.global_lcr_xlayer_map(info.global_id).is_some() {
+                        // Resolved in-band (linear check did not fire) -> buffer the
+                        // § 7.3.8.3 reference for the random-access-point availability
+                        // replay, governed by this local LCR's own extended layer.
+                        self.note_rap_reference(
+                            RapHlsKey::LayerConfigurationRecord {
+                                xlayer: GLOBAL_XLAYER_ID.get(),
+                                id: info.global_id,
+                            },
+                            xlayer,
+                            obu.offset,
+                        );
+                    } else if external_disabled {
+                        report.push(
+                            Diagnostic::error(
+                                "lcr/global-lcr-unavailable",
+                                format!(
+                                    "local layer configuration record for obu_xlayer_id {} \
+                                     references lcr_global_id {}, but no global layer \
+                                     configuration record with that id is available in-band \
+                                     (external HLS is disabled)",
+                                    xlayer.get(),
+                                    info.global_id
+                                ),
+                            )
+                            .with_spec_section("7.3.8.3")
+                            .with_byte_offset(obu.offset),
+                        );
+                    }
                 }
                 // AV2 § 7.3.8.4: a local LCR's lcr_local_atlas_id must resolve to an
                 // available local atlas segment OBU in the same extended layer.
-                if let Some(atlas_id) = info.local_atlas_id
-                    && !self.hls.has_local_atlas(xlayer, atlas_id)
-                    && external_disabled
-                {
-                    report.push(
-                        Diagnostic::error(
-                            "atlas/local-atlas-unavailable",
-                            format!(
-                                "local layer configuration record for obu_xlayer_id {} references \
-                                 lcr_local_atlas_id {}, but no local atlas segment OBU with that id \
-                                 is available in-band for that extended layer (external HLS is \
-                                 disabled)",
-                                xlayer.get(),
-                                atlas_id
-                            ),
-                        )
-                        .with_spec_section("7.3.8.4")
-                        .with_byte_offset(obu.offset),
-                    );
+                if let Some(atlas_id) = info.local_atlas_id {
+                    if self.hls.has_local_atlas(xlayer, atlas_id) {
+                        // Resolved in-band (linear check did not fire) -> buffer the
+                        // § 7.3.8.4 *local* atlas reference for the replay (a global atlas
+                        // "can be available" and is excluded, matching the linear check).
+                        self.note_rap_reference(
+                            RapHlsKey::Atlas {
+                                xlayer: xlayer.get(),
+                                id: atlas_id,
+                            },
+                            xlayer,
+                            obu.offset,
+                        );
+                    } else if external_disabled {
+                        report.push(
+                            Diagnostic::error(
+                                "atlas/local-atlas-unavailable",
+                                format!(
+                                    "local layer configuration record for obu_xlayer_id {} \
+                                     references lcr_local_atlas_id {}, but no local atlas segment \
+                                     OBU with that id is available in-band for that extended layer \
+                                     (external HLS is disabled)",
+                                    xlayer.get(),
+                                    atlas_id
+                                ),
+                            )
+                            .with_spec_section("7.3.8.4")
+                            .with_byte_offset(obu.offset),
+                        );
+                    }
                 }
                 self.hls.record_local_lcr(xlayer, info.local_id);
+                // AV2 § 7.3.8.1: note this local LCR's in-band (re)send (its own extended
+                // layer) for the random-access-point availability replay, so a sequence
+                // header's seq_lcr_id resolving to it at a random access point must find it
+                // resent there.
+                self.rap_replay.note_resend(
+                    RapHlsKey::LayerConfigurationRecord {
+                        xlayer: xlayer.get(),
+                        id: info.local_id,
+                    },
+                    xlayer,
+                );
                 // AV2 § 6.8.9: retain the embedded-layer maps for the dependency-map
                 // agreement checks. A redefinition replaces the maps wholesale so a
                 // re-sent record without embedded info cannot leave stale entries.
@@ -6807,6 +7059,17 @@ impl ValidatorContext {
         let xlayer = obu.header.extended_layer_id;
         if !xlayer.is_global() {
             self.hls.record_local_atlas(xlayer, atlas.atlas_segment_id);
+            // AV2 § 7.3.8.1: note this *local* atlas segment's in-band (re)send (its own
+            // extended layer) for the random-access-point availability replay, so a local
+            // LCR's lcr_local_atlas_id referencing it at a random access point must find it
+            // resent there. A global atlas is excluded (§ 7.3.8.4 "can be available").
+            self.rap_replay.note_resend(
+                RapHlsKey::Atlas {
+                    xlayer: xlayer.get(),
+                    id: atlas.atlas_segment_id,
+                },
+                xlayer,
+            );
         }
     }
 
@@ -6879,10 +7142,13 @@ impl ValidatorContext {
         // (`ops_cnt > 0`); a pure reset (`ops_cnt == 0`) makes no OPS available, so it is
         // not a qualifying resend.
         if defines {
-            self.rap_replay.note_resend(RapHlsKey::OperatingPointSet {
-                xlayer: ops.xlayer_id.get(),
-                ops_id: ops.ops_id,
-            });
+            self.rap_replay.note_resend(
+                RapHlsKey::OperatingPointSet {
+                    xlayer: ops.xlayer_id.get(),
+                    ops_id: ops.ops_id,
+                },
+                obu.header.extended_layer_id,
+            );
         }
     }
 
@@ -9982,6 +10248,7 @@ impl ValidatorContext {
                         xlayer: xlayer.get(),
                         ops_id: br_ops_id,
                     },
+                    xlayer,
                     obu.offset,
                 );
                 if br_ops_cnt != record_ops_cnt {
@@ -10111,6 +10378,35 @@ impl ValidatorContext {
         }
     }
 
+    /// Buffers a sequence header's `seq_lcr_id` § 7.3.8.3 reference for the random-access-
+    /// point availability replay, but only when it resolved to an in-band LCR (so the
+    /// linear § 7.3.8.3 availability check did not fire — keeping the replay predicate
+    /// disjoint). Mirrors [`Self::check_seq_lcr_reference`]'s § 6.4.1 resolution order
+    /// (local LCR in this extended layer first, then global LCR). The reference is governed
+    /// by the sequence header's own extended layer.
+    fn note_seq_lcr_rap_reference(&mut self, obu: &ObuEnvelope<'_>, seq_lcr_id: u8) {
+        if seq_lcr_id == 0 {
+            return;
+        }
+        let xlayer = obu.header.extended_layer_id;
+        let key = if self.hls.has_local_lcr(xlayer, seq_lcr_id) {
+            RapHlsKey::LayerConfigurationRecord {
+                xlayer: xlayer.get(),
+                id: seq_lcr_id,
+            }
+        } else if self.hls.global_lcr_xlayer_map(seq_lcr_id).is_some() {
+            RapHlsKey::LayerConfigurationRecord {
+                xlayer: GLOBAL_XLAYER_ID.get(),
+                id: seq_lcr_id,
+            }
+        } else {
+            // Unresolved in-band: the linear `hls/unavailable-layer-configuration-record`
+            // check owns this; do not replay (disjointness).
+            return;
+        };
+        self.note_rap_reference(key, xlayer, obu.offset);
+    }
+
     fn observe_sequence_header(
         &mut self,
         obu: &ObuEnvelope<'_>,
@@ -10154,17 +10450,25 @@ impl ValidatorContext {
         // references.
         self.hls
             .record_sequence_header(u32::from(general.seq_header_id.get()));
-        // AV2 § 7.3.8.1: note this in-band (re)send for the random-access-point
-        // availability replay (resolved at temporal-unit completion).
-        self.rap_replay
-            .note_resend(RapHlsKey::SequenceHeader(u32::from(
-                general.seq_header_id.get(),
-            )));
+        // AV2 § 7.3.8.1: note this in-band (re)send (by the sequence header's own extended
+        // layer) for the random-access-point availability replay (resolved at temporal-unit
+        // completion). The seq_header_id namespace is global (§ 7.3.8.6), so availability is
+        // object-keyed; the sending layer drives only the resend's leading / random-access
+        // qualification.
+        self.rap_replay.note_resend(
+            RapHlsKey::SequenceHeader(u32::from(general.seq_header_id.get())),
+            obu.header.extended_layer_id,
+        );
 
         // AV2 § 6.4.1 / § 7.3.8.3 / § 7.3.8.6: when seq_lcr_id != 0, the referenced
         // layer configuration record must be available (local-then-global resolution),
         // and a referenced global LCR must include this header's xlayer in its map.
         self.check_seq_lcr_reference(obu, general.seq_lcr_id.get(), options, report);
+        // AV2 § 7.3.8.1: when seq_lcr_id resolved to an in-band LCR (the linear
+        // § 7.3.8.3 availability check above did not fire), buffer that § 7.3.8.3
+        // reference for the random-access-point availability replay, governed by this
+        // sequence header's own extended layer.
+        self.note_seq_lcr_rap_reference(obu, general.seq_lcr_id.get());
 
         let seq_header_id = general.seq_header_id;
         let xlayer = obu.header.extended_layer_id;
