@@ -45,7 +45,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.4.13](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-13) | Sequence decoder model info syntax | `AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-5) | Temporal delimiter OBU syntax | `AV2-5.5-TEMPORAL-DELIMITER` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 5.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-6) | Multi Stream Decoder Operation OBU syntax | `AV2-5.6-MSDO` | ✅ | ✅ | 🟡 | ✅ | 9 |
-| [§ 5.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-7) | Multi frame header OBU syntax | `AV2-5.7-MULTI-FRAME-HEADER` | ✅ | ✅ | 🟡 | ✅ | 6 |
+| [§ 5.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-7) | Multi frame header OBU syntax | `AV2-5.7-MULTI-FRAME-HEADER` | ✅ | ✅ | 🟡 | ✅ | 7 |
 | [§ 5.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8) | Layer config record OBU syntax | `AV2-5.8-LAYER-CONFIG-RECORD` | ✅ | ✅ | 🟡 | ✅ | 11 |
 | [§ 5.8.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-1) | LCR global info syntax | `AV2-5.8.1-LCR-GLOBAL-INFO` | ✅ | ✅ | 🟡 | ✅ | 6 |
 | [§ 5.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-2) | LCR local info syntax | `AV2-5.8.2-LCR-LOCAL-INFO` | ✅ | ✅ | ✅ | ✅ | 2 |
@@ -139,7 +139,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.4.13](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-13) | Sequence decoder model info semantics | `AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.5](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-5) | Temporal delimiter OBU semantics | `AV2-5.5-TEMPORAL-DELIMITER` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 6.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-6) | Multi Stream Decoder Operation OBU semantics | `AV2-5.6-MSDO` | ✅ | ✅ | 🟡 | ✅ | 9 |
-| [§ 6.7](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-7) | Multi frame header OBU semantics | `AV2-5.7-MULTI-FRAME-HEADER` | ✅ | ✅ | 🟡 | ✅ | 6 |
+| [§ 6.7](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-7) | Multi frame header OBU semantics | `AV2-5.7-MULTI-FRAME-HEADER` | ✅ | ✅ | 🟡 | ✅ | 7 |
 | [§ 6.8](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8) | Layer config record OBU semantics | `AV2-5.8-LAYER-CONFIG-RECORD` | ✅ | ✅ | 🟡 | ✅ | 11 |
 | [§ 6.8.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-2) | LCR global info semantics | `AV2-5.8.1-LCR-GLOBAL-INFO` | ✅ | ✅ | 🟡 | ✅ | 6 |
 | [§ 6.8.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-3) | LCR local info semantics | `AV2-5.8.2-LCR-LOCAL-INFO` | ✅ | ✅ | ✅ | ✅ | 2 |
@@ -213,7 +213,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.3.6](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-6) | Coded extended layer unit | `AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT` | ✅ | — | 🟡 | ✅ | 3 |
 | [§ 7.3.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-7) | Temporal unit | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | ✅ | ✅ | 🟡 | ✅ | 3 |
 | [§ 7.3.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-8) | Availability of high level syntax OBUs | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` | ✅ | ✅ | 🟡 | ✅ | 3 |
-| [§ 7.3.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-8) | Availability of high level syntax OBUs | `AV2-7.3.8-HLS-AVAILABILITY` | ✅ | ✅ | 🟡 | ✅ | 13 |
+| [§ 7.3.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-8) | Availability of high level syntax OBUs | `AV2-7.3.8-HLS-AVAILABILITY` | ✅ | ✅ | 🟡 | ✅ | 14 |
 | [§ 7.3.9](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-9) | Availability of long-term reference frames | `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | ✅ | — |  |  | — |
 
 ## Chapter 9 — Additional tables

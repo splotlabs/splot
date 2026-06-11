@@ -153,6 +153,7 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 | `hls/external-hls-disabled` | warning | § 7.3.8.1 | a referenced sequence header is unavailable in-band and external HLS is disabled (advisory) |
 | `hls/multiple-active-sequence-headers` | error | § 7.3.6 | a frame-confirmed activation of a different seq_header_id follows an earlier frame-confirmed activation within the same coded video sequence (no intervening CLK) |
 | `hls/repeated-sequence-header-not-identical` | error | § 7.3.6 | activated sequence header is repeated within CVS with different payload bytes |
+| `hls/unavailable-at-random-access-point` | error | § 7.3.8.1 | a linearly-available HLS OBU (sequence header, multi-frame header, or operating point set) referenced at or after a § 7.4.1 random access point was not (re)sent in or after that point's temporal unit, so it is unavailable on real random access (replay; suppressed under external-HLS Provided) |
 | `hls/unavailable-layer-configuration-record` | error | § 7.3.8.3 | seq_lcr_id resolves to no available local or global LCR (external disabled) |
 | `hls/unavailable-multi-frame-header` | error | § 7.3.8.7 | frame header references a cur_mfh_id with no available multi-frame header (external HLS disabled) |
 | `hls/unavailable-sequence-header` | error | § 7.3.8.6 | frame header references a sequence header id that is unavailable |

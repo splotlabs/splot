@@ -2505,6 +2505,253 @@ mod tests {
         );
     }
 
+    // --- § 7.3.8.1 random-access-point HLS availability replay ---
+
+    // 0x18 = OBU_LEADING_TILE_GROUP (type 6), no extension, tlayer 0.
+    const LEADING_TILE_GROUP_HEADER: u8 = 0x18;
+    // 0x1C = OBU_REGULAR_TILE_GROUP (type 7), no extension, tlayer 0.
+    const REGULAR_TILE_GROUP_HEADER: u8 = 0x1C;
+
+    /// A global temporal delimiter followed by a sequence header with `seq_header_id`
+    /// for xlayer 0 (no embedded/temporal layering).
+    fn td_and_seq(seq_header_id: u32) -> Vec<u8> {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_with_id(seq_header_id, 1, 1),
+        ));
+        data
+    }
+
+    /// A bare sequence header OBU with `seq_header_id` for xlayer 0 (a resend within an
+    /// already-open temporal unit).
+    fn seq_obu(seq_header_id: u32) -> Vec<u8> {
+        annex_b_obu(0x04, &sequence_header_payload_with_id(seq_header_id, 1, 1))
+    }
+
+    const RAP_RULE: &str = "hls/unavailable-at-random-access-point";
+
+    #[test]
+    fn rap_replay_sequence_header_only_before_rap_is_flagged() {
+        // TU0: seq(3) sent. TU1: CLK references seq(3) but it is not resent in the CLK's
+        // temporal unit -> the random access point at TU1 cannot supply it (§ 7.3.8.1).
+        let mut data = td_and_seq(3);
+        data.extend(temporal_delimiter_obu());
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 3));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == RAP_RULE && d.spec_section.as_deref() == Some("7.3.8.1")),
+            "report was: {report}"
+        );
+        // Disjoint from the linear check: the sequence header IS linearly available.
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "hls/unavailable-sequence-header"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn rap_replay_resend_in_rap_temporal_unit_passes() {
+        // TU0: seq(3). TU1: seq(3) resent before the CLK, then CLK references seq(3).
+        let mut data = td_and_seq(3);
+        data.extend(temporal_delimiter_obu());
+        data.extend(seq_obu(3)); // resent in the random access point's temporal unit
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 3));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report.errors().any(|d| d.rule_id == RAP_RULE),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn rap_replay_olk_random_access_point_is_flagged() {
+        // An OLK is also a § 7.4.1 random access point.
+        let mut data = td_and_seq(3);
+        data.extend(temporal_delimiter_obu());
+        data.extend(frame_obu_direct_seq_ref(OLK_HEADER, 3));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| d.rule_id == RAP_RULE),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn rap_replay_ras_random_access_point_is_flagged() {
+        // A RAS frame is also a § 7.4.1 random access point.
+        let mut data = td_and_seq(3);
+        data.extend(temporal_delimiter_obu());
+        data.extend(frame_obu_direct_seq_ref(RAS_HEADER, 3));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| d.rule_id == RAP_RULE),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn rap_replay_resend_after_reference_in_same_temporal_unit_is_flagged() {
+        // § 7.3.8.1 "available ... prior to being referenced": a resend that follows the
+        // referencing frame in the same random access point temporal unit does not
+        // satisfy availability (matching the linear checks' intra-temporal-unit order).
+        let mut data = td_and_seq(3);
+        data.extend(temporal_delimiter_obu());
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 3)); // reference precedes the resend
+        data.extend(seq_obu(3));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| d.rule_id == RAP_RULE),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn rap_replay_no_random_access_point_does_not_fire() {
+        // No CLK/OLK/RAS anywhere -> no random access point governs the references, so a
+        // sequence header sent once and referenced by a regular tile group is fine.
+        let mut data = td_and_seq(3);
+        data.extend(temporal_delimiter_obu());
+        data.extend(frame_obu_direct_seq_ref(REGULAR_TILE_GROUP_HEADER, 3));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report.errors().any(|d| d.rule_id == RAP_RULE),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn rap_replay_leading_temporal_unit_resend_does_not_qualify() {
+        // TU0: seq(3), seq(7). TU1: CLK ref seq(3) + seq(3) resent (the random access
+        // point passes for seq 3). TU2: a LEADING tile group resends seq(7) (a resend in
+        // a temporal unit that drops under random access). TU3: a regular tile group
+        // references seq(7) -> seq(7) had no qualifying resend in or after the random
+        // access point at TU1, so the replay fires.
+        let mut data = td_and_seq(3);
+        data.extend(seq_obu(7));
+        // TU1: random access point that resends seq(3).
+        data.extend(temporal_delimiter_obu());
+        data.extend(seq_obu(3));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 3));
+        // TU2: leading temporal unit that resends seq(7) (does not qualify).
+        data.extend(temporal_delimiter_obu());
+        data.extend(seq_obu(7));
+        data.extend(frame_obu_direct_seq_ref(LEADING_TILE_GROUP_HEADER, 7));
+        // TU3: a non-leading reference to seq(7).
+        data.extend(temporal_delimiter_obu());
+        data.extend(frame_obu_direct_seq_ref(REGULAR_TILE_GROUP_HEADER, 7));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| d.rule_id == RAP_RULE),
+            "report was: {report}"
+        );
+        // seq(3)'s random-access reference (the CLK) was satisfied by its resend.
+        assert!(
+            report
+                .errors()
+                .filter(|d| d.rule_id == RAP_RULE)
+                .all(|d| d.message.contains("seq_header_id 7")),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn rap_replay_non_leading_resend_after_rap_qualifies() {
+        // Same shape as the leading-temporal-unit test, but TU2's resend of seq(7) is in
+        // a REGULAR (non-leading) tile group, so it qualifies and TU3's reference passes.
+        let mut data = td_and_seq(3);
+        data.extend(seq_obu(7));
+        data.extend(temporal_delimiter_obu());
+        data.extend(seq_obu(3));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 3));
+        // TU2: non-leading resend of seq(7).
+        data.extend(temporal_delimiter_obu());
+        data.extend(seq_obu(7));
+        data.extend(frame_obu_direct_seq_ref(REGULAR_TILE_GROUP_HEADER, 7));
+        // TU3: reference seq(7) -> now qualifies.
+        data.extend(temporal_delimiter_obu());
+        data.extend(frame_obu_direct_seq_ref(REGULAR_TILE_GROUP_HEADER, 7));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report.errors().any(|d| d.rule_id == RAP_RULE),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn rap_replay_deduplicates_per_object_per_random_access_point() {
+        // Two frames in/after one random access point both reference the same dangling
+        // sequence header -> one finding per (object, random access point).
+        let mut data = td_and_seq(3);
+        data.extend(temporal_delimiter_obu());
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 3)); // RAP frame
+        data.extend(frame_obu_direct_seq_ref(REGULAR_TILE_GROUP_HEADER, 3)); // same TU, same object
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            report.errors().filter(|d| d.rule_id == RAP_RULE).count(),
+            1,
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn rap_replay_distinct_random_access_points_each_report() {
+        // The same dangling object referenced at two distinct random access points fires
+        // once per random access point.
+        let mut data = td_and_seq(3);
+        data.extend(temporal_delimiter_obu());
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 3)); // RAP #1
+        data.extend(temporal_delimiter_obu());
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 3)); // RAP #2
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            report.errors().filter(|d| d.rule_id == RAP_RULE).count(),
+            2,
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn rap_replay_suppressed_under_external_hls_provided() {
+        // Under any external-HLS Provided mode the replay is suppressed (the external
+        // means escape / partial-declaration policy).
+        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+        let mut data = td_and_seq(3);
+        data.extend(temporal_delimiter_obu());
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 3));
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(
+                ExternalHlsSet::new().with_sequence_header_id(3),
+            ),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !report.errors().any(|d| d.rule_id == RAP_RULE),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn rap_replay_multi_frame_header_reference_before_rap_is_flagged() {
+        // TU0: seq(0) + MFH (mfhId 1). TU1: CLK references the MFH (cur_mfh_id 1), which
+        // is not resent in the random access point's temporal unit.
+        let mut data = td_and_seq(0);
+        data.extend(multi_frame_header_obu(0)); // mfhId 1 -> seq 0
+        data.extend(temporal_delimiter_obu());
+        data.extend(frame_obu_mfh_ref(CLK_HEADER, 1));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == RAP_RULE && d.message.contains("multi-frame header")),
+            "report was: {report}"
+        );
+    }
+
     #[test]
     fn frame_header_seq_header_id_out_of_range_is_not_double_reported() {
         let mut data = td_and_seq_header(0, 1, 1);
