@@ -1787,6 +1787,19 @@ struct ContentInterpretationRecord {
     /// Temporal unit ([`CvsTracker::tu_index`]) of this record's latest appearance,
     /// used by the exact § 7.3.6 CVS scoping (CLK pruning and deferral decisions).
     tu_index: u64,
+    /// Whether this record's latest appearance had its § 6.16.10 Table 6.18
+    /// scan-type CI-time recheck SUPPRESSED by the epoch-aware identical-CI dedup
+    /// guard (finding 1). A re-send whose scan-type-decisive content equalled the
+    /// pre-RAP record's is suppressed at CI-time (the lagging epoch cannot tell it
+    /// apart from an ordinary identical repeat); only such suppressed re-sends are
+    /// re-paired by [`ValidatorContext::repair_post_rap_ci_pairings`] at the CLK/OLK.
+    /// A re-send that CHANGED the decisive content already rechecked eagerly at
+    /// CI-time, so re-pairing it would duplicate the diagnostic.
+    scan_type_recheck_suppressed: bool,
+    /// The § 6.16.7 n_frames analogue of [`Self::scan_type_recheck_suppressed`]:
+    /// whether this record's latest appearance had its timecode n_frames CI-time
+    /// recheck suppressed by the epoch-aware identical-CI dedup guard (finding 1).
+    timecode_recheck_suppressed: bool,
 }
 
 /// The bitstream-derived embedded-layer association of one HDR CLL / MDCV
@@ -2356,13 +2369,37 @@ struct TimecodeCvsState {
 /// unit's § 7.3.6 CVS scope is resolved (see [`TimecodeCvsState::pending_inference`]).
 #[derive(Debug)]
 struct PendingTimecodeInference {
-    /// The carrying OBU's `obu_xlayer_id` of the omitting timecode: a CLK that starts
-    /// a new coded video sequence for this extended layer detaches the
-    /// earlier-temporal-unit seed and fires the diagnostic.
+    /// The carrying OBU's `obu_xlayer_id` of the omitting timecode ([`GLOBAL_XLAYER_ID`]
+    /// for a global OBU), the fallback CVS scope when the targeting is not derivable.
     xlayer: ExtendedLayerId,
+    /// The omitting timecode's § 6.16.3 layer targeting, when derivable from the
+    /// bitstream (finding 2). The deferred diagnostic fires only when a CLK restarts the
+    /// coded video sequence of a layer this timecode actually targets — mirroring
+    /// [`TimecodeObservation::belongs_to_cvs_of`] — so a global `LAYER_VALUES` timecode
+    /// aimed at one extended layer is left pending by an unrelated layer's CLK rather
+    /// than firing on every CLK. `None` falls back to the carrying `obu_xlayer_id`
+    /// scope (a global carrying scope touching every layer, the documented any-CLK
+    /// approximation).
+    targeting: Option<HdrAssociation>,
     /// The inference-without-previous diagnostic to emit if the seed turns out to
     /// belong to the ending coded video sequence.
     diagnostic: Diagnostic,
+}
+
+impl PendingTimecodeInference {
+    /// Whether a § 7.3.6 CVS restart for extended layer `xlayer` detaches this
+    /// deferred timecode's earlier-temporal-unit inference seed — the same
+    /// target-aware test as [`TimecodeObservation::belongs_to_cvs_of`] (finding 2). A
+    /// derivable targeting decides it exactly (the layers the timecode describes); an
+    /// underivable targeting falls back to the carrying `obu_xlayer_id` scope, with a
+    /// global carrying scope touching every layer (the documented harmless any-CLK
+    /// approximation, matching the eager-fire path of [`Self`] for a missing seed).
+    fn belongs_to_cvs_of(&self, xlayer: ExtendedLayerId) -> bool {
+        match &self.targeting {
+            Some(association) => association.touches_xlayer(xlayer),
+            None => self.xlayer.is_global() || self.xlayer == xlayer,
+        }
+    }
 }
 
 /// Whether each clock-timestamp field carried a *present* value in a
@@ -3917,22 +3954,31 @@ impl ValidatorContext {
 
     /// Re-pairs the § 6.16.7 n_frames bound and the § 6.16.10 Table 6.18 scan-type
     /// restrictions of the new coded video sequence's observations against the content
-    /// interpretation OBUs re-sent in this CLK's temporal unit (finding 1, the CLK side
-    /// of the epoch-aware dedup).
+    /// interpretation OBUs re-sent IDENTICALLY in this CLK's temporal unit (finding 1,
+    /// the CLK side of the epoch-aware dedup).
     ///
     /// A content interpretation re-sent in a § 7.3.8.11 random-access-point temporal
     /// unit re-establishes the parameters for the new coded video sequence (§ 7.3.8.11
-    /// step 2). When it repeats the pre-RAP content the epoch-aware dedup
+    /// step 2). When it repeats the pre-RAP content **identically** the epoch-aware dedup
     /// ([`Self::observe_content_interpretation`]) skipped its CI-time recheck — at
     /// CI-time the epoch had not advanced past the still-present pre-RAP record, so the
     /// re-sent CI could not be told apart from an ordinary identical repeat. By the time
     /// the CLK runs, [`Self::observe_ci_rap`] has advanced the epoch to this temporal
-    /// unit and dropped the stale pre-RAP pairings. Re-running the rechecks now pairs the
-    /// new epoch's observations (`tu_index >= epoch`, i.e. this temporal unit's
-    /// metadata, since the epoch filter inside the rechecks excludes the dropped
+    /// unit and dropped the stale pre-RAP pairings. Re-running the suppressed rechecks
+    /// now pairs the new epoch's observations (`tu_index >= epoch`, i.e. this temporal
+    /// unit's metadata, since the epoch filter inside the rechecks excludes the dropped
     /// previous-epoch observations) against the re-sent CI exactly once — the
     /// authoritative pairing, with no duplicate because the pre-RAP pairing was dropped
     /// rather than reported.
+    ///
+    /// The re-pair is filtered to the CIs whose CI-time recheck the dedup guard actually
+    /// SUPPRESSED — i.e. an identical re-send of the pre-RAP record (finding 1). A CI
+    /// re-sent in this RAP temporal unit with a CHANGED (different) decisive content
+    /// defeats the dedup guard and rechecked EAGERLY at CI-time, already reporting any
+    /// violation; re-pairing it here too would duplicate the diagnostic, so the
+    /// per-recheck `*_recheck_suppressed` flags exclude it. The scan-type and timecode
+    /// suppressions are filtered independently, since a re-send can change one decisive
+    /// content while leaving the other identical.
     ///
     /// Only the content interpretations re-sent IN this temporal unit (at/after the
     /// epoch) for the CLK's extended layer (or a global-keyed CI, which describes every
@@ -3946,12 +3992,17 @@ impl ValidatorContext {
         let epoch = self.ci_rap_epoch(clk_xlayer);
         // Snapshot the re-sent (post-epoch) CI records for this extended layer to avoid
         // holding the content_interpretations borrow across the rechecks (which mutate
-        // the deferral state). ContentInterpretation is Copy, so this is cheap.
+        // the deferral state). ContentInterpretation is Copy, so this is cheap. The
+        // two suppression flags select which recheck to replay (finding 1): only a
+        // recheck the dedup guard skipped at CI-time is re-paired here, so a re-send
+        // that changed the content (already rechecked eagerly) is not re-reported.
         let resent: Vec<(
             ExtendedLayerId,
             EmbeddedLayerId,
             ContentInterpretation,
             ByteOffset,
+            bool,
+            bool,
         )> = self
             .content_interpretations
             .iter()
@@ -3959,14 +4010,27 @@ impl ValidatorContext {
                 (*ci_xlayer == clk_xlayer || ci_xlayer.is_global()) && record.tu_index >= epoch
             })
             .map(|((ci_xlayer, ci_mlayer), record)| {
-                (*ci_xlayer, *ci_mlayer, record.content, record.offset)
+                (
+                    *ci_xlayer,
+                    *ci_mlayer,
+                    record.content,
+                    record.offset,
+                    record.scan_type_recheck_suppressed,
+                    record.timecode_recheck_suppressed,
+                )
             })
             .collect();
-        for (ci_xlayer, ci_mlayer, content, ci_offset) in resent {
-            self.recheck_scan_type_after_ci(ci_xlayer, ci_mlayer, &content, ci_offset, report);
-            self.recheck_timecode_n_frames_after_ci(
-                ci_xlayer, ci_mlayer, &content, ci_offset, report,
-            );
+        for (ci_xlayer, ci_mlayer, content, ci_offset, scan_suppressed, timecode_suppressed) in
+            resent
+        {
+            if scan_suppressed {
+                self.recheck_scan_type_after_ci(ci_xlayer, ci_mlayer, &content, ci_offset, report);
+            }
+            if timecode_suppressed {
+                self.recheck_timecode_n_frames_after_ci(
+                    ci_xlayer, ci_mlayer, &content, ci_offset, report,
+                );
+            }
         }
     }
 
@@ -4777,6 +4841,12 @@ impl ValidatorContext {
                 report,
             );
         }
+        // Finding 1 (CLK re-pair filter): record whether the scan-type recheck was
+        // SUPPRESSED here. Only a suppressed re-send (a pre-RAP-identical copy whose
+        // recheck the lagging epoch skipped) is re-paired at the CLK/OLK by
+        // repair_post_rap_ci_pairings; a re-send that CHANGED the decisive content
+        // rechecked eagerly just above, so re-pairing it would duplicate the diagnostic.
+        let scan_type_recheck_suppressed = decisive_content_unchanged;
 
         // AV2 § 6.16.7: a content interpretation establishing ci_timing_info_present_flag
         // / timing may arrive after the timecode metadata whose n_frames bound it
@@ -4813,6 +4883,12 @@ impl ValidatorContext {
                 report,
             );
         }
+        // Finding 1 (CLK re-pair filter, the n_frames analogue of
+        // `scan_type_recheck_suppressed`): a re-send whose timing CHANGED rechecked
+        // eagerly just above, so repair_post_rap_ci_pairings must NOT re-pair it (that
+        // would duplicate the diagnostic); only a suppressed identical re-send is
+        // re-paired at the CLK/OLK.
+        let timecode_recheck_suppressed = timing_unchanged;
 
         match self.content_interpretations.entry((xlayer, mlayer)) {
             Entry::Vacant(slot) => {
@@ -4820,6 +4896,8 @@ impl ValidatorContext {
                     content: content_interpretation,
                     offset: obu.offset,
                     tu_index,
+                    scan_type_recheck_suppressed,
+                    timecode_recheck_suppressed,
                 });
             }
             Entry::Occupied(mut slot) => {
@@ -4854,11 +4932,15 @@ impl ValidatorContext {
                 // coded video sequence *at the temporal unit*, so a copy re-sent in a
                 // CLK temporal unit must survive the CLK pruning as the new coded
                 // video sequence's baseline (a differing repeat also becomes the new
-                // baseline after being routed above).
+                // baseline after being routed above). The suppression flags carry
+                // whether THIS appearance's rechecks were skipped by the dedup guard
+                // (finding 1), so the CLK/OLK re-pair touches only an identical re-send.
                 slot.insert(ContentInterpretationRecord {
                     content: content_interpretation,
                     offset: obu.offset,
                     tu_index,
+                    scan_type_recheck_suppressed,
+                    timecode_recheck_suppressed,
                 });
             }
         }
@@ -5422,15 +5504,19 @@ impl ValidatorContext {
     /// Emits the deferred § 6.16.7 inference-presence diagnostics whose seed now
     /// belongs to an ending coded video sequence because a CLK started a new coded
     /// video sequence for `xlayer` at this temporal unit (§ 7.3.6). A pending entry
-    /// fires when its carrying `obu_xlayer_id` is exactly `xlayer` — § 7.3.6 CVS
+    /// fires when the CLK restarts the coded video sequence of a layer the omitting
+    /// timecode actually targets — the target-aware
+    /// [`PendingTimecodeInference::belongs_to_cvs_of`] test, mirroring the
+    /// observation pruning in [`Self::prune_timecode_scope`] (finding 2). § 7.3.6 CVS
     /// boundaries are per extended layer, so a CLK for one extended layer detaches the
-    /// seed of a timecode carried on that same concrete extended layer only (finding
-    /// 2/3) — OR when the pending entry was carried on a global OBU
-    /// ([`GLOBAL_XLAYER_ID`]): a global timecode spans every layer, so any CLK (always
-    /// for a concrete extended layer) restarts a coded video sequence the global
-    /// timecode participates in and detaches its earlier-temporal-unit seed. Survivors
-    /// are left for [`Self::drop_pending_timecode_inference`] at the temporal-unit
-    /// flush. See [`TimecodeCvsState::pending_inference`].
+    /// seed of a timecode carried on (or, for a global `LAYER_VALUES` timecode,
+    /// targeting) that extended layer only; a CLK for an UNRELATED extended layer
+    /// leaves a global timecode aimed at a different layer pending (pre-fix any global
+    /// carrying scope fired on every CLK, a false positive). A global timecode with no
+    /// derivable targeting keeps the documented any-CLK approximation (its
+    /// `obu_xlayer_id` is global). Survivors are left for
+    /// [`Self::drop_pending_timecode_inference`] at the temporal-unit flush. See
+    /// [`TimecodeCvsState::pending_inference`].
     fn emit_pending_timecode_inference(
         &mut self,
         xlayer: ExtendedLayerId,
@@ -5438,7 +5524,7 @@ impl ValidatorContext {
     ) {
         let mut retained = Vec::with_capacity(self.timecode.pending_inference.len());
         for entry in std::mem::take(&mut self.timecode.pending_inference) {
-            if entry.xlayer == xlayer || entry.xlayer.is_global() {
+            if entry.belongs_to_cvs_of(xlayer) {
                 report.push(entry.diagnostic);
             } else {
                 retained.push(entry);
@@ -5584,6 +5670,10 @@ impl ValidatorContext {
                     .pending_inference
                     .push(PendingTimecodeInference {
                         xlayer: scope_xlayer,
+                        // Carry the § 6.16.3 targeting so emit_pending_timecode_inference
+                        // fires only on a CLK for a layer this timecode targets (finding
+                        // 2), mirroring the n_frames observation's target-aware pruning.
+                        targeting: targeting.clone(),
                         diagnostic,
                     }),
             }
