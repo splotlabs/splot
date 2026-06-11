@@ -762,9 +762,21 @@ impl CodedExtendedLayerTracker {
             // already-counted coded frame unit. Transparent for the unit-count-dependent
             // judgments, but it still belongs to its (already-begun) embedded-layer frame unit,
             // so it participates in the ascending-mlayer ordering (F3): a continuation at a
-            // lower mlayer after a higher embedded layer's unit began is out of order.
+            // lower mlayer after a higher embedded layer's unit began is out of order. Like the
+            // Ambiguous arm below, the boundary-INDEPENDENT type-decided facts are still recorded
+            // before returning (round-5 F2): CLK/OLK identity and leading-ness are decided by
+            // `obu_type` alone, so a CELU containing a CLK and an OLK-typed continuation still
+            // mixes CLK+OLK, and a LEADING-/Regular-typed continuation still evidences a leading /
+            // regular frame unit — § 7.3.6 forbids both mixes regardless of unit structure. The
+            // segmenter reports ContinuesUnit for a non-first tile group of an already-open coded
+            // frame even when its `obu_type` differs (it also flags
+            // frame-unit/mixed-coded-frame-types), so these type-decided CELU mixes would
+            // otherwise be silently skipped. The unit-count-dependent accounting stays skipped (a
+            // continuation opens no new unit).
             FrameBoundary::ContinuesUnit => {
                 Self::note_embedded_layer_ordering(celu, embedded, obu, report);
+                Self::record_clk_olk_identity(celu, facts.obu_type, obu, report);
+                Self::record_leadingness(celu, facts.leadingness, obu, report);
                 return;
             }
             // The segmenter could not decide whether this OBU opened a new coded frame unit
@@ -2957,6 +2969,86 @@ mod tests {
             !has(&r, "celu/leading-frame-mix"),
             "an ambiguous CLK (indeterminate) must stay excluded from leading-frame-mix; \
              report: {r}"
+        );
+    }
+
+    // --- F2 (round-5): type-decided per-OBU facts recorded before the ContinuesUnit return ---
+
+    #[test]
+    fn clk_opener_then_olk_continuation_fires_clk_olk_mixed() {
+        // Round-5 F2: a CLK opener then an OLK reported as ContinuesUnit (a non-first
+        // tile group of an already-opened coded frame — the segmenter flags
+        // frame-unit/mixed-coded-frame-types and reports ContinuesUnit). CLK/OLK identity
+        // is a boundary-INDEPENDENT type-decided fact: the CELU contains both a CLK and an
+        // OLK whichever way the boundary resolves, so § 7.3.6 forbids the mix regardless of
+        // unit structure and clk-olk-mixed must FIRE. Pre-fix: the ContinuesUnit early-return
+        // skips recording the OLK identity, so the mix is missed (false negative).
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        t.observe(
+            &obu(ObuType::ClosedLoopKey, 0, 0, 0),
+            frame_role(
+                ObuType::ClosedLoopKey,
+                true,
+                Some(true),
+                Some(0),
+                Leadingness::Indeterminate,
+            ),
+            &mut r,
+        );
+        t.observe(
+            &obu(ObuType::OpenLoopKey, 0, 0, 1),
+            frame_role(
+                ObuType::OpenLoopKey,
+                false,
+                Some(true),
+                Some(0),
+                Leadingness::Indeterminate,
+            ),
+            &mut r,
+        );
+        assert!(
+            has(&r, "celu/clk-olk-mixed"),
+            "a CLK opener then an OLK ContinuesUnit continuation must fire clk-olk-mixed \
+             (type-decided identity, boundary-independent); report: {r}"
+        );
+    }
+
+    #[test]
+    fn leading_opener_then_regular_continuation_fires_leading_frame_mix() {
+        // Round-5 F2: a LEADING_* opener then a REGULAR-typed OBU reported as ContinuesUnit.
+        // Leading-ness is a boundary-INDEPENDENT type-decided fact (a LEADING/Regular-typed
+        // OBU evidences a leading/regular frame unit whichever unit it belongs to), so the
+        // all-leading-or-none mix rule must FIRE. Pre-fix: the ContinuesUnit early-return
+        // skips the leadingness accounting, so the mix is missed (false negative).
+        let mut t = fresh();
+        let mut r = ValidationReport::new();
+        t.observe(
+            &obu(ObuType::LeadingTileGroup, 0, 0, 0),
+            frame_role(
+                ObuType::LeadingTileGroup,
+                true,
+                Some(true),
+                Some(0),
+                Leadingness::Leading,
+            ),
+            &mut r,
+        );
+        t.observe(
+            &obu(ObuType::RegularTileGroup, 0, 0, 1),
+            frame_role(
+                ObuType::RegularTileGroup,
+                false,
+                Some(true),
+                Some(0),
+                Leadingness::Regular,
+            ),
+            &mut r,
+        );
+        assert!(
+            has(&r, "celu/leading-frame-mix"),
+            "a LEADING opener then a REGULAR-typed ContinuesUnit continuation must fire \
+             leading-frame-mix (type-decided leadingness, boundary-independent); report: {r}"
         );
     }
 }

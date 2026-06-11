@@ -4746,10 +4746,21 @@ impl ValidatorContext {
             // - `ContinuesUnit` is skipped: the unit's bits came from its opener;
             // - `Ambiguous` notes `None`: the OBU might open a unit whose bits are unknowable,
             //   so it soundly poisons (the Unknown invariant).
-            match facts.boundary {
-                FrameBoundary::OpensNewUnit => self.celu.note_order_hint_bits(bits, obu.offset),
-                FrameBoundary::ContinuesUnit => {}
-                FrameBoundary::Ambiguous => self.celu.note_order_hint_bits(None, obu.offset),
+            //
+            // Global frame-bearing OBUs (obu_xlayer_id == GLOBAL_XLAYER_ID) are excluded BEFORE
+            // the accumulator, mirroring the CELU tracker's non-global filter in
+            // [`CodedExtendedLayerTracker::observe`] (round-5 F3). Such an OBU is invalid (a
+            // frame-bearing OBU may not use the global xlayer — already diagnosed by
+            // `obu-header/global-xlayer-allowed-types`) and is not part of any coded extended
+            // layer unit (§ 7.3.6), so it never resolves an active sequence header and would
+            // feed a spurious `None` that poisons the § 7.3.7 same-OrderHintBits judgment for
+            // the valid CELUs in the temporal unit, suppressing a real bits mismatch.
+            if !obu.header.extended_layer_id.is_global() {
+                match facts.boundary {
+                    FrameBoundary::OpensNewUnit => self.celu.note_order_hint_bits(bits, obu.offset),
+                    FrameBoundary::ContinuesUnit => {}
+                    FrameBoundary::Ambiguous => self.celu.note_order_hint_bits(None, obu.offset),
+                }
             }
             CeluRole::Frame(facts)
         } else {
@@ -5028,13 +5039,55 @@ impl ValidatorContext {
     /// disjunction over the present sources — when neither source declares the constraint,
     /// the flag-gated checks stay silent.
     fn doh_constraint_flag_active(&self) -> bool {
+        self.doh_constraint_flag_active_in_window(self.cmvs.current_cmvs_start_tu_index())
+    }
+
+    /// Whether the § 7.3.7 / § 7.4.6 DOH constraints are active for the *just-completed*
+    /// temporal unit at a global-temporal-delimiter boundary (round-5 F1). Identical to
+    /// [`Self::doh_constraint_flag_active`], but resolves the LCR side against the GOVERNING
+    /// CMVS window of the completed unit rather than the live window the
+    /// [`CmvsTracker`](CmvsTracker) has just mutated.
+    ///
+    /// Per § 7.3.2 the completed unit is *contained* in whichever CMVS it belongs to:
+    ///
+    /// - When the unit BEGINS a new CMVS (begin condition 1, 2, or 3), it is the FIRST unit of
+    ///   the NEW CMVS, whose window the tracker has just opened at this unit's index — the live
+    ///   (post-completion) window `Some(start)`, used here.
+    /// - When the unit only CONTINUES the CMVS, the window is unchanged either way.
+    /// - When the unit ENDS the CMVS without beginning a new one (end condition 2 — a CLK with
+    ///   no MSDO, no activated global LCR — Closes the live window to `None`), it is the LAST
+    ///   unit of the ENDING CMVS, whose window was the pre-completion start. The live window is
+    ///   `None`, so this falls back to `cmvs_window_before_completion`.
+    ///
+    /// So the governing window is the post-completion window when it is `Some`, else the
+    /// pre-completion window — which is exactly the window of the CMVS that contains the
+    /// completed unit. The MSDO side is window-independent: `msdo_substream_max` is last-wins
+    /// live state that `complete_temporal_unit` does not clear, so it already reflects the MSDO
+    /// that governed the completed unit (it must remain the preceding MSDO regardless of the
+    /// LCR window).
+    fn doh_constraint_flag_active_for_completed_tu(
+        &self,
+        cmvs_window_before_completion: Option<u64>,
+    ) -> bool {
+        let governing_window = self
+            .cmvs
+            .current_cmvs_start_tu_index()
+            .or(cmvs_window_before_completion);
+        self.doh_constraint_flag_active_in_window(governing_window)
+    }
+
+    /// As [`Self::doh_constraint_flag_active`], but resolves the activated-global-LCR side
+    /// against an explicit CMVS-window start (`None` → no window → no activated global LCR).
+    /// The MSDO side is window-independent (the live last-wins preceding MSDO).
+    fn doh_constraint_flag_active_in_window(&self, cmvs_window_start: Option<u64>) -> bool {
         let msdo_flag = self
             .msdo_substream_max
             .as_ref()
             .is_some_and(|m| m.doh_constraint_flag);
-        let lcr_flag = self
-            .activated_global_lcr()
-            .is_some_and(|(_, record)| record.doh_constraint_flag);
+        let lcr_flag = cmvs_window_start.is_some_and(|cmvs_start| {
+            self.activated_global_lcr_in_window(cmvs_start)
+                .is_some_and(|(_, record)| record.doh_constraint_flag)
+        });
         msdo_flag || lcr_flag
     }
 
@@ -5107,6 +5160,16 @@ impl ValidatorContext {
             // `completed_tu_index` (captured before advance_temporal_unit) is the
             // just-completed temporal unit's index, which stamps the CMVS-window start
             // (§ 7.3.2 scoping).
+            //
+            // The CMVS-window start of the *just-completed* temporal unit, captured BEFORE
+            // `complete_temporal_unit` applies this unit's § 7.3.2 begin/end conditions and
+            // mutates the live window (round-5 F1). The § 7.3.7 DOH flag for the completed unit
+            // must be sampled against the CMVS that CONTAINS it: when this unit ENDS the CMVS
+            // (end condition 2 — a CLK with no MSDO, no activated global LCR), it is the LAST
+            // temporal unit of the ENDING CMVS, so its governing window is this pre-completion
+            // start — not the live window the tracker is about to clear (see
+            // [`Self::doh_constraint_flag_active_in_window`]).
+            let cmvs_window_before_completion = self.cmvs.current_cmvs_start_tu_index();
             self.cmvs.complete_temporal_unit(completed_tu_index, report);
             // AV2 § 6.6: now that the just-completed temporal unit's CMVS membership is
             // resolved, evaluate the deferred `msdo/doh-constraint-required` check for its
@@ -5149,9 +5212,14 @@ impl ValidatorContext {
             // the flag-gated DOH OrderHint / OrderHintBits checks, then clear the per-TU
             // CELU state. The DOH flag must be recorded from the *just-completed* temporal
             // unit's activated global LCR / preceding MSDO before resolution. Runs after the
-            // CMVS / activation resolution above so the activation chain is final.
-            self.celu
-                .set_doh_flag_active(self.doh_constraint_flag_active());
+            // CMVS / activation resolution above so the activation chain is final. The LCR side
+            // is sampled against the GOVERNING window of the completed unit (captured before
+            // `complete_temporal_unit` cleared the live window, round-5 F1), so a CLK boundary
+            // unit that ends the CMVS is still governed by the activated global LCR of the CMVS
+            // that contained it.
+            self.celu.set_doh_flag_active(
+                self.doh_constraint_flag_active_for_completed_tu(cmvs_window_before_completion),
+            );
             self.celu.reset_temporal_unit(report);
             // AV2 § 7.3.7: clear the per-temporal-unit distinct-`obu_mlayer_id` sets so a
             // CLK in the next temporal unit re-attributes only that temporal unit's ids

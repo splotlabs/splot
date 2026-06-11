@@ -18242,6 +18242,166 @@ mod tests {
         );
     }
 
+    // --- Round-5 F3: a global frame-bearing OBU must not poison the DOH bits accumulator -
+
+    /// A frame-bearing OBU (a CLK tile group) carried at `obu_xlayer_id == GLOBAL_XLAYER_ID`
+    /// (31). This is invalid (a CLK may not use the global xlayer — see
+    /// `obu-header/global-xlayer-allowed-types`), and global OBUs are not part of any CELU
+    /// (§ 7.3.6); the frame core never resolves an active sequence header for xlayer 31, so it
+    /// carries no decidable OrderHintBits. Its first-tile-group prefix opens a (would-be)
+    /// frame unit, so the segmenter reports an `OpensNewUnit`-class boundary feeding the DOH
+    /// accumulator a `None` contribution at the wiring seam before the CELU tracker's
+    /// non-global filter (round-5 F3).
+    fn celu_global_frame_obu() -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group -> opens a (would-be) frame unit
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(7); // seq_header_id_in_frame_header -> absent for xlayer 31 (never resolves)
+        annex_b_obu_with_header(&layer_obu_header(4, 0, 0, 31), &fb.into_bytes())
+    }
+
+    #[test]
+    fn celu_doh_global_frame_obu_does_not_poison_bits_accumulator() {
+        // Round-5 F3: a frame-bearing OBU at obu_xlayer_id == GLOBAL_XLAYER_ID (31) must not
+        // feed the § 7.3.7 OrderHintBits accumulator. Such an OBU is not part of any CELU
+        // (§ 7.3.6, the CELU tracker filters globals in `observe`), but the wiring fed
+        // `note_order_hint_bits` BEFORE that filter, so the global OBU contributed a `None`
+        // (no sequence header is active for xlayer 31) that set `bits_undecidable` and
+        // suppressed a real cross-CELU bits mismatch between the valid CELUs in the TU.
+        //
+        // Two active headers are established in separate temporal units so no single TU
+        // legitimately carries two OrderHintBits: TU1 activates seq 0 (OrderHintBits 1) for
+        // xlayer 0; TU2 activates seq 1 (OrderHintBits 2) for xlayer 1. An MSDO with
+        // multistream_doh_constraint_flag == 1 opens a persisting CMVS. TU3 (CMVS open) is the
+        // test temporal unit: xlayer 0 contributes bits 1, xlayer 1 contributes bits 2, plus a
+        // global frame-bearing OBU. Post-fix the global OBU is skipped, so the TU sees bits
+        // {1, 2} and celu/doh-order-hint-bits-mismatch FIRES. Pre-fix the global OBU's None
+        // poisoned the judgment and the mismatch was silent.
+        let mut data = temporal_delimiter_obu(); // TU1: xlayer 0 (bits 1)
+        data.extend(msdo_obu_configured(0, true, &[(0, 0, 0, 0), (1, 0, 0, 0)]));
+        data.extend(celu_seq_header_obu(0, 0, 1)); // xlayer 0 active: seq 0, OrderHintBits 1
+        data.extend(celu_output_clk_ref(0, 0, 1, 0)); // resolves seq 0
+        data.extend(temporal_delimiter_obu()); // TU2: xlayer 1 (bits 2)
+        data.extend(celu_seq_header_obu(1, 1, 2)); // xlayer 1 active: seq 1, OrderHintBits 2
+        data.extend(celu_output_clk_ref(1, 1, 2, 0)); // resolves seq 1
+        data.extend(temporal_delimiter_obu()); // TU3: the test temporal unit
+        data.extend(celu_seq_header_obu(0, 0, 1));
+        data.extend(celu_output_clk_ref(0, 0, 1, 0)); // xlayer 0 -> bits 1
+        data.extend(celu_global_frame_obu()); // global frame-bearing OBU -> must NOT poison
+        data.extend(celu_seq_header_obu(1, 1, 2));
+        data.extend(celu_output_clk_ref(1, 1, 2, 0)); // xlayer 1 -> bits 2
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "celu/doh-order-hint-bits-mismatch"),
+            "a global frame-bearing OBU must not poison the § 7.3.7 OrderHintBits accumulator, \
+             so the real bits mismatch between the valid CELUs must fire; report was: {report}"
+        );
+        // The global frame-bearing OBU keeps its own header diagnostic (orthogonal).
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "obu-header/global-xlayer-allowed-types"),
+            "the global frame-bearing OBU must still trip its own obu-header diagnostic; \
+             report was: {report}"
+        );
+    }
+
+    // --- Round-5 F1: DOH flag sampled against the GOVERNING (pre-completion) CMVS window -
+
+    #[test]
+    fn celu_doh_flag_via_lcr_survives_cmvs_close_at_boundary_tu() {
+        // Round-5 F1: at a global-temporal-delimiter boundary the DOH constraint flag for the
+        // just-completed temporal unit must be sampled against the CMVS window that CONTAINS
+        // that temporal unit — captured BEFORE the CMVS tracker applies the unit's § 7.3.2
+        // begin/end conditions and clears the live window.
+        //
+        // § 7.3.2: a coded multistream video sequence "ends at" the temporal unit that begins
+        // a new coded video sequence (a CLK) but has no OBU_MSDO and no activated global LCR
+        // (end condition 2). That boundary temporal unit is the LAST temporal unit of the
+        // ENDING CMVS — it is contained in the old CMVS, not a new one (no begin condition
+        // fired). § 7.3.7's DOH OrderHint / OrderHintBits constraints apply "for each temporal
+        // unit in the coded multistream video sequence", so the flag for this last unit comes
+        // from the OLD CMVS's activated global LCR. Sampling it against the live window AFTER
+        // the tracker Closed that window resolves `activated_global_lcr()` to None and skips the
+        // § 7.3.7 checks (a false negative).
+        //
+        // TU0 opens an Inside CMVS via begin condition 1 (a CLK xlayer 0 + an MSDO), with a
+        // global LCR id 1 whose lcr_doh_constraint_flag == 1 activated by both layers' headers
+        // (seq_lcr_id == 1). The MSDO's multistream_doh_constraint_flag is 0, so the DOH flag
+        // can come ONLY from the activated global LCR (isolating the LCR-window path). TU1 is
+        // the test temporal unit: two output CLKs (xlayer 0 OrderHint 0, xlayer 1 OrderHint 1,
+        // equal known OrderHintBits 1) carry a cross-CELU OrderHint mismatch, and TU1 carries no
+        // MSDO — a CLK-with-no-MSDO temporal unit, so it ENDS the CMVS (the boundary TU). The
+        // activated global LCR (lcr_doh_constraint_flag 1, observed in TU0) governs TU1, so the
+        // § 7.3.7 cross-CELU OrderHint check must FIRE. Pre-fix the live window was Closed
+        // before the flag was sampled, so the flag read false and the mismatch was silent.
+        let global = global_lcr_obu_agreement(1, 0b11, None, None, true); // doh flag 1, xlayers 0,1
+        let mut data = temporal_delimiter_obu(); // TU0: opens an Inside CMVS (begin condition 1)
+        data.extend(global);
+        data.extend(msdo_obu_configured(0, false, &[(0, 0, 0, 0), (1, 0, 0, 0)])); // MSDO doh 0
+        // Per-layer coded extended layer units in ascending obu_xlayer_id order (§ 7.3.7):
+        // seq0 + CLK0, then seq1 + CLK1. Both CLKs frame-confirm their headers (seq_lcr_id 1),
+        // activating the global LCR for the CMVS.
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1)); // seq 0 xlayer 0, seq_lcr_id 1
+        data.extend(celu_output_clk_ref(0, 0, 1, 0)); // CLK xlayer 0 -> activates seq 0 / LCR 1
+        data.extend(seq_header_obu_lcr_ref(1, 1, 0, true, 1)); // seq 1 xlayer 1, seq_lcr_id 1
+        data.extend(celu_output_clk_ref(1, 1, 1, 0)); // CLK xlayer 1 -> activates seq 1 / LCR 1
+        data.extend(temporal_delimiter_obu()); // TU1: the boundary TU that ends the CMVS
+        // No MSDO in TU1 -> a CLK-with-no-MSDO temporal unit ends the CMVS (end condition 2).
+        // Re-send each activatable header before its CELU's frame so TU1's frames resolve.
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1));
+        data.extend(celu_output_clk_ref(0, 0, 1, 0)); // CELU xlayer 0, OrderHint 0
+        data.extend(seq_header_obu_lcr_ref(1, 1, 0, true, 1));
+        data.extend(celu_output_clk_ref(1, 1, 1, 1)); // CELU xlayer 1, OrderHint 1 -> mismatch
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "celu/doh-order-hint-mismatch"),
+            "the activated global LCR (lcr_doh_constraint_flag 1) governs the CMVS-ending \
+             boundary temporal unit, so the § 7.3.7 cross-CELU OrderHint check must fire even \
+             though that unit closes the live CMVS window; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn celu_doh_flag_via_lcr_off_at_boundary_tu_stays_silent() {
+        // Round-5 F1 (precision): the governing-window capture must NOT blanket-enable the DOH
+        // checks. The identical stream as `…_survives_cmvs_close_at_boundary_tu`, but the
+        // activated global LCR's lcr_doh_constraint_flag == 0 (and the MSDO's flag is 0). The
+        // boundary temporal unit's governing CMVS therefore declares NO DOH constraint, so the
+        // cross-CELU OrderHint disagreement is conforming and celu/doh-order-hint-mismatch must
+        // stay SILENT — the fix samples the flag against the governing window, it does not
+        // unconditionally treat the boundary unit as flagged.
+        let global = global_lcr_obu_agreement(1, 0b11, None, None, false); // doh flag 0
+        let mut data = temporal_delimiter_obu();
+        data.extend(global);
+        data.extend(msdo_obu_configured(0, false, &[(0, 0, 0, 0), (1, 0, 0, 0)])); // MSDO doh 0
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1));
+        data.extend(celu_output_clk_ref(0, 0, 1, 0));
+        data.extend(seq_header_obu_lcr_ref(1, 1, 0, true, 1));
+        data.extend(celu_output_clk_ref(1, 1, 1, 0));
+        data.extend(temporal_delimiter_obu()); // boundary TU ends the CMVS (no MSDO)
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1));
+        data.extend(celu_output_clk_ref(0, 0, 1, 0)); // OrderHint 0
+        data.extend(seq_header_obu_lcr_ref(1, 1, 0, true, 1));
+        data.extend(celu_output_clk_ref(1, 1, 1, 1)); // OrderHint 1 (would mismatch if flagged)
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "celu/doh-order-hint-mismatch"),
+            "with lcr_doh_constraint_flag == 0 the boundary unit's governing CMVS declares no \
+             DOH constraint, so the cross-CELU OrderHint check must stay silent; report was: \
+             {report}"
+        );
+    }
+
     // --- F2: MFH-backed frames are decided when the in-band MFH resolves (§ 7.3.6) -----
 
     /// A CLK frame-bearing OBU on `xlayer` (mlayer 0) whose frame header references the
