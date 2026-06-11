@@ -10638,16 +10638,27 @@ mod tests {
     }
 
     #[test]
-    fn annex_a_iop0_single_xlayer_with_msdo_prohibits_msdo() {
-        // IOP0 with a single extended layer prohibits an OBU_MSDO (Table A.4 row 1).
+    fn annex_a_iop0_msdo_declares_two_streams_so_prohibited_row_is_unreachable() {
+        // Under the strict Table A.3 definitions (mirror lines 146-151), a present
+        // OBU_MSDO sets MultiStreamDecoderMode == 1 and the "Number of Extended Layers" is
+        // its declared num_streams_minus_2 + 2 (== 2 here), which takes precedence over the
+        // single distinct obu_xlayer_id actually coded. So E == 2 > 1 and the Table A.4
+        // "MSDO Prohibited" rows (E == 1) are structurally unreachable in-band whenever an
+        // MSDO is present: annex-a/msdo-prohibited-for-iop must NOT fire here. The genuine
+        // real-world violation (an MSDO declaring substreams that never materialize as
+        // distinct extended layers) is the declared-vs-observed reconciliation owned by the
+        // upcoming msdo-substream-constraint-checks change, not this skeleton. (This
+        // replaces an earlier test that asserted the prohibited row fired on the observed
+        // single-xlayer count — behavior the mirror's declared-precedence definition
+        // contradicts.)
         let data = annex_a_single_xlayer_iop0_stream(true);
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
-            report.errors().any(|d| {
-                d.rule_id == "annex-a/msdo-prohibited-for-iop"
-                    && d.spec_section.as_deref() == Some("A.2")
-            }),
-            "report was: {report}"
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("annex-a/msdo")),
+            "an MSDO declaring two streams reads E == 2, so neither prohibited nor required \
+             fires; report was: {report}"
         );
     }
 
@@ -10725,6 +10736,91 @@ mod tests {
                 .any(|d| d.rule_id.starts_with("annex-a/msdo")
                     || d.rule_id.starts_with("annex-a/lcr")),
             "Table A.4 presence checks are suppressed under external HLS; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_iop0_second_cvs_same_seq_header_id_violation_is_caught() {
+        // Regression for the same-id-CLK-reactivation window-seeding bug. The frame path
+        // re-runs the sequence-activation hook (and so seeds the IOP window's
+        // interoperability point) only when the activated seq_header_id changes or is newly
+        // confirmed. A second coded video sequence that reuses the SAME already-confirmed
+        // seq_header_ids never re-fires the hook, so without explicit seeding its IOP window
+        // opens with no interoperability point and is skipped at evaluation — missing a
+        // two-extended-layer IOP0 second CVS that lacks the required MSDO.
+        //
+        // CVS1 (temporal unit 0): two extended layers WITH a global MSDO (conformant —
+        // E == 2 satisfied). CVS2 (temporal unit 1): the same two extended layers reusing
+        // seq_header_ids 0 and 1, but WITHOUT an MSDO. Seeding from the active header at the
+        // CVS2 boundary makes its window decidable (IOP0), so annex-a/msdo-required-for-iop
+        // fires for CVS2.
+        let mut data = temporal_delimiter_obu();
+        // --- CVS1: temporal unit 0, two xlayers, with MSDO ---
+        data.extend(annex_b_obu(0x50, &msdo_payload(0))); // global MSDO (2 substreams)
+        data.extend(annex_a_seq_obu(AnnexASeq {
+            seq_id: 0,
+            ..AnnexASeq::base()
+        }));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 ref seq 0
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(4, 0, 0, 1),
+            &annex_a_seq_payload(AnnexASeq {
+                seq_id: 1,
+                ..AnnexASeq::base()
+            }),
+        ));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 1)); // CLK xlayer 1 ref seq 1
+        data.extend(temporal_delimiter_obu()); // end temporal unit 0
+        // --- CVS2: temporal unit 1, same two xlayers reusing seq ids 0 and 1, no MSDO ---
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 ref seq 0
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 1)); // CLK xlayer 1 ref seq 1
+        data.extend(temporal_delimiter_obu()); // closes CVS2's window at end of stream path
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "annex-a/msdo-required-for-iop"
+                    && d.spec_section.as_deref() == Some("A.2")
+            }),
+            "a two-extended-layer IOP0 second CVS reusing the same seq_header_ids without an \
+             MSDO must still be flagged; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_iop0_second_xlayer_in_later_tu_of_same_cvs_is_caught() {
+        // Regression for the window-closes-too-early bug. The IOP window spans the WHOLE
+        // coded video sequence, not just its random-access temporal unit. A second distinct
+        // obu_xlayer_id that first appears in a LATER temporal unit of the same coded video
+        // sequence (after the CLK temporal unit, with no new CLK) must still count toward
+        // the Table A.3 "Number of Extended Layers": E == 2, so an IOP0 sequence without an
+        // MSDO is flagged. With the old close-at-CLK-temporal-unit behavior, the later
+        // temporal unit's xlayer went into a fresh window and the two-extended-layer
+        // condition was missed.
+        //
+        // Temporal unit 0: sequence header (seq 0) + CLK xlayer 0 (distinct xlayers {0}).
+        // Temporal unit 1 (same CVS, no new CLK): a regular tile group at xlayer 1 that
+        // references seq 0 — its first appearance introduces the second distinct xlayer
+        // {0, 1}. End of stream flushes the (still-open) window: E == 2, no MSDO ->
+        // annex-a/msdo-required-for-iop.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_a_seq_obu(AnnexASeq {
+            seq_id: 0,
+            ..AnnexASeq::base()
+        }));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 ref seq 0
+        data.extend(temporal_delimiter_obu()); // end temporal unit 0 (window stays open)
+        // Temporal unit 1: a non-CLK frame (regular tile group, obu_type 7) at xlayer 1,
+        // the second distinct extended layer's first appearance.
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 1, 0));
+        data.extend(temporal_delimiter_obu()); // end temporal unit 1
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "annex-a/msdo-required-for-iop"
+                    && d.spec_section.as_deref() == Some("A.2")
+            }),
+            "a second distinct extended layer appearing in a later temporal unit of the same \
+             coded video sequence without an MSDO must be flagged; report was: {report}"
         );
     }
 }

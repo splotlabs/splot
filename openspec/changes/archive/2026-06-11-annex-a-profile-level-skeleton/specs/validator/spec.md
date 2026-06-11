@@ -73,10 +73,16 @@ SHALL suppress these presence checks when external HLS is provided.
   `obu_xlayer_id` and no OBU_MSDO
 - **THEN** `annex-a/msdo-required-for-iop` (error) is emitted at CVS end
 
-#### Scenario: single-layer stream with MSDO
+#### Scenario: MSDO declares two streams so the prohibited row is unreachable
 
-- **WHEN** a profile-0 CVS with one extended layer contains an OBU_MSDO
-- **THEN** `annex-a/msdo-prohibited-for-iop` (error) is emitted
+- **WHEN** a profile-0 CVS contains an OBU_MSDO that declares two streams
+  (`num_streams_minus_2 + 2 == 2`) even though only one distinct non-global
+  `obu_xlayer_id` is coded
+- **THEN** no presence diagnostic is emitted — the Table A.3 "Number of Extended
+  Layers" takes the MSDO's declared count (mirror lines 146-151), so E == 2 and
+  the Table A.4 "MSDO Prohibited" rows (E == 1) are structurally unreachable in-band
+  whenever an MSDO is present (the declared-vs-observed reconciliation is owned by
+  the `msdo-substream-constraint-checks` change)
 
 ## MODIFIED Requirements
 

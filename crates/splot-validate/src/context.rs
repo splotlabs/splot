@@ -210,12 +210,6 @@ pub(crate) struct ValidatorContext {
     /// in-band MSDO/LCR presence checks when externally-supplied HLS makes in-band
     /// presence counting unsound (design).
     external_hls_provided: bool,
-    /// Whether the temporal unit currently being observed contains an
-    /// `OBU_CLOSED_LOOP_KEY`. The Annex A Table A.4 IOP window is evaluated at the next
-    /// global temporal delimiter only when the just-completed temporal unit began a new
-    /// coded video sequence (had a CLK, § 7.3.6), so every extended layer's CLK in one
-    /// temporal unit accumulates into the same window. Reset after each evaluation.
-    annex_a_iop_tu_had_clk: bool,
 }
 
 /// Comparison key for the § 6.10.5 operating-point buffer-delay sum-constancy check:
@@ -1901,18 +1895,24 @@ impl DistinctMlayerTracker {
 }
 
 /// Accumulates the Annex A interoperability-point (Table A.4) evidence for the current
-/// coded-(multistream-)video-sequence window, evaluated at the window's end (a CLK in
-/// any extended layer, or the end of the bitstream).
+/// coded-(multistream-)video-sequence window, evaluated at the window's end (the start
+/// of the next coded video sequence, or the end of the bitstream).
 ///
 /// Table A.4 (mirror lines 178-201) states MSDO/LCR presence requirements for
 /// interoperability points 0-2 as a function of E = "Number of Extended Layers > 1"
 /// and M = "Number of Embedded Layers > 1" (Table A.3 definitions, mirror lines
-/// 144-161). The window scope is the broadest sound one available without modeling the
-/// full § 7.3.2 coded multistream video sequence: it accumulates from the start of the
-/// bitstream (or the most recent CLK in any layer) until the next CLK in any layer or
-/// the end of the bitstream — the same epoch granularity as the `GLOBAL_XLAYER_ID`
-/// coded-video-sequence generation. "Presence" means an OBU of that type occurred in
-/// the window.
+/// 144-161). The window scope is the whole coded (multistream-)video-sequence: it
+/// accumulates from the start of the bitstream (or the start of the previous coded video
+/// sequence) and stays open across *every* temporal unit until a CLK in a *later*
+/// temporal unit begins the next coded video sequence (§ 7.3.6), or the end of the
+/// bitstream. Closing only at the next coded-video-sequence boundary — not at the
+/// temporal unit that merely *contained* the random-access CLK — is what makes the
+/// Table A.3 counts span the whole coded video sequence: a second distinct
+/// `obu_xlayer_id` that first appears in a *later* temporal unit of the same coded video
+/// sequence is still attributed to that sequence. Every extended layer's CLK within one
+/// random-access temporal unit accumulates into the same window (a multistream coded
+/// video sequence has one CLK per extended layer within the temporal unit).
+/// "Presence" means an OBU of that type occurred in the window.
 ///
 /// What is **not** modeled here (recorded as `TODO(spec: AV2-A-LEVELS-TIERS)` at the
 /// call sites): the `MultiStreamDecoderMode == 1` substream level scaling (mirror lines
@@ -1961,6 +1961,14 @@ struct AnnexAIopWindow {
     /// Byte offset to anchor the Table A.4 diagnostic at — the latest activating OBU's
     /// offset, the location where the (now-final) layer configuration is known.
     anchor_offset: ByteOffset,
+    /// The [`CvsTracker::tu_index`] of the temporal unit in which this window's coded
+    /// video sequence began (the temporal unit carrying its `OBU_CLOSED_LOOP_KEY`s), or
+    /// `None` for leading evidence accumulated before the first CLK. The window spans the
+    /// whole coded (multistream-)video-sequence: it stays open across every temporal unit
+    /// until a CLK in a *later* temporal unit begins the next coded video sequence
+    /// (§ 7.3.6), which is when it is flushed (mirror Table A.3 counts span the whole
+    /// coded video sequence, not just its random-access temporal unit).
+    cvs_start_tu: Option<u64>,
 }
 
 impl Default for AnnexAIopWindow {
@@ -1975,6 +1983,7 @@ impl Default for AnnexAIopWindow {
             local_lcr_present: false,
             iop: None,
             anchor_offset: ByteOffset::new(0),
+            cvs_start_tu: None,
         }
     }
 }
@@ -2049,6 +2058,42 @@ impl AnnexAIopTracker {
         }
     }
 
+    /// Whether a CLK observed in temporal unit `tu_index` begins the *next* coded video
+    /// sequence relative to the currently-open window, so the prior window must be flushed
+    /// before this CLK's evidence joins a fresh window. True only when a window is open and
+    /// its coded video sequence began in an *earlier* temporal unit: a CLK in the same
+    /// temporal unit (a second extended layer's CLK in one multistream random-access
+    /// temporal unit) joins the same window, and leading evidence with no recorded CVS
+    /// start (`cvs_start_tu == None`) is absorbed by the first coded video sequence.
+    fn clk_starts_new_cvs(&self, tu_index: u64) -> bool {
+        matches!(
+            self.window.as_ref().and_then(|w| w.cvs_start_tu),
+            Some(start) if start != tu_index
+        )
+    }
+
+    /// Records that the current window's coded video sequence began in temporal unit
+    /// `tu_index` (the temporal unit carrying its CLK), opening the window if it does not
+    /// yet exist. Idempotent within a temporal unit, and a no-op once the window's coded
+    /// video sequence start is recorded (every later CLK in the same coded video sequence
+    /// keeps the original start).
+    fn note_cvs_start(&mut self, tu_index: u64) {
+        self.window_mut().cvs_start_tu.get_or_insert(tu_index);
+    }
+
+    /// Seeds the (possibly freshly opened) window's interoperability point and
+    /// embedded-layer count from the currently-active frame-confirmed sequence header when
+    /// a CLK opens a new coded video sequence. The frame path only re-runs
+    /// `on_sequence_activation` (and so `note_activation`) when the activated
+    /// `seq_header_id` changes or is newly confirmed; a coded video sequence that reuses
+    /// the same confirmed header would otherwise open a window with no interoperability
+    /// point and be skipped at evaluation. Seeding here makes the window decidable from the
+    /// active header carried across the coded-video-sequence boundary. A `None` profile
+    /// (reserved / Configurable) leaves the IOP unset, matching `note_activation`.
+    fn seed_from_active(&mut self, profile_idc: u8, embedded_layers: u32, offset: ByteOffset) {
+        self.note_activation(profile_idc, embedded_layers, offset);
+    }
+
     /// Ends the current window and returns its accumulated evidence for Table A.4
     /// evaluation, resetting the tracker for the next window. Returns `None` when no
     /// evidence was accumulated (an empty window flushes nothing).
@@ -2060,33 +2105,42 @@ impl AnnexAIopTracker {
 impl AnnexAIopWindow {
     /// The Table A.3 "Number of Extended Layers" for this window (mirror lines 146-151).
     ///
-    /// The base case is the count of distinct non-global `obu_xlayer_id` values actually
-    /// present (mirror lines 150-151) — the actual coded structure. This is the value
-    /// the Table A.4 prohibition rows turn on: spec.md's scenario "a single-layer stream
-    /// (one distinct obu_xlayer_id) that contains an OBU_MSDO" must read E == 1 so the
-    /// MSDO is *prohibited*, which would not hold if the MSDO's self-declared
-    /// `num_streams` overrode it. The `num_streams_minus_2 + 2` (MSDO,
-    /// `MultiStreamDecoderMode == 1`) and `LcrMaxNumXLayerCount` (global LCR) values are
-    /// used only as a *fallback* when no concrete `obu_xlayer_id` was observed (a window
-    /// of purely global OBUs) — there the declared count is the only evidence of the
-    /// extended-layer span.
+    /// Evaluated in the exact priority order the mirror's definition gives: a *declared*
+    /// count takes precedence over the observed coded structure.
     ///
-    /// `TODO(spec: AV2-A-LEVELS-TIERS)`: a fuller model would reconcile the declared
-    /// `num_streams` / `LcrMaxNumXLayerCount` with the observed distinct-xlayer count and
-    /// flag a mismatch; this skeleton uses the observed count as authoritative.
+    /// 1. When `MultiStreamDecoderMode == 1` (an `OBU_MSDO` is present in the window), the
+    ///    value is `num_streams_minus_2 + 2` (mirror lines 148-149) — the MSDO's declared
+    ///    substream count, regardless of how many distinct `obu_xlayer_id` materialize.
+    /// 2. Otherwise, when a global layer configuration record is activated, the value is
+    ///    `LcrMaxNumXLayerCount` (mirror lines 149-150) — the global LCR's declared
+    ///    extended-layer span (set-bit count of `lcr_xlayer_map`).
+    /// 3. Otherwise, the value is the number of distinct non-global `obu_xlayer_id` values
+    ///    actually present (mirror lines 150-151) — the observed coded structure, at least
+    ///    1 (Table A.3: "For a coded video sequence, this value is equal to 1").
+    ///
+    /// Consequence for the Table A.4 *Prohibited* rows: because a present MSDO declares
+    /// `num_streams >= 2`, this method returns `>= 2` whenever an MSDO is in the window, so
+    /// E > 1 holds and the "MSDO Prohibited" rows (which require E == 1) are structurally
+    /// unreachable in-band when an MSDO is actually present. The genuine real-world
+    /// violation those rows would catch — an MSDO declaring substreams that never
+    /// materialize as distinct `obu_xlayer_id` — is a declared-vs-observed reconciliation
+    /// that is out of scope here.
+    ///
+    /// `TODO(spec: AV2-A-LEVELS-TIERS)`: the declared-vs-observed reconciliation (an MSDO
+    /// `num_streams` or global-LCR `LcrMaxNumXLayerCount` larger than the distinct
+    /// `obu_xlayer_id` count actually coded) is owned by the upcoming
+    /// `msdo-substream-constraint-checks` change, not modeled here.
     fn extended_layers(&self) -> u32 {
-        let distinct = self.distinct_xlayers.len() as u32;
-        if distinct > 0 {
-            distinct
-        } else {
-            // No concrete obu_xlayer_id: fall back to the global LCR's
-            // LcrMaxNumXLayerCount, then the MSDO's num_streams; absent both, a single
-            // (base-layer) extended layer (Table A.3: "For a coded video sequence, this
-            // value is equal to 1").
-            self.global_lcr_xlayer_count
-                .or(self.msdo_num_streams)
-                .unwrap_or(1)
+        // Declared precedence, in the mirror's definition order: MSDO num_streams (when
+        // MultiStreamDecoderMode == 1), then global-LCR LcrMaxNumXLayerCount, then the
+        // observed distinct non-global obu_xlayer_id count (at least 1).
+        if let Some(num_streams) = self.msdo_num_streams {
+            return num_streams;
         }
+        if let Some(global_count) = self.global_lcr_xlayer_count {
+            return global_count;
+        }
+        (self.distinct_xlayers.len() as u32).max(1)
     }
 
     /// The Table A.3 "Number of Embedded Layers" for this window (mirror lines 152-153):
@@ -2489,20 +2543,22 @@ impl ValidatorContext {
         // which runs from `finish` without access to the options.
         self.external_hls_provided = matches!(options.external_hls, ExternalHlsMode::Provided(_));
 
-        // Annex A Table A.4: a global temporal delimiter ends the just-decoded temporal
-        // unit. If that temporal unit contained an OBU_CLOSED_LOOP_KEY (so it began a new
-        // coded video sequence for at least one extended layer, § 7.3.6), the prior coded
-        // (multistream-)video-sequence window is complete: evaluate its MSDO/LCR presence
-        // requirements before the next window starts. Flushing at the temporal-unit
-        // boundary — not at the CLK itself — lets every extended layer's CLK in one
-        // temporal unit accumulate into the same window (a multistream coded video
-        // sequence has one CLK per extended layer within the temporal unit).
-        if obu.header.obu_type == ObuType::TemporalDelimiter
-            && obu.header.extended_layer_id.is_global()
-            && self.annex_a_iop_tu_had_clk
+        // Annex A Table A.4: the IOP window spans the WHOLE coded (multistream-)video
+        // sequence, so it closes at the START of the next coded video sequence — a CLK in
+        // a temporal unit *later* than the one in which the open window's coded video
+        // sequence began (§ 7.3.6) — not at the temporal unit that merely contained the
+        // random-access CLK. (`self.cvs.tu_index` is the current temporal unit's index; a
+        // global temporal delimiter has already advanced it via the prior call's
+        // `observe_cvs_boundary_events`.) Flushing here, before this CLK's evidence opens a
+        // fresh window, evaluates the prior coded video sequence's MSDO/LCR presence
+        // requirements with every temporal unit of that sequence accounted for. Every
+        // extended layer's CLK within one random-access temporal unit joins the same
+        // window (a multistream coded video sequence has one CLK per extended layer in the
+        // temporal unit), so a same-temporal-unit CLK does not flush.
+        if obu.header.obu_type == ObuType::ClosedLoopKey
+            && self.annex_a_iop.clk_starts_new_cvs(self.cvs.tu_index)
         {
             self.flush_annex_a_iop_window(options, report);
-            self.annex_a_iop_tu_had_clk = false;
         }
 
         self.observe_cvs_boundary_events(obu, report);
@@ -2513,6 +2569,20 @@ impl ValidatorContext {
         // in the current Annex A IOP window (mirror lines 146-151). Recorded for every
         // OBU after the boundary events (so a CLK's own xlayer joins the new window).
         self.annex_a_iop.note_xlayer(obu.header.extended_layer_id);
+
+        // Annex A Table A.4: a CLK begins (or continues, for a multistream same-temporal
+        // unit CLK) the current coded video sequence for its extended layer (§ 7.3.6).
+        // Record the window's coded-video-sequence start temporal unit (so the next
+        // sequence's CLK can detect the boundary) and seed the window's interoperability
+        // point / embedded-layer count from the active frame-confirmed sequence header for
+        // this extended layer. The frame path re-runs `on_sequence_activation` only when
+        // the activated `seq_header_id` changes or is newly confirmed, so a coded video
+        // sequence that reuses the same confirmed header would otherwise leave the window
+        // with no interoperability point; seeding here keeps it decidable.
+        if obu.header.obu_type == ObuType::ClosedLoopKey {
+            self.annex_a_iop.note_cvs_start(self.cvs.tu_index);
+            self.seed_annex_a_iop_from_active(obu.header.extended_layer_id);
+        }
 
         if obu.header.obu_type == ObuType::SequenceHeader {
             self.observe_sequence_header(obu, options, report);
@@ -2633,10 +2703,12 @@ impl ValidatorContext {
             // to the new coded video sequence (see DistinctMlayerTracker::reset_cvs).
             self.distinct_mlayer.advance_temporal_unit();
         } else if obu.header.obu_type == ObuType::ClosedLoopKey {
-            // Annex A Table A.4: this temporal unit begins a new coded video sequence, so
-            // the IOP window is evaluated at the temporal unit's end (the next global
-            // temporal delimiter, or the end of the bitstream).
-            self.annex_a_iop_tu_had_clk = true;
+            // Annex A Table A.4: this temporal unit begins a new coded video sequence. The
+            // prior IOP window was already flushed in `observe_obu` when this CLK was found
+            // to start a coded video sequence later than the open window's (so the window
+            // spans the whole prior coded video sequence, not just its random-access
+            // temporal unit); the window's coded-video-sequence start is recorded and
+            // seeded there too.
             self.start_cvs_for_xlayer(obu.header.extended_layer_id, report);
             self.observe_ci_rap(obu.header.extended_layer_id);
             // AV2 § 7.3.2 / § 7.3.6: a CLK makes this temporal unit one that "contains
@@ -3032,6 +3104,20 @@ impl ValidatorContext {
     }
 
     /// Emits `annex-a/msdo-prohibited-for-iop` when an MSDO is present in the window.
+    ///
+    /// Under the strict Table A.3 "Number of Extended Layers" definition (mirror lines
+    /// 146-151, see [`AnnexAIopWindow::extended_layers`]), a present OBU_MSDO sets
+    /// `MultiStreamDecoderMode == 1` and declares `num_streams_minus_2 + 2 >= 2` extended
+    /// layers, so `e = extended_layers() > 1` is always true when `msdo_present` is true.
+    /// The Table A.4 "MSDO Prohibited" rows require `e` to be false (E == 1), so every
+    /// caller reaching this method with `!e` already has `!msdo_present`, and this body's
+    /// guard never fires in-band: it is the *defensive* arm. This is deliberate — the
+    /// prohibition does NOT fire on an observed single distinct `obu_xlayer_id` overriding
+    /// the MSDO's declared count. The genuine real-world violation that the prohibition
+    /// rows would catch (an MSDO declaring substreams that never materialize as distinct
+    /// extended layers) is the declared-vs-observed reconciliation owned by the upcoming
+    /// `msdo-substream-constraint-checks` change, not this skeleton. The id stays
+    /// registered so a future declared-vs-observed model can reach it.
     fn emit_msdo_prohibited(
         &self,
         window: &AnnexAIopWindow,
@@ -5065,6 +5151,46 @@ impl ValidatorContext {
         // external_declares_sequence_header gate above), emitted once per activated
         // header per coded video sequence.
         self.check_annex_a_value_space(xlayer, report);
+    }
+
+    /// Seeds the current Annex A Table A.4 IOP window's interoperability point and
+    /// embedded-layer count from the frame-confirmed sequence header active for `xlayer`,
+    /// when a CLK opens a new coded video sequence (see the call site in `observe_obu`).
+    ///
+    /// The frame path drives the window via `note_activation`, but only re-runs
+    /// `on_sequence_activation` when the activated `seq_header_id` changes or is newly
+    /// confirmed (`observe_frame_bearing_obu`). A second coded video sequence that reuses
+    /// the same already-confirmed header therefore never re-fires `note_activation`, so its
+    /// window would open with no interoperability point and be skipped at evaluation —
+    /// missing, e.g., an IOP0 two-extended-layer second coded video sequence without an
+    /// MSDO. Seeding from the active header at the coded-video-sequence boundary keeps the
+    /// window decidable. Only a frame-confirmed activation is used (the OBU-order fallback
+    /// is a guess a later frame can contradict, matching `agreement_activation_for`); a
+    /// reserved / Configurable profile leaves the IOP unset, like `note_activation`.
+    fn seed_annex_a_iop_from_active(&mut self, xlayer: ExtendedLayerId) {
+        if self.external_hls_provided {
+            // External HLS makes in-band presence counting unsound and the Table A.4
+            // evaluation is suppressed under it (see `evaluate_annex_a_iop_window`); do not
+            // seed from an in-band header that may be shadowed by an external one. The
+            // broad `Provided` gate matches that suppression decision.
+            return;
+        }
+        if !self.frame_confirmed_xlayers.contains(&xlayer) {
+            return;
+        }
+        let Some((seq_header_id, general)) = self.active_general_for(xlayer) else {
+            return;
+        };
+        let offset = self
+            .sequence_header_offsets
+            .get(&seq_header_id)
+            .copied()
+            .unwrap_or(ByteOffset::new(0));
+        self.annex_a_iop.seed_from_active(
+            general.seq_profile_idc.get(),
+            u32::from(general.seq_max_mlayer_count.get()),
+            offset,
+        );
     }
 
     /// Emits the Annex A.2 / Annex A.4 profile and level/tier *value-space* diagnostics
@@ -7361,6 +7487,15 @@ fn frame_annex_a_level_checks(
                 .with_byte_offset(obu.offset),
             );
         }
+
+        // TODO(spec: AV2-A-LEVELS-TIERS): the per-tile constraints in the same Annex A.4
+        // gated block (mirror lines 623-627) are not checked yet: TileWidth <=
+        // Tile_Width_Scaling_Factor[seq_tier][LevelIdx] * MAX_TILE_WIDTH / 4, TileWidth
+        // >= 64 for non-rightmost tiles, and TileWidth * TileHeight <=
+        // Tile_Area_Scaling_Factor[seq_tier][LevelIdx] * 4096 * 2304 / 4. They need the
+        // per-tile layout geometry and the tier-dependent scaling-factor tables
+        // (currently private to splot-core's tile parser, which already bounds tile
+        // sizing at parse via the same tables).
     }
 }
 
