@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "46a320200d9a4bf07a284442690a51f5ca31b1e6",
+  "audited_commit": "52546b1fb1d9acf3d0508b315399041312eee031",
   "outcome": "success",
   "files": [
     {
@@ -317,7 +317,7 @@
     },
     {
       "path": "crates/splot-cli/tests/cli.rs",
-      "sha256": "c73eddb08323cd42881184f04ed0fc3ae5f2ebc033ef4827c98467391032de69",
+      "sha256": "49f16e9277132bc64a8cb798483ba6029c4f43f359ab3487ff9753f8af532a83",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.4-SEQUENCE-HEADER",
@@ -757,9 +757,11 @@
     },
     {
       "path": "crates/splot-validate/src/celu.rs",
-      "sha256": "668ae62466c41a3882d4c84d425b76c2ca797c9d5f3dae6a0a5e7de1684730bf",
+      "sha256": "bde73e06fb17a110d4f745c9c89793dfb850562cd55139b4547b69d4c0a15032",
       "scope_kind": "workspace:splot-validate",
-      "feature_ids": [],
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO"
+      ],
       "outcome": "success"
     },
     {
@@ -776,7 +778,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "1fb718791b238758e2f8df44a6762ce4701626bdd54c86e047835cd22875eb5d",
+      "sha256": "23c6d291d8d3ba91cce6a08b5b858b4b25b8c6d8cdf82b8bd9dd2764cf6671b0",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -815,7 +817,7 @@
     },
     {
       "path": "crates/splot-validate/src/frame_unit.rs",
-      "sha256": "6035aafe7f3529856b8db11c8a51633abddcda999daa96da58d826174f7599c2",
+      "sha256": "1defdf682c0a5c41ced2a57f48dc0b9b8b76287af502ef1abea2601a6b01f89f",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT"
@@ -847,7 +849,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "36db92efef0b35a33f4f52da5abc1c9c383031346b532eaded17309e1c29f537",
+      "sha256": "9810c16eda5a3b42030e5b67d5bc41d8fe5cd6d401341f330195d8a8c69b0ac7",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1079,7 +1081,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "90c168b3f4ffc25a6f815ec3a7a581bbfd134c56f3b94c4a74652d90529888a7",
+      "sha256": "979b5712c891a73dd38d06f1cdd041811b765162959d965fdf194b983b8ce116",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1369,9 +1371,10 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "321c369edae56490a555cd7f6e010b5d43b03d8eba321f0fbfd104749e5cae38",
+      "sha256": "6ea306e899c152d3c6b9674fdb38056c9ae2a7f809e84fa431d13890044c48dd",
       "scope_kind": "docs",
       "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
         "AV2-7.3.2-CMVS-BOUNDARIES",
         "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
         "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
