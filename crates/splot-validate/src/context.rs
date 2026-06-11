@@ -252,11 +252,14 @@ pub(crate) struct ValidatorContext {
 #[derive(Debug, Clone)]
 struct MsdoSubstreamMax {
     /// `sub_xlayer_id[i] → (sub_stream_max_profile[i], sub_stream_max_level[i],
-    /// sub_stream_max_tier[i])`. A duplicate `sub_xlayer_id` (the spec states no
-    /// uniqueness requirement — see the proposal's roadmap-hygiene note) keeps the
-    /// last entry; the comparison is a per-layer ceiling, so the last-wins choice only
-    /// affects which declared ceiling a duplicated layer is checked against and never
-    /// fabricates a constraint.
+    /// sub_stream_max_tier[i])`. § 6.6 imposes the ceiling "for each sequence header
+    /// activated by the i-th independent sub-stream", i.e. for EACH i. The spec states no
+    /// uniqueness requirement on `sub_xlayer_id` (see the proposal's roadmap-hygiene
+    /// note), so two i values may name the same extended layer; a header activated by
+    /// that layer must then satisfy both ceilings, so a duplicate `sub_xlayer_id` keeps
+    /// the most restrictive (per-dimension minimum) maximum rather than letting a
+    /// last-wins insert discard the tighter ceiling (recorded in `observe_msdo`; codex
+    /// finding 3392940071).
     ceilings: BTreeMap<u8, SubStreamCeiling>,
     /// `multistream_doh_constraint_flag` of the recorded MSDO, for the § 6.6
     /// DOH-constraint requirement (`msdo/doh-constraint-required`).
@@ -2285,6 +2288,21 @@ impl CmvsTracker {
         self.state
     }
 
+    /// The *committed* § 7.3.2 CMVS membership — the membership of the most recently
+    /// completed temporal unit, ignoring any partial facts of the temporal unit currently
+    /// being observed.
+    ///
+    /// After [`Self::complete_temporal_unit`] runs at a temporal-unit boundary, this is
+    /// the just-completed temporal unit's final membership (the per-temporal-unit facts
+    /// have been reset, so [`Self::state`] also returns the committed value — but this
+    /// accessor names the intent). The deferred § 6.6 `msdo/doh-constraint-required`
+    /// evaluation queries it at boundary resolution to decide whether the just-completed
+    /// temporal unit's frame-confirmed activations sit inside a CMVS (see
+    /// [`ValidatorContext::resolve_deferred_doh_constraint`]).
+    fn committed_inside(&self) -> bool {
+        matches!(self.state, CmvsState::Inside)
+    }
+
     /// The disposition of the § 6.4.1 cross-layer monotonic-output-order agreement check
     /// at a sequence-header observation, given the OBUs observed so far in the current
     /// temporal unit.
@@ -2442,7 +2460,7 @@ impl ValidatorContext {
         // temporal delimiter completes the previous temporal unit (flushing deferred
         // CVS-scoped diagnostics) and a CLK starts a new coded video sequence for its
         // extended layer (AV2 § 7.3.6); see observe_cvs_boundary_events.
-        self.observe_cvs_boundary_events(obu, report);
+        self.observe_cvs_boundary_events(obu, options, report);
 
         self.temporal_unit.observe_obu(obu, report);
 
@@ -2547,6 +2565,7 @@ impl ValidatorContext {
     fn observe_cvs_boundary_events(
         &mut self,
         obu: &ObuEnvelope<'_>,
+        options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
         if obu.header.obu_type == ObuType::TemporalDelimiter
@@ -2559,6 +2578,11 @@ impl ValidatorContext {
             // deferred provisional-Inside § 6.4.1 monotonic disagreements are resolved
             // here against the completed temporal unit's final CMVS membership.
             self.cmvs.complete_temporal_unit(report);
+            // AV2 § 6.6: now that the just-completed temporal unit's CMVS membership is
+            // resolved, evaluate the deferred `msdo/doh-constraint-required` check for its
+            // frame-confirmed activations (see resolve_deferred_doh_constraint). Must run
+            // after cmvs.complete_temporal_unit so the membership is final.
+            self.resolve_deferred_doh_constraint(options, report);
             // AV2 § 7.3.8.2: the just-completed temporal unit's buffered OBU_MSDO(s) are
             // resolved against the previous OBU_MSDO now that the temporal unit's
             // § 7.4.1 random-access-point-ness is fully known.
@@ -2766,16 +2790,32 @@ impl ValidatorContext {
 
         // AV2 § 6.6: record the sub-stream PTL ceilings keyed by sub_xlayer_id, replacing
         // any earlier MSDO's ceilings. The live MSDO is the active multistream operation.
-        let mut ceilings = BTreeMap::new();
+        //
+        // § 6.6 states the ceiling constraints "for each sequence header activated by the
+        // i-th independent sub-stream" — i.e. for EACH i in 0..=num_streams_minus_2+1.
+        // The spec declares no uniqueness requirement on sub_xlayer_id (see the proposal's
+        // roadmap-hygiene note), so two entries i and j may name the same extended layer.
+        // A header activated by that layer is then "activated by the i-th sub-stream" for
+        // BOTH i and j, so it must satisfy both ceilings; the effective per-layer ceiling
+        // is the most restrictive (minimum) maximum per dimension. Merging by per-field
+        // min on a duplicate sub_xlayer_id keeps that semantics; a plain last-wins insert
+        // would silently discard the tighter of two declared ceilings (codex finding
+        // 3392940071).
+        let mut ceilings: BTreeMap<u8, SubStreamCeiling> = BTreeMap::new();
         for sub in msdo.sub_streams() {
-            ceilings.insert(
-                sub.sub_xlayer_id,
-                SubStreamCeiling {
-                    max_profile: sub.sub_stream_max_profile,
-                    max_level: sub.sub_stream_max_level,
-                    max_tier: sub.sub_stream_max_tier,
-                },
-            );
+            let declared = SubStreamCeiling {
+                max_profile: sub.sub_stream_max_profile,
+                max_level: sub.sub_stream_max_level,
+                max_tier: sub.sub_stream_max_tier,
+            };
+            ceilings
+                .entry(sub.sub_xlayer_id)
+                .and_modify(|existing| {
+                    existing.max_profile = existing.max_profile.min(declared.max_profile);
+                    existing.max_level = existing.max_level.min(declared.max_level);
+                    existing.max_tier = existing.max_tier.min(declared.max_tier);
+                })
+                .or_insert(declared);
         }
         self.msdo_substream_max = Some(MsdoSubstreamMax {
             ceilings,
@@ -2784,14 +2824,18 @@ impl ValidatorContext {
         });
 
         // AV2 § 6.6: the MSDO-arrives-after-the-header arrival order — re-run the
-        // sub-stream PTL-ceiling and DOH-constraint agreement against every extended
-        // layer with a frame-confirmed activation, so a violation is flagged whether the
-        // MSDO precedes or follows the activation. The activation-precedes-MSDO order is
-        // covered by the calls in `on_sequence_activation`.
+        // sub-stream PTL-ceiling agreement against every extended layer with a
+        // frame-confirmed activation, so a violation is flagged whether the MSDO precedes
+        // or follows the activation. The activation-precedes-MSDO order is covered by the
+        // calls in `on_sequence_activation`. The DOH-constraint check is NOT run here: it
+        // is scoped to a coded multistream *video* sequence whose membership is not final
+        // until the temporal unit completes, so it is deferred to
+        // `resolve_deferred_doh_constraint` at temporal-unit boundary resolution (which
+        // also covers the same-id CLK that opens a CMVS without re-activating a header,
+        // codex finding 3392940072).
         let xlayers: Vec<ExtendedLayerId> = self.frame_confirmed_xlayers.iter().copied().collect();
         for xlayer in xlayers {
             self.check_substream_max_ceilings(xlayer, options, report);
-            self.check_doh_constraint_required(xlayer, options, report);
         }
     }
 
@@ -2805,7 +2849,7 @@ impl ValidatorContext {
     /// ever established a non-zero `ci_scan_type_idc` (see
     /// [`ValidatorContext::flush_scan_type_scope`]). Called once by the validator
     /// after the last OBU.
-    pub(crate) fn finish(&mut self, report: &mut ValidationReport) {
+    pub(crate) fn finish(&mut self, options: &ValidationOptions, report: &mut ValidationReport) {
         self.cvs.flush_completed_tu(report);
         // AV2 § 7.3.2 end condition 3: "The end of the bitstream." The final temporal
         // unit (which has no trailing global temporal delimiter) is completed here so
@@ -2814,6 +2858,10 @@ impl ValidatorContext {
         // a CLK (the temporal unit stayed inside the CMVS until the end of the bitstream)
         // are emitted here.
         self.cmvs.complete_temporal_unit(report);
+        // AV2 § 6.6: resolve the deferred `msdo/doh-constraint-required` check for the
+        // final temporal unit's frame-confirmed activations, exactly as an internal
+        // boundary would (see resolve_deferred_doh_constraint).
+        self.resolve_deferred_doh_constraint(options, report);
         // AV2 § 7.3.8.2: the final temporal unit (which has no trailing global temporal
         // delimiter) is resolved here, exactly as an internal boundary would, so a
         // buffered final-TU OBU_MSDO is compared against the previous one.
@@ -4818,13 +4866,13 @@ impl ValidatorContext {
         }
         self.check_lcr_dependency_agreement(xlayer, options, report);
         // AV2 § 6.6: the activation-precedes-MSDO arrival order for the sub-stream
-        // PTL-ceiling and DOH-constraint agreement checks (the MSDO-precedes-activation
-        // order is covered by the re-check loop in `observe_msdo`). Both internally gate
-        // on the in-band MSDO state, a frame-confirmed activation, and (for DOH) a
-        // definitive CMVS membership; both are suppressed when external HLS declares a
-        // sequence header.
+        // PTL-ceiling agreement check (the MSDO-precedes-activation order is covered by
+        // the re-check loop in `observe_msdo`). It gates on the in-band MSDO state and a
+        // frame-confirmed activation, and is suppressed when external HLS declares a
+        // sequence header. The DOH-constraint check is NOT run here; its CMVS membership
+        // is only final at temporal-unit completion, so it is deferred to
+        // `resolve_deferred_doh_constraint` (see that method and check_doh_constraint_required).
         self.check_substream_max_ceilings(xlayer, options, report);
-        self.check_doh_constraint_required(xlayer, options, report);
     }
 
     /// Emits the Annex A.2 / Annex A.4 profile and level/tier *value-space* diagnostics
@@ -5063,6 +5111,14 @@ impl ValidatorContext {
         let Some((seq_header_id, general)) = self.active_general_for(xlayer) else {
             return;
         };
+        // Anchor at the violating sequence header when its offset is known (matching
+        // the annex-a/* value-space checks); the MSDO offset is the fallback for a
+        // header whose defining OBU was not recorded.
+        let anchor = self
+            .sequence_header_offsets
+            .get(&seq_header_id)
+            .copied()
+            .unwrap_or(msdo_offset);
         let epoch = self.cvs.cvs_generation_epoch(xlayer);
         let value_space = annex_a_value_space_fingerprint(&general);
         let key = SubstreamMaxFindingKey {
@@ -5093,7 +5149,7 @@ impl ValidatorContext {
                     ),
                 )
                 .with_spec_section("6.6")
-                .with_byte_offset(msdo_offset),
+                .with_byte_offset(anchor),
             );
         }
         if level_idx > ceiling.max_level {
@@ -5109,7 +5165,7 @@ impl ValidatorContext {
                     ),
                 )
                 .with_spec_section("6.6")
-                .with_byte_offset(msdo_offset),
+                .with_byte_offset(anchor),
             );
         }
         if tier > ceiling.max_tier {
@@ -5125,7 +5181,7 @@ impl ValidatorContext {
                     ),
                 )
                 .with_spec_section("6.6")
-                .with_byte_offset(msdo_offset),
+                .with_byte_offset(anchor),
             );
         }
     }
@@ -5141,15 +5197,28 @@ impl ValidatorContext {
     /// > the coded multistream video sequence, multistream_doh_constraint_flag shall be
     /// > equal to 1.
     ///
-    /// Gated on [`CmvsState::Inside`] exactly like the landed § 6.4.1
-    /// monotonic-output-order agreement check — the requirement is scoped to a coded
-    /// multistream video sequence and the CMVS tracker is the only oracle (the check
-    /// uses the eager-only `Inside` membership, not the provisional defer/queue path:
-    /// the comparison is intra-layer, not cross-layer, so there is no § 7.3.6
-    /// pre-CLK-redefinition false positive to defer around). Frame-confirmed activations
-    /// only, suppressed under `external_declares_sequence_header`, and idempotent across
-    /// both arrival orders via the same [`SubstreamMaxFindingKey`]-style dedup applied to
-    /// this rule's id.
+    /// **CMVS membership is resolved by the deferred evaluation, not gated here.** § 6.6
+    /// scopes the requirement to a coded multistream *video* sequence, but the temporal
+    /// unit's CMVS membership is not final until its temporal unit completes: a same-id
+    /// header redefinition at the top of a temporal unit that a later MSDO-less CLK ENDS
+    /// (§ 7.3.2 end condition 2) sits *outside* the CMVS even though the committed state
+    /// is still `Inside` when the header activates (codex finding 3392940061). And a
+    /// same-id CLK that re-references an already-active header opens the CMVS at the CLK
+    /// without re-entering `on_sequence_activation` (the seq id is unchanged and the layer
+    /// was already frame-confirmed), so an eager activation-time check never sees the
+    /// transition (codex finding 3392940072). Both are handled by routing this check
+    /// through [`ValidatorContext::resolve_deferred_doh_constraint`], which runs at
+    /// temporal-unit completion against the *resolved* membership and the then-current
+    /// frame-confirmed activations — the same membership-resolution discipline the landed
+    /// § 6.4.1 monotonic-output-order agreement check uses, snapshotting the active
+    /// headers at resolution time. This method therefore performs the per-layer field
+    /// comparison only; the caller guarantees the temporal unit resolved to a definitive
+    /// CMVS `Inside`.
+    ///
+    /// Frame-confirmed activations only, suppressed under
+    /// `external_declares_sequence_header`, and idempotent across temporal units and both
+    /// arrival orders via the `(xlayer, seq_header_id, cvs_epoch)` dedup so a resolved
+    /// evaluation does not re-spam per temporal unit.
     fn check_doh_constraint_required(
         &mut self,
         xlayer: ExtendedLayerId,
@@ -5160,14 +5229,6 @@ impl ValidatorContext {
             return;
         }
         if !self.frame_confirmed_xlayers.contains(&xlayer) {
-            return;
-        }
-        // § 6.6 scopes the requirement to the coded multistream video sequence; fire
-        // only when definitively inside one. (The provisional-Inside defer machinery is
-        // unnecessary here: this is an intra-layer flag comparison, not a cross-layer
-        // agreement that a § 7.3.6 same-CVS redefinition before the CLK could falsely
-        // trip.)
-        if !matches!(self.cmvs.state(), CmvsState::Inside) {
             return;
         }
         let Some(substream_max) = self.msdo_substream_max.as_ref() else {
@@ -5207,6 +5268,48 @@ impl ValidatorContext {
             .with_spec_section("6.6")
             .with_byte_offset(msdo_offset),
         );
+    }
+
+    /// Resolves the deferred § 6.6 `msdo/doh-constraint-required` evaluation for a
+    /// just-completed temporal unit, at temporal-unit-completion time (a temporal
+    /// delimiter boundary or the end-of-bitstream flush), *after* the [`CmvsTracker`] has
+    /// applied the temporal unit's § 7.3.2 begin/end conditions.
+    ///
+    /// The requirement is scoped to a coded multistream *video* sequence, so the
+    /// evaluation only fires when the completed temporal unit resolved to a definitive
+    /// CMVS [`CmvsState::Inside`] ([`CmvsTracker::committed_inside`]). Deferring to this
+    /// point — rather than evaluating eagerly at sequence-header activation as the
+    /// original landing did — handles both arrival-order corner cases the eager check
+    /// missed (codex findings 3392940061 and 3392940072):
+    ///
+    /// - A same-id header redefinition with `monotonic_output_order_flag == 0` at the top
+    ///   of a temporal unit that a later MSDO-less CLK ENDS (§ 7.3.2 end condition 2) sits
+    ///   *outside* the CMVS. The eager check, gated on the still-`Inside` committed state
+    ///   at activation, fired a false positive; this deferred path sees the resolved
+    ///   `Outside`/`Unknown` and does not.
+    /// - A same-id CLK that re-references an already-frame-confirmed active header opens a
+    ///   CMVS at the CLK without re-entering `on_sequence_activation` (the seq id is
+    ///   unchanged and the layer was already confirmed), so the eager activation-time path
+    ///   never ran; this deferred path re-examines ALL frame-confirmed activations against
+    ///   the resolved membership, so the transition to `Inside` is caught.
+    ///
+    /// It snapshots the *then-current* frame-confirmed extended layers and re-runs
+    /// [`Self::check_doh_constraint_required`] for each against the *then-current* MSDO
+    /// record. The `(xlayer, seq_header_id, cvs_epoch)` dedup inside that method keeps a
+    /// resolved evaluation from re-spamming a diagnostic across successive temporal units
+    /// of the same CMVS.
+    fn resolve_deferred_doh_constraint(
+        &mut self,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        if !self.cmvs.committed_inside() {
+            return;
+        }
+        let xlayers: Vec<ExtendedLayerId> = self.frame_confirmed_xlayers.iter().copied().collect();
+        for xlayer in xlayers {
+            self.check_doh_constraint_required(xlayer, options, report);
+        }
     }
 
     /// Emits `sequence-state/monotonic-output-order-mismatch` (AV2 § 6.4.1) when, with
@@ -6576,8 +6679,9 @@ fn timing_mismatch_error(
 
 /// Computes a stable 64-bit FNV-1a fingerprint over an OBU payload's bytes.
 ///
-/// Used to compare repeated activated sequence headers for bit identity without
-/// pulling in a hashing dependency (AV2 § 7.3.6).
+/// Used to compare OBU payloads for bit identity without pulling in a hashing
+/// dependency: repeated activated sequence headers (AV2 § 7.3.6) and the non-RAP
+/// MSDO identity rule (§ 7.3.8.2).
 fn payload_fingerprint(payload: &[u8]) -> u64 {
     const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;

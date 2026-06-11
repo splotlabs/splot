@@ -89,7 +89,7 @@ impl Validator {
                 // The end of the bitstream completes the final temporal unit, flushing
                 // the deferred coded-video-sequence-scoped diagnostics (AV2 § 7.3.6;
                 // see ValidatorContext::finish).
-                context.finish(&mut report);
+                context.finish(options, &mut report);
                 if let Some(error) = parsed.error {
                     report.push(parse_error_diagnostic(&error));
                 }
@@ -106,7 +106,7 @@ impl Validator {
                 }
                 // The end of the IVF input completes the final temporal unit just like
                 // the end of a raw Annex B bitstream.
-                context.finish(&mut report);
+                context.finish(options, &mut report);
                 if let Some(error) = &parsed.error {
                     report.push(ivf_error_diagnostic(error));
                 }
@@ -11216,6 +11216,122 @@ mod tests {
                 .any(|d| d.rule_id == "msdo/doh-constraint-required"),
             "no CMVS means no DOH requirement; report was: {report}"
         );
+    }
+
+    // -- Codex PR #47 follow-ups: deferred DOH evaluation + duplicate ceilings ---
+
+    #[test]
+    fn doh_constraint_not_flagged_when_clk_ends_cmvs_for_the_activating_tu() {
+        // Codex finding 3392940061. The DOH check must defer until the temporal unit's
+        // CMVS membership is final. Scenario: TU1 opens a CMVS (MSDO with
+        // multistream_doh_constraint_flag == 0, a monotonic-1 header, a CLK), so it is
+        // Inside; TU2 redefines the active header to monotonic_output_order_flag == 0 and
+        // activates it via a non-CLK frame BEFORE a later MSDO-less CLK ends the CMVS
+        // (§ 7.3.2 end condition 2, mirror `07-decoding-process.md` lines 335-341). The
+        // monotonic-0 header therefore sits OUTSIDE the CMVS, so § 6.6 does not apply to
+        // it and no `msdo/doh-constraint-required` may fire. The pre-fix eager check,
+        // gated on the still-`Inside` committed state at activation time (the ending CLK
+        // is observed only later in TU2), fired a false positive.
+        let mut data = temporal_delimiter_obu(); // temporal unit 1
+        data.extend(msdo_obu_configured(
+            31,
+            false,
+            &[(0, 21, 21, 0), (1, 21, 21, 0)],
+        ));
+        data.extend(seq_header_obu_ptl(0, 0, 0, 0, false, true)); // seq 0 monotonic 1
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 -> opens CMVS
+        data.extend(temporal_delimiter_obu()); // temporal unit 2 (no MSDO)
+        // Redefinition: a new header (seq 1) for xlayer 0 with monotonic 0, activated by a
+        // non-CLK frame so on_sequence_activation re-runs (the eager path the finding
+        // describes). The ending CLK has not yet been observed when this activates.
+        data.extend(seq_header_obu_ptl(0, 1, 0, 0, false, false)); // seq 1 monotonic 0
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 1)); // non-CLK frame activates seq 1
+        // A later MSDO-less CLK ends the CMVS for temporal unit 2 (end condition 2), so
+        // the monotonic-0 header above is outside the CMVS.
+        data.extend(annex_b_obu(0x10, &[])); // bare CLK on xlayer 0, no MSDO
+        data.extend(temporal_delimiter_obu()); // close temporal unit 2 via a boundary
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "msdo/doh-constraint-required"),
+            "a monotonic-0 header in a temporal unit whose MSDO-less CLK ends the CMVS is \
+             outside the CMVS; § 6.6 must not fire; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn doh_constraint_flagged_when_same_id_clk_opens_cmvs_after_the_activation() {
+        // Codex finding 3392940072. A header frame-confirmed BEFORE any CMVS, then a
+        // temporal unit with an MSDO (multistream_doh_constraint_flag == 0) followed by a
+        // same-id CLK that opens the CMVS. The same-id CLK re-references the already-active
+        // header, so on_sequence_activation is skipped (the seq id is unchanged and the
+        // layer was already frame-confirmed) — the pre-fix eager check, which only ran on
+        // a (re)activation, never saw the CMVS transition to Inside and missed the
+        // violation. The header has monotonic_output_order_flag == 0, so § 6.6 requires
+        // multistream_doh_constraint_flag == 1; the deferred evaluation at temporal-unit
+        // completion re-examines all frame-confirmed activations and fires.
+        let mut data = temporal_delimiter_obu(); // temporal unit 1 (no CMVS yet)
+        data.extend(seq_header_obu_ptl(0, 0, 0, 0, false, false)); // seq 0 monotonic 0
+        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0)); // non-CLK frame confirms seq 0
+        data.extend(temporal_delimiter_obu()); // temporal unit 2
+        // The MSDO (doh flag 0) precedes the coded extended layer unit (§ 7.3.7), and the
+        // same-id CLK frame re-references seq 0 and opens the CMVS at that CLK.
+        data.extend(msdo_obu_configured(
+            31,
+            false,
+            &[(0, 21, 21, 0), (1, 21, 21, 0)],
+        ));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0, ref seq 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "msdo/doh-constraint-required"
+                    && d.spec_section.as_deref() == Some("6.6")
+            }),
+            "a same-id CLK that opens a CMVS over a monotonic-0 frame-confirmed header must \
+             fire § 6.6 at temporal-unit resolution; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn substream_max_duplicate_sub_xlayer_id_keeps_the_most_restrictive_ceiling() {
+        // Codex finding 3392940071. § 6.6 imposes the sub_stream_max_* ceiling "for each
+        // sequence header activated by the i-th independent sub-stream" — for EACH i. With
+        // a duplicate sub_xlayer_id (the spec declares no uniqueness requirement), an
+        // activated header must satisfy BOTH declared ceilings, so the effective per-layer
+        // ceiling is the per-dimension minimum. Here sub_xlayer_id 1 is declared twice with
+        // sub_stream_max_level 8 and 4; a header at level 6 on extended layer 1 exceeds the
+        // tighter ceiling 4 and must be flagged. A pre-fix last-wins insert would keep
+        // whichever entry came last and miss the violation when the 8-ceiling won.
+        for (first, second) in [
+            ((1, 21, 8, 0), (1, 21, 4, 0)),
+            ((1, 21, 4, 0), (1, 21, 8, 0)),
+        ] {
+            let mut data = temporal_delimiter_obu();
+            data.extend(msdo_obu_configured(
+                31,
+                true,
+                &[(0, 21, 21, 0), first, second],
+            ));
+            // Interleave each layer's header with its CLK frame in ascending xlayer order
+            // (§ 7.3.7 coded-extended-layer-unit ordering): xlayer 0 header + frame, then
+            // xlayer 1 header + frame.
+            data.extend(seq_header_obu_ptl(0, 0, 0, 0, false, true)); // xlayer 0 header
+            data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // confirm xlayer 0
+            data.extend(seq_header_obu_ptl(1, 1, 0, 6, false, true)); // xlayer 1: level 6
+            data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 1)); // confirm xlayer 1
+            let report = Validator::new(false).validate_bytes(&data);
+            assert!(
+                report.errors().any(|d| {
+                    d.rule_id == "msdo/substream-level-exceeds-max"
+                        && d.spec_section.as_deref() == Some("6.6")
+                }),
+                "a duplicate sub_xlayer_id must enforce the most restrictive (level 4) \
+                 ceiling regardless of declaration order ({first:?} then {second:?}); \
+                 report was: {report}"
+            );
+        }
     }
 
     // -- Task 5: § 7.3.8.2 non-RAP MSDO identity --------------------------------
