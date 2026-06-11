@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "7830efd0ae03b7aa7689d4c7722144d90c682839",
+  "audited_commit": "e6d81f67a57cad78f231f69deab7fffa3c4fe981",
   "outcome": "success",
   "files": [
     {
@@ -1538,7 +1538,7 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "8fea7f32c9ace1805fb26e3379834874593e59b5061699aef487b963ddf6b2fd",
+      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -1548,8 +1548,6 @@
         "AV2-5.2.3-TRAILING-BITS",
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
-        "AV2-5.6-MSDO",
-        "AV2-7.3.8-HLS-AVAILABILITY",
         "CONF-AVM-DIFF-HARNESS",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
@@ -2852,35 +2850,6 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/msdo-substream-constraint-checks/proposal.md",
-      "sha256": "92ab9df65672caf40fec42f8b588cf33a37f342248dad3ccd55f328a56854170",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.6-MSDO",
-        "AV2-7.3.8-HLS-AVAILABILITY",
-        "AV2-A-LEVELS-TIERS"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/msdo-substream-constraint-checks/specs/validator/spec.md",
-      "sha256": "96e26cd3784e3b4ca29f7007c0e73362f1149dd1d35dbbaec64353942399785f",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.6-MSDO"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/msdo-substream-constraint-checks/tasks.md",
-      "sha256": "f75b6ee187efe09bfa00d08c6dacf686432d74bc8360eee0d5bef53aaad484af",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.6-MSDO"
-      ],
-      "outcome": "success"
-    },
-    {
       "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
       "sha256": "ec25589a8a02879087f03de9cc0c8b07e5fedf96f9a48c8f3dd99be91c14d240",
       "scope_kind": "openspec",
@@ -3018,7 +2987,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "9d25b46d0d054477fa7b60b05ae2d9d627d055e53cdfdb9c94f66200802c4403",
+      "sha256": "8c42a861eaaf469ff1ebd1309c9cccfcefe08a06f96323b79e3f6d25af155e7e",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
