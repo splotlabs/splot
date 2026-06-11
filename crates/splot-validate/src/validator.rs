@@ -10200,6 +10200,38 @@ mod tests {
     }
 
     #[test]
+    fn annex_a_value_space_rechecked_on_same_id_redefinition_with_different_level() {
+        // § 7.3.6 permits re-sending the activated seq_header_id with different content.
+        // The Annex A value-space dedup key carries a fingerprint of the checked fields,
+        // so a same-id redefinition whose seq_level_idx changes from a clean value to a
+        // reserved one re-runs the check and flags it — rather than being suppressed by
+        // the first (clean) activation's key.
+        let mut data = temporal_delimiter_obu();
+        // First activation: seq_header_id 0 at a defined level (0 == 2.0) — clean.
+        data.extend(annex_a_seq_obu(AnnexASeq {
+            seq_id: 0,
+            level_idx: 0,
+            ..AnnexASeq::base()
+        }));
+        // Redefinition of the SAME seq_header_id 0 (still active for xlayer 0) at a
+        // reserved level (25, in 22-30): re-activates and must re-run the value-space
+        // check.
+        data.extend(annex_a_seq_obu(AnnexASeq {
+            seq_id: 0,
+            level_idx: 25,
+            ..AnnexASeq::base()
+        }));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "annex-a/level-reserved" && d.spec_section.as_deref() == Some("A.4")
+            }),
+            "a same-id redefinition with a reserved seq_level_idx must re-run the Annex A \
+             value-space check and flag the reserved level; report was: {report}"
+        );
+    }
+
+    #[test]
     fn annex_a_accepts_level_21_and_31() {
         // LevelIdx 21 (8.3) is the last defined level; 31 is Maximum parameters (valid);
         // 22 is the first reserved value.
@@ -10518,11 +10550,24 @@ mod tests {
 
     /// A local OPS OBU (xlayer 0, `ops_cnt == 1`, `ops_ptl_present`) whose single
     /// operating point's `ops_seq_profile_tier_level_info()` (§ 5.11.2) signals
-    /// `ops_level_idx == level_idx` and `ops_tier_flag == high_tier`. Modeled on
-    /// `local_ops_obu` (OBU type 18); the per-op `ops_data_size` is the byte-aligned
-    /// body length. Unlike the sequence header, the OPS PTL carries `ops_tier_flag`
-    /// unconditionally, so High tier can be signaled at any level here.
+    /// `ops_level_idx == level_idx` and `ops_tier_flag == high_tier`, with
+    /// `ops_seq_profile_idc == 0`.
     fn ops_obu_with_level_tier(level_idx: u32, high_tier: bool) -> Vec<u8> {
+        ops_obu_with_profile_level_tier(0, level_idx, high_tier)
+    }
+
+    /// A local OPS OBU (xlayer 0, `ops_cnt == 1`, `ops_ptl_present`) whose single
+    /// operating point's `ops_seq_profile_tier_level_info()` (§ 5.11.2) signals
+    /// `ops_seq_profile_idc == profile_idc`, `ops_level_idx == level_idx`, and
+    /// `ops_tier_flag == high_tier`. Modeled on `local_ops_obu` (OBU type 18); the
+    /// per-op `ops_data_size` is the byte-aligned body length. Unlike the sequence
+    /// header, the OPS PTL carries `ops_tier_flag` unconditionally, so High tier can be
+    /// signaled at any level here.
+    fn ops_obu_with_profile_level_tier(
+        profile_idc: u32,
+        level_idx: u32,
+        high_tier: bool,
+    ) -> Vec<u8> {
         let mut bits = Bits::default();
         bits.bit(0); // ops_reset_flag
         bits.f(0, 4); // ops_id
@@ -10536,7 +10581,7 @@ mod tests {
         // operating_point_payload(0):
         let mut body = Bits::default();
         // ops_seq_profile_tier_level_info() (§ 5.11.2).
-        body.f(0, 5); // ops_seq_profile_idc
+        body.f(profile_idc, 5); // ops_seq_profile_idc
         body.f(level_idx, 5); // ops_level_idx
         body.bit(u8::from(high_tier)); // ops_tier_flag
         body.f(0, 3); // ops_mlayer_count
@@ -10551,59 +10596,18 @@ mod tests {
         annex_b_obu_with_header(&layer_obu_header(18, 0, 0, 0), &finish_extensible(bits))
     }
 
-    // --- Table A.4 interoperability-point OBU presence (Annex A.2) ---
-
-    /// A two-extended-layer (IOP from `profile_idc`) coded video sequence: one temporal
-    /// unit with ascending coded-extended-layer units — sequence header then CLK for
-    /// xlayer 0, then for xlayer 1 — optionally preceded by a global MSDO and/or global
-    /// LCR, then a trailing temporal delimiter that closes the IOP window so Table A.4 is
-    /// evaluated. Each CLK frame-confirms its extended layer's activation.
-    fn annex_a_two_xlayer_stream(
-        profile_idc: u32,
-        include_msdo: bool,
-        global_lcr_xlayer_map: Option<u32>,
-    ) -> Vec<u8> {
-        let mut data = temporal_delimiter_obu();
-        if include_msdo {
-            data.extend(annex_b_obu(0x50, &msdo_payload(0))); // global MSDO (2 substreams)
-        }
-        if let Some(map) = global_lcr_xlayer_map {
-            data.extend(global_lcr_obu(0, map, None));
-        }
-        // Ascending coded-extended-layer units: xlayer 0's header + CLK, then xlayer 1's.
-        data.extend(annex_a_seq_obu(AnnexASeq {
-            seq_id: 0,
-            profile_idc,
-            ..AnnexASeq::base()
-        }));
-        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0
-        data.extend(annex_b_obu_with_header(
-            &layer_obu_header(4, 0, 0, 1),
-            &annex_a_seq_payload(AnnexASeq {
-                seq_id: 1,
-                profile_idc,
-                ..AnnexASeq::base()
-            }),
-        ));
-        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 1)); // CLK xlayer 1
-        data.extend(temporal_delimiter_obu()); // closes the IOP window -> evaluate Table A.4
-        data
-    }
-
-    /// A two-extended-layer profile-0 (IOP0) coded video sequence; convenience over
-    /// [`annex_a_two_xlayer_stream`].
-    fn annex_a_two_xlayer_iop0_stream(include_msdo: bool) -> Vec<u8> {
-        annex_a_two_xlayer_stream(0, include_msdo, None)
-    }
-
     #[test]
-    fn annex_a_iop0_multi_xlayer_without_msdo_requires_msdo() {
-        // IOP0 with more than one extended layer requires an OBU_MSDO (Table A.4 row 2).
-        let data = annex_a_two_xlayer_iop0_stream(false);
+    fn annex_a_flags_reserved_ops_seq_profile_idc() {
+        // A local OPS carrying ops_seq_profile_idc 7 (reserved 5-30) for one extended
+        // layer must be flagged as a reserved profile (§ 6.10.4 maps the OPS-derived
+        // profile id onto Annex A.2 Table A.1).
+        let mut data = temporal_delimiter_obu();
+        data.extend(ops_obu_with_profile_level_tier(7, 4, false));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             report.errors().any(|d| {
-                d.rule_id == "annex-a/msdo-required-for-iop"
+                d.rule_id == "annex-a/profile-reserved"
+                    && d.message.contains("ops_seq_profile_idc")
                     && d.spec_section.as_deref() == Some("A.2")
             }),
             "report was: {report}"
@@ -10611,216 +10615,16 @@ mod tests {
     }
 
     #[test]
-    fn annex_a_iop0_multi_xlayer_with_msdo_is_accepted() {
-        // The same stream with the required MSDO present must not be flagged.
-        let data = annex_a_two_xlayer_iop0_stream(true);
-        let report = Validator::new(false).validate_bytes(&data);
-        assert!(
-            !report
-                .errors()
-                .any(|d| d.rule_id.starts_with("annex-a/msdo")),
-            "report was: {report}"
-        );
-    }
-
-    /// A single-extended-layer (xlayer 0) IOP0 coded video sequence: sequence header +
-    /// CLK in one temporal unit, optionally preceded by a global MSDO, then a trailing
-    /// temporal delimiter that closes the IOP window.
-    fn annex_a_single_xlayer_iop0_stream(include_msdo: bool) -> Vec<u8> {
+    fn annex_a_accepts_valid_ops_seq_profile_idc() {
+        // ops_seq_profile_idc 0 is a defined profile — no profile-reserved error.
         let mut data = temporal_delimiter_obu();
-        if include_msdo {
-            data.extend(annex_b_obu(0x50, &msdo_payload(0))); // global MSDO
-        }
-        data.extend(annex_a_seq_obu(AnnexASeq::base()));
-        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0
-        data.extend(temporal_delimiter_obu()); // closes the IOP window
-        data
-    }
-
-    #[test]
-    fn annex_a_iop0_msdo_declares_two_streams_so_prohibited_row_is_unreachable() {
-        // Under the strict Table A.3 definitions (mirror lines 146-151), a present
-        // OBU_MSDO sets MultiStreamDecoderMode == 1 and the "Number of Extended Layers" is
-        // its declared num_streams_minus_2 + 2 (== 2 here), which takes precedence over the
-        // single distinct obu_xlayer_id actually coded. So E == 2 > 1 and the Table A.4
-        // "MSDO Prohibited" rows (E == 1) are structurally unreachable in-band whenever an
-        // MSDO is present: annex-a/msdo-prohibited-for-iop must NOT fire here. The genuine
-        // real-world violation (an MSDO declaring substreams that never materialize as
-        // distinct extended layers) is the declared-vs-observed reconciliation owned by the
-        // upcoming msdo-substream-constraint-checks change, not this skeleton. (This
-        // replaces an earlier test that asserted the prohibited row fired on the observed
-        // single-xlayer count — behavior the mirror's declared-precedence definition
-        // contradicts.)
-        let data = annex_a_single_xlayer_iop0_stream(true);
+        data.extend(ops_obu_with_profile_level_tier(0, 4, false));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             !report
                 .errors()
-                .any(|d| d.rule_id.starts_with("annex-a/msdo")),
-            "an MSDO declaring two streams reads E == 2, so neither prohibited nor required \
-             fires; report was: {report}"
-        );
-    }
-
-    #[test]
-    fn annex_a_iop0_single_xlayer_without_msdo_is_accepted() {
-        // A single-extended-layer IOP0 stream with no MSDO is conformant (Table A.4 row
-        // 1: MSDO prohibited == not required).
-        let data = annex_a_single_xlayer_iop0_stream(false);
-        let report = Validator::new(false).validate_bytes(&data);
-        assert!(
-            !report
-                .errors()
-                .any(|d| d.rule_id.starts_with("annex-a/msdo")),
-            "report was: {report}"
-        );
-    }
-
-    #[test]
-    fn annex_a_iop2_multi_xlayer_global_lcr_satisfies_either_or() {
-        // IOP2 (profile 2) with E (two extended layers) and !M: MSDO OR global LCR
-        // satisfies (Table A.4 row "2 Y N"). Provide a global LCR (xlayers 0, 1) and no
-        // MSDO.
-        let data = annex_a_two_xlayer_stream(2, false, Some(0b11));
-        let report = Validator::new(false).validate_bytes(&data);
-        assert!(
-            !report
-                .errors()
-                .any(|d| d.rule_id.starts_with("annex-a/msdo")
-                    || d.rule_id == "annex-a/lcr-required-for-iop"),
-            "a global LCR satisfies the IOP2 E,!M either/or; report was: {report}"
-        );
-    }
-
-    #[test]
-    fn annex_a_iop2_multi_xlayer_msdo_satisfies_either_or() {
-        // IOP2 with E and !M: an MSDO alone also satisfies (Table A.4 row "2 Y N", the
-        // other arm of the either/or). Provide an MSDO and no LCR.
-        let data = annex_a_two_xlayer_stream(2, true, None);
-        let report = Validator::new(false).validate_bytes(&data);
-        assert!(
-            !report
-                .errors()
-                .any(|d| d.rule_id == "annex-a/msdo-required-for-iop"
-                    || d.rule_id == "annex-a/lcr-required-for-iop"),
-            "an MSDO satisfies the IOP2 E,!M either/or; report was: {report}"
-        );
-    }
-
-    #[test]
-    fn annex_a_iop2_multi_xlayer_neither_msdo_nor_lcr_is_flagged() {
-        // IOP2 with E and !M but neither an MSDO nor a global LCR fails the either/or.
-        let data = annex_a_two_xlayer_stream(2, false, None);
-        let report = Validator::new(false).validate_bytes(&data);
-        assert!(
-            report
-                .errors()
-                .any(|d| d.rule_id == "annex-a/msdo-required-for-iop"),
-            "neither MSDO nor LCR present for IOP2 E,!M must be flagged; report was: {report}"
-        );
-    }
-
-    #[test]
-    fn annex_a_table_a4_suppressed_under_external_hls() {
-        use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
-        // The IOP0 two-xlayer-without-MSDO stream is flagged in-band, but suppressed when
-        // external HLS is provided (in-band presence counting is unsound).
-        let data = annex_a_two_xlayer_iop0_stream(false);
-        let options = ValidationOptions {
-            external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
-        };
-        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
-        assert!(
-            !report
-                .errors()
-                .any(|d| d.rule_id.starts_with("annex-a/msdo")
-                    || d.rule_id.starts_with("annex-a/lcr")),
-            "Table A.4 presence checks are suppressed under external HLS; report was: {report}"
-        );
-    }
-
-    #[test]
-    fn annex_a_iop0_second_cvs_same_seq_header_id_violation_is_caught() {
-        // Regression for the same-id-CLK-reactivation window-seeding bug. The frame path
-        // re-runs the sequence-activation hook (and so seeds the IOP window's
-        // interoperability point) only when the activated seq_header_id changes or is newly
-        // confirmed. A second coded video sequence that reuses the SAME already-confirmed
-        // seq_header_ids never re-fires the hook, so without explicit seeding its IOP window
-        // opens with no interoperability point and is skipped at evaluation — missing a
-        // two-extended-layer IOP0 second CVS that lacks the required MSDO.
-        //
-        // CVS1 (temporal unit 0): two extended layers WITH a global MSDO (conformant —
-        // E == 2 satisfied). CVS2 (temporal unit 1): the same two extended layers reusing
-        // seq_header_ids 0 and 1, but WITHOUT an MSDO. Seeding from the active header at the
-        // CVS2 boundary makes its window decidable (IOP0), so annex-a/msdo-required-for-iop
-        // fires for CVS2.
-        let mut data = temporal_delimiter_obu();
-        // --- CVS1: temporal unit 0, two xlayers, with MSDO ---
-        data.extend(annex_b_obu(0x50, &msdo_payload(0))); // global MSDO (2 substreams)
-        data.extend(annex_a_seq_obu(AnnexASeq {
-            seq_id: 0,
-            ..AnnexASeq::base()
-        }));
-        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 ref seq 0
-        data.extend(annex_b_obu_with_header(
-            &layer_obu_header(4, 0, 0, 1),
-            &annex_a_seq_payload(AnnexASeq {
-                seq_id: 1,
-                ..AnnexASeq::base()
-            }),
-        ));
-        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 1)); // CLK xlayer 1 ref seq 1
-        data.extend(temporal_delimiter_obu()); // end temporal unit 0
-        // --- CVS2: temporal unit 1, same two xlayers reusing seq ids 0 and 1, no MSDO ---
-        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 ref seq 0
-        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 1)); // CLK xlayer 1 ref seq 1
-        data.extend(temporal_delimiter_obu()); // closes CVS2's window at end of stream path
-        let report = Validator::new(false).validate_bytes(&data);
-        assert!(
-            report.errors().any(|d| {
-                d.rule_id == "annex-a/msdo-required-for-iop"
-                    && d.spec_section.as_deref() == Some("A.2")
-            }),
-            "a two-extended-layer IOP0 second CVS reusing the same seq_header_ids without an \
-             MSDO must still be flagged; report was: {report}"
-        );
-    }
-
-    #[test]
-    fn annex_a_iop0_second_xlayer_in_later_tu_of_same_cvs_is_caught() {
-        // Regression for the window-closes-too-early bug. The IOP window spans the WHOLE
-        // coded video sequence, not just its random-access temporal unit. A second distinct
-        // obu_xlayer_id that first appears in a LATER temporal unit of the same coded video
-        // sequence (after the CLK temporal unit, with no new CLK) must still count toward
-        // the Table A.3 "Number of Extended Layers": E == 2, so an IOP0 sequence without an
-        // MSDO is flagged. With the old close-at-CLK-temporal-unit behavior, the later
-        // temporal unit's xlayer went into a fresh window and the two-extended-layer
-        // condition was missed.
-        //
-        // Temporal unit 0: sequence header (seq 0) + CLK xlayer 0 (distinct xlayers {0}).
-        // Temporal unit 1 (same CVS, no new CLK): a regular tile group at xlayer 1 that
-        // references seq 0 — its first appearance introduces the second distinct xlayer
-        // {0, 1}. End of stream flushes the (still-open) window: E == 2, no MSDO ->
-        // annex-a/msdo-required-for-iop.
-        let mut data = temporal_delimiter_obu();
-        data.extend(annex_a_seq_obu(AnnexASeq {
-            seq_id: 0,
-            ..AnnexASeq::base()
-        }));
-        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 ref seq 0
-        data.extend(temporal_delimiter_obu()); // end temporal unit 0 (window stays open)
-        // Temporal unit 1: a non-CLK frame (regular tile group, obu_type 7) at xlayer 1,
-        // the second distinct extended layer's first appearance.
-        data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 1, 0));
-        data.extend(temporal_delimiter_obu()); // end temporal unit 1
-        let report = Validator::new(false).validate_bytes(&data);
-        assert!(
-            report.errors().any(|d| {
-                d.rule_id == "annex-a/msdo-required-for-iop"
-                    && d.spec_section.as_deref() == Some("A.2")
-            }),
-            "a second distinct extended layer appearing in a later temporal unit of the same \
-             coded video sequence without an MSDO must be flagged; report was: {report}"
+                .any(|d| d.rule_id == "annex-a/profile-reserved"),
+            "ops_seq_profile_idc 0 is a defined profile; report was: {report}"
         );
     }
 }

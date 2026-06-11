@@ -60,6 +60,16 @@ grounded in `docs/spec/av2/1.0.0/annex-a-profiles-levels-and-tiers.md`:
      (error), `annex-a/lcr-required-for-iop` (error) — exact per-row semantics
      in design.md, including the IOP2 either/or rows.
 
+   > **Descoped before merge (PR #46).** Codex's second review pass found the
+   > Table A.4 IOP-presence window machinery unsound without state this skeleton
+   > does not model. It was removed cleanly before merge and re-lands with the
+   > `msdo-global-lcr-agreement` backlog change once MSDO aggregate-profile
+   > (`multistream_profile_idc`) state, LCR activation state, and §7.3.6-correct
+   > per-TU window attribution exist (the PR #46 codex threads record the
+   > requirements). The three ids moved to the Planned diagnostics backlog in
+   > `docs/VALIDATOR-ROADMAP.md`. Items 1–3 (profile/level/tier value-space and
+   > static level limits) landed as proposed.
+
 ## Non-goals
 
 - Rate-based constraints (MaxDisplayRate/MaxDecodeRate/MaxHeaderRate,

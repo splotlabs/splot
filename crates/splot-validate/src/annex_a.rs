@@ -260,35 +260,6 @@ pub(crate) fn is_reserved_level(level_idx: u8) -> bool {
     (FIRST_RESERVED_LEVEL_IDX..=LAST_RESERVED_LEVEL_IDX).contains(&level_idx)
 }
 
-/// The interoperability point a profile signals (Annex A.2 Table A.1 column
-/// "Interoperability point", mirror lines 61-91).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum InteroperabilityPoint {
-    /// IOP 0 (profile 0, Table A.1 line 64). Single extended layer, single embedded
-    /// layer.
-    Iop0,
-    /// IOP 1 (profiles 1, 3, 4, Table A.1 lines 67/73/81).
-    Iop1,
-    /// IOP 2 (profile 2, Table A.1 line 70).
-    Iop2,
-}
-
-/// Returns the interoperability point a non-Configurable profile signals
-/// (Annex A.2 Table A.1, mirror lines 64-81: profile 0 -> IOP0; 1, 3, 4 -> IOP1;
-/// 2 -> IOP2), or `None` for a reserved (`5..=30`) or the Configurable (`31`)
-/// profile, whose IOP is not directly determined by the profile id (mirror lines
-/// 41-44: "explicitly determined by the profile identifier for all profiles except
-/// the Configurable profile").
-#[must_use]
-pub(crate) fn interoperability_point(profile_idc: u8) -> Option<InteroperabilityPoint> {
-    match profile_idc {
-        0 => Some(InteroperabilityPoint::Iop0),
-        1 | 3 | 4 => Some(InteroperabilityPoint::Iop1),
-        2 => Some(InteroperabilityPoint::Iop2),
-        _ => None,
-    }
-}
-
 /// Returns `true` when `chroma_format_idc` is permitted under `profile_idc`
 /// (Annex A.2 Table A.1 column "chroma_format_idc", mirror lines 61-90):
 ///
@@ -440,19 +411,5 @@ mod tests {
         ] {
             assert!(profile_allows_chroma(CONFIGURABLE_PROFILE_IDC, chroma));
         }
-    }
-
-    #[test]
-    fn interoperability_points_match_table_a1() {
-        // Table A.1: profile 0 -> IOP0 (line 64); 1, 3, 4 -> IOP1 (lines 67/73/81);
-        // 2 -> IOP2 (line 70).
-        assert_eq!(interoperability_point(0), Some(InteroperabilityPoint::Iop0));
-        assert_eq!(interoperability_point(1), Some(InteroperabilityPoint::Iop1));
-        assert_eq!(interoperability_point(2), Some(InteroperabilityPoint::Iop2));
-        assert_eq!(interoperability_point(3), Some(InteroperabilityPoint::Iop1));
-        assert_eq!(interoperability_point(4), Some(InteroperabilityPoint::Iop1));
-        // Reserved (5-30) and Configurable (31) are not directly determined.
-        assert_eq!(interoperability_point(5), None);
-        assert_eq!(interoperability_point(CONFIGURABLE_PROFILE_IDC), None);
     }
 }

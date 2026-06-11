@@ -54,19 +54,29 @@
 
 ## 5. Table A.4 IOP presence checks (CVS scope)
 
-- [x] 5.1 Layer counting per Table A.3 definitions from existing trackers
-  (design.md); embedded-layer count from activated headers. (Extended-layer
-  count from distinct non-global `obu_xlayer_id`, with `num_streams_minus_2+2`
-  / `LcrMaxNumXLayerCount` as a fallback when no concrete xlayer is observed;
-  embedded count from the max `seq_max_mlayer_count` across activated headers.)
-- [x] 5.2 `annex-a/msdo-prohibited-for-iop`, `annex-a/msdo-required-for-iop`,
+> **DESCOPED before merge (PR #46).** Codex's second review pass found the
+> Table A.4 IOP-presence window machinery unsound without state this skeleton
+> does not model (MSDO aggregate-profile `multistream_profile_idc` state, LCR
+> activation state, §7.3.6-correct per-TU window attribution). All of section 5
+> was removed cleanly before merge — types (`AnnexAIopTracker`,
+> `AnnexAIopWindow`, `AnnexAIopState`), the window plumbing and emit paths, the
+> three diagnostics, and their tests — and re-lands with the
+> `msdo-global-lcr-agreement` backlog change. The three ids moved to the Planned
+> diagnostics backlog in `docs/VALIDATOR-ROADMAP.md` (the PR #46 codex threads
+> record the requirements).
+
+- [x] ~~5.1 Layer counting per Table A.3 definitions from existing trackers
+  (design.md); embedded-layer count from activated headers.~~ (Descoped before
+  merge — see the section note.)
+- [x] ~~5.2 `annex-a/msdo-prohibited-for-iop`, `annex-a/msdo-required-for-iop`,
   `annex-a/lcr-required-for-iop` (errors, § A.2 Table A.4) with the design.md
   row semantics, including both IOP2 either/or arms; fire at CVS end;
-  `ExternalHlsMode::Provided` suppression with tests.
-- [x] 5.3 If the Table A.3 layer-budget bound (combination flag for IOP 0/1)
+  `ExternalHlsMode::Provided` suppression with tests.~~ (Descoped before merge —
+  see the section note.)
+- [x] ~~5.3 If the Table A.3 layer-budget bound (combination flag for IOP 0/1)
   is not trivially provable here, record it as `TODO(spec:
-  AV2-A-LEVELS-TIERS)` instead of guessing. (Recorded as a TODO in
-  `evaluate_annex_a_iop_window`.)
+  AV2-A-LEVELS-TIERS)` instead of guessing.~~ (Descoped before merge — see the
+  section note.)
 
 ## 6. Docs, registry, generated artifacts
 
