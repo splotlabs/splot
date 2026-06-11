@@ -46,7 +46,7 @@ decoder-model constraints (Annex E) are out of scope. Hand-crafted unit vectors 
 | `annex-a/level-reserved` | error | § A.4 | an activated seq_level_idx, or an observed ops_level_idx, is in the reserved range 22-30 (Table A.7) |
 | `annex-a/profile-bit-depth-mismatch` | error | § A.2 | bit_depth_idc is not 0 or 1 for a profile in 0-4 (Table A.1; defensive — the parsed bit_depth_idc only models 0/1, so unreachable today) |
 | `annex-a/profile-chroma-format-mismatch` | error | § A.2 | chroma_format_idc is outside the activated profile's allowed set (Table A.1; profile 31 / reserved profiles are skipped) |
-| `annex-a/profile-reserved` | error | § A.2 | seq_profile_idc (or an observed ops_seq_profile_idc) is in the reserved range 5-30 (Table A.1) |
+| `annex-a/profile-reserved` | error | § A.2 | seq_profile_idc, an observed ops_seq_profile_idc, or a multistream_profile_idc (§ 6.6 binds its value space to seq_profile_idc / Table A.1; the spec's "Table A.4" cross-reference is an erratum) is in the reserved range 5-30 (Table A.1) |
 | `annex-a/tile-count-exceeds-level` | error | § A.4 | a parsed intra frame's NumTiles > MaxTiles or TileCols > MaxTileCols for the activated seq_level_idx (Table A.9) |
 
 ### `atlas/`
@@ -206,7 +206,13 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 
 | Rule ID | Severity | Section | Condition |
 |---|---|---|---|
+| `msdo/doh-constraint-required` | error | § 6.6 | inside a coded multistream video sequence, a frame-confirmed activated sequence header has monotonic_output_order_flag == 0 while the MSDO's multistream_doh_constraint_flag == 0 (mirror lines 1391-1393) |
 | `msdo/non-global-layer-id` | error | § 6.6 | OBU_MSDO does not use tlayer==0, mlayer==0, xlayer==GLOBAL_XLAYER_ID |
+| `msdo/non-rap-not-identical` | error | § 7.3.8.2 | an OBU_MSDO in a temporal unit that is not a random access point (§ 7.4.1: no CLK/OLK/RAS) differs from the previous OBU_MSDO; resolved at temporal-unit end |
+| `msdo/profile-below-substream-max` | error | § 6.6 | multistream_profile_idc < sub_stream_max_profile[i] for some i (mirror line 1347) |
+| `msdo/substream-level-exceeds-max` | error | § 6.6 | a frame-confirmed sequence header activated by sub-stream i (mapped via sub_xlayer_id[i]) has seq_level_idx > sub_stream_max_level[i] (mirror lines 1368-1372) |
+| `msdo/substream-profile-exceeds-max` | error | § 6.6 | a frame-confirmed sequence header activated by sub-stream i (mapped via sub_xlayer_id[i]) has seq_profile_idc > sub_stream_max_profile[i] (mirror lines 1362-1366) |
+| `msdo/substream-tier-exceeds-max` | error | § 6.6 | a frame-confirmed sequence header activated by sub-stream i (mapped via sub_xlayer_id[i]) has seq_tier > sub_stream_max_tier[i] (mirror lines 1374-1378) |
 | `msdo/too-many-streams` | error | § 6.6 | num_streams_minus_2 exceeds 2 |
 
 ### `obu-header/`
