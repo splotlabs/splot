@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "82b436e08d241825833df1832ae972a3c16f13a5",
+  "audited_commit": "cc47377caf2ae418c809abbe4d544dff0ef36c4f",
   "outcome": "success",
   "files": [
     {
@@ -1539,7 +1539,7 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "7227cb81480a847511f0033f4e4c294acf866dd35288ab8a4ec26fdf2949a933",
+      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -1549,9 +1549,6 @@
         "AV2-5.2.3-TRAILING-BITS",
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
-        "AV2-5.7-MULTI-FRAME-HEADER",
-        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
-        "AV2-7.3.8-HLS-AVAILABILITY",
         "CONF-AVM-DIFF-HARNESS",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
@@ -2973,41 +2970,6 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/rap-availability-replay/proposal.md",
-      "sha256": "7344ed7df29448a558bdebf4a52c8d23f34afb40ee9a8175f060ac4d42b55899",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.7-MULTI-FRAME-HEADER",
-        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
-        "AV2-7.3.8-HLS-AVAILABILITY"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/rap-availability-replay/specs/validator/spec.md",
-      "sha256": "d6539e4cb3831a7098cb597aa19e3fee9707de3597097a5c1820ea70fac94e42",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.7-MULTI-FRAME-HEADER",
-        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
-        "AV2-7.3.8-HLS-AVAILABILITY"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/rap-availability-replay/tasks.md",
-      "sha256": "17584287b7f66784d703b32a196d0597a1267451243163eca110e67d84f33333",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.6-MSDO",
-        "AV2-5.7-MULTI-FRAME-HEADER",
-        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
-        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
-        "AV2-7.3.8-HLS-AVAILABILITY"
-      ],
-      "outcome": "success"
-    },
-    {
       "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
       "sha256": "ec25589a8a02879087f03de9cc0c8b07e5fedf96f9a48c8f3dd99be91c14d240",
       "scope_kind": "openspec",
@@ -3145,7 +3107,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "c2e0f3a67f2dfdc9cda3e5be829afc3af45e9c4e23f341d58343fa61ea2848ef",
+      "sha256": "38489b899cb92e7092409230484e3a1ef2d7c2ecc02728294c07bdfcd8671d13",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
