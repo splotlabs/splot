@@ -176,6 +176,7 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
     "padding/",
     "metadata/",
     "decoder-model/",
+    "annex-a/",
 ];
 
 /// Output format for `feature-status`.

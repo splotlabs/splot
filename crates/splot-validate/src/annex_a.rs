@@ -1,0 +1,415 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+//! AV2 Annex A profile/level/tier static-constraint tables and helpers
+//! (AV2 v1.0.0 Annex A,
+//! `docs/spec/av2/1.0.0/annex-a-profiles-levels-and-tiers.md`).
+//!
+//! This module holds the table data transcribed **verbatim** from the committed
+//! spec mirror — the AV2 profile definitions (Annex A.2 Table A.1) and the static
+//! level limits (Annex A.4 Tables A.7/A.8/A.9) — plus pure helper functions over
+//! them. Every value cell carries a mirror line citation; the rate columns
+//! (`MaxDisplayRate`/`MaxDecodeRate`/`MaxHeaderRate`/`MainMbps`/`HighMbps`/`MainCR`/
+//! `HighCR`) are deliberately **not** transcribed: they belong to the Annex E
+//! decoder-model change (Feature ID `AV2-E-DECODER-MODEL`).
+//!
+//! The check wiring that consumes these tables lives in
+//! [`crate::context`]; the rule semantics and the Table A.4 interoperability-point
+//! presence requirements are documented there. Feature IDs: `AV2-A-PROFILES`,
+//! `AV2-A-LEVELS-TIERS`.
+
+use splot_core::headers::sequence::ChromaFormatIdc;
+
+/// First reserved `seq_profile_idc` value (Annex A.2 Table A.1, mirror line 85:
+/// "Reserved 5-30"). Values `5..=30` do not conform to any profile of this version.
+pub(crate) const FIRST_RESERVED_PROFILE_IDC: u8 = 5;
+/// Last reserved `seq_profile_idc` value (Annex A.2 Table A.1, mirror line 85:
+/// "Reserved 5-30").
+pub(crate) const LAST_RESERVED_PROFILE_IDC: u8 = 30;
+/// The Configurable profile `seq_profile_idc` (Annex A.2 Table A.1, mirror line 87:
+/// "Configurable 31"). Its chroma/bit-depth constraints are unconstrained by the
+/// profile (Table A.1 dashes), so the profile-mismatch checks skip it.
+pub(crate) const CONFIGURABLE_PROFILE_IDC: u8 = 31;
+
+/// First reserved `seq_level_idx` value (Annex A.4 Table A.7, mirror line 321:
+/// "22-30 Reserved").
+pub(crate) const FIRST_RESERVED_LEVEL_IDX: u8 = 22;
+/// Last reserved `seq_level_idx` value (Annex A.4 Table A.7, mirror line 321:
+/// "22-30 Reserved").
+pub(crate) const LAST_RESERVED_LEVEL_IDX: u8 = 30;
+/// The "Maximum parameters" `seq_level_idx` (Annex A.4 Table A.7, mirror line 323:
+/// "31 Maximum parameters"). When `seq_level_idx == 31` there are no level-based
+/// constraints (Annex A.4, mirror lines 659-660), so all level-limit checks skip
+/// (enforced by [`level_limits`] returning `None`). Used by the table test; named for
+/// the spec value it documents.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const MAX_PARAMETERS_LEVEL_IDX: u8 = 31;
+
+/// The minimum conformant `FrameWidth` / `FrameHeight` (Annex A.4 static
+/// conformance block, mirror lines 628-629: "FrameWidth is greater than or equal to
+/// 16" and "FrameHeight is greater than or equal to 16").
+pub(crate) const MIN_FRAME_DIMENSION: u32 = 16;
+
+/// The static level limits for one `LevelIdx` (Annex A.4 Tables A.8/A.9).
+///
+/// `max_h_size` and `max_v_size` share a single column in Table A.8 — its header is
+/// "MaxHSize/MaxVSize" (mirror lines 330-331) — so one transcribed value bounds both
+/// `FrameWidth <= MaxHSize` and `FrameHeight <= MaxVSize` (Annex A.4, mirror lines
+/// 619-620). It is modeled as one field, [`LevelLimits::max_h_v_size`], to make the
+/// shared column explicit and rule out a transposition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LevelLimits {
+    /// `MaxPicSize` in luma samples (Annex A.4 Table A.8, mirror lines 330-379).
+    pub(crate) max_pic_size: u64,
+    /// The shared `MaxHSize`/`MaxVSize` value in luma samples (Annex A.4 Table A.8
+    /// column "MaxHSize/MaxVSize", mirror lines 330-379).
+    pub(crate) max_h_v_size: u32,
+    /// `MaxTiles` (Annex A.4 Table A.9, mirror lines 385-432).
+    pub(crate) max_tiles: u32,
+    /// `MaxTileCols` (Annex A.4 Table A.9, mirror lines 385-432).
+    pub(crate) max_tile_cols: u32,
+}
+
+/// `LevelLimits` indexed by `seq_level_idx` for the defined levels `0..=21`
+/// (Annex A.4 Table A.7 maps these to levels 2.0..=8.3, mirror lines 269-319).
+///
+/// Each row's `max_pic_size` / `max_h_v_size` come from Table A.8 (mirror lines
+/// 330-379, columns "MaxPicSize" and "MaxHSize/MaxVSize") and its `max_tiles` /
+/// `max_tile_cols` from Table A.9 (mirror lines 385-432, columns "MaxTiles" and
+/// "MaxTileCols"). Reserved indices `22..=30` (Table A.7, mirror line 321) and the
+/// Maximum-parameters index `31` (mirror line 323) are not in this table; the lookup
+/// returns `None` for any index outside `0..=21`. The rate columns are intentionally
+/// omitted (owned by `AV2-E-DECODER-MODEL`).
+const LEVEL_LIMITS: [LevelLimits; 22] = [
+    // LevelIdx 0, level 2.0: A.8 line 334, A.9 line 390.
+    LevelLimits {
+        max_pic_size: 147456,
+        max_h_v_size: 640,
+        max_tiles: 8,
+        max_tile_cols: 4,
+    },
+    // LevelIdx 1, level 2.1: A.8 line 335, A.9 line 391.
+    LevelLimits {
+        max_pic_size: 278784,
+        max_h_v_size: 880,
+        max_tiles: 8,
+        max_tile_cols: 4,
+    },
+    // LevelIdx 2, level 3.0: A.8 line 336, A.9 line 392.
+    LevelLimits {
+        max_pic_size: 665856,
+        max_h_v_size: 1360,
+        max_tiles: 16,
+        max_tile_cols: 6,
+    },
+    // LevelIdx 3, level 3.1: A.8 line 337, A.9 line 393.
+    LevelLimits {
+        max_pic_size: 1065024,
+        max_h_v_size: 1720,
+        max_tiles: 16,
+        max_tile_cols: 6,
+    },
+    // LevelIdx 4, level 4.0: A.8 line 342, A.9 line 398.
+    LevelLimits {
+        max_pic_size: 2359296,
+        max_h_v_size: 2560,
+        max_tiles: 32,
+        max_tile_cols: 8,
+    },
+    // LevelIdx 5, level 4.1: A.8 line 344, A.9 line 400.
+    LevelLimits {
+        max_pic_size: 2359296,
+        max_h_v_size: 2560,
+        max_tiles: 32,
+        max_tile_cols: 8,
+    },
+    // LevelIdx 6, level 5.0: A.8 line 346, A.9 line 402.
+    LevelLimits {
+        max_pic_size: 8912896,
+        max_h_v_size: 4975,
+        max_tiles: 64,
+        max_tile_cols: 8,
+    },
+    // LevelIdx 7, level 5.1: A.8 line 348, A.9 line 404.
+    LevelLimits {
+        max_pic_size: 8912896,
+        max_h_v_size: 4975,
+        max_tiles: 64,
+        max_tile_cols: 8,
+    },
+    // LevelIdx 8, level 5.2: A.8 line 350, A.9 line 406.
+    LevelLimits {
+        max_pic_size: 8912896,
+        max_h_v_size: 4975,
+        max_tiles: 64,
+        max_tile_cols: 8,
+    },
+    // LevelIdx 9, level 5.3: A.8 line 352, A.9 line 408.
+    LevelLimits {
+        max_pic_size: 8912896,
+        max_h_v_size: 4975,
+        max_tiles: 64,
+        max_tile_cols: 8,
+    },
+    // LevelIdx 10, level 6.0: A.8 line 354, A.9 line 410.
+    LevelLimits {
+        max_pic_size: 35651584,
+        max_h_v_size: 9951,
+        max_tiles: 128,
+        max_tile_cols: 16,
+    },
+    // LevelIdx 11, level 6.1: A.8 line 356, A.9 line 412.
+    LevelLimits {
+        max_pic_size: 35651584,
+        max_h_v_size: 9951,
+        max_tiles: 128,
+        max_tile_cols: 16,
+    },
+    // LevelIdx 12, level 6.2: A.8 line 358, A.9 line 414.
+    LevelLimits {
+        max_pic_size: 35651584,
+        max_h_v_size: 9951,
+        max_tiles: 128,
+        max_tile_cols: 16,
+    },
+    // LevelIdx 13, level 6.3: A.8 line 360, A.9 line 416.
+    LevelLimits {
+        max_pic_size: 35651584,
+        max_h_v_size: 9951,
+        max_tiles: 128,
+        max_tile_cols: 16,
+    },
+    // LevelIdx 14, level 7.0: A.8 line 362, A.9 line 418.
+    LevelLimits {
+        max_pic_size: 142606336,
+        max_h_v_size: 19902,
+        max_tiles: 256,
+        max_tile_cols: 32,
+    },
+    // LevelIdx 15, level 7.1: A.8 line 364, A.9 line 420.
+    LevelLimits {
+        max_pic_size: 142606336,
+        max_h_v_size: 19902,
+        max_tiles: 256,
+        max_tile_cols: 32,
+    },
+    // LevelIdx 16, level 7.2: A.8 line 369, A.9 line 422.
+    LevelLimits {
+        max_pic_size: 142606336,
+        max_h_v_size: 19902,
+        max_tiles: 256,
+        max_tile_cols: 32,
+    },
+    // LevelIdx 17, level 7.3: A.8 line 371, A.9 line 424.
+    LevelLimits {
+        max_pic_size: 142606336,
+        max_h_v_size: 19902,
+        max_tiles: 256,
+        max_tile_cols: 32,
+    },
+    // LevelIdx 18, level 8.0: A.8 line 373, A.9 line 426.
+    LevelLimits {
+        max_pic_size: 530841600,
+        max_h_v_size: 38400,
+        max_tiles: 512,
+        max_tile_cols: 64,
+    },
+    // LevelIdx 19, level 8.1: A.8 line 375, A.9 line 428.
+    LevelLimits {
+        max_pic_size: 530841600,
+        max_h_v_size: 38400,
+        max_tiles: 512,
+        max_tile_cols: 64,
+    },
+    // LevelIdx 20, level 8.2: A.8 line 377, A.9 line 430.
+    LevelLimits {
+        max_pic_size: 530841600,
+        max_h_v_size: 38400,
+        max_tiles: 512,
+        max_tile_cols: 64,
+    },
+    // LevelIdx 21, level 8.3: A.8 line 379, A.9 line 432.
+    LevelLimits {
+        max_pic_size: 530841600,
+        max_h_v_size: 38400,
+        max_tiles: 512,
+        max_tile_cols: 64,
+    },
+];
+
+/// Returns the [`LevelLimits`] for `level_idx`, or `None` when `level_idx` is not a
+/// table-mapped level (a reserved `22..=30`, the Maximum-parameters `31`, or any
+/// `5`-bit value above `31`). Bounds-checked: no indexing panic for any `u8` input
+/// (Annex A.4 Tables A.7/A.8/A.9).
+#[must_use]
+pub(crate) fn level_limits(level_idx: u8) -> Option<LevelLimits> {
+    LEVEL_LIMITS.get(level_idx as usize).copied()
+}
+
+/// Returns `true` when `profile_idc` is a reserved profile (Annex A.2 Table A.1,
+/// mirror line 85: "Reserved 5-30").
+#[must_use]
+pub(crate) fn is_reserved_profile(profile_idc: u8) -> bool {
+    (FIRST_RESERVED_PROFILE_IDC..=LAST_RESERVED_PROFILE_IDC).contains(&profile_idc)
+}
+
+/// Returns `true` when `level_idx` is a reserved level index (Annex A.4 Table A.7,
+/// mirror line 321: "22-30 Reserved").
+#[must_use]
+pub(crate) fn is_reserved_level(level_idx: u8) -> bool {
+    (FIRST_RESERVED_LEVEL_IDX..=LAST_RESERVED_LEVEL_IDX).contains(&level_idx)
+}
+
+/// Returns `true` when `chroma_format_idc` is permitted under `profile_idc`
+/// (Annex A.2 Table A.1 column "chroma_format_idc", mirror lines 61-90):
+///
+/// - profiles 0, 1, 2: `CHROMA_FORMAT_400`, `CHROMA_FORMAT_420` (lines 64-71);
+/// - profile 3: adds `CHROMA_FORMAT_422` (lines 73-75);
+/// - profile 4: adds `CHROMA_FORMAT_444` (lines 81-83);
+/// - profile 31 (Configurable): all four formats are listed (lines 87-90).
+///
+/// Reserved profiles (`5..=30`, line 85, no chroma column) and any value above 31
+/// return `false`: there is no defined allowed set, so any format mismatches. The
+/// caller skips this check for reserved and Configurable profiles (the
+/// reserved-profile error and the Table A.1 dashes for profile 31 cover those).
+#[must_use]
+pub(crate) fn profile_allows_chroma(profile_idc: u8, chroma: ChromaFormatIdc) -> bool {
+    match profile_idc {
+        // Main_420_* (IP0/IP1/IP2): CHROMA_FORMAT_400, CHROMA_FORMAT_420.
+        0..=2 => matches!(
+            chroma,
+            ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420
+        ),
+        // Main_422_10_IP1: CHROMA_FORMAT_400, CHROMA_FORMAT_420, CHROMA_FORMAT_422.
+        3 => matches!(
+            chroma,
+            ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Yuv422
+        ),
+        // Main_444_10_IP1: CHROMA_FORMAT_400, CHROMA_FORMAT_420, CHROMA_FORMAT_444.
+        4 => matches!(
+            chroma,
+            ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Yuv444
+        ),
+        // Configurable profile (31): all four formats are listed (Table A.1).
+        CONFIGURABLE_PROFILE_IDC => true,
+        // Reserved (5-30) and any other value: no defined allowed set.
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    // Spot values are quoted directly from the committed mirror
+    // `docs/spec/av2/1.0.0/annex-a-profiles-levels-and-tiers.md`, with the line
+    // citation, so the transcription is checkable without leaving the test body.
+
+    #[test]
+    fn level_limits_match_mirror_spot_values() {
+        // Table A.7 maps LevelIdx 0 -> level 2.0 (mirror line 273); Table A.8 line
+        // 334: "0  2.0  147456  640 ..."; Table A.9 line 390: "0  2.0  150  1.5  -
+        // 2  -  8  4  426x240@30fps".
+        let level_2_0 = level_limits(0).unwrap();
+        assert_eq!(level_2_0.max_pic_size, 147456);
+        assert_eq!(level_2_0.max_h_v_size, 640);
+        assert_eq!(level_2_0.max_tiles, 8);
+        assert_eq!(level_2_0.max_tile_cols, 4);
+
+        // Table A.7 LevelIdx 9 -> level 5.3 (mirror line 295); Table A.8 line 352:
+        // "9  5.3  8912896  4975 ..."; Table A.9 line 408: "9  5.3 ... 64  8 ...".
+        let level_5_3 = level_limits(9).unwrap();
+        assert_eq!(level_5_3.max_pic_size, 8912896);
+        assert_eq!(level_5_3.max_h_v_size, 4975);
+        assert_eq!(level_5_3.max_tiles, 64);
+        assert_eq!(level_5_3.max_tile_cols, 8);
+
+        // Table A.7 LevelIdx 21 -> level 8.3 (mirror line 319); Table A.8 line 379:
+        // "21  8.3  530841600  38400 ..."; Table A.9 line 432: "21  8.3 ... 512  64".
+        let level_8_3 = level_limits(21).unwrap();
+        assert_eq!(level_8_3.max_pic_size, 530841600);
+        assert_eq!(level_8_3.max_h_v_size, 38400);
+        assert_eq!(level_8_3.max_tiles, 512);
+        assert_eq!(level_8_3.max_tile_cols, 64);
+
+        // Table A.8 line 342 / A.9 line 398: "4  4.0  2359296  2560 ... 32  8 ...".
+        let level_4_0 = level_limits(4).unwrap();
+        assert_eq!(level_4_0.max_pic_size, 2359296);
+        assert_eq!(level_4_0.max_h_v_size, 2560);
+        assert_eq!(level_4_0.max_tiles, 32);
+        assert_eq!(level_4_0.max_tile_cols, 8);
+
+        // Table A.8 line 354 / A.9 line 410: "10  6.0  35651584  9951 ... 128  16".
+        let level_6_0 = level_limits(10).unwrap();
+        assert_eq!(level_6_0.max_pic_size, 35651584);
+        assert_eq!(level_6_0.max_h_v_size, 9951);
+        assert_eq!(level_6_0.max_tiles, 128);
+        assert_eq!(level_6_0.max_tile_cols, 16);
+
+        // Table A.8 line 362 / A.9 line 418: "14  7.0  142606336  19902 ... 256 32".
+        let level_7_0 = level_limits(14).unwrap();
+        assert_eq!(level_7_0.max_pic_size, 142606336);
+        assert_eq!(level_7_0.max_h_v_size, 19902);
+        assert_eq!(level_7_0.max_tiles, 256);
+        assert_eq!(level_7_0.max_tile_cols, 32);
+    }
+
+    #[test]
+    fn reserved_and_max_parameters_levels_have_no_limits() {
+        // Table A.7 line 321: "22-30 Reserved"; line 323: "31 Maximum parameters".
+        for idx in FIRST_RESERVED_LEVEL_IDX..=LAST_RESERVED_LEVEL_IDX {
+            assert_eq!(
+                level_limits(idx),
+                None,
+                "reserved level {idx} must map to None"
+            );
+        }
+        assert_eq!(level_limits(MAX_PARAMETERS_LEVEL_IDX), None);
+        // 5-bit seq_level_idx never exceeds 31; the lookup is bounds-checked anyway.
+        assert_eq!(level_limits(u8::MAX), None);
+    }
+
+    #[test]
+    fn reserved_level_range_is_22_through_30() {
+        assert!(!is_reserved_level(21));
+        assert!(is_reserved_level(22));
+        assert!(is_reserved_level(30));
+        assert!(!is_reserved_level(31));
+    }
+
+    #[test]
+    fn reserved_profile_range_is_5_through_30() {
+        // Table A.1 line 85: "Reserved 5-30".
+        assert!(!is_reserved_profile(4));
+        assert!(is_reserved_profile(5));
+        assert!(is_reserved_profile(30));
+        assert!(!is_reserved_profile(CONFIGURABLE_PROFILE_IDC));
+    }
+
+    #[test]
+    fn profile_chroma_allowed_sets_match_table_a1() {
+        // Table A.1 lines 64-71: profiles 0/1/2 allow CHROMA_FORMAT_400, _420.
+        for profile in [0u8, 1, 2] {
+            assert!(profile_allows_chroma(profile, ChromaFormatIdc::Monochrome));
+            assert!(profile_allows_chroma(profile, ChromaFormatIdc::Yuv420));
+            assert!(!profile_allows_chroma(profile, ChromaFormatIdc::Yuv422));
+            assert!(!profile_allows_chroma(profile, ChromaFormatIdc::Yuv444));
+        }
+        // Table A.1 lines 73-75: profile 3 adds CHROMA_FORMAT_422 (not _444).
+        assert!(profile_allows_chroma(3, ChromaFormatIdc::Yuv422));
+        assert!(!profile_allows_chroma(3, ChromaFormatIdc::Yuv444));
+        // Table A.1 lines 81-83: profile 4 adds CHROMA_FORMAT_444 (not _422).
+        assert!(profile_allows_chroma(4, ChromaFormatIdc::Yuv444));
+        assert!(!profile_allows_chroma(4, ChromaFormatIdc::Yuv422));
+        // Table A.1 lines 87-90: the Configurable profile lists all four formats.
+        for chroma in [
+            ChromaFormatIdc::Monochrome,
+            ChromaFormatIdc::Yuv420,
+            ChromaFormatIdc::Yuv422,
+            ChromaFormatIdc::Yuv444,
+        ] {
+            assert!(profile_allows_chroma(CONFIGURABLE_PROFILE_IDC, chroma));
+        }
+    }
+}

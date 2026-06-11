@@ -17,6 +17,7 @@ pub mod diagnostic;
 pub mod options;
 pub mod validator;
 
+mod annex_a;
 mod context;
 mod error_location;
 mod metadata_lifetime;

@@ -53,7 +53,7 @@ dependency order:
 | Activated sequence state | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` |
 | HLS availability | `AV2-7.3.8-HLS-AVAILABILITY` |
 | Temporal-unit ordering completion | `AV2-7.3.7-TEMPORAL-UNIT-ORDER`, then §7.3.2–§7.3.6 children as parse dependencies allow (the minimal §7.3.2 CMVS tracker landed) |
-| Deeper HLS semantics | the `validate = partial` HLS rows (LCR, atlas, OPS/BRT, metadata); the §6.10.7/§6.8.9/§7.3.8.7 dependency-map agreement checks and the §6.4.13/§6.10.5 signaled buffer-delay sum-constancy checks (`decoder-model/*`) are landed, with Annex A/E operating-point *semantics* (decoder-schedule simulation) still future |
+| Deeper HLS semantics | the `validate = partial` HLS rows (LCR, atlas, OPS/BRT, metadata); the §6.10.7/§6.8.9/§7.3.8.7 dependency-map agreement checks, the §6.4.13/§6.10.5 signaled buffer-delay sum-constancy checks (`decoder-model/*`), and the **static** Annex A profile/level/tier value-space subset (`annex-a/*`: Table A.1 profile + Table A.7/A.8/A.9 level/tier value-space and static level limits) are landed, with the Table A.4 interoperability-point OBU-presence checks deferred to the `msdo-global-lcr-agreement` backlog change (see the Planned diagnostics backlog) and the **rate-based** Annex A/E operating-point *semantics* (decoder-schedule simulation, buffer model) still future |
 | Frame-header continuation | the Phase 8 remaining work below |
 
 **Do not start yet** as a primary task: a full tile-group payload parser,
@@ -202,9 +202,16 @@ sum-constancy checks landed as a resolved two-tier outcome
 non-conforming under every "video sequence" reading, plus the advisory
 `decoder-model/buffer-delay-sum-changed-across-cvs` warning for the
 broad-reading-only seq-header / cross-boundary cases — AVM parses but never
-enforces these values, so there is no differential oracle); remaining work is
-deeper semantic validation across the board (Annex A/E operating-point semantics,
-decoder-schedule simulation).
+enforces these values, so there is no differential oracle); the **static** Annex A
+profile/level/tier subset has also landed (`annex-a/*`: Table A.1 profile
+value-space, Table A.7/A.9 level/tier value-space, and the Table A.8/A.9 static
+level-limit checks on the parsed intra frame path; the Table A.4
+interoperability-point OBU-presence checks are deferred to the
+`msdo-global-lcr-agreement` backlog change), so the table data in
+`crates/splot-validate/src/annex_a.rs` is transcribed verbatim from the mirror;
+remaining work is deeper semantic validation across the board — the **rate-based**
+Annex A/E operating-point semantics (MaxDisplayRate/MaxDecodeRate, buffer model)
+and decoder-schedule simulation are still future.
 
 **Goal:** parse HLS OBUs referenced by sequence/frame validation and OBU ordering.
 
@@ -389,6 +396,10 @@ lands, add it to the registry tables there (the CI gate will require it).
 | `obu-order/non-global-hls-before-coded-layer` | error | §7.3.7 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Non-global HLS appears in an invalid temporal-unit region. |
 | `msdo/sub-xlayer-duplicate` | error | §6.6 | `AV2-5.6-MSDO` | Duplicate `sub_xlayer_id` where uniqueness is required. Add only after confirming the exact §6.6 wording in the spec mirror (spec honesty). |
 | `brt/global-ordering-position` | error | §7.3.7 | `AV2-7.3-OBU-ORDERING` | A global BRT in an invalid temporal-unit position. Deferred: §7.3.7 does not list BRT among the global prefix OBUs, so a hard ordering error needs the §7.3.8 decoder-model / random-access state (tracked by a spec TODO under `AV2-7.3-OBU-ORDERING` in `splot-validate`). |
+| `annex-a/msdo-required-for-iop` | error | §A.2 | `AV2-A-PROFILES` | A Table A.4 interoperability-point row requires an OBU_MSDO (or the IOP2 MSDO-or-global-LCR either-or) for a multi-extended-layer coded video sequence and none is present. Deferred from `annex-a-profile-level-skeleton`; re-lands with `msdo-global-lcr-agreement` once MSDO aggregate-profile (`multistream_profile_idc`) state, LCR activation state, and §7.3.6-correct per-TU window attribution exist (the PR #46 codex threads record the requirements). |
+| `annex-a/msdo-prohibited-for-iop` | error | §A.2 | `AV2-A-PROFILES` | A Table A.4 interoperability-point row prohibits an OBU_MSDO (a single-extended-layer coded video sequence) but one is present. Deferred from `annex-a-profile-level-skeleton`; re-lands with `msdo-global-lcr-agreement` once MSDO aggregate-profile (`multistream_profile_idc`) state, LCR activation state, and §7.3.6-correct per-TU window attribution exist (the PR #46 codex threads record the requirements). |
+| `annex-a/lcr-required-for-iop` | error | §A.2 | `AV2-A-PROFILES` | A Table A.4 interoperability-point row requires a local/global OBU_LAYER_CONFIGURATION_RECORD (or the MSDO-plus-local-LCR / global-LCR either-or) that is absent in the coded video sequence. Deferred from `annex-a-profile-level-skeleton`; re-lands with `msdo-global-lcr-agreement` once MSDO aggregate-profile (`multistream_profile_idc`) state, LCR activation state, and §7.3.6-correct per-TU window attribution exist (the PR #46 codex threads record the requirements). |
+| `annex-a/frame-exceeds-ops-level` | error | §A.4/§6.10.4 | `AV2-A-LEVELS-TIERS` | A frame's size / tile geometry exceeds the Annex A.4 Table A.8/A.9 limits for an *operating-point-advertised* level: §6.10.4 requires the operating point's bitstream to satisfy A.4 with `seq_level_idx` set to the OPS-signaled `ops_level_idx`, so the static level-limit checks must also run against OPS levels, not only the activated `seq_level_idx`. Deferred from `annex-a-profile-level-skeleton`: blocked on operating-point-to-frame mapping (which frames belong to which operating point), which the validator does not model yet — `check_ops_level_tier_value_space` currently only checks the OPS-carried value space (reserved-level / high-tier), not per-frame conformance against the advertised level. |
 
 Naming rules live in [`FEATURE-TRACKING.md`](./FEATURE-TRACKING.md) § 12
 (Diagnostic-ID convention); never rename a landed ID without a migration note.

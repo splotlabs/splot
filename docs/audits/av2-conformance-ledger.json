@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "94020b726ae30ffb879da56438f78fc869067cad",
+  "audited_commit": "e01a4c929c348a5e19d468361af423c97b87b10e",
   "outcome": "success",
   "files": [
     {
@@ -745,13 +745,10 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-validate/src/checks/mod.rs",
-      "sha256": "6a8c001bdf571f0c1c1055cf90c3b0ce5cbd305724f8453e18412e8ea0fe1047",
+      "path": "crates/splot-validate/src/annex_a.rs",
+      "sha256": "8c1eef4c001459c086d8ff4f98c734df216606632d995d2094ff71aece2120b2",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
-        "AV2-5.3-RESERVED-OBU",
-        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
-        "AV2-7.3-OBU-ORDERING",
         "AV2-A-LEVELS-TIERS",
         "AV2-A-PROFILES",
         "AV2-E-DECODER-MODEL"
@@ -759,10 +756,23 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-validate/src/context.rs",
-      "sha256": "a82602bf3c85770d15e2d8a4b11426c4ac578c10ea79c7e078f57f3588f6468e",
+      "path": "crates/splot-validate/src/checks/mod.rs",
+      "sha256": "6a8c001bdf571f0c1c1055cf90c3b0ce5cbd305724f8453e18412e8ea0fe1047",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
+        "AV2-5.3-RESERVED-OBU",
+        "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-E-DECODER-MODEL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context.rs",
+      "sha256": "4907d31aa546b6a21b6d3e05aa1740a1349af0db90161c1c735ff7b5d05633e4",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-5.11.2-OPS-SEQ-PTL-INFO",
         "AV2-5.17.5-METADATA-HDR-CLL",
         "AV2-5.17.6-METADATA-HDR-MDCV",
         "AV2-5.18-FRAME-HEADER",
@@ -779,7 +789,8 @@
         "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
         "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
         "AV2-7.3.8-HLS-AVAILABILITY",
-        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY"
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-A-LEVELS-TIERS"
       ],
       "outcome": "success"
     },
@@ -799,7 +810,7 @@
     },
     {
       "path": "crates/splot-validate/src/lib.rs",
-      "sha256": "870a64e7d5b2f692acf460c6c5542ae90f0f8fb435775be3d1d9530e0cad840a",
+      "sha256": "986caa321ad4f2c960d5cfb6b3461c6404345395e68fdc07281c924e851d9a4c",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -822,9 +833,12 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "838159de392160e5de3f71a0e6f090eb5b131c352994386a6f1e843bbf82e3ef",
+      "sha256": "1288b5cafb9b64fce92b6c78d7f81c2f7387c890f64382a43e25204de2b15994",
       "scope_kind": "workspace:splot-validate",
-      "feature_ids": [],
+      "feature_ids": [
+        "AV2-A-LEVELS-TIERS",
+        "AV2-A-PROFILES"
+      ],
       "outcome": "success"
     },
     {
@@ -883,7 +897,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "15dec8fb295dc07c7ae9e6f3d065b492c52284bb45caf365a9fb053b95f9fcf7",
+      "sha256": "fb5d1098a78f42a471148abb0906bb3793703ba5cda7d6fa8e65816f1bc67406",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1050,7 +1064,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "9836251d399d6cb56744590f9deba59b4f10fa67e7fc7d4102458aa483548583",
+      "sha256": "bb93f484b9d9832a8edd5d097fc4a50dd302dc9896ea6b46ffa80fc9d951a4d1",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1187,7 +1201,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "362c056478b88c76d424f320ffff3d99066e34612c1ec9915699cbf50bd9650f",
+      "sha256": "205447eb69f09bcbb65393dbb87ddb85d85a5a32a88dac7a088084701f3f875b",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1340,16 +1354,18 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "b574466b8db2bcab68446f4d822a74c2cd801749546eb584835bcfa38e312764",
+      "sha256": "9d6f5a324cd558961200a9646c8b6dcc580aab841fe61bb8f2223c226745e75b",
       "scope_kind": "docs",
       "feature_ids": [
+        "AV2-A-LEVELS-TIERS",
+        "AV2-A-PROFILES",
         "XTASK-DIAGNOSTIC-REGISTRY"
       ],
       "outcome": "success"
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "183662a05eacb72e5aefff0c7fdac02eaf853a81b5fdb05f84983ba4cd813b32",
+      "sha256": "83c7283fc3ae05247a0921901468579d384fd99ce3b954faa2c71ad63c0d584b",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -1407,6 +1423,8 @@
         "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
         "AV2-7.3.8-HLS-AVAILABILITY",
         "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-A-LEVELS-TIERS",
+        "AV2-A-PROFILES",
         "AV2-IVF-CONTAINER",
         "CONF-AVM-DIFF-HARNESS",
         "CONF-INSPECT-SNAPSHOTS",
@@ -2768,6 +2786,44 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-11-annex-a-profile-level-skeleton/design.md",
+      "sha256": "c48d3198ee4ae1ce39ac02963fa367fbcb2428222cc24ce3fe7509abf360f05d",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-annex-a-profile-level-skeleton/proposal.md",
+      "sha256": "6c3b2b7e1609e31820e25dca022fea515442c86fe43f16ef20c20de38f275875",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.11.2-OPS-SEQ-PTL-INFO",
+        "AV2-A-LEVELS-TIERS",
+        "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-annex-a-profile-level-skeleton/specs/validator/spec.md",
+      "sha256": "ea4db59106bd8a2757bb3f75874c5ce79efa4870ac242fb8f97fb67365362f72",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-A-LEVELS-TIERS",
+        "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-annex-a-profile-level-skeleton/tasks.md",
+      "sha256": "da0260e37a87faad4f653577af0457847e478c715e02283473583ba2ab13a128",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-A-LEVELS-TIERS",
+        "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/avm-differential-harness/proposal.md",
       "sha256": "ca4e00373763656046a33836c38af7626641afedb9e473897f7ae9b2a3572b5f",
       "scope_kind": "openspec",
@@ -2930,7 +2986,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "74fc666dff0f01971e814fcc2339a92a4cd2fa92205891a609d09e7f9a6251fd",
+      "sha256": "9d25b46d0d054477fa7b60b05ae2d9d627d055e53cdfdb9c94f66200802c4403",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
@@ -3017,7 +3073,7 @@
     },
     {
       "path": "xtask/src/feature_status.rs",
-      "sha256": "564243b5f9654d24d69eb343504aa1184d87aa767424d1a7c060c25c14522ea0",
+      "sha256": "2723b320a235f05d21dfea58944b51fb51522fbd9d65441515d0de79aff01d54",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "AV2-5.2.2-OBU-HEADER",
