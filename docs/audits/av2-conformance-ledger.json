@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "618ba8a2e10c9a6a7949ca5bb0ae86025ab99ff8",
+  "audited_commit": "e01a4c929c348a5e19d468361af423c97b87b10e",
   "outcome": "success",
   "files": [
     {
@@ -769,7 +769,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "5c07fb6d332066029a265ca44ee14fdd02153daabc3bb0f1d11017163f568bfe",
+      "sha256": "4907d31aa546b6a21b6d3e05aa1740a1349af0db90161c1c735ff7b5d05633e4",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -833,7 +833,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "4c74995f7f780fca3794a03803c3a66ad04ea0f5e5e6bec4195dc5687cb9a0c8",
+      "sha256": "1288b5cafb9b64fce92b6c78d7f81c2f7387c890f64382a43e25204de2b15994",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-A-LEVELS-TIERS",
@@ -1064,7 +1064,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "699f2b927297888d5dcea8494adc9007c462287440a62674180ad87c59bca048",
+      "sha256": "bb93f484b9d9832a8edd5d097fc4a50dd302dc9896ea6b46ffa80fc9d951a4d1",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1365,7 +1365,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "05f16ec7e723ef66b7c6b5c226a7adf0d32b6c2957a93139f2a0f661e2a7a3a3",
+      "sha256": "83c7283fc3ae05247a0921901468579d384fd99ce3b954faa2c71ad63c0d584b",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -1423,6 +1423,7 @@
         "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
         "AV2-7.3.8-HLS-AVAILABILITY",
         "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-A-LEVELS-TIERS",
         "AV2-A-PROFILES",
         "AV2-IVF-CONTAINER",
         "CONF-AVM-DIFF-HARNESS",
