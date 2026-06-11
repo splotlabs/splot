@@ -6416,7 +6416,13 @@ impl ValidatorContext {
     /// first coded picture, so it is skipped (zero-false-positive). A pair observed in
     /// the pre-frame region of its layer's first coded frame unit has no first-picture
     /// entry yet, so it is not late; a pair a prior baseline already established is an
-    /// allowed later repeat, not a fresh establishment, so it is filtered out.
+    /// allowed later repeat, not a fresh establishment, so it is filtered out. A
+    /// **suffix** metadata (`metadata_is_suffix == 1`) is placed by § 7.3.3 in the tail
+    /// *after* the coded frame but still inside the same coded frame unit, so when it
+    /// falls within the layer's first coded frame unit of this temporal unit (the
+    /// segmenter reports no completed unit for the pair yet) it is "indicated at the
+    /// first coded picture" and is not late — the predicate keys on coded-frame-UNIT
+    /// boundaries, not first-frame-OBU order.
     ///
     /// Each late pair's first picture carries the temporal-unit index at which it was
     /// observed. A same-temporal-unit first picture is unambiguously in the current
@@ -6445,6 +6451,19 @@ impl ValidatorContext {
         // established earlier in the coded video sequence, so this unit is an allowed
         // later repeat for that pair, not a fresh first establishment — the per-pair
         // gate, replacing the former whole-unit `any(intersects)` suppression.
+        // § 7.3.3 places the suffix-metadata tail *after* the coded frame but still
+        // inside the same coded frame unit. So a suffix metadata (`metadata_is_suffix
+        // == 1`) appearing after the first coded picture's OBUs, yet within that
+        // picture's own coded frame unit, is "indicated at the first coded picture" —
+        // it is NOT late. The lateness predicate therefore keys on coded-frame-UNIT
+        // boundaries, not first-frame-OBU order: a suffix metadata is timely when the
+        // segmenter reports the embedded layer is still within its first coded frame
+        // unit of this temporal unit (no unit completed yet). A prefix metadata
+        // (`Some(false)`) heads a *new* unit, so the same-unit grace does not apply;
+        // and a coded frame unit never spans temporal units (§ 7.3.7), so this grace is
+        // scoped to the same temporal unit as the first picture (`seen_tu ==
+        // current_tu`), where the completed-unit count is reliable.
+        let is_suffix_metadata = metadata_is_suffix(obu) == Some(true);
         let mut eager_late: Vec<(ExtendedLayerId, EmbeddedLayerId)> = Vec::new();
         let mut deferred_late: Vec<((ExtendedLayerId, EmbeddedLayerId), u64)> = Vec::new();
         for &pair in pairs {
@@ -6459,6 +6478,17 @@ impl ValidatorContext {
                 continue;
             };
             if seen_tu == current_tu {
+                // Same-temporal-unit first picture. A suffix metadata still inside the
+                // layer's first coded frame unit of this temporal unit (no completed
+                // unit yet) is in the same unit as the first picture, so it is timely.
+                if is_suffix_metadata
+                    && self
+                        .frame_unit
+                        .completed_units_for_embedded_layer(pair.0, pair.1)
+                        == 0
+                {
+                    continue;
+                }
                 eager_late.push(pair);
             } else {
                 deferred_late.push((pair, seen_tu));
@@ -11881,17 +11911,25 @@ impl TemporalUnitState {
         );
         if is_hls_header {
             if self.coded_frame_started_xlayer.contains(&xlayer) {
-                report.push(ordering_error(
-                    "obu-order/non-global-hls-before-coded-layer",
-                    obu,
-                    format!(
-                        "{} for obu_xlayer_id {} appears after the coded frame region of its \
-                         coded extended layer unit has begun; the HLS header OBUs (LCR / OPS / \
-                         atlas / sequence header) must precede the coded frame units",
-                        obu.header.obu_type.spec_name(),
-                        xlayer.get()
-                    ),
-                ));
+                // This rule belongs to § 7.3.6 (coded extended layer unit ordering: LCR
+                // → OPS → atlas → sequence header → frame units), not the § 7.3.7
+                // temporal-unit ordering that the shared `ordering_error` helper assumes;
+                // override the section so the emitted spec_section matches the registry
+                // entry (VALIDATOR-DIAGNOSTICS.md documents this diagnostic as § 7.3.6).
+                report.push(
+                    ordering_error(
+                        "obu-order/non-global-hls-before-coded-layer",
+                        obu,
+                        format!(
+                            "{} for obu_xlayer_id {} appears after the coded frame region of its \
+                             coded extended layer unit has begun; the HLS header OBUs (LCR / OPS / \
+                             atlas / sequence header) must precede the coded frame units",
+                            obu.header.obu_type.spec_name(),
+                            xlayer.get()
+                        ),
+                    )
+                    .with_spec_section("7.3.6"),
+                );
             }
         } else {
             // A frame-region OBU for this extended layer: record that the frame

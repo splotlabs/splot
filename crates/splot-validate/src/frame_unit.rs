@@ -270,6 +270,26 @@ impl FrameUnitSegmenter {
         self.units_completed_for_embedded_layer.clear();
     }
 
+    /// Number of coded frame units this `(xlayer, mlayer)` embedded layer has
+    /// **completed** in the current temporal unit (AV2 § 7.3.8.10 scope, across
+    /// temporal layers). A coded frame unit completes only when the *next* unit
+    /// begins (`starts_new_unit`), so while a unit's coded frame and its
+    /// suffix-metadata tail (§ 7.3.3) are still open this count does not yet include
+    /// it. Consumers (the § 6.16.5 / § 6.16.6 first-coded-picture lateness predicate)
+    /// use a count of `0` to mean "still within the layer's first coded frame unit of
+    /// this temporal unit" — i.e. a suffix metadata after the frame's OBUs but inside
+    /// the same unit is not yet in a later unit.
+    pub(crate) fn completed_units_for_embedded_layer(
+        &self,
+        xlayer: ExtendedLayerId,
+        mlayer: EmbeddedLayerId,
+    ) -> u32 {
+        self.units_completed_for_embedded_layer
+            .get(&(xlayer, mlayer))
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Flushes the final temporal unit's open units (AV2 § 7.3.2 end condition:
     /// end of bitstream), resolving their deferred checks.
     pub(crate) fn finish(&mut self, report: &mut ValidationReport) {
@@ -508,6 +528,16 @@ impl FrameUnitSegmenter {
     ///   non-first tile. A tile OBU with `is_first_tile_group == 0` (or an
     ///   undecidable flag) continues the open coded frame, where the same-type /
     ///   first-tile-group continuation rules apply.
+    /// - a **SEF** OBU (`OBU_LEADING_SEF` / `OBU_REGULAR_SEF`) arrives while a coded
+    ///   frame is open ([`Region::CodedFrame`]). A SEF is the complete coded-frame
+    ///   alternative of its unit — "Or: one OBU of either type OBU_LEADING_SEF or
+    ///   OBU_REGULAR_SEF" (mirror line 417), exactly one OBU — so it can never be a
+    ///   continuation of an already-open coded frame. Like a flag-1 tile OBU it
+    ///   *starts the next coded frame unit* (§ 7.3.6 back-to-back units), whether the
+    ///   open frame is a SEF (SEF after SEF) or tile OBUs (SEF after a completed tile
+    ///   coded frame). The genuine `sef-single-obu` violation is the inverse — a
+    ///   *non-SEF* frame OBU claiming to continue a SEF coded frame — which does not
+    ///   split and is judged in `observe_frame`.
     /// - a **no-delimiter frame** OBU (`OBU_LEADING_TIP` / `OBU_REGULAR_TIP` /
     ///   `OBU_BRIDGE_FRAME`) of a **different `obu_type`** than the open coded frame
     ///   arrives while a coded frame is open ([`Region::CodedFrame`]). The OBUs of a
@@ -548,6 +578,16 @@ impl FrameUnitSegmenter {
                 ..
             }
         );
+        // A SEF is the complete coded-frame alternative of its unit ("Or: one OBU of
+        // either type OBU_LEADING_SEF or OBU_REGULAR_SEF", mirror line 417): it is
+        // exactly one OBU and is never a continuation of an already-open coded frame.
+        // So a SEF arriving while a coded frame is open ([`Region::CodedFrame`]) starts
+        // the next coded frame unit (§ 7.3.6 back-to-back units), exactly like a flag-1
+        // tile OBU — whether the open frame is a SEF (SEF after SEF) or tile OBUs (SEF
+        // after a completed tile coded frame). The genuine sef-single-obu violation —
+        // a *non-SEF* frame OBU claiming to continue a SEF coded frame — does not split
+        // and is judged in `observe_frame`.
+        let starts_next_sef = matches!(role, SegRole::SefFrame);
         // A no-in-band-delimiter frame OBU (TIP / bridge) whose obu_type differs from
         // the open coded frame begins a new unit: the type change is a decidable
         // coded-frame boundary (mirror lines 392-393 / 460-461; these types carry no
@@ -558,7 +598,10 @@ impl FrameUnitSegmenter {
                 .is_some_and(|frame| frame.obu_type != obu_type);
         match unit.region {
             Region::CodedFrame => {
-                is_unit_head || starts_next_coded_frame || starts_next_no_delimiter_frame
+                is_unit_head
+                    || starts_next_coded_frame
+                    || starts_next_sef
+                    || starts_next_no_delimiter_frame
             }
             Region::SuffixTail => is_unit_head || is_frame_role(role),
             _ => false,
@@ -795,17 +838,22 @@ impl FrameUnitSegmenter {
                 first_coded_unit_started.insert(embedded_key);
             }
             Some(mut frame) => {
-                if frame.is_sef || is_sef {
-                    // A SEF coded frame is exactly one OBU (mirror line 417); any
-                    // additional frame OBU in the unit (whether the existing frame is
-                    // a SEF, or a SEF follows another coded frame) violates it.
+                if frame.is_sef {
+                    // A SEF coded frame is exactly one OBU (mirror line 417), and a SEF
+                    // is the complete coded-frame alternative of its unit, so a SEF can
+                    // never *continue* an open coded frame: a SEF arriving while a frame
+                    // is open already started a new unit (`starts_new_unit`), so the
+                    // incoming OBU here is never a SEF. The remaining violation is the
+                    // inverse — a *non-SEF* frame OBU (a tile-group continuation claim,
+                    // is_first_tile_group == 0/undecidable) following the SEF in the same
+                    // unit: the SEF is already the unit's complete coded frame, so the
+                    // extra OBU cannot belong to it.
                     report.push(frame_unit_error(
                         "frame-unit/sef-single-obu",
                         obu,
                         "7.3.3",
-                        "a SEF coded frame must consist of exactly one OBU; a frame OBU follows \
-                         the SEF (or a SEF follows an existing coded frame) in the same coded \
-                         frame unit"
+                        "a SEF coded frame must consist of exactly one OBU; a non-SEF frame OBU \
+                         follows the SEF in the same coded frame unit"
                             .to_owned(),
                     ));
                 } else if frame.obu_type != obu_type {

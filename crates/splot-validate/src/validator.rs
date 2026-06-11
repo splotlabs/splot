@@ -16814,15 +16814,43 @@ mod tests {
 
     #[test]
     fn frame_unit_sef_single_obu_violation_is_flagged() {
-        // AV2 § 7.3.3: a SEF coded frame is exactly one OBU. A SEF followed by
-        // another SEF in the same unit (no head OBU between) violates this.
+        // AV2 § 7.3.3: a SEF coded frame is exactly one OBU and is the complete
+        // coded-frame alternative of its unit. The genuine violation is a *non-SEF*
+        // frame OBU claiming to continue the SEF coded frame: a SEF followed by a
+        // *non-first* regular tile group (is_first_tile_group == 0, an explicit in-band
+        // continuation claim) in the same unit. The SEF is already the unit's complete
+        // coded frame, so the trailing tile OBU cannot belong to it.
         let mut data = seg_td_and_seq();
-        data.extend(annex_b_obu(LEADING_SEF_HEADER, &[0x80]));
-        data.extend(annex_b_obu(REGULAR_SEF_HEADER, &[0x80]));
+        data.extend(annex_b_obu(REGULAR_SEF_HEADER, &[0x80])); // SEF: the complete coded frame
+        let mut rtg = Bits::default();
+        rtg.bit(0); // is_first_tile_group == 0: continuation claim against the SEF
+        data.extend(annex_b_obu(REGULAR_TILE_GROUP_HEADER, &rtg.into_bytes()));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             has_frame_unit_error(&report, "frame-unit/sef-single-obu"),
             "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_sef_after_sef_splits_into_new_unit_silently() {
+        // AV2 § 7.3.3 / § 7.3.6: a SEF is the complete coded-frame alternative of its
+        // unit ("Or: one OBU of either type OBU_LEADING_SEF or OBU_REGULAR_SEF", mirror
+        // line 417), exactly one OBU, so it can never continue an already-open coded
+        // frame. A SEF following a completed SEF unit STARTS A NEW coded frame unit
+        // (back-to-back units, § 7.3.6), exactly like a flag-1 tile OBU — it is not a
+        // sef-single-obu violation. Two back-to-back single-OBU SEF units must be
+        // silent. Pre-fix the second SEF was forced into the first unit and fired
+        // frame-unit/sef-single-obu (a false positive).
+        let mut data = seg_td_and_seq();
+        data.extend(annex_b_obu(LEADING_SEF_HEADER, &[0x80])); // unit 1: SEF
+        data.extend(annex_b_obu(REGULAR_SEF_HEADER, &[0x80])); // unit 2: SEF (new unit)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-unit/")),
+            "two back-to-back SEF units must split silently; report was: {report}"
         );
     }
 
@@ -16894,6 +16922,59 @@ mod tests {
                 .any(|d| d.rule_id.starts_with("frame-unit/")),
             "a same-type no-delimiter continuation is undecidable and must be silent (no \
              mixed-types false positive); report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_sef_after_tip_frame_splits_silently() {
+        // AV2 § 7.3.3 / § 7.3.6: a SEF is the complete coded-frame alternative of its
+        // unit ("Or: one OBU of either type OBU_LEADING_SEF or OBU_REGULAR_SEF", mirror
+        // line 417), exactly one OBU, so it can never continue an already-open coded
+        // frame — regardless of the open frame's type. A SEF following a *completed*
+        // no-delimiter (REGULAR_TIP) coded frame STARTS A NEW coded frame unit
+        // (back-to-back units, § 7.3.6): the unconditional `starts_next_sef` branch in
+        // `starts_new_unit` fires before the no-delimiter Unknown routing in
+        // `observe_frame` can reach the SEF, so the TIP unit is sealed first and the SEF
+        // opens a fresh unit. It must be silent — no sef-single-obu, no
+        // mixed-coded-frame-types.
+        let mut data = seg_td_and_seq();
+        data.extend(annex_b_obu(REGULAR_TIP_HEADER, &[0x80])); // unit 1: TIP coded frame
+        data.extend(annex_b_obu(REGULAR_SEF_HEADER, &[0x80])); // unit 2: SEF (new unit)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-unit/")),
+            "a SEF after a completed TIP coded frame must split silently (no \
+             sef-single-obu / mixed-coded-frame-types); report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_sef_after_bridge_frame_splits_silently() {
+        // Bridge variant of `frame_unit_sef_after_tip_frame_splits_silently`. A bridge
+        // frame is the other no-delimiter (Unknown-routing) coded-frame type (mirror
+        // line 470). A SEF following a *completed* OBU_BRIDGE_FRAME coded frame likewise
+        // starts a new coded frame unit (§ 7.3.6 back-to-back units): the unconditional
+        // `starts_next_sef` branch seals the bridge unit before the bridge's same-type
+        // Unknown routing can absorb the SEF. It must be silent — no sef-single-obu, no
+        // mixed-coded-frame-types.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            num_ref_frames_minus_1: 5, // NumRefFrames == 6 for the bridge ref idx
+            ..FrameCoreSeq::base()
+        });
+        let mut fb = Bits::default();
+        fb.uvlc(0); // seq_header_id_in_frame_header (bridge infers cur_mfh_id == 0)
+        fb.f(0, 3); // bridge_frame_ref_idx == 0 (< NumRefFrames)
+        data.extend(annex_b_obu(BRIDGE_HEADER, &fb.into_bytes())); // unit 1: bridge coded frame
+        data.extend(annex_b_obu(REGULAR_SEF_HEADER, &[0x80])); // unit 2: SEF (new unit)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-unit/")),
+            "a SEF after a completed bridge coded frame must split silently (no \
+             sef-single-obu / mixed-coded-frame-types); report was: {report}"
         );
     }
 
@@ -17136,10 +17217,14 @@ mod tests {
         data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // frame region for xlayer 0
         data.extend(annex_b_obu_with_header(&layer_obu_header(16, 0, 0, 0), &[])); // LCR xlayer 0
         let report = Validator::new(false).validate_bytes(&data);
+        // The emitted spec_section must match the registry entry (§ 7.3.6, the coded
+        // extended layer unit ordering rule), not the § 7.3.7 the shared ordering_error
+        // helper defaults to. Pre-fix this diagnostic carried § 7.3.7.
         assert!(
-            report
-                .errors()
-                .any(|d| d.rule_id == "obu-order/non-global-hls-before-coded-layer"),
+            report.errors().any(|d| {
+                d.rule_id == "obu-order/non-global-hls-before-coded-layer"
+                    && d.spec_section.as_deref() == Some("7.3.6")
+            }),
             "report was: {report}"
         );
     }
@@ -17269,6 +17354,48 @@ mod tests {
                 .any(|d| d.rule_id == "metadata/hdr-cll-first-coded-picture"),
             "a new CVS's first-picture HDR CLL must not fire against stale prior-CVS \
              first-picture state; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_hdr_cll_suffix_in_first_coded_frame_unit_is_conformant() {
+        // AV2 § 7.3.3 / § 6.16.5: the suffix-metadata tail is placed AFTER the coded
+        // frame but still INSIDE the same coded frame unit. So a suffix HDR CLL that
+        // follows the first coded picture's OBUs but is in that picture's own coded
+        // frame unit is "indicated at the first coded picture" — it is NOT late. The
+        // lateness predicate keys on coded-frame-UNIT boundaries, not first-frame-OBU
+        // order. Pre-fix the suffix HDR CLL (after the CLK in stream order) fired
+        // metadata/hdr-cll-first-coded-picture on a conforming stream.
+        let mut data = td_and_seq_header(0, 0, 0);
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // first coded picture (xlayer 0)
+        data.extend(hdr_cll_unit_layer_current_suffix(0, 1000, 200)); // suffix tail, same unit
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "metadata/hdr-cll-first-coded-picture"),
+            "a suffix HDR CLL inside the first coded picture's own coded frame unit must \
+             not be late; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_hdr_cll_suffix_in_second_unit_is_flagged() {
+        // Control for the suffix-tail grace: a suffix HDR CLL in the SECOND coded frame
+        // unit (after the first unit completed) is genuinely after the first coded
+        // picture's unit, so it is still late. A first CLK (unit 1) completes when the
+        // second CLK (unit 2) begins; the suffix HDR CLL then sits in unit 2's tail,
+        // past the first picture's unit, so metadata/hdr-cll-first-coded-picture fires.
+        let mut data = td_and_seq_header(0, 0, 0);
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // unit 1: first coded picture
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // unit 2: starts a new unit
+        data.extend(hdr_cll_unit_layer_current_suffix(0, 1000, 200)); // unit 2 suffix tail: late
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "metadata/hdr-cll-first-coded-picture"),
+            "a suffix HDR CLL in a later coded frame unit is still late; report was: {report}"
         );
     }
 
@@ -17484,6 +17611,17 @@ mod tests {
         unit.f(max_cll, 16); // max_cll
         unit.f(max_fall, 16); // max_fall
         let payload = metadata_short_payload(0x20, 1, &unit.into_bytes()); // type 1 = HDR_CLL
+        annex_b_obu_with_header(&layer_obu_header(8, 0, mlayer, 0), &payload)
+    }
+
+    /// The suffix form of [`hdr_cll_unit_layer_current`]: identical except
+    /// `metadata_is_suffix == 1` (header byte 0b1_010_0_000 = 0xA0), so § 7.3.3 places
+    /// it in the suffix-metadata tail of its coded frame unit, after the coded frame.
+    fn hdr_cll_unit_layer_current_suffix(mlayer: u8, max_cll: u32, max_fall: u32) -> Vec<u8> {
+        let mut unit = Bits::default();
+        unit.f(max_cll, 16); // max_cll
+        unit.f(max_fall, 16); // max_fall
+        let payload = metadata_short_payload(0xA0, 1, &unit.into_bytes()); // suffix, type 1 = HDR_CLL
         annex_b_obu_with_header(&layer_obu_header(8, 0, mlayer, 0), &payload)
     }
 }
