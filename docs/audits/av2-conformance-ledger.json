@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "eaa2793a2869f44011a498a5cc9d8aef34d9a707",
+  "audited_commit": "e81ca84e738b1412d2235fd8c47718ca3f3c19e7",
   "outcome": "success",
   "files": [
     {
@@ -769,7 +769,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "2981177d0efd3fc5f0054a05deae78a89c41da986a75c7dbc63aedb6feaed38a",
+      "sha256": "6c4d25d50e0e7c3bb4de62d2402311a824313f52b9afe4d7aad859336885536d",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -833,7 +833,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "c643402d82178dd7fa36231a7e320cebc0421c3de5b794b5be115a61dc45279d",
+      "sha256": "cac04b47062c83a78bc242eadca83186009d4f9f48484af1b646265b0d965dbf",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-A-LEVELS-TIERS",
@@ -1354,7 +1354,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "0b074ee4c104411abddf7a8051255ba4f236fb4eade393e26a7f380622a18a2c",
+      "sha256": "14a172eab3682a7ad95c43af372559a47b05c97f55106ff7b026435f14bf6834",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-A-LEVELS-TIERS",
@@ -2784,6 +2784,44 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-11-annex-a-profile-level-skeleton/design.md",
+      "sha256": "c48d3198ee4ae1ce39ac02963fa367fbcb2428222cc24ce3fe7509abf360f05d",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-annex-a-profile-level-skeleton/proposal.md",
+      "sha256": "373037079cbfe33c16515cc46ac4aa8dc87409a756ac442c82f2a9caf3c3f1ac",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.11.2-OPS-SEQ-PTL-INFO",
+        "AV2-A-LEVELS-TIERS",
+        "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-annex-a-profile-level-skeleton/specs/validator/spec.md",
+      "sha256": "4449be8571d4583b7f436b586a17248e5473a056838d46a138851274dc695223",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-A-LEVELS-TIERS",
+        "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-annex-a-profile-level-skeleton/tasks.md",
+      "sha256": "effc28e7c1f592db4d9a5c06415c562c72dbc977990f7828cc89a740ddf20a18",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-A-LEVELS-TIERS",
+        "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/avm-differential-harness/proposal.md",
       "sha256": "ca4e00373763656046a33836c38af7626641afedb9e473897f7ae9b2a3572b5f",
       "scope_kind": "openspec",
@@ -2946,7 +2984,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "315715958d7a7e52bcff36f972f2372ec062db437455cfa133871e12a41e1228",
+      "sha256": "cf3f5d6b6da4496d5af0a2908e2c4c5d3a2a10e02b7911314a6b1fbf1f89afca",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
