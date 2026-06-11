@@ -521,6 +521,58 @@ impl Check for MsdoSyntax {
                         .with_byte_offset(obu.offset),
                     );
                 }
+                // AV2 § 6.6 (mirror `06-syntax-structures-semantics.md` line 1347):
+                // "It is a requirement of bitstream conformance that
+                // multistream_profile_idc is greater than or equal to
+                // sub_stream_max_profile[i] for all i in the range 0 to
+                // num_streams_minus_2 + 1, inclusive." Locally decidable from the
+                // in-band MSDO alone — it is never suppressed by external HLS (an
+                // external HLS set cannot redefine the in-band MSDO's own fields).
+                for (i, sub) in msdo.sub_streams().iter().enumerate() {
+                    if msdo.multistream_profile_idc < sub.sub_stream_max_profile {
+                        report.push(
+                            Diagnostic::error(
+                                "msdo/profile-below-substream-max",
+                                format!(
+                                    "multistream_profile_idc {} is below \
+                                     sub_stream_max_profile[{i}] {} (§ 6.6: \
+                                     multistream_profile_idc must be >= every \
+                                     sub_stream_max_profile[i])",
+                                    msdo.multistream_profile_idc, sub.sub_stream_max_profile
+                                ),
+                            )
+                            .with_spec_section("6.6")
+                            .with_byte_offset(obu.offset),
+                        );
+                    }
+                }
+                // AV2 § 6.6 (mirror `06-syntax-structures-semantics.md` lines 1339-1341):
+                // "The allowed values for multistream_profile_idc are the same as those
+                // for seq_profile_idc as defined in Table A.4." The "Table A.4" reference
+                // is a spec erratum: the seq_profile_idc value space is defined by
+                // Annex A.2 Table A.1 (Table A.4 holds interoperability-point rows). The
+                // value space is all this sentence constrains — there is no claim beyond
+                // it — so a reserved (5..=30) value is flagged with the shared
+                // `annex-a/profile-reserved` id (the same value-space verdict the
+                // activated-header check emits for seq_profile_idc). Locally decidable;
+                // not suppressed by external HLS.
+                if crate::annex_a::is_reserved_profile(msdo.multistream_profile_idc) {
+                    report.push(
+                        Diagnostic::error(
+                            "annex-a/profile-reserved",
+                            format!(
+                                "multistream_profile_idc {} is reserved (5..=30); it conforms \
+                                 to no AV2 profile defined in this version of the specification \
+                                 (§ 6.6 binds its value space to seq_profile_idc / Annex A.2 \
+                                 Table A.1; the spec's \"Table A.4\" cross-reference is an \
+                                 erratum)",
+                                msdo.multistream_profile_idc
+                            ),
+                        )
+                        .with_spec_section("A.2")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
                 // AV2 § 5.2.1: OBU_MSDO is non-extensible, so the remaining payload
                 // bits must form valid trailing_bits().
                 if let Err(error) = finish_obu_payload(&mut reader, obu.payload, false)

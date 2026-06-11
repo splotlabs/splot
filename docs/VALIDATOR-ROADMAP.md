@@ -394,7 +394,6 @@ lands, add it to the registry tables there (the CI gate will require it).
 |---|---|---|---|---|
 | `obu-order/global-hls-after-metadata-suffix` | error | §7.3.7 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Global HLS appears after suffix metadata. Needs global suffix-metadata classification, which is pending frame/tile parsing. |
 | `obu-order/non-global-hls-before-coded-layer` | error | §7.3.7 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Non-global HLS appears in an invalid temporal-unit region. |
-| `msdo/sub-xlayer-duplicate` | error | §6.6 | `AV2-5.6-MSDO` | Duplicate `sub_xlayer_id` where uniqueness is required. Add only after confirming the exact §6.6 wording in the spec mirror (spec honesty). |
 | `brt/global-ordering-position` | error | §7.3.7 | `AV2-7.3-OBU-ORDERING` | A global BRT in an invalid temporal-unit position. Deferred: §7.3.7 does not list BRT among the global prefix OBUs, so a hard ordering error needs the §7.3.8 decoder-model / random-access state (tracked by a spec TODO under `AV2-7.3-OBU-ORDERING` in `splot-validate`). |
 | `annex-a/msdo-required-for-iop` | error | §A.2 | `AV2-A-PROFILES` | A Table A.4 interoperability-point row requires an OBU_MSDO (or the IOP2 MSDO-or-global-LCR either-or) for a multi-extended-layer coded video sequence and none is present. Deferred from `annex-a-profile-level-skeleton`; re-lands with `msdo-global-lcr-agreement` once MSDO aggregate-profile (`multistream_profile_idc`) state, LCR activation state, and §7.3.6-correct per-TU window attribution exist (the PR #46 codex threads record the requirements). |
 | `annex-a/msdo-prohibited-for-iop` | error | §A.2 | `AV2-A-PROFILES` | A Table A.4 interoperability-point row prohibits an OBU_MSDO (a single-extended-layer coded video sequence) but one is present. Deferred from `annex-a-profile-level-skeleton`; re-lands with `msdo-global-lcr-agreement` once MSDO aggregate-profile (`multistream_profile_idc`) state, LCR activation state, and §7.3.6-correct per-TU window attribution exist (the PR #46 codex threads record the requirements). |
@@ -403,6 +402,18 @@ lands, add it to the registry tables there (the CI gate will require it).
 
 Naming rules live in [`FEATURE-TRACKING.md`](./FEATURE-TRACKING.md) § 12
 (Diagnostic-ID convention); never rename a landed ID without a migration note.
+
+### Struck backlog entries
+
+- `msdo/sub-xlayer-duplicate` (`AV2-5.6-MSDO`, §6.6): **struck** by
+  `msdo-substream-constraint-checks`. Re-verification of the §6.6 MSDO semantics
+  in the spec mirror
+  ([`06-syntax-structures-semantics.md#s-6-6`](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-6),
+  lines 1330–1398) found **no** `sub_xlayer_id` uniqueness requirement:
+  `sub_xlayer_id[i]` only "specifies the value of obu_xlayer_id ... for the i-th
+  independent sub-bitstream" (line 1359), with no constraint that the values
+  differ. Spec honesty (AGENTS.md §6) forbids inventing the constraint, so the
+  planned diagnostic is removed rather than implemented.
 
 ## Done criteria for the umbrella validator goal
 
