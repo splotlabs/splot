@@ -3854,6 +3854,16 @@ impl ValidatorContext {
             // re-initializes the extended layer's content interpretation
             // parameters to defaults.
             self.observe_ci_rap(obu.header.extended_layer_id);
+            // AV2 § 6.16.7 / § 6.16.10 / § 7.3.8.11 (finding 1, OLK re-pair). Like
+            // the CLK branch above, an OLK is a § 7.3.8.11 random access point, so a
+            // CI re-sent identically in this RAP temporal unit BEFORE the OLK was
+            // deduplicated by the epoch-aware CI guard (the lagging epoch could not
+            // tell it apart from an ordinary identical repeat at CI-time). observe_ci_rap
+            // has now advanced the epoch and dropped the stale pre-RAP timecode /
+            // scan-type pairings; the CI re-sent in this temporal unit is the
+            // § 7.3.8.11 authority for the new epoch's pictures, so re-pair the new
+            // epoch's observations against it now — once, with no duplicate.
+            self.repair_post_rap_ci_pairings(obu.header.extended_layer_id, report);
             // AV2 § 7.4.1: an OLK makes the temporal unit a random access point.
             self.msdo_identity.note_random_access_point();
         } else if obu.header.obu_type == ObuType::RasFrame {

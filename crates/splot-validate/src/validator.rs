@@ -6672,6 +6672,54 @@ mod tests {
     }
 
     #[test]
+    fn metadata_timecode_n_frames_olk_rap_resent_identical_ci_repairs() {
+        // The OLK analogue of `metadata_timecode_n_frames_rap_resent_identical_ci_repairs`.
+        // An OLK is also a § 7.3.8.11 random access point whose observe_ci_rap advances
+        // the epoch and drops the deferred pre-RAP pairings, so the epoch-aware
+        // identical-CI guard must re-pair against the CI re-sent in the OLK's temporal
+        // unit exactly as it does at a CLK. A pre-RAP CI at TU0 establishes a low-rate
+        // timing T (maxPicPerSecond 1). The OLK temporal unit holds, in decoding order, a
+        // timecode that violates T (n_frames 5), then the SAME CI re-sent with timing
+        // IDENTICAL to the pre-RAP copy, then the OLK (§ 7.3.8.11 RAP). The eager timecode
+        // pairing against the stale pre-RAP CI is deferred; the identical re-send is
+        // skipped by the timing-equality dedup guard (pre-RAP record still present); the
+        // OLK drops the deferred pre-RAP pairing. With repair wired at the OLK the re-sent
+        // CI re-pairs the timecode against the post-epoch authority and the violation
+        // fires, anchored at the timecode metadata OBU. (Pre-fix the OLK branch did not
+        // call repair_post_rap_ci_pairings, so the violation vanished.)
+        let low_rate = CiTiming {
+            display_tick: 1000,
+            time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
+            equal_picture_interval: true,
+            num_ticks_minus_1: 1,
+        };
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        // TU0: the pre-RAP CI establishes the low-rate timing.
+        data.extend(content_interpretation_obu(0, 0, Some(low_rate)));
+        data.extend(temporal_delimiter_obu()); // -> TU1, the RAP temporal unit
+        // TU1: timecode (n_frames 5 >= maxPicPerSecond 1) -> the SAME CI re-sent with
+        // identical timing (still before the RAP, so the pre-RAP record is the dedup
+        // baseline) -> OLK (§ 7.3.8.11 RAP, drops the deferred pre-RAP pairing).
+        let timecode_offset = data.len() as u64 + 1;
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 31),
+            &timecode_flagged_payload(5, Some(0), Some(0), Some(0)),
+        ));
+        data.extend(content_interpretation_obu(0, 0, Some(low_rate)));
+        data.extend(open_loop_key_obu()); // OBU_OPEN_LOOP_KEY, xlayer 0 -> RAP
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "metadata/timecode-n-frames-exceeds-rate"
+                    && d.byte_offset.map(|o| o.get()) == Some(timecode_offset)
+            }),
+            "the post-OLK re-sent CI must re-pair the RAP-temporal-unit timecode even \
+             though its timing equals the pre-RAP copy's; report was: {report}"
+        );
+    }
+
+    #[test]
     fn metadata_timecode_n_frames_identical_ci_repeat_no_rap_reports_once() {
         // Cycle-3 finding 1 (epoch-aware dedup, not temporal-unit identity). TU0
         // establishes a low-rate CI (maxPicPerSecond 1) and then a timecode whose
@@ -8410,6 +8458,48 @@ mod tests {
         assert!(
             has_error(&report, "metadata/scan-type-ci-scan-type-mismatch"),
             "the post-RAP re-sent CI must re-pair the RAP-temporal-unit scan-type \
+             metadata even though its ci_scan_type_idc equals the pre-RAP copy's; \
+             report was: {report}"
+        );
+        assert!(
+            !has_error(&report, "content-interpretation/repeated-ci-not-identical"),
+            "the identical re-send is a legal § 6.14 repeat; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn scan_type_olk_rap_resent_identical_ci_repairs() {
+        // The OLK analogue of `scan_type_rap_resent_identical_ci_repairs`. An OLK is also
+        // a § 7.3.8.11 random access point whose observe_ci_rap advances the epoch and
+        // drops the deferred Table 6.18 pairing, so the epoch-aware dedup guard must
+        // re-pair against the CI re-sent in the OLK's temporal unit exactly as it does at
+        // a CLK. A pre-RAP CI at TU0 establishes ci_scan_type_idc 2 (Table 6.18
+        // SingleField). The OLK temporal unit holds, in decoding order, scan-type metadata
+        // mps_pic_struct_type 0 (Frame group, requires ci_scan_type_idc 1) violating the
+        // established 2, then the SAME CI re-sent with ci_scan_type_idc IDENTICAL to the
+        // pre-RAP copy, then the OLK (§ 7.3.8.11 RAP). The eager Table 6.18 pairing
+        // against the stale pre-RAP CI is deferred; the identical re-send is skipped by
+        // the content-equality dedup guard (pre-RAP record still present); the OLK drops
+        // the deferred pre-RAP pairing. With repair wired at the OLK the re-sent CI
+        // re-pairs the metadata against the post-epoch authority and the diagnostic fires.
+        // (Pre-fix the OLK branch did not call repair_post_rap_ci_pairings, so the
+        // violation vanished.)
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+        // TU0: the pre-RAP CI establishes ci_scan_type_idc 2.
+        data.extend(content_interpretation_scan_obu(2, None));
+        data.extend(temporal_delimiter_obu()); // -> TU1, the RAP temporal unit
+        // TU1: scan-type metadata (Frame group, requires idc 1) violating the
+        // established idc 2 -> the SAME CI re-sent identical (still before the RAP, so
+        // the pre-RAP record is the dedup baseline) -> OLK (§ 7.3.8.11 RAP, drops the
+        // deferred pre-RAP pairing).
+        data.extend(global_scan_type_obu(0x00, 0));
+        data.extend(content_interpretation_scan_obu(2, None));
+        data.extend(open_loop_key_obu()); // OBU_OPEN_LOOP_KEY, xlayer 0 -> RAP
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "metadata/scan-type-ci-scan-type-mismatch"),
+            "the post-OLK re-sent CI must re-pair the RAP-temporal-unit scan-type \
              metadata even though its ci_scan_type_idc equals the pre-RAP copy's; \
              report was: {report}"
         );
