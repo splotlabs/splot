@@ -1036,7 +1036,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Payload syntax and validator state effect for temporal-unit boundaries. The locally-decidable temporal-delimiter rules have landed: §6.2.2 obu_xlayer_id == GLOBAL_XLAYER_ID and base-layer obu_tlayer_id/obu_mlayer_id == 0 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2, lines 201-214; obu-header/global-xlayer-required and obu-header/base-layer-only-types) and the §6.2.3 empty payload trailing_bits() tail. §6.5 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-5, lines 1318-1320) defines only the SeenFrameHeader frame-unit state variable. Residual: the temporal-delimiter's SeenFrameHeader reset and temporal-unit boundary effect (global TD, prefix-OBU ordering, ascending-xlayer coded-extended-layer-unit ordering) are modeled by the temporal-unit state machine and owned by AV2-7.3.7-TEMPORAL-UNIT-ORDER; the in-unit metadata-suffix and frame-unit details remain future there."
+notes = "Payload syntax and validator state effect for temporal-unit boundaries. The locally-decidable temporal-delimiter rules have landed: §6.2.2 obu_xlayer_id == GLOBAL_XLAYER_ID and base-layer obu_tlayer_id/obu_mlayer_id == 0 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2, lines 201-214; obu-header/global-xlayer-required and obu-header/base-layer-only-types) and the §6.2.3 empty payload trailing_bits() tail. §6.5 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-5, lines 1318-1320) defines only the SeenFrameHeader frame-unit state variable. Residual: the temporal-delimiter's SeenFrameHeader reset and temporal-unit boundary effect (global TD, prefix-OBU ordering, ascending-xlayer coded-extended-layer-unit ordering) are modeled by the temporal-unit state machine and owned by AV2-7.3.7-TEMPORAL-UNIT-ORDER. Groundwork note: the §6.5 SeenFrameHeader frame-unit state has a structural analogue now that frame-unit-segmentation segments coded frame units per layer (crates/splot-validate/src/frame_unit.rs FrameUnitSegmenter) — the segmenter knows when a coded frame's first OBU begins a frame unit (the SeenFrameHeader set point), which the SeenFrameHeader-reset half of this row needs; the precise §6.5 reset semantics stay blocked on the §5.19 tile_group_obu() parser (AV2-5.19-TILE-GROUP), which sets/clears SeenFrameHeader at the frame-header / frame-header-copy level."
 
 [feature.status]
 mapped = "done"
@@ -1960,7 +1960,7 @@ openspec_change = "qm-filmgrain-hls-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Full §5.13 quantizer_matrix_obu() parser (qm_bit_map f(15), qm_chroma_info_present_flag, reset/default path, per-level qm_is_default_flag, user-defined matrices via the AV2-5.4.11-USER-QM helper), dispatched from open_bitstream_unit() with a QuantizationMatrix ParsedObu variant and inspect JSON summary (level/plane/default status; matrices summarized by shape, not dumped). The parser enforces the §6.4.11 quant_delta -128..=127 bound (qm/quant-delta-out-of-range via the QuantizerMatrixSyntax check), and the validator implements the local §6.12 duplicate-reset-between-frames and duplicate-level-between-frames checks and records per-level HLS availability (QmMLayerId/QmTLayerId/QmDataPresent/QmNumPlanes, reset to defaults on a qm_bit_map==0 reset) as foundation. The between-coded-frames window resets at each frame-bearing OBU only (not at temporal-unit boundaries: §6.12 windows close at a coded frame, so a level reused across a bare temporal delimiter is still a duplicate); frame-bearing covers tile groups plus SEF/TIP/bridge, a superset of the AVM tile-group reset point, so no false positives and at most a SEF-only false negative. Frame quantization-reference checks (using_qmatrix/qm_y/qm_u/qm_v, §6.17.6) and the QmProtected key-frame reset remain deferred until the frame header is parsed."
+notes = "Full §5.13 quantizer_matrix_obu() parser (qm_bit_map f(15), qm_chroma_info_present_flag, reset/default path, per-level qm_is_default_flag, user-defined matrices via the AV2-5.4.11-USER-QM helper), dispatched from open_bitstream_unit() with a QuantizationMatrix ParsedObu variant and inspect JSON summary (level/plane/default status; matrices summarized by shape, not dumped). The parser enforces the §6.4.11 quant_delta -128..=127 bound (qm/quant-delta-out-of-range via the QuantizerMatrixSyntax check), and the validator implements the local §6.12 duplicate-reset-between-frames and duplicate-level-between-frames checks and records per-level HLS availability (QmMLayerId/QmTLayerId/QmDataPresent/QmNumPlanes, reset to defaults on a qm_bit_map==0 reset) as foundation. The between-coded-frames window (QmSeen, '...seen since the last frame', §6.12) resets at each *decoded* coded frame only (is_decoding_coded_frame: tile groups plus TIP/bridge, NOT a SEF, and NOT at temporal-unit boundaries). The former SEF-only false negative is FIXED under frame-unit-segmentation: a SEF (show-existing-frame) displays an already-decoded frame and does not decode a new one, so it no longer resets QmSeen (matching the AVM tile-group reset point); a level reused across a SEF with no intervening decoded frame is now correctly flagged (regression test qm_duplicate_level_across_sef_is_flagged), as is a level reused across a bare temporal delimiter. Frame quantization-reference checks (using_qmatrix/qm_y/qm_u/qm_v, §6.17.6) and the QmProtected key-frame reset remain deferred until the frame header is parsed."
 
 [feature.status]
 mapped = "done"
@@ -1975,7 +1975,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/quantizer_matrix.rs::tests", "crates/splot-core/src/obu.rs::tests::dispatch_parses_quantizer_matrix_payload", "crates/splot-validate/src/validator.rs::tests::qm_duplicate_reset_between_frames_is_flagged", "crates/splot-validate/src/validator.rs::tests::qm_duplicate_level_between_frames_is_flagged", "crates/splot-validate/src/validator.rs::tests::qm_malformed_payload_is_flagged", "crates/splot-validate/src/validator.rs::tests::qm_quant_delta_out_of_range_is_flagged", "crates/splot-validate/src/validator.rs::tests::qm_duplicate_level_across_temporal_delimiter_is_flagged"]
+tests = ["crates/splot-core/src/headers/quantizer_matrix.rs::tests", "crates/splot-core/src/obu.rs::tests::dispatch_parses_quantizer_matrix_payload", "crates/splot-validate/src/validator.rs::tests::qm_duplicate_reset_between_frames_is_flagged", "crates/splot-validate/src/validator.rs::tests::qm_duplicate_level_between_frames_is_flagged", "crates/splot-validate/src/validator.rs::tests::qm_malformed_payload_is_flagged", "crates/splot-validate/src/validator.rs::tests::qm_quant_delta_out_of_range_is_flagged", "crates/splot-validate/src/validator.rs::tests::qm_duplicate_level_across_temporal_delimiter_is_flagged", "crates/splot-validate/src/validator.rs::tests::qm_duplicate_level_across_sef_is_flagged", "crates/splot-validate/src/validator.rs::tests::qm_duplicate_level_across_decoded_frame_is_not_flagged"]
 commands = ["cargo test -p splot-core quantizer", "cargo test -p splot-validate qm"]
 fixtures = ["tests/fixtures/quantizer-matrix.av2"]
 diagnostics = ["qm/duplicate-reset-between-frames", "qm/duplicate-level-between-frames", "qm/quant-delta-out-of-range"]
@@ -1993,7 +1993,7 @@ openspec_change = "qm-filmgrain-hls-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Full §5.14 film_grain_obu() parser (fgm_update_flags f(8), fgm_chroma_idc uvlc() with subX/subY/monochrome derivation, per-slot film_grain_model()) and the complete §5.18.10.2 film_grain_model() parser (scaling points, grain scaling, AR coefficient arrays, chroma multipliers/offsets, overlap/restricted-range/identity/block-size), dispatched from open_bitstream_unit() with a FilmGrain ParsedObu variant and inspect JSON summary (arrays summarized by count, not dumped). Field order verified against the AVM oracle obu_fgm.c (no AV1 code). Validator implements the local §6.13 update-flags-zero, chroma-idc-out-of-range, and duplicate-slot-in-coded-frame-unit checks, the local §6.17.10.2 film-grain-model checks (scaling-points-out-of-range for num_*_points>14, scaling-point-not-increasing for non-monotonic/>=256 point values, and chroma-points-not-paired for the 4:2:0 cb/cr pairing rule), and records per-slot HLS availability (FgmChromaIdc/FgmMLayerId/FgmTLayerId) as foundation. The coded-frame-unit window resets at each frame-bearing OBU only (not at temporal-unit boundaries: §6.13 windows close at a coded frame, so a slot reused across a bare temporal delimiter is still a duplicate); no false positives and at most a SEF-only false negative. Frame film-grain reference checks (apply_grain/fgm_id, §5.18.10.1) remain deferred until the frame header is parsed."
+notes = "Full §5.14 film_grain_obu() parser (fgm_update_flags f(8), fgm_chroma_idc uvlc() with subX/subY/monochrome derivation, per-slot film_grain_model()) and the complete §5.18.10.2 film_grain_model() parser (scaling points, grain scaling, AR coefficient arrays, chroma multipliers/offsets, overlap/restricted-range/identity/block-size), dispatched from open_bitstream_unit() with a FilmGrain ParsedObu variant and inspect JSON summary (arrays summarized by count, not dumped). Field order verified against the AVM oracle obu_fgm.c (no AV1 code). Validator implements the local §6.13 update-flags-zero, chroma-idc-out-of-range, and duplicate-slot-in-coded-frame-unit checks, the local §6.17.10.2 film-grain-model checks (scaling-points-out-of-range for num_*_points>14, scaling-point-not-increasing for non-monotonic/>=256 point values, and chroma-points-not-paired for the 4:2:0 cb/cr pairing rule), and records per-slot HLS availability (FgmChromaIdc/FgmMLayerId/FgmTLayerId) as foundation. The coded-frame-unit window resets at each *decoded* coded frame only (is_decoding_coded_frame: tile groups plus TIP/bridge, NOT a SEF, and not at temporal-unit boundaries: §6.13 windows close at a coded frame, so a slot reused across a bare temporal delimiter is still a duplicate). The former SEF-only false negative is FIXED under frame-unit-segmentation: a SEF (show-existing-frame) does not close a coded-frame-unit window (it displays an already-decoded frame), so a slot reused across a SEF with no intervening decoded frame is now correctly flagged (regression test film_grain_duplicate_slot_across_sef_is_flagged). Frame film-grain reference checks (apply_grain/fgm_id, §5.18.10.1) remain deferred until the frame header is parsed."
 
 [feature.status]
 mapped = "done"
@@ -2008,7 +2008,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/film_grain.rs::tests", "crates/splot-core/src/obu.rs::tests::dispatch_parses_film_grain_payload", "crates/splot-validate/src/validator.rs::tests::film_grain_zero_update_flags_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_chroma_idc_out_of_range_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_duplicate_slot_in_coded_frame_unit_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_malformed_payload_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_too_many_scaling_points_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_420_unpaired_chroma_points_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_non_increasing_scaling_point_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_duplicate_slot_across_temporal_delimiter_is_flagged"]
+tests = ["crates/splot-core/src/headers/film_grain.rs::tests", "crates/splot-core/src/obu.rs::tests::dispatch_parses_film_grain_payload", "crates/splot-validate/src/validator.rs::tests::film_grain_zero_update_flags_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_chroma_idc_out_of_range_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_duplicate_slot_in_coded_frame_unit_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_malformed_payload_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_too_many_scaling_points_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_420_unpaired_chroma_points_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_non_increasing_scaling_point_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_duplicate_slot_across_temporal_delimiter_is_flagged", "crates/splot-validate/src/validator.rs::tests::film_grain_duplicate_slot_across_sef_is_flagged"]
 commands = ["cargo test -p splot-core film", "cargo test -p splot-validate film"]
 fixtures = ["tests/fixtures/film-grain.av2"]
 diagnostics = ["film-grain/update-flags-zero", "film-grain/chroma-idc-out-of-range", "film-grain/duplicate-slot-in-coded-frame-unit", "film-grain/scaling-points-out-of-range", "film-grain/scaling-point-not-increasing", "film-grain/chroma-points-not-paired"]
@@ -2092,7 +2092,7 @@ openspec_change = "metadata-semantic-validation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Umbrella for metadata OBUs; child rows carry the per-type status. The §6.16.3 persistence/cancellation lifetime store and the §6.16.10 scan-type CVS-consistency checks landed via metadata-semantic-validation (over the exact §7.3.6 CVS boundary). validate stays partial pending decoded-frame-hash verification (§6.16.13, blocked on a decoder) and in-frame-unit metadata suffix/prefix placement (§7.3.3/§7.3.4, blocked on frame-unit parsing)."
+notes = "Umbrella for metadata OBUs; child rows carry the per-type status. The §6.16.3 persistence/cancellation lifetime store and the §6.16.10 scan-type CVS-consistency checks landed via metadata-semantic-validation (over the exact §7.3.6 CVS boundary). Under frame-unit-segmentation the §6.16.3 NO_PERSISTENCE ('Used only for the current frame') expiry is now coded-frame-UNIT granular: MetadataLifetimeStore::expire_no_persistence fires at each frame-bearing OBU, which is the single coded frame of its frame unit (§7.3.5), so a unit lapses once its coded frame is observed (the former per-frame-OBU TODO is resolved; a residual remains to scope the expiry to the consuming layer's own frame). The in-frame-unit metadata suffix/prefix placement WITHIN a coded frame unit (§7.3.3/§7.3.4) is now segmented by AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT/AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT (frame_unit.rs). validate stays partial pending decoded-frame-hash verification (§6.16.13, blocked on a decoder) and the deferred per-frame metadata-applicability checks."
 
 [feature.status]
 mapped = "done"
@@ -2257,7 +2257,7 @@ openspec_change = "metadata-semantic-validation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. The §6.16.5 'shall have the same content' rule for additional HDR CLL units in a CVS is checked per intersecting embedded-layer association over the exact §7.3.6 CVS boundary (metadata/hdr-cll-repeat-content-differs): each unit's association set is derived from its §6.16.3 muh_layer_idc targeting (global LAYER_GLOBAL = all layers, local LAYER_GLOBAL = every embedded layer of the carrying xlayer, LAYER_CURRENT = the carrying (xlayer, mlayer), LAYER_VALUES = the full muh_xlayer_map/muh_mlayer_map pair set incl. multi-map global units), so cross-mode pairs that share an embedded layer are compared while disjoint targeting never is. Units with no bitstream-derivable association (LAYER_UNSPECIFIED, LAYER_CURRENT on a global OBU, reserved muh_layer_idc) enter no comparison and no baseline — a documented conservative false negative. validate stays partial: the §6.16.5 'shall be indicated at the first coded picture of that embedded layer' half needs metadata-to-picture association within the coded frame unit and is deferred to avoid false positives (TODO(spec: AV2-5.17.5-METADATA-HDR-CLL) in crates/splot-validate/src/context.rs)."
+notes = "Child row of AV2-5.17-METADATA. The §6.16.5 'shall have the same content' rule for additional HDR CLL units in a CVS is checked per intersecting embedded-layer association over the exact §7.3.6 CVS boundary (metadata/hdr-cll-repeat-content-differs): each unit's association set is derived from its §6.16.3 muh_layer_idc targeting (global LAYER_GLOBAL = all layers, local LAYER_GLOBAL = every embedded layer of the carrying xlayer, LAYER_CURRENT = the carrying (xlayer, mlayer), LAYER_VALUES = the full muh_xlayer_map/muh_mlayer_map pair set incl. multi-map global units), so cross-mode pairs that share an embedded layer are compared while disjoint targeting never is. Units with no bitstream-derivable association (LAYER_UNSPECIFIED, LAYER_CURRENT on a global OBU, reserved muh_layer_idc) enter no comparison and no baseline — a documented conservative false negative. The §6.16.5 'shall be indicated at the first coded picture of that embedded layer in the coded video sequence' half landed under frame-unit-segmentation for the sound subset (metadata/hdr-cll-first-coded-picture): an explicit-pair-targeted unit (LAYER_CURRENT / LAYER_VALUES) that FIRST establishes content (no prior intersecting baseline of the same type in the CVS) when every named embedded layer's first coded picture of the CVS has already passed (embedded_layer_first_picture_seen, set at the layer's first frame-bearing OBU and reset per CVS) was not indicated at the first coded picture and is flagged; a unit in the layer's first coded frame unit's pre-frame region is observed before that picture and never fires, and an allowed later repeat (matching an earlier-established baseline) is not flagged. XLayerWide (local LAYER_GLOBAL) / Universal (global LAYER_GLOBAL) targeting names no single concrete first coded picture and stays deferred (zero false positives). validate stays partial on the deferred XLayerWide/Universal first-coded-picture half and the color-inheritance refinement."
 
 [feature.status]
 mapped = "done"
@@ -2272,10 +2272,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests", "crates/splot-validate/src/validator.rs::tests::hdr_cll_repeat_same_content_accepted", "crates/splot-validate/src/validator.rs::tests::hdr_cll_repeat_content_differs_flagged", "crates/splot-validate/src/validator.rs::tests::hdr_cll_after_cvs_restart_new_content_accepted", "crates/splot-validate/src/validator.rs::tests::hdr_cll_cross_tu_repeat_differs_flagged_at_flush", "crates/splot-validate/src/validator.rs::tests::hdr_cll_global_then_current_layer_differing_content_flagged", "crates/splot-validate/src/validator.rs::tests::hdr_cll_global_then_current_layer_same_content_accepted", "crates/splot-validate/src/validator.rs::tests::hdr_cll_unspecified_layer_targeting_not_compared", "crates/splot-validate/src/validator.rs::tests::hdr_cll_global_group_disjoint_layer_targeting_not_flagged", "crates/splot-validate/src/validator.rs::tests::hdr_cll_global_group_overlapping_layer_targeting_flagged", "crates/splot-validate/src/validator.rs::tests::hdr_cll_cross_mode_deferral_dropped_at_clk"]
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests", "crates/splot-validate/src/validator.rs::tests::hdr_cll_repeat_same_content_accepted", "crates/splot-validate/src/validator.rs::tests::hdr_cll_repeat_content_differs_flagged", "crates/splot-validate/src/validator.rs::tests::hdr_cll_after_cvs_restart_new_content_accepted", "crates/splot-validate/src/validator.rs::tests::hdr_cll_cross_tu_repeat_differs_flagged_at_flush", "crates/splot-validate/src/validator.rs::tests::hdr_cll_global_then_current_layer_differing_content_flagged", "crates/splot-validate/src/validator.rs::tests::hdr_cll_global_then_current_layer_same_content_accepted", "crates/splot-validate/src/validator.rs::tests::hdr_cll_unspecified_layer_targeting_not_compared", "crates/splot-validate/src/validator.rs::tests::hdr_cll_global_group_disjoint_layer_targeting_not_flagged", "crates/splot-validate/src/validator.rs::tests::hdr_cll_global_group_overlapping_layer_targeting_flagged", "crates/splot-validate/src/validator.rs::tests::hdr_cll_cross_mode_deferral_dropped_at_clk", "crates/splot-validate/src/validator.rs::tests::metadata_hdr_cll_first_coded_picture_late_is_flagged", "crates/splot-validate/src/validator.rs::tests::metadata_hdr_cll_at_first_coded_picture_is_conformant"]
 commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata", "cargo test -p splot-validate hdr_cll"]
 fixtures = []
-diagnostics = ["metadata/hdr-cll-repeat-content-differs"]
+diagnostics = ["metadata/hdr-cll-repeat-content-differs", "metadata/hdr-cll-first-coded-picture"]
 
 [[feature]]
 id = "AV2-5.17.6-METADATA-HDR-MDCV"
@@ -2290,7 +2290,7 @@ openspec_change = "metadata-semantic-validation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. The §6.16.6 'shall have the same content' rule for additional HDR MDCV units in a CVS is checked per intersecting embedded-layer association over the exact §7.3.6 CVS boundary (metadata/hdr-mdcv-repeat-content-differs), with the association set derived from the §6.16.3 muh_layer_idc targeting exactly as for AV2-5.17.5-METADATA-HDR-CLL (incl. the LAYER_UNSPECIFIED / global-LAYER_CURRENT / reserved-idc conservative skips). validate stays partial: the §6.16.6 'shall be indicated at the first coded picture of that embedded layer' half needs metadata-to-picture association within the coded frame unit and is deferred to avoid false positives (TODO(spec: AV2-5.17.6-METADATA-HDR-MDCV) in crates/splot-validate/src/context.rs)."
+notes = "Child row of AV2-5.17-METADATA. The §6.16.6 'shall have the same content' rule for additional HDR MDCV units in a CVS is checked per intersecting embedded-layer association over the exact §7.3.6 CVS boundary (metadata/hdr-mdcv-repeat-content-differs), with the association set derived from the §6.16.3 muh_layer_idc targeting exactly as for AV2-5.17.5-METADATA-HDR-CLL (incl. the LAYER_UNSPECIFIED / global-LAYER_CURRENT / reserved-idc conservative skips). The §6.16.6 'shall be indicated at the first coded picture of that embedded layer' half landed under frame-unit-segmentation for the explicit-pair sound subset (metadata/hdr-mdcv-first-coded-picture), sharing the check_hdr_first_coded_picture path with AV2-5.17.5-METADATA-HDR-CLL (an explicit-pair unit first establishing content after the named layers' first coded picture of the CVS has passed; XLayerWide/Universal targeting and the color-inheritance refinement stay deferred). validate stays partial on those deferred halves."
 
 [feature.status]
 mapped = "done"
@@ -2305,10 +2305,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests", "crates/splot-validate/src/validator.rs::tests::hdr_mdcv_repeat_content_differs_flagged"]
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests", "crates/splot-validate/src/validator.rs::tests::hdr_mdcv_repeat_content_differs_flagged", "crates/splot-validate/src/validator.rs::tests::metadata_hdr_mdcv_first_coded_picture_late_is_flagged"]
 commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata", "cargo test -p splot-validate hdr_mdcv"]
 fixtures = []
-diagnostics = ["metadata/hdr-mdcv-repeat-content-differs"]
+diagnostics = ["metadata/hdr-mdcv-repeat-content-differs", "metadata/hdr-mdcv-first-coded-picture"]
 
 [[feature]]
 id = "AV2-5.17.7-METADATA-TIMECODE"
@@ -3126,33 +3126,33 @@ id = "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT"
 name = "Coded output frame unit ordering semantics"
 category = "normative"
 kind = "bitstream-semantics"
-spec_sections = ["7.3.3"]
+spec_sections = ["7.3.3", "7.3.8.10"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
-module = "crates/splot-validate/src/context.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-validate/src/frame_unit.rs"
+openspec_change = "frame-unit-segmentation"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Child row of AV2-7.3-OBU-ORDERING. Add temporal-state checks only after required payload parsers exist."
+notes = "Child row of AV2-7.3-OBU-ORDERING. The coded-output-frame-unit segmentation and the §7.3.3 presence-order checks landed under frame-unit-segmentation (crates/splot-validate/src/frame_unit.rs, FrameUnitSegmenter): each (obu_xlayer_id, obu_mlayer_id, obu_tlayer_id) triple's consecutive OBUs partition into coded frame units with the region order CI (zero or one) -> MFHs -> pre-frame region (BRT/QM/FGM/prefix-metadata, any order) -> the coded frame (same-obu_type tile OBUs with the is_first_tile_group 1-then-0 rule, or exactly one SEF) -> the suffix-metadata tail, OBU_PADDING position-free. Output classification (which selects the §7.3.3 grammar) comes from the parsed output flags: a SEF is always output (frame_unit.rs SefFrame), the tile/TIP frames carry immediate_output_frame/implicit_output_frame from the core parser (context.rs frame_output_class). Eager structural diagnostics (decidable from OBU types and the is_first_tile_group / metadata_is_suffix bits, independent of output class): frame-unit/region-order, frame-unit/duplicate-content-interpretation, frame-unit/first-tile-group-flag, frame-unit/mixed-coded-frame-types, frame-unit/sef-single-obu, frame-unit/suffix-metadata-before-coded-frame. Residual (Unknown path): when a tile/TIP frame's output classification is undecidable (an unsupported FrameHeaderParseStatus stop, blocked on AV2-5.18-FRAME-HEADER), the output-class-derived judgment (the grammar branch and the §7.3.4 BRT bound) is silently dropped for that unit (zero false positives); the OBU-type-decidable structural checks still fire. The prefix-region-after-coded-frame placement is NOT a diagnostic: the grammar permits back-to-back units, so a pre-frame OBU after a coded frame soundly starts a new unit (documented residual, no false positive). §7.3.8.10 ('CI OBUs shall only appear in the first coded frame unit of each embedded layer within a temporal unit', mirror line 880) is enforced from the same per-(xlayer, mlayer) segmentation as frame-unit/ci-not-in-first-frame-unit (independent of output class). decode_check stays partial on the same Unknown-path residual."
 
 [feature.status]
 mapped = "done"
-types = "todo"
+types = "done"
 parse = "not-applicable"
-validate = "todo"
+validate = "partial"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
+decode_check = "partial"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-validate/src/validator.rs::tests::frame_unit_first_tile_group_flag_zero_on_first_is_flagged", "crates/splot-validate/src/validator.rs::tests::frame_unit_non_first_tile_group_flag_one_is_flagged", "crates/splot-validate/src/validator.rs::tests::frame_unit_first_tile_group_flag_conformant_is_silent", "crates/splot-validate/src/validator.rs::tests::frame_unit_undecidable_first_tile_group_stays_silent", "crates/splot-validate/src/validator.rs::tests::frame_unit_duplicate_content_interpretation_is_flagged", "crates/splot-validate/src/validator.rs::tests::frame_unit_ci_after_mfh_is_region_order_error", "crates/splot-validate/src/validator.rs::tests::frame_unit_sef_single_obu_violation_is_flagged", "crates/splot-validate/src/validator.rs::tests::frame_unit_mixed_coded_frame_types_is_flagged", "crates/splot-validate/src/validator.rs::tests::frame_unit_suffix_metadata_before_coded_frame_is_flagged", "crates/splot-validate/src/validator.rs::tests::frame_unit_padding_is_position_free", "crates/splot-validate/src/validator.rs::tests::frame_unit_conformant_output_unit_is_silent", "crates/splot-validate/src/validator.rs::tests::frame_unit_ci_in_second_frame_unit_is_flagged"]
+commands = ["cargo test -p splot-validate frame_unit"]
 fixtures = []
-diagnostics = []
+diagnostics = ["frame-unit/region-order", "frame-unit/duplicate-content-interpretation", "frame-unit/first-tile-group-flag", "frame-unit/mixed-coded-frame-types", "frame-unit/sef-single-obu", "frame-unit/suffix-metadata-before-coded-frame", "frame-unit/ci-not-in-first-frame-unit"]
 
 [[feature]]
 id = "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT"
@@ -3163,29 +3163,29 @@ spec_sections = ["7.3.4"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
 module = "crates/splot-validate/src/context.rs"
-openspec_change = "validator-coverage-roadmap"
+openspec_change = "frame-unit-segmentation"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Child row of AV2-7.3-OBU-ORDERING. Add temporal-state checks only after required payload parsers exist."
+notes = "Child row of AV2-7.3-OBU-ORDERING. The coded-non-output-frame-unit segmentation and the 7.3.4 presence-order checks landed under frame-unit-segmentation (crates/splot-validate/src/frame_unit.rs): shares the FrameUnitSegmenter per-(obu_xlayer_id, obu_mlayer_id, obu_tlayer_id) state machine with AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT, enforcing the 7.3.4 non-output region order. The asymmetry the spec encodes is enforced: a coded NON-output frame unit allows zero or one OBU_BUFFER_REMOVAL_TIMING (mirror line 452), whereas an output frame unit allows zero or more (mirror line 384) - frame-unit/buffer-removal-timing-multiplicity fires only for a non-output unit with two-or-more BRT, resolved at the unit boundary once the output class is known. OBU_BRIDGE_FRAME is the type-decidable non-output coded frame (mirror line 470). The is_first_tile_group / mixed-type / SEF structural checks are shared with AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT (same diagnostics). Residual (Unknown path): a tile/TIP frame whose output classification is undecidable (an unsupported FrameHeaderParseStatus stop, blocked on AV2-5.18-FRAME-HEADER) drops the non-output BRT bound for that unit (the output class is not NonOutput, so the bound cannot be asserted) - zero false positives; decode_check stays partial on this residual."
 
 [feature.status]
 mapped = "done"
-types = "todo"
+types = "done"
 parse = "not-applicable"
-validate = "todo"
+validate = "partial"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
+decode_check = "partial"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-validate/src/validator.rs::tests::frame_unit_brt_multiplicity_in_non_output_unit_is_flagged", "crates/splot-validate/src/validator.rs::tests::frame_unit_brt_multiplicity_in_output_unit_is_conformant", "crates/splot-validate/src/validator.rs::tests::frame_unit_undecidable_first_tile_group_stays_silent"]
+commands = ["cargo test -p splot-validate frame_unit"]
 fixtures = []
-diagnostics = []
+diagnostics = ["frame-unit/buffer-removal-timing-multiplicity"]
 
 [[feature]]
 id = "AV2-7.3.5-CODED-FRAME-UNIT"
@@ -3196,27 +3196,27 @@ spec_sections = ["7.3.5"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
 module = "crates/splot-validate/src/context.rs"
-openspec_change = "validator-coverage-roadmap"
+openspec_change = "frame-unit-segmentation"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Child row of AV2-7.3-OBU-ORDERING. Add temporal-state checks only after required payload parsers exist."
+notes = "Child row of AV2-7.3-OBU-ORDERING. AV2-7.3.5-CODED-FRAME-UNIT is the union 'a coded frame unit is either a coded output frame unit or a coded non-output frame unit' (mirror line 508), realized by the single FrameUnitSegmenter (crates/splot-validate/src/frame_unit.rs) that classifies each unit as output / non-output / Unknown from the parsed output flags and applies the AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT / AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT grammars accordingly. The segmentation is the named blocker this change unblocks for the AV2-7.3.2-CMVS-BOUNDARIES / AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT coded-frame-unit residuals. Residual (Unknown path): an undecidable output classification routes a unit output-class-derived judgment to silence (zero false positives), narrowing as frame-header parsing lands (AV2-5.18-FRAME-HEADER); the OBU-type-decidable structural presence-order checks fire regardless. decode_check stays partial on this residual."
 
 [feature.status]
 mapped = "done"
-types = "todo"
+types = "done"
 parse = "not-applicable"
-validate = "todo"
+validate = "partial"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
+decode_check = "partial"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-validate/src/validator.rs::tests::frame_unit_conformant_output_unit_is_silent", "crates/splot-validate/src/validator.rs::tests::frame_unit_undecidable_first_tile_group_stays_silent", "crates/splot-validate/src/validator.rs::tests::frame_unit_ci_in_second_frame_unit_is_flagged"]
+commands = ["cargo test -p splot-validate frame_unit"]
 fixtures = []
 diagnostics = []
 
@@ -3262,11 +3262,11 @@ spec_sections = ["7.3.7"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
 module = "crates/splot-validate/src/context.rs"
-openspec_change = "validator-coverage-roadmap"
+openspec_change = "frame-unit-segmentation"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Temporal unit state machine: global temporal delimiter, HLS prefix OBUs, coded extended layer units in ascending xlayer order, and padding exceptions. Metadata suffix and frame-unit details remain future work."
+notes = "Temporal unit state machine: global temporal delimiter, HLS prefix OBUs, coded extended layer units in ascending xlayer order, and padding exceptions. The two formerly-backlogged §7.3.7/§7.3.6 ordering rows landed under frame-unit-segmentation, now decidable from the segmentation: obu-order/global-hls-after-metadata-suffix (a global HLS prefix OBU after a global suffix metadata, classified now that metadata_is_suffix is parsed in TemporalUnitState::observe_metadata) and obu-order/non-global-hls-before-coded-layer (a non-global HLS header OBU — LCR/OPS/atlas/sequence header — after the coded frame region of its §7.3.6 coded extended layer unit has begun). Residual: the in-unit metadata-suffix placement WITHIN a coded frame unit and the frame-unit segmentation details proper are owned by AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT / AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT / AV2-7.3.5-CODED-FRAME-UNIT (frame_unit.rs)."
 
 [feature.status]
 mapped = "done"
@@ -3281,10 +3281,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-validate/src/validator.rs::tests::hls_duplicate_temporal_delimiter_is_flagged", "crates/splot-validate/src/validator.rs::tests::temporal_unit_accepts_ascending_coded_xlayers"]
-commands = ["cargo test -p splot-validate hls", "cargo test -p splot-validate temporal_unit"]
+tests = ["crates/splot-validate/src/validator.rs::tests::hls_duplicate_temporal_delimiter_is_flagged", "crates/splot-validate/src/validator.rs::tests::temporal_unit_accepts_ascending_coded_xlayers", "crates/splot-validate/src/validator.rs::tests::obu_order_global_hls_after_metadata_suffix_is_flagged", "crates/splot-validate/src/validator.rs::tests::obu_order_non_global_hls_before_coded_layer_is_flagged", "crates/splot-validate/src/validator.rs::tests::obu_order_non_global_hls_header_before_frame_is_conformant"]
+commands = ["cargo test -p splot-validate hls", "cargo test -p splot-validate temporal_unit", "cargo test -p splot-validate obu_order"]
 fixtures = []
-diagnostics = ["obu-order/duplicate-temporal-delimiter", "obu-order/temporal-unit-missing-delimiter", "obu-order/xlayer-order-not-ascending"]
+diagnostics = ["obu-order/duplicate-temporal-delimiter", "obu-order/temporal-unit-missing-delimiter", "obu-order/xlayer-order-not-ascending", "obu-order/global-hls-after-metadata-suffix", "obu-order/non-global-hls-before-coded-layer"]
 
 [[feature]]
 id = "AV2-7.3.8-HLS-AVAILABILITY"

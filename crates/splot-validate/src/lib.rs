@@ -20,6 +20,7 @@ pub mod validator;
 mod annex_a;
 mod context;
 mod error_location;
+mod frame_unit;
 mod metadata_lifetime;
 
 pub use diagnostic::{Diagnostic, Severity, ValidationReport};

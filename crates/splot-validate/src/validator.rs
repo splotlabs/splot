@@ -16589,4 +16589,466 @@ mod tests {
              so the single-xlayer IOP0 CVS requires no MSDO; report was: {report}"
         );
     }
+
+    // --- coded-frame-unit segmentation (AV2 § 7.3.3 / § 7.3.4 / § 7.3.5 / § 7.3.8.10) ---
+
+    // OBU header bytes (obu_type << 2, no extension, base layer):
+    const MFH_HEADER: u8 = 3 << 2; // OBU_MULTI_FRAME_HEADER (0x0C)
+    const BRT_HEADER: u8 = 15 << 2; // OBU_BUFFER_REMOVAL_TIMING (0x3C)
+    const LEADING_SEF_HEADER: u8 = 11 << 2; // OBU_LEADING_SEF (0x2C)
+    const REGULAR_SEF_HEADER: u8 = 12 << 2; // OBU_REGULAR_SEF (0x30)
+
+    /// A full intra CLK frame whose `immediate_output_frame` (and therefore the
+    /// coded-frame-unit output classification, AV2 § 7.3.3) is decidable: the body
+    /// reaches `intra_structure_tail`, so the core parser settles the output flags
+    /// rather than stopping early. With `immediate_output == true` the frame is an
+    /// output coded frame; with `false` (and the sequence's monotonic_output_order)
+    /// it is a non-output coded frame. `first_tile_group` sets `is_first_tile_group`.
+    fn clk_frame_decidable(first_tile_group: bool, immediate_output: bool) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(u8::from(first_tile_group)); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(u8::from(immediate_output)); // immediate_output_frame
+        fb.bit(0); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0);
+        annex_b_obu(CLK_HEADER, &fb.into_bytes())
+    }
+
+    /// A `frame_core_seq` temporal unit (TD + activating sequence header for xlayer
+    /// 0) for the decidable-frame segmentation tests.
+    fn seg_td_and_seq() -> Vec<u8> {
+        td_and_frame_core_seq(FrameCoreSeq::base())
+    }
+
+    /// A bare buffer-removal-timing OBU at xlayer 0 (the payload is not parsed by
+    /// the segmenter; its role is fixed by the OBU type).
+    fn brt_obu() -> Vec<u8> {
+        annex_b_obu(BRT_HEADER, &[0x80])
+    }
+
+    fn has_frame_unit_error(report: &ValidationReport, rule: &str) -> bool {
+        report.errors().any(|d| d.rule_id == rule)
+    }
+
+    #[test]
+    fn frame_unit_first_tile_group_flag_zero_on_first_is_flagged() {
+        // AV2 § 7.3.3: the first tile OBU of a coded frame must have
+        // is_first_tile_group == 1. A decidable (output) CLK with the flag 0 fires.
+        let mut data = seg_td_and_seq();
+        data.extend(clk_frame_decidable(false, true));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_frame_unit_error(&report, "frame-unit/first-tile-group-flag"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_first_tile_group_flag_conformant_is_silent() {
+        // The same CLK with is_first_tile_group == 1 (the single tile OBU of an
+        // output coded frame) emits no segmentation diagnostic.
+        let mut data = seg_td_and_seq();
+        data.extend(clk_frame_decidable(true, true));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-unit/")),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_non_first_tile_group_flag_one_is_flagged() {
+        // AV2 § 7.3.3: a later tile OBU of the same coded frame must have
+        // is_first_tile_group == 0. Two CLK OBUs (same type), the second with flag 1.
+        let mut data = seg_td_and_seq();
+        data.extend(clk_frame_decidable(true, true)); // first: flag 1 (ok)
+        data.extend(clk_frame_decidable(true, true)); // second: flag 1 (violation)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_frame_unit_error(&report, "frame-unit/first-tile-group-flag"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_undecidable_first_tile_group_stays_silent() {
+        // A tile-group OBU whose output class is undecidable (the activation-prefix-
+        // only frame stops before the output flags) routes the unit to Unknown, so
+        // even the is_first_tile_group == 0 violation is suppressed (zero false
+        // positives). RTG is inter -> the core parse stops before the output flags.
+        let mut data = td_and_seq_header(0, 0, 0);
+        data.extend(frame_obu_direct_seq_ref(REGULAR_TILE_GROUP_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-unit/")),
+            "an undecidable unit must be silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_brt_multiplicity_in_non_output_unit_is_flagged() {
+        // AV2 § 7.3.4: a coded NON-output frame unit allows zero or one BRT. A bridge
+        // frame is always a non-output coded frame (mirror line 470). Two BRT OBUs
+        // before it violate the bound, resolved at the unit boundary.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            num_ref_frames_minus_1: 5, // NumRefFrames == 6 for the bridge ref idx
+            ..FrameCoreSeq::base()
+        });
+        data.extend(brt_obu());
+        data.extend(brt_obu());
+        let mut fb = Bits::default();
+        fb.uvlc(0); // seq_header_id_in_frame_header (bridge infers cur_mfh_id == 0)
+        fb.f(0, 3); // bridge_frame_ref_idx == 0 (< NumRefFrames)
+        data.extend(annex_b_obu(BRIDGE_HEADER, &fb.into_bytes()));
+        data.extend(temporal_delimiter_obu()); // resolve the unit
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_frame_unit_error(&report, "frame-unit/buffer-removal-timing-multiplicity"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_brt_multiplicity_in_output_unit_is_conformant() {
+        // AV2 § 7.3.3: a coded OUTPUT frame unit allows zero or MORE BRT. A SEF is
+        // always an output coded frame, so two BRT OBUs before it are conforming.
+        let mut data = seg_td_and_seq();
+        data.extend(brt_obu());
+        data.extend(brt_obu());
+        data.extend(annex_b_obu(REGULAR_SEF_HEADER, &[0x80])); // output coded frame
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_frame_unit_error(&report, "frame-unit/buffer-removal-timing-multiplicity"),
+            "an output unit permits multiple BRT; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_suffix_metadata_before_coded_frame_is_flagged() {
+        // AV2 § 7.3.3: suffix metadata (metadata_is_suffix == 1) belongs to the
+        // tail, after the coded frame. A suffix metadata appearing before any coded
+        // frame in the unit is out of order.
+        let mut data = seg_td_and_seq();
+        // metadata_short payload: first byte high bit = metadata_is_suffix == 1.
+        let suffix_meta = metadata_short_payload(0x80, 0x04, &[]);
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 0),
+            &suffix_meta,
+        ));
+        data.extend(clk_frame_decidable(true, true));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_frame_unit_error(&report, "frame-unit/suffix-metadata-before-coded-frame"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_duplicate_content_interpretation_is_flagged() {
+        // AV2 § 7.3.3: zero or one CI per coded frame unit.
+        let mut data = seg_td_and_seq();
+        data.extend(content_interpretation_obu(0, 0, None));
+        data.extend(content_interpretation_obu(0, 0, None));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_frame_unit_error(&report, "frame-unit/duplicate-content-interpretation"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_ci_after_mfh_is_region_order_error() {
+        // AV2 § 7.3.3: CI is the first region; a CI after an MFH is out of order.
+        let mut data = seg_td_and_seq();
+        data.extend(annex_b_obu(MFH_HEADER, &[0x80]));
+        data.extend(content_interpretation_obu(0, 0, None));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_frame_unit_error(&report, "frame-unit/region-order"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_sef_single_obu_violation_is_flagged() {
+        // AV2 § 7.3.3: a SEF coded frame is exactly one OBU. A SEF followed by
+        // another SEF in the same unit (no head OBU between) violates this.
+        let mut data = seg_td_and_seq();
+        data.extend(annex_b_obu(LEADING_SEF_HEADER, &[0x80]));
+        data.extend(annex_b_obu(REGULAR_SEF_HEADER, &[0x80]));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_frame_unit_error(&report, "frame-unit/sef-single-obu"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_mixed_coded_frame_types_is_flagged() {
+        // AV2 § 7.3.3: the OBUs of one coded frame must share an obu_type. A
+        // decidable-output CLK followed by a regular tile group (different type) in
+        // the same coded frame fires.
+        let mut data = seg_td_and_seq();
+        data.extend(clk_frame_decidable(true, true)); // CLK, output, decidable
+        data.extend(frame_obu_direct_seq_ref(REGULAR_TILE_GROUP_HEADER, 0)); // different type
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_frame_unit_error(&report, "frame-unit/mixed-coded-frame-types"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_ci_in_second_frame_unit_is_flagged() {
+        // AV2 § 7.3.8.10: a CI may appear only in the first coded frame unit of its
+        // embedded layer in the temporal unit. CI -> SEF (first unit) -> CI (second
+        // unit's head) fires.
+        let mut data = seg_td_and_seq();
+        data.extend(content_interpretation_obu(0, 0, None)); // first unit's CI (ok)
+        data.extend(annex_b_obu(REGULAR_SEF_HEADER, &[0x80])); // closes the first unit
+        data.extend(content_interpretation_obu(0, 0, None)); // second unit's CI (violation)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_frame_unit_error(&report, "frame-unit/ci-not-in-first-frame-unit"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_padding_is_position_free() {
+        // AV2 § 7.3.3: OBU_PADDING may appear at any position within a coded frame
+        // unit. A padding OBU between the pre-frame region and the coded frame must
+        // not be flagged. Use a non-global (xlayer 0) padding inside the coded layer.
+        let mut data = seg_td_and_seq();
+        data.extend(brt_obu());
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(25, 0, 0, 0),
+            &[0x80],
+        )); // padding
+        data.extend(clk_frame_decidable(true, true));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-unit/")),
+            "padding is position-free; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_conformant_output_unit_is_silent() {
+        // A conforming coded output frame unit: CI -> MFH -> BRT -> QM -> output CLK.
+        // No segmentation diagnostic.
+        let mut data = seg_td_and_seq();
+        data.extend(content_interpretation_obu(0, 0, None));
+        data.extend(annex_b_obu(MFH_HEADER, &[0x80]));
+        data.extend(brt_obu());
+        data.extend(clk_frame_decidable(true, true));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-unit/")),
+            "report was: {report}"
+        );
+    }
+
+    // --- § 7.3.7 / § 7.3.6 backlog obu-order rows ---
+
+    #[test]
+    fn obu_order_global_hls_after_metadata_suffix_is_flagged() {
+        // AV2 § 7.3.7: a global suffix metadata is part of a coded frame unit's
+        // suffix tail; a global HLS prefix OBU after it is out of order. A global
+        // OBU_METADATA_SHORT with metadata_is_suffix == 1, then a global LCR.
+        let mut data = temporal_delimiter_obu();
+        // metadata_short payload: first byte high bit = metadata_is_suffix == 1.
+        let suffix_meta = metadata_short_payload(0x80, 0x04, &[]);
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 31),
+            &suffix_meta,
+        ));
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(16, 0, 0, 31),
+            &[],
+        )); // global LCR
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "obu-order/global-hls-after-metadata-suffix"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn obu_order_non_global_hls_before_coded_layer_is_flagged() {
+        // AV2 § 7.3.6: the coded extended layer unit is ordered LCR/OPS/atlas/seq
+        // header -> frame units. A non-global LCR after the frame region of the same
+        // extended layer has begun is out of order. CLK frame (xlayer 0) then a
+        // non-global LCR (xlayer 0).
+        let mut data = td_and_seq_header(0, 0, 0);
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // frame region for xlayer 0
+        data.extend(annex_b_obu_with_header(&layer_obu_header(16, 0, 0, 0), &[])); // LCR xlayer 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "obu-order/non-global-hls-before-coded-layer"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn obu_order_non_global_hls_header_before_frame_is_conformant() {
+        // The conforming order — non-global LCR before the frame region — must not
+        // be flagged.
+        let mut data = td_and_seq_header(0, 0, 0);
+        data.extend(annex_b_obu_with_header(&layer_obu_header(16, 0, 0, 0), &[])); // LCR xlayer 0
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // frame region after
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "obu-order/non-global-hls-before-coded-layer"),
+            "report was: {report}"
+        );
+    }
+
+    // --- § 6.16.5 / § 6.16.6 first-coded-picture half ---
+
+    #[test]
+    fn metadata_hdr_cll_first_coded_picture_late_is_flagged() {
+        // AV2 § 6.16.5: HDR CLL metadata associated with an embedded layer shall be
+        // indicated at the first coded picture of that layer in the CVS. A
+        // LAYER_CURRENT-targeted HDR CLL unit (obu_xlayer_id 0 / obu_mlayer_id 0)
+        // first established AFTER that layer's first coded picture (a CLK) fires.
+        let mut data = td_and_seq_header(0, 0, 0);
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // first coded picture (xlayer 0)
+        data.extend(hdr_cll_unit_layer_current(0, 1000, 200)); // late establishment
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "metadata/hdr-cll-first-coded-picture"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_hdr_mdcv_first_coded_picture_late_is_flagged() {
+        // AV2 § 6.16.6: same rule for HDR MDCV. A LAYER_CURRENT MDCV unit first
+        // established after the layer's first coded picture (a CLK) fires.
+        let mut data = td_and_seq_header(0, 0, 0);
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // first coded picture
+        // metadata_short LAYER_CURRENT (0x20), metadata_type 2 (HDR_MDCV).
+        let payload = metadata_short_payload(0x20, 2, &hdr_mdcv_unit(60));
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 0),
+            &payload,
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "metadata/hdr-mdcv-first-coded-picture"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_hdr_cll_at_first_coded_picture_is_conformant() {
+        // The same HDR CLL unit indicated BEFORE the layer's first coded picture
+        // (in the coded frame unit's pre-frame region) is conforming.
+        let mut data = td_and_seq_header(0, 0, 0);
+        data.extend(hdr_cll_unit_layer_current(0, 1000, 200)); // before the first picture
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "metadata/hdr-cll-first-coded-picture"),
+            "report was: {report}"
+        );
+    }
+
+    // --- task 5.1: QM/FGM SEF false-negative regression ---
+
+    #[test]
+    fn qm_duplicate_level_across_sef_is_flagged() {
+        // AV2 § 6.12: QmSeen is "seen since the last frame"; a SEF (show-existing-
+        // frame) does NOT decode a new frame, so it does not reset the window. A
+        // level reused across a SEF (no intervening decoded frame) is still a
+        // duplicate — the former whole-frame-bearing reset (which included SEF) was
+        // the documented SEF-only false negative, now fixed.
+        let mut data = temporal_delimiter_obu();
+        data.extend(active_sequence_header_obu());
+        data.extend(qm_default_level_obu(0));
+        data.extend(annex_b_obu(REGULAR_SEF_HEADER, &[0x80])); // SEF: does not reset
+        data.extend(qm_default_level_obu(0)); // same level 0 again
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "qm/duplicate-level-between-frames"),
+            "a level reused across a SEF with no intervening decoded frame must be \
+             flagged: {report}"
+        );
+    }
+
+    #[test]
+    fn qm_duplicate_level_across_decoded_frame_is_not_flagged() {
+        // The complement: a decoded coded frame (a tile group) DOES reset the window,
+        // so the same level on either side of it is not a duplicate. The RTG carries
+        // a frame_header_present_flag == 0 (a header-copy tile group), enough to be a
+        // frame-bearing OBU that resets the window.
+        let mut data = temporal_delimiter_obu();
+        data.extend(active_sequence_header_obu());
+        data.extend(qm_default_level_obu(0));
+        data.extend(annex_b_obu(REGULAR_TILE_GROUP_HEADER, &[0x00, 0x80])); // decoded frame: resets
+        data.extend(qm_default_level_obu(0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_error(&report, "qm/duplicate-level-between-frames"),
+            "a decoded coded frame resets the QM window; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn film_grain_duplicate_slot_across_sef_is_flagged() {
+        // AV2 § 6.13: a SEF does not close a coded-frame-unit window, so a slot
+        // reused across a SEF (no intervening decoded frame) is still a duplicate.
+        let mut data = temporal_delimiter_obu();
+        data.extend(active_sequence_header_obu());
+        data.extend(film_grain_obu_bytes(0b0000_0001, 0)); // slot 0
+        data.extend(annex_b_obu(REGULAR_SEF_HEADER, &[0x80])); // SEF: does not reset
+        data.extend(film_grain_obu_bytes(0b0000_0001, 0)); // slot 0 again
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_error(&report, "film-grain/duplicate-slot-in-coded-frame-unit"),
+            "a slot reused across a SEF with no intervening decoded frame must be \
+             flagged: {report}"
+        );
+    }
+
+    /// A `metadata_hdr_cll()` OBU at xlayer 0 / `mlayer` with `LAYER_CURRENT`
+    /// targeting (muh_layer_idc == 1), carrying the given `max_cll` / `max_fall`.
+    fn hdr_cll_unit_layer_current(mlayer: u8, max_cll: u32, max_fall: u32) -> Vec<u8> {
+        // metadata_short header byte: metadata_is_suffix(1)=0, muh_layer_idc(3)=2
+        // (LAYER_CURRENT), muh_cancel_flag(1)=0, muh_persistence_idc(3)=0.
+        // 0b0_010_0_000 = 0x20.
+        let mut unit = Bits::default();
+        unit.f(max_cll, 16); // max_cll
+        unit.f(max_fall, 16); // max_fall
+        let payload = metadata_short_payload(0x20, 1, &unit.into_bytes()); // type 1 = HDR_CLL
+        annex_b_obu_with_header(&layer_obu_header(8, 0, mlayer, 0), &payload)
+    }
 }
