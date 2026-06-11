@@ -3375,18 +3375,45 @@ impl RapHlsKey {
     }
 }
 
+/// One in-band (re)send of an HLS object, recorded as a § 7.3.8.1 replay *event*.
+///
+/// The anchor-relative visibility predicate (see [`RapReplayTracker`]) needs each
+/// (re)send's temporal unit, its sending extended layer, and whether that temporal unit
+/// turned out to carry leading frames — facts that decide whether the (re)send is visible
+/// *under a decode that starts at a given random access point R*. A single global last-good
+/// scalar cannot answer this: a (re)send that is visible when starting at one random access
+/// point can be invisible when starting at an earlier one (it sits in a strictly-later
+/// temporal unit that drops leading frames, or in a layer that does not yet decode under
+/// that start). So the tracker stores the events and replays them per anchor.
+#[derive(Debug, Clone, Copy)]
+struct RapResendEvent {
+    /// The temporal-unit index in which the object was (re)sent.
+    tu: u64,
+    /// The extended layer whose coded extended layer unit carried the (re)send. A
+    /// [`GLOBAL_XLAYER_ID`] send has no single owning layer (it is decoded by whichever
+    /// layer first random-accesses there). § 7.4.6 sender-decodability uses this to decide
+    /// whether the (re)send's layer is decoded under a given random-access start.
+    sending_xlayer: ExtendedLayerId,
+    /// Whether the sending temporal unit carried a LEADING_* frame OBU in *any* layer
+    /// (resolved at temporal-unit completion). § 7.3.8.1: a decode starting at an earlier
+    /// random access point "drops any temporal units containing leading frames", so a
+    /// strictly-later (re)send in a leading temporal unit is not visible under that start.
+    tu_has_any_leading: bool,
+}
+
 /// One reference buffered for § 7.3.8.1 replay resolution at temporal-unit completion.
 ///
 /// Buffered only when the reference resolved linearly (the object was available in-band
 /// at reference time, so the linear `hls/unavailable-*` check did not fire — the two
 /// predicates are disjoint by construction) and external HLS did not suppress it.
 ///
-/// The before-reference same-temporal-unit (re)send is captured *eagerly* (in-band
+/// The before-reference same-temporal-unit (re)send senders are captured *eagerly* (in-band
 /// order) so a (re)send that follows the reference does not retroactively satisfy
 /// "available ... prior to being referenced" (matching the linear checks' intra-temporal-
-/// unit ordering). Its qualification (leading vs. random-access-point, § 7.3.8.1) is
-/// resolved at temporal-unit completion, when this unit's per-extended-layer leading-ness
-/// and random-access-point-ness are fully known.
+/// unit ordering). Their visibility (leading-ness, random-access-point-ness, § 7.4.6
+/// sender-decodability) is resolved at temporal-unit completion against the reference's
+/// governing random access point, when this unit's per-extended-layer facts are fully
+/// known.
 #[derive(Debug, Clone)]
 struct RapPendingReference {
     /// The referenced object.
@@ -3405,16 +3432,18 @@ struct RapPendingReference {
     /// referenced object must be available at any random access point a decoder might
     /// start from.
     governing_xlayer: ExtendedLayerId,
-    /// The most recent promoted *qualifying* (re)send temporal unit of the object as of
-    /// the prior temporal units (object-keyed, cross-extended-layer — § 7.3.8.6 models
-    /// the sequence-header memory as a global `seq_header_id` namespace). `None` when no
-    /// qualifying resend was promoted before this temporal unit.
-    promoted_snapshot: Option<u64>,
+    /// The object's (re)send events recorded in the *completed* prior temporal units
+    /// (object-keyed, cross-extended-layer — § 7.3.8.6 models the sequence-header memory as
+    /// a global `seq_header_id` namespace), snapshotted at reference time so a later resend
+    /// cannot retroactively satisfy the reference. Their per-anchor visibility is resolved
+    /// at completion.
+    promoted_events: Vec<RapResendEvent>,
     /// The extended layers that (re)sent this object *earlier in this temporal unit*
     /// (before this reference, in-band order); empty if it was not resent before the
-    /// reference. The before-reference resend counts when *any* of these senders
-    /// qualifies. Their leading / random-access-point qualification is deferred to
-    /// temporal-unit completion (see [`RapReplayTracker::complete_temporal_unit`]).
+    /// reference. The before-reference resend counts when *any* of these senders is visible
+    /// under the governing random access point. Their leading-ness / random-access-point-
+    /// ness / § 7.4.6 sender-decodability is deferred to temporal-unit completion (see
+    /// [`RapReplayTracker::complete_temporal_unit`]).
     this_tu_resend_xlayers: BTreeSet<ExtendedLayerId>,
     /// Byte offset of the referencing OBU, where the diagnostic is anchored.
     offset: ByteOffset,
@@ -3452,40 +3481,88 @@ struct RapPendingReference {
 /// global anchor (the most recent random access point across *any* layer), since a
 /// global-layer HLS OBU is decoded by whichever layer first random-accesses there.
 ///
+/// **Anchor-relative visibility (the model).** A reference governed by anchor `R` (the
+/// reference's governing layer's most recent random access point, or — for a global
+/// reference — the most recent random access point across any layer) is satisfied iff some
+/// (re)send `S` of the object is *visible under a decode that starts at R*. A single global
+/// last-good scalar cannot answer this, because whether a (re)send is visible depends on
+/// *which* random access point a decoder started from. The predicate, evaluated against the
+/// completed-temporal-unit facts (each temporal unit's leading-ness and per-layer random-
+/// access-point-ness resolve at its end):
+///
+/// > `visible(S, R)` holds iff:
+/// > - **(a)** `S.tu == R` (the random access point's own temporal unit is always
+/// >   decoded — § 7.4.1 "Decoding can be correctly initiated at such a temporal unit"); OR
+/// > - `S.tu > R` AND **(b)** `S`'s temporal unit carries no leading frame in any layer
+/// >   (§ 7.3.8.1: a decode starting at `R` "drops any temporal units containing leading
+/// >   frames", so a strictly-later leading temporal unit's sends are not decoded) AND
+/// >   **(c)** § 7.4.6 sender-decodability: `S`'s sending layer is decoded under start-at-R —
+/// >   the sender is [`GLOBAL_XLAYER_ID`] (decoded by whichever layer first random-accesses
+/// >   there), or the sending layer had a random access point at some temporal unit `T` with
+/// >   `R <= T <= S.tu` (its coded extended layer units begin decoding at its first random
+/// >   access point at or after `R`, so by `S.tu` they are decoded). The middle disjunct of
+/// >   the design sketch — "sender == the layer whose random access point `R` is" — is the
+/// >   `T == R` case of this closed interval and is therefore subsumed.
+///
 /// **Soundness (never a false positive).** Only references that resolved *linearly* are
 /// buffered, so the replay predicate is disjoint from the linear unavailability checks: a
-/// reference with no availability at all is the linear check's job. A resend in a leading
-/// temporal unit does not count (those units drop under random access) *unless* that
-/// temporal unit is itself the governing random access point for the resend's layer — the
-/// random access point's own temporal unit is always decoded when starting there, so its
-/// resends qualify for that random access point (a leading frame in it is a *post*-random-
-/// access drop, not a drop of the random access point's own unit). A temporal unit whose
-/// leading-ness is undecidable from OBU types alone never disqualifies a resend (the type-
+/// reference with no availability at all is the linear check's job. A temporal unit whose
+/// leading-ness is undecidable from OBU types alone never disqualifies a (re)send (the type-
 /// detectable LEADING_* subset is a sound under-approximation — at worst a missed report,
 /// never a false positive). Availability is tracked object-keyed (cross-extended-layer):
 /// § 7.3.8.6 models the sequence-header memory as a global `seq_header_id` namespace, so a
-/// resend in any layer makes the object available — a *more permissive* (sound) over-
-/// approximation versus a strict per-layer decode of the resend's own layer.
+/// *visible* (re)send in any decodable layer makes the object available — clause (c) keeps
+/// this from over-counting a send in a layer the start-at-R decode never reaches.
+///
+/// **A reference whose own temporal unit drops is moot.** § 7.3.8.1 drops *whole* temporal
+/// units containing leading frames. So a reference in a strictly-post-`R` temporal unit that
+/// carries any leading frame is not decoded at all under start-at-R — its availability
+/// requirement is moot and no diagnostic is emitted (the random access point's own temporal
+/// unit, `reference_tu == R`, is never dropped — § 7.4.1).
+///
+/// **Leading-temporal-unit redefinition is an availability *non*-event (finding 4).** When an
+/// object is available at the random access point and then *redefined* only in a later leading
+/// temporal unit, the availability question this tracker answers is unchanged: the random-
+/// access-point version is visible (clause (a)), so a later regular reference is *correctly*
+/// satisfied — "invalidating" availability on a leading redefinition would be a false positive
+/// (the object IS available at the random access point). § 7.4.4 ("Regular frames that follow
+/// leading frames after the OLK temporal unit shall also not reference ... HLS OBUs that are
+/// indicated in temporal units containing leading frames", mirror `07-decoding-process.md`
+/// lines 1184-1185) is a *separate* content-identity divergence — sequential decoding would
+/// use the leading-temporal-unit version while a random-access decode keeps the random-access-
+/// point version — not an availability defect. Detecting it would require modelling each
+/// (re)send's *content* (to tell a genuine redefinition from an identical leading re-send) plus
+/// post-leading-regular-frame reference tracking, which is not yet modelled and is left as a
+/// residual to avoid a false-positive-prone diagnostic.
+// TODO(spec: AV2-7.3.8-HLS-AVAILABILITY): § 7.4.4 leading-temporal-unit content-identity
+// divergence — a post-leading regular frame that references an HLS object redefined in a
+// leading temporal unit is non-conformant even though the object is *available* at the random
+// access point; modelling it needs per-resend content identity + post-leading reference
+// tracking (currently a documented residual, not a diagnostic).
+///
+/// **Event pruning.** Per-anchor visibility means the per-object last-good scalar is
+/// replaced by stored (re)send *events*; per-layer random-access-point histories back
+/// clause (c). Both are pruned of entries older than every current anchor's floor (the
+/// smallest random access point any future reference could be governed by, which only ever
+/// advances), bounding memory while preserving every event a future reference could see.
 #[derive(Debug, Default)]
 struct RapReplayTracker {
-    /// Per object, the temporal-unit index of its most recent *qualifying* in-band
-    /// (re)send, promoted at temporal-unit completion. A (re)send qualifies when its
-    /// sending extended layer's coded extended layer unit is not leading in that temporal
-    /// unit, OR that temporal unit is the random access point for the sending layer (the
-    /// random access point's own unit is always decoded — § 7.4.1). Object-keyed (cross-
-    /// extended-layer, matching the global `seq_header_id` memory). Monotonic — a resend
-    /// only advances the value.
-    last_good_resend_tu: BTreeMap<RapHlsKey, u64>,
+    /// Per object, every visible-candidate in-band (re)send event recorded in *completed*
+    /// temporal units (object-keyed, cross-extended-layer — § 7.3.8.6 models the sequence-
+    /// header memory as a global `seq_header_id` namespace). Anchor-relative visibility (see
+    /// the type docs) replays these per reference against its governing random access point;
+    /// a single scalar cannot, because a (re)send visible when starting at one random access
+    /// point may be invisible when starting at an earlier one. Pruned of events older than
+    /// every current anchor's floor.
+    resend_events: BTreeMap<RapHlsKey, Vec<RapResendEvent>>,
     /// Objects (re)sent in the temporal unit currently being observed, mapped to the *set*
     /// of extended layers that sent each (eager, in-band order). Used both to snapshot the
-    /// before-reference resends for the current unit and to promote into
-    /// [`Self::last_good_resend_tu`] at completion (whose qualification needs each sending
-    /// layer's leading / random-access state). Cleared per unit. When an object is resent
-    /// by several layers in one unit, *all* senders are retained: the object becomes
-    /// available for this random access point if *any* of them qualifies (§ 7.3.8.1 is a
-    /// per-object availability question, so one qualifying send suffices). Accumulating the
-    /// full set — rather than last-writer-wins — avoids dropping a qualifying resend that a
-    /// later non-qualifying (leading, non-random-access) resend would otherwise overwrite.
+    /// before-reference resends for the current unit and to append this unit's resend events
+    /// into [`Self::resend_events`] at completion (whose visibility needs each sending
+    /// layer's leading / random-access state). Cleared per unit. When an object is resent by
+    /// several layers in one unit, *all* senders are retained: the object becomes available
+    /// for a random access point if *any* of them is visible under that start (§ 7.3.8.1 is
+    /// a per-object availability question, so one visible send suffices).
     resent_this_tu: BTreeMap<RapHlsKey, BTreeSet<ExtendedLayerId>>,
     /// References buffered in the temporal unit currently being observed, resolved at
     /// completion (see [`Self::complete_temporal_unit`]).
@@ -3510,6 +3587,14 @@ struct RapReplayTracker {
     /// layer first random-accesses at that temporal unit, so its references must be
     /// satisfied at the earliest such start point).
     most_recent_rap_tu_any: Option<u64>,
+    /// Per extended layer, the set of temporal units at which that layer had a § 7.4.1
+    /// random access point. Backs § 7.4.6 sender-decodability — clause (c) of the
+    /// visibility predicate asks whether a (re)send's sending layer had a random access
+    /// point in the closed interval `[R, S.tu]` (so its coded extended layer units are
+    /// decoded by `S.tu` under a decode starting at `R`). A `BTreeSet` makes the
+    /// interval query a range scan. Pruned of entries older than every current anchor's
+    /// floor (a random access point before that floor can never fall in a future `[R, ..]`).
+    rap_history: BTreeMap<ExtendedLayerId, BTreeSet<u64>>,
     /// Already-emitted `(object, random-access-point temporal unit)` findings, so one
     /// dangling object reports once per random access point even across several
     /// referencing frames in or after it (proposal dedup requirement).
@@ -3546,64 +3631,32 @@ impl RapReplayTracker {
     /// Buffers a linearly-resolved reference to `key` from the OBU at `offset` in the
     /// temporal unit currently being observed. `governing_xlayer` is the referencing
     /// OBU's `obu_xlayer_id` (the layer whose random access point governs this reference;
-    /// a [`GLOBAL_XLAYER_ID`] reference is governed by the global anchor). The reference's
-    /// promoted resend snapshot and any before-reference same-unit resend are captured
-    /// eagerly (in-band order); their qualification is resolved at temporal-unit
-    /// completion (see [`Self::complete_temporal_unit`]), once this unit's per-extended-
-    /// layer leading-ness and random-access-point-ness are known.
+    /// a [`GLOBAL_XLAYER_ID`] reference is governed by the global anchor). The object's
+    /// completed-unit (re)send events and the senders that resent it *before this reference*
+    /// in this unit are snapshotted eagerly (in-band order, so a later resend cannot
+    /// retroactively satisfy the reference); their anchor-relative visibility is resolved at
+    /// temporal-unit completion (see [`Self::complete_temporal_unit`]), once this unit's
+    /// per-extended-layer leading-ness and random-access-point-ness are known.
     fn note_reference(
         &mut self,
         key: RapHlsKey,
         governing_xlayer: ExtendedLayerId,
         offset: ByteOffset,
     ) {
-        let promoted_snapshot = self.last_good_resend_tu.get(&key).copied();
+        let promoted_events = self.resend_events.get(&key).cloned().unwrap_or_default();
         // The senders of this object earlier in this unit (before this reference, in-band
-        // order). Their qualification is deferred: the random access point's own unit is
-        // always decoded, so a before-reference resend in it counts even when the unit is
-        // leading. The full set (not just one sender) is captured so a qualifying resend is
-        // not lost behind a later non-qualifying one.
+        // order). Their visibility is deferred: the random access point's own unit is always
+        // decoded, so a before-reference resend in it counts even when the unit is leading.
+        // The full set (not just one sender) is captured so a visible resend is not lost
+        // behind a later non-visible one.
         let this_tu_resend_xlayers = self.resent_this_tu.get(&key).cloned().unwrap_or_default();
         self.pending_this_tu.push(RapPendingReference {
             key,
             governing_xlayer,
-            promoted_snapshot,
+            promoted_events,
             this_tu_resend_xlayers,
             offset,
         });
-    }
-
-    /// `true` when a (re)send by extended layer `xlayer` in this temporal unit qualifies
-    /// for § 7.3.8.1.
-    ///
-    /// **Concrete sending layer.** Qualifies when its coded extended layer unit is not
-    /// leading, *or* this temporal unit is the random access point for that layer (the
-    /// random access point's own unit is always decoded when starting there, so its resends
-    /// qualify — § 7.4.1).
-    ///
-    /// **Global sending layer ([`GLOBAL_XLAYER_ID`]).** A global-layer HLS OBU
-    /// (e.g. a global layer configuration record) has no single owning coded extended layer
-    /// unit, so it is never tagged "leading" itself. But § 7.4.4 ("Open Random Access",
-    /// mirror `07-decoding-process.md` lines 1184-1185) states: "Regular frames that follow
-    /// leading frames after the OLK temporal unit shall also not reference leading frames or
-    /// HLS OBUs that are indicated in temporal units containing leading frames." A global
-    /// resend in a temporal unit that contains *any* leading frame is therefore not a
-    /// dependable supply for a post-leading regular reference — unless that temporal unit is
-    /// itself a random access point for some layer (the random-access-point unit is always
-    /// decoded by whichever layer first random-accesses there, which is exactly the layer
-    /// that decodes the global HLS). So a global send qualifies when this temporal unit
-    /// carries no leading frame in any layer, *or* this temporal unit is a random access
-    /// point for some layer.
-    fn this_tu_send_qualifies(&self, xlayer: ExtendedLayerId) -> bool {
-        if xlayer.is_global() {
-            // § 7.4.4: a global HLS resend "indicated in a temporal unit containing leading
-            // frames" must not be relied on by a post-leading regular reference, unless the
-            // unit is itself a random access point (always decoded — § 7.4.1).
-            return self.current_tu_leading_xlayers.is_empty()
-                || !self.current_tu_rap_xlayers.is_empty();
-        }
-        !self.current_tu_leading_xlayers.contains(&xlayer)
-            || self.current_tu_rap_xlayers.contains(&xlayer)
     }
 
     /// The governing random access point temporal unit for a reference from
@@ -3618,87 +3671,142 @@ impl RapReplayTracker {
         }
     }
 
+    /// § 7.4.6 sender-decodability — clause (c) of the visibility predicate. `true` when a
+    /// (re)send by `sending_xlayer` at temporal unit `send_tu` is decoded under a decode
+    /// that starts at random access point `rap_tu`.
+    ///
+    /// A [`GLOBAL_XLAYER_ID`] send is decoded by whichever layer first random-accesses at
+    /// its temporal unit, so it is decodable whenever that temporal unit is decoded (its
+    /// leading-ness and `send_tu == rap_tu` exemptions are handled by clauses (a)/(b)). A
+    /// concrete sending layer's coded extended layer units begin decoding at that layer's
+    /// first random access point at or after `rap_tu` (§ 7.4.6: "the decoder shall not
+    /// decode coded extended layer units for an extended layer until a random access point
+    /// for that extended layer is encountered"), so the send is decoded iff the layer had a
+    /// random access point in the closed interval `[rap_tu, send_tu]`.
+    fn sender_decodable_at(
+        &self,
+        sending_xlayer: ExtendedLayerId,
+        send_tu: u64,
+        rap_tu: u64,
+    ) -> bool {
+        if sending_xlayer.is_global() {
+            return true;
+        }
+        self.rap_history
+            .get(&sending_xlayer)
+            .is_some_and(|history| history.range(rap_tu..=send_tu).next().is_some())
+    }
+
+    /// Anchor-relative visibility (the model). `true` when (re)send event `event` is visible
+    /// under a decode that starts at random access point `rap_tu` (§ 7.3.8.1 / § 7.4.6):
+    ///
+    /// - clause (a): the random access point's own temporal unit is always decoded; OR
+    /// - clauses (b) + (c): a strictly-later (re)send is visible only when its temporal unit
+    ///   carries no leading frame (§ 7.3.8.1 drops leading temporal units) and its sending
+    ///   layer is decoded under start-at-`rap_tu` (§ 7.4.6 — see [`Self::sender_decodable_at`]).
+    fn event_visible_at(&self, event: RapResendEvent, rap_tu: u64) -> bool {
+        if event.tu == rap_tu {
+            return true;
+        }
+        event.tu > rap_tu
+            && !event.tu_has_any_leading
+            && self.sender_decodable_at(event.sending_xlayer, event.tu, rap_tu)
+    }
+
+    /// The smallest random access point any future reference could be governed by: the
+    /// minimum over every per-layer anchor and the global anchor (`None` when no random
+    /// access point has completed). Anchors only advance, so an event or random-access-point
+    /// history entry strictly before this floor can never fall in a future governing
+    /// interval and is safe to prune.
+    fn anchor_floor(&self) -> Option<u64> {
+        self.most_recent_rap_tu
+            .values()
+            .copied()
+            .chain(self.most_recent_rap_tu_any)
+            .min()
+    }
+
     /// Resolves the § 7.3.8.1 replay rule for the just-completed temporal unit `tu_index`
     /// and resets the per-temporal-unit working state, returning the diagnostics to emit
     /// each paired with its dangling object's [`RapHlsKey`] (so the caller can apply the
     /// per-kind external-HLS suppression policy — see `complete_rap_replay_tu`).
     ///
-    /// Order matters and is sound regardless of intra-unit OBU order: promote this unit's
-    /// qualifying resends, advance the per-extended-layer random-access-point anchors,
-    /// then resolve this unit's buffered references against each reference's governing
-    /// random access point (which now includes this unit when it is itself that layer's
-    /// random access point).
+    /// Order matters and is sound regardless of intra-unit OBU order: append this unit's
+    /// (re)send events, advance the per-extended-layer / global random-access-point anchors
+    /// and per-layer random-access-point histories, then replay this unit's buffered
+    /// references against each reference's governing random access point under the anchor-
+    /// relative visibility predicate (which now sees this unit when it is itself a random
+    /// access point), and finally prune state older than the anchor floor.
     fn complete_temporal_unit(&mut self, tu_index: u64) -> Vec<(RapHlsKey, Diagnostic)> {
-        // Promote this unit's resends into the last-good map. A resend qualifies when its
-        // sending layer's unit is not leading, OR this unit is that layer's random access
-        // point (the random access point's own unit is always decoded — § 7.4.1; finding
-        // 4: a temporal unit that is both a random access point and carries leading frames
-        // must still promote its own resends for that random access point). A non-
-        // qualifying resend (leading, non-random-access) is dropped: those units drop
-        // under post-random-access decoding.
+        let tu_has_any_leading = !self.current_tu_leading_xlayers.is_empty();
+        // Append this unit's resends as events, one per sending layer (all senders, not
+        // last-writer-wins): per-anchor visibility filters them, so § 7.3.8.1's per-object
+        // "any visible send suffices" is preserved even when a non-visible layer also
+        // resends the same object here.
         for (key, xlayers) in std::mem::take(&mut self.resent_this_tu) {
-            // Promote when *any* sender of this object in this unit qualifies: § 7.3.8.1
-            // availability is satisfied by a single qualifying send, so a qualifying resend
-            // must not be discarded because another (leading, non-random-access) layer also
-            // resent the same object here.
-            if xlayers
-                .iter()
-                .any(|&xlayer| self.this_tu_send_qualifies(xlayer))
-            {
-                self.last_good_resend_tu.insert(key, tu_index);
+            let events = self.resend_events.entry(key).or_default();
+            for sending_xlayer in xlayers {
+                events.push(RapResendEvent {
+                    tu: tu_index,
+                    sending_xlayer,
+                    tu_has_any_leading,
+                });
             }
         }
-        // Advance the per-extended-layer and global random-access-point anchors. The
-        // global anchor (governing GLOBAL_XLAYER_ID references) advances whenever *any*
-        // layer random-accesses here.
+        // Advance the per-extended-layer and global random-access-point anchors and record
+        // the per-layer random-access-point history (§ 7.4.6 sender-decodability). The
+        // global anchor (governing GLOBAL_XLAYER_ID references) advances whenever *any* layer
+        // random-accesses here.
         if !self.current_tu_rap_xlayers.is_empty() {
             self.most_recent_rap_tu_any = Some(tu_index);
             for &xlayer in &self.current_tu_rap_xlayers {
                 self.most_recent_rap_tu.insert(xlayer, tu_index);
+                self.rap_history.entry(xlayer).or_default().insert(tu_index);
             }
         }
 
         let mut diagnostics = Vec::new();
         for pending in std::mem::take(&mut self.pending_this_tu) {
-            // A reference from a frame in a leading coded extended layer unit is in a frame
-            // that itself drops under random access, so its availability requirement is
-            // moot — unless that unit is itself the layer's random access point, where the
-            // unit is always decoded (a global-layer reference is never "leading"). Skip a
-            // moot reference. (`governing_xlayer` is the referencing OBU's own layer.)
-            let reference_unit_drops = !pending.governing_xlayer.is_global()
-                && self
-                    .current_tu_leading_xlayers
-                    .contains(&pending.governing_xlayer)
-                && !self
-                    .current_tu_rap_xlayers
-                    .contains(&pending.governing_xlayer);
-            if reference_unit_drops {
-                continue;
-            }
+            // § 7.3.8.1 drops *whole* temporal units containing leading frames. A reference
+            // in a strictly-post-anchor temporal unit that carries any leading frame is not
+            // decoded at all under that start, so its availability requirement is moot — for
+            // a global referencing OBU (e.g. a buffer-removal-timing OBU) just as for a
+            // frame-bearing one (finding 1). The random access point's own temporal unit
+            // (reference_tu == rap_tu) is never dropped (§ 7.4.1), so the moot test is keyed
+            // to the governing anchor below; here we only know the per-unit facts.
             let Some(rap_tu) = self.governing_rap_tu(pending.governing_xlayer) else {
                 // No random access point governs this reference yet (decoding from the
                 // bitstream start needs no resend).
                 continue;
             };
-            // The qualifying resend snapshot: the max of the object's promoted last-good
-            // resend and — if it was resent before this reference in this unit and that
-            // send qualifies — this unit's index. Resolved now that this unit's per-layer
-            // leading / random-access state is known.
-            let this_tu_good = pending
-                .this_tu_resend_xlayers
+            // Moot when this reference's own temporal unit drops under start-at-rap_tu: a
+            // strictly-later temporal unit carrying any leading frame is dropped wholesale
+            // (§ 7.3.8.1), taking this reference with it. tu_index == rap_tu is the random
+            // access point's own temporal unit, which is always decoded (§ 7.4.1).
+            let reference_unit_drops = tu_index > rap_tu && tu_has_any_leading;
+            if reference_unit_drops {
+                continue;
+            }
+            // Visible from the completed-unit events, or from a before-reference resend in
+            // this unit (its event would carry this unit's `tu_index` / leading-ness — built
+            // here so the before-reference senders evaluate against the same predicate).
+            let satisfied = pending
+                .promoted_events
                 .iter()
-                .any(|&xlayer| self.this_tu_send_qualifies(xlayer))
-                .then_some(tu_index);
-            let good_snapshot = match (pending.promoted_snapshot, this_tu_good) {
-                (Some(a), Some(b)) => Some(a.max(b)),
-                (Some(a), None) => Some(a),
-                (None, Some(b)) => Some(b),
-                (None, None) => None,
-            };
-            // A qualifying (re)send in or after the governing random access point satisfies
-            // § 7.3.8.1; otherwise the object was only available from before the random
-            // access point and is unavailable on real random access.
-            let satisfied = good_snapshot.is_some_and(|good| good >= rap_tu);
+                .any(|&event| self.event_visible_at(event, rap_tu))
+                || pending
+                    .this_tu_resend_xlayers
+                    .iter()
+                    .any(|&sending_xlayer| {
+                        self.event_visible_at(
+                            RapResendEvent {
+                                tu: tu_index,
+                                sending_xlayer,
+                                tu_has_any_leading,
+                            },
+                            rap_tu,
+                        )
+                    });
             if satisfied {
                 continue;
             }
@@ -3709,6 +3817,20 @@ impl RapReplayTracker {
                 pending.key,
                 rap_replay_unavailable(pending.key, rap_tu, pending.offset),
             ));
+        }
+        // Prune events and random-access-point history older than the anchor floor: an entry
+        // strictly before the smallest random access point any future reference could use can
+        // never be visible again (a future governing `rap_tu >= floor > entry.tu`, so clause
+        // (a) fails and clause (b)'s `event.tu > rap_tu` fails). Bounds memory.
+        if let Some(floor) = self.anchor_floor() {
+            for events in self.resend_events.values_mut() {
+                events.retain(|event| event.tu >= floor);
+            }
+            self.resend_events.retain(|_, events| !events.is_empty());
+            for history in self.rap_history.values_mut() {
+                *history = history.split_off(&floor);
+            }
+            self.rap_history.retain(|_, history| !history.is_empty());
         }
         self.current_tu_rap_xlayers.clear();
         self.current_tu_leading_xlayers.clear();
