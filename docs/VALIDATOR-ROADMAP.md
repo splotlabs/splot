@@ -142,9 +142,11 @@ Acceptance:
 ## Phase 5 — OBU ordering and temporal-unit state machine
 
 **Status:** partial — the core §7.3.7 temporal-unit ordering and §7.3.6
-extended-layer ordering landed; a minimal §7.3.2 coded-multistream-video-sequence
-(CMVS) begin/end tracker landed (no `cmvs/*` diagnostics yet — it scopes the
-§6.4.1 `monotonic_output_order_flag` agreement check); the §7.3.3–§7.3.5
+extended-layer ordering landed; a §7.3.2 coded-multistream-video-sequence
+(CMVS) begin/end tracker landed (it scopes the §6.4.1
+`monotonic_output_order_flag` agreement check) and the §7.3.2 boundary-set
+identity check landed as the first `cmvs/*` diagnostic
+(`cmvs/boundary-set-mismatch`, decidable-disagreement-only); the §7.3.3–§7.3.5
 coded-frame-unit rows and §7.3.9 long-term-reference availability are not
 started.
 
@@ -172,9 +174,11 @@ Remaining:
 
 - global metadata prefix/suffix positions (pending frame/tile parsing; see
   the backlog table below);
-- the `cmvs/*` boundary-ordering diagnostics on `AV2-7.3.2-CMVS-BOUNDARIES`
-  (the minimal begin/end tracker landed; only the monotonic-output-order check
-  consumes it so far) and the coded-frame-unit rows
+- the remaining `cmvs/*` boundary-ordering diagnostics on
+  `AV2-7.3.2-CMVS-BOUNDARIES` that depend on §7.3.3–§7.3.5 frame-unit
+  segmentation (the §7.3.2 boundary-set identity check landed as
+  `cmvs/boundary-set-mismatch`; the ordering segmentation residual stays
+  blocked on `AV2-7.3.5-CODED-FRAME-UNIT`) and the coded-frame-unit rows
   (`AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT`,
   `AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT`, `AV2-7.3.5-CODED-FRAME-UNIT`).
 
@@ -395,9 +399,6 @@ lands, add it to the registry tables there (the CI gate will require it).
 | `obu-order/global-hls-after-metadata-suffix` | error | §7.3.7 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Global HLS appears after suffix metadata. Needs global suffix-metadata classification, which is pending frame/tile parsing. |
 | `obu-order/non-global-hls-before-coded-layer` | error | §7.3.7 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Non-global HLS appears in an invalid temporal-unit region. |
 | `brt/global-ordering-position` | error | §7.3.7 | `AV2-7.3-OBU-ORDERING` | A global BRT in an invalid temporal-unit position. Deferred: §7.3.7 does not list BRT among the global prefix OBUs, so a hard ordering error needs the §7.3.8 decoder-model / random-access state (tracked by a spec TODO under `AV2-7.3-OBU-ORDERING` in `splot-validate`). |
-| `annex-a/msdo-required-for-iop` | error | §A.2 | `AV2-A-PROFILES` | A Table A.4 interoperability-point row requires an OBU_MSDO (or the IOP2 MSDO-or-global-LCR either-or) for a multi-extended-layer coded video sequence and none is present. Deferred from `annex-a-profile-level-skeleton`; re-lands with `msdo-global-lcr-agreement` once MSDO aggregate-profile (`multistream_profile_idc`) state, LCR activation state, and §7.3.6-correct per-TU window attribution exist (the PR #46 codex threads record the requirements). |
-| `annex-a/msdo-prohibited-for-iop` | error | §A.2 | `AV2-A-PROFILES` | A Table A.4 interoperability-point row prohibits an OBU_MSDO (a single-extended-layer coded video sequence) but one is present. Deferred from `annex-a-profile-level-skeleton`; re-lands with `msdo-global-lcr-agreement` once MSDO aggregate-profile (`multistream_profile_idc`) state, LCR activation state, and §7.3.6-correct per-TU window attribution exist (the PR #46 codex threads record the requirements). |
-| `annex-a/lcr-required-for-iop` | error | §A.2 | `AV2-A-PROFILES` | A Table A.4 interoperability-point row requires a local/global OBU_LAYER_CONFIGURATION_RECORD (or the MSDO-plus-local-LCR / global-LCR either-or) that is absent in the coded video sequence. Deferred from `annex-a-profile-level-skeleton`; re-lands with `msdo-global-lcr-agreement` once MSDO aggregate-profile (`multistream_profile_idc`) state, LCR activation state, and §7.3.6-correct per-TU window attribution exist (the PR #46 codex threads record the requirements). |
 | `annex-a/frame-exceeds-ops-level` | error | §A.4/§6.10.4 | `AV2-A-LEVELS-TIERS` | A frame's size / tile geometry exceeds the Annex A.4 Table A.8/A.9 limits for an *operating-point-advertised* level: §6.10.4 requires the operating point's bitstream to satisfy A.4 with `seq_level_idx` set to the OPS-signaled `ops_level_idx`, so the static level-limit checks must also run against OPS levels, not only the activated `seq_level_idx`. Deferred from `annex-a-profile-level-skeleton`: blocked on operating-point-to-frame mapping (which frames belong to which operating point), which the validator does not model yet — `check_ops_level_tier_value_space` currently only checks the OPS-carried value space (reserved-level / high-tier), not per-frame conformance against the advertised level. |
 
 Naming rules live in [`FEATURE-TRACKING.md`](./FEATURE-TRACKING.md) § 12

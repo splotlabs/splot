@@ -253,6 +253,84 @@ pub(crate) fn is_reserved_profile(profile_idc: u8) -> bool {
     (FIRST_RESERVED_PROFILE_IDC..=LAST_RESERVED_PROFILE_IDC).contains(&profile_idc)
 }
 
+/// The interoperability point a profile signals (Annex A.2 Table A.1 column
+/// "Interoperability point", mirror lines 61-91).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InteroperabilityPoint {
+    /// IOP 0 (profile 0, Table A.1 line 64). Single extended layer, single embedded
+    /// layer.
+    Iop0,
+    /// IOP 1 (profiles 1, 3, 4, Table A.1 lines 67/73/81).
+    Iop1,
+    /// IOP 2 (profile 2, Table A.1 line 70).
+    Iop2,
+}
+
+impl InteroperabilityPoint {
+    /// The numeric interoperability-point value (`0`, `1`, or `2`), the value
+    /// `lcr_max_interop` carries (AV2 § 6.8.2, mirror lines 1661-1662) and the value
+    /// used in diagnostic messages.
+    #[must_use]
+    pub(crate) fn value(self) -> u8 {
+        match self {
+            Self::Iop0 => 0,
+            Self::Iop1 => 1,
+            Self::Iop2 => 2,
+        }
+    }
+}
+
+/// Returns the interoperability point a non-Configurable profile signals
+/// (Annex A.2 Table A.1, mirror lines 64-81: profile 0 -> IOP0; 1, 3, 4 -> IOP1;
+/// 2 -> IOP2), or `None` for a reserved (`5..=30`) or the Configurable (`31`)
+/// profile, whose interoperability point is not directly determined by the profile id
+/// (the Configurable profile's IOP is conveyed through the Annex A.3 multi-sequence
+/// configuration / aggregate signaling, mirror lines 95-101, not the profile id).
+#[must_use]
+pub(crate) fn interoperability_point(profile_idc: u8) -> Option<InteroperabilityPoint> {
+    match profile_idc {
+        0 => Some(InteroperabilityPoint::Iop0),
+        1 | 3 | 4 => Some(InteroperabilityPoint::Iop1),
+        2 => Some(InteroperabilityPoint::Iop2),
+        _ => None,
+    }
+}
+
+/// Returns `true` when `seq_profile_idc` / `multistream_profile_idc` is permitted under
+/// the multi-sequence configuration `lcr_config_idc` (Annex A.3 Table A.6 column
+/// "seq_profile_idc", mirror lines 242-254):
+///
+/// - `C_Main_420_10` (`lcr_config_idc == 0`): profiles `0..=2`, `31` (line 247);
+/// - `C_Main_422_10` (`lcr_config_idc == 1`): profiles `0..=3`, `31` (line 249);
+/// - `C_Main_444_10` (`lcr_config_idc == 2`): profiles `0..=2`, `4`, `31` (line 252).
+///
+/// Any other `config_idc` (`3..=63` "Reserved", Table A.5 line 238) has no defined
+/// value space, so the caller must not consult this helper for a reserved configuration;
+/// it returns `false` for every profile there (no consistency claim can be made).
+#[must_use]
+pub(crate) fn config_idc_allows_profile(config_idc: u8, profile_idc: u8) -> bool {
+    match config_idc {
+        // C_Main_420_10: seq_profile_idc in {0..=2, 31} (Table A.6 line 247).
+        0 => matches!(profile_idc, 0..=2 | CONFIGURABLE_PROFILE_IDC),
+        // C_Main_422_10: seq_profile_idc in {0..=3, 31} (Table A.6 line 249).
+        1 => matches!(profile_idc, 0..=3 | CONFIGURABLE_PROFILE_IDC),
+        // C_Main_444_10: seq_profile_idc in {0..=2, 4, 31} (Table A.6 line 252).
+        2 => matches!(profile_idc, 0..=2 | 4 | CONFIGURABLE_PROFILE_IDC),
+        // Reserved config_idc (3..=63, Table A.5 line 238): no defined value space.
+        _ => false,
+    }
+}
+
+/// Returns `true` when `config_idc` names a defined Annex A.3 multi-sequence
+/// configuration (`0`, `1`, or `2`; `3..=63` are "Reserved", Table A.5 line 238). The
+/// § 6.8.2 aggregate-consistency check only runs the [`config_idc_allows_profile`]
+/// comparison for a defined configuration; a reserved value is owned by the §6.8.4
+/// Annex-A range residual, not this agreement check.
+#[must_use]
+pub(crate) fn is_defined_config_idc(config_idc: u8) -> bool {
+    matches!(config_idc, 0..=2)
+}
+
 /// Returns `true` when `level_idx` is a reserved level index (Annex A.4 Table A.7,
 /// mirror line 321: "22-30 Reserved").
 #[must_use]
@@ -411,5 +489,75 @@ mod tests {
         ] {
             assert!(profile_allows_chroma(CONFIGURABLE_PROFILE_IDC, chroma));
         }
+    }
+
+    #[test]
+    fn interoperability_points_match_table_a1() {
+        // Table A.1: profile 0 -> IOP0 (line 64); 1, 3, 4 -> IOP1 (lines 67/73/81);
+        // 2 -> IOP2 (line 70).
+        assert_eq!(interoperability_point(0), Some(InteroperabilityPoint::Iop0));
+        assert_eq!(interoperability_point(1), Some(InteroperabilityPoint::Iop1));
+        assert_eq!(interoperability_point(2), Some(InteroperabilityPoint::Iop2));
+        assert_eq!(interoperability_point(3), Some(InteroperabilityPoint::Iop1));
+        assert_eq!(interoperability_point(4), Some(InteroperabilityPoint::Iop1));
+        // Reserved (5-30) and Configurable (31) are not directly determined.
+        assert_eq!(interoperability_point(5), None);
+        assert_eq!(interoperability_point(CONFIGURABLE_PROFILE_IDC), None);
+        // The numeric value matches the IOP label.
+        assert_eq!(InteroperabilityPoint::Iop0.value(), 0);
+        assert_eq!(InteroperabilityPoint::Iop1.value(), 1);
+        assert_eq!(InteroperabilityPoint::Iop2.value(), 2);
+    }
+
+    #[test]
+    fn config_idc_profile_sets_match_table_a6() {
+        // Table A.6 (mirror lines 242-254), cell-verified against the "seq_profile_idc"
+        // column.
+        // C_Main_420_10 (config 0): "0..2, 31" (line 247).
+        for p in [0u8, 1, 2, CONFIGURABLE_PROFILE_IDC] {
+            assert!(
+                config_idc_allows_profile(0, p),
+                "config 0 allows profile {p}"
+            );
+        }
+        for p in [3u8, 4, 5, 30] {
+            assert!(
+                !config_idc_allows_profile(0, p),
+                "config 0 disallows profile {p}"
+            );
+        }
+        // C_Main_422_10 (config 1): "0..3, 31" (line 249).
+        for p in [0u8, 1, 2, 3, CONFIGURABLE_PROFILE_IDC] {
+            assert!(
+                config_idc_allows_profile(1, p),
+                "config 1 allows profile {p}"
+            );
+        }
+        for p in [4u8, 5] {
+            assert!(
+                !config_idc_allows_profile(1, p),
+                "config 1 disallows profile {p}"
+            );
+        }
+        // C_Main_444_10 (config 2): "0..2, 4, 31" (line 252).
+        for p in [0u8, 1, 2, 4, CONFIGURABLE_PROFILE_IDC] {
+            assert!(
+                config_idc_allows_profile(2, p),
+                "config 2 allows profile {p}"
+            );
+        }
+        for p in [3u8, 5] {
+            assert!(
+                !config_idc_allows_profile(2, p),
+                "config 2 disallows profile {p}"
+            );
+        }
+        // Reserved config_idc (3..=63, Table A.5 line 238): no value space.
+        assert!(!config_idc_allows_profile(3, 0));
+        assert!(!config_idc_allows_profile(63, CONFIGURABLE_PROFILE_IDC));
+        assert!(is_defined_config_idc(0));
+        assert!(is_defined_config_idc(2));
+        assert!(!is_defined_config_idc(3));
+        assert!(!is_defined_config_idc(63));
     }
 }

@@ -47,7 +47,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-6) | Multi Stream Decoder Operation OBU syntax | `AV2-5.6-MSDO` | ✅ | ✅ | 🟡 | ✅ | 9 |
 | [§ 5.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-7) | Multi frame header OBU syntax | `AV2-5.7-MULTI-FRAME-HEADER` | ✅ | ✅ | 🟡 | ✅ | 6 |
 | [§ 5.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8) | Layer config record OBU syntax | `AV2-5.8-LAYER-CONFIG-RECORD` | ✅ | ✅ | 🟡 | ✅ | 11 |
-| [§ 5.8.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-1) | LCR global info syntax | `AV2-5.8.1-LCR-GLOBAL-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
+| [§ 5.8.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-1) | LCR global info syntax | `AV2-5.8.1-LCR-GLOBAL-INFO` | ✅ | ✅ | 🟡 | ✅ | 6 |
 | [§ 5.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-2) | LCR local info syntax | `AV2-5.8.2-LCR-LOCAL-INFO` | ✅ | ✅ | ✅ | ✅ | 2 |
 | [§ 5.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-3) | LCR aggregate info syntax | `AV2-5.8.3-LCR-AGGREGATE-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.8.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-4) | LCR sequence profile tier level information syntax | `AV2-5.8.4-LCR-SEQ-PTL-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
@@ -141,7 +141,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-6) | Multi Stream Decoder Operation OBU semantics | `AV2-5.6-MSDO` | ✅ | ✅ | 🟡 | ✅ | 9 |
 | [§ 6.7](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-7) | Multi frame header OBU semantics | `AV2-5.7-MULTI-FRAME-HEADER` | ✅ | ✅ | 🟡 | ✅ | 6 |
 | [§ 6.8](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8) | Layer config record OBU semantics | `AV2-5.8-LAYER-CONFIG-RECORD` | ✅ | ✅ | 🟡 | ✅ | 11 |
-| [§ 6.8.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-2) | LCR global info semantics | `AV2-5.8.1-LCR-GLOBAL-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
+| [§ 6.8.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-2) | LCR global info semantics | `AV2-5.8.1-LCR-GLOBAL-INFO` | ✅ | ✅ | 🟡 | ✅ | 6 |
 | [§ 6.8.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-3) | LCR local info semantics | `AV2-5.8.2-LCR-LOCAL-INFO` | ✅ | ✅ | ✅ | ✅ | 2 |
 | [§ 6.8.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-4) | LCR aggregate info semantics | `AV2-5.8.3-LCR-AGGREGATE-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.8.5](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-5) | LCR sequence profile tier level information semantics | `AV2-5.8.4-LCR-SEQ-PTL-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
@@ -206,7 +206,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | Section | Spec item | Feature | Mapped | Parse | Validate | Tests | Diagnostics |
 |---|---|---|:-:|:-:|:-:|:-:|:-:|
 | [§ 7.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-3) | Ordering of OBUs | `AV2-7.3-OBU-ORDERING` | ✅ | — | 🟡 | ✅ | 4 |
-| [§ 7.3.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-2) | Coded multistream video sequence boundaries | `AV2-7.3.2-CMVS-BOUNDARIES` | ✅ | — | 🟡 | 🟡 | — |
+| [§ 7.3.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-2) | Coded multistream video sequence boundaries | `AV2-7.3.2-CMVS-BOUNDARIES` | ✅ | — | 🟡 | 🟡 | 1 |
 | [§ 7.3.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-3) | Coded output frame unit | `AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT` | ✅ | — |  |  | — |
 | [§ 7.3.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-4) | Coded non-output frame unit | `AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT` | ✅ | — |  |  | — |
 | [§ 7.3.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-5) | Coded frame unit | `AV2-7.3.5-CODED-FRAME-UNIT` | ✅ | — |  |  | — |
@@ -227,7 +227,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | Section | Spec item | Feature | Mapped | Parse | Validate | Tests | Diagnostics |
 |---|---|---|:-:|:-:|:-:|:-:|:-:|
 | [Annex A](./spec/av2/1.0.0/annex-a-profiles-levels-and-tiers.md#s-annex-a) | Profiles, levels, and tiers | `AV2-A-LEVELS-TIERS` | ✅ | — | 🟡 | ✅ | 5 |
-| [Annex A](./spec/av2/1.0.0/annex-a-profiles-levels-and-tiers.md#s-annex-a) | Profiles, levels, and tiers | `AV2-A-PROFILES` | ✅ | — | 🟡 | ✅ | 3 |
+| [Annex A](./spec/av2/1.0.0/annex-a-profiles-levels-and-tiers.md#s-annex-a) | Profiles, levels, and tiers | `AV2-A-PROFILES` | ✅ | — | 🟡 | ✅ | 6 |
 | [Annex B](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b) | Length delimited bitstream format | `AV2-B-ANNEXB-OBU-ENVELOPE` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [Annex E](./spec/av2/1.0.0/annex-e-decoder-model.md#s-annex-e) | Decoder model | `AV2-E-DECODER-MODEL` | ✅ | — |  |  | — |
 

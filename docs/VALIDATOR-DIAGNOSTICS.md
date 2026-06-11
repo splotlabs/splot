@@ -43,7 +43,10 @@ decoder-model constraints (Annex E) are out of scope. Hand-crafted unit vectors 
 | `annex-a/frame-size-below-minimum` | error | § A.4 | a parsed intra frame's FrameWidth or FrameHeight is below 16 under a table-mapped seq_level_idx (not 31, not reserved) |
 | `annex-a/frame-size-exceeds-level` | error | § A.4 | FrameWidth*FrameHeight > MaxPicSize, FrameWidth > MaxHSize, or FrameHeight > MaxVSize for the activated seq_level_idx (Tables A.8) |
 | `annex-a/high-tier-below-4-0` | warning | § A.4 | a High tier is signaled below level 4.0 (Table A.9 NOTE — informative, hence advisory). The reachable case is an OPS-signaled ops_tier_flag == 1 with ops_level_idx < 4 (the OPS PTL carries ops_tier_flag unconditionally, § 5.11.2). The sequence-header arm (seq_tier High with seq_level_idx < 4) is syntax-unreachable because seq_tier is only signaled for seq_level_idx > 3, and is kept as a defensive guard. |
+| `annex-a/lcr-required-for-iop` | error | § A.2 | a Table A.4 interoperability-point row requires a local or activated global OBU_LAYER_CONFIGURATION_RECORD (or the IOP2 either-or combinations) for the coded video sequence and none is present (Table A.4, mirror lines 191/197/199-200) |
 | `annex-a/level-reserved` | error | § A.4 | an activated seq_level_idx, or an observed ops_level_idx, is in the reserved range 22-30 (Table A.7) |
+| `annex-a/msdo-prohibited-for-iop` | error | § A.2 | a Table A.4 row prohibits an OBU_MSDO (a single-extended-layer coded video sequence) but one is present (Table A.4 MSDO Prohibited rows; documented defensive arm — a present MSDO declares E > 1 under Table A.3, so unreachable in-band today) |
+| `annex-a/msdo-required-for-iop` | error | § A.2 | a Table A.4 row requires an OBU_MSDO (a multi-extended-layer coded video sequence, or the IOP2 MSDO-or-activated-global-LCR either-or) and none is present (Table A.4, mirror lines 185/189/195) |
 | `annex-a/profile-bit-depth-mismatch` | error | § A.2 | bit_depth_idc is not 0 or 1 for a profile in 0-4 (Table A.1; defensive — the parsed bit_depth_idc only models 0/1, so unreachable today) |
 | `annex-a/profile-chroma-format-mismatch` | error | § A.2 | chroma_format_idc is outside the activated profile's allowed set (Table A.1; profile 31 / reserved profiles are skipped) |
 | `annex-a/profile-reserved` | error | § A.2 | seq_profile_idc, an observed ops_seq_profile_idc, or a multistream_profile_idc (§ 6.6 binds its value space to seq_profile_idc / Table A.1; the spec's "Table A.4" cross-reference is an erratum) is in the reserved range 5-30 (Table A.1) |
@@ -87,6 +90,16 @@ decoder-model constraints (Annex E) are out of scope. Hand-crafted unit vectors 
 | `content-interpretation/chroma-sample-position-out-of-range` | error | § 6.14 | ci_chroma_sample_position top or bottom exceeds 5 |
 | `content-interpretation/repeated-ci-not-identical` | error | § 6.14 | repeated CI OBU for same xlayer/mlayer in CVS carries different information |
 | `content-interpretation/reserved-bits-nonzero` | warning | § 6.14 | ci_reserved_2bit is non-zero (decoder-ignored producer anomaly) |
+
+### `cmvs/`
+
+Coded-multistream-video-sequence (§7.3.2) boundary semantics (`AV2-7.3.2-CMVS-BOUNDARIES`).
+Decidable-disagreement-only and evaluated at temporal-unit-completion resolution; the §7.3.2
+begin/end tracker's Unknown states never fire. Hand-crafted unit vectors only.
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `cmvs/boundary-set-mismatch` | error | § 7.3.2 | a temporal unit begins a new coded video sequence with no OBU_MSDO but with an activated global LCR, so it ends the CMVS under the MSDO-alone boundary rules yet continues it under the MSDO-plus-global-LCR rules; § 7.3.2 requires the two boundary sets to be identical (mirror line 351) |
 
 ### `decoder-model/`
 
@@ -159,11 +172,17 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 | Rule ID | Severity | Section | Condition |
 |---|---|---|---|
 | `lcr/dependent-xlayers-flag-nonzero` | warning | § 6.8.2 | lcr_dependent_xlayers_flag is set (decoder-ignored) |
+| `lcr/doh-constraint-required` | error | § 6.8.2 | inside a CMVS, a frame-confirmed activated sequence header has monotonic_output_order_flag == 0 while the activated global LCR's lcr_doh_constraint_flag == 0 (mirror lines 1619-1621) |
 | `lcr/global-id-out-of-range` | error | § 6.8.2 | lcr_global_config_record_id is 0 (must be 1..7) |
 | `lcr/global-lcr-unavailable` | error | § 7.3.8.3 | local LCR references an unavailable global LCR (external HLS disabled) |
 | `lcr/global-xlayer-map-missing-xlayer` | error | § 6.4.1 | sequence header xlayer is not set in the referenced global LCR lcr_xlayer_map |
 | `lcr/local-id-zero` | error | § 6.8.3 | lcr_local_id equals 0 |
 | `lcr/mlayer-dependency-missing` | error | § 6.8.9 | activated LCR lcr_mlayer_map includes an embedded layer without a layer the activated sequence header's MLayerDependencyMap requires |
+| `lcr/msdo-aggregate-mismatch` | error | § 6.8.2 | with lcr_aggregate_info_present_flag == 1, multistream_profile_idc is inconsistent with lcr_config_idc (Table A.6), its interop point != lcr_max_interop (Table A.1), multistream_level_idx != lcr_aggregate_level_idx, or multistream_tier != lcr_max_tier_flag (mirror lines 1657-1664) |
+| `lcr/msdo-doh-flag-mismatch` | error | § 6.8.2 | multistream_doh_constraint_flag != the activated global LCR's lcr_doh_constraint_flag (mirror line 1673) |
+| `lcr/msdo-stream-count-mismatch` | error | § 6.8.2 | num_streams_minus_2 + 2 != the activated global LCR's LcrMaxNumXLayerCount (mirror line 1650) |
+| `lcr/msdo-sub-xlayer-not-in-lcr` | error | § 6.8.2 | an MSDO sub_xlayer_id[i] is not in the activated global LCR's LcrXLayerID[] (mirror lines 1651-1652) |
+| `lcr/msdo-substream-ptl-mismatch` | error | § 6.8.2 | with lcr_seq_profile_tier_level_info_present_flag == 1, sub_stream_max_*[i] != lcr_*[sub_xlayer_id[i]] (exact equality, mirror lines 1666-1671) |
 | `lcr/payload-size-overflow` | error | § 6.8.6 | layer config record declared payload size overflows |
 | `lcr/reserved-bits-nonzero` | warning | § 6.8 | a layer config record reserved-zero field is non-zero (decoder-ignored) |
 | `lcr/tlayer-dependency-missing` | error | § 6.8.9 | activated LCR lcr_tlayer_map includes a temporal layer without a layer the activated sequence header's TLayerDependencyMap requires |

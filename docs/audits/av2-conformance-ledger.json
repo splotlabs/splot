@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "4647c476aac6120ac5b5e8ecb652e5c859dcc390",
+  "audited_commit": "a4d65ee820deb16635f47ca345aac5321e99414c",
   "outcome": "success",
   "files": [
     {
@@ -746,7 +746,7 @@
     },
     {
       "path": "crates/splot-validate/src/annex_a.rs",
-      "sha256": "8c1eef4c001459c086d8ff4f98c734df216606632d995d2094ff71aece2120b2",
+      "sha256": "6f2ca8d2e50543363f9d10784569a40e9efc2e022e543d2f86b20c4454322bf6",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-A-LEVELS-TIERS",
@@ -769,7 +769,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "97940bc876cc1675e7fd0853c0ca962ecf436a93503c74487d3524a03fbc3687",
+      "sha256": "f9601606152336612bbdac6e89f4fe082648efaa960c28f74e7735afb9a00626",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -833,7 +833,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "f2c81cdab6131efd83927bbb10f84857bc2cd6d898edcd76a7539a8100576315",
+      "sha256": "bc99971806d58609a1032ec970f2661f6de64e60591d9f5bbe7507281ffad79d",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1065,7 +1065,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "da28693f3a189c24f30487d10365879938c3a0bf187f8c2a17fc1f27042693f3",
+      "sha256": "1da9e16626d072c3cfedff3575e403e9a85ca015bb42916cd10a596d1135a2f0",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1202,7 +1202,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "106b097dc12e3588fc2eae4ca5bd802c0cf4cb701b8ef6420c68988e37306202",
+      "sha256": "f58bf5c444704e173e68e6073cb93eb0c025ba9c95f47276d4687d5275209506",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1355,9 +1355,10 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "97c39b0e213d05e2ba0b0b708e24dd9f61cad42a7b56fad5c50acb280400a138",
+      "sha256": "30b4a7823c790b5afe09fbdca076655c97acf2429b3f10333da510c2b914e56b",
       "scope_kind": "docs",
       "feature_ids": [
+        "AV2-7.3.2-CMVS-BOUNDARIES",
         "AV2-A-LEVELS-TIERS",
         "AV2-A-PROFILES",
         "XTASK-DIAGNOSTIC-REGISTRY"
@@ -1366,7 +1367,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "f16f3c80930ad0d3b4e94bd87603d62a1234d31d0e3ba9d067cc7e5e9d2957e4",
+      "sha256": "eceafcbaa65828c109f228300a9192023129ed14e721c77b3e617509534b6263",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -1425,7 +1426,6 @@
         "AV2-7.3.8-HLS-AVAILABILITY",
         "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
         "AV2-A-LEVELS-TIERS",
-        "AV2-A-PROFILES",
         "AV2-IVF-CONTAINER",
         "CONF-AVM-DIFF-HARNESS",
         "CONF-INSPECT-SNAPSHOTS",
@@ -2825,6 +2825,39 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-11-msdo-global-lcr-agreement/proposal.md",
+      "sha256": "487788012a354cfc597cfd4e22f4eb2c11cbea0f3e30812a3ed57328bed5ed71",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.8-LAYER-CONFIG-RECORD",
+        "AV2-5.8.1-LCR-GLOBAL-INFO",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-msdo-global-lcr-agreement/specs/validator/spec.md",
+      "sha256": "1fdf4b441e485fb2a6c43c2aabdf8925ad34bbec3d72e7e0e4b6c43472caeafa",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.8.1-LCR-GLOBAL-INFO",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-msdo-global-lcr-agreement/tasks.md",
+      "sha256": "e6204a67fe953a88293c4b60224c8544741453f925be38236164b10faa46e754",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.8.1-LCR-GLOBAL-INFO",
+        "AV2-7.3.2-CMVS-BOUNDARIES"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-11-msdo-substream-constraint-checks/proposal.md",
       "sha256": "92ab9df65672caf40fec42f8b588cf33a37f342248dad3ccd55f328a56854170",
       "scope_kind": "openspec",
@@ -3016,7 +3049,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "8c42a861eaaf469ff1ebd1309c9cccfcefe08a06f96323b79e3f6d25af155e7e",
+      "sha256": "d4c8d1409bccb9f65b9e2c871c5560b39ebb998738ac5c567f2bcd6e9c5bb48c",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
@@ -3103,7 +3136,7 @@
     },
     {
       "path": "xtask/src/feature_status.rs",
-      "sha256": "2723b320a235f05d21dfea58944b51fb51522fbd9d65441515d0de79aff01d54",
+      "sha256": "4df559eeb66f3590e48daf2a5435ad6cdaf6bf095fa4462894c8e55da4c85cae",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "AV2-5.2.2-OBU-HEADER",
