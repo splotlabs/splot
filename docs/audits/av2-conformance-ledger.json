@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "726e0fbc557540c0abfda86f57c48d4a801d6754",
+  "audited_commit": "dd9b9ff30ce58ef250fcfd9b655a8dc9fd5448a5",
   "outcome": "success",
   "files": [
     {
@@ -769,7 +769,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "066f3986e0d7ecd7e8bb0fb85fc03bf455734a3dc77cd1626a0940cd8df60472",
+      "sha256": "b5703c49bf9eb614a3858fe64a825095b469291fd61decbde9f2a4004a175886",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -833,7 +833,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "b742346baa5abc8701589c6dcdbcefe49b099d2e6c227ecae71858c2ff1551bb",
+      "sha256": "34319ca954a2a9c3c8704c6698749473424d30c017116ee8abb4a64f97c8f163",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -2821,6 +2821,39 @@
       "feature_ids": [
         "AV2-A-LEVELS-TIERS",
         "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-msdo-global-lcr-agreement/proposal.md",
+      "sha256": "487788012a354cfc597cfd4e22f4eb2c11cbea0f3e30812a3ed57328bed5ed71",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.8-LAYER-CONFIG-RECORD",
+        "AV2-5.8.1-LCR-GLOBAL-INFO",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-msdo-global-lcr-agreement/specs/validator/spec.md",
+      "sha256": "1fdf4b441e485fb2a6c43c2aabdf8925ad34bbec3d72e7e0e4b6c43472caeafa",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.8.1-LCR-GLOBAL-INFO",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-msdo-global-lcr-agreement/tasks.md",
+      "sha256": "e6204a67fe953a88293c4b60224c8544741453f925be38236164b10faa46e754",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.8.1-LCR-GLOBAL-INFO",
+        "AV2-7.3.2-CMVS-BOUNDARIES"
       ],
       "outcome": "success"
     },
