@@ -2319,11 +2319,11 @@ spec_sections = ["5.17.7", "6.16.7"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/metadata.rs"
-openspec_change = "metadata-padding-foundation"
+openspec_change = "metadata-residual-local-semantics"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. The locally-decidable §6.16.7 range bounds have landed (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-7): seconds_value 0..59 (lines 3873-3876), minutes_value 0..59 (3882-3885), and hours_value 0..23 (3890-3893) as metadata/timecode-seconds-out-of-range / metadata/timecode-minutes-out-of-range / metadata/timecode-hours-out-of-range (crates/splot-validate/src/checks/mod.rs:1327-1360). Residual, all still partial: (1) the inference-presence rules — when seconds_value/minutes_value/hours_value is not present it is inferred from the previous timecode and 'it is required that such a previous value shall have been present' (lines 3873-3893) — implementable local work that needs per-CVS previous-timecode state (planned metadata-residual-local-semantics change); (2) the output-order timing rules — clockTimestamp monotonicity when discontinuity_flag==0 (lines 3858-3860) and n_frames < maxPicPerSecond when ci_timing_info_present_flag==1 (lines 3865-3867) — which need output-order and §6.4.12 timing state. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.17-METADATA. The locally-decidable §6.16.7 range bounds landed earlier (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-7): seconds_value 0..59 (lines 3873-3876), minutes_value 0..59 (3882-3885), hours_value 0..23 (3890-3893) as metadata/timecode-seconds-out-of-range / -minutes-out-of-range / -hours-out-of-range (crates/splot-validate/src/checks/mod.rs check_metadata_unit_payload). The metadata-residual-local-semantics change added two more locally-decidable §6.16.7 facts (crates/splot-validate/src/context.rs check_timecode_consistency / recheck_timecode_n_frames_after_ci): (a) the inference-presence rules — when seconds_value/minutes_value/hours_value is not present it is inferred from 'the previous set of clock timestamp syntax elements in decoding order, and it is required that such a previous value shall have been present' (lines 3873-3893) — as metadata/timecode-inferred-without-previous (error), tracked with per-CVS-scope decoding-order field-presence state keyed by obu_xlayer_id (matching the §6.16.10 ScanTypeCvsState / §6.16.3 lifetime-store CVS+extended-layer scoping), the chain carrying inferred values forward and resetting at each §7.3.6 CLK boundary; (b) the n_frames bound — 'When ci_timing_info_present_flag is equal to 1, n_frames shall be less than maxPicPerSecond = ceil(time_scale / TicksPerPicture)' (lines 3865-3867) — as metadata/timecode-n-frames-exceeds-rate (error), decidable because ci_timing_info_present_flag is the content-interpretation OBU's flag (annex-e-decoder-model.md line 293: 'ci_timing_info_present_flag equal to 1 in the content interpretation OBU associated with this extended layer') and time_scale/num_units_in_display_tick/num_ticks_per_picture_minus_1 are parsed into TimingInfo and tracked in the content_interpretations store, so the bound is paired against the in-scope CI timing at/after the layer's §7.3.8.11 epoch in both arrival orders (timecode-before-CI re-checks via recheck_timecode_n_frames_after_ci), with strict 'less than' boundary tests (n_frames == maxPicPerSecond fails, == maxPicPerSecond-1 passes). validate STAYS partial for ONE named residual: the §6.16.7 clockTimestamp output-order monotonicity sentence — 'When ci_timing_info_present_flag is equal to 1 and discontinuity_flag is equal to 0, the value of clockTimestamp shall be greater than or equal to the value of clockTimestamp for the previous set of clock timestamp syntax elements in OUTPUT order' (lines 3858-3860) — is blocked on frame OUTPUT-order state (no decoder / output process; the previous set in output order, not decoding order, is unavailable). Do not mark the umbrella done until this child's output-order residual is resolved."
 
 [feature.status]
 mapped = "done"
@@ -2338,10 +2338,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
-commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests::metadata_timecode_inferred_seconds_without_previous_is_flagged", "crates/splot-validate/src/validator.rs::tests::metadata_timecode_inference_after_present_value_passes", "crates/splot-validate/src/validator.rs::tests::metadata_timecode_inference_names_each_absent_field", "crates/splot-validate/src/validator.rs::tests::metadata_timecode_inference_chain_resets_at_clk", "crates/splot-validate/src/validator.rs::tests::metadata_timecode_n_frames_exceeds_rate_is_flagged", "crates/splot-validate/src/validator.rs::tests::metadata_timecode_n_frames_boundary_passes", "crates/splot-validate/src/validator.rs::tests::metadata_timecode_n_frames_ci_arrives_after_metadata_flagged", "crates/splot-validate/src/validator.rs::tests::metadata_timecode_n_frames_unequal_interval_bound"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate timecode"]
 fixtures = []
-diagnostics = ["metadata/timecode-seconds-out-of-range", "metadata/timecode-minutes-out-of-range", "metadata/timecode-hours-out-of-range"]
+diagnostics = ["metadata/timecode-seconds-out-of-range", "metadata/timecode-minutes-out-of-range", "metadata/timecode-hours-out-of-range", "metadata/timecode-inferred-without-previous", "metadata/timecode-n-frames-exceeds-rate"]
 
 [[feature]]
 id = "AV2-5.17.8-METADATA-BANDING-HINTS"
@@ -2484,11 +2484,11 @@ spec_sections = ["5.17.12", "6.16.13"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/metadata.rs"
-openspec_change = "metadata-padding-foundation"
+openspec_change = "metadata-residual-local-semantics"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Child row of AV2-5.17-METADATA. §6.16.13 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13, lines 4149-4263) defines the decoded-frame-hash content over OutY/OutU/OutV produced by the §7.21.1 output process (plus §7.21.2 intermediate output preparation and §7.21.7 film-grain synthesis), with the MD5 algorithm of [RFC1321]. The only locally decidable element, the reserved bit, is decoder-ignored. Verifying plane_hash/frame_hash against the decoded output is decoder-blocked: it needs the §7.21 output process (and §7.21.7 film-grain synthesis when has_grain == 1), which is not implemented (no decoder). validate stays partial; tracked behind the decoder/output-process backlog."
+notes = "Child row of AV2-5.17-METADATA. §6.16.13 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13, lines 4149-4263) defines the decoded-frame-hash content over OutY/OutU/OutV produced by the §7.21.1 output process (plus §7.21.2 intermediate output preparation and §7.21.7 film-grain synthesis), with the MD5 algorithm of [RFC1321]. The metadata-residual-local-semantics change landed the one locally-decidable reserved-field fact: 'reserved shall be set to 0 and ignored by decoders' (line 4248) as metadata/decoded-frame-hash-reserved-nonzero (warning, crates/splot-validate/src/checks/mod.rs check_metadata_unit_payload), following the established decoder-ignored reserved-field pattern (content-interpretation/reserved-bits-nonzero, metadata/group-reserved-bits-nonzero). validate STAYS partial for ONE named residual: verifying plane_hash/frame_hash against the decoded output is decoder-blocked — it needs the §7.21 output process (and §7.21.7 film-grain synthesis when has_grain == 1), which is not implemented (no decoder). (hash_type's 'all other values reserved for future use' is a value-space note with no 'shall', so no diagnostic is added for it.) Tracked behind the decoder/output-process backlog."
 
 [feature.status]
 mapped = "done"
@@ -2503,10 +2503,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
-commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate metadata"]
+tests = ["crates/splot-core/src/headers/metadata.rs::tests", "crates/splot-validate/src/validator.rs::tests::metadata_decoded_frame_hash_reserved_nonzero_is_warned", "crates/splot-validate/src/validator.rs::tests::metadata_decoded_frame_hash_reserved_zero_is_silent"]
+commands = ["cargo test -p splot-core metadata", "cargo test -p splot-validate decoded_frame_hash"]
 fixtures = []
-diagnostics = []
+diagnostics = ["metadata/decoded-frame-hash-reserved-nonzero"]
 
 [[feature]]
 id = "AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED"

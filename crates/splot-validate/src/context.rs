@@ -25,7 +25,8 @@ use splot_core::headers::layer_config_record::{
     LayerConfigurationRecord, LcrAggregateInfo, LcrRepInfo, parse_layer_config_record,
 };
 use splot_core::headers::metadata::{
-    MetadataPayload, MetadataScanType, MetadataUnit, parse_metadata_group, parse_metadata_short,
+    MetadataPayload, MetadataScanType, MetadataTimecode, MetadataUnit, parse_metadata_group,
+    parse_metadata_short,
 };
 use splot_core::headers::operating_point_set::{
     OperatingPointSet, OpsMlayerInfo, OpsMlayerSource, parse_operating_point_set,
@@ -129,6 +130,12 @@ pub(crate) struct ValidatorContext {
     /// the coded video sequence via the [`CvsTracker`] CLK hook and flushed at the
     /// end of the bitstream (see [`ValidatorContext::finish`]).
     scan_type: ScanTypeCvsState,
+    /// Timecode metadata state per coded-video-sequence scope, for the § 6.16.7
+    /// inference-presence rules and the `ci_timing_info_present_flag`-gated n_frames
+    /// bound; see [`TimecodeCvsState`]. Scoped to the coded video sequence via the
+    /// [`CvsTracker`] CLK hook (the decoding-order inference chain resets at a CVS
+    /// boundary).
+    timecode: TimecodeCvsState,
     temporal_unit: TemporalUnitState,
     /// Exact coded-video-sequence boundary state (AV2 § 7.3.6); see [`CvsTracker`].
     cvs: CvsTracker,
@@ -2213,6 +2220,141 @@ fn scan_type_equal_picture_interval_error(pic_struct: u8, pair: &ScanTypeCiPair)
     .with_byte_offset(pair.at)
 }
 
+/// One observed `metadata_timecode()` unit's n_frames within its
+/// coded-video-sequence scope (AV2 § 6.16.7), kept so a content interpretation that
+/// arrives *after* the timecode (and establishes its `ci_timing_info_present_flag` /
+/// timing) can re-evaluate the n_frames bound — the same arrival-order ambiguity the
+/// § 6.16.10 scan-type / CI pairing handles (see [`ScanTypeObservation`]).
+#[derive(Debug)]
+struct TimecodeObservation {
+    /// The observed `n_frames` value (AV2 § 6.16.7, `f(9)`).
+    n_frames: u16,
+    /// Source byte offset of the carrying metadata OBU (the diagnostic anchor — the
+    /// offending timecode metadata OBU).
+    offset: ByteOffset,
+    /// Temporal unit ([`CvsTracker::tu_index`]) of the observation, for the exact
+    /// § 7.3.6 CVS scoping and the § 7.3.8.11 CI-parameter epoch filter.
+    tu_index: u64,
+}
+
+/// Per coded-video-sequence-scope timecode state (AV2 § 6.16.7), keyed by the
+/// carrying OBU's `obu_xlayer_id`; [`GLOBAL_XLAYER_ID`] keys the global bucket.
+///
+/// Two § 6.16.7 facts are decidable from metadata alone and tracked here:
+///
+/// - **Inference-presence** (the mirror's "When seconds_value \[minutes_value,
+///   hours_value\] is not present, its value is inferred to be equal to the value of
+///   \[that element\] for the previous set of clock timestamp syntax elements **in
+///   decoding order**, and it is required that such a previous \[element\] shall have
+///   been present",
+///   `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-7`, lines
+///   3873-3893): [`prev`] records whether each of the three fields was present in the
+///   previous timecode *in decoding order* within this scope.
+/// - **n_frames bound re-check** ([`observations`]): observed timecodes' n_frames,
+///   kept so a later content interpretation can re-evaluate the bound (the eager
+///   metadata-time direction reads the already-stored CI timing).
+///
+/// **Scope choice (documented):** the mirror's "previous set of clock timestamp
+/// syntax elements in decoding order" carries no layer qualifier, but § 6.16.3 binds
+/// metadata to layers and the timecode is a layer-associated metadata unit. The state
+/// is therefore scoped per `obu_xlayer_id` within the coded video sequence — the same
+/// CVS / extended-layer scoping the landed § 6.16.10 scan-type state
+/// ([`ScanTypeCvsState`]) and § 6.16.3 lifetime store
+/// ([`crate::metadata_lifetime::MetadataLifetimeStore`]) use — and reset at each
+/// § 7.3.6 CVS boundary (a CLK starts a new coded video sequence, breaking the
+/// decoding-order inference chain) via [`ValidatorContext::reset_cvs`].
+#[derive(Debug, Default)]
+struct TimecodeCvsState {
+    scopes: BTreeMap<ExtendedLayerId, TimecodeScope>,
+}
+
+/// Per-scope timecode tracking: the previous-timecode field presence and the n_frames
+/// observations (AV2 § 6.16.7); see [`TimecodeCvsState`].
+#[derive(Debug, Default)]
+struct TimecodeScope {
+    /// Presence of `seconds_value` / `minutes_value` / `hours_value` in the previous
+    /// `metadata_timecode()` set in decoding order within this scope, with the temporal
+    /// unit of that previous set; `None` when no previous timecode has been seen in the
+    /// current coded video sequence. The temporal unit lets the § 7.3.6 CVS boundary
+    /// reset the inference chain (a previous set from an earlier temporal unit belongs
+    /// to the ending coded video sequence and no longer seeds the new one).
+    prev: Option<(TimecodeFieldPresence, u64)>,
+    /// n_frames observations, for the CI-after re-check of the n_frames bound.
+    observations: Vec<TimecodeObservation>,
+}
+
+/// Whether each clock-timestamp field carried a *present* value in a
+/// `metadata_timecode()` set (AV2 § 6.16.7). A field present in the previous set in
+/// decoding order satisfies the inference's "such a previous \[element\] shall have
+/// been present" requirement for the next set that omits it.
+#[derive(Debug, Clone, Copy)]
+struct TimecodeFieldPresence {
+    seconds: bool,
+    minutes: bool,
+    hours: bool,
+}
+
+impl TimecodeFieldPresence {
+    /// Records the present fields of a parsed timecode (each `Option` is `Some` when
+    /// the field was coded, per the § 5.17.7 presence flags).
+    fn of(timecode: &MetadataTimecode) -> Self {
+        Self {
+            seconds: timecode.seconds_value.is_some(),
+            minutes: timecode.minutes_value.is_some(),
+            hours: timecode.hours_value.is_some(),
+        }
+    }
+}
+
+/// `maxPicPerSecond` for the § 6.16.7 n_frames bound: `ceil(time_scale /
+/// TicksPerPicture)`, where `TicksPerPicture` equals
+/// `(num_ticks_per_picture_minus_1 + 1) * num_units_in_display_tick` when
+/// `equal_picture_interval`, else `num_units_in_display_tick` (mirror lines
+/// 3833-3837, 3865-3867). Both `time_scale` and `num_units_in_display_tick` are
+/// guaranteed `> 0` by the § 6.4.12 timing-info parser, so `TicksPerPicture >= 1`,
+/// the result is `>= 1`, and the division never panics.
+fn max_pic_per_second(timing: &TimingInfo) -> u64 {
+    let ticks_per_picture = if timing.equal_picture_interval {
+        // num_ticks_per_picture_minus_1 is Some when equal_picture_interval; treat an
+        // unexpected None as 0 (TicksPerPicture == num_units_in_display_tick) — a
+        // conservative fallback that never panics and never under-counts the bound.
+        let ticks_minus_1 = u64::from(timing.num_ticks_per_picture_minus_1.unwrap_or(0));
+        (ticks_minus_1 + 1) * u64::from(timing.num_units_in_display_tick)
+    } else {
+        u64::from(timing.num_units_in_display_tick)
+    };
+    // ceil(time_scale / ticks_per_picture) for positive integers.
+    let time_scale = u64::from(timing.time_scale);
+    time_scale.div_ceil(ticks_per_picture)
+}
+
+/// Builds the § 6.16.7 n_frames-exceeds-rate diagnostic
+/// (`metadata/timecode-n-frames-exceeds-rate`), anchored at the offending timecode
+/// metadata OBU.
+fn timecode_n_frames_error(
+    n_frames: u16,
+    max_pic_per_second: u64,
+    ci_xlayer: ExtendedLayerId,
+    ci_mlayer: EmbeddedLayerId,
+    ci_offset: ByteOffset,
+    metadata_offset: ByteOffset,
+    at: ByteOffset,
+) -> Diagnostic {
+    Diagnostic::error(
+        "metadata/timecode-n-frames-exceeds-rate",
+        format!(
+            "n_frames {n_frames} (timecode metadata at byte {metadata_offset}) must be less than \
+             maxPicPerSecond {max_pic_per_second} = ceil(time_scale / TicksPerPicture), which the \
+             content interpretation timing_info() for obu_xlayer_id {} / obu_mlayer_id {} (at byte \
+             {ci_offset}) establishes with ci_timing_info_present_flag 1",
+            ci_xlayer.get(),
+            ci_mlayer.get(),
+        ),
+    )
+    .with_spec_section("6.16.7")
+    .with_byte_offset(at)
+}
+
 /// Exact coded-video-sequence boundary tracker (AV2 § 7.3.6,
 /// `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-3-6`).
 ///
@@ -3633,6 +3775,15 @@ impl ValidatorContext {
         if !xlayer.is_global() {
             self.flush_scan_type_scope(GLOBAL_XLAYER_ID, tu_index, report);
         }
+        // § 6.16.7 timecode state: a CLK starts a new coded video sequence at this
+        // temporal unit (§ 7.3.6), so observations and the decoding-order inference
+        // chain from earlier temporal units belong to the ending sequence and are
+        // dropped — same-temporal-unit observations joined the new sequence and stay.
+        // (No flush: the timecode checks are eager, never deferred to a flush.)
+        self.prune_timecode_scope(xlayer, tu_index);
+        if !xlayer.is_global() {
+            self.prune_timecode_scope(GLOBAL_XLAYER_ID, tu_index);
+        }
         self.sequence_fingerprints
             .retain(|(x, _), &mut (_, record_tu)| {
                 !(*x == xlayer || x.is_global()) || record_tu >= tu_index
@@ -4352,6 +4503,28 @@ impl ValidatorContext {
             );
         }
 
+        // AV2 § 6.16.7: a content interpretation establishing ci_timing_info_present_flag
+        // / timing may arrive after the timecode metadata whose n_frames bound it
+        // decides; re-evaluate the stored timecode observations of this scope and the
+        // global bucket — but only when the n_frames-decisive content (the timing_info)
+        // differs from the record this CI replaces, mirroring the scan-type dedup so a
+        // repeated identical CI (the only legal repeat, § 6.14) never re-reports.
+        let timing_unchanged = self
+            .content_interpretations
+            .get(&(xlayer, mlayer))
+            .is_some_and(|existing| {
+                existing.content.timing_info == content_interpretation.timing_info
+            });
+        if !timing_unchanged {
+            self.recheck_timecode_n_frames_after_ci(
+                xlayer,
+                mlayer,
+                &content_interpretation,
+                obu.offset,
+                report,
+            );
+        }
+
         match self.content_interpretations.entry((xlayer, mlayer)) {
             Entry::Vacant(slot) => {
                 slot.insert(ContentInterpretationRecord {
@@ -4507,6 +4680,9 @@ impl ValidatorContext {
         self.check_hdr_repeat_content(obu, &header, &unit, report);
         if let MetadataPayload::ScanType(scan) = &unit.payload {
             self.check_scan_type_consistency(obu, scan, report);
+        }
+        if let MetadataPayload::Timecode(timecode) = &unit.payload {
+            self.check_timecode_consistency(obu, timecode, report);
         }
 
         self.metadata.observe_unit(
@@ -4910,6 +5086,216 @@ impl ValidatorContext {
             .retain(|observation| observation.tu_index >= keep_from_tu);
         if scope.observations.is_empty() {
             self.scan_type.scopes.remove(&scope_key);
+        }
+    }
+
+    /// Prunes the § 6.16.7 timecode scope `scope_key` at a § 7.3.6 CVS boundary that
+    /// starts a new coded video sequence at `keep_from_tu`: n_frames observations from
+    /// earlier temporal units are dropped, and the decoding-order inference chain is
+    /// reset when its previous timecode came from an earlier temporal unit (a
+    /// previous set in the same temporal unit joined the new coded video sequence and
+    /// still seeds it).
+    fn prune_timecode_scope(&mut self, scope_key: ExtendedLayerId, keep_from_tu: u64) {
+        let Some(scope) = self.timecode.scopes.get_mut(&scope_key) else {
+            return;
+        };
+        scope
+            .observations
+            .retain(|observation| observation.tu_index >= keep_from_tu);
+        if scope
+            .prev
+            .is_some_and(|(_, prev_tu)| prev_tu < keep_from_tu)
+        {
+            scope.prev = None;
+        }
+        if scope.observations.is_empty() && scope.prev.is_none() {
+            self.timecode.scopes.remove(&scope_key);
+        }
+    }
+
+    /// Checks the locally-decidable § 6.16.7 timecode rules for one
+    /// `metadata_timecode()` unit
+    /// (`docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-7`):
+    ///
+    /// 1. **Inference-presence** (lines 3873-3893): for each of `seconds_value`,
+    ///    `minutes_value`, `hours_value` that is *not present* in this set, the mirror
+    ///    infers its value from "the previous set of clock timestamp syntax elements in
+    ///    decoding order, and it is required that such a previous \[element\] shall have
+    ///    been present". When no previous set in this CVS scope carried that field, the
+    ///    inference has no source, so `metadata/timecode-inferred-without-previous`
+    ///    (error) is emitted naming the field. The previous-presence chain carries an
+    ///    inferred value forward — after inference the current set's element *is* that
+    ///    value, so it satisfies the next omitting set's requirement.
+    /// 2. **n_frames bound** (lines 3865-3867): "When ci_timing_info_present_flag is
+    ///    equal to 1, n_frames shall be less than maxPicPerSecond". The
+    ///    `ci_timing_info_present_flag` is the content interpretation OBU's flag
+    ///    associated with the timecode's extended layer (annex-e-decoder-model.md line
+    ///    293: "ci_timing_info_present_flag equal to 1 in the content interpretation OBU
+    ///    associated with this extended layer"); a present `timing_info()` in an
+    ///    in-scope content interpretation is exactly that flag set. The bound is checked
+    ///    against every in-scope content-interpretation record at/after the timecode
+    ///    layer's § 7.3.8.11 CI-parameter epoch (the same epoch filter the § 6.16.10
+    ///    scan-type / CI pairing applies); a content interpretation arriving *after* the
+    ///    timecode re-evaluates instead (see
+    ///    [`ValidatorContext::recheck_timecode_n_frames_after_ci`]).
+    ///
+    /// Both diagnostics anchor at the offending timecode metadata OBU. These are
+    /// metadata-local facts, so they are not gated by [`ValidationOptions`]'
+    /// external-HLS mode.
+    fn check_timecode_consistency(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        timecode: &MetadataTimecode,
+        report: &mut ValidationReport,
+    ) {
+        let scope_key = obu.header.extended_layer_id;
+        let tu_index = self.cvs.tu_index;
+
+        // 1. Inference-presence (decoding-order, CVS-scoped).
+        let scope = self.timecode.scopes.entry(scope_key).or_default();
+        let prev = scope.prev.map(|(presence, _)| presence);
+        // For each absent field, a previous *present* value is required.
+        for (present, prev_present, field) in [
+            (
+                timecode.seconds_value.is_some(),
+                prev.is_some_and(|p| p.seconds),
+                "seconds_value",
+            ),
+            (
+                timecode.minutes_value.is_some(),
+                prev.is_some_and(|p| p.minutes),
+                "minutes_value",
+            ),
+            (
+                timecode.hours_value.is_some(),
+                prev.is_some_and(|p| p.hours),
+                "hours_value",
+            ),
+        ] {
+            if !present && !prev_present {
+                report.push(
+                    Diagnostic::error(
+                        "metadata/timecode-inferred-without-previous",
+                        format!(
+                            "{field} is not present and is inferred from the previous set of clock \
+                             timestamp syntax elements in decoding order, but no previous timecode \
+                             in the coded video sequence carried a present {field}"
+                        ),
+                    )
+                    .with_spec_section("6.16.7")
+                    .with_byte_offset(obu.offset),
+                );
+            }
+        }
+        // Carry the presence chain forward: an absent field whose previous set carried
+        // it is now inferred to that value, so it counts as present for the next set.
+        let this = TimecodeFieldPresence::of(timecode);
+        scope.prev = Some((
+            TimecodeFieldPresence {
+                seconds: this.seconds || prev.is_some_and(|p| p.seconds),
+                minutes: this.minutes || prev.is_some_and(|p| p.minutes),
+                hours: this.hours || prev.is_some_and(|p| p.hours),
+            },
+            tu_index,
+        ));
+        scope.observations.push(TimecodeObservation {
+            n_frames: timecode.n_frames,
+            offset: obu.offset,
+            tu_index,
+        });
+
+        // 2. n_frames bound against the already-observed in-scope content
+        // interpretations (a later CI re-evaluates via
+        // recheck_timecode_n_frames_after_ci).
+        for ((ci_xlayer, ci_mlayer), record) in &self.content_interpretations {
+            if !(scope_key.is_global() || *ci_xlayer == scope_key) {
+                continue;
+            }
+            if record.tu_index < self.ci_rap_epoch(*ci_xlayer) {
+                continue;
+            }
+            let Some(timing) = record.content.timing_info else {
+                continue;
+            };
+            let max_pic = max_pic_per_second(&timing);
+            if u64::from(timecode.n_frames) >= max_pic {
+                let diagnostic = timecode_n_frames_error(
+                    timecode.n_frames,
+                    max_pic,
+                    *ci_xlayer,
+                    *ci_mlayer,
+                    record.offset,
+                    obu.offset,
+                    obu.offset,
+                );
+                self.cvs
+                    .defer_or_emit(*ci_xlayer, record.tu_index, diagnostic, report);
+            }
+        }
+    }
+
+    /// Re-evaluates the § 6.16.7 n_frames bound of the stored timecode observations
+    /// against a newly observed content-interpretation record — the content
+    /// interpretation may arrive after the timecode metadata it constrains (the same
+    /// arrival-order handling as
+    /// [`ValidatorContext::recheck_scan_type_after_ci`]). Only a content
+    /// interpretation with a present `timing_info()` (i.e.
+    /// `ci_timing_info_present_flag == 1`) establishes the bound; observations from a
+    /// temporal unit before the CI layer's § 7.3.8.11 random access point are skipped
+    /// (their pictures' content interpretation parameters belong to the previous
+    /// epoch). The diagnostic anchors at the offending timecode metadata OBU.
+    fn recheck_timecode_n_frames_after_ci(
+        &mut self,
+        ci_xlayer: ExtendedLayerId,
+        ci_mlayer: EmbeddedLayerId,
+        content: &ContentInterpretation,
+        ci_offset: ByteOffset,
+        report: &mut ValidationReport,
+    ) {
+        let Some(timing) = content.timing_info else {
+            return;
+        };
+        let max_pic = max_pic_per_second(&timing);
+        let epoch = self.ci_rap_epoch(ci_xlayer);
+        // Global scan-type / CI scopes describe every layer; the timecode bound is
+        // per the timecode's own extended-layer scope plus the global bucket.
+        let scope_keys: &[ExtendedLayerId] = if ci_xlayer.is_global() {
+            &[GLOBAL_XLAYER_ID]
+        } else {
+            &[ci_xlayer, GLOBAL_XLAYER_ID]
+        };
+        for &scope_key in scope_keys {
+            let Some(scope) = self.timecode.scopes.get(&scope_key) else {
+                continue;
+            };
+            // Snapshot the violating observations first to avoid borrowing self twice.
+            let violations: Vec<(u16, ByteOffset, u64)> = scope
+                .observations
+                .iter()
+                .filter(|observation| {
+                    observation.tu_index >= epoch && u64::from(observation.n_frames) >= max_pic
+                })
+                .map(|observation| {
+                    (
+                        observation.n_frames,
+                        observation.offset,
+                        observation.tu_index,
+                    )
+                })
+                .collect();
+            for (n_frames, metadata_offset, observation_tu) in violations {
+                let diagnostic = timecode_n_frames_error(
+                    n_frames,
+                    max_pic,
+                    ci_xlayer,
+                    ci_mlayer,
+                    ci_offset,
+                    metadata_offset,
+                    ci_offset,
+                );
+                self.cvs
+                    .defer_or_emit(scope_key, observation_tu, diagnostic, report);
+            }
         }
     }
 

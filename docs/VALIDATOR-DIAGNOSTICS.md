@@ -203,6 +203,7 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 | `metadata/group-reserved-bits-nonzero` | warning | § 6.16.3 | muh_reserved_zero_2bits is non-zero (decoder-ignored) |
 | `metadata/group-unit-count-too-large` | error | § 6.16.3 | metadata group unit count is too large |
 | `metadata/group-xlayer-map-global-bit-set` | error | § 6.16.3 | bit 31 of muh_xlayer_map is set |
+| `metadata/decoded-frame-hash-reserved-nonzero` | warning | § 6.16.13 | decoded-frame-hash reserved bit is non-zero (decoder-ignored producer anomaly) |
 | `metadata/hdr-cll-repeat-content-differs` | error | § 6.16.5 | HDR CLL metadata units in a CVS associated with a common embedded layer (per § 6.16.3 layer targeting) have different content |
 | `metadata/hdr-mdcv-repeat-content-differs` | error | § 6.16.6 | HDR MDCV metadata units in a CVS associated with a common embedded layer (per § 6.16.3 layer targeting) have different content |
 | `metadata/persistence-idc-reserved` | warning | § 6.16.3 | muh_persistence_idc is 4..7 (reserved for AOMedia use) |
@@ -214,7 +215,9 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 | `metadata/short-layer-idc-out-of-range` | error | § 6.16.2 | muh_layer_idc >= 3 for OBU_METADATA_SHORT |
 | `metadata/temporal-point-info-not-short` | error | § 6.16.11 | METADATA_TYPE_TEMPORAL_POINT_INFO appears outside OBU_METADATA_SHORT |
 | `metadata/timecode-hours-out-of-range` | error | § 6.16.7 | timecode hours_value exceeds 23 |
+| `metadata/timecode-inferred-without-previous` | error | § 6.16.7 | timecode omits seconds_value/minutes_value/hours_value but no previous timecode in the CVS scope (decoding order) carried that field for the inference to draw from |
 | `metadata/timecode-minutes-out-of-range` | error | § 6.16.7 | timecode minutes_value exceeds 59 |
+| `metadata/timecode-n-frames-exceeds-rate` | error | § 6.16.7 | n_frames is not less than maxPicPerSecond = ceil(time_scale / TicksPerPicture) of the in-scope content-interpretation timing_info() (ci_timing_info_present_flag 1) |
 | `metadata/timecode-seconds-out-of-range` | error | § 6.16.7 | timecode seconds_value exceeds 59 |
 | `metadata/unit-payload-underflow` | error | § 6.16.1 | metadata unit payload underflows declared size |
 

@@ -1430,6 +1430,28 @@ fn check_metadata_unit_payload(
                 .with_byte_offset(obu.offset),
             );
         }
+        // AV2 § 6.16.13: "reserved shall be set to 0 and ignored by decoders. This bit is
+        // reserved for future use by AOMedia"
+        // (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13, line 4248). The
+        // decoder ignores the value, so a non-zero reserved bit is a producer anomaly
+        // (warning), matching the established decoder-ignored reserved-field pattern
+        // (content-interpretation/reserved-bits-nonzero, metadata/group-reserved-bits-nonzero).
+        // The plane_hash/frame_hash verification against the decoded output stays
+        // decoder-blocked (§ 7.21 output process); only this local reserved-field fact is
+        // decidable here.
+        MetadataPayload::DecodedFrameHash(frame_hash) if frame_hash.reserved != 0 => {
+            report.push(
+                Diagnostic::warning(
+                    "metadata/decoded-frame-hash-reserved-nonzero",
+                    format!(
+                        "reserved must be 0 (found {}); the value is ignored by a decoder",
+                        frame_hash.reserved
+                    ),
+                )
+                .with_spec_section("6.16.13")
+                .with_byte_offset(obu.offset),
+            );
+        }
         _ => {}
     }
 }
