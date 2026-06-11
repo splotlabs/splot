@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "2af389c199749d848dfb24626f5b38194913ceba",
+  "audited_commit": "4b390ea9081092aceea260b160d237515325f8c1",
   "outcome": "success",
   "files": [
     {
@@ -769,7 +769,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "0d05cb37f16817b85c3300308b67f7a37a86fd07a6334d7ea727f8c7d7b3a860",
+      "sha256": "633efda753670439f56b7888718cb41c9e6fe235cb2ec7eae158aade380fd084",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -1066,7 +1066,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "919939fc88b69ca89025a499fadc44829b8fc2a6e0d6362a5b3c68ae71fd1efc",
+      "sha256": "a692a46f25cfcc3e3a1a7cc57a759c5f0d2be8049142e4ecd676d76e9765e0d4",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
