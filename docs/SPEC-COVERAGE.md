@@ -83,12 +83,12 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.17.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-4) | Metadata ITUT T35 syntax | `AV2-5.17.4-METADATA-ITUT-T35` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 5.17.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-5) | Metadata high dynamic range content light level syntax | `AV2-5.17.5-METADATA-HDR-CLL` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 5.17.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-6) | Metadata high dynamic range mastering display color volume syntax | `AV2-5.17.6-METADATA-HDR-MDCV` | ✅ | ✅ | 🟡 | ✅ | 1 |
-| [§ 5.17.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-7) | Metadata timecode syntax | `AV2-5.17.7-METADATA-TIMECODE` | ✅ | ✅ | 🟡 | ✅ | 3 |
+| [§ 5.17.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-7) | Metadata timecode syntax | `AV2-5.17.7-METADATA-TIMECODE` | ✅ | ✅ | 🟡 | ✅ | 5 |
 | [§ 5.17.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-8) | Metadata banding hints syntax | `AV2-5.17.8-METADATA-BANDING-HINTS` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 5.17.9](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-9) | Metadata ICC profile syntax | `AV2-5.17.9-METADATA-ICC-PROFILE` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 5.17.10](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-10) | Metadata scan type syntax | `AV2-5.17.10-METADATA-SCAN-TYPE` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 5.17.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-11) | Metadata temporal point info syntax | `AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO` | ✅ | ✅ | ✅ | ✅ | 1 |
-| [§ 5.17.12](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-12) | Metadata decoded frame hash syntax | `AV2-5.17.12-METADATA-DECODED-FRAME-HASH` | ✅ | ✅ | 🟡 | ✅ | — |
+| [§ 5.17.12](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-12) | Metadata decoded frame hash syntax | `AV2-5.17.12-METADATA-DECODED-FRAME-HASH` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 5.17.13](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-13) | Metadata user data unregistered syntax | `AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 5.18](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18) | Frame header syntax | `AV2-5.18-FRAME-HEADER` | ✅ | 🟡 | 🟡 | ✅ | 4 |
 | [§ 5.18.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-1) | General frame header syntax | `AV2-5.18.1-FRAME-HEADER-GENERAL` | ✅ | 🟡 | 🟡 | ✅ | — |
@@ -176,13 +176,13 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.16.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-4) | Metadata ITUT T35 semantics | `AV2-5.17.4-METADATA-ITUT-T35` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 6.16.5](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-5) | Metadata high dynamic range content light level semantics | `AV2-5.17.5-METADATA-HDR-CLL` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 6.16.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-6) | Metadata high dynamic range mastering display color volume semantics | `AV2-5.17.6-METADATA-HDR-MDCV` | ✅ | ✅ | 🟡 | ✅ | 1 |
-| [§ 6.16.7](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-7) | Metadata timecode semantics | `AV2-5.17.7-METADATA-TIMECODE` | ✅ | ✅ | 🟡 | ✅ | 3 |
+| [§ 6.16.7](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-7) | Metadata timecode semantics | `AV2-5.17.7-METADATA-TIMECODE` | ✅ | ✅ | 🟡 | ✅ | 5 |
 | [§ 6.16.8](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-8) | Metadata banding hints semantics | `AV2-5.17.8-METADATA-BANDING-HINTS` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 6.16.9](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-9) | Metadata ICC profile semantics | `AV2-5.17.9-METADATA-ICC-PROFILE` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 6.16.10](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-10) | Metadata scan type semantics | `AV2-5.17.10-METADATA-SCAN-TYPE` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 6.16.11](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-11) | Metadata temporal point info semantics | `AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 6.16.12](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-12) | Metadata user data unregistered semantics | `AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED` | ✅ | ✅ | ✅ | ✅ | 4 |
-| [§ 6.16.13](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13) | Metadata decoded frame hash semantics | `AV2-5.17.12-METADATA-DECODED-FRAME-HASH` | ✅ | ✅ | 🟡 | ✅ | — |
+| [§ 6.16.13](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13) | Metadata decoded frame hash semantics | `AV2-5.17.12-METADATA-DECODED-FRAME-HASH` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 6.17](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17) | Frame header OBU semantics | `AV2-5.18-FRAME-HEADER` | ✅ | 🟡 | 🟡 | ✅ | 4 |
 | [§ 6.17](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17) | Frame header OBU semantics | `AV2-5.18.1-FRAME-HEADER-GENERAL` | ✅ | 🟡 | 🟡 | ✅ | — |
 | [§ 6.17](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17) | Frame header OBU semantics | `AV2-5.18.10-FILM-GRAIN-STRUCTURES` | ✅ |  |  |  | — |

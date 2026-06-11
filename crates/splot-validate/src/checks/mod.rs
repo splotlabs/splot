@@ -1377,6 +1377,30 @@ fn check_metadata_unit_payload(
 ) {
     match &unit.payload {
         MetadataPayload::Timecode(timecode) => {
+            // AV2 § 6.16.7: counting_type values 7..=31 are marked "reserved" in the
+            // counting_type table (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-7,
+            // line 3823) with NO conformance sentence forbidding them — § 6.16.7 only
+            // says counting_type "should be the same for all pictures" (line 3804, a
+            // recommendation, not a "shall"). A reserved value is therefore a
+            // decoder-ignored producer anomaly (warning), matching the established
+            // reserved-value pattern for table-"reserved"-without-"shall" fields
+            // (metadata/persistence-idc-reserved, metadata/group-layer-idc-reserved); it
+            // is NOT an error like mps_pic_struct_type > 12, which § 6.16.10 Table 6.18
+            // backs with a "shall not be present" sentence.
+            if timecode.counting_type >= 7 {
+                report.push(
+                    Diagnostic::warning(
+                        "metadata/timecode-counting-type-reserved",
+                        format!(
+                            "counting_type {} is reserved for AOMedia use; not defined by this \
+                             version of the specification",
+                            timecode.counting_type
+                        ),
+                    )
+                    .with_spec_section("6.16.7")
+                    .with_byte_offset(obu.offset),
+                );
+            }
             // AV2 § 6.16.7: seconds 0..=59, minutes 0..=59, hours 0..=23 when present.
             if let Some(seconds) = timecode.seconds_value
                 && seconds > 59
@@ -1427,6 +1451,28 @@ fn check_metadata_unit_payload(
                     ),
                 )
                 .with_spec_section("6.16.10")
+                .with_byte_offset(obu.offset),
+            );
+        }
+        // AV2 § 6.16.13: "reserved shall be set to 0 and ignored by decoders. This bit is
+        // reserved for future use by AOMedia"
+        // (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13, line 4248). The
+        // decoder ignores the value, so a non-zero reserved bit is a producer anomaly
+        // (warning), matching the established decoder-ignored reserved-field pattern
+        // (content-interpretation/reserved-bits-nonzero, metadata/group-reserved-bits-nonzero).
+        // The plane_hash/frame_hash verification against the decoded output stays
+        // decoder-blocked (§ 7.21 output process); only this local reserved-field fact is
+        // decidable here.
+        MetadataPayload::DecodedFrameHash(frame_hash) if frame_hash.reserved != 0 => {
+            report.push(
+                Diagnostic::warning(
+                    "metadata/decoded-frame-hash-reserved-nonzero",
+                    format!(
+                        "reserved must be 0 (found {}); the value is ignored by a decoder",
+                        frame_hash.reserved
+                    ),
+                )
+                .with_spec_section("6.16.13")
                 .with_byte_offset(obu.offset),
             );
         }
