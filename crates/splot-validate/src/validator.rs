@@ -16847,6 +16847,108 @@ mod tests {
         );
     }
 
+    // OBU header bytes for the no-in-band-delimiter frame types (obu_type << 2):
+    const LEADING_TIP_HEADER: u8 = 13 << 2; // OBU_LEADING_TIP (0x34)
+    const REGULAR_TIP_HEADER: u8 = 14 << 2; // OBU_REGULAR_TIP (0x38)
+
+    #[test]
+    fn frame_unit_no_delimiter_different_type_back_to_back_splits_silently() {
+        // AV2 § 7.3.3 / § 7.3.4 / § 7.3.6: OBU_LEADING_TIP / OBU_REGULAR_TIP /
+        // OBU_BRIDGE_FRAME carry no is_first_tile_group delimiter (mirror lines 404-411
+        // / 473-484 omit them). The OBUs of one coded frame share one obu_type (mirror
+        // lines 392-393 / 459-461), so a DIFFERENT no-delimiter type after a completed
+        // coded frame cannot continue it — the type change is a decidable coded-frame
+        // boundary that starts a new unit (§ 7.3.6 back-to-back units). A leading TIP
+        // followed by a regular TIP (two different types) must split silently. Pre-fix
+        // the second TIP stayed in the first coded frame and fired
+        // frame-unit/mixed-coded-frame-types (a false positive).
+        let mut data = seg_td_and_seq();
+        data.extend(annex_b_obu(LEADING_TIP_HEADER, &[0x80])); // coded frame 1 (TIP 13)
+        data.extend(annex_b_obu(REGULAR_TIP_HEADER, &[0x80])); // different type -> new unit
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-unit/")),
+            "a different no-delimiter frame type after a completed coded frame must split \
+             silently, not fire mixed-coded-frame-types; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_no_delimiter_same_type_back_to_back_is_undecidable_and_silent() {
+        // AV2 § 7.3.3 / § 7.3.4: with no is_first_tile_group delimiter on the TIP / bridge
+        // types, a SAME-obu_type OBU after a completed coded frame of that type is
+        // undecidable — it could be a later OBU of the one coded frame ("one or more
+        // OBUs", mirror lines 391-393 / 459-461) or the first OBU of a new same-type
+        // coded frame. The validator must not guess: no false split, no
+        // mixed-coded-frame-types, no sef-single-obu (it is not a SEF). Two regular TIP
+        // OBUs back-to-back must be silent (the unit routes to Unknown).
+        let mut data = seg_td_and_seq();
+        data.extend(annex_b_obu(REGULAR_TIP_HEADER, &[0x80])); // coded frame, TIP 14
+        data.extend(annex_b_obu(REGULAR_TIP_HEADER, &[0x80])); // same type -> undecidable
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-unit/")),
+            "a same-type no-delimiter continuation is undecidable and must be silent (no \
+             mixed-types false positive); report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_mixed_coded_frame_types_still_flags_tile_group_continuation() {
+        // The no-delimiter split must NOT suppress the genuine mixed-types violation for
+        // tile-group OBUs, which DO carry the is_first_tile_group delimiter. A flag-0
+        // regular tile group after a completed TIP coded frame makes an explicit in-band
+        // continuation claim against a mismatched open type, so mixed-coded-frame-types
+        // still fires (control for the no-delimiter different-type split).
+        let mut data = seg_td_and_seq();
+        data.extend(annex_b_obu(REGULAR_TIP_HEADER, &[0x80])); // TIP coded frame
+        let mut rtg = Bits::default();
+        rtg.bit(0); // is_first_tile_group == 0: explicit non-first-tile continuation claim
+        data.extend(annex_b_obu(REGULAR_TILE_GROUP_HEADER, &rtg.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_frame_unit_error(&report, "frame-unit/mixed-coded-frame-types"),
+            "a flag-0 tile group continuing a mismatched TIP coded frame must still fire \
+             mixed-coded-frame-types; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_unit_unreadable_suffix_metadata_after_coded_frame_keeps_unit_intact() {
+        // AV2 § 7.3.3 / § 7.3.4: a metadata OBU whose metadata_is_suffix bit cannot be
+        // read (empty payload) has an undecidable region (prefix head vs suffix tail),
+        // so it must NOT be treated as a unit head that closes a valid open coded frame
+        // unit — doing so would orphan the closed unit's tail into a head-only unit and
+        // cascade a false frame-unit/missing-coded-frame finding. Instead the OBU stays
+        // in the current unit and sets region-blind (suppressing region-order checks for
+        // the unit). A valid coded frame (SEF) + unreadable-suffix metadata + readable
+        // suffix metadata must produce no frame-unit diagnostics. Pre-fix the unreadable
+        // metadata started a new head-only unit and the flush reported missing-coded-frame.
+        let mut data = seg_td_and_seq();
+        data.extend(annex_b_obu(REGULAR_SEF_HEADER, &[0x80])); // valid coded frame
+        // metadata_short with an EMPTY payload: the metadata_is_suffix bit is unreadable.
+        data.extend(annex_b_obu_with_header(&layer_obu_header(8, 0, 0, 0), &[]));
+        // A readable suffix metadata (first payload bit = 1) after it.
+        let suffix_meta = metadata_short_payload(0x80, 0x04, &[]);
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(8, 0, 0, 0),
+            &suffix_meta,
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .diagnostics
+                .iter()
+                .any(|d| d.rule_id.starts_with("frame-unit/")),
+            "an unreadable-suffix metadata after a coded frame must keep the unit intact \
+             (region-blind), not cascade a missing-coded-frame finding; report was: {report}"
+        );
+    }
+
     #[test]
     fn frame_unit_ci_in_second_frame_unit_is_flagged() {
         // AV2 § 7.3.8.10: a CI may appear only in the first coded frame unit of its
@@ -17220,6 +17322,78 @@ mod tests {
                 .errors()
                 .any(|d| d.rule_id == "metadata/hdr-cll-first-coded-picture"),
             "a LAYER_VALUES unit late for one targeted layer must fire; report was: {report}"
+        );
+    }
+
+    /// A single-OBU CLK frame at xlayer 0 / `mlayer` referencing sequence header 0
+    /// directly. Used as the first coded picture of embedded layer `(0, mlayer)`.
+    fn clk_frame_at_mlayer(mlayer: u8) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.bit(1); // is_first_tile_group
+        bits.uvlc(0); // cur_mfh_id == 0 -> direct sequence-header reference
+        bits.uvlc(0); // seq_header_id_in_frame_header == 0
+        // OBU_CLOSED_LOOP_KEY (type 4) with an extension header at (xlayer 0, mlayer).
+        annex_b_obu_with_header(&layer_obu_header(4, 0, mlayer, 0), &bits.into_bytes())
+    }
+
+    #[test]
+    fn metadata_hdr_cll_layer_values_new_layer_late_past_established_layer_is_flagged() {
+        // AV2 § 6.16.5: the first-coded-picture rule binds INDEPENDENTLY per associated
+        // embedded layer (finding 4). A LAYER_VALUES HDR CLL targeting {layer (0,0) +
+        // NEW layer (0,1)} arrives after BOTH layers' first coded pictures, but layer
+        // (0,0)'s content was ALREADY established by an earlier baseline (targeting only
+        // (0,0), indicated before its first picture). Layer (0,1) is freshly established
+        // and late, so the finding must fire naming layer (0,1). Pre-fix the whole-unit
+        // `any(intersects)` gate saw the layer-(0,0) baseline overlap and suppressed the
+        // ENTIRE first-coded-picture check, missing the late new layer.
+        let mut data = td_and_seq_header(0, 0, 1); // mlayers 0 and 1 valid
+        // Baseline for layer (0,0) only, BEFORE its first picture -> timely, silent.
+        data.extend(local_hdr_cll_group_layer_values_obu(0b0000_0001, 1000, 200));
+        data.extend(clk_frame_at_mlayer(0)); // layer (0,0) first picture
+        data.extend(clk_frame_at_mlayer(1)); // layer (0,1) first picture
+        // Late unit targeting {0, 1}; identical layer-(0,0) content so no repeat-differs.
+        data.extend(local_hdr_cll_group_layer_values_obu(0b0000_0011, 1000, 200));
+        let report = Validator::new(false).validate_bytes(&data);
+        let late: Vec<&Diagnostic> = report
+            .errors()
+            .filter(|d| d.rule_id == "metadata/hdr-cll-first-coded-picture")
+            .collect();
+        assert!(
+            !late.is_empty(),
+            "a unit targeting an established layer plus a new late layer must fire for the \
+             new layer; report was: {report}"
+        );
+        assert!(
+            late.iter().all(|d| d.message.contains("obu_mlayer_id 1"))
+                && late.iter().all(|d| !d.message.contains("obu_mlayer_id 0")),
+            "the finding must name only the new late layer (obu_mlayer_id 1), not the \
+             established layer 0; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn metadata_hdr_cll_layer_values_repeat_for_established_layer_only_is_unchanged() {
+        // Control for finding 4: a later unit targeting ONLY the already-established
+        // layer (0,0) is an allowed repeat — the per-pair gate filters that pair out, so
+        // no first-coded-picture finding fires (repeat semantics unchanged). Identical
+        // content keeps the repeat-content check silent too.
+        let mut data = td_and_seq_header(0, 0, 1);
+        data.extend(local_hdr_cll_group_layer_values_obu(0b0000_0001, 1000, 200)); // baseline (0,0)
+        data.extend(clk_frame_at_mlayer(0)); // layer (0,0) first picture
+        data.extend(local_hdr_cll_group_layer_values_obu(0b0000_0001, 1000, 200)); // repeat (0,0)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "metadata/hdr-cll-first-coded-picture"),
+            "an identical repeat for an already-established layer must not fire the \
+             first-coded-picture finding; report was: {report}"
+        );
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "metadata/hdr-cll-repeat-content-differs"),
+            "an identical repeat must not fire repeat-content-differs; report was: {report}"
         );
     }
 

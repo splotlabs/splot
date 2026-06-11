@@ -1950,6 +1950,21 @@ impl HdrAssociation {
             Self::Pairs(pairs) => pairs.contains(&(ci_xlayer, ci_mlayer)),
         }
     }
+
+    /// Returns `true` when this association includes the concrete embedded-layer
+    /// pair `(xlayer, mlayer)` — `Universal` includes every layer, `XLayerWide`
+    /// every embedded layer of its extended layer, and `Pairs` only the pairs it
+    /// names. Used by the § 6.16.5 / § 6.16.6 first-coded-picture check to decide
+    /// **per pair** whether a prior baseline already established that layer's
+    /// content (finding 4), so a unit targeting an established layer alongside a new
+    /// one is still checked for the new layer.
+    fn includes_embedded_pair(&self, xlayer: ExtendedLayerId, mlayer: EmbeddedLayerId) -> bool {
+        match self {
+            Self::Universal => true,
+            Self::XLayerWide(x) => *x == xlayer,
+            Self::Pairs(pairs) => pairs.contains(&(xlayer, mlayer)),
+        }
+    }
 }
 
 /// The single concrete extended layer scoping a comparison between two
@@ -6309,16 +6324,16 @@ impl ValidatorContext {
         };
         let tu_index = self.cvs.tu_index;
         // § 6.16.5 / § 6.16.6 first-coded-picture half: a baseline of the same type
-        // whose association intersects this unit means the content was already
-        // established earlier in the coded video sequence, so this unit is an
-        // allowed (later) repeat, not a fresh first establishment.
-        let already_established = self
-            .hdr_baselines
-            .iter()
-            .any(|record| record.is_mdcv == is_mdcv && record.association.intersects(&association));
-        if !already_established {
-            self.check_hdr_first_coded_picture(obu, &association, is_mdcv, report);
-        }
+        // whose association includes a given embedded layer means the content was
+        // already established for *that* layer earlier in the coded video sequence, so
+        // this unit is an allowed (later) repeat for it — not a fresh first
+        // establishment. The rule binds PER associated embedded layer (finding 4), so
+        // the "already established" gate is applied per (obu_xlayer_id, obu_mlayer_id)
+        // pair: a unit targeting {an established layer + a NEW layer} is still checked
+        // for the new layer. (`check_hdr_first_coded_picture` only inspects explicit
+        // pairs; for `XLayerWide` / `Universal` targeting it returns early regardless,
+        // so the per-pair filter is a no-op there.)
+        self.check_hdr_first_coded_picture(obu, &association, is_mdcv, report);
         for record in &self.hdr_baselines {
             if record.is_mdcv != is_mdcv
                 || record.payload == unit.payload
@@ -6388,17 +6403,20 @@ impl ValidatorContext {
     /// sound subset (mirror `06-syntax-structures-semantics.md` lines 3687-3688 /
     /// 3736-3737).
     ///
-    /// Fires only when the unit *first establishes* its content (the caller gates on
-    /// no prior intersecting baseline) AND it carries an **explicit-pair** targeting
-    /// (`LAYER_CURRENT` / `LAYER_VALUES`). The § 6.16.5 / § 6.16.6 requirement binds
-    /// **independently per associated embedded layer**, so the diagnostic fires when
-    /// **any** named `(obu_xlayer_id, obu_mlayer_id)` pair has already passed its
-    /// first coded picture of the coded video sequence — not only when every pair has
-    /// (finding 6: a unit late for one targeted layer must fire even if another
-    /// targeted layer's first picture has not yet arrived). `XLayerWide` / `Universal`
-    /// targeting names no single concrete first coded picture, so it is skipped
-    /// (zero-false-positive). A pair observed in the pre-frame region of its layer's
-    /// first coded frame unit has no first-picture entry yet, so it is not late.
+    /// The § 6.16.5 / § 6.16.6 requirement binds **independently per associated
+    /// embedded layer**, so the check is applied **per named pair** and fires when
+    /// **any** `(obu_xlayer_id, obu_mlayer_id)` pair *first establishes* its content
+    /// (no prior same-type baseline already includes that pair) after that pair has
+    /// already passed its first coded picture of the coded video sequence — not only
+    /// when every pair is late (finding 6), and not gated away when a *different*
+    /// targeted pair was already established by an earlier unit (finding 4: a unit
+    /// targeting {an established layer + a NEW layer} must still fire for the new
+    /// layer). The check requires **explicit-pair** targeting (`LAYER_CURRENT` /
+    /// `LAYER_VALUES`); `XLayerWide` / `Universal` targeting names no single concrete
+    /// first coded picture, so it is skipped (zero-false-positive). A pair observed in
+    /// the pre-frame region of its layer's first coded frame unit has no first-picture
+    /// entry yet, so it is not late; a pair a prior baseline already established is an
+    /// allowed later repeat, not a fresh establishment, so it is filtered out.
     ///
     /// Each late pair's first picture carries the temporal-unit index at which it was
     /// observed. A same-temporal-unit first picture is unambiguously in the current
@@ -6422,10 +6440,21 @@ impl ValidatorContext {
         let current_tu = self.cvs.tu_index;
         // Partition the named pairs that are *late* (their first coded picture has
         // already passed) into same-TU (eager, definitely the current CVS) and
-        // earlier-TU (deferred, possibly a previous CVS) groups.
+        // earlier-TU (deferred, possibly a previous CVS) groups. A pair a prior
+        // same-type baseline already includes is filtered first (finding 4): it was
+        // established earlier in the coded video sequence, so this unit is an allowed
+        // later repeat for that pair, not a fresh first establishment — the per-pair
+        // gate, replacing the former whole-unit `any(intersects)` suppression.
         let mut eager_late: Vec<(ExtendedLayerId, EmbeddedLayerId)> = Vec::new();
         let mut deferred_late: Vec<((ExtendedLayerId, EmbeddedLayerId), u64)> = Vec::new();
         for &pair in pairs {
+            let already_established = self.hdr_baselines.iter().any(|record| {
+                record.is_mdcv == is_mdcv
+                    && record.association.includes_embedded_pair(pair.0, pair.1)
+            });
+            if already_established {
+                continue;
+            }
             let Some(&seen_tu) = self.embedded_layer_first_picture_seen.get(&pair) else {
                 continue;
             };
