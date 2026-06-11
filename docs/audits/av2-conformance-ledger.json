@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "ff226962f0f346374f1164c85d1d643d54ed0ce5",
+  "audited_commit": "57cd20f4f0733c955bb26996dad2b05b019b67b0",
   "outcome": "success",
   "files": [
     {
@@ -769,7 +769,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "972466737b6797d2152ba6df972ec293ee6a3a207547dd78b16fe2a157a54617",
+      "sha256": "7c7ba96d5bbe31327e6678930adb6f2d6fb53efc320ed22334eb77d787b64da7",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -808,7 +808,7 @@
     },
     {
       "path": "crates/splot-validate/src/frame_unit.rs",
-      "sha256": "b03bcbc884ab2d23783b2336cec27ff37902d0d7d61fafcb624d694381af9f6d",
+      "sha256": "711f5d394a9ff88ea0778c649c65ad41ced9bb52c6b1c037880913386ea65ad3",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT"
@@ -840,7 +840,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "0204821150d5c918a246152b4fc8c46e6799d2a088c60b2fd81c32bd9c09ba43",
+      "sha256": "98fd3974a64374e8d888f9a0175c8a1cab8522a42851be3c5724893e1a3f8c52",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1362,7 +1362,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "c3aa8274bcf5bfc9b4872bb64874793aba7c9a31905a4b9084d54c7edb8222b9",
+      "sha256": "02bbb99e9fa864082eac0cbb752ef09b69c8b7a128facc537b8676ede9f55ba0",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-7.3.2-CMVS-BOUNDARIES",
@@ -2828,6 +2828,38 @@
       "feature_ids": [
         "AV2-A-LEVELS-TIERS",
         "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-frame-unit-segmentation/proposal.md",
+      "sha256": "c06259cb4f6362db60ab4baa1a5426bf2fa42c6cde4a90b89c40f527d3155172",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.13-QUANTIZATION-MATRIX",
+        "AV2-5.14-FILM-GRAIN",
+        "AV2-5.17-METADATA",
+        "AV2-5.5-TEMPORAL-DELIMITER",
+        "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-frame-unit-segmentation/specs/validator/spec.md",
+      "sha256": "73aeeae30375f343c724145a10da7a81df2a9924fe1053cd94f9f50368175ee3",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-11-frame-unit-segmentation/tasks.md",
+      "sha256": "4ce3e5914b2edcded6436052a85cfb0b54801641a6ba4456976b2edb24bd777a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.5-TEMPORAL-DELIMITER"
       ],
       "outcome": "success"
     },
