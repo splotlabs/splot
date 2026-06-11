@@ -468,6 +468,11 @@ pub struct SequenceHeaderGeneral {
     pub max_frame_width: FrameWidth,
     /// `max_frame_height_minus_1 + 1`.
     pub max_frame_height: FrameHeight,
+    /// `seq_cropping_window_present_flag` (`f(1)`); retained so the § 6.8.8
+    /// `lcr_cropping_window_present_flag == seq_cropping_window_present_flag`
+    /// equality can be checked exactly (a `false` flag infers all-zero offsets,
+    /// otherwise indistinguishable from a present all-zero window).
+    pub seq_cropping_window_present_flag: bool,
     /// Cropping offsets inferred or parsed from the sequence header.
     pub cropping_window: CroppingWindow,
     /// `seq_initial_display_delay_minus_1`, if present.
@@ -608,7 +613,8 @@ pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<Seque
     let max_frame_width = FrameWidth::from_minus_1(max_frame_width_minus_1);
     let max_frame_height = FrameHeight::from_minus_1(max_frame_height_minus_1);
 
-    let cropping_window = parse_cropping_window(reader, max_frame_width, max_frame_height)?;
+    let (seq_cropping_window_present_flag, cropping_window) =
+        parse_cropping_window(reader, max_frame_width, max_frame_height)?;
 
     let (
         seq_initial_display_delay_minus_1,
@@ -677,6 +683,7 @@ pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<Seque
         frame_height_bits,
         max_frame_width,
         max_frame_height,
+        seq_cropping_window_present_flag,
         cropping_window,
         seq_initial_display_delay_minus_1,
         decoder_model_info_present_flag,
@@ -1767,14 +1774,20 @@ pub fn parse_sequence_decoder_model_info(
     })
 }
 
+/// Parses `seq_cropping_window_present_flag` and (when set) the four cropping
+/// offsets (AV2 § 5.4.1). Returns the present flag alongside the window so the
+/// validator can enforce the § 6.8.8 `lcr_cropping_window_present_flag ==
+/// seq_cropping_window_present_flag` equality exactly — when the flag is `0` the
+/// offsets are inferred to `0` (a default [`CroppingWindow`]), which would
+/// otherwise be indistinguishable from a present-but-all-zero window.
 fn parse_cropping_window(
     reader: &mut BitReader<'_>,
     max_frame_width: FrameWidth,
     max_frame_height: FrameHeight,
-) -> Result<CroppingWindow> {
+) -> Result<(bool, CroppingWindow)> {
     let seq_cropping_window_present_flag = reader.read_bit()? != 0;
     if !seq_cropping_window_present_flag {
-        return Ok(CroppingWindow::default());
+        return Ok((false, CroppingWindow::default()));
     }
 
     let left = read_checked_crop(
@@ -1797,12 +1810,15 @@ fn parse_cropping_window(
         max_frame_height.minus_1(),
         SequenceHeaderErrorKind::CropBottomOutOfRange,
     )?;
-    Ok(CroppingWindow {
-        left,
-        right,
-        top,
-        bottom,
-    })
+    Ok((
+        true,
+        CroppingWindow {
+            left,
+            right,
+            top,
+            bottom,
+        },
+    ))
 }
 
 fn read_checked_crop(
