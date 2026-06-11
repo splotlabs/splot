@@ -11920,6 +11920,200 @@ mod tests {
         );
     }
 
+    #[test]
+    fn lcr_msdo_agreement_inert_when_global_lcr_not_present_in_this_cmvs() {
+        // Codex finding 1 (3393129738): a global LCR activated in an earlier CVS must not
+        // leak into a *later* CMVS's § 6.8.2 evaluation when that CMVS contains no global-LCR
+        // OBU. TU1/CVS1 opens a CMVS with a conforming MSDO (num_streams 2 == LcrMaxNumXLayer
+        // Count 2) and global LCR id 1 activated by both layers' headers. TU2/CVS2 opens a NEW
+        // CMVS (a changed MSDO: profile differs from TU1's) whose headers still reference
+        // seq_lcr_id 1 (so the association chain resolves the *still-available* global LCR),
+        // but no global-LCR OBU is re-sent. The TU2 MSDO declares num_streams 3, which would
+        // disagree with the leaked record's LcrMaxNumXLayerCount 2 — yet § 6.8.2 must NOT fire,
+        // because the global LCR is not present in TU2's CMVS. Pre-fix `activated_global_lcr`
+        // resolves the leaked record via the live `global_lcr_records` map and the
+        // stream-count mismatch fires falsely.
+        let global = global_lcr_obu_agreement(1, 0b11, None, None, false);
+        let mut data = temporal_delimiter_obu(); // TU1/CVS1: opens CMVS #1
+        data.extend(msdo_obu_configured(0, false, &[(0, 0, 0, 0), (1, 0, 0, 0)]));
+        data.extend(global);
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1)); // activates global LCR 1
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0
+        data.extend(seq_header_obu_lcr_ref(1, 1, 0, true, 1)); // activates global LCR 1
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 1)); // CLK xlayer 1
+        data.extend(temporal_delimiter_obu()); // TU2/CVS2: a changed MSDO opens CMVS #2
+        // num_streams_minus_2 + 2 == 3, profile 31 (differs from TU1's 0 → § 7.3.2 begin
+        // condition 2 starts a new CMVS); three sub-streams. NO global LCR re-sent this CMVS.
+        data.extend(msdo_obu_configured(
+            31,
+            false,
+            &[(0, 0, 0, 0), (1, 0, 0, 0), (2, 0, 0, 0)],
+        ));
+        // Headers redefined at the CVS boundary still reference seq_lcr_id 1 (the leaked
+        // record is still available in-band), and are re-activated by the CLK frames.
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0
+        data.extend(seq_header_obu_lcr_ref(1, 1, 0, true, 1));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 1)); // CLK xlayer 1
+        data.extend(temporal_delimiter_obu()); // close TU2
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report.errors().any(|d| d.rule_id.starts_with("lcr/msdo-")),
+            "a global LCR absent from this CMVS must not be evaluated against its MSDO; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_msdo_agreement_uses_association_time_global_lcr_snapshot() {
+        // Codex finding 2 (3393129741): the § 6.8.2 record is resolved from the
+        // *association-time* snapshot, not a live lookup — a same-id global-LCR redefinition
+        // after a header associated with the earlier revision must not retarget the agreement
+        // at the later revision. Both revisions of global LCR id 1 have LcrMaxNumXLayerCount 2
+        // (map 0b11) so the stream count matches; they differ only in lcr_doh_constraint_flag.
+        // Revision A (doh 1) is observed before the headers, so the headers associate+activate
+        // rev A. Revision B (doh 0) is re-sent after the headers (a redefinition). The MSDO's
+        // multistream_doh_constraint_flag is 1, which AGREES with rev A but DISAGREES with rev
+        // B. The agreement must compare against rev A (no mismatch). Pre-fix the live lookup
+        // sees rev B and `lcr/msdo-doh-flag-mismatch` fires falsely.
+        let global_a = global_lcr_obu_agreement(1, 0b11, None, None, true); // doh 1
+        let global_b = global_lcr_obu_agreement(1, 0b11, None, None, false); // doh 0 (redefine)
+        let mut data = temporal_delimiter_obu();
+        // MSDO multistream_doh_constraint_flag == 1 (agrees with rev A).
+        data.extend(msdo_obu_configured(0, true, &[(0, 0, 0, 0), (1, 0, 0, 0)]));
+        data.extend(global_a); // rev A first
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1)); // associates rev A
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0));
+        data.extend(seq_header_obu_lcr_ref(1, 1, 0, true, 1)); // associates rev A
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 1));
+        data.extend(global_b); // rev B redefines id 1 AFTER the headers associated rev A
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "lcr/msdo-doh-flag-mismatch"),
+            "the agreement must use the association-time rev A (doh 1), which agrees with the \
+             MSDO; report was: {report}"
+        );
+
+        // Inverse: the MSDO agrees with rev B but disagrees with rev A. The diagnostic must
+        // fire naming rev A's value (doh 1), because rev A is the associated record.
+        let global_a = global_lcr_obu_agreement(1, 0b11, None, None, true); // doh 1 (associated)
+        let global_b = global_lcr_obu_agreement(1, 0b11, None, None, false); // doh 0
+        let mut data = temporal_delimiter_obu();
+        // MSDO multistream_doh_constraint_flag == 0 (agrees with rev B, disagrees with rev A).
+        data.extend(msdo_obu_configured(0, false, &[(0, 0, 0, 0), (1, 0, 0, 0)]));
+        data.extend(global_a);
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0));
+        data.extend(seq_header_obu_lcr_ref(1, 1, 0, true, 1));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 1));
+        data.extend(global_b);
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "lcr/msdo-doh-flag-mismatch"
+                    // rev A's lcr_doh_constraint_flag is 1; the message names the associated
+                    // record's value.
+                    && d.message.contains("lcr_doh_constraint_flag (1)")
+            }),
+            "the agreement must fire against the association-time rev A (doh 1); report was: \
+             {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_doh_constraint_required_fires_without_msdo() {
+        // Codex finding 3 (3393129743): the LCR DOH requirement is LCR-only — it must fire in
+        // a global-LCR-only CMVS (no OBU_MSDO) when a confirmed activated header has
+        // monotonic_output_order_flag == 0 and the activated global LCR's
+        // lcr_doh_constraint_flag == 0. § 7.3.2 begin condition 3 (a CLK TU activating a global
+        // LCR with no MSDO) opens such a CMVS. Pre-fix the resolver early-returns on the
+        // missing MSDO, so the LCR-only requirement never fires.
+        let global = global_lcr_obu_agreement(1, 0b1, None, None, false); // doh 0, single xlayer
+        let mut data = temporal_delimiter_obu();
+        data.extend(global); // global LCR present, no MSDO
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, false, 1)); // monotonic 0, activates LCR 1
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 (begin cond 3)
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "lcr/doh-constraint-required"
+                    && d.spec_section.as_deref() == Some("6.8.2")
+            }),
+            "the LCR DOH requirement is LCR-only and must fire without an MSDO; report was: \
+             {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_doh_constraint_required_scoped_to_current_cmvs() {
+        // Codex finding 4 (3393129745): the DOH loop must consider only sequence headers
+        // activated within the CURRENT CMVS, not every frame-confirmed xlayer ever seen.
+        // TU1/CVS1: xlayer 1 activates a header with monotonic_output_order_flag == 0 (frame-
+        // confirmed), in a standalone CVS (no MSDO, no LCR → CMVS stays Outside) that ends
+        // before the CMVS of interest. TU2/CVS2: opens a definitively-Inside CMVS on xlayer 0
+        // (a CLK + MSDO begins it) whose own header is monotonic == 1, with an activated global
+        // LCR whose lcr_doh_constraint_flag == 0. The non-monotonic xlayer-1 header belongs to
+        // the earlier, ended CVS — it is NOT activated within TU2's CMVS, so no diagnostic may
+        // fire. Pre-fix the loop iterates the whole-history frame_confirmed_xlayers set and
+        // flags the leaked xlayer-1 header against TU2's global LCR. (The MSDO's
+        // multistream_doh_constraint_flag is 1, so no § 6.6 check fires; the global LCR's count
+        // and doh-flag match the MSDO so no § 6.8.2 agreement disagreement fires either.)
+        let mut data = temporal_delimiter_obu(); // TU1/CVS1: a non-monotonic xlayer-1 header
+        data.extend(seq_header_obu_lcr_ref(1, 5, 0, false, 0)); // xlayer 1, monotonic 0, no LCR
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 5)); // CLK xlayer 1 → confirms seq 5
+        data.extend(temporal_delimiter_obu()); // TU2/CVS2: a fresh Inside CMVS on xlayer 0
+        // A 2-xlayer global LCR (doh 0) and a matching 2-substream MSDO (doh 0): the count
+        // matches (2 == 2) and the doh flags match, so neither the § 6.8.2 agreement nor the
+        // § 6.6 MSDO DOH check fires — only the LCR DOH requirement is exercised, and it must
+        // not fire because TU2's own header is monotonic == 1.
+        let global = global_lcr_obu_agreement(1, 0b11, None, None, false); // doh 0, 2 xlayers
+        data.extend(global);
+        data.extend(msdo_obu_configured(0, false, &[(0, 0, 0, 0), (1, 0, 0, 0)])); // doh 0
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1)); // xlayer 0, monotonic 1, LCR 1
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 (begin cond 1)
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "lcr/doh-constraint-required"),
+            "a non-monotonic header from an earlier, ended CVS is outside this CMVS and must \
+             not trigger the LCR DOH requirement; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn msdo_doh_constraint_required_scoped_to_current_cmvs() {
+        // Codex finding 4 applied to the § 6.6 `msdo/doh-constraint-required` check
+        // (resolve_deferred_doh_constraint): it also iterated the whole-history
+        // frame_confirmed_xlayers set. TU1/CVS1: xlayer 1 activates a non-monotonic header in a
+        // standalone CVS (no MSDO → CMVS stays Outside) that ends. TU2/CVS2: opens a
+        // definitively-Inside CMVS on xlayer 0 (a CLK + MSDO) whose own header is monotonic ==
+        // 1, with multistream_doh_constraint_flag == 0. The leaked xlayer-1 header is outside
+        // TU2's CMVS, so no `msdo/doh-constraint-required` may fire.
+        let mut data = temporal_delimiter_obu(); // TU1/CVS1: a non-monotonic xlayer-1 header
+        data.extend(seq_header_obu_lcr_ref(1, 5, 0, false, 0)); // xlayer 1, monotonic 0
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 5)); // CLK xlayer 1 → confirms seq 5
+        data.extend(temporal_delimiter_obu()); // TU2/CVS2: a fresh CMVS on xlayer 0
+        data.extend(msdo_obu_configured(0, false, &[(0, 0, 0, 0), (1, 0, 0, 0)])); // doh 0
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 0)); // xlayer 0, monotonic 1
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "msdo/doh-constraint-required"),
+            "a non-monotonic header from an earlier, ended CVS is outside this CMVS and must \
+             not trigger the § 6.6 MSDO DOH requirement; report was: {report}"
+        );
+    }
+
     // -- § 7.3.2 cmvs/boundary-set-mismatch -------------------------------------
 
     #[test]
@@ -12275,6 +12469,44 @@ mod tests {
                 .errors()
                 .any(|d| d.rule_id == "annex-a/msdo-required-for-iop"),
             "the present MSDO satisfies the multi-xlayer requirement; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn annex_a_iop_window_uses_association_time_global_lcr_snapshot() {
+        // claude-review nit 4 (3393139837): the Table A.4 IOP window's activated-LCR
+        // accounting must read `LcrMaxNumXLayerCount` from the *association-time* snapshot
+        // (`LcrAssociation.global_record`), exactly like the § 6.8.2 agreement path, NOT a
+        // live `global_lcr_records` lookup. A same-id global-LCR redefinition mid-CVS with a
+        // different `lcr_xlayer_map` otherwise retargets the window's extended-layer count to
+        // the later revision.
+        //
+        // Global LCR id 1 rev A has lcr_xlayer_map 0b1 -> LcrMaxNumXLayerCount 1 (E == 1).
+        // Rev B redefines id 1 with lcr_xlayer_map 0b11 -> LcrMaxNumXLayerCount 2 (E > 1).
+        // The header (profile 0 -> IOP0) associates rev A in TU1 and is frame-confirmed; that
+        // window correctly counts E == 1. TU2 redefines id 1 to rev B, then a same-id CLK
+        // re-references the still-active header, re-firing the IOP activation note that seeds
+        // TU2's (new-CVS) window. The snapshot path keeps the activated count at rev A's 1
+        // (E == 1, IOP0 -> MSDO neither required nor present -> no error). Pre-fix, the live
+        // lookup at re-activation time sees rev B's count 2 (E > 1), so the IOP0 multi-xlayer
+        // `annex-a/msdo-required-for-iop` fires falsely against a CVS with no MSDO.
+        let global_a = global_lcr_obu_agreement(1, 0b1, None, None, false); // count 1
+        let global_b = global_lcr_obu_agreement(1, 0b11, None, None, false); // count 2 (redefine)
+        let mut data = temporal_delimiter_obu(); // TU1: rev A present, header associates rev A
+        data.extend(global_a);
+        data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1)); // profile 0, seq_lcr_id 1
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK confirms xlayer 0
+        data.extend(temporal_delimiter_obu()); // TU2: rev B redefines id 1, then same-id CLK
+        data.extend(global_b); // redefine id 1 AFTER the header associated rev A
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // same-id CLK re-activates
+        data.extend(temporal_delimiter_obu());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "annex-a/msdo-required-for-iop"),
+            "the IOP window must use the association-time rev A (LcrMaxNumXLayerCount 1, E == 1) \
+             so the single-xlayer IOP0 CVS requires no MSDO; report was: {report}"
         );
     }
 }
