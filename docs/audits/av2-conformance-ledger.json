@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "2b6bde12d2a7af59bb931bbe4c48fc07f6909666",
+  "audited_commit": "726e0fbc557540c0abfda86f57c48d4a801d6754",
   "outcome": "success",
   "files": [
     {
@@ -1538,7 +1538,7 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "8b7ac72fec61040aeaa3644c7f51a9150459fa0127c2b53cfe8eabd2ecd27fbc",
+      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -1548,9 +1548,6 @@
         "AV2-5.2.3-TRAILING-BITS",
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
-        "AV2-5.8.1-LCR-GLOBAL-INFO",
-        "AV2-7.3.2-CMVS-BOUNDARIES",
-        "AV2-A-PROFILES",
         "CONF-AVM-DIFF-HARNESS",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
@@ -2882,39 +2879,6 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/msdo-global-lcr-agreement/proposal.md",
-      "sha256": "487788012a354cfc597cfd4e22f4eb2c11cbea0f3e30812a3ed57328bed5ed71",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.8-LAYER-CONFIG-RECORD",
-        "AV2-5.8.1-LCR-GLOBAL-INFO",
-        "AV2-7.3.2-CMVS-BOUNDARIES",
-        "AV2-A-PROFILES"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/msdo-global-lcr-agreement/specs/validator/spec.md",
-      "sha256": "1fdf4b441e485fb2a6c43c2aabdf8925ad34bbec3d72e7e0e4b6c43472caeafa",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.8.1-LCR-GLOBAL-INFO",
-        "AV2-7.3.2-CMVS-BOUNDARIES",
-        "AV2-A-PROFILES"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/msdo-global-lcr-agreement/tasks.md",
-      "sha256": "e6204a67fe953a88293c4b60224c8544741453f925be38236164b10faa46e754",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.8.1-LCR-GLOBAL-INFO",
-        "AV2-7.3.2-CMVS-BOUNDARIES"
-      ],
-      "outcome": "success"
-    },
-    {
       "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
       "sha256": "ec25589a8a02879087f03de9cc0c8b07e5fedf96f9a48c8f3dd99be91c14d240",
       "scope_kind": "openspec",
@@ -3052,7 +3016,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "8c42a861eaaf469ff1ebd1309c9cccfcefe08a06f96323b79e3f6d25af155e7e",
+      "sha256": "d4c8d1409bccb9f65b9e2c871c5560b39ebb998738ac5c567f2bcd6e9c5bb48c",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
