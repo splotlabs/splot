@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "8ffb78df60369772c1c1f44eb2f509dea848414e",
+  "audited_commit": "c9396f354f78f709960f495d887274dae2e6377a",
   "outcome": "success",
   "files": [
     {
@@ -430,7 +430,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/filtering.rs",
-      "sha256": "d7f66f92ebcf81fe249bd2ee37cce18d93e9804f293d2947b065cbc7ce4b1ed3",
+      "sha256": "e5359a6f996d92e320360ddedfcff132fe53414468f87b14ac43e36d4554a7c7",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.5-FILTERING"
@@ -439,7 +439,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/info.rs",
-      "sha256": "ef97148661fdb129a12d7af93e5e5f4f60f332b10473c986320bae86a1196c9e",
+      "sha256": "56be854b47cbd94cd1a34cb409bc6c73cb7a33bfbb31703d06d2a1d9bbe2aae7",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO"
@@ -856,7 +856,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "c1ad87bfb8e13ea669b3f966ab5c84f510f29885e90242f59cf4de8aa7854ce0",
+      "sha256": "0901c667c9b003d75817ef2532f5aff0afafcff29e0af898f356368c6360b691",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1088,7 +1088,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "c87a81c84e7c8c39a55ecabec7b2d2667ccd085cdf5b866e8c1e4a4515507c8b",
+      "sha256": "b5ea4c75bf816754e1eea461e543d7cd0b9e34b6e59409fc3bf3ebe5005b8a23",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1393,7 +1393,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "8da0f47ce7e37fbc976a7b7f574ff99416c33a96c0cd5887383575de946e5b25",
+      "sha256": "ed186bfd7a0b3e49bdb5496aebec25e6904bfed0d44f647b71624aa39b4491fb",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -3226,7 +3226,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "4801182fd3243ade985af7bfcfcfc4ddcf6c83a828da0a504e92a4a95a817634",
+      "sha256": "7081309c617a60f7e09e71da5a2a243b55c2e528e58b23fe723beb3716df7856",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -3316,7 +3316,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "581ea1b4f1edf15d87e1b3a26a863a8bebf61c05107f44d61cc8768446a2702c",
+      "sha256": "12bdc4986cf46e3b76c72e913fd5c05562227545e803ebfa68bb6d14f1ac017e",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
