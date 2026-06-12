@@ -4921,6 +4921,38 @@ impl ValidatorContext {
     /// stays reliable even when the parse ran against a stale header — making the resolution
     /// check sound. The same guard is applied by the frame-unit segmenter's output-class
     /// derivation ([`Self::frame_output_class`]) so the two layers route to Unknown together.
+    /// Resolves a frame's `cur_mfh_id` (`> 0`) reference to the in-band multi-frame
+    /// header record the `cur_mfh_id > 0` core parse must consume, with the §7.3.8.7
+    /// resolution discipline (AV2 § 5.18.2): the lightweight prefix parse reads only the
+    /// activation fields (`cur_mfh_id` is before any sequence-dependent field, so it is
+    /// reliable even against a stale active header), the `cur_mfh_id` must be nonzero
+    /// and in range, an in-band record must resolve it, and that record's
+    /// `mfh_seq_header_id` must equal `seq_id` — the sequence header the frame is parsed
+    /// against. `None` for a `cur_mfh_id == 0` direct reference, an out-of-range
+    /// `cur_mfh_id`, an absent record, or a record naming a different sequence header;
+    /// the core parser then keeps its `cur_mfh_id > 0`-unresolvable early-stop rather
+    /// than guessing a multi-frame-header-derived size.
+    ///
+    /// Shared by [`Self::frame_core_against_referenced_header`] (output-class /
+    /// reference-header derivation) and [`frame_header_core_checks`] (frame-header
+    /// diagnostics) so the resolution predicate has a single definition.
+    fn resolve_frame_mfh_record(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        first_picture_in_tu: bool,
+        seq_id: SequenceHeaderId,
+    ) -> Option<&MultiFrameHeaderRecord> {
+        let prefix = parse_frame_prefix(obu, first_picture_in_tu)?;
+        if prefix.cur_mfh_id.is_zero() || !prefix.cur_mfh_id.in_range() {
+            return None;
+        }
+        let record = self.hls.multi_frame_header(prefix.cur_mfh_id)?;
+        // §7.3.8.7: the resolved record must name the sequence header parsed against,
+        // otherwise the multi-frame-header state would be applied against the wrong
+        // maxima; a mismatch keeps the unresolvable early-stop.
+        (record.mfh_seq_header_id == seq_id).then_some(record)
+    }
+
     fn frame_core_against_referenced_header(
         &self,
         obu: &ObuEnvelope<'_>,
@@ -4932,14 +4964,8 @@ impl ValidatorContext {
         let active_sequence = self.sequence_headers.get(&seq_id)?;
 
         // Resolve the frame's `cur_mfh_id` (> 0) reference to its in-band multi-frame header,
-        // so the parser can be invoked with the resolving record. The lightweight prefix parse
-        // reads only the activation fields (cur_mfh_id is before any sequence-dependent field),
-        // so it is reliable even against a stale active header.
-        let mfh_record = parse_frame_prefix(obu, first_picture_in_tu).and_then(|prefix| {
-            (!prefix.cur_mfh_id.is_zero() && prefix.cur_mfh_id.in_range())
-                .then(|| self.hls.multi_frame_header(prefix.cur_mfh_id))
-                .flatten()
-        });
+        // so the parser can be invoked with the resolving record (shared §7.3.8.7 discipline).
+        let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
 
         let core = parse_frame_core(obu, first_picture_in_tu, active_sequence, mfh_record)?;
 
@@ -4947,8 +4973,9 @@ impl ValidatorContext {
         // direct reference, `referenced_sequence_header_id` carries the §5.18.2 prefix's
         // resolved id (set only when `seq_header_id_in_frame_header` is in range). For a
         // `cur_mfh_id > 0` reference, the resolved in-band MFH record's `mfh_seq_header_id`
-        // is the referenced id (§ 7.3.8.7); a record only externally declared, out of range, or
-        // absent leaves `mfh_record == None` below and routes to Unknown.
+        // is the referenced id (§ 7.3.8.7); a record only externally declared, out of range,
+        // absent, or naming a different sequence header leaves `mfh_record == None` (the shared
+        // resolver already enforced the seq-id match) and routes to Unknown.
         let referenced = if core.cur_mfh_id.is_zero() {
             core.referenced_sequence_header_id
         } else {
@@ -6108,11 +6135,21 @@ impl ValidatorContext {
             // core parser and emit the locally decidable § 6.17 diagnostics. Parsing
             // and the checks are silent on failure or on paths that need reference
             // state (AV2 § 6.17.2 / § 6.17.4 / § 6.4.6).
+            //
+            // A `cur_mfh_id > 0` frame derives FrameWidth/FrameHeight (and the
+            // §5.18.7.1 segmentation arm) from its resolved multi-frame header on the
+            // non-override path, so resolve that record with the shared §7.3.8.7
+            // discipline and thread it in; without it the core parse stops before
+            // frame_size() and the §6.17.2 MFH-dims / §6.17.7 tile / quant diagnostics
+            // would be skipped for MFH-backed frames. An unresolvable MFH stays `None`,
+            // preserving the early-stop (no guessing).
+            let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
             if let Some(active_sequence) = self.sequence_headers.get(&seq_id) {
                 frame_header_core_checks(
                     obu,
                     first_picture_in_tu,
                     active_sequence,
+                    mfh_record,
                     &self.qm,
                     report,
                 );
@@ -12803,6 +12840,7 @@ fn frame_header_core_checks(
     obu: &ObuEnvelope<'_>,
     first_picture_in_tu: bool,
     active_sequence: &SequenceHeader,
+    mfh_record: Option<&MultiFrameHeaderRecord>,
     qm_state: &QuantizerMatrixState,
     report: &mut ValidationReport,
 ) {
@@ -12863,10 +12901,13 @@ fn frame_header_core_checks(
         }
     }
 
-    // This call site emits the §6.17 bridge-ref / frame-size diagnostics, which are
-    // determined by the active sequence header alone (no multi-frame-header-derived field is
-    // consulted), so it threads no MFH record.
-    let Some(core) = parse_frame_core(obu, first_picture_in_tu, active_sequence, None) else {
+    // This call site emits the §6.17 bridge-ref / frame-size / tile / quant diagnostics.
+    // A `cur_mfh_id > 0` frame's FrameWidth/FrameHeight come from `mfh_record` on the
+    // non-override path (§5.18.4.1, mirror :5767), so the resolved record is threaded in
+    // with the §7.3.8.7 discipline (the caller passes `resolve_frame_mfh_record`'s result).
+    // For a `cur_mfh_id == 0` frame, or a `cur_mfh_id > 0` frame whose in-band MFH is
+    // unresolvable, this is `None` and the core parser keeps its existing early-stop.
+    let Some(core) = parse_frame_core(obu, first_picture_in_tu, active_sequence, mfh_record) else {
         return;
     };
 
@@ -12887,9 +12928,16 @@ fn frame_header_core_checks(
         ));
     }
 
-    // AV2 § 6.17.4.1: frame_width_minus_1 <= max_frame_width_minus_1 and
-    // frame_height_minus_1 <= max_frame_height_minus_1, i.e. FrameWidth/FrameHeight do
-    // not exceed the active sequence maximum.
+    // FrameWidth/FrameHeight do not exceed the active sequence maximum
+    // (FrameWidth <= MaxFrameWidth, FrameHeight <= MaxFrameHeight). On the explicit
+    // override path this is AV2 § 6.17.4.1 (frame_width_minus_1 <= max_frame_width_minus_1,
+    // frame_height_minus_1 <= max_frame_height_minus_1,
+    // docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1, mirror :5200-5205).
+    // On the `cur_mfh_id > 0` non-override path FrameWidth = mfh_frame_width_minus_1 + 1
+    // (mirror :5767), so the identical bound is the AV2 § 6.17.2 requirement that, after
+    // load_sequence_header(), mfh_frame_width_minus_1[ cur_mfh_id ] <= max_frame_width_minus_1
+    // and mfh_frame_height_minus_1[ cur_mfh_id ] <= max_frame_height_minus_1 (mirror :4348-4349).
+    // Both reduce to the same FrameWidth/Height-vs-maxima comparison on `core.frame_size`.
     if let Some(size) = core.frame_size {
         let max_width = active_sequence.general.max_frame_width.get();
         let max_height = active_sequence.general.max_frame_height.get();
