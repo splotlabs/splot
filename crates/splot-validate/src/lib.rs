@@ -10,7 +10,7 @@
 //! a process failure.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
-//! separate license.
+//! separate written license from Bartosz Tomczyk.
 
 pub mod checks;
 pub mod diagnostic;

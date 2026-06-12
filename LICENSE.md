@@ -1,3 +1,5 @@
+Required Notice: Copyright © 2026 Bartosz Tomczyk. Commercial use of splot requires a separate written commercial license from Bartosz Tomczyk.
+
 # PolyForm Noncommercial License 1.0.0
 
 <https://polyformproject.org/licenses/noncommercial/1.0.0>
@@ -18,7 +20,7 @@ The licensor grants you an additional copyright license to distribute copies of 
 
 You must ensure that anyone who gets a copy of any part of the software from you also gets a copy of these terms or the URL for them above, as well as copies of any plain-text lines beginning with `Required Notice:` that the licensor provided with the software.  For example:
 
-> Required Notice: Copyright Splot Labs (https://github.com/splotlabs/splot)
+> Required Notice: Copyright © 2026 Bartosz Tomczyk. Commercial use of splot requires a separate written commercial license from Bartosz Tomczyk.
 
 ## Changes and New Works License
 
