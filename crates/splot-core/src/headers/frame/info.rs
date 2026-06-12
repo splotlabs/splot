@@ -19,8 +19,11 @@
 //!   ([`FrameHeaderParseStatus::UnsupportedUntilFeature`]); the rest of a bridge frame
 //!   needs reference-frame dimensions this phase does not model.
 //! - **Show-existing-frame (SEF)** → reads `frame_to_show_map_idx`,
-//!   `derive_sef_order_hint`, and `sef_order_hint`, then stops before
-//!   `film_grain_config()` ([`FrameHeaderParseStatus::CoreFieldsOnly`]).
+//!   `derive_sef_order_hint`, `sef_order_hint`, and the terminal `film_grain_config()`
+//!   (§ 5.18.10.1), completing the SEF frame header
+//!   ([`FrameHeaderParseStatus::ShowExistingFrameComplete`]). A payload EOF inside the
+//!   SEF `film_grain_config()` preserves the parsed SEF facts and reports
+//!   [`FrameHeaderParseStatus::CoreFieldsOnly`].
 //! - **Inter / switch / TIP / RAS frame** → reads the frame-type field then stops
 //!   ([`FrameHeaderParseStatus::UnsupportedUntilFeature`]); the inter reference map
 //!   needs reference-frame state.
@@ -30,9 +33,15 @@
 //!   `segmentation_params()`, `setup_qm_params()`, `delta_q_params()`, the
 //!   § 5.18.2 lossless/`allow_tcq`/`allow_parity_hiding` tail, and the loop-filter
 //!   cluster `deblocking_filter_params()` (§ 5.18.5.2), `gdf_params()` (§ 5.18.7.9),
-//!   `cdef_params()` (§ 5.18.7.10), `lr_params()` (loop restoration, § 5.18.7.11), and
-//!   `ccso_params()` (§ 5.18.7.12), stopping before `read_tx_mode()` (§ 5.18.8.1)
-//!   ([`FrameHeaderParseStatus::StoppedBeforeReadTxMode`]). When a plane in `lr_params()`
+//!   `cdef_params()` (§ 5.18.7.10), `lr_params()` (loop restoration, § 5.18.7.11),
+//!   `ccso_params()` (§ 5.18.7.12), and the § 5.18.2 tail `read_tx_mode()` (§ 5.18.8.1),
+//!   the no-bit `frame_reference_mode()` / `skip_mode_params()` / `allow_bawp` /
+//!   `allow_warpmv_mode` intra inferences, `reduced_tx_set`, the no-bit intra arm of
+//!   `global_motion_params()` (§ 5.18.9.1), and `film_grain_config()` (§ 5.18.10.1),
+//!   completing the intra frame header
+//!   ([`FrameHeaderParseStatus::IntraHeaderComplete`]). A payload EOF inside the tail
+//!   preserves every earlier fact and reports
+//!   [`FrameHeaderParseStatus::StoppedInsideIntraTail`]. When a plane in `lr_params()`
 //!   signals `frame_filters_on`, the structure reaches the unmodeled
 //!   `read_wienerns_filter()` frame-level Wiener bank decode and the parser stops with
 //!   [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`] (the control-region and
@@ -68,6 +77,10 @@ use crate::headers::frame::segmentation::{
     CoreSeqSegView, MfhSegView, SegmentationParams, parse_segmentation_params,
 };
 use crate::headers::frame::size::{FrameSize, ceil_log2, parse_frame_size};
+use crate::headers::frame::tail::{
+    FilmGrainConfig, FrameHeaderTail, FrameTailInput, parse_film_grain_config,
+    parse_intra_tail as parse_intra_tail_grammar,
+};
 use crate::headers::frame::tiling::{CoreSeqTileView, TileInfo, parse_tile_info};
 use crate::headers::sequence::{ChromaFormatIdc, SequenceHeader, SequenceHeaderId};
 use crate::hls::{MfhId, MultiFrameHeaderRecord};
@@ -102,10 +115,21 @@ pub enum FrameHeaderParseStatus {
     /// not the filtering/quantization/segmentation cluster — currently the
     /// show-existing-frame path, which stops before `film_grain_config()`.
     CoreFieldsOnly,
-    /// The show-existing-frame path was consumed in full. Reserved: produced once
-    /// `film_grain_config()` (§ 5.18.10) is modeled; the current SEF path returns
-    /// [`Self::CoreFieldsOnly`].
+    /// The show-existing-frame path was consumed in full: `frame_to_show_map_idx`,
+    /// `derive_sef_order_hint`, the optional `sef_order_hint`, and the terminal
+    /// `film_grain_config()` (§ 5.18.10.1, mirror :4186) all parsed, after which the SEF
+    /// path `return`s (mirror :4196). The frame header is complete.
     ShowExistingFrameComplete,
+    /// An intra frame header was consumed in full through its § 5.18.2 tail
+    /// (`read_tx_mode()` § 5.18.8.1, the no-bit `frame_reference_mode()` /
+    /// `skip_mode_params()` / `allow_bawp` / `allow_warpmv_mode` intra inferences,
+    /// `reduced_tx_set`, the no-bit intra arm of `global_motion_params()` § 5.18.9.1,
+    /// and `film_grain_config()` § 5.18.10.1). The frame header is complete: every
+    /// `frame_header_info()` field on the intra path has been read or derived. No
+    /// full-payload trailing-bits conformance is implied — the frame header is followed
+    /// by the rest of `tile_group_obu()` (§ 5.19), whose `trailing_bits()` reachability
+    /// is tracked separately (AV2-5.19-TILE-GROUP / NumFrameHeaderBits).
+    IntraHeaderComplete,
     /// An intra frame's control region was read through `disable_cdf_update`,
     /// `tile_info()` (§ 5.18.7.2), `quantization_params()` (§ 5.18.6.1),
     /// `segmentation_params()` (§ 5.18.7.1), `setup_qm_params()` (§ 5.18.6.2),
@@ -151,6 +175,15 @@ pub enum FrameHeaderParseStatus {
     /// see the preserved facts (the pre-cluster behavior, which stopped here before any
     /// filter read, is preserved). No full-payload trailing-bits conformance is implied.
     StoppedInsideFilterParams,
+    /// An intra frame parsed cleanly through `ccso_params()` (§ 5.18.7.12) but the
+    /// payload ran out **inside** the § 5.18.2 tail (`read_tx_mode()` § 5.18.8.1,
+    /// `reduced_tx_set`, or `film_grain_config()` § 5.18.10.1). The control-region and
+    /// loop-filter-cluster facts and any tail field read before the EOF are preserved;
+    /// the unreached tail (`intra_tail`) stays `None`. Like
+    /// [`Self::StoppedInsideFilterParams`], the truncation is a payload-bounds condition,
+    /// not a structural violation, so it is reported through this status rather than as a
+    /// hard parse error. No full-payload trailing-bits conformance is implied.
+    StoppedInsideIntraTail,
     /// A branch needs decoder/reference state or syntax this phase does not model
     /// (e.g. the inter reference map, or the rest of a bridge frame). `feature_id` is
     /// the implementation-matrix row that tracks the missing coverage.
@@ -168,10 +201,12 @@ impl FrameHeaderParseStatus {
             Self::ActivationFieldsOnly => "activation_fields_only",
             Self::CoreFieldsOnly => "core_fields_only",
             Self::ShowExistingFrameComplete => "show_existing_frame_complete",
+            Self::IntraHeaderComplete => "intra_header_complete",
             Self::StoppedBeforeLoopRestorationParams => "stopped_before_loop_restoration_params",
             Self::StoppedBeforeReadTxMode => "stopped_before_read_tx_mode",
             Self::StoppedBeforeWienerNsFilter { .. } => "stopped_before_wienerns_filter",
             Self::StoppedInsideFilterParams => "stopped_inside_filter_params",
+            Self::StoppedInsideIntraTail => "stopped_inside_intra_tail",
             Self::UnsupportedUntilFeature { .. } => "unsupported_until_feature",
         }
     }
@@ -378,6 +413,18 @@ pub struct FrameHeaderCore {
     /// Parsed `ccso_params()` (AV2 § 5.18.7.12), when reached. Per § 5.18.2 call order it
     /// is parsed **after** `lr_params()`.
     pub ccso_params: Option<CcsoParams>,
+    /// The § 5.18.2 intra tail after `ccso_params()` — `read_tx_mode()` (§ 5.18.8.1),
+    /// the no-bit `frame_reference_mode()` / `skip_mode_params()` / `allow_bawp` /
+    /// `allow_warpmv_mode` intra inferences, `reduced_tx_set`, the no-bit intra arm of
+    /// `global_motion_params()` (§ 5.18.9.1), and `film_grain_config()` (§ 5.18.10.1).
+    /// `Some` only when the intra path parsed to completion
+    /// ([`FrameHeaderParseStatus::IntraHeaderComplete`]).
+    pub intra_tail: Option<FrameHeaderTail>,
+    /// The show-existing-frame `film_grain_config()` (§ 5.18.10.1, mirror :4186). `Some`
+    /// only on the SEF path once it parsed to completion
+    /// ([`FrameHeaderParseStatus::ShowExistingFrameComplete`]); the SEF path reads only
+    /// `film_grain_config()`, not the § 5.18.8 coding-mode tail.
+    pub sef_film_grain: Option<FilmGrainConfig>,
     /// Bits consumed by this parse (not necessarily the whole frame header).
     pub consumed_bits: u64,
 }
@@ -424,6 +471,10 @@ struct CoreSeqView {
     /// `chroma_format_idc` (AV2 § 5.4.1): the § 6.4.1 SubsamplingX/Y for `lr_params()`'s
     /// chroma `LoopRestorationSize` derivation.
     chroma_format_idc: ChromaFormatIdc,
+    /// `film_grain_params_present` (AV2 § 5.4.1): gates the § 5.18.10.1
+    /// `film_grain_config()` `apply_grain` derivation. `false` when the sequence header
+    /// did not signal grain.
+    film_grain_params_present: bool,
 }
 
 impl CoreSeqView {
@@ -437,6 +488,9 @@ impl CoreSeqView {
         // `sequence_filter_config()` (§ 5.4.10) gates the § 5.18.2 tail loop-filter
         // structures; without it the intra tail cannot reach deblocking/GDF/CDEF.
         let filter = seq.filter.as_ref()?;
+        // `film_grain_params_present` (§ 5.4.1) is read last in the sequence header; its
+        // absence means the header was not fully parsed, so the tail cannot be reached.
+        let film_grain_params_present = seq.film_grain_params_present?;
         let general = &seq.general;
         Some(Self {
             num_ref_frames: u32::from(inter.num_ref_frames),
@@ -480,6 +534,7 @@ impl CoreSeqView {
                 single_picture_header_flag: general.single_picture_header_flag,
             },
             chroma_format_idc: general.chroma_format_idc,
+            film_grain_params_present,
         })
     }
 }
@@ -659,6 +714,8 @@ fn init_core_from_prefix(prefix: &FrameHeaderPrefix, obu_type: ObuType) -> Frame
         lr_params: None,
         lr_params_partial: None,
         ccso_params: None,
+        intra_tail: None,
+        sef_film_grain: None,
         consumed_bits: 0,
     }
 }
@@ -785,13 +842,42 @@ fn parse_show_existing_frame(
     if !derive_sef_order_hint {
         core.order_hint_lsb = Some(read_f(reader, seq.order_hint_bits)?);
     }
-    // refresh_frame_flags = 0; immediate_output_frame = 1; FrameType comes from the
-    // referenced slot (reference state), so it is left unknown. Stop before
-    // film_grain_config() (§ 5.18.10).
+    // AV2 § 5.18.2 (mirror :4180-4184): refresh_frame_flags = 0; immediate_output_frame = 1.
+    // FrameType comes from the referenced slot (reference state), so it is left unknown.
     core.refresh_frame_flags = Some(0);
     core.immediate_output_frame = Some(true);
-    core.status = FrameHeaderParseStatus::CoreFieldsOnly;
-    Ok(())
+
+    // AV2 § 5.18.2 (mirror :4186): the SEF path calls film_grain_config() (§ 5.18.10.1),
+    // then return()s (mirror :4196) — the frame header is complete. SEF only occurs when
+    // single_picture_header_flag == 0 (the else arm of mirror :4131), so the
+    // film_grain_config() single-picture inference is dead; with immediate_output_frame = 1
+    // the (!immediate && !implicit) output gate is false, so apply_grain is f(1) when grain
+    // is present. The save_grain_params() call at mirror :4190 reads no bits.
+    let input = FrameTailInput {
+        // SEF reads no read_tx_mode(): coded_lossless is irrelevant here but supplied for
+        // the shared input shape (film_grain_config does not consult it).
+        coded_lossless: false,
+        film_grain_params_present: seq.film_grain_params_present,
+        // SEF never runs under single_picture_header_flag (see above).
+        single_picture_header_flag: false,
+        immediate_output_frame: true,
+        implicit_output_frame: false,
+    };
+    match parse_film_grain_config(reader, &input) {
+        Ok(film_grain) => {
+            core.sef_film_grain = Some(film_grain);
+            core.status = FrameHeaderParseStatus::ShowExistingFrameComplete;
+            Ok(())
+        }
+        // A payload EOF inside the SEF film_grain_config() keeps the already-parsed SEF
+        // facts (frame_to_show_map_idx, order hint, output flags) and reports the
+        // truncation through the status rather than failing the whole parse.
+        Err(Error::UnexpectedEof { .. }) => {
+            core.status = FrameHeaderParseStatus::CoreFieldsOnly;
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Parses the intra-frame tail (AV2 § 5.18.2): `frame_size_override_flag`,
@@ -1023,14 +1109,18 @@ fn parse_intra_structures(
 /// `tile_info()` geometry, and — on the `cur_mfh_id > 0` path — the resolved MFH's
 /// deblocking-update state.
 ///
-/// On a clean parse the `core` filter / lr / ccso fields are populated and the terminal
-/// [`FrameHeaderParseStatus::StoppedBeforeReadTxMode`] is set. When a plane signals a
-/// frame-level Wiener filter, `lr_params()` reaches the unmodeled `read_wienerns_filter()`
-/// decode: this function sets [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`] and
-/// returns `Ok(())` (the control-region facts are preserved and the partial `lr_params()`
-/// prefix is stored on `core.lr_params_partial`, leaving `core.lr_params` `None`). On error
-/// the partially-read fields stay `None`; the caller decides whether a payload EOF here is a
-/// truncation (`StoppedInsideFilterParams`) or a hard failure.
+/// On a clean parse the `core` filter / lr / ccso fields are populated, the § 5.18.2
+/// intra tail is parsed (see [`parse_intra_tail_structures`]), and the terminal
+/// [`FrameHeaderParseStatus::IntraHeaderComplete`] is set (or
+/// [`FrameHeaderParseStatus::StoppedInsideIntraTail`] when the payload runs out mid-tail).
+/// When a plane signals a frame-level Wiener filter, `lr_params()` reaches the unmodeled
+/// `read_wienerns_filter()` decode: this function sets
+/// [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`] and returns `Ok(())` (the
+/// control-region facts are preserved and the partial `lr_params()` prefix is stored on
+/// `core.lr_params_partial`, leaving `core.lr_params` `None`). On error the partially-read
+/// fields stay `None`; the caller decides whether a payload EOF in the loop-filter cluster
+/// (deblocking through ccso) is a truncation (`StoppedInsideFilterParams`) or a hard
+/// failure (a tail EOF is handled here as `StoppedInsideIntraTail`).
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
@@ -1144,10 +1234,61 @@ fn parse_filter_cluster(
         &seq.ccso,
     )?);
 
-    // AV2 § 5.18.2: read_tx_mode() (§ 5.18.8.1) is next (mirror :5307); this phase stops
-    // before it. The lr/ccso cluster parsed cleanly, so this is the terminal intra-path stop.
-    core.status = FrameHeaderParseStatus::StoppedBeforeReadTxMode;
-    Ok(())
+    // AV2 § 5.18.2 tail (mirror :5307-5341): read_tx_mode() (§ 5.18.8.1), the no-bit
+    // frame_reference_mode() / skip_mode_params() / allow_bawp / allow_warpmv_mode intra
+    // inferences, reduced_tx_set, the no-bit intra arm of global_motion_params()
+    // (§ 5.18.9.1), and film_grain_config() (§ 5.18.10.1). This completes the intra
+    // frame header.
+    parse_intra_tail_structures(reader, core, seq, coded_lossless)
+}
+
+/// Parses the § 5.18.2 intra tail after `ccso_params()` (AV2 v1.0.0 § 5.18.2, mirror
+/// :5307-5341) and sets the terminal status. On a clean parse the tail is stored on
+/// `core.intra_tail` and the status is [`FrameHeaderParseStatus::IntraHeaderComplete`].
+/// A payload EOF inside the tail keeps every already-parsed fact (the tail field stays
+/// `None`) and reports [`FrameHeaderParseStatus::StoppedInsideIntraTail`] rather than a
+/// hard error, mirroring the loop-filter-cluster truncation handling so earlier
+/// state-supported diagnostics still see the facts.
+///
+/// `coded_lossless` is the derived `CodedLossless` from `parse_lossless_info`, gating
+/// `read_tx_mode()`. The output flags (`immediate_output_frame` / `implicit_output_frame`)
+/// and `single_picture_header_flag` come from the already-set `core` / `seq` state.
+///
+/// # Errors
+/// Returns a typed descriptor error if a sub-read rejects its inputs (not a payload EOF,
+/// which is converted to the truncation status).
+fn parse_intra_tail_structures(
+    reader: &mut BitReader<'_>,
+    core: &mut FrameHeaderCore,
+    seq: &CoreSeqView,
+    coded_lossless: bool,
+) -> Result<()> {
+    // The output flags are always Some by the time the intra tail is reached: the
+    // single-picture path sets them in parse_core_body, and the non-single-picture intra
+    // path sets them before parse_intra_tail. Defaulting to the spec's intra inference
+    // (immediate_output_frame = whatever was parsed) keeps the parser panic-free under
+    // direct API misuse without inventing bits.
+    let input = FrameTailInput {
+        coded_lossless,
+        film_grain_params_present: seq.film_grain_params_present,
+        single_picture_header_flag: seq.single_picture_header_flag,
+        immediate_output_frame: core.immediate_output_frame.unwrap_or(false),
+        implicit_output_frame: core.implicit_output_frame.unwrap_or(false),
+    };
+    match parse_intra_tail_grammar(reader, &input) {
+        Ok(tail) => {
+            core.intra_tail = Some(tail);
+            core.status = FrameHeaderParseStatus::IntraHeaderComplete;
+            Ok(())
+        }
+        // The payload ran out mid-tail: keep the preserved control-region / cluster facts
+        // and record the truncation through the status rather than failing the whole parse.
+        Err(Error::UnexpectedEof { .. }) => {
+            core.status = FrameHeaderParseStatus::StoppedInsideIntraTail;
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Reads `refresh_frame_flags` for an intra frame (AV2 § 5.18.2): the KEY_FRAME branch
@@ -1236,6 +1377,7 @@ mod tests {
     use super::*;
     use crate::error::Error;
     use crate::headers::frame::restoration::FrameRestorationType;
+    use crate::headers::frame::tail::TxMode;
     use crate::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature, SegmentInfo};
     use crate::span::ByteOffset;
 
@@ -1361,6 +1503,7 @@ mod tests {
             restoration: base_restoration(),
             ccso: base_ccso(),
             chroma_format_idc: ChromaFormatIdc::Yuv420,
+            film_grain_params_present: false,
         }
     }
 
@@ -1424,11 +1567,16 @@ mod tests {
         bits.bit(0); // apply_deblocking_filter[0]
         bits.bit(0); // apply_deblocking_filter[1] (both 0 -> no chroma pair, no delta-Q)
         // gdf_params() / cdef_params(): enable_gdf == enable_cdef == 0 -> no bits.
+        // lr_params()/ccso_params(): restoration and CCSO disabled -> no bits.
+        // § 5.18.2 tail: read_tx_mode() not lossless -> tx_mode_select f(1); reduced_tx_set
+        // f(2); film_grain_config() grain absent -> apply_grain inferred 0, no bits.
+        bits.bit(0); // tx_mode_select = 0 -> TX_MODE_LARGEST
+        bits.f(0, 2); // reduced_tx_set = 0
         let data = bits.into_bytes();
         let (core, consumed) =
             parse_body(&data, ObuType::ClosedLoopKey, true, &base_seq()).unwrap();
 
-        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
+        assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
         assert!(core.cur_mfh_id.is_zero());
         assert_eq!(core.seq_header_id_in_frame_header, Some(1));
         assert_eq!(core.frame_type, Some(FrameType::Key));
@@ -1458,11 +1606,16 @@ mod tests {
         assert_eq!(deblocking.apply_deblocking_filter, [false; 4]);
         assert!(!core.gdf_params.unwrap().gdf_frame_enable);
         assert!(!core.cdef_params.unwrap().cdef_frame_enable);
+        let tail = core.intra_tail.as_ref().unwrap();
+        assert_eq!(tail.tx_mode, TxMode::Largest);
+        assert_eq!(tail.reduced_tx_set, 0);
+        assert!(!tail.film_grain.apply_grain);
         // uvlc(0)=1 + uvlc(1)=3 prefix bits, then 33 core bits (1+1+1+4 control/output,
         // 24 frame_size, 1 allow_intrabc, 1 disable_cdf_update), then 14 structure
         // bits (3 tile_info, 8 base_q_idx, 1 segmentation_enabled, 1 using_qmatrix,
-        // 1 delta_q_present), then 2 deblocking apply bits (GDF/CDEF disabled -> 0 bits).
-        assert_eq!(consumed, 4 + 33 + 14 + 2);
+        // 1 delta_q_present), then 2 deblocking apply bits (GDF/CDEF disabled -> 0 bits),
+        // then 3 tail bits (tx_mode_select + reduced_tx_set; grain absent).
+        assert_eq!(consumed, 4 + 33 + 14 + 2 + 3);
     }
 
     /// A fixed in-band multi-frame-header record resolving `cur_mfh_id` for the
@@ -1539,6 +1692,10 @@ mod tests {
         bits.bit(0); // df_delta_q_present[0]
         bits.bit(0); // df_delta_q_present[2]
         bits.bit(0); // df_delta_q_present[3]
+        // lr_params()/ccso_params(): restoration and CCSO disabled -> no bits.
+        // § 5.18.2 tail: tx_mode_select f(1) + reduced_tx_set f(2); grain absent.
+        bits.bit(0); // tx_mode_select = 0
+        bits.f(0, 2); // reduced_tx_set = 0
         let data = bits.into_bytes();
         let (core, _) = parse_body_with_mfh(
             &data,
@@ -1556,7 +1713,8 @@ mod tests {
             "the MFH update arm copies apply_deblocking_filter from the record"
         );
         assert_eq!(deblocking.df_delta_q, [0; 4]);
-        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
+        assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
+        assert!(core.intra_tail.is_some());
     }
 
     /// A `base_seq()` whose `order_hint_bits` is widened to 5 so the intra body built by
@@ -1742,11 +1900,12 @@ mod tests {
     }
 
     #[test]
-    fn frame_header_core_intra_tail_parses_lr_and_ccso_to_read_tx_mode() {
+    fn frame_header_core_intra_tail_parses_lr_ccso_and_tail_to_completion() {
         // Restoration AND CCSO enabled: the intra tail parses cdef, then lr_params()
-        // (no plane signals frame_filters_on, so no read_wienerns_filter) and ccso_params()
-        // to the StoppedBeforeReadTxMode stop. CDEF/GDF stay disabled so the cluster's only
-        // pre-lr reads are the 2 deblocking apply bits.
+        // (no plane signals frame_filters_on, so no read_wienerns_filter) and ccso_params(),
+        // then the §5.18.2 tail (read_tx_mode + reduced_tx_set, grain absent) to the
+        // IntraHeaderComplete terminal. CDEF/GDF stay disabled so the cluster's only pre-lr
+        // reads are the 2 deblocking apply bits.
         let mut seq = byte_aligned_filter_seq();
         // lr_tools both luma tools enabled; chroma PC-Wiener inferred disabled.
         seq.restoration.enable_restoration = true;
@@ -1768,9 +1927,14 @@ mod tests {
         bits.bit(0); // ccso_planes[0]
         bits.bit(0); // ccso_planes[1]
         bits.bit(0); // ccso_planes[2]
+        // §5.18.2 tail: read_tx_mode() not lossless -> tx_mode_select f(1); reduced_tx_set
+        // f(2); film_grain_config() grain absent (test_seq has film_grain_params_present ==
+        // false) -> apply_grain inferred 0, no bits.
+        bits.bit(1); // tx_mode_select = 1 -> TX_MODE_SELECT
+        bits.f(3, 2); // reduced_tx_set = 3
         let data = bits.into_bytes();
         let (core, _) = parse_body(&data, ObuType::ClosedLoopKey, true, &seq).unwrap();
-        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
+        assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
         let lr = core.lr_params.as_ref().unwrap();
         assert!(!lr.uses_lr);
         assert_eq!(lr.planes.len(), 3);
@@ -1783,6 +1947,14 @@ mod tests {
         assert_eq!(ccso.ccso_frame_flag, Some(true));
         assert_eq!(ccso.planes.len(), 3);
         assert!(ccso.planes.iter().all(|p| !p.ccso_planes));
+        let tail = core.intra_tail.as_ref().expect("intra tail parsed");
+        assert_eq!(tail.tx_mode, TxMode::Select);
+        assert_eq!(tail.reduced_tx_set, 3);
+        assert!(!tail.reference_select);
+        assert!(!tail.skip_mode_present);
+        assert!(!tail.allow_bawp);
+        assert!(!tail.use_global_motion);
+        assert!(!tail.film_grain.apply_grain);
     }
 
     #[test]
@@ -1880,6 +2052,144 @@ mod tests {
         assert_eq!(
             core.ccso_params, None,
             "the truncated ccso structure stays None"
+        );
+    }
+
+    #[test]
+    fn frame_header_core_eof_inside_intra_tail_preserves_cluster_facts() {
+        // The payload parses cleanly through ccso_params() but ends inside the § 5.18.2
+        // tail (the reduced_tx_set f(2) read overruns): the control-region and loop-filter
+        // facts survive, intra_tail stays None, and the status is StoppedInsideIntraTail.
+        let mut seq = byte_aligned_filter_seq();
+        seq.ccso.enable_ccso = true;
+        let mut bits = intra_body_up_to_filter_cluster();
+        bits.bit(0); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1]
+        // gdf/cdef/lr disabled -> no bits. ccso enabled -> ccso_frame_flag f(1) + 3 planes.
+        bits.bit(1); // ccso_frame_flag
+        bits.bit(0); // ccso_planes[0]
+        bits.bit(0); // ccso_planes[1]
+        bits.bit(0); // ccso_planes[2]
+        // § 5.18.2 tail: tx_mode_select f(1), then reduced_tx_set f(2) — supply only the
+        // tx bit and ONE of the two reduced_tx_set bits, then truncate so the second
+        // reduced_tx_set bit overruns.
+        bits.bit(0); // tx_mode_select = 0 -> Largest
+        bits.bit(0); // 1 of 2 reduced_tx_set bits; the next bit is missing
+        let total_bits = bits.bit_len();
+        let mut data = bits.into_bytes();
+        // Truncate to the last whole byte that still contains the tx + partial reduced bits
+        // but not a full second reduced_tx_set bit. total_bits here is mid-byte, so keeping
+        // ceil(total_bits/8) - 0 bytes and not padding more leaves the read short.
+        let keep_bytes = total_bits / 8; // drop the partial trailing byte -> reduced_tx_set overruns
+        data.truncate(keep_bytes);
+        let (core, _) = parse_body(&data, ObuType::ClosedLoopKey, true, &seq).unwrap();
+        assert_eq!(core.status, FrameHeaderParseStatus::StoppedInsideIntraTail);
+        // Control-region and cluster facts survive; the tail itself was not committed.
+        assert_eq!(core.frame_size, Some(FrameSize::new(16, 16)));
+        assert!(core.deblocking_filter_params.is_some());
+        assert!(core.lr_params.is_some());
+        assert!(core.ccso_params.is_some());
+        assert_eq!(core.intra_tail, None, "the truncated tail stays None");
+    }
+
+    #[test]
+    fn frame_header_core_intra_tail_with_grain_present_reads_id_and_seed() {
+        // film_grain_params_present == true on an OUTPUT key frame (immediate_output_frame
+        // == 1): film_grain_config()'s output gate is false, so apply_grain is read f(1);
+        // when set, fgm_id f(3) + grain_seed f(16). Build the body with the output flag set
+        // (the byte-aligned helper hardcodes both output flags to 0, which would force
+        // apply_grain = 0).
+        let mut seq = base_seq();
+        seq.film_grain_params_present = true;
+        let mut bits = Bits::default();
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(0); // seq_header_id_in_frame_header
+        bits.bit(1); // immediate_output_frame == 1 (output frame -> apply_grain readable)
+        // implicit_output_frame inferred 0 (immediate_output_frame == 1), no bit.
+        bits.bit(0); // frame_size_override_flag == 0 (cur_mfh_id == 0 -> max dims)
+        bits.f(3, 4); // order_hint f(4)
+        // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
+        bits.bit(0); // allow_intrabc
+        bits.bit(0); // disable_cdf_update
+        bits.bit(1); // uniform_tile_spacing_flag (4096x2304 single uniform tile)
+        bits.bit(0); // increment_tile_cols_log2 = 0
+        bits.bit(0); // increment_tile_rows_log2 = 0
+        bits.f(90, 8); // base_q_idx (non-lossless)
+        bits.bit(0); // segmentation_enabled
+        bits.bit(0); // using_qmatrix
+        bits.bit(0); // delta_q_present
+        bits.bit(0); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1]
+        // gdf/cdef/lr/ccso all disabled in base_seq -> no bits.
+        // § 5.18.2 tail: tx_mode_select f(1); reduced_tx_set f(2); film_grain_config()
+        // grain present + immediate_output -> apply_grain f(1) + fgm_id f(3) + grain_seed f(16).
+        bits.bit(1); // tx_mode_select = 1 -> Select
+        bits.f(1, 2); // reduced_tx_set = 1
+        bits.bit(1); // apply_grain = 1
+        bits.f(4, 3); // fgm_id = 4
+        bits.f(0xC0DE, 16); // grain_seed
+        let data = bits.into_bytes();
+        let (core, _) = parse_body(&data, ObuType::ClosedLoopKey, true, &seq).unwrap();
+        assert_eq!(core.immediate_output_frame, Some(true));
+        assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
+        let tail = core.intra_tail.as_ref().unwrap();
+        assert_eq!(tail.tx_mode, TxMode::Select);
+        assert_eq!(tail.reduced_tx_set, 1);
+        assert!(tail.film_grain.apply_grain);
+        assert_eq!(tail.film_grain.fgm_id, Some(4));
+        assert_eq!(tail.film_grain.grain_seed, Some(0xC0DE));
+    }
+
+    #[test]
+    fn frame_header_core_sef_with_grain_reads_apply_grain_then_completes() {
+        // SEF with film_grain_params_present == true: immediate_output_frame == 1 makes the
+        // output gate false, so apply_grain is read f(1); when set, fgm_id + grain_seed.
+        let mut seq = base_seq();
+        seq.film_grain_params_present = true;
+        let mut bits = Bits::default();
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(0); // seq_header_id_in_frame_header
+        bits.f(6, 3); // frame_to_show_map_idx
+        bits.bit(1); // derive_sef_order_hint == 1 -> no sef_order_hint
+        // film_grain_config(): grain present, immediate_output -> apply_grain f(1).
+        bits.bit(1); // apply_grain = 1
+        bits.f(2, 3); // fgm_id = 2
+        bits.f(0x1357, 16); // grain_seed
+        let data = bits.into_bytes();
+        let (core, _) = parse_body(&data, ObuType::RegularSef, true, &seq).unwrap();
+        assert_eq!(core.show_existing_frame, Some(true));
+        assert_eq!(
+            core.status,
+            FrameHeaderParseStatus::ShowExistingFrameComplete
+        );
+        let fg = core.sef_film_grain.expect("SEF film_grain_config parsed");
+        assert!(fg.apply_grain);
+        assert_eq!(fg.fgm_id, Some(2));
+        assert_eq!(fg.grain_seed, Some(0x1357));
+    }
+
+    #[test]
+    fn frame_header_core_sef_eof_inside_film_grain_preserves_facts() {
+        // SEF with grain present but the payload ends inside film_grain_config(): the SEF
+        // facts survive and the status reports CoreFieldsOnly (not a hard error).
+        let mut seq = base_seq();
+        seq.film_grain_params_present = true;
+        let mut bits = Bits::default();
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(0); // seq_header_id_in_frame_header
+        bits.f(6, 3); // frame_to_show_map_idx
+        bits.bit(1); // derive_sef_order_hint == 1
+        bits.bit(1); // apply_grain = 1
+        bits.f(2, 3); // fgm_id = 2
+        bits.f(0, 8); // only 8 of 16 grain_seed bits, then EOF
+        let data = bits.into_bytes();
+        let (core, _) = parse_body(&data, ObuType::RegularSef, true, &seq).unwrap();
+        assert_eq!(core.show_existing_frame, Some(true));
+        assert_eq!(core.frame_to_show_map_idx, Some(6));
+        assert_eq!(core.status, FrameHeaderParseStatus::CoreFieldsOnly);
+        assert_eq!(
+            core.sef_film_grain, None,
+            "the truncated SEF grain stays None"
         );
     }
 
@@ -2009,6 +2319,10 @@ mod tests {
         // bitstream. GDF/CDEF disabled in base_filter -> no bits.
         bits.bit(0); // apply_deblocking_filter[0]
         bits.bit(0); // apply_deblocking_filter[1]
+        // lr_params()/ccso_params(): restoration and CCSO disabled -> no bits.
+        // § 5.18.2 tail: tx_mode_select f(1) + reduced_tx_set f(2); grain absent.
+        bits.bit(0); // tx_mode_select = 0
+        bits.f(0, 2); // reduced_tx_set = 0
         let data = bits.into_bytes();
         let (core, _) = parse_body_with_mfh(
             &data,
@@ -2033,7 +2347,7 @@ mod tests {
         assert_eq!(core.tile_info.as_ref().unwrap().tile_cols, 1);
         assert_eq!(core.quantization_params.unwrap().base_q_idx, 70);
         assert!(!core.segmentation_params.unwrap().segmentation_enabled);
-        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
+        assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
     }
 
     #[test]
@@ -2061,6 +2375,10 @@ mod tests {
         // base_q_idx == 0 -> delta_q_present inferred 0 (no bit). Lossless tail: every
         // segment lossless, so no qm_index bits; then allow_tcq / allow_parity_hiding
         // gated off in base_seq -> no bits.
+        // lr_params()/ccso_params(): restoration and CCSO disabled -> no bits.
+        // § 5.18.2 tail: CodedLossless == 1 -> read_tx_mode() reads NO bit (TxMode =
+        // ONLY_4X4); reduced_tx_set f(2) is still read; grain absent.
+        bits.f(0, 2); // reduced_tx_set = 0 (no tx_mode_select bit on the lossless gate)
         let data = bits.into_bytes();
         let (core, _) = parse_body_with_mfh(
             &data,
@@ -2085,7 +2403,11 @@ mod tests {
                 .apply_deblocking_filter,
             [false; 4]
         );
-        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
+        assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
+        // The CodedLossless gate skipped tx_mode_select: TxMode is ONLY_4X4.
+        let tail = core.intra_tail.as_ref().unwrap();
+        assert_eq!(tail.tx_mode, TxMode::Only4x4);
+        assert_eq!(tail.reduced_tx_set, 0);
     }
 
     #[test]
@@ -2140,6 +2462,10 @@ mod tests {
         // apply[0]/[1] read. GDF/CDEF disabled in base_filter.
         bits.bit(0); // apply_deblocking_filter[0]
         bits.bit(0); // apply_deblocking_filter[1]
+        // lr_params()/ccso_params(): restoration and CCSO disabled -> no bits.
+        // § 5.18.2 tail: tx_mode_select f(1) + reduced_tx_set f(2); grain absent.
+        bits.bit(0); // tx_mode_select = 0
+        bits.f(0, 2); // reduced_tx_set = 0
         let data = bits.into_bytes();
         let (core, _) = parse_body_with_mfh(
             &data,
@@ -2164,7 +2490,8 @@ mod tests {
         );
         assert_eq!(seg.features[3][0].data, 7);
         assert_eq!(seg.last_active_seg_id, 3);
-        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
+        assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
+        assert!(core.intra_tail.is_some());
     }
 
     #[test]
@@ -2253,10 +2580,15 @@ mod tests {
         bits.f(1, 2); // cdef_y_sec_strength[0]
         bits.bit(1); // cdef_uv_pri_zero -> 0
         bits.f(3, 2); // cdef_uv_sec_strength[0] == 3 -> 4
+        // lr_params()/ccso_params(): restoration and CCSO disabled (base_seq) -> no bits.
+        // § 5.18.2 tail: read_tx_mode() not lossless -> tx_mode_select f(1); reduced_tx_set
+        // f(2); film_grain_config() grain absent -> apply_grain inferred 0, no bits.
+        bits.bit(1); // tx_mode_select = 1 -> TX_MODE_SELECT
+        bits.f(2, 2); // reduced_tx_set = 2
         let data = bits.into_bytes();
         let (core, consumed) = parse_body(&data, ObuType::ClosedLoopKey, true, &seq).unwrap();
 
-        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
+        assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
         let tile_info = core.tile_info.as_ref().unwrap();
         assert_eq!(tile_info.tile_cols, 2);
         assert_eq!(tile_info.tile_rows, 1);
@@ -2317,11 +2649,16 @@ mod tests {
         let ccso = core.ccso_params.as_ref().unwrap();
         assert_eq!(ccso.ccso_frame_flag, None);
         assert!(ccso.planes.is_empty());
+        let tail = core.intra_tail.as_ref().unwrap();
+        assert_eq!(tail.tx_mode, TxMode::Select);
+        assert_eq!(tail.reduced_tx_set, 2);
+        assert!(!tail.film_grain.apply_grain);
         // 2 prefix bits + 33 control/size bits + 64 pre-filter structure bits (7 tile_info,
         // 8 base_q_idx, 25 segmentation, 13 setup_qm, 1 delta_q_present, 8 qm_index,
         // 1 allow_tcq, 1 allow_parity_hiding) + 30 loop-filter bits (7 deblocking,
-        // 6 gdf, 17 cdef) + 0 lr/ccso bits (both disabled).
-        assert_eq!(consumed, 2 + 33 + 64 + 30);
+        // 6 gdf, 17 cdef) + 0 lr/ccso bits (both disabled) + 3 tail bits (tx_mode_select +
+        // reduced_tx_set; grain absent).
+        assert_eq!(consumed, 2 + 33 + 64 + 30 + 3);
     }
 
     #[test]
@@ -2371,6 +2708,10 @@ mod tests {
         // deblocking_filter_params(): not lossless -> apply[0]/[1] read (GDF/CDEF off).
         bits.bit(0); // apply_deblocking_filter[0]
         bits.bit(0); // apply_deblocking_filter[1]
+        // lr_params()/ccso_params(): restoration and CCSO disabled -> no bits.
+        // § 5.18.2 tail: tx_mode_select f(1) + reduced_tx_set f(2); grain absent.
+        bits.bit(0); // tx_mode_select = 0
+        bits.f(0, 2); // reduced_tx_set = 0
         let data = bits.into_bytes();
         let (core, _) = parse_body(&data, ObuType::RegularTileGroup, true, &base_seq()).unwrap();
 
@@ -2379,7 +2720,8 @@ mod tests {
         assert_eq!(core.refresh_frame_flags, Some(0b0000_0101));
         assert_eq!(core.frame_size, Some(FrameSize::new(4096, 2304)));
         assert_eq!(core.quantization_params.unwrap().base_q_idx, 45);
-        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
+        assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
+        assert!(core.intra_tail.is_some());
     }
 
     #[test]
@@ -2409,6 +2751,13 @@ mod tests {
         // disabled in base_filter, so the single-picture enable inference is not reached.
         bits.bit(0); // apply_deblocking_filter[0]
         bits.bit(0); // apply_deblocking_filter[1]
+        // lr_params()/ccso_params(): restoration and CCSO disabled -> no bits.
+        // §5.18.2 tail: read_tx_mode() not lossless -> tx_mode_select f(1); reduced_tx_set
+        // f(2); film_grain_config() grain absent (film_grain_params_present == false) ->
+        // apply_grain inferred 0 even though single_picture_header_flag is set, since the
+        // first gate (!film_grain_params_present) wins.
+        bits.bit(0); // tx_mode_select = 0 -> TX_MODE_LARGEST
+        bits.f(1, 2); // reduced_tx_set = 1
         let data = bits.into_bytes();
         let (core, _) = parse_body(&data, ObuType::ClosedLoopKey, true, &seq).unwrap();
 
@@ -2418,7 +2767,11 @@ mod tests {
         assert_eq!(core.implicit_output_frame, Some(false));
         assert_eq!(core.order_hint_lsb, Some(9));
         assert_eq!(core.frame_size, Some(FrameSize::new(4096, 2304)));
-        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
+        assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
+        let tail = core.intra_tail.as_ref().expect("intra tail parsed");
+        assert_eq!(tail.tx_mode, TxMode::Largest);
+        assert_eq!(tail.reduced_tx_set, 1);
+        assert!(!tail.film_grain.apply_grain);
     }
 
     #[test]
@@ -2464,7 +2817,15 @@ mod tests {
             core.frame_type, None,
             "FrameType comes from reference state"
         );
-        assert_eq!(core.status, FrameHeaderParseStatus::CoreFieldsOnly);
+        // base_seq() has film_grain_params_present == false, so film_grain_config()
+        // infers apply_grain = 0 (no bit) and the SEF header completes.
+        assert_eq!(
+            core.status,
+            FrameHeaderParseStatus::ShowExistingFrameComplete
+        );
+        let fg = core.sef_film_grain.expect("SEF film_grain_config parsed");
+        assert!(!fg.apply_grain);
+        assert_eq!(fg.fgm_id, None);
     }
 
     #[test]
@@ -2485,7 +2846,12 @@ mod tests {
             core.order_hint_lsb, None,
             "order hint is derived from the slot, not signaled"
         );
-        assert_eq!(core.status, FrameHeaderParseStatus::CoreFieldsOnly);
+        // Grain not present -> apply_grain inferred 0, SEF header completes.
+        assert_eq!(
+            core.status,
+            FrameHeaderParseStatus::ShowExistingFrameComplete
+        );
+        assert!(core.sef_film_grain.is_some());
     }
 
     #[test]
@@ -2605,6 +2971,10 @@ mod tests {
         // deblocking_filter_params(): not lossless -> apply[0]/[1] read (GDF/CDEF off).
         bits.bit(0); // apply_deblocking_filter[0]
         bits.bit(0); // apply_deblocking_filter[1]
+        // lr_params()/ccso_params(): restoration and CCSO disabled -> no bits.
+        // § 5.18.2 tail: tx_mode_select f(1) + reduced_tx_set f(2); grain absent.
+        bits.bit(0); // tx_mode_select = 0
+        bits.f(0, 2); // reduced_tx_set = 0
         let data = bits.into_bytes();
         let (core, _) = parse_body(&data, ObuType::OpenLoopKey, true, &seq).unwrap();
 
@@ -2615,7 +2985,8 @@ mod tests {
         assert_eq!(core.order_hint_lsb, Some(2));
         assert_eq!(core.refresh_frame_flags, Some(0b0000_0101));
         assert_eq!(core.frame_size, Some(FrameSize::new(4096, 2304)));
-        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
+        assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
+        assert!(core.intra_tail.is_some());
     }
 
     #[test]
@@ -2948,6 +3319,7 @@ mod proptests {
                         restoration,
                         ccso,
                         chroma_format_idc,
+                        film_grain_params_present: false,
                     }
                 },
             )

@@ -1021,17 +1021,19 @@ positives.
   that reference (the existing QM availability diagnostics own that case)
 
 ### Requirement: Frame-header parse coverage reporting stays honest
-The validator and inspector SHALL report each partial frame-header parse status
-distinctly — the intra-path stop before `read_tx_mode()` (after the loop-filter,
-loop-restoration, and CCSO cluster), the honest stop before the unmodeled
-`read_wienerns_filter()` frame-level Wiener bank decode, and the truncation status
-for a payload that ends inside the loop-filter / loop-restoration / CCSO cluster —
-and SHALL NOT claim full § 5.18 frame-header conformance for frame headers parsed
-only through a partial stop point. A frame header truncated inside the cluster SHALL
-still expose its already-parsed control-region facts to the state-supported
-diagnostics (the truncation SHALL NOT silence earlier frame-size / output-class
-checks). Existing frame-header activation and HLS reference diagnostics SHALL be
-preserved unchanged.
+The validator and inspector SHALL report each frame-header parse status
+distinctly — the complete intra-path terminal (after the § 5.18.2 tail), the
+complete show-existing-frame terminal (after its `film_grain_config()`), the honest
+stop before the unmodeled `read_wienerns_filter()` frame-level Wiener bank decode,
+the truncation status for a payload that ends inside the loop-filter /
+loop-restoration / CCSO cluster, and the truncation status for a payload that ends
+inside the § 5.18.2 tail — and SHALL NOT claim full § 5.18 frame-header conformance
+(including trailing-bits conformance of the carrying OBU) from any of these statuses,
+since the frame header is followed by the rest of `tile_group_obu()` (§ 5.19). A
+frame header truncated inside the cluster or tail SHALL still expose its
+already-parsed control-region facts to the state-supported diagnostics (the
+truncation SHALL NOT silence earlier frame-size / output-class checks). Existing
+frame-header activation and HLS reference diagnostics SHALL be preserved unchanged.
 
 #### Scenario: Inspector surfaces new fields and status
 - **WHEN** `splot inspect` runs on a stream whose frame header parses through

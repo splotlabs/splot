@@ -834,21 +834,22 @@ only when `!(CodedLossless || !enable_parity_hiding || allow_tcq)`.
 - **THEN** no `qm_index` is read for that segment and its QM levels are 15
 
 ### Requirement: Intra-path frame-header stop point
-The intra-path parser SHALL stop with an explicit `FrameHeaderParseStatus` value
-indicating it stopped before `read_tx_mode()` (§ 5.18.8.1) once it has read the
-§ 5.18.2 lossless / `allow_tcq` / `allow_parity_hiding` tail and the loop-filter
-cluster `deblocking_filter_params()` (AV2 v1.0.0 § 5.18.5.2), `gdf_params()`
-(§ 5.18.7.9), `cdef_params()` (§ 5.18.7.10), `lr_params()` (loop restoration,
-§ 5.18.7.11), and `ccso_params()` (§ 5.18.7.12). When an `lr_params()` plane signals
-a frame-level Wiener filter, the parser SHALL instead stop before the unmodeled
-`read_wienerns_filter()` frame-level Wiener bank decode, naming the missing coverage.
-No full-payload trailing-bits conformance SHALL be inferred from a partial status.
+The intra-path parser SHALL read the § 5.18.2 lossless / `allow_tcq` /
+`allow_parity_hiding` tail and the loop-filter cluster
+`deblocking_filter_params()` (AV2 v1.0.0 § 5.18.5.2), `gdf_params()` (§ 5.18.7.9),
+`cdef_params()` (§ 5.18.7.10), `lr_params()` (loop restoration, § 5.18.7.11), and
+`ccso_params()` (§ 5.18.7.12), then continue into the § 5.18.2 tail (see the
+*complete intra frame-header parsing* requirement) rather than stopping at this
+point. When an `lr_params()` plane signals a frame-level Wiener filter, the parser
+SHALL instead stop before the unmodeled `read_wienerns_filter()` frame-level Wiener
+bank decode, naming the missing coverage. No full-payload trailing-bits conformance
+SHALL be inferred from a partial status.
 
-#### Scenario: Status reports the deeper stop point
-- **WHEN** a valid intra frame header parses through the loop-restoration and CCSO
-  cluster
-- **THEN** the parse status names the next unparsed structure (`read_tx_mode()`)
-  and `consumed_bits` covers exactly the parsed prefix
+#### Scenario: Wiener bank decode is the cluster stop point
+- **WHEN** a valid intra frame header parses through the loop-restoration cluster
+  and an `lr_params()` plane signals a frame-level Wiener filter
+- **THEN** the parse status names the unparsed `read_wienerns_filter()` decode and
+  `consumed_bits` covers exactly the parsed prefix
 
 ### Requirement: New frame parsers never panic
 All new frame-header parsing paths SHALL return typed errors on truncated or
@@ -969,19 +970,20 @@ unsupported routing.
 
 The frame-header core parser SHALL parse `lr_params()` (§ 5.18.7.11) and
 `ccso_params()` (§ 5.18.7.12) on the intra path, gated on the parsed
-sequence restoration/CCSO configuration, and SHALL advance its stop status
-to the next unparsed structure of the § 5.18.2 tail (`read_tx_mode()`,
-§ 5.18.8.1). When an `lr_params()` plane signals a frame-level Wiener filter,
-the parser SHALL stop honestly before the unmodeled `read_wienerns_filter()`
-bank decode, naming the missing coverage and preserving the pre-Wiener facts.
-An EOF inside the new cluster SHALL preserve the already-parsed frame facts.
+sequence restoration/CCSO configuration, and SHALL continue into the § 5.18.2
+tail (`read_tx_mode()`, § 5.18.8.1, and beyond — see the *complete intra
+frame-header parsing* requirement). When an `lr_params()` plane signals a
+frame-level Wiener filter, the parser SHALL stop honestly before the unmodeled
+`read_wienerns_filter()` bank decode, naming the missing coverage and preserving
+the pre-Wiener facts. An EOF inside the new cluster SHALL preserve the
+already-parsed frame facts.
 
 #### Scenario: intra frame parses lr and ccso params
 
 - **WHEN** an intra frame header reaches the post-CDEF tail with the
   gating sequence configuration parsed
-- **THEN** the loop-restoration and CCSO parameters are parsed and the
-  stop status names the next unparsed structure (`read_tx_mode()`)
+- **THEN** the loop-restoration and CCSO parameters are parsed and parsing
+  continues into the § 5.18.2 tail
 
 #### Scenario: frame-level Wiener filter stops honestly
 

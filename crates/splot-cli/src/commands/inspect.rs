@@ -22,10 +22,10 @@ use splot_core::headers::content_interpretation::{
 use splot_core::headers::film_grain::{FilmGrainObu, parse_film_grain};
 use splot_core::headers::frame::{
     CcsoParams, CcsoPlaneParams, CdefParams, CdefStrengthSet, DeblockingFilterParams, DeltaQParams,
-    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderPrefix,
-    FrameReferenceStateView, GdfParams, LosslessInfo, LrParams, LrPartialParams, LrPlaneParams,
-    QuantizationParams, SegmentationParams, SetupQmParams, TileInfo, parse_frame_header_core,
-    parse_frame_header_prefix,
+    FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
+    FrameHeaderPrefix, FrameHeaderTail, FrameReferenceStateView, GdfParams, LosslessInfo, LrParams,
+    LrPartialParams, LrPlaneParams, QuantizationParams, SegmentationParams, SetupQmParams,
+    TileInfo, parse_frame_header_core, parse_frame_header_prefix,
 };
 use splot_core::headers::metadata::{MetadataUnit, parse_metadata_group, parse_metadata_short};
 use splot_core::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
@@ -668,6 +668,10 @@ struct FrameHeaderCoreView {
     #[serde(skip_serializing_if = "Option::is_none")]
     frame_is_intra: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    immediate_output_frame: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    implicit_output_frame: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     order_hint_lsb: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     refresh_frame_flags: Option<u32>,
@@ -701,6 +705,10 @@ struct FrameHeaderCoreView {
     lr_partial: Option<LrPartialParamsView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ccso: Option<CcsoParamsView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    intra_tail: Option<FrameHeaderTailView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sef_film_grain: Option<FilmGrainConfigView>,
     consumed_bits: u64,
 }
 
@@ -1099,6 +1107,58 @@ impl CcsoParamsView {
     }
 }
 
+/// Parsed `film_grain_config()` for `--json` (AV2 § 5.18.10.1). `fgm_id` / `grain_seed`
+/// are omitted when `apply_grain` is `0`.
+#[derive(Serialize)]
+struct FilmGrainConfigView {
+    apply_grain: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fgm_id: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grain_seed: Option<u16>,
+}
+
+impl FilmGrainConfigView {
+    fn new(config: &FilmGrainConfig) -> Self {
+        Self {
+            apply_grain: config.apply_grain,
+            fgm_id: config.fgm_id,
+            grain_seed: config.grain_seed,
+        }
+    }
+}
+
+/// Parsed § 5.18.2 intra tail for `--json` (`read_tx_mode()` § 5.18.8.1,
+/// `frame_reference_mode()` § 5.18.8.3, `skip_mode_params()` § 5.18.8.2, the inferred
+/// `allow_bawp` / `allow_warpmv_mode`, `reduced_tx_set`, `global_motion_params()`
+/// § 5.18.9.1 intra arm, and `film_grain_config()` § 5.18.10.1).
+#[derive(Serialize)]
+struct FrameHeaderTailView {
+    tx_mode: &'static str,
+    reference_select: bool,
+    skip_mode_present: bool,
+    allow_bawp: bool,
+    allow_warpmv_mode: bool,
+    reduced_tx_set: u8,
+    use_global_motion: bool,
+    film_grain: FilmGrainConfigView,
+}
+
+impl FrameHeaderTailView {
+    fn new(tail: &FrameHeaderTail) -> Self {
+        Self {
+            tx_mode: tail.tx_mode.label(),
+            reference_select: tail.reference_select,
+            skip_mode_present: tail.skip_mode_present,
+            allow_bawp: tail.allow_bawp,
+            allow_warpmv_mode: tail.allow_warpmv_mode,
+            reduced_tx_set: tail.reduced_tx_set,
+            use_global_motion: tail.use_global_motion,
+            film_grain: FilmGrainConfigView::new(&tail.film_grain),
+        }
+    }
+}
+
 impl FrameHeaderCoreView {
     fn new(core: &FrameHeaderCore) -> Self {
         Self {
@@ -1109,6 +1169,8 @@ impl FrameHeaderCoreView {
             show_existing_frame: core.show_existing_frame,
             frame_type: core.frame_type.map(|frame_type| frame_type.label()),
             frame_is_intra: core.frame_is_intra,
+            immediate_output_frame: core.immediate_output_frame,
+            implicit_output_frame: core.implicit_output_frame,
             order_hint_lsb: core.order_hint_lsb,
             refresh_frame_flags: core.refresh_frame_flags,
             frame_size: core.frame_size.map(|size| FrameSizeView {
@@ -1141,6 +1203,8 @@ impl FrameHeaderCoreView {
                 .as_ref()
                 .map(LrPartialParamsView::new),
             ccso: core.ccso_params.as_ref().map(CcsoParamsView::new),
+            intra_tail: core.intra_tail.as_ref().map(FrameHeaderTailView::new),
+            sef_film_grain: core.sef_film_grain.as_ref().map(FilmGrainConfigView::new),
             consumed_bits: core.consumed_bits,
         }
     }

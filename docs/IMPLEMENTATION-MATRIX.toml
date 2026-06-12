@@ -2620,7 +2620,7 @@ openspec_change = "frame-loop-restoration-ccso-params"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. State-aware core parser (FrameHeaderParseMode::Core) over the control region: derived frame-kind flags, bridge_frame_ref_idx, the single-picture / show-existing-frame branch, frame-type determination, long-term id, output-control flags, order_hint, and refresh_frame_flags. Under mfh-frame-header-state the two cur_mfh_id > 0 stops that previously fired purely for missing MFH state are removed: with the resolved MultiFrameHeaderRecord threaded in, the intra path parses through frame_size() (AV2-5.18.4-FRAME-SIZE) and segmentation_params() (AV2-5.18.7-SEGMENTATION-TILING) on the cur_mfh_id > 0 path the same as cur_mfh_id == 0. Under frame-filtering-deblocking-gdf-cdef the intra-path stop advanced past the §5.18.2 tail loop-filter cluster — deblocking_filter_params() (AV2-5.18.5-FILTERING), gdf_params(), and cdef_params() (both AV2-5.18.7-SEGMENTATION-TILING). Under frame-loop-restoration-ccso-params the stop advances further past lr_params() (§5.18.7.11) and ccso_params() (§5.18.7.12, both AV2-5.18.7-SEGMENTATION-TILING), so the terminal intra stop is renamed StoppedBeforeReadTxMode (the next unparsed structure is read_tx_mode(), §5.18.8.1, mirror :5307). On the intra path NumTotalRefs == 0 (mirror :4573), so lr_params()'s temporal-prediction arm and ccso_params()'s reuse arm are dead. When an lr plane signals frame_filters_on, lr_params() reaches the unmodeled read_wienerns_filter() frame-level Wiener bank decode (search_frame_filters/predict_group/decode_signed_subexp_with_ref over the Wiener_Ns_Taps_* tables): the parser stops honestly with StoppedBeforeWienerNsFilter (feature_id AV2-5.18.7-SEGMENTATION-TILING), preserving the control-region and pre-Wiener facts. A payload that ends INSIDE the cluster (deblocking through ccso) does not fail the whole core parse: parse_filter_cluster() converts the payload-EOF into StoppedInsideFilterParams, preserving the already-parsed control-region facts (frame_size, output flags, tile/quant/segmentation, and any completed cluster structure) and leaving the unreached fields None, so the validator/inspect .ok() of the core still sees those facts (e.g. frame-header/frame-size-exceeds-sequence-max fires on a frame truncated inside deblocking). There is no frame-header-payload truncation diagnostic surface, so the truncation is preserved as facts + Unknown routing rather than a new rule. A cur_mfh_id > 0 frame whose in-band MFH is unresolvable still stops with UnsupportedUntilFeature (no guessing). parse stays partial until all of §5.18.2 is consumed; the read_wienerns_filter() frame-level Wiener bank decode, read_tx_mode() and the rest of the §5.18.2 tail, the inter-path arms (including §5.18.5.1 read_interpolation_filter()), the explicit reference map, primary-reference range, and frame_header_copy() remain TODO."
+notes = "Child row of AV2-5.18-FRAME-HEADER. State-aware core parser (FrameHeaderParseMode::Core) over the control region: derived frame-kind flags, bridge_frame_ref_idx, the single-picture / show-existing-frame branch, frame-type determination, long-term id, output-control flags, order_hint, and refresh_frame_flags. Under mfh-frame-header-state the two cur_mfh_id > 0 stops that previously fired purely for missing MFH state are removed: with the resolved MultiFrameHeaderRecord threaded in, the intra path parses through frame_size() (AV2-5.18.4-FRAME-SIZE) and segmentation_params() (AV2-5.18.7-SEGMENTATION-TILING) on the cur_mfh_id > 0 path the same as cur_mfh_id == 0. Under frame-filtering-deblocking-gdf-cdef the intra-path stop advanced past the §5.18.2 tail loop-filter cluster — deblocking_filter_params() (AV2-5.18.5-FILTERING), gdf_params(), and cdef_params() (both AV2-5.18.7-SEGMENTATION-TILING). Under frame-loop-restoration-ccso-params the stop advanced past lr_params() (§5.18.7.11) and ccso_params() (§5.18.7.12, both AV2-5.18.7-SEGMENTATION-TILING). Under frame-header-intra-tail-completion the intra path is now PARSED TO COMPLETION: after ccso_params() the §5.18.2 tail parses read_tx_mode() (AV2-5.18.8-TRANSFORM-CODING-MODES), the no-bit frame_reference_mode()/skip_mode_params() intra inferences (same row), the no-bit allow_bawp/allow_warpmv_mode inferences, reduced_tx_set f(2), the no-bit global_motion_params() intra arm (AV2-5.18.9-GLOBAL-MOTION), and film_grain_config() (AV2-5.18.10-FILM-GRAIN-STRUCTURES), reaching the terminal IntraHeaderComplete (parse_intra_tail_structures, crates/splot-core/src/headers/frame/tail.rs). The show-existing-frame path likewise completes (ShowExistingFrameComplete) after its film_grain_config(). On the intra path NumTotalRefs == 0 (mirror :4573), so lr_params()'s temporal-prediction arm and ccso_params()'s reuse arm are dead. When an lr plane signals frame_filters_on, lr_params() reaches the unmodeled read_wienerns_filter() frame-level Wiener bank decode: the parser stops honestly with StoppedBeforeWienerNsFilter (feature_id AV2-5.18.7-SEGMENTATION-TILING), preserving the control-region and pre-Wiener facts. A payload that ends INSIDE the loop-filter cluster (deblocking through ccso) reports StoppedInsideFilterParams; a payload that ends INSIDE the §5.18.2 tail reports StoppedInsideIntraTail — both preserve the already-parsed facts and leave the unreached fields None, so the validator/inspect .ok() of the core still sees those facts. A cur_mfh_id > 0 frame whose in-band MFH is unresolvable still stops with UnsupportedUntilFeature (no guessing). Residuals: trailing-bits validation of a complete frame-carrying OBU is NOT yet decidable — the frame header is followed by the rest of tile_group_obu() (§5.19, AV2-5.19-TILE-GROUP), whose bru_inactive headerBits/remainingBits trailing_bits() tail needs NumFrameHeaderBits accounting (the next backlog change); the inter/TIP/switch/RAS-path arms (including §5.18.5.1 read_interpolation_filter(), the §5.18.8 inter coding-mode arms, the §5.18.9 inter global-motion warp decode, the explicit reference map, primary-reference range), the bridge-frame remainder, the read_wienerns_filter() Wiener bank decode, and frame_header_copy() remain TODO."
 
 [feature.status]
 mapped = "done"
@@ -2635,7 +2635,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/frame/info.rs::tests", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_mfh_default_dims_parse_through_tile_info", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_unresolvable_mfh_default_size_stays_unsupported", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_intra_tail_parses_full_structure_cluster", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_intra_tail_parses_lr_and_ccso_to_read_tx_mode", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_frame_filters_on_stops_before_wienerns", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_eof_inside_deblocking_filter_params_preserves_facts", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_eof_inside_gdf_params_preserves_facts", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_eof_inside_cdef_params_preserves_facts", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_eof_inside_ccso_params_preserves_facts", "crates/splot-validate/src/validator.rs::tests::validator_flags_frame_size_exceeds_max_when_truncated_inside_deblocking", "crates/splot-validate/src/validator.rs::tests::validator_flags_bridge_ref_index_out_of_range", "crates/splot-validate/src/validator.rs::tests::validator_flags_ras_requires_long_term_frame_id_bits", "crates/splot-validate/src/validator.rs::tests::celu_mfh_backed_frame_is_decided_not_unknown", "crates/splot-cli/tests/cli.rs::inspect_json_exposes_mfh_backed_frame_header_core"]
+tests = ["crates/splot-core/src/headers/frame/info.rs::tests", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_mfh_default_dims_parse_through_tile_info", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_unresolvable_mfh_default_size_stays_unsupported", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_intra_tail_parses_full_structure_cluster", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_intra_tail_parses_lr_ccso_and_tail_to_completion", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_eof_inside_intra_tail_preserves_cluster_facts", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_intra_tail_with_grain_present_reads_id_and_seed", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_sef_with_grain_reads_apply_grain_then_completes", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_sef_eof_inside_film_grain_preserves_facts", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_frame_filters_on_stops_before_wienerns", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_eof_inside_deblocking_filter_params_preserves_facts", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_eof_inside_ccso_params_preserves_facts", "crates/splot-validate/src/validator.rs::tests::validator_flags_frame_size_exceeds_max_when_truncated_inside_deblocking", "crates/splot-validate/src/validator.rs::tests::validator_flags_bridge_ref_index_out_of_range", "crates/splot-validate/src/validator.rs::tests::validator_flags_ras_requires_long_term_frame_id_bits", "crates/splot-validate/src/validator.rs::tests::celu_mfh_backed_frame_is_decided_not_unknown", "crates/splot-cli/tests/cli.rs::inspect_json_exposes_mfh_backed_frame_header_core"]
 commands = ["cargo test -p splot-core frame_header", "cargo test -p splot-validate frame_header", "cargo test -p splot-validate celu_mfh", "cargo test -p splot-cli mfh"]
 fixtures = ["tests/fixtures/frame-header-core.av2", "tests/fixtures/frame-header-core-mfh.av2"]
 diagnostics = ["hls/unavailable-sequence-header", "hls/unavailable-multi-frame-header", "frame-header/seq-header-id-out-of-range", "frame-header/cur-mfh-id-out-of-range", "frame-header/bridge-ref-index-out-of-range", "frame-header/ras-requires-long-term-frame-id-bits"]
@@ -2927,31 +2927,31 @@ name = "Frame transform and coding mode syntax"
 category = "normative"
 kind = "bitstream-syntax"
 spec_sections = ["5.18.8", "6.17"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+sources = ["docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-8"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/frame/tail.rs"
+openspec_change = "frame-header-intra-tail-completion"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation. When implementing, narrow spec_sections to the exact §6.17 subsection if the spec has one."
+notes = "Child row of AV2-5.18-FRAME-HEADER. The §5.18.2 intra tail parses the §5.18.8 coding-mode structures via crates/splot-core/src/headers/frame/tail.rs (parse_intra_tail): read_tx_mode() (§5.18.8.1, mirror :7634) reads tx_mode_select f(1) gated on the already-derived CodedLossless (TxMode = ONLY_4X4 when CodedLossless == 1, no bit); frame_reference_mode() (§5.18.8.3, mirror :7739) infers reference_select = 0 on the intra path (no bit); skip_mode_params() (§5.18.8.2, mirror :7671) infers skipModeAllowed = 0 / skip_mode_present = 0 on the intra path (FrameIsIntra, no bit). The inter-path arms (tx_mode_select always read, reference_select f(1), skip_mode_present gating with the get_relative_dist/OrderHints derivation) need reference-frame state and remain TODO (blocked on AV2-5.18.2-FRAME-HEADER-INFO inter-path parsing)."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "partial"
+parse = "partial"
+validate = "not-applicable"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "partial"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
+tests = ["crates/splot-core/src/headers/frame/tail.rs::tests", "crates/splot-core/src/headers/frame/tail.rs::tests::read_tx_mode_lossless_reads_no_bits", "crates/splot-core/src/headers/frame/tail.rs::tests::read_tx_mode_select_and_largest", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_intra_tail_parses_lr_ccso_and_tail_to_completion", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_mfh_omitted_size_infers_sequence_maxima"]
+commands = ["cargo test -p splot-core frame::tail", "cargo test -p splot-core frame_header"]
+fixtures = ["tests/fixtures/frame-header-core.av2", "tests/fixtures/frame-header-core-mfh.av2"]
 diagnostics = []
 
 [[feature]]
@@ -2960,31 +2960,31 @@ name = "Frame global motion syntax"
 category = "normative"
 kind = "bitstream-syntax"
 spec_sections = ["5.18.9", "6.17"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+sources = ["docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-9"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/frame/tail.rs"
+openspec_change = "frame-header-intra-tail-completion"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation. When implementing, narrow spec_sections to the exact §6.17 subsection if the spec has one."
+notes = "Child row of AV2-5.18-FRAME-HEADER. The §5.18.9.1 global_motion_params() intra arm is modeled in crates/splot-core/src/headers/frame/tail.rs (parse_intra_tail): on the intra path the structure returns immediately (FrameIsIntra, mirror :7792) — every GmType[ref] is IDENTITY and gm_params are the identity warp — reading NO bits, so use_global_motion is recorded false as a derivation. The inter arm (use_global_motion f(1), the per-reference baseParams/baseDistance setup, gm_type ns, and the subexp-coded warp-parameter decode decode_signed_subexp_with_ref over the gm_params) is its own backlog change and remains TODO."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "partial"
+parse = "partial"
+validate = "not-applicable"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "partial"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
+tests = ["crates/splot-core/src/headers/frame/tail.rs::tests::parse_intra_tail_full_lossy_with_grain", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_intra_tail_parses_lr_ccso_and_tail_to_completion"]
+commands = ["cargo test -p splot-core frame::tail", "cargo test -p splot-core frame_header"]
+fixtures = ["tests/fixtures/frame-header-core.av2"]
 diagnostics = []
 
 [[feature]]
@@ -2992,32 +2992,32 @@ id = "AV2-5.18.10-FILM-GRAIN-STRUCTURES"
 name = "Frame film grain structures syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.18.10", "6.17"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+spec_sections = ["5.18.10", "6.17.10.1"]
+sources = ["docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-10", "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-10-1"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/frame/tail.rs"
+openspec_change = "frame-header-intra-tail-completion"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation. When implementing, narrow spec_sections to the exact §6.17 subsection if the spec has one."
+notes = "Child row of AV2-5.18-FRAME-HEADER. film_grain_config() (§5.18.10.1, mirror :8163) is parsed in crates/splot-core/src/headers/frame/tail.rs (parse_film_grain_config) on both the intra tail and the show-existing-frame path: the apply_grain derivation (§5.18.10.1 :8165 — inferred 0 when !film_grain_params_present or neither output flag set; inferred 1 for a single-picture header; else f(1)), then fgm_id f(3) and grain_seed f(16) when apply_grain. The load_grain_model( fgm_id ) call (mirror :8183) reads NO bits — per §6.17.10.1 it is a memory-load reference to a film-grain model slot previously decoded by a film_grain_obu() (§5.14), so no in-band film_grain_model() (§5.18.10.2) syntax is present here and the §5.14 FilmGrainModel parser (AV2-5.14-FILM-GRAIN, crates/splot-core/src/headers/film_grain.rs) is intentionally not invoked from the frame-header path. The §5.18.10.2 in-band film_grain_model() is parsed only in its §5.14 OBU context (that row). HLS reference checks on fgm_id (§6.17.10.1 FgmTLayerId/FgmMLayerId/FgmChromaIdc availability) need the cross-OBU film-grain model store and remain a validate residual."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "partial"
+parse = "done"
+validate = "partial"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "partial"
+tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
+tests = ["crates/splot-core/src/headers/frame/tail.rs::tests", "crates/splot-core/src/headers/frame/tail.rs::tests::film_grain_config_single_picture_infers_apply_grain_one_then_reads_id_and_seed", "crates/splot-core/src/headers/frame/tail.rs::tests::film_grain_config_reads_apply_grain_bit_then_fields", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_intra_tail_with_grain_present_reads_id_and_seed", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_sef_with_grain_reads_apply_grain_then_completes", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_sef_eof_inside_film_grain_preserves_facts"]
+commands = ["cargo test -p splot-core frame::tail", "cargo test -p splot-core frame_header"]
+fixtures = ["tests/fixtures/frame-header-core.av2"]
 diagnostics = []
 
 [[feature]]
