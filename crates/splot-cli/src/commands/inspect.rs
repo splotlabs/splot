@@ -88,6 +88,8 @@ struct InspectRecord {
     frame_header_prefix: Option<FrameHeaderPrefixView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     frame_header_core: Option<FrameHeaderCoreView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_header_copy: Option<FrameHeaderCopyView>,
     header: ObuHeader,
 }
 
@@ -119,6 +121,7 @@ impl InspectRecord {
             metadata_group: metadata_group_view(obu),
             frame_header_prefix: frame_header_prefix_view(obu),
             frame_header_core: frame_header_core_view(obu, sequences, multi_frame_headers),
+            frame_header_copy: frame_header_copy_view(obu),
             header: obu.header,
         }
     }
@@ -525,6 +528,49 @@ fn frame_header_prefix_view(obu: &ObuEnvelope<'_>) -> Option<FrameHeaderPrefixVi
         return None;
     };
     Some(FrameHeaderPrefixView::new(&prefix))
+}
+
+/// Surfaces the `frame_header_copy()` region of a non-first tile group (AV2 § 5.18.1).
+///
+/// A non-first tile group (`is_first_tile_group == 0`) with `frame_header_present_flag ==
+/// 1` carries `frame_header_copy()` — a bit copy of the first tile group's frame header
+/// (§ 5.18.1 mirror :3960-3981). The inspector is stateless per OBU, so it surfaces the
+/// *presence* and start position of the copy region; the § 6.17.1 bit-identity comparison
+/// against the first header (`frame-header/copy-bits-mismatch` /
+/// `frame-header/copy-bits-truncated`) is a stateful validator check, not surfaced here.
+fn frame_header_copy_view(obu: &ObuEnvelope<'_>) -> Option<FrameHeaderCopyView> {
+    if !obu.header.obu_type.is_tile_group() {
+        return None;
+    }
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    let is_first_tile_group = reader.read_bit().ok()? != 0;
+    if is_first_tile_group {
+        // A first tile group carries frame_header( 1 ), surfaced via frame_header_core; it
+        // has no copy region.
+        return None;
+    }
+    let frame_header_present_flag = reader.read_bit().ok()? != 0;
+    if !frame_header_present_flag {
+        // frame_header_present_flag == 0: no frame_header_copy() in this tile group.
+        return None;
+    }
+    Some(FrameHeaderCopyView {
+        payload_kind: "frame_header_copy",
+        // The copy region begins at the reader's current position (after the
+        // is_first_tile_group and frame_header_present_flag bits).
+        copy_region_start_byte: reader.byte_offset().get(),
+        // The comparison needs the coded frame's first header (cross-OBU state the
+        // stateless inspector does not hold); the validator performs it.
+        compared: false,
+    })
+}
+
+/// A non-first tile group's `frame_header_copy()` presence view for `--json`.
+#[derive(Serialize)]
+struct FrameHeaderCopyView {
+    payload_kind: &'static str,
+    copy_region_start_byte: u64,
+    compared: bool,
 }
 
 /// A prefix-only view of a parsed `frame_header_info()` for `--json`. The

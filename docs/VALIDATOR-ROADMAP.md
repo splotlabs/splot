@@ -435,17 +435,40 @@ The inter-path arms of every child remain partial/todo.
   § 5.18.10.1 state no requirement of bitstream conformance on the parsed intra
   fields, and the fgm_id HLS-availability checks need the cross-OBU film-grain
   model store (deferred).
-- **Remaining:** trailing-bits validation of a complete frame-carrying OBU is not
-  yet decidable — the frame header is followed by the rest of `tile_group_obu()`
-  (§ 5.19, `AV2-5.19-TILE-GROUP`), whose `bru_inactive` `headerBits` /
-  `remainingBits` `trailing_bits()` tail needs `NumFrameHeaderBits` accounting (the
-  next backlog change). Also remaining: the `read_wienerns_filter()` frame-level
-  Wiener bank decode, the inter frame-header paths (including the inter § 5.18.8
-  coding-mode arms, the § 5.18.9 inter global-motion warp decode, the inter
-  `cur_mfh_id > 0` arms, § 5.18.5.1 `read_interpolation_filter()`), the bridge-frame
-  remainder, `frame_header_copy()`, and the § 6.17.6.2 layer-dependency constraints
-  (the §5.4.1 dependency maps are now exposed by the sequence-header model; the
-  checks themselves are not implemented yet).
+- **Landed** (OpenSpec `frame-header-copy-bit-accounting`): the § 5.18.1
+  `NumFrameHeaderBits` accounting and the `frame_header( isFirst == 0 )` ==
+  `frame_header_copy()` path are now modeled for completed-intra first headers. When a
+  first tile group's `frame_header_info()` reaches `IntraHeaderComplete`, the core's
+  `consumed_bits` is `NumFrameHeaderBits` (mirror :3924), and `splot-core` records the
+  exact first-header bits (`RecordedFrameHeaderBits`, starting after the
+  `tile_group_obu()` `is_first_tile_group` flag per § 6.17.1 mirror :4303-4305) and
+  parses a non-first tile group's `frame_header_copy()` as exactly that many
+  `header_bit` `f(1)` reads, comparing bit-for-bit (`parse_frame_header_copy`,
+  `crates/splot-core/src/headers/tile_group.rs`). The validator
+  (`observe_frame_header_copy` / `check_frame_header_copy`,
+  `crates/splot-validate/src/context.rs`) pairs a non-first tile group with ITS coded
+  frame's first tile group using the `FrameUnitSegmenter` boundary authority
+  (`OpensNewUnit` records, `ContinuesUnit` compares, `Ambiguous` drops), keyed per
+  `(xlayer, mlayer, tlayer)` and cleared at each temporal delimiter. § 6.17.1 makes
+  bit-identity a requirement of bitstream conformance (mirror :4299-4300), surfaced as
+  `frame-header/copy-bits-mismatch`; a copy region shorter than `NumFrameHeaderBits` is
+  a § 5.18.1 / § 6.2.1 truncation, `frame-header/copy-bits-truncated`. An incomplete /
+  coverage-stopped / unresolvable first header records nothing (the copy region stays
+  unparsed, Unknown routing). This gives non-first tile groups an EXACT header/tile-data
+  boundary (the still-undecidable half is the FIRST tile group's tile-data boundary,
+  which needs § 5.19 / § 5.20 modeling). `inspect` surfaces the copy region's presence
+  on non-first tile groups (`frame_header_copy` view).
+- **Remaining:** trailing-bits validation of a complete FIRST-tile-group frame-carrying
+  OBU is not yet decidable — its frame header is followed by the rest of
+  `tile_group_obu()` (§ 5.19, `AV2-5.19-TILE-GROUP`), whose `bru_inactive` `headerBits`
+  / `remainingBits` `trailing_bits()` tail and the § 5.20 tile payload still need
+  modeling. Also remaining: the `read_wienerns_filter()` frame-level Wiener bank decode,
+  the inter frame-header paths (including the inter § 5.18.8 coding-mode arms, the
+  § 5.18.9 inter global-motion warp decode, the inter `cur_mfh_id > 0` arms, § 5.18.5.1
+  `read_interpolation_filter()`), the bridge-frame remainder, `frame_header_copy()` for
+  an INTER first header (the gate extends when the inter path completes), and the
+  § 6.17.6.2 layer-dependency constraints (the §5.4.1 dependency maps are now exposed by
+  the sequence-header model; the checks themselves are not implemented yet).
   `AV2-5.18-FRAME-HEADER` and `AV2-5.19-TILE-GROUP` therefore stay `partial`,
   not `done`.
 
