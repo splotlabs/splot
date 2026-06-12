@@ -347,9 +347,19 @@ pub fn parse_global_motion_params(
     }
 
     // mirror :7853-7857: the per-reference loop reads warp bits for a reference only when
-    // dist != 0 && OrderHints[ ref ] != RESTRICTED_OH. Both OrderHint and OrderHints[ ref ]
-    // are cross-frame order-hint state, so the presence of the first per-reference bit is
-    // undeterminable here — stop honestly at the loop boundary.
+    // dist != 0 && OrderHints[ ref ] != RESTRICTED_OH. With zero references the loop has no
+    // iterations, consults no cross-frame state, and the structure completes (stop: None).
+    if input.num_total_refs == 0 {
+        return Ok(GlobalMotionParams {
+            use_global_motion: true,
+            our_ref: Some(our_ref),
+            stop: None,
+            references,
+        });
+    }
+    // Otherwise both OrderHint and OrderHints[ ref ] are cross-frame order-hint state, so
+    // the presence of the first per-reference bit is undeterminable here — stop honestly at
+    // the loop boundary.
     Ok(GlobalMotionParams {
         use_global_motion: true,
         our_ref: Some(our_ref),
@@ -415,9 +425,12 @@ pub fn decode_signed_subexp_with_ref(
     k: u32,
 ) -> Result<i64> {
     // mirror :8034: x = decode_unsigned_subexp_with_ref( high - low, r - low, k ).
-    let x = decode_unsigned_subexp_with_ref(reader, high - low, r - low, k)?;
+    // Saturating spans: in-spec warp bounds never saturate, but this helper is public and
+    // a constructed (low, high, r) such as (i64::MIN, i64::MAX, _) must not overflow-panic;
+    // a saturated span keeps the ordering semantics and stays panic-free.
+    let x = decode_unsigned_subexp_with_ref(reader, high.saturating_sub(low), r.saturating_sub(low), k)?;
     // mirror :8036: return x + low.
-    Ok(x + low)
+    Ok(x.saturating_add(low))
 }
 
 /// `decode_unsigned_subexp_with_ref( mx, r, k )` (AV2 v1.0.0 § 5.18.9.4, mirror
@@ -434,12 +447,15 @@ pub fn decode_unsigned_subexp_with_ref(
     // mirror :8052: v = decode_subexp( mx, k ). decode_subexp's bit reads depend only on mx
     // and k; r recenters the decoded value below (so r never affects the bit position).
     let v = decode_subexp(reader, mx, k)?;
-    // mirror :8054-8062: recenter v around r. `r << 1` is computed in i64; the comparison
-    // and the inverse_recenter arithmetic stay in i64 (no overflow for the bounded warp r).
-    if (r << 1) <= mx {
+    // mirror :8054-8062: recenter v around r. The doubling comparison runs in i128 so an
+    // arbitrary public-API r never overflow-panics (in-spec warp values are far inside
+    // range); the else arm uses the same wrapping arithmetic contract as inverse_recenter
+    // (panic-free; out-of-contract inputs yield wrapped values, never UB or a panic).
+    if i128::from(r) * 2 <= i128::from(mx) {
         Ok(inverse_recenter(r, v))
     } else {
-        Ok(mx - 1 - inverse_recenter(mx - 1 - r, v))
+        let mirrored = inverse_recenter(mx.wrapping_sub(1).wrapping_sub(r), v);
+        Ok(mx.wrapping_sub(1).wrapping_sub(mirrored))
     }
 }
 
@@ -484,7 +500,10 @@ pub fn decode_subexp(reader: &mut BitReader<'_>, num_syms: i64, k: u32) -> Resul
             // mirror :8090-8094: n = numSyms - mk; subexp_final_bits ns(n); return + mk.
             // num_syms_u >= mk here (mk only advances while num_syms_u > mk + 3*a > mk, so the
             // previous mk was < num_syms_u and mk += a kept it < num_syms_u — see the module
-            // overflow note), so n >= 1; the i64 cast below is exact for the bounded n.
+            // overflow note). For num_syms_u >= 1 the first iteration has mk == 0 <
+            // num_syms_u, so n >= 1; the degenerate num_syms_u == 0 input yields n == 0 and
+            // read_ns(0) correctly rejects it with InvalidNs. The i64 cast below is exact
+            // for the bounded n.
             let n = num_syms_u - mk;
             let n_u32 = u32::try_from(n).unwrap_or(u32::MAX);
             let final_bits = u64::from(reader.read_ns(n_u32)?);
@@ -802,6 +821,41 @@ mod tests {
             num_total_refs: u32::try_from(ref_frame_idx.len()).unwrap(),
             ref_frame_idx,
         }
+    }
+
+    #[test]
+    fn zero_total_refs_completes_without_stop() {
+        // mirror :7853-7857: with NumTotalRefs == 0 the per-reference loop has zero
+        // iterations and consults no cross-frame state, so the structure COMPLETES
+        // (stop: None) instead of reporting an honest stop (codex PR #64 review).
+        // Bits: use_global_motion == 1, then our_ref ns(1) reads no bits (n == 1 ->
+        // single symbol 0 == NumTotalRefs -> the base-load arm is skipped).
+        let input = base_input(&[]);
+        let mut r = reader(&[0b1000_0000]);
+        let gm = parse_global_motion_params(&mut r, &input).unwrap();
+        assert!(gm.use_global_motion);
+        assert_eq!(gm.our_ref, Some(0));
+        assert_eq!(gm.stop, None, "a zero-reference loop is complete, not stopped");
+    }
+
+    #[test]
+    fn signed_subexp_extreme_bounds_do_not_panic() {
+        // Public-API hardening (codex PR #64 review): (low, high, r) spans like
+        // (i64::MIN, i64::MAX, 0) must not overflow-panic; the saturated span keeps the
+        // call panic-free and returns a structured result.
+        let mut r = reader(&[0x00, 0x00, 0x00, 0x00]);
+        let _ = decode_signed_subexp_with_ref(&mut r, i64::MIN, i64::MAX, 0, 1);
+    }
+
+    #[test]
+    fn unsigned_subexp_extreme_recenter_does_not_panic() {
+        // Public-API hardening (codex PR #64 review): an arbitrary r outside
+        // i64::MIN/2..=i64::MAX/2 must not overflow the doubling comparison (run in
+        // i128) or the mirrored recenter arm (wrapping, like inverse_recenter).
+        let mut r = reader(&[0x00, 0x00, 0x00, 0x00]);
+        let _ = decode_unsigned_subexp_with_ref(&mut r, i64::MAX, i64::MAX - 1, 1);
+        let mut r2 = reader(&[0x00, 0x00, 0x00, 0x00]);
+        let _ = decode_unsigned_subexp_with_ref(&mut r2, 8, i64::MIN, 1);
     }
 
     #[test]
