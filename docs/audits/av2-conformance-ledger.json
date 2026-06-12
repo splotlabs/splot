@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "3f9bc9069fd5bc56d19fdf9c5d9256f08083026b",
+  "audited_commit": "64aa102f007118a47ebfd0313b8bfb150bbebc32",
   "outcome": "success",
   "files": [
     {
@@ -436,7 +436,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/global_motion.rs",
-      "sha256": "e63c9f239e47991899ef4dc7786c70be8fa5c346868107ccf913e3388a715a8c",
+      "sha256": "3280ab64c77ec546d4d8a7a69830c1b37244e27f2b67d71e96c99dce46f9633a",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.9-GLOBAL-MOTION"
