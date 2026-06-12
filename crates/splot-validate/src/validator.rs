@@ -201,6 +201,12 @@ mod tests {
             self.bits.len()
         }
 
+        /// The raw per-bit values accumulated so far (one `u8` per bit), consuming the
+        /// builder. Used to replay a bit sequence verbatim (e.g. a `frame_header_copy()`).
+        fn drain_bits(self) -> Vec<u8> {
+            self.bits
+        }
+
         fn into_bytes(self) -> Vec<u8> {
             let mut bytes = Vec::new();
             for chunk in self.bits.chunks(8) {
@@ -5127,6 +5133,397 @@ mod tests {
                 .errors()
                 .any(|d| d.rule_id == "frame-header/truncated-frame-header"),
             "an unresolvable-MFH coverage stop must NOT fire truncated-frame-header; report was: {report}"
+        );
+    }
+
+    /// The `frame_header()` bits of a complete intra CLK first tile group (the syntax
+    /// AFTER the `tile_group_obu()` `is_first_tile_group` flag) for a
+    /// [`frame_core_seq_payload`] base sequence. Reaches `IntraHeaderComplete`. The same
+    /// bit sequence is the `frame_header_copy()` a conformant non-first tile group must
+    /// carry (AV2 § 5.18.1 / § 6.17.1).
+    fn complete_intra_clk_frame_header_body() -> Bits {
+        let mut fb = Bits::default();
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // immediate_output_frame
+        fb.bit(0); // frame_size_override_flag == 0 (max dims 16x16)
+        fb.f(0, 1); // order_hint f(1)
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0); // structure + loop-filter cluster (no bits past)
+        fb.bit(0); // tx_mode_select = 0
+        fb.f(0, 2); // reduced_tx_set = 0
+        fb
+    }
+
+    /// A complete intra CLK FIRST tile group OBU: `is_first_tile_group == 1` then the
+    /// frame header body (AV2 § 5.19 / § 5.18.1).
+    fn clk_first_tile_group() -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group -> frame_header_present_flag inferred 1
+        for b in complete_intra_clk_frame_header_body().drain_bits() {
+            fb.bit(b);
+        }
+        annex_b_obu(CLK_HEADER, &fb.into_bytes())
+    }
+
+    /// A CLK NON-FIRST tile group OBU: `is_first_tile_group == 0`,
+    /// `frame_header_present_flag == 1`, then `body_bits` as the `frame_header_copy()`
+    /// region (AV2 § 5.18.1). `body_bits` is appended verbatim so a caller can supply a
+    /// matching, mismatched, or truncated copy.
+    fn clk_non_first_tile_group(body_bits: &[u8]) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(0); // is_first_tile_group == 0
+        fb.bit(1); // frame_header_present_flag == 1 (copy follows)
+        for &b in body_bits {
+            fb.bit(b);
+        }
+        annex_b_obu(CLK_HEADER, &fb.into_bytes())
+    }
+
+    #[test]
+    fn validator_silent_on_matching_frame_header_copy() {
+        // A completed intra first tile group followed by a non-first tile group whose
+        // frame_header_copy() is bit-identical: § 6.17.1 is satisfied, no copy diagnostic.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group());
+        let body = complete_intra_clk_frame_header_body().drain_bits();
+        data.extend(clk_non_first_tile_group(&body));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-header/copy-bits-")),
+            "a bit-identical frame_header_copy() must be silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_frame_header_copy_mismatch() {
+        // The non-first tile group's copy differs from the first header in one bit.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group());
+        let mut body = complete_intra_clk_frame_header_body().drain_bits();
+        // Flip the immediate_output_frame bit (offset 2 of the body, after the two uvlc(0)
+        // single-bit codes) so the copy is no longer bit-identical (§ 6.17.1).
+        body[2] ^= 1;
+        data.extend(clk_non_first_tile_group(&body));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/copy-bits-mismatch"),
+            "a non-bit-identical frame_header_copy() must fire copy-bits-mismatch; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_copy_bits_mismatch_anchors_at_offending_bit() {
+        // Regression (codex round-9 F3): the copy-bits-mismatch diagnostic must anchor at the
+        // precise byte+bit of the differing header_bit, not at the OBU header. The flipped
+        // header_bit is offset 2 of the frame_header body (== mismatch_bit 2). The copy region
+        // starts after the two tile_group_obu() prefix bits, so the offending bit is at
+        // payload bit (2 + 2) == 4: within the FIRST payload byte, MSB-first bit 4. Pre-fix the
+        // diagnostic anchored at the OBU header offset and carried no bit offset.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group());
+        let mut body = complete_intra_clk_frame_header_body().drain_bits();
+        body[2] ^= 1; // flip header_bit[2]
+        // The non-first tile group's OBU header offset (its `obu.offset`): the bytes so far are
+        // the TD + sequence-bearing frame-core preamble + the first CLK tile group; the
+        // non-first tile group's leb128 length byte precedes its header byte, whose offset is
+        // `data.len() + 1` once we know the preamble length. Capture it before appending.
+        let non_first_header_offset = (data.len() + 1) as u64;
+        data.extend(clk_non_first_tile_group(&body));
+        let report = Validator::new(false).validate_bytes(&data);
+        // The differing bit is the OBU payload's first byte (header offset + 1), MSB-first
+        // bit 4. Assert the precise anchor on the fired mismatch (no panicking unwrap/expect).
+        let payload_first_byte = non_first_header_offset + 1;
+        let precise = report.errors().find(|d| {
+            d.rule_id == "frame-header/copy-bits-mismatch"
+                && d.byte_offset.map(|b| b.get()) == Some(payload_first_byte)
+                && d.bit_offset.map(|b| b.get()) == Some(4)
+                && d.message.contains("header_bit[2]")
+        });
+        assert!(
+            precise.is_some(),
+            "copy-bits-mismatch must anchor at byte {payload_first_byte} bit 4 (the differing \
+             bit), not the OBU header at {non_first_header_offset}, and carry header_bit[2] in \
+             the message; report was: {report}"
+        );
+        // Control: NO copy-bits-mismatch anchors at the OBU header offset (the pre-fix anchor).
+        assert!(
+            !report.errors().any(|d| {
+                d.rule_id == "frame-header/copy-bits-mismatch"
+                    && d.byte_offset.map(|b| b.get()) == Some(non_first_header_offset)
+            }),
+            "the mismatch must not anchor at the OBU header offset; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_frame_header_copy_truncated() {
+        // The non-first tile group's copy region is shorter than NumFrameHeaderBits: every
+        // available bit matches, but the payload ends before all copied bits (§ 5.18.1 /
+        // § 6.2.1). NumFrameHeaderBits is 26 here; build the full matching non-first OBU,
+        // then truncate its PAYLOAD to 3 whole bytes (24 bits total = 22 copy bits after the
+        // is_first_tile_group + frame_header_present_flag prefix), all of which match — so
+        // the payload ends cleanly inside the copy region with no trailing pad to misread as
+        // a differing bit.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group());
+        let body = complete_intra_clk_frame_header_body().drain_bits();
+        let mut copy = Bits::default();
+        copy.bit(0); // is_first_tile_group == 0
+        copy.bit(1); // frame_header_present_flag == 1
+        for b in body {
+            copy.bit(b);
+        }
+        let mut payload = copy.into_bytes();
+        payload.truncate(3); // keep 24 bits (22 matching copy bits) < 26 NumFrameHeaderBits
+        data.extend(annex_b_obu(CLK_HEADER, &payload));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/copy-bits-truncated"),
+            "a frame_header_copy() shorter than NumFrameHeaderBits must fire \
+             copy-bits-truncated; report was: {report}"
+        );
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/copy-bits-mismatch"),
+            "a clean truncation must not also fire a mismatch; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_frame_header_copy_silent_when_header_not_present() {
+        // A non-first tile group with frame_header_present_flag == 0 carries NO
+        // frame_header_copy() (AV2 § 5.19): the bytes after the flag are tile data, so
+        // even with a live first-header record nothing may be compared. Guards the
+        // check_frame_header_copy early-exit against regressions that would read tile
+        // bytes as copy bits (claude-review PR #60 integration gap).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group());
+        let mut fb = Bits::default();
+        fb.bit(0); // is_first_tile_group == 0
+        fb.bit(0); // frame_header_present_flag == 0 (no copy region)
+        // Arbitrary tile-data bytes that deliberately do NOT match the first header.
+        for _ in 0..26 {
+            fb.bit(1);
+        }
+        data.extend(annex_b_obu(CLK_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-header/copy-bits-")),
+            "frame_header_present_flag == 0 carries no copy region; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_frame_header_copy_silent_when_first_header_incomplete() {
+        // The first tile group's frame header does NOT complete (an INTER first frame stops
+        // at UnsupportedUntilFeature), so NumFrameHeaderBits is unknown and the non-first
+        // tile group's copy region is left unparsed — no copy diagnostic (Unknown routing).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        // First tile group: an inter RTG that stops after frame-type (coverage stop).
+        let mut first = Bits::default();
+        first.bit(1); // is_first_tile_group
+        first.uvlc(0); // cur_mfh_id == 0
+        first.uvlc(0); // seq_header_id_in_frame_header
+        first.bit(1); // frame_is_inter == 1 -> INTER_FRAME (parser stops; no NumFrameHeaderBits)
+        data.extend(annex_b_obu(RTG_HEADER, &first.into_bytes()));
+        // Non-first RTG carrying arbitrary "copy" bits that would mismatch ANY first header.
+        let mut second = Bits::default();
+        second.bit(0); // is_first_tile_group == 0
+        second.bit(1); // frame_header_present_flag == 1
+        second.f(0xFFFF, 16); // arbitrary bits
+        data.extend(annex_b_obu(RTG_HEADER, &second.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-header/copy-bits-")),
+            "an incomplete first header must leave the copy region unparsed (no copy \
+             diagnostic); report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_frame_header_copy_dropped_on_ambiguous_boundary() {
+        // The non-first tile group's is_first_tile_group bit is unreadable (empty payload),
+        // so the segmenter reports Ambiguous and the copy judgment is dropped. A second
+        // non-first tile group whose copy region would MISMATCH stays silent because the
+        // ambiguous OBU poisons nothing here — the record is intact but the unreadable OBU
+        // makes no copy judgment.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group());
+        // A CLK tile group with an EMPTY payload: the is_first_tile_group bit is unreadable,
+        // so seg_role_for derives is_first_tile_group: None -> Ambiguous boundary.
+        data.extend(annex_b_obu(CLK_HEADER, &[]));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-header/copy-bits-")),
+            "an Ambiguous-boundary tile group must make no copy judgment; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_frame_header_copy_poisoned_after_ambiguous_boundary() {
+        // Regression (codex round-8 F1): an Ambiguous tile-group OBU (unreadable
+        // is_first_tile_group while a coded frame is open) MAY have started a new coded
+        // frame. If the first header's record is left intact, a LATER readable flag-0 tile
+        // group pairs against the PREVIOUS frame's record and false-positives a copy
+        // mismatch/truncation — yet in the equally-valid interpretation it belongs to the
+        // ambiguous new frame, whose first header is unknown. Per the poison-scope rule the
+        // Ambiguous boundary must drop the triple's record so subsequent pairings stay silent
+        // until the next decided OpensNewUnit re-records.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group()); // records NumFrameHeaderBits for this triple
+        // A CLK tile group with an EMPTY payload: is_first_tile_group is unreadable, so the
+        // segmenter reports Ambiguous (it may have opened a new coded frame).
+        data.extend(annex_b_obu(CLK_HEADER, &[]));
+        // A readable flag-0 (is_first_tile_group == 0) non-first tile group whose copy region
+        // does NOT match the recorded first header. Pre-fix the still-intact record pairs and
+        // fires copy-bits-mismatch; post-fix the poisoned record drops the pairing -> silent.
+        let mut mismatched = complete_intra_clk_frame_header_body().drain_bits();
+        mismatched[2] ^= 1;
+        data.extend(clk_non_first_tile_group(&mismatched));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-header/copy-bits-")),
+            "a record poisoned by an Ambiguous boundary must not pair with a later flag-0 \
+             tile group; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_frame_header_copy_decided_continuation_still_fires_after_no_ambiguity() {
+        // Control for the F1 poison: with NO ambiguous OBU in between, a decided continuation
+        // (readable flag-0 non-first tile group) still pairs against the intact record and
+        // fires copy-bits-mismatch on a real mismatch — the poison is scoped to Ambiguous only.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group());
+        let mut mismatched = complete_intra_clk_frame_header_body().drain_bits();
+        mismatched[2] ^= 1;
+        data.extend(clk_non_first_tile_group(&mismatched));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/copy-bits-mismatch"),
+            "a decided continuation must still fire on a real mismatch; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_frame_header_copy_re_records_after_ambiguous_then_new_frame() {
+        // Control for the F1 poison: after an Ambiguous boundary poisons the record, a new
+        // decided coded frame (its own temporal unit, OpensNewUnit) RE-RECORDS its first
+        // header, and a following non-first tile group of that frame pairs correctly — a real
+        // mismatch fires, a bit-identical copy is silent.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group()); // TU1 frame: records, then poisoned below
+        data.extend(annex_b_obu(CLK_HEADER, &[])); // Ambiguous -> poison TU1 record
+        // TU2: a fresh temporal delimiter starts a new coded frame; OpensNewUnit re-records.
+        data.extend(temporal_delimiter_obu());
+        data.extend(clk_first_tile_group()); // TU2 frame: re-records NumFrameHeaderBits
+        let mut mismatched = complete_intra_clk_frame_header_body().drain_bits();
+        mismatched[2] ^= 1;
+        data.extend(clk_non_first_tile_group(&mismatched)); // pairs with the TU2 record
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/copy-bits-mismatch"),
+            "a re-recorded first header after an Ambiguous boundary must pair with its own \
+             coded frame's non-first tile group; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_frame_header_copy_record_resets_across_temporal_units() {
+        // A completed first header in temporal unit 1 must not pair with a non-first tile
+        // group in temporal unit 2 (a coded frame does not span temporal units, § 7.3.7):
+        // the record is cleared at the temporal-delimiter boundary. The TU2 non-first tile
+        // group finds no record and stays silent even with a mismatching copy.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group()); // TU1: records NumFrameHeaderBits
+        // TU2: a new temporal delimiter clears the record; the lone non-first tile group has
+        // no first header of its own (already a segmenter concern) and no record to pair.
+        data.extend(temporal_delimiter_obu());
+        let mut mismatched = complete_intra_clk_frame_header_body().drain_bits();
+        mismatched[2] ^= 1;
+        data.extend(clk_non_first_tile_group(&mismatched));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-header/copy-bits-")),
+            "a record from a prior temporal unit must not pair across the boundary; \
+             report was: {report}"
+        );
+    }
+
+    /// A conformant grain-free REGULAR_SEF for a [`FrameCoreSeq::base()`] sequence at the
+    /// default `(xlayer, mlayer, tlayer) == (0, 0, 0)` triple: cur_mfh_id / seq ref,
+    /// frame_to_show_map_idx f(3), derive_sef_order_hint == 1, then a §5.2.3
+    /// trailing_one_bit (apply_grain inferred 0, no grain bits). The SEF is its own
+    /// single-OBU coded frame (§ 7.3.3) and shares the CLK tile groups' triple.
+    fn conformant_sef_same_triple() -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.f(0, 3); // frame_to_show_map_idx f(3)
+        fb.bit(1); // derive_sef_order_hint == 1 -> no sef_order_hint
+        fb.bit(1); // §5.2.3 trailing_one_bit
+        annex_b_obu(REGULAR_SEF_HEADER, &fb.into_bytes())
+    }
+
+    #[test]
+    fn validator_frame_header_copy_record_cleared_by_sef_opening_new_frame() {
+        // Regression (codex round-9 F2): a completed first tile group records its
+        // NumFrameHeaderBits for the (xlayer, mlayer, tlayer) triple. A SEF in the SAME triple
+        // is its own single-OBU coded frame (§ 7.3.3) — it OPENS a new coded frame
+        // (OpensNewUnit), ending the tile coded frame whose header is recorded. The segmenter
+        // then routes a following flag-0 (is_first_tile_group == 0) tile group as CONTINUING
+        // the SEF coded frame (the frame-unit/sef-single-obu case), so it carries no
+        // frame_header_copy() of its own. Pre-fix the SEF (not a tile group) returned early
+        // before clearing the record, leaving the STALE tile-frame record alive; the flag-0
+        // tile group then paired against it and false-positived frame-header/copy-bits-mismatch.
+        // Post-fix the SEF's OpensNewUnit boundary clears the record, so the flag-0 tile group
+        // finds none and stays silent on copy-bits-*.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group()); // records NumFrameHeaderBits for the triple
+        data.extend(conformant_sef_same_triple()); // SEF: own coded frame, same triple
+        // A readable flag-0 non-first tile group whose copy region does NOT match the recorded
+        // first header. The segmenter treats it as continuing the SEF coded frame.
+        let mut mismatched = complete_intra_clk_frame_header_body().drain_bits();
+        mismatched[2] ^= 1;
+        data.extend(clk_non_first_tile_group(&mismatched));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-header/copy-bits-")),
+            "a SEF opening a new coded frame must clear the prior tile frame's record so a \
+             later flag-0 tile group does not pair against it; report was: {report}"
+        );
+        // Control: the segmenter's own sef-single-obu diagnostic still fires for the
+        // flag-0-after-SEF continuation (its existing behavior is unchanged by the copy fix).
+        assert!(
+            has_frame_unit_error(&report, "frame-unit/sef-single-obu"),
+            "the flag-0 tile group continuing the SEF coded frame must still fire \
+             sef-single-obu; report was: {report}"
         );
     }
 

@@ -352,6 +352,56 @@ fn validate_frame_header_core_fixture_exits_zero() {
     assert_eq!(out.status.code(), Some(0));
 }
 
+/// Frames one OBU as Annex B `leb128(num_bytes_in_obu)` + header byte + payload. The
+/// single-byte size is a valid leb128 for sizes < 128 (matches the validator's framing).
+fn annex_b_obu(header: u8, payload: &[u8]) -> Vec<u8> {
+    let size = payload.len() + 1;
+    assert!(u8::try_from(size).is_ok());
+    let mut data = Vec::with_capacity(size + 1);
+    data.push(size as u8);
+    data.push(header);
+    data.extend_from_slice(payload);
+    data
+}
+
+#[test]
+fn inspect_json_surfaces_frame_header_copy_on_non_first_tile_group() {
+    // A non-first tile group (is_first_tile_group == 0, frame_header_present_flag == 1)
+    // carries frame_header_copy() (AV2 § 5.18.1). The stateless inspector surfaces the
+    // copy region's presence and start, with `compared: false` (the § 6.17.1 bit-identity
+    // check is a stateful validator concern). A global temporal delimiter (0x12) precedes
+    // it so the stream parses; no sequence header is needed for the structural copy view.
+    let mut data = annex_b_obu(0x12, &[]); // OBU_TEMPORAL_DELIMITER (global)
+    // OBU_CLOSED_LOOP_KEY (0x10): is_first_tile_group == 0 (bit), frame_header_present_flag
+    // == 1 (bit), then 6 arbitrary copy bits -> one payload byte 0b01_xxxxxx.
+    data.extend(annex_b_obu(0x10, &[0b0110_1010]));
+    let path = temp_input("av2", &data);
+    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let records = json.as_array().expect("inspect output is an array");
+    // records[0] is the temporal delimiter; records[1] is the non-first tile group.
+    let copy = &records[1]["frame_header_copy"];
+    assert_eq!(copy["payload_kind"], "frame_header_copy");
+    assert_eq!(copy["compared"], false);
+    // The copy region starts after the OBU header byte and the two prefix bits
+    // (is_first_tile_group + frame_header_present_flag). Those two bits live in the FIRST
+    // payload byte, so the region begins inside that same byte at MSB-first bit 2 — the
+    // start is byte+bit precise. The OBU is at byte 4 (TD: leb128 byte + header byte =
+    // 2 bytes, then this OBU's leb128 byte + header byte = bytes 2,3), so its payload's
+    // first byte is byte 4.
+    assert_eq!(copy["copy_region_start_byte"], 4);
+    assert_eq!(copy["copy_region_start_bit"], 2);
+    // A first tile group (records would be different) and other OBUs carry no copy view.
+    assert!(records[0].get("frame_header_copy").is_none());
+}
+
 #[test]
 fn inspect_json_exposes_mfh_backed_frame_header_core() {
     // The fixture is TemporalDelimiter, a non-single-picture SequenceHeader (id 0),
