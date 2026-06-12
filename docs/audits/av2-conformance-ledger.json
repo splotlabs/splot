@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "108d0acfff5fda64e22badaa304b7d57ca9d5e62",
+  "audited_commit": "a1a87699c2906ec2500a74fcfc05fa930931a299",
   "outcome": "success",
   "files": [
     {
@@ -283,7 +283,7 @@
     },
     {
       "path": "crates/splot-cli/src/commands/inspect.rs",
-      "sha256": "58b0a6929376e8d916c8b1d93ca93a5425ddf84b62c1eec8d0e94586347f9ded",
+      "sha256": "416a6c7cab29a96c29d95d190ce59e091b3cc92d33d6199372a797f22baf4079",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.2.1-OBU-DISPATCH",
@@ -317,7 +317,7 @@
     },
     {
       "path": "crates/splot-cli/tests/cli.rs",
-      "sha256": "a18a1d27db00dbd328184fda055d7677fde1a067dcc144a4205eb2ecf1c1d2f3",
+      "sha256": "a0ec4940435df8b6fcd94e02b8b46abec18e005df529c9ad1442184340423aa0",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.4-SEQUENCE-HEADER",
@@ -436,7 +436,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/info.rs",
-      "sha256": "93b38bd02d1ebc451fb1874273912ef046076e724d17562cf0c004d5f934e998",
+      "sha256": "6143e01dfd4409308ee5f5eef565349a70f26bc540c76e5cd810a34f590cfa15",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -812,7 +812,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "a24977d16c676ea43af42ad9d90c6f2f42b091bcb3215c7bb6cd094a77fbdfe1",
+      "sha256": "54556d1c752714a72c0abe4b2afd6ed19067a5cd773ce1e9bc33c3ed43856447",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -853,7 +853,7 @@
     },
     {
       "path": "crates/splot-validate/src/frame_unit.rs",
-      "sha256": "3d3f22fc8458aeda70d2eb487549bb306f9ef30e9c5bc63eb8692644ea348f97",
+      "sha256": "6bb98612d6b8afdeafc8b60e24ca4d4cede2c6e9c9fb921cf7552625ab93c7e9",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT"
@@ -894,7 +894,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "c3b740a338cc3fa75300b0ac17e1e2fce477e9a92c7ec0e6da95c629d091b398",
+      "sha256": "4d71ab9ce7768e8ec9b20829fb105d0770f4188173fe5530cdda362971a17114",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
