@@ -196,6 +196,11 @@ mod tests {
             }
         }
 
+        /// Number of bits accumulated so far (for byte-exact test truncation).
+        fn bit_len(&self) -> usize {
+            self.bits.len()
+        }
+
         fn into_bytes(self) -> Vec<u8> {
             let mut bytes = Vec::new();
             for chunk in self.bits.chunks(8) {
@@ -4476,6 +4481,58 @@ mod tests {
                 .errors()
                 .any(|d| d.rule_id == "frame-header/frame-size-exceeds-sequence-max"),
             "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_frame_size_exceeds_max_when_truncated_inside_deblocking() {
+        // REGRESSION (codex F2): the frame-size-exceeds-sequence-max check reads
+        // core.frame_size, which is parsed long before the §5.18.2 loop-filter cluster. A
+        // payload truncated INSIDE deblocking_filter_params() must NOT silence it: the core
+        // parser preserves the already-parsed control-region facts (StoppedInsideFilterParams)
+        // instead of returning Err, so parse_frame_core().ok() still yields the frame_size.
+        // Before the fix the truncation produced Err -> None -> every frame-header check was
+        // silently skipped.
+        // OrderHintBits == 2 (order_hint_bits_minus_1 == 1) makes the frame-header body end
+        // exactly on a byte boundary at delta_q_present, so the loop-filter cluster begins
+        // on a fresh byte. The payload then carries no cluster bytes at all and the very
+        // first deblocking read overruns it — a genuine EOF, not zero-padding.
+        let seq = FrameCoreSeq {
+            order_hint_bits_minus_1: 1,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // immediate_output_frame (implicit forced 0 by monotonic)
+        fb.bit(1); // frame_size_override_flag
+        fb.f(0, 2); // order_hint f(OrderHintBits == 2)
+        fb.f(256 - 1, 8); // frame_width_minus_1 -> FrameWidth 256 (> max 16)
+        fb.f(8 - 1, 8); // frame_height_minus_1 -> FrameHeight 8
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        // The §5.18.2 structure cluster: tile_info() (uniform + 1 col increment for the
+        // 256-wide frame), quantization_params(), segmentation, setup_qm, delta_q. We stop
+        // emitting at delta_q_present, which lands on a byte boundary, so the payload holds
+        // none of the loop-filter cluster and the first deblocking apply read overruns it.
+        fb.bit(1); // uniform_tile_spacing_flag (tile_info)
+        fb.bit(0); // increment_tile_cols_log2 = 0 (256-wide -> 1 increment bit)
+        fb.f(100, 9); // base_q_idx f(9)
+        fb.bit(0); // segmentation_enabled
+        fb.bit(0); // using_qmatrix
+        fb.bit(0); // delta_q_present -> ends on bit 40 (byte boundary)
+        assert_eq!(fb.bit_len(), 40, "the body must end on a byte boundary");
+        let payload = fb.into_bytes();
+        data.extend(annex_b_obu(CLK_HEADER, &payload));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/frame-size-exceeds-sequence-max"),
+            "a frame-size violation truncated inside deblocking must still fire; report was: {report}"
         );
     }
 

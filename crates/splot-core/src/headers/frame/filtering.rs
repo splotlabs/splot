@@ -21,7 +21,7 @@
 //! reads `apply_deblocking_filter[0..]` from the bitstream instead.
 
 use crate::bitio::BitReader;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::headers::sequence::{CdefOnSkipTxfm, SuperblockSize};
 
 /// `GDF_MIN_SIZE` (AV2 v1.0.0 § 3, `docs/spec/av2/1.0.0/03-symbols.md`): minimum size
@@ -183,7 +183,10 @@ pub struct CdefParams {
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
-/// ends mid-field.
+/// ends mid-field, or [`Error::BitWidthTooLarge`](crate::error::Error::BitWidthTooLarge)
+/// if `df_par_bits_minus_2` is large enough that `dfParBits = df_par_bits_minus_2 + 2`
+/// exceeds the 32-bit `df_delta_q[i]` read width (an out-of-range, non-conformant
+/// sequence field a direct/fuzz caller can supply).
 pub fn parse_deblocking_filter_params(
     reader: &mut BitReader<'_>,
     coded_lossless: bool,
@@ -226,9 +229,26 @@ pub fn parse_deblocking_filter_params(
         }
     }
 
-    // AV2 § 5.18.5.2: dfParBits = df_par_bits_minus_2 + 2 (so 2..=5 bits).
+    // AV2 § 5.18.5.2: dfParBits = df_par_bits_minus_2 + 2. The sequence parser reads
+    // df_par_bits_minus_2 as f(2) (§ 5.4.10), so the conformant range is 0..=3 (dfParBits
+    // 2..=5). A direct/fuzz caller is not bound by that read, so guard the read width here:
+    // `df_delta_q[i]` is `f(dfParBits)` and `read_bits` rejects `n > 32`, so a dfParBits
+    // beyond 32 is an impossible width. Reject it with the same structured
+    // `BitWidthTooLarge` before the `DfDeltaQ` derivation. This mirrors `frame_size()`'s
+    // reliance on `read_bits` to reject an over-wide `frame_width_bits`.
     let df_par_bits = u32::from(df_par_bits_minus_2) + 2;
-    let half = 1i32 << (df_par_bits - 1);
+    if df_par_bits > 32 {
+        return Err(Error::BitWidthTooLarge {
+            requested: df_par_bits,
+            max: 32,
+        });
+    }
+    // `1 << (dfParBits - 1)` and `df_delta_q[i] - half` are computed in i64 — like
+    // `BitReader::read_su` — and narrowed: for dfParBits up to 32 the i32 forms would
+    // shift past / overflow i32 and panic in debug. The conformant DfDeltaQ (dfParBits
+    // 2..=5) always fits; the wider non-conformant inputs stay panic-free and produce a
+    // bounded value rather than an unwind. `dfParBits >= 1` here, so the shift is valid.
+    let half = 1i64 << (df_par_bits - 1);
 
     let mut df_delta_q_present = [false; 4];
     let mut df_delta_q = [0i32; 4];
@@ -239,8 +259,8 @@ pub fn parse_deblocking_filter_params(
             if df_delta_q_present[i] {
                 // AV2 § 5.18.5.2: df_delta_q[i] f(dfParBits);
                 // DfDeltaQ[i] = df_delta_q[i] - (1 << (dfParBits - 1)).
-                let raw = reader.read_bits(df_par_bits)? as i32;
-                df_delta_q[i] = raw - half;
+                let raw = i64::from(reader.read_bits(df_par_bits)?);
+                df_delta_q[i] = (raw - half) as i32;
             } else {
                 // AV2 § 5.18.5.2: DfDeltaQ[i] = (i == 1) ? DfDeltaQ[0] : 0.
                 df_delta_q[i] = if i == 1 { df_delta_q[0] } else { 0 };
@@ -483,7 +503,6 @@ pub fn parse_cdef_params(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::error::Error;
     use crate::span::ByteOffset;
 
     #[derive(Default)]
@@ -678,6 +697,50 @@ mod tests {
         let mut r = reader(&data);
         let params = parse_deblocking_filter_params(&mut r, false, 1, 3, None).unwrap();
         assert_eq!(params.df_delta_q[0], 4);
+    }
+
+    #[test]
+    fn deblocking_oversized_df_par_bits_is_structured_error_not_panic() {
+        // The in-tree sequence parser reads df_par_bits_minus_2 as f(2) (0..=3), but a
+        // direct/fuzz caller can construct a CoreSeqFilterView (or pass the field) outside
+        // that range. dfParBits = df_par_bits_minus_2 + 2 then exceeds the 32-bit
+        // `df_delta_q[i]` read width, which the workspace's no-reachable-panic rule requires
+        // be rejected with a structured BitWidthTooLarge rather than letting `read_bits`
+        // attempt an impossible width. A buffer of 0xFF bytes large enough to satisfy the
+        // apply reads keeps the failure the width, not EOF. df_par_bits_minus_2 == 31 ->
+        // dfParBits = 33 (> 32) is the first value the read width rejects; everything larger
+        // does too. (The in-range-but-wide boundary dfParBits == 32 is covered separately,
+        // where the i64 DfDeltaQ derivation keeps the shift/subtraction panic-free.)
+        let data = [0xFFu8; 16];
+        for df_par_bits_minus_2 in [31u8, 32, 200, u8::MAX] {
+            let mut r = reader(&data);
+            let result =
+                parse_deblocking_filter_params(&mut r, false, 1, df_par_bits_minus_2, None);
+            assert!(
+                matches!(result, Err(Error::BitWidthTooLarge { .. })),
+                "df_par_bits_minus_2 == {df_par_bits_minus_2} must yield BitWidthTooLarge, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn deblocking_max_width_df_par_bits_reads_without_overflow_panic() {
+        // df_par_bits_minus_2 == 30 -> dfParBits = 32: the read width is in range (<= 32),
+        // but the `1 << (dfParBits - 1)` half (2^31) and the `df_delta_q[i] - half`
+        // subtraction would overflow i32 and panic in debug if computed in i32. They are
+        // computed in i64 and narrowed (the result always fits i32), so a constructed view
+        // at the boundary returns Ok with a bounded value rather than panicking. apply[0] set
+        // + present so the f(32) read and the subtraction both fire.
+        let mut bits = Bits::default();
+        bits.bit(1); // apply[0]
+        bits.bit(0); // apply[1]
+        // monochrome (NumPlanes == 1) -> no chroma pair.
+        bits.bit(1); // df_delta_q_present[0]
+        bits.f(1, 32); // df_delta_q[0] == 1 -> 1 - 2^31 == i32::MIN + 1
+        let data = bits.into_bytes();
+        let mut r = reader(&data);
+        let params = parse_deblocking_filter_params(&mut r, false, 1, 30, None).unwrap();
+        assert_eq!(params.df_delta_q[0], (1i64 - (1i64 << 31)) as i32);
     }
 
     // ---- gdf ----
@@ -940,7 +1003,10 @@ mod proptests {
             data in proptest::collection::vec(any::<u8>(), 0..32),
             coded_lossless in any::<bool>(),
             num_planes in prop_oneof![Just(1u8), Just(3u8)],
-            df_par_bits_minus_2 in 0u8..=3,
+            // Widened to the full u8 range: a direct/fuzz caller is not bound by the
+            // sequence parser's f(2) read, so df_par_bits_minus_2 outside 0..=3 must not
+            // panic (it returns a structured BitWidthTooLarge instead).
+            df_par_bits_minus_2 in any::<u8>(),
             mfh in proptest::option::of((any::<bool>(), any::<[bool; 4]>())),
         ) {
             let view = mfh.map(|(update, apply)| MfhDeblockingView {

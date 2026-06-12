@@ -32,7 +32,11 @@
 //!   cluster `deblocking_filter_params()` (§ 5.18.5.2), `gdf_params()` (§ 5.18.7.9),
 //!   and `cdef_params()` (§ 5.18.7.10), stopping before `lr_params()` (loop
 //!   restoration, § 5.18.7.11)
-//!   ([`FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams`]). On the
+//!   ([`FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams`]). A payload that
+//!   runs out **inside** the loop-filter cluster instead keeps the already-parsed
+//!   control-region facts and reports the truncation as
+//!   [`FrameHeaderParseStatus::StoppedInsideFilterParams`] rather than failing the whole
+//!   parse (so earlier state-supported diagnostics still see the facts). On the
 //!   `cur_mfh_id > 0` path the resolved in-band multi-frame header's § 5.7 state is
 //!   threaded in (the [`MultiFrameHeaderRecord`] passed via
 //!   [`FrameHeaderParseInput::mfh_record`]) so the § 5.18.4.1 default dimensions, the
@@ -103,6 +107,18 @@ pub enum FrameHeaderParseStatus {
     /// `cdef_params()` (§ 5.18.7.10); the parser stopped before `lr_params()`
     /// (loop restoration, § 5.18.7.11).
     StoppedBeforeLoopRestorationParams,
+    /// An intra frame's control region was read in full through the § 5.18.2
+    /// lossless/`allow_tcq`/`allow_parity_hiding` tail, but the payload ran out
+    /// **inside** the loop-filter cluster `deblocking_filter_params()` (§ 5.18.5.2),
+    /// `gdf_params()` (§ 5.18.7.9), or `cdef_params()` (§ 5.18.7.10). The already-parsed
+    /// control-region facts (frame size, output flags, tile/quant/segmentation) are
+    /// intact and exposed; the cluster fields that were not reached stay `None`. The
+    /// truncation itself is a payload-bounds condition, not a structural violation, so it
+    /// is reported through this status rather than as a hard parse error — earlier
+    /// state-supported diagnostics still see the preserved facts (the pre-cluster
+    /// behavior, which stopped here before any filter read, is preserved). No
+    /// full-payload trailing-bits conformance is implied.
+    StoppedInsideFilterParams,
     /// A branch needs decoder/reference state or syntax this phase does not model
     /// (e.g. the inter reference map, or the rest of a bridge frame). `feature_id` is
     /// the implementation-matrix row that tracks the missing coverage.
@@ -121,6 +137,7 @@ impl FrameHeaderParseStatus {
             Self::CoreFieldsOnly => "core_fields_only",
             Self::ShowExistingFrameComplete => "show_existing_frame_complete",
             Self::StoppedBeforeLoopRestorationParams => "stopped_before_loop_restoration_params",
+            Self::StoppedInsideFilterParams => "stopped_inside_filter_params",
             Self::UnsupportedUntilFeature { .. } => "unsupported_until_feature",
         }
     }
@@ -897,12 +914,53 @@ fn parse_intra_structures(
     core.setup_qm_params = Some(qm);
     core.delta_q_params = Some(delta_q);
 
-    // AV2 § 5.18.2 tail (mirror :5297-5301): deblocking_filter_params() (§ 5.18.5.2),
-    // gdf_params() (§ 5.18.7.9), cdef_params() (§ 5.18.7.10), in that order. All three
-    // are determined by the parsed sequence filter config (§ 5.4.10), the frame state
-    // (CodedLossless, NumPlanes), the parsed tile_info() geometry, and — on the
-    // cur_mfh_id > 0 path — the resolved MFH's deblocking-update state.
+    // AV2 § 5.18.2 tail (mirror :5297-5301): the loop-filter cluster
+    // deblocking_filter_params() / gdf_params() / cdef_params(). A truncation INSIDE the
+    // cluster must not discard the control-region facts already parsed above (frame size,
+    // output flags, tile/quant/segmentation): before this cluster existed the parser
+    // stopped here and returned Ok with exactly those facts, and the validator/inspect
+    // call sites .ok() the result, so an Err would silently drop every earlier
+    // state-supported diagnostic. parse_filter_cluster() therefore converts a payload-EOF
+    // into the StoppedInsideFilterParams status (facts preserved, cluster fields left
+    // None) and only propagates a genuine structural error.
+    match parse_filter_cluster(reader, core, seq, mfh, coded_lossless) {
+        // parse_filter_cluster sets the terminal status itself (the cluster-complete stop,
+        // or the unreachable missing-tile_info guard), so the Ok arm leaves it untouched.
+        Ok(()) => Ok(()),
+        // The payload ran out mid-cluster: keep the preserved control-region facts and
+        // record the truncation through the status rather than failing the whole parse.
+        Err(Error::UnexpectedEof { .. }) => {
+            core.status = FrameHeaderParseStatus::StoppedInsideFilterParams;
+            Ok(())
+        }
+        // A structural error (e.g. an impossible read width) is a real parse failure.
+        Err(error) => Err(error),
+    }
+}
 
+/// Parses the § 5.18.2 tail loop-filter cluster on the intra path:
+/// `deblocking_filter_params()` (§ 5.18.5.2), `gdf_params()` (§ 5.18.7.9), and
+/// `cdef_params()` (§ 5.18.7.10), in that order
+/// (AV2 v1.0.0 § 5.18.2, mirror :5297-5301). All three are determined by the parsed
+/// sequence filter config (§ 5.4.10), the frame state (`CodedLossless`, `NumPlanes`), the
+/// parsed `tile_info()` geometry, and — on the `cur_mfh_id > 0` path — the resolved MFH's
+/// deblocking-update state.
+///
+/// On success the three `core` filter fields are populated. On error the partially-read
+/// fields stay `None`; the caller decides whether a payload EOF here is a truncation
+/// (`StoppedInsideFilterParams`) or a hard failure.
+///
+/// # Errors
+/// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
+/// ends mid-cluster, or another typed error if a sub-parser rejects its inputs (for
+/// example an out-of-range `df_par_bits_minus_2` read width).
+fn parse_filter_cluster(
+    reader: &mut BitReader<'_>,
+    core: &mut FrameHeaderCore,
+    seq: &CoreSeqView,
+    mfh: Option<&MfhFrameView>,
+    coded_lossless: bool,
+) -> Result<()> {
     // AV2 § 5.18.5.2: the cur_mfh_id > 0 arm copies apply_deblocking_filter from the
     // resolved MFH; on the cur_mfh_id == 0 direct path no MFH view is supplied.
     let mfh_deblocking = mfh.map(|view| &view.deblocking);
@@ -920,11 +978,11 @@ fn parse_intra_structures(
     // SbSize is frame_sb_size(frame_is_intra == true). The geometry borrow of
     // `core.tile_info` is scoped so the later `core.gdf_params` write is unambiguous.
     let gdf = {
-        // `tile_info` was set to `Some` earlier in this function (every other path
-        // returns before here), so this binding never falls through; the explicit guard
-        // keeps the parser panic-free even under direct API misuse rather than
-        // unwrapping. The borrow is scoped to this block so the later `core.gdf_params`
-        // write is unambiguous.
+        // `tile_info` was set to `Some` earlier in parse_intra_structures (every other
+        // path returns before the cluster), so this binding never falls through; the
+        // explicit guard keeps the parser panic-free even under direct API misuse rather
+        // than unwrapping. The borrow is scoped to this block so the later
+        // `core.gdf_params` write is unambiguous.
         let Some(tile_info) = core.tile_info.as_ref() else {
             core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
                 feature_id: FRAME_HEADER_INFO_FEATURE,
@@ -955,7 +1013,7 @@ fn parse_intra_structures(
     )?);
 
     // AV2 § 5.18.2: lr_params() (loop restoration, § 5.18.7.11) is next; this phase
-    // stops before it.
+    // stops before it. The cluster parsed cleanly, so this is the terminal stop.
     core.status = FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams;
     Ok(())
 }
@@ -1074,6 +1132,11 @@ mod tests {
             if leading_zeros > 0 {
                 self.f(code_num - (1 << leading_zeros), leading_zeros);
             }
+        }
+
+        /// Number of bits accumulated so far (for byte-exact test truncation).
+        fn bit_len(&self) -> usize {
+            self.bits.len()
         }
 
         fn into_bytes(self) -> Vec<u8> {
@@ -1333,35 +1396,186 @@ mod tests {
         );
     }
 
-    #[test]
-    fn frame_header_core_eof_inside_deblocking_filter_params() {
-        // A non-lossless intra frame whose payload is truncated so the
-        // deblocking_filter_params() apply bits overrun the buffer: the parser reports
-        // EOF without panicking. The frame parses through the structure cluster and into
-        // the loop-filter cluster; dropping the trailing byte removes the bits the
-        // apply_deblocking_filter reads would consume.
+    /// A `base_seq()` whose `order_hint_bits` is widened to 5 so the intra body built by
+    /// [`intra_body_up_to_filter_cluster`] ends on a byte boundary, putting the start of
+    /// the loop-filter cluster exactly at bit 48 (byte 6). This lets the truncation tests
+    /// land an EOF at a precise byte without disturbing the preceding structures.
+    fn byte_aligned_filter_seq() -> CoreSeqView {
+        let mut seq = base_seq();
+        seq.order_hint_bits = 5;
+        seq
+    }
+
+    /// Builds an intra CLK frame-header body parsed cleanly through the § 5.18.2 structure
+    /// cluster (frame_size 16x16, both output flags 0) up to and including
+    /// `delta_q_present`, i.e. positioned exactly at the start of the loop-filter cluster.
+    /// The caller appends the loop-filter bits and applies the truncation. Paired with
+    /// [`byte_aligned_filter_seq`] (`order_hint_bits == 5`) the cluster starts at bit 48.
+    fn intra_body_up_to_filter_cluster() -> Bits {
         let mut bits = Bits::default();
         bits.uvlc(0); // cur_mfh_id == 0
         bits.uvlc(0); // seq_header_id_in_frame_header
-        bits.bit(0); // immediate_output_frame
-        bits.bit(0); // implicit_output_frame
+        bits.bit(0); // immediate_output_frame == 0
+        bits.bit(0); // implicit_output_frame == 0
         bits.bit(1); // frame_size_override_flag
-        bits.f(5, 4); // order_hint
-        bits.f(16 - 1, 12); // frame_width_minus_1
-        bits.f(16 - 1, 12); // frame_height_minus_1
+        bits.f(5, 5); // order_hint f(order_hint_bits == 5)
+        bits.f(16 - 1, 12); // frame_width_minus_1 -> FrameWidth 16
+        bits.f(16 - 1, 12); // frame_height_minus_1 -> FrameHeight 16
         bits.bit(0); // allow_intrabc
         bits.bit(0); // disable_cdf_update
-        bits.bit(1); // uniform_tile_spacing_flag
-        bits.bit(0); // increment_tile_cols_log2
-        bits.bit(0); // increment_tile_rows_log2
+        // tile_info() for a 16x16 frame with 128x128 superblocks is a single superblock
+        // (MiCols == MiRows == 4, sbCols == sbRows == 1), so tile_params() reads only
+        // uniform_tile_spacing_flag and skips the increment / context fields.
+        bits.bit(1); // uniform_tile_spacing_flag (single tile)
         bits.f(90, 8); // base_q_idx (non-lossless -> deblocking reads apply bits)
         bits.bit(0); // segmentation_enabled
         bits.bit(0); // using_qmatrix
         bits.bit(0); // delta_q_present
+        bits
+    }
+
+    /// Asserts the control-region facts parsed before the loop-filter cluster survived a
+    /// mid-cluster truncation: the parse returned Ok, the frame size and output flags are
+    /// intact, and the status records the truncation.
+    fn assert_truncated_filter_cluster_preserves_facts(core: &FrameHeaderCore) {
+        assert_eq!(
+            core.status,
+            FrameHeaderParseStatus::StoppedInsideFilterParams,
+            "a mid-cluster truncation reports StoppedInsideFilterParams"
+        );
+        assert_eq!(
+            core.frame_size,
+            Some(FrameSize::new(16, 16)),
+            "frame_size parsed before the cluster must survive the truncation"
+        );
+        assert_eq!(core.immediate_output_frame, Some(false));
+        assert_eq!(core.implicit_output_frame, Some(false));
+        assert!(
+            core.quantization_params.is_some(),
+            "quantization_params parsed before the cluster must survive"
+        );
+        assert!(
+            core.tile_info.is_some(),
+            "tile_info parsed before the cluster must survive"
+        );
+    }
+
+    #[test]
+    fn frame_header_core_eof_inside_deblocking_filter_params_preserves_facts() {
+        // REGRESSION (codex F2): a payload truncated mid-deblocking_filter_params() must
+        // NOT fail the whole core parse. Before the loop-filter cluster existed the parser
+        // stopped here and returned Ok with the control-region facts; the validator/inspect
+        // .ok() the result, so an Err would silently drop every earlier state-supported
+        // diagnostic. The parser now keeps the facts and reports StoppedInsideFilterParams.
+        //
+        // byte_aligned_filter_seq() puts the loop-filter cluster on byte 6 (bit 48), so
+        // deblocking's first read (apply_deblocking_filter[0]) sits in byte 6. Truncating
+        // the payload to 6 bytes makes that read overrun, landing the EOF at the very start
+        // of the cluster with deblocking_filter_params still None.
+        let mut bits = intra_body_up_to_filter_cluster();
+        let cluster_start = bits.bit_len();
+        assert_eq!(
+            cluster_start, 48,
+            "with order_hint_bits == 5 the loop-filter cluster starts on byte 6"
+        );
+        // deblocking apply[0] is the cluster's first read (bit 48 = byte 6). Truncating to
+        // 6 bytes makes that read overrun, landing the EOF at the very start of the cluster.
+        bits.bit(0); // apply_deblocking_filter[0] (in the dropped byte 6)
         let mut data = bits.into_bytes();
-        data.pop(); // drop the trailing (partial) byte so the apply reads overrun
-        let err = parse_body(&data, ObuType::ClosedLoopKey, true, &base_seq()).unwrap_err();
-        assert!(matches!(err, Error::UnexpectedEof { .. }));
+        data.truncate(6); // 48 bits: the deblocking apply reads overrun
+        let (core, _) = parse_body(
+            &data,
+            ObuType::ClosedLoopKey,
+            true,
+            &byte_aligned_filter_seq(),
+        )
+        .unwrap();
+        assert_truncated_filter_cluster_preserves_facts(&core);
+        assert_eq!(
+            core.deblocking_filter_params, None,
+            "the truncated deblocking structure leaves its field None"
+        );
+        assert_eq!(core.gdf_params, None);
+        assert_eq!(core.cdef_params, None);
+    }
+
+    #[test]
+    fn frame_header_core_eof_inside_gdf_params_preserves_facts() {
+        // The payload parses cleanly through deblocking_filter_params() and into
+        // gdf_params(), then runs out: deblocking is preserved, gdf/cdef stay None, and the
+        // status is the truncation marker. deblocking is built to consume exactly the full
+        // byte 6 (apply[0..4] = 1 + df_delta_q_present[0..4] = 0, 8 bits), so gdf begins at
+        // the byte-7 boundary (bit 56) and truncating to 7 bytes drops the byte gdf needs.
+        let mut seq = byte_aligned_filter_seq();
+        seq.filter.enable_gdf = true; // gdf_params() reads bits instead of short-circuiting
+        let mut bits = intra_body_up_to_filter_cluster();
+        bits.bit(1); // apply_deblocking_filter[0]
+        bits.bit(1); // apply_deblocking_filter[1]
+        bits.bit(1); // apply_deblocking_filter[2] (NumPlanes 3, luma set)
+        bits.bit(1); // apply_deblocking_filter[3]
+        bits.bit(0); // df_delta_q_present[0]
+        bits.bit(0); // df_delta_q_present[1]
+        bits.bit(0); // df_delta_q_present[2]
+        bits.bit(0); // df_delta_q_present[3] -> deblocking ends at bit 56 (byte boundary)
+        assert_eq!(
+            bits.bit_len(),
+            56,
+            "deblocking consumes exactly byte 6 so gdf starts on byte 7"
+        );
+        bits.bit(1); // gdf_frame_enable (byte 7) -> dropped
+        let mut data = bits.into_bytes();
+        data.truncate(7); // 56 bits: the gdf_frame_enable read overruns
+        let (core, _) = parse_body(&data, ObuType::ClosedLoopKey, true, &seq).unwrap();
+        assert_truncated_filter_cluster_preserves_facts(&core);
+        assert!(
+            core.deblocking_filter_params.is_some(),
+            "deblocking parsed before the gdf truncation must survive"
+        );
+        assert_eq!(
+            core.gdf_params, None,
+            "the truncated gdf structure stays None"
+        );
+        assert_eq!(core.cdef_params, None);
+    }
+
+    #[test]
+    fn frame_header_core_eof_inside_cdef_params_preserves_facts() {
+        // The payload parses cleanly through deblocking and gdf (gdf disabled-by-flag so it
+        // short-circuits with no reads) and into cdef_params(), then runs out: deblocking
+        // and gdf are preserved, cdef stays None, status is the marker. deblocking again
+        // consumes exactly byte 6 (8 bits) so cdef begins at the byte-7 boundary (bit 56).
+        let mut seq = byte_aligned_filter_seq();
+        seq.filter.enable_cdef = true; // cdef_params() reads bits instead of short-circuiting
+        // enable_gdf stays false so gdf_params() short-circuits with no reads.
+        let mut bits = intra_body_up_to_filter_cluster();
+        bits.bit(1); // apply_deblocking_filter[0]
+        bits.bit(1); // apply_deblocking_filter[1]
+        bits.bit(1); // apply_deblocking_filter[2]
+        bits.bit(1); // apply_deblocking_filter[3]
+        bits.bit(0); // df_delta_q_present[0]
+        bits.bit(0); // df_delta_q_present[1]
+        bits.bit(0); // df_delta_q_present[2]
+        bits.bit(0); // df_delta_q_present[3] -> deblocking ends at bit 56 (byte boundary)
+        // gdf_params(): enable_gdf == false -> no bits.
+        bits.bit(1); // cdef_frame_enable (byte 7) -> dropped
+        let mut data = bits.into_bytes();
+        data.truncate(7); // 56 bits: the cdef_frame_enable read overruns
+        let (core, _) = parse_body(&data, ObuType::ClosedLoopKey, true, &seq).unwrap();
+        assert_truncated_filter_cluster_preserves_facts(&core);
+        assert!(
+            core.deblocking_filter_params.is_some(),
+            "deblocking parsed before the cdef truncation must survive"
+        );
+        // gdf was frame-disabled, so its field is Some with gdf_frame_enable == false.
+        assert_eq!(
+            core.gdf_params.as_ref().map(|g| g.gdf_frame_enable),
+            Some(false),
+            "the frame-disabled gdf structure parsed (no bits) before the cdef truncation"
+        );
+        assert_eq!(
+            core.cdef_params, None,
+            "the truncated cdef structure stays None"
+        );
     }
 
     #[test]

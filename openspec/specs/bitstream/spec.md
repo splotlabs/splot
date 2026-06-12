@@ -833,18 +833,18 @@ only when `!(CodedLossless || !enable_parity_hiding || allow_tcq)`.
 - **WHEN** `using_qmatrix` is 1 and a segment is lossless per `LosslessArray`
 - **THEN** no `qm_index` is read for that segment and its QM levels are 15
 
-### Requirement: New frame-header stop point
-After `allow_parity_hiding`, the intra-path parser SHALL stop with a new
-explicit `FrameHeaderParseStatus` value indicating it stopped before
-`deblocking_filter_params()` (AV2 v1.0.0 § 5.18.5.2). The
-`StoppedBeforeFilteringQuantSegmentation` status SHALL no longer be produced on
-this path, and no full-payload trailing-bits conformance SHALL be inferred from
-the new partial status.
+### Requirement: Intra-path frame-header stop point
+The intra-path parser SHALL stop with an explicit `FrameHeaderParseStatus` value
+indicating it stopped before `lr_params()` (loop restoration, § 5.18.7.11) once it
+has read the § 5.18.2 lossless / `allow_tcq` / `allow_parity_hiding` tail and the
+loop-filter cluster `deblocking_filter_params()` (AV2 v1.0.0 § 5.18.5.2),
+`gdf_params()` (§ 5.18.7.9), and `cdef_params()` (§ 5.18.7.10). No full-payload
+trailing-bits conformance SHALL be inferred from a partial status.
 
 #### Scenario: Status reports the deeper stop point
-- **WHEN** a valid intra frame header parses through the new structures
-- **THEN** the parse status is the new stopped-before-deblocking value and
-  `consumed_bits` covers exactly the parsed prefix
+- **WHEN** a valid intra frame header parses through the loop-filter cluster
+- **THEN** the parse status names the next unparsed structure (loop restoration)
+  and `consumed_bits` covers exactly the parsed prefix
 
 ### Requirement: New frame parsers never panic
 All new frame-header parsing paths SHALL return typed errors on truncated or
@@ -955,6 +955,9 @@ unsupported routing.
 
 #### Scenario: EOF inside filter params
 
-- **WHEN** the payload ends inside any of the three structures
-- **THEN** the parser reports the truncation without panicking
+- **WHEN** the payload ends inside any of the three loop-filter structures
+- **THEN** the parser reports the truncation without panicking, preserves the
+  already-parsed control-region facts (frame size, output flags, tile / quant /
+  segmentation), leaves the unreached filter fields unset, and records the
+  truncation through a dedicated stop status rather than failing the whole parse
 
