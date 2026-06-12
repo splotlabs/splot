@@ -268,6 +268,14 @@ authorised by the maintainer.
   sha256 `e9916f091e4e83446aad6b4601641c5b292e569c144c4163b26a4497573b533f`) by
   poppler's `pdftotext -layout`. Machine-readable provenance:
   `docs/spec/av2/1.0.0/provenance.toml`.
+- **Attachment:** the spec's § 9 additional-tables header is committed verbatim at
+  `docs/spec/av2/1.0.0/attachments/all_tables.h`
+  (<https://av2.aomedia.org/v1.0.0/attachments/all_tables.h>,
+  sha256 `c3837e1c3b333e9ed51885c642562b519e3c3ed2ab385557d296c30a29c04ca1`). It is
+  the same AOMedia copyright and version, carries no PolyForm SPDX header, and is
+  pinned in `provenance.toml [attachments]` and `CHECKSUMS`. `cargo xtask gen-tables`
+  generates `crates/splot-core/src/tables/` from it; the generated Rust is original
+  `splot` code (PolyForm), not part of this exception.
 - **Isolation & integrity:** the mirror lives only under `docs/spec/av2/`, carries
   **no** PolyForm SPDX header, declares its AOM copyright in
   `docs/spec/av2/1.0.0/README.md`, and is excluded from `typos`. The

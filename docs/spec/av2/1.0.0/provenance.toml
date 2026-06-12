@@ -11,3 +11,8 @@ source_html = "https://av2.aomedia.org/v1.0.0/index.html"
 poppler_version = "pdftotext version 26.04.0"
 pdftotext_args = "-layout"
 generated_by = "scripts/spec/regenerate-av2-spec.sh"
+
+[attachments.all_tables_h]
+path = "attachments/all_tables.h"
+url = "https://av2.aomedia.org/v1.0.0/attachments/all_tables.h"
+sha256 = "c3837e1c3b333e9ed51885c642562b519e3c3ed2ab385557d296c30a29c04ca1"

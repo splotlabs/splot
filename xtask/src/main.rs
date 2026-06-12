@@ -15,6 +15,7 @@ use clap::{Parser, Subcommand};
 mod audit_scope;
 mod diagnostic_registry;
 mod feature_status;
+mod gen_tables;
 mod git_util;
 
 use audit_scope::{AuditScopeFormat, AuditScopeOptions};
@@ -50,7 +51,20 @@ const SPLOT_VALIDATE_COVERAGE_IGNORE_REGEX: &str =
 const SPEC_MIRRORS: &[(&str, &str, &str)] = &[(
     "docs/spec/av2/1.0.0",
     "e9916f091e4e83446aad6b4601641c5b292e569c144c4163b26a4497573b533f",
-    "d4c786fcda4c16e1e72005c42f047f67c1b0f66f54a20899234df3f78406350a",
+    "d56cf5c10d24c03c3de675ccc78c42e1d56482726631e7ade71e768638a57273",
+)];
+
+/// Verbatim spec attachments committed under a mirror's `attachments/`, pinned to
+/// `(mirror_dir, attachment_relpath, sha256)`. These are non-PDF-derived files
+/// (e.g. the § 9 `all_tables.h` additional-tables header consumed by
+/// `cargo xtask gen-tables`) fetched verbatim from the spec site. The mirror's own
+/// `CHECKSUMS` already covers their bytes; this extra pin asserts the attachment's
+/// sha256 is *also* recorded in `provenance.toml [attachments]`, so the recorded
+/// provenance cannot silently drift from the committed bytes.
+const SPEC_MIRROR_ATTACHMENTS: &[(&str, &str, &str)] = &[(
+    "docs/spec/av2/1.0.0",
+    "attachments/all_tables.h",
+    "c3837e1c3b333e9ed51885c642562b519e3c3ed2ab385557d296c30a29c04ca1",
 )];
 
 #[derive(Parser, Debug)]
@@ -112,8 +126,12 @@ enum Task {
         #[arg(long)]
         output: Option<PathBuf>,
     },
-    /// (stub) Generate spec tables from the AV2 additional tables.
-    GenTables,
+    /// Generate the AV2 § 9 additional tables into `crates/splot-core/src/tables/`.
+    GenTables {
+        /// Verify the committed generated tables are up to date instead of writing.
+        #[arg(long)]
+        check: bool,
+    },
     /// (stub) Fetch AV2/AOMedia conformance vectors.
     FetchVectors,
     /// (stub) Run AVM differential testing.
@@ -179,10 +197,7 @@ fn main() -> Result<()> {
         Task::SpecCoverage { format, output } => {
             feature_status::run_spec_coverage(&workspace_root()?, format, output)
         }
-        Task::GenTables => {
-            gen_tables_stub();
-            Ok(())
-        }
+        Task::GenTables { check } => gen_tables::run_gen_tables(&workspace_root()?, check),
         Task::FetchVectors => {
             fetch_vectors_stub();
             Ok(())
@@ -251,6 +266,7 @@ fn run_ci() -> Result<()> {
     check_dependency_direction(&root)?;
     check_spec_mirror(&root)?;
     check_fuzz_targets(&root)?;
+    gen_tables::run_gen_tables(&root, true)?;
     feature_status::run_check_feature_status(&root)?;
     diagnostic_registry::check_diagnostic_registry(&root)?;
 
@@ -799,8 +815,77 @@ fn check_spec_mirror(root: &Path) -> Result<()> {
             pinned_checksums_sha,
         )?;
     }
+    for (rel_dir, rel_attachment, pinned_sha) in SPEC_MIRROR_ATTACHMENTS {
+        verify_spec_mirror_attachment(&root.join(rel_dir), rel_dir, rel_attachment, pinned_sha)?;
+    }
     eprintln!("check-spec-mirror: ok");
     Ok(())
+}
+
+/// Verifies a committed verbatim attachment matches its pinned sha256 on disk and
+/// that the same sha256 is recorded in the mirror's `provenance.toml [attachments]`
+/// table. The mirror `CHECKSUMS` pin (step 3 of [`verify_spec_mirror_dir`]) already
+/// guards the bytes; this additionally couples the recorded provenance to those
+/// bytes so a re-pointed or stale provenance entry fails the gate.
+fn verify_spec_mirror_attachment(
+    dir: &Path,
+    rel_dir: &str,
+    rel_attachment: &str,
+    pinned_sha: &str,
+) -> Result<()> {
+    let mut problems: Vec<String> = Vec::new();
+
+    let attachment_path = dir.join(rel_attachment);
+    let bytes = std::fs::read(&attachment_path)
+        .with_context(|| format!("failed to read {}", attachment_path.display()))?;
+    let got = sha256_hex(&bytes);
+    if got != *pinned_sha {
+        problems.push(format!(
+            "attachment {rel_attachment} sha256 {got:?} does not match the pinned {pinned_sha:?}"
+        ));
+    }
+
+    // The recorded sha256 in provenance.toml [attachments.*] must agree with the
+    // pin (and therefore the bytes). The table is keyed by a TOML-safe alias, so
+    // match on the `path` field rather than guessing the key.
+    let provenance_path = dir.join("provenance.toml");
+    let provenance = std::fs::read_to_string(&provenance_path)
+        .with_context(|| format!("failed to read {}", provenance_path.display()))?;
+    let table: toml::Table = toml::from_str(&provenance)
+        .with_context(|| format!("failed to parse {}", provenance_path.display()))?;
+    let recorded = table
+        .get("attachments")
+        .and_then(|v| v.as_table())
+        .and_then(|attachments| {
+            attachments.values().find_map(|entry| {
+                let entry = entry.as_table()?;
+                let path = entry.get("path").and_then(|v| v.as_str())?;
+                (path == rel_attachment)
+                    .then(|| entry.get("sha256").and_then(|v| v.as_str()))
+                    .flatten()
+            })
+        });
+    match recorded {
+        None => problems.push(format!(
+            "provenance.toml has no [attachments] entry with path = \"{rel_attachment}\""
+        )),
+        Some(sha) if sha != pinned_sha => problems.push(format!(
+            "provenance.toml attachment sha256 {sha:?} does not match the pinned {pinned_sha:?}"
+        )),
+        Some(_) => {}
+    }
+
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        for problem in &problems {
+            eprintln!("spec mirror {rel_dir}: {problem}");
+        }
+        bail!(
+            "spec mirror {rel_dir} attachment {rel_attachment} failed integrity check ({} problem(s))",
+            problems.len()
+        )
+    }
 }
 
 fn verify_spec_mirror_dir(
@@ -1087,14 +1172,6 @@ fn resolved_dep_name(
     key.to_owned()
 }
 
-fn gen_tables_stub() {
-    eprintln!("xtask gen-tables: not yet implemented.");
-    eprintln!(
-        "Planned: download the AV2 v1.0.0 additional tables (all_tables.h) and generate Rust"
-    );
-    eprintln!("modules under crates/splot-core/src/ (AV2 § 9). See docs/SPEC-MAPPING.md.");
-}
-
 fn fetch_vectors_stub() {
     eprintln!("xtask fetch-vectors: not yet implemented.");
     eprintln!("Planned: fetch AV2/AOMedia conformance vectors into a gitignored tests/vectors/.");
@@ -1236,6 +1313,49 @@ mod tests {
         // An extra file not listed in CHECKSUMS fails.
         std::fs::write(dir.join("sub/extra.md"), "x")?;
         assert!(verify_spec_mirror_dir(&dir, rel, "PIN", &manifest_sha).is_err());
+
+        let _ = std::fs::remove_dir_all(&base);
+        Ok(())
+    }
+
+    #[test]
+    fn spec_mirror_attachment_gate_couples_bytes_and_provenance() -> Result<()> {
+        let base = std::env::temp_dir().join(format!("xtask-spec-att-{}", std::process::id()));
+        let dir = base.join("docs/spec/av2/1.0.0");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(dir.join("attachments"))?;
+
+        let body = b"Foo[1] = { 0 }\n";
+        let sha = sha256_hex(body);
+        std::fs::write(dir.join("attachments/all_tables.h"), body)?;
+        let rel = "docs/spec/av2/1.0.0";
+        let att_rel = "attachments/all_tables.h";
+
+        let write_provenance = |recorded_sha: &str| -> Result<()> {
+            let provenance = format!(
+                "pdf_sha256 = \"PIN\"\n\n[attachments.all_tables_h]\npath = \"{att_rel}\"\nsha256 = \"{recorded_sha}\"\n"
+            );
+            std::fs::write(dir.join("provenance.toml"), provenance)?;
+            Ok(())
+        };
+
+        // Bytes match the pin AND provenance records the same sha -> ok.
+        write_provenance(&sha)?;
+        verify_spec_mirror_attachment(&dir, rel, att_rel, &sha)?;
+
+        // Provenance records a different sha than the pin -> fails.
+        write_provenance("0000")?;
+        assert!(verify_spec_mirror_attachment(&dir, rel, att_rel, &sha).is_err());
+
+        // Provenance has no [attachments] entry -> fails.
+        std::fs::write(dir.join("provenance.toml"), "pdf_sha256 = \"PIN\"\n")?;
+        assert!(verify_spec_mirror_attachment(&dir, rel, att_rel, &sha).is_err());
+
+        // On-disk bytes no longer match the pin -> fails (even if provenance agrees
+        // with the pin), so the pinned sha and the bytes are coupled.
+        write_provenance(&sha)?;
+        std::fs::write(dir.join("attachments/all_tables.h"), b"tampered\n")?;
+        assert!(verify_spec_mirror_attachment(&dir, rel, att_rel, &sha).is_err());
 
         let _ = std::fs::remove_dir_all(&base);
         Ok(())

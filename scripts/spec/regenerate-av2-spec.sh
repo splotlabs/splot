@@ -106,6 +106,20 @@ echo "PDF sha256 verified: $GOT" >&2
 POPPLER_VERSION="$(pdftotext -v 2>&1 | sed -n '1p')"
 pdftotext -layout "$WORK/spec.pdf" "$WORK/raw.txt"
 
+# 3b. Fetch the § 9 "additional tables" attachment (all_tables.h). It is committed
+# verbatim under the mirror's attachments/ path and is the input to
+# `cargo xtask gen-tables`. Its sha256 is pinned in the committed provenance.toml;
+# we re-verify it after downloading so a re-pointed/altered attachment fails loudly.
+ATTACHMENT_URL="https://av2.aomedia.org/v$VERSION/attachments/all_tables.h"
+ATTACHMENT_SHA="c3837e1c3b333e9ed51885c642562b519e3c3ed2ab385557d296c30a29c04ca1"
+echo "Downloading $ATTACHMENT_URL ..." >&2
+curl -sSL -o "$WORK/all_tables.h" "$ATTACHMENT_URL" || die "attachment download failed"
+ATT_GOT="$(sha256_of "$WORK/all_tables.h")"
+if [ "$ATT_GOT" != "$ATTACHMENT_SHA" ]; then
+  die "attachment sha256 mismatch: expected $ATTACHMENT_SHA, got $ATT_GOT (refusing to continue)"
+fi
+echo "attachment sha256 verified: $ATT_GOT" >&2
+
 # 4. Structure into the mirror (or a temp dir, in --verify mode).
 TARGET="$OUTDIR"
 [ "$VERIFY" -eq 1 ] && TARGET="$WORK/mirror"
@@ -116,7 +130,10 @@ python3 "$SCRIPT_DIR/build_av2_mirror.py" \
   --version "$VERSION" \
   --pdf-url "${URL:-local:$PDF_PATH}" \
   --pdf-sha256 "$SHA256" \
-  --poppler-version "$POPPLER_VERSION"
+  --poppler-version "$POPPLER_VERSION" \
+  --attachment "$WORK/all_tables.h" \
+  --attachment-url "$ATTACHMENT_URL" \
+  --attachment-sha256 "$ATTACHMENT_SHA"
 
 # 5. In --verify mode, diff against the committed mirror.
 if [ "$VERIFY" -eq 1 ]; then
