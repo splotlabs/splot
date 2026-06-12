@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "c081a14bb5d916c303e918390b0a52c2707e343b",
+  "audited_commit": "46f6cd8d6793b64f8df4e3215f84d9523063e73f",
   "outcome": "success",
   "files": [
     {
@@ -3382,6 +3382,32 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-12-gen-tables-additional-tables/proposal.md",
+      "sha256": "ced8da567afa9225c830bc5193cc81fa581f4c89864b2caebdd61fd212e5d1c5",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-9-ADDITIONAL-TABLES",
+        "XTASK-GEN-TABLES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-gen-tables-additional-tables/specs/bitstream/spec.md",
+      "sha256": "2d215fdd76fe9222def2f5f2415d060e331a8a95a729c572f2842bdfce973fcb",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-9-ADDITIONAL-TABLES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-gen-tables-additional-tables/tasks.md",
+      "sha256": "7eb08d7fcde25e8b4f9395b80badb813ce1c916e6047b520910ee55f1da722cd",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-12-mfh-frame-header-state/proposal.md",
       "sha256": "954a54f5145c5cca327233900ee983bbeb9b14c82e93a24423925251eb39053b",
       "scope_kind": "openspec",
@@ -3526,32 +3552,6 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/gen-tables-additional-tables/proposal.md",
-      "sha256": "ced8da567afa9225c830bc5193cc81fa581f4c89864b2caebdd61fd212e5d1c5",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-9-ADDITIONAL-TABLES",
-        "XTASK-GEN-TABLES"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/gen-tables-additional-tables/specs/bitstream/spec.md",
-      "sha256": "2d215fdd76fe9222def2f5f2415d060e331a8a95a729c572f2842bdfce973fcb",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-9-ADDITIONAL-TABLES"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/gen-tables-additional-tables/tasks.md",
-      "sha256": "7eb08d7fcde25e8b4f9395b80badb813ce1c916e6047b520910ee55f1da722cd",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
       "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
       "sha256": "ec25589a8a02879087f03de9cc0c8b07e5fedf96f9a48c8f3dd99be91c14d240",
       "scope_kind": "openspec",
@@ -3599,7 +3599,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "850bcc58d6d393282c6ea9f381b9a4f182f54e75487d03a412f4d111b3fe100f",
+      "sha256": "bc55e30c88dd6d2730b627900e5f16b2f93c389e838c3be78b0b97cd9c83ce36",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
