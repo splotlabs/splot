@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "8da582a83a50bc11629708233474a98bc92c5e04",
+  "audited_commit": "2fe0fb2087de39b3c4048a3142389fbd009851c0",
   "outcome": "success",
   "files": [
     {
@@ -436,7 +436,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/info.rs",
-      "sha256": "6143e01dfd4409308ee5f5eef565349a70f26bc540c76e5cd810a34f590cfa15",
+      "sha256": "8fe3bae45ceacfaa06816c9c5c11dd2ba14b4f3237fe183ff20fef1bb8c47766",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -447,7 +447,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/inter.rs",
-      "sha256": "24b71a3c314a94dea0dfad30c69eae20a3c96e9de3fe0bd271734f6313f166fc",
+      "sha256": "bbb782cf8978e4072d6cc1c71aadeb7b5c9fb3e12ac006a20fe90b353d5e639c",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"
@@ -812,7 +812,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "1aae139497003eea0785c170fe3b3559a862aa040488bebcc001b86faaf8d017",
+      "sha256": "bb7037f9ba4d187d82861c3bd00d93b077d4b1d53f1b2aac3261f8e0c20e6a2a",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -853,7 +853,7 @@
     },
     {
       "path": "crates/splot-validate/src/frame_unit.rs",
-      "sha256": "6bb98612d6b8afdeafc8b60e24ca4d4cede2c6e9c9fb921cf7552625ab93c7e9",
+      "sha256": "208a330b68b1629a53c54c619d1fd83ee13c7514deb2306d87447a502fd8abe1",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT"
@@ -894,7 +894,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "65950ad2cd4c4b0bbf119ab6592c9f909bf6c08e682c417600e6c274190665e8",
+      "sha256": "9e1909c1560b437a6a3e26beef1dedfb27d1ea8786cbcf59c36228c57e561bf3",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1419,7 +1419,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "4b4c53c53428eb614292ae53831c7443dfb5f9c023025f8befbbabad16fc72ae",
+      "sha256": "c2b3585013bb934c867c00002ab4f58eed1fa7e68f9fba8b9ee7adb532aa433c",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
