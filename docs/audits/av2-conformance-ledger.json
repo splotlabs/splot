@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "bbf825fcaf37160645900d7c9ecb899666d45783",
+  "audited_commit": "ad0737efffbf1463c6a067cdf95dffc3b035e750",
   "outcome": "success",
   "files": [
     {
@@ -620,7 +620,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/tile_group.rs",
-      "sha256": "1b15f36cc9594a317e06d47dc44f74ea4aec1ce132b93931f61f46a2f359833f",
+      "sha256": "94bf5684adda2031053fbff77caba2bb67d2e2396aebbdc2afeb66a7aa47b56d",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.19-TILE-GROUP",
@@ -876,7 +876,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "f2b6a6b18293f76ebbf0159c200053592bba99d4643d22f5ce5a82c25287e4d2",
+      "sha256": "925ee7232ffa99fa05c5b13b359511876975dfb321e629ef53fda4cafa1a42c0",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -960,7 +960,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "34d0006b1691350e3853cda8dd57c32527c91361bda5ebc669bbbba645ab401f",
+      "sha256": "405918706b923293f1575a2c6008c07d84db54d3cb2dea4a8c5da8d9e11b1ea2",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1491,7 +1491,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "9ea9dc1b6fb64319ce9e0eb26ce5dc353c43d3d3e3ec8814e5910944bcf98bf3",
+      "sha256": "398176e38e62a8d7e497dbab5a5780280a31cf6c2530205d85a3581e395d5566",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
