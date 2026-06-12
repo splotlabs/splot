@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "2bc1c68e56a03ba2a724b7792ffeb17d9da1ae9d",
+  "audited_commit": "dea64103ef7ac7b0523799a97069e6ba5817668a",
   "outcome": "success",
   "files": [
     {
@@ -3119,6 +3119,39 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-12-frame-header-intra-tail-completion/proposal.md",
+      "sha256": "575fa85fffa191f5fd2811c27b89d92619db7b6967f846f64dc5177ba7043837",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.14-FILM-GRAIN",
+        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.8-TRANSFORM-CODING-MODES",
+        "AV2-5.18.9-GLOBAL-MOTION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-frame-header-intra-tail-completion/specs/bitstream/spec.md",
+      "sha256": "a354256a5abffbdfe377ae1b8fa8414c415ba3b34e156d3f81eb34be25512c3b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.8-TRANSFORM-CODING-MODES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-frame-header-intra-tail-completion/tasks.md",
+      "sha256": "5146708cbe408e22314dc6709e3d4f479078162a9519c4fefffaffeb42f2f350",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
+        "AV2-5.18.2-FRAME-HEADER-INFO"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-12-frame-loop-restoration-ccso-params/proposal.md",
       "sha256": "b0bac9a2eeda08a7202baca36c2a59c5dc049dbe4b05d25a9e1eb06d2cbd6c6b",
       "scope_kind": "openspec",
@@ -3228,39 +3261,6 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/frame-header-intra-tail-completion/proposal.md",
-      "sha256": "575fa85fffa191f5fd2811c27b89d92619db7b6967f846f64dc5177ba7043837",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.14-FILM-GRAIN",
-        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
-        "AV2-5.18.2-FRAME-HEADER-INFO",
-        "AV2-5.18.8-TRANSFORM-CODING-MODES",
-        "AV2-5.18.9-GLOBAL-MOTION"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-header-intra-tail-completion/specs/bitstream/spec.md",
-      "sha256": "a354256a5abffbdfe377ae1b8fa8414c415ba3b34e156d3f81eb34be25512c3b",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18.2-FRAME-HEADER-INFO",
-        "AV2-5.18.8-TRANSFORM-CODING-MODES"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-header-intra-tail-completion/tasks.md",
-      "sha256": "5146708cbe408e22314dc6709e3d4f479078162a9519c4fefffaffeb42f2f350",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
-        "AV2-5.18.2-FRAME-HEADER-INFO"
-      ],
-      "outcome": "success"
-    },
-    {
       "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
       "sha256": "ec25589a8a02879087f03de9cc0c8b07e5fedf96f9a48c8f3dd99be91c14d240",
       "scope_kind": "openspec",
@@ -3308,7 +3308,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "c3884e175cc2d3bf680dc75b81958d52e866f3e7397f6a5650b9a6c66abf9d75",
+      "sha256": "6d3551360d79446b4dda0859530220e7e1748d41c7676520ddee4155150f1ab6",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
