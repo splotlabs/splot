@@ -6632,22 +6632,26 @@ impl ValidatorContext {
             // frame_size() and the §6.17.2 MFH-dims / §6.17.7 tile / quant diagnostics
             // would be skipped for MFH-backed frames. An unresolvable MFH stays `None`,
             // preserving the early-stop (no guessing).
-            // AV2 § 7.23: when this OBU opens a NEW coded frame, the previous coded frame's
+            // AV2 § 7.23: when this OBU closes the previous coded frame, that frame's
             // decode finished, so its deferred § 7.23 update must be committed BEFORE the
             // reference-buffer snapshot below — otherwise the inter parser's
             // frame_size_with_refs() / frame_size_with_bridge() would read the stale
             // pre-refresh buffer and poison, silently skipping the §6.17 frame-size
             // diagnostics that the prior frame's refresh makes decidable (codex F1). The
-            // segmenter is the boundary authority; `opens_new_coded_frame` is a non-mutating
-            // peek of the same OpensNewUnit decision `observe` makes later in stream order.
-            // A continuation (its own frame's update is pending) does NOT commit here, so the
-            // committing OBU never sees its OWN update — preserving the PR #62 deferral. The
-            // commit is idempotent (`commit_pending_ref_update` takes the pending), so the
-            // later `observe_reference_state` re-commit at the OpensNewUnit boundary is a
-            // no-op; the Ambiguous-boundary commit there is unaffected (it is not an opener
-            // here, so the early commit is skipped and the deferred commit still runs).
+            // segmenter is the boundary authority; `commits_pending_ref_update` is a
+            // non-mutating peek of the SAME commit decision `observe_reference_state` makes
+            // later in stream order — it fires for both the `OpensNewUnit` boundary AND the
+            // `Ambiguous` boundary (a same-type no-delimiter TIP / bridge opener, or an
+            // unreadable tile-group delimiter), the exact set on which the prior frame's
+            // update is committed. The earlier peek only matched `OpensNewUnit`, so a
+            // same-type no-delimiter opener after a refresh snapshotted the stale buffer
+            // (codex F1). A decided continuation (its own frame's update is pending) does
+            // NOT commit here, so the committing OBU never sees its OWN update — preserving
+            // the PR #62 deferral. The commit is idempotent (`commit_pending_ref_update`
+            // takes the pending), so the later `observe_reference_state` re-commit at the
+            // same boundary is a no-op.
             let role = self.seg_role_for(obu, first_picture_in_tu);
-            if self.frame_unit.opens_new_coded_frame(obu, role) {
+            if self.frame_unit.commits_pending_ref_update(obu, role) {
                 self.commit_pending_ref_update();
             }
             let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);

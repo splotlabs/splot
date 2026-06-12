@@ -418,24 +418,36 @@ impl FrameUnitSegmenter {
     }
 
     /// Non-mutating peek: would this frame-bearing `obu` (with the precomputed `role`)
-    /// **open a new coded frame** for its layer triple, rather than continue the open one?
+    /// cause [`Self::observe`] to **commit the previous coded frame's deferred § 7.23
+    /// update** for its layer triple — i.e. would the boundary be
+    /// [`FrameBoundary::OpensNewUnit`] **or** [`FrameBoundary::Ambiguous`], the exact set
+    /// for which [`ValidatorContext::observe_reference_state`](crate::context) commits the
+    /// pending update?
     ///
-    /// This mirrors exactly the boundary [`Self::observe`] would return: a frame-bearing
-    /// OBU that resets the open unit ([`Self::starts_new_unit`]) or arrives with no open
-    /// coded frame reaches the [`observe_frame`](Self::observe_frame) `None` arm —
-    /// [`FrameBoundary::OpensNewUnit`]. Every decided / ambiguous continuation of an open
-    /// coded frame returns `false` (the `Some` arm: `ContinuesUnit` or `Ambiguous`).
+    /// This must mirror the authoritative boundary [`Self::observe`] returns, so the
+    /// early commit before the reference-buffer snapshot agrees with the later commit in
+    /// `observe_reference_state`:
     ///
-    /// The validator uses this to decide whether the previous frame's deferred § 7.23
-    /// reference-state update must be committed *before* this OBU's reference-buffer
-    /// snapshot is taken: an opener's pending update belongs to the *previous* coded frame
-    /// (its decode finished), so committing it first makes the snapshot see the post-update
-    /// buffer; a continuation's pending update is its *own* frame's, which must not land
-    /// before the frame that produced it is fully observed. The state is not advanced —
-    /// [`Self::observe`] runs later in stream order with the authoritative side effects.
-    pub(crate) fn opens_new_coded_frame(&self, obu: &ObuEnvelope<'_>, role: SegRole) -> bool {
+    /// - A frame-bearing OBU that resets the open unit ([`Self::starts_new_unit`]) or
+    ///   arrives with no open coded frame reaches the [`observe_frame`](Self::observe_frame)
+    ///   `None` arm — [`FrameBoundary::OpensNewUnit`] (commit).
+    /// - With an open coded frame and no reset, the `Some` arm is reached: an unreadable
+    ///   tile-group delimiter, or a **same-`obu_type` no-delimiter** TIP / bridge OBU,
+    ///   yields [`FrameBoundary::Ambiguous`] (the prior frame is done either way, so commit
+    ///   — codex F1). A decided continuation (`sef-single-obu` / `mixed-coded-frame-types`
+    ///   keep-in-frame, or a readable `is_first_tile_group == 0` same-type tile OBU) yields
+    ///   [`FrameBoundary::ContinuesUnit`] (no commit: the pending update is the OBU's *own*
+    ///   frame's, which must not land before that frame is fully observed).
+    ///
+    /// The previous behavior only matched [`FrameBoundary::OpensNewUnit`], so a same-type
+    /// no-delimiter opener immediately after a refreshing frame (which `observe` resolves as
+    /// `Ambiguous`, committing the prior update) snapshotted the *stale* pre-refresh buffer
+    /// and silently dropped the newly decidable § 6.17 frame-size diagnostics. The state is
+    /// not advanced — [`Self::observe`] runs later in stream order with the authoritative
+    /// side effects (the commit is idempotent, so the later re-commit is a no-op).
+    pub(crate) fn commits_pending_ref_update(&self, obu: &ObuEnvelope<'_>, role: SegRole) -> bool {
         // Globals and padding are never part of a coded frame unit (matches the early
-        // returns in `observe`); they carry no coded-frame open.
+        // returns in `observe`); they carry no coded-frame open and commit nothing.
         if obu.header.extended_layer_id.is_global() || matches!(role, SegRole::Padding) {
             return false;
         }
@@ -444,15 +456,42 @@ impl FrameUnitSegmenter {
             obu.header.embedded_layer_id,
             obu.header.temporal_layer_id,
         );
-        // No state yet for this triple == a fresh unit (coded_frame None) == opens.
+        // No state yet for this triple == a fresh unit (coded_frame None) == OpensNewUnit.
         let Some(state) = self.layers.get(&key) else {
             return true;
         };
         // `observe` resets the unit first when `starts_new_unit` holds (so the reset unit's
-        // coded_frame is None == opens), otherwise reaches `observe_frame`: the `None` arm
-        // (no open coded frame) opens; the `Some` arm (a continuation / ambiguous) does not.
-        Self::starts_new_unit(&state.unit, role, obu.header.obu_type)
-            || state.unit.coded_frame.is_none()
+        // coded_frame is None == OpensNewUnit).
+        if Self::starts_new_unit(&state.unit, role, obu.header.obu_type) {
+            return true;
+        }
+        // Otherwise `observe_frame` runs against the open coded frame:
+        let Some(frame) = state.unit.coded_frame else {
+            // No open coded frame -> the `None` arm -> OpensNewUnit (commit).
+            return true;
+        };
+        // The `Some` arm. The two Ambiguous sub-cases (which `observe_reference_state`
+        // commits on) are an unreadable tile-group delimiter and a same-`obu_type`
+        // no-delimiter TIP / bridge OBU. A mismatched-type no-delimiter OBU never reaches
+        // here (`starts_new_unit` already split it via `starts_next_no_delimiter_frame`),
+        // so a no-delimiter role with an open coded frame is necessarily same-type.
+        match role {
+            SegRole::TileFrame {
+                is_first_tile_group,
+                ..
+            } => is_first_tile_group.is_none(), // unreadable delimiter -> Ambiguous
+            SegRole::TipFrame { .. } | SegRole::BridgeFrame => {
+                debug_assert!(is_no_delimiter_frame_role(role));
+                // Same-type no-delimiter adjacency is Ambiguous (round-7 F2); a SEF open
+                // frame would have split this OBU into a new unit above.
+                let _ = frame;
+                true
+            }
+            // A SEF arriving on an open frame split into a new unit above (OpensNewUnit,
+            // already returned). Non-frame / padding roles never reach this peek's frame
+            // path. Anything else is a decided continuation (no commit).
+            _ => false,
+        }
     }
 
     /// Feeds one OBU to the segmenter in stream order.
@@ -1362,5 +1401,90 @@ mod tests {
             "a different-type no-delimiter frame is a decidable boundary, so it opens a \
              new unit (not Ambiguous)"
         );
+    }
+
+    #[test]
+    fn commits_pending_ref_update_matches_observe_commit_decision() {
+        // Codex F1: the non-mutating commit peek must agree with the authoritative
+        // boundary `observe` returns for EVERY frame-bearing OBU — `OpensNewUnit` and
+        // `Ambiguous` commit, `ContinuesUnit` does not. The earlier `opens_new_coded_frame`
+        // peek only matched `OpensNewUnit`, so a same-type no-delimiter opener (an
+        // `Ambiguous` boundary that `observe_reference_state` commits on) was peeked as
+        // false — the stale-buffer snapshot bug. Drive a fresh segmenter for each case and
+        // assert the peek equals (boundary == OpensNewUnit || boundary == Ambiguous).
+        fn commit_for(boundary: Option<FrameBoundary>) -> bool {
+            matches!(
+                boundary,
+                Some(FrameBoundary::OpensNewUnit | FrameBoundary::Ambiguous)
+            )
+        }
+
+        // Case 1: a same-type no-delimiter bridge after an open bridge -> Ambiguous (commit).
+        // Pre-fix this was the silent miss: the peek said `false` while `observe` commits.
+        let mut peek_seg = FrameUnitSegmenter::default();
+        let mut authority_seg = FrameUnitSegmenter::default();
+        let mut r = ValidationReport::new();
+        peek_seg.observe(&obu(ObuType::BridgeFrame, 0), SegRole::BridgeFrame, &mut r);
+        authority_seg.observe(&obu(ObuType::BridgeFrame, 0), SegRole::BridgeFrame, &mut r);
+        let second = obu(ObuType::BridgeFrame, 1);
+        let peek = peek_seg.commits_pending_ref_update(&second, SegRole::BridgeFrame);
+        let boundary = authority_seg.observe(&second, SegRole::BridgeFrame, &mut r);
+        assert_eq!(boundary, Some(FrameBoundary::Ambiguous));
+        assert!(
+            peek,
+            "a same-type no-delimiter bridge opener is an Ambiguous boundary that commits \
+             the prior frame's §7.23 update; the peek must agree (codex F1)"
+        );
+        assert_eq!(peek, commit_for(boundary));
+
+        // Case 2: the first bridge with no open frame -> OpensNewUnit (commit).
+        let peek_seg = FrameUnitSegmenter::default();
+        let mut authority_seg = FrameUnitSegmenter::default();
+        let first = obu(ObuType::BridgeFrame, 0);
+        let peek = peek_seg.commits_pending_ref_update(&first, SegRole::BridgeFrame);
+        let boundary = authority_seg.observe(&first, SegRole::BridgeFrame, &mut r);
+        assert_eq!(boundary, Some(FrameBoundary::OpensNewUnit));
+        assert_eq!(peek, commit_for(boundary));
+        assert!(peek);
+
+        // Case 3: a readable is_first_tile_group == 0 continuation -> ContinuesUnit (no
+        // commit): its own frame's update is still pending and must not land early.
+        let mut peek_seg = FrameUnitSegmenter::default();
+        let mut authority_seg = FrameUnitSegmenter::default();
+        let open = SegRole::TileFrame {
+            is_first_tile_group: Some(true),
+            output: Some(true),
+        };
+        let cont = SegRole::TileFrame {
+            is_first_tile_group: Some(false),
+            output: Some(true),
+        };
+        peek_seg.observe(&obu(ObuType::RegularTileGroup, 0), open, &mut r);
+        authority_seg.observe(&obu(ObuType::RegularTileGroup, 0), open, &mut r);
+        let next = obu(ObuType::RegularTileGroup, 1);
+        let peek = peek_seg.commits_pending_ref_update(&next, cont);
+        let boundary = authority_seg.observe(&next, cont, &mut r);
+        assert_eq!(boundary, Some(FrameBoundary::ContinuesUnit));
+        assert!(
+            !peek,
+            "a decided same-type tile continuation does not commit the pending update"
+        );
+        assert_eq!(peek, commit_for(boundary));
+
+        // Case 4: an unreadable tile-group delimiter on an open frame -> Ambiguous (commit).
+        let mut peek_seg = FrameUnitSegmenter::default();
+        let mut authority_seg = FrameUnitSegmenter::default();
+        let unreadable = SegRole::TileFrame {
+            is_first_tile_group: None,
+            output: Some(true),
+        };
+        peek_seg.observe(&obu(ObuType::RegularTileGroup, 0), open, &mut r);
+        authority_seg.observe(&obu(ObuType::RegularTileGroup, 0), open, &mut r);
+        let next = obu(ObuType::RegularTileGroup, 1);
+        let peek = peek_seg.commits_pending_ref_update(&next, unreadable);
+        let boundary = authority_seg.observe(&next, unreadable, &mut r);
+        assert_eq!(boundary, Some(FrameBoundary::Ambiguous));
+        assert!(peek);
+        assert_eq!(peek, commit_for(boundary));
     }
 }

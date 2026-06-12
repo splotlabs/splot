@@ -5121,14 +5121,27 @@ mod tests {
             "a complete intra frame header must NOT fire truncated-frame-header; report was: {report}"
         );
 
-        // (b) An INTER frame stops at UnsupportedUntilFeature (the inter reference map needs
-        // reference state this phase does not model) — a coverage stop, NOT a truncation.
+        // (b) An INTER frame that parses its full modeled control prefix (output flags,
+        // order_hint, primary-ref signaling, refresh_frame_flags) and then reaches the
+        // implicit-reference-map coverage stop (explicit_ref_frame_map off ->
+        // get_ref_frames(0), InterStop::UnmodeledDerivation -> UnsupportedUntilFeature) — a
+        // clean coverage stop with NO EOF, so it must NOT fire truncated-frame-header. (The
+        // base sequence has explicit_ref_frame_map == false; the bits end exactly after
+        // refresh_frame_flags on a byte boundary so no field is mid-read — distinguishing a
+        // coverage stop from the StoppedInsideInterControl truncation of codex F2.)
         let mut inter = td_and_frame_core_seq(FrameCoreSeq::base());
         let mut ib = Bits::default();
         ib.bit(1); // is_first_tile_group
         ib.uvlc(0); // cur_mfh_id == 0
         ib.uvlc(0); // seq_header_id_in_frame_header
-        ib.bit(1); // frame_is_inter == 1 -> INTER_FRAME (parser stops after frame-type)
+        ib.bit(1); // frame_is_inter == 1 -> INTER_FRAME
+        ib.bit(0); // immediate_output_frame (monotonic_output -> implicit forced 0, no bit)
+        ib.bit(0); // frame_size_override_flag
+        ib.f(0, 1); // order_hint f(OrderHintBits == 1)
+        ib.bit(0); // signal_primary_ref_frame
+        ib.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        ib.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8) -> ends on a byte boundary
+        // explicit_ref_frame_map off -> explicitRefFrameMap 0 -> get_ref_frames(0) coverage stop.
         inter.extend(annex_b_obu(RTG_HEADER, &ib.into_bytes()));
         let report = Validator::new(false).validate_bytes(&inter);
         assert!(
@@ -20628,6 +20641,60 @@ mod tests {
             has_num_total_refs_error(&report),
             "num_total_refs 3 > ActiveNumRefFrames 2 must fire the §6.17.2 check; \
              report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_header_truncated_inside_inter_control_fires_and_preserves_facts() {
+        // Codex F2: an INTER frame whose payload ends INSIDE the modeled §5.18.2 inter
+        // control region (here right after num_total_refs, before ref_frame_idx) must (1)
+        // fire frame-header/truncated-frame-header (the core reports
+        // StoppedInsideInterControl, a truncation in a fully-modeled region) AND (2) preserve
+        // the facts parsed before the EOF — proven here by num_total_refs == 3 (> the
+        // ActiveNumRefFrames == 2 bound) still firing frame-header/num-total-refs-out-of-range.
+        // Pre-fix the inter EOF propagated UnexpectedEof out of parse_frame_header_core, the
+        // validator's `.ok()` dropped both the truncation and every earlier fact, and the
+        // frame validated clean (the PR #57/#59 regression class).
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            num_ref_frames_minus_1: 1, // NumRefFrames == 2 -> ActiveNumRefFrames == 2
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(1); // frame_is_inter == 1 -> INTER_FRAME
+        fb.bit(1); // immediate_output_frame (monotonic_output -> implicit forced 0, no bit)
+        fb.bit(0); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        fb.bit(0); // signal_primary_ref_frame
+        fb.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        fb.f(0, 2); // refresh_frame_flags f(NumRefFrames == 2)
+        fb.bit(1); // frame_explicit_ref_frame_map
+        fb.f(3, 3); // num_total_refs == 3 (> ActiveNumRefFrames 2) — last field before EOF
+        // Truncate the payload to the byte that just contains num_total_refs, dropping
+        // ref_frame_idx[i] so the parser EOFs while reading it.
+        let keep_bytes = fb.bit_len().div_ceil(8);
+        // Emit a few ref_frame_idx bits so into_bytes() pads a full final byte we then drop.
+        fb.f(0, 1); // (dropped) the first ref_frame_idx[0] bit
+        let mut payload = fb.into_bytes();
+        payload.truncate(keep_bytes);
+        data.extend(annex_b_obu(REGULAR_TILE_GROUP_HEADER, &payload));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/truncated-frame-header"),
+            "an EOF inside the modeled inter control region must fire \
+             frame-header/truncated-frame-header; report was: {report}"
+        );
+        assert!(
+            has_num_total_refs_error(&report),
+            "the num_total_refs fact parsed before the EOF must survive and still fire the \
+             §6.17.2 out-of-range check (facts preserved across truncation); report was: \
+             {report}"
         );
     }
 

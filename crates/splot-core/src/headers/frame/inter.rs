@@ -31,8 +31,9 @@
 //!
 //! ## Stop taxonomy
 //!
-//! [`parse_inter_control`] returns a [`InterControl`] carrying every exactly-determined
-//! field plus the terminal [`InterStop`]. The variants are all **coverage** stops, never
+//! [`parse_inter_control_into`] fills a caller-owned [`InterControl`] carrying every
+//! exactly-determined field plus the terminal [`InterStop`]. The variants are all
+//! **coverage** stops, never
 //! truncations:
 //! - [`InterStop::ReachedSharedTail`] — the control region parsed through every modeled
 //!   field, including `disable_cdf_update`, up to the shared `tile_info()` (mirror :5183);
@@ -269,10 +270,16 @@ pub struct InterControl {
     pub allow_screen_content_tools: Option<bool>,
     /// `allow_intrabc` (mirror :4861), when read on the inter path.
     pub allow_intrabc: Option<bool>,
-    /// `true` when a parsed `ref_frame_idx[i]` names an index at or beyond the
-    /// `NUM_REF_FRAMES` buffer (`idx >= NUM_REF_FRAMES`). AV2 § 6.17.2 requires every used
-    /// reference slot to be valid; recorded for the validator. The in-range proven-invalid
-    /// case (`RefValid[idx] == false`) is decided separately by the validator's §7.23
+    /// `true` when a parsed `ref_frame_idx[i]` names an index at or beyond the **active**
+    /// reference-slot count (`idx >= NumRefFrames`). AV2 § 6.17.2 (mirror :4605-4606)
+    /// requires `RefValid[ ref_frame_idx[i] ] == 1`, and RefValid is defined only over the
+    /// active slots `0..NumRefFrames-1`; an index >= NumRefFrames names a slot outside that
+    /// buffer, so it is an unconditional violation decidable from the parsed value alone (it
+    /// arises because the read width `CeilLog2(NumRefFrames)` over-covers a non-power-of-two
+    /// NumRefFrames — e.g. 6 -> 3 bits -> values up to 7). This active bound subsumes the
+    /// `NUM_REF_FRAMES` (16) buffer bound, since NumRefFrames <= NUM_REF_FRAMES always.
+    /// Recorded for the validator. The in-range proven-invalid case (`RefValid[idx] == false`
+    /// for `idx < NumRefFrames`) is decided separately by the validator's §7.23
     /// reference-state check (`ValidatorContext::reference_state_checks`), not by this flag —
     /// the parser cannot distinguish an Unknown slot from a proven-invalid one here.
     pub has_invalid_ref_frame_idx: bool,
@@ -373,18 +380,25 @@ fn ref_dims(reference_state: &FrameReferenceStateView<'_>, idx: u32) -> Option<(
     Some((w, h))
 }
 
-/// Parses the non-intra `frame_header_info()` control region (AV2 v1.0.0 § 5.18.2),
-/// starting after the output-control flags. The reader is positioned just before
-/// `disable_cross_frame_cdf_init` (mirror :4341); on a [`InterStop::ReachedSharedTail`]
-/// stop it is positioned at the shared `tile_info()` (mirror :5183).
+/// Parses the non-intra `frame_header_info()` control region (AV2 v1.0.0 § 5.18.2) into a
+/// freshly default [`InterControl`], starting after the output-control flags. The reader is
+/// positioned just before `disable_cross_frame_cdf_init` (mirror :4341); on a
+/// [`InterStop::ReachedSharedTail`] stop it is positioned at the shared `tile_info()` (mirror
+/// :5183).
 ///
 /// `frame_size_override_flag` was read (or inferred) by the caller along with the
 /// output-control flags; it selects the reference-grounded frame-size arm.
+///
+/// This is the value-returning convenience used by the unit tests; production callers use
+/// [`parse_inter_control_into`] with a caller-owned `control` so a mid-field
+/// [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) preserves the partial facts
+/// (codex F2).
 ///
 /// # Errors
 /// Returns a typed error if the payload ends or is malformed before a modeled field can
 /// be read. A branch needing unmodeled state or poisoned reference facts returns `Ok`
 /// with the corresponding [`InterStop`], never an error and never a guessed value.
+#[cfg(test)]
 pub(crate) fn parse_inter_control(
     reader: &mut BitReader<'_>,
     seq: &InterSeqView,
@@ -393,7 +407,36 @@ pub(crate) fn parse_inter_control(
     frame_size_override_flag: bool,
 ) -> Result<InterControl> {
     let mut control = InterControl::default();
+    parse_inter_control_into(
+        reader,
+        seq,
+        ctx,
+        reference_state,
+        frame_size_override_flag,
+        &mut control,
+    )?;
+    Ok(control)
+}
 
+/// Parses the non-intra control region (AV2 § 5.18.2) into a caller-owned `control`, so the
+/// fields parsed before any [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof)
+/// survive on the caller's `control` rather than being dropped with a local value. This is
+/// the facts-preserving entry the core parser uses to convert an EOF inside the modeled
+/// inter / bridge control region into a truncation status (codex F2): on `Err(UnexpectedEof)`
+/// the caller keeps `control`'s partial facts and records the truncation; on `Ok` the region
+/// reached one of its modeled coverage stops.
+///
+/// # Errors
+/// Returns a typed error if the payload ends or is malformed before a modeled field can be
+/// read; the partial facts up to that point remain on `control`.
+pub(crate) fn parse_inter_control_into(
+    reader: &mut BitReader<'_>,
+    seq: &InterSeqView,
+    ctx: &InterFrameContext,
+    reference_state: &FrameReferenceStateView<'_>,
+    frame_size_override_flag: bool,
+    control: &mut InterControl,
+) -> Result<()> {
     // AV2 § 5.18.2 (mirror :4341): disable_cross_frame_cdf_init = 0 (init).
     // AV2 § 5.18.2 (mirror :4343-4403): the non-bridge / bridge primary-reference block.
     // order_hint was already read by the caller in the shared order-hint read; here we
@@ -431,14 +474,14 @@ pub(crate) fn parse_inter_control(
 
     // AV2 § 5.18.2 (mirror :4429-4537): refresh_frame_flags. The KEY-frame arms were
     // handled on the intra path; here we cover the bridge / RAS / switch / inter arms.
-    control.refresh_frame_flags = read_inter_refresh_frame_flags(reader, seq, ctx, &control)?;
+    control.refresh_frame_flags = read_inter_refresh_frame_flags(reader, seq, ctx, control)?;
 
     // The RAS arm (mirror :4493) derives refresh_frame_flags from RefValid/RefLongTermId;
     // when that arm is selected but the reference state is not modeled, the derivation is
     // undecidable and we stopped above with None — surface the honest stop.
     if control.refresh_frame_flags.is_none() {
         control.stop = Some(InterStop::UnmodeledDerivation);
-        return Ok(control);
+        return Ok(());
     }
 
     // AV2 § 5.18.2 (mirror :4577): the !FrameIsIntra branch.
@@ -448,10 +491,10 @@ pub(crate) fn parse_inter_control(
         ctx,
         reference_state,
         frame_size_override_flag,
-        &mut control,
+        control,
     )?;
 
-    Ok(control)
+    Ok(())
 }
 
 /// Reads / derives `refresh_frame_flags` for the non-intra arms (AV2 § 5.18.2 mirror
@@ -549,15 +592,30 @@ fn parse_inter_reference_region(
             // explicit_ref_frame_map is true here (the implicit arm returned above).
             read_f(reader, ref_idx_bits)?
         };
-        // AV2 § 6.17.2: a used reference slot must name a valid buffer slot, so
-        // ref_frame_idx[i] must be less than NUM_REF_FRAMES. The conformant read width is
-        // CeilLog2(NumRefFrames) with NumRefFrames <= NUM_REF_FRAMES, so a conformant
-        // stream never trips this; a direct/fuzz caller with NumRefFrames > NUM_REF_FRAMES
-        // can. The RefValid[idx] == 0 case is under-reported here: `view_into` collapses
-        // an Unknown slot and a ProvenInvalid slot to the same `ref_valid == false`, so
-        // flagging it would false-positive on the resting Unknown state — the honest
-        // proven-invalid distinction needs an extended view (a future phase).
-        if idx as usize >= NUM_REF_FRAMES {
+        // AV2 § 6.17.2 (mirror `06-syntax-structures-semantics.md` lines 4605-4606):
+        // `RefValid[ ref_frame_idx[i] ] == 1` is required, and RefValid is defined only over
+        // the active slots `0..NumRefFrames-1` of the `NUM_REF_FRAMES`-slot buffer. A
+        // conformant `ref_frame_idx[i]` must therefore be both `< NumRefFrames` (the ACTIVE
+        // bound — RefValid is defined there) and `< NUM_REF_FRAMES` (the physical buffer
+        // bound). Two ways a parsed value escapes:
+        //   - The read width is `CeilLog2(NumRefFrames)` (mirror :4619), which over-covers a
+        //     non-power-of-two NumRefFrames (e.g. 6 -> 3 bits -> values 0..7), so an index
+        //     `>= NumRefFrames` can be encoded — outside the active range, RefValid undefined
+        //     (codex F3). The bridge path already enforces the same active bound on
+        //     bridge_frame_ref_idx.
+        //   - A direct/fuzz caller with a non-conformant `NumRefFrames > NUM_REF_FRAMES`
+        //     widens the read so an index `>= NUM_REF_FRAMES` can be encoded — outside the
+        //     physical buffer.
+        // Either is an unconditional §6.17.2 violation decidable from the parsed value alone,
+        // so the bound is `idx >= min(NumRefFrames, NUM_REF_FRAMES)`. The in-range
+        // proven-invalid case (`RefValid[idx] == 0` for an in-range idx) is under-reported
+        // here: `view_into` collapses an Unknown slot and a ProvenInvalid slot to the same
+        // `ref_valid == false`, so flagging it would false-positive on the resting Unknown
+        // state — that distinction needs an extended view (a future phase). Both arms fold
+        // into the single `has_invalid_ref_frame_idx` flag the validator turns into one
+        // `frame-header/ref-frame-idx-invalid-slot` diagnostic (one home, no double-fire).
+        let active_slot_bound = u64::from(seq.num_ref_frames).min(NUM_REF_FRAMES as u64);
+        if u64::from(idx) >= active_slot_bound {
             control.has_invalid_ref_frame_idx = true;
         }
         ref_frame_idx.push(idx);
@@ -589,14 +647,22 @@ fn parse_inter_reference_region(
         }
     } else if frame_size_override_flag && ctx.frame_type != FrameType::Switch {
         // mirror :4637 / § 5.18.4.3: frame_size_with_refs() reads found_ref f(1) per ref
-        // (until found), and on a hit copies RefFrameWidth/Height[ ref_frame_idx[i] ].
-        match parse_frame_size_with_refs(reader, seq, reference_state, &control.ref_frame_idx)? {
-            Some(size) => control.frame_size = Some(size),
-            None => {
-                control.stop = Some(InterStop::PoisonedReferenceState);
-                return Ok(());
-            }
-        }
+        // (until found), and on a hit copies RefFrameWidth/Height[ ref_frame_idx[i] ] then
+        // compute_image_size() (no bits, mirror :5847) — NO further size bits follow a hit.
+        // The next inter-control fields (BRU / use_ref_frame_mvs / TIP / screen-content /
+        // MV-precision / filter / motion-mode / disable_cdf_update) have presence and widths
+        // determined by sequence state and NumTotalRefs, never by FrameWidth / MiRows, so a
+        // hit on a slot whose dims the model has not proven leaves the bit position exact —
+        // only the SIZE is unknown. So `parse_frame_size_with_refs` consumes every found_ref
+        // bit regardless, and we continue parsing with `frame_size` left None rather than
+        // stopping (codex F4): the down-stream presence-known fields and pure BRU diagnostics
+        // stay reachable. (Only later tail structures — tile_info() / film_grain_config() at
+        // the shared tail — consume the dims, and those are already a separate coverage stop.)
+        // A hit on an unmodeled slot returns None with every found_ref bit consumed, so the
+        // bit position stays exact and only the resolved size is unknown — record the size
+        // when known and fall through either way (no stop).
+        control.frame_size =
+            parse_frame_size_with_refs(reader, seq, reference_state, &control.ref_frame_idx)?;
     } else {
         // mirror :4641 / § 5.18.4.1: frame_size(). On the non-override inter path the dims
         // come from the MFH defaults / sequence maxima; only the cur_mfh_id == 0 default is
@@ -817,11 +883,14 @@ fn read_frame_opfl_refine_type(reader: &mut BitReader<'_>, enable_opfl_refine: u
 
 /// Parses `frame_size_with_refs()` (AV2 § 5.18.4.3): reads `found_ref` f(1) per ref until
 /// a hit, then copies `RefFrameWidth/Height[ ref_frame_idx[i] ]`. Returns `Ok(None)` when
-/// a hit lands on a slot whose dims the model has not proven (a poisoned-state stop — the
-/// `found_ref` bits up to and including the hit were consumed). When no ref is found the
-/// fallback `frame_size()` is the non-override default, which the caller does not reach
-/// here (override is set), so an all-miss reads `NumTotalRefs` `found_ref` bits then falls
-/// to the override `frame_size()` explicit dims.
+/// a hit lands on a slot whose dims the model has not proven — `None` here means the size is
+/// **unknown but every consumed bit is exact** (the `found_ref` bits up to and including the
+/// hit were read; per § 5.18.4.3 a hit then calls `compute_image_size()`, which reads no
+/// bits, mirror :5847), so the caller continues parsing the rest of the modeled inter
+/// control region rather than stopping (codex F4). When no ref is found the fallback
+/// `frame_size()` is the non-override default, which the caller does not reach here (override
+/// is set), so an all-miss reads `NumTotalRefs` `found_ref` bits then falls to the override
+/// `frame_size()` explicit dims.
 fn parse_frame_size_with_refs(
     reader: &mut BitReader<'_>,
     seq: &InterSeqView,
@@ -1171,6 +1240,61 @@ mod tests {
         assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
     }
 
+    /// AV2 § 6.17.2 (mirror :4605-4606): codex F3. With a non-power-of-two NumRefFrames the
+    /// read width `CeilLog2(NumRefFrames)` over-covers the active slot range, so an encoded
+    /// `ref_frame_idx[i]` can exceed `NumRefFrames - 1` while still fitting the buffer bound
+    /// of 16. RefValid is defined only over `0..NumRefFrames-1`, so such an index is an
+    /// unconditional violation. NumRefFrames == 6 -> 3-bit ref_frame_idx (values 0..7); an
+    /// idx of 7 is >= 6 and must be flagged even though it is < NUM_REF_FRAMES (16).
+    fn parse_ref_idx_with_num_ref_frames_6(idx: u32) -> InterControl {
+        let mut bits = Bits::default();
+        bits.bit(0); // signal_primary_ref_frame
+        bits.bit(0); // disable_cross_frame_cdf_init
+        bits.f(0, 6); // refresh_frame_flags f(NumRefFrames == 6)
+        bits.bit(1); // frame_explicit_ref_frame_map
+        bits.f(1, 3); // num_total_refs = 1
+        bits.f(idx, 3); // ref_frame_idx[0] f(CeilLog2(6) == 3)
+        bits.bit(0); // use_ref_frame_mvs (num_total_refs == 1 -> no tmvp)
+        bits.bit(0); // allow_intrabc
+        bits.bit(0); // use_qtr_precision_mv
+        bits.bit(0); // allow_high_precision_mv
+        bits.bit(1); // is_filter_switchable
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let mut seq = inter_seq();
+        seq.num_ref_frames = 6;
+        let ctx = inter_ctx();
+        let rs = FrameReferenceStateView::unknown();
+        parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap()
+    }
+
+    #[test]
+    fn inter_ref_idx_beyond_active_num_ref_frames_is_flagged() {
+        // idx == 7 >= NumRefFrames (6): outside the active reference buffer (codex F3).
+        let control = parse_ref_idx_with_num_ref_frames_6(7);
+        assert!(
+            control.has_invalid_ref_frame_idx,
+            "ref_frame_idx == 7 with NumRefFrames == 6 names a slot outside the active \
+             buffer (RefValid undefined there); §6.17.2 requires it be flagged"
+        );
+        assert_eq!(control.ref_frame_idx, vec![7]);
+        assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
+    }
+
+    #[test]
+    fn inter_ref_idx_within_active_num_ref_frames_is_silent() {
+        // idx == 5 < NumRefFrames (6): in range, so the active-bound check stays silent (the
+        // in-range RefValid == 0 case is decided by the validator's §7.23 check, not here).
+        let control = parse_ref_idx_with_num_ref_frames_6(5);
+        assert!(
+            !control.has_invalid_ref_frame_idx,
+            "ref_frame_idx == 5 with NumRefFrames == 6 is in the active range, so the \
+             active-bound flag must not fire"
+        );
+        assert_eq!(control.ref_frame_idx, vec![5]);
+        assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
+    }
+
     #[test]
     fn switch_frame_infers_primary_ref_none_and_reads_explicit_map() {
         // SWITCH_FRAME: primary_ref_frame = PRIMARY_REF_NONE (no bits), explicitRefFrameMap
@@ -1241,24 +1365,53 @@ mod tests {
     }
 
     #[test]
-    fn frame_size_with_refs_poisoned_when_hit_slot_unknown() {
-        // override INTER, found_ref=1 on a slot the model has not proven -> poisoned stop.
+    fn frame_size_with_refs_continues_when_hit_slot_unknown() {
+        // Codex F4: override INTER, found_ref=1 on a slot the model has not proven. A hit
+        // consumes NO further size bits (§ 5.18.4.3 copies the ref dims then compute_image_
+        // size(), no bits), and the rest of the inter control region's presence/widths
+        // depend on sequence state / NumTotalRefs, never on FrameWidth/MiRows — so the bit
+        // position is exact and the parse must CONTINUE with frame_size left None, reaching
+        // the shared tail, rather than stopping with PoisonedReferenceState. Pre-fix this
+        // returned PoisonedReferenceState and dropped every presence-known field after the
+        // size hit.
         let mut bits = Bits::default();
         bits.bit(0); // signal_primary_ref_frame
         bits.bit(0); // disable_cross_frame_cdf_init
         bits.f(0, 8); // refresh_frame_flags
         bits.bit(1); // frame_explicit_ref_frame_map
         bits.f(1, 3); // num_total_refs = 1
-        bits.f(2, 3); // ref_frame_idx[0] = 2
-        bits.bit(1); // found_ref = 1
+        bits.f(2, 3); // ref_frame_idx[0] = 2 (Unknown slot under the unknown() view)
+        bits.bit(1); // found_ref = 1 -> hits the unmodeled slot 2 (size unknown)
+        // The control region continues (presence-known fields, no dims needed):
+        bits.bit(0); // use_ref_frame_mvs (num_total_refs == 1 -> no tmvp)
+        bits.bit(0); // allow_intrabc
+        bits.bit(0); // use_qtr_precision_mv
+        bits.bit(0); // allow_high_precision_mv
+        bits.bit(1); // is_filter_switchable
+        bits.bit(0); // disable_cdf_update f(1), just before the shared tail
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let seq = inter_seq();
         let ctx = inter_ctx();
         let rs = FrameReferenceStateView::unknown();
         let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, true).unwrap();
-        assert_eq!(control.stop, Some(InterStop::PoisonedReferenceState));
-        assert_eq!(control.frame_size, None);
+        assert_eq!(
+            control.frame_size, None,
+            "the hit slot's dims are unmodeled, so the size is genuinely unknown"
+        );
+        assert_eq!(
+            control.use_ref_frame_mvs,
+            Some(false),
+            "the presence-known field after the size hit is reached, not dropped (F4)"
+        );
+        assert_eq!(control.allow_intrabc, Some(false));
+        assert_eq!(control.mv_precision, Some(MvPrecision::HalfPel));
+        assert_eq!(control.disable_cdf_update, Some(false));
+        assert_eq!(
+            control.stop,
+            Some(InterStop::ReachedSharedTail),
+            "with the bit position exact, the control region parses through to the shared tail"
+        );
     }
 
     #[test]
