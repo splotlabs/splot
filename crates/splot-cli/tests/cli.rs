@@ -390,9 +390,14 @@ fn inspect_json_surfaces_frame_header_copy_on_non_first_tile_group() {
     let copy = &records[1]["frame_header_copy"];
     assert_eq!(copy["payload_kind"], "frame_header_copy");
     assert_eq!(copy["compared"], false);
-    // The copy region starts after the OBU header byte (1) and the two prefix bits, which
-    // are within the first payload byte -> the region's first whole byte is the next one.
-    assert!(copy.get("copy_region_start_byte").is_some());
+    // The copy region starts after the OBU header byte and the two prefix bits
+    // (is_first_tile_group + frame_header_present_flag). Those two bits live in the FIRST
+    // payload byte, so the region begins inside that same byte at MSB-first bit 2 — the
+    // start is byte+bit precise. The OBU is at byte 4 (TD: leb128 byte + header byte =
+    // 2 bytes, then this OBU's leb128 byte + header byte = bytes 2,3), so its payload's
+    // first byte is byte 4.
+    assert_eq!(copy["copy_region_start_byte"], 4);
+    assert_eq!(copy["copy_region_start_bit"], 2);
     // A first tile group (records would be different) and other OBUs carry no copy view.
     assert!(records[0].get("frame_header_copy").is_none());
 }

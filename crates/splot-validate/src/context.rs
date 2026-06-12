@@ -4923,19 +4923,31 @@ impl ValidatorContext {
     /// payload shorter than `NumFrameHeaderBits` is a § 6.2.1 truncation
     /// (`frame-header/copy-bits-truncated`).
     ///
-    /// The segmenter's `boundary` is the coded-frame authority:
+    /// The segmenter's `boundary` is the coded-frame authority, and its record lifecycle is
+    /// driven for **any** frame-bearing OBU — a SEF / TIP / bridge frame is its own
+    /// single-OBU coded frame (§ 7.3.3) that ENDS a preceding tile coded frame in the same
+    /// triple, so its boundary must clear / poison the stale record even though it carries
+    /// no copy region of its own:
     ///
-    /// - [`FrameBoundary::OpensNewUnit`] on a tile-group OBU is its coded frame's *first*
-    ///   tile group — reset the triple's record and, if the first header parsed to
-    ///   completion ([`FrameHeaderParseStatus::IntraHeaderComplete`]), record its bits.
-    /// - [`FrameBoundary::ContinuesUnit`] on a non-first tile group
+    /// - [`FrameBoundary::OpensNewUnit`] resets the triple's record (a new coded frame
+    ///   opened). When the OBU is a *tile-group* first whose header parsed to completion
+    ///   ([`FrameHeaderParseStatus::IntraHeaderComplete`]), its bits are re-recorded; a
+    ///   SEF / TIP / bridge first re-records nothing (no copy region).
+    /// - [`FrameBoundary::ContinuesUnit`] on a non-first *tile group*
     ///   (`is_first_tile_group == 0`, `frame_header_present_flag == 1`) pairs against the
-    ///   triple's record and checks the copy region.
+    ///   triple's record and checks the copy region; a non-tile continuation has no copy.
     /// - [`FrameBoundary::Ambiguous`] drops the pairing (the Unknown invariant) AND poisons
-    ///   the triple's record: the unreadable `is_first_tile_group` delimiter may have started
-    ///   a new coded frame, so the recorded first header can no longer be trusted to pair with
-    ///   a later tile group. The record is removed so subsequent continuations stay silent
-    ///   until the next decided [`FrameBoundary::OpensNewUnit`] re-records.
+    ///   the triple's record: the undecidable OBU (an unreadable `is_first_tile_group`
+    ///   delimiter, or a same-type no-delimiter TIP / bridge) may have started a new coded
+    ///   frame, so the recorded first header can no longer be trusted to pair with a later
+    ///   tile group. The record is removed so subsequent continuations stay silent until the
+    ///   next decided [`FrameBoundary::OpensNewUnit`] re-records.
+    ///
+    /// A SEF / TIP / bridge OBU opening a new coded frame in the same triple as a recorded
+    /// tile frame must therefore clear that record (codex round-9 F2): otherwise a later
+    /// flag-0 tile group the segmenter routes as continuing that SEF coded frame (the
+    /// `frame-unit/sef-single-obu` case) would pair against the stale predecessor and
+    /// false-positive a `frame-header/copy-bits-*` mismatch.
     ///
     /// An incomplete / coverage-stopped / unresolvable first header records nothing, so a
     /// later non-first tile group finds no record and the copy region stays unparsed (as
@@ -4949,12 +4961,6 @@ impl ValidatorContext {
         boundary: Option<FrameBoundary>,
         report: &mut ValidationReport,
     ) {
-        // Only tile-group OBUs carry tile_group_obu() with the is_first_tile_group flag and
-        // the frame_header_copy() region (§ 5.19). SEF / TIP / bridge frames call
-        // frame_header( 1 ) directly and never carry a copy.
-        if !obu.header.obu_type.is_tile_group() {
-            return;
-        }
         // The segmenter ignores globals (a frame-bearing OBU may not use the global xlayer,
         // already diagnosed elsewhere), returning no boundary — nothing to pair.
         let Some(boundary) = boundary else {
@@ -4966,35 +4972,52 @@ impl ValidatorContext {
             obu.header.temporal_layer_id,
         );
 
+        // The record lifecycle is driven by the segmenter boundary for ANY frame-bearing OBU,
+        // NOT only tile groups. A SEF / TIP / bridge OBU is its own single-OBU coded frame
+        // (§ 7.3.3): when it opens a new coded frame in the same triple it ENDS the previous
+        // tile coded frame whose first header may be recorded here, so its OpensNewUnit /
+        // Ambiguous boundary must clear / poison that record. Were the non-tile early return
+        // kept before this, the stale record would survive and a later flag-0 tile group the
+        // segmenter routes as continuing that SEF coded frame (the sef-single-obu case) would
+        // pair against it and false-positive a copy-bits-* mismatch (codex round-9 F2). So:
+        // OpensNewUnit clears (and re-records only for a completed tile-group first), Ambiguous
+        // poisons, for every frame-bearing OBU; the tile-group-only record/check is gated below.
+        let is_tile_group = obu.header.obu_type.is_tile_group();
         match boundary {
             FrameBoundary::OpensNewUnit => {
-                // The first tile group of a (possibly freshly opened) coded frame. Any prior
-                // record for this triple belonged to an earlier coded frame; drop it. Record
-                // this header's bits only if it parsed to completion through frame_header_info().
+                // The first OBU of a (possibly freshly opened) coded frame. Any prior record
+                // for this triple belonged to an earlier coded frame; drop it. Record header
+                // bits only for a tile-group first that parsed to completion through
+                // frame_header_info() — a SEF / TIP / bridge frame carries no copy region to
+                // pair, so it records nothing (it only clears the stale predecessor).
                 self.frame_header_copy_record.remove(&key);
-                if let Some(recorded) = self.record_first_frame_header(obu, first_picture_in_tu) {
+                if is_tile_group
+                    && let Some(recorded) = self.record_first_frame_header(obu, first_picture_in_tu)
+                {
                     self.frame_header_copy_record.insert(key, recorded);
                 }
             }
             FrameBoundary::ContinuesUnit => {
-                // A non-first tile group continuing the open coded frame. It carries
-                // frame_header_copy() only when frame_header_present_flag == 1; pair against
-                // this triple's recorded first header when present.
-                if let Some(recorded) = self.frame_header_copy_record.get(&key) {
+                // Only a tile-group OBU carries tile_group_obu() with the frame_header_copy()
+                // region (§ 5.19); it carries the copy only when frame_header_present_flag == 1.
+                // A non-tile continuation has no copy region to check. Pair a tile-group
+                // continuation against this triple's recorded first header when present.
+                if is_tile_group && let Some(recorded) = self.frame_header_copy_record.get(&key) {
                     check_frame_header_copy(obu, recorded, report);
                 }
             }
             FrameBoundary::Ambiguous => {
-                // The tile group's role in the coded frame is undecidable (an unreadable
-                // is_first_tile_group delimiter). Make no copy judgment for this OBU (the
-                // Unknown invariant) — but the unreadable delimiter MAY have started a new
-                // coded frame, so the triple's recorded first header can no longer be trusted
-                // to belong to whatever later tile group pairs against it. In the other valid
-                // interpretation the OBU opened an ambiguous new frame whose first header is
-                // unknown, so a later readable flag-0 tile group belongs to that frame, not the
-                // recorded one. Poison the record (drop it) so subsequent ContinuesUnit
-                // pairings stay silent until the next decided OpensNewUnit re-records — the
-                // established poison-scope rule, matching the CELU layer's unit-count poison.
+                // The OBU's role in the coded frame is undecidable (an unreadable
+                // is_first_tile_group delimiter, or a same-type no-delimiter TIP / bridge).
+                // Make no copy judgment for this OBU (the Unknown invariant) — but the OBU MAY
+                // have started a new coded frame, so the triple's recorded first header can no
+                // longer be trusted to belong to whatever later tile group pairs against it. In
+                // the other valid interpretation the OBU opened an ambiguous new frame whose
+                // first header is unknown, so a later readable flag-0 tile group belongs to that
+                // frame, not the recorded one. Poison the record (drop it) so subsequent
+                // ContinuesUnit pairings stay silent until the next decided OpensNewUnit
+                // re-records — the established poison-scope rule, matching the CELU layer's
+                // unit-count poison.
                 self.frame_header_copy_record.remove(&key);
             }
         }
@@ -13898,7 +13921,9 @@ fn frame_film_grain_reference_checks(
 ///
 /// - emits `frame-header/copy-bits-mismatch` (§ 6.17.1) when a copied `header_bit[i]`
 ///   differs from the first header's bit at offset `i` — the conformance requirement that
-///   the copy be bit-identical — anchored at the offending OBU;
+///   the copy be bit-identical — anchored at the precise byte+bit of the offending
+///   `header_bit` (the copy-region start translated through `mismatch_bit`), not the OBU
+///   header;
 /// - emits `frame-header/copy-bits-truncated` (§ 5.18.1 / § 6.2.1) when the payload ends
 ///   before all `NumFrameHeaderBits` copy bits could be read.
 ///
@@ -13930,20 +13955,44 @@ fn check_frame_header_copy(
         return;
     }
 
+    // The copy region begins HERE, after the two tile_group_obu() prefix bits
+    // (is_first_tile_group + frame_header_present_flag). Capture its start position so a
+    // mismatch can be anchored at the exact byte+bit of the offending header_bit, rather than
+    // at the OBU header (§ 6.17.1 reports a per-bit conformance requirement). `mismatch_bit`
+    // is zero-based from this copy-region start (the two prefix bits are excluded), so the
+    // offending bit sits `bit_offset_in_byte + mismatch_bit` bits past `start_byte`.
+    let start_byte = reader.byte_offset();
+    let start_bit = u64::from(reader.bit_offset().get());
+
     match parse_frame_header_copy(&mut reader, recorded) {
         FrameHeaderCopyOutcome::Matches => {}
         FrameHeaderCopyOutcome::Mismatch { mismatch_bit } => {
-            report.push(frame_header_error(
-                "frame-header/copy-bits-mismatch",
-                "6.17.1",
-                obu,
-                format!(
-                    "frame_header_copy() differs from the first tile group's frame header: \
-                     header_bit[{mismatch_bit}] is not equal to the bit at offset {mismatch_bit} \
-                     of the first frame header (NumFrameHeaderBits == {})",
-                    recorded.num_frame_header_bits()
-                ),
-            ));
+            // Translate the copy-region start (2 prefix bits already consumed) + mismatch_bit
+            // into the OBU-payload byte offset and MSB-first bit-within-byte of the offending
+            // header_bit. `start_bit` is 0..=7 and `mismatch_bit < NumFrameHeaderBits`, so the
+            // sum is bounded; the byte advance is its whole-byte part.
+            let absolute_bit = start_bit.saturating_add(mismatch_bit);
+            let mismatch_byte = start_byte.saturating_add(absolute_bit / 8);
+            // `absolute_bit % 8` is 0..=7 by construction, so `try_new` always succeeds; fall
+            // back to the byte-aligned position rather than panic if it ever did not.
+            let mismatch_bit_in_byte =
+                BitOffset::try_new((absolute_bit % 8) as u8).unwrap_or(BitOffset::from_bits(0));
+            report.push(
+                Diagnostic::error(
+                    "frame-header/copy-bits-mismatch",
+                    format!(
+                        "frame_header_copy() differs from the first tile group's frame header: \
+                         header_bit[{mismatch_bit}] is not equal to the bit at offset \
+                         {mismatch_bit} of the first frame header (NumFrameHeaderBits == {}); \
+                         the differing bit is at byte {mismatch_byte}, bit {mismatch_bit_in_byte} \
+                         (MSB-first) of the OBU payload",
+                        recorded.num_frame_header_bits()
+                    ),
+                )
+                .with_spec_section("6.17.1")
+                .with_byte_offset(mismatch_byte)
+                .with_bit_offset(mismatch_bit_in_byte),
+            );
         }
         FrameHeaderCopyOutcome::Truncated { available_bits } => {
             report.push(frame_header_error(

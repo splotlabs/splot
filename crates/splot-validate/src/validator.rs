@@ -5219,6 +5219,50 @@ mod tests {
     }
 
     #[test]
+    fn validator_copy_bits_mismatch_anchors_at_offending_bit() {
+        // Regression (codex round-9 F3): the copy-bits-mismatch diagnostic must anchor at the
+        // precise byte+bit of the differing header_bit, not at the OBU header. The flipped
+        // header_bit is offset 2 of the frame_header body (== mismatch_bit 2). The copy region
+        // starts after the two tile_group_obu() prefix bits, so the offending bit is at
+        // payload bit (2 + 2) == 4: within the FIRST payload byte, MSB-first bit 4. Pre-fix the
+        // diagnostic anchored at the OBU header offset and carried no bit offset.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group());
+        let mut body = complete_intra_clk_frame_header_body().drain_bits();
+        body[2] ^= 1; // flip header_bit[2]
+        // The non-first tile group's OBU header offset (its `obu.offset`): the bytes so far are
+        // the TD + sequence-bearing frame-core preamble + the first CLK tile group; the
+        // non-first tile group's leb128 length byte precedes its header byte, whose offset is
+        // `data.len() + 1` once we know the preamble length. Capture it before appending.
+        let non_first_header_offset = (data.len() + 1) as u64;
+        data.extend(clk_non_first_tile_group(&body));
+        let report = Validator::new(false).validate_bytes(&data);
+        // The differing bit is the OBU payload's first byte (header offset + 1), MSB-first
+        // bit 4. Assert the precise anchor on the fired mismatch (no panicking unwrap/expect).
+        let payload_first_byte = non_first_header_offset + 1;
+        let precise = report.errors().find(|d| {
+            d.rule_id == "frame-header/copy-bits-mismatch"
+                && d.byte_offset.map(|b| b.get()) == Some(payload_first_byte)
+                && d.bit_offset.map(|b| b.get()) == Some(4)
+                && d.message.contains("header_bit[2]")
+        });
+        assert!(
+            precise.is_some(),
+            "copy-bits-mismatch must anchor at byte {payload_first_byte} bit 4 (the differing \
+             bit), not the OBU header at {non_first_header_offset}, and carry header_bit[2] in \
+             the message; report was: {report}"
+        );
+        // Control: NO copy-bits-mismatch anchors at the OBU header offset (the pre-fix anchor).
+        assert!(
+            !report.errors().any(|d| {
+                d.rule_id == "frame-header/copy-bits-mismatch"
+                    && d.byte_offset.map(|b| b.get()) == Some(non_first_header_offset)
+            }),
+            "the mismatch must not anchor at the OBU header offset; report was: {report}"
+        );
+    }
+
+    #[test]
     fn validator_flags_frame_header_copy_truncated() {
         // The non-first tile group's copy region is shorter than NumFrameHeaderBits: every
         // available bit matches, but the payload ends before all copied bits (§ 5.18.1 /
@@ -5427,6 +5471,59 @@ mod tests {
                 .any(|d| d.rule_id.starts_with("frame-header/copy-bits-")),
             "a record from a prior temporal unit must not pair across the boundary; \
              report was: {report}"
+        );
+    }
+
+    /// A conformant grain-free REGULAR_SEF for a [`FrameCoreSeq::base()`] sequence at the
+    /// default `(xlayer, mlayer, tlayer) == (0, 0, 0)` triple: cur_mfh_id / seq ref,
+    /// frame_to_show_map_idx f(3), derive_sef_order_hint == 1, then a §5.2.3
+    /// trailing_one_bit (apply_grain inferred 0, no grain bits). The SEF is its own
+    /// single-OBU coded frame (§ 7.3.3) and shares the CLK tile groups' triple.
+    fn conformant_sef_same_triple() -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.f(0, 3); // frame_to_show_map_idx f(3)
+        fb.bit(1); // derive_sef_order_hint == 1 -> no sef_order_hint
+        fb.bit(1); // §5.2.3 trailing_one_bit
+        annex_b_obu(REGULAR_SEF_HEADER, &fb.into_bytes())
+    }
+
+    #[test]
+    fn validator_frame_header_copy_record_cleared_by_sef_opening_new_frame() {
+        // Regression (codex round-9 F2): a completed first tile group records its
+        // NumFrameHeaderBits for the (xlayer, mlayer, tlayer) triple. A SEF in the SAME triple
+        // is its own single-OBU coded frame (§ 7.3.3) — it OPENS a new coded frame
+        // (OpensNewUnit), ending the tile coded frame whose header is recorded. The segmenter
+        // then routes a following flag-0 (is_first_tile_group == 0) tile group as CONTINUING
+        // the SEF coded frame (the frame-unit/sef-single-obu case), so it carries no
+        // frame_header_copy() of its own. Pre-fix the SEF (not a tile group) returned early
+        // before clearing the record, leaving the STALE tile-frame record alive; the flag-0
+        // tile group then paired against it and false-positived frame-header/copy-bits-mismatch.
+        // Post-fix the SEF's OpensNewUnit boundary clears the record, so the flag-0 tile group
+        // finds none and stays silent on copy-bits-*.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group()); // records NumFrameHeaderBits for the triple
+        data.extend(conformant_sef_same_triple()); // SEF: own coded frame, same triple
+        // A readable flag-0 non-first tile group whose copy region does NOT match the recorded
+        // first header. The segmenter treats it as continuing the SEF coded frame.
+        let mut mismatched = complete_intra_clk_frame_header_body().drain_bits();
+        mismatched[2] ^= 1;
+        data.extend(clk_non_first_tile_group(&mismatched));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-header/copy-bits-")),
+            "a SEF opening a new coded frame must clear the prior tile frame's record so a \
+             later flag-0 tile group does not pair against it; report was: {report}"
+        );
+        // Control: the segmenter's own sef-single-obu diagnostic still fires for the
+        // flag-0-after-SEF continuation (its existing behavior is unchanged by the copy fix).
+        assert!(
+            has_frame_unit_error(&report, "frame-unit/sef-single-obu"),
+            "the flag-0 tile group continuing the SEF coded frame must still fire \
+             sef-single-obu; report was: {report}"
         );
     }
 

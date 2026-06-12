@@ -556,9 +556,14 @@ fn frame_header_copy_view(obu: &ObuEnvelope<'_>) -> Option<FrameHeaderCopyView> 
     }
     Some(FrameHeaderCopyView {
         payload_kind: "frame_header_copy",
-        // The copy region begins at the reader's current position (after the
-        // is_first_tile_group and frame_header_present_flag bits).
+        // The copy region begins at the reader's current position, AFTER the two prefix
+        // bits (is_first_tile_group + frame_header_present_flag). Those bits are still
+        // within the first payload byte, so `byte_offset()` alone points at the byte
+        // CONTAINING the prefix bits — a byte-only field would let a consumer mistake the
+        // two prefix bits for copy bits. Pair it with the MSB-first bit position within
+        // that byte (== 2 here) so the copy region's first bit is locatable exactly.
         copy_region_start_byte: reader.byte_offset().get(),
+        copy_region_start_bit: reader.bit_offset().get(),
         // The comparison needs the coded frame's first header (cross-OBU state the
         // stateless inspector does not hold); the validator performs it.
         compared: false,
@@ -566,10 +571,17 @@ fn frame_header_copy_view(obu: &ObuEnvelope<'_>) -> Option<FrameHeaderCopyView> 
 }
 
 /// A non-first tile group's `frame_header_copy()` presence view for `--json`.
+///
+/// The copy region's start is byte+bit precise: `copy_region_start_byte` is the
+/// absolute byte offset of the byte containing the region's first bit, and
+/// `copy_region_start_bit` is that bit's MSB-first position (`0..=7`) within the byte.
+/// The region begins after the two `tile_group_obu()` prefix bits, so a byte-only
+/// position would be ambiguous about whether the prefix bits are copy bits.
 #[derive(Serialize)]
 struct FrameHeaderCopyView {
     payload_kind: &'static str,
     copy_region_start_byte: u64,
+    copy_region_start_bit: u8,
     compared: bool,
 }
 
