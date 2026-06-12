@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "069b62db81bf78210bad04d1dc5c8c23e66c820a",
+  "audited_commit": "f3df6463711e0cc8696343cf34846b246cabb711",
   "outcome": "success",
   "files": [
     {
@@ -875,7 +875,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "d9ec496ffe9b6a2596981958cd6046c182a98ba87b8a57f10cc5a27beffa302e",
+      "sha256": "bfa90df287987a61216ef2dc9b03c120414e70ae53c655811e42d4c4e5729619",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
