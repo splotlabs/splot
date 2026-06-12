@@ -358,7 +358,8 @@ Acceptance:
 `AV2-5.18.3-FRAME-CONFIGURATION` and `AV2-5.18.4-FRAME-SIZE` parse with tests,
 and the intra tail through `AV2-5.18.6-QUANTIZATION`,
 `AV2-5.18.7-SEGMENTATION-TILING` (`AV2-5.18.7.3-TILE-PARAMS` done; `gdf_params()`
-§5.18.7.9 and `cdef_params()` §5.18.7.10 parse on the intra path), and
+§5.18.7.9, `cdef_params()` §5.18.7.10, `lr_params()` §5.18.7.11, and
+`ccso_params()` §5.18.7.12 parse on the intra path), and
 `AV2-5.18.5-FILTERING` (`deblocking_filter_params()` §5.18.5.2 on the intra path)
 is partial; the §5.18.8–§5.18.10 child rows are todo.
 
@@ -389,22 +390,35 @@ is partial; the §5.18.8–§5.18.10 child rows are todo.
   `deblocking_filter_params()` (§ 5.18.5.2, including the `cur_mfh_id > 0`
   `mfh_deblocking_filter_update` / `mfh_apply_deblocking_filter` arm),
   `gdf_params()` (§ 5.18.7.9), and `cdef_params()` (§ 5.18.7.10) — so the core
-  stop status is now `StoppedBeforeLoopRestorationParams` (the next unparsed
-  structure is `lr_params()`, § 5.18.7.11). A payload that ends *inside* the
-  loop-filter cluster is reported through the dedicated `StoppedInsideFilterParams`
-  status: the already-parsed control-region facts (frame size, output flags,
-  tile / quant / segmentation) are preserved so the validator's state-supported
-  checks (e.g. `frame-header/frame-size-exceeds-sequence-max`) still fire on a
-  truncated frame, rather than the EOF failing the whole core parse and silently
-  skipping them. §6.17.5.2 / §6.17.7.5 / §6.17.7.6 state no requirement of
-  bitstream conformance on the parsed fields, so no diagnostic was added, and
-  there is no frame-header-payload truncation diagnostic surface to route the
-  truncation to (facts + Unknown routing are preserved instead).
-- **Remaining:** inter frame-header paths (including the inter `cur_mfh_id > 0`
-  arms and § 5.18.5.1 `read_interpolation_filter()`), § 5.18.7.11+ loop
-  restoration / CCSO onward, and the § 6.17.6.2 layer-dependency constraints (the
-  §5.4.1 dependency maps are now exposed by the sequence-header model; the checks
-  themselves are not implemented yet).
+  stop status was then `StoppedBeforeLoopRestorationParams`. A payload that ends
+  *inside* the loop-filter cluster is reported through the dedicated
+  `StoppedInsideFilterParams` status: the already-parsed control-region facts
+  (frame size, output flags, tile / quant / segmentation) are preserved so the
+  validator's state-supported checks (e.g.
+  `frame-header/frame-size-exceeds-sequence-max`) still fire on a truncated frame,
+  rather than the EOF failing the whole core parse and silently skipping them.
+  §6.17.5.2 / §6.17.7.5 / §6.17.7.6 state no requirement of bitstream conformance
+  on the parsed fields, so no diagnostic was added.
+- **Landed** (OpenSpec `frame-loop-restoration-ccso-params`): the intra-path stop
+  advances past `lr_params()` (§ 5.18.7.11) and `ccso_params()` (§ 5.18.7.12), so
+  the terminal intra stop status is now `StoppedBeforeReadTxMode` (the next
+  unparsed structure is `read_tx_mode()`, § 5.18.8.1). On the intra path
+  `NumTotalRefs == 0`, so `lr_params()`'s temporal-prediction arm and
+  `ccso_params()`'s reuse arm are dead. When an `lr_params()` plane signals a
+  frame-level Wiener filter, the parser stops honestly with
+  `StoppedBeforeWienerNsFilter` before the unmodeled `read_wienerns_filter()` bank
+  decode. § 6.17.7.8 yields two locally decidable diagnostics:
+  `frame-header/ccso-ext-filter-reserved` (`ccso_ext_filter != 7`) and
+  `frame-header/ccso-max-band-out-of-range` (`1 << ccso_max_band_log2 <=
+  CCSO_BAND_NUM`). The § 6.17.7.7 lr size / RU-divisibility bounds and the
+  reference-state CCSO requirements remain deferred (the reuse/ref-state arm is
+  dead on the intra path).
+- **Remaining:** the `read_wienerns_filter()` frame-level Wiener bank decode,
+  `read_tx_mode()` (§ 5.18.8.1) and the rest of the § 5.18.2 tail, inter
+  frame-header paths (including the inter `cur_mfh_id > 0` arms and § 5.18.5.1
+  `read_interpolation_filter()`), and the § 6.17.6.2 layer-dependency constraints
+  (the §5.4.1 dependency maps are now exposed by the sequence-header model; the
+  checks themselves are not implemented yet).
   `AV2-5.18-FRAME-HEADER` and `AV2-5.19-TILE-GROUP` therefore stay `partial`,
   not `done`.
 
