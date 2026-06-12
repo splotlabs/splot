@@ -5574,15 +5574,39 @@ mod tests {
     #[test]
     fn validator_silent_on_single_tile_no_size_field() {
         // A single-tile intra frame has one (last) tile and reads NO size field (§5.20.1):
-        // the framing is trivially conformant — no tile-payload defect regardless of payload.
+        // with at least one coded-tile byte the framing is conformant. (A ZERO-byte tile
+        // would fire tile-payload/zero-size-tile — see the companion test.)
         let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
-        data.extend(clk_first_tile_group());
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        for b in complete_intra_clk_frame_header_body().drain_bits() {
+            fb.bit(b);
+        }
+        let mut payload = fb.into_bytes();
+        payload.push(0x00); // one coded-tile byte: SymbolMaxBits starts at 8-15 = -7 >= -14
+        data.extend(annex_b_obu(CLK_HEADER, &payload));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             !report
                 .errors()
                 .any(|d| d.rule_id.starts_with("tile-payload/")),
-            "a single-tile group reads no size field and must be framing-silent; \
+            "a single-tile group with a one-byte coded tile must be framing-silent; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_zero_size_single_tile() {
+        // §8.2.2/§8.2.4: a zero-byte non-bridge tile starts SymbolMaxBits at -15, below
+        // the exit_symbol() floor of -14 — framing-decidable (codex review, PR #68).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group()); // headerBytes == payload len -> sz == 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "tile-payload/zero-size-tile"),
+            "a zero-size non-bridge tile must fire tile-payload/zero-size-tile; \
              report was: {report}"
         );
     }

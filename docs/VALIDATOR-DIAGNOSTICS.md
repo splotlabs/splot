@@ -424,6 +424,7 @@ offending tile's size-field byte offset within the bitstream.
 |---|---|---|---|
 | `tile-payload/size-field-truncated` | error | § 5.20.1 | a non-last, non-bridge tile's `tile_size_minus_1 le(TileSizeBytes)` length field runs past the end of the `tile_group_payload()` region — the size field itself is truncated (§4.11.5: `le(n)` reads exactly `TileSizeBytes` bytes; §6.2.1: the OBU payload must contain every mandatory tile syntax element) |
 | `tile-payload/tile-size-overflows-payload` | error | § 5.20.1 | a non-last tile's `tileSize + TileSizeBytes` exceeds the remaining `sz`, so the §5.20.1 bookkeeping `sz -= tileSize + TileSizeBytes` (mirror :8571) would go negative — the coded-tile region the size field claims runs past the bytes the payload region still holds |
+| `tile-payload/zero-size-tile` | error | § 8.2.4 | the §5.20.1 framing gives a non-bridge tile a zero-size coded region: `init_symbol(0)` starts `SymbolMaxBits` at `8*0-15 = -15` (§8.2.2, mirror 08:87), the counter only ever decreases during decoding (08:327), and §8.2.4 requires `SymbolMaxBits >= -14` at `exit_symbol()` (08:342) — unsatisfiable regardless of tile content, so the defect is decidable from framing alone. Bridge tiles run no `init_symbol` (§5.20.1 gates it on `!IsBridge`) and are exempt. Only the last tile can be zero-size (non-last non-bridge tiles code `tile_size_minus_1 + 1 >= 1`) |
 
 ### `trailing-bits/`
 

@@ -14723,6 +14723,18 @@ fn tile_group_framing_checks(
                 .with_byte_offset(anchor),
             );
         }
+        TileFramingDefect::ZeroSizeTile { tile_num, .. } => {
+            report.push(
+                Diagnostic::error(
+                    "tile-payload/zero-size-tile",
+                    format!(
+                        "the §5.20.1 tile_group_payload() framing gives TileNum={tile_num} a                          zero-size coded tile: init_symbol(0) starts SymbolMaxBits at -15                          (§8.2.2, mirror 08:87) and the counter only decreases, so the                          §8.2.4 exit_symbol() requirement SymbolMaxBits >= -14 (mirror                          08:342) can never be satisfied"
+                    ),
+                )
+                .with_spec_section("8.2.4")
+                .with_byte_offset(anchor),
+            );
+        }
         // `TileFramingDefect` is `#[non_exhaustive]`; a future framing defect with no
         // established conformance meaning is silent rather than guessed (zero false positives).
         _ => {}
