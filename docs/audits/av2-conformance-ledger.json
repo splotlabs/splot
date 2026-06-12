@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "4b3c58be8e8aa4facd642c1b9d2b959defe37eb5",
+  "audited_commit": "7eacb8f71a73cc2f70d741298748402132d35134",
   "outcome": "success",
   "files": [
     {
@@ -3224,6 +3224,30 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-12-frame-reference-state-model/proposal.md",
+      "sha256": "2ef412a32b6b65a9a41ef1c54f445f1259bc17482aed992fe1e792ae8570ede6",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-7.23-REFERENCE-FRAME-UPDATE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-frame-reference-state-model/specs/validator/spec.md",
+      "sha256": "0c9b8376b92f67976c1bcd92a27365a47c887e62689e6ada244d8dea023287c0",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-frame-reference-state-model/tasks.md",
+      "sha256": "c64b531b07b260051982360bd0882d84b08d82d1175fb22012119a7577e3e91a",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-12-mfh-frame-header-state/proposal.md",
       "sha256": "954a54f5145c5cca327233900ee983bbeb9b14c82e93a24423925251eb39053b",
       "scope_kind": "openspec",
@@ -3329,30 +3353,6 @@
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
       ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-reference-state-model/proposal.md",
-      "sha256": "2ef412a32b6b65a9a41ef1c54f445f1259bc17482aed992fe1e792ae8570ede6",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18.2-FRAME-HEADER-INFO",
-        "AV2-7.23-REFERENCE-FRAME-UPDATE"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-reference-state-model/specs/validator/spec.md",
-      "sha256": "0c9b8376b92f67976c1bcd92a27365a47c887e62689e6ada244d8dea023287c0",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-reference-state-model/tasks.md",
-      "sha256": "c64b531b07b260051982360bd0882d84b08d82d1175fb22012119a7577e3e91a",
-      "scope_kind": "openspec",
-      "feature_ids": [],
       "outcome": "success"
     },
     {
@@ -3493,7 +3493,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "4d86c03d19087852322357380f8e91b127dbae16216093e0bfb7079a36525503",
+      "sha256": "45d61047397eff1e809e2102d5d2a9134ff972986ad649f8e2e774067345b927",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
