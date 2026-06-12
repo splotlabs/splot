@@ -139,8 +139,13 @@ pub enum FrameHeaderParseStatus {
     /// state (a fully parsed active sequence header) needed to continue.
     ActivationFieldsOnly,
     /// Core control fields were read and the parser stopped at a bounded point that is
-    /// not the filtering/quantization/segmentation cluster — currently the
-    /// show-existing-frame path, which stops before `film_grain_config()`.
+    /// not the filtering/quantization/segmentation cluster.
+    ///
+    /// Reserved: superseded by [`Self::StoppedInsideShowExistingFrame`] for its last
+    /// in-tree producer (the show-existing-frame `film_grain_config()` truncation);
+    /// this variant is retained for completeness and out-of-tree compatibility but is
+    /// no longer produced by the in-tree parser. It stays on the silent side of the
+    /// truncation partition (an ordinary bounded stop, never a truncation).
     CoreFieldsOnly,
     /// The show-existing-frame path was consumed in full: `frame_to_show_map_idx`,
     /// `derive_sef_order_hint`, the optional `sef_order_hint`, and the terminal
