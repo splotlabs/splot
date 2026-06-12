@@ -5,14 +5,45 @@
 //! (AV2 v1.0.0 § 5.18.2, `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`).
 //!
 //! This is the inter / switch / TIP / bridge counterpart of the intra control region in
-//! [`super::info`]. It begins after the output-control flags (`immediate_output_frame` /
-//! `implicit_output_frame`) and parses the reference-control region — primary-reference
-//! signaling, the explicit reference map (`frame_explicit_ref_frame_map`,
-//! `num_total_refs`, `ref_frame_idx[i]`), the reference-state-grounded frame sizes
-//! (`frame_size_with_refs()` § 5.18.4.3, `frame_size_with_bridge()` § 5.18.4.2), the BRU
-//! triple (`use_bru` / `bru_ref` / `bru_inactive`), `use_ref_frame_mvs` /
-//! `tmvp_sample_step_minus_1`, and the TIP block — exactly per the mirror, gated on the
-//! parsed sequence configuration and the modeled reference state.
+//! [`super::info`]. On the non-bridge path it begins after the output-control flags
+//! (`immediate_output_frame` / `implicit_output_frame`); on the bridge path the caller
+//! enters with `is_bridge == true` just after `bridge_frame_ref_idx`. It parses the
+//! reference-control region — primary-reference signaling (`signal_primary_ref_frame`,
+//! `disable_cross_frame_cdf_init`, `primary_ref_frame`), the bridge
+//! `bridge_frame_overwrite_flag`, the per-arm `refresh_frame_flags`, the explicit
+//! reference map (`frame_explicit_ref_frame_map`, `num_total_refs`, `ref_frame_idx[i]`),
+//! the reference-state-grounded frame sizes (`frame_size_with_refs()` § 5.18.4.3,
+//! `frame_size_with_bridge()` § 5.18.4.2), the BRU triple (`use_bru` / `bru_ref` /
+//! `bru_inactive`), `use_ref_frame_mvs` / `tmvp_sample_step_minus_1`, the TIP block,
+//! `frame_opfl_refine_type()` (§ 5.18.3.2), `screen_content_params()` / `intrabc_params()`,
+//! the `max_drl_bits_minus_1` override, the MV precision, `read_interpolation_filter()`
+//! (§ 5.18.5.1), the `frame_enabled_motion_modes` loop, and — on the ordinary inter /
+//! switch path — `disable_cdf_update` (mirror :5041) immediately before the shared tail —
+//! exactly per the mirror, gated on the parsed sequence configuration and the modeled
+//! reference state.
+//!
+//! Per-block bit alignment is anchored on a few § 3 / Table 6.5 constants that select read
+//! widths and presence: [`PRIMARY_REF_NONE`] / [`PRIMARY_REF_CHOOSE`] (the inferred
+//! primary-reference values), [`REFINE_AUTO`] / [`REFINE_SWITCHABLE`] (the
+//! `frame_opfl_refine_type()` arm and its `opfl_refine_all` gate), and
+//! [`MAX_REF_MV_STACK_SIZE`] / [`MOTION_MODES`] / [`INTERINTRA`] (the `ns(n)` / loop
+//! bounds). A wrong constant silently mis-positions every following field.
+//!
+//! ## Stop taxonomy
+//!
+//! [`parse_inter_control`] returns a [`InterControl`] carrying every exactly-determined
+//! field plus the terminal [`InterStop`]. The variants are all **coverage** stops, never
+//! truncations:
+//! - [`InterStop::ReachedSharedTail`] — the control region parsed through every modeled
+//!   field, including `disable_cdf_update`, up to the shared `tile_info()` (mirror :5183);
+//!   the caller continues into the shared structure cluster.
+//! - [`InterStop::BruInactiveOrBridgeReturn`] / [`InterStop::TipAsOutputReturn`] — the
+//!   `bru_inactive` / `IsBridge` (mirror :4971/:5045) or TIP-as-output (mirror :4945) arm
+//!   `return`s after `film_grain_config()` / `tile_info()` reads needing reference-frame
+//!   dims this phase does not thread.
+//! - [`InterStop::UnmodeledDerivation`] — a derivation needing unmodeled syntax
+//!   (`get_ref_frames()` for the implicit reference map).
+//! - [`InterStop::PoisonedReferenceState`] — see *Honest poisoning* below.
 //!
 //! ## Honest poisoning
 //!
@@ -23,8 +54,7 @@
 //! honestly with [`InterStop::PoisonedReferenceState`] — the facts parsed up to that
 //! branch are preserved on the returned [`InterControl`]. Derivations the model cannot
 //! perform without unmodeled syntax (`get_ref_frames()` for the implicit reference map,
-//! `get_past_future_cur_ref_lists()`) stop with [`InterStop::UnmodeledDerivation`]. Both
-//! are **coverage** stops, never truncations.
+//! `get_past_future_cur_ref_lists()`) stop with [`InterStop::UnmodeledDerivation`].
 //!
 //! The parser never guesses a bit position: a stop is taken *before* the first read whose
 //! width or presence depends on an unavailable derivation.
@@ -194,6 +224,12 @@ pub struct InterControl {
     pub signal_primary_ref_frame: Option<bool>,
     /// `disable_cross_frame_cdf_init` (mirror :4387), when read.
     pub disable_cross_frame_cdf_init: Option<bool>,
+    /// `disable_cdf_update` (mirror :5041), read on the ordinary inter / switch path —
+    /// the `else` arm of `if ( TipFrameMode == TIP_FRAME_AS_OUTPUT || bru_inactive ||
+    /// IsBridge )` — immediately before the shared-tail `tile_info()` (mirror :5183).
+    /// `None` on the early-return arms (TIP-as-output / bru-inactive / bridge), which take
+    /// the `if` branch and never read this bit.
+    pub disable_cdf_update: Option<bool>,
     /// `primary_ref_frame` (mirror :4393), when read or inferred.
     pub primary_ref_frame: Option<u8>,
     /// `bridge_frame_overwrite_flag` (mirror :4425), when read (bridge frames).
@@ -631,10 +667,16 @@ fn parse_inter_reference_region(
     // mirror :4737-4853: the TIP block.
     let tip_gate = seq.enable_tip && use_ref_frame_mvs && num_total_refs >= 2 && !bru_inactive;
     if tip_gate {
-        // The TIP block's usesEqualWeight (mirror :4775) needs NumFutureRefs / NumPastRefs
-        // from get_past_future_cur_ref_lists(), which this phase does not model. The first
-        // bit it gates is tip_global_wtd_index (mirror :4787), so we stop honestly before
-        // the TIP reads rather than guess that gate.
+        // The TIP block's very first step (mirror :4749) is the
+        // `EnableTipOutput && is_tip_frame()` branch that decides whether TipFrameMode is
+        // TIP_FRAME_AS_OUTPUT (no bit) or a signaled `tip_frame_mode` f(1) (mirror :4755).
+        // That branch — and the later `allow_tip_hole_fill` gate (mirror :4767), the
+        // `usesEqualWeight` derivation (mirror :4775), and the `tip_global_wtd_index` f(3)
+        // (mirror :4787) — needs `EnableTipOutput` / `enable_tip_hole_fill` /
+        // `enable_tip_refinemv` and the `get_past_future_cur_ref_lists()` NumFutureRefs /
+        // NumPastRefs, none of which this phase threads through `InterSeqView` or models.
+        // The first bit in the block (`tip_frame_mode` f(1)) is therefore already
+        // undeterminable, so we stop honestly before any TIP read rather than guess.
         control.stop = Some(InterStop::PoisonedReferenceState);
         return Ok(());
     }
@@ -732,10 +774,18 @@ fn parse_inter_reference_region(
     control.frame_enabled_motion_modes = Some(motion_modes);
 
     // mirror :4945-4969: TIP_FRAME_AS_OUTPUT block — not reached (TipFrameMode disabled here).
-    // mirror :4971: TipFrameMode == AS_OUTPUT || bru_inactive || IsBridge — all false here,
-    // so the early-return arm is NOT taken and parsing falls through to the shared tail.
-    // mirror :5097-5181: use_ref_frame_mvs motion-field / TIP-output derivations read no bits
-    // here (TipFrameMode == TIP_FRAME_DISABLED, no AS_OUTPUT return). The next bits are the
+    // mirror :4971-5043: TipFrameMode == AS_OUTPUT || bru_inactive || IsBridge — all false
+    // here, so the early-return `if` arm is NOT taken and parsing enters the `else` arm
+    // (mirror :5039-5043), which reads disable_cdf_update f(1) immediately before the shared
+    // tail. This is the same f(1) the intra path reads at its own position (info.rs, the
+    // else-branch of `if ( bru_inactive || IsBridge )`); the inter ordinary path reaches it
+    // here, after the motion-mode block. Recording it keeps the consumed-bit count exact, so
+    // the shared tail starts at the right position.
+    control.disable_cdf_update = Some(reader.read_bit()? != 0);
+
+    // mirror :5045-5095: the bru_inactive / IsBridge return arm — not taken here. mirror
+    // :5097-5181: use_ref_frame_mvs motion-field / TIP-output derivations read no bits here
+    // (TipFrameMode == TIP_FRAME_DISABLED, no AS_OUTPUT return). The next bits are the
     // shared tail tile_info() (mirror :5183).
     control.stop = Some(InterStop::ReachedSharedTail);
     Ok(())
@@ -892,6 +942,7 @@ mod tests {
         bits.bit(0); // is_filter_switchable = 0
         bits.f(2, 2); // interpolation_filter = 2 (EIGHTTAP_SHARP)
         // motion modes: seq_frame_motion_modes_present_flag false -> no bits.
+        bits.bit(0); // disable_cdf_update f(1) (mirror :5041), just before the shared tail.
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let seq = inter_seq();
@@ -919,7 +970,71 @@ mod tests {
             control.frame_enabled_motion_modes,
             Some([false; MOTION_MODES])
         );
+        assert_eq!(control.disable_cdf_update, Some(false));
         assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
+    }
+
+    /// AV2 § 5.18.2 (mirror :5039-5043): on the ordinary inter / switch path (TipFrameMode
+    /// disabled, `!bru_inactive`, `!IsBridge`), the control region reads `disable_cdf_update`
+    /// f(1) — the `else` arm of `if ( TipFrameMode == TIP_FRAME_AS_OUTPUT || bru_inactive ||
+    /// IsBridge )` — immediately before the shared-tail `tile_info()` (mirror :5183). On the
+    /// `ReachedSharedTail` stop the parser must consume that bit and record it, so the shared
+    /// tail starts at the exact bit position. Asserts the consumed-bit count and the recorded
+    /// flag for both `disable_cdf_update` values. (Pre-fix the bit was not consumed: the
+    /// consumed count was one short and `disable_cdf_update` stayed `None`, so the shared tail
+    /// would have started one bit early.)
+    fn reached_shared_tail_consumes_disable_cdf_update(disable_cdf_update_bit: u8) {
+        let mut bits = Bits::default();
+        bits.bit(1); // signal_primary_ref_frame
+        bits.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        bits.f(2, 3); // primary_ref_frame
+        bits.f(0b1010_1010, 8); // refresh_frame_flags f(NumRefFrames)
+        bits.bit(1); // frame_explicit_ref_frame_map (seq explicit_ref_frame_map)
+        bits.f(2, 3); // num_total_refs
+        bits.f(3, 3); // ref_frame_idx[0]
+        bits.f(5, 3); // ref_frame_idx[1]
+        // non-override, cur_mfh_id == 0 -> frame_size() default dims (no bits).
+        bits.bit(0); // use_ref_frame_mvs = 0
+        // TIP gate false. TipFrameMode = DISABLED. frame_opfl_refine_type(): no bits.
+        bits.bit(0); // intrabc_params(): allow_intrabc = 0
+        bits.bit(0); // use_qtr_precision_mv = 0
+        bits.bit(0); // allow_high_precision_mv = 0 -> HALF_PEL
+        bits.bit(0); // is_filter_switchable = 0
+        bits.f(2, 2); // interpolation_filter = 2
+        // motion modes: seq_frame_motion_modes_present_flag false -> no bits.
+        // Bits consumed up to (not including) disable_cdf_update:
+        //   1 (signal) + 1 (cdf_init) + 3 (primary_ref) + 8 (refresh) + 1 (explicit map)
+        //   + 3 (num_total_refs) + 3 + 3 (two ref_frame_idx, CeilLog2(8) == 3 each)
+        //   + 1 (use_ref_frame_mvs) + 1 (allow_intrabc) + 1 + 1 (mv precision)
+        //   + 1 (is_filter_switchable) + 2 (interpolation_filter) = 30.
+        const BITS_BEFORE_DISABLE_CDF_UPDATE: u64 = 30;
+        bits.bit(disable_cdf_update_bit); // disable_cdf_update f(1) (mirror :5041)
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let seq = inter_seq();
+        let ctx = inter_ctx();
+        let rs = FrameReferenceStateView::unknown();
+        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+
+        assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
+        // The recorded flag matches the input bit, both ways.
+        assert_eq!(
+            control.disable_cdf_update,
+            Some(disable_cdf_update_bit != 0)
+        );
+        // disable_cdf_update was consumed: the reader is positioned exactly at the shared
+        // tail tile_info() (mirror :5183), one bit past where it would be pre-fix.
+        assert_eq!(reader.consumed_bits(), BITS_BEFORE_DISABLE_CDF_UPDATE + 1);
+    }
+
+    #[test]
+    fn reached_shared_tail_consumes_disable_cdf_update_zero() {
+        reached_shared_tail_consumes_disable_cdf_update(0);
+    }
+
+    #[test]
+    fn reached_shared_tail_consumes_disable_cdf_update_one() {
+        reached_shared_tail_consumes_disable_cdf_update(1);
     }
 
     /// Builds the explicit-map inter prefix up to (and not including) the
@@ -946,6 +1061,7 @@ mod tests {
         bits.bit(0); // allow_high_precision_mv = 0 -> HALF_PEL
         bits.bit(1); // is_filter_switchable = 1 (no interpolation_filter f(2))
         // motion modes: seq_frame_motion_modes_present_flag false -> no bits.
+        bits.bit(0); // disable_cdf_update f(1) (mirror :5041), just before the shared tail.
     }
 
     #[test]

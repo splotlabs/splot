@@ -15,9 +15,16 @@
 //! Modeled paths and their stop points:
 //! - **No sequence state / activation-prefix mode** → reads only the activation
 //!   fields ([`FrameHeaderParseStatus::ActivationFieldsOnly`]).
-//! - **Bridge frame** → reads `bridge_frame_ref_idx` then stops
-//!   ([`FrameHeaderParseStatus::UnsupportedUntilFeature`]); the rest of a bridge frame
-//!   needs reference-frame dimensions this phase does not model.
+//! - **Bridge frame** → reads `bridge_frame_ref_idx`, then parses the `IsBridge`
+//!   reference-control region via [`super::inter::parse_inter_control`]
+//!   (`bridge_frame_overwrite_flag`, the bridge `refresh_frame_flags` arms,
+//!   `NumTotalRefs = 1`, `ref_frame_idx[0] = bridge_frame_ref_idx`, and
+//!   `frame_size_with_bridge()` § 5.18.4.2). It then reaches the `IsBridge` early-return
+//!   arm (§ 5.18.2 mirror :4971/:5045) and stops with
+//!   [`super::inter::InterStop::BruInactiveOrBridgeReturn`] — the bridge tail
+//!   (`film_grain_config()` / `tile_info()`) needs reference-frame dims this phase does not
+//!   thread — recording the parsed bridge facts on `core.inter` and reporting
+//!   [`FrameHeaderParseStatus::UnsupportedUntilFeature`].
 //! - **Show-existing-frame (SEF)** → reads `frame_to_show_map_idx`,
 //!   `derive_sef_order_hint`, `sef_order_hint`, and the terminal `film_grain_config()`
 //!   (§ 5.18.10.1), completing the SEF frame header
@@ -26,9 +33,21 @@
 //!   [`FrameHeaderParseStatus::StoppedInsideShowExistingFrame`] — the SEF tail *is*
 //!   `film_grain_config()`, so an EOF there is a truncation of a fully-modeled region,
 //!   distinct from the ordinary bounded [`FrameHeaderParseStatus::CoreFieldsOnly`] stop.
-//! - **Inter / switch / TIP / RAS frame** → reads the frame-type field then stops
-//!   ([`FrameHeaderParseStatus::UnsupportedUntilFeature`]); the inter reference map
-//!   needs reference-frame state.
+//! - **Inter / switch / TIP / RAS frame** → reads the inter output-control flags and
+//!   `order_hint`, then parses the § 5.18.2 reference-control region via
+//!   [`super::inter::parse_inter_control`]: the primary-reference signaling, the explicit
+//!   reference map (`frame_explicit_ref_frame_map`, `num_total_refs`, `ref_frame_idx[i]`),
+//!   the reference-grounded frame size (`frame_size_with_refs()` § 5.18.4.3), the BRU
+//!   triple, `use_ref_frame_mvs` / `tmvp_sample_step_minus_1`, the TIP block, the
+//!   MV-precision / interpolation-filter / motion-mode reads, and `disable_cdf_update`
+//!   (mirror :5041) — converging on the shared tail
+//!   ([`super::inter::InterStop::ReachedSharedTail`]) or stopping at one of the honest
+//!   [`super::inter::InterStop`] coverage stops (an unmodeled derivation such as the
+//!   implicit reference map, a poisoned reference-state slot, or the TIP-as-output /
+//!   bru-inactive / bridge early-return arms). The parsed inter facts are recorded on
+//!   `core.inter`; the frame still stops with
+//!   [`FrameHeaderParseStatus::UnsupportedUntilFeature`] because the shared tail past the
+//!   control region is not yet threaded with the inter primary-reference / TIP inputs.
 //! - **Intra frame (key / intra-only / single-picture)** → reads the full control
 //!   region through `frame_size()`, `screen_content_params()`, `intrabc_params()`,
 //!   `disable_cdf_update`, `tile_info()`, `quantization_params()`,
@@ -3674,6 +3693,8 @@ mod tests {
         bits.bit(0); // use_qtr_precision_mv
         bits.bit(0); // allow_high_precision_mv
         bits.bit(1); // is_filter_switchable
+        // motion modes: seq_frame_motion_modes_present_flag false -> no bits.
+        bits.bit(0); // disable_cdf_update f(1) (mirror :5041), just before the shared tail.
         let data = bits.into_bytes();
         let (core, _) = parse_body(&data, ObuType::RegularTileGroup, true, &seq).unwrap();
 
@@ -3688,6 +3709,7 @@ mod tests {
             inter.interpolation_filter,
             Some(InterpolationFilter::Switchable)
         );
+        assert_eq!(inter.disable_cdf_update, Some(false));
         assert_eq!(
             inter.stop,
             Some(crate::headers::frame::inter::InterStop::ReachedSharedTail)

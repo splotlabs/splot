@@ -18415,7 +18415,13 @@ mod tests {
         fb.bit(0); // allow_screen_content_tools
         fb.bit(0); // allow_intrabc
         fb.bit(0); // disable_cdf_update
-        intra_structure_tail(&mut fb, 0);
+        intra_structure_tail(&mut fb, 0); // structure + loop-filter cluster (no bits past)
+        // The §5.18.2 intra tail through IntraHeaderComplete: a complete CLK header is what
+        // makes its §7.23 reference-state effect (the ClkReset + allFrames refresh) grounded.
+        // A truncated tail would land on StoppedInside*, which `derive_ref_update` poisons
+        // (a non-conformant truncated frame's slot effect is unestablished).
+        fb.bit(0); // tx_mode_select = 0
+        fb.f(0, 2); // reduced_tx_set = 0
         annex_b_obu(CLK_HEADER, &fb.into_bytes())
     }
 
@@ -20529,6 +20535,7 @@ mod tests {
         fb.bit(0); // allow_high_precision_mv -> HALF_PEL
         fb.bit(1); // is_filter_switchable -> SWITCHABLE (no interpolation_filter f(2))
         // motion modes: seq_frame_motion_modes_present_flag == 0 -> no bits.
+        fb.bit(0); // disable_cdf_update f(1) (mirror :5041), just before the shared tail.
         annex_b_obu(REGULAR_TILE_GROUP_HEADER, &fb.into_bytes())
     }
 
@@ -20578,6 +20585,7 @@ mod tests {
         fb.bit(0); // allow_high_precision_mv -> HALF_PEL
         fb.bit(1); // is_filter_switchable -> SWITCHABLE (no interpolation_filter f(2))
         // motion modes: seq_frame_motion_modes_present_flag == 0 -> no bits.
+        fb.bit(0); // disable_cdf_update f(1) (mirror :5041), just before the shared tail.
         annex_b_obu(REGULAR_TILE_GROUP_HEADER, &fb.into_bytes())
     }
 
@@ -20616,6 +20624,86 @@ mod tests {
             has_num_total_refs_error(&report),
             "num_total_refs 3 > ActiveNumRefFrames 2 must fire the §6.17.2 check; \
              report was: {report}"
+        );
+    }
+
+    fn has_primary_ref_frame_error(report: &ValidationReport) -> bool {
+        report
+            .errors()
+            .any(|d| d.rule_id == "frame-header/primary-ref-frame-out-of-range")
+    }
+
+    /// A regular-tile-group INTER frame (explicit reference map) that SIGNALS
+    /// `primary_ref_frame` (`signal_primary_ref_frame == 1`, f(3) value `primary_ref_frame`)
+    /// and codes `num_total_refs`, against the base inter sequence (NumRefFrames == 8 ->
+    /// CeilLog2 == 3 for each `ref_frame_idx`, OrderHintBits == 1, monotonic output,
+    /// enable_ref_frame_mvs == 0). The body parses through the inter control region into the
+    /// shared tail, so the core records both `signal_primary_ref_frame` / `primary_ref_frame`
+    /// and `num_total_refs` for the §6.17.2 range check.
+    fn ref_inter_primary_ref(primary_ref_frame: u32, num_total_refs: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(1); // frame_is_inter == 1 -> INTER_FRAME
+        fb.bit(1); // immediate_output_frame (monotonic_output -> implicit forced 0, no bit)
+        fb.bit(0); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        fb.bit(1); // signal_primary_ref_frame == 1 -> primary_ref_frame is present
+        fb.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        fb.f(primary_ref_frame, 3); // primary_ref_frame f(3)
+        fb.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8)
+        fb.bit(1); // frame_explicit_ref_frame_map (explicit_ref_frame_map seq flag set)
+        fb.f(num_total_refs, 3); // num_total_refs f(3)
+        for _ in 0..num_total_refs {
+            fb.f(0, 3); // ref_frame_idx[i] f(CeilLog2(8) == 3) -> slot 0
+        }
+        // non-override, cur_mfh_id == 0 -> frame_size() default dims (no bits).
+        // use_ref_frame_mvs: enable_ref_frame_mvs == 0 -> inferred 0 (no bit).
+        // frame_opfl_refine_type: enable_opfl_refine != REFINE_AUTO -> no bits.
+        fb.bit(0); // allow_screen_content_tools (SELECT) -> force_integer_mv = 0
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // use_qtr_precision_mv
+        fb.bit(0); // allow_high_precision_mv -> HALF_PEL
+        fb.bit(1); // is_filter_switchable -> SWITCHABLE (no interpolation_filter f(2))
+        // motion modes: seq_frame_motion_modes_present_flag == 0 -> no bits.
+        fb.bit(0); // disable_cdf_update f(1) (mirror :5041), just before the shared tail.
+        annex_b_obu(REGULAR_TILE_GROUP_HEADER, &fb.into_bytes())
+    }
+
+    #[test]
+    fn frame_header_primary_ref_frame_in_range_is_silent() {
+        // §6.17.2 (mirror :4500-4502): a signaled primary_ref_frame must be PRIMARY_REF_NONE
+        // or < NumTotalRefs. num_total_refs == 2, primary_ref_frame == 1 (< 2) -> in range,
+        // silent.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(ref_inter_primary_ref(1, 2)); // primary_ref_frame 1 < num_total_refs 2
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_primary_ref_frame_error(&report),
+            "primary_ref_frame 1 < NumTotalRefs 2 is conformant -> silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_header_primary_ref_frame_out_of_range_fires() {
+        // num_total_refs == 1, primary_ref_frame == 5 (signaled, not PRIMARY_REF_NONE, not
+        // < 1) -> the §6.17.2 range check fires.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(ref_inter_primary_ref(5, 1)); // primary_ref_frame 5 >= num_total_refs 1
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_primary_ref_frame_error(&report),
+            "a signaled primary_ref_frame 5 that is neither PRIMARY_REF_NONE nor < NumTotalRefs \
+             1 must fire the §6.17.2 range check; report was: {report}"
         );
     }
 
@@ -20789,6 +20877,76 @@ mod tests {
             has_ref_slot_error(&report),
             "a SEF after the second CLK referencing a proven-invalid slot must fire; \
              report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ref_state_unsupported_inter_frame_poisons_not_refreshes() {
+        // §7.23 staging gate (F2): an INTER frame whose core RESOLVES against its active
+        // sequence header records `refresh_frame_flags` and dims on the core, but its parse
+        // stops at `UnsupportedUntilFeature` past the prefix (the inter reference-control
+        // region is not parsed to completion this phase). Staging a normal §7.23 Refresh
+        // from such a frame asserts buffer facts the validator has not earned — the frame's
+        // decodability is unestablished and its slot effect could be wrong both ways — so
+        // `derive_ref_update` must POISON ALL slots, not refresh.
+        //
+        // Observable consequence (the wrong vs. right behavior diverges here):
+        //   1. CLK -> slot 0 valid, slots 1.. PROVEN invalid (key-frame `first` rule).
+        //   2. INTER frame, explicit map, `refresh_frame_flags == 0` (refreshes no slot),
+        //      core resolves, status `UnsupportedUntilFeature`.
+        //   3. SEF displaying slot 5.
+        // Pre-fix: the inter frame stages `Refresh { mask = 0 }`, which leaves the
+        //   already-PROVEN-invalid slot 5 untouched -> still ProvenInvalid -> the SEF(5)
+        //   slot-validity check FIRES. But that is a FALSE POSITIVE: after an inter frame
+        //   the validator could not fully parse, the buffer state is genuinely unknown, so
+        //   it cannot prove slot 5 is still invalid.
+        // Post-fix: the unsupported inter frame POISONS all slots -> slot 5 Unknown -> the
+        //   SEF(5) check correctly drops to silence (the zero-false-positive rule).
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(clk_frame_decidable(true, true)); // CLK: slot 0 valid, 1.. proven invalid
+        data.extend(ref_inter_explicit_map(0)); // resolving INTER, refresh mask 0, UNSUPPORTED
+        data.extend(ref_sef(5)); // SEF displaying slot 5
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_ref_slot_error(&report),
+            "an UNSUPPORTED inter frame (parse stopped past the prefix) must POISON the §7.23 \
+             buffer, not stage a normal Refresh from its recorded mask; after poisoning, the \
+             SEF(5) slot-validity check must drop to silence (it can no longer prove slot 5 \
+             invalid). Pre-fix the inter frame staged a Refresh that left slot 5 ProvenInvalid \
+             and the SEF check fired a FALSE POSITIVE; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ref_state_completed_intra_still_refreshes_after_gate() {
+        // §7.23 staging gate (F2), the positive direction: a COMPLETED intra CLK
+        // (`IntraHeaderComplete`) still stages its grounded §7.23 ClkReset + allFrames
+        // refresh — the gate only blocks incomplete / unsupported / truncated parses, not
+        // grounded complete ones. The CLK re-validates slot 0; a SEF(5) is still PROVEN
+        // invalid (the reset cleared it and the allFrames `first` rule re-validated only
+        // slot 0), so the slot-validity check fires exactly as before the gate.
+        let mut data = seg_td_and_seq();
+        data.extend(clk_frame_decidable(true, true)); // COMPLETED CLK -> reset + refresh slot 0
+        data.extend(ref_sef(5)); // proven invalid -> must still fire (the refresh is grounded)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_ref_slot_error(&report),
+            "a completed intra CLK must still stage its grounded ClkReset/refresh through the \
+             gate, so a SEF(5) on the proven-invalid slot fires; report was: {report}"
+        );
+        // And referencing the re-validated slot 0 is silent, confirming the refresh landed.
+        let mut data0 = seg_td_and_seq();
+        data0.extend(clk_frame_decidable(true, true));
+        data0.extend(ref_sef(0));
+        let report0 = Validator::new(false).validate_bytes(&data0);
+        assert!(
+            !has_ref_slot_error(&report0),
+            "the completed CLK's refresh must re-validate slot 0 (SEF(0) silent); \
+             report was: {report0}"
         );
     }
 }
