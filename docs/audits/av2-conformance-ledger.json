@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "ad0737efffbf1463c6a067cdf95dffc3b035e750",
+  "audited_commit": "ab1579ed8e87fe1f01eb60786e8972f9df08d351",
   "outcome": "success",
   "files": [
     {
@@ -620,7 +620,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/tile_group.rs",
-      "sha256": "94bf5684adda2031053fbff77caba2bb67d2e2396aebbdc2afeb66a7aa47b56d",
+      "sha256": "705488db6d42d80bdab0040b2d356038209831992546af8e8c8477031df322cb",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.19-TILE-GROUP",
@@ -876,7 +876,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "925ee7232ffa99fa05c5b13b359511876975dfb321e629ef53fda4cafa1a42c0",
+      "sha256": "6b7cacccbc5ee2994fdd3e387fa12060bf0fb9773a4fadfb73714a2be4c226fc",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -960,7 +960,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "405918706b923293f1575a2c6008c07d84db54d3cb2dea4a8c5da8d9e11b1ea2",
+      "sha256": "02d949c2bcf1110b58ea984ee71e5f8102920c673b50c60b9e54bf7bcfb0e756",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1195,7 +1195,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "176d5749003b51db9aecd3bf98c1cc7d141587ec0bdb8f1cdc1d488110849512",
+      "sha256": "be64943444d904a11b5b886c8abaafd9a6cb84566131f38ba9165308e890a4ec",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1491,7 +1491,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "398176e38e62a8d7e497dbab5a5780280a31cf6c2530205d85a3581e395d5566",
+      "sha256": "026408968adef5cdd5b68503291c200820425bbb91c32c060923f2522ce28ad0",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -1508,7 +1508,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "2cbb3ef2da685f29524f565c4edf98ef08dad66ecb053c6f212470fd9467c199",
+      "sha256": "0987de2af5cc6d310eaeca7bc091e1644ef52e88613857661b4f96088381ace3",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
