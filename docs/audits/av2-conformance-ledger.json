@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "bb6ebdf30a62e14783bc9f303ef8ca15c69b1aa9",
+  "audited_commit": "f33f312bda80ed1e4bb93d41ecd7ee78bee90691",
   "outcome": "success",
   "files": [
     {
@@ -283,7 +283,7 @@
     },
     {
       "path": "crates/splot-cli/src/commands/inspect.rs",
-      "sha256": "6aadd132ec39d8a844e2bb2570f2d740534dd787ac720990188aeab966ed2950",
+      "sha256": "7e1001a69feb40a9c8f7157519183bd0cbe301ce015eb5770be2146b74df46f2",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.2.1-OBU-DISPATCH",
@@ -317,7 +317,7 @@
     },
     {
       "path": "crates/splot-cli/tests/cli.rs",
-      "sha256": "2a6334fe2a7292bee8f8f69d5befb10082bb5ef00dea34d27f5c8f5ca139a80a",
+      "sha256": "ed5814122c871f93b6971d0545b89f17f56c19f9aba909231d0da2260f7c1e8c",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.4-SEQUENCE-HEADER",
@@ -371,7 +371,6 @@
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
         "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
-        "AV2-5.18.5-FILTERING",
         "AV2-5.18.8-TRANSFORM-CODING-MODES",
         "AV2-5.18.9-GLOBAL-MOTION",
         "AV2-5.20-TILE-GROUP-PAYLOAD",
@@ -430,8 +429,17 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-core/src/headers/frame/filtering.rs",
+      "sha256": "e5359a6f996d92e320360ddedfcff132fe53414468f87b14ac43e36d4554a7c7",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.18.5-FILTERING"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-core/src/headers/frame/info.rs",
-      "sha256": "bc74294ec08d49b3007b7feb06e733b575afc01919e95fa04f23a6b2bcef3d69",
+      "sha256": "56be854b47cbd94cd1a34cb409bc6c73cb7a33bfbb31703d06d2a1d9bbe2aae7",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO"
@@ -440,7 +448,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/mod.rs",
-      "sha256": "a6fac3b0d54da83245658bd5f42b16e465349683afdd47a5dbf128bc31e6864a",
+      "sha256": "8ac5d1f080c8bbe6146abe62fa6c002da820a241561d4d9160663cada8ca2eb5",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -587,7 +595,7 @@
     },
     {
       "path": "crates/splot-core/src/hls.rs",
-      "sha256": "49d6e5248aa625dad2d1d8629d85a3f4592ecbcc7add4e59e996e54935191f18",
+      "sha256": "2b65d96f085da956b73755c1c420c4707ff6911363f9e2bc8aab655dbcd4c83c",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -777,7 +785,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "3b958598eb722c60cad3e41f585fd79c5bcab2e21421988aee0a892f75b90b06",
+      "sha256": "b27b6867f85676447643cec21d696c43272b25e03db22acfd5763887cef59b81",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -848,7 +856,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "b4a9c756f86f0904cc76cc68e0a31b6427a6a14caddc91acc8a4c4e907bf017a",
+      "sha256": "0901c667c9b003d75817ef2532f5aff0afafcff29e0af898f356368c6360b691",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -913,7 +921,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "6b2d20c03ed7dffdeb750d6e6aeac15c3224bcd05ff957069b8a5af10b7ea8d8",
+      "sha256": "a88edbb3827b455c44153363ef149289b741341047a114a62d7ece17bb79dae6",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1080,7 +1088,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "16fe1ff34646fe328f0e8c376297dbfd1fc7ea832467e025684c0ca72e611fe8",
+      "sha256": "b5ea4c75bf816754e1eea461e543d7cd0b9e34b6e59409fc3bf3ebe5005b8a23",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1217,7 +1225,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "f905f95c7f7d62eda16046483d83f5eaf83503028966bc386b74bd45c8b23267",
+      "sha256": "be948e5bdd7399c70a9737a98551ed1f75625a61b5852e60740abd037e1698e9",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1385,7 +1393,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "e98757a4068d3a8b6ac1847157ec42bd35f47af1a092e06df9737ca980300e2f",
+      "sha256": "ed186bfd7a0b3e49bdb5496aebec25e6904bfed0d44f647b71624aa39b4491fb",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -3058,6 +3066,37 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-12-frame-filtering-deblocking-gdf-cdef/proposal.md",
+      "sha256": "bf2f5b8d82176a7d5eb9b956514d80e655c9a3e011f3f7278a47a13982e0d9a0",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.5-FILTERING",
+        "AV2-5.18.7-SEGMENTATION-TILING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-frame-filtering-deblocking-gdf-cdef/specs/bitstream/spec.md",
+      "sha256": "cd590e73db25991e98aa259b6b9208d2b5b902fd3c3da035d0ea3a7711332a45",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.5-FILTERING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-frame-filtering-deblocking-gdf-cdef/tasks.md",
+      "sha256": "aef51524e7e213d2a29f21badc7318b7d68f01d8f9f048e47d5af26c60488b34",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.5-FILTERING",
+        "AV2-5.18.7-SEGMENTATION-TILING"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-12-mfh-frame-header-state/proposal.md",
       "sha256": "954a54f5145c5cca327233900ee983bbeb9b14c82e93a24423925251eb39053b",
       "scope_kind": "openspec",
@@ -3187,7 +3226,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "769016de38e7d91d440c459335cb443d1074a02209e78b4fa9dc697f204e1941",
+      "sha256": "7081309c617a60f7e09e71da5a2a243b55c2e528e58b23fe723beb3716df7856",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -3277,7 +3316,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "581ea1b4f1edf15d87e1b3a26a863a8bebf61c05107f44d61cc8768446a2702c",
+      "sha256": "12bdc4986cf46e3b76c72e913fd5c05562227545e803ebfa68bb6d14f1ac017e",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
