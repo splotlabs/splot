@@ -341,8 +341,11 @@ pub(crate) struct ValidatorContext {
     /// is the first header's exact bit length. The segmenter is the boundary authority: a
     /// tile group reported as [`FrameBoundary::OpensNewUnit`] resets the triple's record
     /// (a new coded frame), a [`FrameBoundary::ContinuesUnit`] non-first tile group pairs
-    /// against it, and a [`FrameBoundary::Ambiguous`] boundary drops the pairing. Cleared
-    /// at each global temporal delimiter (a coded frame does not span temporal units).
+    /// against it, and a [`FrameBoundary::Ambiguous`] boundary drops the pairing AND poisons
+    /// (removes) the record — the unreadable delimiter may have opened a new coded frame, so
+    /// the recorded header can no longer pair until the next [`FrameBoundary::OpensNewUnit`]
+    /// re-records. Cleared at each global temporal delimiter (a coded frame does not span
+    /// temporal units).
     frame_header_copy_record:
         BTreeMap<(ExtendedLayerId, EmbeddedLayerId, TemporalLayerId), RecordedFrameHeaderBits>,
     /// Coded-extended-layer-unit constraints (§ 7.3.6) and the § 7.3.7 / § 7.4.6 DOH
@@ -4928,9 +4931,11 @@ impl ValidatorContext {
     /// - [`FrameBoundary::ContinuesUnit`] on a non-first tile group
     ///   (`is_first_tile_group == 0`, `frame_header_present_flag == 1`) pairs against the
     ///   triple's record and checks the copy region.
-    /// - [`FrameBoundary::Ambiguous`] drops the pairing (the Unknown invariant): the
-    ///   tile group's role in the coded frame is undecidable, so the record is left intact
-    ///   but no copy judgment is made.
+    /// - [`FrameBoundary::Ambiguous`] drops the pairing (the Unknown invariant) AND poisons
+    ///   the triple's record: the unreadable `is_first_tile_group` delimiter may have started
+    ///   a new coded frame, so the recorded first header can no longer be trusted to pair with
+    ///   a later tile group. The record is removed so subsequent continuations stay silent
+    ///   until the next decided [`FrameBoundary::OpensNewUnit`] re-records.
     ///
     /// An incomplete / coverage-stopped / unresolvable first header records nothing, so a
     /// later non-first tile group finds no record and the copy region stays unparsed (as
@@ -4981,8 +4986,16 @@ impl ValidatorContext {
             }
             FrameBoundary::Ambiguous => {
                 // The tile group's role in the coded frame is undecidable (an unreadable
-                // is_first_tile_group delimiter). Make no copy judgment (the Unknown
-                // invariant) and leave the record intact for a later decided continuation.
+                // is_first_tile_group delimiter). Make no copy judgment for this OBU (the
+                // Unknown invariant) — but the unreadable delimiter MAY have started a new
+                // coded frame, so the triple's recorded first header can no longer be trusted
+                // to belong to whatever later tile group pairs against it. In the other valid
+                // interpretation the OBU opened an ambiguous new frame whose first header is
+                // unknown, so a later readable flag-0 tile group belongs to that frame, not the
+                // recorded one. Poison the record (drop it) so subsequent ContinuesUnit
+                // pairings stay silent until the next decided OpensNewUnit re-records — the
+                // established poison-scope rule, matching the CELU layer's unit-count poison.
+                self.frame_header_copy_record.remove(&key);
             }
         }
     }

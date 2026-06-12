@@ -5306,6 +5306,81 @@ mod tests {
     }
 
     #[test]
+    fn validator_frame_header_copy_poisoned_after_ambiguous_boundary() {
+        // Regression (codex round-8 F1): an Ambiguous tile-group OBU (unreadable
+        // is_first_tile_group while a coded frame is open) MAY have started a new coded
+        // frame. If the first header's record is left intact, a LATER readable flag-0 tile
+        // group pairs against the PREVIOUS frame's record and false-positives a copy
+        // mismatch/truncation — yet in the equally-valid interpretation it belongs to the
+        // ambiguous new frame, whose first header is unknown. Per the poison-scope rule the
+        // Ambiguous boundary must drop the triple's record so subsequent pairings stay silent
+        // until the next decided OpensNewUnit re-records.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group()); // records NumFrameHeaderBits for this triple
+        // A CLK tile group with an EMPTY payload: is_first_tile_group is unreadable, so the
+        // segmenter reports Ambiguous (it may have opened a new coded frame).
+        data.extend(annex_b_obu(CLK_HEADER, &[]));
+        // A readable flag-0 (is_first_tile_group == 0) non-first tile group whose copy region
+        // does NOT match the recorded first header. Pre-fix the still-intact record pairs and
+        // fires copy-bits-mismatch; post-fix the poisoned record drops the pairing -> silent.
+        let mut mismatched = complete_intra_clk_frame_header_body().drain_bits();
+        mismatched[2] ^= 1;
+        data.extend(clk_non_first_tile_group(&mismatched));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-header/copy-bits-")),
+            "a record poisoned by an Ambiguous boundary must not pair with a later flag-0 \
+             tile group; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_frame_header_copy_decided_continuation_still_fires_after_no_ambiguity() {
+        // Control for the F1 poison: with NO ambiguous OBU in between, a decided continuation
+        // (readable flag-0 non-first tile group) still pairs against the intact record and
+        // fires copy-bits-mismatch on a real mismatch — the poison is scoped to Ambiguous only.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group());
+        let mut mismatched = complete_intra_clk_frame_header_body().drain_bits();
+        mismatched[2] ^= 1;
+        data.extend(clk_non_first_tile_group(&mismatched));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/copy-bits-mismatch"),
+            "a decided continuation must still fire on a real mismatch; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_frame_header_copy_re_records_after_ambiguous_then_new_frame() {
+        // Control for the F1 poison: after an Ambiguous boundary poisons the record, a new
+        // decided coded frame (its own temporal unit, OpensNewUnit) RE-RECORDS its first
+        // header, and a following non-first tile group of that frame pairs correctly — a real
+        // mismatch fires, a bit-identical copy is silent.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group()); // TU1 frame: records, then poisoned below
+        data.extend(annex_b_obu(CLK_HEADER, &[])); // Ambiguous -> poison TU1 record
+        // TU2: a fresh temporal delimiter starts a new coded frame; OpensNewUnit re-records.
+        data.extend(temporal_delimiter_obu());
+        data.extend(clk_first_tile_group()); // TU2 frame: re-records NumFrameHeaderBits
+        let mut mismatched = complete_intra_clk_frame_header_body().drain_bits();
+        mismatched[2] ^= 1;
+        data.extend(clk_non_first_tile_group(&mismatched)); // pairs with the TU2 record
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/copy-bits-mismatch"),
+            "a re-recorded first header after an Ambiguous boundary must pair with its own \
+             coded frame's non-first tile group; report was: {report}"
+        );
+    }
+
+    #[test]
     fn validator_frame_header_copy_record_resets_across_temporal_units() {
         // A completed first header in temporal unit 1 must not pair with a non-first tile
         // group in temporal unit 2 (a coded frame does not span temporal units, § 7.3.7):

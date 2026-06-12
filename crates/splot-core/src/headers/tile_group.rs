@@ -127,11 +127,27 @@ impl RecordedFrameHeaderBits {
     ///
     /// # Errors
     /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if fewer than
-    /// `num_frame_header_bits` bits remain.
+    /// `num_frame_header_bits` bits remain. The remaining-bits check runs **before** the
+    /// backing buffer is allocated, so a caller-supplied count larger than the reader's
+    /// payload returns the structured error rather than attempting a `ceil(n/8)`-byte
+    /// allocation (which would abort the process for a huge count — a no-panic violation).
     pub fn record(reader: &mut BitReader<'_>, num_frame_header_bits: u64) -> Result<Self> {
+        // Reject an out-of-range count up front, before allocating: `num_frame_header_bits`
+        // is public API, so a hostile/garbage value (e.g. `u64::MAX`) must not drive a
+        // `ceil(n/8)`-byte allocation that OOM-aborts. The bit-by-bit loop below would EOF
+        // anyway, but only after the buffer is reserved, so the guard must precede it.
+        if reader.remaining_bits() < num_frame_header_bits {
+            // The deficit, reported in whole bytes, matches the per-bit `read_bit()` EOF the
+            // loop would have raised at the first missing bit.
+            let needed_bits = num_frame_header_bits.saturating_sub(reader.remaining_bits());
+            return Err(crate::error::Error::UnexpectedEof {
+                offset: reader.byte_offset(),
+                needed: usize::try_from(needed_bits.div_ceil(8)).unwrap_or(usize::MAX),
+            });
+        }
         let byte_len = num_frame_header_bits.div_ceil(8);
-        // The bit count is bounded by the OBU payload size, so the cast is sound; a payload
-        // large enough to overflow `usize` cannot be held in memory in the first place.
+        // The bit count is bounded by the remaining payload (checked above), so the cast is
+        // sound; a payload large enough to overflow `usize` cannot be held in memory anyway.
         let byte_len = usize::try_from(byte_len).unwrap_or(usize::MAX);
         let mut bits = vec![0u8; byte_len];
         for i in 0..num_frame_header_bits {
@@ -465,6 +481,26 @@ mod tests {
             Err(Error::UnexpectedEof { .. })
         ));
     }
+
+    #[test]
+    fn record_frame_header_bits_huge_count_short_reader_is_eof_not_oom() {
+        // Regression (codex round-8 F2): a huge num_frame_header_bits must NOT allocate
+        // ceil(n/8) bytes before any EOF check — that can OOM-abort instead of returning the
+        // documented UnexpectedEof (no-panic rule). The remaining-bits check must precede the
+        // allocation, so an empty / short reader yields a structured error and no blowup.
+        let mut empty = BitReader::new(&[], ByteOffset::new(0));
+        assert!(matches!(
+            RecordedFrameHeaderBits::record(&mut empty, u64::MAX),
+            Err(Error::UnexpectedEof { .. })
+        ));
+
+        let data = [0xFFu8; 4]; // 32 bits available
+        let mut short = BitReader::new(&data, ByteOffset::new(0));
+        assert!(matches!(
+            RecordedFrameHeaderBits::record(&mut short, 1u64 << 40),
+            Err(Error::UnexpectedEof { .. })
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -508,6 +544,22 @@ mod proptests {
                     prop_assert!(available_bits < num_bits);
                 }
             }
+        }
+
+        /// Recording a huge bit count from a small payload must EOF cleanly (the documented
+        /// UnexpectedEof) instead of pre-allocating ceil(n/8) bytes and OOM-aborting — the
+        /// remaining-bits guard must run before the allocation (round-8 F2).
+        #[test]
+        fn record_huge_count_short_reader_never_oom(
+            data in proptest::collection::vec(any::<u8>(), 0..16),
+            num_bits in (1u64 << 32)..=u64::MAX,
+        ) {
+            let mut reader = BitReader::new(&data, ByteOffset::new(0));
+            // The payload holds at most 16*8 == 128 bits, far fewer than num_bits, so the
+            // result must be the structured EOF error — and crucially without allocating.
+            let result = RecordedFrameHeaderBits::record(&mut reader, num_bits);
+            let is_eof = matches!(result, Err(crate::error::Error::UnexpectedEof { .. }));
+            prop_assert!(is_eof);
         }
     }
 }
