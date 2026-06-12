@@ -223,6 +223,34 @@ pub struct LrParams {
     pub loop_restoration_size: [u32; 3],
 }
 
+/// The partially-parsed `lr_params()` facts committed before the honest
+/// [`LrParseOutcome::StoppedBeforeWienerNsFilter`] stop (AV2 v1.0.0 § 5.18.7.11).
+///
+/// When a plane signals `frame_filters_on[plane]`, `lr_params()` reads every modeled
+/// field — the per-plane `indexToTool` selection, `frame_filters_on`, the luma
+/// `NumFilterClasses`, and the luma/chroma size-signaling flags — **before** it would
+/// enter the unmodeled `read_wienerns_filter()` bank decode (mirror :7377). Those facts
+/// are real and consumed; this struct carries them so consumers (inspect, the validator)
+/// see the parsed prefix instead of an opaque `None`.
+///
+/// This is deliberately a *distinct* type from [`LrParams`]: a complete parse yields
+/// `LrParams`, a stopped parse yields `LrPartialParams`. The two are never interchangeable,
+/// so no consumer can mistake a partial parse for a complete one (a partial parse never
+/// observed the frame-level Wiener bank that follows). The fields mirror the completed
+/// `LrParams` fields up to the stop point; `loop_restoration_size` is derived because the
+/// size-signaling phase completes before the Wiener loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LrPartialParams {
+    /// `UsesLr`: any plane uses loop restoration (derived before the stop).
+    pub uses_lr: bool,
+    /// Per-plane parsed state committed before the stop (`NumPlanes` entries).
+    pub planes: Vec<LrPlaneParams>,
+    /// `LoopRestorationSize[0..3]` derived per plane (the size-signaling flags are read
+    /// before the Wiener loop, so this is exact).
+    pub loop_restoration_size: [u32; 3],
+}
+
 /// The result of attempting to parse `lr_params()` on the intra path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LrParseOutcome {
@@ -232,13 +260,14 @@ pub enum LrParseOutcome {
     /// A plane signalled `frame_filters_on[plane]`, so the structure entered
     /// `read_wienerns_filter(plane, 0, 0, 1)` (§ 5.18.7.11, mirror :7377). That
     /// frame-level Wiener bank decode is not yet modeled; the honest stop carries the
-    /// blocking Feature ID and the per-plane state parsed up to the loop. No bits past the
-    /// last completed read were consumed.
+    /// blocking Feature ID and the partially-parsed LR facts committed up to the loop. No
+    /// bits past the last completed read were consumed.
     StoppedBeforeWienerNsFilter {
         /// Implementation-matrix Feature ID for the `read_wienerns_filter()` coverage.
         feature_id: &'static str,
-        /// The per-plane state parsed before the stop (tool/frame_filters_on/classes).
-        planes: Vec<LrPlaneParams>,
+        /// The LR facts parsed before the stop (per-plane tool/frame_filters_on/classes,
+        /// `UsesLr`, and the derived `LoopRestorationSize`).
+        partial: LrPartialParams,
     },
 }
 
@@ -386,9 +415,16 @@ pub fn parse_lr_params(
     // temporal_pred_flag is always 0, so any frame_filters_on plane enters the unmodeled
     // read_wienerns_filter() decode. Stop honestly there rather than guessing the bank decode.
     if any_frame_filters_on {
+        // The per-plane and size-signaling phases above are complete, so UsesLr and the
+        // derived LoopRestorationSize are exact facts; carry them with the per-plane state
+        // so consumers see the parsed prefix rather than an opaque stop.
         return Ok(LrParseOutcome::StoppedBeforeWienerNsFilter {
             feature_id: WIENERNS_FILTER_FEATURE,
-            planes,
+            partial: LrPartialParams {
+                uses_lr,
+                planes,
+                loop_restoration_size,
+            },
         });
     }
 
@@ -823,14 +859,21 @@ mod tests {
         )
         .unwrap();
         match outcome {
-            LrParseOutcome::StoppedBeforeWienerNsFilter { feature_id, planes } => {
+            LrParseOutcome::StoppedBeforeWienerNsFilter {
+                feature_id,
+                partial,
+            } => {
                 assert_eq!(feature_id, WIENERNS_FILTER_FEATURE);
                 assert_eq!(
-                    planes[0].restoration_type,
+                    partial.planes[0].restoration_type,
                     FrameRestorationType::WienerNonsep
                 );
-                assert!(planes[0].frame_filters_on);
-                assert_eq!(planes[0].num_filter_classes, Some(6));
+                assert!(partial.planes[0].frame_filters_on);
+                assert_eq!(partial.planes[0].num_filter_classes, Some(6));
+                // UsesLr and the size-signaling flags are derived before the stop: luma
+                // RESTORE_WIENER_NONSEP uses LR, and lr_luma_use_half_size -> 512 >> 1.
+                assert!(partial.uses_lr);
+                assert_eq!(partial.loop_restoration_size[0], 256);
             }
             other => panic!("expected StoppedBeforeWienerNsFilter, got {other:?}"),
         }

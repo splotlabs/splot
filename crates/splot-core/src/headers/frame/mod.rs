@@ -57,8 +57,8 @@ pub use quant::{
 };
 pub use restoration::{
     CCSO_BAND_NUM, CcsoParams, CcsoPlaneParams, CoreSeqCcsoView, CoreSeqRestorationView,
-    FrameRestorationType, LrGeometry, LrParams, LrParseOutcome, LrPlaneParams, parse_ccso_params,
-    parse_lr_params,
+    FrameRestorationType, LrGeometry, LrParams, LrParseOutcome, LrPartialParams, LrPlaneParams,
+    parse_ccso_params, parse_lr_params,
 };
 pub use segmentation::{CoreSeqSegView, SegmentationParams, parse_segmentation_params};
 pub use size::FrameSize;

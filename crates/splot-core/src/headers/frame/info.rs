@@ -62,7 +62,7 @@ use crate::headers::frame::quant::{
 };
 use crate::headers::frame::restoration::{
     CcsoParams, CoreSeqCcsoView, CoreSeqRestorationView, LrGeometry, LrParams, LrParseOutcome,
-    parse_ccso_params, parse_lr_params,
+    LrPartialParams, parse_ccso_params, parse_lr_params,
 };
 use crate::headers::frame::segmentation::{
     CoreSeqSegView, MfhSegView, SegmentationParams, parse_segmentation_params,
@@ -361,10 +361,20 @@ pub struct FrameHeaderCore {
     /// it is parsed **after** `gdf_params()`.
     pub cdef_params: Option<CdefParams>,
     /// Parsed `lr_params()` (AV2 § 5.18.7.11), when reached on the intra tail (after
-    /// `cdef_params()`). `None` when the parse stopped before it or stopped inside the
-    /// unmodeled frame-level Wiener bank decode (see
-    /// [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`]).
+    /// `cdef_params()`) **and parsed to completion**. `None` when the parse stopped before
+    /// it, or stopped inside the unmodeled frame-level Wiener bank decode — in the latter
+    /// case the parsed prefix lives in [`Self::lr_params_partial`] instead (see
+    /// [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`]). This field always means a
+    /// *complete* `lr_params()` parse, so consumers cannot mistake partial state for it.
     pub lr_params: Option<LrParams>,
+    /// The partial `lr_params()` facts committed before the honest
+    /// [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`] stop (AV2 § 5.18.7.11): the
+    /// per-plane restoration types, `frame_filters_on`, the luma `NumFilterClasses`, the
+    /// derived `UsesLr`, and the `LoopRestorationSize` size flags. `Some` only on that stop
+    /// (mutually exclusive with [`Self::lr_params`]); `None` otherwise. Kept separate from
+    /// [`Self::lr_params`] so a partial parse is never mistaken for a complete one — the
+    /// frame-level Wiener bank that follows was not parsed.
+    pub lr_params_partial: Option<LrPartialParams>,
     /// Parsed `ccso_params()` (AV2 § 5.18.7.12), when reached. Per § 5.18.2 call order it
     /// is parsed **after** `lr_params()`.
     pub ccso_params: Option<CcsoParams>,
@@ -647,6 +657,7 @@ fn init_core_from_prefix(prefix: &FrameHeaderPrefix, obu_type: ObuType) -> Frame
         gdf_params: None,
         cdef_params: None,
         lr_params: None,
+        lr_params_partial: None,
         ccso_params: None,
         consumed_bits: 0,
     }
@@ -1016,8 +1027,9 @@ fn parse_intra_structures(
 /// [`FrameHeaderParseStatus::StoppedBeforeReadTxMode`] is set. When a plane signals a
 /// frame-level Wiener filter, `lr_params()` reaches the unmodeled `read_wienerns_filter()`
 /// decode: this function sets [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`] and
-/// returns `Ok(())` (the control-region and pre-Wiener facts are preserved). On error the
-/// partially-read fields stay `None`; the caller decides whether a payload EOF here is a
+/// returns `Ok(())` (the control-region facts are preserved and the partial `lr_params()`
+/// prefix is stored on `core.lr_params_partial`, leaving `core.lr_params` `None`). On error
+/// the partially-read fields stay `None`; the caller decides whether a payload EOF here is a
 /// truncation (`StoppedInsideFilterParams`) or a hard failure.
 ///
 /// # Errors
@@ -1085,9 +1097,9 @@ fn parse_filter_cluster(
     // AV2 § 5.18.7.11: lr_params() (loop restoration). On the intra path FrameIsIntra, so
     // numRefFrames == 0 and the temporal-prediction arm is dead; the SbSize and chroma
     // subsampling drive the size signaling. A plane signalling frame_filters_on enters the
-    // unmodeled read_wienerns_filter() decode, which stops the parse honestly (the partial
-    // lr facts up to that loop are exposed via core.lr_params left None, the per-plane state
-    // is captured in the status path instead).
+    // unmodeled read_wienerns_filter() decode, which stops the parse honestly: the partial
+    // lr facts parsed up to that loop are surfaced on core.lr_params_partial (not
+    // core.lr_params, which means a complete parse) so consumers see the parsed prefix.
     let lr_geometry = LrGeometry::new(seq.tile.frame_sb_size(true), seq.chroma_format_idc);
     // base_q_idx feeds the spec's get_filter_set_index derivation only (SubclassLookup); it
     // signals no bits. It is `Some` here because quantization_params() always parses before
@@ -1107,9 +1119,17 @@ fn parse_filter_cluster(
         LrParseOutcome::Parsed(lr) => {
             core.lr_params = Some(lr);
         }
-        LrParseOutcome::StoppedBeforeWienerNsFilter { feature_id, .. } => {
+        LrParseOutcome::StoppedBeforeWienerNsFilter {
+            feature_id,
+            partial,
+        } => {
             // The frame-level Wiener bank decode is unmodeled; stop honestly. The
             // control-region facts and the cdef/lr-pre-Wiener reads above are preserved.
+            // The partial lr_params facts parsed up to the loop (per-plane types,
+            // frame_filters_on, NumFilterClasses, UsesLr, size flags) were really consumed,
+            // so surface them on the dedicated partial field rather than discarding them.
+            // `lr_params` stays None (no complete parse) so the two can never be confused.
+            core.lr_params_partial = Some(partial);
             core.status = FrameHeaderParseStatus::StoppedBeforeWienerNsFilter { feature_id };
             return Ok(());
         }
@@ -1798,6 +1818,30 @@ mod tests {
         assert!(core.deblocking_filter_params.is_some());
         assert_eq!(core.lr_params, None);
         assert_eq!(core.ccso_params, None);
+        // The lr_params() prefix parsed before the Wiener stop is preserved on the dedicated
+        // partial field (facts-preservation invariant): the per-plane types,
+        // frame_filters_on, the luma NumFilterClasses, UsesLr, and the size flags are real
+        // consumed facts and must not be discarded.
+        let partial = core
+            .lr_params_partial
+            .as_ref()
+            .expect("the partial lr_params facts parsed before the Wiener stop are preserved");
+        assert!(partial.uses_lr, "luma RESTORE_WIENER_NONSEP uses LR");
+        assert_eq!(partial.planes.len(), 3);
+        assert_eq!(
+            partial.planes[0].restoration_type,
+            FrameRestorationType::WienerNonsep
+        );
+        assert!(partial.planes[0].frame_filters_on);
+        // num_filter_classes_idx == 2 -> Decode_Num_Filter_Classes[2] == 3.
+        assert_eq!(partial.planes[0].num_filter_classes, Some(3));
+        assert_eq!(
+            partial.planes[1].restoration_type,
+            FrameRestorationType::None
+        );
+        assert!(!partial.planes[1].frame_filters_on);
+        // lr_luma_use_half_size -> 512 >> 1 == 256 (size flags read before the stop).
+        assert_eq!(partial.loop_restoration_size[0], 256);
     }
 
     #[test]

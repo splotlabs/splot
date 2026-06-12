@@ -23,8 +23,8 @@ use splot_core::headers::film_grain::{FilmGrainObu, parse_film_grain};
 use splot_core::headers::frame::{
     CcsoParams, CcsoPlaneParams, CdefParams, CdefStrengthSet, DeblockingFilterParams, DeltaQParams,
     FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderPrefix,
-    FrameReferenceStateView, GdfParams, LosslessInfo, LrParams, LrPlaneParams, QuantizationParams,
-    SegmentationParams, SetupQmParams, TileInfo, parse_frame_header_core,
+    FrameReferenceStateView, GdfParams, LosslessInfo, LrParams, LrPartialParams, LrPlaneParams,
+    QuantizationParams, SegmentationParams, SetupQmParams, TileInfo, parse_frame_header_core,
     parse_frame_header_prefix,
 };
 use splot_core::headers::metadata::{MetadataUnit, parse_metadata_group, parse_metadata_short};
@@ -698,6 +698,8 @@ struct FrameHeaderCoreView {
     #[serde(skip_serializing_if = "Option::is_none")]
     lr: Option<LrParamsView>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    lr_partial: Option<LrPartialParamsView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     ccso: Option<CcsoParamsView>,
     consumed_bits: u64,
 }
@@ -1021,6 +1023,31 @@ impl LrParamsView {
     }
 }
 
+/// The partial `lr_params()` facts for `--json` when the parse stopped before the unmodeled
+/// frame-level Wiener bank decode (AV2 § 5.18.7.11, the core
+/// `StoppedBeforeWienerNsFilter` status). This is surfaced under the distinct `lr_partial`
+/// key (never `lr`) so a stopped parse is never reported as a complete one; `stopped_before`
+/// records where the parse halted.
+#[derive(Serialize)]
+struct LrPartialParamsView {
+    stopped_before: &'static str,
+    uses_lr: bool,
+    loop_restoration_size: [u32; 3],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    planes: Vec<LrPlaneParamsView>,
+}
+
+impl LrPartialParamsView {
+    fn new(partial: &LrPartialParams) -> Self {
+        Self {
+            stopped_before: "read_wienerns_filter",
+            uses_lr: partial.uses_lr,
+            loop_restoration_size: partial.loop_restoration_size,
+            planes: partial.planes.iter().map(LrPlaneParamsView::new).collect(),
+        }
+    }
+}
+
 /// One plane's parsed `ccso_params()` state for `--json` (AV2 § 5.18.7.12).
 #[derive(Serialize)]
 struct CcsoPlaneParamsView {
@@ -1109,6 +1136,10 @@ impl FrameHeaderCoreView {
             gdf: core.gdf_params.as_ref().map(GdfParamsView::new),
             cdef: core.cdef_params.as_ref().map(CdefParamsView::new),
             lr: core.lr_params.as_ref().map(LrParamsView::new),
+            lr_partial: core
+                .lr_params_partial
+                .as_ref()
+                .map(LrPartialParamsView::new),
             ccso: core.ccso_params.as_ref().map(CcsoParamsView::new),
             consumed_bits: core.consumed_bits,
         }

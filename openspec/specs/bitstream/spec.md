@@ -987,7 +987,11 @@ An EOF inside the new cluster SHALL preserve the already-parsed frame facts.
 
 - **WHEN** an `lr_params()` plane signals `frame_filters_on`
 - **THEN** the parser stops before `read_wienerns_filter()` with a named
-  missing-coverage status, preserving the already-parsed facts
+  missing-coverage status, and the partial `lr_params()` facts parsed before
+  the stop (per-plane restoration types, `frame_filters_on`, the luma
+  `NumFilterClasses`, `UsesLr`, and `LoopRestorationSize`) are surfaced on a
+  dedicated partial field — distinct from the complete-parse field so a
+  partial parse is never mistaken for a complete one
 
 #### Scenario: EOF preserves facts
 
