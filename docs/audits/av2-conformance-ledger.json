@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "54029d5bc979820463dd6cf5c4307232f816779e",
+  "audited_commit": "0cbb75fa589889cda715220f48a042e8dc4c1a37",
   "outcome": "success",
   "files": [
     {
@@ -1558,18 +1558,16 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "d078bafc9285e6c3f0c4989ae8e242e23f968c1e98dbf992c2930d71f63e5e93",
+      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
         "AV2-5.18-FRAME-HEADER",
-        "AV2-5.18.7-SEGMENTATION-TILING",
         "AV2-5.19-TILE-GROUP",
         "AV2-5.2.2-OBU-HEADER",
         "AV2-5.2.3-TRAILING-BITS",
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
-        "AV2-5.4.2-SEQUENCE-TILE-CONFIG",
         "CONF-AVM-DIFF-HARNESS",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
@@ -3090,6 +3088,33 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-12-seq-tile-nonuniform-reuse-starts/proposal.md",
+      "sha256": "e4f72d1abb199bbeb87cb3a828f6c79ffe554370146a2f8960d6885badf69645",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.4.2-SEQUENCE-TILE-CONFIG"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-seq-tile-nonuniform-reuse-starts/specs/bitstream/spec.md",
+      "sha256": "32dbf9aec034303aff43698b522c935f74440d1f71791a76aba564b00aac36d4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.4.2-SEQUENCE-TILE-CONFIG"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-seq-tile-nonuniform-reuse-starts/tasks.md",
+      "sha256": "e89c71ab91c14979f9217e9bad400aee701f9cd8cfbf8ec001907c2886bafe0a",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/avm-differential-harness/proposal.md",
       "sha256": "ca4e00373763656046a33836c38af7626641afedb9e473897f7ae9b2a3572b5f",
       "scope_kind": "openspec",
@@ -3112,33 +3137,6 @@
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
       ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/seq-tile-nonuniform-reuse-starts/proposal.md",
-      "sha256": "e4f72d1abb199bbeb87cb3a828f6c79ffe554370146a2f8960d6885badf69645",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18.7-SEGMENTATION-TILING",
-        "AV2-5.4.2-SEQUENCE-TILE-CONFIG"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/seq-tile-nonuniform-reuse-starts/specs/bitstream/spec.md",
-      "sha256": "32dbf9aec034303aff43698b522c935f74440d1f71791a76aba564b00aac36d4",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18.7-SEGMENTATION-TILING",
-        "AV2-5.4.2-SEQUENCE-TILE-CONFIG"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/seq-tile-nonuniform-reuse-starts/tasks.md",
-      "sha256": "e89c71ab91c14979f9217e9bad400aee701f9cd8cfbf8ec001907c2886bafe0a",
-      "scope_kind": "openspec",
-      "feature_ids": [],
       "outcome": "success"
     },
     {
@@ -3189,7 +3187,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "10f8fa303f24e8fc5fb7cce3712de932b0cbecf98adc29010686154ed81e0cf3",
+      "sha256": "769016de38e7d91d440c459335cb443d1074a02209e78b4fa9dc697f204e1941",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
