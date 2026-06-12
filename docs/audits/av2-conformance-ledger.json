@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "b020b19b73c1edeb403f95cc588a81ee938c7a5f",
+  "audited_commit": "99906ee81493b5beaacc75b114a3b70e93185a95",
   "outcome": "success",
   "files": [
     {
@@ -3743,7 +3743,7 @@
     },
     {
       "path": "scripts/spec/regenerate-av2-spec.sh",
-      "sha256": "67b895c0c8cf1eeaed9cd15edd7cc53b518a2a90b0daf4eb3b6feeed0aec84f8",
+      "sha256": "bfdc7c8e0f3563db53213384667e3bea410dbcfddba5cc93c1b461ca1f31d3a2",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
