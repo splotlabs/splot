@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "97e0b2bc914297ac3ccbb0ecc669269741f43738",
+  "audited_commit": "f17f7d9f30e708691b63a2c0b7447dec281a49d8",
   "outcome": "success",
   "files": [
     {
@@ -3353,6 +3353,42 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-12-reference-state-and-random-access/proposal.md",
+      "sha256": "76e657fb0fdc2824520e8bb615e1a7f331afe70bda17500d10de51aeab260b47",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.13-QUANTIZATION-MATRIX",
+        "AV2-5.18.6-QUANTIZATION",
+        "AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO",
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-reference-state-and-random-access/specs/validator/spec.md",
+      "sha256": "2f5ac50f167ec43e82bda9bc033388876a99fd5aacdda61796184df74331b93e",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-reference-state-and-random-access/tasks.md",
+      "sha256": "52b90a7070af57940612861b21527e89fb6d7802081db454b5f4c04f74b04129",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.13-QUANTIZATION-MATRIX",
+        "AV2-5.18.6-QUANTIZATION",
+        "AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO",
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-7.23-REFERENCE-FRAME-UPDATE",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-12-seq-tile-nonuniform-reuse-starts/proposal.md",
       "sha256": "e4f72d1abb199bbeb87cb3a828f6c79ffe554370146a2f8960d6885badf69645",
       "scope_kind": "openspec",
@@ -3427,42 +3463,6 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/reference-state-and-random-access/proposal.md",
-      "sha256": "76e657fb0fdc2824520e8bb615e1a7f331afe70bda17500d10de51aeab260b47",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.13-QUANTIZATION-MATRIX",
-        "AV2-5.18.6-QUANTIZATION",
-        "AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO",
-        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
-        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
-        "AV2-7.4-RANDOM-ACCESS"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/reference-state-and-random-access/specs/validator/spec.md",
-      "sha256": "2f5ac50f167ec43e82bda9bc033388876a99fd5aacdda61796184df74331b93e",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/reference-state-and-random-access/tasks.md",
-      "sha256": "52b90a7070af57940612861b21527e89fb6d7802081db454b5f4c04f74b04129",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.13-QUANTIZATION-MATRIX",
-        "AV2-5.18.6-QUANTIZATION",
-        "AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO",
-        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
-        "AV2-7.23-REFERENCE-FRAME-UPDATE",
-        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
-        "AV2-7.4-RANDOM-ACCESS"
       ],
       "outcome": "success"
     },
@@ -3604,7 +3604,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "45d61047397eff1e809e2102d5d2a9134ff972986ad649f8e2e774067345b927",
+      "sha256": "7a9631cc867a20e88df089c140b5586416c06b98bc3009433bfbb09e74ab6ff3",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
