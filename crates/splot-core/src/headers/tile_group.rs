@@ -46,8 +46,10 @@ pub struct TileGroupHeaderPrefix {
 
 /// Parses the `tile_group_obu()` prefix (AV2 v1.0.0 § 5.19).
 ///
-/// `obu_type` is the tile-group OBU type, and `first_picture_in_tu` is forwarded to
-/// the frame-header prefix parser for `startCVS` derivation. The parser reads
+/// `obu_type` is the tile-group OBU type, and `first_picture_in_tu` is forwarded
+/// unchanged to the frame-header prefix parser for `startCVS` derivation (AV2
+/// § 5.18.2). Pass `Some(known)` on a stateful path that tracks `FirstPictureInTU`;
+/// pass `None` on the stateless dispatch front door. The parser reads
 /// `is_first_tile_group`, infers or reads `frame_header_present_flag`, and parses the
 /// [`FrameHeaderPrefix`] only for the first tile group. It stops before tile payload
 /// syntax.
@@ -59,7 +61,7 @@ pub struct TileGroupHeaderPrefix {
 pub fn parse_tile_group_prefix(
     reader: &mut BitReader<'_>,
     obu_type: ObuType,
-    first_picture_in_tu: bool,
+    first_picture_in_tu: Option<bool>,
 ) -> Result<TileGroupHeaderPrefix> {
     let start_bits = reader.consumed_bits();
 
@@ -553,13 +555,14 @@ mod tests {
         bits.uvlc(2); // seq_header_id_in_frame_header
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let prefix = parse_tile_group_prefix(&mut reader, ObuType::ClosedLoopKey, true).unwrap();
+        let prefix =
+            parse_tile_group_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true)).unwrap();
         assert!(prefix.is_first_tile_group);
         assert!(prefix.frame_header_present_flag);
         let frame_header = prefix.frame_header.expect("first tile group has a header");
         assert!(frame_header.cur_mfh_id.is_zero());
         assert_eq!(frame_header.seq_header_id_in_frame_header, Some(2));
-        assert!(frame_header.starts_cvs); // CLK + FirstPictureInTU
+        assert_eq!(frame_header.starts_cvs, Some(true)); // CLK + FirstPictureInTU
     }
 
     #[test]
@@ -570,7 +573,7 @@ mod tests {
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let prefix =
-            parse_tile_group_prefix(&mut reader, ObuType::RegularTileGroup, false).unwrap();
+            parse_tile_group_prefix(&mut reader, ObuType::RegularTileGroup, Some(false)).unwrap();
         assert!(!prefix.is_first_tile_group);
         assert!(!prefix.frame_header_present_flag);
         assert_eq!(prefix.frame_header, None);
@@ -587,7 +590,7 @@ mod tests {
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let prefix =
-            parse_tile_group_prefix(&mut reader, ObuType::RegularTileGroup, false).unwrap();
+            parse_tile_group_prefix(&mut reader, ObuType::RegularTileGroup, Some(false)).unwrap();
         assert!(!prefix.is_first_tile_group);
         assert!(prefix.frame_header_present_flag);
         assert_eq!(prefix.frame_header, None);
@@ -597,7 +600,7 @@ mod tests {
     fn tile_group_prefix_eof_is_structured_error() {
         let mut reader = BitReader::new(&[], ByteOffset::new(0));
         assert!(matches!(
-            parse_tile_group_prefix(&mut reader, ObuType::ClosedLoopKey, true),
+            parse_tile_group_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true)),
             Err(Error::UnexpectedEof { .. })
         ));
     }
@@ -916,7 +919,7 @@ mod proptests {
         fn parse_tile_group_prefix_never_panics(
             data in proptest::collection::vec(any::<u8>(), 0..64),
             raw_type in 0u8..=31,
-            first_picture in any::<bool>(),
+            first_picture in any::<Option<bool>>(),
         ) {
             let obu_type = ObuType::from_raw(raw_type);
             let mut reader = BitReader::new(&data, ByteOffset::new(0));

@@ -973,8 +973,9 @@ pub fn parse_frame_header_core(
 
     // The activation/reference prefix is parsed exactly as the prefix parser does, so
     // existing behavior cannot regress (AV2 § 5.18.2 activation fields).
-    let prefix = parse_frame_header_prefix(reader, input.obu_type, input.first_picture_in_tu)?;
-    let mut core = init_core_from_prefix(&prefix, input.obu_type);
+    let prefix =
+        parse_frame_header_prefix(reader, input.obu_type, Some(input.first_picture_in_tu))?;
+    let mut core = init_core_from_prefix(&prefix, input.obu_type, input.first_picture_in_tu);
 
     // Activation-prefix mode, or core mode without a fully parsed active sequence
     // header, stops at the prefix: the next field (`order_hint`, `bridge_frame_ref_idx`,
@@ -1009,7 +1010,17 @@ pub fn parse_frame_header_core(
 /// Builds the initial core result from the activation prefix, with all post-prefix
 /// fields unset and the conservative [`FrameHeaderParseStatus::ActivationFieldsOnly`]
 /// status.
-fn init_core_from_prefix(prefix: &FrameHeaderPrefix, obu_type: ObuType) -> FrameHeaderCore {
+///
+/// `first_picture_in_tu` is the known stateful `FirstPictureInTU`; the core's
+/// `starts_cvs` is derived directly from it and `obu_type` per AV2 § 5.18.2
+/// (`startCVS = obu_type == OBU_CLOSED_LOOP_KEY && FirstPictureInTU`), so the core
+/// always carries a concrete `bool` and never unwraps the prefix's `Option` (the
+/// prefix may be `None` only on the stateless front door, which does not reach here).
+fn init_core_from_prefix(
+    prefix: &FrameHeaderPrefix,
+    obu_type: ObuType,
+    first_picture_in_tu: bool,
+) -> FrameHeaderCore {
     FrameHeaderCore {
         obu_type,
         status: FrameHeaderParseStatus::ActivationFieldsOnly,
@@ -1017,7 +1028,7 @@ fn init_core_from_prefix(prefix: &FrameHeaderPrefix, obu_type: ObuType) -> Frame
         is_key_frame: prefix.is_key_frame,
         is_regular: prefix.is_regular,
         is_bridge: prefix.is_bridge,
-        starts_cvs: prefix.starts_cvs,
+        starts_cvs: obu_type == ObuType::ClosedLoopKey && first_picture_in_tu,
         cur_mfh_id: prefix.cur_mfh_id,
         seq_header_id_in_frame_header: prefix.seq_header_id_in_frame_header,
         referenced_sequence_header_id: prefix.referenced_sequence_header_id,
@@ -2193,8 +2204,8 @@ mod tests {
         reference_state: &FrameReferenceStateView<'_>,
     ) -> Result<(FrameHeaderCore, u64)> {
         let mut reader = BitReader::new(data, ByteOffset::new(0));
-        let prefix = parse_frame_header_prefix(&mut reader, obu_type, first_picture_in_tu)?;
-        let mut core = init_core_from_prefix(&prefix, obu_type);
+        let prefix = parse_frame_header_prefix(&mut reader, obu_type, Some(first_picture_in_tu))?;
+        let mut core = init_core_from_prefix(&prefix, obu_type, first_picture_in_tu);
         parse_core_body(&mut reader, &mut core, seq, mfh_view, reference_state)?;
         let consumed = reader.consumed_bits();
         Ok((core, consumed))
@@ -4570,8 +4581,10 @@ mod proptests {
         ) {
             let obu_type = ObuType::from_raw(raw_type);
             let mut reader = BitReader::new(&data, ByteOffset::new(0));
-            if let Ok(prefix) = parse_frame_header_prefix(&mut reader, obu_type, first_picture) {
-                let mut core = init_core_from_prefix(&prefix, obu_type);
+            if let Ok(prefix) =
+                parse_frame_header_prefix(&mut reader, obu_type, Some(first_picture))
+            {
+                let mut core = init_core_from_prefix(&prefix, obu_type, first_picture);
                 // On a cur_mfh_id > 0 prefix, resolve against a fixed in-band MFH record
                 // so the resolved-MFH paths are exercised; `SequenceHeaderId::try_new(0)`
                 // is always Some (0 < MAX_SEQ_NUM).

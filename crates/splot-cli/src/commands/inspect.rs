@@ -534,16 +534,16 @@ struct FilmGrainModelView {
 /// Re-parses a frame-bearing OBU's prefix so `--json` can expose the
 /// activation/reference fields. This is **prefix-only** data, never a complete frame
 /// header. The inspector does not model temporal-unit state, so `FirstPictureInTU` is
-/// passed as `false` and `startCVS` is not surfaced.
+/// withheld (`None`) and `startCVS` is not surfaced.
 fn frame_header_prefix_view(obu: &ObuEnvelope<'_>) -> Option<FrameHeaderPrefixView> {
     let obu_type = obu.header.obu_type;
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
     let prefix = if obu_type.is_tile_group() {
-        parse_tile_group_prefix(&mut reader, obu_type, false)
+        parse_tile_group_prefix(&mut reader, obu_type, None)
             .ok()
             .and_then(|tile_group| tile_group.frame_header)?
     } else if obu_type.is_sef() || obu_type.is_tip_frame() || obu_type == ObuType::BridgeFrame {
-        parse_frame_header_prefix(&mut reader, obu_type, false).ok()?
+        parse_frame_header_prefix(&mut reader, obu_type, None).ok()?
     } else {
         return None;
     };
@@ -667,11 +667,11 @@ fn resolve_inspect_sequence<'a>(
     let obu_type = obu.header.obu_type;
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
     let prefix = if obu_type.is_tile_group() {
-        parse_tile_group_prefix(&mut reader, obu_type, false)
+        parse_tile_group_prefix(&mut reader, obu_type, None)
             .ok()?
             .frame_header?
     } else {
-        parse_frame_header_prefix(&mut reader, obu_type, false).ok()?
+        parse_frame_header_prefix(&mut reader, obu_type, None).ok()?
     };
     let seq_id = if prefix.cur_mfh_id.is_zero() {
         prefix.referenced_sequence_header_id?
@@ -792,11 +792,11 @@ fn resolve_inspect_mfh<'a>(
     let obu_type = obu.header.obu_type;
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
     let prefix = if obu_type.is_tile_group() {
-        parse_tile_group_prefix(&mut reader, obu_type, false)
+        parse_tile_group_prefix(&mut reader, obu_type, None)
             .ok()?
             .frame_header?
     } else {
-        parse_frame_header_prefix(&mut reader, obu_type, false).ok()?
+        parse_frame_header_prefix(&mut reader, obu_type, None).ok()?
     };
     let cur_mfh_id = prefix.cur_mfh_id;
     if cur_mfh_id.is_zero() || !cur_mfh_id.in_range() {

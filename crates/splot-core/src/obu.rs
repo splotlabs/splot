@@ -357,13 +357,15 @@ pub fn dispatch_obu_payload<'a>(
         // family). Dispatch stays stateless: it parses only the state-free § 5.18.2 /
         // § 5.19 activation prefix and returns PrefixParsed with the reason the rest needs
         // state. `first_picture_in_tu` is per-extended-layer decoder state the stateless
-        // front door does not hold, so it is passed `false` (it only affects the CLK-only
-        // `startCVS` derivation, not which bytes are read); the validator and inspector
+        // front door does not hold, so it is passed `None` (it only affects the CLK-only
+        // `startCVS` derivation, not which bytes are read): a CLK then exposes
+        // `starts_cvs == None` rather than a fabricated `Some(false)`, while every other
+        // type is decided `Some(false)` from the type alone. The validator and inspector
         // supply the real value on their stateful paths. An EOF inside the prefix returns
         // the existing structured error path.
         obu_type if obu_type.is_tile_group() => {
             let mut reader = BitReader::new(payload, payload_offset);
-            let prefix = parse_tile_group_prefix(&mut reader, obu_type, false)?;
+            let prefix = parse_tile_group_prefix(&mut reader, obu_type, None)?;
             Ok(PayloadStatus::PrefixParsed {
                 prefix: FramePayloadPrefix::TileGroup(prefix),
                 blocked_on: BLOCKED_ON_ACTIVE_SEQUENCE_HEADER_STATE,
@@ -374,7 +376,7 @@ pub fn dispatch_obu_payload<'a>(
             if obu_type.is_sef() || obu_type.is_tip_frame() || obu_type == ObuType::BridgeFrame =>
         {
             let mut reader = BitReader::new(payload, payload_offset);
-            let prefix = parse_frame_header_prefix(&mut reader, obu_type, false)?;
+            let prefix = parse_frame_header_prefix(&mut reader, obu_type, None)?;
             Ok(PayloadStatus::PrefixParsed {
                 prefix: FramePayloadPrefix::FrameHeader(prefix),
                 blocked_on: BLOCKED_ON_ACTIVE_SEQUENCE_HEADER_STATE,
@@ -1035,6 +1037,68 @@ mod tests {
             dispatch_obu_payload(header, &[], ByteOffset::new(1)),
             Err(Error::UnexpectedEof { .. })
         ));
+    }
+
+    #[test]
+    fn dispatch_clk_tile_group_prefix_leaves_starts_cvs_unknown() {
+        // A ClosedLoopKey dispatched statelessly cannot know FirstPictureInTU, so its
+        // startCVS (AV2 § 5.18.2: obu_type == OBU_CLOSED_LOOP_KEY && FirstPictureInTU)
+        // is genuinely unknown — it must surface as None, NOT a fabricated Some(false).
+        // 0x10 = ext=0, type=4 (ClosedLoopKey). Payload 0xD8: is_first_tile_group=1,
+        // cur_mfh_id=uvlc(0), seq_header_id=uvlc(2).
+        let header = read_obu_header(&[0x10], ByteOffset::new(0)).unwrap();
+        assert_eq!(header.obu_type, ObuType::ClosedLoopKey);
+        let status = dispatch_obu_payload(header, &[0xD8], ByteOffset::new(1)).unwrap();
+        assert!(
+            matches!(
+                &status,
+                PayloadStatus::PrefixParsed {
+                    prefix: FramePayloadPrefix::TileGroup(_),
+                    ..
+                }
+            ),
+            "expected a tile-group prefix, got {status:?}"
+        );
+        if let PayloadStatus::PrefixParsed {
+            prefix: FramePayloadPrefix::TileGroup(tg),
+            ..
+        } = &status
+        {
+            let fh = tg
+                .frame_header
+                .expect("first tile group carries a frame header");
+            assert_eq!(fh.starts_cvs, None, "stateless CLK startCVS is unknown");
+        }
+    }
+
+    #[test]
+    fn dispatch_clk_frame_header_prefix_leaves_starts_cvs_unknown() {
+        // A ClosedLoopKey can also reach the frame-header dispatch arm via its
+        // frame-header-only families; assert the same None for a SEF-style frame-header
+        // prefix when the carried type would gate startCVS. RegularSef is non-CLK, so it
+        // is decided Some(false) (type-only). 0x30 = ext=0, type=12 (RegularSef).
+        let header = read_obu_header(&[0x30], ByteOffset::new(0)).unwrap();
+        assert_eq!(header.obu_type, ObuType::RegularSef);
+        let status = dispatch_obu_payload(header, &[0xC0], ByteOffset::new(1)).unwrap();
+        assert!(
+            matches!(
+                &status,
+                PayloadStatus::PrefixParsed {
+                    prefix: FramePayloadPrefix::FrameHeader(_),
+                    ..
+                }
+            ),
+            "expected a frame-header prefix, got {status:?}"
+        );
+        if let PayloadStatus::PrefixParsed {
+            prefix: FramePayloadPrefix::FrameHeader(fh),
+            ..
+        } = &status
+        {
+            // Non-CLK: startCVS is decided from the type alone (always false), independent
+            // of the unknown FirstPictureInTU — so it is Some(false), not None.
+            assert_eq!(fh.starts_cvs, Some(false));
+        }
     }
 
     #[test]

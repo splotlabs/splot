@@ -13820,12 +13820,12 @@ fn parse_frame_prefix(
     if obu.header.obu_type.is_tile_group() {
         // Tile-group OBUs carry tile_group_obu(); a frame header is parseable only for
         // the first tile group (a non-first tile group carries frame_header_copy()).
-        parse_tile_group_prefix(&mut reader, obu.header.obu_type, first_picture_in_tu)
+        parse_tile_group_prefix(&mut reader, obu.header.obu_type, Some(first_picture_in_tu))
             .ok()
             .and_then(|tile_group| tile_group.frame_header)
     } else {
         // SEF / TIP / bridge frames call frame_header( 1 ) directly (AV2 § 5.2.1).
-        parse_frame_header_prefix(&mut reader, obu.header.obu_type, first_picture_in_tu).ok()
+        parse_frame_header_prefix(&mut reader, obu.header.obu_type, Some(first_picture_in_tu)).ok()
     }
 }
 
