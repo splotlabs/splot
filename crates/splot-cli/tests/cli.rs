@@ -482,6 +482,42 @@ fn validate_frame_header_core_mfh_fixture_exits_zero() {
 }
 
 #[test]
+fn inspect_json_surfaces_inter_disable_cdf_update() {
+    // TemporalDelimiter + a non-single-picture SequenceHeader (id 0, OrderHintBits == 1,
+    // NumRefFrames == 8, explicit_ref_frame_map == 1) + an OBU_REGULAR_TILE_GROUP whose
+    // first tile group carries an INTER frame header parsed through the full § 5.18.2
+    // non-intra control region into the shared tail (InterStop::ReachedSharedTail). The
+    // non-override / cur_mfh_id == 0 path takes the default 16x16 dims (no reference-state
+    // dependency), reads the explicit reference map (num_total_refs == 1, ref_frame_idx[0]
+    // == 0), MV precision (HALF_PEL), a SWITCHABLE interpolation filter, and finally
+    // `disable_cdf_update` f(1) (mirror :5041) immediately before the shared tail. The
+    // inspector must surface that parsed bit in the inter view's `disable_cdf_update` field
+    // (regression: InterControlView::new previously dropped it).
+    let data: [u8; 28] = [
+        0x01, 0x08, 0x13, 0x04, 0x80, 0x0c, 0x01, 0x77, 0x0f, 0x0f, 0x00, 0x00, 0x00, 0x07, 0x70,
+        0x00, 0x00, 0x06, 0x00, 0x10, 0x00, 0x02, 0x05, 0x1c, 0xf8, 0x00, 0x48, 0x08,
+    ];
+    let path = temp_input("av2", &data);
+    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let records = json.as_array().expect("inspect output is an array");
+    let core = &records[2]["frame_header_core"];
+    assert_eq!(core["frame_type"], "inter");
+    assert_eq!(core["frame_is_intra"], false);
+    let inter = &core["inter"];
+    assert_eq!(inter["stop"], "reached_shared_tail");
+    // The §5.18.2 disable_cdf_update bit (0 in this stream) must be surfaced, not dropped.
+    assert_eq!(
+        inter["disable_cdf_update"],
+        false,
+        "the inter view must surface the parsed §5.18.2 disable_cdf_update bit; \
+         stdout was: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
 fn validate_frame_header_prefix_fixture_exits_zero() {
     let out = validate("frame-header-prefix.av2", &[]);
     assert_eq!(out.status.code(), Some(0));

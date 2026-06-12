@@ -904,6 +904,10 @@ struct InterControlView {
     interpolation_filter: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     frame_enabled_motion_modes: Option<Vec<bool>>,
+    /// `disable_cdf_update` (AV2 § 5.18.2, mirror :5041), read on the ordinary inter /
+    /// switch path immediately before the shared tail (`InterStop::ReachedSharedTail`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disable_cdf_update: Option<bool>,
     has_invalid_ref_frame_idx: bool,
 }
 
@@ -934,6 +938,7 @@ impl InterControlView {
             frame_enabled_motion_modes: inter
                 .frame_enabled_motion_modes
                 .map(|modes| modes.to_vec()),
+            disable_cdf_update: inter.disable_cdf_update,
             has_invalid_ref_frame_idx: inter.has_invalid_ref_frame_idx,
         }
     }

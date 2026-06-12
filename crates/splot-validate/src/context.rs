@@ -6632,6 +6632,24 @@ impl ValidatorContext {
             // frame_size() and the §6.17.2 MFH-dims / §6.17.7 tile / quant diagnostics
             // would be skipped for MFH-backed frames. An unresolvable MFH stays `None`,
             // preserving the early-stop (no guessing).
+            // AV2 § 7.23: when this OBU opens a NEW coded frame, the previous coded frame's
+            // decode finished, so its deferred § 7.23 update must be committed BEFORE the
+            // reference-buffer snapshot below — otherwise the inter parser's
+            // frame_size_with_refs() / frame_size_with_bridge() would read the stale
+            // pre-refresh buffer and poison, silently skipping the §6.17 frame-size
+            // diagnostics that the prior frame's refresh makes decidable (codex F1). The
+            // segmenter is the boundary authority; `opens_new_coded_frame` is a non-mutating
+            // peek of the same OpensNewUnit decision `observe` makes later in stream order.
+            // A continuation (its own frame's update is pending) does NOT commit here, so the
+            // committing OBU never sees its OWN update — preserving the PR #62 deferral. The
+            // commit is idempotent (`commit_pending_ref_update` takes the pending), so the
+            // later `observe_reference_state` re-commit at the OpensNewUnit boundary is a
+            // no-op; the Ambiguous-boundary commit there is unaffected (it is not an opener
+            // here, so the early commit is skipped and the deferred commit still runs).
+            let role = self.seg_role_for(obu, first_picture_in_tu);
+            if self.frame_unit.opens_new_coded_frame(obu, role) {
+                self.commit_pending_ref_update();
+            }
             let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
             if let Some(active_sequence) = self.sequence_headers.get(&seq_id) {
                 // AV2 § 7.23: thread the modeled per-extended-layer reference-frame buffer

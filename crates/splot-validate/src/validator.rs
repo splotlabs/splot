@@ -20949,4 +20949,118 @@ mod tests {
              report was: {report0}"
         );
     }
+
+    /// A COMPLETED override CLK key frame whose explicit frame size is `width`x`height`
+    /// (read as f(frame_width_bits == 8) each), against the base inter sequence. The CLK
+    /// reset + allFrames refresh (max_mlayer_id == 0, key-frame `first` rule) re-validates
+    /// slot 0 with these stored dims (`RefFrameWidth/Height[0]`), which a later
+    /// `frame_size_with_refs()` inter frame copies. A nonzero `base_q_idx` and the complete
+    /// §5.18.2 intra tail land the parse on `IntraHeaderComplete`, so `derive_ref_update`
+    /// stages a grounded §7.23 update (not a poison).
+    fn clk_frame_override_size(width: u32, height: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(1); // immediate_output_frame
+        fb.bit(1); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
+        fb.f(width - 1, 8); // frame_width_minus_1 f(frame_width_bits == 8)
+        fb.f(height - 1, 8); // frame_height_minus_1 f(frame_height_bits == 8)
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        // A 256-wide frame: sbCols == 4, so tile_info() reads one column increment bit. A
+        // 16-wide frame reads none; this helper is used at 256 width.
+        intra_structure_tail(&mut fb, 1);
+        fb.bit(0); // tx_mode_select = 0
+        fb.f(0, 2); // reduced_tx_set = 0
+        annex_b_obu(CLK_HEADER, &fb.into_bytes())
+    }
+
+    /// A regular-tile-group INTER frame (explicit reference map) on the OVERRIDE path that
+    /// derives its frame size via `frame_size_with_refs()` (§5.18.4.3): `found_ref == 1` on
+    /// the first ref, so FrameWidth/Height are copied from `RefFrameWidth/Height[ref_slot]`
+    /// — no explicit width/height bits are read. Built against the base inter sequence
+    /// (NumRefFrames == 8 -> CeilLog2 == 3, OrderHintBits == 1, monotonic output,
+    /// enable_ref_frame_mvs == 0). The parse records `core.frame_size` from the referenced
+    /// slot's stored dims, which the §6.17.4.1 frame-size-exceeds-sequence-max check reads.
+    fn inter_frame_size_with_refs(ref_slot: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(1); // frame_is_inter == 1 -> INTER_FRAME
+        fb.bit(1); // immediate_output_frame (monotonic_output -> implicit forced 0, no bit)
+        fb.bit(1); // frame_size_override_flag == 1 -> frame_size_with_refs() on the inter path
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        fb.bit(0); // signal_primary_ref_frame
+        fb.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        fb.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8)
+        fb.bit(1); // frame_explicit_ref_frame_map (explicit_ref_frame_map seq flag set)
+        fb.f(1, 3); // num_total_refs == 1
+        fb.f(ref_slot, 3); // ref_frame_idx[0] f(CeilLog2(8) == 3)
+        // frame_size_with_refs(): override && !SWITCH -> found_ref f(1) per ref until a hit;
+        // found_ref == 1 on ref 0 copies RefFrameWidth/Height[ref_slot] (no width/height bits).
+        fb.bit(1); // found_ref == 1
+        // use_ref_frame_mvs: enable_ref_frame_mvs == 0 -> inferred 0 (no bit).
+        // frame_opfl_refine_type: enable_opfl_refine != REFINE_AUTO -> no bits.
+        fb.bit(0); // allow_screen_content_tools (SELECT) -> force_integer_mv = 0
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // use_qtr_precision_mv
+        fb.bit(0); // allow_high_precision_mv -> HALF_PEL
+        fb.bit(1); // is_filter_switchable -> SWITCHABLE (no interpolation_filter f(2))
+        // motion modes: seq_frame_motion_modes_present_flag == 0 -> no bits.
+        fb.bit(0); // disable_cdf_update f(1) (mirror :5041), just before the shared tail.
+        annex_b_obu(REGULAR_TILE_GROUP_HEADER, &fb.into_bytes())
+    }
+
+    #[test]
+    fn ref_state_inter_frame_size_with_refs_sees_prior_frame_refresh() {
+        // REGRESSION (codex F1): the §6.17 frame-size diagnostics emitted from
+        // `frame_header_core_checks` (in `observe_frame_bearing_obu`) must see the prior
+        // frame's COMMITTED §7.23 reference-state update, not a stale snapshot. The bug: the
+        // reference-buffer snapshot threaded into the inter parser is taken in
+        // `observe_frame_bearing_obu`, which runs BEFORE `observe_reference_state` commits
+        // the previous frame's deferred §7.23 update (the PR #62 deferred-commit pattern
+        // commits at the next OpensNewUnit boundary). So a frame opening a new coded frame
+        // immediately after the previous frame refreshed a slot snapshots STALE state.
+        //
+        // Scenario:
+        //   1. CLK key frame, override size 256x8 (out of range), refreshes slot 0 valid
+        //      with stored dims 256x8 (allFrames + key-frame `first` rule). Its own size
+        //      fires §6.17.4.1 at the CLK's offset.
+        //   2. INTER frame, override path, `frame_size_with_refs()` with `found_ref == 1` on
+        //      `ref_frame_idx[0] == 0` -> FrameWidth/Height = RefFrameWidth/Height[0] = 256x8,
+        //      which exceeds the sequence max 16x16 (§6.17.4.1) at the INTER frame's offset.
+        //
+        // Post-fix the slot-0 refresh is committed before the inter parse's snapshot, so
+        // `frame_size_with_refs()` grounds 256x8 and the §6.17.4.1 check fires at the inter
+        // frame's offset. Pre-fix the snapshot is stale (slot 0 still Unknown), so
+        // `frame_size_with_refs()` poisons, `core.frame_size` is None, and the §6.17.4.1
+        // check is SILENTLY skipped for the inter frame.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        let clk = clk_frame_override_size(256, 8);
+        // The inter frame's diagnostic anchors at its OBU header, one Annex B leb128
+        // size-prefix byte past the end of the preceding OBUs (the CLK).
+        let inter_obu_offset = (data.len() + clk.len()) as u64 + 1;
+        data.extend(clk); // refreshes slot 0 with dims 256x8
+        data.extend(inter_frame_size_with_refs(0)); // copies slot-0 dims via frame_size_with_refs
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "frame-header/frame-size-exceeds-sequence-max"
+                    && d.byte_offset.map(|offset| offset.get()) == Some(inter_obu_offset)
+            }),
+            "the inter frame's frame_size_with_refs() must see the prior frame's committed \
+             slot-0 refresh (dims 256x8 > max 16x16) and fire §6.17.4.1 at the inter frame's \
+             offset {inter_obu_offset}; pre-fix the stale snapshot left slot 0 Unknown so the \
+             size poisoned and the check was skipped. report was: {report}"
+        );
+    }
 }

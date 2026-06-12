@@ -636,13 +636,14 @@ pub struct FrameHeaderCore {
     /// § 6.2.1 / § 5.2.3 diagnostic. `None` on every other path (no SEF boundary to check,
     /// or the SEF parse stopped before completing `film_grain_config()`).
     pub sef_trailing_bits: Option<SefTrailingBits>,
-    /// The parsed non-intra control region (AV2 § 5.18.2, mirror :4351-5181), present only
-    /// on the inter / switch / TIP path (`frame_is_intra == Some(false)`, non-bridge,
-    /// non-SEF). Carries the primary-reference signaling, the explicit reference map, the
-    /// reference-grounded frame size, the BRU triple, `use_ref_frame_mvs` / TMVP, the TIP
-    /// block, MV precision, the interpolation filter, and motion modes, plus the
+    /// The parsed non-intra control region (AV2 § 5.18.2, mirror :4351-5181), present on
+    /// the inter / switch / TIP path (`frame_is_intra == Some(false)`, non-SEF) and on the
+    /// bridge path (`parse_bridge_inter_path` records its control region here too). Carries
+    /// the primary-reference signaling, the explicit reference map, the reference-grounded
+    /// frame size, the BRU triple, `use_ref_frame_mvs` / TMVP, the TIP block, MV precision,
+    /// the interpolation filter, and motion modes, plus the
     /// [`InterStop`](crate::headers::frame::inter::InterStop) recording where the inter
-    /// region stopped. `None` on the intra / SEF / bridge paths.
+    /// region stopped. `None` on the intra / SEF paths.
     pub inter: Option<crate::headers::frame::inter::InterControl>,
     /// Bits consumed by this parse (not necessarily the whole frame header).
     pub consumed_bits: u64,
@@ -1122,11 +1123,13 @@ fn parse_core_body(
 /// [`parse_inter_control`](crate::headers::frame::inter::parse_inter_control), converging
 /// into the shared tail (`tile_info()` onward) where the parse reached it.
 ///
-/// On a [`InterStop`](crate::headers::frame::inter::InterStop) that does not reach the
-/// shared tail, the inter facts are recorded on `core.inter` and the terminal
-/// [`FrameHeaderParseStatus`] reflects the stop class. When the control region converges
-/// into the shared tail the parser continues into the shared structure cluster (the same
-/// `tile_info()` → quant → segmentation → … path the intra tail uses, with inter inputs).
+/// Whatever [`InterStop`](crate::headers::frame::inter::InterStop) the control region
+/// reaches — including [`InterStop::ReachedSharedTail`](crate::headers::frame::inter::InterStop)
+/// — the inter facts are recorded on `core.inter` and the parse stops here with the
+/// unsupported-coverage [`FrameHeaderParseStatus`]; the distinct stop class is preserved on
+/// `core.inter.stop`. Continuing into the shared structure cluster (the same
+/// `tile_info()` → quant → segmentation → … path the intra tail uses, with inter inputs)
+/// is the next phase.
 fn parse_inter_path(
     reader: &mut BitReader<'_>,
     core: &mut FrameHeaderCore,

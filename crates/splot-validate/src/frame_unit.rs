@@ -417,6 +417,44 @@ impl FrameUnitSegmenter {
         );
     }
 
+    /// Non-mutating peek: would this frame-bearing `obu` (with the precomputed `role`)
+    /// **open a new coded frame** for its layer triple, rather than continue the open one?
+    ///
+    /// This mirrors exactly the boundary [`Self::observe`] would return: a frame-bearing
+    /// OBU that resets the open unit ([`Self::starts_new_unit`]) or arrives with no open
+    /// coded frame reaches the [`observe_frame`](Self::observe_frame) `None` arm —
+    /// [`FrameBoundary::OpensNewUnit`]. Every decided / ambiguous continuation of an open
+    /// coded frame returns `false` (the `Some` arm: `ContinuesUnit` or `Ambiguous`).
+    ///
+    /// The validator uses this to decide whether the previous frame's deferred § 7.23
+    /// reference-state update must be committed *before* this OBU's reference-buffer
+    /// snapshot is taken: an opener's pending update belongs to the *previous* coded frame
+    /// (its decode finished), so committing it first makes the snapshot see the post-update
+    /// buffer; a continuation's pending update is its *own* frame's, which must not land
+    /// before the frame that produced it is fully observed. The state is not advanced —
+    /// [`Self::observe`] runs later in stream order with the authoritative side effects.
+    pub(crate) fn opens_new_coded_frame(&self, obu: &ObuEnvelope<'_>, role: SegRole) -> bool {
+        // Globals and padding are never part of a coded frame unit (matches the early
+        // returns in `observe`); they carry no coded-frame open.
+        if obu.header.extended_layer_id.is_global() || matches!(role, SegRole::Padding) {
+            return false;
+        }
+        let key = (
+            obu.header.extended_layer_id,
+            obu.header.embedded_layer_id,
+            obu.header.temporal_layer_id,
+        );
+        // No state yet for this triple == a fresh unit (coded_frame None) == opens.
+        let Some(state) = self.layers.get(&key) else {
+            return true;
+        };
+        // `observe` resets the unit first when `starts_new_unit` holds (so the reset unit's
+        // coded_frame is None == opens), otherwise reaches `observe_frame`: the `None` arm
+        // (no open coded frame) opens; the `Some` arm (a continuation / ambiguous) does not.
+        Self::starts_new_unit(&state.unit, role, obu.header.obu_type)
+            || state.unit.coded_frame.is_none()
+    }
+
     /// Feeds one OBU to the segmenter in stream order.
     ///
     /// Returns the OBU's coded-frame-unit boundary signal ([`FrameBoundary`]) when it
