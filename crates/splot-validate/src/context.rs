@@ -13679,6 +13679,41 @@ fn frame_header_core_checks(
         ));
     }
 
+    // AV2 § 6.17.2 (mirror :4587-4596): "If use_bru is equal to 1, it is a requirement of
+    // bitstream conformance that all the following are true: … immediate_output_frame is
+    // equal to 1, bru_ref is less than NumTotalRefs, …". The two pure-arithmetic clauses
+    // are decidable from the recorded scalars alone; the slot-fact clauses (RefOrderHint /
+    // RESTRICTED_OH, the dims equalities) and the refresh-bit clause need reference-state /
+    // map facts the explicit-map arm may not ground and stay named residuals. The implicit
+    // `get_ref_frames()` map records `num_total_refs == None`, so the bru_ref bound
+    // under-reports there (silent rather than guessing NumTotalRefs).
+    if let Some(inter) = core.inter.as_ref()
+        && inter.use_bru == Some(true)
+    {
+        if let Some(bru_ref) = inter.bru_ref
+            && let Some(num_total_refs) = inter.num_total_refs
+            && bru_ref >= num_total_refs
+        {
+            report.push(frame_header_error(
+                "frame-header/bru-ref-out-of-range",
+                "6.17.2",
+                obu,
+                format!(
+                    "bru_ref {bru_ref} must be less than NumTotalRefs ({num_total_refs}) \
+                     when use_bru == 1"
+                ),
+            ));
+        }
+        if core.immediate_output_frame == Some(false) {
+            report.push(frame_header_error(
+                "frame-header/bru-without-immediate-output",
+                "6.17.2",
+                obu,
+                "use_bru == 1 requires immediate_output_frame == 1".to_string(),
+            ));
+        }
+    }
+
     // AV2 § 6.17.2: every used reference slot must be valid — an inter frame's
     // ref_frame_idx[i] must name a slot whose RefValid is 1. The core parser flags a
     // parsed ref_frame_idx that the modeled §7.23 reference state proves invalid

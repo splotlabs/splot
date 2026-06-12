@@ -4254,6 +4254,9 @@ mod tests {
         /// `frame_explicit_ref_frame_map` / `num_total_refs` / `ref_frame_idx[i]` from the
         /// bitstream rather than deriving the reference map (§5.18.2 mirror :4583-4625).
         explicit_ref_frame_map: bool,
+        /// `enable_bru` (§ 5.4.6): when set, an inter frame reads the BRU triple
+        /// (`use_bru` / `bru_ref` / `bru_inactive`, §5.18.2 mirror :4653-4669).
+        enable_bru: bool,
     }
 
     impl FrameCoreSeq {
@@ -4276,6 +4279,7 @@ mod tests {
                 film_grain_params_present: false,
                 bounded_tile_config: false,
                 explicit_ref_frame_map: false,
+                enable_bru: false,
             }
         }
     }
@@ -4352,7 +4356,7 @@ mod tests {
         bits.bit(0); // enable_df_sub_pu
         bits.f(0, 2); // enable_opfl_refine
         bits.bit(0); // enable_refinemv
-        bits.bit(0); // enable_bru
+        bits.bit(u8::from(o.enable_bru)); // enable_bru
         bits.bit(0); // enable_adaptive_mvd
         bits.bit(0); // enable_mvd_sign_derive
         bits.bit(0); // enable_flex_mvres
@@ -20704,6 +20708,107 @@ mod tests {
             has_primary_ref_frame_error(&report),
             "a signaled primary_ref_frame 5 that is neither PRIMARY_REF_NONE nor < NumTotalRefs \
              1 must fire the §6.17.2 range check; report was: {report}"
+        );
+    }
+
+    /// A regular-tile-group INTER frame (explicit reference map, `enable_bru` sequence)
+    /// that codes `num_total_refs`, the `ref_frame_idx` loop, then the §5.18.2 BRU triple
+    /// (`use_bru == 1`, `bru_ref` f(CeilLog2(num_total_refs)), `bru_inactive == 0`) and
+    /// completes the control region into the shared tail, for the §6.17.2 BRU checks.
+    fn ref_inter_bru(immediate_output: bool, num_total_refs: u32, bru_ref: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(1); // frame_is_inter == 1 -> INTER_FRAME
+        fb.bit(u8::from(immediate_output)); // immediate_output_frame (monotonic -> no implicit bit)
+        fb.bit(0); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        fb.bit(0); // signal_primary_ref_frame == 0 -> PRIMARY_REF_CHOOSE (no f(3))
+        fb.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        fb.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8)
+        fb.bit(1); // frame_explicit_ref_frame_map
+        fb.f(num_total_refs, 3); // num_total_refs f(3)
+        for _ in 0..num_total_refs {
+            fb.f(0, 3); // ref_frame_idx[i] f(CeilLog2(8) == 3) -> slot 0
+        }
+        // non-override, cur_mfh_id == 0 -> frame_size() default dims (no bits).
+        // mirror :4653-4669: the BRU triple (enable_bru sequence, INTER, not TIP/bridge).
+        fb.bit(1); // use_bru == 1
+        let n = 32 - (num_total_refs - 1).leading_zeros();
+        fb.f(bru_ref, n); // bru_ref f(CeilLog2(num_total_refs))
+        fb.bit(0); // bru_inactive == 0 -> no early return
+        // use_ref_frame_mvs: enable_ref_frame_mvs == 0 -> inferred 0 (no bit).
+        // frame_opfl_refine_type: enable_opfl_refine != REFINE_AUTO -> no bits.
+        fb.bit(0); // allow_screen_content_tools (SELECT) -> force_integer_mv = 0
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // use_qtr_precision_mv
+        fb.bit(0); // allow_high_precision_mv -> HALF_PEL
+        fb.bit(1); // is_filter_switchable -> SWITCHABLE (no interpolation_filter f(2))
+        // motion modes: seq_frame_motion_modes_present_flag == 0 -> no bits.
+        fb.bit(0); // disable_cdf_update f(1) (mirror :5041), just before the shared tail.
+        annex_b_obu(REGULAR_TILE_GROUP_HEADER, &fb.into_bytes())
+    }
+
+    #[test]
+    fn frame_header_bru_ref_out_of_range_fires() {
+        // §6.17.2 (mirror :4592): when use_bru == 1, bru_ref must be less than
+        // NumTotalRefs. num_total_refs == 3 -> bru_ref f(CeilLog2(3) == 2) can code 3,
+        // which violates the bound.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            enable_bru: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(ref_inter_bru(true, 3, 3));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/bru-ref-out-of-range"),
+            "bru_ref 3 >= NumTotalRefs 3 must fire the §6.17.2 bound; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_header_bru_in_range_with_output_is_silent() {
+        // bru_ref 2 < NumTotalRefs 3 and immediate_output_frame == 1: both §6.17.2 BRU
+        // clauses hold -> neither BRU diagnostic fires.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            enable_bru: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(ref_inter_bru(true, 3, 2));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/bru-ref-out-of-range"
+                    || d.rule_id == "frame-header/bru-without-immediate-output"),
+            "a conformant BRU frame must not fire the §6.17.2 BRU checks; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_header_bru_without_immediate_output_fires() {
+        // §6.17.2 (mirror :4591): use_bru == 1 requires immediate_output_frame == 1.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            enable_bru: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(ref_inter_bru(false, 3, 2));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/bru-without-immediate-output"),
+            "use_bru == 1 with immediate_output_frame == 0 must fire the §6.17.2 check; \
+             report was: {report}"
         );
     }
 
