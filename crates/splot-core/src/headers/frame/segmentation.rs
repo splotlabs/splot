@@ -4,16 +4,22 @@
 //! Frame-header segmentation parameters (AV2 v1.0.0 § 5.18.7.1,
 //! `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-1`).
 //!
-//! Models `segmentation_params()` on the **intra path with a direct sequence
-//! reference** (`cur_mfh_id == 0`): there `DerivedPrimaryRefFrame ==
+//! Models `segmentation_params()` on the **intra path** for both reference forms:
+//! the direct sequence reference (`cur_mfh_id == 0`) and the resolved multi-frame
+//! header reference (`cur_mfh_id > 0`). On the intra path `DerivedPrimaryRefFrame ==
 //! PRIMARY_REF_NONE`, so `segmentation_update_map` is inferred `1` and
-//! `segmentation_temporal_update` is inferred `0` without reading bits, and the
-//! `haveSegParams` / `allowChange` derivation uses the sequence state
-//! (`seq_seg_info_present_flag` / `seq_allow_seg_info_change`, AV2 § 5.4.4) only.
-//! The `cur_mfh_id > 0` branch consults multi-frame-header fields
-//! (`mfh_seg_info_present_flag`, `mfh_ext_seg_flag`, `mfh_allow_seg_info_change`)
-//! that the validator's MFH record does not carry yet, so the caller stops with an
-//! explicit partial status before reaching this parser on that path.
+//! `segmentation_temporal_update` is inferred `0` without reading bits.
+//!
+//! The `haveSegParams` / `allowChange` / `mfhId` derivation follows § 5.18.7.1:
+//! - When `cur_mfh_id > 0 && mfh_seg_info_present_flag[cur_mfh_id]` (the resolved MFH
+//!   passed as [`MfhSegView`]): `haveSegParams = (mfh_ext_seg_flag == enable_ext_seg)`,
+//!   `allowChange = haveSegParams && mfh_allow_seg_info_change`, `mfhId = cur_mfh_id`,
+//!   and a `reuse_seg_info` copy draws from `MfhFeatureEnabled` / `MfhFeatureData`.
+//! - Otherwise the sequence branch (`seq_seg_info_present_flag`, `mfhId = 0`) or the
+//!   zero fallback applies, exactly as before.
+//!
+//! A `cur_mfh_id > 0` reference whose in-band MFH is unresolvable is never passed
+//! here: the caller keeps the unsupported/Unknown routing instead of guessing.
 //!
 //! Fresh feature data is parsed with the existing `seg_info(MaxSegments)` helper
 //! ([`crate::segment::parse_seg_info`], AV2 § 5.4.9).
@@ -66,6 +72,27 @@ impl CoreSeqSegView {
     }
 }
 
+/// The resolved multi-frame header's segment-info inputs for `segmentation_params()`
+/// on the `cur_mfh_id > 0` path (AV2 v1.0.0 § 5.18.7.1, the
+/// `cur_mfh_id > 0 && mfh_seg_info_present_flag[cur_mfh_id]` branch).
+///
+/// Built from a [`crate::hls::MultiFrameHeaderRecord`] only when
+/// `mfh_seg_info_present_flag` is set (the gate that selects this branch); the caller
+/// passes `None` otherwise (including the `cur_mfh_id == 0` direct-reference path),
+/// which leaves the sequence/zero derivation in effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MfhSegView {
+    /// `mfh_ext_seg_flag[cur_mfh_id]` (AV2 § 5.7): compared with `enable_ext_seg` to
+    /// derive `haveSegParams` (§ 5.18.7.1).
+    pub mfh_ext_seg_flag: bool,
+    /// `mfh_allow_seg_info_change[cur_mfh_id]` (AV2 § 5.7): the `allowChange` input
+    /// (only when `haveSegParams`).
+    pub mfh_allow_seg_info_change: bool,
+    /// `MfhFeatureEnabled[mfhId]` / `MfhFeatureData[mfhId]` (AV2 § 5.7 / § 5.4.9):
+    /// the data a `reuse_seg_info` copy draws from on this path.
+    pub mfh_segment_info: SegmentInfo,
+}
+
 /// Parsed `segmentation_params()` (AV2 v1.0.0 § 5.18.7.1,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-1`) on the intra path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,9 +119,14 @@ pub struct SegmentationParams {
 }
 
 /// Parses `segmentation_params()` (AV2 v1.0.0 § 5.18.7.1,
-/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-1`) on the intra path
-/// with `cur_mfh_id == 0` (the caller stops before this parser on the
-/// MFH-resolved path; see the module docs).
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-1`) on the intra path.
+///
+/// `mfh` carries the resolved multi-frame header's segment-info inputs for the
+/// `cur_mfh_id > 0 && mfh_seg_info_present_flag[cur_mfh_id]` branch; pass `None` for
+/// the `cur_mfh_id == 0` direct-reference path (or any path where that gate is `0`),
+/// which keeps the sequence/zero derivation. A `cur_mfh_id > 0` reference whose
+/// in-band MFH is unresolvable is never parsed here (the caller keeps Unknown
+/// routing).
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) or a typed
@@ -102,6 +134,7 @@ pub struct SegmentationParams {
 pub fn parse_segmentation_params(
     reader: &mut BitReader<'_>,
     seg: &CoreSeqSegView,
+    mfh: Option<&MfhSegView>,
 ) -> Result<SegmentationParams> {
     // AV2 § 5.18.7.1: segmentation_enabled f(1).
     let segmentation_enabled = reader.read_bit()? != 0;
@@ -114,15 +147,27 @@ pub fn parse_segmentation_params(
     let segmentation_temporal_update = false;
 
     if segmentation_enabled {
-        // AV2 § 5.18.7.1 haveSegParams / allowChange / mfhId derivation. This
-        // parser only runs with cur_mfh_id == 0 (see module docs), so the
-        // `cur_mfh_id > 0 && mfh_seg_info_present_flag[cur_mfh_id]` branch is
-        // never taken: only the sequence branch and the zero fallback apply, and
-        // mfhId == 0 throughout.
-        let (have_seg_params, allow_change) = if seg.seq_seg_info_present_flag {
-            (true, seg.seq_allow_seg_info_change)
+        // AV2 § 5.18.7.1 haveSegParams / allowChange / mfhId derivation, in the spec's
+        // branch order:
+        //   if ( cur_mfh_id > 0 && mfh_seg_info_present_flag[cur_mfh_id] ) {
+        //       haveSegParams = mfh_ext_seg_flag[cur_mfh_id] == enable_ext_seg
+        //       allowChange   = haveSegParams && mfh_allow_seg_info_change[cur_mfh_id]
+        //   } else if ( seq_seg_info_present_flag ) { ... } else { 0, 0 }
+        // `mfh.is_some()` already encodes `cur_mfh_id > 0 && mfh_seg_info_present_flag`
+        // (the caller builds the view only when that gate holds). `reuse_source` carries
+        // the data a `reuse_seg_info` copy draws from (MfhFeatureData on the MFH branch,
+        // SeqFeatureData on the sequence branch).
+        let (have_seg_params, allow_change, reuse_source) = if let Some(mfh) = mfh {
+            let have = mfh.mfh_ext_seg_flag == seg.enable_ext_seg;
+            (
+                have,
+                have && mfh.mfh_allow_seg_info_change,
+                Some(mfh.mfh_segment_info),
+            )
+        } else if seg.seq_seg_info_present_flag {
+            (true, seg.seq_allow_seg_info_change, seg.seq_segment_info)
         } else {
-            (false, false)
+            (false, false, None)
         };
 
         // AV2 § 5.18.7.1: reuse_seg_info f(1) when allowChange, else inferred
@@ -134,14 +179,13 @@ pub fn parse_segmentation_params(
         };
 
         if reuse_seg_info {
-            // AV2 § 5.18.7.1, mfhId == 0: FeatureEnabled / FeatureData copy
-            // SeqFeatureEnabled / SeqFeatureData (§ 5.4.4) for all MAX_SEGMENTS
-            // segments. reuse_seg_info == 1 implies haveSegParams == 1, i.e.
-            // seq_seg_info_present_flag, so a view built by
-            // `from_sequence_config` always carries the stored data here; an
-            // inconsistent hand-built view keeps the all-disabled default
-            // instead of panicking.
-            if let Some(info) = seg.seq_segment_info {
+            // AV2 § 5.18.7.1: FeatureEnabled / FeatureData copy the stored data for all
+            // MAX_SEGMENTS segments — SeqFeature* when mfhId == 0, MfhFeature* when
+            // mfhId == cur_mfh_id. reuse_seg_info == 1 implies haveSegParams == 1, so a
+            // view built from a real record always carries the stored data here; an
+            // inconsistent hand-built view keeps the all-disabled default instead of
+            // panicking.
+            if let Some(info) = reuse_source {
                 features = info.features;
             }
         } else {
@@ -261,7 +305,7 @@ mod tests {
         bits.bit(0); // segmentation_enabled
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let params = parse_segmentation_params(&mut reader, &no_seq_info_view(8)).unwrap();
+        let params = parse_segmentation_params(&mut reader, &no_seq_info_view(8), None).unwrap();
         assert_eq!(reader.consumed_bits(), 1);
         assert!(!params.segmentation_enabled);
         assert!(!params.reuse_seg_info);
@@ -297,7 +341,7 @@ mod tests {
         }
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let params = parse_segmentation_params(&mut reader, &no_seq_info_view(8)).unwrap();
+        let params = parse_segmentation_params(&mut reader, &no_seq_info_view(8), None).unwrap();
         // 1 + 8 * SEG_LVL_MAX enabled bits + 10 value bits.
         assert_eq!(reader.consumed_bits(), 35);
         assert!(params.segmentation_enabled);
@@ -328,7 +372,7 @@ mod tests {
         }
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let params = parse_segmentation_params(&mut reader, &no_seq_info_view(8)).unwrap();
+        let params = parse_segmentation_params(&mut reader, &no_seq_info_view(8), None).unwrap();
         assert_eq!(reader.consumed_bits(), 25);
         assert!(params.features[5][1].enabled);
         assert_eq!(params.last_active_seg_id, 5);
@@ -350,7 +394,7 @@ mod tests {
         bits.bit(0); // feature_enabled[15][2]
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let params = parse_segmentation_params(&mut reader, &no_seq_info_view(16)).unwrap();
+        let params = parse_segmentation_params(&mut reader, &no_seq_info_view(16), None).unwrap();
         assert_eq!(reader.consumed_bits(), 1 + 16 * 3 + 10);
         assert_eq!(params.last_active_seg_id, 15);
         assert!(!params.seg_id_pre_skip);
@@ -365,7 +409,7 @@ mod tests {
         bits.bit(1); // segmentation_enabled
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let params = parse_segmentation_params(&mut reader, &view).unwrap();
+        let params = parse_segmentation_params(&mut reader, &view, None).unwrap();
         assert_eq!(reader.consumed_bits(), 1);
         assert!(params.reuse_seg_info);
         assert_eq!(
@@ -389,7 +433,7 @@ mod tests {
         bits.bit(1); // reuse_seg_info
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let params = parse_segmentation_params(&mut reader, &view).unwrap();
+        let params = parse_segmentation_params(&mut reader, &view, None).unwrap();
         assert_eq!(reader.consumed_bits(), 2);
         assert!(params.reuse_seg_info);
         assert_eq!(params.features, view.seq_segment_info.unwrap().features);
@@ -409,7 +453,7 @@ mod tests {
         }
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let params = parse_segmentation_params(&mut reader, &view).unwrap();
+        let params = parse_segmentation_params(&mut reader, &view, None).unwrap();
         assert_eq!(reader.consumed_bits(), 2 + 8 * 3);
         assert!(!params.reuse_seg_info);
         assert!(
@@ -427,7 +471,7 @@ mod tests {
     fn empty_input_reports_eof_without_panicking() {
         let mut reader = BitReader::new(&[], ByteOffset::new(0));
         assert!(matches!(
-            parse_segmentation_params(&mut reader, &no_seq_info_view(8)),
+            parse_segmentation_params(&mut reader, &no_seq_info_view(8), None),
             Err(Error::UnexpectedEof { .. })
         ));
     }
@@ -439,7 +483,119 @@ mod tests {
         let data = [0b1000_0000u8];
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         assert!(matches!(
-            parse_segmentation_params(&mut reader, &no_seq_info_view(8)),
+            parse_segmentation_params(&mut reader, &no_seq_info_view(8), None),
+            Err(Error::UnexpectedEof { .. })
+        ));
+    }
+
+    /// An MFH segmentation view carrying stored feature data with segment 3,
+    /// feature 0 (SEG_LVL_ALT_Q) enabled.
+    fn mfh_seg_view(ext_seg: bool, allow_change: bool) -> MfhSegView {
+        let mut features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];
+        features[3][0] = SegmentFeature {
+            enabled: true,
+            data: 9,
+        };
+        MfhSegView {
+            mfh_ext_seg_flag: ext_seg,
+            mfh_allow_seg_info_change: allow_change,
+            mfh_segment_info: SegmentInfo {
+                num_segments: 8,
+                features,
+            },
+        }
+    }
+
+    #[test]
+    fn mfh_arm_reuse_inferred_copies_mfh_feature_data_when_change_not_allowed() {
+        // § 5.18.7.1 MFH branch: mfh_ext_seg_flag == enable_ext_seg -> haveSegParams = 1;
+        // mfh_allow_seg_info_change == 0 -> allowChange = 0, so reuse_seg_info is
+        // inferred 1 (no bit) and FeatureData copies MfhFeatureData[cur_mfh_id].
+        let seg = no_seq_info_view(8); // enable_ext_seg == false
+        let mfh = mfh_seg_view(false, false); // mfh_ext_seg_flag == enable_ext_seg
+        let mut bits = Bits::default();
+        bits.bit(1); // segmentation_enabled
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let params = parse_segmentation_params(&mut reader, &seg, Some(&mfh)).unwrap();
+        assert_eq!(reader.consumed_bits(), 1);
+        assert!(params.reuse_seg_info);
+        assert!(
+            params.features[3][0].enabled,
+            "MFH arm reuse copies MfhFeatureEnabled/MfhFeatureData"
+        );
+        assert_eq!(params.features[3][0].data, 9);
+        assert_eq!(params.last_active_seg_id, 3);
+    }
+
+    #[test]
+    fn mfh_arm_reads_reuse_bit_when_change_allowed() {
+        // mfh_allow_seg_info_change == 1 with haveSegParams == 1 -> allowChange = 1, so
+        // reuse_seg_info f(1) is read (here 1), then MFH data is copied.
+        let seg = no_seq_info_view(8);
+        let mfh = mfh_seg_view(false, true);
+        let mut bits = Bits::default();
+        bits.bit(1); // segmentation_enabled
+        bits.bit(1); // reuse_seg_info
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let params = parse_segmentation_params(&mut reader, &seg, Some(&mfh)).unwrap();
+        assert_eq!(reader.consumed_bits(), 2);
+        assert!(params.reuse_seg_info);
+        assert!(params.features[3][0].enabled);
+        assert_eq!(params.last_active_seg_id, 3);
+    }
+
+    #[test]
+    fn mfh_arm_ext_seg_mismatch_yields_no_seg_params_and_parses_fresh() {
+        // mfh_ext_seg_flag != enable_ext_seg -> haveSegParams = 0, allowChange = 0, so
+        // reuse_seg_info is inferred 0 and seg_info(MaxSegments) is parsed fresh,
+        // ignoring the stored MFH data.
+        let seg = no_seq_info_view(8); // enable_ext_seg == false
+        let mfh = mfh_seg_view(true, true); // mfh_ext_seg_flag == true != false
+        let mut bits = Bits::default();
+        bits.bit(1); // segmentation_enabled
+        for _ in 0..8 {
+            bits.f(0, 3); // fresh seg_info(8): all features disabled
+        }
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let params = parse_segmentation_params(&mut reader, &seg, Some(&mfh)).unwrap();
+        assert_eq!(reader.consumed_bits(), 1 + 8 * 3);
+        assert!(!params.reuse_seg_info);
+        assert!(
+            params.features.iter().flatten().all(|f| !f.enabled),
+            "mismatch parses fresh all-disabled seg_info, not the MFH data"
+        );
+        assert_eq!(params.last_active_seg_id, 0);
+    }
+
+    #[test]
+    fn mfh_arm_takes_priority_over_sequence_branch() {
+        // Both the MFH arm (mfh present) and seq_seg_info_present_flag would supply
+        // data; § 5.18.7.1 selects the MFH branch first, so MFH data wins.
+        let seg = seq_info_view(false); // seq segment 7, feature 2 enabled
+        let mfh = mfh_seg_view(false, false); // MFH segment 3, feature 0 enabled
+        let mut bits = Bits::default();
+        bits.bit(1); // segmentation_enabled
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let params = parse_segmentation_params(&mut reader, &seg, Some(&mfh)).unwrap();
+        assert!(params.features[3][0].enabled, "MFH branch wins");
+        assert!(!params.features[7][2].enabled, "sequence data is not used");
+        assert_eq!(params.last_active_seg_id, 3);
+    }
+
+    #[test]
+    fn mfh_arm_truncation_reports_eof() {
+        // MFH arm with allowChange == 1 reads segmentation_enabled then reuse_seg_info;
+        // a single-bit payload (only segmentation_enabled == 1) overruns the reuse bit.
+        let seg = no_seq_info_view(8);
+        let mfh = mfh_seg_view(false, true);
+        let mut reader = BitReader::new(&[], ByteOffset::new(0));
+        // Empty input: segmentation_enabled f(1) itself overruns.
+        assert!(matches!(
+            parse_segmentation_params(&mut reader, &seg, Some(&mfh)),
             Err(Error::UnexpectedEof { .. })
         ));
     }
@@ -453,7 +609,7 @@ mod proptests {
 
     proptest! {
         /// `segmentation_params()` must never panic, for arbitrary payloads and
-        /// arbitrary (even internally inconsistent) sequence views.
+        /// arbitrary (even internally inconsistent) sequence and MFH views.
         #[test]
         fn parse_segmentation_params_never_panics(
             data in proptest::collection::vec(any::<u8>(), 0..96),
@@ -465,6 +621,12 @@ mod proptests {
             stored_segment in 0..MAX_SEGMENTS,
             stored_feature in 0..SEG_LVL_MAX,
             stored_data in any::<i32>(),
+            with_mfh in any::<bool>(),
+            mfh_ext_seg_flag in any::<bool>(),
+            mfh_allow_seg_info_change in any::<bool>(),
+            mfh_segment in 0..MAX_SEGMENTS,
+            mfh_feature in 0..SEG_LVL_MAX,
+            mfh_data in any::<i32>(),
         ) {
             let mut features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];
             features[stored_segment][stored_feature] = SegmentFeature {
@@ -481,8 +643,21 @@ mod proptests {
                     features,
                 }),
             };
+            let mut mfh_features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];
+            mfh_features[mfh_segment][mfh_feature] = SegmentFeature {
+                enabled: true,
+                data: mfh_data,
+            };
+            let mfh = with_mfh.then_some(MfhSegView {
+                mfh_ext_seg_flag,
+                mfh_allow_seg_info_change,
+                mfh_segment_info: SegmentInfo {
+                    num_segments: max_segments.min(MAX_SEGMENTS as u8),
+                    features: mfh_features,
+                },
+            });
             let mut reader = BitReader::new(&data, ByteOffset::new(0));
-            let _ = parse_segmentation_params(&mut reader, &seg);
+            let _ = parse_segmentation_params(&mut reader, &seg, mfh.as_ref());
         }
     }
 }

@@ -29,8 +29,9 @@ use splot_core::headers::metadata::{MetadataUnit, parse_metadata_group, parse_me
 use splot_core::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
 use splot_core::headers::padding::parse_padding_obu;
 use splot_core::headers::quantizer_matrix::{QuantizerMatrixObu, parse_quantizer_matrix};
-use splot_core::headers::sequence::{SequenceHeader, parse_sequence_header};
+use splot_core::headers::sequence::{SequenceHeader, SequenceHeaderId, parse_sequence_header};
 use splot_core::headers::tile_group::parse_tile_group_prefix;
+use splot_core::hls::{MfhId, MultiFrameHeaderRecord, parse_multi_frame_header};
 use splot_core::ivf::{IvfFrame, IvfHeader};
 use splot_core::obu::{ObuHeader, PayloadStatus};
 use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
@@ -93,6 +94,7 @@ impl InspectRecord {
         index: usize,
         obu: &ObuEnvelope<'_>,
         sequences: &BTreeMap<u8, SequenceHeader>,
+        multi_frame_headers: &BTreeMap<u32, MultiFrameHeaderRecord>,
         ivf_header: Option<IvfHeader>,
         ivf_frame: Option<IvfFrame<'_>>,
     ) -> Self {
@@ -114,7 +116,7 @@ impl InspectRecord {
             metadata_short: metadata_short_view(obu),
             metadata_group: metadata_group_view(obu),
             frame_header_prefix: frame_header_prefix_view(obu),
-            frame_header_core: frame_header_core_view(obu, sequences),
+            frame_header_core: frame_header_core_view(obu, sequences, multi_frame_headers),
             header: obu.header,
         }
     }
@@ -555,11 +557,14 @@ impl FrameHeaderPrefixView {
     }
 }
 
-/// Resolves the sequence header a frame directly references (`cur_mfh_id == 0`) from
-/// the inspector's running map of seen sequence headers.
+/// Resolves the sequence header a frame references from the inspector's running map of
+/// seen sequence headers: a `cur_mfh_id == 0` frame references one directly
+/// (`referenced_sequence_header_id`); a `cur_mfh_id > 0` frame references it through the
+/// resolved multi-frame header's `mfh_seq_header_id` (AV2 § 5.18.2 `load_sequence_header`).
 fn resolve_inspect_sequence<'a>(
     obu: &ObuEnvelope<'_>,
     sequences: &'a BTreeMap<u8, SequenceHeader>,
+    mfh_record: Option<&MultiFrameHeaderRecord>,
 ) -> Option<&'a SequenceHeader> {
     let obu_type = obu.header.obu_type;
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
@@ -570,16 +575,26 @@ fn resolve_inspect_sequence<'a>(
     } else {
         parse_frame_header_prefix(&mut reader, obu_type, false).ok()?
     };
-    let seq_id = prefix.referenced_sequence_header_id?;
+    let seq_id = if prefix.cur_mfh_id.is_zero() {
+        prefix.referenced_sequence_header_id?
+    } else {
+        // cur_mfh_id > 0: the referenced sequence header is the resolved MFH's
+        // mfh_seq_header_id (§ 7.3.8.7), available only when the MFH was seen in-band.
+        mfh_record?.mfh_seq_header_id
+    };
     sequences.get(&seq_id.get())
 }
 
 /// Runs the frame-header **core** parser against the active sequence header (when one
 /// is resolvable) and exposes its parse status and known core fields. Falls back to
-/// the activation-only result when the sequence is unavailable.
+/// the activation-only result when the sequence is unavailable. For a `cur_mfh_id > 0`
+/// frame, the in-band multi-frame header resolving that reference (when seen) is passed
+/// in so the § 5.18.4.1 default dimensions and § 5.18.7.1 segmentation arm are
+/// surfaced; an unresolved reference leaves the parse at its unsupported stop.
 fn frame_header_core_view(
     obu: &ObuEnvelope<'_>,
     sequences: &BTreeMap<u8, SequenceHeader>,
+    multi_frame_headers: &BTreeMap<u32, MultiFrameHeaderRecord>,
 ) -> Option<FrameHeaderCoreView> {
     let obu_type = obu.header.obu_type;
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
@@ -595,17 +610,44 @@ fn frame_header_core_view(
     // is what parse_frame_header_core consumes; resolve_inspect_sequence deliberately
     // uses its own fresh reader to re-parse the small activation prefix (not a
     // reader-position bug).
-    let active_sequence = resolve_inspect_sequence(obu, sequences);
+    // Resolve the frame's `cur_mfh_id` (> 0) against the in-band multi-frame-header
+    // store via a fresh activation-prefix parse (cur_mfh_id precedes any
+    // sequence-dependent field, so it is reliable without sequence state).
+    let mfh_record = resolve_inspect_mfh(obu, multi_frame_headers);
+    let active_sequence = resolve_inspect_sequence(obu, sequences, mfh_record);
     let input = FrameHeaderParseInput {
         obu_type,
         first_picture_in_tu: false,
         active_sequence,
-        mfh_record: None,
+        mfh_record,
         reference_state: FrameReferenceStateView::unknown(),
         mode: FrameHeaderParseMode::Core,
     };
     let core = parse_frame_header_core(&mut reader, &input).ok()?;
     Some(FrameHeaderCoreView::new(&core))
+}
+
+/// Resolves a frame's `cur_mfh_id` (> 0, in range) to the in-band multi-frame-header
+/// record that defines it, if one has been seen. `None` for a `cur_mfh_id == 0` direct
+/// reference or an unresolved id.
+fn resolve_inspect_mfh<'a>(
+    obu: &ObuEnvelope<'_>,
+    multi_frame_headers: &'a BTreeMap<u32, MultiFrameHeaderRecord>,
+) -> Option<&'a MultiFrameHeaderRecord> {
+    let obu_type = obu.header.obu_type;
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    let prefix = if obu_type.is_tile_group() {
+        parse_tile_group_prefix(&mut reader, obu_type, false)
+            .ok()?
+            .frame_header?
+    } else {
+        parse_frame_header_prefix(&mut reader, obu_type, false).ok()?
+    };
+    let cur_mfh_id = prefix.cur_mfh_id;
+    if cur_mfh_id.is_zero() || !cur_mfh_id.in_range() {
+        return None;
+    }
+    multi_frame_headers.get(&cur_mfh_id.get())
 }
 
 /// A frame-header core summary for `--json`. `status` makes explicit how far the core
@@ -1052,13 +1094,23 @@ fn inspect_records(parsed: &ParsedBitstream<'_>) -> Vec<InspectRecord> {
     // Track sequence headers in OBU order so a later frame header's core parse can
     // resolve the sequence state it references (AV2 § 5.18.2 load_sequence_header).
     let mut sequences: BTreeMap<u8, SequenceHeader> = BTreeMap::new();
+    // Track in-band multi-frame headers (keyed by mfhId) so a later frame header's
+    // `cur_mfh_id > 0` core parse can resolve its § 5.7 state (AV2 § 5.18.2).
+    let mut multi_frame_headers: BTreeMap<u32, MultiFrameHeaderRecord> = BTreeMap::new();
     let mut records = Vec::new();
 
     match parsed {
         ParsedBitstream::AnnexB(parsed) => {
             records.reserve(parsed.obus.len());
             for obu in &parsed.obus {
-                push_inspect_record(&mut records, obu, &mut sequences, None, None);
+                push_inspect_record(
+                    &mut records,
+                    obu,
+                    &mut sequences,
+                    &mut multi_frame_headers,
+                    None,
+                    None,
+                );
             }
         }
         ParsedBitstream::Ivf(parsed) => {
@@ -1071,6 +1123,7 @@ fn inspect_records(parsed: &ParsedBitstream<'_>) -> Vec<InspectRecord> {
                         &mut records,
                         obu,
                         &mut sequences,
+                        &mut multi_frame_headers,
                         ivf_header,
                         Some(frame.frame),
                     );
@@ -1086,18 +1139,56 @@ fn push_inspect_record(
     records: &mut Vec<InspectRecord>,
     obu: &ObuEnvelope<'_>,
     sequences: &mut BTreeMap<u8, SequenceHeader>,
+    multi_frame_headers: &mut BTreeMap<u32, MultiFrameHeaderRecord>,
     ivf_header: Option<IvfHeader>,
     ivf_frame: Option<IvfFrame<'_>>,
 ) {
     let index = records.len();
     records.push(InspectRecord::new(
-        index, obu, sequences, ivf_header, ivf_frame,
+        index,
+        obu,
+        sequences,
+        multi_frame_headers,
+        ivf_header,
+        ivf_frame,
     ));
-    if obu.header.obu_type == ObuType::SequenceHeader {
-        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        if let Ok(sequence) = parse_sequence_header(&mut reader) {
-            sequences.insert(sequence.general.seq_header_id.get(), sequence);
+    match obu.header.obu_type {
+        ObuType::SequenceHeader => {
+            let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+            if let Ok(sequence) = parse_sequence_header(&mut reader) {
+                sequences.insert(sequence.general.seq_header_id.get(), sequence);
+            }
         }
+        ObuType::MultiFrameHeader => {
+            // Record the parsed § 5.7 state (frame size, segmentation arm, deblocking
+            // update) keyed by mfhId, mirroring the validator's availability record, so
+            // a later `cur_mfh_id` reference resolves the same view.
+            let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+            if let Ok(mfh) = parse_multi_frame_header(&mut reader)
+                && mfh.mfh_id_in_range()
+                && mfh.seq_header_id_in_range()
+                && let Some(seq_id) = SequenceHeaderId::try_new(mfh.mfh_seq_header_id)
+                && let Ok(mfh_id_value) = u32::try_from(mfh.mfh_id())
+            {
+                multi_frame_headers.insert(
+                    mfh_id_value,
+                    MultiFrameHeaderRecord {
+                        mfh_id: MfhId::from_raw(mfh_id_value),
+                        mfh_seq_header_id: seq_id,
+                        mfh_tlayer_id: obu.header.temporal_layer_id,
+                        mfh_mlayer_id: obu.header.embedded_layer_id,
+                        mfh_frame_size: mfh.mfh_frame_size,
+                        mfh_seg_info_present_flag: mfh.mfh_seg_info_present_flag,
+                        mfh_ext_seg_flag: mfh.mfh_ext_seg_flag,
+                        mfh_allow_seg_info_change: mfh.mfh_allow_seg_info_change,
+                        mfh_segment_info: mfh.segment_info,
+                        mfh_deblocking_filter_update: mfh.mfh_deblocking_filter_update,
+                        offset: obu.offset,
+                    },
+                );
+            }
+        }
+        _ => {}
     }
 }
 

@@ -18637,6 +18637,12 @@ mod tests {
         fb.bit(0); // allow_intrabc
         fb.bit(0); // disable_cdf_update
         intra_structure_tail(&mut fb, 0);
+        // The cur_mfh_id > 0 prefix (`uvlc(cur_mfh_id)`) is one bit longer than the
+        // direct cur_mfh_id == 0 prefix, so the now-fully-parsed § 5.18.2 intra tail can
+        // need one more bit than byte-padding alone supplies; an extra padding byte gives
+        // the core parser room to reach its StoppedBeforeDeblockingFilterParams stop
+        // (trailing bits past the stop are ignored).
+        fb.f(0, 8);
         annex_b_obu_with_header(&layer_obu_header(4, 0, 0, xlayer), &fb.into_bytes())
     }
 

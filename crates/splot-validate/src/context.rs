@@ -7894,6 +7894,15 @@ impl ValidatorContext {
                 mfh_seq_header_id: seq_id,
                 mfh_tlayer_id: obu.header.temporal_layer_id,
                 mfh_mlayer_id: obu.header.embedded_layer_id,
+                // Carry the parsed §5.7 state a `cur_mfh_id > 0` frame header consumes at
+                // §5.18.2 (default frame dimensions and the §5.18.7.1 segmentation arm)
+                // and the deblocking-update groundwork bit.
+                mfh_frame_size: mfh.mfh_frame_size,
+                mfh_seg_info_present_flag: mfh.mfh_seg_info_present_flag,
+                mfh_ext_seg_flag: mfh.mfh_ext_seg_flag,
+                mfh_allow_seg_info_change: mfh.mfh_allow_seg_info_change,
+                mfh_segment_info: mfh.segment_info,
+                mfh_deblocking_filter_update: mfh.mfh_deblocking_filter_update,
                 offset: obu.offset,
             });
             // AV2 § 7.3.8.1: note this MFH's in-band (re)send for the replay, and — when

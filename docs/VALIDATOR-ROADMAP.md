@@ -370,11 +370,20 @@ and the intra tail through `AV2-5.18.6-QUANTIZATION` and
   `frame-header/tile-cols-out-of-range`, `frame-header/tile-rows-out-of-range`,
   `frame-header/context-update-tile-id-out-of-range`, and
   `frame-header/qm-plane-count-mismatch`.
-- **Remaining:** inter frame-header paths, the MFH-gated branches
-  (`cur_mfh_id > 0` stops as unsupported), the § 5.18.7.4 non-uniform
-  sequence-reuse branch, § 5.18.5 filtering onward, and the § 6.17.6.2
-  layer-dependency constraints (the §5.4.1 dependency maps are now exposed by
-  the sequence-header model; the checks themselves are not implemented yet).
+- **Landed** (OpenSpec `mfh-frame-header-state`): the intra `cur_mfh_id > 0`
+  path now resolves the in-band multi-frame header's parsed § 5.7 state (carried
+  on `MultiFrameHeaderRecord`) into the core parse, so § 5.18.4.1 default
+  dimensions come from `mfh_frame_width/height_minus_1[ cur_mfh_id ]` (with the
+  § 5.18.2 omitted-size inference) and § 5.18.7.1 `segmentation_params()` parses
+  its MFH-gated arm — the same intra tail the `cur_mfh_id == 0` path reaches. A
+  `cur_mfh_id > 0` frame whose in-band MFH is unresolvable still routes to
+  Unknown. `mfh_deblocking_filter_update` is recorded as groundwork only.
+- **Remaining:** inter frame-header paths (including the inter `cur_mfh_id > 0`
+  arms), the § 5.18.7.4 non-uniform sequence-reuse branch, § 5.18.5 filtering
+  onward (the `mfh_deblocking_filter_update`-gated deblocking parse lands with
+  `frame-filtering-deblocking-gdf-cdef`), and the § 6.17.6.2 layer-dependency
+  constraints (the §5.4.1 dependency maps are now exposed by the sequence-header
+  model; the checks themselves are not implemented yet).
   `AV2-5.18-FRAME-HEADER` and `AV2-5.19-TILE-GROUP` therefore stay `partial`,
   not `done`.
 
