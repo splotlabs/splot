@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "07aeeecdf3a5e0df04ae8233a0162030c9c0b02c",
+  "audited_commit": "3f9bc9069fd5bc56d19fdf9c5d9256f08083026b",
   "outcome": "success",
   "files": [
     {
@@ -3152,6 +3152,31 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-12-frame-global-motion-params/proposal.md",
+      "sha256": "42cc336a4891b3dd4a428dda7056db9f656f0d9261911208c44a1db3b5ae04a8",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.9-GLOBAL-MOTION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-frame-global-motion-params/specs/bitstream/spec.md",
+      "sha256": "d22e4c8e3dd0288e27cea971ec2b4296d9ea802da0882f33cb362fa0478ca13e",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.9-GLOBAL-MOTION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-frame-global-motion-params/tasks.md",
+      "sha256": "046da72051a9a320ce63c67dd70bf6eb0b7662bc3bf6f74cf9fd95b4640b3c17",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-12-frame-header-copy-bit-accounting/proposal.md",
       "sha256": "6c17cce401115403b4fdbba3795161a90ce12b4e48413287823a39e6c294b61d",
       "scope_kind": "openspec",
@@ -3401,31 +3426,6 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/frame-global-motion-params/proposal.md",
-      "sha256": "42cc336a4891b3dd4a428dda7056db9f656f0d9261911208c44a1db3b5ae04a8",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18.9-GLOBAL-MOTION"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-global-motion-params/specs/bitstream/spec.md",
-      "sha256": "d22e4c8e3dd0288e27cea971ec2b4296d9ea802da0882f33cb362fa0478ca13e",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18.9-GLOBAL-MOTION"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-global-motion-params/tasks.md",
-      "sha256": "046da72051a9a320ce63c67dd70bf6eb0b7662bc3bf6f74cf9fd95b4640b3c17",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
       "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
       "sha256": "ec25589a8a02879087f03de9cc0c8b07e5fedf96f9a48c8f3dd99be91c14d240",
       "scope_kind": "openspec",
@@ -3473,7 +3473,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "a327282d59967730c02989f0da04faccaf2bd522519aa93619ac64ab4158fbe0",
+      "sha256": "850bcc58d6d393282c6ea9f381b9a4f182f54e75487d03a412f4d111b3fe100f",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
