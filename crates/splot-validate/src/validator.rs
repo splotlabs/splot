@@ -4724,6 +4724,81 @@ mod tests {
         );
     }
 
+    #[test]
+    fn validator_flags_mfh_stored_frame_size_exceeds_sequence_max_on_truncated_frame() {
+        // F1 regression: the §6.17.2 stored-dims bound (mfh_frame_width_minus_1 <=
+        // max_frame_width_minus_1, mirror :4348) depends ONLY on the resolved MFH
+        // record and the active sequence maxima — it is decidable at the
+        // load_sequence_header point regardless of how far the referencing frame
+        // header parses. A `cur_mfh_id == 1` frame whose payload is truncated right
+        // after the prefix (`frame_obu_mfh_ref` codes only is_first_tile_group +
+        // cur_mfh_id, so parse_frame_core returns None) must still fire the stored-MFH
+        // check: the referenced MFH stores FrameWidth 256 > max_frame_width 16.
+        // Pre-fix the check ran only past the `let Some(core) = parse_frame_core(..)`
+        // early-stop, so this truncated frame was silently skipped.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(mfh_obu_with_frame_size(256, 8)); // stored dims 256x8 (> max 16x16)
+        data.extend(frame_obu_mfh_ref(CLK_HEADER, 1)); // truncated after the prefix
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/mfh-frame-size-exceeds-sequence-max"),
+            "a truncated frame referencing an oversized-stored-dims MFH must still fire \
+             the §6.17.2 stored-dims check; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_accepts_mfh_within_sequence_max_on_truncated_frame() {
+        // F1 negative control: a conformant MFH (stored dims 16x16 == max) backing a
+        // truncated `cur_mfh_id == 1` frame must stay silent on the §6.17.2
+        // stored-dims rule for this id — the hoist must not introduce a false positive
+        // when the core parse fails but the stored dims are in range.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(mfh_obu_with_frame_size(16, 16)); // stored dims 16x16 == max
+        data.extend(frame_obu_mfh_ref(CLK_HEADER, 1)); // truncated after the prefix
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/mfh-frame-size-exceeds-sequence-max"),
+            "a conformant-MFH truncated frame must stay silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_both_frame_size_rules_when_override_repeats_mfh_out_of_range_dims() {
+        // F2 regression: an override==1 frame that explicitly codes the SAME
+        // out-of-range dims the MFH stores is a genuine §6.17.4.1 violation of its own
+        // explicit frame_width/height_minus_1 fields, distinct from the §6.17.2
+        // stored-MFH violation. The no-double-fire suppression must key on the parsed
+        // PATH (frame_size_override_flag), not on dimension equality: with override==1
+        // BOTH frame-header/frame-size-exceeds-sequence-max (§6.17.4.1, the explicit
+        // fields) and frame-header/mfh-frame-size-exceeds-sequence-max (§6.17.2, the
+        // stored dims) must fire. Pre-fix the value-equality `derived_is_mfh_default`
+        // wrongly suppressed the §6.17.4.1 check because the numbers matched.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(mfh_obu_with_frame_size(256, 8)); // stored dims 256x8 (> max 16x16)
+        // Override to the SAME out-of-range dims 256x8 (256-wide -> one column increment).
+        data.extend(mfh_backed_clk_override_size(256, 8, 1));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/mfh-frame-size-exceeds-sequence-max"),
+            "the §6.17.2 stored-MFH check must fire; report was: {report}"
+        );
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/frame-size-exceeds-sequence-max"),
+            "an override==1 frame's explicit out-of-range dims are a separate §6.17.4.1 \
+             violation that must fire even when they equal the stored MFH dims; \
+             report was: {report}"
+        );
+    }
+
     // OBU header bytes: obu_type << 2. 0x14 = OBU_OPEN_LOOP_KEY (5), 0x1c =
     // OBU_REGULAR_TILE_GROUP (7).
     const OLK_HEADER: u8 = 0x14;

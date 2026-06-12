@@ -12901,12 +12901,64 @@ fn frame_header_core_checks(
         }
     }
 
+    let max_width = active_sequence.general.max_frame_width.get();
+    let max_height = active_sequence.general.max_frame_height.get();
+
+    // AV2 § 6.17.2: after load_sequence_header(), for every `cur_mfh_id > 0` frame it is a
+    // requirement of bitstream conformance that the *referenced multi-frame header's stored*
+    // dimensions satisfy mfh_frame_width_minus_1[ cur_mfh_id ] <= max_frame_width_minus_1 and
+    // mfh_frame_height_minus_1[ cur_mfh_id ] <= max_frame_height_minus_1
+    // (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2, mirror :4348-4349).
+    // This bounds the MFH's *stored* dims and is INDEPENDENT of frame_size_override_flag and
+    // of how far the referencing frame header parses: it is decidable from the resolved MFH
+    // record and the active sequence maxima alone, at the load_sequence_header point. So it
+    // runs here, BEFORE (and independent of) the `parse_frame_core` outcome below — a
+    // truncated / malformed frame-header remainder (`core == None`) must not silence this
+    // decidable diagnostic. A frame overriding to in-range dims (so `core.frame_size` is
+    // conformant) still must not reference an out-of-range MFH. The predicate (stored MFH
+    // dims) differs from the §6.17.4.1 derived-FrameWidth check below, so it has its own
+    // rule id. An MFH with no `mfh_frame_size` payload infers its default dims to the
+    // sequence maxima (§5.18.2, mirror :4101) and is trivially in range, so the omitted-size
+    // case is silent here. Anchored at `obu` (the referencing frame's OBU) and emitted once
+    // per referencing frame header. On this resolution path `record.mfh_id == cur_mfh_id`
+    // (`resolve_frame_mfh_record` looks the record up by the prefix's `cur_mfh_id`), so the
+    // message's id matches the referencing frame's `cur_mfh_id`. An unresolvable MFH leaves
+    // `mfh_record == None` (the shared guard) and stays silent.
+    let mfh_stored_dims = if let Some(record) = mfh_record
+        && let Some(mfh_size) = record.mfh_frame_size
+    {
+        let mfh_width = mfh_size.width_minus_1 + 1;
+        let mfh_height = mfh_size.height_minus_1 + 1;
+        if mfh_width > max_width || mfh_height > max_height {
+            report.push(frame_header_error(
+                "frame-header/mfh-frame-size-exceeds-sequence-max",
+                "6.17.2",
+                obu,
+                format!(
+                    "the referenced multi-frame header (cur_mfh_id {}) stores \
+                     FrameWidth={}, FrameHeight={}, which exceeds the active sequence \
+                     maximum {}x{} (§6.17.2 mfh_frame_width/height_minus_1 <= \
+                     max_frame_width/height_minus_1)",
+                    record.mfh_id.get(),
+                    mfh_width,
+                    mfh_height,
+                    max_width,
+                    max_height
+                ),
+            ));
+        }
+        Some((mfh_width, mfh_height))
+    } else {
+        None
+    };
+
     // This call site emits the §6.17 bridge-ref / frame-size / tile / quant diagnostics.
     // A `cur_mfh_id > 0` frame's FrameWidth/FrameHeight come from `mfh_record` on the
     // non-override path (§5.18.4.1, mirror :5767), so the resolved record is threaded in
     // with the §7.3.8.7 discipline (the caller passes `resolve_frame_mfh_record`'s result).
     // For a `cur_mfh_id == 0` frame, or a `cur_mfh_id > 0` frame whose in-band MFH is
-    // unresolvable, this is `None` and the core parser keeps its existing early-stop.
+    // unresolvable, this is `None` and the core parser keeps its existing early-stop. The
+    // §6.17.2 stored-MFH bound above already ran, so it is not lost when the core parse stops.
     let Some(core) = parse_frame_core(obu, first_picture_in_tu, active_sequence, mfh_record) else {
         return;
     };
@@ -12928,51 +12980,6 @@ fn frame_header_core_checks(
         ));
     }
 
-    let max_width = active_sequence.general.max_frame_width.get();
-    let max_height = active_sequence.general.max_frame_height.get();
-
-    // AV2 § 6.17.2: after load_sequence_header(), for every `cur_mfh_id > 0` frame it is a
-    // requirement of bitstream conformance that the *referenced multi-frame header's stored*
-    // dimensions satisfy mfh_frame_width_minus_1[ cur_mfh_id ] <= max_frame_width_minus_1 and
-    // mfh_frame_height_minus_1[ cur_mfh_id ] <= max_frame_height_minus_1
-    // (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2, mirror :4348-4349).
-    // This bounds the MFH's *stored* dims and is INDEPENDENT of frame_size_override_flag —
-    // a frame overriding to in-range dims (so `core.frame_size` is conformant) still must
-    // not reference an out-of-range MFH. The predicate (stored MFH dims) differs from the
-    // §6.17.4.1 derived-FrameWidth check below, so it has its own rule id. An MFH with no
-    // `mfh_frame_size` payload infers its default dims to the sequence maxima (§5.18.2,
-    // mirror :4101) and is trivially in range, so the omitted-size case is silent here.
-    // Evaluated at the referencing frame's OBU (the §6.17.2 load_sequence_header point), so
-    // the diagnostic is anchored at `obu` and emitted once per referencing frame header.
-    // An unresolvable MFH leaves `mfh_record == None` (the shared guard) and stays silent.
-    let mfh_stored_dims = if let Some(record) = mfh_record
-        && let Some(mfh_size) = record.mfh_frame_size
-    {
-        let mfh_width = mfh_size.width_minus_1 + 1;
-        let mfh_height = mfh_size.height_minus_1 + 1;
-        if mfh_width > max_width || mfh_height > max_height {
-            report.push(frame_header_error(
-                "frame-header/mfh-frame-size-exceeds-sequence-max",
-                "6.17.2",
-                obu,
-                format!(
-                    "the referenced multi-frame header (cur_mfh_id {}) stores \
-                     FrameWidth={}, FrameHeight={}, which exceeds the active sequence \
-                     maximum {}x{} (§6.17.2 mfh_frame_width/height_minus_1 <= \
-                     max_frame_width/height_minus_1)",
-                    core.cur_mfh_id.get(),
-                    mfh_width,
-                    mfh_height,
-                    max_width,
-                    max_height
-                ),
-            ));
-        }
-        Some((mfh_width, mfh_height))
-    } else {
-        None
-    };
-
     // FrameWidth/FrameHeight do not exceed the active sequence maximum
     // (FrameWidth <= MaxFrameWidth, FrameHeight <= MaxFrameHeight). On the explicit
     // override path this is AV2 § 6.17.4.1 (frame_width_minus_1 <= max_frame_width_minus_1,
@@ -12982,11 +12989,17 @@ fn frame_header_core_checks(
     // (mirror :5767), so `core.frame_size` carries the MFH's stored dims verbatim — that
     // exact case is already the §6.17.2 stored-MFH check above, the single home for
     // stored-MFH dims. To avoid double-reporting the identical numbers, the derived check
-    // is skipped only when `core.frame_size` equals the stored MFH dims (the override==0
-    // MFH-default path). On the override==1 path the derived dims come from explicit
-    // frame_size() bits and differ from the stored dims, so both checks examine distinct
-    // numbers and both legitimately fire when each independently exceeds the maxima.
-    let derived_is_mfh_default = matches!((core.frame_size, mfh_stored_dims), (Some(size), Some(dims)) if (size.width, size.height) == dims);
+    // defers ONLY on that parsed PATH — `frame_size_override_flag == 0` on a resolved
+    // `cur_mfh_id > 0` frame (§5.18.4 / §5.18.2, mirror :5767), where FrameWidth/Height are
+    // the MFH default dimensions and carry no explicit fields of their own. The suppression
+    // keys on provenance (the override flag), NOT on dimension equality: an override==1 frame
+    // that explicitly codes the same out-of-range dims the MFH stores commits a genuine,
+    // separate §6.17.4.1 violation through its own frame_width/height_minus_1 fields, so both
+    // checks legitimately fire even when the numbers coincide. (`mfh_stored_dims.is_some()`
+    // bounds the deferral to the case the §6.17.2 home actually examined those dims.)
+    let derived_is_mfh_default = core.frame_size_override_flag == Some(false)
+        && !core.cur_mfh_id.is_zero()
+        && mfh_stored_dims.is_some();
     if !derived_is_mfh_default
         && let Some(size) = core.frame_size
         && (size.width > max_width || size.height > max_height)

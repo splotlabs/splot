@@ -256,6 +256,16 @@ pub struct FrameHeaderCore {
     pub refresh_frame_flags: Option<u32>,
     /// `FrameWidth`/`FrameHeight` from `frame_size()`, when exactly known.
     pub frame_size: Option<FrameSize>,
+    /// `frame_size_override_flag` (AV2 § 5.18.4 / § 5.18.2), when the intra tail read
+    /// or inferred it. This records the *provenance* of [`Self::frame_size`]: on the
+    /// `cur_mfh_id > 0` non-override path (`Some(false)`) `FrameWidth`/`FrameHeight`
+    /// come from the resolved multi-frame header's stored default dimensions
+    /// (`mfh_frame_width/height_minus_1 + 1`, § 5.18.4.1, mirror :5767), whereas on the
+    /// override path (`Some(true)`) they come from this frame's explicit
+    /// `frame_width_minus_1` / `frame_height_minus_1` fields. A single-picture key frame
+    /// infers it `false` without reading a bit. `None` when the parse stopped before the
+    /// intra tail.
+    pub frame_size_override_flag: Option<bool>,
     /// `bridge_frame_ref_idx`, when read (bridge frames).
     pub bridge_frame_ref_idx: Option<u32>,
     /// `frame_to_show_map_idx`, when read (show-existing-frame).
@@ -492,6 +502,7 @@ fn init_core_from_prefix(prefix: &FrameHeaderPrefix, obu_type: ObuType) -> Frame
         order_hint_lsb: None,
         refresh_frame_flags: None,
         frame_size: None,
+        frame_size_override_flag: None,
         bridge_frame_ref_idx: None,
         frame_to_show_map_idx: None,
         allow_screen_content_tools: None,
@@ -664,6 +675,11 @@ fn parse_intra_tail(
     } else {
         reader.read_bit()? != 0
     };
+    // Record the dims provenance for the §6.17.4.1 / §6.17.2 validator split: the
+    // non-override path (`false`) derives FrameWidth/FrameHeight from the MFH default
+    // dimensions (or the sequence maxima for cur_mfh_id == 0), the override path
+    // (`true`) from this frame's explicit frame_width/height_minus_1 fields below.
+    core.frame_size_override_flag = Some(frame_size_override_flag);
 
     // order_hint f(OrderHintBits); OrderHintLsbs = order_hint.
     core.order_hint_lsb = Some(read_f(reader, seq.order_hint_bits)?);
@@ -1169,6 +1185,11 @@ mod tests {
 
         assert_eq!(core.cur_mfh_id.get(), 1);
         assert_eq!(core.frame_size, Some(FrameSize::new(1920, 1080)));
+        assert_eq!(
+            core.frame_size_override_flag,
+            Some(true),
+            "the override path records frame_size_override_flag == 1 (explicit dims provenance)"
+        );
         assert_eq!(core.tile_info.as_ref().unwrap().tile_cols, 1);
         assert_eq!(core.quantization_params.unwrap().base_q_idx, 70);
         assert_eq!(core.segmentation_params, None);
@@ -1235,6 +1256,11 @@ mod tests {
             core.frame_size,
             Some(FrameSize::new(1920, 1080)),
             "MFH default dims drive frame_size on the non-override path"
+        );
+        assert_eq!(
+            core.frame_size_override_flag,
+            Some(false),
+            "the non-override default path records frame_size_override_flag == 0 (MFH-default provenance)"
         );
         assert_eq!(core.tile_info.as_ref().unwrap().tile_cols, 1);
         assert_eq!(core.quantization_params.unwrap().base_q_idx, 70);
