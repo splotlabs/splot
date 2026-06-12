@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "e41ccaa4a7131ecf5bf07f9a0ef22aa6f5171f51",
+  "audited_commit": "80d344ad513cee40f0b9b0524433c38fff3a3ab3",
   "outcome": "success",
   "files": [
     {
@@ -1195,7 +1195,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "e1c9de99180b1ee25a64548a5be86de546d862e6cf190ae046e7da067c56f1be",
+      "sha256": "68f431c6f3530d49fb4aaddf5ac93a0cbbf1f37763c5f39a90c77024f241b43a",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
