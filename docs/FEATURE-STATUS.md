@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-10. 130 feature(s).
+Matrix version 1. Last reviewed 2026-06-10. 131 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -107,7 +107,8 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT` | Coded extended layer unit ordering semantics | normative | bitstream-semantics | done | todo | n/a | partial | n/a | n/a | partial | done | pending | `crates/splot-validate/src/context.rs` |
 | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | Temporal unit OBU order | normative | bitstream-semantics | done | done | done | partial | todo | todo | partial | done | pending | `crates/splot-validate/src/context.rs` |
 | `AV2-7.3.8-HLS-AVAILABILITY` | High-level syntax availability | normative | bitstream-semantics | done | done | done | partial | todo | todo | partial | done | pending | `crates/splot-validate/src/context.rs` |
-| `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | Long-term reference availability | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/context.rs` |
+| `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | Long-term reference availability | normative | bitstream-semantics | done | done | n/a | partial | n/a | n/a | partial | partial | pending | `crates/splot-validate/src/context.rs` |
+| `AV2-7.4-RANDOM-ACCESS` | Random access decoding | normative | bitstream-semantics | done | done | n/a | partial | n/a | n/a | partial | partial | pending | `crates/splot-validate/src/context.rs` |
 | `AV2-7.23-REFERENCE-FRAME-UPDATE` | Reference frame update process | normative | bitstream-semantics | done | done | n/a | partial | n/a | n/a | partial | done | pending | `crates/splot-validate/src/reference_state.rs` |
 | `AV2-9-ADDITIONAL-TABLES` | Additional spec tables (codegen) | normative | bitstream-semantics | done | todo | todo | n/a | n/a | n/a | todo | todo | pending | `crates/splot-core/src/tables.rs` |
 | `AV2-A-PROFILES` | Annex A profile constraints | normative | bitstream-semantics | done | todo | n/a | partial | n/a | n/a | todo | done | pending | `crates/splot-validate/src/annex_a.rs` |

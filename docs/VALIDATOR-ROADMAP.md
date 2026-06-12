@@ -181,7 +181,11 @@ segmenter, keyed per `obu_xlayer_id`): the `celu/*` in-unit ordering,
 output-frame presence, same-OrderHint, CLK/OLK first-unit and lowest-layer,
 no-CLK+OLK-mix, all-leading-or-none, and CELU-scoped CI rules, plus the
 flag-gated `celu/doh-order-hint-mismatch` / `celu/doh-order-hint-bits-mismatch`
-checks. §7.3.9 long-term-reference availability is not started.
+checks. §7.3.9 long-term-reference availability is partial
+(`reference-state-and-random-access`): the per-slot `RefLongTermId` model and the
+§6.17.2 RAS `long_term_id_in_use` check (`frame-header/ras-ref-long-term-id-not-in-use`)
+landed; the §7.3.9.1 general availability + the RAP-CELU CLK-then-OLK ordering remain
+residuals (need a long-term RAP-replay key).
 
 **Goal:** enforce temporal-unit and coded-extended-layer presence order enough for validator-first conformance.
 
@@ -238,7 +242,14 @@ points enough to support HLS availability, coded-video-sequence boundaries, and
 long-term-reference preconditions (§7.4.2 covers random access with and without
 long-term reference frames). Closely coupled to
 `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` and the `AV2-5.6-MSDO`
-random-access-point detection bound.
+random-access-point detection bound. **Partial** (`reference-state-and-random-access`,
+umbrella `AV2-7.4-RANDOM-ACCESS`): the §7.4.5 RAS reference restriction landed (via the
+§6.17.2 `long_term_id_in_use` check + the per-slot `RefLongTermId` model) and the
+§7.3.8.9 `reset_qm()` QmProtected discipline the §7.4.3/.4/.5 processes invoke landed
+(`frame-header/qm-level-unavailable`). Residuals: the §7.4.2 preconditions, the §7.4.4
+OLK `ref_long_term_id` iff-conditions, the §7.3.9.1 RAP-CELU ordering, and the
+§7.4.4/.5 `OrderHint < (1<<OrderHintBits)` bound (not header-decidable — the unwrapped
+`get_disp_order_hint()`).
 
 Acceptance:
 
@@ -489,7 +500,11 @@ The inter-path arms of every child remain partial/todo.
   (the `explicit_ref_frame_map` / `ref_frame_idx` `RefValid` checks § 6.17.2 :4605-4607,
   `frame_size_with_refs`, `primary_ref_frame` range, the `use_bru` OrderHint/dim
   constraints § 6.17.2 :4587-4596) await inter-path parsing; the § 7.3.9 long-term
-  reference availability is `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY`; the § 6.17.2
+  reference availability (`AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY`) is now **partial** —
+  `reference-state-and-random-access` added the per-slot `RefLongTermId` to `SlotFacts` (from
+  a KEY frame's `long_term_id_plus_1 - 1`) and the § 6.17.2 RAS `long_term_id_in_use` check;
+  the § 7.3.9.1 general availability + the § 7.4.4 OLK `ref_long_term_id` iff-conditions
+  remain residuals. The § 6.17.2
   `derive_sef_order_hint` already-shown / `RefImplicitOutputFrame` /
   `RefImmediateOutputFrame` SEF constraints (mirror :4375-4380) need output-frame-buffer
   / shown state this phase does not model.

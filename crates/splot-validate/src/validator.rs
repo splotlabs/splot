@@ -6693,6 +6693,116 @@ mod tests {
         );
     }
 
+    // --- § 7.3.8.9 quantizer-matrix availability + QmProtected reset ---
+
+    #[test]
+    fn validator_flags_qm_level_unavailable_when_no_qm_obu() {
+        // A CLK frame with using_qmatrix == 1 references custom level 0, but no QM OBU has
+        // made level 0 available — § 7.3.8.9 violation (the CLK's own reset_qm clears the
+        // never-sent unprotected level, and external HLS is disabled by default).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_frame_with_qm_reference(0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "frame-header/qm-level-unavailable"
+                    && d.spec_section.as_deref() == Some("7.3.8.9")
+            }),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_silent_on_qm_level_available_via_qm_obu() {
+        // A QM OBU (chroma -> 3 planes, matching the 4:2:0 sequence) makes level 0 available
+        // before the referencing CLK in the SAME temporal unit, so the §7.3.8.9 availability
+        // check stays silent (the level is QmProtected and present).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(qm_default_level_obu_chroma(0));
+        data.extend(clk_frame_with_qm_reference(0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/qm-level-unavailable"),
+            "an available QM level must not fire; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_qm_level_unavailable_boundary_default_level_silent() {
+        // qm_y == 15 == NUM_CUSTOM_QMS selects the built-in default matrix, never a custom
+        // slot, so §7.3.8.9 availability does not apply even with no QM OBU.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_frame_with_qm_reference(15));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/qm-level-unavailable"),
+            "the default matrix is always available; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_qm_level_unavailable_suppressed_under_external_provided() {
+        // ExternalHlsSet cannot express QM OBUs, so any Provided mode means the level MAY be
+        // supplied externally — the §7.3.8.9 availability check suppresses (inexpressible
+        // kind), like the film-grain availability check.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_frame_with_qm_reference(0));
+        use crate::options::{ExternalHlsMode, ExternalHlsSet};
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/qm-level-unavailable"),
+            "a Provided external-HLS mode must suppress QM availability; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_qm_protected_reset_clears_unprotected_level_across_temporal_units() {
+        // TU1 sends level 0 via a QM OBU (no referencing frame). TU2 starts with a CLK that
+        // references level 0 without re-sending it: the temporal delimiter cleared
+        // QmProtected, so the CLK's reset_qm() clears the (now unprotected) level 0 — §7.3.8.9
+        // unavailable fires. This proves the QmProtected reset is modeled (both-order:
+        // QM-then-frame within each TU, frame across the TU boundary).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(qm_default_level_obu_chroma(0)); // TU1: level 0 available + protected
+        data.extend(temporal_delimiter_obu()); // TU2 starts: QmProtected cleared
+        data.extend(clk_frame_with_qm_reference(0)); // CLK reset_qm() clears unprotected lvl 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "frame-header/qm-level-unavailable"
+                    && d.spec_section.as_deref() == Some("7.3.8.9")
+            }),
+            "a level reset out of a previous temporal unit must be unavailable; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_qm_protected_reset_preserves_resent_level_in_current_temporal_unit() {
+        // Same as above, but TU2 RE-SENDS level 0 before the CLK: the QM OBU sets QmProtected
+        // for level 0, so the CLK's reset_qm() does NOT clear it — §7.3.8.9 stays silent.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(qm_default_level_obu_chroma(0)); // TU1
+        data.extend(temporal_delimiter_obu()); // TU2 starts: QmProtected cleared
+        data.extend(qm_default_level_obu_chroma(0)); // TU2 re-sends level 0 -> protected
+        data.extend(clk_frame_with_qm_reference(0)); // reset_qm() preserves protected level 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/qm-level-unavailable"),
+            "a level re-sent in the current temporal unit must survive reset_qm; report was: {report}"
+        );
+    }
+
     #[test]
     fn validator_preserves_existing_unavailable_sequence_header_check() {
         // The frame-header core wiring must not suppress the activation/HLS checks: a
@@ -12203,6 +12313,63 @@ mod tests {
         }
     }
 
+    /// Appends a § 5.8.8 `lcr_embedded_layer_info()` block where each set bit `j` of
+    /// `mlayer_map` (ascending) carries an explicit `lcr_max_expected_width` /
+    /// `lcr_max_expected_height` (`lcr_same_sh_max_resolution_flag == 0`) from `dims[k]`.
+    fn append_lcr_embedded_layer_info_with_dims(
+        bits: &mut Bits,
+        mlayer_map: u8,
+        tlayer_maps: &[u8],
+        dims: &[(u32, u32)],
+    ) {
+        assert_eq!(mlayer_map.count_ones() as usize, tlayer_maps.len());
+        assert_eq!(mlayer_map.count_ones() as usize, dims.len());
+        bits.f(u32::from(mlayer_map), 8); // lcr_mlayer_map
+        let mut next = 0usize;
+        for j in 0u8..8 {
+            if mlayer_map & (1u8 << j) == 0 {
+                continue;
+            }
+            bits.f(u32::from(tlayer_maps[next]), 4); // lcr_tlayer_map
+            bits.f(0, 8); // lcr_layer_type = TEXTURE_LAYER
+            bits.f(0, 8); // lcr_view_type = VIEW_UNSPECIFIED
+            if j > 0 {
+                bits.f(0, u32::from(j)); // lcr_dependent_layer_map
+            }
+            bits.bit(0); // lcr_same_sh_max_resolution_flag = 0 -> explicit dims follow
+            bits.uvlc(dims[next].0); // lcr_max_expected_width
+            bits.uvlc(dims[next].1); // lcr_max_expected_height
+            next += 1;
+            bits.align(); // byte_alignment()
+        }
+    }
+
+    /// A local LCR OBU at `xlayer` carrying embedded-layer info with explicit per-layer
+    /// `lcr_max_expected_width`/`height` (`same_sh_max_resolution_flag == 0`).
+    fn local_lcr_obu_with_expected_dims(
+        xlayer: u8,
+        local_id: u32,
+        mlayer_map: u8,
+        tlayer_maps: &[u8],
+        dims: &[(u32, u32)],
+    ) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(0, 3); // lcr_global_id
+        bits.f(local_id, 3); // lcr_local_id
+        bits.bit(0); // lcr_profile_tier_level_info_present_flag
+        bits.bit(0); // lcr_local_atlas_id_present_flag
+        bits.f(0, 3); // reserved_zero_3bits
+        bits.f(0, 5); // lcr_local_reserved_zero_5bits
+        bits.bit(0); // lcr_rep_info_present_flag
+        bits.bit(0); // lcr_xlayer_purpose_present_flag
+        bits.bit(0); // lcr_xlayer_color_info_present_flag
+        bits.bit(1); // lcr_embedded_layer_info_present_flag
+        bits.align(); // byte_alignment()
+        append_lcr_embedded_layer_info_with_dims(&mut bits, mlayer_map, tlayer_maps, dims);
+        extensible_obu_tail(&mut bits);
+        annex_b_obu_with_header(&layer_obu_header(16, 0, 0, xlayer), &bits.into_bytes())
+    }
+
     /// A local LCR OBU at `xlayer` (`lcr_global_id == 0`) carrying embedded-layer
     /// info with the given maps.
     fn local_lcr_obu_with_embedded(
@@ -12542,6 +12709,118 @@ mod tests {
             !has_error(&report, "lcr/mlayer-dependency-missing")
                 && !has_error(&report, "lcr/tlayer-dependency-missing"),
             "an unreferenced LCR must not be checked; report was: {report}"
+        );
+    }
+
+    // --- § 6.8.9 lcr_max_expected_width/height sequence-max bound ---
+
+    #[test]
+    fn lcr_max_expected_dims_exceed_sequence_max_is_flagged() {
+        // The activated sequence header has max_frame_width_minus_1 == 15 (max width 16) and
+        // max_frame_height_minus_1 == 7 (max height 8). The activated local LCR declares
+        // lcr_max_expected_width == 17 > 16 for embedded layer 0 — a § 6.8.9 violation.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_expected_dims(
+            0,
+            5,
+            0b1,
+            &[0b1],
+            &[(17, 8)],
+        ));
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_with_lcr(0, 5, 1, 1),
+        ));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // frame-confirms the activation
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "lcr/max-expected-dims-exceed-sequence-max"
+                    && d.spec_section.as_deref() == Some("6.8.9")
+            }),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_max_expected_dims_at_sequence_max_boundary_is_silent() {
+        // lcr_max_expected_width == 16 (== max width) and lcr_max_expected_height == 8 (== max
+        // height): the § 6.8.9 bound is `<=`, so equality at both maxima is conformant.
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_expected_dims(
+            0,
+            5,
+            0b1,
+            &[0b1],
+            &[(16, 8)],
+        ));
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_with_lcr(0, 5, 1, 1),
+        ));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "lcr/max-expected-dims-exceed-sequence-max"),
+            "an at-maximum expected dimension must not fire; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_max_expected_dims_without_frame_confirmation_is_silent() {
+        // Without a frame-confirmed activation (no CLK referencing the header), the §6.8.9
+        // bound stays silent (the strict activation gate — Unknown, no guessing).
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_expected_dims(
+            0,
+            5,
+            0b1,
+            &[0b1],
+            &[(17, 8)],
+        ));
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_with_lcr(0, 5, 1, 1),
+        ));
+        // No frame OBU: the activation is not frame-confirmed.
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "lcr/max-expected-dims-exceed-sequence-max"),
+            "an unconfirmed activation must not fire; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn lcr_max_expected_dims_suppressed_under_external_provided() {
+        // Under a Provided external-HLS mode an unmodeled external local LCR could shadow the
+        // in-band association, so the §6.8.9 bound suppresses (zero false positives).
+        let mut data = temporal_delimiter_obu();
+        data.extend(local_lcr_obu_with_expected_dims(
+            0,
+            5,
+            0b1,
+            &[0b1],
+            &[(17, 8)],
+        ));
+        data.extend(annex_b_obu(
+            0x04,
+            &sequence_header_payload_with_lcr(0, 5, 1, 1),
+        ));
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
+        use crate::options::{ExternalHlsMode, ExternalHlsSet};
+        let options = ValidationOptions {
+            external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
+        };
+        let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "lcr/max-expected-dims-exceed-sequence-max"),
+            "a Provided external-HLS mode must suppress the §6.8.9 bound; report was: {report}"
         );
     }
 
@@ -20702,6 +20981,118 @@ mod tests {
         report
             .errors()
             .any(|d| d.rule_id == "frame-header/primary-ref-frame-out-of-range")
+    }
+
+    // --- § 6.17.2 RAS long_term_id_in_use(RefLongTermId[ref_frame_idx[i]]) ---
+
+    fn has_ras_ref_long_term_error(report: &ValidationReport) -> bool {
+        report
+            .errors()
+            .any(|d| d.rule_id == "frame-header/ras-ref-long-term-id-not-in-use")
+    }
+
+    /// A complete CLK KEY frame (allFrames refresh -> only slot 0 valid by the §7.23 key
+    /// `first` rule) whose `long_term_id_plus_1` sets `LongTermId = long_term_id_plus_1 - 1`,
+    /// so slot 0's modeled `RefLongTermId` becomes that value. Built against the base
+    /// `frame_core_seq` sequence with `long_term_frame_id_bits == 4`. The body parses to
+    /// completion so the validator commits the §7.23 Refresh.
+    fn clk_frame_long_term(long_term_id_plus_1: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        // CLK -> KEY: long_term_id_plus_1 f(long_term_frame_id_bits == 4)
+        fb.f(long_term_id_plus_1, 4);
+        fb.bit(1); // immediate_output_frame
+        fb.bit(1); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
+        fb.f(15, 8); // frame_width_minus_1 f(8) -> 16 (== max_frame_width)
+        fb.f(15, 8); // frame_height_minus_1 f(8) -> 16 (== max_frame_height)
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0); // 16-wide frame -> no col-increment bit
+        annex_b_obu(CLK_HEADER, &fb.into_bytes())
+    }
+
+    /// A RAS frame (FrameType derived to SWITCH; explicit reference map) listing a single
+    /// `ref_long_term_id` and selecting slot 0 via `ref_frame_idx[0]`. Built against a base
+    /// `frame_core_seq` sequence with `long_term_frame_id_bits == 4`, `explicit_ref_frame_map
+    /// == 1`. A RAS forces `frame_size_override_flag == 1` (SWITCH) so frame_size() reads
+    /// explicit dims. The body parses through the inter control region so `inter.ref_frame_idx`
+    /// is recorded for the §6.17.2 long_term_id_in_use check.
+    fn ras_frame_explicit_map(ref_long_term_id: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // restricted_prediction_switch
+        fb.f(1, 3); // num_key_ref_frames == 1
+        fb.f(ref_long_term_id, 4); // ref_long_term_id[0] f(long_term_frame_id_bits == 4)
+        fb.bit(1); // immediate_output_frame (RAS is not OLK)
+        // monotonic_output_order_flag -> implicit_output_frame forced 0 (no bit)
+        // SWITCH frame_type -> frame_size_override_flag forced 1 (no bit)
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        fb.bit(0); // signal_primary_ref_frame
+        fb.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        // refresh_frame_flags: RAS && max_mlayer_id == 0 -> derived (no bits)
+        fb.bit(1); // frame_explicit_ref_frame_map (explicit_ref_frame_map seq flag set)
+        fb.f(1, 3); // num_total_refs == 1
+        fb.f(0, 3); // ref_frame_idx[0] f(CeilLog2(8) == 3) -> slot 0
+        // SWITCH + frame_size_override_flag == 1: frame_size() reads explicit dims (not
+        // frame_size_with_refs, since frame_type == Switch).
+        fb.f(15, 8); // frame_width_minus_1 f(8) -> 16 (== max_frame_width)
+        fb.f(15, 8); // frame_height_minus_1 f(8) -> 16 (== max_frame_height)
+        annex_b_obu(RAS_HEADER, &fb.into_bytes())
+    }
+
+    #[test]
+    fn validator_ras_ref_long_term_silent_when_max_mlayer_zero_stops_before_ref_frame_idx() {
+        // REACHABILITY BOUNDARY (named residual): for a RAS frame with max_mlayer_id == 0, the
+        // §5.18.2 refresh_frame_flags derivation reads RefValid/RefLongTermId (mirror :4493),
+        // which the inter parser cannot ground, so it stops with InterStop::UnmodeledDerivation
+        // BEFORE reaching ref_frame_idx (inter.rs :524-526 / :482-485). `core.inter.ref_frame_idx`
+        // is therefore EMPTY, so the §6.17.2 long_term_id_in_use check has nothing to evaluate
+        // and stays silent — even though the RAS lists 3 while slot 0's modeled RefLongTermId is
+        // 5. The check is reachable only for max_mlayer_id != 0 RAS frames (whose refresh is read
+        // explicitly so the parse continues into the reference region). This proves the rule does
+        // NOT false-positive on the unreachable single-embedded-layer case (zero false positives).
+        let seq = FrameCoreSeq {
+            long_term_frame_id_bits: 4,
+            explicit_ref_frame_map: true,
+            ..FrameCoreSeq::base() // max_mlayer_id == 0
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(clk_frame_long_term(6)); // establishes slot 0 RefLongTermId 5
+        data.extend(temporal_delimiter_obu());
+        data.extend(ras_frame_explicit_map(3)); // lists 3 (!= 5), but parse stops early
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_ras_ref_long_term_error(&report),
+            "a RAS with max_mlayer_id == 0 stops before ref_frame_idx -> the §6.17.2 long-term \
+             check is unreachable and must stay silent (no false positive); report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_silent_on_ras_ref_long_term_when_slot_unknown() {
+        // No prior CLK establishes slot 0, so the §7.23 buffer leaves it Unknown: even if the
+        // parser reached ref_frame_idx, the RAS long_term_id_in_use check cannot prove a
+        // violation against an Unknown slot and drops to silence (the Unknown invariant).
+        let seq = FrameCoreSeq {
+            long_term_frame_id_bits: 4,
+            explicit_ref_frame_map: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(ras_frame_explicit_map(3)); // slot 0 is Unknown -> silent
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_ras_ref_long_term_error(&report),
+            "an Unknown slot cannot prove a §6.17.2 long-term violation -> silent; \
+             report was: {report}"
+        );
     }
 
     /// A regular-tile-group INTER frame (explicit reference map) that SIGNALS
