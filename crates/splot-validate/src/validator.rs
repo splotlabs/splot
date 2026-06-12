@@ -5182,6 +5182,245 @@ mod tests {
         annex_b_obu(CLK_HEADER, &fb.into_bytes())
     }
 
+    /// Builds a complete intra CLK FIRST tile group for a 160x16 frame (TileCols == 3,
+    /// TileRows == 1, NumTiles == 3, TileColsLog2 == 2, TileRowsLog2 == 0 -> tileBits ==
+    /// 2), reaching `IntraHeaderComplete`, then appends the §5.19 tile_group_obu()
+    /// structure: `tile_start_and_end_present_flag` (NumTiles > 1) and, when present, the
+    /// `tg_start` / `tg_end` f(2) reads, followed by enough payload bytes to byte-align.
+    /// `tg_range` is `Some((tg_start, tg_end))` for an explicit range (flag == 1) or `None`
+    /// to infer 0 .. NumTiles - 1 (flag == 0).
+    fn clk_first_tile_group_multitile(tg_range: Option<(u32, u32)>) -> Vec<u8> {
+        let mut fb = Bits::default();
+        // frame_header() through tile_info() for a 160x16 frame.
+        clk_frame_until_tile_info(&mut fb, 160, 16, (8, 8));
+        uniform_3x1_tile_info(&mut fb, 2); // TileCols == 3, context_update_tile_id == 2 (< 3)
+        quant_seg_tail(&mut fb);
+        // loop-filter cluster (deblocking 2 bits, gdf/cdef disabled) then the §5.18.2 tail.
+        fb.bit(0); // apply_deblocking_filter[0]
+        fb.bit(0); // apply_deblocking_filter[1]
+        fb.bit(0); // tx_mode_select = 0
+        fb.f(0, 2); // reduced_tx_set = 0
+        // §5.19 tile_group_obu() structure (use_bru/bru_inactive == 0 on the intra path):
+        match tg_range {
+            Some((start, end)) => {
+                fb.bit(1); // tile_start_and_end_present_flag
+                fb.f(start, 2); // tg_start f(tileBits == 2)
+                fb.f(end, 2); // tg_end f(tileBits == 2)
+            }
+            None => {
+                fb.bit(0); // tile_start_and_end_present_flag == 0 -> range inferred
+            }
+        }
+        // byte_alignment() + a small tile_group_payload() region (zero pad bits are fine).
+        annex_b_obu(CLK_HEADER, &fb.into_bytes())
+    }
+
+    /// A 160x16 frame-core sequence header (TileCols == 3 layout) plus a temporal delimiter.
+    fn td_and_frame_core_seq_160() -> Vec<u8> {
+        td_and_frame_core_seq(FrameCoreSeq {
+            max_frame_width_minus_1: 159,
+            ..FrameCoreSeq::base()
+        })
+    }
+
+    #[test]
+    fn validator_tile_group_range_silent_on_conforming_multitile() {
+        // An explicit tg range covering the whole 3-tile frame (tg_start == 0, tg_end ==
+        // 2 == NumTiles - 1) satisfies every locally-decidable §6.18 clause.
+        let mut data = td_and_frame_core_seq_160();
+        data.extend(clk_first_tile_group_multitile(Some((0, 2))));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("tile-group/")),
+            "a conforming multi-tile tg range must be silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_tile_group_range_silent_on_inferred_range() {
+        // tile_start_and_end_present_flag == 0 infers tg_start == 0, tg_end == NumTiles -
+        // 1: always conformant, no §6.18 diagnostic.
+        let mut data = td_and_frame_core_seq_160();
+        data.extend(clk_first_tile_group_multitile(None));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("tile-group/")),
+            "an inferred tg range must be silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_first_tile_group_tg_start_not_zero() {
+        // The first tile group of a coded frame has TileNum == 0, so tg_start must be 0
+        // (§6.18 mirror :6215-6216). An explicit tg_start == 1 is a conformance defect.
+        let mut data = td_and_frame_core_seq_160();
+        data.extend(clk_first_tile_group_multitile(Some((1, 2))));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "tile-group/first-tg-start-not-zero"
+                    && d.spec_section.as_deref() == Some("6.18")),
+            "a first tile group with tg_start != 0 must fire first-tg-start-not-zero; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_tg_end_before_tg_start() {
+        // tg_end < tg_start violates §6.18 (mirror :6220). Use tg_start == 0 (so the
+        // first-tg-start rule stays silent) is impossible with tg_end < 0; instead build
+        // tg_start == 2, tg_end == 1 — this also trips first-tg-start-not-zero, so assert
+        // the tg-end rule specifically fires.
+        let mut data = td_and_frame_core_seq_160();
+        data.extend(clk_first_tile_group_multitile(Some((2, 1))));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "tile-group/tg-end-before-tg-start"
+                    && d.spec_section.as_deref() == Some("6.18")),
+            "tg_end < tg_start must fire tg-end-before-tg-start; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_tg_end_out_of_range() {
+        // tg_end == 3 exceeds NumTiles - 1 == 2 (§6.18 mirror :6218-6223): no tile group's
+        // tg_end may exceed the last tile index. tg_start == 0 keeps the first-tg rule
+        // silent so the out-of-range rule is isolated.
+        let mut data = td_and_frame_core_seq_160();
+        data.extend(clk_first_tile_group_multitile(Some((0, 3))));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "tile-group/tg-end-out-of-range"
+                    && d.spec_section.as_deref() == Some("6.18")),
+            "tg_end > NumTiles - 1 must fire tg-end-out-of-range; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_tile_group_range_silent_on_single_tile() {
+        // A single-tile frame (NumTiles == 1) reads no tile_start_and_end_present_flag and
+        // infers tg_start == 0, tg_end == 0: no §6.18 diagnostic, and the existing
+        // single-tile fixtures stay valid.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("tile-group/")),
+            "a single-tile frame must not fire any tile-group range diagnostic; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_tile_group_structure_truncation() {
+        // A multi-tile frame whose payload ends after the tile_start_and_end_present_flag
+        // but before tg_start/tg_end (§6.2.1 mandatory-syntax truncation). The frame header
+        // must stay COMPLETE (so the §5.19 structure — not the frame header — is what
+        // truncates), so keep every frame-header bit plus the flag and drop the rest at the
+        // bit level.
+        // Use a 160x160 frame: TileCols == TileRows == 3, NumTiles == 9, TileColsLog2 ==
+        // TileRowsLog2 == 2 -> tileBits == 4. The explicit §5.19 range then needs
+        // flag(1) + tg_start(4) + tg_end(4) == 9 bits, which reliably SPILLS past the frame
+        // header's final byte, so truncating to the whole-byte frame-header length keeps the
+        // frame header complete while the structure read runs off the buffer end.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            max_frame_width_minus_1: 159,
+            max_frame_height_minus_1: 159,
+            frame_height_bits_minus_1: 7,
+            ..FrameCoreSeq::base()
+        });
+        let mut fh = Bits::default();
+        clk_frame_until_tile_info(&mut fh, 160, 160, (8, 8));
+        // 3x3 uniform tile_info(): col increments 1,1 then row increments 1,1, then
+        // context_update_tile_id f(TileRowsLog2 2 + TileColsLog2 2 == 4) and
+        // tile_size_bytes_minus_1 f(2).
+        fh.bit(1); // uniform_tile_spacing_flag
+        fh.bit(1); // increment_tile_cols_log2 = 1
+        fh.bit(1); // increment_tile_cols_log2 = 1 (reaches maxLog2TileCols)
+        fh.bit(1); // increment_tile_rows_log2 = 1
+        fh.bit(1); // increment_tile_rows_log2 = 1 (reaches maxLog2TileRows)
+        fh.f(0, 4); // context_update_tile_id (< 9)
+        fh.f(0, 2); // tile_size_bytes_minus_1
+        quant_seg_tail(&mut fh);
+        fh.bit(0); // apply_deblocking_filter[0]
+        fh.bit(0); // apply_deblocking_filter[1]
+        fh.bit(0); // tx_mode_select
+        fh.f(0, 2); // reduced_tx_set
+        let fh_bits = fh.bit_len();
+        let fh_bytes = fh_bits.div_ceil(8);
+        // Append the explicit-range structure (flag + tg_start(4) + tg_end(4)), then truncate
+        // to the whole-byte frame-header length so the 9-bit structure cannot be read in full.
+        let mut fb = fh;
+        fb.bit(1); // tile_start_and_end_present_flag == 1
+        fb.f(0, 4); // tg_start
+        fb.f(8, 4); // tg_end (== NumTiles - 1)
+        let mut payload = fb.into_bytes();
+        payload.truncate(fh_bytes);
+        data.extend(annex_b_obu(CLK_HEADER, &payload));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "tile-group/truncated-structure"
+                    && d.spec_section.as_deref() == Some("6.2.1")),
+            "a payload ending inside the §5.19 structure must fire truncated-structure; \
+             report was: {report}"
+        );
+        // The frame header itself completed, so it must NOT fire the frame-header truncation.
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/truncated-frame-header"),
+            "the frame header is complete; only the §5.19 structure truncates; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_tile_group_byte_alignment_nonzero_pad() {
+        // §6.2.4: every byte_alignment() pad bit must be 0. A single-tile intra frame whose
+        // §5.19 byte_alignment() contains a non-zero zero_bit is a conformance defect. The
+        // complete intra frame header reaches IntraHeaderComplete; append a stray 1 bit so
+        // byte_alignment() reads a non-zero pad.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        for b in complete_intra_clk_frame_header_body().drain_bits() {
+            fb.bit(b);
+        }
+        // NumTiles == 1 -> no tile_start_and_end_present_flag; byte_alignment() runs next.
+        // A pad bit can only be corrupted when the header ends unaligned — assert the
+        // precondition so a future fixture change to an aligned length fails loudly
+        // instead of silently skipping the violation (claude review, PR #61).
+        assert!(
+            !fb.bit_len().is_multiple_of(8),
+            "test precondition: the intra header body must end unaligned so \
+             byte_alignment() reads pad bits"
+        );
+        fb.bit(1); // a non-zero byte_alignment() zero_bit (§6.2.4 violation)
+        data.extend(annex_b_obu(CLK_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "tile-group/byte-alignment-zero-bit"
+                    && d.spec_section.as_deref() == Some("6.2.4")),
+            "a non-zero §5.19 byte_alignment() pad bit must fire byte-alignment-zero-bit; \
+             report was: {report}"
+        );
+    }
+
     #[test]
     fn validator_silent_on_matching_frame_header_copy() {
         // A completed intra first tile group followed by a non-first tile group whose

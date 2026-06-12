@@ -344,6 +344,20 @@ fn inspect_json_exposes_frame_header_core() {
     assert_eq!(tail["allow_bawp"], false);
     assert_eq!(tail["use_global_motion"], false);
     assert_eq!(tail["film_grain"]["apply_grain"], false);
+
+    // The § 5.19 tile_group_obu() structure after frame_header(): a single-tile frame
+    // (NumTiles == 1) reads no tile_start_and_end_present_flag and infers tg_start == 0,
+    // tg_end == 0, then byte_alignment() and the headerBytes/payload boundary. The
+    // payload (§5.20) stays unparsed; payload_size records its byte length.
+    let structure = &records[2]["tile_group_structure"];
+    assert_eq!(structure["payload_kind"], "tile_group_structure");
+    assert_eq!(structure["num_tiles"], 1);
+    assert_eq!(structure["tile_start_and_end_present_flag"], false);
+    assert_eq!(structure["tg_start"], 0);
+    assert_eq!(structure["tg_end"], 0);
+    assert_eq!(structure["status"], "complete");
+    assert!(structure["header_bytes"].is_u64());
+    assert!(structure["payload_size"].is_u64());
 }
 
 #[test]

@@ -23,16 +23,19 @@ use splot_core::headers::film_grain::{FilmGrainObu, parse_film_grain};
 use splot_core::headers::frame::{
     CcsoParams, CcsoPlaneParams, CdefParams, CdefStrengthSet, DeblockingFilterParams, DeltaQParams,
     FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
-    FrameHeaderPrefix, FrameHeaderTail, FrameReferenceStateView, GdfParams, LosslessInfo, LrParams,
-    LrPartialParams, LrPlaneParams, QuantizationParams, SefTrailingBits, SegmentationParams,
-    SetupQmParams, TileInfo, parse_frame_header_core, parse_frame_header_prefix,
+    FrameHeaderParseStatus, FrameHeaderPrefix, FrameHeaderTail, FrameReferenceStateView, GdfParams,
+    LosslessInfo, LrParams, LrPartialParams, LrPlaneParams, QuantizationParams, SefTrailingBits,
+    SegmentationParams, SetupQmParams, TileInfo, parse_frame_header_core,
+    parse_frame_header_prefix,
 };
 use splot_core::headers::metadata::{MetadataUnit, parse_metadata_group, parse_metadata_short};
 use splot_core::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
 use splot_core::headers::padding::parse_padding_obu;
 use splot_core::headers::quantizer_matrix::{QuantizerMatrixObu, parse_quantizer_matrix};
 use splot_core::headers::sequence::{SequenceHeader, SequenceHeaderId, parse_sequence_header};
-use splot_core::headers::tile_group::parse_tile_group_prefix;
+use splot_core::headers::tile_group::{
+    TileGroupLayout, parse_tile_group_prefix, parse_tile_group_structure,
+};
 use splot_core::hls::{MfhId, MultiFrameHeaderRecord, parse_multi_frame_header};
 use splot_core::ivf::{IvfFrame, IvfHeader};
 use splot_core::obu::{ObuHeader, PayloadStatus};
@@ -90,6 +93,8 @@ struct InspectRecord {
     frame_header_core: Option<FrameHeaderCoreView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     frame_header_copy: Option<FrameHeaderCopyView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tile_group_structure: Option<TileGroupStructureView>,
     header: ObuHeader,
 }
 
@@ -122,6 +127,7 @@ impl InspectRecord {
             frame_header_prefix: frame_header_prefix_view(obu),
             frame_header_core: frame_header_core_view(obu, sequences, multi_frame_headers),
             frame_header_copy: frame_header_copy_view(obu),
+            tile_group_structure: tile_group_structure_view(obu, sequences, multi_frame_headers),
             header: obu.header,
         }
     }
@@ -585,6 +591,24 @@ struct FrameHeaderCopyView {
     compared: bool,
 }
 
+/// The § 5.19 `tile_group_obu()` structure after `frame_header()` for `--json` (AV2
+/// § 5.19). Surfaced only for the FIRST tile group of an intra-complete coded frame
+/// (`status` records whether the structure parsed fully or truncated); `header_bytes` /
+/// `payload_size` record the `headerBytes` / unparsed § 5.20 payload boundary.
+#[derive(Serialize)]
+struct TileGroupStructureView {
+    payload_kind: &'static str,
+    num_tiles: u32,
+    tile_start_and_end_present_flag: bool,
+    tg_start: u32,
+    tg_end: u32,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    header_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload_size: Option<u64>,
+}
+
 /// A prefix-only view of a parsed `frame_header_info()` for `--json`. The
 /// `payload_kind` / `prefix_status` labels make explicit that this is not a complete
 /// frame header (AV2 § 5.18 is only prefix-parsed).
@@ -685,6 +709,63 @@ fn frame_header_core_view(
     };
     let core = parse_frame_header_core(&mut reader, &input).ok()?;
     Some(FrameHeaderCoreView::new(&core))
+}
+
+/// Surfaces the § 5.19 `tile_group_obu()` structure after `frame_header()` for the FIRST
+/// tile group of an intra-complete coded frame (AV2 § 5.19). Decidable only when the
+/// frame header reaches [`FrameHeaderParseStatus::IntraHeaderComplete`] on the intra path
+/// (so `use_bru`/`bru_inactive` derive to 0 and the BRU arms are dead) with a parsed
+/// `tile_info()`; otherwise `None` (the BRU-undecidable honest stop).
+fn tile_group_structure_view(
+    obu: &ObuEnvelope<'_>,
+    sequences: &BTreeMap<u8, SequenceHeader>,
+    multi_frame_headers: &BTreeMap<u32, MultiFrameHeaderRecord>,
+) -> Option<TileGroupStructureView> {
+    let obu_type = obu.header.obu_type;
+    if !obu_type.is_tile_group() {
+        return None;
+    }
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    // Only the first tile group carries a parseable frame_header(1) (AV2 § 5.19).
+    if reader.read_bit().ok()? == 0 {
+        return None;
+    }
+    let mfh_record = resolve_inspect_mfh(obu, multi_frame_headers);
+    let active_sequence = resolve_inspect_sequence(obu, sequences, mfh_record);
+    let input = FrameHeaderParseInput {
+        obu_type,
+        first_picture_in_tu: false,
+        active_sequence,
+        mfh_record,
+        reference_state: FrameReferenceStateView::unknown(),
+        mode: FrameHeaderParseMode::Core,
+    };
+    let core = parse_frame_header_core(&mut reader, &input).ok()?;
+    if core.status != FrameHeaderParseStatus::IntraHeaderComplete
+        || core.frame_is_intra != Some(true)
+    {
+        return None;
+    }
+    let tile_info = core.tile_info.as_ref()?;
+    let layout = TileGroupLayout::new(
+        tile_info.tile_cols,
+        tile_info.tile_rows,
+        tile_info.tile_cols_log2,
+        tile_info.tile_rows_log2,
+    );
+    // `reader` is positioned past frame_header(); parse the structure from the same reader.
+    let structure =
+        parse_tile_group_structure(&mut reader, layout, obu.payload.len() as u64).ok()?;
+    Some(TileGroupStructureView {
+        payload_kind: "tile_group_structure",
+        num_tiles: layout.num_tiles,
+        tile_start_and_end_present_flag: structure.tile_start_and_end_present_flag,
+        tg_start: structure.tg_start,
+        tg_end: structure.tg_end,
+        status: structure.outcome.label(),
+        header_bytes: structure.header_bytes,
+        payload_size: structure.payload_size,
+    })
 }
 
 /// Resolves a frame's `cur_mfh_id` (> 0, in range) to the in-band multi-frame-header

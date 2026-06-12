@@ -39,8 +39,8 @@ use splot_core::headers::sequence::{
     SequenceHeaderId, TLayerDependencyMap, Tier, TimingInfo, parse_sequence_header,
 };
 use splot_core::headers::tile_group::{
-    FrameHeaderCopyOutcome, RecordedFrameHeaderBits, parse_frame_header_copy,
-    parse_tile_group_prefix,
+    FrameHeaderCopyOutcome, RecordedFrameHeaderBits, TileGroupLayout, TileGroupStructureOutcome,
+    parse_frame_header_copy, parse_tile_group_prefix, parse_tile_group_structure,
 };
 use splot_core::hls::{
     MAX_MFH_NUM, MfhId, MultiFrameHeaderRecord, MultistreamDecoderOperation, parse_msdo,
@@ -13312,6 +13312,19 @@ fn frame_header_core_checks(
         frame_tile_info_checks(tile_info, obu, report);
     }
 
+    // AV2 § 5.19 / § 6.18: the post-frame-header tile_group_obu() structure — the
+    // tile-group range (tg_start/tg_end) and the headerBytes/payload boundary — is
+    // decidable on the intra-complete first-tile-group path (use_bru/bru_inactive derive
+    // to 0). Emits the locally-decidable §6.18 tg-range diagnostics; a non-intra-complete
+    // or non-first-tile-group frame is the BRU-undecidable honest stop and stays silent.
+    tile_group_range_checks(
+        obu,
+        first_picture_in_tu,
+        active_sequence,
+        mfh_record,
+        report,
+    );
+
     // Annex A.4 static level limits for the parsed frame size / tile count against the
     // active sequence header's seq_level_idx / seq_tier.
     frame_annex_a_level_checks(&core, active_sequence, obu, report);
@@ -13387,6 +13400,189 @@ fn frame_header_core_checks(
             ),
         ));
     }
+}
+
+/// Emits the locally decidable § 6.18 tile-group-range diagnostics for the FIRST tile
+/// group of an intra-complete coded frame (AV2 v1.0.0 § 5.19 / § 6.18).
+///
+/// The § 5.19 structure after `frame_header()` is decidable only when the first tile
+/// group's frame header parsed to completion on the intra path
+/// ([`FrameHeaderParseStatus::IntraHeaderComplete`] with `frame_is_intra == Some(true)`
+/// and a parsed `tile_info()`): then `use_bru == 0` and `bru_inactive == 0` are the
+/// § 5.18.2 intra-derived constants (mirror :4127-4129 / :4653), so the `bru_inactive`
+/// early-return and the `use_bru` `bru_tile_active` loop are both dead, and
+/// [`parse_tile_group_structure`] consumes the structure exactly. `NumTiles` /
+/// `TileColsLog2` / `TileRowsLog2` come from the parsed `tile_info()`.
+///
+/// The locally-decidable § 6.18 clauses for the FIRST tile group are:
+///
+/// - **tg_start of the first tile group is 0** (mirror :6215-6216: `tg_start` equals
+///   `TileNum` at `tile_group_payload`, and `TileNum = 0` for the first tile group of a
+///   regular intra frame, mirror :3956);
+/// - **tg_end >= tg_start** (mirror :6220);
+/// - **tg_end <= NumTiles - 1** (mirror :6218-6223 — `tg_end` is a zero-based tile index,
+///   and the last tile group's `tg_end` is `NumTiles - 1`, so no `tg_end` may exceed it).
+///
+/// Under-reported (needs prior-tile-group state the segmenter would thread): the
+/// cross-tile-group continuity (`tg_start == previous tg_end + 1`) and the requirement
+/// that the LAST tile group's `tg_end == NumTiles - 1` when the range is split across
+/// multiple groups (residual: tile-group-continuity-across-groups). Only the first tile
+/// group is checked here, so only the `TileNum == 0` instance of the continuity clause is
+/// decided.
+fn tile_group_range_checks(
+    obu: &ObuEnvelope<'_>,
+    first_picture_in_tu: bool,
+    active_sequence: &SequenceHeader,
+    mfh_record: Option<&MultiFrameHeaderRecord>,
+    report: &mut ValidationReport,
+) {
+    // Only a tile-group OBU carries the §5.19 tile_group_obu() structure; SEF / TIP /
+    // bridge frames route through decode_frame_wrapup() (mirror :3942-3958) with no
+    // tile_group_obu() control region.
+    if !obu.header.obu_type.is_tile_group() {
+        return;
+    }
+
+    // Re-parse from the OBU payload start so the reader is positioned exactly past
+    // frame_header() (the same span parse_frame_core consumes), then derive the structure.
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    // tile_group_obu(): is_first_tile_group must be 1 for a parseable first frame_header(1)
+    // (a non-first tile group carries frame_header_copy(), not checked here — its tg range
+    // needs the prior-group continuity state). A read failure or a 0 flag leaves the
+    // structure undecidable.
+    let Ok(is_first) = reader.read_bit() else {
+        return;
+    };
+    if is_first == 0 {
+        return;
+    }
+    let input = FrameHeaderParseInput {
+        obu_type: obu.header.obu_type,
+        first_picture_in_tu,
+        active_sequence: Some(active_sequence),
+        mfh_record,
+        reference_state: FrameReferenceStateView::unknown(),
+        mode: FrameHeaderParseMode::Core,
+    };
+    let Ok(core) = parse_frame_header_core(&mut reader, &input) else {
+        return;
+    };
+
+    // The §5.19 structure is decidable only on the intra-complete path: IntraHeaderComplete
+    // guarantees the whole frame_header_info() parsed (so the reader sits exactly at the end
+    // of frame_header()), frame_is_intra makes use_bru/bru_inactive the derived 0 constants,
+    // and tile_info supplies NumTiles / TileColsLog2 / TileRowsLog2. Any other stop (a
+    // coverage stop, an inter/TIP/bridge path, or a truncation) is the BRU-undecidable
+    // honest stop (BruUndecidable::NotIntraComplete) — leave the range unjudged.
+    if core.status != FrameHeaderParseStatus::IntraHeaderComplete
+        || core.frame_is_intra != Some(true)
+    {
+        return;
+    }
+    let Some(tile_info) = core.tile_info.as_ref() else {
+        return;
+    };
+
+    let layout = TileGroupLayout::new(
+        tile_info.tile_cols,
+        tile_info.tile_rows,
+        tile_info.tile_cols_log2,
+        tile_info.tile_rows_log2,
+    );
+    let num_tiles = layout.num_tiles;
+    // sz is the OBU payload size in bytes (§5.2.1); obu.payload is exactly that slice.
+    let sz = obu.payload.len() as u64;
+    let Ok(structure) = parse_tile_group_structure(&mut reader, layout, sz) else {
+        // The only non-EOF error is a §6.2.4 byte_alignment() zero-bit defect. The
+        // byte_alignment() reachability is owned by AV2-5.2.4-BYTE-ALIGNMENT and the
+        // tile-group dispatch does not yet route that diagnostic to this OBU; surface it
+        // through the dedicated tile-group rule so the defect is not silently dropped.
+        report.push(frame_header_error(
+            "tile-group/byte-alignment-zero-bit",
+            "6.2.4",
+            obu,
+            "the §5.19 tile_group_obu() byte_alignment() padding contains a non-zero \
+             zero_bit (§6.2.4 requires every alignment bit to be 0)"
+                .to_owned(),
+        ));
+        return;
+    };
+
+    // A truncation inside the §5.19 structure means the OBU payload ended before the
+    // tile-group range / byte_alignment() could be read — a §6.2.1 mandatory-syntax
+    // truncation, parallel to frame-header/truncated-frame-header. The already-parsed
+    // facts are preserved on `structure`; surface the truncation rather than judging an
+    // incomplete range.
+    if structure.outcome == TileGroupStructureOutcome::Truncated {
+        report.push(frame_header_error(
+            "tile-group/truncated-structure",
+            "6.2.1",
+            obu,
+            "the OBU payload ends inside the §5.19 tile_group_obu() structure \
+             (tile_start_and_end_present_flag / tg_start / tg_end / byte_alignment) before \
+             it could be read; the §6.2.1 OBU payload must contain every mandatory \
+             tile-group syntax element"
+                .to_owned(),
+        ));
+        return;
+    }
+
+    // §6.18 (mirror :6215-6216): tg_start of the FIRST tile group equals TileNum == 0.
+    // Only the explicit-range path (tile_start_and_end_present_flag == 1) can violate it;
+    // the inferred path sets tg_start = 0 by construction.
+    if structure.tile_start_and_end_present_flag && structure.tg_start != 0 {
+        report.push(frame_header_error(
+            "tile-group/first-tg-start-not-zero",
+            "6.18",
+            obu,
+            format!(
+                "the first tile group codes tg_start={}, but §6.18 requires tg_start to \
+                 equal TileNum at tile_group_payload, which is 0 for the first tile group \
+                 of the coded frame (§5.19 mirror :3956)",
+                structure.tg_start
+            ),
+        ));
+    }
+
+    // §6.18 (mirror :6220): tg_end >= tg_start.
+    if structure.tg_end < structure.tg_start {
+        report.push(frame_header_error(
+            "tile-group/tg-end-before-tg-start",
+            "6.18",
+            obu,
+            format!(
+                "the tile group codes tg_end={} < tg_start={}, but §6.18 requires tg_end to \
+                 be greater than or equal to tg_start",
+                structure.tg_end, structure.tg_start
+            ),
+        ));
+    }
+
+    // §6.18 (mirror :6218-6223): tg_end is a zero-based tile index and the last tile
+    // group's tg_end is NumTiles - 1, so no tg_end may exceed NumTiles - 1. Decidable from
+    // the explicit range and NumTiles; the inferred path sets tg_end = NumTiles - 1.
+    if structure.tile_start_and_end_present_flag
+        && num_tiles > 0
+        && structure.tg_end > num_tiles - 1
+    {
+        report.push(frame_header_error(
+            "tile-group/tg-end-out-of-range",
+            "6.18",
+            obu,
+            format!(
+                "the tile group codes tg_end={}, which exceeds NumTiles-1={} (§6.18: tg_end \
+                 is a zero-based tile index and the last tile group's tg_end is NumTiles-1)",
+                structure.tg_end,
+                num_tiles - 1
+            ),
+        ));
+    }
+
+    // Likewise tg_start must be a valid tile index (< NumTiles). For the first tile group
+    // the stricter tg_start == 0 check above subsumes this, but a coded tg_start beyond
+    // NumTiles is still independently a §6.18 bounds defect worth its own anchor only when
+    // the first-tg-start-not-zero rule did not already fire — which it always does for any
+    // nonzero tg_start. So no separate tg_start-bounds rule is emitted for the first group.
 }
 
 /// Emits the locally decidable § 6.17.7.2 tile-info diagnostics for a parsed frame

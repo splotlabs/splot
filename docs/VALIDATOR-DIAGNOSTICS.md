@@ -392,6 +392,16 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 | `tile-params/tile-cols-out-of-range` | error | § 6.17.7.2 | TileCols exceeds MAX_TILE_COLS |
 | `tile-params/tile-rows-out-of-range` | error | § 6.17.7.2 | TileRows exceeds MAX_TILE_ROWS |
 
+### `tile-group/`
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `tile-group/first-tg-start-not-zero` | error | § 6.18 | the FIRST tile group of a coded frame codes an explicit `tg_start != 0`, but §6.18 (mirror :6215-6216) requires `tg_start` to equal `TileNum` at `tile_group_payload`, and `TileNum == 0` for the first tile group of a regular intra frame (§5.19 mirror :3956). Decidable only for the FIRST tile group of an intra-complete coded frame (`FrameHeaderParseStatus::IntraHeaderComplete`, `frame_is_intra == true`, with a parsed `tile_info()`): on that path `use_bru`/`bru_inactive` derive to the §5.18.2 constant 0 (mirror :4127-4129 / :4653), so `parse_tile_group_structure` reads the §5.19 `tg_start`/`tg_end` exactly. The inferred-range path (`tile_start_and_end_present_flag == 0`) sets `tg_start = 0` by construction and never fires. Cross-tile-group continuity (`tg_start == previous tg_end + 1`) and the last-group `tg_end == NumTiles - 1` are under-reported (need prior-tile-group state) |
+| `tile-group/tg-end-before-tg-start` | error | § 6.18 | the tile group codes `tg_end < tg_start`, violating §6.18 (mirror :6220) which requires `tg_end >= tg_start`. Same intra-complete first-tile-group gating as `tile-group/first-tg-start-not-zero` |
+| `tile-group/tg-end-out-of-range` | error | § 6.18 | the tile group codes an explicit `tg_end > NumTiles - 1`, but §6.18 (mirror :6218-6223) makes `tg_end` a zero-based tile index whose maximum (the last tile group's `tg_end`) is `NumTiles - 1`. Same gating; the inferred-range path sets `tg_end = NumTiles - 1` and never fires |
+| `tile-group/truncated-structure` | error | § 6.2.1 | the OBU payload ends inside the §5.19 `tile_group_obu()` structure (`tile_start_and_end_present_flag` / `tg_start` / `tg_end` / `byte_alignment`) before it could be read; the §6.2.1 OBU payload must contain every mandatory tile-group syntax element. Parallels `frame-header/truncated-frame-header`; the already-parsed structure facts are preserved. Same intra-complete first-tile-group gating |
+| `tile-group/byte-alignment-zero-bit` | error | § 6.2.4 | the §5.19 `tile_group_obu()` `byte_alignment()` padding contains a non-zero `zero_bit` (§6.2.4 requires every alignment bit to be 0). Decidable on the same intra-complete first-tile-group path; the §5.20 `tile_group_payload()` bytes after the alignment boundary stay unparsed |
+
 ### `trailing-bits/`
 
 | Rule ID | Severity | Section | Condition |
@@ -445,7 +455,11 @@ with byte offsets instead of silently accepted.
 The following namespaces are reserved for future validator work and are intentionally **absent
 from the enforced registry above** because nothing emits them yet:
 
-- `tile-group/` — frame-data / tile payload boundary checks (needs full frame/tile parsing).
+- `tile-group/` — the §5.19 `tile_group_obu()` STRUCTURE diagnostics (tg-range, byte-alignment,
+  truncation) have landed for the intra-complete first tile group (see the registry above). The
+  remaining residuals are the §5.20 `tile_group_payload()` tile-data boundary checks (need full
+  tile parsing, `AV2-5.20-TILE-GROUP-PAYLOAD`) and the cross-tile-group continuity / last-group
+  `tg_end == NumTiles - 1` clauses (need prior-tile-group state threaded through the segmenter).
 - `hls-availability/` — a dedicated high-level-syntax availability namespace; today the landed
   availability checks live under `hls/` (see the registry above).
 - `obu-payload/` — strict-mode payload constraints.
