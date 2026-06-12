@@ -6150,7 +6150,11 @@ impl ValidatorContext {
                     first_picture_in_tu,
                     active_sequence,
                     mfh_record,
-                    &self.qm,
+                    FrameReferenceAvailability {
+                        qm: &self.qm,
+                        film_grain: &self.film_grain,
+                    },
+                    options,
                     report,
                 );
             }
@@ -12831,6 +12835,18 @@ fn parse_frame_core(
     parse_frame_header_core(&mut reader, &input).ok()
 }
 
+/// The cross-OBU HLS-availability state a frame's reference checks consult (AV2 § 7.3.8):
+/// per-level quantizer-matrix availability (§ 7.3.8.9 / § 6.17.6.2) and per-slot
+/// film-grain availability (§ 7.3.8.8 / § 6.17.10.1). Bundled so the frame-header check
+/// keeps one availability parameter as more reference families land.
+#[derive(Clone, Copy)]
+struct FrameReferenceAvailability<'a> {
+    /// Per-level custom quantizer-matrix availability (AV2 § 6.17.6.2).
+    qm: &'a QuantizerMatrixState,
+    /// Per-slot film-grain model availability (AV2 § 6.17.10.1 / § 7.3.8.8).
+    film_grain: &'a FilmGrainState,
+}
+
 /// Emits the locally decidable frame-header-info / frame-size diagnostics for a frame
 /// whose active sequence header is available (AV2 § 6.17.2 / § 6.17.4 / § 6.4.6).
 ///
@@ -12842,9 +12858,14 @@ fn frame_header_core_checks(
     first_picture_in_tu: bool,
     active_sequence: &SequenceHeader,
     mfh_record: Option<&MultiFrameHeaderRecord>,
-    qm_state: &QuantizerMatrixState,
+    reference_state: FrameReferenceAvailability<'_>,
+    options: &ValidationOptions,
     report: &mut ValidationReport,
 ) {
+    let FrameReferenceAvailability {
+        qm: qm_state,
+        film_grain: film_grain_state,
+    } = reference_state;
     // AV2 § 6.4.6: if long_term_frame_id_bits == 0, no OBU_RAS_FRAME shall be present
     // in the coded video sequence. Decidable from obu_type + the active sequence alone.
     if obu.header.obu_type == ObuType::RasFrame
@@ -12998,6 +13019,28 @@ fn frame_header_core_checks(
         ));
     }
 
+    // AV2 § 5.2.1 (:124-152) / § 5.2.3 / § 6.2.1: a show-existing-frame OBU's payload is
+    // exactly the SEF frame_header() plus trailing_bits( remainingPayloadBits ). The SEF
+    // arm of § 5.18.2 (mirror :4145) return()s right after film_grain_config() (:4186), and
+    // a SEF OBU is not an is_tile_group() type, so usedArith == 0 and there is no tile data
+    // — the boundary is decidable from the payload alone. A non-conformant tail (no
+    // trailing_one_bit, or a stray set bit after it, including the grain_seed-eats-the-marker
+    // case) is a § 6.2.1 / § 6.2.3 conformance defect. The core parser classifies the tail
+    // without failing (the parsed SEF facts survive), so surface a non-Valid outcome here.
+    if let Some(violation) = core.sef_trailing_bits
+        && let Some(message) = violation.violation_message()
+    {
+        report.push(frame_header_error(
+            "frame-header/sef-trailing-bits-invalid",
+            "6.2.3",
+            obu,
+            format!(
+                "the show-existing-frame OBU payload's §5.2.3 trailing_bits() is malformed: \
+                 {message}"
+            ),
+        ));
+    }
+
     // AV2 § 6.17.2: bridge_frame_ref_idx must name a valid reference slot, so it must
     // be less than NumRefFrames.
     if let Some(idx) = core.bridge_frame_ref_idx
@@ -13106,6 +13149,18 @@ fn frame_header_core_checks(
     // AV2 § 6.17.7.8: per-plane CCSO field bounds for a parsed `ccso_params()`.
     if let Some(ccso) = core.ccso_params.as_ref() {
         frame_ccso_params_checks(ccso, obu, report);
+    }
+
+    // AV2 § 6.17.10.1 / § 7.3.8.8: when `apply_grain == 1`, a film grain OBU that has set
+    // FilmGrainPresent[ fgm_id ] == 1 for the referenced fgm_id must be available. The
+    // parsed film_grain_config() lives on the SEF path (`sef_film_grain`) or the intra tail
+    // (`intra_tail.film_grain`).
+    if let Some(film_grain) = core
+        .sef_film_grain
+        .as_ref()
+        .or_else(|| core.intra_tail.as_ref().map(|tail| &tail.film_grain))
+    {
+        frame_film_grain_reference_checks(film_grain, film_grain_state, options, obu, report);
     }
 
     // The remaining checks compare refresh_frame_flags against NumRefFrames.
@@ -13613,6 +13668,71 @@ fn frame_qm_reference_checks(
                 ),
             ));
         }
+    }
+}
+
+/// Emits the locally-decidable § 6.17.10.1 / § 7.3.8.8 film-grain *availability*
+/// diagnostic for a parsed `film_grain_config()`: when `apply_grain == 1`, the referenced
+/// `fgm_id` slot must have a received film-grain model (`FilmGrainPresent[ fgm_id ] == 1`).
+///
+/// **Scope and under-reporting (zero-false-positive discipline, AGENTS.md § 7).** This
+/// covers ONLY the `FilmGrainPresent[ fgm_id ] == 1` requirement of § 6.17.10.1, and only
+/// the in-band-availability half:
+///
+/// - **External means.** § 7.3.8.8 allows the model to be available "by provision through
+///   external means". [`ExternalHlsSet`](crate::options::ExternalHlsSet) cannot express
+///   film-grain OBUs (only sequence headers and operating point sets), so under any
+///   `ExternalHlsMode::Provided` the model MAY be external without being listed — exactly
+///   the inexpressible-kind case the blanket "any Provided suppresses" policy covers. The
+///   check therefore fires only under `ExternalHlsMode::Disabled`.
+/// - **Random-access-point visibility (§ 7.3.8.1).** A model available only from an earlier
+///   position is unavailable at a later random access point that drops it. `available[]` is
+///   monotonic (never reset at a random access point), so this check OVER-approximates
+///   presence and silently UNDER-reports that random-access-point-unavailability direction.
+///   That is a named residual on AV2-7.3.8-HLS-AVAILABILITY (no random-access-point replay
+///   for film-grain references yet), not a false positive: the linear absence test can only
+///   miss findings, never invent them. The companion § 6.17.10.1 layer-dependency
+///   constraints (FgmTLayerId / FgmMLayerId / FgmChromaIdc) also remain a residual.
+///
+/// A `None`-for-the-slot under `Disabled` is therefore decidable and sound: no in-band film
+/// grain OBU ever set the slot before this frame and no external provision is possible.
+fn frame_film_grain_reference_checks(
+    film_grain: &splot_core::headers::frame::FilmGrainConfig,
+    film_grain_state: &FilmGrainState,
+    options: &ValidationOptions,
+    obu: &ObuEnvelope<'_>,
+    report: &mut ValidationReport,
+) {
+    // The fgm_id reference (and its § 6.17.10.1 requirement) exists only when apply_grain.
+    if !film_grain.apply_grain {
+        return;
+    }
+    // Film grain OBUs cannot be expressed by ExternalHlsSet, so under any Provided mode the
+    // referenced model MAY be supplied externally without being listed — suppress to avoid a
+    // false positive. Only the external-disabled case is decidable from the bitstream alone.
+    if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+        return;
+    }
+    let Some(fgm_id) = film_grain.fgm_id else {
+        return;
+    };
+    let slot = usize::from(fgm_id);
+    // A slot outside the modeled range cannot be matched against availability state; the
+    // fgm_id field is f(3) (0..=7), so this never trips for a parsed config, but guard it.
+    let Some(record) = film_grain_state.available.get(slot) else {
+        return;
+    };
+    if record.is_none() {
+        report.push(frame_header_error(
+            "frame-header/film-grain-model-unavailable",
+            "6.17.10.1",
+            obu,
+            format!(
+                "film_grain_config() has apply_grain == 1 and references fgm_id {fgm_id}, but no \
+                 film grain OBU has set FilmGrainPresent[{fgm_id}] == 1 (no received model for \
+                 that slot)"
+            ),
+        ));
     }
 }
 

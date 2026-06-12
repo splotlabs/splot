@@ -1008,10 +1008,14 @@ tail — `read_tx_mode()` (§ 5.18.8.1), `frame_reference_mode()`
 (§ 5.18.8.3, no bits on intra), `skip_mode_params()` (§ 5.18.8.2), the
 intra-inferred `allow_bawp`/`allow_warpmv_mode`, `reduced_tx_set`, the
 § 5.18.9.1 intra arm of `global_motion_params()`, and
-`film_grain_config()` (§ 5.18.10.1, reusing the § 5.14 film-grain-model
-parser) — so an intra frame header parses to completion, the
-show-existing-frame path included. An EOF inside the tail SHALL preserve
-the already-parsed facts.
+`film_grain_config()` (§ 5.18.10.1) — so an intra frame header parses to
+completion, the show-existing-frame path included. Within
+`film_grain_config()` the `load_grain_model( fgm_id )` call reads **no
+bits** (§ 6.17.10.1): it is a memory-load reference to a film-grain model
+slot previously decoded by a `film_grain_obu()` (§ 5.14), so the § 5.14
+film-grain-model parser is **not** invoked from the frame-header path —
+only the in-band `apply_grain`, `fgm_id`, and `grain_seed` fields are read.
+An EOF inside the tail SHALL preserve the already-parsed facts.
 
 #### Scenario: intra header completes
 

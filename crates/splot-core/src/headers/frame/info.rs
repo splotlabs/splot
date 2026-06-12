@@ -61,7 +61,7 @@
 //!   [`FrameHeaderParseStatus::UnsupportedUntilFeature`] rather than guessing.
 
 use crate::bitio::BitReader;
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, TrailingBitsErrorKind};
 use crate::headers::frame::config::{parse_intrabc_params, parse_screen_content_params};
 use crate::headers::frame::filtering::{
     CdefParams, CoreSeqFilterView, DeblockingFilterParams, GdfGeometry, GdfParams,
@@ -86,6 +86,7 @@ use crate::headers::frame::tail::{
 use crate::headers::frame::tiling::{CoreSeqTileView, TileInfo, parse_tile_info};
 use crate::headers::sequence::{ChromaFormatIdc, SequenceHeader, SequenceHeaderId};
 use crate::hls::{MfhId, MultiFrameHeaderRecord};
+use crate::obu::parse_trailing_bits;
 use crate::types::ObuType;
 
 use super::{FrameHeaderPrefix, parse_frame_header_prefix};
@@ -381,6 +382,88 @@ pub struct FrameHeaderParseInput<'a> {
     pub mode: FrameHeaderParseMode,
 }
 
+/// How a show-existing-frame OBU's `trailing_bits()` boundary resolved (AV2 v1.0.0
+/// § 5.2.1 / § 5.2.3).
+///
+/// A show-existing-frame OBU's payload is **exactly** the SEF `frame_header()` followed
+/// by `trailing_bits( remainingPayloadBits )`: the SEF arm of § 5.18.2 (mirror :4145)
+/// `return`s immediately after `film_grain_config()` (mirror :4186), and a SEF OBU
+/// (`OBU_LEADING_SEF` / `OBU_REGULAR_SEF`) is not an `is_tile_group()` type, so
+/// `usedArith == 0` and § 5.2.1 (:132-152) reads `trailing_bits( remainingPayloadBits )`
+/// over the rest of the payload (the type is not extensible, so the `else` arm applies).
+/// There is no tile data after a SEF frame header, so the boundary is decidable from the
+/// payload alone. Recorded only on the [`FrameHeaderParseStatus::ShowExistingFrameComplete`]
+/// path; the validator surfaces a non-`Valid` outcome as a § 6.2.1 / § 5.2.3 diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SefTrailingBits {
+    /// `trailing_bits( remainingPayloadBits )` was exactly one `trailing_one_bit == 1`
+    /// followed by zero bits to the OBU boundary (AV2 § 5.2.3 / § 6.2.3).
+    Valid,
+    /// The payload ended with no bits left for `trailing_bits()` — there was no
+    /// `trailing_one_bit`. This catches the `grain_seed`-eats-the-marker case: a
+    /// `grain_seed` short by its final bit consumes what should have been the
+    /// `trailing_one_bit`, leaving nothing for the trailing-bits boundary (AV2 § 6.2.1).
+    Empty,
+    /// The first remaining bit was not the required `trailing_one_bit == 1`
+    /// (AV2 § 6.2.3).
+    MissingOneBit,
+    /// A bit after the `trailing_one_bit` was not `0` (AV2 § 6.2.3).
+    ZeroBitNotZero,
+}
+
+impl SefTrailingBits {
+    /// A stable snake-case label for tools and diagnostics.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Valid => "valid",
+            Self::Empty => "empty",
+            Self::MissingOneBit => "missing_one_bit",
+            Self::ZeroBitNotZero => "zero_bit_not_zero",
+        }
+    }
+
+    /// A human-readable description of the specific § 5.2.3 / § 6.2.3 violation, or
+    /// `None` for [`Self::Valid`].
+    #[must_use]
+    pub const fn violation_message(self) -> Option<&'static str> {
+        match self {
+            Self::Valid => None,
+            Self::Empty => Some(
+                "the OBU payload ended with no trailing_bits() — there was no trailing_one_bit \
+                 after the show-existing-frame film_grain_config() (a grain_seed short by one bit \
+                 consumes the marker)",
+            ),
+            Self::MissingOneBit => Some(
+                "the first bit after the show-existing-frame frame header was not the \
+                 required trailing_one_bit == 1",
+            ),
+            Self::ZeroBitNotZero => {
+                Some("a trailing_zero_bit after the show-existing-frame trailing_one_bit was not 0")
+            }
+        }
+    }
+}
+
+/// Validates `trailing_bits( remainingPayloadBits )` over the rest of `reader`'s payload
+/// for a show-existing-frame OBU (AV2 § 5.2.1 / § 5.2.3), classifying the outcome without
+/// failing the parse so the already-parsed SEF facts survive.
+fn classify_sef_trailing_bits(reader: &mut BitReader<'_>) -> SefTrailingBits {
+    match parse_trailing_bits(reader, reader.remaining_bits()) {
+        Ok(()) => SefTrailingBits::Valid,
+        Err(Error::InvalidTrailingBits { kind, .. }) => match kind {
+            TrailingBitsErrorKind::Empty => SefTrailingBits::Empty,
+            TrailingBitsErrorKind::MissingOneBit => SefTrailingBits::MissingOneBit,
+            TrailingBitsErrorKind::ZeroBitNotZero => SefTrailingBits::ZeroBitNotZero,
+        },
+        // `parse_trailing_bits` reads exactly `remaining_bits()` bits, so it cannot run
+        // past the payload; an EOF here is unreachable, but treat it conservatively as a
+        // missing marker rather than panicking.
+        Err(_) => SefTrailingBits::MissingOneBit,
+    }
+}
+
 /// A state-aware core parse of `frame_header_info()` (AV2 v1.0.0 § 5.18.2).
 ///
 /// Fields beyond the activation prefix are `Option`, present only when the
@@ -499,6 +582,14 @@ pub struct FrameHeaderCore {
     /// ([`FrameHeaderParseStatus::ShowExistingFrameComplete`]); the SEF path reads only
     /// `film_grain_config()`, not the § 5.18.8 coding-mode tail.
     pub sef_film_grain: Option<FilmGrainConfig>,
+    /// How a show-existing-frame OBU's `trailing_bits()` boundary resolved (AV2 § 5.2.1 /
+    /// § 5.2.3). `Some` only on the [`FrameHeaderParseStatus::ShowExistingFrameComplete`]
+    /// path: the SEF payload is exactly the SEF frame header plus
+    /// `trailing_bits( remainingPayloadBits )` (no tile data), so the boundary is
+    /// decidable from the payload alone. The validator surfaces a non-`Valid` outcome as a
+    /// § 6.2.1 / § 5.2.3 diagnostic. `None` on every other path (no SEF boundary to check,
+    /// or the SEF parse stopped before completing `film_grain_config()`).
+    pub sef_trailing_bits: Option<SefTrailingBits>,
     /// Bits consumed by this parse (not necessarily the whole frame header).
     pub consumed_bits: u64,
 }
@@ -546,9 +637,15 @@ struct CoreSeqView {
     /// chroma `LoopRestorationSize` derivation.
     chroma_format_idc: ChromaFormatIdc,
     /// `film_grain_params_present` (AV2 § 5.4.1): gates the § 5.18.10.1
-    /// `film_grain_config()` `apply_grain` derivation. `false` when the sequence header
-    /// did not signal grain.
-    film_grain_params_present: bool,
+    /// `film_grain_config()` `apply_grain` derivation. `Some(false)` when the sequence
+    /// header did not signal grain, `Some(true)` when it did. `None` when the active
+    /// sequence header was recorded from a **bounded** stop that ended before
+    /// `film_grain_params_present` (read last in § 5.4.1, after the child configs), e.g.
+    /// the bounded `sequence_tile_config()` residual: the flag is then genuinely unknown.
+    /// The control region (frame size, output flags, order hint, tile/quant/segmentation)
+    /// does not consume this flag, so the parser still reaches and reports those facts; it
+    /// stops honestly only when `film_grain_config()` itself needs the unknown flag.
+    film_grain_params_present: Option<bool>,
 }
 
 impl CoreSeqView {
@@ -562,9 +659,16 @@ impl CoreSeqView {
         // `sequence_filter_config()` (§ 5.4.10) gates the § 5.18.2 tail loop-filter
         // structures; without it the intra tail cannot reach deblocking/GDF/CDEF.
         let filter = seq.filter.as_ref()?;
-        // `film_grain_params_present` (§ 5.4.1) is read last in the sequence header; its
-        // absence means the header was not fully parsed, so the tail cannot be reached.
-        let film_grain_params_present = seq.film_grain_params_present?;
+        // `film_grain_params_present` (§ 5.4.1) is read last in the sequence header, AFTER
+        // every child config above. A bounded `sequence_tile_config()` stop yields a header
+        // with all those children present but this flag `None`. It is NOT required to read
+        // the control region (frame size, output flags, order hint, tile/quant/segmentation,
+        // the loop-filter cluster) — only `film_grain_config()` consumes it — so its absence
+        // must NOT collapse the whole view (that would suppress every locally-decidable
+        // frame-size / output / order-hint diagnostic). Carry it as `Option` and defer the
+        // requirement to `film_grain_config()` consumption: an unknown flag there is an
+        // honest stop with the parsed facts preserved, not a guess.
+        let film_grain_params_present = seq.film_grain_params_present;
         let general = &seq.general;
         Some(Self {
             num_ref_frames: u32::from(inter.num_ref_frames),
@@ -790,6 +894,7 @@ fn init_core_from_prefix(prefix: &FrameHeaderPrefix, obu_type: ObuType) -> Frame
         ccso_params: None,
         intra_tail: None,
         sef_film_grain: None,
+        sef_trailing_bits: None,
         consumed_bits: 0,
     }
 }
@@ -927,11 +1032,23 @@ fn parse_show_existing_frame(
     // film_grain_config() single-picture inference is dead; with immediate_output_frame = 1
     // the (!immediate && !implicit) output gate is false, so apply_grain is f(1) when grain
     // is present. The save_grain_params() call at mirror :4190 reads no bits.
+    //
+    // film_grain_config() consumes film_grain_params_present (§ 5.4.1, the apply_grain
+    // gate). If the active sequence header was a bounded stop that never read that flag, it
+    // is genuinely unknown — the SEF facts above (frame_to_show_map_idx, order hint, output
+    // flags) are preserved, but the parser cannot decide apply_grain without guessing, so it
+    // stops honestly here rather than inventing the flag.
+    let Some(film_grain_params_present) = seq.film_grain_params_present else {
+        core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+            feature_id: FRAME_HEADER_INFO_FEATURE,
+        };
+        return Ok(());
+    };
     let input = FrameTailInput {
         // SEF reads no read_tx_mode(): coded_lossless is irrelevant here but supplied for
         // the shared input shape (film_grain_config does not consult it).
         coded_lossless: false,
-        film_grain_params_present: seq.film_grain_params_present,
+        film_grain_params_present,
         // SEF never runs under single_picture_header_flag (see above).
         single_picture_header_flag: false,
         immediate_output_frame: true,
@@ -940,6 +1057,14 @@ fn parse_show_existing_frame(
     match parse_film_grain_config(reader, &input) {
         Ok(film_grain) => {
             core.sef_film_grain = Some(film_grain);
+            // AV2 § 5.2.1 (:124-152) / § 5.2.3: a SEF OBU is not an is_tile_group() type,
+            // so usedArith == 0 and the rest of the payload is exactly
+            // trailing_bits( remainingPayloadBits ) — the SEF arm of § 5.18.2 (mirror :4145)
+            // return()s right after film_grain_config() (:4186), and there is no tile data.
+            // Classify that boundary so the validator can surface a non-conformant tail
+            // (including the grain_seed-eats-the-marker case) as a § 6.2.1 / § 5.2.3
+            // diagnostic, without failing the parse — the parsed SEF facts survive.
+            core.sef_trailing_bits = Some(classify_sef_trailing_bits(reader));
             core.status = FrameHeaderParseStatus::ShowExistingFrameComplete;
             Ok(())
         }
@@ -1340,6 +1465,19 @@ fn parse_intra_tail_structures(
     seq: &CoreSeqView,
     coded_lossless: bool,
 ) -> Result<()> {
+    // film_grain_config() (the last § 5.18.2 tail structure) consumes
+    // film_grain_params_present (§ 5.4.1, the apply_grain gate). If the active sequence
+    // header was a bounded stop that never read that flag, it is genuinely unknown: the
+    // control region and loop-filter cluster already parsed and their facts are preserved,
+    // but the parser cannot decide apply_grain without guessing. Stop honestly before the
+    // tail rather than inventing the flag — this is the deferred half of the § 5.4.1
+    // film_grain_params_present requirement (the view no longer gates the whole parse on it).
+    let Some(film_grain_params_present) = seq.film_grain_params_present else {
+        core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+            feature_id: FRAME_HEADER_INFO_FEATURE,
+        };
+        return Ok(());
+    };
     // The output flags are always Some by the time the intra tail is reached: the
     // single-picture path sets them in parse_core_body, and the non-single-picture intra
     // path sets them before parse_intra_tail. Defaulting to the spec's intra inference
@@ -1347,7 +1485,7 @@ fn parse_intra_tail_structures(
     // direct API misuse without inventing bits.
     let input = FrameTailInput {
         coded_lossless,
-        film_grain_params_present: seq.film_grain_params_present,
+        film_grain_params_present,
         single_picture_header_flag: seq.single_picture_header_flag,
         immediate_output_frame: core.immediate_output_frame.unwrap_or(false),
         implicit_output_frame: core.implicit_output_frame.unwrap_or(false),
@@ -1580,7 +1718,7 @@ mod tests {
             restoration: base_restoration(),
             ccso: base_ccso(),
             chroma_format_idc: ChromaFormatIdc::Yuv420,
-            film_grain_params_present: false,
+            film_grain_params_present: Some(false),
         }
     }
 
@@ -2177,7 +2315,7 @@ mod tests {
         // (the byte-aligned helper hardcodes both output flags to 0, which would force
         // apply_grain = 0).
         let mut seq = base_seq();
-        seq.film_grain_params_present = true;
+        seq.film_grain_params_present = Some(true);
         let mut bits = Bits::default();
         bits.uvlc(0); // cur_mfh_id == 0
         bits.uvlc(0); // seq_header_id_in_frame_header
@@ -2218,11 +2356,103 @@ mod tests {
     }
 
     #[test]
+    fn frame_header_core_intra_unknown_grain_flag_parses_control_region_then_stops() {
+        // film_grain_params_present == None models an active sequence header recorded from a
+        // bounded sequence_tile_config() stop (the flag is read last in § 5.4.1, after every
+        // child config). Pre-fix CoreSeqView::from_sequence's `?` on the flag collapsed the
+        // whole view, so the frame parse stopped at ActivationFieldsOnly and every
+        // frame-size / output / order-hint diagnostic was suppressed. Now the control region
+        // (which never consumes the flag) parses to completion and the parser stops honestly
+        // at the film_grain_config() boundary — facts preserved, NOT a guessed apply_grain.
+        let mut seq = base_seq();
+        seq.film_grain_params_present = None;
+        let mut bits = Bits::default();
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(0); // seq_header_id_in_frame_header
+        bits.bit(1); // immediate_output_frame == 1
+        bits.bit(0); // frame_size_override_flag == 0 (cur_mfh_id == 0 -> max dims 4096x2304)
+        bits.f(3, 4); // order_hint f(4)
+        // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
+        bits.bit(0); // allow_intrabc
+        bits.bit(0); // disable_cdf_update
+        bits.bit(1); // uniform_tile_spacing_flag
+        bits.bit(0); // increment_tile_cols_log2 = 0
+        bits.bit(0); // increment_tile_rows_log2 = 0
+        bits.f(90, 8); // base_q_idx (non-lossless)
+        bits.bit(0); // segmentation_enabled
+        bits.bit(0); // using_qmatrix
+        bits.bit(0); // delta_q_present
+        bits.bit(0); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1]
+        // gdf/cdef/lr/ccso disabled in base_seq -> no bits. The next structure is the
+        // § 5.18.2 tail, whose film_grain_config() needs the (unknown) grain flag.
+        let data = bits.into_bytes();
+        let (core, _) = parse_body(&data, ObuType::ClosedLoopKey, true, &seq).unwrap();
+        // The control region parsed: these facts feed the validator's §6.17 diagnostics.
+        assert_eq!(core.immediate_output_frame, Some(true));
+        assert_eq!(core.order_hint_lsb, Some(3));
+        assert_eq!(core.frame_size, Some(FrameSize::new(4096, 2304)));
+        assert!(core.quantization_params.is_some());
+        assert!(core.deblocking_filter_params.is_some());
+        // The parser stopped honestly at the film_grain_config() boundary, not at the prefix
+        // (ActivationFieldsOnly) and never guessing apply_grain.
+        assert!(matches!(
+            core.status,
+            FrameHeaderParseStatus::UnsupportedUntilFeature { .. }
+        ));
+        assert_ne!(core.status, FrameHeaderParseStatus::ActivationFieldsOnly);
+        assert_eq!(
+            core.intra_tail, None,
+            "the grain-gated tail was not reached"
+        );
+        assert!(
+            !core.status.is_truncated_in_modeled_region(),
+            "an unknown-flag stop is a coverage stop, not a truncation defect"
+        );
+    }
+
+    #[test]
+    fn frame_header_core_sef_unknown_grain_flag_preserves_facts_then_stops() {
+        // SEF whose active sequence header is a bounded stop (film_grain_params_present ==
+        // None). The SEF fields (frame_to_show_map_idx, order hint, output flags) are parsed
+        // and preserved, but film_grain_config() needs the unknown grain flag, so the parser
+        // stops honestly rather than guessing apply_grain. Pre-fix the whole parse collapsed
+        // to ActivationFieldsOnly.
+        let mut seq = base_seq();
+        seq.film_grain_params_present = None;
+        let mut bits = Bits::default();
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(0); // seq_header_id_in_frame_header
+        bits.f(6, 3); // frame_to_show_map_idx
+        bits.bit(0); // derive_sef_order_hint == 0
+        bits.f(11, 4); // sef_order_hint f(4)
+        let data = bits.into_bytes();
+        let (core, _) = parse_body(&data, ObuType::RegularSef, true, &seq).unwrap();
+        assert_eq!(core.show_existing_frame, Some(true));
+        assert_eq!(core.frame_to_show_map_idx, Some(6));
+        assert_eq!(core.order_hint_lsb, Some(11));
+        assert_eq!(core.refresh_frame_flags, Some(0));
+        assert!(matches!(
+            core.status,
+            FrameHeaderParseStatus::UnsupportedUntilFeature { .. }
+        ));
+        assert_ne!(core.status, FrameHeaderParseStatus::ActivationFieldsOnly);
+        assert_eq!(
+            core.sef_film_grain, None,
+            "grain not decided without the flag"
+        );
+        assert_eq!(
+            core.sef_trailing_bits, None,
+            "no completed SEF tail to classify"
+        );
+    }
+
+    #[test]
     fn frame_header_core_sef_with_grain_reads_apply_grain_then_completes() {
         // SEF with film_grain_params_present == true: immediate_output_frame == 1 makes the
         // output gate false, so apply_grain is read f(1); when set, fgm_id + grain_seed.
         let mut seq = base_seq();
-        seq.film_grain_params_present = true;
+        seq.film_grain_params_present = Some(true);
         let mut bits = Bits::default();
         bits.uvlc(0); // cur_mfh_id == 0
         bits.uvlc(0); // seq_header_id_in_frame_header
@@ -2232,6 +2462,9 @@ mod tests {
         bits.bit(1); // apply_grain = 1
         bits.f(2, 3); // fgm_id = 2
         bits.f(0x1357, 16); // grain_seed
+        // § 5.2.3 trailing_bits(): trailing_one_bit == 1, then into_bytes() zero-pads the
+        // rest of the byte (the trailing_zero_bits) — a conformant SEF tail.
+        bits.bit(1); // trailing_one_bit
         let data = bits.into_bytes();
         let (core, _) = parse_body(&data, ObuType::RegularSef, true, &seq).unwrap();
         assert_eq!(core.show_existing_frame, Some(true));
@@ -2243,6 +2476,8 @@ mod tests {
         assert!(fg.apply_grain);
         assert_eq!(fg.fgm_id, Some(2));
         assert_eq!(fg.grain_seed, Some(0x1357));
+        // A conformant SEF tail classifies as Valid (no diagnostic).
+        assert_eq!(core.sef_trailing_bits, Some(SefTrailingBits::Valid));
     }
 
     #[test]
@@ -2253,7 +2488,7 @@ mod tests {
         // decidable truncation (distinct from the ordinary bounded CoreFieldsOnly stop),
         // surfaced as truncated-in-modeled-region. Not a hard error.
         let mut seq = base_seq();
-        seq.film_grain_params_present = true;
+        seq.film_grain_params_present = Some(true);
         let mut bits = Bits::default();
         bits.uvlc(0); // cur_mfh_id == 0
         bits.uvlc(0); // seq_header_id_in_frame_header
@@ -2278,6 +2513,83 @@ mod tests {
             core.sef_film_grain, None,
             "the truncated SEF grain stays None"
         );
+        // No trailing-bits boundary is recorded on a truncated SEF: the payload ended
+        // inside film_grain_config(), so there is no completed tail to classify.
+        assert_eq!(core.sef_trailing_bits, None);
+    }
+
+    #[test]
+    fn frame_header_core_sef_nonzero_bits_after_fields_flag_trailing_bits() {
+        // A grain-free SEF whose payload carries arbitrary nonzero bits after the parsed
+        // fields where § 5.2.3 trailing_bits() must be. Pre-fix this completed silently
+        // (ShowExistingFrameComplete with no trailing-bits boundary); now the SEF tail is
+        // classified and a non-conformant tail is recorded for the validator.
+        let mut bits = Bits::default();
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(0); // seq_header_id_in_frame_header
+        bits.f(6, 3); // frame_to_show_map_idx
+        bits.bit(1); // derive_sef_order_hint == 1 -> no sef_order_hint
+        // No grain (base_seq has film_grain_params_present == false) -> apply_grain = 0.
+        // The next bit must be the trailing_one_bit == 1; instead a 0 then arbitrary bits.
+        bits.bit(0); // would-be trailing_one_bit, but it is 0
+        bits.f(0b1011, 4); // arbitrary nonzero bits after the SEF fields
+        let data = bits.into_bytes();
+        let (core, _) = parse_body(&data, ObuType::RegularSef, true, &base_seq()).unwrap();
+        assert_eq!(core.show_existing_frame, Some(true));
+        assert_eq!(
+            core.status,
+            FrameHeaderParseStatus::ShowExistingFrameComplete,
+            "the SEF fields still parse to completion; the defect is in the tail"
+        );
+        assert_eq!(
+            core.sef_trailing_bits,
+            Some(SefTrailingBits::MissingOneBit),
+            "the first post-field bit was not the required trailing_one_bit"
+        );
+    }
+
+    #[test]
+    fn frame_header_core_sef_grain_seed_short_one_bit_eats_trailing_marker() {
+        // A SEF with grain where grain_seed is short by its final bit: the f(16) read
+        // consumes what should have been the § 5.2.3 trailing_one_bit, leaving no marker.
+        // Pre-fix this completed clean with a corrupted seed; now the trailing-bits check
+        // fails (the marker was eaten), so the SEF no longer completes silently.
+        let mut seq = base_seq();
+        seq.film_grain_params_present = Some(true);
+        let mut bits = Bits::default();
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(0); // seq_header_id_in_frame_header
+        bits.f(6, 3); // frame_to_show_map_idx
+        bits.bit(1); // derive_sef_order_hint == 1
+        bits.bit(1); // apply_grain = 1
+        bits.f(2, 3); // fgm_id = 2
+        // A conformant frame would code grain_seed f(16) then a trailing_one_bit. Here the
+        // encoder coded only 15 distinct seed bits plus the marker bit, so the f(16) read
+        // swallows the marker: 15 seed bits then the would-be trailing_one_bit as bit 16,
+        // and into_bytes() zero-fills the rest — no trailing_one_bit remains.
+        bits.f(0x0000, 15); // 15 seed bits
+        bits.bit(1); // the marker bit, consumed as the 16th grain_seed bit
+        let data = bits.into_bytes();
+        let (core, _) = parse_body(&data, ObuType::RegularSef, true, &seq).unwrap();
+        assert_eq!(
+            core.status,
+            FrameHeaderParseStatus::ShowExistingFrameComplete
+        );
+        let fg = core.sef_film_grain.expect("SEF film_grain_config parsed");
+        // The seed is parsed (with the marker bit folded into it), but the trailing-bits
+        // boundary is now non-conformant: the bytes after grain_seed are all zero, so the
+        // first remaining bit is 0 (MissingOneBit) — or, if grain_seed ended exactly at a
+        // byte boundary, no bits remain (Empty). Either is a recorded violation.
+        assert_eq!(fg.grain_seed, Some(1));
+        assert_ne!(
+            core.sef_trailing_bits,
+            Some(SefTrailingBits::Valid),
+            "the eaten trailing_one_bit makes the SEF tail non-conformant"
+        );
+        assert!(matches!(
+            core.sef_trailing_bits,
+            Some(SefTrailingBits::MissingOneBit | SefTrailingBits::Empty)
+        ));
     }
 
     #[test]
@@ -2893,6 +3205,7 @@ mod tests {
         bits.f(6, 3); // frame_to_show_map_idx
         bits.bit(0); // derive_sef_order_hint == 0
         bits.f(11, 4); // sef_order_hint
+        bits.bit(1); // § 5.2.3 trailing_one_bit; into_bytes() zero-pads the rest.
         let data = bits.into_bytes();
         let (core, _) = parse_body(&data, ObuType::RegularSef, true, &base_seq()).unwrap();
 
@@ -2913,6 +3226,8 @@ mod tests {
         let fg = core.sef_film_grain.expect("SEF film_grain_config parsed");
         assert!(!fg.apply_grain);
         assert_eq!(fg.fgm_id, None);
+        // A conformant grain-free SEF tail classifies as Valid (no diagnostic).
+        assert_eq!(core.sef_trailing_bits, Some(SefTrailingBits::Valid));
     }
 
     #[test]
@@ -2924,6 +3239,7 @@ mod tests {
         bits.uvlc(0); // seq_header_id_in_frame_header
         bits.f(2, 3); // frame_to_show_map_idx
         bits.bit(1); // derive_sef_order_hint == 1 -> no sef_order_hint bits
+        bits.bit(1); // § 5.2.3 trailing_one_bit; into_bytes() zero-pads the rest.
         let data = bits.into_bytes();
         let (core, _) = parse_body(&data, ObuType::RegularSef, true, &base_seq()).unwrap();
 
@@ -2939,6 +3255,7 @@ mod tests {
             FrameHeaderParseStatus::ShowExistingFrameComplete
         );
         assert!(core.sef_film_grain.is_some());
+        assert_eq!(core.sef_trailing_bits, Some(SefTrailingBits::Valid));
     }
 
     #[test]
@@ -3406,7 +3723,7 @@ mod proptests {
                         restoration,
                         ccso,
                         chroma_format_idc,
-                        film_grain_params_present: false,
+                        film_grain_params_present: Some(false),
                     }
                 },
             )

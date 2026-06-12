@@ -49,7 +49,7 @@ pub use filtering::{
 };
 pub use info::{
     FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
-    FrameReferenceStateView, FrameType, parse_frame_header_core,
+    FrameReferenceStateView, FrameType, SefTrailingBits, parse_frame_header_core,
 };
 pub use quant::{
     CoreSeqQuantView, DeltaQParams, LosslessInfo, MAX_PIC_QM_NUM, QmSetLevels, QuantizationParams,

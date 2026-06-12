@@ -24,8 +24,8 @@ use splot_core::headers::frame::{
     CcsoParams, CcsoPlaneParams, CdefParams, CdefStrengthSet, DeblockingFilterParams, DeltaQParams,
     FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
     FrameHeaderPrefix, FrameHeaderTail, FrameReferenceStateView, GdfParams, LosslessInfo, LrParams,
-    LrPartialParams, LrPlaneParams, QuantizationParams, SegmentationParams, SetupQmParams,
-    TileInfo, parse_frame_header_core, parse_frame_header_prefix,
+    LrPartialParams, LrPlaneParams, QuantizationParams, SefTrailingBits, SegmentationParams,
+    SetupQmParams, TileInfo, parse_frame_header_core, parse_frame_header_prefix,
 };
 use splot_core::headers::metadata::{MetadataUnit, parse_metadata_group, parse_metadata_short};
 use splot_core::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
@@ -709,6 +709,11 @@ struct FrameHeaderCoreView {
     intra_tail: Option<FrameHeaderTailView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sef_film_grain: Option<FilmGrainConfigView>,
+    /// The §5.2.1 / §5.2.3 show-existing-frame `trailing_bits()` classification (stable
+    /// label), present only on a completed SEF header. A value other than `"valid"` means
+    /// the SEF payload tail is non-conformant (surfaced as a diagnostic by the validator).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sef_trailing_bits: Option<&'static str>,
     consumed_bits: u64,
 }
 
@@ -1205,6 +1210,7 @@ impl FrameHeaderCoreView {
             ccso: core.ccso_params.as_ref().map(CcsoParamsView::new),
             intra_tail: core.intra_tail.as_ref().map(FrameHeaderTailView::new),
             sef_film_grain: core.sef_film_grain.as_ref().map(FilmGrainConfigView::new),
+            sef_trailing_bits: core.sef_trailing_bits.map(SefTrailingBits::label),
             consumed_bits: core.consumed_bits,
         }
     }
