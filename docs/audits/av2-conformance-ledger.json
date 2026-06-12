@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "dea64103ef7ac7b0523799a97069e6ba5817668a",
+  "audited_commit": "7d57e5c418fb84c261fc3f74b334915349121e97",
   "outcome": "success",
   "files": [
     {
@@ -436,7 +436,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/info.rs",
-      "sha256": "ab0d984e80e7cab2c94b4f26f777e0c2f5becc99e04e1ac057a75fc9185e7a64",
+      "sha256": "8a38c158d4ba541d5590e3110d411d368c8ce8fac521cdc06d0a1342fc929576",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -804,7 +804,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "a0d533b1db5266d39705be2ab6b2535fafcd0d3d0b34b3c507c6c831ec7573cc",
+      "sha256": "6f151d8210b332f946f5adae88a6e49102f1efd27844bc897e53a2e6b7c2a82c",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -875,7 +875,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "fe3cbcbfcb8e4c9b704e9e0feff4cd8de41ff58b0428c9309ec93f2db09b0c0c",
+      "sha256": "bb0c4d2d87d032596640ccf789785daa5993cf66ee1b71fd26b15ef682ee27ee",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1107,7 +1107,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "f8da3f9309d2425d2142075c99f6dabf6166449c76ff64fc0d9e8ff3eda59b80",
+      "sha256": "040f3400136f71cdd93ef50720d6ca667bb63990f4450b6d1c2821447407288b",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1244,7 +1244,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "0a8dcda723fb05d16069b9e3ed172e294b795bc48dcf1162977c0bf7150de147",
+      "sha256": "8140e89282ca9910c630a8f72598f8290f10c0b3aca01ec62e3908eda2241f87",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1397,7 +1397,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "f9fbf3d5fe794cbec8a55fc3342e0d968e25855519ebecfc805fcc5d6f22d916",
+      "sha256": "65e3039c4d61013c85c473cee630c3e4ba26eecb5c2114e3bb6dcfc0ae113e2f",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -3398,7 +3398,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "f0ad3658fb729e772220b8615a30d90abadea788c8279b075aaf647226bc3c70",
+      "sha256": "4d86c03d19087852322357380f8e91b127dbae16216093e0bfb7079a36525503",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
