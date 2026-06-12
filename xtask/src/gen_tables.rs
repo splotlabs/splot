@@ -179,12 +179,10 @@ pub fn run_gen_tables(root: &Path, check: bool) -> Result<()> {
                 let entry = entry?;
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                    let rel = format!(
-                        "{OUTPUT_DIR}/{}",
-                        path.file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or_default()
-                    );
+                    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                        bail!("non-UTF-8 filename under {OUTPUT_DIR}: {}", path.display());
+                    };
+                    let rel = format!("{OUTPUT_DIR}/{name}");
                     if !outputs.files.contains_key(&rel) {
                         drift.push(format!("unexpected (would be removed): {rel}"));
                     }
@@ -519,6 +517,11 @@ fn strip_comments(raw: &str) -> String {
 /// A `-` is only allowed as a unary sign for the following number; the attachment
 /// sometimes prints a space between the sign and the digits (`- 1`), so whitespace
 /// between the sign and the digit is tolerated.
+///
+/// ASSUMPTION (claude review, PR #66): a binary subtraction like `1-2` would be
+/// misread as the two values `1` and `-2` — the attachment contains no arithmetic
+/// expressions (only literals), and the determinism test's exact table count would
+/// flag a future spec version that introduced one.
 fn is_numeric_body(body: &str) -> bool {
     let bytes = body.as_bytes();
     for (k, &b) in bytes.iter().enumerate() {
@@ -705,6 +708,12 @@ fn render_node(toks: &[Tok], idx: &mut usize) -> Result<String> {
     match toks.get(*idx) {
         Some(Tok::Int(v)) => {
             *idx += 1;
+            // The generated consts are typed i32: reject out-of-range values here with
+            // a clear generator error instead of deferring to a rustc type error in the
+            // generated file (claude review, PR #66).
+            if i32::try_from(*v).is_err() {
+                bail!("table value {v} does not fit the generated i32 type");
+            }
             Ok(v.to_string())
         }
         Some(Tok::Open) => {
