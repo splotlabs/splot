@@ -209,6 +209,26 @@ pub fn run_gen_tables(root: &Path, check: bool) -> Result<()> {
 
     std::fs::create_dir_all(root.join(OUTPUT_DIR))
         .with_context(|| format!("failed to create {OUTPUT_DIR}"))?;
+    // Remove stale generated modules first (a renamed/no-longer-emitted table group
+    // would otherwise survive every regeneration and keep --check failing until
+    // deleted by hand — codex review, PR #66).
+    for entry in std::fs::read_dir(root.join(OUTPUT_DIR))
+        .with_context(|| format!("failed to read {OUTPUT_DIR}"))?
+    {
+        let entry = entry.with_context(|| format!("failed to read an entry in {OUTPUT_DIR}"))?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                bail!("non-UTF-8 filename under {OUTPUT_DIR}: {}", path.display());
+            };
+            let rel = format!("{OUTPUT_DIR}/{name}");
+            if !outputs.files.contains_key(&rel) {
+                std::fs::remove_file(&path)
+                    .with_context(|| format!("failed to remove stale {rel}"))?;
+                eprintln!("gen-tables: removed stale {rel}");
+            }
+        }
+    }
     for (rel, content) in &outputs.files {
         std::fs::write(root.join(rel), content)
             .with_context(|| format!("failed to write {rel}"))?;
@@ -541,7 +561,7 @@ fn is_numeric_body(body: &str) -> bool {
     true
 }
 
-/// Render one § 9 module file: SPDX + provenance header, then one `pub const` per
+/// Render one § 9 module file: SPDX + provenance header, then one `pub static` per
 /// table.
 fn render_module(section: &Section, decls: &[&Decl]) -> Result<String> {
     // Writing to a `String` is infallible, so `write!`/`writeln!` results are
@@ -578,7 +598,11 @@ fn render_module(section: &Section, decls: &[&Decl]) -> Result<String> {
         // a single line so `cargo fmt --check` is stable and the generator's output
         // does not depend on the installed rustfmt version.
         let _ = writeln!(out, "#[rustfmt::skip]");
-        let _ = writeln!(out, "pub const {rust_name}: {ty} = {value};");
+        // `pub static`, not `pub const`: a const is value-substituted at every
+        // mention, so the large §9 arrays (e.g. the ~216 KiB QUANTIZER_MATRIX)
+        // could be re-materialized at call sites; a static has one read-only
+        // storage location (codex review, PR #66).
+        let _ = writeln!(out, "pub static {rust_name}: {ty} = {value};");
         out.push('\n');
     }
 

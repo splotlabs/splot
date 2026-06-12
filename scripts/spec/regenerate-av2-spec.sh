@@ -36,6 +36,7 @@ SHA256=""
 OUTDIR=""
 PDF_PATH=""
 ATTACHMENT_PATH=""
+ATTACHMENT_SHA=""
 VERIFY=0
 
 die() { echo "regenerate-av2-spec: $*" >&2; exit 1; }
@@ -44,7 +45,7 @@ while [ $# -gt 0 ]; do
   # Value-taking flags must be followed by a value; check before reading $2 so a
   # trailing "--version" with no value fails clearly instead of via `set -u`.
   case "$1" in
-    --version|--url|--sha256|--outdir|--pdf|--attachment-file)
+    --version|--url|--sha256|--outdir|--pdf|--attachment-file|--attachment-sha256)
       [ $# -ge 2 ] || die "option $1 requires a value" ;;
   esac
   case "$1" in
@@ -54,6 +55,7 @@ while [ $# -gt 0 ]; do
     --outdir)  OUTDIR="$2"; shift 2 ;;
     --pdf)     PDF_PATH="$2"; shift 2 ;;
     --attachment-file) ATTACHMENT_PATH="$2"; shift 2 ;;
+    --attachment-sha256) ATTACHMENT_SHA="$2"; shift 2 ;;
     --verify)  VERIFY=1; shift ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -116,7 +118,15 @@ pdftotext -layout "$WORK/spec.pdf" "$WORK/raw.txt"
 # `cargo xtask gen-tables`. Its sha256 is pinned in the committed provenance.toml;
 # we re-verify it after downloading so a re-pointed/altered attachment fails loudly.
 ATTACHMENT_URL="https://av2.aomedia.org/v$VERSION/attachments/all_tables.h"
-ATTACHMENT_SHA="c3837e1c3b333e9ed51885c642562b519e3c3ed2ab385557d296c30a29c04ca1"
+# The attachment pin is version-specific; for any non-1.0.0 mirror a
+# --attachment-sha256 must be supplied (codex review, PR #66).
+if [ -z "${ATTACHMENT_SHA:-}" ]; then
+  if [ "$VERSION" = "1.0.0" ]; then
+    ATTACHMENT_SHA="c3837e1c3b333e9ed51885c642562b519e3c3ed2ab385557d296c30a29c04ca1"
+  else
+    die "no --attachment-sha256 given and no built-in pin for version $VERSION"
+  fi
+fi
 # Offline-friendly sourcing (mirrors --pdf): an explicit --attachment-file wins;
 # otherwise reuse the committed attachment when its bytes match the pin, so
 # `--verify --pdf <cached>` keeps working without network; download only as the
