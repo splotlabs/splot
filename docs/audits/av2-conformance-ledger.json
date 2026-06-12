@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "46f6cd8d6793b64f8df4e3215f84d9523063e73f",
+  "audited_commit": "b020b19b73c1edeb403f95cc588a81ee938c7a5f",
   "outcome": "success",
   "files": [
     {
@@ -3789,7 +3789,7 @@
     },
     {
       "path": "xtask/src/gen_tables.rs",
-      "sha256": "67f4dbf22ee48fbf521913f6f0375ea05f2eb411c372703f51874b388b53c5c1",
+      "sha256": "a91d02ce18ac6dd4a4956055850f88fcf6d04403ab7414edc754697037bd8634",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "AV2-9-ADDITIONAL-TABLES",
