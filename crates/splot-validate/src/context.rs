@@ -13568,6 +13568,33 @@ fn frame_header_core_checks(
         ));
     }
 
+    // AV2 § 6.17.2 (mirror :4578-4579): if num_total_refs is present, it is a requirement
+    // of bitstream conformance that num_total_refs <= ActiveNumRefFrames, where
+    // ActiveNumRefFrames = Min( REFS_PER_FRAME, NumRefFrames ) (§ 5.18.2 mirror :963;
+    // REFS_PER_FRAME == 7 per § 3 mirror :697). num_total_refs is read as f(3) so the parse
+    // is always safe (the ref_frame_idx loop runs <= 7 times); this is a decidable
+    // bound the validator checks from the recorded value and the active sequence alone.
+    if let Some(inter) = core.inter.as_ref()
+        && let Some(num_total_refs) = inter.num_total_refs
+        && let Some(seq_inter) = active_sequence.inter.as_ref()
+    {
+        const REFS_PER_FRAME: u32 = 7;
+        let active_num_ref_frames = REFS_PER_FRAME.min(u32::from(seq_inter.num_ref_frames));
+        if num_total_refs > active_num_ref_frames {
+            report.push(frame_header_error(
+                "frame-header/num-total-refs-out-of-range",
+                "6.17.2",
+                obu,
+                format!(
+                    "num_total_refs {num_total_refs} must be less than or equal to \
+                     ActiveNumRefFrames {active_num_ref_frames} = Min(REFS_PER_FRAME {}, \
+                     NumRefFrames {})",
+                    REFS_PER_FRAME, seq_inter.num_ref_frames
+                ),
+            ));
+        }
+    }
+
     // AV2 § 6.17.2: every used reference slot must be valid — an inter frame's
     // ref_frame_idx[i] must name a slot whose RefValid is 1. The core parser flags a
     // parsed ref_frame_idx that the modeled §7.23 reference state proves invalid

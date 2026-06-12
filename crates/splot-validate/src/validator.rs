@@ -4458,7 +4458,10 @@ mod tests {
     #[test]
     fn validator_flags_bridge_ref_index_out_of_range() {
         // NumRefFrames == 6 -> CeilLog2(6) == 3 bits, so bridge_frame_ref_idx can encode
-        // 6 or 7, both >= NumRefFrames (AV2 § 6.17.2).
+        // 6 or 7, both >= NumRefFrames (AV2 § 6.17.2). The body codes the IsBridge
+        // reference-control arms (overwrite flag + frame_size_with_bridge dims) so the core
+        // records bridge_frame_ref_idx and stops honestly (frame_size_with_bridge() Min
+        // needs slot-6 dims, which are out of range / Unknown -> PoisonedReferenceState).
         let mut data = td_and_frame_core_seq(FrameCoreSeq {
             num_ref_frames_minus_1: 5, // NumRefFrames == 6 (non-power-of-2)
             ..FrameCoreSeq::base()
@@ -4466,6 +4469,9 @@ mod tests {
         let mut fb = Bits::default();
         fb.uvlc(0); // seq_header_id_in_frame_header (bridge infers cur_mfh_id == 0)
         fb.f(6, 3); // bridge_frame_ref_idx == 6 (>= NumRefFrames 6)
+        fb.bit(0); // bridge_frame_overwrite_flag == 0 -> refresh = 1 << 6 (no bits)
+        fb.f(0, 8); // bridge_frame_width_minus_1 f(frame_width_bits == 8)
+        fb.f(0, 8); // bridge_frame_height_minus_1 f(frame_height_bits == 8)
         data.extend(annex_b_obu(BRIDGE_HEADER, &fb.into_bytes()));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
@@ -20530,6 +20536,87 @@ mod tests {
         report
             .errors()
             .any(|d| d.rule_id == "frame-header/ref-frame-idx-invalid-slot")
+    }
+
+    fn has_num_total_refs_error(report: &ValidationReport) -> bool {
+        report
+            .errors()
+            .any(|d| d.rule_id == "frame-header/num-total-refs-out-of-range")
+    }
+
+    /// A regular-tile-group INTER frame (explicit reference map) coding `num_total_refs`
+    /// against a NumRefFrames == 2 sequence (`num_ref_frames_minus_1 == 1`), so
+    /// ActiveNumRefFrames = Min(REFS_PER_FRAME 7, 2) == 2 and an f(3) `num_total_refs`
+    /// of 3..=7 exceeds the §6.17.2 bound. Each `ref_frame_idx[i]` is f(CeilLog2(2) == 1).
+    /// Built against the base inter sequence (OrderHintBits == 1, monotonic output,
+    /// enable_ref_frame_mvs == 0); the body parses through the inter control region into
+    /// the shared tail, so the core's `inter.num_total_refs` is recorded for the check.
+    fn ref_inter_num_total_refs(num_total_refs: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(1); // frame_is_inter == 1 -> INTER_FRAME
+        fb.bit(1); // immediate_output_frame (monotonic_output -> implicit forced 0, no bit)
+        fb.bit(0); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        fb.bit(0); // signal_primary_ref_frame
+        fb.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        fb.f(0, 2); // refresh_frame_flags f(NumRefFrames == 2)
+        fb.bit(1); // frame_explicit_ref_frame_map (explicit_ref_frame_map seq flag set)
+        fb.f(num_total_refs, 3); // num_total_refs f(3)
+        for _ in 0..num_total_refs {
+            fb.f(0, 1); // ref_frame_idx[i] f(CeilLog2(2) == 1) -> slot 0
+        }
+        // non-override, cur_mfh_id == 0 -> frame_size() default dims (no bits).
+        // use_ref_frame_mvs: enable_ref_frame_mvs == 0 -> inferred 0 (no bit). When
+        // num_total_refs == 1 there is no tmvp read either way.
+        // frame_opfl_refine_type: enable_opfl_refine != REFINE_AUTO -> no bits.
+        fb.bit(0); // allow_screen_content_tools (SELECT) -> force_integer_mv = 0
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // use_qtr_precision_mv
+        fb.bit(0); // allow_high_precision_mv -> HALF_PEL
+        fb.bit(1); // is_filter_switchable -> SWITCHABLE (no interpolation_filter f(2))
+        // motion modes: seq_frame_motion_modes_present_flag == 0 -> no bits.
+        annex_b_obu(REGULAR_TILE_GROUP_HEADER, &fb.into_bytes())
+    }
+
+    #[test]
+    fn frame_header_num_total_refs_in_range_is_silent() {
+        // §6.17.2 (mirror :4578-4579): num_total_refs <= ActiveNumRefFrames. NumRefFrames
+        // == 2 -> ActiveNumRefFrames == 2; num_total_refs == 2 is exactly at the bound ->
+        // silent.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            num_ref_frames_minus_1: 1, // NumRefFrames == 2 -> ActiveNumRefFrames == 2
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(ref_inter_num_total_refs(2)); // at the bound
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_num_total_refs_error(&report),
+            "num_total_refs == ActiveNumRefFrames is conformant -> silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_header_num_total_refs_out_of_range_fires() {
+        // NumRefFrames == 2 -> ActiveNumRefFrames == 2; num_total_refs == 3 (> 2) violates
+        // the §6.17.2 bound -> the diagnostic fires.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            num_ref_frames_minus_1: 1, // NumRefFrames == 2 -> ActiveNumRefFrames == 2
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(ref_inter_num_total_refs(3)); // exceeds the bound
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_num_total_refs_error(&report),
+            "num_total_refs 3 > ActiveNumRefFrames 2 must fire the §6.17.2 check; \
+             report was: {report}"
+        );
     }
 
     #[test]

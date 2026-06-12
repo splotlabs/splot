@@ -62,9 +62,13 @@ const PRIMARY_REF_NONE: u8 = 7;
 /// `signal_primary_ref_frame == 0` (§ 5.18.2 mirror :4397).
 const PRIMARY_REF_CHOOSE: u8 = 8;
 
-/// `REFINE_SWITCHABLE` (AV2 v1.0.0 § 3): the `opfl_refine_type` value past which
-/// `frame_opfl_refine_type()` reads `opfl_refine_all` (§ 5.18.3.2 mirror :5601).
-const REFINE_SWITCHABLE: u32 = 2;
+/// `REFINE_SWITCHABLE` (AV2 v1.0.0 Table 6.5, § 6.17.2 mirror :947): the `opfl_refine_type`
+/// value at which `frame_opfl_refine_type()` does NOT read `opfl_refine_all` (§ 5.18.3.2
+/// mirror :5601, `if ( opfl_refine_type != REFINE_SWITCHABLE )`). `opfl_refine_type` is read
+/// as `f(1)`, so its value space is {0, 1}: a value of 2 here would make the inequality
+/// always true and consume an extra `opfl_refine_all` bit, mis-positioning every following
+/// field.
+const REFINE_SWITCHABLE: u32 = 1;
 
 /// `REFINE_AUTO` (AV2 v1.0.0 § 3): the `enable_opfl_refine` value that makes
 /// `frame_opfl_refine_type()` signal `opfl_refine_type` (§ 5.18.3.2 mirror :5597).
@@ -132,8 +136,9 @@ impl TipFrameMode {
 #[non_exhaustive]
 pub enum InterStop {
     /// A § 5.18.2 derivation this phase does not model is required to continue
-    /// (`get_ref_frames()` for the implicit reference map, or
-    /// `get_past_future_cur_ref_lists()`). The facts parsed before it are preserved.
+    /// (`get_ref_frames()` for the implicit reference map). The facts parsed before it are
+    /// preserved. The TIP block's `get_past_future_cur_ref_lists()` past/future ref counts
+    /// are a reference-state derivation and stop with [`Self::PoisonedReferenceState`].
     UnmodeledDerivation,
     /// A § 5.18.2 derivation that affects a bit position needs a reference slot the
     /// model has not proven valid (`frame_size_with_refs()` / `frame_size_with_bridge()`
@@ -228,9 +233,12 @@ pub struct InterControl {
     pub allow_screen_content_tools: Option<bool>,
     /// `allow_intrabc` (mirror :4861), when read on the inter path.
     pub allow_intrabc: Option<bool>,
-    /// `true` when a parsed `ref_frame_idx[i]` references a slot the modeled reference
-    /// state proves invalid (`RefValid[idx] == false` with a modeled buffer). AV2 § 6.17.2
-    /// requires every used reference slot to be valid; recorded for the validator.
+    /// `true` when a parsed `ref_frame_idx[i]` names an index at or beyond the
+    /// `NUM_REF_FRAMES` buffer (`idx >= NUM_REF_FRAMES`). AV2 § 6.17.2 requires every used
+    /// reference slot to be valid; recorded for the validator. The in-range proven-invalid
+    /// case (`RefValid[idx] == false`) is decided separately by the validator's §7.23
+    /// reference-state check (`ValidatorContext::reference_state_checks`), not by this flag —
+    /// the parser cannot distinguish an Unknown slot from a proven-invalid one here.
     pub has_invalid_ref_frame_idx: bool,
 }
 
@@ -374,7 +382,7 @@ pub(crate) fn parse_inter_control(
         }
         // mirror :4391-4399: if ( signal ) primary_ref_frame f(3); else PRIMARY_REF_CHOOSE.
         if signal {
-            control.primary_ref_frame = Some(u8::try_from(reader.read_bits(3)?).unwrap_or(0));
+            control.primary_ref_frame = Some(reader.read_bits_u8(3)?);
         } else {
             control.primary_ref_frame = Some(PRIMARY_REF_CHOOSE);
         }
@@ -910,6 +918,88 @@ mod tests {
         assert_eq!(
             control.frame_enabled_motion_modes,
             Some([false; MOTION_MODES])
+        );
+        assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
+    }
+
+    /// Builds the explicit-map inter prefix up to (and not including) the
+    /// `frame_opfl_refine_type()` reads, with `num_total_refs == 1` so the TIP gate / tmvp
+    /// reads stay absent. The caller appends the `opfl_refine_type` / `opfl_refine_all` bits.
+    fn opfl_refine_prefix(bits: &mut Bits) {
+        bits.bit(0); // signal_primary_ref_frame
+        bits.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        bits.f(0, 8); // refresh_frame_flags f(NumRefFrames)
+        bits.bit(1); // frame_explicit_ref_frame_map
+        bits.f(1, 3); // num_total_refs = 1
+        bits.f(0, 3); // ref_frame_idx[0]
+        // non-override, cur_mfh_id == 0 -> frame_size() default dims (no bits).
+        bits.bit(0); // use_ref_frame_mvs = 0 (num_total_refs == 1 -> no tmvp)
+        // TIP gate false (enable_tip off). TipFrameMode = DISABLED. Then frame_opfl_refine_type().
+    }
+
+    /// Appends the inter tail after `frame_opfl_refine_type()`: screen_content / intrabc /
+    /// MV-precision / interpolation-filter, converging into the shared tail.
+    fn opfl_refine_tail(bits: &mut Bits) {
+        // screen_content_params(): seq_force off -> allow_screen_content_tools = 0, no bits.
+        bits.bit(0); // intrabc_params(): allow_intrabc = 0
+        bits.bit(0); // use_qtr_precision_mv = 0
+        bits.bit(0); // allow_high_precision_mv = 0 -> HALF_PEL
+        bits.bit(1); // is_filter_switchable = 1 (no interpolation_filter f(2))
+        // motion modes: seq_frame_motion_modes_present_flag false -> no bits.
+    }
+
+    #[test]
+    fn opfl_refine_auto_switchable_skips_opfl_refine_all() {
+        // AV2 § 5.18.3.2 (mirror :5597-5607): enable_opfl_refine == REFINE_AUTO reads
+        // opfl_refine_type f(1); when opfl_refine_type == REFINE_SWITCHABLE (1),
+        // opfl_refine_all is NOT read. A REFINE_SWITCHABLE constant of 2 would (wrongly) read
+        // the extra bit and shift every subsequent field by one — the post-fix layout aligns
+        // is_filter_switchable to the bit right after opfl_refine_type.
+        let mut bits = Bits::default();
+        opfl_refine_prefix(&mut bits);
+        bits.bit(1); // opfl_refine_type = 1 (REFINE_SWITCHABLE) -> NO opfl_refine_all
+        opfl_refine_tail(&mut bits);
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let mut seq = inter_seq();
+        seq.enable_opfl_refine = REFINE_AUTO;
+        let ctx = inter_ctx();
+        let rs = FrameReferenceStateView::unknown();
+        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        assert_eq!(control.tip_frame_mode, Some(TipFrameMode::Disabled));
+        assert_eq!(control.allow_intrabc, Some(false));
+        assert_eq!(control.mv_precision, Some(MvPrecision::HalfPel));
+        // is_filter_switchable == 1 only lands here if opfl_refine_all was skipped.
+        assert_eq!(
+            control.interpolation_filter,
+            Some(InterpolationFilter::Switchable)
+        );
+        assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
+    }
+
+    #[test]
+    fn opfl_refine_auto_non_switchable_reads_opfl_refine_all() {
+        // AV2 § 5.18.3.2 (mirror :5597-5607): enable_opfl_refine == REFINE_AUTO reads
+        // opfl_refine_type f(1); when opfl_refine_type != REFINE_SWITCHABLE (here 0,
+        // REFINE_NONE), opfl_refine_all f(1) IS read. The tail then aligns one bit later.
+        let mut bits = Bits::default();
+        opfl_refine_prefix(&mut bits);
+        bits.bit(0); // opfl_refine_type = 0 (REFINE_NONE) -> opfl_refine_all IS read
+        bits.bit(0); // opfl_refine_all f(1)
+        opfl_refine_tail(&mut bits);
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let mut seq = inter_seq();
+        seq.enable_opfl_refine = REFINE_AUTO;
+        let ctx = inter_ctx();
+        let rs = FrameReferenceStateView::unknown();
+        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        assert_eq!(control.tip_frame_mode, Some(TipFrameMode::Disabled));
+        assert_eq!(control.allow_intrabc, Some(false));
+        assert_eq!(control.mv_precision, Some(MvPrecision::HalfPel));
+        assert_eq!(
+            control.interpolation_filter,
+            Some(InterpolationFilter::Switchable)
         );
         assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
     }

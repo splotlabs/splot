@@ -990,17 +990,20 @@ fn parse_core_body(
 ) -> Result<()> {
     let obu_type = core.obu_type;
 
-    // AV2 § 5.18.2: a bridge frame reads bridge_frame_ref_idx f(CeilLog2(NumRefFrames))
-    // immediately after load_sequence_header(). The rest of a bridge frame needs
-    // reference-frame dimensions, so the parser stops here.
+    // AV2 § 5.18.2 (mirror :4117-4123): a bridge frame reads bridge_frame_ref_idx
+    // f(CeilLog2(NumRefFrames)) immediately after load_sequence_header(), then takes the
+    // IsBridge arm through the reference-control region. FrameType = INTER_FRAME (mirror
+    // :4203-4205), immediate_output_frame / implicit_output_frame = 0 (mirror :4295-4313),
+    // and frame_size_override_flag / order_hint are NOT read (the bridge skips the non-bridge
+    // :4351+ block), so the bridge enters the inter control region directly.
     if core.is_bridge {
-        core.bridge_frame_ref_idx = Some(read_f(reader, ceil_log2(seq.num_ref_frames))?);
+        let bridge_frame_ref_idx = read_f(reader, ceil_log2(seq.num_ref_frames))?;
+        core.bridge_frame_ref_idx = Some(bridge_frame_ref_idx);
         core.frame_type = Some(FrameType::Inter);
         core.frame_is_intra = Some(false);
-        core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
-            feature_id: FRAME_HEADER_INFO_FEATURE,
-        };
-        return Ok(());
+        core.immediate_output_frame = Some(false);
+        core.implicit_output_frame = Some(false);
+        return parse_bridge_inter_path(reader, core, seq, bridge_frame_ref_idx, reference_state);
     }
 
     if seq.single_picture_header_flag {
@@ -1112,7 +1115,7 @@ fn parse_inter_path(
     frame_type: FrameType,
     reference_state: &FrameReferenceStateView<'_>,
 ) -> Result<()> {
-    use crate::headers::frame::inter::{InterFrameContext, InterSeqView, parse_inter_control};
+    use crate::headers::frame::inter::{InterFrameContext, parse_inter_control};
 
     let obu_type = core.obu_type;
 
@@ -1129,33 +1132,11 @@ fn parse_inter_path(
     // mirror :4367: order_hint f(OrderHintBits); OrderHintLsbs = order_hint.
     core.order_hint_lsb = Some(read_f(reader, seq.order_hint_bits)?);
 
-    let inter_seq = InterSeqView {
-        num_ref_frames: seq.num_ref_frames,
-        enable_short_refresh_frame_flags: seq.enable_short_refresh_frame_flags,
-        explicit_ref_frame_map: seq.inter.explicit_ref_frame_map,
-        enable_ref_frame_mvs: seq.inter.enable_ref_frame_mvs,
-        enable_bru: seq.inter.enable_bru,
-        enable_tip: seq.inter.enable_tip,
-        seq_max_drl_bits_minus_1: seq.inter.seq_max_drl_bits_minus_1,
-        allow_frame_max_drl_bits: seq.inter.allow_frame_max_drl_bits,
-        enable_flex_mvres: seq.inter.enable_flex_mvres,
-        seq_frame_motion_modes_present_flag: seq.inter.seq_frame_motion_modes_present_flag,
-        seq_enabled_motion_modes: seq.inter.seq_enabled_motion_modes,
-        enable_opfl_refine: seq.inter.enable_opfl_refine,
-        max_mlayer_id: seq.max_mlayer_id,
-        seq_force_screen_content_tools: seq.seq_force_screen_content_tools,
-        seq_force_integer_mv: seq.seq_force_integer_mv,
-        allow_frame_max_bvp_drl_bits: seq.allow_frame_max_bvp_drl_bits,
-        frame_width_bits: seq.frame_width_bits,
-        frame_height_bits: seq.frame_height_bits,
-        max_frame_width: seq.max_frame_width,
-        max_frame_height: seq.max_frame_height,
-        sb_size: seq.tile.frame_sb_size(false),
-    };
+    let inter_seq = build_inter_seq_view(seq);
     let ctx = InterFrameContext {
         obu_type,
         frame_type,
-        is_bridge: false, // bridge frames return before this path
+        is_bridge: false, // bridge frames take parse_bridge_inter_path, not this path
         bridge_frame_ref_idx: None,
         cur_mfh_id_is_zero: core.cur_mfh_id.is_zero(),
     };
@@ -1184,6 +1165,93 @@ fn parse_inter_path(
     // poisoned-state stops are unmodeled by construction. In both cases the control-region
     // facts are preserved on `core.inter`. The distinct stop class lives in `control.stop`;
     // the core status is the unsupported-coverage class (never a truncation).
+    core.inter = Some(control);
+    core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+        feature_id: FRAME_HEADER_INFO_FEATURE,
+    };
+    Ok(())
+}
+
+/// Builds the [`InterSeqView`](crate::headers::frame::inter::InterSeqView) the inter
+/// control region consumes from the parsed sequence configuration. Shared by the
+/// non-bridge inter path and the bridge path.
+fn build_inter_seq_view(seq: &CoreSeqView) -> crate::headers::frame::inter::InterSeqView {
+    use crate::headers::frame::inter::InterSeqView;
+    InterSeqView {
+        num_ref_frames: seq.num_ref_frames,
+        enable_short_refresh_frame_flags: seq.enable_short_refresh_frame_flags,
+        explicit_ref_frame_map: seq.inter.explicit_ref_frame_map,
+        enable_ref_frame_mvs: seq.inter.enable_ref_frame_mvs,
+        enable_bru: seq.inter.enable_bru,
+        enable_tip: seq.inter.enable_tip,
+        seq_max_drl_bits_minus_1: seq.inter.seq_max_drl_bits_minus_1,
+        allow_frame_max_drl_bits: seq.inter.allow_frame_max_drl_bits,
+        enable_flex_mvres: seq.inter.enable_flex_mvres,
+        seq_frame_motion_modes_present_flag: seq.inter.seq_frame_motion_modes_present_flag,
+        seq_enabled_motion_modes: seq.inter.seq_enabled_motion_modes,
+        enable_opfl_refine: seq.inter.enable_opfl_refine,
+        max_mlayer_id: seq.max_mlayer_id,
+        seq_force_screen_content_tools: seq.seq_force_screen_content_tools,
+        seq_force_integer_mv: seq.seq_force_integer_mv,
+        allow_frame_max_bvp_drl_bits: seq.allow_frame_max_bvp_drl_bits,
+        frame_width_bits: seq.frame_width_bits,
+        frame_height_bits: seq.frame_height_bits,
+        max_frame_width: seq.max_frame_width,
+        max_frame_height: seq.max_frame_height,
+        sb_size: seq.tile.frame_sb_size(false),
+    }
+}
+
+/// Parses a bridge frame's `frame_header_info()` reference-control region (AV2 § 5.18.2,
+/// `IsBridge` arm). The reader is positioned just after `bridge_frame_ref_idx` (mirror
+/// :4121); the bridge skips the non-bridge `frame_size_override_flag` / `order_hint` reads
+/// (mirror :4353-4367) and enters the control region directly via
+/// [`parse_inter_control`](crate::headers::frame::inter::parse_inter_control) with
+/// `is_bridge == true`.
+///
+/// The bridge takes the `IsBridge` reference-control arms verbatim:
+/// `primary_ref_frame = PRIMARY_REF_NONE` (mirror :4345, no bits),
+/// `bridge_frame_overwrite_flag` f(1) (mirror :4425), the bridge `refresh_frame_flags`
+/// arms (mirror :4489/:4533), `NumTotalRefs = 1` (mirror :4597),
+/// `ref_frame_idx[0] = bridge_frame_ref_idx` (mirror :4615, no bits), and
+/// `frame_size_with_bridge()` (mirror :4633, § 5.18.4.2). It then hits the
+/// `IsBridge` early-return arm (mirror :4971/:5045), stopping with
+/// [`InterStop::BruInactiveOrBridgeReturn`](crate::headers::frame::inter::InterStop::BruInactiveOrBridgeReturn)
+/// — the bridge tail (`film_grain_config()` / `tile_info()`) needs reference-frame dims /
+/// `MiRows`/`MiCols` this phase does not thread, an honest coverage stop. The parsed bridge
+/// facts are preserved on `core.inter`.
+fn parse_bridge_inter_path(
+    reader: &mut BitReader<'_>,
+    core: &mut FrameHeaderCore,
+    seq: &CoreSeqView,
+    bridge_frame_ref_idx: u32,
+    reference_state: &FrameReferenceStateView<'_>,
+) -> Result<()> {
+    use crate::headers::frame::inter::{InterFrameContext, parse_inter_control};
+
+    let inter_seq = build_inter_seq_view(seq);
+    let ctx = InterFrameContext {
+        obu_type: core.obu_type,
+        frame_type: FrameType::Inter,
+        is_bridge: true,
+        bridge_frame_ref_idx: Some(bridge_frame_ref_idx),
+        cur_mfh_id_is_zero: core.cur_mfh_id.is_zero(),
+    };
+
+    // frame_size_override_flag is never read on the bridge path; frame_size_with_bridge()
+    // is selected unconditionally by the IsBridge arm (mirror :4627), so the flag is inert
+    // for the bridge and passed as false.
+    let control = parse_inter_control(reader, &inter_seq, &ctx, reference_state, false)?;
+
+    // Lift the bridge reference-grounded frame size / refresh flags onto the core so the
+    // state-supported diagnostics and the inspector see them.
+    if let Some(size) = control.frame_size {
+        core.frame_size = Some(size);
+    }
+    if let Some(flags) = control.refresh_frame_flags {
+        core.refresh_frame_flags = Some(flags);
+    }
+
     core.inter = Some(control);
     core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
         feature_id: FRAME_HEADER_INFO_FEATURE,
@@ -1774,7 +1842,7 @@ mod tests {
     use super::*;
     use crate::error::Error;
     use crate::headers::frame::filtering::InterpolationFilter;
-    use crate::headers::frame::inter::MvPrecision;
+    use crate::headers::frame::inter::{InterStop, MvPrecision, NUM_REF_FRAMES};
     use crate::headers::frame::restoration::FrameRestorationType;
     use crate::headers::frame::tail::TxMode;
     use crate::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature, SegmentInfo};
@@ -3396,25 +3464,85 @@ mod tests {
     }
 
     #[test]
-    fn frame_header_core_bridge_reads_ref_idx_then_stops() {
-        // Bridge frame: cur_mfh_id inferred 0, reads seq_header_id, then
-        // bridge_frame_ref_idx f(CeilLog2(8) == 3); stops before reference-state syntax.
+    fn frame_header_core_bridge_parses_overwrite_refresh_and_size_arms() {
+        // Bridge frame: cur_mfh_id inferred 0, reads seq_header_id, bridge_frame_ref_idx
+        // f(CeilLog2(8) == 3), then the IsBridge reference-control arms (AV2 § 5.18.2,
+        // mirror :4425-4633): bridge_frame_overwrite_flag f(1) == 0 -> refresh = 1 <<
+        // bridge_frame_ref_idx (no bits), NumTotalRefs = 1 / ref_frame_idx = bridge (no
+        // bits), then frame_size_with_bridge() Min(ref dims, explicit dims). The IsBridge
+        // early-return arm (mirror :4971/:5045) then stops.
         let mut bits = Bits::default();
         bits.uvlc(4); // seq_header_id_in_frame_header (bridge infers cur_mfh_id == 0)
-        bits.f(5, 3); // bridge_frame_ref_idx
+        bits.f(5, 3); // bridge_frame_ref_idx = 5
+        bits.bit(0); // bridge_frame_overwrite_flag = 0 -> refresh = 1 << 5 (no bits)
+        bits.f(1920 - 1, 12); // bridge_frame_width_minus_1
+        bits.f(1080 - 1, 12); // bridge_frame_height_minus_1
         let data = bits.into_bytes();
-        let (core, consumed) = parse_body(&data, ObuType::BridgeFrame, true, &base_seq()).unwrap();
+
+        // RefFrameWidth/Height[5] modeled so frame_size_with_bridge() Min resolves.
+        let mut ref_valid = [false; NUM_REF_FRAMES];
+        ref_valid[5] = true;
+        let ref_oh = [0u32; NUM_REF_FRAMES];
+        let mut ref_w = [0u32; NUM_REF_FRAMES];
+        let mut ref_h = [0u32; NUM_REF_FRAMES];
+        ref_w[5] = 1280;
+        ref_h[5] = 720;
+        let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
+        let (core, _) =
+            parse_body_with_ref(&data, ObuType::BridgeFrame, true, &base_seq(), None, &rs).unwrap();
 
         assert!(core.is_bridge);
         assert_eq!(core.bridge_frame_ref_idx, Some(5));
         assert_eq!(core.frame_type, Some(FrameType::Inter));
         assert_eq!(core.frame_is_intra, Some(false));
+        assert_eq!(core.immediate_output_frame, Some(false));
+        assert_eq!(core.implicit_output_frame, Some(false));
+        let inter = core.inter.as_ref().expect("bridge inter control parsed");
+        assert_eq!(inter.bridge_frame_overwrite_flag, Some(false));
+        assert_eq!(inter.refresh_frame_flags, Some(1 << 5));
+        assert_eq!(inter.primary_ref_frame, Some(7)); // PRIMARY_REF_NONE
+        assert_eq!(inter.explicit_ref_frame_map, Some(true));
+        assert_eq!(inter.num_total_refs, Some(1));
+        assert_eq!(inter.ref_frame_idx, vec![5]);
+        // frame_size_with_bridge() Min(1280, 1920) x Min(720, 1080).
+        assert_eq!(core.frame_size, Some(FrameSize::new(1280, 720)));
+        // The bridge takes the IsBridge early-return arm.
+        assert_eq!(inter.stop, Some(InterStop::BruInactiveOrBridgeReturn));
         assert!(matches!(
             core.status,
             FrameHeaderParseStatus::UnsupportedUntilFeature { .. }
         ));
-        // uvlc(4) is 5 bits; bridge_frame_ref_idx is 3 bits.
-        assert_eq!(consumed, 8);
+    }
+
+    #[test]
+    fn frame_header_core_bridge_overwrite_reads_refresh_frame_flags() {
+        // Bridge frame with bridge_frame_overwrite_flag == 1 takes the else refresh arm
+        // (AV2 § 5.18.2 mirror :4533): refresh_frame_flags f(NumRefFrames == 8).
+        let mut bits = Bits::default();
+        bits.uvlc(4); // seq_header_id_in_frame_header
+        bits.f(5, 3); // bridge_frame_ref_idx = 5
+        bits.bit(1); // bridge_frame_overwrite_flag = 1 -> refresh f(NumRefFrames)
+        bits.f(0b1010_0101, 8); // refresh_frame_flags f(8)
+        bits.f(1920 - 1, 12); // bridge_frame_width_minus_1
+        bits.f(1080 - 1, 12); // bridge_frame_height_minus_1
+        let data = bits.into_bytes();
+
+        let mut ref_valid = [false; NUM_REF_FRAMES];
+        ref_valid[5] = true;
+        let ref_oh = [0u32; NUM_REF_FRAMES];
+        let mut ref_w = [0u32; NUM_REF_FRAMES];
+        let mut ref_h = [0u32; NUM_REF_FRAMES];
+        ref_w[5] = 1280;
+        ref_h[5] = 720;
+        let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
+        let (core, _) =
+            parse_body_with_ref(&data, ObuType::BridgeFrame, true, &base_seq(), None, &rs).unwrap();
+
+        let inter = core.inter.as_ref().expect("bridge inter control parsed");
+        assert_eq!(inter.bridge_frame_overwrite_flag, Some(true));
+        assert_eq!(inter.refresh_frame_flags, Some(0b1010_0101));
+        assert_eq!(core.frame_size, Some(FrameSize::new(1280, 720)));
+        assert_eq!(inter.stop, Some(InterStop::BruInactiveOrBridgeReturn));
     }
 
     #[test]
