@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "e606d4ccad6b2c0441bbacb7ccd8ad7d0615c5ad",
+  "audited_commit": "4b26fbacc9c39a0970a7e6fa87941d3008aadf55",
   "outcome": "success",
   "files": [
     {
@@ -777,7 +777,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "97c8920e8b76318fa647f918004d4bc7a04d909998e789dc52b828b7e9014e7f",
+      "sha256": "111be3769054ab5256fc3be606b5fb6dd1265c1004cc0e668d9cb0e784c2f12e",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -848,7 +848,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "61216814380a6b074cf9be120355a1bad6edea083132ec298e25e173b6279923",
+      "sha256": "3a958b4189c76e22e5a55511c5c0acb3f3629b025e030d93f3d6d972b7ed3ae2",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1080,7 +1080,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "a8bcf44eff1fec754dbedf9a2ab938150c6eeb5f97592c6f005837b46235ba0e",
+      "sha256": "2074038ff35dc9746c839ff797bd7b45b1bb1f07a33556805c52e42b5e6a5895",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
