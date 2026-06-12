@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "d4c49617b0aeadb09b195889e84d041c2b25fa34",
+  "audited_commit": "578d7c7eaa4ec8450492f333430a76c21690ef3e",
   "outcome": "success",
   "files": [
     {
@@ -445,7 +445,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/info.rs",
-      "sha256": "d2d344d2660c25f1dc879af486fda62e11a3f5e9e3ed11f3c005caac28be65eb",
+      "sha256": "b2d36b423e46f8a4e4333024c987e2a586aad89352d44019de471dc5ad091ea8",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -820,7 +820,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "c29675e6cb0cb26b28692e40cb80a4fd9f2321675b0a4a62b013b4094950346a",
+      "sha256": "ed1008ed54d88ca44fc00f16ce01ff1db83e0da05a28796e50da223e19a06c67",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -903,7 +903,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "6da90e2b7677f7cd8f6182c6c0f057d6eaf9d16e67f4c075143bf1f4eb5dadee",
+      "sha256": "bff2041c72418ce268377e2ff3bf588451eaba54d96c0fc6aad2e8adf05a3b82",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -3604,7 +3604,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "7a9631cc867a20e88df089c140b5586416c06b98bc3009433bfbb09e74ab6ff3",
+      "sha256": "4d24c02247e33d23495d74d178bf14275ab35e01b3a0353c719b09f3a881c579",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
