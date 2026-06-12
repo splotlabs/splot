@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "2e6e9bc0a8a34c3a39d39321aac92476becc84e2",
+  "audited_commit": "bbf825fcaf37160645900d7c9ecb899666d45783",
   "outcome": "success",
   "files": [
     {
@@ -3555,6 +3555,32 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-12-tile-payload-boundary-validation/proposal.md",
+      "sha256": "6ffd9189f7421f59db045d0a0e521725aebf761e477711f1f20d8a1e461229ad",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.20-TILE-GROUP-PAYLOAD"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-tile-payload-boundary-validation/specs/bitstream/spec.md",
+      "sha256": "fb6c8b799d8e4243772ae0376d29e3a464d4446b63043c33fd5c2135e21ae578",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.20-TILE-GROUP-PAYLOAD"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-tile-payload-boundary-validation/tasks.md",
+      "sha256": "668e62bfd769b55153dcd89e4db2a646431a7981bfad790b0c59457ad585e27c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/avm-differential-harness/proposal.md",
       "sha256": "ca4e00373763656046a33836c38af7626641afedb9e473897f7ae9b2a3572b5f",
       "scope_kind": "openspec",
@@ -3577,32 +3603,6 @@
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
       ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/tile-payload-boundary-validation/proposal.md",
-      "sha256": "6ffd9189f7421f59db045d0a0e521725aebf761e477711f1f20d8a1e461229ad",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.19-TILE-GROUP",
-        "AV2-5.20-TILE-GROUP-PAYLOAD"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/tile-payload-boundary-validation/specs/bitstream/spec.md",
-      "sha256": "fb6c8b799d8e4243772ae0376d29e3a464d4446b63043c33fd5c2135e21ae578",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.20-TILE-GROUP-PAYLOAD"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/tile-payload-boundary-validation/tasks.md",
-      "sha256": "668e62bfd769b55153dcd89e4db2a646431a7981bfad790b0c59457ad585e27c",
-      "scope_kind": "openspec",
-      "feature_ids": [],
       "outcome": "success"
     },
     {
@@ -3653,7 +3653,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "c66333d0ffcd4ae9f8dcdc6c23d8a7db7e436c8eb9f67c30a1a8b7e98f02d284",
+      "sha256": "fea6f80fd04e529563c66afa76c353a4d22b0e3212ae6d4918df168a40560511",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
