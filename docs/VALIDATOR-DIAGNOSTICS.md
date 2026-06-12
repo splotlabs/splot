@@ -174,6 +174,7 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 | `frame-header/switch-or-ras-mlayer-dependency-not-self-contained` | error | § 6.4.1 | OBU_SWITCH / OBU_RAS_FRAME has MLayerDependencyMap[obu_mlayer_id][m] != 0 for some embedded layer m != obu_mlayer_id |
 | `frame-header/tile-cols-out-of-range` | error | § 6.17.7.2 | frame tile_info() derives TileCols greater than MAX_TILE_COLS |
 | `frame-header/tile-rows-out-of-range` | error | § 6.17.7.2 | frame tile_info() derives TileRows greater than MAX_TILE_ROWS |
+| `frame-header/truncated-frame-header` | error | § 6.2.1 | the OBU payload ends inside the frame header before mandatory `frame_header_info()` syntax (§5.18.2) could be read — `frame_header( )` reads those elements from the §6.2.1 OBU payload, which must contain them (the payload lies before the first trailing bit; the §6.2.1 NOTE makes consuming bits within the trailing bits a detectable error). Fired ONLY on an EOF in a FULLY-MODELED region (the core parse reports `StoppedInsideFilterParams` / `StoppedInsideIntraTail` / `StoppedInsideShowExistingFrame`, i.e. `is_truncated_in_modeled_region()`); the already-parsed facts are preserved and still feed every other frame-header diagnostic. Unsupported-coverage stops (`StoppedBeforeWienerNsFilter`, `UnsupportedUntilFeature`, the MFH-unresolvable stops, `CoreFieldsOnly`) and complete headers stay silent — an early stop where the following syntax is unmodeled is not evidence of truncation |
 
 ### `frame-unit/`
 

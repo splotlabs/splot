@@ -12964,6 +12964,40 @@ fn frame_header_core_checks(
         return;
     };
 
+    // AV2 § 6.2.1 / § 5.18.2: the frame_header_info() syntax elements (§ 5.18.2) are
+    // mandatory — `frame_header( )` reads them sequentially from the OBU payload inside
+    // open_bitstream_unit() (§ 5.2.1). The payload is bounded by obuPayloadSize and "lies
+    // between the first bit of the given bytes and the last bit before the first trailing
+    // bit" (§ 6.2.1, docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-1, lines
+    // 47-60); trailing bits are always present (unless header-only), so a payload that ends
+    // BEFORE a mandatory syntax element is malformed — the §6.2.1 NOTE makes "the parsing
+    // of the OBU header and payload leads to the consumption of bits within the trailing
+    // bits" a detectable error condition. The core parser preserves the already-parsed
+    // facts and reports the truncation through one of the EOF-in-a-fully-modeled-region
+    // statuses (StoppedInsideFilterParams / StoppedInsideIntraTail /
+    // StoppedInsideShowExistingFrame). Those — and ONLY those — are a decidable defect:
+    // an unsupported-coverage stop (StoppedBeforeWienerNsFilter, UnsupportedUntilFeature,
+    // the MFH-unresolvable stops, CoreFieldsOnly) stops where this parser does not fully
+    // model the following syntax, so its early end is not evidence of truncation and must
+    // stay silent. `is_truncated_in_modeled_region()` is the exact partition (documented on
+    // FrameHeaderParseStatus). Anchored at the frame's OBU. The facts path is untouched:
+    // the preserved core fields still feed every diagnostic below, so a truncated frame
+    // keeps contributing its decided facts (celu / frame-unit judgments unchanged).
+    if core.status.is_truncated_in_modeled_region() {
+        report.push(frame_header_error(
+            "frame-header/truncated-frame-header",
+            "6.2.1",
+            obu,
+            format!(
+                "the OBU payload ends inside the frame header before mandatory \
+                 frame_header_info() syntax (§5.18.2) could be read (parse stopped: {}); \
+                 the §6.2.1 OBU payload must contain every mandatory frame-header syntax \
+                 element",
+                core.status.label()
+            ),
+        ));
+    }
+
     // AV2 § 6.17.2: bridge_frame_ref_idx must name a valid reference slot, so it must
     // be less than NumRefFrames.
     if let Some(idx) = core.bridge_frame_ref_idx

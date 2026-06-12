@@ -4233,6 +4233,11 @@ mod tests {
         /// `enable_ccso` (§ 5.4.10): when set, the sequence filter config signals CCSO
         /// and `ccso_unit_matches_sb_size`, so the frame's `ccso_params()` reads.
         enable_ccso: bool,
+        /// `film_grain_params_present` (§ 5.4.1, the sequence header's last flag): when
+        /// set, `film_grain_config()` reads `apply_grain` f(1) on an output frame (and,
+        /// when applied, `fgm_id` f(3) + `grain_seed` f(16)), so a truncated intra / SEF
+        /// tail can run out inside it.
+        film_grain_params_present: bool,
     }
 
     impl FrameCoreSeq {
@@ -4252,6 +4257,7 @@ mod tests {
                 still_picture: false,
                 enable_short_refresh_frame_flags: false,
                 enable_ccso: false,
+                film_grain_params_present: false,
             }
         }
     }
@@ -4360,7 +4366,7 @@ mod tests {
         bits.f(0, 2); // df_par_bits_minus_2
         // sequence_tile_config
         bits.bit(0); // seq_tile_info_present_flag
-        bits.bit(0); // film_grain_params_present
+        bits.bit(u8::from(o.film_grain_params_present)); // film_grain_params_present
         extensible_obu_tail(&mut bits);
         bits.into_bytes()
     }
@@ -4681,6 +4687,167 @@ mod tests {
                 .errors()
                 .any(|d| d.rule_id == "frame-header/frame-size-exceeds-sequence-max"),
             "a frame-size violation truncated inside deblocking must still fire; report was: {report}"
+        );
+        // The facts-preservation regression also surfaces the truncation itself: a payload
+        // that ends inside the fully-modeled loop-filter cluster fires the new
+        // frame-header/truncated-frame-header (§6.2.1) error.
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/truncated-frame-header"),
+            "a payload truncated inside the loop-filter cluster must fire \
+             truncated-frame-header; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_truncated_frame_header_inside_intra_tail() {
+        // A KEY frame whose payload parses cleanly through ccso_params() but ends INSIDE
+        // the §5.18.2 tail: film_grain_params_present == 1 on an OUTPUT key frame makes
+        // film_grain_config() read apply_grain f(1) (and, when set, fgm_id f(3) +
+        // grain_seed f(16)) — truncating mid-grain_seed lands the EOF inside the modeled
+        // tail, so the core reports StoppedInsideIntraTail and the validator surfaces
+        // frame-header/truncated-frame-header (§6.2.1). Pre-fix this validated clean.
+        let seq = FrameCoreSeq {
+            film_grain_params_present: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(1); // immediate_output_frame == 1 (output frame -> apply_grain readable)
+        // implicit_output_frame inferred 0 (monotonic + immediate), no bit.
+        fb.bit(0); // frame_size_override_flag == 0 (cur_mfh_id == 0 -> max dims 16x16)
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
+        // frame_size(): non-override default (16x16), no bits.
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        // §5.18.2 structure cluster (16x16, BLOCK_64X64 -> single tile, no col increment)
+        // + the loop-filter cluster (deblocking apply[0]/[1], gdf/cdef/lr/ccso disabled).
+        intra_structure_tail(&mut fb, 0);
+        // §5.18.2 tail: read_tx_mode() not lossless -> tx_mode_select f(1); reduced_tx_set
+        // f(2); film_grain_config() grain present + output -> apply_grain f(1) + fgm_id f(3)
+        // + grain_seed f(16). Emit through fgm_id and only PART of grain_seed, then truncate.
+        fb.bit(0); // tx_mode_select = 0
+        fb.f(0, 2); // reduced_tx_set = 0
+        fb.bit(1); // apply_grain = 1
+        fb.f(0, 3); // fgm_id = 0
+        fb.f(0, 8); // only 8 of 16 grain_seed bits, then truncation
+        let total_bits = fb.bit_len();
+        let mut payload = fb.into_bytes();
+        payload.truncate(total_bits / 8); // drop the partial trailing byte -> grain_seed overruns
+        data.extend(annex_b_obu(CLK_HEADER, &payload));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/truncated-frame-header"),
+            "a payload truncated inside the §5.18.2 intra tail must fire \
+             truncated-frame-header; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_truncated_frame_header_inside_sef_film_grain() {
+        // A REGULAR_SEF frame whose payload parses frame_to_show_map_idx and
+        // derive_sef_order_hint but ends INSIDE the terminal film_grain_config() (the SEF
+        // tail IS film_grain_config()): film_grain_params_present == 1 makes apply_grain
+        // readable (immediate_output_frame is inferred 1 for SEF), so truncating mid
+        // grain_seed lands the EOF in the modeled SEF tail -> StoppedInsideShowExistingFrame
+        // -> frame-header/truncated-frame-header (§6.2.1). Pre-fix this validated clean.
+        let seq = FrameCoreSeq {
+            film_grain_params_present: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        // SEF is NOT a tile group: frame_header(1) is called directly, no is_first bit.
+        let mut fb = Bits::default();
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.f(0, 3); // frame_to_show_map_idx f(CeilLog2(NumRefFrames == 8) == 3)
+        fb.bit(1); // derive_sef_order_hint == 1 -> no sef_order_hint
+        // film_grain_config(): grain present + immediate_output (inferred 1 for SEF) ->
+        // apply_grain f(1) + fgm_id f(3) + grain_seed f(16). Emit through fgm_id and PART of
+        // grain_seed, then truncate.
+        fb.bit(1); // apply_grain = 1
+        fb.f(0, 3); // fgm_id = 0
+        fb.f(0, 8); // only 8 of 16 grain_seed bits, then truncation
+        let total_bits = fb.bit_len();
+        let mut payload = fb.into_bytes();
+        payload.truncate(total_bits / 8); // drop the partial trailing byte -> grain_seed overruns
+        data.extend(annex_b_obu(REGULAR_SEF_HEADER, &payload));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/truncated-frame-header"),
+            "a SEF payload truncated inside film_grain_config() must fire \
+             truncated-frame-header; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_truncated_frame_header_silent_on_complete_and_coverage_stops() {
+        // CONTROLS: the truncated-frame-header error must NOT fire on a complete header or
+        // on an unsupported-coverage stop (StoppedBeforeWienerNsFilter is unreachable here;
+        // the inter / unresolvable-MFH stops are the UnsupportedUntilFeature class).
+
+        // (a) A complete intra KEY frame validates with no truncation finding.
+        let mut complete = td_and_frame_core_seq(FrameCoreSeq::base());
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // immediate_output_frame
+        fb.bit(0); // frame_size_override_flag == 0 (max dims 16x16)
+        fb.f(0, 1); // order_hint f(1)
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0); // structure + loop-filter cluster (no bits past)
+        // §5.18.2 tail: tx_mode_select f(1) + reduced_tx_set f(2); grain absent (no bits).
+        fb.bit(0); // tx_mode_select = 0
+        fb.f(0, 2); // reduced_tx_set = 0
+        complete.extend(annex_b_obu(CLK_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&complete);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/truncated-frame-header"),
+            "a complete intra frame header must NOT fire truncated-frame-header; report was: {report}"
+        );
+
+        // (b) An INTER frame stops at UnsupportedUntilFeature (the inter reference map needs
+        // reference state this phase does not model) — a coverage stop, NOT a truncation.
+        let mut inter = td_and_frame_core_seq(FrameCoreSeq::base());
+        let mut ib = Bits::default();
+        ib.bit(1); // is_first_tile_group
+        ib.uvlc(0); // cur_mfh_id == 0
+        ib.uvlc(0); // seq_header_id_in_frame_header
+        ib.bit(1); // frame_is_inter == 1 -> INTER_FRAME (parser stops after frame-type)
+        inter.extend(annex_b_obu(RTG_HEADER, &ib.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&inter);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/truncated-frame-header"),
+            "an inter-frame coverage stop must NOT fire truncated-frame-header; report was: {report}"
+        );
+
+        // (c) An unresolvable-MFH frame (cur_mfh_id > 0 with no in-band MFH) stops at
+        // UnsupportedUntilFeature — a coverage stop, NOT a truncation.
+        let mut mfh = td_and_frame_core_seq(FrameCoreSeq::base());
+        mfh.extend(frame_obu_mfh_ref(CLK_HEADER, 1)); // cur_mfh_id == 1, no MFH OBU
+        let report = Validator::new(false).validate_bytes(&mfh);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/truncated-frame-header"),
+            "an unresolvable-MFH coverage stop must NOT fire truncated-frame-header; report was: {report}"
         );
     }
 

@@ -23,7 +23,9 @@
 //!   (§ 5.18.10.1), completing the SEF frame header
 //!   ([`FrameHeaderParseStatus::ShowExistingFrameComplete`]). A payload EOF inside the
 //!   SEF `film_grain_config()` preserves the parsed SEF facts and reports
-//!   [`FrameHeaderParseStatus::CoreFieldsOnly`].
+//!   [`FrameHeaderParseStatus::StoppedInsideShowExistingFrame`] — the SEF tail *is*
+//!   `film_grain_config()`, so an EOF there is a truncation of a fully-modeled region,
+//!   distinct from the ordinary bounded [`FrameHeaderParseStatus::CoreFieldsOnly`] stop.
 //! - **Inter / switch / TIP / RAS frame** → reads the frame-type field then stops
 //!   ([`FrameHeaderParseStatus::UnsupportedUntilFeature`]); the inter reference map
 //!   needs reference-frame state.
@@ -104,6 +106,31 @@ pub enum FrameHeaderParseMode {
 ///
 /// A partial status means the parser intentionally stopped; callers must not infer
 /// that the full payload or its trailing bits were validated.
+///
+/// # Truncation partition
+///
+/// The variants split cleanly into two disjoint classes that callers (the validator's
+/// `frame_header_core_checks`) MUST keep separate:
+///
+/// - **EOF-in-a-fully-modeled region** — the OBU payload ended where the spec mandates
+///   more syntax in a region this parser fully models, so the truncation is a decidable
+///   bitstream defect that must surface as a validation error
+///   ([`Self::is_truncated_in_modeled_region`] returns `true`):
+///   [`Self::StoppedInsideFilterParams`], [`Self::StoppedInsideIntraTail`], and
+///   [`Self::StoppedInsideShowExistingFrame`].
+/// - **Bounded coverage stop / complete parse** — the parser stopped at a point whose
+///   following syntax it does NOT fully model (unsupported coverage), or it completed,
+///   so an early stop is *not* evidence of a truncated payload and must stay silent:
+///   [`Self::ActivationFieldsOnly`], [`Self::CoreFieldsOnly`],
+///   [`Self::ShowExistingFrameComplete`], [`Self::IntraHeaderComplete`],
+///   [`Self::StoppedBeforeLoopRestorationParams`], [`Self::StoppedBeforeReadTxMode`],
+///   [`Self::StoppedBeforeWienerNsFilter`], and [`Self::UnsupportedUntilFeature`].
+///
+/// The partition is exact: every status producer in this module either reaches a
+/// modeled-region EOF (the three `StoppedInside*` statuses) or sets a coverage/complete
+/// status. `CoreFieldsOnly` is deliberately on the silent side — it is reserved for an
+/// ordinary bounded stop, never a truncation (the SEF film-grain EOF, which previously
+/// reused it, now reports [`Self::StoppedInsideShowExistingFrame`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FrameHeaderParseStatus {
@@ -147,9 +174,13 @@ pub enum FrameHeaderParseStatus {
     /// An intra frame's control region was read in full through `cdef_params()`,
     /// then `lr_params()` (loop restoration, § 5.18.7.11) and `ccso_params()`
     /// (§ 5.18.7.12); the parser stopped before `read_tx_mode()` (§ 5.18.8.1), the next
-    /// § 5.18.2 tail structure (mirror :5307). This is the terminal intra-path stop when
-    /// the loop-restoration / CCSO cluster parsed cleanly without entering the unmodeled
-    /// frame-level Wiener bank decode.
+    /// § 5.18.2 tail structure (mirror :5307).
+    ///
+    /// Reserved: superseded by [`Self::IntraHeaderComplete`] (and
+    /// [`Self::StoppedInsideIntraTail`] on truncation) once the § 5.18.2 intra tail
+    /// parses to completion. The current intra path advances past `read_tx_mode()`;
+    /// this variant is retained for completeness and out-of-tree compatibility but is
+    /// no longer produced by the in-tree parser.
     StoppedBeforeReadTxMode,
     /// An intra frame parsed through `cdef_params()` and into `lr_params()`
     /// (§ 5.18.7.11), but a plane signalled `frame_filters_on[plane]`, so the structure
@@ -184,6 +215,19 @@ pub enum FrameHeaderParseStatus {
     /// not a structural violation, so it is reported through this status rather than as a
     /// hard parse error. No full-payload trailing-bits conformance is implied.
     StoppedInsideIntraTail,
+    /// The show-existing-frame path parsed `frame_to_show_map_idx`,
+    /// `derive_sef_order_hint`, and the optional `sef_order_hint`, but the payload ran out
+    /// **inside** the terminal `film_grain_config()` (§ 5.18.10.1, mirror :4186) — the SEF
+    /// tail *is* `film_grain_config()`, so an EOF there is a truncation of a fully-modeled
+    /// region, not an unsupported-coverage stop. The already-parsed SEF facts
+    /// (`frame_to_show_map_idx`, the order hint, the output flags, `refresh_frame_flags`)
+    /// are intact and exposed; `sef_film_grain` stays `None`. Like
+    /// [`Self::StoppedInsideIntraTail`] / [`Self::StoppedInsideFilterParams`], the
+    /// truncation is a payload-bounds condition, not a structural violation, so it is
+    /// reported through this status rather than as a hard parse error — but it is on the
+    /// truncated-in-modeled-region side of the partition, distinct from the ordinary
+    /// bounded [`Self::CoreFieldsOnly`] stop it previously (incorrectly) shared.
+    StoppedInsideShowExistingFrame,
     /// A branch needs decoder/reference state or syntax this phase does not model
     /// (e.g. the inter reference map, or the rest of a bridge frame). `feature_id` is
     /// the implementation-matrix row that tracks the missing coverage.
@@ -207,8 +251,33 @@ impl FrameHeaderParseStatus {
             Self::StoppedBeforeWienerNsFilter { .. } => "stopped_before_wienerns_filter",
             Self::StoppedInsideFilterParams => "stopped_inside_filter_params",
             Self::StoppedInsideIntraTail => "stopped_inside_intra_tail",
+            Self::StoppedInsideShowExistingFrame => "stopped_inside_show_existing_frame",
             Self::UnsupportedUntilFeature { .. } => "unsupported_until_feature",
         }
+    }
+
+    /// `true` when the status records an EOF **inside a region this parser fully
+    /// models** — i.e. the OBU payload ended where the spec mandates more syntax, a
+    /// decidable bitstream defect (the truncated-in-modeled-region side of the
+    /// [enum partition](Self#truncation-partition)). Exactly
+    /// [`Self::StoppedInsideFilterParams`], [`Self::StoppedInsideIntraTail`], and
+    /// [`Self::StoppedInsideShowExistingFrame`].
+    ///
+    /// Coverage stops and complete parses return `false`: an early stop whose following
+    /// syntax is unmodeled ([`Self::StoppedBeforeWienerNsFilter`],
+    /// [`Self::UnsupportedUntilFeature`], [`Self::CoreFieldsOnly`], the reserved
+    /// `StoppedBefore*` variants) is not evidence of a truncated payload, and a complete
+    /// header ([`Self::IntraHeaderComplete`], [`Self::ShowExistingFrameComplete`]) was not
+    /// truncated at all. The validator fires its truncated-frame-header diagnostic on
+    /// exactly the `true` set.
+    #[must_use]
+    pub const fn is_truncated_in_modeled_region(self) -> bool {
+        matches!(
+            self,
+            Self::StoppedInsideFilterParams
+                | Self::StoppedInsideIntraTail
+                | Self::StoppedInsideShowExistingFrame
+        )
     }
 }
 
@@ -871,9 +940,12 @@ fn parse_show_existing_frame(
         }
         // A payload EOF inside the SEF film_grain_config() keeps the already-parsed SEF
         // facts (frame_to_show_map_idx, order hint, output flags) and reports the
-        // truncation through the status rather than failing the whole parse.
+        // truncation through the status rather than failing the whole parse. The SEF tail
+        // IS film_grain_config() (a fully-modeled region), so this is a decidable
+        // truncation (StoppedInsideShowExistingFrame), distinct from the ordinary bounded
+        // CoreFieldsOnly stop — the validator surfaces it as a truncated-frame-header error.
         Err(Error::UnexpectedEof { .. }) => {
-            core.status = FrameHeaderParseStatus::CoreFieldsOnly;
+            core.status = FrameHeaderParseStatus::StoppedInsideShowExistingFrame;
             Ok(())
         }
         Err(error) => Err(error),
@@ -2171,7 +2243,10 @@ mod tests {
     #[test]
     fn frame_header_core_sef_eof_inside_film_grain_preserves_facts() {
         // SEF with grain present but the payload ends inside film_grain_config(): the SEF
-        // facts survive and the status reports CoreFieldsOnly (not a hard error).
+        // facts survive and the status reports StoppedInsideShowExistingFrame — the SEF
+        // tail IS film_grain_config(), a fully-modeled region, so an EOF there is a
+        // decidable truncation (distinct from the ordinary bounded CoreFieldsOnly stop),
+        // surfaced as truncated-in-modeled-region. Not a hard error.
         let mut seq = base_seq();
         seq.film_grain_params_present = true;
         let mut bits = Bits::default();
@@ -2186,7 +2261,14 @@ mod tests {
         let (core, _) = parse_body(&data, ObuType::RegularSef, true, &seq).unwrap();
         assert_eq!(core.show_existing_frame, Some(true));
         assert_eq!(core.frame_to_show_map_idx, Some(6));
-        assert_eq!(core.status, FrameHeaderParseStatus::CoreFieldsOnly);
+        assert_eq!(
+            core.status,
+            FrameHeaderParseStatus::StoppedInsideShowExistingFrame
+        );
+        assert!(
+            core.status.is_truncated_in_modeled_region(),
+            "an EOF in the SEF film_grain_config() tail is a truncation in a modeled region"
+        );
         assert_eq!(
             core.sef_film_grain, None,
             "the truncated SEF grain stays None"

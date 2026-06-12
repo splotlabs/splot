@@ -1035,6 +1035,17 @@ already-parsed control-region facts to the state-supported diagnostics (the
 truncation SHALL NOT silence earlier frame-size / output-class checks). Existing
 frame-header activation and HLS reference diagnostics SHALL be preserved unchanged.
 
+Because the loop-filter cluster, the § 5.18.2 intra tail, and the
+show-existing-frame `film_grain_config()` tail are now fully modeled, an EOF
+inside any of them is a decidable bitstream defect (the OBU payload ends where
+§ 5.18.2 mandates more syntax). The validator SHALL therefore ALSO surface the
+truncation itself as an error diagnostic (`frame-header/truncated-frame-header`,
+§ 6.2.1) — fired on exactly the EOF-in-a-fully-modeled-region parse statuses and
+never on an unsupported-coverage stop (where the following syntax is unmodeled,
+so the early stop is not evidence of truncation) nor on a complete header. The
+facts-preserving behavior above is unchanged: the truncated frame keeps
+contributing its decided facts to every other diagnostic.
+
 #### Scenario: Inspector surfaces new fields and status
 - **WHEN** `splot inspect` runs on a stream whose frame header parses through
   quantization/segmentation/tiling
@@ -1045,6 +1056,19 @@ frame-header activation and HLS reference diagnostics SHALL be preserved unchang
 - **WHEN** the existing validator test suite runs after this change
 - **THEN** all previously emitted diagnostics (rule ids, severities, spec
   sections) are unchanged
+
+#### Scenario: Truncated frame header surfaces an error
+- **WHEN** a frame header's payload ends inside the fully-modeled loop-filter
+  cluster, the § 5.18.2 intra tail, or the show-existing-frame
+  `film_grain_config()` tail (an EOF-in-a-fully-modeled-region parse status)
+- **THEN** the validator emits `frame-header/truncated-frame-header` (§ 6.2.1)
+  while still exposing the already-parsed facts to the other diagnostics
+
+#### Scenario: Coverage stop stays silent
+- **WHEN** a frame-header parse stops at an unsupported-coverage point (the
+  unmodeled Wiener bank decode, an inter / unresolvable-MFH stop, or any other
+  status whose following syntax is unmodeled) or completes
+- **THEN** the validator does NOT emit `frame-header/truncated-frame-header`
 
 ### Requirement: OPS dependency-map agreement
 
