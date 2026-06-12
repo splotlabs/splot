@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "654aaa699b61085411643a9656d8822657eded83",
+  "audited_commit": "aaf5f40bde48ff7c72631a1af0039ff35b8bd0ca",
   "outcome": "success",
   "files": [
     {
@@ -757,7 +757,7 @@
     },
     {
       "path": "crates/splot-validate/src/celu.rs",
-      "sha256": "f0dcd9b1f7f4be67dc286a25547648e17c7feb4c199f12389a1574e91054f527",
+      "sha256": "1766196892f163cb76e5c0e5dc30a5c44107016500b15d16b7535825bcd07478",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO"
@@ -1081,7 +1081,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "f095a8abe0f30f205ef97c730f8f78a05b1d46d8a8ede77d645b54a1e8bead79",
+      "sha256": "0bffb0d03796455472b45ae796412b01b094009d8d77c4c72f87ba4a4ec7a26b",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1371,7 +1371,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "1e9b83a90a1a4cb6582e7af985d345b3af8080c15c1984fdb585487b55f6ccff",
+      "sha256": "74ee473f7f9b07cf16a67b81a2bdd6ae93652c04347d45131d12ce0bc08257a1",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
