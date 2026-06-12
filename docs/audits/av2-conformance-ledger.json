@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "59fcad65d356cdc6b9f7c1534f2e3f701d93b425",
+  "audited_commit": "fa7b7e9f8640bb3cd5afea20181de0c16a205229",
   "outcome": "success",
   "files": [
     {
@@ -3171,6 +3171,36 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-12-frame-header-inter-reference-paths/proposal.md",
+      "sha256": "ee73010962724f463e7341d4f5bb2304453be8747561218802ccacadd02745d6",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.3-FRAME-CONFIGURATION",
+        "AV2-5.18.4-FRAME-SIZE",
+        "AV2-5.18.5-FILTERING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-frame-header-inter-reference-paths/specs/bitstream/spec.md",
+      "sha256": "71adbb739842827bdaca4276dd4df96e5458a9e132e265c7b97947cc41c8f217",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-frame-header-inter-reference-paths/tasks.md",
+      "sha256": "176f7179745b8c2cb1365b87f14568f247bbb368fbc8dc3070895c726303fa6f",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.3-FRAME-CONFIGURATION"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-12-frame-header-intra-tail-completion/proposal.md",
       "sha256": "575fa85fffa191f5fd2811c27b89d92619db7b6967f846f64dc5177ba7043837",
       "scope_kind": "openspec",
@@ -3363,36 +3393,6 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/frame-header-inter-reference-paths/proposal.md",
-      "sha256": "ee73010962724f463e7341d4f5bb2304453be8747561218802ccacadd02745d6",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18.2-FRAME-HEADER-INFO",
-        "AV2-5.18.3-FRAME-CONFIGURATION",
-        "AV2-5.18.4-FRAME-SIZE",
-        "AV2-5.18.5-FILTERING"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-header-inter-reference-paths/specs/bitstream/spec.md",
-      "sha256": "71adbb739842827bdaca4276dd4df96e5458a9e132e265c7b97947cc41c8f217",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18.2-FRAME-HEADER-INFO"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-header-inter-reference-paths/tasks.md",
-      "sha256": "176f7179745b8c2cb1365b87f14568f247bbb368fbc8dc3070895c726303fa6f",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18.3-FRAME-CONFIGURATION"
-      ],
-      "outcome": "success"
-    },
-    {
       "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
       "sha256": "ec25589a8a02879087f03de9cc0c8b07e5fedf96f9a48c8f3dd99be91c14d240",
       "scope_kind": "openspec",
@@ -3440,7 +3440,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "5045a10e992b44b855340e7ad86cbbef7128a3836c903bad1b9befa1526e0804",
+      "sha256": "a327282d59967730c02989f0da04faccaf2bd522519aa93619ac64ab4158fbe0",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
