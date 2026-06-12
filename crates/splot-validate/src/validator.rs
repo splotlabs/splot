@@ -5400,14 +5400,15 @@ mod tests {
             fb.bit(b);
         }
         // NumTiles == 1 -> no tile_start_and_end_present_flag; byte_alignment() runs next.
-        // Inject a non-zero pad bit only if the frame header did not already end byte-aligned.
-        if !fb.bit_len().is_multiple_of(8) {
-            fb.bit(1); // a non-zero byte_alignment() zero_bit (§6.2.4 violation)
-        } else {
-            // Byte-aligned headers leave no pad to corrupt; force a misalignment with a
-            // single 0 bit (so the tg structure is decidable) then a non-zero pad bit.
-            fb.bit(1);
-        }
+        // A pad bit can only be corrupted when the header ends unaligned — assert the
+        // precondition so a future fixture change to an aligned length fails loudly
+        // instead of silently skipping the violation (claude review, PR #61).
+        assert!(
+            !fb.bit_len().is_multiple_of(8),
+            "test precondition: the intra header body must end unaligned so \
+             byte_alignment() reads pad bits"
+        );
+        fb.bit(1); // a non-zero byte_alignment() zero_bit (§6.2.4 violation)
         data.extend(annex_b_obu(CLK_HEADER, &fb.into_bytes()));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
