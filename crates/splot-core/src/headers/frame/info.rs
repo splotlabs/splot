@@ -617,12 +617,40 @@ pub struct FrameHeaderCore {
     /// § 6.2.1 / § 5.2.3 diagnostic. `None` on every other path (no SEF boundary to check,
     /// or the SEF parse stopped before completing `film_grain_config()`).
     pub sef_trailing_bits: Option<SefTrailingBits>,
+    /// The parsed non-intra control region (AV2 § 5.18.2, mirror :4351-5181), present only
+    /// on the inter / switch / TIP path (`frame_is_intra == Some(false)`, non-bridge,
+    /// non-SEF). Carries the primary-reference signaling, the explicit reference map, the
+    /// reference-grounded frame size, the BRU triple, `use_ref_frame_mvs` / TMVP, the TIP
+    /// block, MV precision, the interpolation filter, and motion modes, plus the
+    /// [`InterStop`](crate::headers::frame::inter::InterStop) recording where the inter
+    /// region stopped. `None` on the intra / SEF / bridge paths.
+    pub inter: Option<crate::headers::frame::inter::InterControl>,
     /// Bits consumed by this parse (not necessarily the whole frame header).
     pub consumed_bits: u64,
 }
 
 /// Matrix Feature ID for the frame-header-info coverage this phase does not model.
 const FRAME_HEADER_INFO_FEATURE: &str = "AV2-5.18.2-FRAME-HEADER-INFO";
+
+/// `MOTION_MODES` (AV2 v1.0.0 § 3): the motion-mode array length carried for the
+/// § 5.18.2 inter motion-mode loop.
+const MOTION_MODES: usize = 5;
+
+/// The § 5.4.6 `sequence_inter_config()` flags the § 5.18.2 non-intra control region
+/// consumes (AV2 v1.0.0 § 5.4.6), gathered alongside the rest of [`CoreSeqView`].
+#[derive(Debug, Clone, Copy)]
+struct CoreSeqInterView {
+    enable_ref_frame_mvs: bool,
+    explicit_ref_frame_map: bool,
+    enable_bru: bool,
+    enable_tip: bool,
+    seq_max_drl_bits_minus_1: u32,
+    allow_frame_max_drl_bits: bool,
+    enable_flex_mvres: bool,
+    seq_frame_motion_modes_present_flag: bool,
+    seq_enabled_motion_modes: [bool; MOTION_MODES],
+    enable_opfl_refine: u8,
+}
 
 /// Sequence-derived scalars the core parser needs, gathered from a fully parsed
 /// [`SequenceHeader`]. `None` when any required child config (partition, segment,
@@ -648,6 +676,9 @@ struct CoreSeqView {
     seq_force_screen_content_tools: u8,
     seq_force_integer_mv: u8,
     allow_frame_max_bvp_drl_bits: bool,
+    /// § 5.4.6 inter-config inputs consumed by the § 5.18.2 non-intra control region
+    /// ([`crate::headers::frame::inter`]).
+    inter: CoreSeqInterView,
     /// § 5.18.6 / § 5.18.7.8 / § 5.18.2-lossless-tail inputs (AV2 § 5.4.8).
     quant: CoreSeqQuantView,
     /// § 5.18.7.1 segmentation inputs (AV2 § 5.4.4).
@@ -712,6 +743,20 @@ impl CoreSeqView {
             seq_force_screen_content_tools: scc.seq_force_screen_content_tools,
             seq_force_integer_mv: scc.seq_force_integer_mv,
             allow_frame_max_bvp_drl_bits: inter.allow_frame_max_bvp_drl_bits,
+            // AV2 § 5.4.6: the inter-config flags consumed by the § 5.18.2 non-intra
+            // control region.
+            inter: CoreSeqInterView {
+                enable_ref_frame_mvs: inter.enable_ref_frame_mvs,
+                explicit_ref_frame_map: inter.explicit_ref_frame_map,
+                enable_bru: inter.enable_bru,
+                enable_tip: inter.enable_tip,
+                seq_max_drl_bits_minus_1: inter.seq_max_drl_bits_minus_1,
+                allow_frame_max_drl_bits: inter.allow_frame_max_drl_bits,
+                enable_flex_mvres: inter.enable_flex_mvres,
+                seq_frame_motion_modes_present_flag: inter.seq_frame_motion_modes_present_flag,
+                seq_enabled_motion_modes: inter.seq_enabled_motion_modes,
+                enable_opfl_refine: inter.enable_opfl_refine,
+            },
             quant: CoreSeqQuantView::from_sequence_configs(general, tq),
             seg: CoreSeqSegView::from_sequence_config(segment),
             tile: CoreSeqTileView::from_sequence_configs(general, partition, tq, tile),
@@ -871,7 +916,13 @@ pub fn parse_frame_header_core(
                 .mfh_record
                 .map(|record| MfhFrameView::from_record(record, &seq))
         };
-        parse_core_body(reader, &mut core, &seq, mfh_view.as_ref())?;
+        parse_core_body(
+            reader,
+            &mut core,
+            &seq,
+            mfh_view.as_ref(),
+            &input.reference_state,
+        )?;
     }
 
     core.consumed_bits = reader.consumed_bits().saturating_sub(start_bits);
@@ -922,6 +973,7 @@ fn init_core_from_prefix(prefix: &FrameHeaderPrefix, obu_type: ObuType) -> Frame
         intra_tail: None,
         sef_film_grain: None,
         sef_trailing_bits: None,
+        inter: None,
         consumed_bits: 0,
     }
 }
@@ -934,6 +986,7 @@ fn parse_core_body(
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
     mfh: Option<&MfhFrameView>,
+    reference_state: &FrameReferenceStateView<'_>,
 ) -> Result<()> {
     let obu_type = core.obu_type;
 
@@ -970,7 +1023,10 @@ fn parse_core_body(
 
     // AV2 § 5.18.2: frame-type determination (the non-SEF, non-bridge branch).
     let frame_type = if obu_type == ObuType::Switch || obu_type == ObuType::RasFrame {
-        reader.read_bit()?; // restricted_prediction_switch f(1)
+        // restricted_prediction_switch f(1): a real bit. It affects only reference-state
+        // derivations (OrderHint / RefOrderHint, mirror :4259-4277) the inter region does
+        // not compute here, so its value does not change any modeled bit position.
+        reader.read_bit()?;
         FrameType::Switch
     } else if obu_type.is_tip_frame() {
         FrameType::Inter
@@ -1010,16 +1066,10 @@ fn parse_core_body(
         }
     }
 
-    if !frame_is_intra {
-        // Inter / switch / RAS / TIP: the remaining control fields and the inter
-        // reference map need reference-frame state, so the parser stops here.
-        core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
-            feature_id: FRAME_HEADER_INFO_FEATURE,
-        };
-        return Ok(());
-    }
-
-    // AV2 § 5.18.2 output control (intra frames).
+    // AV2 § 5.18.2 output control (mirror :4295-4313). This block is in the non-SEF,
+    // non-single-picture branch and applies to BOTH intra and inter frames. A bridge
+    // frame already returned above; here `obu_type` is never OBU_BRIDGE_FRAME, so the
+    // gate reduces to the OLK / monotonic-output checks.
     let immediate_output_frame = if obu_type == ObuType::OpenLoopKey {
         false
     } else {
@@ -1033,7 +1083,112 @@ fn parse_core_body(
     };
     core.implicit_output_frame = Some(implicit_output_frame);
 
-    parse_intra_tail(reader, core, seq, mfh, frame_type, false)
+    if frame_is_intra {
+        return parse_intra_tail(reader, core, seq, mfh, frame_type, false);
+    }
+
+    // AV2 § 5.18.2 (mirror :4351-4403): the non-bridge inter / switch / TIP path reads
+    // frame_size_override_flag (when not SWITCH / single-picture), order_hint, then the
+    // reference control region. order_hint is bit-direct; OrderHint = get_disp_order_hint()
+    // is a reference-state derivation that affects no bit position here, so it is not
+    // computed.
+    parse_inter_path(reader, core, seq, frame_type, reference_state)
+}
+
+/// Parses the non-intra `frame_header_info()` path (AV2 § 5.18.2, mirror :4351-5181):
+/// `frame_size_override_flag`, `order_hint`, then the reference control region via
+/// [`parse_inter_control`](crate::headers::frame::inter::parse_inter_control), converging
+/// into the shared tail (`tile_info()` onward) where the parse reached it.
+///
+/// On a [`InterStop`](crate::headers::frame::inter::InterStop) that does not reach the
+/// shared tail, the inter facts are recorded on `core.inter` and the terminal
+/// [`FrameHeaderParseStatus`] reflects the stop class. When the control region converges
+/// into the shared tail the parser continues into the shared structure cluster (the same
+/// `tile_info()` → quant → segmentation → … path the intra tail uses, with inter inputs).
+fn parse_inter_path(
+    reader: &mut BitReader<'_>,
+    core: &mut FrameHeaderCore,
+    seq: &CoreSeqView,
+    frame_type: FrameType,
+    reference_state: &FrameReferenceStateView<'_>,
+) -> Result<()> {
+    use crate::headers::frame::inter::{InterFrameContext, InterSeqView, parse_inter_control};
+
+    let obu_type = core.obu_type;
+
+    // mirror :4353-4365: frame_size_override_flag. SWITCH_FRAME forces 1 (no bit);
+    // single_picture_header_flag forces 0; otherwise f(1). The inter path is never a
+    // single-picture frame (that path is intra-only above), so the gate is SWITCH vs read.
+    let frame_size_override_flag = if frame_type == FrameType::Switch {
+        true
+    } else {
+        reader.read_bit()? != 0
+    };
+    core.frame_size_override_flag = Some(frame_size_override_flag);
+
+    // mirror :4367: order_hint f(OrderHintBits); OrderHintLsbs = order_hint.
+    core.order_hint_lsb = Some(read_f(reader, seq.order_hint_bits)?);
+
+    let inter_seq = InterSeqView {
+        num_ref_frames: seq.num_ref_frames,
+        enable_short_refresh_frame_flags: seq.enable_short_refresh_frame_flags,
+        explicit_ref_frame_map: seq.inter.explicit_ref_frame_map,
+        enable_ref_frame_mvs: seq.inter.enable_ref_frame_mvs,
+        enable_bru: seq.inter.enable_bru,
+        enable_tip: seq.inter.enable_tip,
+        seq_max_drl_bits_minus_1: seq.inter.seq_max_drl_bits_minus_1,
+        allow_frame_max_drl_bits: seq.inter.allow_frame_max_drl_bits,
+        enable_flex_mvres: seq.inter.enable_flex_mvres,
+        seq_frame_motion_modes_present_flag: seq.inter.seq_frame_motion_modes_present_flag,
+        seq_enabled_motion_modes: seq.inter.seq_enabled_motion_modes,
+        enable_opfl_refine: seq.inter.enable_opfl_refine,
+        max_mlayer_id: seq.max_mlayer_id,
+        seq_force_screen_content_tools: seq.seq_force_screen_content_tools,
+        seq_force_integer_mv: seq.seq_force_integer_mv,
+        allow_frame_max_bvp_drl_bits: seq.allow_frame_max_bvp_drl_bits,
+        frame_width_bits: seq.frame_width_bits,
+        frame_height_bits: seq.frame_height_bits,
+        max_frame_width: seq.max_frame_width,
+        max_frame_height: seq.max_frame_height,
+        sb_size: seq.tile.frame_sb_size(false),
+    };
+    let ctx = InterFrameContext {
+        obu_type,
+        frame_type,
+        is_bridge: false, // bridge frames return before this path
+        bridge_frame_ref_idx: None,
+        cur_mfh_id_is_zero: core.cur_mfh_id.is_zero(),
+    };
+
+    let control = parse_inter_control(
+        reader,
+        &inter_seq,
+        &ctx,
+        reference_state,
+        frame_size_override_flag,
+    )?;
+
+    // Lift the inter reference-grounded frame size / refresh flags onto the core so
+    // existing state-supported diagnostics and the inspector see them.
+    if let Some(size) = control.frame_size {
+        core.frame_size = Some(size);
+    }
+    if let Some(flags) = control.refresh_frame_flags {
+        core.refresh_frame_flags = Some(flags);
+    }
+
+    // Whether the control region converged into the shared tail (tile_info() onward, see
+    // InterStop::reaches_shared_tail) or stopped at a coverage / poisoned-state branch, the
+    // parser stops honestly here: the shared structure cluster needs inter
+    // primary-reference / TIP inputs the shared path does not yet accept, and the coverage /
+    // poisoned-state stops are unmodeled by construction. In both cases the control-region
+    // facts are preserved on `core.inter`. The distinct stop class lives in `control.stop`;
+    // the core status is the unsupported-coverage class (never a truncation).
+    core.inter = Some(control);
+    core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+        feature_id: FRAME_HEADER_INFO_FEATURE,
+    };
+    Ok(())
 }
 
 /// Parses the show-existing-frame sub-path (AV2 § 5.18.2), stopping before
@@ -1618,6 +1773,8 @@ fn test_sub_views() -> (CoreSeqQuantView, CoreSeqSegView, CoreSeqTileView) {
 mod tests {
     use super::*;
     use crate::error::Error;
+    use crate::headers::frame::filtering::InterpolationFilter;
+    use crate::headers::frame::inter::MvPrecision;
     use crate::headers::frame::restoration::FrameRestorationType;
     use crate::headers::frame::tail::TxMode;
     use crate::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature, SegmentInfo};
@@ -1721,6 +1878,23 @@ mod tests {
         }
     }
 
+    /// A § 5.4.6 inter sub-view for tests with every inter tool disabled: the inter path
+    /// reads the explicit reference map only when `explicit_ref_frame_map` is overridden.
+    fn base_inter() -> CoreSeqInterView {
+        CoreSeqInterView {
+            enable_ref_frame_mvs: false,
+            explicit_ref_frame_map: false,
+            enable_bru: false,
+            enable_tip: false,
+            seq_max_drl_bits_minus_1: 0,
+            allow_frame_max_drl_bits: false,
+            enable_flex_mvres: false,
+            seq_frame_motion_modes_present_flag: false,
+            seq_enabled_motion_modes: [false; MOTION_MODES],
+            enable_opfl_refine: 0,
+        }
+    }
+
     fn base_seq() -> CoreSeqView {
         let (quant, seg, tile) = test_sub_views();
         CoreSeqView {
@@ -1738,6 +1912,7 @@ mod tests {
             seq_force_screen_content_tools: 0,
             seq_force_integer_mv: 0,
             allow_frame_max_bvp_drl_bits: false,
+            inter: base_inter(),
             quant,
             seg,
             tile,
@@ -1769,10 +1944,30 @@ mod tests {
         seq: &CoreSeqView,
         mfh_view: Option<&MfhFrameView>,
     ) -> Result<(FrameHeaderCore, u64)> {
+        parse_body_with_ref(
+            data,
+            obu_type,
+            first_picture_in_tu,
+            seq,
+            mfh_view,
+            &FrameReferenceStateView::unknown(),
+        )
+    }
+
+    /// Like [`parse_body_with_mfh`] but threads a modeled reference state into the core
+    /// body (the inter reference paths consume it).
+    fn parse_body_with_ref(
+        data: &[u8],
+        obu_type: ObuType,
+        first_picture_in_tu: bool,
+        seq: &CoreSeqView,
+        mfh_view: Option<&MfhFrameView>,
+        reference_state: &FrameReferenceStateView<'_>,
+    ) -> Result<(FrameHeaderCore, u64)> {
         let mut reader = BitReader::new(data, ByteOffset::new(0));
         let prefix = parse_frame_header_prefix(&mut reader, obu_type, first_picture_in_tu)?;
         let mut core = init_core_from_prefix(&prefix, obu_type);
-        parse_core_body(&mut reader, &mut core, seq, mfh_view)?;
+        parse_core_body(&mut reader, &mut core, seq, mfh_view, reference_state)?;
         let consumed = reader.consumed_bits();
         Ok((core, consumed))
     }
@@ -3286,32 +3481,100 @@ mod tests {
     }
 
     #[test]
-    fn frame_header_core_inter_stops_after_frame_type() {
-        // Regular tile group, frame_is_inter == 1 -> INTER_FRAME; the inter reference
-        // map needs reference state, so the parser stops after the frame-type field.
+    fn frame_header_core_inter_implicit_map_stops_unmodeled() {
+        // Regular tile group, frame_is_inter == 1 -> INTER_FRAME. With the sequence's
+        // explicit_ref_frame_map off, explicitRefFrameMap derives 0 and get_ref_frames(0)
+        // is unmodeled, so the inter region stops honestly right after the refresh flags.
         let mut bits = Bits::default();
         bits.uvlc(0); // cur_mfh_id == 0
         bits.uvlc(0); // seq_header_id_in_frame_header
         bits.bit(1); // frame_is_inter == 1
+        bits.bit(0); // immediate_output_frame
+        bits.bit(0); // implicit_output_frame
+        bits.bit(0); // frame_size_override_flag
+        bits.f(5, 4); // order_hint f(OrderHintBits == 4)
+        bits.bit(0); // signal_primary_ref_frame
+        bits.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        bits.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8)
+        // explicit_ref_frame_map seq flag off -> explicitRefFrameMap 0 -> get_ref_frames(0).
         let data = bits.into_bytes();
-        let (core, consumed) =
-            parse_body(&data, ObuType::RegularTileGroup, true, &base_seq()).unwrap();
+        let (core, _) = parse_body(&data, ObuType::RegularTileGroup, true, &base_seq()).unwrap();
 
         assert_eq!(core.frame_type, Some(FrameType::Inter));
         assert_eq!(core.frame_is_intra, Some(false));
+        assert_eq!(core.immediate_output_frame, Some(false));
+        assert_eq!(core.order_hint_lsb, Some(5));
         assert!(matches!(
             core.status,
             FrameHeaderParseStatus::UnsupportedUntilFeature { .. }
         ));
-        // uvlc(0) + uvlc(0) + frame_is_inter == 3 bits.
-        assert_eq!(consumed, 3);
+        let inter = core.inter.as_ref().unwrap();
+        assert_eq!(inter.explicit_ref_frame_map, Some(false));
+        assert_eq!(
+            inter.stop,
+            Some(crate::headers::frame::inter::InterStop::UnmodeledDerivation)
+        );
+    }
+
+    #[test]
+    fn frame_header_core_inter_explicit_map_reaches_shared_tail() {
+        // Regular tile group, INTER, with the sequence explicit_ref_frame_map on: the
+        // inter control region parses the explicit map, frame size, MV precision, the
+        // interpolation filter, and motion modes, converging into the shared tail (the
+        // core status is the unsupported-coverage class; the shared tail needs inter inputs
+        // the shared cluster does not yet accept).
+        let mut seq = base_seq();
+        seq.inter.explicit_ref_frame_map = true;
+        seq.inter.enable_ref_frame_mvs = true;
+        let mut bits = Bits::default();
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(0); // seq_header_id_in_frame_header
+        bits.bit(1); // frame_is_inter == 1
+        bits.bit(0); // immediate_output_frame
+        bits.bit(0); // implicit_output_frame
+        bits.bit(0); // frame_size_override_flag
+        bits.f(7, 4); // order_hint
+        bits.bit(0); // signal_primary_ref_frame
+        bits.bit(0); // disable_cross_frame_cdf_init
+        bits.f(0, 8); // refresh_frame_flags
+        bits.bit(1); // frame_explicit_ref_frame_map
+        bits.f(1, 3); // num_total_refs = 1
+        bits.f(2, 3); // ref_frame_idx[0]
+        // non-override, cur_mfh_id == 0 -> frame_size() default dims (no bits).
+        bits.bit(0); // use_ref_frame_mvs (num_total_refs == 1 -> no tmvp)
+        bits.bit(0); // allow_intrabc
+        bits.bit(0); // use_qtr_precision_mv
+        bits.bit(0); // allow_high_precision_mv
+        bits.bit(1); // is_filter_switchable
+        let data = bits.into_bytes();
+        let (core, _) = parse_body(&data, ObuType::RegularTileGroup, true, &seq).unwrap();
+
+        assert_eq!(core.frame_type, Some(FrameType::Inter));
+        let inter = core.inter.as_ref().unwrap();
+        assert_eq!(inter.explicit_ref_frame_map, Some(true));
+        assert_eq!(inter.num_total_refs, Some(1));
+        assert_eq!(inter.ref_frame_idx, vec![2]);
+        assert_eq!(inter.frame_size, Some(FrameSize::new(4096, 2304)));
+        assert_eq!(inter.mv_precision, Some(MvPrecision::HalfPel));
+        assert_eq!(
+            inter.interpolation_filter,
+            Some(InterpolationFilter::Switchable)
+        );
+        assert_eq!(
+            inter.stop,
+            Some(crate::headers::frame::inter::InterStop::ReachedSharedTail)
+        );
+        // The core status is the unsupported-coverage class (the shared tail needs inter
+        // inputs not yet threaded), never a truncation.
+        assert!(!core.status.is_truncated_in_modeled_region());
     }
 
     #[test]
     fn frame_header_core_ras_reads_num_key_ref_frames_then_stops() {
         // RAS frame: restricted_prediction_switch f(1), then (long_term_frame_id_bits
-        // != 0) num_key_ref_frames f(3) and the ref_long_term_id loop, before the
-        // parser stops as a non-intra (switch) frame (AV2 § 5.18.2).
+        // != 0) num_key_ref_frames f(3) and the ref_long_term_id loop, then the inter
+        // output-control flags and order_hint, before the RAS refresh derivation
+        // (max_mlayer_id == 0) stops honestly (it reads RefValid / RefLongTermId).
         let mut seq = base_seq();
         seq.long_term_frame_id_bits = 4;
         let mut bits = Bits::default();
@@ -3321,18 +3584,28 @@ mod tests {
         bits.f(2, 3); // num_key_ref_frames == 2
         bits.f(5, 4); // ref_long_term_id[0]
         bits.f(9, 4); // ref_long_term_id[1]
+        bits.bit(0); // immediate_output_frame
+        bits.bit(0); // implicit_output_frame
+        // frame_size_override_flag forced 1 for SWITCH (no bit).
+        bits.f(3, 4); // order_hint f(OrderHintBits == 4)
+        // RAS + max_mlayer_id == 0 -> refresh_frame_flags derivation reads RefValid (no
+        // bits), stop honestly.
         let data = bits.into_bytes();
-        let (core, consumed) = parse_body(&data, ObuType::RasFrame, true, &seq).unwrap();
+        let (core, _) = parse_body(&data, ObuType::RasFrame, true, &seq).unwrap();
 
         assert_eq!(core.frame_type, Some(FrameType::Switch));
         assert_eq!(core.frame_is_intra, Some(false));
+        assert_eq!(core.order_hint_lsb, Some(3));
+        assert_eq!(core.frame_size_override_flag, Some(true));
         assert!(matches!(
             core.status,
             FrameHeaderParseStatus::UnsupportedUntilFeature { .. }
         ));
-        // uvlc(0)+uvlc(0) (2) + restricted_prediction_switch (1) + num_key_ref (3) +
-        // 2 * ref_long_term_id f(4) (8) == 14 bits.
-        assert_eq!(consumed, 2 + 1 + 3 + 8);
+        let inter = core.inter.as_ref().unwrap();
+        assert_eq!(
+            inter.stop,
+            Some(crate::headers::frame::inter::InterStop::UnmodeledDerivation)
+        );
         // ref_long_term_id values 5 and 9 are not the reserved (1 << 4) - 1 == 15.
         assert!(!core.forbidden_ref_long_term_id);
     }
@@ -3743,6 +4016,18 @@ mod proptests {
                         seq_force_screen_content_tools: scc.0,
                         seq_force_integer_mv: scc.1,
                         allow_frame_max_bvp_drl_bits: scc.2,
+                        inter: CoreSeqInterView {
+                            enable_ref_frame_mvs: flags[0],
+                            explicit_ref_frame_map: flags[1],
+                            enable_bru: flags[2],
+                            enable_tip: flags[0],
+                            seq_max_drl_bits_minus_1: u32::from(scc.0),
+                            allow_frame_max_drl_bits: scc.2,
+                            enable_flex_mvres: flags[1],
+                            seq_frame_motion_modes_present_flag: flags[2],
+                            seq_enabled_motion_modes: [false, flags[0], flags[1], flags[2], false],
+                            enable_opfl_refine: scc.1,
+                        },
                         quant,
                         seg,
                         tile,
@@ -3845,7 +4130,13 @@ mod proptests {
                     }
                     _ => None,
                 };
-                let _ = parse_core_body(&mut reader, &mut core, &seq, mfh_view.as_ref());
+                let _ = parse_core_body(
+                    &mut reader,
+                    &mut core,
+                    &seq,
+                    mfh_view.as_ref(),
+                    &FrameReferenceStateView::unknown(),
+                );
                 prop_assert!(reader.consumed_bits() <= (data.len() as u64) * 8);
             }
         }

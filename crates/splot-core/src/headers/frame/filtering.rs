@@ -278,6 +278,86 @@ pub fn parse_deblocking_filter_params(
     })
 }
 
+/// The frame-level interpolation filter selected by `read_interpolation_filter()`
+/// (AV2 v1.0.0 § 5.18.5.1, `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-5-1`).
+///
+/// `is_filter_switchable` selects [`Self::Switchable`]; otherwise the explicit
+/// `interpolation_filter` `f(2)` value names the fixed filter. The four fixed values
+/// `0..3` are `EIGHTTAP`, `EIGHTTAP_SMOOTH`, `EIGHTTAP_SHARP`, and `BILINEAR`
+/// respectively (AV2 § 3 interpolation-filter constants).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InterpolationFilter {
+    /// `EIGHTTAP` (`interpolation_filter == 0`).
+    Eighttap,
+    /// `EIGHTTAP_SMOOTH` (`interpolation_filter == 1`).
+    EighttapSmooth,
+    /// `EIGHTTAP_SHARP` (`interpolation_filter == 2`).
+    EighttapSharp,
+    /// `BILINEAR` (`interpolation_filter == 3`).
+    Bilinear,
+    /// `SWITCHABLE` (`is_filter_switchable == 1`).
+    Switchable,
+}
+
+impl InterpolationFilter {
+    /// Returns a stable snake-case label for tools and JSON output.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Eighttap => "eighttap",
+            Self::EighttapSmooth => "eighttap_smooth",
+            Self::EighttapSharp => "eighttap_sharp",
+            Self::Bilinear => "bilinear",
+            Self::Switchable => "switchable",
+        }
+    }
+
+    /// Maps the explicit `interpolation_filter` `f(2)` value (`0..3`) to its fixed
+    /// filter (AV2 § 5.18.5.1).
+    const fn from_fixed_code(code: u32) -> Self {
+        match code & 0x3 {
+            0 => Self::Eighttap,
+            1 => Self::EighttapSmooth,
+            2 => Self::EighttapSharp,
+            // The mask restricts `code` to `0..=3`; `3` is the only remaining value.
+            _ => Self::Bilinear,
+        }
+    }
+}
+
+/// Parses `read_interpolation_filter()` (AV2 v1.0.0 § 5.18.5.1,
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-5-1`).
+///
+/// ```text
+/// read_interpolation_filter( ) {
+///     is_filter_switchable                         f(1)
+///     if ( is_filter_switchable == 1 ) {
+///         interpolation_filter = SWITCHABLE
+///     } else {
+///         interpolation_filter                     f(2)
+///     }
+/// }
+/// ```
+///
+/// No reference-frame state gates this read, so it parses on the inter path once
+/// reached.
+///
+/// # Errors
+/// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
+/// ends before the `is_filter_switchable` bit or the `interpolation_filter` `f(2)` value.
+pub fn read_interpolation_filter(reader: &mut BitReader<'_>) -> Result<InterpolationFilter> {
+    // AV2 § 5.18.5.1: is_filter_switchable f(1).
+    let is_filter_switchable = reader.read_bit()? != 0;
+    if is_filter_switchable {
+        Ok(InterpolationFilter::Switchable)
+    } else {
+        // AV2 § 5.18.5.1: interpolation_filter f(2).
+        let code = reader.read_bits(2)?;
+        Ok(InterpolationFilter::from_fixed_code(code))
+    }
+}
+
 /// Geometry inputs for the `gdf_per_block` gate of `gdf_params()` (AV2 v1.0.0
 /// § 5.18.7.9), derived from the parsed `tile_info()` and frame `SbSize`.
 #[derive(Debug, Clone, Copy)]
@@ -741,6 +821,52 @@ mod tests {
         let mut r = reader(&data);
         let params = parse_deblocking_filter_params(&mut r, false, 1, 30, None).unwrap();
         assert_eq!(params.df_delta_q[0], (1i64 - (1i64 << 31)) as i32);
+    }
+
+    // ---- interpolation filter (§ 5.18.5.1) ----
+
+    #[test]
+    fn interpolation_filter_switchable_reads_one_bit() {
+        // is_filter_switchable == 1 -> SWITCHABLE (no interpolation_filter f(2)).
+        let mut bits = Bits::default();
+        bits.bit(1); // is_filter_switchable
+        let data = bits.into_bytes();
+        let mut r = reader(&data);
+        let filter = read_interpolation_filter(&mut r).unwrap();
+        assert_eq!(filter, InterpolationFilter::Switchable);
+        assert_eq!(r.consumed_bits(), 1);
+    }
+
+    #[test]
+    fn interpolation_filter_fixed_reads_two_bit_code() {
+        // is_filter_switchable == 0 -> interpolation_filter f(2). Each code maps to its
+        // fixed filter.
+        for (code, expected) in [
+            (0u32, InterpolationFilter::Eighttap),
+            (1, InterpolationFilter::EighttapSmooth),
+            (2, InterpolationFilter::EighttapSharp),
+            (3, InterpolationFilter::Bilinear),
+        ] {
+            let mut bits = Bits::default();
+            bits.bit(0); // is_filter_switchable
+            bits.f(code, 2); // interpolation_filter
+            let data = bits.into_bytes();
+            let mut r = reader(&data);
+            let filter = read_interpolation_filter(&mut r).unwrap();
+            assert_eq!(filter, expected, "code {code}");
+            assert_eq!(r.consumed_bits(), 3);
+        }
+    }
+
+    #[test]
+    fn interpolation_filter_eof_is_structured_error() {
+        // No bits -> EOF before is_filter_switchable.
+        let data: [u8; 0] = [];
+        let mut r = reader(&data);
+        assert!(matches!(
+            read_interpolation_filter(&mut r),
+            Err(Error::UnexpectedEof { .. })
+        ));
     }
 
     // ---- gdf ----

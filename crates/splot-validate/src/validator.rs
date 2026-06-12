@@ -4250,6 +4250,10 @@ mod tests {
         /// child config present but `film_grain_params_present == None` (read after the
         /// tile config), exercising the finding-C deferral.
         bounded_tile_config: bool,
+        /// `explicit_ref_frame_map` (§ 5.4.6): when set, an inter frame reads
+        /// `frame_explicit_ref_frame_map` / `num_total_refs` / `ref_frame_idx[i]` from the
+        /// bitstream rather than deriving the reference map (§5.18.2 mirror :4583-4625).
+        explicit_ref_frame_map: bool,
     }
 
     impl FrameCoreSeq {
@@ -4271,6 +4275,7 @@ mod tests {
                 enable_ccso: false,
                 film_grain_params_present: false,
                 bounded_tile_config: false,
+                explicit_ref_frame_map: false,
             }
         }
     }
@@ -4330,7 +4335,7 @@ mod tests {
         bits.f(o.order_hint_bits_minus_1, 4); // order_hint_bits_minus_1
         bits.bit(0); // enable_refmvbank
         bits.bit(1); // disable_drl_reorder
-        bits.bit(0); // explicit_ref_frame_map
+        bits.bit(u8::from(o.explicit_ref_frame_map)); // explicit_ref_frame_map
         bits.bit(1); // explicit_num_ref_frames
         bits.f(o.num_ref_frames_minus_1, 4); // num_ref_frames_minus_1
         bits.f(o.long_term_frame_id_bits, 3); // long_term_frame_id_bits
@@ -20486,6 +20491,102 @@ mod tests {
         report
             .errors()
             .any(|d| d.rule_id == "frame-header/show-existing-frame-invalid-slot")
+    }
+
+    /// A regular-tile-group INTER frame with the explicit reference map (the sequence
+    /// must set `explicit_ref_frame_map`), referencing `ref_slot` via `ref_frame_idx[0]`.
+    /// Built against the base inter sequence (NumRefFrames == 8 -> CeilLog2 == 3,
+    /// OrderHintBits == 1, monotonic output, enable_ref_frame_mvs == 0). The body parses
+    /// through the inter control region into the shared tail, so the core's
+    /// `inter.ref_frame_idx` is populated for the §6.17.2 slot-validity check.
+    fn ref_inter_explicit_map(ref_slot: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(1); // frame_is_inter == 1 -> INTER_FRAME
+        fb.bit(1); // immediate_output_frame (monotonic_output -> implicit forced 0, no bit)
+        fb.bit(0); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        fb.bit(0); // signal_primary_ref_frame
+        fb.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        fb.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8)
+        fb.bit(1); // frame_explicit_ref_frame_map (explicit_ref_frame_map seq flag set)
+        fb.f(1, 3); // num_total_refs == 1
+        fb.f(ref_slot, 3); // ref_frame_idx[0] f(CeilLog2(8) == 3)
+        // non-override, cur_mfh_id == 0 -> frame_size() default dims (no bits).
+        // use_ref_frame_mvs: enable_ref_frame_mvs == 0 -> inferred 0 (no bit).
+        // frame_opfl_refine_type: enable_opfl_refine != REFINE_AUTO -> no bits.
+        fb.bit(0); // allow_screen_content_tools (SELECT) -> force_integer_mv = 0
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // use_qtr_precision_mv
+        fb.bit(0); // allow_high_precision_mv -> HALF_PEL
+        fb.bit(1); // is_filter_switchable -> SWITCHABLE (no interpolation_filter f(2))
+        // motion modes: seq_frame_motion_modes_present_flag == 0 -> no bits.
+        annex_b_obu(REGULAR_TILE_GROUP_HEADER, &fb.into_bytes())
+    }
+
+    fn has_ref_frame_idx_error(report: &ValidationReport) -> bool {
+        report
+            .errors()
+            .any(|d| d.rule_id == "frame-header/ref-frame-idx-invalid-slot")
+    }
+
+    #[test]
+    fn ref_state_inter_ref_frame_idx_proven_invalid_fires() {
+        // §7.23 / §5.18.2 / §6.17.2: a CLK at FirstPictureInTU resets RefValid over
+        // 0..NumRefFrames and its allFrames refresh re-validates only slot 0. A later INTER
+        // frame whose explicit ref_frame_idx[0] names slot 3 -> the buffer PROVES
+        // RefValid[3] == 0, so the inter ref-idx slot-validity diagnostic fires.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(clk_frame_decidable(true, true)); // CLK: reset + allFrames refresh
+        data.extend(ref_inter_explicit_map(3)); // INTER referencing proven-invalid slot 3
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_ref_frame_idx_error(&report),
+            "an inter frame whose ref_frame_idx names a CLK-invalidated, never-refreshed slot \
+             must fire the inter ref-idx slot-validity check; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ref_state_inter_ref_frame_idx_valid_slot_is_silent() {
+        // The same CLK leaves slot 0 valid. An INTER frame referencing slot 0 via
+        // ref_frame_idx[0] is conformant -> silent.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(clk_frame_decidable(true, true));
+        data.extend(ref_inter_explicit_map(0)); // INTER referencing the valid slot 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_ref_frame_idx_error(&report),
+            "an inter frame referencing the valid slot 0 must be silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ref_state_inter_ref_frame_idx_poisoned_slot_drops_to_silence() {
+        // A mid-stream join (no observed CLK reset) leaves every slot Unknown. An INTER
+        // frame referencing slot 3 -> Unknown (not proven invalid) -> silent.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(ref_inter_explicit_map(3)); // first frame, all slots Unknown
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_ref_frame_idx_error(&report),
+            "an inter frame against an unestablished (Unknown) buffer must drop to silence; \
+             report was: {report}"
+        );
     }
 
     #[test]

@@ -5041,10 +5041,11 @@ impl ValidatorContext {
     /// buffer makes locally decidable (AV2 § 6.17.2).
     ///
     /// Currently: a show-existing-frame whose `frame_to_show_map_idx` names a slot the
-    /// modeled buffer **proves** invalid (`RefValid == 0`). A *poisoned* (Unknown) slot
-    /// drops to silence — the buffer cannot prove a violation there (the Unknown
-    /// invariant). The check runs only when the frame's core resolved against its active
-    /// sequence header (the parsed `frame_to_show_map_idx` is trustworthy).
+    /// modeled buffer **proves** invalid (`RefValid == 0`), and an inter frame whose
+    /// explicit-reference-map `ref_frame_idx[i]` names a proven-invalid slot. A *poisoned*
+    /// (Unknown) slot drops to silence in both — the buffer cannot prove a violation there
+    /// (the Unknown invariant). The check runs only when the frame's core resolved against
+    /// its active sequence header (the parsed indices are trustworthy).
     fn reference_state_checks(
         &self,
         obu: &ObuEnvelope<'_>,
@@ -5054,21 +5055,17 @@ impl ValidatorContext {
         let Some(core) = self.frame_core_against_referenced_header(obu, first_picture_in_tu) else {
             return;
         };
-        if core.show_existing_frame != Some(true) {
-            return;
-        }
-        let Some(idx) = core.frame_to_show_map_idx else {
-            return;
-        };
         // AV2 § 6.17.2 (mirror :4178-4179) / § 7.23: a show-existing-frame outputs the
         // frame stored at `frame_to_show_map_idx`; that reference frame must be valid
         // (`RefValid[ frame_to_show_map_idx ] == 1`). The buffer fires ONLY when it
         // PROVES the slot invalid (a CLK reset with no re-validating refresh since); a
         // poisoned (Unknown) slot stays silent.
-        if self
-            .reference_state
-            .slot(obu.header.extended_layer_id, idx as usize)
-            == SlotState::ProvenInvalid
+        if core.show_existing_frame == Some(true)
+            && let Some(idx) = core.frame_to_show_map_idx
+            && self
+                .reference_state
+                .slot(obu.header.extended_layer_id, idx as usize)
+                == SlotState::ProvenInvalid
         {
             report.push(frame_header_error(
                 "frame-header/show-existing-frame-invalid-slot",
@@ -5080,6 +5077,35 @@ impl ValidatorContext {
                      (the slot was invalidated by a CLK reset and not refreshed since)"
                 ),
             ));
+        }
+
+        // AV2 § 6.17.2 / § 7.23: an inter frame's explicit-reference-map ref_frame_idx[i]
+        // (§5.18.2 mirror :4611-4625) names a reference slot that must be valid
+        // (`RefValid[ ref_frame_idx[i] ] == 1`). Fire ONLY where the §7.23 buffer PROVES
+        // the slot invalid (a CLK reset with no re-validating refresh since); a poisoned
+        // (Unknown) slot, or the implicit reference map (`get_ref_frames()`, unmodeled),
+        // stays silent.
+        if let Some(inter) = core.inter.as_ref() {
+            for &idx in &inter.ref_frame_idx {
+                if self
+                    .reference_state
+                    .slot(obu.header.extended_layer_id, idx as usize)
+                    == SlotState::ProvenInvalid
+                {
+                    report.push(frame_header_error(
+                        "frame-header/ref-frame-idx-invalid-slot",
+                        "6.17.2",
+                        obu,
+                        format!(
+                            "inter frame ref_frame_idx names reference slot {idx}, but the §7.23 \
+                             reference-frame buffer state proves RefValid[{idx}] == 0 (the slot \
+                             was invalidated by a CLK reset and not refreshed since)"
+                        ),
+                    ));
+                    // One diagnostic per frame is enough to flag the defect.
+                    break;
+                }
+            }
         }
     }
 
@@ -6579,6 +6605,29 @@ impl ValidatorContext {
             // preserving the early-stop (no guessing).
             let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
             if let Some(active_sequence) = self.sequence_headers.get(&seq_id) {
+                // AV2 § 7.23: thread the modeled per-extended-layer reference-frame buffer
+                // into the §6.17 frame-header checks so the §6.17.2 inter `ref_frame_idx`
+                // validity check sees the same `RefValid[]` the celu/output decisions do.
+                // The scratch arrays must outlive the check, so they are stack-local here.
+                let mut ref_valid = [false; NUM_REF_FRAMES];
+                let mut ref_oh = [0u32; NUM_REF_FRAMES];
+                let mut ref_w = [0u32; NUM_REF_FRAMES];
+                let mut ref_h = [0u32; NUM_REF_FRAMES];
+                let reference_buffer = if self
+                    .reference_state
+                    .view_into(
+                        obu.header.extended_layer_id,
+                        &mut ref_valid,
+                        &mut ref_oh,
+                        &mut ref_w,
+                        &mut ref_h,
+                    )
+                    .is_some()
+                {
+                    FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h)
+                } else {
+                    FrameReferenceStateView::unknown()
+                };
                 frame_header_core_checks(
                     obu,
                     first_picture_in_tu,
@@ -6587,6 +6636,7 @@ impl ValidatorContext {
                     FrameReferenceAvailability {
                         qm: &self.qm,
                         film_grain: &self.film_grain,
+                        reference_buffer,
                     },
                     options,
                     report,
@@ -13287,6 +13337,11 @@ struct FrameReferenceAvailability<'a> {
     qm: &'a QuantizerMatrixState,
     /// Per-slot film-grain model availability (AV2 § 6.17.10.1 / § 7.3.8.8).
     film_grain: &'a FilmGrainState,
+    /// The modeled §7.23 per-extended-layer reference-frame buffer view (AV2 § 7.23),
+    /// threaded into the core parse so the §6.17.2 inter `ref_frame_idx` validity check
+    /// sees the same `RefValid[]` the celu/output decisions do. `unknown()` when the
+    /// extended layer has no modeled buffer yet (no false positives).
+    reference_buffer: FrameReferenceStateView<'a>,
 }
 
 /// Emits the locally decidable frame-header-info / frame-size diagnostics for a frame
@@ -13307,6 +13362,7 @@ fn frame_header_core_checks(
     let FrameReferenceAvailability {
         qm: qm_state,
         film_grain: film_grain_state,
+        reference_buffer,
     } = reference_state;
     // AV2 § 6.4.6: if long_term_frame_id_bits == 0, no OBU_RAS_FRAME shall be present
     // in the coded video sequence. Decidable from obu_type + the active sequence alone.
@@ -13424,17 +13480,17 @@ fn frame_header_core_checks(
     // unresolvable, this is `None` and the core parser keeps its existing early-stop. The
     // §6.17.2 stored-MFH bound above already ran, so it is not lost when the core parse stops.
     //
-    // The §7.23 reference-frame buffer view is `unknown()` here: this free function holds
-    // no reference-state tracker, and none of the §6.17 diagnostics it emits consult
-    // reference state (they are decidable from the active sequence header alone). The
-    // modeled buffer is threaded into the method core parse
-    // (`frame_core_against_referenced_header`) instead, where the validator owns it.
+    // The §7.23 reference-frame buffer view is threaded in by the caller (the modeled
+    // per-extended-layer buffer, or `unknown()` when none is established): the §6.17.2
+    // inter `ref_frame_idx` validity check below consults the same `RefValid[]` the
+    // celu/output decisions do. The other §6.17 diagnostics this function emits are
+    // decidable from the active sequence header alone and ignore the view.
     let Some(core) = parse_frame_core(
         obu,
         first_picture_in_tu,
         active_sequence,
         mfh_record,
-        FrameReferenceStateView::unknown(),
+        reference_buffer,
     ) else {
         return;
     };
@@ -13509,6 +13565,26 @@ fn frame_header_core_checks(
                 "bridge_frame_ref_idx {idx} must be less than NumRefFrames {}",
                 inter.num_ref_frames
             ),
+        ));
+    }
+
+    // AV2 § 6.17.2: every used reference slot must be valid — an inter frame's
+    // ref_frame_idx[i] must name a slot whose RefValid is 1. The core parser flags a
+    // parsed ref_frame_idx that the modeled §7.23 reference state proves invalid
+    // (RefValid[idx] == 0 against a modeled buffer, or an out-of-NUM_REF_FRAMES index).
+    // Slots the model has not grounded stay Unknown and are not reported (no guessing).
+    if core
+        .inter
+        .as_ref()
+        .is_some_and(|inter| inter.has_invalid_ref_frame_idx)
+    {
+        report.push(frame_header_error(
+            "frame-header/ref-frame-idx-invalid-slot",
+            "6.17.2",
+            obu,
+            "a ref_frame_idx[i] names a reference slot the modeled §7.23 reference state \
+             proves invalid (RefValid[idx] == 0) or out of the NUM_REF_FRAMES buffer"
+                .to_owned(),
         ));
     }
 
