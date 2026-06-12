@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "2e7097f0ef38dbaa1b2c82ca37b97fef36ae5970",
+  "audited_commit": "711b497d52c41e7381a1dadf8c0399045dce5cbf",
   "outcome": "success",
   "files": [
     {
@@ -283,7 +283,7 @@
     },
     {
       "path": "crates/splot-cli/src/commands/inspect.rs",
-      "sha256": "adf344bcef559669f80f9bef1895772620fe85e1000b626e409f051a90041002",
+      "sha256": "b235d686f87b4c268508821dd225589121bdf4b340de91f2c08ae6528a4b3906",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.2.1-OBU-DISPATCH",
@@ -439,7 +439,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/info.rs",
-      "sha256": "a60cf613ea58c84c2059856356debe30a0c7b4a3b46294e98760920c5faa60d3",
+      "sha256": "7e41ec769a1a9dfe9e3d6c6e47e2659509df235192c8f1f96b26724070a86a72",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -449,7 +449,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/mod.rs",
-      "sha256": "7a6796f121a5150a0e15b2c18934d4d6045192521b8162be799ef1e69afb5b1d",
+      "sha256": "90a2dc570404e7029a2ab8f35cc67e5d75c47e3606857ff23bd579534efe0bc3",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -468,7 +468,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/restoration.rs",
-      "sha256": "71031105d56e55d2b9d73502736426884309827a10ddd88b4239d0b16b262c92",
+      "sha256": "71a19fe0e56ed9a82d4f2a251a3e249cca65fb15a2990def64ce728e75dc7f14",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.7-SEGMENTATION-TILING"
@@ -3263,7 +3263,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "592e07a5a55ecaed839fc85c2cdc4ebbeb3583fbe18be6aec1d6b3e2d8c82f5f",
+      "sha256": "99707f3cf2e8f2262ae77f955a8d54ffb2c52f777ec2ee1ce953c00536988d7f",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
