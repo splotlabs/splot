@@ -463,6 +463,36 @@ The inter-path arms of every child remain partial/todo.
   `inspect` surfaces the copy region's presence on non-first tile groups
   (`frame_header_copy` view) and the § 5.19 structure on the intra-complete first tile group
   (`tile_group_structure` view).
+- **Landed** (OpenSpec `frame-reference-state-model`,
+  `AV2-7.23-REFERENCE-FRAME-UPDATE`): the § 7.23 reference-frame buffer state is now
+  MODELED for intra streams, replacing the always-unknown `FrameReferenceStateView`
+  placeholder. A per-extended-layer `ReferenceStateTracker`
+  (`crates/splot-validate/src/reference_state.rs`) holds `NUM_REF_FRAMES` slots, each
+  `Unknown` / `ProvenInvalid` / `Valid{RefOrderHint, dims}`, updated at each completed
+  frame's segmenter-authoritative coded-frame boundary (deferred per § 7.23's
+  decode-frame-wrapup ordering, with the end-of-bitstream flush) from the parsed
+  `refresh_frame_flags` / `OrderHint` / dimensions and the § 7.23 key/switch `first`
+  RefValid rule. A CLK at `FirstPictureInTU` grounds the § 5.18.2 reset
+  (`RefValid[i] = 0` over `0..NumRefFrames`, mirror :4449-4455) then re-applies its
+  refresh; a frame whose refresh mask is not parsed (inter / TIP / bridge / truncated /
+  ambiguous-boundary) honestly poisons ALL slots; a mid-stream join starts all-`Unknown`
+  (sound under-approximation). The modeled buffer gives the § 6.17.2
+  show-existing-frame slot-validity check
+  (`frame-header/show-existing-frame-invalid-slot`): a SEF (`refresh_frame_flags = 0`,
+  no update, but displays `frame_to_show_map_idx`) referencing a slot the buffer PROVES
+  invalid fires; a poisoned (Unknown) slot drops to silence (the Unknown invariant). The
+  modeled view is threaded into the core parse via `FrameReferenceStateView::from_slots`
+  — forward plumbing for the § 5.18 INTER reference paths (no intra branch consumes it
+  today). No external-HLS suppression: reference buffers are written only in-band by the
+  § 7.23 process.
+- **Remaining:** the § 5.18 INTER reference-path CONSUMERS of the modeled reference state
+  (the `explicit_ref_frame_map` / `ref_frame_idx` `RefValid` checks § 6.17.2 :4605-4607,
+  `frame_size_with_refs`, `primary_ref_frame` range, the `use_bru` OrderHint/dim
+  constraints § 6.17.2 :4587-4596) await inter-path parsing; the § 7.3.9 long-term
+  reference availability is `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY`; the § 6.17.2
+  `derive_sef_order_hint` already-shown / `RefImplicitOutputFrame` /
+  `RefImmediateOutputFrame` SEF constraints (mirror :4375-4380) need output-frame-buffer
+  / shown state this phase does not model.
 - **Remaining:** the § 5.20 `tile_group_payload()` body (`AV2-5.20-TILE-GROUP-PAYLOAD`),
   the INTER-path BRU arms of `tile_group_obu()` (the `bru_inactive` `headerBits` /
   `remainingBits` `trailing_bits()` early-return and the `use_bru` `bru_tile_active` loop,

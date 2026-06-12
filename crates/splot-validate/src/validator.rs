@@ -20441,4 +20441,166 @@ mod tests {
              the ascending-mlayer order check; report was: {report}"
         );
     }
+
+    // === AV2 § 7.23 reference-frame buffer state model =====================
+
+    /// A show-existing-frame OBU referencing `slot` (`frame_to_show_map_idx`), against a
+    /// base sequence (NumRefFrames == 8 -> CeilLog2 == 3 bits, OrderHintBits == 1, no
+    /// film grain). `derive_sef_order_hint == 1` so no `sef_order_hint` is read, then the
+    /// §5.2.3 trailing one bit. The SEF arm sets `refresh_frame_flags = 0`, so it updates
+    /// no slot but DISPLAYS `slot` — making `RefValid[slot]` checkable (§6.17.2).
+    const REF_SEF_HEADER: u8 = REGULAR_SEF_HEADER;
+
+    fn ref_sef(slot: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.f(slot, 3); // frame_to_show_map_idx f(CeilLog2(8) == 3)
+        fb.bit(1); // derive_sef_order_hint == 1 -> no sef_order_hint
+        // film_grain_params_present == false -> film_grain_config() reads no bits.
+        fb.bit(1); // §5.2.3 trailing_one_bit
+        annex_b_obu(REF_SEF_HEADER, &fb.into_bytes())
+    }
+
+    /// A regular-tile-group inter frame that parses to completion. Its
+    /// `refresh_frame_flags` IS parsed (`enable_short_refresh_frame_flags == 0` ->
+    /// f(NumRefFrames) read here), but as an INTER frame on a path the core parser does
+    /// not fully model, `frame_core_against_referenced_header` does not resolve it, so the
+    /// validator poisons all slots (the mask could touch any slot). Used to test honest
+    /// poisoning. The body is a best-effort inter header; the validator's core parse stops
+    /// before the flags, so the update is `PoisonAll` either way.
+    fn ref_inter_tile_group() -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        // An INTER tile-group frame: the core parser's inter path is not fully modeled,
+        // so the frame is unresolved and the validator poisons all slots.
+        fb.bit(1); // immediate_output_frame
+        fb.bit(0); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(1)
+        annex_b_obu(REGULAR_TILE_GROUP_HEADER, &fb.into_bytes())
+    }
+
+    fn has_ref_slot_error(report: &ValidationReport) -> bool {
+        report
+            .errors()
+            .any(|d| d.rule_id == "frame-header/show-existing-frame-invalid-slot")
+    }
+
+    #[test]
+    fn ref_state_sef_proven_invalid_slot_fires() {
+        // §7.23 / §5.18.2 / §6.17.2: a CLK at FirstPictureInTU resets RefValid[i] = 0 over
+        // 0..NumRefFrames, then its allFrames refresh (max_mlayer_id == 0) re-validates only
+        // slot 0 (the key-frame `first` rule). A later SEF referencing slot 3 -> the buffer
+        // PROVES RefValid[3] == 0, so the slot-validity diagnostic fires.
+        let mut data = seg_td_and_seq();
+        data.extend(clk_frame_decidable(true, true)); // CLK: reset + allFrames refresh
+        data.extend(ref_sef(3)); // SEF displaying proven-invalid slot 3
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_ref_slot_error(&report),
+            "a SEF referencing a CLK-invalidated, never-refreshed slot must fire the \
+             show-existing-frame slot-validity check; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ref_state_sef_valid_slot_is_silent() {
+        // The same CLK leaves slot 0 valid (lowest refreshed slot of the allFrames mask
+        // under the key-frame `first` rule). A SEF referencing slot 0 is conformant ->
+        // silent.
+        let mut data = seg_td_and_seq();
+        data.extend(clk_frame_decidable(true, true));
+        data.extend(ref_sef(0)); // SEF displaying the valid slot 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_ref_slot_error(&report),
+            "a SEF referencing the valid slot 0 must be silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ref_state_sef_poisoned_slot_drops_to_silence() {
+        // A mid-stream join (no observed CLK reset) leaves every slot Unknown. The
+        // tracker only fires when it PROVES RefValid == 0; an Unknown slot drops to
+        // silence (the Unknown invariant). A SEF as the first frame after just a TD + seq
+        // header references slot 3 -> Unknown -> silent.
+        let mut data = seg_td_and_seq();
+        data.extend(ref_sef(3)); // first frame, all slots Unknown
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_ref_slot_error(&report),
+            "a SEF against an unestablished (poisoned/Unknown) buffer must drop to silence; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ref_state_inter_frame_poisons_then_sef_is_silent() {
+        // After a CLK establishes slot 0 valid, an INTER tile-group frame whose refresh
+        // mask the validator cannot ground poisons ALL slots. A subsequent SEF referencing
+        // slot 0 -> now Unknown (not proven invalid) -> silent. This proves honest
+        // poisoning: the previously-valid slot is no longer judged once poisoned.
+        let mut data = seg_td_and_seq();
+        data.extend(clk_frame_decidable(true, true)); // slot 0 valid
+        data.extend(ref_inter_tile_group()); // poisons all slots
+        data.extend(ref_sef(0)); // slot 0 now Unknown -> silent
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_ref_slot_error(&report),
+            "an unparsed inter refresh mask must poison the buffer, so a later SEF against a \
+             once-valid slot drops to silence; report was: {report}"
+        );
+        // And the inter frame must not itself spuriously fire the slot check.
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/show-existing-frame-invalid-slot"),
+        );
+    }
+
+    #[test]
+    fn ref_state_sef_invalid_then_inter_then_sef_silent_proves_poison_lifetime() {
+        // Ordering: CLK (slot 0 valid, slots 1.. proven invalid) -> SEF(3) fires ->
+        // inter poisons -> SEF(3) now silent (poisoned, no longer PROVEN invalid). The
+        // poison transition is observable: the SAME reference flips from firing to silent.
+        let mut data = seg_td_and_seq();
+        data.extend(clk_frame_decidable(true, true));
+        data.extend(ref_sef(3)); // proven invalid -> fires
+        let report_before = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_ref_slot_error(&report_before),
+            "report: {report_before}"
+        );
+
+        let mut data2 = seg_td_and_seq();
+        data2.extend(clk_frame_decidable(true, true));
+        data2.extend(ref_inter_tile_group()); // poison all slots
+        data2.extend(ref_sef(3)); // now Unknown -> silent
+        let report_after = Validator::new(false).validate_bytes(&data2);
+        assert!(
+            !has_ref_slot_error(&report_after),
+            "after poisoning, the same slot-3 reference must drop to silence; \
+             report was: {report_after}"
+        );
+    }
+
+    #[test]
+    fn ref_state_clk_reset_across_cvs_revalidates_only_slot_zero() {
+        // Two CVS epochs: each CLK resets and re-validates only slot 0. A SEF after the
+        // second CLK referencing slot 5 must fire (proven invalid), and referencing slot 0
+        // must be silent — confirming the CLK reset re-runs per CVS.
+        let mut data = seg_td_and_seq();
+        data.extend(clk_frame_decidable(true, true)); // CVS 1
+        data.extend(temporal_delimiter_obu());
+        data.extend(clk_frame_decidable(true, true)); // CVS 2 (new CLK -> reset again)
+        data.extend(ref_sef(5)); // proven invalid in CVS 2
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_ref_slot_error(&report),
+            "a SEF after the second CLK referencing a proven-invalid slot must fire; \
+             report was: {report}"
+        );
+    }
 }

@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-10. 129 feature(s); 103 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-10. 130 feature(s); 104 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -190,6 +190,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.17](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17) | Frame header OBU semantics | `AV2-5.18.9-GLOBAL-MOTION` | ✅ | 🟡 | — | ✅ | — |
 | [§ 6.17.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2) | Frame header info semantics | `AV2-5.18.2-FRAME-HEADER-INFO` | ✅ | 🟡 | 🟡 | ✅ | 8 |
 | [§ 6.17.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2) | Frame header info semantics | `AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS` | ✅ | — | 🟡 | ✅ | 9 |
+| [§ 6.17.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2) | Frame header info semantics | `AV2-7.23-REFERENCE-FRAME-UPDATE` | ✅ | — | 🟡 | ✅ | 1 |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `AV2-5.18.4-FRAME-SIZE` | ✅ | 🟡 | 🟡 | ✅ | 2 |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS` | ✅ | — | 🟡 | ✅ | 9 |
 | [§ 6.17.5.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-5-2) | Deblocking filter params semantics | `AV2-5.18.5-FILTERING` | ✅ | 🟡 | — | 🟡 | — |
@@ -218,6 +219,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.3.8.10](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-8-10) | Content interpretation OBU availability | `AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT` | ✅ | — | 🟡 | ✅ | 7 |
 | [§ 7.3.9](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-9) | Availability of long-term reference frames | `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | ✅ | — |  |  | — |
 | [§ 7.4.6](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-6) | Multistream Random Access | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | ✅ | ✅ | 🟡 | ✅ | 7 |
+| [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `AV2-7.23-REFERENCE-FRAME-UPDATE` | ✅ | — | 🟡 | ✅ | 1 |
 
 ## Chapter 9 — Additional tables
 

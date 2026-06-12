@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "14bf77e98ea699176cd2ebe0e0be890c453c0368",
+  "audited_commit": "7eacb8f71a73cc2f70d741298748402132d35134",
   "outcome": "success",
   "files": [
     {
@@ -436,7 +436,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/info.rs",
-      "sha256": "8f1587995d6cbebb001c809ca4203b67fbbedf19fee80547022f0f557a2c7524",
+      "sha256": "7ec24db9329e7d881f6f06f181b992ff642f0a7229f0c40e4ebd4c8998c8ff67",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -805,12 +805,13 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "bb326197b24ab0b1182878a8b3be7de49626c2c05162ccc99da8789879f0b6ff",
+      "sha256": "c184fd9d4de139d1468bc1279dc97a848584d582f0f8ecf9eaafd1835460c557",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
         "AV2-5.17.7-METADATA-TIMECODE",
         "AV2-5.18-FRAME-HEADER",
+        "AV2-5.18.2-FRAME-HEADER-INFO",
         "AV2-5.18.6-QUANTIZATION",
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.6-MSDO",
@@ -854,7 +855,7 @@
     },
     {
       "path": "crates/splot-validate/src/lib.rs",
-      "sha256": "980cf29f1b2c0384fded540b1f8bb900f2484d59b52ea45d8a5a06330e19b98f",
+      "sha256": "432de96a2f493f43d5ca64abf0fa9ed2a560ad5adb3ed0f5958a3ed37536a2ca",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -876,8 +877,17 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-validate/src/reference_state.rs",
+      "sha256": "108877513cb01390401c94947ad550c4692633453fb78d62611a440f646ba4bd",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-7.23-REFERENCE-FRAME-UPDATE"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "09bf2b46ac7afc89aa1967830680dcb3ab1a9406f9354ccc3702bd093a649d06",
+      "sha256": "559bb8378599476942716907610f9bc016f4776fdcb22ceb55376c0b25004886",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -942,7 +952,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "fe51efd0ee2337281a745b39c521e14c78e8dc8c08b29330a0f4cbae4d93f5e0",
+      "sha256": "66aa46446cc52e585cd067d0049e72953d20386435be88a3e2bc0adb08e8d543",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1034,6 +1044,7 @@
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
         "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
         "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.23-REFERENCE-FRAME-UPDATE",
         "AV2-7.3-OBU-ORDERING",
         "AV2-7.3.2-CMVS-BOUNDARIES",
         "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT",
@@ -1109,7 +1120,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "9e87a7d5b3f0d20e88b487077e45f48332f90a815946b3243121d4a6ad46040c",
+      "sha256": "e1bc083a4d2e95b9c0446882de025233c59f03742e6488b1920f4de44d8abf56",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1201,6 +1212,7 @@
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
         "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
         "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.23-REFERENCE-FRAME-UPDATE",
         "AV2-7.3-OBU-ORDERING",
         "AV2-7.3.2-CMVS-BOUNDARIES",
         "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT",
@@ -1246,7 +1258,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "234ec99dcfcd0009fbc6cd1991c6af0a52b25f5217c4e97aefdb81bc6ea4fb78",
+      "sha256": "e11e8ad80804b7566b80d2f856a5da99c4e15e0cbf2b53a1c56a6da07ccc59d4",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1338,6 +1350,7 @@
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
         "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
         "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.23-REFERENCE-FRAME-UPDATE",
         "AV2-7.3-OBU-ORDERING",
         "AV2-7.3.2-CMVS-BOUNDARIES",
         "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT",
@@ -1399,7 +1412,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "5cd8e55b2574dbb148ce952eee23620b2e4a6a69ba9e6a16af89d9ef8df28726",
+      "sha256": "bc11502fe6d2adac6aef72a1327ac52f2d29422ad103e5a36d8b4d134482eb8f",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -1416,7 +1429,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "23bef41460f9816de57f130194944fa9a33d3fa34708fb3aa2c2842d2dbed8ba",
+      "sha256": "fa5a94dd059d3565c091da027bad033b925a6ff3fa445bebeacdb1ac01a2587b",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -1469,6 +1482,7 @@
         "AV2-5.9-ATLAS-SEGMENT",
         "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
         "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
+        "AV2-7.23-REFERENCE-FRAME-UPDATE",
         "AV2-7.3-OBU-ORDERING",
         "AV2-7.3.2-CMVS-BOUNDARIES",
         "AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT",
@@ -3210,6 +3224,30 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-12-frame-reference-state-model/proposal.md",
+      "sha256": "2ef412a32b6b65a9a41ef1c54f445f1259bc17482aed992fe1e792ae8570ede6",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-7.23-REFERENCE-FRAME-UPDATE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-frame-reference-state-model/specs/validator/spec.md",
+      "sha256": "0c9b8376b92f67976c1bcd92a27365a47c887e62689e6ada244d8dea023287c0",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-frame-reference-state-model/tasks.md",
+      "sha256": "c64b531b07b260051982360bd0882d84b08d82d1175fb22012119a7577e3e91a",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-12-mfh-frame-header-state/proposal.md",
       "sha256": "954a54f5145c5cca327233900ee983bbeb9b14c82e93a24423925251eb39053b",
       "scope_kind": "openspec",
@@ -3455,7 +3493,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "4d86c03d19087852322357380f8e91b127dbae16216093e0bfb7079a36525503",
+      "sha256": "45d61047397eff1e809e2102d5d2a9134ff972986ad649f8e2e774067345b927",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
