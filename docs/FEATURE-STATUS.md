@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-10. 131 feature(s).
+Matrix version 1. Last reviewed 2026-06-10. 132 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -110,7 +110,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | Long-term reference availability | normative | bitstream-semantics | done | done | n/a | partial | n/a | n/a | partial | partial | pending | `crates/splot-validate/src/context.rs` |
 | `AV2-7.4-RANDOM-ACCESS` | Random access decoding | normative | bitstream-semantics | done | done | n/a | partial | n/a | n/a | partial | partial | pending | `crates/splot-validate/src/context.rs` |
 | `AV2-7.23-REFERENCE-FRAME-UPDATE` | Reference frame update process | normative | bitstream-semantics | done | done | n/a | partial | n/a | n/a | partial | done | pending | `crates/splot-validate/src/reference_state.rs` |
-| `AV2-9-ADDITIONAL-TABLES` | Additional spec tables (codegen) | normative | bitstream-semantics | done | todo | todo | n/a | n/a | n/a | todo | todo | pending | `crates/splot-core/src/tables.rs` |
+| `AV2-9-ADDITIONAL-TABLES` | Additional spec tables (codegen) | normative | bitstream-semantics | done | partial | partial | n/a | n/a | n/a | todo | partial | pending | `crates/splot-core/src/tables/` |
 | `AV2-A-PROFILES` | Annex A profile constraints | normative | bitstream-semantics | done | todo | n/a | partial | n/a | n/a | todo | done | pending | `crates/splot-validate/src/annex_a.rs` |
 | `AV2-A-LEVELS-TIERS` | Annex A level and tier constraints | normative | bitstream-semantics | done | todo | n/a | partial | n/a | n/a | todo | done | pending | `crates/splot-validate/src/annex_a.rs` |
 | `AV2-E-DECODER-MODEL` | Annex E decoder model constraints | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/checks/mod.rs` |
@@ -133,6 +133,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `XTASK-FEATURE-STATUS` | xtask feature status reporting and checks | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/feature_status.rs` |
 | `XTASK-AUDIT-SCOPE` | Changed-file AV2 audit scope | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/audit_scope.rs` |
 | `XTASK-DIAGNOSTIC-REGISTRY` | Validator diagnostic registry enforcement | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/diagnostic_registry.rs` |
+| `XTASK-GEN-TABLES` | AV2 § 9 tables code generator | automation | automation | done | done | done | done | done | n/a | n/a | done | n/a | `xtask/src/gen_tables.rs` |
 | `XTASK-CI-QUALITY-GATES` | CI quality gates (docs build + coverage threshold) | automation | automation | done | n/a | n/a | done | n/a | n/a | n/a | n/a | n/a | `xtask/src/main.rs` |
 | `DOC-FEATURE-TRACKING` | Feature tracking documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `docs/FEATURE-TRACKING.md` |
 | `DOC-VALIDATOR-ROADMAP` | Validator coverage roadmap documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `docs/VALIDATOR-ROADMAP.md` |

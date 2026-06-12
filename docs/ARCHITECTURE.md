@@ -53,8 +53,10 @@ by `cargo xtask check-dependency-direction`):
   `check-feature-status`, `check-diagnostic-registry`,
   `check-conventional-commits`/`-title`); matrix reporting (`feature-status`,
   `spec-coverage`); audit scoping (`audit-scope`); `audit`, `coverage`, and
-  `fuzz` wrappers; plus the `gen-tables`, `fetch-vectors`, and `conformance`
-  stubs.
+  `fuzz` wrappers; `gen-tables` (code-generates the AV2 § 9 tables into
+  `crates/splot-core/src/tables/` from the committed `all_tables.h` attachment,
+  with a `--check` drift gate run in `cargo xtask ci`); plus the `fetch-vectors`
+  and `conformance` stubs.
 
 ## Reference-informed encoder architecture
 

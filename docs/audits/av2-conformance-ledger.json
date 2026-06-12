@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "578d7c7eaa4ec8450492f333430a76c21690ef3e",
+  "audited_commit": "f7d7370aecbc60ce1ac385e795fd395970c699cd",
   "outcome": "success",
   "files": [
     {
@@ -253,7 +253,7 @@
     },
     {
       "path": "_typos.toml",
-      "sha256": "49abafbe2646d71038de39776be19934aa938c2a6ba5760b905b02da0ef077da",
+      "sha256": "60c69043181f0e0b83723af25487cb23588e5af52c7d059af884387a6cc45ff6",
       "scope_kind": "repository-process",
       "feature_ids": [
         "AV2-5.17.5-METADATA-HDR-CLL"
@@ -718,12 +718,59 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-core/src/tables.rs",
-      "sha256": "feaa45d6172e47c507cc926f090242cb3ad4bfb65ca1324f4b82d044c00cfa8c",
+      "path": "crates/splot-core/src/tables/cdf.rs",
+      "sha256": "d7cf48e5431a9e054041ab1361f95b685d07b59a95fceb2e55d24bc1ac385871",
       "scope_kind": "workspace:splot-core",
-      "feature_ids": [
-        "AV2-9-ADDITIONAL-TABLES"
-      ],
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/tables/conversion.rs",
+      "sha256": "c4e4d3fbfca37b5b138dbc84151fd0908e5a56391f8b0a12977009a7c1619b5e",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/tables/loop_restoration.rs",
+      "sha256": "91321c1258ec4d51465a286e12abe9fb3f15ce07a43cc7380a4c15f09b284998",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/tables/mod.rs",
+      "sha256": "305726bf0675fba0656c71a8f320711a49a6b67c648621149649e7d0cd1d111b",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/tables/quantizer.rs",
+      "sha256": "ab4f3dff33388ec981cd3b66373761c8fd288c2a344a2a8a914ba4198d9822f8",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/tables/secondary_transform.rs",
+      "sha256": "9de445533e4db2aab1675c51edcaea261a69f2f9cce93f48298fb4dd44d9068b",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/tables/transform_1d.rs",
+      "sha256": "ec469a66c903f41e4093069dedcad6dd3f95b9392ce2488fbe3f710ffa589efc",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/tables/warp_filter.rs",
+      "sha256": "96601bdb82cdc0730f5a18a4554455b1fe958fa3aa1d8cae07cbc73d42bc8cf1",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [],
       "outcome": "success"
     },
     {
@@ -741,6 +788,15 @@
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.2.1-OBU-TYPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/tests/tables_spot.rs",
+      "sha256": "e492d13355626922ed6daae5aeeb809f8c3a49370e76dc975d8c912ec5eaf2dd",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-9-ADDITIONAL-TABLES"
       ],
       "outcome": "success"
     },
@@ -928,7 +984,7 @@
     },
     {
       "path": "docs/ARCHITECTURE.md",
-      "sha256": "493a80205c505422d707384d1161974833f53e9ee1e80c4954c01901a61ef936",
+      "sha256": "5f5f1f7b8ede99bdb9ee9acc9df231aa3ed517465330ae2a35ffa010d03edca8",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-IVF-CONTAINER"
@@ -968,7 +1024,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "c00c110c342ff56d3bf284ae497a1dcbe889f7c77cce00d431f021162bf2dd4d",
+      "sha256": "bffc56820fe79b9d8c971051f84e1b47f9fc62a3fbaef5d7e90d7b76ed0fe299",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1101,7 +1157,8 @@
         "XTASK-CI-QUALITY-GATES",
         "XTASK-CONVENTIONAL-COMMITS",
         "XTASK-DIAGNOSTIC-REGISTRY",
-        "XTASK-FEATURE-STATUS"
+        "XTASK-FEATURE-STATUS",
+        "XTASK-GEN-TABLES"
       ],
       "outcome": "success"
     },
@@ -1137,7 +1194,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "7342c0e8920820e26d9bbc0e0fc55c91f4c30deecb9b64caaf54e65f23704c12",
+      "sha256": "5c7e4608d7c48623f35635c4bb69c5a75be994aaa7cfa4750101d9b84bdfca80",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1270,13 +1327,14 @@
         "XTASK-CI-QUALITY-GATES",
         "XTASK-CONVENTIONAL-COMMITS",
         "XTASK-DIAGNOSTIC-REGISTRY",
-        "XTASK-FEATURE-STATUS"
+        "XTASK-FEATURE-STATUS",
+        "XTASK-GEN-TABLES"
       ],
       "outcome": "success"
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "6739871060919b76b105172f26078bd6880c8fd584acefe88bbe86cbb1beeb49",
+      "sha256": "bbb8431545902b5f4ae51371352cf20737b992722495e7f204e842a2de430510",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1409,7 +1467,8 @@
         "XTASK-CI-QUALITY-GATES",
         "XTASK-CONVENTIONAL-COMMITS",
         "XTASK-DIAGNOSTIC-REGISTRY",
-        "XTASK-FEATURE-STATUS"
+        "XTASK-FEATURE-STATUS",
+        "XTASK-GEN-TABLES"
       ],
       "outcome": "success"
     },
@@ -1547,21 +1606,21 @@
     },
     {
       "path": "docs/references/THIRD-PARTY-NOTICES.md",
-      "sha256": "0ce2031820eaabd7e9abfadd68309ad4cd40b8cd2c28acab0121a2e482e0b9af",
+      "sha256": "f8135af4e534d9f78d2b1f5d01aeb6cbf0cd0399fbe055da564e3cf258b96d42",
       "scope_kind": "docs",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "docs/spec/av2/1.0.0/CHECKSUMS",
-      "sha256": "d4c786fcda4c16e1e72005c42f047f67c1b0f66f54a20899234df3f78406350a",
+      "sha256": "d56cf5c10d24c03c3de675ccc78c42e1d56482726631e7ade71e768638a57273",
       "scope_kind": "spec-mirror-integrity",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "docs/spec/av2/1.0.0/provenance.toml",
-      "sha256": "b3ba78ccaffc74c922f9ff27a9edefeb61bba150239a0fc337526f7b746c10a8",
+      "sha256": "a60455e8b31814bb893385c65f9cdbedb2dbbb3f3f710ce500bd7fb21b8510d6",
       "scope_kind": "spec-mirror-integrity",
       "feature_ids": [],
       "outcome": "success"
@@ -3323,6 +3382,32 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-12-gen-tables-additional-tables/proposal.md",
+      "sha256": "ced8da567afa9225c830bc5193cc81fa581f4c89864b2caebdd61fd212e5d1c5",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-9-ADDITIONAL-TABLES",
+        "XTASK-GEN-TABLES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-gen-tables-additional-tables/specs/bitstream/spec.md",
+      "sha256": "2d215fdd76fe9222def2f5f2415d060e331a8a95a729c572f2842bdfce973fcb",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-9-ADDITIONAL-TABLES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-gen-tables-additional-tables/tasks.md",
+      "sha256": "7eb08d7fcde25e8b4f9395b80badb813ce1c916e6047b520910ee55f1da722cd",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-12-mfh-frame-header-state/proposal.md",
       "sha256": "954a54f5145c5cca327233900ee983bbeb9b14c82e93a24423925251eb39053b",
       "scope_kind": "openspec",
@@ -3514,7 +3599,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "850bcc58d6d393282c6ea9f381b9a4f182f54e75487d03a412f4d111b3fe100f",
+      "sha256": "bc55e30c88dd6d2730b627900e5f16b2f93c389e838c3be78b0b97cd9c83ce36",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -3651,14 +3736,14 @@
     },
     {
       "path": "scripts/spec/build_av2_mirror.py",
-      "sha256": "c6dc22145dd41f332c861f4612d46f07f3003379fb46d41efd500f8c4da65cde",
+      "sha256": "ef0fcfd8e3fc85b3d7e4a1074716dbc5d557a365444445e4bf5edc66ff7fc3c2",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "scripts/spec/regenerate-av2-spec.sh",
-      "sha256": "53b53f3e195f43689812ac296aadd531d642572385240dfc531015e42cd88702",
+      "sha256": "b3eacb71652cb331923b59946639ef60feed445a26120e6a1bc64bdeca105e41",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
@@ -3703,6 +3788,16 @@
       "outcome": "success"
     },
     {
+      "path": "xtask/src/gen_tables.rs",
+      "sha256": "7e564bbe179df0f47eb2c82f3b1af07e27111c6dac242a2d37a667ffde21ca49",
+      "scope_kind": "workspace:xtask",
+      "feature_ids": [
+        "AV2-9-ADDITIONAL-TABLES",
+        "XTASK-GEN-TABLES"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "xtask/src/git_util.rs",
       "sha256": "9463297dfcb64c6d04f94384ae9168651ee35beb007280ae89ec7be659b45791",
       "scope_kind": "workspace:xtask",
@@ -3711,7 +3806,7 @@
     },
     {
       "path": "xtask/src/main.rs",
-      "sha256": "49c84ccc2e4d209777b9808ebc81563c03fe6e99e2c7b5c9f86f704672304c13",
+      "sha256": "71d743ba25f59bf3a5f3133617766b64f4b1f736fd5878ca361f491da26947ed",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",

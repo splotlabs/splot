@@ -11,6 +11,9 @@ extend-exclude = [
   "docs/IMPLEMENTATION-MATRIX.toml",
   # Verbatim AOM AV2 specification mirror (third-party text, do not spell-check).
   "docs/spec/**",
+  # Machine-generated AV2 § 9 tables (cargo xtask gen-tables): const names and doc
+  # comments are spec table identifiers (Ddtx_Kernel, Cctx, Mhccp, ...), not prose.
+  "crates/splot-core/src/tables/**",
   "*.av2",
   "*.obu",
 ]
