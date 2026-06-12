@@ -36,6 +36,7 @@ use crate::types::ObuType;
 mod config;
 mod filtering;
 mod info;
+mod inter;
 mod quant;
 mod restoration;
 mod segmentation;
@@ -45,12 +46,14 @@ mod tiling;
 
 pub use filtering::{
     CdefParams, CdefStrengthSet, CoreSeqFilterView, DeblockingFilterParams, GdfGeometry, GdfParams,
-    MfhDeblockingView, parse_cdef_params, parse_deblocking_filter_params, parse_gdf_params,
+    InterpolationFilter, MfhDeblockingView, parse_cdef_params, parse_deblocking_filter_params,
+    parse_gdf_params, read_interpolation_filter,
 };
 pub use info::{
     FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
     FrameReferenceStateView, FrameType, SefTrailingBits, parse_frame_header_core,
 };
+pub use inter::{InterControl, InterStop, MvPrecision, TipFrameMode};
 pub use quant::{
     CoreSeqQuantView, DeltaQParams, LosslessInfo, MAX_PIC_QM_NUM, QmSetLevels, QuantizationParams,
     SetupQmParams, parse_delta_q_params, parse_lossless_info, parse_quantization_params,

@@ -24,8 +24,8 @@ use splot_core::headers::frame::{
     CcsoParams, CcsoPlaneParams, CdefParams, CdefStrengthSet, DeblockingFilterParams, DeltaQParams,
     FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
     FrameHeaderParseStatus, FrameHeaderPrefix, FrameHeaderTail, FrameReferenceStateView, GdfParams,
-    LosslessInfo, LrParams, LrPartialParams, LrPlaneParams, QuantizationParams, SefTrailingBits,
-    SegmentationParams, SetupQmParams, TileInfo, parse_frame_header_core,
+    InterControl, LosslessInfo, LrParams, LrPartialParams, LrPlaneParams, QuantizationParams,
+    SefTrailingBits, SegmentationParams, SetupQmParams, TileInfo, parse_frame_header_core,
     parse_frame_header_prefix,
 };
 use splot_core::headers::metadata::{MetadataUnit, parse_metadata_group, parse_metadata_short};
@@ -853,7 +853,95 @@ struct FrameHeaderCoreView {
     /// the SEF payload tail is non-conformant (surfaced as a diagnostic by the validator).
     #[serde(skip_serializing_if = "Option::is_none")]
     sef_trailing_bits: Option<&'static str>,
+    /// The parsed §5.18.2 non-intra control region (inter / switch / TIP path), present
+    /// only when the frame is non-intra. Surfaces the primary-reference signaling, the
+    /// explicit reference map, the reference-grounded frame size, the BRU triple, the MV
+    /// precision / interpolation filter / motion modes, and the inter stop class.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inter: Option<InterControlView>,
     consumed_bits: u64,
+}
+
+/// The parsed §5.18.2 non-intra control region for `--json` (AV2 § 5.18.2).
+#[derive(Serialize)]
+struct InterControlView {
+    /// The inter stop class (stable label).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stop: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signal_primary_ref_frame: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disable_cross_frame_cdf_init: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    primary_ref_frame: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bridge_frame_overwrite_flag: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    explicit_ref_frame_map: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_total_refs: Option<u32>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ref_frame_idx: Vec<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_size: Option<FrameSizeView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    use_bru: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bru_ref: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bru_inactive: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    use_ref_frame_mvs: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tmvp_sample_step_minus_1: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tip_frame_mode: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_drl_bits_minus_1: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mv_precision: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    interpolation_filter: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_enabled_motion_modes: Option<Vec<bool>>,
+    /// `disable_cdf_update` (AV2 § 5.18.2, mirror :5041), read on the ordinary inter /
+    /// switch path immediately before the shared tail (`InterStop::ReachedSharedTail`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disable_cdf_update: Option<bool>,
+    has_invalid_ref_frame_idx: bool,
+}
+
+impl InterControlView {
+    fn new(inter: &InterControl) -> Self {
+        Self {
+            stop: inter.stop.map(|stop| stop.label()),
+            signal_primary_ref_frame: inter.signal_primary_ref_frame,
+            disable_cross_frame_cdf_init: inter.disable_cross_frame_cdf_init,
+            primary_ref_frame: inter.primary_ref_frame,
+            bridge_frame_overwrite_flag: inter.bridge_frame_overwrite_flag,
+            explicit_ref_frame_map: inter.explicit_ref_frame_map,
+            num_total_refs: inter.num_total_refs,
+            ref_frame_idx: inter.ref_frame_idx.clone(),
+            frame_size: inter.frame_size.map(|size| FrameSizeView {
+                width: size.width,
+                height: size.height,
+            }),
+            use_bru: inter.use_bru,
+            bru_ref: inter.bru_ref,
+            bru_inactive: inter.bru_inactive,
+            use_ref_frame_mvs: inter.use_ref_frame_mvs,
+            tmvp_sample_step_minus_1: inter.tmvp_sample_step_minus_1,
+            tip_frame_mode: inter.tip_frame_mode.map(|mode| mode.label()),
+            max_drl_bits_minus_1: inter.max_drl_bits_minus_1,
+            mv_precision: inter.mv_precision.map(|precision| precision.label()),
+            interpolation_filter: inter.interpolation_filter.map(|filter| filter.label()),
+            frame_enabled_motion_modes: inter
+                .frame_enabled_motion_modes
+                .map(|modes| modes.to_vec()),
+            disable_cdf_update: inter.disable_cdf_update,
+            has_invalid_ref_frame_idx: inter.has_invalid_ref_frame_idx,
+        }
+    }
 }
 
 /// A frame's parsed luma dimensions for `--json`.
@@ -1350,6 +1438,7 @@ impl FrameHeaderCoreView {
             intra_tail: core.intra_tail.as_ref().map(FrameHeaderTailView::new),
             sef_film_grain: core.sef_film_grain.as_ref().map(FilmGrainConfigView::new),
             sef_trailing_bits: core.sef_trailing_bits.map(SefTrailingBits::label),
+            inter: core.inter.as_ref().map(InterControlView::new),
             consumed_bits: core.consumed_bits,
         }
     }

@@ -20,12 +20,61 @@ const SELECT_SCREEN_CONTENT_TOOLS: u8 = 2;
 /// `force_integer_mv` (AV2 v1.0.0 § 3 / § 6.4.7).
 const SELECT_INTEGER_MV: u8 = 2;
 
-/// Parses `screen_content_params()` (AV2 v1.0.0 § 5.18.3.3) and returns
-/// `allow_screen_content_tools`.
+/// The two flags `screen_content_params()` derives (AV2 v1.0.0 § 5.18.3.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScreenContentParams {
+    /// `allow_screen_content_tools`.
+    pub allow_screen_content_tools: bool,
+    /// `force_integer_mv` (`0` when screen-content tools are off, else read or forced).
+    /// The inter MV-precision block (§ 5.18.2 mirror :4885) gates on it.
+    pub force_integer_mv: bool,
+}
+
+/// Parses `screen_content_params()` (AV2 v1.0.0 § 5.18.3.3) and returns both
+/// `allow_screen_content_tools` and `force_integer_mv`.
 ///
 /// `seq_force_screen_content_tools` and `seq_force_integer_mv` come from the active
 /// sequence's `sequence_scc_config()` (§ 5.4.7). When a field is forced by the
 /// sequence, no bit is read; only the `SELECT_*` sentinel reads a flag.
+///
+/// # Errors
+/// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if a signaled
+/// flag cannot be read.
+pub(crate) fn parse_screen_content_params_full(
+    reader: &mut BitReader<'_>,
+    seq_force_screen_content_tools: u8,
+    seq_force_integer_mv: u8,
+) -> Result<ScreenContentParams> {
+    // AV2 § 5.18.3.3.
+    let allow_screen_content_tools =
+        if seq_force_screen_content_tools == SELECT_SCREEN_CONTENT_TOOLS {
+            reader.read_bit()? != 0
+        } else {
+            seq_force_screen_content_tools != 0
+        };
+
+    // AV2 § 5.18.3.3: force_integer_mv is read only when screen-content tools are on and
+    // the sequence selects it; otherwise it is forced (0, or the sequence value).
+    let force_integer_mv = if allow_screen_content_tools {
+        if seq_force_integer_mv == SELECT_INTEGER_MV {
+            reader.read_bit()? != 0
+        } else {
+            seq_force_integer_mv != 0
+        }
+    } else {
+        false
+    };
+
+    Ok(ScreenContentParams {
+        allow_screen_content_tools,
+        force_integer_mv,
+    })
+}
+
+/// Parses `screen_content_params()` (AV2 v1.0.0 § 5.18.3.3) and returns
+/// `allow_screen_content_tools` only (the intra path does not consume `force_integer_mv`,
+/// since `FrameIsIntra` skips the MV-precision block). A thin wrapper over
+/// [`parse_screen_content_params_full`].
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if a signaled
@@ -35,21 +84,12 @@ pub(crate) fn parse_screen_content_params(
     seq_force_screen_content_tools: u8,
     seq_force_integer_mv: u8,
 ) -> Result<bool> {
-    // AV2 § 5.18.3.3.
-    let allow_screen_content_tools =
-        if seq_force_screen_content_tools == SELECT_SCREEN_CONTENT_TOOLS {
-            reader.read_bit()? != 0
-        } else {
-            seq_force_screen_content_tools != 0
-        };
-
-    if allow_screen_content_tools && seq_force_integer_mv == SELECT_INTEGER_MV {
-        // force_integer_mv f(1): read to stay bit-aligned; the value gates MV precision
-        // in syntax this phase stops before, so it is not surfaced.
-        reader.read_bit()?;
-    }
-
-    Ok(allow_screen_content_tools)
+    Ok(parse_screen_content_params_full(
+        reader,
+        seq_force_screen_content_tools,
+        seq_force_integer_mv,
+    )?
+    .allow_screen_content_tools)
 }
 
 /// Parses `intrabc_params()` (AV2 v1.0.0 § 5.18.3.4) and returns `allow_intrabc`.

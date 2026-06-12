@@ -4250,6 +4250,13 @@ mod tests {
         /// child config present but `film_grain_params_present == None` (read after the
         /// tile config), exercising the finding-C deferral.
         bounded_tile_config: bool,
+        /// `explicit_ref_frame_map` (§ 5.4.6): when set, an inter frame reads
+        /// `frame_explicit_ref_frame_map` / `num_total_refs` / `ref_frame_idx[i]` from the
+        /// bitstream rather than deriving the reference map (§5.18.2 mirror :4583-4625).
+        explicit_ref_frame_map: bool,
+        /// `enable_bru` (§ 5.4.6): when set, an inter frame reads the BRU triple
+        /// (`use_bru` / `bru_ref` / `bru_inactive`, §5.18.2 mirror :4653-4669).
+        enable_bru: bool,
     }
 
     impl FrameCoreSeq {
@@ -4271,6 +4278,8 @@ mod tests {
                 enable_ccso: false,
                 film_grain_params_present: false,
                 bounded_tile_config: false,
+                explicit_ref_frame_map: false,
+                enable_bru: false,
             }
         }
     }
@@ -4330,7 +4339,7 @@ mod tests {
         bits.f(o.order_hint_bits_minus_1, 4); // order_hint_bits_minus_1
         bits.bit(0); // enable_refmvbank
         bits.bit(1); // disable_drl_reorder
-        bits.bit(0); // explicit_ref_frame_map
+        bits.bit(u8::from(o.explicit_ref_frame_map)); // explicit_ref_frame_map
         bits.bit(1); // explicit_num_ref_frames
         bits.f(o.num_ref_frames_minus_1, 4); // num_ref_frames_minus_1
         bits.f(o.long_term_frame_id_bits, 3); // long_term_frame_id_bits
@@ -4347,7 +4356,7 @@ mod tests {
         bits.bit(0); // enable_df_sub_pu
         bits.f(0, 2); // enable_opfl_refine
         bits.bit(0); // enable_refinemv
-        bits.bit(0); // enable_bru
+        bits.bit(u8::from(o.enable_bru)); // enable_bru
         bits.bit(0); // enable_adaptive_mvd
         bits.bit(0); // enable_mvd_sign_derive
         bits.bit(0); // enable_flex_mvres
@@ -4453,7 +4462,10 @@ mod tests {
     #[test]
     fn validator_flags_bridge_ref_index_out_of_range() {
         // NumRefFrames == 6 -> CeilLog2(6) == 3 bits, so bridge_frame_ref_idx can encode
-        // 6 or 7, both >= NumRefFrames (AV2 § 6.17.2).
+        // 6 or 7, both >= NumRefFrames (AV2 § 6.17.2). The body codes the IsBridge
+        // reference-control arms (overwrite flag + frame_size_with_bridge dims) so the core
+        // records bridge_frame_ref_idx and stops honestly (frame_size_with_bridge() Min
+        // needs slot-6 dims, which are out of range / Unknown -> PoisonedReferenceState).
         let mut data = td_and_frame_core_seq(FrameCoreSeq {
             num_ref_frames_minus_1: 5, // NumRefFrames == 6 (non-power-of-2)
             ..FrameCoreSeq::base()
@@ -4461,6 +4473,9 @@ mod tests {
         let mut fb = Bits::default();
         fb.uvlc(0); // seq_header_id_in_frame_header (bridge infers cur_mfh_id == 0)
         fb.f(6, 3); // bridge_frame_ref_idx == 6 (>= NumRefFrames 6)
+        fb.bit(0); // bridge_frame_overwrite_flag == 0 -> refresh = 1 << 6 (no bits)
+        fb.f(0, 8); // bridge_frame_width_minus_1 f(frame_width_bits == 8)
+        fb.f(0, 8); // bridge_frame_height_minus_1 f(frame_height_bits == 8)
         data.extend(annex_b_obu(BRIDGE_HEADER, &fb.into_bytes()));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
@@ -5106,14 +5121,27 @@ mod tests {
             "a complete intra frame header must NOT fire truncated-frame-header; report was: {report}"
         );
 
-        // (b) An INTER frame stops at UnsupportedUntilFeature (the inter reference map needs
-        // reference state this phase does not model) — a coverage stop, NOT a truncation.
+        // (b) An INTER frame that parses its full modeled control prefix (output flags,
+        // order_hint, primary-ref signaling, refresh_frame_flags) and then reaches the
+        // implicit-reference-map coverage stop (explicit_ref_frame_map off ->
+        // get_ref_frames(0), InterStop::UnmodeledDerivation -> UnsupportedUntilFeature) — a
+        // clean coverage stop with NO EOF, so it must NOT fire truncated-frame-header. (The
+        // base sequence has explicit_ref_frame_map == false; the bits end exactly after
+        // refresh_frame_flags on a byte boundary so no field is mid-read — distinguishing a
+        // coverage stop from the StoppedInsideInterControl truncation of codex F2.)
         let mut inter = td_and_frame_core_seq(FrameCoreSeq::base());
         let mut ib = Bits::default();
         ib.bit(1); // is_first_tile_group
         ib.uvlc(0); // cur_mfh_id == 0
         ib.uvlc(0); // seq_header_id_in_frame_header
-        ib.bit(1); // frame_is_inter == 1 -> INTER_FRAME (parser stops after frame-type)
+        ib.bit(1); // frame_is_inter == 1 -> INTER_FRAME
+        ib.bit(0); // immediate_output_frame (monotonic_output -> implicit forced 0, no bit)
+        ib.bit(0); // frame_size_override_flag
+        ib.f(0, 1); // order_hint f(OrderHintBits == 1)
+        ib.bit(0); // signal_primary_ref_frame
+        ib.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        ib.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8) -> ends on a byte boundary
+        // explicit_ref_frame_map off -> explicitRefFrameMap 0 -> get_ref_frames(0) coverage stop.
         inter.extend(annex_b_obu(RTG_HEADER, &ib.into_bytes()));
         let report = Validator::new(false).validate_bytes(&inter);
         assert!(
@@ -18404,7 +18432,13 @@ mod tests {
         fb.bit(0); // allow_screen_content_tools
         fb.bit(0); // allow_intrabc
         fb.bit(0); // disable_cdf_update
-        intra_structure_tail(&mut fb, 0);
+        intra_structure_tail(&mut fb, 0); // structure + loop-filter cluster (no bits past)
+        // The §5.18.2 intra tail through IntraHeaderComplete: a complete CLK header is what
+        // makes its §7.23 reference-state effect (the ClkReset + allFrames refresh) grounded.
+        // A truncated tail would land on StoppedInside*, which `derive_ref_update` poisons
+        // (a non-conformant truncated frame's slot effect is unestablished).
+        fb.bit(0); // tx_mode_select = 0
+        fb.f(0, 2); // reduced_tx_set = 0
         annex_b_obu(CLK_HEADER, &fb.into_bytes())
     }
 
@@ -20488,6 +20522,420 @@ mod tests {
             .any(|d| d.rule_id == "frame-header/show-existing-frame-invalid-slot")
     }
 
+    /// A regular-tile-group INTER frame with the explicit reference map (the sequence
+    /// must set `explicit_ref_frame_map`), referencing `ref_slot` via `ref_frame_idx[0]`.
+    /// Built against the base inter sequence (NumRefFrames == 8 -> CeilLog2 == 3,
+    /// OrderHintBits == 1, monotonic output, enable_ref_frame_mvs == 0). The body parses
+    /// through the inter control region into the shared tail, so the core's
+    /// `inter.ref_frame_idx` is populated for the §6.17.2 slot-validity check.
+    fn ref_inter_explicit_map(ref_slot: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(1); // frame_is_inter == 1 -> INTER_FRAME
+        fb.bit(1); // immediate_output_frame (monotonic_output -> implicit forced 0, no bit)
+        fb.bit(0); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        fb.bit(0); // signal_primary_ref_frame
+        fb.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        fb.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8)
+        fb.bit(1); // frame_explicit_ref_frame_map (explicit_ref_frame_map seq flag set)
+        fb.f(1, 3); // num_total_refs == 1
+        fb.f(ref_slot, 3); // ref_frame_idx[0] f(CeilLog2(8) == 3)
+        // non-override, cur_mfh_id == 0 -> frame_size() default dims (no bits).
+        // use_ref_frame_mvs: enable_ref_frame_mvs == 0 -> inferred 0 (no bit).
+        // frame_opfl_refine_type: enable_opfl_refine != REFINE_AUTO -> no bits.
+        fb.bit(0); // allow_screen_content_tools (SELECT) -> force_integer_mv = 0
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // use_qtr_precision_mv
+        fb.bit(0); // allow_high_precision_mv -> HALF_PEL
+        fb.bit(1); // is_filter_switchable -> SWITCHABLE (no interpolation_filter f(2))
+        // motion modes: seq_frame_motion_modes_present_flag == 0 -> no bits.
+        fb.bit(0); // disable_cdf_update f(1) (mirror :5041), just before the shared tail.
+        annex_b_obu(REGULAR_TILE_GROUP_HEADER, &fb.into_bytes())
+    }
+
+    fn has_ref_frame_idx_error(report: &ValidationReport) -> bool {
+        report
+            .errors()
+            .any(|d| d.rule_id == "frame-header/ref-frame-idx-invalid-slot")
+    }
+
+    fn has_num_total_refs_error(report: &ValidationReport) -> bool {
+        report
+            .errors()
+            .any(|d| d.rule_id == "frame-header/num-total-refs-out-of-range")
+    }
+
+    /// A regular-tile-group INTER frame (explicit reference map) coding `num_total_refs`
+    /// against a NumRefFrames == 2 sequence (`num_ref_frames_minus_1 == 1`), so
+    /// ActiveNumRefFrames = Min(REFS_PER_FRAME 7, 2) == 2 and an f(3) `num_total_refs`
+    /// of 3..=7 exceeds the §6.17.2 bound. Each `ref_frame_idx[i]` is f(CeilLog2(2) == 1).
+    /// Built against the base inter sequence (OrderHintBits == 1, monotonic output,
+    /// enable_ref_frame_mvs == 0); the body parses through the inter control region into
+    /// the shared tail, so the core's `inter.num_total_refs` is recorded for the check.
+    fn ref_inter_num_total_refs(num_total_refs: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(1); // frame_is_inter == 1 -> INTER_FRAME
+        fb.bit(1); // immediate_output_frame (monotonic_output -> implicit forced 0, no bit)
+        fb.bit(0); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        fb.bit(0); // signal_primary_ref_frame
+        fb.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        fb.f(0, 2); // refresh_frame_flags f(NumRefFrames == 2)
+        fb.bit(1); // frame_explicit_ref_frame_map (explicit_ref_frame_map seq flag set)
+        fb.f(num_total_refs, 3); // num_total_refs f(3)
+        for _ in 0..num_total_refs {
+            fb.f(0, 1); // ref_frame_idx[i] f(CeilLog2(2) == 1) -> slot 0
+        }
+        // non-override, cur_mfh_id == 0 -> frame_size() default dims (no bits).
+        // use_ref_frame_mvs: enable_ref_frame_mvs == 0 -> inferred 0 (no bit). When
+        // num_total_refs == 1 there is no tmvp read either way.
+        // frame_opfl_refine_type: enable_opfl_refine != REFINE_AUTO -> no bits.
+        fb.bit(0); // allow_screen_content_tools (SELECT) -> force_integer_mv = 0
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // use_qtr_precision_mv
+        fb.bit(0); // allow_high_precision_mv -> HALF_PEL
+        fb.bit(1); // is_filter_switchable -> SWITCHABLE (no interpolation_filter f(2))
+        // motion modes: seq_frame_motion_modes_present_flag == 0 -> no bits.
+        fb.bit(0); // disable_cdf_update f(1) (mirror :5041), just before the shared tail.
+        annex_b_obu(REGULAR_TILE_GROUP_HEADER, &fb.into_bytes())
+    }
+
+    #[test]
+    fn frame_header_num_total_refs_in_range_is_silent() {
+        // §6.17.2 (mirror :4578-4579): num_total_refs <= ActiveNumRefFrames. NumRefFrames
+        // == 2 -> ActiveNumRefFrames == 2; num_total_refs == 2 is exactly at the bound ->
+        // silent.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            num_ref_frames_minus_1: 1, // NumRefFrames == 2 -> ActiveNumRefFrames == 2
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(ref_inter_num_total_refs(2)); // at the bound
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_num_total_refs_error(&report),
+            "num_total_refs == ActiveNumRefFrames is conformant -> silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_header_num_total_refs_out_of_range_fires() {
+        // NumRefFrames == 2 -> ActiveNumRefFrames == 2; num_total_refs == 3 (> 2) violates
+        // the §6.17.2 bound -> the diagnostic fires.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            num_ref_frames_minus_1: 1, // NumRefFrames == 2 -> ActiveNumRefFrames == 2
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(ref_inter_num_total_refs(3)); // exceeds the bound
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_num_total_refs_error(&report),
+            "num_total_refs 3 > ActiveNumRefFrames 2 must fire the §6.17.2 check; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_header_truncated_inside_inter_control_fires_and_preserves_facts() {
+        // Codex F2: an INTER frame whose payload ends INSIDE the modeled §5.18.2 inter
+        // control region (here right after num_total_refs, before ref_frame_idx) must (1)
+        // fire frame-header/truncated-frame-header (the core reports
+        // StoppedInsideInterControl, a truncation in a fully-modeled region) AND (2) preserve
+        // the facts parsed before the EOF — proven here by num_total_refs == 3 (> the
+        // ActiveNumRefFrames == 2 bound) still firing frame-header/num-total-refs-out-of-range.
+        // Pre-fix the inter EOF propagated UnexpectedEof out of parse_frame_header_core, the
+        // validator's `.ok()` dropped both the truncation and every earlier fact, and the
+        // frame validated clean (the PR #57/#59 regression class).
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            num_ref_frames_minus_1: 1, // NumRefFrames == 2 -> ActiveNumRefFrames == 2
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(1); // frame_is_inter == 1 -> INTER_FRAME
+        fb.bit(1); // immediate_output_frame (monotonic_output -> implicit forced 0, no bit)
+        fb.bit(0); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        fb.bit(0); // signal_primary_ref_frame
+        fb.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        fb.f(0, 2); // refresh_frame_flags f(NumRefFrames == 2)
+        fb.bit(1); // frame_explicit_ref_frame_map
+        fb.f(3, 3); // num_total_refs == 3 (> ActiveNumRefFrames 2) — last field before EOF
+        // Truncate the payload to the byte that just contains num_total_refs, dropping
+        // ref_frame_idx[i] so the parser EOFs while reading it.
+        let keep_bytes = fb.bit_len().div_ceil(8);
+        // Emit a few ref_frame_idx bits so into_bytes() pads a full final byte we then drop.
+        fb.f(0, 1); // (dropped) the first ref_frame_idx[0] bit
+        let mut payload = fb.into_bytes();
+        payload.truncate(keep_bytes);
+        data.extend(annex_b_obu(REGULAR_TILE_GROUP_HEADER, &payload));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/truncated-frame-header"),
+            "an EOF inside the modeled inter control region must fire \
+             frame-header/truncated-frame-header; report was: {report}"
+        );
+        assert!(
+            has_num_total_refs_error(&report),
+            "the num_total_refs fact parsed before the EOF must survive and still fire the \
+             §6.17.2 out-of-range check (facts preserved across truncation); report was: \
+             {report}"
+        );
+    }
+
+    fn has_primary_ref_frame_error(report: &ValidationReport) -> bool {
+        report
+            .errors()
+            .any(|d| d.rule_id == "frame-header/primary-ref-frame-out-of-range")
+    }
+
+    /// A regular-tile-group INTER frame (explicit reference map) that SIGNALS
+    /// `primary_ref_frame` (`signal_primary_ref_frame == 1`, f(3) value `primary_ref_frame`)
+    /// and codes `num_total_refs`, against the base inter sequence (NumRefFrames == 8 ->
+    /// CeilLog2 == 3 for each `ref_frame_idx`, OrderHintBits == 1, monotonic output,
+    /// enable_ref_frame_mvs == 0). The body parses through the inter control region into the
+    /// shared tail, so the core records both `signal_primary_ref_frame` / `primary_ref_frame`
+    /// and `num_total_refs` for the §6.17.2 range check.
+    fn ref_inter_primary_ref(primary_ref_frame: u32, num_total_refs: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(1); // frame_is_inter == 1 -> INTER_FRAME
+        fb.bit(1); // immediate_output_frame (monotonic_output -> implicit forced 0, no bit)
+        fb.bit(0); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        fb.bit(1); // signal_primary_ref_frame == 1 -> primary_ref_frame is present
+        fb.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        fb.f(primary_ref_frame, 3); // primary_ref_frame f(3)
+        fb.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8)
+        fb.bit(1); // frame_explicit_ref_frame_map (explicit_ref_frame_map seq flag set)
+        fb.f(num_total_refs, 3); // num_total_refs f(3)
+        for _ in 0..num_total_refs {
+            fb.f(0, 3); // ref_frame_idx[i] f(CeilLog2(8) == 3) -> slot 0
+        }
+        // non-override, cur_mfh_id == 0 -> frame_size() default dims (no bits).
+        // use_ref_frame_mvs: enable_ref_frame_mvs == 0 -> inferred 0 (no bit).
+        // frame_opfl_refine_type: enable_opfl_refine != REFINE_AUTO -> no bits.
+        fb.bit(0); // allow_screen_content_tools (SELECT) -> force_integer_mv = 0
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // use_qtr_precision_mv
+        fb.bit(0); // allow_high_precision_mv -> HALF_PEL
+        fb.bit(1); // is_filter_switchable -> SWITCHABLE (no interpolation_filter f(2))
+        // motion modes: seq_frame_motion_modes_present_flag == 0 -> no bits.
+        fb.bit(0); // disable_cdf_update f(1) (mirror :5041), just before the shared tail.
+        annex_b_obu(REGULAR_TILE_GROUP_HEADER, &fb.into_bytes())
+    }
+
+    #[test]
+    fn frame_header_primary_ref_frame_in_range_is_silent() {
+        // §6.17.2 (mirror :4500-4502): a signaled primary_ref_frame must be PRIMARY_REF_NONE
+        // or < NumTotalRefs. num_total_refs == 2, primary_ref_frame == 1 (< 2) -> in range,
+        // silent.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(ref_inter_primary_ref(1, 2)); // primary_ref_frame 1 < num_total_refs 2
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_primary_ref_frame_error(&report),
+            "primary_ref_frame 1 < NumTotalRefs 2 is conformant -> silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_header_primary_ref_frame_out_of_range_fires() {
+        // num_total_refs == 1, primary_ref_frame == 5 (signaled, not PRIMARY_REF_NONE, not
+        // < 1) -> the §6.17.2 range check fires.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(ref_inter_primary_ref(5, 1)); // primary_ref_frame 5 >= num_total_refs 1
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_primary_ref_frame_error(&report),
+            "a signaled primary_ref_frame 5 that is neither PRIMARY_REF_NONE nor < NumTotalRefs \
+             1 must fire the §6.17.2 range check; report was: {report}"
+        );
+    }
+
+    /// A regular-tile-group INTER frame (explicit reference map, `enable_bru` sequence)
+    /// that codes `num_total_refs`, the `ref_frame_idx` loop, then the §5.18.2 BRU triple
+    /// (`use_bru == 1`, `bru_ref` f(CeilLog2(num_total_refs)), `bru_inactive == 0`) and
+    /// completes the control region into the shared tail, for the §6.17.2 BRU checks.
+    fn ref_inter_bru(immediate_output: bool, num_total_refs: u32, bru_ref: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(1); // frame_is_inter == 1 -> INTER_FRAME
+        fb.bit(u8::from(immediate_output)); // immediate_output_frame (monotonic -> no implicit bit)
+        fb.bit(0); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        fb.bit(0); // signal_primary_ref_frame == 0 -> PRIMARY_REF_CHOOSE (no f(3))
+        fb.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        fb.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8)
+        fb.bit(1); // frame_explicit_ref_frame_map
+        fb.f(num_total_refs, 3); // num_total_refs f(3)
+        for _ in 0..num_total_refs {
+            fb.f(0, 3); // ref_frame_idx[i] f(CeilLog2(8) == 3) -> slot 0
+        }
+        // non-override, cur_mfh_id == 0 -> frame_size() default dims (no bits).
+        // mirror :4653-4669: the BRU triple (enable_bru sequence, INTER, not TIP/bridge).
+        fb.bit(1); // use_bru == 1
+        let n = 32 - (num_total_refs - 1).leading_zeros();
+        fb.f(bru_ref, n); // bru_ref f(CeilLog2(num_total_refs))
+        fb.bit(0); // bru_inactive == 0 -> no early return
+        // use_ref_frame_mvs: enable_ref_frame_mvs == 0 -> inferred 0 (no bit).
+        // frame_opfl_refine_type: enable_opfl_refine != REFINE_AUTO -> no bits.
+        fb.bit(0); // allow_screen_content_tools (SELECT) -> force_integer_mv = 0
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // use_qtr_precision_mv
+        fb.bit(0); // allow_high_precision_mv -> HALF_PEL
+        fb.bit(1); // is_filter_switchable -> SWITCHABLE (no interpolation_filter f(2))
+        // motion modes: seq_frame_motion_modes_present_flag == 0 -> no bits.
+        fb.bit(0); // disable_cdf_update f(1) (mirror :5041), just before the shared tail.
+        annex_b_obu(REGULAR_TILE_GROUP_HEADER, &fb.into_bytes())
+    }
+
+    #[test]
+    fn frame_header_bru_ref_out_of_range_fires() {
+        // §6.17.2 (mirror :4592): when use_bru == 1, bru_ref must be less than
+        // NumTotalRefs. num_total_refs == 3 -> bru_ref f(CeilLog2(3) == 2) can code 3,
+        // which violates the bound.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            enable_bru: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(ref_inter_bru(true, 3, 3));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/bru-ref-out-of-range"),
+            "bru_ref 3 >= NumTotalRefs 3 must fire the §6.17.2 bound; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_header_bru_in_range_with_output_is_silent() {
+        // bru_ref 2 < NumTotalRefs 3 and immediate_output_frame == 1: both §6.17.2 BRU
+        // clauses hold -> neither BRU diagnostic fires.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            enable_bru: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(ref_inter_bru(true, 3, 2));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/bru-ref-out-of-range"
+                    || d.rule_id == "frame-header/bru-without-immediate-output"),
+            "a conformant BRU frame must not fire the §6.17.2 BRU checks; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn frame_header_bru_without_immediate_output_fires() {
+        // §6.17.2 (mirror :4591): use_bru == 1 requires immediate_output_frame == 1.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            enable_bru: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(ref_inter_bru(false, 3, 2));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/bru-without-immediate-output"),
+            "use_bru == 1 with immediate_output_frame == 0 must fire the §6.17.2 check; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ref_state_inter_ref_frame_idx_proven_invalid_fires() {
+        // §7.23 / §5.18.2 / §6.17.2: a CLK at FirstPictureInTU resets RefValid over
+        // 0..NumRefFrames and its allFrames refresh re-validates only slot 0. A later INTER
+        // frame whose explicit ref_frame_idx[0] names slot 3 -> the buffer PROVES
+        // RefValid[3] == 0, so the inter ref-idx slot-validity diagnostic fires.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(clk_frame_decidable(true, true)); // CLK: reset + allFrames refresh
+        data.extend(ref_inter_explicit_map(3)); // INTER referencing proven-invalid slot 3
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_ref_frame_idx_error(&report),
+            "an inter frame whose ref_frame_idx names a CLK-invalidated, never-refreshed slot \
+             must fire the inter ref-idx slot-validity check; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ref_state_inter_ref_frame_idx_valid_slot_is_silent() {
+        // The same CLK leaves slot 0 valid. An INTER frame referencing slot 0 via
+        // ref_frame_idx[0] is conformant -> silent.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(clk_frame_decidable(true, true));
+        data.extend(ref_inter_explicit_map(0)); // INTER referencing the valid slot 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_ref_frame_idx_error(&report),
+            "an inter frame referencing the valid slot 0 must be silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ref_state_inter_ref_frame_idx_poisoned_slot_drops_to_silence() {
+        // A mid-stream join (no observed CLK reset) leaves every slot Unknown. An INTER
+        // frame referencing slot 3 -> Unknown (not proven invalid) -> silent.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(ref_inter_explicit_map(3)); // first frame, all slots Unknown
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_ref_frame_idx_error(&report),
+            "an inter frame against an unestablished (Unknown) buffer must drop to silence; \
+             report was: {report}"
+        );
+    }
+
     #[test]
     fn ref_state_sef_proven_invalid_slot_fires() {
         // §7.23 / §5.18.2 / §6.17.2: a CLK at FirstPictureInTU resets RefValid[i] = 0 over
@@ -20601,6 +21049,190 @@ mod tests {
             has_ref_slot_error(&report),
             "a SEF after the second CLK referencing a proven-invalid slot must fire; \
              report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ref_state_unsupported_inter_frame_poisons_not_refreshes() {
+        // §7.23 staging gate (F2): an INTER frame whose core RESOLVES against its active
+        // sequence header records `refresh_frame_flags` and dims on the core, but its parse
+        // stops at `UnsupportedUntilFeature` past the prefix (the inter reference-control
+        // region is not parsed to completion this phase). Staging a normal §7.23 Refresh
+        // from such a frame asserts buffer facts the validator has not earned — the frame's
+        // decodability is unestablished and its slot effect could be wrong both ways — so
+        // `derive_ref_update` must POISON ALL slots, not refresh.
+        //
+        // Observable consequence (the wrong vs. right behavior diverges here):
+        //   1. CLK -> slot 0 valid, slots 1.. PROVEN invalid (key-frame `first` rule).
+        //   2. INTER frame, explicit map, `refresh_frame_flags == 0` (refreshes no slot),
+        //      core resolves, status `UnsupportedUntilFeature`.
+        //   3. SEF displaying slot 5.
+        // Pre-fix: the inter frame stages `Refresh { mask = 0 }`, which leaves the
+        //   already-PROVEN-invalid slot 5 untouched -> still ProvenInvalid -> the SEF(5)
+        //   slot-validity check FIRES. But that is a FALSE POSITIVE: after an inter frame
+        //   the validator could not fully parse, the buffer state is genuinely unknown, so
+        //   it cannot prove slot 5 is still invalid.
+        // Post-fix: the unsupported inter frame POISONS all slots -> slot 5 Unknown -> the
+        //   SEF(5) check correctly drops to silence (the zero-false-positive rule).
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(clk_frame_decidable(true, true)); // CLK: slot 0 valid, 1.. proven invalid
+        data.extend(ref_inter_explicit_map(0)); // resolving INTER, refresh mask 0, UNSUPPORTED
+        data.extend(ref_sef(5)); // SEF displaying slot 5
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !has_ref_slot_error(&report),
+            "an UNSUPPORTED inter frame (parse stopped past the prefix) must POISON the §7.23 \
+             buffer, not stage a normal Refresh from its recorded mask; after poisoning, the \
+             SEF(5) slot-validity check must drop to silence (it can no longer prove slot 5 \
+             invalid). Pre-fix the inter frame staged a Refresh that left slot 5 ProvenInvalid \
+             and the SEF check fired a FALSE POSITIVE; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn ref_state_completed_intra_still_refreshes_after_gate() {
+        // §7.23 staging gate (F2), the positive direction: a COMPLETED intra CLK
+        // (`IntraHeaderComplete`) still stages its grounded §7.23 ClkReset + allFrames
+        // refresh — the gate only blocks incomplete / unsupported / truncated parses, not
+        // grounded complete ones. The CLK re-validates slot 0; a SEF(5) is still PROVEN
+        // invalid (the reset cleared it and the allFrames `first` rule re-validated only
+        // slot 0), so the slot-validity check fires exactly as before the gate.
+        let mut data = seg_td_and_seq();
+        data.extend(clk_frame_decidable(true, true)); // COMPLETED CLK -> reset + refresh slot 0
+        data.extend(ref_sef(5)); // proven invalid -> must still fire (the refresh is grounded)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_ref_slot_error(&report),
+            "a completed intra CLK must still stage its grounded ClkReset/refresh through the \
+             gate, so a SEF(5) on the proven-invalid slot fires; report was: {report}"
+        );
+        // And referencing the re-validated slot 0 is silent, confirming the refresh landed.
+        let mut data0 = seg_td_and_seq();
+        data0.extend(clk_frame_decidable(true, true));
+        data0.extend(ref_sef(0));
+        let report0 = Validator::new(false).validate_bytes(&data0);
+        assert!(
+            !has_ref_slot_error(&report0),
+            "the completed CLK's refresh must re-validate slot 0 (SEF(0) silent); \
+             report was: {report0}"
+        );
+    }
+
+    /// A COMPLETED override CLK key frame whose explicit frame size is `width`x`height`
+    /// (read as f(frame_width_bits == 8) each), against the base inter sequence. The CLK
+    /// reset + allFrames refresh (max_mlayer_id == 0, key-frame `first` rule) re-validates
+    /// slot 0 with these stored dims (`RefFrameWidth/Height[0]`), which a later
+    /// `frame_size_with_refs()` inter frame copies. A nonzero `base_q_idx` and the complete
+    /// §5.18.2 intra tail land the parse on `IntraHeaderComplete`, so `derive_ref_update`
+    /// stages a grounded §7.23 update (not a poison).
+    fn clk_frame_override_size(width: u32, height: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(1); // immediate_output_frame
+        fb.bit(1); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
+        fb.f(width - 1, 8); // frame_width_minus_1 f(frame_width_bits == 8)
+        fb.f(height - 1, 8); // frame_height_minus_1 f(frame_height_bits == 8)
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        // A 256-wide frame: sbCols == 4, so tile_info() reads one column increment bit. A
+        // 16-wide frame reads none; this helper is used at 256 width.
+        intra_structure_tail(&mut fb, 1);
+        fb.bit(0); // tx_mode_select = 0
+        fb.f(0, 2); // reduced_tx_set = 0
+        annex_b_obu(CLK_HEADER, &fb.into_bytes())
+    }
+
+    /// A regular-tile-group INTER frame (explicit reference map) on the OVERRIDE path that
+    /// derives its frame size via `frame_size_with_refs()` (§5.18.4.3): `found_ref == 1` on
+    /// the first ref, so FrameWidth/Height are copied from `RefFrameWidth/Height[ref_slot]`
+    /// — no explicit width/height bits are read. Built against the base inter sequence
+    /// (NumRefFrames == 8 -> CeilLog2 == 3, OrderHintBits == 1, monotonic output,
+    /// enable_ref_frame_mvs == 0). The parse records `core.frame_size` from the referenced
+    /// slot's stored dims, which the §6.17.4.1 frame-size-exceeds-sequence-max check reads.
+    fn inter_frame_size_with_refs(ref_slot: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(1); // frame_is_inter == 1 -> INTER_FRAME
+        fb.bit(1); // immediate_output_frame (monotonic_output -> implicit forced 0, no bit)
+        fb.bit(1); // frame_size_override_flag == 1 -> frame_size_with_refs() on the inter path
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        fb.bit(0); // signal_primary_ref_frame
+        fb.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        fb.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8)
+        fb.bit(1); // frame_explicit_ref_frame_map (explicit_ref_frame_map seq flag set)
+        fb.f(1, 3); // num_total_refs == 1
+        fb.f(ref_slot, 3); // ref_frame_idx[0] f(CeilLog2(8) == 3)
+        // frame_size_with_refs(): override && !SWITCH -> found_ref f(1) per ref until a hit;
+        // found_ref == 1 on ref 0 copies RefFrameWidth/Height[ref_slot] (no width/height bits).
+        fb.bit(1); // found_ref == 1
+        // use_ref_frame_mvs: enable_ref_frame_mvs == 0 -> inferred 0 (no bit).
+        // frame_opfl_refine_type: enable_opfl_refine != REFINE_AUTO -> no bits.
+        fb.bit(0); // allow_screen_content_tools (SELECT) -> force_integer_mv = 0
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // use_qtr_precision_mv
+        fb.bit(0); // allow_high_precision_mv -> HALF_PEL
+        fb.bit(1); // is_filter_switchable -> SWITCHABLE (no interpolation_filter f(2))
+        // motion modes: seq_frame_motion_modes_present_flag == 0 -> no bits.
+        fb.bit(0); // disable_cdf_update f(1) (mirror :5041), just before the shared tail.
+        annex_b_obu(REGULAR_TILE_GROUP_HEADER, &fb.into_bytes())
+    }
+
+    #[test]
+    fn ref_state_inter_frame_size_with_refs_sees_prior_frame_refresh() {
+        // REGRESSION (codex F1): the §6.17 frame-size diagnostics emitted from
+        // `frame_header_core_checks` (in `observe_frame_bearing_obu`) must see the prior
+        // frame's COMMITTED §7.23 reference-state update, not a stale snapshot. The bug: the
+        // reference-buffer snapshot threaded into the inter parser is taken in
+        // `observe_frame_bearing_obu`, which runs BEFORE `observe_reference_state` commits
+        // the previous frame's deferred §7.23 update (the PR #62 deferred-commit pattern
+        // commits at the next OpensNewUnit boundary). So a frame opening a new coded frame
+        // immediately after the previous frame refreshed a slot snapshots STALE state.
+        //
+        // Scenario:
+        //   1. CLK key frame, override size 256x8 (out of range), refreshes slot 0 valid
+        //      with stored dims 256x8 (allFrames + key-frame `first` rule). Its own size
+        //      fires §6.17.4.1 at the CLK's offset.
+        //   2. INTER frame, override path, `frame_size_with_refs()` with `found_ref == 1` on
+        //      `ref_frame_idx[0] == 0` -> FrameWidth/Height = RefFrameWidth/Height[0] = 256x8,
+        //      which exceeds the sequence max 16x16 (§6.17.4.1) at the INTER frame's offset.
+        //
+        // Post-fix the slot-0 refresh is committed before the inter parse's snapshot, so
+        // `frame_size_with_refs()` grounds 256x8 and the §6.17.4.1 check fires at the inter
+        // frame's offset. Pre-fix the snapshot is stale (slot 0 still Unknown), so
+        // `frame_size_with_refs()` poisons, `core.frame_size` is None, and the §6.17.4.1
+        // check is SILENTLY skipped for the inter frame.
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        let clk = clk_frame_override_size(256, 8);
+        // The inter frame's diagnostic anchors at its OBU header, one Annex B leb128
+        // size-prefix byte past the end of the preceding OBUs (the CLK).
+        let inter_obu_offset = (data.len() + clk.len()) as u64 + 1;
+        data.extend(clk); // refreshes slot 0 with dims 256x8
+        data.extend(inter_frame_size_with_refs(0)); // copies slot-0 dims via frame_size_with_refs
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "frame-header/frame-size-exceeds-sequence-max"
+                    && d.byte_offset.map(|offset| offset.get()) == Some(inter_obu_offset)
+            }),
+            "the inter frame's frame_size_with_refs() must see the prior frame's committed \
+             slot-0 refresh (dims 256x8 > max 16x16) and fire §6.17.4.1 at the inter frame's \
+             offset {inter_obu_offset}; pre-fix the stale snapshot left slot 0 Unknown so the \
+             size poisoned and the check was skipped. report was: {report}"
         );
     }
 }

@@ -4966,18 +4966,33 @@ impl ValidatorContext {
     }
 
     /// Derives the grounded § 7.23 [`FrameRefUpdate`] for a frame-bearing `obu` from its
-    /// parsed core, honestly poisoning when the refresh mask / frame type / dims / order
-    /// hint cannot be grounded.
+    /// parsed core, honestly poisoning when the frame's § 7.23 effect on the buffer cannot
+    /// be grounded.
     ///
-    /// - A show-existing-frame sets `refresh_frame_flags = 0` (§ 5.18.2 :4180), so it
-    ///   updates no slot ([`FrameRefUpdate::SefNoUpdate`]).
-    /// - A CLK that starts a new CVS (`OBU_CLOSED_LOOP_KEY && FirstPictureInTU`) resets
-    ///   `RefValid[i] = 0` over `0..NumRefFrames` (§ 5.18.2 :4449-4455) then applies its
-    ///   own refresh ([`FrameRefUpdate::ClkReset`]).
-    /// - Any other frame whose `refresh_frame_flags`, `frame_type`, dims, and order hint
-    ///   all parsed applies the § 7.23 update with the key/switch `first` rule.
-    /// - Otherwise (the core did not resolve, an inter/TIP/bridge path, a truncation, or
-    ///   any missing fact) the mask could touch any slot, so poison all
+    /// Only a frame whose `frame_header_info()` parse **completed** stages a § 7.23 update;
+    /// everything else poisons all slots. Completion is what establishes the frame's
+    /// decodability and the trustworthiness of its slot facts: a parse that stopped past the
+    /// prefix ([`FrameHeaderParseStatus::UnsupportedUntilFeature`] — the inter / TIP / bridge
+    /// reference-control region this phase does not parse to completion — or any
+    /// truncated / coverage stop) may have read its `refresh_frame_flags` / dims correctly
+    /// *or* mis-positioned them, and its decodability is unestablished, so the downstream
+    /// slot facts could be wrong both ways. Recording a normal § 7.23 [`Refresh`] from such a
+    /// frame would assert facts about the buffer the validator has not earned; the sound
+    /// treatment is to poison (mask known is not enough — see the
+    /// [`FrameRefUpdate::PoisonAll`] contract). The grounded completed statuses are
+    /// [`FrameHeaderParseStatus::IntraHeaderComplete`] (an intra header read in full) and
+    /// [`FrameHeaderParseStatus::ShowExistingFrameComplete`] (a SEF read in full).
+    ///
+    /// - A completed show-existing-frame sets `refresh_frame_flags = 0` (§ 5.18.2 :4180), so
+    ///   it updates no slot ([`FrameRefUpdate::SefNoUpdate`]).
+    /// - A completed CLK that starts a new CVS (`OBU_CLOSED_LOOP_KEY && FirstPictureInTU`)
+    ///   resets `RefValid[i] = 0` over `0..NumRefFrames` (§ 5.18.2 :4449-4455) then applies
+    ///   its own refresh ([`FrameRefUpdate::ClkReset`]).
+    /// - Any other **completed** frame whose `refresh_frame_flags`, `frame_type`, dims, and
+    ///   order hint all parsed applies the § 7.23 update with the key/switch `first` rule.
+    /// - Otherwise (the core did not resolve, an incomplete / unsupported / truncated parse —
+    ///   including every inter / TIP / bridge path, which never completes in this phase — or
+    ///   any missing fact) the frame's effect on the buffer is unestablished, so poison all
     ///   ([`FrameRefUpdate::PoisonAll`]).
     fn derive_ref_update(
         &self,
@@ -4992,7 +5007,21 @@ impl ValidatorContext {
             return FrameRefUpdate::PoisonAll;
         };
 
-        // A show-existing-frame updates no slot (§ 5.18.2 :4180).
+        // Only a completed parse may stage a § 7.23 update (see the doc above). An
+        // incomplete / unsupported / truncated parse — every inter / TIP / bridge path lands
+        // on `UnsupportedUntilFeature` past the prefix — has unestablished decodability and
+        // possibly mis-positioned `refresh_frame_flags` / dims, so it poisons even though
+        // those fields may be `Some` on the core. This is the gate that stops a normal
+        // §7.23 Refresh from an inter frame whose parse never completed.
+        if !matches!(
+            core.status,
+            FrameHeaderParseStatus::IntraHeaderComplete
+                | FrameHeaderParseStatus::ShowExistingFrameComplete
+        ) {
+            return FrameRefUpdate::PoisonAll;
+        }
+
+        // A completed show-existing-frame updates no slot (§ 5.18.2 :4180).
         if core.show_existing_frame == Some(true) {
             return FrameRefUpdate::SefNoUpdate;
         }
@@ -5041,10 +5070,11 @@ impl ValidatorContext {
     /// buffer makes locally decidable (AV2 § 6.17.2).
     ///
     /// Currently: a show-existing-frame whose `frame_to_show_map_idx` names a slot the
-    /// modeled buffer **proves** invalid (`RefValid == 0`). A *poisoned* (Unknown) slot
-    /// drops to silence — the buffer cannot prove a violation there (the Unknown
-    /// invariant). The check runs only when the frame's core resolved against its active
-    /// sequence header (the parsed `frame_to_show_map_idx` is trustworthy).
+    /// modeled buffer **proves** invalid (`RefValid == 0`), and an inter frame whose
+    /// explicit-reference-map `ref_frame_idx[i]` names a proven-invalid slot. A *poisoned*
+    /// (Unknown) slot drops to silence in both — the buffer cannot prove a violation there
+    /// (the Unknown invariant). The check runs only when the frame's core resolved against
+    /// its active sequence header (the parsed indices are trustworthy).
     fn reference_state_checks(
         &self,
         obu: &ObuEnvelope<'_>,
@@ -5054,21 +5084,17 @@ impl ValidatorContext {
         let Some(core) = self.frame_core_against_referenced_header(obu, first_picture_in_tu) else {
             return;
         };
-        if core.show_existing_frame != Some(true) {
-            return;
-        }
-        let Some(idx) = core.frame_to_show_map_idx else {
-            return;
-        };
         // AV2 § 6.17.2 (mirror :4178-4179) / § 7.23: a show-existing-frame outputs the
         // frame stored at `frame_to_show_map_idx`; that reference frame must be valid
         // (`RefValid[ frame_to_show_map_idx ] == 1`). The buffer fires ONLY when it
         // PROVES the slot invalid (a CLK reset with no re-validating refresh since); a
         // poisoned (Unknown) slot stays silent.
-        if self
-            .reference_state
-            .slot(obu.header.extended_layer_id, idx as usize)
-            == SlotState::ProvenInvalid
+        if core.show_existing_frame == Some(true)
+            && let Some(idx) = core.frame_to_show_map_idx
+            && self
+                .reference_state
+                .slot(obu.header.extended_layer_id, idx as usize)
+                == SlotState::ProvenInvalid
         {
             report.push(frame_header_error(
                 "frame-header/show-existing-frame-invalid-slot",
@@ -5080,6 +5106,35 @@ impl ValidatorContext {
                      (the slot was invalidated by a CLK reset and not refreshed since)"
                 ),
             ));
+        }
+
+        // AV2 § 6.17.2 / § 7.23: an inter frame's explicit-reference-map ref_frame_idx[i]
+        // (§5.18.2 mirror :4611-4625) names a reference slot that must be valid
+        // (`RefValid[ ref_frame_idx[i] ] == 1`). Fire ONLY where the §7.23 buffer PROVES
+        // the slot invalid (a CLK reset with no re-validating refresh since); a poisoned
+        // (Unknown) slot, or the implicit reference map (`get_ref_frames()`, unmodeled),
+        // stays silent.
+        if let Some(inter) = core.inter.as_ref() {
+            for &idx in &inter.ref_frame_idx {
+                if self
+                    .reference_state
+                    .slot(obu.header.extended_layer_id, idx as usize)
+                    == SlotState::ProvenInvalid
+                {
+                    report.push(frame_header_error(
+                        "frame-header/ref-frame-idx-invalid-slot",
+                        "6.17.2",
+                        obu,
+                        format!(
+                            "inter frame ref_frame_idx names reference slot {idx}, but the §7.23 \
+                             reference-frame buffer state proves RefValid[{idx}] == 0 (the slot \
+                             was invalidated by a CLK reset and not refreshed since)"
+                        ),
+                    ));
+                    // One diagnostic per frame is enough to flag the defect.
+                    break;
+                }
+            }
         }
     }
 
@@ -6577,8 +6632,53 @@ impl ValidatorContext {
             // frame_size() and the §6.17.2 MFH-dims / §6.17.7 tile / quant diagnostics
             // would be skipped for MFH-backed frames. An unresolvable MFH stays `None`,
             // preserving the early-stop (no guessing).
+            // AV2 § 7.23: when this OBU closes the previous coded frame, that frame's
+            // decode finished, so its deferred § 7.23 update must be committed BEFORE the
+            // reference-buffer snapshot below — otherwise the inter parser's
+            // frame_size_with_refs() / frame_size_with_bridge() would read the stale
+            // pre-refresh buffer and poison, silently skipping the §6.17 frame-size
+            // diagnostics that the prior frame's refresh makes decidable (codex F1). The
+            // segmenter is the boundary authority; `commits_pending_ref_update` is a
+            // non-mutating peek of the SAME commit decision `observe_reference_state` makes
+            // later in stream order — it fires for both the `OpensNewUnit` boundary AND the
+            // `Ambiguous` boundary (a same-type no-delimiter TIP / bridge opener, or an
+            // unreadable tile-group delimiter), the exact set on which the prior frame's
+            // update is committed. The earlier peek only matched `OpensNewUnit`, so a
+            // same-type no-delimiter opener after a refresh snapshotted the stale buffer
+            // (codex F1). A decided continuation (its own frame's update is pending) does
+            // NOT commit here, so the committing OBU never sees its OWN update — preserving
+            // the PR #62 deferral. The commit is idempotent (`commit_pending_ref_update`
+            // takes the pending), so the later `observe_reference_state` re-commit at the
+            // same boundary is a no-op.
+            let role = self.seg_role_for(obu, first_picture_in_tu);
+            if self.frame_unit.commits_pending_ref_update(obu, role) {
+                self.commit_pending_ref_update();
+            }
             let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
             if let Some(active_sequence) = self.sequence_headers.get(&seq_id) {
+                // AV2 § 7.23: thread the modeled per-extended-layer reference-frame buffer
+                // into the §6.17 frame-header checks so the §6.17.2 inter `ref_frame_idx`
+                // validity check sees the same `RefValid[]` the celu/output decisions do.
+                // The scratch arrays must outlive the check, so they are stack-local here.
+                let mut ref_valid = [false; NUM_REF_FRAMES];
+                let mut ref_oh = [0u32; NUM_REF_FRAMES];
+                let mut ref_w = [0u32; NUM_REF_FRAMES];
+                let mut ref_h = [0u32; NUM_REF_FRAMES];
+                let reference_buffer = if self
+                    .reference_state
+                    .view_into(
+                        obu.header.extended_layer_id,
+                        &mut ref_valid,
+                        &mut ref_oh,
+                        &mut ref_w,
+                        &mut ref_h,
+                    )
+                    .is_some()
+                {
+                    FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h)
+                } else {
+                    FrameReferenceStateView::unknown()
+                };
                 frame_header_core_checks(
                     obu,
                     first_picture_in_tu,
@@ -6587,6 +6687,7 @@ impl ValidatorContext {
                     FrameReferenceAvailability {
                         qm: &self.qm,
                         film_grain: &self.film_grain,
+                        reference_buffer,
                     },
                     options,
                     report,
@@ -13287,14 +13388,23 @@ struct FrameReferenceAvailability<'a> {
     qm: &'a QuantizerMatrixState,
     /// Per-slot film-grain model availability (AV2 § 6.17.10.1 / § 7.3.8.8).
     film_grain: &'a FilmGrainState,
+    /// The modeled §7.23 per-extended-layer reference-frame buffer view (AV2 § 7.23),
+    /// threaded into the core parse so the §6.17.2 inter `ref_frame_idx` validity check
+    /// sees the same `RefValid[]` the celu/output decisions do. `unknown()` when the
+    /// extended layer has no modeled buffer yet (no false positives).
+    reference_buffer: FrameReferenceStateView<'a>,
 }
 
 /// Emits the locally decidable frame-header-info / frame-size diagnostics for a frame
 /// whose active sequence header is available (AV2 § 6.17.2 / § 6.17.4 / § 6.4.6).
 ///
-/// Only state-supported checks are emitted; paths that need reference-frame buffer
-/// state (show-existing-frame slot validity, explicit reference maps,
-/// `primary_ref_frame` range) are left to a future phase rather than guessed.
+/// Checks decidable from the parsed core and the active sequence alone are emitted here —
+/// including the § 6.17.2 `primary_ref_frame < NumTotalRefs` range bound, which needs only
+/// the two recorded scalars (`signal_primary_ref_frame` / `primary_ref_frame` and the
+/// explicit-map `num_total_refs`) and no reference-frame buffer state. Checks that need the
+/// modeled § 7.23 reference-frame buffer (show-existing-frame slot validity, explicit
+/// `ref_frame_idx` slot validity) run from the buffer view rather than being guessed; a path
+/// whose bound needs unmodeled state (the implicit reference map's `NumTotalRefs`) under-reports.
 fn frame_header_core_checks(
     obu: &ObuEnvelope<'_>,
     first_picture_in_tu: bool,
@@ -13307,6 +13417,7 @@ fn frame_header_core_checks(
     let FrameReferenceAvailability {
         qm: qm_state,
         film_grain: film_grain_state,
+        reference_buffer,
     } = reference_state;
     // AV2 § 6.4.6: if long_term_frame_id_bits == 0, no OBU_RAS_FRAME shall be present
     // in the coded video sequence. Decidable from obu_type + the active sequence alone.
@@ -13424,17 +13535,17 @@ fn frame_header_core_checks(
     // unresolvable, this is `None` and the core parser keeps its existing early-stop. The
     // §6.17.2 stored-MFH bound above already ran, so it is not lost when the core parse stops.
     //
-    // The §7.23 reference-frame buffer view is `unknown()` here: this free function holds
-    // no reference-state tracker, and none of the §6.17 diagnostics it emits consult
-    // reference state (they are decidable from the active sequence header alone). The
-    // modeled buffer is threaded into the method core parse
-    // (`frame_core_against_referenced_header`) instead, where the validator owns it.
+    // The §7.23 reference-frame buffer view is threaded in by the caller (the modeled
+    // per-extended-layer buffer, or `unknown()` when none is established): the §6.17.2
+    // inter `ref_frame_idx` validity check below consults the same `RefValid[]` the
+    // celu/output decisions do. The other §6.17 diagnostics this function emits are
+    // decidable from the active sequence header alone and ignore the view.
     let Some(core) = parse_frame_core(
         obu,
         first_picture_in_tu,
         active_sequence,
         mfh_record,
-        FrameReferenceStateView::unknown(),
+        reference_buffer,
     ) else {
         return;
     };
@@ -13509,6 +13620,121 @@ fn frame_header_core_checks(
                 "bridge_frame_ref_idx {idx} must be less than NumRefFrames {}",
                 inter.num_ref_frames
             ),
+        ));
+    }
+
+    // AV2 § 6.17.2 (mirror :4578-4579): if num_total_refs is present, it is a requirement
+    // of bitstream conformance that num_total_refs <= ActiveNumRefFrames, where
+    // ActiveNumRefFrames = Min( REFS_PER_FRAME, NumRefFrames ) (§ 5.18.2 mirror :963;
+    // REFS_PER_FRAME == 7 per § 3 mirror :697). num_total_refs is read as f(3) so the parse
+    // is always safe (the ref_frame_idx loop runs <= 7 times); this is a decidable
+    // bound the validator checks from the recorded value and the active sequence alone.
+    if let Some(inter) = core.inter.as_ref()
+        && let Some(num_total_refs) = inter.num_total_refs
+        && let Some(seq_inter) = active_sequence.inter.as_ref()
+    {
+        const REFS_PER_FRAME: u32 = 7;
+        let active_num_ref_frames = REFS_PER_FRAME.min(u32::from(seq_inter.num_ref_frames));
+        if num_total_refs > active_num_ref_frames {
+            report.push(frame_header_error(
+                "frame-header/num-total-refs-out-of-range",
+                "6.17.2",
+                obu,
+                format!(
+                    "num_total_refs {num_total_refs} must be less than or equal to \
+                     ActiveNumRefFrames {active_num_ref_frames} = Min(REFS_PER_FRAME {}, \
+                     NumRefFrames {})",
+                    REFS_PER_FRAME, seq_inter.num_ref_frames
+                ),
+            ));
+        }
+    }
+
+    // AV2 § 6.17.2 (mirror :4500-4502): "when primary_ref_frame is present in the bitstream
+    // primary_ref_frame is either equal to PRIMARY_REF_NONE, or primary_ref_frame is less
+    // than NumTotalRefs"
+    // (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2). "Present in the
+    // bitstream" is exactly the signaled case: primary_ref_frame is read as f(3) only when
+    // signal_primary_ref_frame == 1 (§5.18.2 mirror :4391-4399); when it is inferred
+    // (PRIMARY_REF_NONE on the switch / bridge / intra arms, or PRIMARY_REF_CHOOSE when
+    // signal == 0) the constraint is satisfied trivially and no range check applies. The
+    // bound needs NumTotalRefs, which only the explicit-reference-map arm records; the
+    // implicit `get_ref_frames()` map (unmodeled) records `num_total_refs == None`, so this
+    // check under-reports there (stays silent rather than guessing NumTotalRefs). Decidable
+    // from the two recorded scalars alone — no reference-frame buffer state is required.
+    const PRIMARY_REF_NONE: u8 = 7;
+    if let Some(inter) = core.inter.as_ref()
+        && inter.signal_primary_ref_frame == Some(true)
+        && let Some(primary_ref_frame) = inter.primary_ref_frame
+        && let Some(num_total_refs) = inter.num_total_refs
+        && primary_ref_frame != PRIMARY_REF_NONE
+        && u32::from(primary_ref_frame) >= num_total_refs
+    {
+        report.push(frame_header_error(
+            "frame-header/primary-ref-frame-out-of-range",
+            "6.17.2",
+            obu,
+            format!(
+                "primary_ref_frame {primary_ref_frame} is present in the bitstream \
+                 (signal_primary_ref_frame == 1) but is neither PRIMARY_REF_NONE ({PRIMARY_REF_NONE}) \
+                 nor less than NumTotalRefs ({num_total_refs}), violating the §6.17.2 requirement \
+                 of bitstream conformance"
+            ),
+        ));
+    }
+
+    // AV2 § 6.17.2 (mirror :4587-4596): "If use_bru is equal to 1, it is a requirement of
+    // bitstream conformance that all the following are true: … immediate_output_frame is
+    // equal to 1, bru_ref is less than NumTotalRefs, …". The two pure-arithmetic clauses
+    // are decidable from the recorded scalars alone; the slot-fact clauses (RefOrderHint /
+    // RESTRICTED_OH, the dims equalities) and the refresh-bit clause need reference-state /
+    // map facts the explicit-map arm may not ground and stay named residuals. The implicit
+    // `get_ref_frames()` map records `num_total_refs == None`, so the bru_ref bound
+    // under-reports there (silent rather than guessing NumTotalRefs).
+    if let Some(inter) = core.inter.as_ref()
+        && inter.use_bru == Some(true)
+    {
+        if let Some(bru_ref) = inter.bru_ref
+            && let Some(num_total_refs) = inter.num_total_refs
+            && bru_ref >= num_total_refs
+        {
+            report.push(frame_header_error(
+                "frame-header/bru-ref-out-of-range",
+                "6.17.2",
+                obu,
+                format!(
+                    "bru_ref {bru_ref} must be less than NumTotalRefs ({num_total_refs}) \
+                     when use_bru == 1"
+                ),
+            ));
+        }
+        if core.immediate_output_frame == Some(false) {
+            report.push(frame_header_error(
+                "frame-header/bru-without-immediate-output",
+                "6.17.2",
+                obu,
+                "use_bru == 1 requires immediate_output_frame == 1".to_string(),
+            ));
+        }
+    }
+
+    // AV2 § 6.17.2: every used reference slot must be valid — an inter frame's
+    // ref_frame_idx[i] must name a slot whose RefValid is 1. The core parser flags a
+    // parsed ref_frame_idx that the modeled §7.23 reference state proves invalid
+    // (RefValid[idx] == 0 against a modeled buffer, or an out-of-NUM_REF_FRAMES index).
+    // Slots the model has not grounded stay Unknown and are not reported (no guessing).
+    if core
+        .inter
+        .as_ref()
+        .is_some_and(|inter| inter.has_invalid_ref_frame_idx)
+    {
+        report.push(frame_header_error(
+            "frame-header/ref-frame-idx-invalid-slot",
+            "6.17.2",
+            obu,
+            "a ref_frame_idx[i] names a reference slot the modeled §7.23 reference state \
+             proves invalid (RefValid[idx] == 0) or out of the NUM_REF_FRAMES buffer"
+                .to_owned(),
         ));
     }
 
