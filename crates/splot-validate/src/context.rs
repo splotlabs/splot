@@ -39,8 +39,9 @@ use splot_core::headers::sequence::{
     SequenceHeaderId, TLayerDependencyMap, Tier, TimingInfo, parse_sequence_header,
 };
 use splot_core::headers::tile_group::{
-    FrameHeaderCopyOutcome, RecordedFrameHeaderBits, TileGroupLayout, TileGroupStructureOutcome,
-    parse_frame_header_copy, parse_tile_group_prefix, parse_tile_group_structure,
+    FrameHeaderCopyOutcome, RecordedFrameHeaderBits, TileFramingDefect, TileGroupLayout,
+    TileGroupStructureOutcome, parse_frame_header_copy, parse_tile_group_framing,
+    parse_tile_group_prefix, parse_tile_group_structure,
 };
 use splot_core::hls::{
     MAX_MFH_NUM, MfhId, MultiFrameHeaderRecord, MultistreamDecoderOperation, parse_msdo,
@@ -14586,6 +14587,146 @@ fn tile_group_range_checks(
     // NumTiles is still independently a §6.18 bounds defect worth its own anchor only when
     // the first-tg-start-not-zero rule did not already fire — which it always does for any
     // nonzero tg_start. So no separate tg_start-bounds rule is emitted for the first group.
+
+    // §5.20.1 (mirror :8553-8640): once the §5.19 structure is COMPLETE and the tg-range is
+    // self-consistent, parse the per-tile framing over the tile_group_payload() region and
+    // flag the provable framing defects (AV2-5.20-TILE-GROUP-PAYLOAD). Skip when the range is
+    // not self-consistent (the §6.18 diagnostics above already own that), so framing never
+    // runs over a meaningless tile count.
+    if structure.tg_end < structure.tg_start || (num_tiles > 0 && structure.tg_end > num_tiles - 1)
+    {
+        return;
+    }
+    tile_group_framing_checks(obu, &structure, tile_info, report);
+}
+
+/// Emits the locally decidable § 5.20.1 tile-payload framing diagnostics for a COMPLETE
+/// § 5.19 tile-group structure (AV2 v1.0.0 § 5.20.1, mirror :8553-8640;
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1`).
+///
+/// The framing slice is decidable from the bytes alone: each non-last, non-bridge tile reads
+/// `tile_size_minus_1 le(TileSizeBytes)` (§ 4.11.5: exactly `TileSizeBytes` bytes) and
+/// bookkeeps `sz -= tileSize + TileSizeBytes` (mirror :8571); the last tile takes the
+/// remaining `sz` (mirror :8557). Two arms are provable framing defects:
+///
+/// - **`tile-payload/size-field-truncated`** — the `le(TileSizeBytes)` size field of a
+///   non-last tile runs past the payload region (§ 4.11.5 / § 6.2.1);
+/// - **`tile-payload/tile-size-overflows-payload`** — a non-last tile's
+///   `tileSize + TileSizeBytes` exceeds the remaining `sz`, so the mirror :8571 subtraction
+///   would go negative.
+///
+/// Named residuals (NOT framing checks; owned by `AV2-5.20-TILE-GROUP-PAYLOAD` / its child
+/// rows): a zero-size last tile is not provably defective from framing — the `exit_symbol()`
+/// trailing one-bit / `SymbolMaxBits >= -14` conformance (§ 8.2.4) depends on the symbol
+/// decoder's consumption during `decode_tile()`; `init_symbol(tileSize)` (§ 8.2.2) tolerates
+/// `tileSize == 0` and reads no further than the tile's own bytes, so it adds no
+/// framing-decidable minimum. The `IsBridge` / `BruTileActive` arms (mirror :8559 / :8585)
+/// are dead on this intra-complete tile-group path (`IsBridge == 0`, `use_bru == 0`).
+fn tile_group_framing_checks(
+    obu: &ObuEnvelope<'_>,
+    structure: &splot_core::headers::tile_group::TileGroupStructure,
+    tile_info: &TileInfo,
+    report: &mut ValidationReport,
+) {
+    // The framing needs headerBytes / payload_size (the byte-aligned region boundary) and
+    // TileSizeBytes. headerBytes/payload_size are Some only on the Complete path.
+    let (Some(header_bytes), Some(payload_size)) = (structure.header_bytes, structure.payload_size)
+    else {
+        return;
+    };
+
+    // TileSizeBytes is present only when (TileCols > 1 || TileRows > 1) (§5.18.7.2). When it
+    // is absent the frame is a single tile, so this tile group's only tile is the last tile
+    // and reads no size field — the framing is trivially the whole region as one tile. When
+    // it is absent but the range spans >1 tile, the size-field width is unknown (an
+    // unparsed/ambiguous layout) — stay silent. A present, in-domain (1..=4) value frames the
+    // multi-tile case.
+    let num_tiles_in_group = u64::from(structure.tg_end - structure.tg_start) + 1;
+    let tile_size_bytes = match tile_info.tile_size_bytes {
+        Some(tsb) if (1..=4).contains(&tsb) => tsb,
+        // Single-tile group with no size field: frame the whole region as the lone tile.
+        None if num_tiles_in_group == 1 => 1,
+        // Multi-tile group with no / out-of-domain TileSizeBytes: undecidable, stay silent.
+        _ => return,
+    };
+
+    // The tile_group_payload() region is the payload_size bytes after the §5.19
+    // byte_alignment(), i.e. starting at headerBytes into the OBU payload. Bound the slice
+    // defensively (the structure's payload_size is sz - headerBytes, already within the OBU
+    // payload, but a slice out of range must never panic).
+    let start = usize::try_from(header_bytes).unwrap_or(usize::MAX);
+    let end = usize::try_from(header_bytes.saturating_add(payload_size)).unwrap_or(usize::MAX);
+    let Some(region) = obu.payload.get(start..end.min(obu.payload.len())) else {
+        return;
+    };
+
+    // IsBridge is always 0 on this path: tile_group_range_checks only reaches here for an
+    // is_tile_group() OBU on the intra-complete path (a BRIDGE frame is its own OBU type, not
+    // a tile-group type, and the intra path never enters the FrameType==INTER_FRAME BRU gate).
+    let framing = parse_tile_group_framing(
+        region,
+        structure.tg_start,
+        structure.tg_end,
+        tile_size_bytes,
+        false,
+    );
+
+    let Some(defect) = framing.defect else {
+        return;
+    };
+
+    // Anchor at the offending tile's size-field byte offset within the bitstream:
+    // payload_offset + headerBytes + the offset within the tile_group_payload() region.
+    let region_base = obu.payload_offset().get().saturating_add(header_bytes);
+    let anchor = ByteOffset::new(region_base.saturating_add(defect.size_field_offset()));
+
+    match defect {
+        TileFramingDefect::SizeFieldTruncated {
+            tile_num,
+            available,
+            ..
+        } => {
+            report.push(
+                Diagnostic::error(
+                    "tile-payload/size-field-truncated",
+                    format!(
+                        "the §5.20.1 tile_group_payload() size field for TileNum={tile_num} is \
+                         truncated: tile_size_minus_1 le(TileSizeBytes={tile_size_bytes}) needs \
+                         {tile_size_bytes} bytes but only {available} remain in the payload \
+                         region (§4.11.5 reads exactly TileSizeBytes bytes; §6.2.1 the OBU \
+                         payload must contain every mandatory tile syntax element)"
+                    ),
+                )
+                .with_spec_section("5.20.1")
+                .with_byte_offset(anchor),
+            );
+        }
+        TileFramingDefect::TileSizeOverflowsPayload {
+            tile_num,
+            tile_size,
+            tile_size_bytes: tsb,
+            remaining,
+            ..
+        } => {
+            report.push(
+                Diagnostic::error(
+                    "tile-payload/tile-size-overflows-payload",
+                    format!(
+                        "the §5.20.1 tile_group_payload() framing for TileNum={tile_num} \
+                         overflows the payload region: tileSize={tile_size} + \
+                         TileSizeBytes={tsb} exceeds the {remaining} bytes still available, so \
+                         the bookkeeping sz -= tileSize + TileSizeBytes (mirror :8571) would go \
+                         negative"
+                    ),
+                )
+                .with_spec_section("5.20.1")
+                .with_byte_offset(anchor),
+            );
+        }
+        // `TileFramingDefect` is `#[non_exhaustive]`; a future framing defect with no
+        // established conformance meaning is silent rather than guessed (zero false positives).
+        _ => {}
+    }
 }
 
 /// Emits the locally decidable § 6.17.7.2 tile-info diagnostics for a parsed frame

@@ -1072,11 +1072,12 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_clk_frame_header_prefix_leaves_starts_cvs_unknown() {
-        // A ClosedLoopKey can also reach the frame-header dispatch arm via its
-        // frame-header-only families; assert the same None for a SEF-style frame-header
-        // prefix when the carried type would gate startCVS. RegularSef is non-CLK, so it
-        // is decided Some(false) (type-only). 0x30 = ext=0, type=12 (RegularSef).
+    fn dispatch_non_clk_frame_header_prefix_has_some_false_starts_cvs() {
+        // A non-CLK type on the frame-header dispatch arm (e.g. RegularSef) has
+        // startCVS = false by type alone — no FirstPictureInTU input is needed, so it is
+        // decided Some(false) (the control case to the CLK-tile-group None above; CLK is a
+        // tile-group type and routes to the tile-group arm, not here). RegularSef is non-CLK,
+        // so it is decided Some(false) (type-only). 0x30 = ext=0, type=12 (RegularSef).
         let header = read_obu_header(&[0x30], ByteOffset::new(0)).unwrap();
         assert_eq!(header.obu_type, ObuType::RegularSef);
         let status = dispatch_obu_payload(header, &[0xC0], ByteOffset::new(1)).unwrap();

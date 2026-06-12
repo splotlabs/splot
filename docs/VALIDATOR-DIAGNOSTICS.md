@@ -411,6 +411,20 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 | `tile-group/truncated-structure` | error | § 6.2.1 | the OBU payload ends inside the §5.19 `tile_group_obu()` structure (`tile_start_and_end_present_flag` / `tg_start` / `tg_end` / `byte_alignment`) before it could be read; the §6.2.1 OBU payload must contain every mandatory tile-group syntax element. Parallels `frame-header/truncated-frame-header`; the already-parsed structure facts are preserved. Same intra-complete first-tile-group gating |
 | `tile-group/byte-alignment-zero-bit` | error | § 6.2.4 | the §5.19 `tile_group_obu()` `byte_alignment()` padding contains a non-zero `zero_bit` (§6.2.4 requires every alignment bit to be 0). Decidable on the same intra-complete first-tile-group path; the §5.20 `tile_group_payload()` bytes after the alignment boundary stay unparsed |
 
+### `tile-payload/`
+
+The §5.20.1 `tile_group_payload()` per-tile framing diagnostics (`AV2-5.20-TILE-GROUP-PAYLOAD`):
+the byte boundaries of each tile's `tile_size_minus_1 le(TileSizeBytes)` length field and its
+`tileSize`-byte coded-tile region, decidable from the framing alone (no symbol decoding). Run
+only for a COMPLETE §5.19 structure on the intra-complete first-tile-group path (so `IsBridge ==
+0`, `use_bru == 0`); `TileSizeBytes` comes from the parsed `tile_info()`. Anchored at the
+offending tile's size-field byte offset within the bitstream.
+
+| Rule ID | Severity | Section | Condition |
+|---|---|---|---|
+| `tile-payload/size-field-truncated` | error | § 5.20.1 | a non-last, non-bridge tile's `tile_size_minus_1 le(TileSizeBytes)` length field runs past the end of the `tile_group_payload()` region — the size field itself is truncated (§4.11.5: `le(n)` reads exactly `TileSizeBytes` bytes; §6.2.1: the OBU payload must contain every mandatory tile syntax element) |
+| `tile-payload/tile-size-overflows-payload` | error | § 5.20.1 | a non-last tile's `tileSize + TileSizeBytes` exceeds the remaining `sz`, so the §5.20.1 bookkeeping `sz -= tileSize + TileSizeBytes` (mirror :8571) would go negative — the coded-tile region the size field claims runs past the bytes the payload region still holds |
+
 ### `trailing-bits/`
 
 | Rule ID | Severity | Section | Condition |
@@ -466,9 +480,19 @@ from the enforced registry above** because nothing emits them yet:
 
 - `tile-group/` — the §5.19 `tile_group_obu()` STRUCTURE diagnostics (tg-range, byte-alignment,
   truncation) have landed for the intra-complete first tile group (see the registry above). The
-  remaining residuals are the §5.20 `tile_group_payload()` tile-data boundary checks (need full
-  tile parsing, `AV2-5.20-TILE-GROUP-PAYLOAD`) and the cross-tile-group continuity / last-group
-  `tg_end == NumTiles - 1` clauses (need prior-tile-group state threaded through the segmenter).
+  §5.20.1 `tile_group_payload()` per-tile FRAMING boundary checks have also landed under the
+  `tile-payload/` namespace (see the registry above: `size-field-truncated`,
+  `tile-size-overflows-payload`). The remaining residuals are the cross-tile-group continuity /
+  last-group `tg_end == NumTiles - 1` clauses (need prior-tile-group state threaded through the
+  segmenter).
+- `tile-payload/` — the §5.20.1 per-tile FRAMING checks have landed (see the registry above). The
+  remaining residuals are the post-framing `decode_tile()` block syntax and §8 symbol decoding
+  (`AV2-5.20-TILE-GROUP-PAYLOAD`'s §5.20.2-.10 child rows): a zero-size last tile is NOT
+  framing-provable (the `exit_symbol()` trailing one-bit / `SymbolMaxBits >= -14` conformance,
+  §8.2.4, depends on symbol-decoder consumption during `decode_tile()`; `init_symbol(tileSize)`,
+  §8.2.2, tolerates `tileSize == 0` and reads no further than the tile's own bytes, so it adds no
+  framing-decidable minimum), and the bridge / `BruTileActive` size-skipping arms (mirror :8559 /
+  :8585) are dead on the intra-complete tile-group path (`IsBridge == 0`, `use_bru == 0`).
 - `hls-availability/` — a dedicated high-level-syntax availability namespace; today the landed
   availability checks live under `hls/` (see the registry above).
 - `obu-payload/` — strict-mode payload constraints.

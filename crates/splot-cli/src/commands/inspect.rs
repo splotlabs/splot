@@ -48,7 +48,7 @@ use splot_core::headers::padding::parse_padding_obu;
 use splot_core::headers::quantizer_matrix::{QuantizerMatrixObu, parse_quantizer_matrix};
 use splot_core::headers::sequence::{SequenceHeader, SequenceHeaderId, parse_sequence_header};
 use splot_core::headers::tile_group::{
-    TileGroupLayout, parse_tile_group_prefix, parse_tile_group_structure,
+    TileGroupLayout, parse_tile_group_framing, parse_tile_group_prefix, parse_tile_group_structure,
 };
 use splot_core::hls::{MfhId, MultiFrameHeaderRecord, parse_multi_frame_header};
 use splot_core::ivf::{IvfFrame, IvfHeader};
@@ -621,6 +621,25 @@ struct TileGroupStructureView {
     header_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     payload_size: Option<u64>,
+    /// The § 5.20.1 per-tile framing (offset/size per tile), present only when the structure
+    /// is complete and the framing was decidable (AV2 § 5.20.1). Empty/absent otherwise.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tile_framing: Vec<TileFramingView>,
+    /// The provable § 5.20.1 framing defect label, when the framing found one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tile_framing_defect: Option<&'static str>,
+}
+
+/// One tile's § 5.20.1 byte framing for `--json`: its `tile_size_minus_1` length-field offset
+/// (absent for the last/bridge tiles) and its `tileSize`-byte coded-tile region, all as byte
+/// offsets relative to the `tile_group_payload()` region start (AV2 § 5.20.1).
+#[derive(Serialize)]
+struct TileFramingView {
+    tile_num: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size_field_offset: Option<u64>,
+    tile_data_offset: u64,
+    tile_size: u64,
 }
 
 /// A prefix-only view of a parsed `frame_header_info()` for `--json`. The
@@ -770,6 +789,49 @@ fn tile_group_structure_view(
     // `reader` is positioned past frame_header(); parse the structure from the same reader.
     let structure =
         parse_tile_group_structure(&mut reader, layout, obu.payload.len() as u64).ok()?;
+
+    // §5.20.1: surface the per-tile framing over the tile_group_payload() region when the
+    // structure completed and the range is self-consistent. IsBridge == 0 on this
+    // intra-complete tile-group path; TileSizeBytes comes from tile_info() (None == single
+    // tile, framed as the lone last tile).
+    let (mut tile_framing, mut tile_framing_defect) = (Vec::new(), None);
+    if let (Some(header_bytes), Some(payload_size)) =
+        (structure.header_bytes, structure.payload_size)
+        && structure.tg_end >= structure.tg_start
+    {
+        let num_tiles_in_group = u64::from(structure.tg_end - structure.tg_start) + 1;
+        let tsb = match tile_info.tile_size_bytes {
+            Some(tsb) if (1..=4).contains(&tsb) => Some(tsb),
+            None if num_tiles_in_group == 1 => Some(1),
+            _ => None,
+        };
+        if let Some(tsb) = tsb {
+            let start = usize::try_from(header_bytes).unwrap_or(usize::MAX);
+            let end =
+                usize::try_from(header_bytes.saturating_add(payload_size)).unwrap_or(usize::MAX);
+            if let Some(region) = obu.payload.get(start..end.min(obu.payload.len())) {
+                let framing = parse_tile_group_framing(
+                    region,
+                    structure.tg_start,
+                    structure.tg_end,
+                    tsb,
+                    false,
+                );
+                tile_framing = framing
+                    .tiles
+                    .iter()
+                    .map(|t| TileFramingView {
+                        tile_num: t.tile_num,
+                        size_field_offset: t.size_field_offset,
+                        tile_data_offset: t.tile_data_offset,
+                        tile_size: t.tile_size,
+                    })
+                    .collect();
+                tile_framing_defect = framing.defect.map(|d| d.label());
+            }
+        }
+    }
+
     Some(TileGroupStructureView {
         payload_kind: "tile_group_structure",
         num_tiles: layout.num_tiles,
@@ -779,6 +841,8 @@ fn tile_group_structure_view(
         status: structure.outcome.label(),
         header_bytes: structure.header_bytes,
         payload_size: structure.payload_size,
+        tile_framing,
+        tile_framing_defect,
     })
 }
 

@@ -516,7 +516,21 @@ The inter-path arms of every child remain partial/todo.
   `derive_sef_order_hint` already-shown / `RefImplicitOutputFrame` /
   `RefImmediateOutputFrame` SEF constraints (mirror :4375-4380) need output-frame-buffer
   / shown state this phase does not model.
-- **Remaining:** the § 5.20 `tile_group_payload()` body (`AV2-5.20-TILE-GROUP-PAYLOAD`),
+- **Landed** (OpenSpec `tile-payload-boundary-validation`, `AV2-5.20-TILE-GROUP-PAYLOAD`): the
+  § 5.20.1 per-tile FRAMING SLICE of `tile_group_payload()`. `parse_tile_group_framing`
+  (`crates/splot-core/src/headers/tile_group.rs`) walks the loop over the structure's
+  `payload_size` region — `tile_size_minus_1 le(TileSizeBytes)` for each non-last, non-bridge
+  tile, `tileSize = +1`, the `sz -= tileSize + TileSizeBytes` bookkeeping, the last-tile (takes
+  the remaining `sz`) and bridge (no size field) arms — recording per-tile framing and stopping
+  at the first provable defect. The validator (`tile_group_framing_checks`) flags
+  `tile-payload/size-field-truncated` (the `le(TileSizeBytes)` field runs past the region;
+  § 4.11.5 / § 6.2.1) and `tile-payload/tile-size-overflows-payload` (mirror :8571 would go
+  negative), anchored at the offending tile's byte offset; `inspect` surfaces the per-tile
+  `tile_framing`. § 8.2 grounding (NOT a check): `init_symbol(tileSize)` tolerates `tileSize ==
+  0` and reads no further than the tile's own bytes, and `exit_symbol()` conformance (§ 8.2.4)
+  needs the symbol decoder — so a zero-size last tile is not framing-provable (named residual).
+- **Remaining:** the § 5.20 `tile_group_payload()` body BEYOND framing — `decode_tile()` and the
+  § 5.20.2-.10 block syntax / § 8 entropy decode (child rows of `AV2-5.20-TILE-GROUP-PAYLOAD`),
   the INTER-path BRU arms of `tile_group_obu()` (the `bru_inactive` `headerBits` /
   `remainingBits` `trailing_bits()` early-return and the `use_bru` `bru_tile_active` loop,
   reachable only once the inter frame-header path derives `use_bru`/`bru_inactive`), and the
@@ -558,8 +572,18 @@ Rules:
 locally-decidable § 6.18 tg-range diagnostics (`tile-group/first-tg-start-not-zero`,
 `tile-group/tg-end-before-tg-start`, `tile-group/tg-end-out-of-range`,
 `tile-group/truncated-structure`, `tile-group/byte-alignment-zero-bit`) and `inspect`
-surfaces the `tile_group_structure` view. `AV2-5.20-TILE-GROUP-PAYLOAD` (the payload body),
-the INTER-path BRU arms, and the arithmetic-boundary targets are still untouched.
+surfaces the `tile_group_structure` view. The § 5.20.1 per-tile FRAMING SLICE also landed
+(`tile-payload-boundary-validation`): `parse_tile_group_framing` walks the
+`tile_group_payload()` loop over the structure's `payload_size` region — `tile_size_minus_1
+le(TileSizeBytes)` for each non-last, non-bridge tile, the `sz -= tileSize + TileSizeBytes`
+bookkeeping, and the last-tile/bridge arms — and the validator flags the two provable framing
+defects (`tile-payload/size-field-truncated`, `tile-payload/tile-size-overflows-payload`,
+anchored at the offending tile's byte offset); `inspect` surfaces the per-tile `tile_framing`.
+The § 8.2 decision is grounded honestly: `init_symbol(tileSize)` tolerates `tileSize == 0` and
+reads no further than the tile's own bytes, and `exit_symbol()`'s trailing-bit / `SymbolMaxBits
+>= -14` conformance (§ 8.2.4) depends on symbol-decoder consumption — so a zero-size last tile
+is NOT framing-provable (named residual). `decode_tile()` / the § 5.20.2-.10 block syntax, the
+INTER-path BRU arms, and the arithmetic-coder-state boundary targets are still untouched.
 
 **Goal:** validate tile-group structure without prematurely promising a complete decoder.
 
@@ -572,9 +596,11 @@ Feature IDs:
 Initial target:
 
 - ~~validate tile group header/size fields~~ — landed for the intra-complete first tile
-  group (the § 5.19 structure, tg range, and `headerBytes`/payload boundary);
-- validate arithmetic coder entry/exit boundaries;
-- validate `exit_symbol` / trailing-bit interactions;
+  group (the § 5.19 structure, tg range, and `headerBytes`/payload boundary), and the
+  § 5.20.1 per-tile FRAMING (size-field / `tileSize` boundary checks) over the payload region;
+- validate arithmetic coder entry/exit boundaries (needs symbol decoding — child territory);
+- validate `exit_symbol` / trailing-bit interactions (needs `decode_tile()` — child territory:
+  the zero-size-last-tile trailing-bit check is NOT framing-provable);
 - the INTER-path `tile_group_obu()` BRU arms and the cross-tile-group continuity § 6.18
   clauses remain (the latter needs prior-tile-group state);
 - leave pixel-reconstruction-dependent checks as explicit child rows.

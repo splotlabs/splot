@@ -5238,10 +5238,13 @@ mod tests {
     /// TileRows == 1, NumTiles == 3, TileColsLog2 == 2, TileRowsLog2 == 0 -> tileBits ==
     /// 2), reaching `IntraHeaderComplete`, then appends the §5.19 tile_group_obu()
     /// structure: `tile_start_and_end_present_flag` (NumTiles > 1) and, when present, the
-    /// `tg_start` / `tg_end` f(2) reads, followed by enough payload bytes to byte-align.
-    /// `tg_range` is `Some((tg_start, tg_end))` for an explicit range (flag == 1) or `None`
-    /// to infer 0 .. NumTiles - 1 (flag == 0).
-    fn clk_first_tile_group_multitile(tg_range: Option<(u32, u32)>) -> Vec<u8> {
+    /// `tg_start` / `tg_end` f(2) reads, followed by `payload` as the byte-aligned
+    /// tile_group_payload() region (§5.20.1). `tg_range` is `Some((tg_start, tg_end))` for an
+    /// explicit range (flag == 1) or `None` to infer 0 .. NumTiles - 1 (flag == 0).
+    fn clk_first_tile_group_multitile_payload(
+        tg_range: Option<(u32, u32)>,
+        payload: &[u8],
+    ) -> Vec<u8> {
         let mut fb = Bits::default();
         // frame_header() through tile_info() for a 160x16 frame.
         clk_frame_until_tile_info(&mut fb, 160, 16, (8, 8));
@@ -5263,8 +5266,23 @@ mod tests {
                 fb.bit(0); // tile_start_and_end_present_flag == 0 -> range inferred
             }
         }
-        // byte_alignment() + a small tile_group_payload() region (zero pad bits are fine).
-        annex_b_obu(CLK_HEADER, &fb.into_bytes())
+        // byte_alignment() pads to the byte boundary; then append the tile_group_payload().
+        let mut bytes = fb.into_bytes();
+        bytes.extend_from_slice(payload);
+        annex_b_obu(CLK_HEADER, &bytes)
+    }
+
+    /// A conformant §5.20.1 tile_group_payload() region for the full 3-tile (0..=2) range of
+    /// the 160x16 layout (TileSizeBytes == 1): tile0 `le(1)=0`->tileSize 1 + 1 data byte,
+    /// tile1 likewise, tile2 (last) takes the remaining byte.
+    fn conformant_3tile_payload() -> Vec<u8> {
+        vec![0x00, 0xAA, 0x00, 0xBB, 0xCC]
+    }
+
+    /// As [`clk_first_tile_group_multitile_payload`] but with a conformant full-range tile
+    /// payload, for tests that only exercise the §5.19 tg-range diagnostics.
+    fn clk_first_tile_group_multitile(tg_range: Option<(u32, u32)>) -> Vec<u8> {
+        clk_first_tile_group_multitile_payload(tg_range, &conformant_3tile_payload())
     }
 
     /// A 160x16 frame-core sequence header (TileCols == 3 layout) plus a temporal delimiter.
@@ -5278,15 +5296,17 @@ mod tests {
     #[test]
     fn validator_tile_group_range_silent_on_conforming_multitile() {
         // An explicit tg range covering the whole 3-tile frame (tg_start == 0, tg_end ==
-        // 2 == NumTiles - 1) satisfies every locally-decidable §6.18 clause.
+        // 2 == NumTiles - 1) with a conformant §5.20.1 tile_group_payload() satisfies every
+        // locally-decidable §6.18 range AND §5.20.1 framing clause.
         let mut data = td_and_frame_core_seq_160();
         data.extend(clk_first_tile_group_multitile(Some((0, 2))));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             !report
                 .errors()
-                .any(|d| d.rule_id.starts_with("tile-group/")),
-            "a conforming multi-tile tg range must be silent; report was: {report}"
+                .any(|d| d.rule_id.starts_with("tile-group/")
+                    || d.rule_id.starts_with("tile-payload/")),
+            "a conforming multi-tile tg range + framing must be silent; report was: {report}"
         );
     }
 
@@ -5469,6 +5489,100 @@ mod tests {
                 .any(|d| d.rule_id == "tile-group/byte-alignment-zero-bit"
                     && d.spec_section.as_deref() == Some("6.2.4")),
             "a non-zero §5.19 byte_alignment() pad bit must fire byte-alignment-zero-bit; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_silent_on_conformant_tile_payload_framing() {
+        // A conformant 3-tile §5.20.1 framing (tile0/1 le(1) size fields + last tile) fires
+        // no tile-payload defect.
+        let mut data = td_and_frame_core_seq_160();
+        data.extend(clk_first_tile_group_multitile_payload(
+            Some((0, 2)),
+            &conformant_3tile_payload(),
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("tile-payload/")),
+            "a conformant tile-payload framing must be silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_tile_payload_size_field_truncated() {
+        // §5.20.1 / §4.11.5: a non-last tile reads le(TileSizeBytes). With an EMPTY
+        // tile_group_payload() region, tile0's le(1) size field cannot be read — the size
+        // field is truncated (§6.2.1: the OBU payload must contain every mandatory element).
+        let mut data = td_and_frame_core_seq_160();
+        data.extend(clk_first_tile_group_multitile_payload(Some((0, 2)), &[]));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "tile-payload/size-field-truncated"
+                    && d.spec_section.as_deref() == Some("5.20.1")),
+            "an empty payload region must fire size-field-truncated; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_tile_payload_tile_size_overflows() {
+        // §5.20.1 (mirror :8571): a non-last tile whose tileSize + TileSizeBytes exceeds the
+        // remaining sz overflows the payload. tile0 codes le(1) == 250 -> tileSize 251, but
+        // the region is only 4 bytes, so 251 + 1 > 4.
+        let mut data = td_and_frame_core_seq_160();
+        data.extend(clk_first_tile_group_multitile_payload(
+            Some((0, 2)),
+            &[250, 0, 0, 0],
+        ));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "tile-payload/tile-size-overflows-payload"
+                    && d.spec_section.as_deref() == Some("5.20.1")),
+            "an overflowing tile size must fire tile-size-overflows-payload; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_tile_payload_anchors_at_offending_tile_offset() {
+        // The diagnostic anchors at the offending tile's size-field byte offset within the
+        // bitstream (not the OBU header). For an empty region the defect sits at the start of
+        // the tile_group_payload() region (headerBytes into the OBU payload), so the byte
+        // offset is strictly past the OBU header and equals the region base.
+        let mut data = td_and_frame_core_seq_160();
+        let prefix_len = data.len() as u64;
+        data.extend(clk_first_tile_group_multitile_payload(Some((0, 2)), &[]));
+        let report = Validator::new(false).validate_bytes(&data);
+        // The diagnostic carries a byte offset that lands inside the tile-group OBU's payload
+        // (past the container/OBU header that precedes it), so it is at least where the
+        // tile-group OBU started — proving the anchor is at the tile, not the OBU header.
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "tile-payload/size-field-truncated"
+                    && d.byte_offset.is_some_and(|o| o.get() >= prefix_len)),
+            "the framing anchor must be inside the tile-group OBU payload region (>= byte \
+             {prefix_len}); report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_silent_on_single_tile_no_size_field() {
+        // A single-tile intra frame has one (last) tile and reads NO size field (§5.20.1):
+        // the framing is trivially conformant — no tile-payload defect regardless of payload.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group());
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("tile-payload/")),
+            "a single-tile group reads no size field and must be framing-silent; \
              report was: {report}"
         );
     }

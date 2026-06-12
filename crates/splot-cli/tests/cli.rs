@@ -364,6 +364,23 @@ fn inspect_json_exposes_frame_header_core() {
     assert_eq!(structure["status"], "complete");
     assert!(structure["header_bytes"].is_u64());
     assert!(structure["payload_size"].is_u64());
+
+    // The § 5.20.1 per-tile framing is surfaced for the completed tile group. A single-tile
+    // frame has one (last) tile that reads NO size field and takes the whole payload region.
+    let framing = structure["tile_framing"]
+        .as_array()
+        .expect("tile_framing is an array");
+    assert_eq!(framing.len(), 1, "single tile -> one framing record");
+    assert_eq!(framing[0]["tile_num"], 0);
+    assert!(
+        framing[0].get("size_field_offset").is_none(),
+        "the lone last tile reads no le(TileSizeBytes) size field"
+    );
+    assert_eq!(framing[0]["tile_data_offset"], 0);
+    // tile_size == payload_size for the lone last tile.
+    assert_eq!(framing[0]["tile_size"], structure["payload_size"]);
+    // A conformant framing reports no defect.
+    assert!(structure.get("tile_framing_defect").is_none());
 }
 
 #[test]
