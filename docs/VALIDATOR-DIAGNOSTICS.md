@@ -158,7 +158,7 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 | `frame-header/ccso-ext-filter-reserved` | error | § 6.17.7.8 | a parsed `ccso_params()` plane in the `!ccso_bo_only` arm has `ccso_ext_filter == 7`, the reserved value §6.17.7.8 (mirror :5819) forbids |
 | `frame-header/ccso-max-band-out-of-range` | error | § 6.17.7.8 | a parsed `ccso_params()` plane has `1 << ccso_max_band_log2 > CCSO_BAND_NUM` (64), violating §6.17.7.8 (mirror :5824). Only reachable in the `ccso_bo_only` arm where `ccso_max_band_log2` is `f(3)` |
 | `frame-header/context-update-tile-id-out-of-range` | error | § 6.17.7.2 | context_update_tile_id is not less than TileCols * TileRows |
-| `frame-header/copy-bits-mismatch` | error | § 6.17.1 | a non-first tile group's `frame_header_copy()` (`frame_header( isFirst == 0 )`, §5.18.1) differs from the coded frame's first tile group's frame header: `header_bit[i]` is not equal to the value of the bit at offset `i` from the start of the first `frame_header()` (mirror :4296-4300), violating the §6.17.1 requirement of bitstream conformance that the copy be bit-identical. Fired ONLY when the first tile group's `frame_header_info()` parsed to completion (`FrameHeaderParseStatus::IntraHeaderComplete`) so `NumFrameHeaderBits` and the exact first-header bits are known, and the non-first tile group is a decidable continuation of the SAME coded frame (the segmenter reports `FrameBoundary::ContinuesUnit`). The diagnostic is anchored at the precise location of the first differing `header_bit`: the copy region start (after the two `tile_group_obu()` prefix bits) translated through `mismatch_bit` into the OBU-payload byte offset (`byte_offset`) and the MSB-first bit-within-byte (`bit_offset`) of the offending bit, with the copy-region bit index `header_bit[i]` in the message. (Before this it anchored at the OBU header offset with no bit offset.) An incomplete/coverage-stopped/unresolvable first header records nothing (the copy region stays unparsed); a `FrameBoundary::Ambiguous` boundary (unreadable `is_first_tile_group` delimiter) drops the judgment; and a SEF/TIP/bridge frame opening a new coded frame in the same `(xlayer, mlayer, tlayer)` triple clears the recorded header so a later flag-0 tile group the segmenter routes as continuing that SEF coded frame does not pair against the stale record. The recorded bits exclude the `tile_group_obu()` `is_first_tile_group` flag before `frame_header()` (mirror :4303-4305), so the comparison is bit-aligned not byte-aligned |
+| `frame-header/copy-bits-mismatch` | error | § 6.17.1 | a non-first tile group's `frame_header_copy()` (`frame_header( isFirst == 0 )`, §5.18.1) differs from the coded frame's first tile group's frame header: `header_bit[i]` is not equal to the value of the bit at offset `i` from the start of the first `frame_header()` (mirror :4296-4300), violating the §6.17.1 requirement of bitstream conformance that the copy be bit-identical. Fired ONLY when the first tile group's `frame_header_info()` parsed to completion (`FrameHeaderParseStatus::IntraHeaderComplete`) so `NumFrameHeaderBits` and the exact first-header bits are known, and the non-first tile group is a decidable continuation of the SAME coded frame (the segmenter reports `FrameBoundary::ContinuesUnit`). The diagnostic is anchored at the precise location of the first differing `header_bit`: the copy region start (after the two `tile_group_obu()` prefix bits) translated through `mismatch_bit` into the OBU-payload byte offset (`byte_offset`) and the MSB-first bit-within-byte (`bit_offset`) of the offending bit, with the copy-region bit index `header_bit[i]` in the message. (Before this it anchored at the OBU header offset with no bit offset.) An incomplete/coverage-stopped/unresolvable first header records nothing (the copy region stays unparsed); a `FrameBoundary::Ambiguous` boundary (unreadable `is_first_tile_group` delimiter) drops the judgment; and a SEF/TIP/bridge frame opening a new coded frame in the same `(xlayer, mlayer, tlayer)` triple clears the recorded header so a later flag-0 tile group the segmenter routes as continuing that SEF coded frame does not pair against the stale record. The recorded bits exclude the `tile_group_obu()` `is_first_tile_group` flag before `frame_header()` (mirror :4303-4305), so the comparison is bit-aligned not byte-aligned. A mismatch does NOT suppress the continuation's §6.18 tg-range / §5.20.1 framing checks: the §5.19 structure starts at the exact bit `2 + NumFrameHeaderBits` whether or not the copy content matched, so `tile-group/*` and `tile-payload/*` are still decidable on the same OBU |
 | `frame-header/copy-bits-truncated` | error | § 6.2.1 | a non-first tile group's `frame_header_copy()` region ends before all `NumFrameHeaderBits` copied `header_bit` `f(1)` reads (§5.18.1, mirror :3973-3981) — the OBU payload is shorter than the recorded first header, and `frame_header( )` must read those elements from the §6.2.1 OBU payload (the payload lies before the trailing bits). Fired ONLY when every copy bit available before the EOF matched the first header (a differing bit within the available prefix is the decidable `frame-header/copy-bits-mismatch` instead) and the first header completed (`IntraHeaderComplete`, so `NumFrameHeaderBits` is known). Anchored at the offending non-first tile-group OBU. Same gating/Unknown-routing as `frame-header/copy-bits-mismatch` |
 | `frame-header/cur-mfh-id-out-of-range` | error | § 6.17 | cur_mfh_id is not less than MAX_MFH_NUM |
 | `frame-header/film-grain-model-unavailable` | error | § 6.17.10.1 | a parsed `film_grain_config()` has `apply_grain == 1` and references an `fgm_id` whose slot has no received in-band film-grain model (`FilmGrainPresent[fgm_id] != 1`), violating §6.17.10.1 / §7.3.8.8. Fires ONLY under `ExternalHlsMode::Disabled` — `ExternalHlsSet` cannot express film-grain OBUs, so any `Provided` mode means the model MAY be supplied externally and the check suppresses (inexpressible-kind blanket policy). The §7.3.8.1 random-access-point-unavailability direction is under-reported (monotonic `available[]` never resets at a RAP; awaits a film-grain RAP-replay key, AV2-7.3.8-HLS-AVAILABILITY); the §6.17.10.1 FgmTLayerId/FgmMLayerId/FgmChromaIdc layer-dependency constraints remain a residual |
@@ -416,9 +416,17 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 The §5.20.1 `tile_group_payload()` per-tile framing diagnostics (`AV2-5.20-TILE-GROUP-PAYLOAD`):
 the byte boundaries of each tile's `tile_size_minus_1 le(TileSizeBytes)` length field and its
 `tileSize`-byte coded-tile region, decidable from the framing alone (no symbol decoding). Run
-only for a COMPLETE §5.19 structure on the intra-complete first-tile-group path (so `IsBridge ==
-0`, `use_bru == 0`); `TileSizeBytes` comes from the parsed `tile_info()`. Anchored at the
-offending tile's size-field byte offset within the bitstream.
+for a COMPLETE §5.19 structure on EVERY tile-group OBU of a paired intra-complete coded frame —
+the FIRST tile group (layout from its parsed `tile_info()`) AND each CONTINUATION tile group
+(`is_first_tile_group == 0`; the §5.18.1 layout — `NumTiles` / `tileBits` / `TileSizeBytes` —
+comes from the recorded first tile group's header, since a continuation reads `frame_header_copy()`
+not a fresh `tile_info()`). A continuation's structure starts after the optional
+`frame_header_copy()` region (both the `frame_header_present_flag == 1` copy arm and the
+`frame_header_present_flag == 0` no-copy arm are handled); the bit position past the copy is exact
+(`NumFrameHeaderBits` known), so the framing runs even after a `frame-header/copy-bits-mismatch`.
+On that intra-complete path `IsBridge == 0` and `use_bru == 0`. Anchored at the offending tile's
+size-field byte offset within the bitstream. A continuation with no recorded first-header layout
+(Unknown routing) leaves the structure unparsed.
 
 | Rule ID | Severity | Section | Condition |
 |---|---|---|---|
@@ -480,20 +488,24 @@ The following namespaces are reserved for future validator work and are intentio
 from the enforced registry above** because nothing emits them yet:
 
 - `tile-group/` — the §5.19 `tile_group_obu()` STRUCTURE diagnostics (tg-range, byte-alignment,
-  truncation) have landed for the intra-complete first tile group (see the registry above). The
-  §5.20.1 `tile_group_payload()` per-tile FRAMING boundary checks have also landed under the
-  `tile-payload/` namespace (see the registry above: `size-field-truncated`,
-  `tile-size-overflows-payload`). The remaining residuals are the cross-tile-group continuity /
-  last-group `tg_end == NumTiles - 1` clauses (need prior-tile-group state threaded through the
-  segmenter).
+  truncation) have landed for EVERY tile group of an intra-complete coded frame: the first tile
+  group (layout from its parsed `tile_info()`) AND each continuation (`is_first_tile_group == 0`;
+  layout from the recorded first header, §5.18.1). The §5.20.1 `tile_group_payload()` per-tile
+  FRAMING boundary checks have also landed under the `tile-payload/` namespace for both (see the
+  registry above: `size-field-truncated`, `tile-size-overflows-payload`). The
+  `tile-group/first-tg-start-not-zero` clause stays first-group-only (a continuation's
+  `tg_start == previous tg_end + 1` needs prior-group state). The remaining residuals are the
+  cross-tile-group continuity / last-group `tg_end == NumTiles - 1` clauses (need prior-tile-group
+  state threaded through the segmenter).
 - `tile-payload/` — the §5.20.1 per-tile FRAMING checks have landed (see the registry above). The
   remaining residuals are the post-framing `decode_tile()` block syntax and §8 symbol decoding
-  (`AV2-5.20-TILE-GROUP-PAYLOAD`'s §5.20.2-.10 child rows): a zero-size last tile is NOT
-  framing-provable (the `exit_symbol()` trailing one-bit / `SymbolMaxBits >= -14` conformance,
-  §8.2.4, depends on symbol-decoder consumption during `decode_tile()`; `init_symbol(tileSize)`,
-  §8.2.2, tolerates `tileSize == 0` and reads no further than the tile's own bytes, so it adds no
-  framing-decidable minimum), and the bridge / `BruTileActive` size-skipping arms (mirror :8559 /
-  :8585) are dead on the intra-complete tile-group path (`IsBridge == 0`, `use_bru == 0`).
+  (`AV2-5.20-TILE-GROUP-PAYLOAD`'s §5.20.2-.10 child rows): the zero-size-tile case IS
+  framing-provable and landed as `tile-payload/zero-size-tile` (init at `8*0-15 = -15`, monotone
+  decreasing, below §8.2.4's `>= -14` floor); the remaining `exit_symbol()` conformance for
+  nonzero tiles (the exact exit value, the trailing one-bit) depends on symbol-decoder
+  consumption during `decode_tile()` and stays a residual, and the bridge / `BruTileActive`
+  size-skipping arms (mirror :8559 / :8585) are dead on the intra-complete tile-group path
+  (`IsBridge == 0`, `use_bru == 0`).
 - `hls-availability/` — a dedicated high-level-syntax availability namespace; today the landed
   availability checks live under `hls/` (see the registry above).
 - `obu-payload/` — strict-mode payload constraints.

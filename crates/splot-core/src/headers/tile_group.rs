@@ -473,16 +473,16 @@ pub struct TileGroupFraming {
 ///
 /// # § 8.2 residual (checkable-without-decoding)
 ///
-/// `init_symbol(tileSize)` (mirror :8607) reads `f(Min(tileSize * 8, 15))` (§ 8.2.2):
-/// it tolerates `tileSize == 0` (it reads `f(0)`) and never reads beyond the tile's own
-/// `tileSize` bytes (a shortfall becomes padding "not present in the bitstream", § 8.2.2),
-/// so it imposes **no** minimum-tile-size constraint decidable from framing. The
-/// `exit_symbol()` conformance (`SymbolMaxBits >= -14`; the trailing one-bit at
-/// `trailingBitPosition`; § 8.2.4) all depend on the symbol decoder's consumption during
-/// `decode_tile()` and on bit positions only known after decoding — so a zero-size last
-/// tile is **not** provably defective from framing (the trailing-bit requirement lives in
-/// `exit_symbol`, symbol-decode territory). Both are named residuals of
-/// `AV2-5.20-TILE-GROUP-PAYLOAD`, not framing checks.
+/// `init_symbol(tileSize)` (mirror :8607) reads `f(Min(tileSize * 8, 15))` (§ 8.2.2) and
+/// sets `SymbolMaxBits = 8 * sz - 15` (08:87). The counter only ever decreases during
+/// decoding (08:327), and § 8.2.4 requires `SymbolMaxBits >= -14` at `exit_symbol()`
+/// (08:342) — so a zero-size non-bridge tile starts at `-15`, below the floor, and can
+/// never satisfy the exit requirement regardless of content: that violation IS decidable
+/// from framing alone and is reported here as [`TileFramingDefect::ZeroSizeTile`]
+/// (bridge tiles run no `init_symbol` and are exempt). The remaining `exit_symbol()`
+/// conformance for nonzero tiles (the exact `SymbolMaxBits` at exit; the trailing
+/// one-bit at `trailingBitPosition`) depends on the symbol decoder's consumption during
+/// `decode_tile()` and stays a named residual of `AV2-5.20-TILE-GROUP-PAYLOAD`.
 ///
 /// # `IsBridge` / BRU residual
 ///
