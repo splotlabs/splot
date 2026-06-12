@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "0cbb75fa589889cda715220f48a042e8dc4c1a37",
+  "audited_commit": "bb6ebdf30a62e14783bc9f303ef8ca15c69b1aa9",
   "outcome": "success",
   "files": [
     {
@@ -310,7 +310,7 @@
     },
     {
       "path": "crates/splot-cli/src/main.rs",
-      "sha256": "890c2509b664bf39213bd067bc1d28f012180c427383d04162585856f606cdcc",
+      "sha256": "d2282118b6adcd8eff65185d496a5be76092dc623ab247ebb94122454d37017c",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [],
       "outcome": "success"
@@ -615,7 +615,7 @@
     },
     {
       "path": "crates/splot-core/src/lib.rs",
-      "sha256": "f986455d5a24873590619ce9a2ae83fdfbda3db3fb2747d7adbc05fbeb97019d",
+      "sha256": "57241ce78dfce09266bb7814d273d0ded3322f2f913461d3ace1aae3bfc9fff0",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-IVF-CONTAINER"
@@ -731,7 +731,7 @@
     },
     {
       "path": "crates/splot-encode/src/lib.rs",
-      "sha256": "4e064e060a336eb4f3a1c8042e58a7abbda5be7f23a20c707b9cc2f82d8f6d29",
+      "sha256": "31bf1d17b37c851b3e34e1d283a1d771e312924622f9b02e976007f77427ecd7",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [],
       "outcome": "success"
@@ -825,7 +825,7 @@
     },
     {
       "path": "crates/splot-validate/src/lib.rs",
-      "sha256": "7d93aabeba91d3228a069991a5987fb56ca1bfbb149c8bf65eae75dbc6b8f510",
+      "sha256": "980cf29f1b2c0384fded540b1f8bb900f2484d59b52ea45d8a5a06330e19b98f",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -1479,7 +1479,7 @@
     },
     {
       "path": "docs/references/THIRD-PARTY-NOTICES.md",
-      "sha256": "54a5577838c59231db035aa3cdbd8be27c881df5129e3b596bbefff5d49670fc",
+      "sha256": "0ce2031820eaabd7e9abfadd68309ad4cd40b8cd2c28acab0121a2e482e0b9af",
       "scope_kind": "docs",
       "feature_ids": [],
       "outcome": "success"

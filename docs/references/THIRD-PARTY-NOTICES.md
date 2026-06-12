@@ -12,10 +12,12 @@
 
 ## 1. Current repository policy
 
-`splot` project code and original documentation are licensed under:
+`splot` project code and original documentation are licensed by Bartosz
+Tomczyk under the PolyForm Noncommercial License 1.0.0, except for explicitly
+listed third-party materials and generated-tooling exceptions.
 
 ```text
-PolyForm Noncommercial 1.0.0
+SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 ```
 
 Known exception (assistant integrations): OpenSpec-generated assistant

@@ -21,7 +21,7 @@
 //! - This is the **AV2** OBU header (§ 5.2.2), not the AV1 OBU header.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
-//! separate license.
+//! separate written license from Bartosz Tomczyk.
 
 pub mod annexb;
 pub mod bitio;

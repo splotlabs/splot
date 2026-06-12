@@ -9,7 +9,7 @@
 //! on this crate except `splot-cli`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
-//! separate license.
+//! separate written license from Bartosz Tomczyk.
 
 pub mod config;
 pub mod context;
