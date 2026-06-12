@@ -12928,31 +12928,79 @@ fn frame_header_core_checks(
         ));
     }
 
+    let max_width = active_sequence.general.max_frame_width.get();
+    let max_height = active_sequence.general.max_frame_height.get();
+
+    // AV2 § 6.17.2: after load_sequence_header(), for every `cur_mfh_id > 0` frame it is a
+    // requirement of bitstream conformance that the *referenced multi-frame header's stored*
+    // dimensions satisfy mfh_frame_width_minus_1[ cur_mfh_id ] <= max_frame_width_minus_1 and
+    // mfh_frame_height_minus_1[ cur_mfh_id ] <= max_frame_height_minus_1
+    // (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2, mirror :4348-4349).
+    // This bounds the MFH's *stored* dims and is INDEPENDENT of frame_size_override_flag —
+    // a frame overriding to in-range dims (so `core.frame_size` is conformant) still must
+    // not reference an out-of-range MFH. The predicate (stored MFH dims) differs from the
+    // §6.17.4.1 derived-FrameWidth check below, so it has its own rule id. An MFH with no
+    // `mfh_frame_size` payload infers its default dims to the sequence maxima (§5.18.2,
+    // mirror :4101) and is trivially in range, so the omitted-size case is silent here.
+    // Evaluated at the referencing frame's OBU (the §6.17.2 load_sequence_header point), so
+    // the diagnostic is anchored at `obu` and emitted once per referencing frame header.
+    // An unresolvable MFH leaves `mfh_record == None` (the shared guard) and stays silent.
+    let mfh_stored_dims = if let Some(record) = mfh_record
+        && let Some(mfh_size) = record.mfh_frame_size
+    {
+        let mfh_width = mfh_size.width_minus_1 + 1;
+        let mfh_height = mfh_size.height_minus_1 + 1;
+        if mfh_width > max_width || mfh_height > max_height {
+            report.push(frame_header_error(
+                "frame-header/mfh-frame-size-exceeds-sequence-max",
+                "6.17.2",
+                obu,
+                format!(
+                    "the referenced multi-frame header (cur_mfh_id {}) stores \
+                     FrameWidth={}, FrameHeight={}, which exceeds the active sequence \
+                     maximum {}x{} (§6.17.2 mfh_frame_width/height_minus_1 <= \
+                     max_frame_width/height_minus_1)",
+                    core.cur_mfh_id.get(),
+                    mfh_width,
+                    mfh_height,
+                    max_width,
+                    max_height
+                ),
+            ));
+        }
+        Some((mfh_width, mfh_height))
+    } else {
+        None
+    };
+
     // FrameWidth/FrameHeight do not exceed the active sequence maximum
     // (FrameWidth <= MaxFrameWidth, FrameHeight <= MaxFrameHeight). On the explicit
     // override path this is AV2 § 6.17.4.1 (frame_width_minus_1 <= max_frame_width_minus_1,
     // frame_height_minus_1 <= max_frame_height_minus_1,
     // docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1, mirror :5200-5205).
     // On the `cur_mfh_id > 0` non-override path FrameWidth = mfh_frame_width_minus_1 + 1
-    // (mirror :5767), so the identical bound is the AV2 § 6.17.2 requirement that, after
-    // load_sequence_header(), mfh_frame_width_minus_1[ cur_mfh_id ] <= max_frame_width_minus_1
-    // and mfh_frame_height_minus_1[ cur_mfh_id ] <= max_frame_height_minus_1 (mirror :4348-4349).
-    // Both reduce to the same FrameWidth/Height-vs-maxima comparison on `core.frame_size`.
-    if let Some(size) = core.frame_size {
-        let max_width = active_sequence.general.max_frame_width.get();
-        let max_height = active_sequence.general.max_frame_height.get();
-        if size.width > max_width || size.height > max_height {
-            report.push(frame_header_error(
-                "frame-header/frame-size-exceeds-sequence-max",
-                "6.17.4.1",
-                obu,
-                format!(
-                    "frame_header_info() derives FrameWidth={}, FrameHeight={}, which \
-                     exceeds the active sequence maximum {}x{}",
-                    size.width, size.height, max_width, max_height
-                ),
-            ));
-        }
+    // (mirror :5767), so `core.frame_size` carries the MFH's stored dims verbatim — that
+    // exact case is already the §6.17.2 stored-MFH check above, the single home for
+    // stored-MFH dims. To avoid double-reporting the identical numbers, the derived check
+    // is skipped only when `core.frame_size` equals the stored MFH dims (the override==0
+    // MFH-default path). On the override==1 path the derived dims come from explicit
+    // frame_size() bits and differ from the stored dims, so both checks examine distinct
+    // numbers and both legitimately fire when each independently exceeds the maxima.
+    let derived_is_mfh_default = matches!((core.frame_size, mfh_stored_dims), (Some(size), Some(dims)) if (size.width, size.height) == dims);
+    if !derived_is_mfh_default
+        && let Some(size) = core.frame_size
+        && (size.width > max_width || size.height > max_height)
+    {
+        report.push(frame_header_error(
+            "frame-header/frame-size-exceeds-sequence-max",
+            "6.17.4.1",
+            obu,
+            format!(
+                "frame_header_info() derives FrameWidth={}, FrameHeight={}, which \
+                 exceeds the active sequence maximum {}x{}",
+                size.width, size.height, max_width, max_height
+            ),
+        ));
     }
 
     // AV2 § 6.17.2: ref_long_term_id[i] != (1 << long_term_frame_id_bits) - 1.
