@@ -64,6 +64,16 @@ impl MfhId {
 
 /// HLS availability record for a parsed multi-frame header OBU (AV2 v1.0.0 § 5.7 /
 /// § 7.3.8.7), consumed by the frame-header `cur_mfh_id` reference check.
+///
+/// Beyond the availability identity (`mfh_id` / `mfh_seq_header_id` / layer ids) this
+/// also carries the parsed § 5.7 state a `cur_mfh_id > 0` frame header consumes at
+/// § 5.18.2: the frame-size payload (for the § 5.18.4.1 default dimensions),
+/// the segment-info gating flags and the parsed `MfhFeatureEnabled` / `MfhFeatureData`
+/// (for the § 5.18.7.1 MFH-gated `segmentation_params()` arm), and
+/// `mfh_deblocking_filter_update` (groundwork; deblocking parsing itself lands with
+/// the frame-filtering change). Keeping this state in `splot-core` lets the validator
+/// pass a complete view into the core parse without `splot-core` depending on any
+/// `splot-validate` type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MultiFrameHeaderRecord {
     /// `mfhId = mfh_id_minus_1 + 1` (in range, `< MAX_MFH_NUM`).
@@ -74,6 +84,26 @@ pub struct MultiFrameHeaderRecord {
     pub mfh_tlayer_id: TemporalLayerId,
     /// `MfhMLayerId[mfhId]`: the multi-frame header OBU's `obu_mlayer_id`.
     pub mfh_mlayer_id: EmbeddedLayerId,
+    /// `mfh_frame_size_present_flag` payload, when present (AV2 § 5.7). `None` is the
+    /// omitted-size case: § 5.18.2 (:4101) infers the dimensions to the sequence
+    /// maxima when this is absent, applied at § 5.18.4.1 consumption.
+    pub mfh_frame_size: Option<MfhFrameSize>,
+    /// `mfh_seg_info_present_flag` (AV2 § 5.7): gates the § 5.18.7.1 MFH arm.
+    pub mfh_seg_info_present_flag: bool,
+    /// `mfh_ext_seg_flag`, present when `mfh_seg_info_present_flag` (AV2 § 5.7); the
+    /// § 5.18.7.1 `mfh_ext_seg_flag == enable_ext_seg` `haveSegParams` test.
+    pub mfh_ext_seg_flag: Option<bool>,
+    /// `mfh_allow_seg_info_change`, present when `mfh_seg_info_present_flag`
+    /// (AV2 § 5.7); the § 5.18.7.1 `allowChange` input.
+    pub mfh_allow_seg_info_change: Option<bool>,
+    /// Parsed `seg_info(mfh_ext_seg_flag ? 16 : 8)` (`MfhFeatureEnabled[mfhId]` /
+    /// `MfhFeatureData[mfhId]`, AV2 § 5.7 / § 5.4.9), present when
+    /// `mfh_seg_info_present_flag`. Reused by the § 5.18.7.1 `reuse_seg_info` arm.
+    pub mfh_segment_info: Option<SegmentInfo>,
+    /// `mfh_deblocking_filter_update[mfhId]` (AV2 § 5.7). Recorded as groundwork; the
+    /// deblocking parse it gates lands with the frame-filtering change
+    /// (`frame-filtering-deblocking-gdf-cdef`).
+    pub mfh_deblocking_filter_update: bool,
     /// Source byte offset of the multi-frame header OBU that produced this record.
     pub offset: ByteOffset,
 }

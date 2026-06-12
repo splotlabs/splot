@@ -4472,6 +4472,333 @@ mod tests {
         );
     }
 
+    /// A multi-frame header OBU (type 3) at xlayer 0 with `mfh_seq_header_id` 0 and
+    /// `mfhId` 1 (`mfh_id_minus_1` 0), carrying an `mfh_frame_size_present_flag`
+    /// payload whose `mfh_frame_width_minus_1` / `mfh_frame_height_minus_1` derive the
+    /// given `FrameWidth` / `FrameHeight` (AV2 § 5.7). No segmentation info, no
+    /// deblocking update. A `cur_mfh_id == 1` frame with `frame_size_override_flag == 0`
+    /// then derives its FrameWidth/FrameHeight from this record (mirror :5767).
+    fn mfh_obu_with_frame_size(width: u32, height: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.uvlc(0); // mfh_seq_header_id 0
+        bits.uvlc(0); // mfh_id_minus_1 -> mfhId = 1
+        bits.bit(1); // mfh_frame_size_present_flag
+        bits.f(8 - 1, 4); // mfh_frame_width_bits_minus_1 -> 8-bit width field
+        bits.f(8 - 1, 4); // mfh_frame_height_bits_minus_1 -> 8-bit height field
+        bits.f(width - 1, 8); // mfh_frame_width_minus_1 -> FrameWidth = width
+        bits.f(height - 1, 8); // mfh_frame_height_minus_1 -> FrameHeight = height
+        bits.bit(0); // mfh_deblocking_filter_update
+        bits.bit(0); // mfh_seg_info_present_flag -> fully parsed
+        bits.bit(0); // obu_extension_flag = 0
+        bits.bit(1); // trailing_one_bit
+        annex_b_obu(0x0C, &bits.into_bytes())
+    }
+
+    /// A multi-frame header OBU (type 3) at xlayer 0 with `mfh_seq_header_id` 0 and
+    /// `mfhId` 1, with `mfh_frame_size_present_flag == 0` (no stored dimensions). AV2
+    /// § 5.18.2 (:4101) infers the default dims to the sequence maxima at consumption,
+    /// so the §6.17.2 `mfh_frame_width_minus_1 <= max_frame_width_minus_1` bound has no
+    /// stored value to compare and is trivially satisfied.
+    fn mfh_obu_without_frame_size() -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.uvlc(0); // mfh_seq_header_id 0
+        bits.uvlc(0); // mfh_id_minus_1 -> mfhId = 1
+        bits.bit(0); // mfh_frame_size_present_flag == 0 (no stored dims)
+        bits.bit(0); // mfh_deblocking_filter_update
+        bits.bit(0); // mfh_seg_info_present_flag -> fully parsed
+        bits.bit(0); // obu_extension_flag = 0
+        bits.bit(1); // trailing_one_bit
+        annex_b_obu(0x0C, &bits.into_bytes())
+    }
+
+    /// A `cur_mfh_id == 1`, `frame_size_override_flag == 0` CLK frame (AV2 § 5.18.2)
+    /// whose FrameWidth/FrameHeight come from the resolved MFH record's default
+    /// dimensions (no explicit width/height bits). `col_increment_bits` is the number
+    /// of `tile_info()` column-increment bits the derived FrameWidth requires.
+    fn mfh_backed_clk_default_size(col_increment_bits: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(1); // cur_mfh_id == 1 (resolves through the MFH; no seq id field follows)
+        fb.bit(0); // immediate_output_frame
+        fb.bit(0); // frame_size_override_flag == 0 -> MFH default dims
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
+        // frame_size(): no bits on the non-override path (dims come from the MFH).
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, col_increment_bits);
+        annex_b_obu(CLK_HEADER, &fb.into_bytes())
+    }
+
+    /// A `cur_mfh_id == 1`, `frame_size_override_flag == 1` CLK frame (AV2 § 5.18.2)
+    /// whose FrameWidth/FrameHeight come from explicit `frame_width_minus_1` /
+    /// `frame_height_minus_1` bits (`width` / `height`), ignoring the resolved MFH's
+    /// stored default dimensions. `col_increment_bits` is the number of `tile_info()`
+    /// column-increment bits the overridden FrameWidth requires. The explicit width
+    /// field is the sequence `frame_width_bits` wide (8 for [`FrameCoreSeq::base`]).
+    fn mfh_backed_clk_override_size(width: u32, height: u32, col_increment_bits: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(1); // cur_mfh_id == 1 (resolves through the MFH; no seq id field follows)
+        fb.bit(0); // immediate_output_frame
+        fb.bit(1); // frame_size_override_flag == 1 -> explicit dims override the MFH
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
+        fb.f(width - 1, 8); // frame_width_minus_1 (f(frame_width_bits == 8))
+        fb.f(height - 1, 8); // frame_height_minus_1 (f(frame_height_bits == 8))
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, col_increment_bits);
+        annex_b_obu(CLK_HEADER, &fb.into_bytes())
+    }
+
+    #[test]
+    fn validator_flags_mfh_stored_frame_size_exceeds_sequence_max_on_override() {
+        // Regression for the §6.17.2 stored-MFH bound: a cur_mfh_id > 0 frame overrides
+        // to in-range dims (16x16 == max), so the derived FrameWidth is conformant and
+        // frame-header/frame-size-exceeds-sequence-max (§6.17.4.1) must stay silent. But
+        // the referenced MFH's STORED mfh_frame_width_minus_1 derives FrameWidth 256 >
+        // max_frame_width 16, which §6.17.2 (mirror :4348) bounds independently of
+        // frame_size_override_flag, after load_sequence_header. Pre-fix this was silent
+        // (the round-1 check fires only when the MFH dims flow into core.frame_size).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(mfh_obu_with_frame_size(256, 8)); // stored dims 256x8 (> max 16x16)
+        // Override to 16x16 (in range); 16-wide frame: sbCols == 1, no column increment.
+        data.extend(mfh_backed_clk_override_size(16, 16, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/mfh-frame-size-exceeds-sequence-max"),
+            "report was: {report}"
+        );
+        // The override dims are in range, so the §6.17.4.1 derived check stays silent.
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/frame-size-exceeds-sequence-max"),
+            "the in-range override must not fire the derived frame-size check; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_accepts_mfh_stored_frame_size_within_sequence_max_on_override() {
+        // Negative control: a conformant MFH (stored dims 16x16 == max) backing an
+        // in-range override frame must stay silent on both rules.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(mfh_obu_with_frame_size(16, 16));
+        data.extend(mfh_backed_clk_override_size(16, 16, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/mfh-frame-size-exceeds-sequence-max"),
+            "report was: {report}"
+        );
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/frame-size-exceeds-sequence-max"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_does_not_flag_mfh_omitted_frame_size_on_override() {
+        // Omitted-size control: an MFH with no mfh_frame_size payload infers its default
+        // dims to the sequence maxima (trivially in range), so the §6.17.2 stored-dims
+        // check has nothing to compare and stays silent even when the frame overrides.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(mfh_obu_without_frame_size());
+        data.extend(mfh_backed_clk_override_size(16, 16, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/mfh-frame-size-exceeds-sequence-max"),
+            "an omitted MFH size infers the maxima and must stay silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_does_not_double_fire_mfh_frame_size_on_default_path() {
+        // No-double-fire control for the override==0 path: the MFH stored dims flow into
+        // core.frame_size verbatim, so the §6.17.2 stored-MFH check is the single home —
+        // frame-header/mfh-frame-size-exceeds-sequence-max fires exactly once and the
+        // §6.17.4.1 derived frame-header/frame-size-exceeds-sequence-max does NOT also
+        // fire on the same dims.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(mfh_obu_with_frame_size(256, 8)); // stored dims 256x8 (> max 16x16)
+        // 256-wide frame: sbCols == 4, so tile_info() reads one column increment bit.
+        data.extend(mfh_backed_clk_default_size(1));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            report
+                .errors()
+                .filter(|d| d.rule_id == "frame-header/mfh-frame-size-exceeds-sequence-max")
+                .count(),
+            1,
+            "the stored-MFH check is the single home for the default path; report was: {report}"
+        );
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/frame-size-exceeds-sequence-max"),
+            "the derived check must defer to the stored-MFH check on the default path; \
+             report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_does_not_flag_mfh_stored_frame_size_when_mfh_unresolvable() {
+        // Unresolvable-MFH control: with no in-band MFH backing cur_mfh_id == 1, the
+        // §6.17.2 stored-dims check has no record to read and stays silent (the existing
+        // guard), exactly like the derived check.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        // No MFH OBU recorded; the override CLK still references cur_mfh_id == 1.
+        data.extend(mfh_backed_clk_override_size(16, 16, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/mfh-frame-size-exceeds-sequence-max"),
+            "an unresolvable MFH must keep the silent behavior; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_mfh_default_frame_size_exceeds_sequence_max() {
+        // Regression for the cur_mfh_id > 0 default-size path: with
+        // frame_size_override_flag == 0, FrameWidth/Height come from the MFH record
+        // (mirror :5767). The MFH carries FrameWidth 256 > max_frame_width 16, so the
+        // resolved frame must fire the §6.17.2 stored-MFH bound
+        // (mfh_frame_width_minus_1 <= max_frame_width_minus_1, mirror :4348), homed in
+        // frame-header/mfh-frame-size-exceeds-sequence-max. The default-path dims flow
+        // verbatim into core.frame_size, so this is the single home (the §6.17.4.1
+        // derived check defers — see validator_does_not_double_fire_mfh_frame_size_on_default_path).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(mfh_obu_with_frame_size(256, 8));
+        // 256-wide frame: sbCols == 4, so tile_info() reads one column increment bit.
+        data.extend(mfh_backed_clk_default_size(1));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/mfh-frame-size-exceeds-sequence-max"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_accepts_mfh_default_frame_size_within_sequence_max() {
+        // Negative control: a resolvable, conformant MFH (FrameWidth 16 == max,
+        // FrameHeight 16 == max) backing the same default-size frame must stay silent.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(mfh_obu_with_frame_size(16, 16));
+        data.extend(mfh_backed_clk_default_size(0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/frame-size-exceeds-sequence-max"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_does_not_flag_mfh_default_frame_size_when_mfh_unresolvable() {
+        // Unresolvable-MFH control: no in-band MFH backs cur_mfh_id == 1, so the core
+        // parse stops before frame_size() (no guessing) and the frame-size check cannot
+        // fire — the pre-fix early-stop behavior is preserved for this case.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        // No MFH OBU recorded; the CLK still references cur_mfh_id == 1.
+        data.extend(mfh_backed_clk_default_size(1));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/frame-size-exceeds-sequence-max"),
+            "an unresolvable MFH must keep the early-stop behavior; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_mfh_stored_frame_size_exceeds_sequence_max_on_truncated_frame() {
+        // F1 regression: the §6.17.2 stored-dims bound (mfh_frame_width_minus_1 <=
+        // max_frame_width_minus_1, mirror :4348) depends ONLY on the resolved MFH
+        // record and the active sequence maxima — it is decidable at the
+        // load_sequence_header point regardless of how far the referencing frame
+        // header parses. A `cur_mfh_id == 1` frame whose payload is truncated right
+        // after the prefix (`frame_obu_mfh_ref` codes only is_first_tile_group +
+        // cur_mfh_id, so parse_frame_core returns None) must still fire the stored-MFH
+        // check: the referenced MFH stores FrameWidth 256 > max_frame_width 16.
+        // Pre-fix the check ran only past the `let Some(core) = parse_frame_core(..)`
+        // early-stop, so this truncated frame was silently skipped.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(mfh_obu_with_frame_size(256, 8)); // stored dims 256x8 (> max 16x16)
+        data.extend(frame_obu_mfh_ref(CLK_HEADER, 1)); // truncated after the prefix
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/mfh-frame-size-exceeds-sequence-max"),
+            "a truncated frame referencing an oversized-stored-dims MFH must still fire \
+             the §6.17.2 stored-dims check; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_accepts_mfh_within_sequence_max_on_truncated_frame() {
+        // F1 negative control: a conformant MFH (stored dims 16x16 == max) backing a
+        // truncated `cur_mfh_id == 1` frame must stay silent on the §6.17.2
+        // stored-dims rule for this id — the hoist must not introduce a false positive
+        // when the core parse fails but the stored dims are in range.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(mfh_obu_with_frame_size(16, 16)); // stored dims 16x16 == max
+        data.extend(frame_obu_mfh_ref(CLK_HEADER, 1)); // truncated after the prefix
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/mfh-frame-size-exceeds-sequence-max"),
+            "a conformant-MFH truncated frame must stay silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_both_frame_size_rules_when_override_repeats_mfh_out_of_range_dims() {
+        // F2 regression: an override==1 frame that explicitly codes the SAME
+        // out-of-range dims the MFH stores is a genuine §6.17.4.1 violation of its own
+        // explicit frame_width/height_minus_1 fields, distinct from the §6.17.2
+        // stored-MFH violation. The no-double-fire suppression must key on the parsed
+        // PATH (frame_size_override_flag), not on dimension equality: with override==1
+        // BOTH frame-header/frame-size-exceeds-sequence-max (§6.17.4.1, the explicit
+        // fields) and frame-header/mfh-frame-size-exceeds-sequence-max (§6.17.2, the
+        // stored dims) must fire. Pre-fix the value-equality `derived_is_mfh_default`
+        // wrongly suppressed the §6.17.4.1 check because the numbers matched.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(mfh_obu_with_frame_size(256, 8)); // stored dims 256x8 (> max 16x16)
+        // Override to the SAME out-of-range dims 256x8 (256-wide -> one column increment).
+        data.extend(mfh_backed_clk_override_size(256, 8, 1));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/mfh-frame-size-exceeds-sequence-max"),
+            "the §6.17.2 stored-MFH check must fire; report was: {report}"
+        );
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/frame-size-exceeds-sequence-max"),
+            "an override==1 frame's explicit out-of-range dims are a separate §6.17.4.1 \
+             violation that must fire even when they equal the stored MFH dims; \
+             report was: {report}"
+        );
+    }
+
     // OBU header bytes: obu_type << 2. 0x14 = OBU_OPEN_LOOP_KEY (5), 0x1c =
     // OBU_REGULAR_TILE_GROUP (7).
     const OLK_HEADER: u8 = 0x14;
@@ -18637,6 +18964,12 @@ mod tests {
         fb.bit(0); // allow_intrabc
         fb.bit(0); // disable_cdf_update
         intra_structure_tail(&mut fb, 0);
+        // The cur_mfh_id > 0 prefix (`uvlc(cur_mfh_id)`) is one bit longer than the
+        // direct cur_mfh_id == 0 prefix, so the now-fully-parsed § 5.18.2 intra tail can
+        // need one more bit than byte-padding alone supplies; an extra padding byte gives
+        // the core parser room to reach its StoppedBeforeDeblockingFilterParams stop
+        // (trailing bits past the stop are ignored).
+        fb.f(0, 8);
         annex_b_obu_with_header(&layer_obu_header(4, 0, 0, xlayer), &fb.into_bytes())
     }
 

@@ -30,9 +30,13 @@
 //!   `segmentation_params()`, `setup_qm_params()`, `delta_q_params()`, and the
 //!   § 5.18.2 lossless/`allow_tcq`/`allow_parity_hiding` tail, stopping before
 //!   `deblocking_filter_params()` (§ 5.18.5.2)
-//!   ([`FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams`]). The
-//!   `cur_mfh_id > 0` branches that need unmodeled multi-frame-header state stop
-//!   with [`FrameHeaderParseStatus::UnsupportedUntilFeature`].
+//!   ([`FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams`]). On the
+//!   `cur_mfh_id > 0` path the resolved in-band multi-frame header's § 5.7 state is
+//!   threaded in (the [`MultiFrameHeaderRecord`] passed via
+//!   [`FrameHeaderParseInput::mfh_record`]) so the § 5.18.4.1 default dimensions and
+//!   the § 5.18.7.1 MFH-gated segmentation arm parse the same as the direct path; a
+//!   `cur_mfh_id > 0` frame whose MFH is unresolvable still stops with
+//!   [`FrameHeaderParseStatus::UnsupportedUntilFeature`] rather than guessing.
 
 use crate::bitio::BitReader;
 use crate::error::{Error, Result};
@@ -42,7 +46,7 @@ use crate::headers::frame::quant::{
     parse_delta_q_params, parse_lossless_info, parse_quantization_params, parse_setup_qm_params,
 };
 use crate::headers::frame::segmentation::{
-    CoreSeqSegView, SegmentationParams, parse_segmentation_params,
+    CoreSeqSegView, MfhSegView, SegmentationParams, parse_segmentation_params,
 };
 use crate::headers::frame::size::{FrameSize, ceil_log2, parse_frame_size};
 use crate::headers::frame::tiling::{CoreSeqTileView, TileInfo, parse_tile_info};
@@ -196,8 +200,11 @@ pub struct FrameHeaderParseInput<'a> {
     /// activation fields; otherwise the result is [`FrameHeaderParseStatus::ActivationFieldsOnly`].
     pub active_sequence: Option<&'a SequenceHeader>,
     /// The multi-frame header resolving a `cur_mfh_id > 0` reference, when available.
-    /// Reserved for future `frame_size()` default-dimension resolution; the record
-    /// type does not yet carry MFH frame dimensions.
+    /// Its parsed § 5.7 state supplies the § 5.18.4.1 default frame dimensions (with the
+    /// § 5.18.2 omitted-size inference) and the § 5.18.7.1 MFH-gated
+    /// `segmentation_params()` arm. `None` for a `cur_mfh_id == 0` direct reference, or
+    /// when the in-band MFH is unresolvable — the latter keeps the unsupported/Unknown
+    /// routing rather than guessing field positions.
     pub mfh_record: Option<&'a MultiFrameHeaderRecord>,
     /// Reference-frame buffer state (see [`FrameReferenceStateView`]).
     pub reference_state: FrameReferenceStateView<'a>,
@@ -249,6 +256,16 @@ pub struct FrameHeaderCore {
     pub refresh_frame_flags: Option<u32>,
     /// `FrameWidth`/`FrameHeight` from `frame_size()`, when exactly known.
     pub frame_size: Option<FrameSize>,
+    /// `frame_size_override_flag` (AV2 § 5.18.4 / § 5.18.2), when the intra tail read
+    /// or inferred it. This records the *provenance* of [`Self::frame_size`]: on the
+    /// `cur_mfh_id > 0` non-override path (`Some(false)`) `FrameWidth`/`FrameHeight`
+    /// come from the resolved multi-frame header's stored default dimensions
+    /// (`mfh_frame_width/height_minus_1 + 1`, § 5.18.4.1, mirror :5767), whereas on the
+    /// override path (`Some(true)`) they come from this frame's explicit
+    /// `frame_width_minus_1` / `frame_height_minus_1` fields. A single-picture key frame
+    /// infers it `false` without reading a bit. `None` when the parse stopped before the
+    /// intra tail.
+    pub frame_size_override_flag: Option<bool>,
     /// `bridge_frame_ref_idx`, when read (bridge frames).
     pub bridge_frame_ref_idx: Option<u32>,
     /// `frame_to_show_map_idx`, when read (show-existing-frame).
@@ -280,11 +297,6 @@ pub struct FrameHeaderCore {
 
 /// Matrix Feature ID for the frame-header-info coverage this phase does not model.
 const FRAME_HEADER_INFO_FEATURE: &str = "AV2-5.18.2-FRAME-HEADER-INFO";
-
-/// Matrix Feature ID for the § 5.18.7.1 / § 5.18.7.2 multi-frame-header-gated
-/// branches this phase does not model (`mfh_seg_info_present_flag`,
-/// `mfh_ext_seg_flag`, `mfh_allow_seg_info_change` for `cur_mfh_id > 0`).
-const SEGMENTATION_TILING_FEATURE: &str = "AV2-5.18.7-SEGMENTATION-TILING";
 
 /// Sequence-derived scalars the core parser needs, gathered from a fully parsed
 /// [`SequenceHeader`]. `None` when any required child config (partition, segment,
@@ -349,6 +361,66 @@ impl CoreSeqView {
     }
 }
 
+/// The resolved multi-frame header's § 5.7 state needed by the `cur_mfh_id > 0`
+/// frame-header core path (AV2 v1.0.0 § 5.18.2), derived from a
+/// [`MultiFrameHeaderRecord`] against the active sequence header's maxima.
+///
+/// Built only on the `cur_mfh_id > 0` path (with a resolved in-band record); on the
+/// `cur_mfh_id == 0` direct path the parser keeps `None` and uses sequence state.
+#[derive(Debug)]
+struct MfhFrameView {
+    /// `(FrameWidth, FrameHeight)` default dimensions for the § 5.18.4.1 non-override
+    /// path: `mfh_frame_width/height_minus_1[ cur_mfh_id ] + 1`, with the § 5.18.2
+    /// omitted-size inference (:4101) already applied — when the MFH carried no
+    /// frame-size payload, these equal the sequence `max_frame_width/height`.
+    default_dims: (u32, u32),
+    /// The § 5.18.7.1 MFH-gated segmentation inputs, `Some` only when
+    /// `mfh_seg_info_present_flag` is set (the gate selecting the MFH branch).
+    seg: Option<MfhSegView>,
+}
+
+impl MfhFrameView {
+    /// Resolves a [`MultiFrameHeaderRecord`]'s § 5.7 state against the active
+    /// sequence header's maxima for the `cur_mfh_id > 0` core path (AV2 § 5.18.2).
+    fn from_record(record: &MultiFrameHeaderRecord, seq: &CoreSeqView) -> Self {
+        // AV2 § 5.18.2 (:4101): `if ( cur_mfh_id == 0 || !mfh_frame_size_present_flag )`
+        // infers `mfh_frame_width/height_minus_1[ cur_mfh_id ]` to `max_frame_*_minus_1`.
+        // On this path `cur_mfh_id > 0`, so the inference applies exactly when the MFH
+        // carried no frame-size payload; otherwise the explicit MFH dimensions are used
+        // (§ 5.18.4.1, :5767). `width`/`height` here are the `*_minus_1 + 1` luma values.
+        let default_dims = match record.mfh_frame_size {
+            Some(size) => (
+                size.width_minus_1.saturating_add(1),
+                size.height_minus_1.saturating_add(1),
+            ),
+            None => (seq.max_frame_width, seq.max_frame_height),
+        };
+        // AV2 § 5.18.7.1: the MFH segmentation branch is gated on
+        // `mfh_seg_info_present_flag`; build its view only then. The seg-info flags and
+        // parsed feature data are present together with the flag (AV2 § 5.7).
+        let seg = if record.mfh_seg_info_present_flag {
+            match (
+                record.mfh_ext_seg_flag,
+                record.mfh_allow_seg_info_change,
+                record.mfh_segment_info,
+            ) {
+                (Some(ext_seg), Some(allow_change), Some(segment_info)) => Some(MfhSegView {
+                    mfh_ext_seg_flag: ext_seg,
+                    mfh_allow_seg_info_change: allow_change,
+                    mfh_segment_info: segment_info,
+                }),
+                // An inconsistent record (flag set without its payload) cannot select
+                // the MFH branch soundly; fall back to the sequence/zero derivation
+                // rather than guessing.
+                _ => None,
+            }
+        } else {
+            None
+        };
+        Self { default_dims, seg }
+    }
+}
+
 /// Reads `f(n)`, treating `n == 0` as reading no bits (value `0`), matching the
 /// AV2 convention that an `f(0)` field is absent.
 fn read_f(reader: &mut BitReader<'_>, n: u32) -> Result<u32> {
@@ -389,7 +461,18 @@ pub fn parse_frame_header_core(
     if input.mode == FrameHeaderParseMode::Core
         && let Some(seq) = input.active_sequence.and_then(CoreSeqView::from_sequence)
     {
-        parse_core_body(reader, &mut core, &seq)?;
+        // Resolve the `cur_mfh_id > 0` multi-frame-header state once, against the active
+        // sequence maxima. `None` when `cur_mfh_id == 0` (direct sequence reference) or
+        // when the in-band MFH is unresolvable (the resolution guard upstream passes no
+        // record), which keeps the unsupported/Unknown routing rather than guessing.
+        let mfh_view = if core.cur_mfh_id.is_zero() {
+            None
+        } else {
+            input
+                .mfh_record
+                .map(|record| MfhFrameView::from_record(record, &seq))
+        };
+        parse_core_body(reader, &mut core, &seq, mfh_view.as_ref())?;
     }
 
     core.consumed_bits = reader.consumed_bits().saturating_sub(start_bits);
@@ -419,6 +502,7 @@ fn init_core_from_prefix(prefix: &FrameHeaderPrefix, obu_type: ObuType) -> Frame
         order_hint_lsb: None,
         refresh_frame_flags: None,
         frame_size: None,
+        frame_size_override_flag: None,
         bridge_frame_ref_idx: None,
         frame_to_show_map_idx: None,
         allow_screen_content_tools: None,
@@ -441,6 +525,7 @@ fn parse_core_body(
     reader: &mut BitReader<'_>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
+    mfh: Option<&MfhFrameView>,
 ) -> Result<()> {
     let obu_type = core.obu_type;
 
@@ -465,7 +550,7 @@ fn parse_core_body(
         core.frame_is_intra = Some(true);
         core.immediate_output_frame = Some(true);
         core.implicit_output_frame = Some(false);
-        return parse_intra_tail(reader, core, seq, FrameType::Key, true);
+        return parse_intra_tail(reader, core, seq, mfh, FrameType::Key, true);
     }
 
     // AV2 § 5.18.2: ShowExistingFrame = is_sef().
@@ -540,7 +625,7 @@ fn parse_core_body(
     };
     core.implicit_output_frame = Some(implicit_output_frame);
 
-    parse_intra_tail(reader, core, seq, frame_type, false)
+    parse_intra_tail(reader, core, seq, mfh, frame_type, false)
 }
 
 /// Parses the show-existing-frame sub-path (AV2 § 5.18.2), stopping before
@@ -579,6 +664,7 @@ fn parse_intra_tail(
     reader: &mut BitReader<'_>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
+    mfh: Option<&MfhFrameView>,
     frame_type: FrameType,
     single_picture: bool,
 ) -> Result<()> {
@@ -589,6 +675,11 @@ fn parse_intra_tail(
     } else {
         reader.read_bit()? != 0
     };
+    // Record the dims provenance for the §6.17.4.1 / §6.17.2 validator split: the
+    // non-override path (`false`) derives FrameWidth/FrameHeight from the MFH default
+    // dimensions (or the sequence maxima for cur_mfh_id == 0), the override path
+    // (`true`) from this frame's explicit frame_width/height_minus_1 fields below.
+    core.frame_size_override_flag = Some(frame_size_override_flag);
 
     // order_hint f(OrderHintBits); OrderHintLsbs = order_hint.
     core.order_hint_lsb = Some(read_f(reader, seq.order_hint_bits)?);
@@ -604,12 +695,17 @@ fn parse_intra_tail(
     )?);
 
     // FrameIsIntra branch: frame_size(); screen_content_params(); intrabc_params().
+    // AV2 § 5.18.4.1 non-override default dimensions:
+    //   - cur_mfh_id == 0: max_frame_width/height (the § 5.18.2 :4101 inference for the
+    //     direct sequence reference).
+    //   - cur_mfh_id > 0: mfh_frame_width/height_minus_1[ cur_mfh_id ] + 1, with the
+    //     same omitted-size inference already folded into MfhFrameView::default_dims
+    //     (:4101). `None` only when the in-band MFH was unresolvable, which keeps the
+    //     parse from inventing a size (the structure cluster then stops).
     let default_dims = if core.cur_mfh_id.is_zero() {
         Some((seq.max_frame_width, seq.max_frame_height))
     } else {
-        // cur_mfh_id > 0 default dimensions come from the multi-frame header, which is
-        // not modeled with frame dimensions yet — leave the size unknown.
-        None
+        mfh.map(|view| view.default_dims)
     };
     core.frame_size = parse_frame_size(
         reader,
@@ -638,7 +734,7 @@ fn parse_intra_tail(
     // (FrameIsIntra branch), so none of the bru / motion-field / TIP blocks between
     // `disable_cdf_update` and `tile_info()` read bits or return, and parsing
     // continues directly at the structure cluster.
-    parse_intra_structures(reader, core, seq)
+    parse_intra_structures(reader, core, seq, mfh)
 }
 
 /// Parses the § 5.18.2 intra-path structure cluster after `disable_cdf_update`:
@@ -650,17 +746,21 @@ fn parse_intra_tail(
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`).
 ///
 /// The intra path always has `TipFrameMode == TIP_FRAME_DISABLED` and `!IsBridge`.
-/// Branches that need unmodeled multi-frame-header state (`cur_mfh_id > 0`) stop
-/// with [`FrameHeaderParseStatus::UnsupportedUntilFeature`] instead of guessing.
+/// On the `cur_mfh_id > 0` path the resolved multi-frame-header state is supplied via
+/// `mfh` (the § 5.18.4.1 default dimensions and the § 5.18.7.1 MFH segmentation arm);
+/// a `cur_mfh_id > 0` frame whose in-band MFH is unresolvable never reaches here with a
+/// known `frame_size`, so it still stops with
+/// [`FrameHeaderParseStatus::UnsupportedUntilFeature`] rather than guessing.
 fn parse_intra_structures(
     reader: &mut BitReader<'_>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
+    mfh: Option<&MfhFrameView>,
 ) -> Result<()> {
     // AV2 § 5.18.7.2: tile_info() derives sbCols/sbRows from MiCols/MiRows, i.e. from
-    // the exact FrameWidth/FrameHeight (§ 5.18.4.4). With cur_mfh_id > 0 and
-    // frame_size_override_flag == 0 the default dimensions come from
-    // mfh_frame_width_minus_1[ cur_mfh_id ], which the MFH record does not model yet.
+    // the exact FrameWidth/FrameHeight (§ 5.18.4.4). On the cur_mfh_id > 0 path those
+    // come from MfhFrameView::default_dims; `frame_size` is `None` only when the in-band
+    // MFH was unresolvable (no record), which keeps the unsupported/Unknown routing.
     let Some(frame_size) = core.frame_size else {
         core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
             feature_id: FRAME_HEADER_INFO_FEATURE,
@@ -692,16 +792,24 @@ fn parse_intra_structures(
     // AV2 § 5.18.2: set_primary_ref_frame_and_ctx( 1 ) reads no bits.
 
     // AV2 § 5.18.7.1: segmentation_params() consults mfh_seg_info_present_flag /
-    // mfh_ext_seg_flag / mfh_allow_seg_info_change when cur_mfh_id > 0; those MFH
-    // fields are not modeled, so the parser stops before segmentation_params() on
-    // that path (see `headers::frame::segmentation` module docs).
-    if !core.cur_mfh_id.is_zero() {
+    // mfh_ext_seg_flag / mfh_allow_seg_info_change when cur_mfh_id > 0. On the
+    // cur_mfh_id > 0 path the resolved MFH state must be known to derive the
+    // haveSegParams / allowChange / mfhId arm; if the in-band MFH is unresolvable
+    // (`mfh` is None) the derivation is undecidable, so stop here rather than guess.
+    // (Reachable only when frame_size_override_flag == 1 supplied an explicit size;
+    // otherwise the frame_size guard above already stopped.)
+    if !core.cur_mfh_id.is_zero() && mfh.is_none() {
         core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
-            feature_id: SEGMENTATION_TILING_FEATURE,
+            feature_id: FRAME_HEADER_INFO_FEATURE,
         };
         return Ok(());
     }
-    let segmentation = parse_segmentation_params(reader, &seq.seg)?;
+    // The resolved MFH segmentation arm (`MfhSegView`) is passed through; it is `Some`
+    // only when cur_mfh_id > 0 with mfh_seg_info_present_flag set, otherwise the
+    // sequence/zero derivation applies (cur_mfh_id == 0, or the MFH did not signal
+    // segment info).
+    let mfh_seg = mfh.and_then(|view| view.seg.as_ref());
+    let segmentation = parse_segmentation_params(reader, &seq.seg, mfh_seg)?;
 
     // AV2 § 5.18.2: setup_qm_params() (§ 5.18.6.2) runs after segmentation_params()
     // and is gated on the frame's parsed segmentation_enabled.
@@ -820,6 +928,7 @@ fn test_sub_views() -> (CoreSeqQuantView, CoreSeqSegView, CoreSeqTileView) {
 mod tests {
     use super::*;
     use crate::error::Error;
+    use crate::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature, SegmentInfo};
     use crate::span::ByteOffset;
 
     #[derive(Default)]
@@ -890,17 +999,29 @@ mod tests {
     }
 
     /// Parses the activation prefix then the core body, returning the result and the
-    /// total bits consumed (prefix + body).
+    /// total bits consumed (prefix + body). `cur_mfh_id == 0` paths pass no MFH state.
     fn parse_body(
         data: &[u8],
         obu_type: ObuType,
         first_picture_in_tu: bool,
         seq: &CoreSeqView,
     ) -> Result<(FrameHeaderCore, u64)> {
+        parse_body_with_mfh(data, obu_type, first_picture_in_tu, seq, None)
+    }
+
+    /// Like [`parse_body`] but resolves a `cur_mfh_id > 0` reference against `mfh_view`
+    /// (the in-band multi-frame-header state) when present.
+    fn parse_body_with_mfh(
+        data: &[u8],
+        obu_type: ObuType,
+        first_picture_in_tu: bool,
+        seq: &CoreSeqView,
+        mfh_view: Option<&MfhFrameView>,
+    ) -> Result<(FrameHeaderCore, u64)> {
         let mut reader = BitReader::new(data, ByteOffset::new(0));
         let prefix = parse_frame_header_prefix(&mut reader, obu_type, first_picture_in_tu)?;
         let mut core = init_core_from_prefix(&prefix, obu_type);
-        parse_core_body(&mut reader, &mut core, seq)?;
+        parse_core_body(&mut reader, &mut core, seq, mfh_view)?;
         let consumed = reader.consumed_bits();
         Ok((core, consumed))
     }
@@ -973,11 +1094,38 @@ mod tests {
         assert_eq!(consumed, 4 + 33 + 14);
     }
 
+    /// A fixed in-band multi-frame-header record resolving `cur_mfh_id` for the
+    /// `cur_mfh_id > 0` core path. `mfh_frame_size` / `mfh_seg_info_present_flag`
+    /// control which § 5.18.4.1 / § 5.18.7.1 arm is exercised.
+    fn mfh_record(
+        mfh_frame_size: Option<crate::hls::MfhFrameSize>,
+        seg: Option<(bool, bool, SegmentInfo)>,
+    ) -> MultiFrameHeaderRecord {
+        let (present, ext, allow, info) = match seg {
+            Some((ext, allow, info)) => (true, Some(ext), Some(allow), Some(info)),
+            None => (false, None, None, None),
+        };
+        MultiFrameHeaderRecord {
+            mfh_id: MfhId::from_raw(1),
+            mfh_seq_header_id: SequenceHeaderId::try_new(0).unwrap(),
+            mfh_tlayer_id: crate::types::TemporalLayerId::from_bits(0),
+            mfh_mlayer_id: crate::types::EmbeddedLayerId::from_bits(0),
+            mfh_frame_size,
+            mfh_seg_info_present_flag: present,
+            mfh_ext_seg_flag: ext,
+            mfh_allow_seg_info_change: allow,
+            mfh_segment_info: info,
+            mfh_deblocking_filter_update: false,
+            offset: ByteOffset::new(0),
+        }
+    }
+
     #[test]
-    fn frame_header_core_reads_mfh_reference_path() {
-        // CLK, cur_mfh_id == 2 (resolved via MFH); frame_size_override_flag == 0 leaves
-        // the size unknown because cur_mfh_id > 0 default dims come from the MFH, so
-        // the parser stops before tile_info() (§ 5.18.7.2 needs MiCols/MiRows).
+    fn frame_header_core_unresolvable_mfh_default_size_stays_unsupported() {
+        // CLK, cur_mfh_id == 2 with NO resolved MFH record and
+        // frame_size_override_flag == 0: the default dims come from the (unresolvable)
+        // MFH, so the size is unknown and the parser stops before tile_info() without
+        // guessing — the Unknown-routing case.
         let mut bits = Bits::default();
         bits.uvlc(2); // cur_mfh_id == 2 -> no seq_header_id_in_frame_header
         bits.bit(0); // immediate_output_frame
@@ -989,6 +1137,7 @@ mod tests {
         bits.bit(0); // allow_intrabc
         bits.bit(0); // disable_cdf_update
         let data = bits.into_bytes();
+        // No MFH record -> unresolvable.
         let (core, _) = parse_body(&data, ObuType::ClosedLoopKey, true, &base_seq()).unwrap();
 
         assert_eq!(core.cur_mfh_id.get(), 2);
@@ -996,7 +1145,7 @@ mod tests {
         assert_eq!(core.order_hint_lsb, Some(7));
         assert_eq!(
             core.frame_size, None,
-            "cur_mfh_id > 0 default dims are unmodeled"
+            "unresolvable cur_mfh_id > 0 default dims stay unknown"
         );
         assert_eq!(
             core.status,
@@ -1009,11 +1158,12 @@ mod tests {
     }
 
     #[test]
-    fn frame_header_core_mfh_with_explicit_size_stops_before_segmentation() {
-        // CLK, cur_mfh_id == 1 with frame_size_override_flag == 1: tile_info() and
-        // quantization_params() are exactly determined, but segmentation_params()
-        // consults mfh_seg_info_present_flag (§ 5.18.7.1), which is unmodeled, so the
-        // parser stops there with the blocking Feature ID.
+    fn frame_header_core_unresolvable_mfh_with_explicit_size_stops_before_segmentation() {
+        // CLK, cur_mfh_id == 1, frame_size_override_flag == 1 (explicit dims), but NO
+        // resolved MFH record: tile_info() / quantization_params() parse from the
+        // explicit size, but segmentation_params() needs mfh_seg_info_present_flag
+        // (§ 5.18.7.1), which is undecidable without the record — so the parser stops
+        // there rather than guessing the sequence/zero arm.
         let mut bits = Bits::default();
         bits.uvlc(1); // cur_mfh_id == 1 -> no seq_header_id_in_frame_header
         bits.bit(0); // immediate_output_frame
@@ -1035,6 +1185,11 @@ mod tests {
 
         assert_eq!(core.cur_mfh_id.get(), 1);
         assert_eq!(core.frame_size, Some(FrameSize::new(1920, 1080)));
+        assert_eq!(
+            core.frame_size_override_flag,
+            Some(true),
+            "the override path records frame_size_override_flag == 1 (explicit dims provenance)"
+        );
         assert_eq!(core.tile_info.as_ref().unwrap().tile_cols, 1);
         assert_eq!(core.quantization_params.unwrap().base_q_idx, 70);
         assert_eq!(core.segmentation_params, None);
@@ -1042,12 +1197,202 @@ mod tests {
         assert_eq!(
             core.status,
             FrameHeaderParseStatus::UnsupportedUntilFeature {
-                feature_id: "AV2-5.18.7-SEGMENTATION-TILING"
+                feature_id: "AV2-5.18.2-FRAME-HEADER-INFO"
             }
         );
         // uvlc(1)=3 prefix bits, then 33 core bits, then 3 tile_info bits and the
         // 8-bit base_q_idx; segmentation_params() is not reached.
         assert_eq!(consumed, 3 + 33 + 3 + 8);
+    }
+
+    #[test]
+    fn frame_header_core_mfh_default_dims_parse_through_tile_info() {
+        // CLK, cur_mfh_id == 1, frame_size_override_flag == 0, resolved MFH carrying
+        // explicit 1920x1080 dims: the § 5.18.4.1 default path uses the MFH dims (no
+        // frame-size bits), and tile_info()/quantization_params()/segmentation_params()
+        // parse through to the deblocking stop.
+        let mfh_size = Some(crate::hls::MfhFrameSize {
+            width_bits: 12,
+            height_bits: 12,
+            width_minus_1: 1920 - 1,
+            height_minus_1: 1080 - 1,
+        });
+        let record = mfh_record(mfh_size, None); // mfh_seg_info_present_flag == 0
+        let view = MfhFrameView::from_record(&record, &base_seq());
+
+        let mut bits = Bits::default();
+        bits.uvlc(1); // cur_mfh_id == 1
+        bits.bit(0); // immediate_output_frame
+        bits.bit(0); // implicit_output_frame
+        bits.bit(0); // frame_size_override_flag == 0 (MFH default dims, no bits)
+        bits.f(7, 4); // order_hint
+        // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
+        // frame_size(): MFH default path, no bits
+        bits.bit(0); // allow_intrabc
+        bits.bit(0); // disable_cdf_update
+        bits.bit(1); // uniform_tile_spacing_flag (single tile)
+        bits.bit(0); // increment_tile_cols_log2 = 0
+        bits.bit(0); // increment_tile_rows_log2 = 0
+        bits.f(70, 8); // base_q_idx
+        // segmentation_params(): mfh_seg_info_present_flag == 0, seq has no info ->
+        // sequence/zero arm. segmentation_enabled == 0 (no further bits).
+        bits.bit(0); // segmentation_enabled
+        bits.bit(0); // using_qmatrix (setup_qm_params)
+        bits.bit(0); // delta_q_present (base_q_idx 70 > 0; 0 -> no further delta_q bits)
+        // lossless tail: base_q_idx 70 non-lossless, no QM -> no qm_index bits; base_seq
+        // has choose_tcq_per_frame / enable_parity_hiding off -> no allow_* bits.
+        let data = bits.into_bytes();
+        let (core, _) = parse_body_with_mfh(
+            &data,
+            ObuType::ClosedLoopKey,
+            true,
+            &base_seq(),
+            Some(&view),
+        )
+        .unwrap();
+
+        assert_eq!(core.cur_mfh_id.get(), 1);
+        assert_eq!(
+            core.frame_size,
+            Some(FrameSize::new(1920, 1080)),
+            "MFH default dims drive frame_size on the non-override path"
+        );
+        assert_eq!(
+            core.frame_size_override_flag,
+            Some(false),
+            "the non-override default path records frame_size_override_flag == 0 (MFH-default provenance)"
+        );
+        assert_eq!(core.tile_info.as_ref().unwrap().tile_cols, 1);
+        assert_eq!(core.quantization_params.unwrap().base_q_idx, 70);
+        assert!(!core.segmentation_params.unwrap().segmentation_enabled);
+        assert_eq!(
+            core.status,
+            FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams
+        );
+    }
+
+    #[test]
+    fn frame_header_core_mfh_omitted_size_infers_sequence_maxima() {
+        // cur_mfh_id == 1, resolved MFH with NO frame-size payload: § 5.18.2 (:4101)
+        // infers the default dims to the sequence maxima (base_seq: 4096x2304).
+        let record = mfh_record(None, None); // no mfh_frame_size, no seg info
+        let view = MfhFrameView::from_record(&record, &base_seq());
+        assert_eq!(view.default_dims, (4096, 2304));
+
+        let mut bits = Bits::default();
+        bits.uvlc(1); // cur_mfh_id == 1
+        bits.bit(0); // immediate_output_frame
+        bits.bit(0); // implicit_output_frame
+        bits.bit(0); // frame_size_override_flag == 0 (MFH default = inferred maxima)
+        bits.f(7, 4); // order_hint
+        bits.bit(0); // allow_intrabc
+        bits.bit(0); // disable_cdf_update
+        bits.bit(1); // uniform_tile_spacing_flag
+        bits.bit(0); // increment_tile_cols_log2
+        bits.bit(0); // increment_tile_rows_log2
+        bits.f(0, 8); // base_q_idx == 0 (no delta_q bits)
+        bits.bit(0); // segmentation_enabled
+        bits.bit(0); // using_qmatrix
+        // base_q_idx == 0 -> delta_q_present inferred 0 (no bit). Lossless tail: every
+        // segment lossless, so no qm_index bits; then allow_tcq / allow_parity_hiding
+        // gated off in base_seq -> no bits.
+        let data = bits.into_bytes();
+        let (core, _) = parse_body_with_mfh(
+            &data,
+            ObuType::ClosedLoopKey,
+            true,
+            &base_seq(),
+            Some(&view),
+        )
+        .unwrap();
+
+        assert_eq!(
+            core.frame_size,
+            Some(FrameSize::new(4096, 2304)),
+            "omitted MFH size infers the sequence maxima (:4101)"
+        );
+        assert_eq!(
+            core.status,
+            FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams
+        );
+    }
+
+    #[test]
+    fn frame_header_core_mfh_segmentation_arm_reuses_mfh_feature_data() {
+        // cur_mfh_id == 1, frame_size_override_flag == 1, resolved MFH with
+        // mfh_seg_info_present_flag == 1, mfh_ext_seg_flag == enable_ext_seg (false),
+        // mfh_allow_seg_info_change == 0: § 5.18.7.1 selects the MFH arm with
+        // haveSegParams == 1, allowChange == 0, so reuse_seg_info is inferred 1 (no bit)
+        // and FeatureData copies MfhFeatureData[cur_mfh_id].
+        let mut mfh_features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];
+        mfh_features[3][0] = SegmentFeature {
+            enabled: true,
+            data: 7,
+        };
+        let record = mfh_record(
+            None,
+            Some((
+                false, // mfh_ext_seg_flag == enable_ext_seg (base_seq enable_ext_seg = false)
+                false, // mfh_allow_seg_info_change
+                SegmentInfo {
+                    num_segments: 8,
+                    features: mfh_features,
+                },
+            )),
+        );
+        let view = MfhFrameView::from_record(&record, &base_seq());
+
+        let mut bits = Bits::default();
+        bits.uvlc(1); // cur_mfh_id == 1
+        bits.bit(0); // immediate_output_frame
+        bits.bit(0); // implicit_output_frame
+        bits.bit(1); // frame_size_override_flag == 1
+        bits.f(7, 4); // order_hint
+        bits.f(1920 - 1, 12); // frame_width_minus_1
+        bits.f(1080 - 1, 12); // frame_height_minus_1
+        bits.bit(0); // allow_intrabc
+        bits.bit(0); // disable_cdf_update
+        bits.bit(1); // uniform_tile_spacing_flag
+        bits.bit(0); // increment_tile_cols_log2
+        bits.bit(0); // increment_tile_rows_log2
+        bits.f(70, 8); // base_q_idx
+        // segmentation_params(): MFH arm, haveSegParams==1, allowChange==0 ->
+        // reuse_seg_info inferred 1, no reuse bit, copy MFH features.
+        bits.bit(1); // segmentation_enabled
+        // setup_qm_params(): using_qmatrix off.
+        bits.bit(0); // using_qmatrix
+        // delta_q_params(): base_q_idx 70 > 0.
+        bits.bit(0); // delta_q_present
+        // lossless tail: segment 3 has alt-q feature data 7 -> non-lossless; others
+        // disabled (qindex == base_q_idx 70, non-lossless). No QM -> no qm_index bits.
+        let data = bits.into_bytes();
+        let (core, _) = parse_body_with_mfh(
+            &data,
+            ObuType::ClosedLoopKey,
+            true,
+            &base_seq(),
+            Some(&view),
+        )
+        .unwrap();
+
+        let seg = core
+            .segmentation_params
+            .expect("segmentation parsed on MFH arm");
+        assert!(seg.segmentation_enabled);
+        assert!(
+            seg.reuse_seg_info,
+            "MFH arm with allowChange==0 infers reuse"
+        );
+        assert!(
+            seg.features[3][0].enabled,
+            "reuse copies MfhFeatureEnabled/MfhFeatureData, not sequence data"
+        );
+        assert_eq!(seg.features[3][0].data, 7);
+        assert_eq!(seg.last_active_seg_id, 3);
+        assert_eq!(
+            core.status,
+            FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams
+        );
     }
 
     #[test]
@@ -1697,6 +2042,43 @@ mod proptests {
             })
     }
 
+    /// A fixed in-band multi-frame-header record for the `cur_mfh_id > 0` never-panic
+    /// property: it signals both a frame-size payload and a segment-info arm so the
+    /// resolved-MFH paths are exercised. Dimensions are bounded to `seq`'s bit widths.
+    /// `seq_id` is a valid `SequenceHeaderId` provided by the caller (always `Some` for
+    /// `0`), so this helper itself never constructs an id.
+    fn arbitrary_mfh_record(seq: &CoreSeqView, seq_id: SequenceHeaderId) -> MultiFrameHeaderRecord {
+        use crate::hls::MfhFrameSize;
+        let width_bits = seq.frame_width_bits.clamp(1, 16);
+        let height_bits = seq.frame_height_bits.clamp(1, 16);
+        let mut features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];
+        features[0][0] = SegmentFeature {
+            enabled: true,
+            data: 1,
+        };
+        MultiFrameHeaderRecord {
+            mfh_id: MfhId::from_raw(1),
+            mfh_seq_header_id: seq_id,
+            mfh_tlayer_id: crate::types::TemporalLayerId::from_bits(0),
+            mfh_mlayer_id: crate::types::EmbeddedLayerId::from_bits(0),
+            mfh_frame_size: Some(MfhFrameSize {
+                width_bits: width_bits as u8,
+                height_bits: height_bits as u8,
+                width_minus_1: 0,
+                height_minus_1: 0,
+            }),
+            mfh_seg_info_present_flag: true,
+            mfh_ext_seg_flag: Some(false),
+            mfh_allow_seg_info_change: Some(false),
+            mfh_segment_info: Some(SegmentInfo {
+                num_segments: 8,
+                features,
+            }),
+            mfh_deblocking_filter_update: false,
+            offset: ByteOffset::new(0),
+        }
+    }
+
     proptest! {
         /// The frame-header core parser must never panic on arbitrary input, in either
         /// mode, with no modeled sequence state.
@@ -1739,7 +2121,16 @@ mod proptests {
             let mut reader = BitReader::new(&data, ByteOffset::new(0));
             if let Ok(prefix) = parse_frame_header_prefix(&mut reader, obu_type, first_picture) {
                 let mut core = init_core_from_prefix(&prefix, obu_type);
-                let _ = parse_core_body(&mut reader, &mut core, &seq);
+                // On a cur_mfh_id > 0 prefix, resolve against a fixed in-band MFH record
+                // so the resolved-MFH paths are exercised; `SequenceHeaderId::try_new(0)`
+                // is always Some (0 < MAX_SEQ_NUM).
+                let mfh_view = match (core.cur_mfh_id.is_zero(), SequenceHeaderId::try_new(0)) {
+                    (false, Some(seq_id)) => {
+                        Some(MfhFrameView::from_record(&arbitrary_mfh_record(&seq, seq_id), &seq))
+                    }
+                    _ => None,
+                };
+                let _ = parse_core_body(&mut reader, &mut core, &seq, mfh_view.as_ref());
                 prop_assert!(reader.consumed_bits() <= (data.len() as u64) * 8);
             }
         }

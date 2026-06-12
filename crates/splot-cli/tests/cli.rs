@@ -324,6 +324,54 @@ fn validate_frame_header_core_fixture_exits_zero() {
 }
 
 #[test]
+fn inspect_json_exposes_mfh_backed_frame_header_core() {
+    // The fixture is TemporalDelimiter, a non-single-picture SequenceHeader (id 0),
+    // an in-band MultiFrameHeader (mfhId 1 -> mfh_seq_header_id 0, no frame-size payload
+    // so the § 5.18.2 omitted-size inference applies, no segment info), then an
+    // OBU_CLOSED_LOOP_KEY whose first tile group references `cur_mfh_id = 1`. The
+    // inspector resolves the MFH to its sequence header and surfaces the core summary:
+    // the § 5.18.4.1 default dimensions come from the MFH (inferred to the 16x16
+    // sequence maxima), and segmentation parses its sequence/zero arm.
+    let path = fixture("frame-header-core-mfh.av2");
+    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let records = json.as_array().expect("inspect output is an array");
+    assert!(
+        records.len() >= 4,
+        "stdout was: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    // Index 2 is the multi-frame header; index 3 is the cur_mfh_id == 1 frame.
+    assert_eq!(records[2]["header"]["obu_type"], "MultiFrameHeader");
+    let core = &records[3]["frame_header_core"];
+    assert_eq!(core["payload_kind"], "frame_header_core");
+    assert_eq!(core["status"], "stopped_before_deblocking_filter_params");
+    assert_eq!(core["cur_mfh_id"], 1);
+    assert_eq!(core["frame_type"], "key");
+    assert_eq!(core["frame_is_intra"], true);
+    // Omitted MFH frame size -> § 5.18.2 (:4101) infers the 16x16 sequence maxima.
+    assert_eq!(core["frame_size"]["width"], 16);
+    assert_eq!(core["frame_size"]["height"], 16);
+    let tile = &core["tile_layout"];
+    assert_eq!(tile["tile_cols"], 1);
+    assert_eq!(tile["tile_rows"], 1);
+    assert_eq!(core["quantization"]["base_q_idx"], 100);
+    assert_eq!(core["segmentation"]["segmentation_enabled"], false);
+}
+
+#[test]
+fn validate_frame_header_core_mfh_fixture_exits_zero() {
+    // The cur_mfh_id == 1 frame is an output key frame (immediate_output_frame == 1),
+    // so the lone coded extended layer unit satisfies the § 7.3.6 output rule.
+    let out = validate("frame-header-core-mfh.av2", &[]);
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("conformant"), "stdout was: {stdout}");
+}
+
+#[test]
 fn validate_frame_header_prefix_fixture_exits_zero() {
     let out = validate("frame-header-prefix.av2", &[]);
     assert_eq!(out.status.code(), Some(0));

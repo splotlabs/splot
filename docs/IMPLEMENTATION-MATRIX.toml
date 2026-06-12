@@ -1098,11 +1098,11 @@ spec_sections = ["5.7", "6.7"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/hls.rs"
-openspec_change = "rap-availability-replay"
+openspec_change = "mfh-frame-header-state"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "multi_frame_header_obu() syntax is now parsed in full, including seg_info() via the shared AV2-5.4.9-SEGMENT-INFO helper (no bounded status). Local id ranges are checked, and the mfh_seq_header_id -> sequence-header reference availability (§7.3.8.6/§7.3.8.7) is validated against the in-band store plus optional external HLS (see AV2-7.3.8-HLS-AVAILABILITY). Fully parsed MFHs run the §5.2.1 payload-tail check and are recorded as MultiFrameHeaderRecord availability, consumed by the frame-header cur_mfh_id reference check (hls/unavailable-multi-frame-header). The §7.3.8.7 layer-dependency constraints are enforced at that reference with the §6.17.2 predicate against the loaded in-band sequence header's maps (frame-header/mfh-mlayer-dependency-missing, frame-header/mfh-tlayer-dependency-missing). The §7.3.8.1 availability half is now complete under rap-availability-replay: an MFH (re)send is recorded in the RapReplayTracker, the frame-header cur_mfh_id reference is replayed (a MFH referenced at/after a random access point but not resent in/after it fires hls/unavailable-at-random-access-point), and the MFH's own mfh_seq_header_id sequence-header reference is replayed the same way. Remaining residual (keeps validate=partial): the §6.17.2 MFH frame-size override bounds stay future work, blocked on frame reference state (AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS / reference-frame parsing)."
+notes = "multi_frame_header_obu() syntax is now parsed in full, including seg_info() via the shared AV2-5.4.9-SEGMENT-INFO helper (no bounded status). Local id ranges are checked, and the mfh_seq_header_id -> sequence-header reference availability (§7.3.8.6/§7.3.8.7) is validated against the in-band store plus optional external HLS (see AV2-7.3.8-HLS-AVAILABILITY). Fully parsed MFHs run the §5.2.1 payload-tail check and are recorded as MultiFrameHeaderRecord availability, consumed by the frame-header cur_mfh_id reference check (hls/unavailable-multi-frame-header). Under mfh-frame-header-state the MultiFrameHeaderRecord now also carries the parsed §5.7 state a cur_mfh_id > 0 frame header consumes at §5.18.2 (mfh_frame_size, mfh_seg_info_present_flag/mfh_ext_seg_flag/mfh_allow_seg_info_change + parsed MfhFeatureEnabled/Data, and mfh_deblocking_filter_update groundwork); the validator and inspect resolve cur_mfh_id > 0 frames through this record into the core parse (AV2-5.18.4-FRAME-SIZE / AV2-5.18.7-SEGMENTATION-TILING). A cur_mfh_id whose in-band MFH is unresolvable keeps the existing Unknown routing. The §7.3.8.7 layer-dependency constraints are enforced at that reference with the §6.17.2 predicate against the loaded in-band sequence header's maps (frame-header/mfh-mlayer-dependency-missing, frame-header/mfh-tlayer-dependency-missing). The §7.3.8.1 availability half is complete under rap-availability-replay: an MFH (re)send is recorded in the RapReplayTracker, the frame-header cur_mfh_id reference is replayed (a MFH referenced at/after a random access point but not resent in/after it fires hls/unavailable-at-random-access-point), and the MFH's own mfh_seq_header_id sequence-header reference is replayed the same way. The §6.17.2 MFH frame-size bound (after load_sequence_header(), mfh_frame_width/height_minus_1[ cur_mfh_id ] <= max_frame_width/height_minus_1; mirror docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2 :4348-4349) now fires at the frame on the referenced MFH's STORED dims via the dedicated frame-header/mfh-frame-size-exceeds-sequence-max: frame_header_core_checks resolves the cur_mfh_id > 0 record (shared resolve_frame_mfh_record §7.3.8.7 discipline) and compares the record's stored mfh_frame_size dims against the active maxima REGARDLESS of frame_size_override_flag AND of the frame-header core parse outcome — so a frame overriding to in-range dims no longer hides an out-of-range MFH, and a truncated/malformed frame-header remainder no longer silences the check (the predicate needs only the resolved record + the sequence maxima, so it runs at the load_sequence_header point before the core parse). An omitted mfh_frame_size infers the maxima (§5.18.2, mirror :4101) and stays silent; an unresolvable MFH stays silent. No double-fire on the override==0 default path: the §6.17.2 stored-MFH rule is the single home and the §6.17.4.1 derived frame-header/frame-size-exceeds-sequence-max defers by parsed PATH (frame_size_override_flag == 0 on the resolved cur_mfh_id > 0 frame), NOT by dimension equality — so an override==1 frame coding the same out-of-range dims fires both rules (tracked on AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS / AV2-5.18.4-FRAME-SIZE). Remaining residual (keeps validate=partial): mfh_deblocking_filter_update is recorded but the deblocking parse it gates lands with frame-filtering-deblocking-gdf-cdef (AV2-5.18.5-FILTERING)."
 
 [feature.status]
 mapped = "done"
@@ -1117,9 +1117,9 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/hls.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_mfh_out_of_range_ids_are_flagged", "crates/splot-validate/src/validator.rs::tests::hls_frame_header_mfh_available_is_accepted", "crates/splot-validate/src/validator.rs::tests::frame_mfh_mlayer_dependency_missing_is_flagged", "crates/splot-validate/src/validator.rs::tests::frame_mfh_tlayer_dependency_missing_is_flagged", "crates/splot-validate/src/validator.rs::tests::rap_replay_multi_frame_header_reference_before_rap_is_flagged"]
-commands = ["cargo test -p splot-core hls", "cargo test -p splot-validate hls", "cargo test -p splot-validate mfh_", "cargo test -p splot-validate frame_mfh", "cargo test -p splot-validate rap_replay"]
-fixtures = []
+tests = ["crates/splot-core/src/hls.rs::tests", "crates/splot-validate/src/validator.rs::tests::hls_mfh_out_of_range_ids_are_flagged", "crates/splot-validate/src/validator.rs::tests::hls_frame_header_mfh_available_is_accepted", "crates/splot-validate/src/validator.rs::tests::frame_mfh_mlayer_dependency_missing_is_flagged", "crates/splot-validate/src/validator.rs::tests::frame_mfh_tlayer_dependency_missing_is_flagged", "crates/splot-validate/src/validator.rs::tests::rap_replay_multi_frame_header_reference_before_rap_is_flagged", "crates/splot-validate/src/validator.rs::tests::celu_mfh_backed_frame_is_decided_not_unknown", "crates/splot-validate/src/validator.rs::tests::celu_mfh_referencing_different_seq_than_active_is_unknown", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_mfh_default_dims_parse_through_tile_info", "crates/splot-cli/tests/cli.rs::inspect_json_exposes_mfh_backed_frame_header_core"]
+commands = ["cargo test -p splot-core hls", "cargo test -p splot-validate hls", "cargo test -p splot-validate mfh_", "cargo test -p splot-validate frame_mfh", "cargo test -p splot-validate rap_replay", "cargo test -p splot-validate celu_mfh", "cargo test -p splot-cli mfh"]
+fixtures = ["tests/fixtures/frame-header-core-mfh.av2"]
 diagnostics = ["mfh/seq-header-id-out-of-range", "mfh/id-out-of-range", "mfh/sequence-header-unavailable", "hls/unavailable-multi-frame-header", "hls/unavailable-at-random-access-point", "frame-header/mfh-mlayer-dependency-missing", "frame-header/mfh-tlayer-dependency-missing"]
 
 [[feature]]
@@ -2616,11 +2616,11 @@ spec_sections = ["5.18.2", "6.17.2"]
 sources = ["docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2", "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/frame/info.rs"
-openspec_change = "frame-header-core-foundation"
+openspec_change = "mfh-frame-header-state"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. State-aware core parser (FrameHeaderParseMode::Core) over the control region: derived frame-kind flags, bridge_frame_ref_idx, the single-picture / show-existing-frame branch, frame-type determination, long-term id, output-control flags, order_hint, and refresh_frame_flags. It stops with an explicit FrameHeaderParseStatus before reference-state-dependent syntax (inter reference map, bridge remainder) and the deep §5.18.5+ cluster. parse stays partial until all of §5.18.2 is consumed; the explicit reference map, primary-reference range, and frame_header_copy() remain TODO."
+notes = "Child row of AV2-5.18-FRAME-HEADER. State-aware core parser (FrameHeaderParseMode::Core) over the control region: derived frame-kind flags, bridge_frame_ref_idx, the single-picture / show-existing-frame branch, frame-type determination, long-term id, output-control flags, order_hint, and refresh_frame_flags. Under mfh-frame-header-state the two cur_mfh_id > 0 stops that previously fired purely for missing MFH state are removed: with the resolved MultiFrameHeaderRecord threaded in, the intra path now parses through frame_size() (AV2-5.18.4-FRAME-SIZE) and segmentation_params() (AV2-5.18.7-SEGMENTATION-TILING) on the cur_mfh_id > 0 path the same as cur_mfh_id == 0. A cur_mfh_id > 0 frame whose in-band MFH is unresolvable still stops with UnsupportedUntilFeature (no guessing). It stops with an explicit FrameHeaderParseStatus before reference-state-dependent syntax (inter reference map, bridge remainder) and the deep §5.18.5+ cluster (deblocking lands with AV2-5.18.5-FILTERING). parse stays partial until all of §5.18.2 is consumed; the inter-path MFH arms, the explicit reference map, primary-reference range, and frame_header_copy() remain TODO."
 
 [feature.status]
 mapped = "done"
@@ -2635,9 +2635,9 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/frame/info.rs::tests", "crates/splot-validate/src/validator.rs::tests::validator_flags_bridge_ref_index_out_of_range", "crates/splot-validate/src/validator.rs::tests::validator_flags_ras_requires_long_term_frame_id_bits"]
-commands = ["cargo test -p splot-core frame_header", "cargo test -p splot-validate frame_header"]
-fixtures = ["tests/fixtures/frame-header-core.av2"]
+tests = ["crates/splot-core/src/headers/frame/info.rs::tests", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_mfh_default_dims_parse_through_tile_info", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_unresolvable_mfh_default_size_stays_unsupported", "crates/splot-validate/src/validator.rs::tests::validator_flags_bridge_ref_index_out_of_range", "crates/splot-validate/src/validator.rs::tests::validator_flags_ras_requires_long_term_frame_id_bits", "crates/splot-validate/src/validator.rs::tests::celu_mfh_backed_frame_is_decided_not_unknown", "crates/splot-cli/tests/cli.rs::inspect_json_exposes_mfh_backed_frame_header_core"]
+commands = ["cargo test -p splot-core frame_header", "cargo test -p splot-validate frame_header", "cargo test -p splot-validate celu_mfh", "cargo test -p splot-cli mfh"]
+fixtures = ["tests/fixtures/frame-header-core.av2", "tests/fixtures/frame-header-core-mfh.av2"]
 diagnostics = ["hls/unavailable-sequence-header", "hls/unavailable-multi-frame-header", "frame-header/seq-header-id-out-of-range", "frame-header/cur-mfh-id-out-of-range", "frame-header/bridge-ref-index-out-of-range", "frame-header/ras-requires-long-term-frame-id-bits"]
 
 [[feature]]
@@ -2682,11 +2682,11 @@ spec_sections = ["5.18.4", "6.17.4.1"]
 sources = ["docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-4", "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/frame/size.rs"
-openspec_change = "frame-header-core-foundation"
+openspec_change = "mfh-frame-header-state"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. frame_size() (§5.18.4.1) is modeled for the explicit-override and direct/default (cur_mfh_id == 0) paths, plus the CeilLog2 helper. frame_size_with_refs() (§5.18.4.3) and frame_size_with_bridge() (§5.18.4.2) need reference-frame dimensions and remain TODO. The frame-size-exceeds-sequence-max diagnostic is wired (§6.17.4.1)."
+notes = "Child row of AV2-5.18-FRAME-HEADER. frame_size() (§5.18.4.1) is modeled for the explicit-override, the direct/default (cur_mfh_id == 0) path, and — under mfh-frame-header-state — the cur_mfh_id > 0 default path: FrameWidth/Height come from mfh_frame_width/height_minus_1[ cur_mfh_id ] (mirror :5767), with the §5.18.2 omitted-size inference to the sequence maxima (mirror :4101) applied when the resolved MFH carried no frame-size payload. A cur_mfh_id > 0 frame whose in-band MFH is unresolvable keeps the size unknown (no guessing). frame_size_with_refs() (§5.18.4.3) and frame_size_with_bridge() (§5.18.4.2) need reference-frame dimensions and remain TODO. The frame-size-vs-sequence-maximum diagnostics are split by predicate: the explicit-override §6.17.4.1 bound on the derived FrameWidth/Height emits frame-header/frame-size-exceeds-sequence-max, and the §6.17.2 bound on the referenced MFH's STORED dims (mfh_frame_width/height_minus_1[ cur_mfh_id ] <= max_frame_width/height_minus_1, mirror :4348-4349) emits the dedicated frame-header/mfh-frame-size-exceeds-sequence-max — evaluated against the resolved record's stored dims REGARDLESS of frame_size_override_flag AND of the frame-header core parse outcome (a truncated/malformed remainder still fires it, since the predicate needs only the resolved record and the sequence maxima), so an in-range override no longer hides an out-of-range MFH and a truncated frame no longer silences a decidable diagnostic. The §6.17.4.1 derived rule's no-double-fire deferral keys on the parsed PATH (frame_size_override_flag == 0 on a resolved cur_mfh_id > 0 frame, where FrameWidth/Height ARE the MFH default dims), NOT on dimension value equality: an override==1 frame that explicitly codes the same out-of-range dims the MFH stores is a separate §6.17.4.1 violation of its own frame_width/height_minus_1 fields, so both rules fire. Omitted-size MFHs (inferred maxima) and unresolvable MFHs stay silent."
 
 [feature.status]
 mapped = "done"
@@ -2701,10 +2701,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/frame/size.rs::tests", "crates/splot-validate/src/validator.rs::tests::validator_flags_frame_size_exceeds_sequence_max"]
-commands = ["cargo test -p splot-core frame::size", "cargo test -p splot-validate frame_size"]
-fixtures = ["tests/fixtures/frame-header-core.av2"]
-diagnostics = ["frame-header/frame-size-exceeds-sequence-max"]
+tests = ["crates/splot-core/src/headers/frame/size.rs::tests", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_mfh_default_dims_parse_through_tile_info", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_mfh_omitted_size_infers_sequence_maxima", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_unresolvable_mfh_default_size_stays_unsupported", "crates/splot-validate/src/validator.rs::tests::validator_flags_frame_size_exceeds_sequence_max", "crates/splot-validate/src/validator.rs::tests::validator_flags_mfh_default_frame_size_exceeds_sequence_max", "crates/splot-validate/src/validator.rs::tests::validator_flags_mfh_stored_frame_size_exceeds_sequence_max_on_override", "crates/splot-validate/src/validator.rs::tests::validator_accepts_mfh_stored_frame_size_within_sequence_max_on_override", "crates/splot-validate/src/validator.rs::tests::validator_does_not_flag_mfh_omitted_frame_size_on_override", "crates/splot-validate/src/validator.rs::tests::validator_does_not_double_fire_mfh_frame_size_on_default_path", "crates/splot-validate/src/validator.rs::tests::validator_does_not_flag_mfh_stored_frame_size_when_mfh_unresolvable", "crates/splot-validate/src/validator.rs::tests::validator_accepts_mfh_default_frame_size_within_sequence_max", "crates/splot-validate/src/validator.rs::tests::validator_does_not_flag_mfh_default_frame_size_when_mfh_unresolvable", "crates/splot-validate/src/validator.rs::tests::validator_flags_mfh_stored_frame_size_exceeds_sequence_max_on_truncated_frame", "crates/splot-validate/src/validator.rs::tests::validator_accepts_mfh_within_sequence_max_on_truncated_frame", "crates/splot-validate/src/validator.rs::tests::validator_flags_both_frame_size_rules_when_override_repeats_mfh_out_of_range_dims"]
+commands = ["cargo test -p splot-core frame::size", "cargo test -p splot-core frame_header_core_mfh", "cargo test -p splot-validate frame_size", "cargo test -p splot-validate mfh_"]
+fixtures = ["tests/fixtures/frame-header-core.av2", "tests/fixtures/frame-header-core-mfh.av2"]
+diagnostics = ["frame-header/frame-size-exceeds-sequence-max", "frame-header/mfh-frame-size-exceeds-sequence-max"]
 
 [[feature]]
 id = "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS"
@@ -2719,7 +2719,7 @@ openspec_change = "frame-header-core-foundation"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Locally decidable, state-supported frame-header-info checks driven by the core parser: bridge_frame_ref_idx range, frame_to_refresh range, reserved ref_long_term_id, refresh_frame_flags-when-output-deferred, still-picture KEY/immediate constraints, and the INTRA_ONLY all-slot-refresh rule (§6.17.2); frame size vs sequence maximum (§6.17.4.1); and the RAS-frame long_term_frame_id_bits requirement (§6.4.6). Reference-frame-buffer and long-term-reference availability checks (show-existing-frame slot validity, explicit reference map, primary_ref_frame range) remain partial until dedicated reference state exists, and are never guessed."
+notes = "Locally decidable, state-supported frame-header-info checks driven by the core parser: bridge_frame_ref_idx range, frame_to_refresh range, reserved ref_long_term_id, refresh_frame_flags-when-output-deferred, still-picture KEY/immediate constraints, and the INTRA_ONLY all-slot-refresh rule (§6.17.2); frame size vs sequence maximum split by predicate: the §6.17.4.1 explicit-override bound on the derived FrameWidth/Height (frame-header/frame-size-exceeds-sequence-max) and the §6.17.2 bound on the referenced MFH's STORED dims mfh_frame_width/height_minus_1[ cur_mfh_id ] <= max_frame_width/height_minus_1, mirror :4348-4349 (frame-header/mfh-frame-size-exceeds-sequence-max — frame_header_core_checks resolves the cur_mfh_id > 0 record and compares its stored dims against the sequence maxima REGARDLESS of frame_size_override_flag AND of the core parse outcome, so an in-range override does not hide an out-of-range MFH and a truncated/malformed frame-header remainder still fires it; the §6.17.4.1 derived rule's no-double-fire deferral keys on the parsed PATH (frame_size_override_flag == 0 on a resolved cur_mfh_id > 0 frame) NOT on dimension equality, so an override==1 frame coding the same out-of-range dims fires both rules; omitted-size and unresolvable MFHs stay silent); and the RAS-frame long_term_frame_id_bits requirement (§6.4.6). Reference-frame-buffer and long-term-reference availability checks (show-existing-frame slot validity, explicit reference map, primary_ref_frame range) remain partial until dedicated reference state exists, and are never guessed."
 
 [feature.status]
 mapped = "done"
@@ -2734,10 +2734,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-validate/src/validator.rs::tests::validator_flags_bridge_ref_index_out_of_range", "crates/splot-validate/src/validator.rs::tests::validator_flags_frame_size_exceeds_sequence_max", "crates/splot-validate/src/validator.rs::tests::validator_flags_ras_requires_long_term_frame_id_bits", "crates/splot-validate/src/validator.rs::tests::validator_flags_frame_to_refresh_out_of_range", "crates/splot-validate/src/validator.rs::tests::validator_flags_reserved_ref_long_term_id", "crates/splot-validate/src/validator.rs::tests::validator_flags_still_picture_non_key_frame", "crates/splot-validate/src/validator.rs::tests::validator_flags_intra_only_refresh_all_slots"]
-commands = ["cargo test -p splot-validate frame", "cargo test -p splot-validate validator_flags"]
+tests = ["crates/splot-validate/src/validator.rs::tests::validator_flags_bridge_ref_index_out_of_range", "crates/splot-validate/src/validator.rs::tests::validator_flags_frame_size_exceeds_sequence_max", "crates/splot-validate/src/validator.rs::tests::validator_flags_mfh_default_frame_size_exceeds_sequence_max", "crates/splot-validate/src/validator.rs::tests::validator_flags_mfh_stored_frame_size_exceeds_sequence_max_on_override", "crates/splot-validate/src/validator.rs::tests::validator_accepts_mfh_stored_frame_size_within_sequence_max_on_override", "crates/splot-validate/src/validator.rs::tests::validator_does_not_flag_mfh_omitted_frame_size_on_override", "crates/splot-validate/src/validator.rs::tests::validator_does_not_double_fire_mfh_frame_size_on_default_path", "crates/splot-validate/src/validator.rs::tests::validator_does_not_flag_mfh_stored_frame_size_when_mfh_unresolvable", "crates/splot-validate/src/validator.rs::tests::validator_accepts_mfh_default_frame_size_within_sequence_max", "crates/splot-validate/src/validator.rs::tests::validator_does_not_flag_mfh_default_frame_size_when_mfh_unresolvable", "crates/splot-validate/src/validator.rs::tests::validator_flags_mfh_stored_frame_size_exceeds_sequence_max_on_truncated_frame", "crates/splot-validate/src/validator.rs::tests::validator_accepts_mfh_within_sequence_max_on_truncated_frame", "crates/splot-validate/src/validator.rs::tests::validator_flags_both_frame_size_rules_when_override_repeats_mfh_out_of_range_dims", "crates/splot-validate/src/validator.rs::tests::validator_flags_ras_requires_long_term_frame_id_bits", "crates/splot-validate/src/validator.rs::tests::validator_flags_frame_to_refresh_out_of_range", "crates/splot-validate/src/validator.rs::tests::validator_flags_reserved_ref_long_term_id", "crates/splot-validate/src/validator.rs::tests::validator_flags_still_picture_non_key_frame", "crates/splot-validate/src/validator.rs::tests::validator_flags_intra_only_refresh_all_slots"]
+commands = ["cargo test -p splot-validate frame", "cargo test -p splot-validate validator_flags", "cargo test -p splot-validate mfh_"]
 fixtures = []
-diagnostics = ["frame-header/bridge-ref-index-out-of-range", "frame-header/frame-size-exceeds-sequence-max", "frame-header/ras-requires-long-term-frame-id-bits", "frame-header/frame-to-refresh-out-of-range", "frame-header/ref-long-term-id-reserved", "frame-header/refresh-frame-flags-zero-on-deferred-output", "frame-header/still-picture-requires-key-frame", "frame-header/intra-only-refresh-all-slots"]
+diagnostics = ["frame-header/bridge-ref-index-out-of-range", "frame-header/frame-size-exceeds-sequence-max", "frame-header/mfh-frame-size-exceeds-sequence-max", "frame-header/ras-requires-long-term-frame-id-bits", "frame-header/frame-to-refresh-out-of-range", "frame-header/ref-long-term-id-reserved", "frame-header/refresh-frame-flags-zero-on-deferred-output", "frame-header/still-picture-requires-key-frame", "frame-header/intra-only-refresh-all-slots"]
 
 [[feature]]
 id = "AV2-5.18.5-FILTERING"
@@ -2821,11 +2821,11 @@ spec_sections = ["5.18.7", "6.17.7"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/frame/tiling.rs"
-openspec_change = "frame-tiling-quant-segmentation"
+openspec_change = "mfh-frame-header-state"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. tile_info() (§5.18.7.2, MiCols/MiRows per §5.18.4.4) and segmentation_params() (§5.18.7.1, reusing seg_info()) are typed and parsed on the intra frame-header path with cur_mfh_id == 0. Bounded residuals keep parse/tests partial: inter paths, MFH-gated branches (mfh_seg_info_present_flag etc. — explicit UnsupportedUntilFeature stop), and the §5.18.7.4 non-uniform sequence-reuse branch (the sequence start arrays are not recorded — see AV2-5.18.7.3-TILE-PARAMS). §6.17.7.2 TileCols/TileRows/context_update_tile_id checks are live."
+notes = "Child row of AV2-5.18-FRAME-HEADER. tile_info() (§5.18.7.2, MiCols/MiRows per §5.18.4.4) and segmentation_params() (§5.18.7.1, reusing seg_info()) are typed and parsed on the intra frame-header path for both reference forms: cur_mfh_id == 0 (sequence/zero arm) and — under mfh-frame-header-state — cur_mfh_id > 0, where the MFH-gated arm derives haveSegParams = (mfh_ext_seg_flag == enable_ext_seg), allowChange = haveSegParams && mfh_allow_seg_info_change, mfhId = cur_mfh_id, and a reuse_seg_info copy draws from MfhFeatureEnabled/MfhFeatureData (mirror :6266-6298). The MFH branch takes priority over the sequence branch per the spec order; a cur_mfh_id > 0 frame whose in-band MFH is unresolvable still stops (no guessing). Bounded residuals keep parse/tests partial: inter paths and the §5.18.7.4 non-uniform sequence-reuse branch (the sequence start arrays are not recorded — see AV2-5.18.7.3-TILE-PARAMS). §6.17.7.2 TileCols/TileRows/context_update_tile_id checks are live."
 
 [feature.status]
 mapped = "done"
@@ -2843,14 +2843,19 @@ perf = "not-applicable"
 tests = [
   "crates/splot-core/src/headers/frame/tiling.rs::tests",
   "crates/splot-core/src/headers/frame/segmentation.rs::tests",
+  "crates/splot-core/src/headers/frame/segmentation.rs::tests::mfh_arm_reuse_inferred_copies_mfh_feature_data_when_change_not_allowed",
+  "crates/splot-core/src/headers/frame/segmentation.rs::tests::mfh_arm_ext_seg_mismatch_yields_no_seg_params_and_parses_fresh",
+  "crates/splot-core/src/headers/frame/segmentation.rs::tests::mfh_arm_takes_priority_over_sequence_branch",
   "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_intra_tail_parses_full_structure_cluster",
+  "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_mfh_segmentation_arm_reuses_mfh_feature_data",
+  "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_unresolvable_mfh_with_explicit_size_stops_before_segmentation",
   "crates/splot-validate/src/validator.rs::tests",
 ]
 commands = [
   "cargo test -p splot-core headers::frame",
   "cargo test -p splot-validate",
 ]
-fixtures = ["tests/fixtures/frame-header-core.av2"]
+fixtures = ["tests/fixtures/frame-header-core.av2", "tests/fixtures/frame-header-core-mfh.av2"]
 diagnostics = [
   "frame-header/tile-cols-out-of-range",
   "frame-header/tile-rows-out-of-range",
