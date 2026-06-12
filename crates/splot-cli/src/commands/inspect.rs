@@ -21,10 +21,11 @@ use splot_core::headers::content_interpretation::{
 };
 use splot_core::headers::film_grain::{FilmGrainObu, parse_film_grain};
 use splot_core::headers::frame::{
-    CdefParams, CdefStrengthSet, DeblockingFilterParams, DeltaQParams, FrameHeaderCore,
-    FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderPrefix, FrameReferenceStateView,
-    GdfParams, LosslessInfo, QuantizationParams, SegmentationParams, SetupQmParams, TileInfo,
-    parse_frame_header_core, parse_frame_header_prefix,
+    CcsoParams, CcsoPlaneParams, CdefParams, CdefStrengthSet, DeblockingFilterParams, DeltaQParams,
+    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderPrefix,
+    FrameReferenceStateView, GdfParams, LosslessInfo, LrParams, LrPlaneParams, QuantizationParams,
+    SegmentationParams, SetupQmParams, TileInfo, parse_frame_header_core,
+    parse_frame_header_prefix,
 };
 use splot_core::headers::metadata::{MetadataUnit, parse_metadata_group, parse_metadata_short};
 use splot_core::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
@@ -694,6 +695,10 @@ struct FrameHeaderCoreView {
     gdf: Option<GdfParamsView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cdef: Option<CdefParamsView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lr: Option<LrParamsView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ccso: Option<CcsoParamsView>,
     consumed_bits: u64,
 }
 
@@ -977,6 +982,96 @@ impl CdefParamsView {
     }
 }
 
+/// One plane's parsed `lr_params()` state for `--json` (AV2 § 5.18.7.11).
+#[derive(Serialize)]
+struct LrPlaneParamsView {
+    restoration_type: &'static str,
+    frame_filters_on: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_filter_classes: Option<u8>,
+}
+
+impl LrPlaneParamsView {
+    fn new(plane: &LrPlaneParams) -> Self {
+        Self {
+            restoration_type: plane.restoration_type.label(),
+            frame_filters_on: plane.frame_filters_on,
+            num_filter_classes: plane.num_filter_classes,
+        }
+    }
+}
+
+/// Parsed `lr_params()` for `--json` (AV2 § 5.18.7.11). The per-plane entries are empty
+/// when loop restoration is disabled (the early return).
+#[derive(Serialize)]
+struct LrParamsView {
+    uses_lr: bool,
+    loop_restoration_size: [u32; 3],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    planes: Vec<LrPlaneParamsView>,
+}
+
+impl LrParamsView {
+    fn new(params: &LrParams) -> Self {
+        Self {
+            uses_lr: params.uses_lr,
+            loop_restoration_size: params.loop_restoration_size,
+            planes: params.planes.iter().map(LrPlaneParamsView::new).collect(),
+        }
+    }
+}
+
+/// One plane's parsed `ccso_params()` state for `--json` (AV2 § 5.18.7.12).
+#[derive(Serialize)]
+struct CcsoPlaneParamsView {
+    ccso_planes: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ccso_bo_only: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ccso_scale_idx: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ccso_quant_idx: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ccso_ext_filter: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ccso_edge_clf: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ccso_max_band_log2: Option<u8>,
+}
+
+impl CcsoPlaneParamsView {
+    fn new(plane: &CcsoPlaneParams) -> Self {
+        Self {
+            ccso_planes: plane.ccso_planes,
+            ccso_bo_only: plane.ccso_bo_only,
+            ccso_scale_idx: plane.ccso_scale_idx,
+            ccso_quant_idx: plane.ccso_quant_idx,
+            ccso_ext_filter: plane.ccso_ext_filter,
+            ccso_edge_clf: plane.ccso_edge_clf,
+            ccso_max_band_log2: plane.ccso_max_band_log2,
+        }
+    }
+}
+
+/// Parsed `ccso_params()` for `--json` (AV2 § 5.18.7.12). `ccso_frame_flag` is omitted
+/// when CCSO is disabled (the early return leaves all planes off).
+#[derive(Serialize)]
+struct CcsoParamsView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ccso_frame_flag: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    planes: Vec<CcsoPlaneParamsView>,
+}
+
+impl CcsoParamsView {
+    fn new(params: &CcsoParams) -> Self {
+        Self {
+            ccso_frame_flag: params.ccso_frame_flag,
+            planes: params.planes.iter().map(CcsoPlaneParamsView::new).collect(),
+        }
+    }
+}
+
 impl FrameHeaderCoreView {
     fn new(core: &FrameHeaderCore) -> Self {
         Self {
@@ -1013,6 +1108,8 @@ impl FrameHeaderCoreView {
                 .map(DeblockingFilterParamsView::new),
             gdf: core.gdf_params.as_ref().map(GdfParamsView::new),
             cdef: core.cdef_params.as_ref().map(CdefParamsView::new),
+            lr: core.lr_params.as_ref().map(LrParamsView::new),
+            ccso: core.ccso_params.as_ref().map(CcsoParamsView::new),
             consumed_bits: core.consumed_bits,
         }
     }

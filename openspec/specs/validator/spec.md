@@ -977,6 +977,27 @@ SHALL be registered in `docs/VALIDATOR-DIAGNOSTICS.md`.
   MAX_TILE_ROWS bounds and a valid `context_update_tile_id`
 - **THEN** no tile-info diagnostics are emitted
 
+### Requirement: Frame CCSO-params conformance diagnostics
+The validator SHALL emit structured error diagnostics, with stable `rule_id`,
+`severity`, `spec_section`, and byte offsets, for the locally-decidable
+§ 6.17.7.8 CCSO-params constraints on a parsed frame `ccso_params()`:
+`ccso_ext_filter` equal to `7` (the reserved value), and
+`1 << ccso_max_band_log2` greater than `CCSO_BAND_NUM`. The reference-state
+CCSO requirements (`ccso_ref_idx < NumTotalRefs` and the reuse equalities)
+are dead on the intra path and SHALL NOT be guessed. Each new rule id SHALL be
+registered in `docs/VALIDATOR-DIAGNOSTICS.md`.
+
+#### Scenario: Reserved CCSO ext filter
+- **WHEN** a frame header parses a `ccso_params()` plane with
+  `ccso_ext_filter == 7`
+- **THEN** the validator reports an error diagnostic citing § 6.17.7.8 at the
+  frame-header OBU offset
+
+#### Scenario: Conforming CCSO params are silent
+- **WHEN** a frame header parses `ccso_params()` with `ccso_ext_filter != 7`
+  and `1 << ccso_max_band_log2 <= CCSO_BAND_NUM`
+- **THEN** no CCSO-params diagnostics are emitted
+
 ### Requirement: Frame QM reference diagnostics
 The validator SHALL check the locally-decidable § 6.17.6.2 constraints for
 parsed `setup_qm_params()` levels that reference custom quantizer matrices
@@ -1001,14 +1022,16 @@ positives.
 
 ### Requirement: Frame-header parse coverage reporting stays honest
 The validator and inspector SHALL report each partial frame-header parse status
-distinctly — the intra-path stop before `lr_params()` and the truncation status
-for a payload that ends inside the loop-filter cluster — and SHALL NOT claim full
-§ 5.18 frame-header conformance for frame headers parsed only through a partial
-stop point. A frame header truncated inside the loop-filter cluster SHALL still
-expose its already-parsed control-region facts to the state-supported diagnostics
-(the truncation SHALL NOT silence earlier frame-size / output-class checks).
-Existing frame-header activation and HLS reference diagnostics SHALL be preserved
-unchanged.
+distinctly — the intra-path stop before `read_tx_mode()` (after the loop-filter,
+loop-restoration, and CCSO cluster), the honest stop before the unmodeled
+`read_wienerns_filter()` frame-level Wiener bank decode, and the truncation status
+for a payload that ends inside the loop-filter / loop-restoration / CCSO cluster —
+and SHALL NOT claim full § 5.18 frame-header conformance for frame headers parsed
+only through a partial stop point. A frame header truncated inside the cluster SHALL
+still expose its already-parsed control-region facts to the state-supported
+diagnostics (the truncation SHALL NOT silence earlier frame-size / output-class
+checks). Existing frame-header activation and HLS reference diagnostics SHALL be
+preserved unchanged.
 
 #### Scenario: Inspector surfaces new fields and status
 - **WHEN** `splot inspect` runs on a stream whose frame header parses through

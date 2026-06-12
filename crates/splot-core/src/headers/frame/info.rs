@@ -30,11 +30,15 @@
 //!   `segmentation_params()`, `setup_qm_params()`, `delta_q_params()`, the
 //!   § 5.18.2 lossless/`allow_tcq`/`allow_parity_hiding` tail, and the loop-filter
 //!   cluster `deblocking_filter_params()` (§ 5.18.5.2), `gdf_params()` (§ 5.18.7.9),
-//!   and `cdef_params()` (§ 5.18.7.10), stopping before `lr_params()` (loop
-//!   restoration, § 5.18.7.11)
-//!   ([`FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams`]). A payload that
-//!   runs out **inside** the loop-filter cluster instead keeps the already-parsed
-//!   control-region facts and reports the truncation as
+//!   `cdef_params()` (§ 5.18.7.10), `lr_params()` (loop restoration, § 5.18.7.11), and
+//!   `ccso_params()` (§ 5.18.7.12), stopping before `read_tx_mode()` (§ 5.18.8.1)
+//!   ([`FrameHeaderParseStatus::StoppedBeforeReadTxMode`]). When a plane in `lr_params()`
+//!   signals `frame_filters_on`, the structure reaches the unmodeled
+//!   `read_wienerns_filter()` frame-level Wiener bank decode and the parser stops with
+//!   [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`] (the control-region and
+//!   pre-Wiener facts preserved). A payload that runs out **inside** the loop-filter
+//!   cluster (deblocking through ccso) instead keeps the already-parsed control-region
+//!   facts and reports the truncation as
 //!   [`FrameHeaderParseStatus::StoppedInsideFilterParams`] rather than failing the whole
 //!   parse (so earlier state-supported diagnostics still see the facts). On the
 //!   `cur_mfh_id > 0` path the resolved in-band multi-frame header's § 5.7 state is
@@ -56,12 +60,16 @@ use crate::headers::frame::quant::{
     CoreSeqQuantView, DeltaQParams, LosslessInfo, QuantizationParams, SetupQmParams,
     parse_delta_q_params, parse_lossless_info, parse_quantization_params, parse_setup_qm_params,
 };
+use crate::headers::frame::restoration::{
+    CcsoParams, CoreSeqCcsoView, CoreSeqRestorationView, LrGeometry, LrParams, LrParseOutcome,
+    parse_ccso_params, parse_lr_params,
+};
 use crate::headers::frame::segmentation::{
     CoreSeqSegView, MfhSegView, SegmentationParams, parse_segmentation_params,
 };
 use crate::headers::frame::size::{FrameSize, ceil_log2, parse_frame_size};
 use crate::headers::frame::tiling::{CoreSeqTileView, TileInfo, parse_tile_info};
-use crate::headers::sequence::{SequenceHeader, SequenceHeaderId};
+use crate::headers::sequence::{ChromaFormatIdc, SequenceHeader, SequenceHeaderId};
 use crate::hls::{MfhId, MultiFrameHeaderRecord};
 use crate::types::ObuType;
 
@@ -106,18 +114,42 @@ pub enum FrameHeaderParseStatus {
     /// `deblocking_filter_params()` (§ 5.18.5.2), `gdf_params()` (§ 5.18.7.9), and
     /// `cdef_params()` (§ 5.18.7.10); the parser stopped before `lr_params()`
     /// (loop restoration, § 5.18.7.11).
+    ///
+    /// Reserved: superseded by [`Self::StoppedBeforeReadTxMode`] once `lr_params()` and
+    /// `ccso_params()` parse on the intra path. The current intra path advances past both
+    /// and reports the next stop; this variant is retained for completeness and
+    /// out-of-tree compatibility but is no longer produced by the in-tree parser.
     StoppedBeforeLoopRestorationParams,
+    /// An intra frame's control region was read in full through `cdef_params()`,
+    /// then `lr_params()` (loop restoration, § 5.18.7.11) and `ccso_params()`
+    /// (§ 5.18.7.12); the parser stopped before `read_tx_mode()` (§ 5.18.8.1), the next
+    /// § 5.18.2 tail structure (mirror :5307). This is the terminal intra-path stop when
+    /// the loop-restoration / CCSO cluster parsed cleanly without entering the unmodeled
+    /// frame-level Wiener bank decode.
+    StoppedBeforeReadTxMode,
+    /// An intra frame parsed through `cdef_params()` and into `lr_params()`
+    /// (§ 5.18.7.11), but a plane signalled `frame_filters_on[plane]`, so the structure
+    /// reached `read_wienerns_filter(plane, 0, 0, 1)` (mirror :7377) — a frame-level Wiener
+    /// non-separable bank decode (`search_frame_filters()`, `predict_group()`,
+    /// `decode_signed_subexp_with_ref()`) this phase does not model. The control-region and
+    /// pre-Wiener `lr_params()` facts are intact and exposed; `read_tx_mode()` and beyond
+    /// are unreached. `feature_id` is the implementation-matrix row for the missing decode.
+    StoppedBeforeWienerNsFilter {
+        /// Implementation-matrix Feature ID for the unmodeled `read_wienerns_filter()`.
+        feature_id: &'static str,
+    },
     /// An intra frame's control region was read in full through the § 5.18.2
     /// lossless/`allow_tcq`/`allow_parity_hiding` tail, but the payload ran out
     /// **inside** the loop-filter cluster `deblocking_filter_params()` (§ 5.18.5.2),
-    /// `gdf_params()` (§ 5.18.7.9), or `cdef_params()` (§ 5.18.7.10). The already-parsed
-    /// control-region facts (frame size, output flags, tile/quant/segmentation) are
-    /// intact and exposed; the cluster fields that were not reached stay `None`. The
-    /// truncation itself is a payload-bounds condition, not a structural violation, so it
-    /// is reported through this status rather than as a hard parse error — earlier
-    /// state-supported diagnostics still see the preserved facts (the pre-cluster
-    /// behavior, which stopped here before any filter read, is preserved). No
-    /// full-payload trailing-bits conformance is implied.
+    /// `gdf_params()` (§ 5.18.7.9), `cdef_params()` (§ 5.18.7.10), `lr_params()`
+    /// (§ 5.18.7.11), or `ccso_params()` (§ 5.18.7.12). The already-parsed
+    /// control-region facts (frame size, output flags, tile/quant/segmentation, and any
+    /// cluster structure that completed before the truncation) are intact and exposed; the
+    /// cluster fields that were not reached stay `None`. The truncation itself is a
+    /// payload-bounds condition, not a structural violation, so it is reported through this
+    /// status rather than as a hard parse error — earlier state-supported diagnostics still
+    /// see the preserved facts (the pre-cluster behavior, which stopped here before any
+    /// filter read, is preserved). No full-payload trailing-bits conformance is implied.
     StoppedInsideFilterParams,
     /// A branch needs decoder/reference state or syntax this phase does not model
     /// (e.g. the inter reference map, or the rest of a bridge frame). `feature_id` is
@@ -137,6 +169,8 @@ impl FrameHeaderParseStatus {
             Self::CoreFieldsOnly => "core_fields_only",
             Self::ShowExistingFrameComplete => "show_existing_frame_complete",
             Self::StoppedBeforeLoopRestorationParams => "stopped_before_loop_restoration_params",
+            Self::StoppedBeforeReadTxMode => "stopped_before_read_tx_mode",
+            Self::StoppedBeforeWienerNsFilter { .. } => "stopped_before_wienerns_filter",
             Self::StoppedInsideFilterParams => "stopped_inside_filter_params",
             Self::UnsupportedUntilFeature { .. } => "unsupported_until_feature",
         }
@@ -326,6 +360,14 @@ pub struct FrameHeaderCore {
     /// Parsed `cdef_params()` (AV2 § 5.18.7.10), when reached. Per § 5.18.2 call order
     /// it is parsed **after** `gdf_params()`.
     pub cdef_params: Option<CdefParams>,
+    /// Parsed `lr_params()` (AV2 § 5.18.7.11), when reached on the intra tail (after
+    /// `cdef_params()`). `None` when the parse stopped before it or stopped inside the
+    /// unmodeled frame-level Wiener bank decode (see
+    /// [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`]).
+    pub lr_params: Option<LrParams>,
+    /// Parsed `ccso_params()` (AV2 § 5.18.7.12), when reached. Per § 5.18.2 call order it
+    /// is parsed **after** `lr_params()`.
+    pub ccso_params: Option<CcsoParams>,
     /// Bits consumed by this parse (not necessarily the whole frame header).
     pub consumed_bits: u64,
 }
@@ -365,6 +407,13 @@ struct CoreSeqView {
     tile: CoreSeqTileView,
     /// § 5.18.5.2 / § 5.18.7.9 / § 5.18.7.10 loop-filter inputs (AV2 § 5.4.10).
     filter: CoreSeqFilterView,
+    /// § 5.18.7.11 loop-restoration tool flags (AV2 § 5.4.10).
+    restoration: CoreSeqRestorationView,
+    /// § 5.18.7.12 CCSO inputs (AV2 § 5.4.10 / § 5.4.1).
+    ccso: CoreSeqCcsoView,
+    /// `chroma_format_idc` (AV2 § 5.4.1): the § 6.4.1 SubsamplingX/Y for `lr_params()`'s
+    /// chroma `LoopRestorationSize` derivation.
+    chroma_format_idc: ChromaFormatIdc,
 }
 
 impl CoreSeqView {
@@ -407,6 +456,20 @@ impl CoreSeqView {
                 df_par_bits_minus_2: filter.df_par_bits_minus_2,
                 single_picture_header_flag: general.single_picture_header_flag,
             },
+            // AV2 § 5.4.10: the loop-restoration tool flags consumed by lr_params().
+            restoration: CoreSeqRestorationView {
+                enable_restoration: filter.enable_restoration,
+                lr_pc_wiener_disabled: filter.lr_pc_wiener_disabled,
+                lr_wiener_nonsep_disabled: filter.lr_wiener_nonsep_disabled,
+                lr_uv_pc_wiener_disabled: filter.lr_uv_pc_wiener_disabled,
+                lr_uv_wiener_nonsep_disabled: filter.lr_uv_wiener_nonsep_disabled,
+            },
+            // AV2 § 5.4.10 / § 5.4.1: the CCSO inputs consumed by ccso_params().
+            ccso: CoreSeqCcsoView {
+                enable_ccso: filter.enable_ccso,
+                single_picture_header_flag: general.single_picture_header_flag,
+            },
+            chroma_format_idc: general.chroma_format_idc,
         })
     }
 }
@@ -583,6 +646,8 @@ fn init_core_from_prefix(prefix: &FrameHeaderPrefix, obu_type: ObuType) -> Frame
         deblocking_filter_params: None,
         gdf_params: None,
         cdef_params: None,
+        lr_params: None,
+        ccso_params: None,
         consumed_bits: 0,
     }
 }
@@ -914,15 +979,15 @@ fn parse_intra_structures(
     core.setup_qm_params = Some(qm);
     core.delta_q_params = Some(delta_q);
 
-    // AV2 § 5.18.2 tail (mirror :5297-5301): the loop-filter cluster
-    // deblocking_filter_params() / gdf_params() / cdef_params(). A truncation INSIDE the
-    // cluster must not discard the control-region facts already parsed above (frame size,
-    // output flags, tile/quant/segmentation): before this cluster existed the parser
-    // stopped here and returned Ok with exactly those facts, and the validator/inspect
-    // call sites .ok() the result, so an Err would silently drop every earlier
-    // state-supported diagnostic. parse_filter_cluster() therefore converts a payload-EOF
-    // into the StoppedInsideFilterParams status (facts preserved, cluster fields left
-    // None) and only propagates a genuine structural error.
+    // AV2 § 5.18.2 tail (mirror :5297-5307): the loop-filter cluster
+    // deblocking_filter_params() / gdf_params() / cdef_params(), then lr_params()
+    // (§ 5.18.7.11) and ccso_params() (§ 5.18.7.12). A truncation INSIDE the cluster must
+    // not discard the control-region facts already parsed above (frame size, output flags,
+    // tile/quant/segmentation): the validator/inspect call sites .ok() the result, so an Err
+    // would silently drop every earlier state-supported diagnostic. parse_filter_cluster()
+    // therefore converts a payload-EOF into the StoppedInsideFilterParams status (facts
+    // preserved, unreached cluster fields left None) and only propagates a genuine structural
+    // error.
     match parse_filter_cluster(reader, core, seq, mfh, coded_lossless) {
         // parse_filter_cluster sets the terminal status itself (the cluster-complete stop,
         // or the unreachable missing-tile_info guard), so the Ok arm leaves it untouched.
@@ -939,16 +1004,21 @@ fn parse_intra_structures(
 }
 
 /// Parses the § 5.18.2 tail loop-filter cluster on the intra path:
-/// `deblocking_filter_params()` (§ 5.18.5.2), `gdf_params()` (§ 5.18.7.9), and
-/// `cdef_params()` (§ 5.18.7.10), in that order
-/// (AV2 v1.0.0 § 5.18.2, mirror :5297-5301). All three are determined by the parsed
-/// sequence filter config (§ 5.4.10), the frame state (`CodedLossless`, `NumPlanes`), the
-/// parsed `tile_info()` geometry, and — on the `cur_mfh_id > 0` path — the resolved MFH's
+/// `deblocking_filter_params()` (§ 5.18.5.2), `gdf_params()` (§ 5.18.7.9),
+/// `cdef_params()` (§ 5.18.7.10), `lr_params()` (§ 5.18.7.11), and `ccso_params()`
+/// (§ 5.18.7.12), in that order (AV2 v1.0.0 § 5.18.2, mirror :5297-5307). All are
+/// determined by the parsed sequence filter config (§ 5.4.10), the frame state
+/// (`CodedLossless`, `NumPlanes`, `SbSize`, chroma subsampling, `base_q_idx`), the parsed
+/// `tile_info()` geometry, and — on the `cur_mfh_id > 0` path — the resolved MFH's
 /// deblocking-update state.
 ///
-/// On success the three `core` filter fields are populated. On error the partially-read
-/// fields stay `None`; the caller decides whether a payload EOF here is a truncation
-/// (`StoppedInsideFilterParams`) or a hard failure.
+/// On a clean parse the `core` filter / lr / ccso fields are populated and the terminal
+/// [`FrameHeaderParseStatus::StoppedBeforeReadTxMode`] is set. When a plane signals a
+/// frame-level Wiener filter, `lr_params()` reaches the unmodeled `read_wienerns_filter()`
+/// decode: this function sets [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`] and
+/// returns `Ok(())` (the control-region and pre-Wiener facts are preserved). On error the
+/// partially-read fields stay `None`; the caller decides whether a payload EOF here is a
+/// truncation (`StoppedInsideFilterParams`) or a hard failure.
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
@@ -1012,9 +1082,51 @@ fn parse_filter_cluster(
         &seq.filter,
     )?);
 
-    // AV2 § 5.18.2: lr_params() (loop restoration, § 5.18.7.11) is next; this phase
-    // stops before it. The cluster parsed cleanly, so this is the terminal stop.
-    core.status = FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams;
+    // AV2 § 5.18.7.11: lr_params() (loop restoration). On the intra path FrameIsIntra, so
+    // numRefFrames == 0 and the temporal-prediction arm is dead; the SbSize and chroma
+    // subsampling drive the size signaling. A plane signalling frame_filters_on enters the
+    // unmodeled read_wienerns_filter() decode, which stops the parse honestly (the partial
+    // lr facts up to that loop are exposed via core.lr_params left None, the per-plane state
+    // is captured in the status path instead).
+    let lr_geometry = LrGeometry::new(seq.tile.frame_sb_size(true), seq.chroma_format_idc);
+    // base_q_idx feeds the spec's get_filter_set_index derivation only (SubclassLookup); it
+    // signals no bits. It is `Some` here because quantization_params() always parses before
+    // the cluster on the reached intra path.
+    let base_q_idx = core
+        .quantization_params
+        .as_ref()
+        .map_or(0, |quant| quant.base_q_idx);
+    match parse_lr_params(
+        reader,
+        coded_lossless,
+        seq.quant.num_planes,
+        &seq.restoration,
+        lr_geometry,
+        base_q_idx,
+    )? {
+        LrParseOutcome::Parsed(lr) => {
+            core.lr_params = Some(lr);
+        }
+        LrParseOutcome::StoppedBeforeWienerNsFilter { feature_id, .. } => {
+            // The frame-level Wiener bank decode is unmodeled; stop honestly. The
+            // control-region facts and the cdef/lr-pre-Wiener reads above are preserved.
+            core.status = FrameHeaderParseStatus::StoppedBeforeWienerNsFilter { feature_id };
+            return Ok(());
+        }
+    }
+
+    // AV2 § 5.18.7.12: ccso_params(). The intra path's reuse arm (reuse_ccso / ccso_ref_idx)
+    // is dead (FrameIsIntra), so it parses fully on plain (f/tu) reads.
+    core.ccso_params = Some(parse_ccso_params(
+        reader,
+        coded_lossless,
+        seq.quant.num_planes,
+        &seq.ccso,
+    )?);
+
+    // AV2 § 5.18.2: read_tx_mode() (§ 5.18.8.1) is next (mirror :5307); this phase stops
+    // before it. The lr/ccso cluster parsed cleanly, so this is the terminal intra-path stop.
+    core.status = FrameHeaderParseStatus::StoppedBeforeReadTxMode;
     Ok(())
 }
 
@@ -1103,6 +1215,7 @@ fn test_sub_views() -> (CoreSeqQuantView, CoreSeqSegView, CoreSeqTileView) {
 mod tests {
     use super::*;
     use crate::error::Error;
+    use crate::headers::frame::restoration::FrameRestorationType;
     use crate::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature, SegmentInfo};
     use crate::span::ByteOffset;
 
@@ -1131,6 +1244,17 @@ mod tests {
             self.bit(1);
             if leading_zeros > 0 {
                 self.f(code_num - (1 << leading_zeros), leading_zeros);
+            }
+        }
+
+        /// `ns(n)` encoding of `value` (0..n-1), the inverse of [`BitReader::read_ns`].
+        fn ns(&mut self, value: u32, n: u32) {
+            let w = u32::BITS - n.leading_zeros();
+            let m = (1u32 << w) - n;
+            if value < m {
+                self.f(value, w - 1);
+            } else {
+                self.f(value + m, w);
             }
         }
 
@@ -1171,6 +1295,28 @@ mod tests {
         }
     }
 
+    /// A test restoration view (§ 5.4.10) with `enable_restoration == false`, so
+    /// `lr_params()` returns without reading any bits. Override it in a test that needs the
+    /// enabled per-plane arm.
+    fn base_restoration() -> CoreSeqRestorationView {
+        CoreSeqRestorationView {
+            enable_restoration: false,
+            lr_pc_wiener_disabled: false,
+            lr_wiener_nonsep_disabled: false,
+            lr_uv_pc_wiener_disabled: false,
+            lr_uv_wiener_nonsep_disabled: false,
+        }
+    }
+
+    /// A test CCSO view (§ 5.4.10) with `enable_ccso == false`, so `ccso_params()` returns
+    /// without reading any bits. Override it in a test that needs the enabled arm.
+    fn base_ccso() -> CoreSeqCcsoView {
+        CoreSeqCcsoView {
+            enable_ccso: false,
+            single_picture_header_flag: false,
+        }
+    }
+
     fn base_seq() -> CoreSeqView {
         let (quant, seg, tile) = test_sub_views();
         CoreSeqView {
@@ -1192,6 +1338,9 @@ mod tests {
             seg,
             tile,
             filter: base_filter(),
+            restoration: base_restoration(),
+            ccso: base_ccso(),
+            chroma_format_idc: ChromaFormatIdc::Yuv420,
         }
     }
 
@@ -1259,10 +1408,7 @@ mod tests {
         let (core, consumed) =
             parse_body(&data, ObuType::ClosedLoopKey, true, &base_seq()).unwrap();
 
-        assert_eq!(
-            core.status,
-            FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams
-        );
+        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
         assert!(core.cur_mfh_id.is_zero());
         assert_eq!(core.seq_header_id_in_frame_header, Some(1));
         assert_eq!(core.frame_type, Some(FrameType::Key));
@@ -1390,10 +1536,7 @@ mod tests {
             "the MFH update arm copies apply_deblocking_filter from the record"
         );
         assert_eq!(deblocking.df_delta_q, [0; 4]);
-        assert_eq!(
-            core.status,
-            FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams
-        );
+        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
     }
 
     /// A `base_seq()` whose `order_hint_bits` is widened to 5 so the intra body built by
@@ -1579,6 +1722,124 @@ mod tests {
     }
 
     #[test]
+    fn frame_header_core_intra_tail_parses_lr_and_ccso_to_read_tx_mode() {
+        // Restoration AND CCSO enabled: the intra tail parses cdef, then lr_params()
+        // (no plane signals frame_filters_on, so no read_wienerns_filter) and ccso_params()
+        // to the StoppedBeforeReadTxMode stop. CDEF/GDF stay disabled so the cluster's only
+        // pre-lr reads are the 2 deblocking apply bits.
+        let mut seq = byte_aligned_filter_seq();
+        // lr_tools both luma tools enabled; chroma PC-Wiener inferred disabled.
+        seq.restoration.enable_restoration = true;
+        seq.restoration.lr_uv_pc_wiener_disabled = true;
+        seq.ccso.enable_ccso = true;
+        let mut bits = intra_body_up_to_filter_cluster();
+        // deblocking_filter_params(): not lossless -> apply[0]/[1] read, both 0.
+        bits.bit(0); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1]
+        // gdf_params() / cdef_params(): disabled -> no bits.
+        // lr_params(): luma tool_index ns(4) == 0 -> RESTORE_NONE; chroma planes ns(2) == 0
+        // -> RESTORE_NONE. No frame_filters_on, no size flags.
+        bits.ns(0, 4); // plane 0 tool_index -> RESTORE_NONE
+        bits.ns(0, 2); // plane 1 tool_index -> RESTORE_NONE
+        bits.ns(0, 2); // plane 2 tool_index -> RESTORE_NONE
+        // ccso_params(): not single picture -> ccso_frame_flag f(1) == 1, then all planes
+        // ccso_planes == 0.
+        bits.bit(1); // ccso_frame_flag
+        bits.bit(0); // ccso_planes[0]
+        bits.bit(0); // ccso_planes[1]
+        bits.bit(0); // ccso_planes[2]
+        let data = bits.into_bytes();
+        let (core, _) = parse_body(&data, ObuType::ClosedLoopKey, true, &seq).unwrap();
+        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
+        let lr = core.lr_params.as_ref().unwrap();
+        assert!(!lr.uses_lr);
+        assert_eq!(lr.planes.len(), 3);
+        assert!(
+            lr.planes
+                .iter()
+                .all(|p| p.restoration_type == FrameRestorationType::None)
+        );
+        let ccso = core.ccso_params.as_ref().unwrap();
+        assert_eq!(ccso.ccso_frame_flag, Some(true));
+        assert_eq!(ccso.planes.len(), 3);
+        assert!(ccso.planes.iter().all(|p| !p.ccso_planes));
+    }
+
+    #[test]
+    fn frame_header_core_frame_filters_on_stops_before_wienerns() {
+        // A luma plane selects RESTORE_WIENER_NONSEP and signals frame_filters_on -> the
+        // structure reaches the unmodeled read_wienerns_filter() decode, so the parse stops
+        // honestly with StoppedBeforeWienerNsFilter and the pre-Wiener facts are preserved.
+        let mut seq = byte_aligned_filter_seq();
+        seq.restoration.enable_restoration = true;
+        seq.restoration.lr_uv_pc_wiener_disabled = true;
+        seq.ccso.enable_ccso = true; // ccso never reached (lr stops first)
+        let mut bits = intra_body_up_to_filter_cluster();
+        bits.bit(0); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1]
+        // lr_params(): plane 0 tool_index ns(4) == 2 -> RESTORE_WIENER_NONSEP.
+        bits.ns(2, 4); // plane 0 -> RESTORE_WIENER_NONSEP
+        bits.bit(1); // frame_filters_on[0] == 1
+        bits.f(2, 3); // num_filter_classes_idx == 2 -> Decode_Num_Filter_Classes[2] == 3
+        bits.ns(0, 2); // plane 1 -> RESTORE_NONE
+        bits.ns(0, 2); // plane 2 -> RESTORE_NONE
+        bits.bit(1); // lr_luma_use_half_size (size signaling still runs before the stop)
+        let data = bits.into_bytes();
+        let (core, _) = parse_body(&data, ObuType::ClosedLoopKey, true, &seq).unwrap();
+        assert_eq!(
+            core.status,
+            FrameHeaderParseStatus::StoppedBeforeWienerNsFilter {
+                feature_id: "AV2-5.18.7-SEGMENTATION-TILING"
+            }
+        );
+        // The pre-cluster facts and the deblocking/cdef reads before the stop survive; the
+        // lr_params field stays None (the structure did not complete) and ccso is unreached.
+        assert_eq!(core.frame_size, Some(FrameSize::new(16, 16)));
+        assert!(core.deblocking_filter_params.is_some());
+        assert_eq!(core.lr_params, None);
+        assert_eq!(core.ccso_params, None);
+    }
+
+    #[test]
+    fn frame_header_core_eof_inside_ccso_params_preserves_facts() {
+        // The payload parses through deblocking and lr_params() (restoration disabled so it
+        // reads nothing) and into ccso_params(), then runs out at the ccso_frame_flag read:
+        // the earlier facts survive, ccso stays None, status is the truncation marker. The
+        // deblocking reads consume exactly byte 6 (bit 56) so ccso begins at the byte-7
+        // boundary.
+        let mut seq = byte_aligned_filter_seq();
+        // restoration disabled (lr reads nothing); ccso enabled (reads the frame flag).
+        seq.ccso.enable_ccso = true;
+        let mut bits = intra_body_up_to_filter_cluster();
+        bits.bit(1); // apply_deblocking_filter[0]
+        bits.bit(1); // apply_deblocking_filter[1]
+        bits.bit(1); // apply_deblocking_filter[2]
+        bits.bit(1); // apply_deblocking_filter[3]
+        bits.bit(0); // df_delta_q_present[0]
+        bits.bit(0); // df_delta_q_present[1]
+        bits.bit(0); // df_delta_q_present[2]
+        bits.bit(0); // df_delta_q_present[3] -> deblocking ends at bit 56 (byte boundary)
+        // gdf/cdef disabled -> no bits. lr disabled -> no bits.
+        bits.bit(1); // ccso_frame_flag (byte 7) -> dropped by truncation
+        let mut data = bits.into_bytes();
+        data.truncate(7); // 56 bits: the ccso_frame_flag read overruns
+        let (core, _) = parse_body(&data, ObuType::ClosedLoopKey, true, &seq).unwrap();
+        assert_truncated_filter_cluster_preserves_facts(&core);
+        assert!(
+            core.deblocking_filter_params.is_some(),
+            "deblocking parsed before the ccso truncation must survive"
+        );
+        assert!(
+            core.lr_params.is_some(),
+            "the restoration-disabled lr structure parsed (no bits) before the ccso truncation"
+        );
+        assert_eq!(
+            core.ccso_params, None,
+            "the truncated ccso structure stays None"
+        );
+    }
+
+    #[test]
     fn frame_header_core_unresolvable_mfh_default_size_stays_unsupported() {
         // CLK, cur_mfh_id == 2 with NO resolved MFH record and
         // frame_size_override_flag == 0: the default dims come from the (unresolvable)
@@ -1728,10 +1989,7 @@ mod tests {
         assert_eq!(core.tile_info.as_ref().unwrap().tile_cols, 1);
         assert_eq!(core.quantization_params.unwrap().base_q_idx, 70);
         assert!(!core.segmentation_params.unwrap().segmentation_enabled);
-        assert_eq!(
-            core.status,
-            FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams
-        );
+        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
     }
 
     #[test]
@@ -1783,10 +2041,7 @@ mod tests {
                 .apply_deblocking_filter,
             [false; 4]
         );
-        assert_eq!(
-            core.status,
-            FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams
-        );
+        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
     }
 
     #[test]
@@ -1865,10 +2120,7 @@ mod tests {
         );
         assert_eq!(seg.features[3][0].data, 7);
         assert_eq!(seg.last_active_seg_id, 3);
-        assert_eq!(
-            core.status,
-            FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams
-        );
+        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
     }
 
     #[test]
@@ -1960,10 +2212,7 @@ mod tests {
         let data = bits.into_bytes();
         let (core, consumed) = parse_body(&data, ObuType::ClosedLoopKey, true, &seq).unwrap();
 
-        assert_eq!(
-            core.status,
-            FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams
-        );
+        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
         let tile_info = core.tile_info.as_ref().unwrap();
         assert_eq!(tile_info.tile_cols, 2);
         assert_eq!(tile_info.tile_rows, 1);
@@ -2016,10 +2265,18 @@ mod tests {
         assert_eq!(cdef.strengths[0].y_sec_strength, 1);
         assert_eq!(cdef.strengths[0].uv_pri_strength, 0);
         assert_eq!(cdef.strengths[0].uv_sec_strength, 4);
+        // lr_params(): restoration disabled (base_seq) -> Parsed with uses_lr == false and
+        // no per-plane reads. ccso_params(): CCSO disabled -> ccso_frame_flag None, no reads.
+        let lr = core.lr_params.as_ref().unwrap();
+        assert!(!lr.uses_lr);
+        assert!(lr.planes.is_empty());
+        let ccso = core.ccso_params.as_ref().unwrap();
+        assert_eq!(ccso.ccso_frame_flag, None);
+        assert!(ccso.planes.is_empty());
         // 2 prefix bits + 33 control/size bits + 64 pre-filter structure bits (7 tile_info,
         // 8 base_q_idx, 25 segmentation, 13 setup_qm, 1 delta_q_present, 8 qm_index,
         // 1 allow_tcq, 1 allow_parity_hiding) + 30 loop-filter bits (7 deblocking,
-        // 6 gdf, 17 cdef).
+        // 6 gdf, 17 cdef) + 0 lr/ccso bits (both disabled).
         assert_eq!(consumed, 2 + 33 + 64 + 30);
     }
 
@@ -2078,10 +2335,7 @@ mod tests {
         assert_eq!(core.refresh_frame_flags, Some(0b0000_0101));
         assert_eq!(core.frame_size, Some(FrameSize::new(4096, 2304)));
         assert_eq!(core.quantization_params.unwrap().base_q_idx, 45);
-        assert_eq!(
-            core.status,
-            FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams
-        );
+        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
     }
 
     #[test]
@@ -2120,10 +2374,7 @@ mod tests {
         assert_eq!(core.implicit_output_frame, Some(false));
         assert_eq!(core.order_hint_lsb, Some(9));
         assert_eq!(core.frame_size, Some(FrameSize::new(4096, 2304)));
-        assert_eq!(
-            core.status,
-            FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams
-        );
+        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
     }
 
     #[test]
@@ -2320,10 +2571,7 @@ mod tests {
         assert_eq!(core.order_hint_lsb, Some(2));
         assert_eq!(core.refresh_frame_flags, Some(0b0000_0101));
         assert_eq!(core.frame_size, Some(FrameSize::new(4096, 2304)));
-        assert_eq!(
-            core.status,
-            FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams
-        );
+        assert_eq!(core.status, FrameHeaderParseStatus::StoppedBeforeReadTxMode);
     }
 
     #[test]
@@ -2569,6 +2817,36 @@ mod proptests {
             )
     }
 
+    /// Arbitrary [`CoreSeqRestorationView`] values, with `lr_uv_pc_wiener_disabled` tied
+    /// to `enable_restoration` per the § 5.4.10 inference (mirror :1382).
+    fn arbitrary_restoration_view() -> impl Strategy<Value = CoreSeqRestorationView> {
+        any::<[bool; 4]>().prop_map(|flags| CoreSeqRestorationView {
+            enable_restoration: flags[0],
+            lr_pc_wiener_disabled: flags[1],
+            lr_wiener_nonsep_disabled: flags[2],
+            lr_uv_pc_wiener_disabled: flags[0],
+            lr_uv_wiener_nonsep_disabled: flags[3],
+        })
+    }
+
+    /// Arbitrary [`CoreSeqCcsoView`] values.
+    fn arbitrary_ccso_view() -> impl Strategy<Value = CoreSeqCcsoView> {
+        any::<bool>().prop_map(|enable_ccso| CoreSeqCcsoView {
+            enable_ccso,
+            single_picture_header_flag: false,
+        })
+    }
+
+    /// Arbitrary `chroma_format_idc` values (§ 5.4.1).
+    fn arbitrary_chroma_format() -> impl Strategy<Value = ChromaFormatIdc> {
+        prop_oneof![
+            Just(ChromaFormatIdc::Yuv420),
+            Just(ChromaFormatIdc::Monochrome),
+            Just(ChromaFormatIdc::Yuv444),
+            Just(ChromaFormatIdc::Yuv422),
+        ]
+    }
+
     /// Arbitrary [`CoreSeqView`] values within their type ranges, including the
     /// § 5.18.6 / § 5.18.7 / § 5.4.10 sub-views consumed by the new intra structure
     /// cluster.
@@ -2588,39 +2866,47 @@ mod proptests {
             arbitrary_seg_view(),
             arbitrary_tile_view(),
             arbitrary_filter_view(),
+            arbitrary_restoration_view(),
+            arbitrary_ccso_view(),
+            arbitrary_chroma_format(),
         )
-            .prop_map(|(general, quant, seg, tile, filter)| {
-                let (
-                    num_ref_frames,
-                    order_hint_bits,
-                    long_term_frame_id_bits,
-                    flags,
-                    max_mlayer_id,
-                    dim_bits,
-                    max_dims,
-                    scc,
-                ) = general;
-                CoreSeqView {
-                    num_ref_frames,
-                    order_hint_bits,
-                    long_term_frame_id_bits,
-                    enable_short_refresh_frame_flags: flags[0],
-                    monotonic_output_order_flag: flags[1],
-                    single_picture_header_flag: flags[2],
-                    max_mlayer_id,
-                    frame_width_bits: dim_bits.0,
-                    frame_height_bits: dim_bits.1,
-                    max_frame_width: max_dims.0,
-                    max_frame_height: max_dims.1,
-                    seq_force_screen_content_tools: scc.0,
-                    seq_force_integer_mv: scc.1,
-                    allow_frame_max_bvp_drl_bits: scc.2,
-                    quant,
-                    seg,
-                    tile,
-                    filter,
-                }
-            })
+            .prop_map(
+                |(general, quant, seg, tile, filter, restoration, ccso, chroma_format_idc)| {
+                    let (
+                        num_ref_frames,
+                        order_hint_bits,
+                        long_term_frame_id_bits,
+                        flags,
+                        max_mlayer_id,
+                        dim_bits,
+                        max_dims,
+                        scc,
+                    ) = general;
+                    CoreSeqView {
+                        num_ref_frames,
+                        order_hint_bits,
+                        long_term_frame_id_bits,
+                        enable_short_refresh_frame_flags: flags[0],
+                        monotonic_output_order_flag: flags[1],
+                        single_picture_header_flag: flags[2],
+                        max_mlayer_id,
+                        frame_width_bits: dim_bits.0,
+                        frame_height_bits: dim_bits.1,
+                        max_frame_width: max_dims.0,
+                        max_frame_height: max_dims.1,
+                        seq_force_screen_content_tools: scc.0,
+                        seq_force_integer_mv: scc.1,
+                        allow_frame_max_bvp_drl_bits: scc.2,
+                        quant,
+                        seg,
+                        tile,
+                        filter,
+                        restoration,
+                        ccso,
+                        chroma_format_idc,
+                    }
+                },
+            )
     }
 
     /// A fixed in-band multi-frame-header record for the `cur_mfh_id > 0` never-panic

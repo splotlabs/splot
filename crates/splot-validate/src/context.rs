@@ -17,9 +17,9 @@ use splot_core::headers::film_grain::{
     FilmGrainObu, FilmGrainScalingPoint, MAX_FILM_GRAIN, parse_film_grain,
 };
 use splot_core::headers::frame::{
-    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderPrefix,
-    FrameReferenceStateView, FrameType, SetupQmParams, TileInfo, parse_frame_header_core,
-    parse_frame_header_prefix,
+    CCSO_BAND_NUM, CcsoParams, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
+    FrameHeaderPrefix, FrameReferenceStateView, FrameType, SetupQmParams, TileInfo,
+    parse_frame_header_core, parse_frame_header_prefix,
 };
 use splot_core::headers::layer_config_record::{
     LayerConfigurationRecord, LcrAggregateInfo, LcrRepInfo, parse_layer_config_record,
@@ -13069,6 +13069,11 @@ fn frame_header_core_checks(
         frame_qm_reference_checks(setup_qm, active_sequence, qm_state, obu, report);
     }
 
+    // AV2 § 6.17.7.8: per-plane CCSO field bounds for a parsed `ccso_params()`.
+    if let Some(ccso) = core.ccso_params.as_ref() {
+        frame_ccso_params_checks(ccso, obu, report);
+    }
+
     // The remaining checks compare refresh_frame_flags against NumRefFrames.
     let Some(num_ref_frames) = active_sequence
         .inter
@@ -13176,6 +13181,62 @@ fn frame_tile_info_checks(
                 tile_info.context_update_tile_id, tile_info.tile_cols, tile_info.tile_rows
             ),
         ));
+    }
+}
+
+/// Emits the locally decidable § 6.17.7.8 CCSO-params diagnostics for a parsed frame
+/// `ccso_params()` (AV2 v1.0.0 § 6.17.7.8,
+/// `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-7-8`, mirror
+/// :5819 / :5824):
+///
+/// - `frame-header/ccso-ext-filter-reserved` (error): `ccso_ext_filter != 7` (mirror
+///   :5819). `ccso_ext_filter` is `f(3)` (0..=7), so the reserved value 7 is reachable.
+/// - `frame-header/ccso-max-band-out-of-range` (error): `1 << ccso_max_band_log2 <=
+///   CCSO_BAND_NUM` (mirror :5824). `ccso_max_band_log2` is `f(2 + ccso_bo_only)`
+///   (0..=7), so a value > 6 (`1 << 7 == 128 > CCSO_BAND_NUM == 64`) violates the bound;
+///   it is only reachable in the `ccso_bo_only` arm (`f(3)`).
+///
+/// Both bounds are fully determined by the parsed per-plane fields, so they hold on the
+/// intra path independent of reference-frame state. The reference-state CCSO requirements
+/// (`ccso_ref_idx < NumTotalRefs`, the `SavedCcso*` / `RefMi*` reuse equalities) are dead
+/// on the intra path (`NumTotalRefs == 0`), so they are not modeled here.
+fn frame_ccso_params_checks(
+    ccso: &CcsoParams,
+    obu: &ObuEnvelope<'_>,
+    report: &mut ValidationReport,
+) {
+    for (plane, params) in ccso.planes.iter().enumerate() {
+        // AV2 § 6.17.7.8 (:5819): ccso_ext_filter is not equal to 7. Present only on the
+        // non-ccso_bo_only arm (otherwise inferred 0); `None` when ccso_planes[plane] == 0.
+        if params.ccso_ext_filter == Some(7) {
+            report.push(frame_header_error(
+                "frame-header/ccso-ext-filter-reserved",
+                "6.17.7.8",
+                obu,
+                format!(
+                    "ccso_ext_filter for plane {plane} is 7, which is the reserved value \
+                     §6.17.7.8 forbids"
+                ),
+            ));
+        }
+        // AV2 § 6.17.7.8 (:5824): 1 << ccso_max_band_log2 <= CCSO_BAND_NUM. Use a widened
+        // shift so a non-conformant value cannot overflow: ccso_max_band_log2 is f(2..=3)
+        // (0..=7), and `1u32 << 7` is in range.
+        if let Some(max_band_log2) = params.ccso_max_band_log2 {
+            let max_band = 1u32 << u32::from(max_band_log2);
+            if max_band > CCSO_BAND_NUM {
+                report.push(frame_header_error(
+                    "frame-header/ccso-max-band-out-of-range",
+                    "6.17.7.8",
+                    obu,
+                    format!(
+                        "ccso_max_band_log2 for plane {plane} is {max_band_log2}, so \
+                         1 << ccso_max_band_log2 == {max_band} exceeds CCSO_BAND_NUM \
+                         ({CCSO_BAND_NUM})"
+                    ),
+                ));
+            }
+        }
     }
 }
 

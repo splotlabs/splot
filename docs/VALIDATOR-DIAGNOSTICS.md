@@ -155,6 +155,8 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 | Rule ID | Severity | Section | Condition |
 |---|---|---|---|
 | `frame-header/bridge-ref-index-out-of-range` | error | § 6.17.2 | bridge_frame_ref_idx is not less than NumRefFrames |
+| `frame-header/ccso-ext-filter-reserved` | error | § 6.17.7.8 | a parsed `ccso_params()` plane in the `!ccso_bo_only` arm has `ccso_ext_filter == 7`, the reserved value §6.17.7.8 (mirror :5819) forbids |
+| `frame-header/ccso-max-band-out-of-range` | error | § 6.17.7.8 | a parsed `ccso_params()` plane has `1 << ccso_max_band_log2 > CCSO_BAND_NUM` (64), violating §6.17.7.8 (mirror :5824). Only reachable in the `ccso_bo_only` arm where `ccso_max_band_log2` is `f(3)` |
 | `frame-header/context-update-tile-id-out-of-range` | error | § 6.17.7.2 | context_update_tile_id is not less than TileCols * TileRows |
 | `frame-header/cur-mfh-id-out-of-range` | error | § 6.17 | cur_mfh_id is not less than MAX_MFH_NUM |
 | `frame-header/frame-size-exceeds-sequence-max` | error | § 6.17.4.1 | derived FrameWidth/FrameHeight exceeds active sequence maximum (the explicit-override `frame_size()` path). The no-double-fire deferral keys on the parsed PATH, not on dimension equality: only the `cur_mfh_id > 0` non-override default path (`frame_size_override_flag == 0`, derived dims taken from the MFH's stored dims) defers to `frame-header/mfh-frame-size-exceeds-sequence-max`. An override==1 frame that explicitly codes the same out-of-range dims the MFH stores is a separate §6.17.4.1 violation of its own `frame_width/height_minus_1` fields, so both rules fire |

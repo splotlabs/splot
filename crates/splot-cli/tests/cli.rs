@@ -279,7 +279,7 @@ fn inspect_json_exposes_frame_header_core() {
 
     let core = &records[2]["frame_header_core"];
     assert_eq!(core["payload_kind"], "frame_header_core");
-    assert_eq!(core["status"], "stopped_before_loop_restoration_params");
+    assert_eq!(core["status"], "stopped_before_read_tx_mode");
     assert_eq!(core["frame_type"], "key");
     assert_eq!(core["frame_is_intra"], true);
     assert_eq!(core["show_existing_frame"], false);
@@ -324,6 +324,16 @@ fn inspect_json_exposes_frame_header_core() {
     );
     assert_eq!(core["gdf"]["gdf_frame_enable"], false);
     assert_eq!(core["cdef"]["cdef_frame_enable"], false);
+    // The § 5.18.7.11 / § 5.18.7.12 lr / ccso cluster: restoration and CCSO are disabled at
+    // the sequence level, so lr_params() reports the default unit sizes with uses_lr false
+    // and ccso_params() returns with no ccso_frame_flag. The parser advances to the stop
+    // before read_tx_mode().
+    assert_eq!(core["lr"]["uses_lr"], false);
+    assert_eq!(
+        core["lr"]["loop_restoration_size"],
+        serde_json::json!([64, 32, 32])
+    );
+    assert!(core["ccso"].get("ccso_frame_flag").is_none());
 }
 
 #[test]
@@ -356,7 +366,7 @@ fn inspect_json_exposes_mfh_backed_frame_header_core() {
     assert_eq!(records[2]["header"]["obu_type"], "MultiFrameHeader");
     let core = &records[3]["frame_header_core"];
     assert_eq!(core["payload_kind"], "frame_header_core");
-    assert_eq!(core["status"], "stopped_before_loop_restoration_params");
+    assert_eq!(core["status"], "stopped_before_read_tx_mode");
     assert_eq!(core["cur_mfh_id"], 1);
     assert_eq!(core["frame_type"], "key");
     assert_eq!(core["frame_is_intra"], true);
@@ -377,6 +387,10 @@ fn inspect_json_exposes_mfh_backed_frame_header_core() {
     );
     assert_eq!(core["gdf"]["gdf_frame_enable"], false);
     assert_eq!(core["cdef"]["cdef_frame_enable"], false);
+    // Restoration / CCSO disabled at the sequence level -> lr_params() reports the default
+    // sizes and the parser stops before read_tx_mode().
+    assert_eq!(core["lr"]["uses_lr"], false);
+    assert!(core["ccso"].get("ccso_frame_flag").is_none());
 }
 
 #[test]

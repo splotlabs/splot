@@ -4230,11 +4230,15 @@ mod tests {
         long_term_frame_id_bits: u32,
         still_picture: bool,
         enable_short_refresh_frame_flags: bool,
+        /// `enable_ccso` (§ 5.4.10): when set, the sequence filter config signals CCSO
+        /// and `ccso_unit_matches_sb_size`, so the frame's `ccso_params()` reads.
+        enable_ccso: bool,
     }
 
     impl FrameCoreSeq {
         /// seq 0; 8-bit frame dimensions, 16x16 maximum; OrderHintBits = 1,
-        /// NumRefFrames = 8; no long-term ids; not still-picture; full refresh signaling.
+        /// NumRefFrames = 8; no long-term ids; not still-picture; full refresh signaling;
+        /// CCSO disabled.
         fn base() -> Self {
             Self {
                 seq_id: 0,
@@ -4247,6 +4251,7 @@ mod tests {
                 long_term_frame_id_bits: 0,
                 still_picture: false,
                 enable_short_refresh_frame_flags: false,
+                enable_ccso: false,
             }
         }
     }
@@ -4346,7 +4351,10 @@ mod tests {
         bits.bit(0); // enable_cdef
         bits.bit(0); // enable_gdf
         bits.bit(0); // enable_restoration
-        bits.bit(0); // enable_ccso
+        bits.bit(u8::from(o.enable_ccso)); // enable_ccso
+        if o.enable_ccso {
+            bits.bit(0); // ccso_unit_matches_sb_size (no effect on the offset-loop reads)
+        }
         bits.bit(0); // cdef_on_skip_txfm_always_on
         bits.bit(0); // cdef_on_skip_txfm_disabled
         bits.f(0, 2); // df_par_bits_minus_2
@@ -4480,6 +4488,146 @@ mod tests {
             !report
                 .errors()
                 .any(|d| d.rule_id == "frame-header/frame-size-exceeds-sequence-max"),
+            "report was: {report}"
+        );
+    }
+
+    /// Builds a CLK frame whose §5.18.2 intra tail parses cleanly through cdef and
+    /// lr_params() (restoration disabled), then `ccso_params()` for a CCSO-enabled
+    /// sequence: `ccso_frame_flag = 1`, plane 0 enabled in the `!ccso_bo_only` arm with the
+    /// caller's `ccso_ext_filter` and `ccso_max_band_log2`, planes 1/2 disabled. Uses
+    /// `ccso_scale_idx = 0`, `ccso_quant_idx = 0` so `quantStep = CCSO_Quant_Sz[0][0] == 16`
+    /// (nonzero → `ccso_edge_clf` read) and `ccso_edge_clf = 0` so `maxEdgeInterval = 3`. The
+    /// offset loop then reads `3 * 3 * (1 << ccso_max_band_log2)` `ccso_offset_idx` tu(7)
+    /// values (all 0 -> a single `0` bit each).
+    fn frame_with_ccso_plane0(ccso_ext_filter: u32, ccso_max_band_log2: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // immediate_output_frame
+        fb.bit(0); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0);
+        // gdf/cdef disabled, restoration disabled -> lr_params() reads nothing.
+        // ccso_params(): not single picture -> ccso_frame_flag f(1) == 1.
+        fb.bit(1); // ccso_frame_flag
+        // plane 0: ccso_planes == 1, !ccso_bo_only arm.
+        fb.bit(1); // ccso_planes[0]
+        fb.bit(0); // ccso_bo_only[0] == 0
+        fb.f(0, 2); // ccso_scale_idx[0] == 0
+        fb.f(0, 2); // ccso_quant_idx[0] == 0 -> CCSO_Quant_Sz[0][0] == 16 != 0
+        fb.f(ccso_ext_filter, 3); // ccso_ext_filter[0]
+        fb.bit(0); // ccso_edge_clf[0] == 0 (quantStep != 0) -> maxEdgeInterval = 3
+        fb.f(ccso_max_band_log2, 2); // ccso_max_band_log2[0] (n = 2, !ccso_bo_only)
+        // offset loop: 3 * 3 * (1 << ccso_max_band_log2) ccso_offset_idx tu(7) == 0 (one 0 bit).
+        let max_band = 1u32 << ccso_max_band_log2;
+        for _ in 0..(3 * 3 * max_band) {
+            fb.bit(0); // ccso_offset_idx tu(7) == 0
+        }
+        // plane 1/2 disabled.
+        fb.bit(0); // ccso_planes[1]
+        fb.bit(0); // ccso_planes[2]
+        // Padding so the core reaches its stop after ccso_params() (trailing bits ignored).
+        fb.f(0, 8);
+        annex_b_obu(CLK_HEADER, &fb.into_bytes())
+    }
+
+    #[test]
+    fn validator_flags_ccso_ext_filter_reserved() {
+        // §6.17.7.8 (mirror :5819): ccso_ext_filter == 7 is the reserved value. With
+        // ccso_max_band_log2 == 0 (1 << 0 == 1 <= CCSO_BAND_NUM) only the ext_filter rule fires.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            enable_ccso: true,
+            ..FrameCoreSeq::base()
+        });
+        data.extend(frame_with_ccso_plane0(7, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/ccso-ext-filter-reserved"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_accepts_ccso_ext_filter_within_range() {
+        // ccso_ext_filter == 6 (the largest conformant value) must not be flagged.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            enable_ccso: true,
+            ..FrameCoreSeq::base()
+        });
+        data.extend(frame_with_ccso_plane0(6, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/ccso-ext-filter-reserved"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_flags_ccso_max_band_out_of_range() {
+        // §6.17.7.8 (mirror :5824): 1 << ccso_max_band_log2 <= CCSO_BAND_NUM (64). In the
+        // !ccso_bo_only arm ccso_max_band_log2 is f(2) (0..=3), so 3 -> 1 << 3 == 8 <= 64 is
+        // always in range. The out-of-range case is only reachable in the ccso_bo_only arm
+        // (f(3) -> up to 7), so build that arm directly: ccso_max_band_log2 == 7 -> 128 > 64.
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // immediate_output_frame
+        fb.bit(0); // frame_size_override_flag
+        fb.f(0, 1); // order_hint
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0);
+        // ccso_params(): ccso_frame_flag == 1; plane 0 in the ccso_bo_only arm.
+        fb.bit(1); // ccso_frame_flag
+        fb.bit(1); // ccso_planes[0]
+        fb.bit(1); // ccso_bo_only[0] == 1 -> quant/ext/edge_clf inferred 0, maxEdgeInterval 1
+        fb.f(0, 2); // ccso_scale_idx[0]
+        fb.f(7, 3); // ccso_max_band_log2[0] f(3) == 7 -> 1 << 7 == 128 > CCSO_BAND_NUM
+        // offset loop: 1 * 1 * (1 << 7) == 128 ccso_offset_idx tu(7) == 0.
+        for _ in 0..128 {
+            fb.bit(0);
+        }
+        fb.bit(0); // ccso_planes[1]
+        fb.bit(0); // ccso_planes[2]
+        fb.f(0, 8); // padding
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            enable_ccso: true,
+            ..FrameCoreSeq::base()
+        });
+        data.extend(annex_b_obu(CLK_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/ccso-max-band-out-of-range"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_accepts_ccso_max_band_within_range() {
+        // ccso_max_band_log2 == 3 in the !ccso_bo_only arm -> 1 << 3 == 8 <= 64, conformant.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            enable_ccso: true,
+            ..FrameCoreSeq::base()
+        });
+        data.extend(frame_with_ccso_plane0(0, 3));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/ccso-max-band-out-of-range"),
             "report was: {report}"
         );
     }
@@ -19031,10 +19179,10 @@ mod tests {
         // The cur_mfh_id > 0 prefix (`uvlc(cur_mfh_id)`) is one bit longer than the
         // direct cur_mfh_id == 0 prefix, so the now-fully-parsed § 5.18.2 intra tail and
         // the loop-filter cluster (deblocking_filter_params() reads 2 apply bits with
-        // GDF/CDEF disabled) can need more bits than byte-padding alone supplies; an extra
-        // padding byte gives the core parser room to reach its
-        // StoppedBeforeLoopRestorationParams stop (trailing bits past the stop are
-        // ignored).
+        // GDF/CDEF disabled; lr_params()/ccso_params() read nothing with restoration/CCSO
+        // disabled) can need more bits than byte-padding alone supplies; an extra padding
+        // byte gives the core parser room to reach its StoppedBeforeReadTxMode stop
+        // (trailing bits past the stop are ignored).
         fb.f(0, 8);
         annex_b_obu_with_header(&layer_obu_header(4, 0, 0, xlayer), &fb.into_bytes())
     }
