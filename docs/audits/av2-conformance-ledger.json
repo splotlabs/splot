@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "a1a87699c2906ec2500a74fcfc05fa930931a299",
+  "audited_commit": "8da582a83a50bc11629708233474a98bc92c5e04",
   "outcome": "success",
   "files": [
     {
@@ -812,7 +812,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "54556d1c752714a72c0abe4b2afd6ed19067a5cd773ce1e9bc33c3ed43856447",
+      "sha256": "1aae139497003eea0785c170fe3b3559a862aa040488bebcc001b86faaf8d017",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -894,7 +894,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "4d71ab9ce7768e8ec9b20829fb105d0770f4188173fe5530cdda362971a17114",
+      "sha256": "65950ad2cd4c4b0bbf119ab6592c9f909bf6c08e682c417600e6c274190665e8",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1127,7 +1127,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "c1e593e30fd2fc43039fc2e08fa92a4bc3e495ad8a73d93a1067ef7bd1069b5b",
+      "sha256": "b9e85cef4d556b998e827881cbc055b3cf81d784a3725535094507f36a9429a4",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1265,7 +1265,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "3ac845f39f213075c4f0325c0966159e9538ddadc8a1f298fb23138787f36eb1",
+      "sha256": "c9db486c3be8e61005c2778d36d3f38dfc8caeadd619f190e39b07c4552e3016",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1419,7 +1419,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "b7389ae7d164e13b6e88e2189380bd502bdeb87c8f41b9aac7f241623c1072bd",
+      "sha256": "4b4c53c53428eb614292ae53831c7443dfb5f9c023025f8befbbabad16fc72ae",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
