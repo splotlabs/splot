@@ -378,12 +378,16 @@ and the intra tail through `AV2-5.18.6-QUANTIZATION` and
   its MFH-gated arm — the same intra tail the `cur_mfh_id == 0` path reaches. A
   `cur_mfh_id > 0` frame whose in-band MFH is unresolvable still routes to
   Unknown. `mfh_deblocking_filter_update` is recorded as groundwork only.
+  The § 5.18.7.4 non-uniform sequence-reuse branch is now wired: § 5.4.2 parsing
+  records `SeqSbColStarts` / `SeqSbRowStarts`, so a frame reusing a non-uniform
+  sequence tile layout parses through `tile_info()` instead of stopping
+  unimplemented.
 - **Remaining:** inter frame-header paths (including the inter `cur_mfh_id > 0`
-  arms), the § 5.18.7.4 non-uniform sequence-reuse branch, § 5.18.5 filtering
-  onward (the `mfh_deblocking_filter_update`-gated deblocking parse lands with
-  `frame-filtering-deblocking-gdf-cdef`), and the § 6.17.6.2 layer-dependency
-  constraints (the §5.4.1 dependency maps are now exposed by the sequence-header
-  model; the checks themselves are not implemented yet).
+  arms), § 5.18.5 filtering onward (the `mfh_deblocking_filter_update`-gated
+  deblocking parse lands with `frame-filtering-deblocking-gdf-cdef`), and the
+  § 6.17.6.2 layer-dependency constraints (the §5.4.1 dependency maps are now
+  exposed by the sequence-header model; the checks themselves are not implemented
+  yet).
   `AV2-5.18-FRAME-HEADER` and `AV2-5.19-TILE-GROUP` therefore stay `partial`,
   not `done`.
 

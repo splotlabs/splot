@@ -33,11 +33,11 @@ use super::size::FrameSize;
 ///
 /// The sequence tile layout (`SeqUniformTileSpacingFlag`, `SeqTileColsLog2`,
 /// `SeqTileRowsLog2`, `SeqTileCols`, `SeqTileRows`, `SeqSbCols`, `SeqSbRows`) is
-/// carried as the stored [`TileParams`] in [`Self::seq_tile_params`].
-// TODO(spec: AV2-5.18.7-SEGMENTATION-TILING): `SeqSbColStarts` / `SeqSbRowStarts`
-// (needed by the non-uniform `reuse_tile_params()` branch, § 5.18.7.4) are not
-// recorded by the parsed `TileParams` yet; extend `crate::tile` to expose them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// carried as the stored [`TileParams`] in [`Self::seq_tile_params`], and the
+/// `SeqSbColStarts` / `SeqSbRowStarts` start arrays (recorded by § 5.4.2 parsing,
+/// needed by the non-uniform `reuse_tile_params()` branch of § 5.18.7.4) are carried
+/// in [`Self::seq_sb_col_starts`] / [`Self::seq_sb_row_starts`].
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreSeqTileView {
     /// `seq_tile_info_present_flag` (AV2 § 5.4.2): `haveTileParams` for non-bridge
     /// frames (§ 5.18.7.2).
@@ -53,6 +53,13 @@ pub struct CoreSeqTileView {
     /// signalled, or when `seq_level_idx` is a reserved level with no defined tile
     /// bit layout (a non-conformant stream).
     pub seq_tile_params: Option<TileParams>,
+    /// `SeqSbColStarts[0..SeqTileCols]` (AV2 § 5.4.2), needed by the non-uniform
+    /// `reuse_tile_params()` branch (§ 5.18.7.4); empty unless a non-reserved sequence
+    /// tile layout is present. Bounded by `MAX_TILE_COLS`.
+    pub seq_sb_col_starts: Vec<u32>,
+    /// `SeqSbRowStarts[0..SeqTileRows]` (AV2 § 5.4.2), the row companion of
+    /// [`Self::seq_sb_col_starts`]. Bounded by `MAX_TILE_ROWS`.
+    pub seq_sb_row_starts: Vec<u32>,
     /// `get_seq_sb_size()` (AV2 § 5.18.7.6): the `seqSbSize` argument of
     /// `tile_params()` / `reuse_tile_params()` (§ 5.18.7.2).
     pub seq_sb_size: SuperblockSize,
@@ -90,6 +97,8 @@ impl CoreSeqTileView {
             seq_tile_info_present_flag: tile.seq_tile_info_present_flag,
             allow_tile_info_change: tile.allow_tile_info_change.unwrap_or(false),
             seq_tile_params: tile.params,
+            seq_sb_col_starts: tile.seq_sb_col_starts.clone(),
+            seq_sb_row_starts: tile.seq_sb_row_starts.clone(),
             seq_sb_size: partition.seq_sb_size(),
             use_256x256_superblock: partition.use_256x256_superblock,
             use_128x128_superblock: partition.use_128x128_superblock,
@@ -162,8 +171,9 @@ pub struct TileInfo {
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) or a typed
 /// descriptor error if the payload ends or is malformed mid-field, and
 /// [`Error::Unimplemented`](crate::error::Error::Unimplemented) when the layout
-/// depends on unmodeled state (reserved `seq_level_idx`, or the non-uniform
-/// sequence-reuse start arrays; see [`CoreSeqTileView`]).
+/// depends on unmodeled state (a reserved `seq_level_idx` leaves
+/// [`CoreSeqTileView::seq_tile_params`] `None` so the reuse eligibility cannot be
+/// evaluated).
 pub fn parse_tile_info(
     reader: &mut BitReader<'_>,
     tile: &CoreSeqTileView,
@@ -267,12 +277,40 @@ pub fn parse_tile_info(
                     reused.sb_shift2,
                 )
             }
-            _ => {
-                // The non-uniform § 5.18.7.4 branch needs SeqSbColStarts /
-                // SeqSbRowStarts, which the parsed sequence model does not record
-                // yet (see the TODO on `CoreSeqTileView`). `seq` is always `Some`
-                // here (reuse implies eligibility), so this arm is exactly the
-                // unrecorded-start-arrays case.
+            Some(seq) => {
+                // § 5.18.7.2 reuse branch -> reuse_tile_params() (§ 5.18.7.4),
+                // non-uniform arm: the stored SeqSbColStarts / SeqSbRowStarts and tile
+                // counts pass through (recorded by § 5.4.2 parsing), and sbShift2 =
+                // Mi_Width_Log2[SbSize]. `seq` is always `Some` here (reuse implies
+                // eligibility, which the `None` arm rejected earlier).
+                let reused = reuse_tile_params(ReuseTileParamsInput {
+                    uniform_spacing: false,
+                    seq_sb_row_starts: &tile.seq_sb_row_starts,
+                    seq_tile_rows: seq.tile_rows,
+                    seq_tile_rows_log2: seq.tile_rows_log2,
+                    seq_sb_col_starts: &tile.seq_sb_col_starts,
+                    seq_tile_cols: seq.tile_cols,
+                    seq_tile_cols_log2: seq.tile_cols_log2,
+                    seq_sb_size,
+                    sb_size,
+                    mi_cols,
+                    mi_rows,
+                });
+                (
+                    reused.sb_col_starts,
+                    reused.sb_row_starts,
+                    reused.tile_cols,
+                    reused.tile_rows,
+                    reused.tile_cols_log2,
+                    reused.tile_rows_log2,
+                    reused.sb_shift2,
+                )
+            }
+            None => {
+                // `reuse_tile_info` is only set when eligible, and the `None` (reserved
+                // seq_level_idx) case already returned `Unimplemented` above, so this
+                // arm is unreachable for a parsed layout. Stop explicitly rather than
+                // guessing bit positions if it is ever reached via direct API misuse.
                 return Err(Error::Unimplemented {
                     feature: "AV2-5.18.7-SEGMENTATION-TILING",
                 });
@@ -413,6 +451,8 @@ mod tests {
             seq_tile_info_present_flag: false,
             allow_tile_info_change: false,
             seq_tile_params: None,
+            seq_sb_col_starts: Vec::new(),
+            seq_sb_row_starts: Vec::new(),
             seq_sb_size: SuperblockSize::Block64x64,
             use_256x256_superblock: false,
             use_128x128_superblock: false,
@@ -678,20 +718,91 @@ mod tests {
     }
 
     #[test]
-    fn non_uniform_sequence_reuse_is_unimplemented() {
+    fn non_uniform_sequence_reuse_passes_recorded_starts_through() {
         // A stored non-uniform layout with matching SeqSbCols/SeqSbRows is eligible
-        // and reuse is inferred, but the unrecorded SeqSbColStarts/SeqSbRowStarts
-        // make the § 5.18.7.4 non-uniform branch unevaluable.
+        // (§ 5.18.7.2 :6449), reuse is inferred (no allow_tile_info_change), and the
+        // § 5.18.7.4 non-uniform branch passes the recorded SeqSbColStarts /
+        // SeqSbRowStarts through. 256x256 BLOCK_64X64 -> MiCols = MiRows = 64,
+        // sbCols = sbRows = 4. Stored starts [0, 2] for both axes, two tiles per axis;
+        // sbShift2 = Mi_Width_Log2[BLOCK_64X64] = 4, so MiColStarts = [0, 32, 64].
         let mut view = base_view();
         view.seq_tile_info_present_flag = true;
         let mut params = uniform_2x2_seq_params();
         params.uniform_spacing = false;
         view.seq_tile_params = Some(params);
+        view.seq_sb_col_starts = vec![0, 2];
+        view.seq_sb_row_starts = vec![0, 2];
+        // Multi-tile (2x2) layout reads context_update_tile_id f(2) then
+        // tile_size_bytes_minus_1 f(2).
+        let mut bits = Bits::default();
+        bits.f(2, 2); // context_update_tile_id (n = TileRowsLog2 + TileColsLog2 = 2)
+        bits.f(1, 2); // tile_size_bytes_minus_1 -> TileSizeBytes = 2
+        let data = bits.into_bytes();
+        let info = parse(&view, &data, FrameSize::new(256, 256)).unwrap();
+        assert!(info.reuse_tile_info);
+        assert_eq!(info.tile_cols, 2);
+        assert_eq!(info.tile_rows, 2);
+        assert_eq!(info.tile_cols_log2, 1);
+        assert_eq!(info.tile_rows_log2, 1);
+        assert_eq!(info.mi_col_starts, vec![0, 32, 64]);
+        assert_eq!(info.mi_row_starts, vec![0, 32, 64]);
+        assert_eq!(info.context_update_tile_id, 2);
+        assert_eq!(info.tile_size_bytes, Some(2));
+        // reuse bit was inferred (not read); only the 4 context bits were consumed.
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let _ = parse_tile_info(
+            &mut reader,
+            &view,
+            FrameSize::new(256, 256),
+            true,
+            false,
+            false,
+        );
+        assert_eq!(reader.consumed_bits(), 4);
+    }
+
+    #[test]
+    fn non_uniform_sequence_reuse_gate_mismatch_parses_fresh() {
+        // § 5.18.7.2 :6449 non-uniform reuse gate: SeqSbCols == sbCols && SeqSbRows ==
+        // sbRows. A stored non-uniform 2x2 layout whose SeqSbCols/SeqSbRows do not match
+        // the frame grid is ineligible, so reuse_tile_info is inferred 0 and tile_info()
+        // falls through to a fresh tile_params() parse. 16x8 BLOCK_64X64 -> sbCols =
+        // sbRows = 1 (stored sb_cols = sb_rows = 4 from uniform_2x2_seq_params), so the
+        // gate fails and the explicit branch reads uniform_tile_spacing_flag.
+        let mut view = base_view();
+        view.seq_tile_info_present_flag = true;
+        view.allow_tile_info_change = true;
+        let mut params = uniform_2x2_seq_params();
+        params.uniform_spacing = false;
+        view.seq_tile_params = Some(params);
+        view.seq_sb_col_starts = vec![0, 2];
+        view.seq_sb_row_starts = vec![0, 2];
+        let mut bits = Bits::default();
+        bits.bit(1); // uniform_tile_spacing_flag (fresh tile_params)
+        let data = bits.into_bytes();
+        let info = parse(&view, &data, FrameSize::new(16, 8)).unwrap();
+        assert!(!info.reuse_tile_info);
+        assert_eq!(info.tile_cols, 1);
+        assert_eq!(info.tile_rows, 1);
+    }
+
+    #[test]
+    fn non_uniform_sequence_reuse_eof_in_context_fields() {
+        // The non-uniform reuse layout above is multi-tile, so the trailing context
+        // fields are read. reuse_tile_info is inferred (no allow_tile_info_change) and
+        // reuse_tile_params() reads no bits, so an empty payload reaches the first
+        // context read (context_update_tile_id f(2)) and yields a typed EOF rather than
+        // a panic.
+        let mut view = base_view();
+        view.seq_tile_info_present_flag = true;
+        let mut params = uniform_2x2_seq_params();
+        params.uniform_spacing = false;
+        view.seq_tile_params = Some(params);
+        view.seq_sb_col_starts = vec![0, 2];
+        view.seq_sb_row_starts = vec![0, 2];
         assert!(matches!(
             parse(&view, &[], FrameSize::new(256, 256)),
-            Err(Error::Unimplemented {
-                feature: "AV2-5.18.7-SEGMENTATION-TILING"
-            })
+            Err(Error::UnexpectedEof { .. })
         ));
     }
 
@@ -800,6 +911,8 @@ mod proptests {
             frame_is_intra in any::<bool>(),
             is_bridge in any::<bool>(),
             tip_frame_as_output in any::<bool>(),
+            seq_sb_col_starts in proptest::collection::vec(0u32..=4096, 0..=64),
+            seq_sb_row_starts in proptest::collection::vec(0u32..=4096, 0..=64),
         ) {
             let (use_256, use_128) = sb_flags(sb);
             let view = CoreSeqTileView {
@@ -816,6 +929,8 @@ mod proptests {
                     covers_cols: true,
                     covers_rows: true,
                 }),
+                seq_sb_col_starts,
+                seq_sb_row_starts,
                 seq_sb_size: sb_size(seq_sb),
                 use_256x256_superblock: use_256,
                 use_128x128_superblock: use_128,
