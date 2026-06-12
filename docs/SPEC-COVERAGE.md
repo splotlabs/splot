@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-10. 130 feature(s); 104 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-10. 131 feature(s); 105 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -54,7 +54,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.8.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-5) | LCR global payload syntax | `AV2-5.8.5-LCR-GLOBAL-PAYLOAD` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 5.8.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-6) | LCR xlayer info syntax | `AV2-5.8.6-LCR-XLAYER-INFO` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 5.8.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-7) | LCR rep info syntax | `AV2-5.8.7-LCR-REP-INFO` | ✅ | ✅ | ✅ | ✅ | 1 |
-| [§ 5.8.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-8) | LCR embedded layer info syntax | `AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
+| [§ 5.8.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-8) | LCR embedded layer info syntax | `AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 5.8.9](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-9) | LCR xlayer color info syntax | `AV2-5.8.9-LCR-XLAYER-COLOR-INFO` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 5.9](./spec/av2/1.0.0/05-syntax-structures.md#s-5-9) | Atlas segment info OBU syntax | `AV2-5.9-ATLAS-SEGMENT` | ✅ | ✅ | 🟡 | ✅ | 6 |
 | [§ 5.9.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-9-1) | Atlas label segment info syntax | `AV2-5.9.1-ATLAS-LABEL-SEGMENT-INFO` | ✅ | ✅ | ✅ | ✅ | 5 |
@@ -97,12 +97,12 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.18.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-4) | Frame size structures | `AV2-5.18.4-FRAME-SIZE` | ✅ | 🟡 | 🟡 | ✅ | 2 |
 | [§ 5.18.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-5) | Filtering structures | `AV2-5.18.5-FILTERING` | ✅ | 🟡 | — | 🟡 | — |
 | [§ 5.18.5.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-5-2) | Deblocking filter params syntax | `AV2-5.18.5-FILTERING` | ✅ | 🟡 | — | 🟡 | — |
-| [§ 5.18.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-6) | Quantization structures | `AV2-5.18.6-QUANTIZATION` | ✅ | 🟡 | 🟡 | 🟡 | 1 |
+| [§ 5.18.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-6) | Quantization structures | `AV2-5.18.6-QUANTIZATION` | ✅ | 🟡 | 🟡 | 🟡 | 2 |
 | [§ 5.18.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7) | Segmentation and tiling structures | `AV2-5.18.7-SEGMENTATION-TILING` | ✅ | 🟡 | 🟡 | 🟡 | 5 |
 | [§ 5.18.7.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-3) | Tile params syntax | `AV2-5.18.7.3-TILE-PARAMS` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 5.18.7.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-5) | Uniform spacing function | `AV2-5.18.7.3-TILE-PARAMS` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 5.18.7.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-7) | Tile size calculation function | `AV2-5.18.7.3-TILE-PARAMS` | ✅ | ✅ | ✅ | ✅ | 4 |
-| [§ 5.18.7.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-8) | Quantizer index delta parameters syntax | `AV2-5.18.6-QUANTIZATION` | ✅ | 🟡 | 🟡 | 🟡 | 1 |
+| [§ 5.18.7.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-8) | Quantizer index delta parameters syntax | `AV2-5.18.6-QUANTIZATION` | ✅ | 🟡 | 🟡 | 🟡 | 2 |
 | [§ 5.18.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-8) | Transform and coding mode structures | `AV2-5.18.8-TRANSFORM-CODING-MODES` | ✅ | 🟡 | — | ✅ | — |
 | [§ 5.18.9](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-9) | Global motion structures | `AV2-5.18.9-GLOBAL-MOTION` | ✅ | 🟡 | — | ✅ | — |
 | [§ 5.18.10](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-10) | Film grain structures | `AV2-5.18.10-FILM-GRAIN-STRUCTURES` | ✅ | ✅ | 🟡 | ✅ | 1 |
@@ -130,7 +130,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.4.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-4) | Sequence segment config semantics | `AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.4.5](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-5) | Sequence intra config semantics | `AV2-5.4.5-SEQUENCE-INTRA-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.4.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-6) | Sequence inter config semantics | `AV2-5.4.6-SEQUENCE-INTER-CONFIG` | ✅ | ✅ | ✅ | ✅ | 1 |
-| [§ 6.4.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-6) | Sequence inter config semantics | `AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS` | ✅ | — | 🟡 | ✅ | 14 |
+| [§ 6.4.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-6) | Sequence inter config semantics | `AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS` | ✅ | — | 🟡 | ✅ | 15 |
 | [§ 6.4.7](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-7) | Sequence screen content config semantics | `AV2-5.4.7-SEQUENCE-SCC-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.4.8](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-8) | Sequence transform quant entropy config semantics | `AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.4.9](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-9) | Segment information semantics | `AV2-5.4.9-SEGMENT-INFO` | ✅ | ✅ | — | ✅ | — |
@@ -149,7 +149,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.8.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-6) | LCR global payload semantics | `AV2-5.8.5-LCR-GLOBAL-PAYLOAD` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 6.8.7](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-7) | LCR xlayer info semantics | `AV2-5.8.6-LCR-XLAYER-INFO` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 6.8.8](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-8) | LCR rep info semantics | `AV2-5.8.7-LCR-REP-INFO` | ✅ | ✅ | ✅ | ✅ | 1 |
-| [§ 6.8.9](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-9) | LCR embedded layer info semantics | `AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
+| [§ 6.8.9](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-9) | LCR embedded layer info semantics | `AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 6.8.10](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-10) | LCR xlayer color info semantics | `AV2-5.8.9-LCR-XLAYER-COLOR-INFO` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 6.9](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9) | Atlas segment info OBU semantics | `AV2-5.9-ATLAS-SEGMENT` | ✅ | ✅ | 🟡 | ✅ | 6 |
 | [§ 6.9.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-2) | Atlas label segment info semantics | `AV2-5.9.1-ATLAS-LABEL-SEGMENT-INFO` | ✅ | ✅ | ✅ | ✅ | 5 |
@@ -189,12 +189,13 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.17](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17) | Frame header OBU semantics | `AV2-5.18.8-TRANSFORM-CODING-MODES` | ✅ | 🟡 | — | ✅ | — |
 | [§ 6.17](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17) | Frame header OBU semantics | `AV2-5.18.9-GLOBAL-MOTION` | ✅ | 🟡 | — | ✅ | — |
 | [§ 6.17.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2) | Frame header info semantics | `AV2-5.18.2-FRAME-HEADER-INFO` | ✅ | 🟡 | 🟡 | ✅ | 9 |
-| [§ 6.17.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2) | Frame header info semantics | `AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS` | ✅ | — | 🟡 | ✅ | 14 |
+| [§ 6.17.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2) | Frame header info semantics | `AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS` | ✅ | — | 🟡 | ✅ | 15 |
 | [§ 6.17.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2) | Frame header info semantics | `AV2-7.23-REFERENCE-FRAME-UPDATE` | ✅ | — | 🟡 | ✅ | 1 |
+| [§ 6.17.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2) | Frame header info semantics | `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | ✅ | — | 🟡 | 🟡 | 1 |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `AV2-5.18.4-FRAME-SIZE` | ✅ | 🟡 | 🟡 | ✅ | 2 |
-| [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS` | ✅ | — | 🟡 | ✅ | 14 |
+| [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS` | ✅ | — | 🟡 | ✅ | 15 |
 | [§ 6.17.5.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-5-2) | Deblocking filter params semantics | `AV2-5.18.5-FILTERING` | ✅ | 🟡 | — | 🟡 | — |
-| [§ 6.17.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-6) | Quantization structures | `AV2-5.18.6-QUANTIZATION` | ✅ | 🟡 | 🟡 | 🟡 | 1 |
+| [§ 6.17.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-6) | Quantization structures | `AV2-5.18.6-QUANTIZATION` | ✅ | 🟡 | 🟡 | 🟡 | 2 |
 | [§ 6.17.7](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-7) | Segmentation and tiling structures | `AV2-5.18.7-SEGMENTATION-TILING` | ✅ | 🟡 | 🟡 | 🟡 | 5 |
 | [§ 6.17.7](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-7) | Segmentation and tiling structures | `AV2-5.18.7.3-TILE-PARAMS` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 6.17.10.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-10-1) | Film grain config semantics | `AV2-5.18.10-FILM-GRAIN-STRUCTURES` | ✅ | ✅ | 🟡 | ✅ | 1 |
@@ -217,7 +218,12 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.3.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-8) | Availability of high level syntax OBUs | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` | ✅ | ✅ | 🟡 | ✅ | 3 |
 | [§ 7.3.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-8) | Availability of high level syntax OBUs | `AV2-7.3.8-HLS-AVAILABILITY` | ✅ | ✅ | 🟡 | ✅ | 14 |
 | [§ 7.3.8.10](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-8-10) | Content interpretation OBU availability | `AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT` | ✅ | — | 🟡 | ✅ | 7 |
-| [§ 7.3.9](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-9) | Availability of long-term reference frames | `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | ✅ | — |  |  | — |
+| [§ 7.3.9](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-9) | Availability of long-term reference frames | `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | ✅ | — | 🟡 | 🟡 | 1 |
+| [§ 7.3.9](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-9) | Availability of long-term reference frames | `AV2-7.4-RANDOM-ACCESS` | ✅ | — | 🟡 | 🟡 | 2 |
+| [§ 7.4.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-2) | Random access and use of long-term reference frames | `AV2-7.4-RANDOM-ACCESS` | ✅ | — | 🟡 | 🟡 | 2 |
+| [§ 7.4.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-4) | Open Random Access | `AV2-7.4-RANDOM-ACCESS` | ✅ | — | 🟡 | 🟡 | 2 |
+| [§ 7.4.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-5) | Random Access Switch | `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | ✅ | — | 🟡 | 🟡 | 1 |
+| [§ 7.4.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-5) | Random Access Switch | `AV2-7.4-RANDOM-ACCESS` | ✅ | — | 🟡 | 🟡 | 2 |
 | [§ 7.4.6](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-6) | Multistream Random Access | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | ✅ | ✅ | 🟡 | ✅ | 7 |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `AV2-7.23-REFERENCE-FRAME-UPDATE` | ✅ | — | 🟡 | ✅ | 1 |
 

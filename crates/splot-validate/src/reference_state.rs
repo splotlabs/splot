@@ -86,6 +86,13 @@ pub(crate) struct SlotFacts {
     pub(crate) width: u32,
     /// `RefFrameHeight[ i ]` (§ 7.23 :14103).
     pub(crate) height: u32,
+    /// `RefLongTermId[ i ]` (§ 7.23 :14113), the slot's modeled long-term id. `None` models
+    /// the spec's `-1` sentinel ("not a long-term reference frame"); `Some(id)` is a KEY
+    /// frame's `LongTermId = long_term_id_plus_1 - 1` (§ 5.18.2 mirror :4231-4239), the only
+    /// frame type that establishes a non-`-1` `LongTermId`. The § 6.17.2 RAS
+    /// `long_term_id_in_use(RefLongTermId[ ref_frame_idx[i] ])` check (mirror :4615-4616)
+    /// reads this for the slots a RAS frame selects.
+    pub(crate) long_term_id: Option<u32>,
 }
 
 /// One extended layer's `NUM_REF_FRAMES`-slot reference-frame buffer state.
@@ -249,6 +256,22 @@ impl ReferenceStateTracker {
             .map_or(SlotState::Unknown, |layer| layer.slots[idx])
     }
 
+    /// The modeled `RefLongTermId[ idx ]` of slot `idx` in `xlayer`'s buffer, when the slot
+    /// is **proven valid** (§ 7.23): `Some(Some(id))` for a long-term slot, `Some(None)` for
+    /// a proven-valid non-long-term slot (the spec's `-1`). Returns `None` when the slot is
+    /// `Unknown` or `ProvenInvalid` — the long-term id is then undecidable, so a dependent
+    /// judgment must drop to silence (the Unknown invariant).
+    pub(crate) fn slot_long_term_id(
+        &self,
+        xlayer: ExtendedLayerId,
+        idx: usize,
+    ) -> Option<Option<u32>> {
+        match self.slot(xlayer, idx) {
+            SlotState::Valid(facts) => Some(facts.long_term_id),
+            SlotState::Unknown | SlotState::ProvenInvalid => None,
+        }
+    }
+
     /// Borrows `xlayer`'s `RefValid[]` / `RefOrderHint[]` / dims as the parallel slices a
     /// [`splot_core::headers::frame::FrameReferenceStateView`] threads into the parser,
     /// writing them into the caller-provided scratch buffers. Returns `None` when the
@@ -295,17 +318,28 @@ impl ReferenceStateTracker {
     }
 }
 
-/// Builds [`SlotFacts`] from a parsed frame's `OrderHint` LSB and dimensions, or `None`
-/// when any are missing (the validator then poisons rather than storing partial facts).
+/// Builds [`SlotFacts`] from a parsed frame's `OrderHint` LSB, dimensions, and
+/// `LongTermId`, or `None` when any *required* fact is missing (the validator then
+/// poisons rather than storing partial facts).
+///
+/// `long_term_id` is the parsed `LongTermId` (`< 0` is the spec's `-1` "not a long-term
+/// frame" sentinel, mapped to `None`; `>= 0` is a KEY frame's `long_term_id_plus_1 - 1`).
+/// A `None` for `long_term_id` (the frame's parse never reached the long-term field) is
+/// treated as the `-1` sentinel — the slot is then modeled as not a long-term frame — so a
+/// missing `LongTermId` does NOT poison: a frame's reference-state facts (order hint, dims)
+/// can be fully grounded while its `LongTermId` defaults to "not long-term", which is the
+/// only conformant value when `long_term_frame_id_bits == 0`.
 pub(crate) fn slot_facts(
     order_hint_lsb: Option<u32>,
     width: Option<u32>,
     height: Option<u32>,
+    long_term_id: Option<i64>,
 ) -> Option<SlotFacts> {
     Some(SlotFacts {
         order_hint: order_hint_lsb?,
         width: width?,
         height: height?,
+        long_term_id: long_term_id.and_then(|id| u32::try_from(id).ok()),
     })
 }
 
@@ -316,6 +350,7 @@ pub(crate) fn is_key_or_switch(frame_type: FrameType) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
@@ -327,6 +362,17 @@ mod tests {
             order_hint,
             width: 320,
             height: 240,
+            long_term_id: None,
+        }
+    }
+
+    /// A long-term-bearing slot fact with the given `RefLongTermId`.
+    fn lt_facts(order_hint: u32, long_term_id: u32) -> SlotFacts {
+        SlotFacts {
+            order_hint,
+            width: 320,
+            height: 240,
+            long_term_id: Some(long_term_id),
         }
     }
 
@@ -490,6 +536,7 @@ mod tests {
                     order_hint: 11,
                     width: 64,
                     height: 48,
+                    long_term_id: None,
                 },
             },
         );
@@ -522,11 +569,58 @@ mod tests {
     }
 
     #[test]
-    fn slot_facts_requires_every_field() {
-        assert!(slot_facts(Some(1), Some(2), Some(3)).is_some());
-        assert!(slot_facts(None, Some(2), Some(3)).is_none());
-        assert!(slot_facts(Some(1), None, Some(3)).is_none());
-        assert!(slot_facts(Some(1), Some(2), None).is_none());
+    fn slot_facts_requires_order_hint_and_dims_but_not_long_term_id() {
+        assert!(slot_facts(Some(1), Some(2), Some(3), Some(-1)).is_some());
+        assert!(slot_facts(None, Some(2), Some(3), Some(-1)).is_none());
+        assert!(slot_facts(Some(1), None, Some(3), Some(-1)).is_none());
+        assert!(slot_facts(Some(1), Some(2), None, Some(-1)).is_none());
+        // A `-1` LongTermId (the non-long-term sentinel) maps to `None`, not poisoning.
+        assert_eq!(
+            slot_facts(Some(1), Some(2), Some(3), Some(-1))
+                .unwrap()
+                .long_term_id,
+            None
+        );
+        // A missing LongTermId also defaults to the non-long-term sentinel.
+        assert_eq!(
+            slot_facts(Some(1), Some(2), Some(3), None)
+                .unwrap()
+                .long_term_id,
+            None
+        );
+        // A non-negative LongTermId is retained as the slot's long-term id.
+        assert_eq!(
+            slot_facts(Some(1), Some(2), Some(3), Some(4))
+                .unwrap()
+                .long_term_id,
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn slot_long_term_id_reads_only_valid_slots() {
+        let mut tracker = ReferenceStateTracker::default();
+        // A long-term KEY refresh into slot 0 (LongTermId 5) and a plain refresh into slot 2.
+        tracker.apply(
+            XL,
+            FrameRefUpdate::Refresh {
+                refresh_frame_flags: 0b1,
+                is_key_or_switch: false,
+                facts: lt_facts(7, 5),
+            },
+        );
+        tracker.apply(
+            XL,
+            FrameRefUpdate::Refresh {
+                refresh_frame_flags: 0b100,
+                is_key_or_switch: false,
+                facts: facts(8),
+            },
+        );
+        assert_eq!(tracker.slot_long_term_id(XL, 0), Some(Some(5)));
+        assert_eq!(tracker.slot_long_term_id(XL, 2), Some(None));
+        // An Unknown slot is undecidable (None), not a proof of any long-term id.
+        assert_eq!(tracker.slot_long_term_id(XL, 1), None);
     }
 
     #[test]
@@ -552,7 +646,7 @@ mod tests {
         ) {
             let mut tracker = ReferenceStateTracker::default();
             let xl = ExtendedLayerId::from_bits(xlayer_raw);
-            let f = SlotFacts { order_hint, width, height };
+            let f = SlotFacts { order_hint, width, height, long_term_id: None };
             let update = match kind {
                 0 => FrameRefUpdate::ClkReset { num_ref_frames: num_ref, refresh_frame_flags: mask, facts: f },
                 1 => FrameRefUpdate::Refresh { refresh_frame_flags: mask, is_key_or_switch: is_kos, facts: f },
@@ -571,7 +665,7 @@ mod tests {
         #[test]
         fn refresh_validates_exactly_set_bits(mask in any::<u16>()) {
             let mut tracker = ReferenceStateTracker::default();
-            let f = SlotFacts { order_hint: 1, width: 2, height: 3 };
+            let f = SlotFacts { order_hint: 1, width: 2, height: 3, long_term_id: None };
             tracker.apply(
                 XL,
                 FrameRefUpdate::Refresh {
@@ -599,7 +693,7 @@ mod tests {
                 FrameRefUpdate::Refresh {
                     refresh_frame_flags: mask,
                     is_key_or_switch: is_kos,
-                    facts: SlotFacts { order_hint: 9, width: 9, height: 9 },
+                    facts: SlotFacts { order_hint: 9, width: 9, height: 9, long_term_id: None },
                 },
             );
             tracker.apply(XL, FrameRefUpdate::PoisonAll);

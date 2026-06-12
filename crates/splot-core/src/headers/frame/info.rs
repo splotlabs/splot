@@ -599,6 +599,25 @@ pub struct FrameHeaderCore {
     /// `true` if any `ref_long_term_id[i]` equals the reserved value
     /// `(1 << long_term_frame_id_bits) - 1`, which AV2 § 6.17.2 forbids.
     pub forbidden_ref_long_term_id: bool,
+    /// `restricted_prediction_switch` (AV2 § 5.18.2, mirror :4256), the `f(1)` read on
+    /// the SWITCH / RAS frame-type arm. `Some(true)`/`Some(false)` when the bit was read
+    /// (a SWITCH or RAS frame); `None` on every other frame type (the bit is not present).
+    /// AV2 § 7.3.8.9: the OBU_SWITCH quantizer-matrix-level reset only applies when this is
+    /// `1`. AV2 § 7.4.5: the RAS OrderHint bound applies only when this is `0` (a residual —
+    /// the unwrapped OrderHint is not header-decidable).
+    pub restricted_prediction_switch: Option<bool>,
+    /// `LongTermId` for this frame (AV2 § 5.18.2, mirror :4231-4239): for a KEY frame when
+    /// `long_term_frame_id_bits > 0` it is `long_term_id_plus_1` minus one, else `-1`. `None`
+    /// when the frame type was not derived or the read did not reach this point. The § 7.23
+    /// reference frame update process stores this as `RefLongTermId[i]` for the refreshed
+    /// slots (mirror :14113), so a KEY frame's value becomes the long-term id of those slots.
+    pub long_term_id: Option<i64>,
+    /// `ref_long_term_id[0..num_key_ref_frames]` (AV2 § 5.18.2, mirror :4243-4253), the
+    /// long-term ids a RAS / OLK frame lists. Empty when not a RAS / OLK frame, when
+    /// `long_term_frame_id_bits == 0`, or when `num_key_ref_frames == 0`. AV2 § 6.17.2
+    /// (mirror :4615-4616): a RAS frame's `ref_frame_idx[i]` must select a slot whose
+    /// `RefLongTermId` is `long_term_id_in_use` in this list.
+    pub ref_long_term_ids: Vec<u32>,
     /// Parsed `tile_info()` (AV2 § 5.18.7.2), when reached on the intra path.
     pub tile_info: Option<TileInfo>,
     /// Parsed `quantization_params()` (AV2 § 5.18.6.1), when reached.
@@ -669,6 +688,20 @@ pub struct FrameHeaderCore {
     /// [`InterStop`](crate::headers::frame::inter::InterStop) recording where the inter
     /// region stopped. `None` on the intra / SEF paths.
     pub inter: Option<crate::headers::frame::inter::InterControl>,
+    /// `true` once the parse passes the § 5.18.2 `reset_qm()` call site (AV2 mirror
+    /// `05-syntax-structures.md` :4279-4283) with its trigger condition satisfied — i.e. the
+    /// parse reached the point AFTER `restricted_prediction_switch`, the
+    /// `num_key_ref_frames` / `ref_long_term_id[i]` list, and the SWITCH-restricted output
+    /// flush, with `obu_type == OBU_RAS_FRAME || (obu_type == OBU_SWITCH &&
+    /// restricted_prediction_switch)`. This is an explicit "reached reset_qm" fact: it stays
+    /// `true` even when the parse later truncates inside the inter control region (the
+    /// facts-preserving [`FrameHeaderParseStatus::StoppedInsideInterControl`] keeps the core),
+    /// so a consumer can confirm the § 7.3.8.9 quantizer-matrix availability reset from the
+    /// parsed bits alone rather than requiring the whole core parse to complete (codex F2).
+    /// `false` for every frame type whose `reset_qm()` trigger is not met, and for a RAS /
+    /// restricted SWITCH whose parse stops BEFORE the call site (truncated mid-prefix or
+    /// mid-`ref_long_term_id` — the reset is then unconfirmed).
+    pub reached_qm_reset: bool,
     /// Bits consumed by this parse (not necessarily the whole frame header).
     pub consumed_bits: u64,
 }
@@ -1002,6 +1035,9 @@ fn init_core_from_prefix(prefix: &FrameHeaderPrefix, obu_type: ObuType) -> Frame
         allow_screen_content_tools: None,
         allow_intrabc: None,
         forbidden_ref_long_term_id: false,
+        restricted_prediction_switch: None,
+        long_term_id: None,
+        ref_long_term_ids: Vec::new(),
         tile_info: None,
         quantization_params: None,
         segmentation_params: None,
@@ -1018,6 +1054,7 @@ fn init_core_from_prefix(prefix: &FrameHeaderPrefix, obu_type: ObuType) -> Frame
         sef_film_grain: None,
         sef_trailing_bits: None,
         inter: None,
+        reached_qm_reset: false,
         consumed_bits: 0,
     }
 }
@@ -1088,8 +1125,10 @@ fn parse_core_body(
     let frame_type = if obu_type == ObuType::Switch || obu_type == ObuType::RasFrame {
         // restricted_prediction_switch f(1): a real bit. It affects only reference-state
         // derivations (OrderHint / RefOrderHint, mirror :4259-4277) the inter region does
-        // not compute here, so its value does not change any modeled bit position.
-        reader.read_bit()?;
+        // not compute here, so its value does not change any modeled bit position; it IS
+        // recorded for the validator's § 7.3.8.9 OBU_SWITCH quantizer-matrix reset gate
+        // (the reset applies only when restricted_prediction_switch == 1).
+        core.restricted_prediction_switch = Some(reader.read_bit()? != 0);
         FrameType::Switch
     } else if obu_type.is_tip_frame() {
         FrameType::Inter
@@ -1111,8 +1150,16 @@ fn parse_core_body(
     // ref_long_term_id[i] (RAS / OLK frames) are read after the frame-type field and
     // before the FrameIsIntra split. Both are fully determined by sequence state, so
     // they are read even on the non-intra paths the parser then stops on.
+    //
+    // mirror :4231-4239: `LongTermId = -1`, then for a KEY frame
+    // `LongTermId = long_term_id_plus_1 - 1`. When `long_term_frame_id_bits == 0` the
+    // `f(0)` read yields `long_term_id_plus_1 == 0`, so `LongTermId == -1` even for a KEY
+    // frame — the `-1` "not a long-term frame" sentinel. The § 7.23 update stores this as
+    // `RefLongTermId[i]` for the refreshed slots (mirror :14113).
+    core.long_term_id = Some(-1);
     if frame_type == FrameType::Key {
-        read_f(reader, seq.long_term_frame_id_bits)?; // long_term_id_plus_1
+        let long_term_id_plus_1 = read_f(reader, seq.long_term_frame_id_bits)?;
+        core.long_term_id = Some(i64::from(long_term_id_plus_1) - 1);
     }
     if (obu_type == ObuType::RasFrame || obu_type == ObuType::OpenLoopKey)
         && seq.long_term_frame_id_bits != 0
@@ -1121,13 +1168,31 @@ fn parse_core_body(
         // (1 << long_term_frame_id_bits) - 1; record a violation for the validator.
         let reserved_long_term_id = (1u32 << seq.long_term_frame_id_bits).wrapping_sub(1);
         let num_key_ref_frames = reader.read_bits(3)?;
+        let mut ref_long_term_ids = Vec::with_capacity(num_key_ref_frames as usize);
         for _ in 0..num_key_ref_frames {
             let ref_long_term_id = read_f(reader, seq.long_term_frame_id_bits)?;
             if ref_long_term_id == reserved_long_term_id {
                 core.forbidden_ref_long_term_id = true;
             }
+            // Recorded for the validator's § 6.17.2 RAS `long_term_id_in_use` check
+            // (mirror :4615-4616) and `long_term_id_in_use()` (mirror :5529-5536).
+            ref_long_term_ids.push(ref_long_term_id);
         }
+        core.ref_long_term_ids = ref_long_term_ids;
     }
+
+    // AV2 § 5.18.2 reset_qm() call site (mirror :4279-4283): the parse has now passed
+    // `restricted_prediction_switch`, the `num_key_ref_frames` / `ref_long_term_id[i]` list,
+    // and the SWITCH-restricted output flush — the exact point the spec calls `reset_qm()`,
+    // BEFORE the output-control flags below and the inter control region. Record an explicit
+    // "reached reset_qm with its trigger met" fact so a consumer can confirm the § 7.3.8.9
+    // quantizer-matrix availability reset from the parsed bits even when the parse later
+    // truncates inside the inter control region (codex F2). The trigger is exactly the spec's
+    // `obu_type == OBU_RAS_FRAME || (obu_type == OBU_SWITCH && restricted_prediction_switch)`;
+    // for a SWITCH the gate reads `restricted_prediction_switch` (set above on the SWITCH /
+    // RAS frame-type arm), so an unread gate (`None`) leaves the fact `false` (unconfirmed).
+    core.reached_qm_reset = obu_type == ObuType::RasFrame
+        || (obu_type == ObuType::Switch && core.restricted_prediction_switch == Some(true));
 
     // AV2 § 5.18.2 output control (mirror :4295-4313). This block is in the non-SEF,
     // non-single-picture branch and applies to BOTH intra and inter frames. A bridge

@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "09f993eae6bc59cda065640f8c6613589b7a0889",
+  "audited_commit": "578d7c7eaa4ec8450492f333430a76c21690ef3e",
   "outcome": "success",
   "files": [
     {
@@ -445,7 +445,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/info.rs",
-      "sha256": "8fe3bae45ceacfaa06816c9c5c11dd2ba14b4f3237fe183ff20fef1bb8c47766",
+      "sha256": "b2d36b423e46f8a4e4333024c987e2a586aad89352d44019de471dc5ad091ea8",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -820,7 +820,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "bb7037f9ba4d187d82861c3bd00d93b077d4b1d53f1b2aac3261f8e0c20e6a2a",
+      "sha256": "ed1008ed54d88ca44fc00f16ce01ff1db83e0da05a28796e50da223e19a06c67",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -841,6 +841,7 @@
         "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
         "AV2-7.3.8-HLS-AVAILABILITY",
         "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
         "AV2-A-LEVELS-TIERS"
       ],
       "outcome": "success"
@@ -893,7 +894,7 @@
     },
     {
       "path": "crates/splot-validate/src/reference_state.rs",
-      "sha256": "108877513cb01390401c94947ad550c4692633453fb78d62611a440f646ba4bd",
+      "sha256": "7b67e8f56efb313a321bf1f3cc00a24c2377b5fe45fe39b78020228933a5c7cf",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-7.23-REFERENCE-FRAME-UPDATE"
@@ -902,7 +903,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "9e1909c1560b437a6a3e26beef1dedfb27d1ea8786cbcf59c36228c57e561bf3",
+      "sha256": "bff2041c72418ce268377e2ff3bf588451eaba54d96c0fc6aad2e8adf05a3b82",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -967,7 +968,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "219eb34d58c68535acacd65182eb5658aa56c86417b7c9726cc62a37e137ffc1",
+      "sha256": "c00c110c342ff56d3bf284ae497a1dcbe889f7c77cce00d431f021162bf2dd4d",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1069,6 +1070,7 @@
         "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
         "AV2-7.3.8-HLS-AVAILABILITY",
         "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
         "AV2-9-ADDITIONAL-TABLES",
         "AV2-A-LEVELS-TIERS",
         "AV2-A-PROFILES",
@@ -1135,7 +1137,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "7dc5a05f8065a408fb56f33ca0b6e874c8e75e194d6df93d4cf8de2155b0ea88",
+      "sha256": "7342c0e8920820e26d9bbc0e0fc55c91f4c30deecb9b64caaf54e65f23704c12",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1237,6 +1239,7 @@
         "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
         "AV2-7.3.8-HLS-AVAILABILITY",
         "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
         "AV2-9-ADDITIONAL-TABLES",
         "AV2-A-LEVELS-TIERS",
         "AV2-A-PROFILES",
@@ -1273,7 +1276,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "c9db486c3be8e61005c2778d36d3f38dfc8caeadd619f190e39b07c4552e3016",
+      "sha256": "6739871060919b76b105172f26078bd6880c8fd584acefe88bbe86cbb1beeb49",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1375,6 +1378,7 @@
         "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
         "AV2-7.3.8-HLS-AVAILABILITY",
         "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
         "AV2-9-ADDITIONAL-TABLES",
         "AV2-A-LEVELS-TIERS",
         "AV2-A-PROFILES",
@@ -1427,7 +1431,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "c2b3585013bb934c867c00002ab4f58eed1fa7e68f9fba8b9ee7adb532aa433c",
+      "sha256": "b0ac3c155bfaccdf7efef6cabe10a81466fb94d0285b591fc0e0fe57575d1ff7",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -1444,7 +1448,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "48de9ee167a267423875eea44ea8a34f0cf2ebea90732dc7b885dda533b1b0a7",
+      "sha256": "4937cf4f1fb6e2221c6162f08ecbdd0ba5f429c0daf50e7c0c1663f61a936b54",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -1507,6 +1511,7 @@
         "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
         "AV2-7.3.8-HLS-AVAILABILITY",
         "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
         "AV2-A-LEVELS-TIERS",
         "AV2-E-DECODER-MODEL",
         "AV2-IVF-CONTAINER",
@@ -3348,6 +3353,42 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-12-reference-state-and-random-access/proposal.md",
+      "sha256": "76e657fb0fdc2824520e8bb615e1a7f331afe70bda17500d10de51aeab260b47",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.13-QUANTIZATION-MATRIX",
+        "AV2-5.18.6-QUANTIZATION",
+        "AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO",
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-reference-state-and-random-access/specs/validator/spec.md",
+      "sha256": "2f5ac50f167ec43e82bda9bc033388876a99fd5aacdda61796184df74331b93e",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-reference-state-and-random-access/tasks.md",
+      "sha256": "52b90a7070af57940612861b21527e89fb6d7802081db454b5f4c04f74b04129",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.13-QUANTIZATION-MATRIX",
+        "AV2-5.18.6-QUANTIZATION",
+        "AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO",
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-7.23-REFERENCE-FRAME-UPDATE",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-12-seq-tile-nonuniform-reuse-starts/proposal.md",
       "sha256": "e4f72d1abb199bbeb87cb3a828f6c79ffe554370146a2f8960d6885badf69645",
       "scope_kind": "openspec",
@@ -3563,7 +3604,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "45d61047397eff1e809e2102d5d2a9134ff972986ad649f8e2e774067345b927",
+      "sha256": "4d24c02247e33d23495d74d178bf14275ab35e01b3a0353c719b09f3a881c579",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",

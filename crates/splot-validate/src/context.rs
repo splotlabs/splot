@@ -173,6 +173,9 @@ pub(crate) struct ValidatorContext {
     /// Already-emitted § 6.8.8 rep-info mismatch findings; see
     /// [`Self::emitted_lcr_ptl_findings`] for the dedup discipline.
     emitted_lcr_rep_info_findings: BTreeSet<LcrRepInfoFindingKey>,
+    /// Already-emitted § 6.8.9 `lcr_max_expected_width/height` sequence-max bound findings;
+    /// see [`Self::emitted_lcr_ptl_findings`] for the dedup discipline.
+    emitted_lcr_expected_dims_findings: BTreeSet<LcrExpectedDimsFindingKey>,
     /// Extended layers whose active sequence header was confirmed by a parsed
     /// frame-header reference (the § 5.18.2 `load_sequence_header` path), as
     /// opposed to the first-seen OBU-order fallback. The § 6.10.7 / § 6.8.9
@@ -1121,6 +1124,14 @@ struct LcrEmbeddedMaps {
     /// `(embedded layer index, lcr_tlayer_map[isGlobal][xId][j])` pairs, in
     /// ascending set-bit order of `lcr_mlayer_map`.
     tlayer_maps: Vec<(u8, u8)>,
+    /// `(embedded layer index j, lcr_max_expected_width[..][j], lcr_max_expected_height)`
+    /// per embedded layer (AV2 § 5.8.8 / § 6.8.9), present only when
+    /// `lcr_same_sh_max_resolution_flag == 0` (otherwise the width/height default to the
+    /// sequence maxima and the § 6.8.9 sequence-max bound is satisfied trivially, so a
+    /// `None` width/height entry is omitted from the bound check). Retained for the § 6.8.9
+    /// `lcr_max_expected_width/height <= max_frame_width/height_minus_1 + 1` bound against
+    /// the activated sequence header.
+    max_expected: Vec<(u8, Option<u32>, Option<u32>)>,
     /// Byte offset of the defining LCR OBU.
     offset: ByteOffset,
 }
@@ -1577,6 +1588,27 @@ struct LcrRepInfoFindingKey {
     header_value: u64,
 }
 
+/// Dedup key for an emitted § 6.8.9 `lcr_max_expected_width/height` sequence-max bound
+/// finding; see [`LcrPtlFindingKey`] for the dedup discipline. The embedded-layer index,
+/// the LCR-declared expected dimension, and the activated header maximum fold a content
+/// change into a distinct key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct LcrExpectedDimsFindingKey {
+    xlayer: ExtendedLayerId,
+    seq_header_id: SequenceHeaderId,
+    lcr_is_global: bool,
+    lcr_id: u8,
+    lcr_offset: ByteOffset,
+    /// The embedded layer index `j` the bound constrains.
+    mlayer_index: u8,
+    /// `true` for the width bound, `false` for the height bound.
+    is_width: bool,
+    /// The LCR-declared `lcr_max_expected_width/height[..][j]`.
+    lcr_value: u32,
+    /// The activated header's `max_frame_width/height_minus_1 + 1`.
+    header_max: u32,
+}
+
 /// Scans an 8-bit embedded-layer bitmask for the first § 6.10.7 / § 6.8.9 closure
 /// violation under `MLayerDependencyMap`: a set bit `cMId` for which the map
 /// requires a dependency `rMId < cMId` (`MLayerDependencyMap[cMId][rMId] == 1`)
@@ -1833,8 +1865,34 @@ struct QuantizerMatrixState {
     /// `true` once any QM OBU has been observed since the last coded frame. A
     /// `qm_bit_map == 0` reset is only conformant as the first QM OBU in the window.
     qm_obu_seen_since_coded_frame: bool,
-    /// Monotonic per-level availability for future frame-reference validation.
+    /// Per-level availability for frame-reference validation (AV2 § 7.3.8.9). A `Some`
+    /// record means a QM OBU made the level available; `None` means no available record
+    /// (never defined, or cleared by a `reset_qm()` for an unprotected level).
     available: [Option<QmLevelRecord>; NUM_CUSTOM_QMS],
+    /// `QmProtected[level]` (AV2 § 6.12 mirror :3134-3138 / § 5.5 / § 5.13): a bitmap of the
+    /// levels protected from `reset_qm()` because a QM OBU (re)sent them in the *current*
+    /// temporal unit. Cleared to 0 for every level at a temporal delimiter (§ 5.5 mirror
+    /// :1626-1630); a QM OBU sets the bit for the levels it sends (§ 5.13 mirror
+    /// :3010/:3033). `reset_qm()` (§ 5.18.2 mirror :4106-4108 / :4278-4286) clears
+    /// `available[level]` only for *unprotected* levels, so a level re-sent this temporal
+    /// unit survives a CLK/OLK/SWITCH/RAS reset (the QmProtected discipline).
+    qm_protected: u16,
+    /// Per-level *poison* bitmap: a level whose `reset_qm()` was triggered by a SWITCH /
+    /// RAS frame whose parse never **reached** (or could not **confirm**) the § 5.18.2
+    /// reset call site (mirror :4279-4283) — a truncated header, an unresolvable core, or a
+    /// SWITCH whose `restricted_prediction_switch` gate the parse never read. The reset's
+    /// *availability* effect is then UNKNOWN (it might or might not have cleared the level),
+    /// so neither the `available` record (would falsely under-report) nor a clear-to-`None`
+    /// (would falsely *fire* `frame-header/qm-level-unavailable`) is sound. A poisoned level
+    /// DROPS the § 7.3.8.9 availability judgment (stays silent), exactly like an
+    /// externally-suppressed level. Re-grounded by a QM OBU re-sending the level (definitely
+    /// available again) or by a *confirmed* reset (definitely cleared — see
+    /// [`Self::reset_qm_availability_for_key`] /
+    /// [`Self::reset_qm_availability_for_switch_or_ras`]); persists across temporal
+    /// delimiters (it is HLS availability state, not the § 6.12 coded-frame window).
+    /// Protected levels (`qm_protected` set) are never poisoned: a reset cannot touch them,
+    /// so their availability stays known.
+    availability_poisoned: u16,
 }
 
 impl QuantizerMatrixState {
@@ -1842,6 +1900,96 @@ impl QuantizerMatrixState {
     fn reset_coded_frame_window(&mut self) {
         self.seen_levels_since_coded_frame = 0;
         self.qm_obu_seen_since_coded_frame = false;
+    }
+
+    /// Clears `QmProtected[level] = 0` for every level at a temporal delimiter
+    /// (AV2 § 5.5, mirror :1626-1630).
+    fn clear_qm_protected_at_temporal_delimiter(&mut self) {
+        self.qm_protected = 0;
+    }
+
+    /// Applies the AV2 § 5.18.2 `reset_qm()` *availability* effect for a CLK / OLK (the
+    /// unconditional `needsReset = 1` arm, mirror :5348-5360): every **unprotected** level's
+    /// availability record is cleared to the spec defaults (`QmDataPresent = 0`,
+    /// `QmMLayerId = QmTLayerId = -1`), which the validator models as the level becoming
+    /// *unavailable* (`available[level] = None`). A level protected by a QM OBU re-sent in
+    /// the current temporal unit (`qm_protected` bit set) is left untouched.
+    ///
+    /// This is the fully-decidable arm: a CLK / OLK resets *every* unprotected level
+    /// regardless of layer (`needsReset = 1`), so no `MLayerPresenceMap` state is needed.
+    ///
+    /// A CLK / OLK reset is always *confirmed* (it is decidable from `obu_type` +
+    /// `FirstPictureInTU` alone), so it also clears any prior `availability_poisoned` bit for
+    /// the cleared level: the level is now definitively unavailable, re-grounding the
+    /// § 7.3.8.9 judgment.
+    fn reset_qm_availability_for_key(&mut self) {
+        for level in 0..NUM_CUSTOM_QMS {
+            if (self.qm_protected >> level) & 1 == 0 {
+                self.available[level] = None;
+                self.availability_poisoned &= !(1u16 << level);
+            }
+        }
+    }
+
+    /// Applies the AV2 § 5.18.2 `reset_qm()` *availability* effect for a SWITCH (with
+    /// `restricted_prediction_switch == 1`) or RAS frame (mirror :4278-4286 / :5350-5354).
+    ///
+    /// For these frame types `needsReset = QmMLayerId[level] == -1 ||
+    /// MLayerPresenceMap[QmMLayerId[level]][obu_mlayer_id]`. Only the **provable** arm is
+    /// modeled: a level whose recorded `QmMLayerId == -1` (the record's `mlayer_id == None`,
+    /// set by a `qm_bit_map == 0` reset QM OBU, or by a prior `reset_qm`) is unconditionally
+    /// reset. The `MLayerPresenceMap[...]` arm needs the §5.4.1 presence map joined against
+    /// the level's defining layer — clearing on it would risk falsely marking an
+    /// in-presence level unavailable — so it stays a named residual (the level is left
+    /// available, never falsely cleared). Protected levels (`qm_protected` set) are untouched.
+    ///
+    /// This is the *confirmed*-reset path: the caller only invokes it once the frame's core
+    /// parse has reached the § 5.18.2 reset call site (mirror :4283) — a resolved RAS core,
+    /// or a SWITCH core with `restricted_prediction_switch == 1`
+    /// ([`ValidatorContext::apply_qm_reset_for_frame`]). A level it provably clears therefore
+    /// also re-grounds out of any prior poison (`availability_poisoned` bit cleared): the
+    /// level is now definitively unavailable.
+    fn reset_qm_availability_for_switch_or_ras(&mut self) {
+        for level in 0..NUM_CUSTOM_QMS {
+            if (self.qm_protected >> level) & 1 != 0 {
+                continue;
+            }
+            // Only the `QmMLayerId[level] == -1` arm is provably a reset; the
+            // MLayerPresenceMap arm is a residual (do not clear — no false unavailability).
+            let provably_resets =
+                self.available[level].is_none_or(|record| record.mlayer_id.is_none());
+            if provably_resets {
+                self.available[level] = None;
+                self.availability_poisoned &= !(1u16 << level);
+            }
+        }
+    }
+
+    /// Poisons the *availability* state for a SWITCH / RAS frame whose `reset_qm()` effect
+    /// the validator cannot CONFIRM (AV2 § 5.18.2 mirror :4279-4283): the frame's core parse
+    /// never reached the reset call site (a truncated header, an unresolvable core, or a
+    /// SWITCH whose `restricted_prediction_switch` gate the parse never read). The reset
+    /// might or might not have fired, so each unprotected level's availability becomes
+    /// *unknown* — the § 7.3.8.9 judgment must DROP rather than fire or under-report.
+    ///
+    /// Only the `availability_poisoned` bit is set; the `available` record is left untouched
+    /// (a poisoned level is dropped regardless of its record, and preserving the record lets
+    /// a confirmed reset / resend re-ground precisely). Protected levels (`qm_protected`
+    /// set) survive any reset, so their availability stays known and is never poisoned —
+    /// symmetric with the protected-level skip in the confirmed-reset methods.
+    fn poison_qm_availability_for_unconfirmed_reset(&mut self) {
+        for level in 0..NUM_CUSTOM_QMS {
+            if (self.qm_protected >> level) & 1 == 0 {
+                self.availability_poisoned |= 1u16 << level;
+            }
+        }
+    }
+
+    /// Whether `level`'s availability is poisoned (unknown) by an unconfirmed SWITCH / RAS
+    /// reset. The § 7.3.8.9 availability check drops its judgment for a poisoned level. A
+    /// `level >= NUM_CUSTOM_QMS` (never a custom slot) is never poisoned.
+    fn availability_poisoned(&self, level: usize) -> bool {
+        level < NUM_CUSTOM_QMS && (self.availability_poisoned >> level) & 1 != 0
     }
 }
 
@@ -4705,6 +4853,14 @@ impl ValidatorContext {
 
         self.temporal_unit.observe_obu(obu, report);
 
+        // AV2 § 5.5 (mirror :1626-1630): temporal_delimiter_obu() clears QmProtected[level] =
+        // 0 for every level. After this point a QM OBU sent earlier in a previous temporal
+        // unit no longer protects its level from a CLK/OLK/SWITCH/RAS reset_qm() in this
+        // temporal unit — the QmProtected discipline the § 7.3.8.9 availability check honors.
+        if obu.header.obu_type == ObuType::TemporalDelimiter {
+            self.qm.clear_qm_protected_at_temporal_delimiter();
+        }
+
         // Annex A Table A.3: record this OBU's non-global obu_xlayer_id into the current
         // temporal unit's Table A.4 pending facts (the distinct extended-layer base count,
         // mirror lines 146-151). Recorded after the boundary events so a CLK's own xlayer
@@ -4965,6 +5121,161 @@ impl ValidatorContext {
         }
     }
 
+    /// Applies a frame header's `reset_qm()` *availability* effect to the per-level QM
+    /// availability state (AV2 § 7.3.8.9, mirror :847-858; § 5.18.2 mirror :4106-4108 /
+    /// :4278-4286; `reset_qm()` mirror :5346-5363).
+    ///
+    /// "Quantization matrix levels from previous temporal units are reset at the first OBU
+    /// in a temporal unit with obu_type equal to OBU_CLOSED_LOOP_KEY or OBU_OPEN_LOOP_KEY
+    /// or OBU_SWITCH or OBU_RAS_FRAME (the QmProtected array is used to avoid the reset of
+    /// levels sent in the current temporal unit). … If obu_type is equal to OBU_SWITCH, the
+    /// reset only applies if restricted_prediction_switch is equal to 1."
+    ///
+    /// - CLK / OLK: `keyFrame && FirstPictureInTU` (a CLK / OLK *is* a KEY frame). The reset
+    ///   is decidable from obu_type + `FirstPictureInTU` alone, with the unconditional
+    ///   `needsReset = 1` arm (every unprotected level cleared). Always confirmed.
+    /// - RAS: always resets *once the parse reaches the reset call site*. The spec's
+    ///   `reset_qm()` call (mirror :4283) sits AFTER `restricted_prediction_switch`
+    ///   (mirror :4209), `num_key_ref_frames` (mirror :4244-4257), and the output flags — so
+    ///   the validator must not assume the reset on the `obu_type` alone. A RAS core that
+    ///   resolves to `Some` necessarily read through those fields and entered the inter path
+    ///   (`finish_inter_control`, mirror :4351+), which is past :4283, so a `Some` RAS core
+    ///   *confirms* the reset; a `None` core (truncated before the bit, unresolvable
+    ///   sequence, or a malformed prefix) leaves the reset UNCONFIRMED.
+    /// - SWITCH: resets only when the parsed `restricted_prediction_switch == 1`; the bit is
+    ///   read on the SWITCH / RAS arm of the core parse and recorded on the core. A `Some`
+    ///   core with the bit `0` *confirms NO reset* (nothing to do); a `None` core leaves the
+    ///   reset UNCONFIRMED (the gate bit was never read, so the spec might or might not have
+    ///   cleared the levels).
+    ///
+    /// The SWITCH / RAS arm uses the partial `needsReset` model (only the
+    /// `QmMLayerId == -1` arm is provable; see
+    /// [`QuantizerMatrixState::reset_qm_availability_for_switch_or_ras`]).
+    ///
+    /// **Unconfirmed-effect discipline (the PR #63 § 7.23 staging gate, applied to QM
+    /// availability).** When the RAS / SWITCH reset is UNCONFIRMED, the validator must
+    /// neither clear the level to `None` (that would falsely *fire*
+    /// `frame-header/qm-level-unavailable` for a level the reset may have left available) nor
+    /// silently skip it (that would falsely assert the level is *still available* when the
+    /// reset may have cleared it). Both directions guess. The sound treatment is to POISON
+    /// the level's availability ([`QuantizerMatrixState::poison_qm_availability_for_unconfirmed_reset`]):
+    /// the § 7.3.8.9 judgment DROPS until the level is re-grounded by a QM OBU re-sending it,
+    /// or by a later *confirmed* reset that grounds it as definitively unavailable.
+    fn apply_qm_reset_for_frame(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        first_picture_in_tu: bool,
+        resolved: Option<SequenceHeaderId>,
+    ) {
+        match obu.header.obu_type {
+            // CLK / OLK reset_qm() runs at `keyFrame && FirstPictureInTU` (mirror :4106 /
+            // :4279-4283). It is decidable from `obu_type` + `FirstPictureInTU` ALONE — no
+            // sequence-dependent read precedes it — so it clears regardless of whether the
+            // frame's referenced sequence header resolves (codex F1(a)).
+            ObuType::ClosedLoopKey | ObuType::OpenLoopKey if first_picture_in_tu => {
+                self.qm.reset_qm_availability_for_key();
+            }
+            // RAS / SWITCH reset_qm() sits at mirror :4279-4283, PAST sequence-dependent reads
+            // (`restricted_prediction_switch`, `num_key_ref_frames` / `ref_long_term_id[i]`),
+            // so confirming it needs the parsed bits. An unresolvable reference
+            // (`resolved == None`) cannot prove the reset fired -> POISON, never skip (codex
+            // F1(b)). A resolvable reference confirms from the parsed `reached_qm_reset` fact:
+            // the parse passes the :4283 call site with the trigger met. The fact survives a
+            // facts-preserving inter-control truncation (`StoppedInsideInterControl` keeps the
+            // core), so a RAS / restricted SWITCH that reaches the reset and then truncates
+            // inside the inter region (e.g. EOF in `ref_frame_idx`) still CONFIRMS — it no
+            // longer requires the whole core parse to complete (codex F2). A parse that stops
+            // BEFORE the call site leaves the fact `false` -> the reset stays unconfirmed ->
+            // poison. A SWITCH with `restricted_prediction_switch == 0` never sets the fact
+            // (its reset_qm() trigger is false), which is the confirmed NO-reset case the spec
+            // gate describes — the parse reaches the inter region but `reset_qm()` did not run.
+            ObuType::RasFrame | ObuType::Switch => {
+                match resolved.and_then(|seq_id| {
+                    self.frame_core_against_resolved_header(obu, first_picture_in_tu, seq_id)
+                }) {
+                    Some(core) if core.reached_qm_reset => {
+                        self.qm.reset_qm_availability_for_switch_or_ras();
+                    }
+                    // A resolvable SWITCH whose parse reached the reset point but whose
+                    // `restricted_prediction_switch == 0` (so `reached_qm_reset == false`)
+                    // confirms NO reset — nothing to do.
+                    Some(core)
+                        if obu.header.obu_type == ObuType::Switch
+                            && core.restricted_prediction_switch == Some(false) => {}
+                    // Unresolvable, or a resolvable core that stopped before the reset call
+                    // site (the SWITCH gate bit unread, or a RAS truncated mid-prefix /
+                    // mid-`ref_long_term_id`): the reset is unconfirmed.
+                    _ => self.qm.poison_qm_availability_for_unconfirmed_reset(),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Parses a frame-bearing `obu`'s core against an explicitly given sequence header id
+    /// `seq_id`, applying the §7.3.8.7 referenced-header guard (the parse must run against the
+    /// header the frame references). Shared by two callers:
+    /// [`Self::frame_core_against_referenced_header`] passes the extended layer's currently
+    /// active header; [`Self::apply_qm_reset_for_frame`] passes the just-resolved `seq_id`
+    /// because it runs BEFORE the §5.18.2 activation that would set `active_sequence_by_xlayer`,
+    /// so it cannot read the active map. `None` when the sequence header is not modeled, the
+    /// core parse fails outright (a hard error, not the facts-preserving inter-control
+    /// truncation, which yields `Some`), or the frame references a different header.
+    fn frame_core_against_resolved_header(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        first_picture_in_tu: bool,
+        seq_id: SequenceHeaderId,
+    ) -> Option<FrameHeaderCore> {
+        let active_sequence = self.sequence_headers.get(&seq_id)?;
+
+        // Resolve the frame's `cur_mfh_id` (> 0) reference to its in-band multi-frame header,
+        // so the parser can be invoked with the resolving record (shared §7.3.8.7 discipline).
+        let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
+
+        // AV2 § 7.23: thread the modeled per-extended-layer reference-frame buffer view into
+        // the core parse (no §5.18 reference read precedes the §5.18.2 reset_qm() call site, so
+        // the `reached_qm_reset` fact this caller reads is independent of the buffer view). The
+        // scratch arrays must outlive the parse, so they are stack-local here.
+        let mut ref_valid = [false; NUM_REF_FRAMES];
+        let mut ref_oh = [0u32; NUM_REF_FRAMES];
+        let mut ref_w = [0u32; NUM_REF_FRAMES];
+        let mut ref_h = [0u32; NUM_REF_FRAMES];
+        let reference_state = if self
+            .reference_state
+            .view_into(
+                obu.header.extended_layer_id,
+                &mut ref_valid,
+                &mut ref_oh,
+                &mut ref_w,
+                &mut ref_h,
+            )
+            .is_some()
+        {
+            FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h)
+        } else {
+            FrameReferenceStateView::unknown()
+        };
+
+        let core = parse_frame_core(
+            obu,
+            first_picture_in_tu,
+            active_sequence,
+            mfh_record,
+            reference_state,
+        )?;
+
+        // The frame must reference `seq_id` (the header parsed against): for a `cur_mfh_id == 0`
+        // direct reference, the prefix's resolved id; for a `cur_mfh_id > 0` reference, the
+        // resolved in-band MFH record's `mfh_seq_header_id` (§ 7.3.8.7).
+        let referenced = if core.cur_mfh_id.is_zero() {
+            core.referenced_sequence_header_id
+        } else {
+            mfh_record.map(|record| record.mfh_seq_header_id)
+        };
+        (referenced == Some(seq_id)).then_some(core)
+    }
+
     /// Derives the grounded § 7.23 [`FrameRefUpdate`] for a frame-bearing `obu` from its
     /// parsed core, honestly poisoning when the frame's § 7.23 effect on the buffer cannot
     /// be grounded.
@@ -5038,6 +5349,13 @@ impl ValidatorContext {
             core.order_hint_lsb,
             core.frame_size.map(|size| size.width),
             core.frame_size.map(|size| size.height),
+            // AV2 § 7.23 (mirror :14113): RefLongTermId[i] = LongTermId. A KEY frame's
+            // LongTermId comes from long_term_id_plus_1 (§5.18.2 mirror :4231-4239); every
+            // other frame infers LongTermId == -1 (the "not a long-term frame" sentinel).
+            // `core.long_term_id` is `Some(-1)` once the long-term field was reached, so a
+            // completed-parse frame always grounds this (the `slot_facts` helper maps a
+            // negative or `None` value to the `None` non-long-term sentinel without poisoning).
+            core.long_term_id,
         ) else {
             return FrameRefUpdate::PoisonAll;
         };
@@ -5070,11 +5388,14 @@ impl ValidatorContext {
     /// buffer makes locally decidable (AV2 § 6.17.2).
     ///
     /// Currently: a show-existing-frame whose `frame_to_show_map_idx` names a slot the
-    /// modeled buffer **proves** invalid (`RefValid == 0`), and an inter frame whose
-    /// explicit-reference-map `ref_frame_idx[i]` names a proven-invalid slot. A *poisoned*
-    /// (Unknown) slot drops to silence in both — the buffer cannot prove a violation there
-    /// (the Unknown invariant). The check runs only when the frame's core resolved against
-    /// its active sequence header (the parsed indices are trustworthy).
+    /// modeled buffer **proves** invalid (`RefValid == 0`); an inter frame whose
+    /// explicit-reference-map `ref_frame_idx[i]` names a proven-invalid slot; and a RAS
+    /// frame whose explicit-map `ref_frame_idx[i]` selects a slot whose modeled
+    /// `RefLongTermId` is not in the RAS frame's own `ref_long_term_id` list
+    /// (`long_term_id_in_use(...) == 0`, § 6.17.2 mirror :4615-4616). A *poisoned* (Unknown)
+    /// slot drops to silence in all three — the buffer cannot prove a violation there (the
+    /// Unknown invariant). The check runs only when the frame's core resolved against its
+    /// active sequence header (the parsed indices are trustworthy).
     fn reference_state_checks(
         &self,
         obu: &ObuEnvelope<'_>,
@@ -5129,6 +5450,74 @@ impl ValidatorContext {
                             "inter frame ref_frame_idx names reference slot {idx}, but the §7.23 \
                              reference-frame buffer state proves RefValid[{idx}] == 0 (the slot \
                              was invalidated by a CLK reset and not refreshed since)"
+                        ),
+                    ));
+                    // One diagnostic per frame is enough to flag the defect.
+                    break;
+                }
+            }
+        }
+
+        // AV2 § 6.17.2 (mirror :4615-4616): "If obu_type is equal to OBU_RAS_FRAME, it is a
+        // requirement of bitstream conformance that
+        // long_term_id_in_use( RefLongTermId[ ref_frame_idx[ i ] ] ) is equal to 1." A RAS
+        // frame may reference ONLY long-term reference frames whose RefLongTermId appears in
+        // its own ref_long_term_id list (§7.4.5). `long_term_id_in_use(longTermId)` (mirror
+        // :5529-5536) returns 1 iff `longTermId` equals some `ref_long_term_id[j]`.
+        //
+        // Decidable when: (1) this is a RAS frame; (2) the explicit reference map recorded
+        // `ref_frame_idx`; (3) the selected slot is PROVEN valid in the §7.23 buffer so its
+        // RefLongTermId is known. A slot the buffer cannot prove valid (Unknown /
+        // ProvenInvalid) yields `None` from `slot_long_term_id` and DROPS to silence (the
+        // Unknown invariant — and a ProvenInvalid slot is already flagged by the
+        // ref-frame-idx check above).
+        //
+        // REACHABILITY RESIDUAL: condition (2) holds only for a RAS frame with
+        // `max_mlayer_id != 0`. For `max_mlayer_id == 0` (a single-embedded-layer stream) the
+        // §5.18.2 RAS `refresh_frame_flags` derivation reads RefValid/RefLongTermId (mirror
+        // :4493), which the inter parser cannot ground, so it stops with
+        // InterStop::UnmodeledDerivation BEFORE `ref_frame_idx` (inter.rs) — `core.inter`
+        // then records no `ref_frame_idx` and this check is silent. So the rule fires only for
+        // the multistream (`max_mlayer_id != 0`) RAS case; the single-layer case is an honest
+        // under-report (no false positive — the loop simply has nothing to evaluate).
+        //
+        // A proven-valid slot whose RefLongTermId is the `-1`
+        // sentinel (`Some(None)`: refreshed by a non-KEY frame, so not a long-term frame) is
+        // never `long_term_id_in_use`, since every `ref_long_term_id[j]` is `>= 0` — a RAS
+        // selecting it is a defect. A proven-valid long-term slot (`Some(Some(id))`) must
+        // have its `id` listed. Anchored at the RAS frame's OBU, one diagnostic per frame.
+        if obu.header.obu_type == ObuType::RasFrame
+            && let Some(inter) = core.inter.as_ref()
+        {
+            for &idx in &inter.ref_frame_idx {
+                // Only a PROVEN-valid slot's RefLongTermId is decidable; Unknown /
+                // ProvenInvalid drops to silence.
+                let Some(slot_long_term_id) = self
+                    .reference_state
+                    .slot_long_term_id(obu.header.extended_layer_id, idx as usize)
+                else {
+                    continue;
+                };
+                // long_term_id_in_use: the slot's RefLongTermId must equal some listed
+                // ref_long_term_id[j]. A `-1` (None) sentinel is never in the list.
+                let in_use =
+                    slot_long_term_id.is_some_and(|id| core.ref_long_term_ids.contains(&id));
+                if !in_use {
+                    let slot_desc = match slot_long_term_id {
+                        Some(id) => format!("RefLongTermId {id}"),
+                        None => "RefLongTermId -1 (not a long-term reference frame)".to_owned(),
+                    };
+                    report.push(frame_header_error(
+                        "frame-header/ras-ref-long-term-id-not-in-use",
+                        "6.17.2",
+                        obu,
+                        format!(
+                            "OBU_RAS_FRAME ref_frame_idx selects reference slot {idx} whose \
+                             modeled {slot_desc} is not in the frame's ref_long_term_id list \
+                             {:?} (§6.17.2: long_term_id_in_use(RefLongTermId[ref_frame_idx[i]]) \
+                             must equal 1 — a RAS frame may reference only long-term frames it \
+                             lists)",
+                            core.ref_long_term_ids
                         ),
                     ));
                     // One diagnostic per frame is enough to flag the defect.
@@ -5405,64 +5794,13 @@ impl ValidatorContext {
         obu: &ObuEnvelope<'_>,
         first_picture_in_tu: bool,
     ) -> Option<FrameHeaderCore> {
+        // The extended layer's currently active (§5.18.2-confirmed) sequence header is the one
+        // this frame parses against. The actual parse + referenced-header guard is shared with
+        // the pre-activation reset path via `frame_core_against_resolved_header`.
         let seq_id = *self
             .active_sequence_by_xlayer
             .get(&obu.header.extended_layer_id)?;
-        let active_sequence = self.sequence_headers.get(&seq_id)?;
-
-        // Resolve the frame's `cur_mfh_id` (> 0) reference to its in-band multi-frame header,
-        // so the parser can be invoked with the resolving record (shared §7.3.8.7 discipline).
-        let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
-
-        // AV2 § 7.23: thread the modeled per-extended-layer reference-frame buffer view
-        // into the core parse (forward plumbing for the §5.18 inter reference paths; no
-        // intra branch reads it today). The scratch arrays must outlive the parse, so
-        // they are stack-local here and borrowed by the view; an extended layer with no
-        // modeled buffer yet threads `unknown()`.
-        let mut ref_valid = [false; NUM_REF_FRAMES];
-        let mut ref_oh = [0u32; NUM_REF_FRAMES];
-        let mut ref_w = [0u32; NUM_REF_FRAMES];
-        let mut ref_h = [0u32; NUM_REF_FRAMES];
-        let reference_state = if self
-            .reference_state
-            .view_into(
-                obu.header.extended_layer_id,
-                &mut ref_valid,
-                &mut ref_oh,
-                &mut ref_w,
-                &mut ref_h,
-            )
-            .is_some()
-        {
-            FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h)
-        } else {
-            FrameReferenceStateView::unknown()
-        };
-
-        let core = parse_frame_core(
-            obu,
-            first_picture_in_tu,
-            active_sequence,
-            mfh_record,
-            reference_state,
-        )?;
-
-        // The referenced sequence header must be the one parsed against. For a `cur_mfh_id == 0`
-        // direct reference, `referenced_sequence_header_id` carries the §5.18.2 prefix's
-        // resolved id (set only when `seq_header_id_in_frame_header` is in range). For a
-        // `cur_mfh_id > 0` reference, the resolved in-band MFH record's `mfh_seq_header_id`
-        // is the referenced id (§ 7.3.8.7); a record only externally declared, out of range,
-        // absent, or naming a different sequence header leaves `mfh_record == None` (the shared
-        // resolver already enforced the seq-id match) and routes to Unknown.
-        let referenced = if core.cur_mfh_id.is_zero() {
-            core.referenced_sequence_header_id
-        } else {
-            mfh_record.map(|record| record.mfh_seq_header_id)
-        };
-        if referenced != Some(seq_id) {
-            return None;
-        }
-        Some(core)
+        self.frame_core_against_resolved_header(obu, first_picture_in_tu, seq_id)
     }
 
     /// Derives a frame-bearing OBU's output class (`immediate_output_frame == 1 ||
@@ -6512,6 +6850,21 @@ impl ValidatorContext {
         // § 7.3.8.7 MFH reference. The resolution captures each object's qualifying-resend
         // snapshot as of this reference (intra-temporal-unit order).
         self.note_frame_rap_references(&prefix, resolved, obu.header.extended_layer_id, obu.offset);
+
+        // AV2 § 7.3.8.9 / § 5.18.2: apply the frame header's reset_qm() availability effect
+        // BEFORE the sequence-resolution gate below, so a reset-bearing frame whose sequence
+        // reference cannot be resolved still gets the right treatment instead of being skipped
+        // (codex F1). The partition is by what `reset_qm()` needs:
+        //   - CLK / OLK: the §5.18.2 `keyFrame && FirstPictureInTU` reset (mirror :4106 /
+        //     :4279-4283) is decidable from `obu_type` + `FirstPictureInTU` ALONE, with no
+        //     sequence-dependent read before it, so it clears regardless of resolution.
+        //   - RAS / restricted SWITCH: the reset sits past sequence-dependent reads, so an
+        //     unresolvable reference (no in-band sequence header, `resolved == None`) cannot
+        //     prove the reset fired — it POISONS, never silently skips. A resolvable reference
+        //     confirms the reset from the parsed `reached_qm_reset` fact (codex F2).
+        // This only mutates `self.qm` availability, independent of the §7.23 reference-buffer
+        // commit inside the gate, so running it here (before activation) is order-stable.
+        self.apply_qm_reset_for_frame(obu, first_picture_in_tu, resolved);
 
         // AV2 § 5.18.2: frame_header_info() calls load_sequence_header() for EVERY
         // frame (both cur_mfh_id == 0 and cur_mfh_id > 0), before the `if (keyFrame)`
@@ -8639,6 +8992,17 @@ impl ValidatorContext {
                                     .iter()
                                     .map(|layer| (layer.mlayer_index, layer.tlayer_map))
                                     .collect(),
+                                max_expected: embedded
+                                    .layers
+                                    .iter()
+                                    .map(|layer| {
+                                        (
+                                            layer.mlayer_index,
+                                            layer.max_expected_width,
+                                            layer.max_expected_height,
+                                        )
+                                    })
+                                    .collect(),
                                 offset: obu.offset,
                             },
                         );
@@ -8754,6 +9118,17 @@ impl ValidatorContext {
                                 .layers
                                 .iter()
                                 .map(|layer| (layer.mlayer_index, layer.tlayer_map))
+                                .collect(),
+                            max_expected: embedded
+                                .layers
+                                .iter()
+                                .map(|layer| {
+                                    (
+                                        layer.mlayer_index,
+                                        layer.max_expected_width,
+                                        layer.max_expected_height,
+                                    )
+                                })
                                 .collect(),
                             offset: obu.offset,
                         },
@@ -9643,6 +10018,7 @@ impl ValidatorContext {
         self.check_lcr_dependency_agreement(xlayer, options, report);
         self.check_lcr_ptl_ceilings(xlayer, options, report);
         self.check_lcr_rep_info_agreement(xlayer, options, report);
+        self.check_lcr_expected_dims_bounds(xlayer, options, report);
         if external_declares_sequence_header(options) {
             return;
         }
@@ -11685,6 +12061,115 @@ impl ValidatorContext {
         }
     }
 
+    /// Emits `lcr/max-expected-dims-exceed-sequence-max` (AV2 § 6.8.9) when an activated
+    /// LCR's `lcr_max_expected_width[..][j]` / `lcr_max_expected_height[..][j]` exceeds the
+    /// activated sequence header's `max_frame_width/height_minus_1 + 1`.
+    ///
+    /// AV2 § 6.8.9 (mirror `06-syntax-structures-semantics.md#s-6-8-9`, :2135-2148): "It is a
+    /// requirement of bitstream conformance that lcr_max_expected_width[ isGlobal ][ xId ][ j ]
+    /// shall be less than or equal to max_frame_width_minus_1 + 1 obtained from the activated
+    /// sequence header" (and the height analogue). This is the pure-arithmetic clause — the
+    /// LCR's declared per-embedded-layer expected maximum against the activated sequence
+    /// header maximum — decidable at activation from the snapshotted association alone.
+    ///
+    /// The companion `FrameWidth/FrameHeight <= lcr_max_expected_width/height` per-frame clause
+    /// (mirror :2137-2139 / :2144-2146) is a named residual: it needs each frame's
+    /// `(obu_xlayer_id, obu_mlayer_id) -> (xId, j)` mapping and FrameWidth/Height joined
+    /// against the activated LCR per layer, which this phase does not thread.
+    ///
+    /// Suppression / activation gating mirrors [`Self::check_lcr_rep_info_agreement`]: it
+    /// fires only under [`ExternalHlsMode::Disabled`] (an unmodeled external local LCR could
+    /// shadow the in-band association under a Provided mode) and only on a strict
+    /// frame-confirmed activation. Anchored at the defining LCR OBU. A
+    /// `same_sh_max_resolution_flag == 1` layer (omitted width/height) inherits the sequence
+    /// maxima and is trivially in bound, so it carries `None` and is skipped.
+    fn check_lcr_expected_dims_bounds(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+            return;
+        }
+        let Some((seq_header_id, general)) = self.frame_confirmed_activation_for(xlayer) else {
+            return;
+        };
+        let Some(association) = self.lcr_associations.get(&(xlayer, seq_header_id)) else {
+            return;
+        };
+        let Some(maps) = association.maps.as_ref() else {
+            // No embedded-layer info means no lcr_max_expected_* to bound.
+            return;
+        };
+        let lcr_is_global = association.lcr_is_global;
+        let lcr_id = association.lcr_id;
+        let lcr_offset = maps.offset;
+        let scope = if lcr_is_global { "global" } else { "local" };
+        let header_max_width = general.max_frame_width.get();
+        let header_max_height = general.max_frame_height.get();
+
+        // Collect (mlayer_index, is_width, lcr_value, header_max) per violation. The
+        // human-readable fragment is built lazily in the dedup loop below (after the
+        // `insert(key)` check), so a finding already emitted spends no allocation — matching
+        // [`Self::check_lcr_rep_info_agreement`].
+        let mut violations: Vec<(u8, bool, u32, u32)> = Vec::new();
+        for &(mlayer_index, width, height) in &maps.max_expected {
+            if let Some(lcr_width) = width
+                && lcr_width > header_max_width
+            {
+                violations.push((mlayer_index, true, lcr_width, header_max_width));
+            }
+            if let Some(lcr_height) = height
+                && lcr_height > header_max_height
+            {
+                violations.push((mlayer_index, false, lcr_height, header_max_height));
+            }
+        }
+
+        for (mlayer_index, is_width, lcr_value, header_max) in violations {
+            let key = LcrExpectedDimsFindingKey {
+                xlayer,
+                seq_header_id,
+                lcr_is_global,
+                lcr_id,
+                lcr_offset,
+                mlayer_index,
+                is_width,
+                lcr_value,
+                header_max,
+            };
+            if !self.emitted_lcr_expected_dims_findings.insert(key) {
+                continue;
+            }
+            let fragment = if is_width {
+                format!(
+                    "lcr_max_expected_width[{mlayer_index}] {lcr_value} > \
+                     max_frame_width_minus_1 + 1 = {header_max}"
+                )
+            } else {
+                format!(
+                    "lcr_max_expected_height[{mlayer_index}] {lcr_value} > \
+                     max_frame_height_minus_1 + 1 = {header_max}"
+                )
+            };
+            report.push(
+                Diagnostic::error(
+                    "lcr/max-expected-dims-exceed-sequence-max",
+                    format!(
+                        "activated {scope} layer configuration record {lcr_id}'s expected \
+                         dimension for extended layer {} exceeds the maximum from sequence \
+                         header {} activated for that layer: {fragment} (§ 6.8.9)",
+                        xlayer.get(),
+                        seq_header_id.get(),
+                    ),
+                )
+                .with_spec_section("6.8.9")
+                .with_byte_offset(lcr_offset),
+            );
+        }
+    }
+
     /// Observes a quantizer matrix OBU (§ 5.13), running the locally-checkable § 6.12
     /// duplicate-reset / duplicate-level diagnostics and recording per-level
     /// availability. A parse failure or malformed payload tail is silent (the OBU is
@@ -11775,10 +12260,12 @@ impl ValidatorContext {
     fn check_quantizer_matrix(&mut self, obu: &ObuEnvelope<'_>, qm: &QuantizerMatrixObu) {
         self.qm.qm_obu_seen_since_coded_frame = true;
         if qm.qm_bit_map == 0 {
-            // AV2 § 5.13 reset path: every custom level returns to its defaults
-            // (QmDataPresent = 0, QmMLayerId = QmTLayerId = -1, QmNumPlanes = numPlanes),
-            // so a frame-reference check after a reset must not see stale layer/data
-            // state from a previously defined matrix.
+            // AV2 § 5.13 reset path (mirror :3006-3018): every custom level returns to its
+            // defaults (QmDataPresent = 0, QmMLayerId = QmTLayerId = -1, QmNumPlanes =
+            // numPlanes) and `QmProtected[level] = 1` for every level. The reset makes the
+            // level "available as default" (a QM OBU was sent), so the availability record is
+            // a default record (not `None`); a frame-reference check after a reset must not
+            // see stale layer/data state from a previously defined matrix.
             for record in &mut self.qm.available {
                 *record = Some(QmLevelRecord {
                     mlayer_id: None,
@@ -11787,6 +12274,11 @@ impl ValidatorContext {
                     num_planes: qm.num_planes,
                 });
             }
+            // A QM OBU re-grounds availability: every level is now definitely available (as a
+            // default), so any prior unconfirmed-reset poison is lifted for all levels.
+            self.qm.availability_poisoned = 0;
+            // AV2 § 5.13 mirror :3010: QmProtected[level] = 1 for every level.
+            self.qm.qm_protected = (1u16 << NUM_CUSTOM_QMS) - 1;
             return;
         }
         self.qm.seen_levels_since_coded_frame |= qm.qm_bit_map;
@@ -11799,6 +12291,12 @@ impl ValidatorContext {
                     data_present: !level.is_default,
                     num_planes: qm.num_planes,
                 });
+                // A QM OBU re-sending this level re-grounds its availability (definitely
+                // available again), lifting any prior unconfirmed-reset poison for it.
+                self.qm.availability_poisoned &= !(1u16 << index);
+                // AV2 § 5.13 mirror :3033: QmProtected[level] = 1 for each sent level, so a
+                // level (re)sent in this temporal unit survives a later reset_qm().
+                self.qm.qm_protected |= 1u16 << index;
             }
         }
     }
@@ -13833,10 +14331,11 @@ fn frame_header_core_checks(
     // active sequence header's seq_level_idx / seq_tier.
     frame_annex_a_level_checks(&core, active_sequence, obu, report);
 
-    // AV2 § 6.17.6.2: custom-QM plane-count references for a parsed
-    // `setup_qm_params()`, gated on recorded quantizer-matrix availability state.
+    // AV2 § 6.17.6.2 / § 7.3.8.9: custom-QM plane-count references and the §7.3.8.9
+    // availability presence for a parsed `setup_qm_params()`, gated on recorded
+    // quantizer-matrix availability state.
     if let Some(setup_qm) = core.setup_qm_params.as_ref() {
-        frame_qm_reference_checks(setup_qm, active_sequence, qm_state, obu, report);
+        frame_qm_reference_checks(setup_qm, active_sequence, qm_state, options, obu, report);
     }
 
     // AV2 § 6.17.7.8: per-plane CCSO field bounds for a parsed `ccso_params()`.
@@ -14465,20 +14964,55 @@ fn check_ops_level_tier_value_space(
     }
 }
 
-/// Emits the locally decidable § 6.17.6.2 custom-QM plane-count diagnostics for a
-/// parsed frame `setup_qm_params()` (AV2 v1.0.0 § 6.17.6.2,
-/// `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-6-2`): each
-/// `qm_y[i]` / `qm_u[i]` / `qm_v[i]` less than `NUM_CUSTOM_QMS` references a custom
-/// quantizer-matrix slot whose `QmNumPlanes` must equal the active sequence's
-/// `NumPlanes`.
+/// Emits the locally decidable § 6.17.6.2 custom-QM plane-count diagnostics and the
+/// § 7.3.8.9 quantizer-matrix *availability* diagnostic for a parsed frame
+/// `setup_qm_params()` (AV2 v1.0.0 § 6.17.6.2,
+/// `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-6-2`; § 7.3.8.9,
+/// `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-3-8-9`).
 ///
-/// Only slots with recorded quantizer-matrix OBU state are checked: a referenced
-/// slot with no available record is silent here (HLS availability is owned by the
-/// deferred § 7.3.8 reference checks), never a guessed false positive.
+/// Each `qm_y[i]` / `qm_u[i]` / `qm_v[i]` less than `NUM_CUSTOM_QMS` references a custom
+/// quantizer-matrix slot. Two requirements are checked:
+///
+/// - **§ 6.17.6.2 plane count.** A referenced custom slot's `QmNumPlanes` must equal the
+///   active sequence's `NumPlanes`. Only slots with a recorded QM OBU state are checked;
+///   a slot with no record is owned by the availability check below.
+/// - **§ 7.3.8.9 availability.** "When using_qmatrix is equal to 1 in a frame header, the
+///   quantization matrix levels referenced by qm_y, qm_u, and qm_v shall be available to
+///   the decoding process, by inclusion of a quantization matrix OBU in the bitstream or by
+///   provision through external means." A referenced custom slot with NO available record
+///   (`qm_state.available[level] == None`) is unavailable.
+///
+/// **External-means suppression (zero-false-positive discipline, AGENTS.md § 7).**
+/// [`ExternalHlsSet`](crate::options::ExternalHlsSet) cannot express quantizer-matrix OBUs
+/// (only sequence headers and operating point sets), so under any
+/// [`ExternalHlsMode::Provided`] the levels MAY be supplied externally without being listed
+/// — exactly the inexpressible-kind case the blanket "any Provided suppresses" policy covers
+/// (matching the film-grain availability check). The availability diagnostic therefore fires
+/// only under [`ExternalHlsMode::Disabled`]. The `available[]` state honors the § 5.5 /
+/// § 5.13 / § 5.18.2 QmProtected `reset_qm()` discipline (a CLK / OLK at FirstPictureInTU, or
+/// a RAS / restricted SWITCH, clears unprotected levels), so a level reset out of a previous
+/// temporal unit and not re-sent in the current one is correctly judged unavailable.
+///
+/// **Unconfirmed-reset poison.** A SWITCH / RAS frame whose core parse did not CONFIRM it
+/// reached the § 5.18.2 `reset_qm()` call site (mirror :4283) — a truncated header, an
+/// unresolvable core, or a SWITCH whose `restricted_prediction_switch` gate was never read —
+/// POISONS the unprotected levels' availability instead of clearing them
+/// ([`ValidatorContext::apply_qm_reset_for_frame`]). A poisoned level
+/// ([`QuantizerMatrixState::availability_poisoned`]) DROPS its § 7.3.8.9 judgment (neither
+/// the false-fire of a clear-to-`None` nor the stale "available" of a skip), exactly like an
+/// externally-suppressed level, until a QM OBU re-sends it or a later confirmed reset grounds
+/// it. This is the QM-availability analogue of the § 7.23 unconfirmed-effect staging gate.
+///
+/// **Residual.** The § 6.17.6.2 layer-dependency constraints
+/// (MLayerDependencyMap[obu_mlayer_id][QmMLayerId[...]] == 1 and the TLayerDependencyMap
+/// analogue) remain a named TODO below — the QM-side check needs the defining QM OBU's layer
+/// identity joined against the §5.4.1 dependency maps in a way the availability state does
+/// not yet thread.
 fn frame_qm_reference_checks(
     setup_qm: &SetupQmParams,
     active_sequence: &SequenceHeader,
     qm_state: &QuantizerMatrixState,
+    options: &ValidationOptions,
     obu: &ObuEnvelope<'_>,
     report: &mut ValidationReport,
 ) {
@@ -14503,7 +15037,7 @@ fn frame_qm_reference_checks(
     let qm_num = usize::from(setup_qm.pic_qm_num_minus_1) + 1;
     // Distinct referenced custom slots: qm_uv_same_as_y / shared-UV copies and
     // repeated levels across the qmNum sets reference the same slot, which violates
-    // (or satisfies) § 6.17.6.2 once, not once per syntax element.
+    // (or satisfies) § 6.17.6.2 / § 7.3.8.9 once, not once per syntax element.
     let mut referenced = [false; NUM_CUSTOM_QMS];
     for set in setup_qm.levels.iter().take(qm_num) {
         // qm_y[i] is always present; qm_u[i] / qm_v[i] exist only when NumPlanes > 1
@@ -14521,14 +15055,44 @@ fn frame_qm_reference_checks(
             }
         }
     }
+    // AV2 § 7.3.8.9 availability fires only when external HLS cannot supply the levels
+    // (ExternalHlsSet cannot express QM OBUs, so any Provided mode means the levels MAY be
+    // external — the inexpressible-kind blanket suppression).
+    let availability_decidable = matches!(options.external_hls, ExternalHlsMode::Disabled);
     for (level, _) in referenced
         .iter()
         .enumerate()
         .filter(|(_, referenced)| **referenced)
     {
-        // Missing per-slot state stays silent (no false positive when no quantizer
-        // matrix OBU has defined or reset this slot).
+        // A level POISONED by a SWITCH / RAS reset whose effect the validator could not
+        // confirm (a truncated header that never reached the § 5.18.2 reset call site, or a
+        // SWITCH whose restricted_prediction_switch gate the parse never read) has UNKNOWN
+        // availability: the reset may or may not have cleared it. Drop both the availability
+        // and the plane-count judgments — guessing either way would be a false positive
+        // (clear-to-fire) or a false negative (stale "available"). The poison is lifted by a
+        // QM OBU re-sending the level, or by a later confirmed reset
+        // (QuantizerMatrixState::availability_poisoned).
+        if qm_state.availability_poisoned(level) {
+            continue;
+        }
         let Some(record) = qm_state.available[level] else {
+            // AV2 § 7.3.8.9: the referenced custom level has no available record (no QM OBU
+            // ever defined it, or a reset_qm() cleared it and it was not re-sent in the
+            // current temporal unit). Decidable only under external-disabled; a poisoned /
+            // externally-suppressed state stays silent (no guessing).
+            if availability_decidable {
+                report.push(frame_header_error(
+                    "frame-header/qm-level-unavailable",
+                    "7.3.8.9",
+                    obu,
+                    format!(
+                        "setup_qm_params() has using_qmatrix == 1 and references custom \
+                         quantizer matrix level {level}, but no quantizer matrix OBU has made \
+                         that level available (§7.3.8.9: the referenced QM levels must be \
+                         available, by inclusion of a QM OBU or external means)"
+                    ),
+                ));
+            }
             continue;
         };
         if record.num_planes != num_planes {
