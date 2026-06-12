@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "17e5d5781e1969e55ff0474fedc82d27689fcb97",
+  "audited_commit": "e606d4ccad6b2c0441bbacb7ccd8ad7d0615c5ad",
   "outcome": "success",
   "files": [
     {
@@ -1558,20 +1558,16 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "bc63e9836486b7ef214f8dc75a4d1445f6c8a21969fa5dc68f50781b71be1f51",
+      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
         "AV2-5.18-FRAME-HEADER",
-        "AV2-5.18.2-FRAME-HEADER-INFO",
-        "AV2-5.18.4-FRAME-SIZE",
-        "AV2-5.18.7-SEGMENTATION-TILING",
         "AV2-5.19-TILE-GROUP",
         "AV2-5.2.2-OBU-HEADER",
         "AV2-5.2.3-TRAILING-BITS",
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
-        "AV2-5.7-MULTI-FRAME-HEADER",
         "CONF-AVM-DIFF-HARNESS",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
@@ -3062,6 +3058,36 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-12-mfh-frame-header-state/proposal.md",
+      "sha256": "954a54f5145c5cca327233900ee983bbeb9b14c82e93a24423925251eb39053b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.4-FRAME-SIZE",
+        "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.7-MULTI-FRAME-HEADER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-mfh-frame-header-state/specs/bitstream/spec.md",
+      "sha256": "94ba68b16dcd88f396ff8affd1675fbe21202250dc610f904576414301e756ae",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.4-FRAME-SIZE",
+        "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.7-MULTI-FRAME-HEADER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-mfh-frame-header-state/tasks.md",
+      "sha256": "0578fb5d341afba454633c44fba35d5f585806e6b89d62705a59b97bf0da8373",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/avm-differential-harness/proposal.md",
       "sha256": "ca4e00373763656046a33836c38af7626641afedb9e473897f7ae9b2a3572b5f",
       "scope_kind": "openspec",
@@ -3084,36 +3110,6 @@
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
       ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/mfh-frame-header-state/proposal.md",
-      "sha256": "954a54f5145c5cca327233900ee983bbeb9b14c82e93a24423925251eb39053b",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18.2-FRAME-HEADER-INFO",
-        "AV2-5.18.4-FRAME-SIZE",
-        "AV2-5.18.7-SEGMENTATION-TILING",
-        "AV2-5.7-MULTI-FRAME-HEADER"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/mfh-frame-header-state/specs/bitstream/spec.md",
-      "sha256": "94ba68b16dcd88f396ff8affd1675fbe21202250dc610f904576414301e756ae",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18.4-FRAME-SIZE",
-        "AV2-5.18.7-SEGMENTATION-TILING",
-        "AV2-5.7-MULTI-FRAME-HEADER"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/mfh-frame-header-state/tasks.md",
-      "sha256": "0578fb5d341afba454633c44fba35d5f585806e6b89d62705a59b97bf0da8373",
-      "scope_kind": "openspec",
-      "feature_ids": [],
       "outcome": "success"
     },
     {
@@ -3164,7 +3160,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "9f9c8d094309962a6ee14e49b66310869d1daa94d38528e163897d07305d2cc8",
+      "sha256": "10f8fa303f24e8fc5fb7cce3712de932b0cbecf98adc29010686154ed81e0cf3",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
