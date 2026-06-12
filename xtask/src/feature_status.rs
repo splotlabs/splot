@@ -162,6 +162,7 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
     "ivf/",
     "hls/",
     "cmvs/",
+    "celu/",
     "msdo/",
     "mfh/",
     "content-interpretation/",

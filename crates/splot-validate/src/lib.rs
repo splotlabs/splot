@@ -18,6 +18,7 @@ pub mod options;
 pub mod validator;
 
 mod annex_a;
+mod celu;
 mod context;
 mod error_location;
 mod frame_unit;

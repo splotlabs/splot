@@ -55,8 +55,9 @@ use crate::annex_a::{
     is_defined_config_idc, is_reserved_level, is_reserved_profile, level_limits,
     profile_allows_chroma,
 };
+use crate::celu::{CeluRole, CodedExtendedLayerTracker, FrameFacts, Leadingness};
 use crate::diagnostic::{Diagnostic, ValidationReport};
-use crate::frame_unit::{FrameUnitSegmenter, SegRole};
+use crate::frame_unit::{FrameBoundary, FrameUnitSegmenter, SegRole, type_decided_output};
 use crate::metadata_lifetime::{
     ActiveMetadataUnit, LAYER_CURRENT, LAYER_GLOBAL, LAYER_VALUES, MetadataLifetimeStore,
     PersistenceMode,
@@ -328,6 +329,12 @@ pub(crate) struct ValidatorContext {
     /// see [`FrameUnitSegmenter`]. Reset at each global temporal delimiter and
     /// flushed at the end of the bitstream.
     frame_unit: FrameUnitSegmenter,
+    /// Coded-extended-layer-unit constraints (§ 7.3.6) and the § 7.3.7 / § 7.4.6 DOH
+    /// OrderHint / OrderHintBits checks; see [`CodedExtendedLayerTracker`]. Sits above
+    /// the frame-unit segmenter (keyed per `obu_xlayer_id` across a temporal unit). Reset
+    /// at each global temporal delimiter (resolving the per-CELU and DOH constraints) and
+    /// flushed at the end of the bitstream.
+    celu: CodedExtendedLayerTracker,
     /// For each `(xlayer, mlayer)`, the **temporal-unit index** of that embedded
     /// layer's first observed coded picture — the § 6.16.5 / § 6.16.6 "first coded
     /// picture of that embedded layer in the coded video sequence" state. An HDR CLL
@@ -346,6 +353,26 @@ pub(crate) struct ValidatorContext {
     /// the entries for its extended layer at the boundary so a new CVS re-establishes
     /// its own first-picture state.
     embedded_layer_first_picture_seen: BTreeMap<(ExtendedLayerId, EmbeddedLayerId), u64>,
+    /// Per extended layer, the § 7.3.6 "content interpretation present in any CELU shall also
+    /// be present in the first CELU of the sequence" PRESENCE state (mirror lines 560-562,
+    /// `07-decoding-process.md#s-7-3-6`). For each extended layer it records the embedded
+    /// layers whose CI was observed in the FIRST coded extended layer unit of the current
+    /// coded video sequence (the CELU in the CVS's first temporal unit, § 7.3.6) and dedups
+    /// the diagnostic per embedded layer. A CI in a LATER CELU of the same CVS for an embedded
+    /// layer the first CELU lacked fires `celu/content-interpretation-not-in-first-celu`. Reset
+    /// per coded video sequence in [`Self::start_cvs_for_xlayer`]. The contents-identity half
+    /// of the same sentence is owned by `content-interpretation/repeated-ci-not-identical`
+    /// (§ 6.14); this state owns only the presence half. See [`CiFirstCeluState`].
+    ci_first_celu: BTreeMap<ExtendedLayerId, CiFirstCeluState>,
+    /// The `(xlayer, mlayer)` content-interpretation OBUs observed in the CURRENT temporal
+    /// unit, each with the byte offset of its first appearance (the diagnostic anchor). Cleared
+    /// at every temporal-unit boundary. Resolved against the per-CVS [`Self::ci_first_celu`]
+    /// state at the boundary (and at the end of the bitstream): the whole temporal unit
+    /// containing a CLK belongs to the new coded video sequence (§ 7.3.6), so a CI's CELU
+    /// membership is final only once the temporal unit (with any CLK) is complete — the
+    /// presence judgment is therefore deferred to the boundary rather than fired eagerly at
+    /// CI-observation time (round-6 F3). See [`Self::resolve_ci_first_celu_for_tu`].
+    ci_observed_in_tu: BTreeMap<(ExtendedLayerId, EmbeddedLayerId), ByteOffset>,
 }
 
 /// One in-band global layer configuration record's § 6.8.2 agreement fields (AV2
@@ -1840,6 +1867,42 @@ struct ContentInterpretationRecord {
     /// whether this record's latest appearance had its timecode n_frames CI-time
     /// recheck suppressed by the epoch-aware identical-CI dedup guard (finding 1).
     timecode_recheck_suppressed: bool,
+}
+
+/// Per extended layer, the § 7.3.6 first-CELU CI PRESENCE state (mirror lines 560-562,
+/// `07-decoding-process.md#s-7-3-6`): "If an OBU_CONTENT_INTERPRETATION is present in any
+/// coded extended layer unit, this OBU shall also be present in the first coded extended
+/// layer unit of the sequence ... for a given embedded layer."
+///
+/// The "first coded extended layer unit of the sequence" for an extended layer is its CELU
+/// in the coded video sequence's FIRST temporal unit (a CVS starts at the temporal unit
+/// containing a CLK, § 7.3.6). This state records — scoped to the layer's CVS — the embedded
+/// layers whose first CELU carried a CI, so a later CELU that adds a CI for an embedded layer
+/// the first CELU lacked can be flagged. Reset per coded video sequence in
+/// [`ValidatorContext::start_cvs_for_xlayer`].
+///
+/// **Unknown-first-CELU drop.** If the first CELU of the CVS was not observed — the stream
+/// starts mid-CVS (no CLK seen for the layer, so the implicit CVS began before the first
+/// observed OBU) — `first_celu_tu` is `None` and the presence judgment drops: the first
+/// CELU's CI set is unknowable. An external-HLS `Provided` mode likewise drops the judgment
+/// at the call site (an external CI in the first CELU cannot be enumerated by
+/// [`crate::options::ExternalHlsSet`], which expresses only sequence headers and operating
+/// point sets), consistent with the partial-declaration suppression policy.
+#[derive(Debug, Default)]
+struct CiFirstCeluState {
+    /// The temporal-unit index of the CVS's first temporal unit — the temporal unit whose
+    /// CELU is the "first coded extended layer unit of the sequence" for this layer. `None`
+    /// until a CLK establishes the CVS start for the layer (so a mid-CVS join, where no CLK
+    /// has been observed, leaves it `None` and drops the judgment).
+    first_celu_tu: Option<u64>,
+    /// The embedded layers (`obu_mlayer_id`) whose CI was observed in the first CELU of the
+    /// CVS. A CI in a later CELU for an embedded layer absent from this set fires
+    /// `celu/content-interpretation-not-in-first-celu`.
+    first_celu_ci_mlayers: BTreeSet<EmbeddedLayerId>,
+    /// The embedded layers already reported, so the diagnostic dedups per
+    /// `(xlayer, mlayer, CVS epoch)` — a repeated later CI for the same missing embedded
+    /// layer fires once per coded video sequence.
+    reported: BTreeSet<EmbeddedLayerId>,
 }
 
 /// The bitstream-derived embedded-layer association of one HDR CLL / MDCV
@@ -4702,9 +4765,64 @@ impl ValidatorContext {
         // segmenter. The role (region classification, plus the output class and
         // is_first_tile_group / metadata_is_suffix facts) is computed from the
         // already-parsed state; an undecidable frame-header parse path yields an
-        // unknown output class that routes the unit to Unknown (silent).
+        // unknown output class that routes the unit to Unknown (silent). The segmenter
+        // returns each frame-bearing OBU's coded-frame-unit boundary signal — the CELU
+        // tracker consumes it as the single source of truth for coded-frame-unit
+        // boundaries (§ 7.3.6), rather than re-deriving them from frame-delimiter bits.
         let role = self.seg_role_for(obu, first_picture_in_tu);
-        self.frame_unit.observe(obu, role, report);
+        let boundary = self.frame_unit.observe(obu, role, report);
+
+        // AV2 § 7.3.6 / § 7.3.7 / § 7.4.6: feed the coded-extended-layer-unit tracker,
+        // which sits above the frame-unit segmenter (keyed per obu_xlayer_id across the
+        // temporal unit). The per-frame facts (output class, order_hint, leading-ness,
+        // CLK/OLK identity) come from the same best-effort core parse; the coded-frame-unit
+        // boundary comes from the segmenter (above). Any field the parse cannot reach is
+        // left undecidable and routes the dependent judgment to silence; an Ambiguous
+        // boundary poisons the embedded layer's unit-count-dependent judgments. The
+        // per-frame OrderHintBits (from the active sequence header) is threaded separately
+        // for the § 7.3.7 same-OrderHintBits-in-TU check, since it spans CELUs.
+        let celu_role = if is_frame_bearing(obu.header.obu_type) {
+            // A frame-bearing OBU: derive its CELU facts AND its OrderHintBits contribution from
+            // ONE core parse + resolution (F4 — no double parse). The OrderHintBits is gated on
+            // the SAME resolution decision the facts use: a frame whose referenced sequence
+            // header did not resolve to the active header contributes no bits (None), rather
+            // than the stale active header's bits, so the § 7.3.7 same-OrderHintBits-in-TU check
+            // is not fed a wrong-bits value. (The CELU tracker filters global frame-bearing OBUs
+            // in `observe`.)
+            let (facts, bits) = self.frame_celu_facts(obu, first_picture_in_tu, boundary);
+            // AV2 § 7.3.7 (mirror line 655): the same-OrderHintBits judgment is over frame
+            // UNITS, not OBUs (F1). Feed the accumulator per frame-unit boundary, so a
+            // continuation OBU (a non-first tile group of an already-counted coded frame) does
+            // not contribute a redundant — and possibly unresolved-`None` — value that would
+            // poison the whole temporal unit's bits judgment:
+            //
+            // - `OpensNewUnit` notes the unit's resolved bits (`Some` or, when the opener does
+            //   not resolve to its active header, `None` — an unresolved opener still soundly
+            //   poisons, since the unit it opens has unknowable bits);
+            // - `ContinuesUnit` is skipped: the unit's bits came from its opener;
+            // - `Ambiguous` notes `None`: the OBU might open a unit whose bits are unknowable,
+            //   so it soundly poisons (the Unknown invariant).
+            //
+            // Global frame-bearing OBUs (obu_xlayer_id == GLOBAL_XLAYER_ID) are excluded BEFORE
+            // the accumulator, mirroring the CELU tracker's non-global filter in
+            // [`CodedExtendedLayerTracker::observe`] (round-5 F3). Such an OBU is invalid (a
+            // frame-bearing OBU may not use the global xlayer — already diagnosed by
+            // `obu-header/global-xlayer-allowed-types`) and is not part of any coded extended
+            // layer unit (§ 7.3.6), so it never resolves an active sequence header and would
+            // feed a spurious `None` that poisons the § 7.3.7 same-OrderHintBits judgment for
+            // the valid CELUs in the temporal unit, suppressing a real bits mismatch.
+            if !obu.header.extended_layer_id.is_global() {
+                match facts.boundary {
+                    FrameBoundary::OpensNewUnit => self.celu.note_order_hint_bits(bits, obu.offset),
+                    FrameBoundary::ContinuesUnit => {}
+                    FrameBoundary::Ambiguous => self.celu.note_order_hint_bits(None, obu.offset),
+                }
+            }
+            CeluRole::Frame(facts)
+        } else {
+            self.celu_role_for(obu)
+        };
+        self.celu.observe(obu, celu_role, report);
 
         // AV2 § 6.16.5 / § 6.16.6: mark this embedded layer's first coded picture
         // seen once its first coded frame (any frame-bearing OBU) is observed, for
@@ -4767,17 +4885,90 @@ impl ValidatorContext {
         reader.read_bit().ok().map(|bit| bit != 0)
     }
 
-    /// Derives a frame-bearing OBU's output class (`immediate_output_frame == 1 ||
-    /// implicit_output_frame == 1`, AV2 § 7.3.3 / § 6.17.2) from a best-effort core
-    /// parse against its active sequence header. `None` (undecidable) when the
-    /// active sequence is unavailable or the core parse stops before the output
-    /// flags — which routes the unit to Unknown rather than guessing.
-    fn frame_output_class(&self, obu: &ObuEnvelope<'_>, first_picture_in_tu: bool) -> Option<bool> {
+    /// Parses a frame-bearing OBU's [`FrameHeaderCore`] against the layer's active sequence
+    /// header, but **only** returns it when the frame's referenced sequence header resolved
+    /// to the very header parsed against (AV2 § 5.18.2). `None` (undecidable → Unknown
+    /// routing) when:
+    ///
+    /// - no sequence header is active for the layer, or its stored header is missing;
+    /// - the core parse failed (a payload the skeleton cannot reach); or
+    /// - the frame's referenced sequence header is **not** the active header parsed against.
+    ///
+    /// A frame's referenced sequence header is the active header when **either**:
+    ///
+    /// - **`cur_mfh_id == 0`** (direct reference) and the §5.18.2 prefix's
+    ///   `referenced_sequence_header_id` (set only when `seq_header_id_in_frame_header` is in
+    ///   range) equals the parsed-against id; or
+    /// - **`cur_mfh_id > 0`** (multi-frame-header reference) and an *in-band* multi-frame
+    ///   header record resolves that `cur_mfh_id` (in range, present in
+    ///   [`HlsAvailabilityStore::multi_frame_header`]) whose `mfh_seq_header_id` equals the
+    ///   parsed-against id (§ 7.3.8.7). The §5.18.2 control region through the output flags is
+    ///   determined by the active (== resolved) sequence header alone, so the output class /
+    ///   `order_hint` are decidable on this path even though `referenced_sequence_header_id` is
+    ///   `None` (the prefix leaves it unset for `cur_mfh_id > 0`).
+    ///
+    /// External-HLS caveat: an MFH only *externally* declared (`ExternalHlsMode::Provided`, not
+    /// in-band) is **not** a verifiable association — `multi_frame_header` returns `None` for
+    /// it — so the frame stays Unknown (the PR #49 partial-declaration policy). An out-of-range
+    /// `cur_mfh_id`, an absent record, or an MFH whose `mfh_seq_header_id` names a different
+    /// header all keep Unknown.
+    ///
+    /// This is the stale-activation safety: the sequence-header-dependent field widths
+    /// (`order_hint` is `f(OrderHintBits)`, etc.) make any post-prefix field a misparse when
+    /// read against the wrong header, so the output class and `order_hint` would be garbage. The
+    /// activation/reference prefix (`cur_mfh_id`, `seq_header_id_in_frame_header`,
+    /// `referenced_sequence_header_id`) is parsed *before* any sequence-dependent field, so it
+    /// stays reliable even when the parse ran against a stale header — making the resolution
+    /// check sound. The same guard is applied by the frame-unit segmenter's output-class
+    /// derivation ([`Self::frame_output_class`]) so the two layers route to Unknown together.
+    fn frame_core_against_referenced_header(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        first_picture_in_tu: bool,
+    ) -> Option<FrameHeaderCore> {
         let seq_id = *self
             .active_sequence_by_xlayer
             .get(&obu.header.extended_layer_id)?;
         let active_sequence = self.sequence_headers.get(&seq_id)?;
-        let core = parse_frame_core(obu, first_picture_in_tu, active_sequence)?;
+
+        // Resolve the frame's `cur_mfh_id` (> 0) reference to its in-band multi-frame header,
+        // so the parser can be invoked with the resolving record. The lightweight prefix parse
+        // reads only the activation fields (cur_mfh_id is before any sequence-dependent field),
+        // so it is reliable even against a stale active header.
+        let mfh_record = parse_frame_prefix(obu, first_picture_in_tu).and_then(|prefix| {
+            (!prefix.cur_mfh_id.is_zero() && prefix.cur_mfh_id.in_range())
+                .then(|| self.hls.multi_frame_header(prefix.cur_mfh_id))
+                .flatten()
+        });
+
+        let core = parse_frame_core(obu, first_picture_in_tu, active_sequence, mfh_record)?;
+
+        // The referenced sequence header must be the one parsed against. For a `cur_mfh_id == 0`
+        // direct reference, `referenced_sequence_header_id` carries the §5.18.2 prefix's
+        // resolved id (set only when `seq_header_id_in_frame_header` is in range). For a
+        // `cur_mfh_id > 0` reference, the resolved in-band MFH record's `mfh_seq_header_id`
+        // is the referenced id (§ 7.3.8.7); a record only externally declared, out of range, or
+        // absent leaves `mfh_record == None` below and routes to Unknown.
+        let referenced = if core.cur_mfh_id.is_zero() {
+            core.referenced_sequence_header_id
+        } else {
+            mfh_record.map(|record| record.mfh_seq_header_id)
+        };
+        if referenced != Some(seq_id) {
+            return None;
+        }
+        Some(core)
+    }
+
+    /// Derives a frame-bearing OBU's output class (`immediate_output_frame == 1 ||
+    /// implicit_output_frame == 1`, AV2 § 7.3.3 / § 6.17.2) from a best-effort core
+    /// parse against its active sequence header. `None` (undecidable) when the
+    /// active sequence is unavailable, the frame's referenced sequence header is not the
+    /// active header parsed against ([`Self::frame_core_against_referenced_header`]), or the
+    /// core parse stops before the output flags — which routes the unit to Unknown rather
+    /// than guessing.
+    fn frame_output_class(&self, obu: &ObuEnvelope<'_>, first_picture_in_tu: bool) -> Option<bool> {
+        let core = self.frame_core_against_referenced_header(obu, first_picture_in_tu)?;
         match (core.immediate_output_frame, core.implicit_output_frame) {
             (Some(immediate), Some(implicit)) => Some(immediate || implicit),
             // One flag known and already true settles the output class; the other
@@ -4785,6 +4976,178 @@ impl ValidatorContext {
             (Some(true), _) | (_, Some(true)) => Some(true),
             _ => None,
         }
+    }
+
+    /// Classifies a **non-frame-bearing** `obu` into its coded-extended-layer-unit
+    /// [`CeluRole`] (AV2 § 7.3.6), parallel to [`Self::seg_role_for`]. The HLS headers (LCR /
+    /// OPS / atlas / sequence header) and content-interpretation map directly; all other
+    /// coded-extended-layer-interior OBUs (BRT / QM / FGM / metadata / MFH) are `FrameInterior`;
+    /// padding is position-free. Frame-bearing OBUs are dispatched by the caller (see
+    /// [`Self::observe_frame_bearing_obu`]) so their facts and OrderHintBits come from a single
+    /// shared parse + resolution; if one reaches here it is treated as transparent padding.
+    fn celu_role_for(&self, obu: &ObuEnvelope<'_>) -> CeluRole {
+        match obu.header.obu_type {
+            ObuType::Padding => CeluRole::Padding,
+            ObuType::LayerConfigurationRecord => CeluRole::LayerConfigurationRecord,
+            ObuType::OperatingPointSet => CeluRole::OperatingPointSet,
+            ObuType::AtlasSegment => CeluRole::AtlasSegment,
+            ObuType::SequenceHeader => CeluRole::SequenceHeader,
+            ObuType::ContentInterpretation => CeluRole::ContentInterpretation,
+            ObuType::BufferRemovalTiming
+            | ObuType::QuantizationMatrix
+            | ObuType::FilmGrain
+            | ObuType::MetadataShort
+            | ObuType::MetadataGroup
+            | ObuType::MultiFrameHeader => CeluRole::FrameInterior,
+            // Reserved types (and the global-only temporal delimiter / MSDO, which the
+            // tracker filters as global) are ignored by the § 7.3.6 grammar ("OBU types that
+            // are not defined in this specification can be ignored", mirror line 618). Map to
+            // Padding so they are transparent — neither opening a frame nor advancing an HLS
+            // phase.
+            _ => CeluRole::Padding,
+        }
+    }
+
+    /// Derives the [`FrameFacts`] for a frame-bearing OBU from a best-effort core parse
+    /// against its active sequence header (AV2 § 5.18.2). Leading-ness is type-decided from
+    /// `obu_type` (see [`frame_leadingness`]), so it never routes to Unknown; the output
+    /// class and `order_hint` are `None` when the parse stops before them or the active
+    /// sequence header is unavailable (the Unknown invariant).
+    ///
+    /// The coded-frame-unit `boundary` is the [`FrameUnitSegmenter`]'s authoritative signal
+    /// for this OBU (the segmenter is the single source of truth for coded-frame-unit
+    /// boundaries, § 7.3.6); the CELU tracker consumes it rather than re-deriving boundaries.
+    /// `boundary` is `None` only for a *global* frame-bearing OBU (the segmenter ignores
+    /// globals), which the CELU tracker also filters before it reads this field — so the
+    /// `OpensNewUnit` fallback is never observed.
+    fn frame_celu_facts(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        first_picture_in_tu: bool,
+        boundary: Option<FrameBoundary>,
+    ) -> (FrameFacts, Option<u32>) {
+        let obu_type = obu.header.obu_type;
+        let leadingness = frame_leadingness(obu_type);
+
+        // F3: the output class is TYPE-DECIDED for a SEF (§ 7.3.3 "Or" branch -> output) and a
+        // BRIDGE (§ 7.3.4 list only -> non-output) by `obu_type` alone, BEFORE consulting any
+        // parsed flag — `type_decided_output` is the single source of truth shared with the
+        // frame-unit segmenter. A bridge parser stops early and would otherwise route to Unknown,
+        // suppressing the § 7.3.6 presence checks; the type decision keeps it decided.
+        let type_decided = type_decided_output(obu_type);
+
+        // F4: one core parse + resolution drives BOTH the flag-derived facts AND the OrderHintBits
+        // contribution. `frame_core_against_referenced_header` returns `Some` only when the
+        // frame's referenced sequence header resolved to the active header it parsed against
+        // (the stale-activation guard). When it resolves, the active header IS the referenced
+        // one, so its `OrderHintBits` is this frame's bits; when it does not resolve, the bits
+        // contribution is `None` (not the stale active header's bits) so the § 7.3.7
+        // same-OrderHintBits-in-TU check is never fed a wrong-bits value.
+        let core = self.frame_core_against_referenced_header(obu, first_picture_in_tu);
+        let (flag_output, order_hint, bits) = match &core {
+            Some(core) => {
+                let flag_output = match (core.immediate_output_frame, core.implicit_output_frame) {
+                    (Some(immediate), Some(implicit)) => Some(immediate || implicit),
+                    // One flag known and already true settles output; the other being unreached
+                    // cannot flip an output frame to non-output (mirror § 6.17.2).
+                    (Some(true), _) | (_, Some(true)) => Some(true),
+                    _ => None,
+                };
+                // The resolved frame's OrderHintBits is the active (== referenced) header's,
+                // when its inter config was parsed (the Unknown invariant otherwise).
+                let bits = self
+                    .active_sequence_by_xlayer
+                    .get(&obu.header.extended_layer_id)
+                    .and_then(|seq_id| self.sequence_headers.get(seq_id))
+                    .and_then(|seq| seq.inter.as_ref())
+                    .map(|inter| u32::from(inter.order_hint_bits));
+                (flag_output, core.order_hint_lsb, bits)
+            }
+            None => (None, None, None),
+        };
+
+        // The type decision wins when present; otherwise the flag-derived class (Unknown when
+        // the parse did not resolve / reach the flags). `order_hint` is the parsed `order_hint_lsb`
+        // (the LSB proxy, see [`crate::celu`]); a SEF/bridge with an absent reference keeps its
+        // type-decided output but contributes no order_hint / bits.
+        let output = type_decided.or(flag_output);
+
+        (
+            FrameFacts {
+                obu_type,
+                boundary: boundary.unwrap_or(FrameBoundary::OpensNewUnit),
+                output,
+                order_hint,
+                // Round-6 F2: carry the per-frame OrderHintBits into the facts so the CELU
+                // tracker can gate the cross-CELU §7.3.7 OrderHint comparison on only the two
+                // COMPARED output units' bits being known and equal — the SAME resolved bits
+                // value also threaded TU-wide to `note_order_hint_bits` for the same-bits
+                // judgment (constraint 1). A frame whose referenced header did not resolve
+                // contributes `None` here too (the stale-activation guard).
+                order_hint_bits: bits,
+                leadingness,
+            },
+            bits,
+        )
+    }
+
+    /// Whether the § 7.3.7 / § 7.4.6 DOH constraints are active for the *just-completed*
+    /// temporal unit at a global-temporal-delimiter boundary or at the end of the bitstream
+    /// (round-5 F1 / round-6 F1). Resolves the LCR side against the GOVERNING CMVS window of
+    /// the completed unit rather than the live window the [`CmvsTracker`](CmvsTracker) has
+    /// just mutated.
+    ///
+    /// The base disjunction (see [`Self::doh_constraint_flag_active_in_window`]) is:
+    /// `multistream_doh_constraint_flag` in the preceding MSDO equals 1, or
+    /// `lcr_doh_constraint_flag` in the activated global LCR equals 1. Either source being
+    /// absent contributes `false`, so when neither source declares the constraint the
+    /// flag-gated checks stay silent.
+    ///
+    /// Per § 7.3.2 the completed unit is *contained* in whichever CMVS it belongs to:
+    ///
+    /// - When the unit BEGINS a new CMVS (begin condition 1, 2, or 3), it is the FIRST unit of
+    ///   the NEW CMVS, whose window the tracker has just opened at this unit's index — the live
+    ///   (post-completion) window `Some(start)`, used here.
+    /// - When the unit only CONTINUES the CMVS, the window is unchanged either way.
+    /// - When the unit ENDS the CMVS without beginning a new one (end condition 2 — a CLK with
+    ///   no MSDO, no activated global LCR — Closes the live window to `None`), it is the LAST
+    ///   unit of the ENDING CMVS, whose window was the pre-completion start. The live window is
+    ///   `None`, so this falls back to `cmvs_window_before_completion`.
+    ///
+    /// So the governing window is the post-completion window when it is `Some`, else the
+    /// pre-completion window — which is exactly the window of the CMVS that contains the
+    /// completed unit. The MSDO side is window-independent: `msdo_substream_max` is last-wins
+    /// live state that `complete_temporal_unit` does not clear, so it already reflects the MSDO
+    /// that governed the completed unit (it must remain the preceding MSDO regardless of the
+    /// LCR window).
+    fn doh_constraint_flag_active_for_completed_tu(
+        &self,
+        cmvs_window_before_completion: Option<u64>,
+    ) -> bool {
+        let governing_window = self
+            .cmvs
+            .current_cmvs_start_tu_index()
+            .or(cmvs_window_before_completion);
+        self.doh_constraint_flag_active_in_window(governing_window)
+    }
+
+    /// The base § 7.3.7 / § 7.4.6 DOH constraint-active disjunction (mirror lines 650-657 /
+    /// 1316-1320), resolving the activated-global-LCR side against an explicit CMVS-window
+    /// start (`None` → no window → no activated global LCR, via
+    /// [`Self::activated_global_lcr_in_window`]). The MSDO side is window-independent (the
+    /// live last-wins preceding MSDO, [`Self::msdo_substream_max`]; § 7.3.8.2 keeps a non-RAP
+    /// MSDO identical to its predecessor). The DOH flag is active iff either source declares
+    /// the constraint.
+    fn doh_constraint_flag_active_in_window(&self, cmvs_window_start: Option<u64>) -> bool {
+        let msdo_flag = self
+            .msdo_substream_max
+            .as_ref()
+            .is_some_and(|m| m.doh_constraint_flag);
+        let lcr_flag = cmvs_window_start.is_some_and(|cmvs_start| {
+            self.activated_global_lcr_in_window(cmvs_start)
+                .is_some_and(|(_, record)| record.doh_constraint_flag)
+        });
+        msdo_flag || lcr_flag
     }
 
     /// Resets the §6.12/§6.13 coded-frame windows for quantizer-matrix and film-grain
@@ -4856,6 +5219,16 @@ impl ValidatorContext {
             // `completed_tu_index` (captured before advance_temporal_unit) is the
             // just-completed temporal unit's index, which stamps the CMVS-window start
             // (§ 7.3.2 scoping).
+            //
+            // The CMVS-window start of the *just-completed* temporal unit, captured BEFORE
+            // `complete_temporal_unit` applies this unit's § 7.3.2 begin/end conditions and
+            // mutates the live window (round-5 F1). The § 7.3.7 DOH flag for the completed unit
+            // must be sampled against the CMVS that CONTAINS it: when this unit ENDS the CMVS
+            // (end condition 2 — a CLK with no MSDO, no activated global LCR), it is the LAST
+            // temporal unit of the ENDING CMVS, so its governing window is this pre-completion
+            // start — not the live window the tracker is about to clear (see
+            // [`Self::doh_constraint_flag_active_in_window`]).
+            let cmvs_window_before_completion = self.cmvs.current_cmvs_start_tu_index();
             self.cmvs.complete_temporal_unit(completed_tu_index, report);
             // AV2 § 6.6: now that the just-completed temporal unit's CMVS membership is
             // resolved, evaluate the deferred `msdo/doh-constraint-required` check for its
@@ -4892,6 +5265,28 @@ impl ValidatorContext {
             // clears its per-temporal-unit state. The § 7.3.8.10 first-coded-frame-
             // unit CI counters likewise reset per temporal unit.
             self.frame_unit.reset_temporal_unit(report);
+            // AV2 § 7.3.6 / § 7.3.7 / § 7.4.6: resolve the just-completed temporal unit's
+            // coded-extended-layer-unit constraints (output-frame presence, OrderHint
+            // agreement, CLK/OLK first-unit and lowest-layer rules, all-leading-or-none) and
+            // the flag-gated DOH OrderHint / OrderHintBits checks, then clear the per-TU
+            // CELU state. The DOH flag must be recorded from the *just-completed* temporal
+            // unit's activated global LCR / preceding MSDO before resolution. Runs after the
+            // CMVS / activation resolution above so the activation chain is final. The LCR side
+            // is sampled against the GOVERNING window of the completed unit (captured before
+            // `complete_temporal_unit` cleared the live window, round-5 F1), so a CLK boundary
+            // unit that ends the CMVS is still governed by the activated global LCR of the CMVS
+            // that contained it.
+            self.celu.set_doh_flag_active(
+                self.doh_constraint_flag_active_for_completed_tu(cmvs_window_before_completion),
+            );
+            self.celu.reset_temporal_unit(report);
+            // AV2 § 7.3.6 (round-6 F3): resolve the just-completed temporal unit's CIs against
+            // the first-coded-extended-layer-unit-of-the-sequence presence rule (mirror lines
+            // 560-562). Runs after the CLK boundary events of the temporal unit have been
+            // applied (they are processed at the CLK OBU, earlier in the same temporal unit, so
+            // `start_cvs_for_xlayer` already re-seeded the first-CELU state), so each CI's CVS
+            // membership is final.
+            self.resolve_ci_first_celu_for_tu(completed_tu_index, options, report);
             // AV2 § 7.3.7: clear the per-temporal-unit distinct-`obu_mlayer_id` sets so a
             // CLK in the next temporal unit re-attributes only that temporal unit's ids
             // to the new coded video sequence (see DistinctMlayerTracker::reset_cvs).
@@ -5216,6 +5611,20 @@ impl ValidatorContext {
     fn start_cvs_for_xlayer(&mut self, xlayer: ExtendedLayerId, report: &mut ValidationReport) {
         self.cvs.start_cvs(xlayer, report);
         let tu_index = self.cvs.tu_index;
+        // AV2 § 7.3.6 (mirror lines 560-562, round-6 F3): this CLK starts a new coded video
+        // sequence for `xlayer` at this temporal unit, whose CELU is the "first coded extended
+        // layer unit of the sequence". Reset the first-CELU CI presence state so the new
+        // sequence judges its own first CELU. Idempotent within a temporal unit (a redundant
+        // CLK in the same temporal unit is the same boundary event, so it must not drop CI
+        // presence already recorded for this first CELU): only re-seed when the recorded first
+        // CELU temporal unit differs from this one.
+        let ci_state = self.ci_first_celu.entry(xlayer).or_default();
+        if ci_state.first_celu_tu != Some(tu_index) {
+            *ci_state = CiFirstCeluState {
+                first_celu_tu: Some(tu_index),
+                ..CiFirstCeluState::default()
+            };
+        }
         // AV2 § 7.3.6: "A new coded video sequence for an extended layer is defined to
         // start at each temporal unit that contains an OBU with obu_type equal to
         // OBU_CLOSED_LOOP_KEY ..." (mirror `07-decoding-process.md` lines 604–606). The
@@ -5472,6 +5881,17 @@ impl ValidatorContext {
         // are emitted here. `cvs.tu_index` is the final temporal unit's index (no
         // advance_temporal_unit runs at the end of the bitstream), stamping the CMVS-window
         // start if this final temporal unit begins one.
+        //
+        // The CMVS-window start of the FINAL temporal unit, captured BEFORE
+        // `complete_temporal_unit` applies this unit's § 7.3.2 begin/end conditions and
+        // mutates the live window (round-6 F1, mirroring the internal-boundary capture). The
+        // § 7.3.7 DOH flag for the final unit must be sampled against the CMVS that CONTAINS
+        // it: when the end of the bitstream (end condition 3) ends a CMVS this final unit
+        // CLOSED (a CLK with no MSDO, no activated global LCR — end condition 2), it is the
+        // LAST temporal unit of the ENDING CMVS, so its governing window is this pre-completion
+        // start — not the live window `complete_temporal_unit` is about to clear (see
+        // [`Self::doh_constraint_flag_active_for_completed_tu`]).
+        let cmvs_window_before_completion = self.cmvs.current_cmvs_start_tu_index();
         self.cmvs.complete_temporal_unit(self.cvs.tu_index, report);
         // AV2 § 6.6: resolve the deferred `msdo/doh-constraint-required` check for the
         // final temporal unit's frame-confirmed activations, exactly as an internal
@@ -5510,6 +5930,26 @@ impl ValidatorContext {
         // unit (no trailing global temporal delimiter), so resolve its open coded
         // frame units' deferred checks exactly as a temporal-delimiter boundary would.
         self.frame_unit.finish(report);
+        // AV2 § 7.3.6 / § 7.3.7 / § 7.4.6: the end of the bitstream ends the final
+        // temporal unit, so resolve its coded-extended-layer-unit constraints and the
+        // flag-gated DOH OrderHint / OrderHintBits checks exactly as an internal boundary
+        // would. The DOH flag is recorded from the final temporal unit's activated global
+        // LCR / preceding MSDO before resolution. The LCR side is sampled against the
+        // GOVERNING window of the final unit (captured before `complete_temporal_unit` cleared
+        // the live window, round-6 F1) — symmetric with the internal-boundary path — so a CLK
+        // final unit that ends the CMVS at the end of the bitstream is still governed by the
+        // activated global LCR of the CMVS that contained it (the MSDO side is window-
+        // independent live last-wins state).
+        self.celu.set_doh_flag_active(
+            self.doh_constraint_flag_active_for_completed_tu(cmvs_window_before_completion),
+        );
+        self.celu.finish(report);
+        // AV2 § 7.3.6 (round-6 F3): resolve the final temporal unit's CIs against the
+        // first-coded-extended-layer-unit-of-the-sequence presence rule, exactly as an
+        // internal boundary would. `cvs.tu_index` is the final temporal unit's index (no
+        // advance runs at the end of the bitstream); its CLK boundary events were already
+        // applied at the CLK OBU, so each CI's CVS membership is final.
+        self.resolve_ci_first_celu_for_tu(self.cvs.tu_index, options, report);
     }
 
     /// Returns the per-extended-layer `FirstPictureInTU` — "the first frame unit in
@@ -5960,6 +6400,18 @@ impl ValidatorContext {
         let mlayer = obu.header.embedded_layer_id;
         let tu_index = self.cvs.tu_index;
 
+        // AV2 § 7.3.6 (mirror lines 560-562): record this CI's `(xlayer, mlayer)` presence in
+        // the current temporal unit for the first-CELU-of-the-sequence presence judgment,
+        // resolved at the temporal-unit boundary (round-6 F3). A CI belongs to a coded
+        // extended layer unit, which is per non-global extended layer (§ 7.3.6); a global CI
+        // is not part of any CELU, so it is excluded. The first appearance's offset anchors
+        // the diagnostic.
+        if !xlayer.is_global() {
+            self.ci_observed_in_tu
+                .entry((xlayer, mlayer))
+                .or_insert(obu.offset);
+        }
+
         // Cross-embedded-layer timing consistency: compare this layer's timing
         // against the first other embedded layer (same extended layer) that already
         // carries present timing within this CVS scope.
@@ -6144,6 +6596,80 @@ impl ValidatorContext {
                     scan_type_recheck_suppressed,
                     timecode_recheck_suppressed,
                 });
+            }
+        }
+    }
+
+    /// Resolves the § 7.3.6 first-CELU-of-the-sequence CI PRESENCE judgment (mirror lines
+    /// 560-562, round-6 F3) for the just-completed temporal unit `completed_tu_index`. Called
+    /// at each global-temporal-delimiter boundary and at the end of the bitstream, after the
+    /// CLK boundary events of the temporal unit have been applied (so the CVS the temporal
+    /// unit belongs to is final — the whole temporal unit containing a CLK belongs to the new
+    /// coded video sequence, § 7.3.6). Drains [`Self::ci_observed_in_tu`].
+    ///
+    /// For each `(xlayer, mlayer)` CI observed in the temporal unit:
+    ///
+    /// - Under an external-HLS `Provided` mode the judgment DROPS: an external CI in the first
+    ///   CELU cannot be enumerated by [`crate::options::ExternalHlsSet`] (it expresses only
+    ///   sequence headers and operating point sets), so the validator cannot prove the first
+    ///   CELU lacked the CI — consistent with the partial-declaration suppression policy.
+    /// - If the layer's coded video sequence start was not observed (`first_celu_tu` is `None`
+    ///   — a mid-CVS join, no CLK seen) the judgment DROPS: the first CELU's CI set is
+    ///   unknowable (documented Unknown-first-CELU drop, see [`CiFirstCeluState`]).
+    /// - If this temporal unit IS the CVS's first temporal unit (`completed_tu_index ==
+    ///   first_celu_tu`), the CI is in the first CELU — record `mlayer` as present there.
+    /// - Otherwise the CI is in a LATER CELU: if `mlayer` was absent from the first CELU's CI
+    ///   set (and not already reported this CVS), fire `celu/content-interpretation-not-in-
+    ///   first-celu`, anchored at the offending CI, and dedup per `(xlayer, mlayer, CVS epoch)`.
+    fn resolve_ci_first_celu_for_tu(
+        &mut self,
+        completed_tu_index: u64,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        let observed = std::mem::take(&mut self.ci_observed_in_tu);
+        // External HLS (any Provided mode): an external CI the set cannot enumerate may be the
+        // first CELU's CI, so the presence judgment is not decidable — drop wholesale. The
+        // per-TU buffer is still drained above so it does not leak into the next temporal unit.
+        if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
+            return;
+        }
+        for ((xlayer, mlayer), offset) in observed {
+            let state = self.ci_first_celu.entry(xlayer).or_default();
+            let Some(first_celu_tu) = state.first_celu_tu else {
+                // No CLK established the CVS start for this layer (mid-CVS join): the first
+                // coded extended layer unit of the sequence was not observed, so the presence
+                // judgment is undecidable — drop (documented Unknown-first-CELU drop).
+                continue;
+            };
+            if completed_tu_index == first_celu_tu {
+                // This temporal unit is the CVS's first temporal unit, so this CI is in the
+                // first coded extended layer unit of the sequence — record the embedded layer.
+                state.first_celu_ci_mlayers.insert(mlayer);
+            } else if !state.first_celu_ci_mlayers.contains(&mlayer)
+                && state.reported.insert(mlayer)
+            {
+                // A later coded extended layer unit carries a CI for an embedded layer the
+                // sequence's first CELU lacked (§ 7.3.6 lines 560-562). Dedup per
+                // (xlayer, mlayer, CVS epoch) via `reported`.
+                report.push(
+                    Diagnostic::error(
+                        "celu/content-interpretation-not-in-first-celu",
+                        format!(
+                            "OBU_CONTENT_INTERPRETATION is present for obu_xlayer_id {} / \
+                             obu_mlayer_id {} in a coded extended layer unit that is not the \
+                             first coded extended layer unit of the coded video sequence, but \
+                             the first coded extended layer unit of the sequence carried no \
+                             content interpretation for that embedded layer; § 7.3.6 requires a \
+                             CI present in any coded extended layer unit to also be present in \
+                             the first coded extended layer unit of the sequence",
+                            xlayer.get(),
+                            mlayer.get()
+                        ),
+                    )
+                    .with_spec_section("7.3.6")
+                    .with_byte_offset(offset),
+                );
             }
         }
     }
@@ -12166,6 +12692,39 @@ fn is_frame_bearing(obu_type: ObuType) -> bool {
         || obu_type == ObuType::BridgeFrame
 }
 
+/// The § 7.3.6 all-leading-or-none [`Leadingness`] derived from `obu_type`, mirroring AVM's
+/// tri-state `is_leading_picture` (`av2/decoder/obu.c:2544-2549`) rather than the § 6.4.1-area
+/// gloss (`06-syntax-structures-semantics.md:4546`) that reads `IsRegular == 0` as exactly
+/// "leading":
+///
+/// - the `av2_is_leading_vcl_obu` set (`av2/decoder/obu.c:1666` — `OBU_LEADING_TILE_GROUP`,
+///   `OBU_LEADING_SEF`, `OBU_LEADING_TIP`) is [`Leadingness::Leading`];
+/// - the `av2_is_regular_vcl_obu` set (`av2/decoder/decodeframe.c:7015` — `OLK` plus
+///   `REGULAR_TILE_GROUP` / `REGULAR_SEF` / `REGULAR_TIP` / `SWITCH` / `RAS` / `BRIDGE`,
+///   i.e. the § 5.18.2 `IsRegular == 1` set) is [`Leadingness::Regular`];
+/// - a CLK lands in neither AVM set, so the oracle leaves `is_leading_picture == -1`; the
+///   validator follows it and classes a CLK [`Leadingness::Indeterminate`], excluding it
+///   from the all-leading-or-none judgment (the documented ambiguous-spec under-report).
+///
+/// Type-decided, so the § 7.3.6 all-leading-or-none rule never routes to Unknown.
+fn frame_leadingness(obu_type: ObuType) -> Leadingness {
+    match obu_type {
+        ObuType::LeadingTileGroup | ObuType::LeadingSef | ObuType::LeadingTip => {
+            Leadingness::Leading
+        }
+        ObuType::OpenLoopKey
+        | ObuType::RegularTileGroup
+        | ObuType::RegularTip
+        | ObuType::RegularSef
+        | ObuType::Switch
+        | ObuType::RasFrame
+        | ObuType::BridgeFrame => Leadingness::Regular,
+        // A CLK is neither leading nor regular under the AVM tri-state (the § 6.4.1 gloss
+        // would call it leading; the oracle and this validator do not).
+        _ => Leadingness::Indeterminate,
+    }
+}
+
 /// Parses a frame-bearing OBU's frame-header prefix (best-effort), returning `None`
 /// on any parse failure or when no parseable frame header is present (an absent
 /// header or a non-first tile group's `frame_header_copy()`).
@@ -12190,10 +12749,18 @@ fn parse_frame_prefix(
 /// header (AV2 § 5.18.2), positioning the reader past the `tile_group_obu()` prefix
 /// for tile-group OBUs. Returns `None` when there is no parseable first-tile-group
 /// frame header or the core parse fails (best-effort, never an error).
+///
+/// `mfh_record` is the in-band multi-frame header resolving this frame's `cur_mfh_id`
+/// (`> 0`) reference, or `None` for a `cur_mfh_id == 0` direct reference (or when the
+/// MFH is unavailable). It is threaded into the core parser so the `cur_mfh_id > 0`
+/// paths can resolve their multi-frame-header-derived state as that coverage lands; the
+/// currently-reachable fields (the §5.18.2 control region through the output flags) are
+/// determined by the active sequence header alone.
 fn parse_frame_core(
     obu: &ObuEnvelope<'_>,
     first_picture_in_tu: bool,
     active_sequence: &SequenceHeader,
+    mfh_record: Option<&MultiFrameHeaderRecord>,
 ) -> Option<FrameHeaderCore> {
     let obu_type = obu.header.obu_type;
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
@@ -12210,7 +12777,7 @@ fn parse_frame_core(
         obu_type,
         first_picture_in_tu,
         active_sequence: Some(active_sequence),
-        mfh_record: None,
+        mfh_record,
         reference_state: FrameReferenceStateView::unknown(),
         mode: FrameHeaderParseMode::Core,
     };
@@ -12287,7 +12854,10 @@ fn frame_header_core_checks(
         }
     }
 
-    let Some(core) = parse_frame_core(obu, first_picture_in_tu, active_sequence) else {
+    // This call site emits the §6.17 bridge-ref / frame-size diagnostics, which are
+    // determined by the active sequence header alone (no multi-frame-header-derived field is
+    // consulted), so it threads no MFH record.
+    let Some(core) = parse_frame_core(obu, first_picture_in_tu, active_sequence, None) else {
         return;
     };
 
