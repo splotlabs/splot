@@ -1877,6 +1877,22 @@ struct QuantizerMatrixState {
     /// `available[level]` only for *unprotected* levels, so a level re-sent this temporal
     /// unit survives a CLK/OLK/SWITCH/RAS reset (the QmProtected discipline).
     qm_protected: u16,
+    /// Per-level *poison* bitmap: a level whose `reset_qm()` was triggered by a SWITCH /
+    /// RAS frame whose parse never **reached** (or could not **confirm**) the § 5.18.2
+    /// reset call site (mirror :4279-4283) — a truncated header, an unresolvable core, or a
+    /// SWITCH whose `restricted_prediction_switch` gate the parse never read. The reset's
+    /// *availability* effect is then UNKNOWN (it might or might not have cleared the level),
+    /// so neither the `available` record (would falsely under-report) nor a clear-to-`None`
+    /// (would falsely *fire* `frame-header/qm-level-unavailable`) is sound. A poisoned level
+    /// DROPS the § 7.3.8.9 availability judgment (stays silent), exactly like an
+    /// externally-suppressed level. Re-grounded by a QM OBU re-sending the level (definitely
+    /// available again) or by a *confirmed* reset (definitely cleared — see
+    /// [`Self::reset_qm_availability_for_key`] /
+    /// [`Self::reset_qm_availability_for_switch_or_ras`]); persists across temporal
+    /// delimiters (it is HLS availability state, not the § 6.12 coded-frame window).
+    /// Protected levels (`qm_protected` set) are never poisoned: a reset cannot touch them,
+    /// so their availability stays known.
+    availability_poisoned: u16,
 }
 
 impl QuantizerMatrixState {
@@ -1901,10 +1917,16 @@ impl QuantizerMatrixState {
     ///
     /// This is the fully-decidable arm: a CLK / OLK resets *every* unprotected level
     /// regardless of layer (`needsReset = 1`), so no `MLayerPresenceMap` state is needed.
+    ///
+    /// A CLK / OLK reset is always *confirmed* (it is decidable from `obu_type` +
+    /// `FirstPictureInTU` alone), so it also clears any prior `availability_poisoned` bit for
+    /// the cleared level: the level is now definitively unavailable, re-grounding the
+    /// § 7.3.8.9 judgment.
     fn reset_qm_availability_for_key(&mut self) {
         for level in 0..NUM_CUSTOM_QMS {
             if (self.qm_protected >> level) & 1 == 0 {
                 self.available[level] = None;
+                self.availability_poisoned &= !(1u16 << level);
             }
         }
     }
@@ -1920,6 +1942,13 @@ impl QuantizerMatrixState {
     /// the level's defining layer — clearing on it would risk falsely marking an
     /// in-presence level unavailable — so it stays a named residual (the level is left
     /// available, never falsely cleared). Protected levels (`qm_protected` set) are untouched.
+    ///
+    /// This is the *confirmed*-reset path: the caller only invokes it once the frame's core
+    /// parse has reached the § 5.18.2 reset call site (mirror :4283) — a resolved RAS core,
+    /// or a SWITCH core with `restricted_prediction_switch == 1`
+    /// ([`ValidatorContext::apply_qm_reset_for_frame`]). A level it provably clears therefore
+    /// also re-grounds out of any prior poison (`availability_poisoned` bit cleared): the
+    /// level is now definitively unavailable.
     fn reset_qm_availability_for_switch_or_ras(&mut self) {
         for level in 0..NUM_CUSTOM_QMS {
             if (self.qm_protected >> level) & 1 != 0 {
@@ -1931,8 +1960,36 @@ impl QuantizerMatrixState {
                 self.available[level].is_none_or(|record| record.mlayer_id.is_none());
             if provably_resets {
                 self.available[level] = None;
+                self.availability_poisoned &= !(1u16 << level);
             }
         }
+    }
+
+    /// Poisons the *availability* state for a SWITCH / RAS frame whose `reset_qm()` effect
+    /// the validator cannot CONFIRM (AV2 § 5.18.2 mirror :4279-4283): the frame's core parse
+    /// never reached the reset call site (a truncated header, an unresolvable core, or a
+    /// SWITCH whose `restricted_prediction_switch` gate the parse never read). The reset
+    /// might or might not have fired, so each unprotected level's availability becomes
+    /// *unknown* — the § 7.3.8.9 judgment must DROP rather than fire or under-report.
+    ///
+    /// Only the `availability_poisoned` bit is set; the `available` record is left untouched
+    /// (a poisoned level is dropped regardless of its record, and preserving the record lets
+    /// a confirmed reset / resend re-ground precisely). Protected levels (`qm_protected`
+    /// set) survive any reset, so their availability stays known and is never poisoned —
+    /// symmetric with the protected-level skip in the confirmed-reset methods.
+    fn poison_qm_availability_for_unconfirmed_reset(&mut self) {
+        for level in 0..NUM_CUSTOM_QMS {
+            if (self.qm_protected >> level) & 1 == 0 {
+                self.availability_poisoned |= 1u16 << level;
+            }
+        }
+    }
+
+    /// Whether `level`'s availability is poisoned (unknown) by an unconfirmed SWITCH / RAS
+    /// reset. The § 7.3.8.9 availability check drops its judgment for a poisoned level. A
+    /// `level >= NUM_CUSTOM_QMS` (never a custom slot) is never poisoned.
+    fn availability_poisoned(&self, level: usize) -> bool {
+        level < NUM_CUSTOM_QMS && (self.availability_poisoned >> level) & 1 != 0
     }
 }
 
@@ -5076,43 +5133,69 @@ impl ValidatorContext {
     ///
     /// - CLK / OLK: `keyFrame && FirstPictureInTU` (a CLK / OLK *is* a KEY frame). The reset
     ///   is decidable from obu_type + `FirstPictureInTU` alone, with the unconditional
-    ///   `needsReset = 1` arm (every unprotected level cleared).
-    /// - RAS: always resets (the `restricted_prediction_switch` SWITCH gate does not apply).
+    ///   `needsReset = 1` arm (every unprotected level cleared). Always confirmed.
+    /// - RAS: always resets *once the parse reaches the reset call site*. The spec's
+    ///   `reset_qm()` call (mirror :4283) sits AFTER `restricted_prediction_switch`
+    ///   (mirror :4209), `num_key_ref_frames` (mirror :4244-4257), and the output flags — so
+    ///   the validator must not assume the reset on the `obu_type` alone. A RAS core that
+    ///   resolves to `Some` necessarily read through those fields and entered the inter path
+    ///   (`finish_inter_control`, mirror :4351+), which is past :4283, so a `Some` RAS core
+    ///   *confirms* the reset; a `None` core (truncated before the bit, unresolvable
+    ///   sequence, or a malformed prefix) leaves the reset UNCONFIRMED.
     /// - SWITCH: resets only when the parsed `restricted_prediction_switch == 1`; the bit is
-    ///   read on the SWITCH / RAS arm of the core parse and recorded on the core.
+    ///   read on the SWITCH / RAS arm of the core parse and recorded on the core. A `Some`
+    ///   core with the bit `0` *confirms NO reset* (nothing to do); a `None` core leaves the
+    ///   reset UNCONFIRMED (the gate bit was never read, so the spec might or might not have
+    ///   cleared the levels).
     ///
     /// The SWITCH / RAS arm uses the partial `needsReset` model (only the
     /// `QmMLayerId == -1` arm is provable; see
-    /// [`QuantizerMatrixState::reset_qm_availability_for_switch_or_ras`]). A frame whose core
-    /// the validator cannot resolve (no active sequence, malformed prefix) applies no reset
-    /// — it never *adds* availability, so a missed reset can only UNDER-report (never a false
-    /// positive on the availability check).
-    fn apply_qm_reset_for_frame(
-        &mut self,
-        obu: &ObuEnvelope<'_>,
-        first_picture_in_tu: bool,
-        seq_id: SequenceHeaderId,
-    ) {
+    /// [`QuantizerMatrixState::reset_qm_availability_for_switch_or_ras`]).
+    ///
+    /// **Unconfirmed-effect discipline (the PR #63 § 7.23 staging gate, applied to QM
+    /// availability).** When the RAS / SWITCH reset is UNCONFIRMED, the validator must
+    /// neither clear the level to `None` (that would falsely *fire*
+    /// `frame-header/qm-level-unavailable` for a level the reset may have left available) nor
+    /// silently skip it (that would falsely assert the level is *still available* when the
+    /// reset may have cleared it). Both directions guess. The sound treatment is to POISON
+    /// the level's availability ([`QuantizerMatrixState::poison_qm_availability_for_unconfirmed_reset`]):
+    /// the § 7.3.8.9 judgment DROPS until the level is re-grounded by a QM OBU re-sending it,
+    /// or by a later *confirmed* reset that grounds it as definitively unavailable.
+    fn apply_qm_reset_for_frame(&mut self, obu: &ObuEnvelope<'_>, first_picture_in_tu: bool) {
         match obu.header.obu_type {
             // CLK / OLK reset_qm() runs at `keyFrame && FirstPictureInTU` (mirror :4106).
             ObuType::ClosedLoopKey | ObuType::OpenLoopKey if first_picture_in_tu => {
                 self.qm.reset_qm_availability_for_key();
             }
-            // RAS always resets (mirror :4278-4280).
+            // RAS resets at mirror :4283, which the parse only reaches when the core resolves
+            // (a `Some` RAS core read past restricted_prediction_switch into the inter path,
+            // past :4283). A `None` core never reached the reset call site, so the reset is
+            // unconfirmed -> poison rather than clear-to-fire.
             ObuType::RasFrame => {
-                self.qm.reset_qm_availability_for_switch_or_ras();
-            }
-            // SWITCH resets only when restricted_prediction_switch == 1 (mirror :4280-4286).
-            // Resolve the core against the referenced header to read the recorded bit; an
-            // unresolvable core applies no reset (under-report, never a false positive).
-            ObuType::Switch => {
-                let _ = seq_id; // resolved inside frame_core_against_referenced_header
                 if self
                     .frame_core_against_referenced_header(obu, first_picture_in_tu)
-                    .and_then(|core| core.restricted_prediction_switch)
-                    == Some(true)
+                    .is_some()
                 {
                     self.qm.reset_qm_availability_for_switch_or_ras();
+                } else {
+                    self.qm.poison_qm_availability_for_unconfirmed_reset();
+                }
+            }
+            // SWITCH resets only when restricted_prediction_switch == 1 (mirror :4280-4286).
+            // Resolve the core against the referenced header to read the recorded bit:
+            // `Some(true)` confirms the reset; `Some(false)` confirms NO reset (do nothing);
+            // `None` (truncated before the gate bit, unresolvable) leaves it unconfirmed ->
+            // poison (symmetric with the RAS unconfirmed arm).
+            ObuType::Switch => {
+                match self
+                    .frame_core_against_referenced_header(obu, first_picture_in_tu)
+                    .map(|core| core.restricted_prediction_switch)
+                {
+                    Some(Some(true)) => self.qm.reset_qm_availability_for_switch_or_ras(),
+                    Some(Some(false)) => {} // confirmed no reset
+                    // An unresolvable core, or one that never read the gate bit, cannot
+                    // decide whether the reset fired.
+                    Some(None) | None => self.qm.poison_qm_availability_for_unconfirmed_reset(),
                 }
             }
             _ => {}
@@ -6892,7 +6975,7 @@ impl ValidatorContext {
             // references a level reset by its own reset_qm() must see the post-reset
             // availability. Run after the deferred §7.23 commit above so ordering is stable,
             // and before the immutable `mfh_record` / `active_sequence` borrows below.
-            self.apply_qm_reset_for_frame(obu, first_picture_in_tu, seq_id);
+            self.apply_qm_reset_for_frame(obu, first_picture_in_tu);
             let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
             if let Some(active_sequence) = self.sequence_headers.get(&seq_id) {
                 // AV2 § 7.23: thread the modeled per-extended-layer reference-frame buffer
@@ -11995,40 +12078,25 @@ impl ValidatorContext {
         let header_max_width = general.max_frame_width.get();
         let header_max_height = general.max_frame_height.get();
 
-        // Collect (mlayer_index, is_width, lcr_value, header_max, fragment) per violation.
-        let mut violations: Vec<(u8, bool, u32, u32, String)> = Vec::new();
+        // Collect (mlayer_index, is_width, lcr_value, header_max) per violation. The
+        // human-readable fragment is built lazily in the dedup loop below (after the
+        // `insert(key)` check), so a finding already emitted spends no allocation — matching
+        // [`Self::check_lcr_rep_info_agreement`].
+        let mut violations: Vec<(u8, bool, u32, u32)> = Vec::new();
         for &(mlayer_index, width, height) in &maps.max_expected {
             if let Some(lcr_width) = width
                 && lcr_width > header_max_width
             {
-                violations.push((
-                    mlayer_index,
-                    true,
-                    lcr_width,
-                    header_max_width,
-                    format!(
-                        "lcr_max_expected_width[{mlayer_index}] {lcr_width} > \
-                         max_frame_width_minus_1 + 1 = {header_max_width}"
-                    ),
-                ));
+                violations.push((mlayer_index, true, lcr_width, header_max_width));
             }
             if let Some(lcr_height) = height
                 && lcr_height > header_max_height
             {
-                violations.push((
-                    mlayer_index,
-                    false,
-                    lcr_height,
-                    header_max_height,
-                    format!(
-                        "lcr_max_expected_height[{mlayer_index}] {lcr_height} > \
-                         max_frame_height_minus_1 + 1 = {header_max_height}"
-                    ),
-                ));
+                violations.push((mlayer_index, false, lcr_height, header_max_height));
             }
         }
 
-        for (mlayer_index, is_width, lcr_value, header_max, fragment) in violations {
+        for (mlayer_index, is_width, lcr_value, header_max) in violations {
             let key = LcrExpectedDimsFindingKey {
                 xlayer,
                 seq_header_id,
@@ -12043,6 +12111,17 @@ impl ValidatorContext {
             if !self.emitted_lcr_expected_dims_findings.insert(key) {
                 continue;
             }
+            let fragment = if is_width {
+                format!(
+                    "lcr_max_expected_width[{mlayer_index}] {lcr_value} > \
+                     max_frame_width_minus_1 + 1 = {header_max}"
+                )
+            } else {
+                format!(
+                    "lcr_max_expected_height[{mlayer_index}] {lcr_value} > \
+                     max_frame_height_minus_1 + 1 = {header_max}"
+                )
+            };
             report.push(
                 Diagnostic::error(
                     "lcr/max-expected-dims-exceed-sequence-max",
@@ -12164,6 +12243,9 @@ impl ValidatorContext {
                     num_planes: qm.num_planes,
                 });
             }
+            // A QM OBU re-grounds availability: every level is now definitely available (as a
+            // default), so any prior unconfirmed-reset poison is lifted for all levels.
+            self.qm.availability_poisoned = 0;
             // AV2 § 5.13 mirror :3010: QmProtected[level] = 1 for every level.
             self.qm.qm_protected = (1u16 << NUM_CUSTOM_QMS) - 1;
             return;
@@ -12178,6 +12260,9 @@ impl ValidatorContext {
                     data_present: !level.is_default,
                     num_planes: qm.num_planes,
                 });
+                // A QM OBU re-sending this level re-grounds its availability (definitely
+                // available again), lifting any prior unconfirmed-reset poison for it.
+                self.qm.availability_poisoned &= !(1u16 << index);
                 // AV2 § 5.13 mirror :3033: QmProtected[level] = 1 for each sent level, so a
                 // level (re)sent in this temporal unit survives a later reset_qm().
                 self.qm.qm_protected |= 1u16 << index;
@@ -14877,6 +14962,16 @@ fn check_ops_level_tier_value_space(
 /// a RAS / restricted SWITCH, clears unprotected levels), so a level reset out of a previous
 /// temporal unit and not re-sent in the current one is correctly judged unavailable.
 ///
+/// **Unconfirmed-reset poison.** A SWITCH / RAS frame whose core parse did not CONFIRM it
+/// reached the § 5.18.2 `reset_qm()` call site (mirror :4283) — a truncated header, an
+/// unresolvable core, or a SWITCH whose `restricted_prediction_switch` gate was never read —
+/// POISONS the unprotected levels' availability instead of clearing them
+/// ([`ValidatorContext::apply_qm_reset_for_frame`]). A poisoned level
+/// ([`QuantizerMatrixState::availability_poisoned`]) DROPS its § 7.3.8.9 judgment (neither
+/// the false-fire of a clear-to-`None` nor the stale "available" of a skip), exactly like an
+/// externally-suppressed level, until a QM OBU re-sends it or a later confirmed reset grounds
+/// it. This is the QM-availability analogue of the § 7.23 unconfirmed-effect staging gate.
+///
 /// **Residual.** The § 6.17.6.2 layer-dependency constraints
 /// (MLayerDependencyMap[obu_mlayer_id][QmMLayerId[...]] == 1 and the TLayerDependencyMap
 /// analogue) remain a named TODO below — the QM-side check needs the defining QM OBU's layer
@@ -14938,6 +15033,17 @@ fn frame_qm_reference_checks(
         .enumerate()
         .filter(|(_, referenced)| **referenced)
     {
+        // A level POISONED by a SWITCH / RAS reset whose effect the validator could not
+        // confirm (a truncated header that never reached the § 5.18.2 reset call site, or a
+        // SWITCH whose restricted_prediction_switch gate the parse never read) has UNKNOWN
+        // availability: the reset may or may not have cleared it. Drop both the availability
+        // and the plane-count judgments — guessing either way would be a false positive
+        // (clear-to-fire) or a false negative (stale "available"). The poison is lifted by a
+        // QM OBU re-sending the level, or by a later confirmed reset
+        // (QuantizerMatrixState::availability_poisoned).
+        if qm_state.availability_poisoned(level) {
+            continue;
+        }
         let Some(record) = qm_state.available[level] else {
             // AV2 § 7.3.8.9: the referenced custom level has no available record (no QM OBU
             // ever defined it, or a reset_qm() cleared it and it was not re-sent in the

@@ -4257,6 +4257,17 @@ mod tests {
         /// `enable_bru` (§ 5.4.6): when set, an inter frame reads the BRU triple
         /// (`use_bru` / `bru_ref` / `bru_inactive`, §5.18.2 mirror :4653-4669).
         enable_bru: bool,
+        /// `max_mlayer_id` (§ 5.4.1, mirror :387): the highest embedded layer the CVS may
+        /// declare. When `> 0` the header reads two extra fields — `seq_max_mlayer_cnt_minus_1`
+        /// f(CeilLog2(max_mlayer_id + 1)) right after `max_mlayer_id` (mirror :389-395) and
+        /// `mlayer_dependency_present_flag` f(1) after `decoder_model_info_present_flag`
+        /// (mirror :507-509, here cleared so no dependency map reads) — and, crucially, it
+        /// takes the §5.18.2 refresh derivation OUT of the `OBU_RAS_FRAME && max_mlayer_id == 0`
+        /// arm (mirror :4493) that reads RefValid/RefLongTermId and forces the inter parser's
+        /// honest early stop. A `max_mlayer_id != 0` RAS frame falls through to the explicit
+        /// SWITCH `refresh_frame_flags f(NumRefFrames)` arm (mirror :4507-4509), so the parse
+        /// continues into the reference region and records `ref_frame_idx`.
+        max_mlayer_id: u32,
     }
 
     impl FrameCoreSeq {
@@ -4280,6 +4291,7 @@ mod tests {
                 bounded_tile_config: false,
                 explicit_ref_frame_map: false,
                 enable_bru: false,
+                max_mlayer_id: 0,
             }
         }
     }
@@ -4305,7 +4317,13 @@ mod tests {
         bits.f(0, 3); // seq_lcr_id
         bits.bit(u8::from(o.still_picture)); // still_picture
         bits.f(0, 2); // max_tlayer_id
-        bits.f(0, 3); // max_mlayer_id == 0
+        bits.f(o.max_mlayer_id, 3); // max_mlayer_id (mirror :387)
+        if o.max_mlayer_id > 0 {
+            // mirror :389-395: seq_max_mlayer_cnt_minus_1 f(CeilLog2(max_mlayer_id + 1)).
+            // SeqMaxMlayerCnt = max_mlayer_id + 1 admits every declared embedded layer
+            // 0..=max_mlayer_id (§ 6.4.1), keeping the fixture conformant.
+            bits.f(o.max_mlayer_id, ceil_log2_u32(o.max_mlayer_id + 1));
+        }
         bits.bit(1); // monotonic_output_order_flag
         bits.f(o.frame_width_bits_minus_1, 4);
         bits.f(o.frame_height_bits_minus_1, 4);
@@ -4315,6 +4333,12 @@ mod tests {
         bits.bit(0); // seq_cropping_window_present_flag
         bits.bit(0); // seq_initial_display_delay_present_flag
         bits.bit(0); // decoder_model_info_present_flag
+        if o.max_mlayer_id > 0 {
+            // mirror :507-509: max_tlayer_id == 0 so the §5.4.1 tlayer-dependency block reads
+            // nothing, but max_mlayer_id > 0 reads mlayer_dependency_present_flag f(1). Clearing
+            // it (0) skips the dependency-map loop, so the cascade stops here.
+            bits.bit(0); // mlayer_dependency_present_flag
+        }
         // sequence_partition_config (BLOCK_64X64, SDP off)
         bits.bit(0); // use_256x256_superblock
         bits.bit(0); // use_128x128_superblock
@@ -6621,6 +6645,22 @@ mod tests {
         annex_b_obu(QM_HEADER, &bits.into_bytes())
     }
 
+    /// A `quantizer_matrix_obu()` with `qm_bit_map == 0` (the § 5.13 reset/default path)
+    /// and `qm_chroma_info_present_flag == 1` (`QmNumPlanes == 3`). This makes EVERY custom
+    /// level available as a default record with `QmMLayerId == -1` (the validator's
+    /// `mlayer_id == None`), which is the arm the § 5.18.2 SWITCH / RAS `reset_qm()` can
+    /// PROVABLY reset (mirror :5351, `needsReset = QmMLayerId[level] == -1`). It also sets
+    /// `QmProtected[level] = 1` for every level (mirror :3010), so a temporal delimiter
+    /// must intervene before a later reset can act.
+    fn qm_reset_obu_chroma() -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.f(0, 15); // qm_bit_map == 0 -> reset/default path
+        bits.bit(1); // qm_chroma_info_present_flag = 1 -> 3 planes
+        bits.bit(1); // trailing_one_bit (QM is non-extensible)
+        bits.align();
+        annex_b_obu(QM_HEADER, &bits.into_bytes())
+    }
+
     #[test]
     fn validator_flags_frame_qm_plane_count_mismatch() {
         // A QM OBU defines custom level 0 with QmNumPlanes == 1
@@ -6800,6 +6840,198 @@ mod tests {
                 .errors()
                 .any(|d| d.rule_id == "frame-header/qm-level-unavailable"),
             "a level re-sent in the current temporal unit must survive reset_qm; report was: {report}"
+        );
+    }
+
+    /// A RAS frame (`OBU_RAS_FRAME`) whose parse REACHES the § 5.18.2 `reset_qm()` call
+    /// site (mirror :4283) — proving the reset condition fired. It reads
+    /// `restricted_prediction_switch`, `num_key_ref_frames == 0`, the output flags, the
+    /// SWITCH-forced `frame_size_override_flag`, and `order_hint`, then converges on the
+    /// RAS `refresh_frame_flags` derivation arm (mirror :4493, `max_mlayer_id == 0`), which
+    /// reads no bits and stops with `InterStop::UnmodeledDerivation` — an
+    /// `UnsupportedUntilFeature` coverage stop that yields a resolvable (`Some`) core. The
+    /// stop is past :4283, so the RAS reset is CONFIRMED. The sequence must have
+    /// `long_term_frame_id_bits != 0` (§ 6.4.6), so the caller threads
+    /// `FrameCoreSeq { long_term_frame_id_bits: 4, .. }`.
+    fn ras_frame_confirmed_reset() -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group -> frame_header_present_flag inferred 1
+        fb.uvlc(0); // cur_mfh_id == 0 -> direct sequence-header reference
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // restricted_prediction_switch f(1)  (read on the RAS/SWITCH arm)
+        fb.f(0, 3); // num_key_ref_frames == 0 (no ref_long_term_id reads)
+        fb.bit(0); // immediate_output_frame f(1)  (RAS is not OLK; monotonic -> implicit 0)
+        // SWITCH_FRAME forces frame_size_override_flag == 1 (no bit).
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        // SWITCH primary-ref block reads no bits; the RAS (max_mlayer_id == 0)
+        // refresh-flags arm reads no bits and stops -> reset_qm() (:4283) already ran.
+        annex_b_obu(RAS_HEADER, &fb.into_bytes())
+    }
+
+    /// A RAS frame (`OBU_RAS_FRAME`) truncated BEFORE the § 5.18.2 `reset_qm()` call site
+    /// (mirror :4283): it reads `restricted_prediction_switch` and `num_key_ref_frames`, then
+    /// the payload runs out inside the `ref_long_term_id[i]` loop (mirror :4252) — before the
+    /// reset is reached. The core parse fails (`Err` propagates -> resolves to `None`), so the
+    /// RAS reset is UNCONFIRMED. The sequence must have `long_term_frame_id_bits != 0`
+    /// (§ 6.4.6); the caller threads `FrameCoreSeq { long_term_frame_id_bits: 4, .. }`, for
+    /// which the unread `ref_long_term_id` reads are f(4) each (7 of them == 28 bits, far past
+    /// the byte-aligned padding, forcing a true EOF before :4283).
+    fn ras_frame_truncated_before_reset() -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // restricted_prediction_switch f(1)
+        fb.f(7, 3); // num_key_ref_frames == 7 -> 7 * f(4) ref_long_term_id reads follow
+        // Payload ends here: the ref_long_term_id[0..7] reads (28 bits) run past the payload,
+        // so parse_frame_header_core returns Err -> the validator's core resolves to None,
+        // BEFORE the reset_qm() call site (mirror :4283).
+        annex_b_obu(RAS_HEADER, &fb.into_bytes())
+    }
+
+    /// An INTRA_ONLY regular-tile-group frame whose `setup_qm_params()` references custom
+    /// `qm_y[0] == level` (the same § 5.18.6.2 reference as
+    /// [`clk_frame_with_qm_reference`]), but as an INTRA_ONLY frame it triggers NO
+    /// `reset_qm()` (§ 5.18.2 mirror :4279-4283 resets only on CLK / OLK / SWITCH / RAS).
+    /// This isolates the QM-availability judgment from the referencing frame's own reset,
+    /// so a stale / poisoned availability state is the only thing that can flip the
+    /// §7.3.8.9 diagnostic. `refresh_frame_flags == 1` (a single non-output slot, never
+    /// all-slots) keeps the §6.17.2 intra-only checks silent.
+    fn intra_only_frame_with_qm_reference(level: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // frame_is_inter == 0 -> INTRA_ONLY (no reset_qm)
+        fb.bit(1); // immediate_output_frame == 1 (output frame; no implicit bit)
+        fb.bit(1); // frame_size_override_flag
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        fb.f(16 - 1, 8); // frame_width_minus_1 -> FrameWidth 16 (== max)
+        fb.f(16 - 1, 8); // frame_height_minus_1 -> FrameHeight 16 (== max)
+        fb.f(1, 8); // refresh_frame_flags f(NumRefFrames == 8) == 1 (not all-slots)
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        fb.bit(1); // uniform_tile_spacing_flag (sbCols == 1: no increments)
+        fb.f(100, 9); // base_q_idx f(9) (§ 5.18.6.1)
+        fb.bit(0); // segmentation_enabled (§ 5.18.7.1)
+        fb.bit(1); // using_qmatrix (§ 5.18.6.2)
+        fb.f(level, 4); // qm_y[0]
+        fb.bit(1); // qm_uv_same_as_y (NumPlanes == 3)
+        fb.bit(0); // delta_q_present (§ 5.18.7.8)
+        annex_b_obu(RTG_HEADER, &fb.into_bytes())
+    }
+
+    #[test]
+    fn validator_qm_truncated_ras_reset_does_not_falsely_fire_unavailable() {
+        // A truncated RAS frame (payload ends after the prefix, before
+        // restricted_prediction_switch) never reaches the § 5.18.2 reset_qm() call site
+        // (mirror :4283). Its parse fails (Err -> core None), so the RAS reset is NOT
+        // confirmed: the QM availability state must be POISONED (unknown), not cleared to
+        // "unavailable". A later INTRA_ONLY frame (no reset_qm of its own) referencing a QM
+        // level made available before the RAS must therefore stay SILENT — the poison drops
+        // the §7.3.8.9 judgment. Pre-fix the RAS branch cleared on the OBU type alone, so
+        // this fired falsely.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            long_term_frame_id_bits: 4, // § 6.4.6: RAS requires long_term_frame_id_bits != 0
+            ..FrameCoreSeq::base()
+        });
+        // The reset QM OBU makes level 0 available with QmMLayerId == -1 (mlayer_id None) —
+        // the arm a SWITCH / RAS reset_qm() can PROVABLY clear (mirror :5351).
+        data.extend(qm_reset_obu_chroma()); // TU1: level 0 available (mlayer_id -1) + protected
+        data.extend(temporal_delimiter_obu()); // TU2 starts: QmProtected cleared
+        data.extend(ras_frame_truncated_before_reset()); // truncated RAS: reset unconfirmed
+        data.extend(temporal_delimiter_obu()); // TU3 starts: QmProtected cleared
+        data.extend(intra_only_frame_with_qm_reference(0)); // references level 0 (no own reset)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/qm-level-unavailable"),
+            "a truncated RAS whose reset is unconfirmed must POISON (not clear) QM \
+             availability, so the later reference stays silent; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_qm_confirmed_ras_reset_fires_unavailable_without_resend() {
+        // A RAS frame whose parse reaches the reset_qm() call site (mirror :4283) CONFIRMS
+        // the reset: the unprotected level 0 made available in a prior TU is cleared to
+        // "unavailable". A later INTRA_ONLY frame (no reset_qm of its own) referencing level
+        // 0 without re-sending it must fire §7.3.8.9 unavailable — the confirmed reset
+        // grounds "unavailable", not a poison.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            long_term_frame_id_bits: 4,
+            ..FrameCoreSeq::base()
+        });
+        // The reset QM OBU makes level 0 available with QmMLayerId == -1 (mlayer_id None) —
+        // the arm the confirmed RAS reset_qm() provably clears (mirror :5351).
+        data.extend(qm_reset_obu_chroma()); // TU1: level 0 available (mlayer_id -1) + protected
+        data.extend(temporal_delimiter_obu()); // TU2 starts: QmProtected cleared
+        data.extend(ras_frame_confirmed_reset()); // confirmed RAS reset_qm() clears unprotected lvl 0
+        data.extend(temporal_delimiter_obu()); // TU3 starts
+        data.extend(intra_only_frame_with_qm_reference(0)); // references level 0 (no own reset)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "frame-header/qm-level-unavailable"
+                    && d.spec_section.as_deref() == Some("7.3.8.9")
+            }),
+            "a confirmed RAS reset must ground the level unavailable; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_qm_resend_after_truncated_ras_poison_regrounds_availability() {
+        // After a truncated RAS poisons QM availability, a QM OBU re-sending the level
+        // re-grounds it (the level is definitively available again), so a referencing frame
+        // stays SILENT — the resend lifts the poison.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            long_term_frame_id_bits: 4,
+            ..FrameCoreSeq::base()
+        });
+        data.extend(qm_reset_obu_chroma()); // TU1: level 0 available (mlayer_id -1)
+        data.extend(temporal_delimiter_obu()); // TU2 starts
+        data.extend(ras_frame_truncated_before_reset()); // truncated RAS: poisons level 0
+        data.extend(temporal_delimiter_obu()); // TU3 starts: QmProtected cleared
+        data.extend(qm_reset_obu_chroma()); // re-send level 0 -> re-grounds (poison lifted)
+        data.extend(intra_only_frame_with_qm_reference(0)); // references the re-grounded level 0
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/qm-level-unavailable"),
+            "a QM resend after a poison must re-ground availability; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_qm_unconfirmed_switch_reset_does_not_falsely_fire_unavailable() {
+        // The symmetric SWITCH case. A SWITCH frame whose core the validator cannot resolve
+        // (here it references a sequence header that is not the active one — the same
+        // "unresolvable core" class the §5.18.2 SWITCH arm hits when the header is truncated
+        // before restricted_prediction_switch, mirror :4281) leaves the reset_qm() effect
+        // UNCONFIRMED: the gate bit was never decided. The validator must POISON the
+        // availability state (drop later judgments) — NOT clear it to "unavailable" (which
+        // would falsely fire §7.3.8.9) and NOT, as pre-fix, silently skip and assert a stale
+        // "available" verdict. A later INTRA_ONLY frame (no reset_qm of its own) referencing
+        // a level made available before the SWITCH must therefore stay SILENT; this guards
+        // the SWITCH arm against the same clear-to-fire regression the RAS arm had.
+        let mut data = td_and_seq_header(0, 0, 0); // activate sequence id 0
+        // 0x28 = 0b0_01010_00 -> ext=0, type=10 (OBU_SWITCH), tlayer=0.
+        const SWITCH_HEADER: u8 = 0x28;
+        data.extend(qm_reset_obu_chroma()); // TU1: level 0 available (mlayer_id -1) + protected
+        data.extend(temporal_delimiter_obu()); // TU2 starts: QmProtected cleared
+        data.extend(frame_obu_direct_seq_ref(SWITCH_HEADER, 5)); // references seq 5 (not active) -> None core -> poison
+        data.extend(temporal_delimiter_obu()); // TU3 starts
+        data.extend(intra_only_frame_with_qm_reference(0)); // references level 0 (no own reset)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/qm-level-unavailable"),
+            "an unconfirmed SWITCH reset must POISON QM availability (not clear-to-fire), so \
+             the later reference stays silent; report was: {report}"
         );
     }
 
@@ -20991,12 +21223,20 @@ mod tests {
             .any(|d| d.rule_id == "frame-header/ras-ref-long-term-id-not-in-use")
     }
 
-    /// A complete CLK KEY frame (allFrames refresh -> only slot 0 valid by the §7.23 key
-    /// `first` rule) whose `long_term_id_plus_1` sets `LongTermId = long_term_id_plus_1 - 1`,
-    /// so slot 0's modeled `RefLongTermId` becomes that value. Built against the base
-    /// `frame_core_seq` sequence with `long_term_frame_id_bits == 4`. The body parses to
-    /// completion so the validator commits the §7.23 Refresh.
-    fn clk_frame_long_term(long_term_id_plus_1: u32) -> Vec<u8> {
+    /// A complete CLK KEY frame whose `long_term_id_plus_1` sets
+    /// `LongTermId = long_term_id_plus_1 - 1`, so the refreshed slot's modeled
+    /// `RefLongTermId` becomes that value. Built against a base `frame_core_seq` sequence
+    /// with `long_term_frame_id_bits == 4`. The body parses to completion so the validator
+    /// commits the §7.23 refresh (a CLK at FirstPictureInTU is a `ClkReset` — every slot is
+    /// cleared, then the refresh mask re-validates the named slots with these facts).
+    ///
+    /// `max_mlayer_id` must match the active sequence header's value (§5.18.2 mirror :4429):
+    /// - `0`: the CLK refresh derives `allFrames` (no bits) and the §7.23 key `first` rule
+    ///   leaves only slot 0 valid.
+    /// - `!= 0`: the CLK falls out of the `OBU_CLOSED_LOOP_KEY && max_mlayer_id == 0` arm and
+    ///   reads `refresh_frame_flags f(NumRefFrames == 8)` explicitly (mirror :4443-4447); we
+    ///   pass `1` so only slot 0 is refreshed (grounded with this `RefLongTermId`).
+    fn clk_frame_long_term(long_term_id_plus_1: u32, max_mlayer_id: u32) -> Vec<u8> {
         let mut fb = Bits::default();
         fb.bit(1); // is_first_tile_group
         fb.uvlc(0); // cur_mfh_id == 0
@@ -21006,7 +21246,13 @@ mod tests {
         fb.bit(1); // immediate_output_frame
         fb.bit(1); // frame_size_override_flag
         fb.f(0, 1); // order_hint f(OrderHintBits == 1)
-        // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
+        if max_mlayer_id == 0 {
+            // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits, mirror :4431-4433)
+        } else {
+            // mirror :4443-4447: the !enable_short_refresh else arm reads
+            // refresh_frame_flags f(NumRefFrames == 8); 1 -> refresh slot 0 only.
+            fb.f(1, 8); // refresh_frame_flags f(NumRefFrames == 8)
+        }
         fb.f(15, 8); // frame_width_minus_1 f(8) -> 16 (== max_frame_width)
         fb.f(15, 8); // frame_height_minus_1 f(8) -> 16 (== max_frame_height)
         fb.bit(0); // allow_screen_content_tools
@@ -21017,12 +21263,31 @@ mod tests {
     }
 
     /// A RAS frame (FrameType derived to SWITCH; explicit reference map) listing a single
-    /// `ref_long_term_id` and selecting slot 0 via `ref_frame_idx[0]`. Built against a base
-    /// `frame_core_seq` sequence with `long_term_frame_id_bits == 4`, `explicit_ref_frame_map
-    /// == 1`. A RAS forces `frame_size_override_flag == 1` (SWITCH) so frame_size() reads
-    /// explicit dims. The body parses through the inter control region so `inter.ref_frame_idx`
-    /// is recorded for the §6.17.2 long_term_id_in_use check.
-    fn ras_frame_explicit_map(ref_long_term_id: u32) -> Vec<u8> {
+    /// `ref_long_term_id` and selecting slot 0 for every `ref_frame_idx[i]`. Built against a
+    /// base `frame_core_seq` sequence with `long_term_frame_id_bits == 4`,
+    /// `explicit_ref_frame_map == 1`, and `num_ref_frames` reference slots. A RAS forces
+    /// `frame_size_override_flag == 1` (SWITCH) so frame_size() reads explicit dims.
+    ///
+    /// `max_mlayer_id` selects the §5.18.2 refresh arm (mirror :4493 vs :4507):
+    /// - `0`: the RAS refresh derives from RefValid/RefLongTermId, which the inter parser
+    ///   cannot ground, so it stops with `InterStop::UnmodeledDerivation` BEFORE
+    ///   `ref_frame_idx` (no `refresh_frame_flags` bits, parse never reaches the reference
+    ///   region — the reachability boundary).
+    /// - `!= 0`: the RAS falls through to the SWITCH arm and reads
+    ///   `refresh_frame_flags f(NumRefFrames)` explicitly, so the body parses through the
+    ///   inter control region and `inter.ref_frame_idx` IS recorded for the §6.17.2
+    ///   `long_term_id_in_use` check.
+    ///
+    /// `num_total_refs` is coded as f(3); each `ref_frame_idx[i]` is f(CeilLog2(NumRefFrames))
+    /// and points at slot 0. (A `num_total_refs` above `Min(REFS_PER_FRAME, NumRefFrames)`
+    /// independently trips `frame-header/num-total-refs-out-of-range`, which doubles as a
+    /// proof the parse reached the reference region.)
+    fn ras_frame_explicit_map(
+        ref_long_term_id: u32,
+        max_mlayer_id: u32,
+        num_ref_frames: u32,
+        num_total_refs: u32,
+    ) -> Vec<u8> {
         let mut fb = Bits::default();
         fb.bit(1); // is_first_tile_group
         fb.uvlc(0); // cur_mfh_id == 0
@@ -21034,12 +21299,19 @@ mod tests {
         // monotonic_output_order_flag -> implicit_output_frame forced 0 (no bit)
         // SWITCH frame_type -> frame_size_override_flag forced 1 (no bit)
         fb.f(0, 1); // order_hint f(OrderHintBits == 1)
-        fb.bit(0); // signal_primary_ref_frame
-        fb.bit(0); // disable_cross_frame_cdf_init (not TIP)
-        // refresh_frame_flags: RAS && max_mlayer_id == 0 -> derived (no bits)
+        // FrameType derived to SWITCH -> primary_ref_frame = PRIMARY_REF_NONE and
+        // disable_cross_frame_cdf_init = 0 are inferred (no bits, inter.rs :448-451).
+        if max_mlayer_id == 0 {
+            // refresh_frame_flags: RAS && max_mlayer_id == 0 -> derived (no bits, parse stops)
+        } else {
+            // mirror :4507-4509: FrameType == SWITCH -> refresh_frame_flags f(NumRefFrames).
+            fb.f(0, num_ref_frames); // refresh_frame_flags f(NumRefFrames)
+        }
         fb.bit(1); // frame_explicit_ref_frame_map (explicit_ref_frame_map seq flag set)
-        fb.f(1, 3); // num_total_refs == 1
-        fb.f(0, 3); // ref_frame_idx[0] f(CeilLog2(8) == 3) -> slot 0
+        fb.f(num_total_refs, 3); // num_total_refs f(3)
+        for _ in 0..num_total_refs {
+            fb.f(0, ceil_log2_u32(num_ref_frames)); // ref_frame_idx[i] -> slot 0
+        }
         // SWITCH + frame_size_override_flag == 1: frame_size() reads explicit dims (not
         // frame_size_with_refs, since frame_type == Switch).
         fb.f(15, 8); // frame_width_minus_1 f(8) -> 16 (== max_frame_width)
@@ -21064,9 +21336,11 @@ mod tests {
             ..FrameCoreSeq::base() // max_mlayer_id == 0
         };
         let mut data = td_and_frame_core_seq(seq);
-        data.extend(clk_frame_long_term(6)); // establishes slot 0 RefLongTermId 5
+        data.extend(clk_frame_long_term(6, 0)); // establishes slot 0 RefLongTermId 5
         data.extend(temporal_delimiter_obu());
-        data.extend(ras_frame_explicit_map(3)); // lists 3 (!= 5), but parse stops early
+        // max_mlayer_id == 0, NumRefFrames == 8, num_total_refs == 1: lists 3 (!= 5), but the
+        // refresh derivation stops the parse before ref_frame_idx.
+        data.extend(ras_frame_explicit_map(3, 0, 8, 1));
         let report = Validator::new(false).validate_bytes(&data);
         assert!(
             !has_ras_ref_long_term_error(&report),
@@ -21077,21 +21351,69 @@ mod tests {
 
     #[test]
     fn validator_silent_on_ras_ref_long_term_when_slot_unknown() {
-        // No prior CLK establishes slot 0, so the §7.23 buffer leaves it Unknown: even if the
-        // parser reached ref_frame_idx, the RAS long_term_id_in_use check cannot prove a
-        // violation against an Unknown slot and drops to silence (the Unknown invariant).
+        // The Unknown-invariant path: the parse REACHES ref_frame_idx (max_mlayer_id != 0, so
+        // the RAS refresh derivation takes the explicit SWITCH arm instead of the unmodeled
+        // RefValid/RefLongTermId derivation), but NO prior CLK establishes slot 0, so the §7.23
+        // buffer leaves it Unknown. `slot_long_term_id` returns None for an Unknown slot, the
+        // long-term check `continue`s, and the rule stays silent — even though the RAS lists 3.
+        //
+        // REACHABILITY GUARD (against future vacuity): NumRefFrames == 2 ->
+        // ActiveNumRefFrames == Min(REFS_PER_FRAME 7, 2) == 2, and num_total_refs == 3 (> 2)
+        // independently fires frame-header/num-total-refs-out-of-range — a fact decidable ONLY
+        // after the parser reads num_total_refs in the reference region (immediately before
+        // ref_frame_idx). Asserting that diagnostic DOES fire proves the parse advanced past the
+        // refresh arm into the reference region (so the 3 recorded ref_frame_idx[i] = slot 0 ARE
+        // present and the Unknown-slot branch is genuinely exercised), while the long-term rule
+        // stays silent.
         let seq = FrameCoreSeq {
             long_term_frame_id_bits: 4,
             explicit_ref_frame_map: true,
+            num_ref_frames_minus_1: 1, // NumRefFrames == 2 -> ActiveNumRefFrames == 2
+            max_mlayer_id: 1,          // != 0 -> RAS refresh takes the explicit SWITCH arm
             ..FrameCoreSeq::base()
         };
         let mut data = td_and_frame_core_seq(seq);
-        data.extend(ras_frame_explicit_map(3)); // slot 0 is Unknown -> silent
+        // No CLK: slot 0 is Unknown. NumRefFrames == 2, num_total_refs == 3 (> ActiveNumRefFrames).
+        data.extend(ras_frame_explicit_map(3, 1, 2, 3));
         let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_num_total_refs_error(&report),
+            "the RAS parse must reach the reference region (num_total_refs 3 > \
+             ActiveNumRefFrames 2 fires the §6.17.2 bound) so ref_frame_idx is recorded and the \
+             Unknown-slot path is genuinely exercised; report was: {report}"
+        );
         assert!(
             !has_ras_ref_long_term_error(&report),
             "an Unknown slot cannot prove a §6.17.2 long-term violation -> silent; \
              report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_fires_on_ras_ref_long_term_when_slot_long_term_id_not_listed() {
+        // The end-to-end FIRES path. A prior CLK grounds slot 0 with RefLongTermId 5
+        // (long_term_id_plus_1 6 -> LongTermId 5), then a RAS frame (max_mlayer_id != 0, so the
+        // parse reaches ref_frame_idx) selects slot 0 while listing only ref_long_term_id 3.
+        // long_term_id_in_use(5) == 0 (5 is not in {3}), so the §6.17.2 conformance requirement
+        // is violated and frame-header/ras-ref-long-term-id-not-in-use fires. NumRefFrames == 8
+        // keeps num_total_refs == 1 in range (ActiveNumRefFrames == 7), isolating the long-term
+        // rule.
+        let seq = FrameCoreSeq {
+            long_term_frame_id_bits: 4,
+            explicit_ref_frame_map: true,
+            max_mlayer_id: 1, // != 0 -> the RAS refresh takes the explicit SWITCH arm
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq);
+        data.extend(clk_frame_long_term(6, 1)); // grounds slot 0 RefLongTermId 5
+        data.extend(temporal_delimiter_obu());
+        // NumRefFrames == 8, num_total_refs == 1, slot 0 selected; RAS lists 3 (!= 5).
+        data.extend(ras_frame_explicit_map(3, 1, 8, 1));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            has_ras_ref_long_term_error(&report),
+            "a RAS selecting slot 0 (RefLongTermId 5) while listing only ref_long_term_id 3 \
+             violates §6.17.2 long_term_id_in_use and must fire; report was: {report}"
         );
     }
 
