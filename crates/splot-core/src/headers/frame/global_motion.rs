@@ -428,7 +428,12 @@ pub fn decode_signed_subexp_with_ref(
     // Saturating spans: in-spec warp bounds never saturate, but this helper is public and
     // a constructed (low, high, r) such as (i64::MIN, i64::MAX, _) must not overflow-panic;
     // a saturated span keeps the ordering semantics and stays panic-free.
-    let x = decode_unsigned_subexp_with_ref(reader, high.saturating_sub(low), r.saturating_sub(low), k)?;
+    let x = decode_unsigned_subexp_with_ref(
+        reader,
+        high.saturating_sub(low),
+        r.saturating_sub(low),
+        k,
+    )?;
     // mirror :8036: return x + low.
     Ok(x.saturating_add(low))
 }
@@ -835,7 +840,10 @@ mod tests {
         let gm = parse_global_motion_params(&mut r, &input).unwrap();
         assert!(gm.use_global_motion);
         assert_eq!(gm.our_ref, Some(0));
-        assert_eq!(gm.stop, None, "a zero-reference loop is complete, not stopped");
+        assert_eq!(
+            gm.stop, None,
+            "a zero-reference loop is complete, not stopped"
+        );
     }
 
     #[test]
