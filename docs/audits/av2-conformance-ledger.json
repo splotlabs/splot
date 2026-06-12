@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "99906ee81493b5beaacc75b114a3b70e93185a95",
+  "audited_commit": "f7d7370aecbc60ce1ac385e795fd395970c699cd",
   "outcome": "success",
   "files": [
     {
@@ -719,21 +719,21 @@
     },
     {
       "path": "crates/splot-core/src/tables/cdf.rs",
-      "sha256": "87b211190e0e44492be7af49971de7afece4e5bd52ca24849570a5ea6c827333",
+      "sha256": "d7cf48e5431a9e054041ab1361f95b685d07b59a95fceb2e55d24bc1ac385871",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-core/src/tables/conversion.rs",
-      "sha256": "e29cbc4bd8d938a8eb29c79b9804fc3a729516a20d93fe3e910bb196805aac9d",
+      "sha256": "c4e4d3fbfca37b5b138dbc84151fd0908e5a56391f8b0a12977009a7c1619b5e",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-core/src/tables/loop_restoration.rs",
-      "sha256": "7e6790005aea3af07b2968c4d15532fa7dfa6118ffbe198b27e7f21f50d04b03",
+      "sha256": "91321c1258ec4d51465a286e12abe9fb3f15ce07a43cc7380a4c15f09b284998",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"
@@ -747,28 +747,28 @@
     },
     {
       "path": "crates/splot-core/src/tables/quantizer.rs",
-      "sha256": "6e59a59f959b978e6a9d9632902717418f51763fb4222ec4ff2467e3c782a2f9",
+      "sha256": "ab4f3dff33388ec981cd3b66373761c8fd288c2a344a2a8a914ba4198d9822f8",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-core/src/tables/secondary_transform.rs",
-      "sha256": "23b86c65bfbeb0cbdc816e98dbc20834161ef4cddc594b0cd1af2752a7441f5d",
+      "sha256": "9de445533e4db2aab1675c51edcaea261a69f2f9cce93f48298fb4dd44d9068b",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-core/src/tables/transform_1d.rs",
-      "sha256": "2e87e76069dd9c619bcbc4f79a44c107b1ab6d260023491b4f3fae7c445d43d5",
+      "sha256": "ec469a66c903f41e4093069dedcad6dd3f95b9392ce2488fbe3f710ffa589efc",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-core/src/tables/warp_filter.rs",
-      "sha256": "64cf3e9bda787d4e5fae6b9140985f73d34a518b3315e31376b6c4ee0d57fe3f",
+      "sha256": "96601bdb82cdc0730f5a18a4554455b1fe958fa3aa1d8cae07cbc73d42bc8cf1",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"
@@ -3743,7 +3743,7 @@
     },
     {
       "path": "scripts/spec/regenerate-av2-spec.sh",
-      "sha256": "bfdc7c8e0f3563db53213384667e3bea410dbcfddba5cc93c1b461ca1f31d3a2",
+      "sha256": "b3eacb71652cb331923b59946639ef60feed445a26120e6a1bc64bdeca105e41",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
@@ -3789,7 +3789,7 @@
     },
     {
       "path": "xtask/src/gen_tables.rs",
-      "sha256": "a91d02ce18ac6dd4a4956055850f88fcf6d04403ab7414edc754697037bd8634",
+      "sha256": "7e564bbe179df0f47eb2c82f3b1af07e27111c6dac242a2d37a667ffde21ca49",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "AV2-9-ADDITIONAL-TABLES",
