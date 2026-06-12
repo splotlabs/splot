@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "2fe0fb2087de39b3c4048a3142389fbd009851c0",
+  "audited_commit": "07aeeecdf3a5e0df04ae8233a0162030c9c0b02c",
   "outcome": "success",
   "files": [
     {
@@ -435,6 +435,15 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-core/src/headers/frame/global_motion.rs",
+      "sha256": "e63c9f239e47991899ef4dc7786c70be8fa5c346868107ccf913e3388a715a8c",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.18.9-GLOBAL-MOTION"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-core/src/headers/frame/info.rs",
       "sha256": "8fe3bae45ceacfaa06816c9c5c11dd2ba14b4f3237fe183ff20fef1bb8c47766",
       "scope_kind": "workspace:splot-core",
@@ -454,7 +463,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/mod.rs",
-      "sha256": "2e263a24b988844f0424bccbaede71e33bcd9243b01f119608e8c93e2fa4643f",
+      "sha256": "4e6c3b7b871dffb58dec56ae83e89aa8fda35bebecedb6d0a027795296f06092",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -502,8 +511,7 @@
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
-        "AV2-5.18.8-TRANSFORM-CODING-MODES",
-        "AV2-5.18.9-GLOBAL-MOTION"
+        "AV2-5.18.8-TRANSFORM-CODING-MODES"
       ],
       "outcome": "success"
     },
@@ -959,7 +967,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "66aa46446cc52e585cd067d0049e72953d20386435be88a3e2bc0adb08e8d543",
+      "sha256": "219eb34d58c68535acacd65182eb5658aa56c86417b7c9726cc62a37e137ffc1",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1127,7 +1135,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "b9e85cef4d556b998e827881cbc055b3cf81d784a3725535094507f36a9429a4",
+      "sha256": "7dc5a05f8065a408fb56f33ca0b6e874c8e75e194d6df93d4cf8de2155b0ea88",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1436,7 +1444,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "fa5a94dd059d3565c091da027bad033b925a6ff3fa445bebeacdb1ac01a2587b",
+      "sha256": "48de9ee167a267423875eea44ea8a34f0cf2ebea90732dc7b885dda533b1b0a7",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -3390,6 +3398,31 @@
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
       ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/frame-global-motion-params/proposal.md",
+      "sha256": "42cc336a4891b3dd4a428dda7056db9f656f0d9261911208c44a1db3b5ae04a8",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.9-GLOBAL-MOTION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/frame-global-motion-params/specs/bitstream/spec.md",
+      "sha256": "d22e4c8e3dd0288e27cea971ec2b4296d9ea802da0882f33cb362fa0478ca13e",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.9-GLOBAL-MOTION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/frame-global-motion-params/tasks.md",
+      "sha256": "046da72051a9a320ce63c67dd70bf6eb0b7662bc3bf6f74cf9fd95b4640b3c17",
+      "scope_kind": "openspec",
+      "feature_ids": [],
       "outcome": "success"
     },
     {
