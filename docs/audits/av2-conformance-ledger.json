@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "eea9b60ade92375bf37c4b9c03d818b5403376eb",
+  "audited_commit": "2e7097f0ef38dbaa1b2c82ca37b97fef36ae5970",
   "outcome": "success",
   "files": [
     {
@@ -3107,6 +3107,33 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-12-frame-loop-restoration-ccso-params/proposal.md",
+      "sha256": "b0bac9a2eeda08a7202baca36c2a59c5dc049dbe4b05d25a9e1eb06d2cbd6c6b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.7-SEGMENTATION-TILING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-frame-loop-restoration-ccso-params/specs/bitstream/spec.md",
+      "sha256": "ad01b9a7de7a3a40d91ac9b119f1b7cd91efdebda2886671272f88e45560fc71",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.7-SEGMENTATION-TILING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-frame-loop-restoration-ccso-params/tasks.md",
+      "sha256": "2dc0fe3f980e93bf4703e2c8a669c06b76bc2352d287d9c0e2410f1ee0ed7ee5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-12-mfh-frame-header-state/proposal.md",
       "sha256": "954a54f5145c5cca327233900ee983bbeb9b14c82e93a24423925251eb39053b",
       "scope_kind": "openspec",
@@ -3186,33 +3213,6 @@
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
       ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-loop-restoration-ccso-params/proposal.md",
-      "sha256": "b0bac9a2eeda08a7202baca36c2a59c5dc049dbe4b05d25a9e1eb06d2cbd6c6b",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18.2-FRAME-HEADER-INFO",
-        "AV2-5.18.7-SEGMENTATION-TILING"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-loop-restoration-ccso-params/specs/bitstream/spec.md",
-      "sha256": "b976ea60c002de7e6dac0f124f84830c5ad18d9e2425ccfb19f64b5d9b86d9ac",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18.2-FRAME-HEADER-INFO",
-        "AV2-5.18.7-SEGMENTATION-TILING"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-loop-restoration-ccso-params/tasks.md",
-      "sha256": "2dc0fe3f980e93bf4703e2c8a669c06b76bc2352d287d9c0e2410f1ee0ed7ee5",
-      "scope_kind": "openspec",
-      "feature_ids": [],
       "outcome": "success"
     },
     {
