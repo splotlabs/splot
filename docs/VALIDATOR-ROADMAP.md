@@ -455,14 +455,21 @@ The inter-path arms of every child remain partial/todo.
   a § 5.18.1 / § 6.2.1 truncation, `frame-header/copy-bits-truncated`. An incomplete /
   coverage-stopped / unresolvable first header records nothing (the copy region stays
   unparsed, Unknown routing). This gives non-first tile groups an EXACT header/tile-data
-  boundary (the still-undecidable half is the FIRST tile group's tile-data boundary,
-  which needs § 5.19 / § 5.20 modeling). `inspect` surfaces the copy region's presence
-  on non-first tile groups (`frame_header_copy` view).
-- **Remaining:** trailing-bits validation of a complete FIRST-tile-group frame-carrying
-  OBU is not yet decidable — its frame header is followed by the rest of
-  `tile_group_obu()` (§ 5.19, `AV2-5.19-TILE-GROUP`), whose `bru_inactive` `headerBits`
-  / `remainingBits` `trailing_bits()` tail and the § 5.20 tile payload still need
-  modeling. Also remaining: the `read_wienerns_filter()` frame-level Wiener bank decode,
+  boundary. The FIRST tile group's header/tile-data boundary is now EXACT on the
+  INTRA-COMPLETE path too (`tile-group-structure-completion`, Phase 9): once the first
+  tile group reaches `IntraHeaderComplete`, `use_bru`/`bru_inactive` are the § 5.18.2
+  derived constant 0 (mirror :4127-4129 / :4653), so `parse_tile_group_structure` consumes
+  the § 5.19 remainder (tg range, `byte_alignment()`, the `headerBytes` payload boundary).
+  `inspect` surfaces the copy region's presence on non-first tile groups
+  (`frame_header_copy` view) and the § 5.19 structure on the intra-complete first tile group
+  (`tile_group_structure` view).
+- **Remaining:** the § 5.20 `tile_group_payload()` body (`AV2-5.20-TILE-GROUP-PAYLOAD`),
+  the INTER-path BRU arms of `tile_group_obu()` (the `bru_inactive` `headerBits` /
+  `remainingBits` `trailing_bits()` early-return and the `use_bru` `bru_tile_active` loop,
+  reachable only once the inter frame-header path derives `use_bru`/`bru_inactive`), and the
+  cross-tile-group continuity / last-group `tg_end == NumTiles - 1` § 6.18 clauses (need
+  prior-tile-group state threaded through the segmenter). Also remaining: the
+  `read_wienerns_filter()` frame-level Wiener bank decode,
   the inter frame-header paths (including the inter § 5.18.8 coding-mode arms, the
   § 5.18.9 inter global-motion warp decode, the inter `cur_mfh_id > 0` arms, § 5.18.5.1
   `read_interpolation_filter()`), the bridge-frame remainder, `frame_header_copy()` for
@@ -485,9 +492,16 @@ Rules:
 
 ## Phase 9 — tile group and arithmetic payload boundary validation
 
-**Status:** partial — only the `tile_group_obu()` prefix from the Phase 8
-activation skeleton landed; `AV2-5.20-TILE-GROUP-PAYLOAD` and the
-arithmetic-boundary targets are untouched.
+**Status:** partial — the `tile_group_obu()` § 5.19 STRUCTURE landed
+(`tile-group-structure-completion`): on the intra-complete first-tile-group path
+`parse_tile_group_structure` reads `tile_start_and_end_present_flag`, `tg_start`/`tg_end`,
+`byte_alignment()`, and the `headerBytes`/payload boundary (the BRU arms are dead on intra
+— `use_bru`/`bru_inactive` derive to the § 5.18.2 constant 0). The validator emits the
+locally-decidable § 6.18 tg-range diagnostics (`tile-group/first-tg-start-not-zero`,
+`tile-group/tg-end-before-tg-start`, `tile-group/tg-end-out-of-range`,
+`tile-group/truncated-structure`, `tile-group/byte-alignment-zero-bit`) and `inspect`
+surfaces the `tile_group_structure` view. `AV2-5.20-TILE-GROUP-PAYLOAD` (the payload body),
+the INTER-path BRU arms, and the arithmetic-boundary targets are still untouched.
 
 **Goal:** validate tile-group structure without prematurely promising a complete decoder.
 
@@ -499,9 +513,12 @@ Feature IDs:
 
 Initial target:
 
-- validate tile group header/size fields;
+- ~~validate tile group header/size fields~~ — landed for the intra-complete first tile
+  group (the § 5.19 structure, tg range, and `headerBytes`/payload boundary);
 - validate arithmetic coder entry/exit boundaries;
 - validate `exit_symbol` / trailing-bit interactions;
+- the INTER-path `tile_group_obu()` BRU arms and the cross-tile-group continuity § 6.18
+  clauses remain (the latter needs prior-tile-group state);
 - leave pixel-reconstruction-dependent checks as explicit child rows.
 
 Acceptance:
