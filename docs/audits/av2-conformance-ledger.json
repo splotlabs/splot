@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "aaf5f40bde48ff7c72631a1af0039ff35b8bd0ca",
+  "audited_commit": "17e5d5781e1969e55ff0474fedc82d27689fcb97",
   "outcome": "success",
   "files": [
     {
@@ -283,7 +283,7 @@
     },
     {
       "path": "crates/splot-cli/src/commands/inspect.rs",
-      "sha256": "c667065982c381f1d8526236e3368533f3128bf783d4cdf1dd109d9d8d2a5efd",
+      "sha256": "6aadd132ec39d8a844e2bb2570f2d740534dd787ac720990188aeab966ed2950",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.2.1-OBU-DISPATCH",
@@ -317,7 +317,7 @@
     },
     {
       "path": "crates/splot-cli/tests/cli.rs",
-      "sha256": "49f16e9277132bc64a8cb798483ba6029c4f43f359ab3487ff9753f8af532a83",
+      "sha256": "2a6334fe2a7292bee8f8f69d5befb10082bb5ef00dea34d27f5c8f5ca139a80a",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.4-SEQUENCE-HEADER",
@@ -431,11 +431,10 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/info.rs",
-      "sha256": "e60416f96551789364f98c718327d65a2431c741a83b373cc85e9e8241606647",
+      "sha256": "8f7cb972625de2fca1cf59e9f3d3b85f11da3122c6d17d8901d268a8fb5947fa",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
-        "AV2-5.18.2-FRAME-HEADER-INFO",
-        "AV2-5.18.7-SEGMENTATION-TILING"
+        "AV2-5.18.2-FRAME-HEADER-INFO"
       ],
       "outcome": "success"
     },
@@ -460,7 +459,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/segmentation.rs",
-      "sha256": "15744a20108a46152d2236378c1387c5d563c2aa5eaa98fc3196aa46f350b5c4",
+      "sha256": "fb85b849e9d9d930ae2bfa9141e81960214e023d1028c9fdacbbba0656bf41be",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"
@@ -588,7 +587,7 @@
     },
     {
       "path": "crates/splot-core/src/hls.rs",
-      "sha256": "c113d70bc22e5301caa807a0ed37755b55c1ccddc084604b52a784e2dd4a2b7a",
+      "sha256": "49d6e5248aa625dad2d1d8629d85a3f4592ecbcc7add4e59e996e54935191f18",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -778,7 +777,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "1a7d3d65e80bb4558193c08ff731302cacf1d0250b133c07a319ea96140249df",
+      "sha256": "97c8920e8b76318fa647f918004d4bc7a04d909998e789dc52b828b7e9014e7f",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -849,7 +848,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "ef30a4ea7fe83078b38965fac4089290bd00a454c737c890ce389ceac87cf012",
+      "sha256": "61216814380a6b074cf9be120355a1bad6edea083132ec298e25e173b6279923",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1081,7 +1080,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "0bffb0d03796455472b45ae796412b01b094009d8d77c4c72f87ba4a4ec7a26b",
+      "sha256": "a8bcf44eff1fec754dbedf9a2ab938150c6eeb5f97592c6f005837b46235ba0e",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1386,7 +1385,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "6aad4a0028dd7741813a1e16eaf3f0b274a9cc83727776bba8a59f4c8fd14f95",
+      "sha256": "3a0c70de8335c1a0d901b69ab5795473c78e81e67b015c61d8954cb086100937",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -1559,16 +1558,20 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
+      "sha256": "bc63e9836486b7ef214f8dc75a4d1445f6c8a21969fa5dc68f50781b71be1f51",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
         "AV2-5.18-FRAME-HEADER",
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.4-FRAME-SIZE",
+        "AV2-5.18.7-SEGMENTATION-TILING",
         "AV2-5.19-TILE-GROUP",
         "AV2-5.2.2-OBU-HEADER",
         "AV2-5.2.3-TRAILING-BITS",
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.7-MULTI-FRAME-HEADER",
         "CONF-AVM-DIFF-HARNESS",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
@@ -3081,6 +3084,36 @@
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
       ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/mfh-frame-header-state/proposal.md",
+      "sha256": "954a54f5145c5cca327233900ee983bbeb9b14c82e93a24423925251eb39053b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.4-FRAME-SIZE",
+        "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.7-MULTI-FRAME-HEADER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/mfh-frame-header-state/specs/bitstream/spec.md",
+      "sha256": "94ba68b16dcd88f396ff8affd1675fbe21202250dc610f904576414301e756ae",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.4-FRAME-SIZE",
+        "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.7-MULTI-FRAME-HEADER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/mfh-frame-header-state/tasks.md",
+      "sha256": "0578fb5d341afba454633c44fba35d5f585806e6b89d62705a59b97bf0da8373",
+      "scope_kind": "openspec",
+      "feature_ids": [],
       "outcome": "success"
     },
     {
