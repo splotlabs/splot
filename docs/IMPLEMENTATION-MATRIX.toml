@@ -2967,16 +2967,16 @@ kind = "bitstream-syntax"
 spec_sections = ["5.18.9", "6.17"]
 sources = ["docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-9"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers/frame/tail.rs"
-openspec_change = "frame-header-intra-tail-completion"
+module = "crates/splot-core/src/headers/frame/global_motion.rs"
+openspec_change = "frame-global-motion-params"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. The §5.18.9.1 global_motion_params() intra arm is modeled in crates/splot-core/src/headers/frame/tail.rs (parse_intra_tail): on the intra path the structure returns immediately (FrameIsIntra, mirror :7792) — every GmType[ref] is IDENTITY and gm_params are the identity warp — reading NO bits, so use_global_motion is recorded false as a derivation. The inter arm (use_global_motion f(1), the per-reference baseParams/baseDistance setup, gm_type ns, and the subexp-coded warp-parameter decode decode_signed_subexp_with_ref over the gm_params) is its own backlog change and remains TODO."
+notes = "Child row of AV2-5.18-FRAME-HEADER. The §5.18.9.1 global_motion_params() INTRA arm is modeled in crates/splot-core/src/headers/frame/tail.rs (parse_intra_tail): on the intra path the structure returns immediately (FrameIsIntra, mirror :7792) — every GmType[ref] is IDENTITY and gm_params are the identity warp — reading NO bits, so use_global_motion is recorded false as a derivation. Under frame-global-motion-params the INTER arm and its subexp decode chain are modeled as a standalone structure parser in crates/splot-core/src/headers/frame/global_motion.rs (parse_global_motion_params, GlobalMotionParams/GlobalMotionRef/GmType/GlobalMotionStop, GlobalMotionInput): the §5.18.9.1 intra/disabled return (FrameIsIntra || !enable_global_motion, mirror :7792), use_global_motion f(1) (mirror :7798), the baseParams=Default_Warp_Params/baseDistance=1 setup (no bits, mirror :7806-7812), and the our_ref base selection — the SWITCH_FRAME our_ref=NumTotalRefs inference (mirror :7816, no bits) and the else-arm our_ref ns(NumTotalRefs+1) (mirror :7822). The §5.18.9.2-.6 subexp decode chain is fully implemented and unit-tested against HAND-COMPUTED vectors: read_global_param (§5.18.9.2, the precBits/mx/precDiff/round/sub derivations and r=(PrevGmParams>>precDiff)-sub, mirror :7988-8014), decode_signed_subexp_with_ref (§5.18.9.3, mirror :8032), decode_unsigned_subexp_with_ref (§5.18.9.4, the (r<<1)<=mx recenter/mirror branches, mirror :8050), decode_subexp (§5.18.9.5, the mk/a/b2 growth with the numSyms<=mk+3*a guard, mirror :8076 — the 1<<b2 growth and 3*a are computed in u64/saturating so a constructed subexp_more_bits=1 run cannot overflow before the numSyms-bounded termination), and inverse_recenter (§5.18.9.6, wrapping i64 so adversarial r/v never overflow-panic, mirror :8134). HONEST STOPS (cross-frame boundary, GlobalMotionStop — COVERAGE stops, never truncations, facts preserved): our_ref != NumTotalRefs enters the base-warp load arm (mirror :7826-7846) whose their_ref ns(RefNumTotalRefs[refIdx]) read width, SavedGmParams, and SavedOrderHints are per-slot facts of the REFERENCED frame the model does not carry -> RefNumTotalRefsUnmodeled; the per-reference warp loop (mirror :7853-7857) reads warp bits only when dist != 0 && OrderHints[ref] != RESTRICTED_OH, and OrderHint/OrderHints[ref] are cross-frame order-hint state, so the presence of the first per-reference bit is undeterminable -> OrderHintsUnmodeled at the loop boundary. The reachable production depth is use_global_motion + the our_ref selection; the per-reference warp decode and its subexp chain become production-reachable once §7.23 cross-frame OrderHints/RefNumTotalRefs/SavedGmParams state is threaded (named residuals). VALIDATE not-applicable: both §6.17.9.1 conformance clauses (OrderHints[our_ref] != RESTRICTED_OH when our_ref != NumTotalRefs; SavedOrderHints[refIdx][their_ref] != RESTRICTED_OH) read the same cross-frame order-hint state the honest stops gate on, so neither is locally decidable — both are named residuals, no diagnostics. INSPECT residual: the typed warp state (GlobalMotionParams::references / GmType::label) is surfaced via the structure parser's public API, ready for the inspect inter view once the inter shared tail threads the cross-frame state and reaches global_motion_params(); the inter path stops at InterStop::ReachedSharedTail before the shared tail today (AV2-5.18.2-FRAME-HEADER-INFO), so the structure is not yet invoked from the production frame-header parse. proptests assert the whole chain and the inter arm never panic over arbitrary warp bit patterns / state."
 
 [feature.status]
 mapped = "done"
-types = "partial"
+types = "done"
 parse = "partial"
 validate = "not-applicable"
 write = "todo"
@@ -2987,8 +2987,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/frame/tail.rs::tests::parse_intra_tail_full_lossy_with_grain", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_intra_tail_parses_lr_ccso_and_tail_to_completion"]
-commands = ["cargo test -p splot-core frame::tail", "cargo test -p splot-core frame_header"]
+tests = ["crates/splot-core/src/headers/frame/tail.rs::tests::parse_intra_tail_full_lossy_with_grain", "crates/splot-core/src/headers/frame/global_motion.rs::tests::read_global_param_translational_idx0_prev_zero", "crates/splot-core/src/headers/frame/global_motion.rs::tests::decode_subexp_more_bits_then_subexp_bits_branch", "crates/splot-core/src/headers/frame/global_motion.rs::tests::inverse_recenter_hand_vectors", "crates/splot-core/src/headers/frame/global_motion.rs::tests::our_ref_not_num_total_refs_stops_at_ref_num_total_refs", "crates/splot-core/src/headers/frame/global_motion.rs::tests::switch_frame_infers_our_ref_num_total_refs_no_ns_bits"]
+commands = ["cargo test -p splot-core global_motion", "cargo test -p splot-core frame::tail"]
 fixtures = ["tests/fixtures/frame-header-core.av2"]
 diagnostics = []
 

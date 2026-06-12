@@ -500,9 +500,14 @@ The inter-path arms of every child remain partial/todo.
   cross-tile-group continuity / last-group `tg_end == NumTiles - 1` § 6.18 clauses (need
   prior-tile-group state threaded through the segmenter). Also remaining: the
   `read_wienerns_filter()` frame-level Wiener bank decode,
-  the inter frame-header paths (including the inter § 5.18.8 coding-mode arms, the
-  § 5.18.9 inter global-motion warp decode, the inter `cur_mfh_id > 0` arms, § 5.18.5.1
-  `read_interpolation_filter()`), the bridge-frame remainder, `frame_header_copy()` for
+  the inter frame-header paths (including the inter § 5.18.8 coding-mode arms and the inter
+  `cur_mfh_id > 0` arms; the § 5.18.9 inter global-motion arm — `use_global_motion`, the
+  `our_ref ns(NumTotalRefs+1)` base selection, and the full § 5.18.9.2-.6 subexp decode
+  chain — is now modeled as the standalone `global_motion.rs` structure parser
+  (`AV2-5.18.9-GLOBAL-MOTION`), but its per-reference warp loop stops honestly on the
+  cross-frame `OrderHints` / `RefNumTotalRefs` / `SavedGmParams` state and the structure is
+  not yet invoked from the production parse, which stops at `InterStop::ReachedSharedTail`
+  before the shared tail), the bridge-frame remainder, `frame_header_copy()` for
   an INTER first header (the gate extends when the inter path completes), and the
   § 6.17.6.2 layer-dependency constraints (the §5.4.1 dependency maps are now exposed by
   the sequence-header model; the checks themselves are not implemented yet).

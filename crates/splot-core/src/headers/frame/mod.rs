@@ -35,6 +35,7 @@ use crate::types::ObuType;
 
 mod config;
 mod filtering;
+mod global_motion;
 mod info;
 mod inter;
 mod quant;
@@ -48,6 +49,11 @@ pub use filtering::{
     CdefParams, CdefStrengthSet, CoreSeqFilterView, DeblockingFilterParams, GdfGeometry, GdfParams,
     InterpolationFilter, MfhDeblockingView, parse_cdef_params, parse_deblocking_filter_params,
     parse_gdf_params, read_interpolation_filter,
+};
+pub use global_motion::{
+    GlobalMotionInput, GlobalMotionParams, GlobalMotionRef, GlobalMotionStop, GmType,
+    decode_signed_subexp_with_ref, decode_subexp, decode_unsigned_subexp_with_ref,
+    inverse_recenter, parse_global_motion_params, read_global_param,
 };
 pub use info::{
     FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
