@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "7d57e5c418fb84c261fc3f74b334915349121e97",
+  "audited_commit": "359a4d5a9e4f0e5ebe519178cd95f682ffcfbddb",
   "outcome": "success",
   "files": [
     {
@@ -436,7 +436,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/info.rs",
-      "sha256": "8a38c158d4ba541d5590e3110d411d368c8ce8fac521cdc06d0a1342fc929576",
+      "sha256": "69bbc36b3416b7320eebbfd468473d698a3fabcab4baa2304300ce9f960264ae",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
