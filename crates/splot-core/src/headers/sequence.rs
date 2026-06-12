@@ -7,7 +7,7 @@ use crate::bitio::BitReader;
 use crate::error::{Error, Result, SequenceHeaderErrorKind};
 use crate::segment::{SegmentInfo, parse_seg_info};
 use crate::span::{BitOffset, ByteOffset};
-use crate::tile::{TileParams, TileParamsInput, parse_tile_params};
+use crate::tile::{TileParams, TileParamsInput, parse_tile_layout};
 use crate::types::{EmbeddedLayerId, TemporalLayerId};
 
 /// `MAX_SEQ_NUM` for `seq_header_id` validation (AV2 v1.0.0 § 6.4.1).
@@ -1603,7 +1603,7 @@ pub fn parse_sequence_filter_config(
 }
 
 /// `sequence_tile_config()` (AV2 v1.0.0 § 5.4.2 / § 6.4.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SequenceTileConfig {
     /// `seq_tile_info_present_flag`.
     pub seq_tile_info_present_flag: bool,
@@ -1612,6 +1612,16 @@ pub struct SequenceTileConfig {
     /// Parsed `tile_params()` (§ 5.18.7.3), present when tile info is signalled and the
     /// sequence level is not reserved.
     pub params: Option<TileParams>,
+    /// `SeqSbColStarts[0..SeqTileCols]` (AV2 § 5.4.2: the `sbColStarts` returned by the
+    /// `tile_params()` call at mirror
+    /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-2` :654-656). Recorded at parse
+    /// time so the frame § 5.18.7.4 non-uniform `reuse_tile_params()` branch can rebuild
+    /// the layout. Empty when tile info is not signalled or the level is reserved (no
+    /// parsed [`Self::params`]). Bounded by `MAX_TILE_COLS`.
+    pub seq_sb_col_starts: Vec<u32>,
+    /// `SeqSbRowStarts[0..SeqTileRows]` (AV2 § 5.4.2; the `sbRowStarts` companion of
+    /// [`Self::seq_sb_col_starts`]). Bounded by `MAX_TILE_ROWS`.
+    pub seq_sb_row_starts: Vec<u32>,
 }
 
 impl SequenceTileConfig {
@@ -1637,6 +1647,11 @@ impl SequenceTileConfig {
 /// `seq_level_idx` has no defined tile bit layout, so the params are left `None` (a
 /// bounded residual reported by [`SequenceTileConfig::unimplemented_at`]).
 ///
+/// The `tile_params()` call at AV2 § 5.4.2 returns `SeqSbColStarts` / `SeqSbRowStarts`
+/// (mirror `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-2` :654-656); these are
+/// retained on [`SequenceTileConfig`] for the frame § 5.18.7.4 non-uniform
+/// `reuse_tile_params()` branch.
+///
 /// # Errors
 /// Returns descriptor errors or [`Error::UnexpectedEof`] if the payload ends mid-field.
 pub fn parse_sequence_tile_config(
@@ -1649,23 +1664,33 @@ pub fn parse_sequence_tile_config(
             seq_tile_info_present_flag: false,
             allow_tile_info_change: None,
             params: None,
+            seq_sb_col_starts: Vec::new(),
+            seq_sb_row_starts: Vec::new(),
         });
     }
 
     let allow_tile_info_change = reader.read_bit()? != 0;
     // AV2 § 5.4.2: tile_params(max_frame_width_minus_1 + 1, max_frame_height_minus_1 + 1,
     // seqSbSize, seqSbSize, 0). A reserved seq_level_idx has no defined layout, so it is
-    // surfaced as a bounded residual rather than a hard parse error.
-    let params = match parse_tile_params(reader, tile_params_input) {
-        Ok(params) => Some(params),
-        Err(Error::Unimplemented { .. }) => None,
-        Err(error) => return Err(error),
-    };
+    // surfaced as a bounded residual rather than a hard parse error. The full layout
+    // keeps SeqSbColStarts / SeqSbRowStarts for the § 5.18.7.4 reuse path.
+    let (params, seq_sb_col_starts, seq_sb_row_starts) =
+        match parse_tile_layout(reader, tile_params_input) {
+            Ok(layout) => (
+                Some(layout.params),
+                layout.sb_col_starts,
+                layout.sb_row_starts,
+            ),
+            Err(Error::Unimplemented { .. }) => (None, Vec::new(), Vec::new()),
+            Err(error) => return Err(error),
+        };
 
     Ok(SequenceTileConfig {
         seq_tile_info_present_flag: true,
         allow_tile_info_change: Some(allow_tile_info_change),
         params,
+        seq_sb_col_starts,
+        seq_sb_row_starts,
     })
 }
 
@@ -2785,7 +2810,75 @@ mod tests {
         assert!(params.uniform_spacing);
         assert_eq!(params.tile_cols, 1);
         assert_eq!(params.tile_rows, 1);
+        // § 5.4.2 records SeqSbColStarts / SeqSbRowStarts; a single-tile layout starts
+        // at superblock 0 on both axes.
+        assert_eq!(tile.seq_sb_col_starts, vec![0]);
+        assert_eq!(tile.seq_sb_row_starts, vec![0]);
         assert_eq!(header.film_grain_params_present, Some(false));
+    }
+
+    #[test]
+    fn sequence_tile_config_records_non_uniform_start_arrays() {
+        // § 5.4.2 tile_params(maxFrameWidth, maxFrameHeight, seqSbSize, seqSbSize, 0)
+        // on a 128x8 grid (BLOCK_64X64 -> sbCols = 2, sbRows = 1), non-uniform: two
+        // 1-superblock columns. The recorded SeqSbColStarts / SeqSbRowStarts are the
+        // ones the § 5.18.7.4 non-uniform reuse branch consumes.
+        let input = TileParamsInput {
+            frame_width: 128,
+            frame_height: 8,
+            uniform_sb_size: SuperblockSize::Block64x64,
+            sb_size: SuperblockSize::Block64x64,
+            is_bridge: false,
+            seq_tier: Tier::Main,
+            seq_level_idx: LevelIdx::from_bits(0),
+        };
+        let mut bits = Bits::default();
+        bits.bit(1); // seq_tile_info_present_flag
+        bits.bit(1); // allow_tile_info_change
+        bits.bit(0); // uniform_tile_spacing_flag = 0
+        bits.bit(0); // ns(2) width_in_sbs_minus_1 = 0 -> first column 1 sb wide
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let tile = parse_sequence_tile_config(&mut reader, input).unwrap();
+        assert!(tile.seq_tile_info_present_flag);
+        assert_eq!(tile.allow_tile_info_change, Some(true));
+        let params = tile.params.expect("non-reserved level parses tile params");
+        assert!(!params.uniform_spacing);
+        assert_eq!(params.tile_cols, 2);
+        assert_eq!(params.tile_rows, 1);
+        assert_eq!(params.sb_cols, 2);
+        assert_eq!(params.sb_rows, 1);
+        // Two 1-superblock columns -> starts [0, 1]; the single row starts at 0.
+        assert_eq!(tile.seq_sb_col_starts, vec![0, 1]);
+        assert_eq!(tile.seq_sb_row_starts, vec![0]);
+    }
+
+    #[test]
+    fn sequence_tile_config_reserved_level_records_empty_start_arrays() {
+        // A reserved seq_level_idx has no defined tile bit layout; params is None and the
+        // start arrays stay empty (the bounded residual).
+        let input = TileParamsInput {
+            frame_width: 128,
+            frame_height: 8,
+            uniform_sb_size: SuperblockSize::Block64x64,
+            sb_size: SuperblockSize::Block64x64,
+            is_bridge: false,
+            seq_tier: Tier::Main,
+            seq_level_idx: LevelIdx::from_bits(22),
+        };
+        let mut bits = Bits::default();
+        bits.bit(1); // seq_tile_info_present_flag
+        bits.bit(0); // allow_tile_info_change
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let tile = parse_sequence_tile_config(&mut reader, input).unwrap();
+        assert!(tile.params.is_none());
+        assert!(tile.seq_sb_col_starts.is_empty());
+        assert!(tile.seq_sb_row_starts.is_empty());
+        assert_eq!(
+            tile.unimplemented_at(),
+            Some("AV2-5.4.2-SEQUENCE-TILE-CONFIG")
+        );
     }
 
     #[test]

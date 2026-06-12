@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "6f540bdcddf471613018984e2e15e61dabfb8a5e",
+  "audited_commit": "0cbb75fa589889cda715220f48a042e8dc4c1a37",
   "outcome": "success",
   "files": [
     {
@@ -431,7 +431,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/info.rs",
-      "sha256": "e5834f20d84f3474b1dae7ad0d317c3d06f8f3448dd9ee5487cf40bb4c2b8d41",
+      "sha256": "bc74294ec08d49b3007b7feb06e733b575afc01919e95fa04f23a6b2bcef3d69",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO"
@@ -475,7 +475,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/tiling.rs",
-      "sha256": "9d6454adb3d69bb69960789f84a40d33c02efbc055a9e4b9a42a9239824b94f5",
+      "sha256": "f7d44f513ade85145e137a0360c93cd57bd8f9896a6061e771724aae35ee5974",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.7-SEGMENTATION-TILING"
@@ -559,7 +559,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/sequence.rs",
-      "sha256": "d4df762649244f57bb1fa39de167c1da0f3faed5deacc6a6bcdcaf11a23ad142",
+      "sha256": "30b451b6016180b21d8f819f6126282b7caaea755bc016befde761cae4a40c42",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
@@ -1080,7 +1080,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "1f59cc700788fea7a87d02a530f455ccd7a25ae26a4d6b532b5f94c734d9a5d2",
+      "sha256": "16fe1ff34646fe328f0e8c376297dbfd1fc7ea832467e025684c0ca72e611fe8",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1385,7 +1385,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "3a0c70de8335c1a0d901b69ab5795473c78e81e67b015c61d8954cb086100937",
+      "sha256": "e98757a4068d3a8b6ac1847157ec42bd35f47af1a092e06df9737ca980300e2f",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -3088,6 +3088,33 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-12-seq-tile-nonuniform-reuse-starts/proposal.md",
+      "sha256": "e4f72d1abb199bbeb87cb3a828f6c79ffe554370146a2f8960d6885badf69645",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.4.2-SEQUENCE-TILE-CONFIG"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-seq-tile-nonuniform-reuse-starts/specs/bitstream/spec.md",
+      "sha256": "32dbf9aec034303aff43698b522c935f74440d1f71791a76aba564b00aac36d4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.4.2-SEQUENCE-TILE-CONFIG"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-seq-tile-nonuniform-reuse-starts/tasks.md",
+      "sha256": "e89c71ab91c14979f9217e9bad400aee701f9cd8cfbf8ec001907c2886bafe0a",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/avm-differential-harness/proposal.md",
       "sha256": "ca4e00373763656046a33836c38af7626641afedb9e473897f7ae9b2a3572b5f",
       "scope_kind": "openspec",
@@ -3160,7 +3187,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "10f8fa303f24e8fc5fb7cce3712de932b0cbecf98adc29010686154ed81e0cf3",
+      "sha256": "769016de38e7d91d440c459335cb443d1074a02209e78b4fa9dc697f204e1941",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",

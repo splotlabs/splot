@@ -570,11 +570,11 @@ spec_sections = ["5.4.2", "6.4.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/sequence.rs"
-openspec_change = "segmentation-tile-params-foundation"
+openspec_change = "seq-tile-nonuniform-reuse-starts"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. tile_params() is now parsed via the shared AV2-5.18.7.3-TILE-PARAMS helper, so a valid sequence tile config parses fully (no bounded status); only a reserved seq_level_idx (non-conformant) leaves a documented bounded residual. Local §6.17.7 tile constraints are checked (tile-params/* diagnostics). Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. tile_params() is now parsed via the shared AV2-5.18.7.3-TILE-PARAMS helper, so a valid sequence tile config parses fully (no bounded status); only a reserved seq_level_idx (non-conformant) leaves a documented bounded residual. Under seq-tile-nonuniform-reuse-starts the §5.4.2 parse also persists the derived SeqSbColStarts / SeqSbRowStarts arrays (mirror docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-2 :654-656) on SequenceTileConfig, which the frame §5.18.7.4 non-uniform reuse_tile_params() branch consumes. Local §6.17.7 tile constraints are checked (tile-params/* diagnostics). Do not mark the umbrella done until this child is proven."
 
 [feature.status]
 mapped = "done"
@@ -589,7 +589,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-core/src/tile.rs::tests", "crates/splot-validate/src/validator.rs::tests", "crates/splot-cli/tests/cli.rs"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-core/src/headers/sequence.rs::tests::sequence_tile_config_records_non_uniform_start_arrays", "crates/splot-core/src/headers/sequence.rs::tests::sequence_tile_config_reserved_level_records_empty_start_arrays", "crates/splot-core/src/tile.rs::tests", "crates/splot-validate/src/validator.rs::tests", "crates/splot-cli/tests/cli.rs"]
 commands = ["cargo test -p splot-core sequence", "cargo test -p splot-core tile", "cargo test -p splot-validate sequence_header", "cargo test -p splot-cli inspect"]
 fixtures = ["tests/fixtures/seq-header-tile-params.av2"]
 diagnostics = ["tile-params/tile-cols-out-of-range", "tile-params/tile-rows-out-of-range", "tile-params/nonuniform-cols-do-not-cover-frame", "tile-params/nonuniform-rows-do-not-cover-frame"]
@@ -2821,11 +2821,11 @@ spec_sections = ["5.18.7", "6.17.7"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/frame/tiling.rs"
-openspec_change = "mfh-frame-header-state"
+openspec_change = "seq-tile-nonuniform-reuse-starts"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. tile_info() (§5.18.7.2, MiCols/MiRows per §5.18.4.4) and segmentation_params() (§5.18.7.1, reusing seg_info()) are typed and parsed on the intra frame-header path for both reference forms: cur_mfh_id == 0 (sequence/zero arm) and — under mfh-frame-header-state — cur_mfh_id > 0, where the MFH-gated arm derives haveSegParams = (mfh_ext_seg_flag == enable_ext_seg), allowChange = haveSegParams && mfh_allow_seg_info_change, mfhId = cur_mfh_id, and a reuse_seg_info copy draws from MfhFeatureEnabled/MfhFeatureData (mirror :6266-6298). The MFH branch takes priority over the sequence branch per the spec order; a cur_mfh_id > 0 frame whose in-band MFH is unresolvable still stops (no guessing). Bounded residuals keep parse/tests partial: inter paths and the §5.18.7.4 non-uniform sequence-reuse branch (the sequence start arrays are not recorded — see AV2-5.18.7.3-TILE-PARAMS). §6.17.7.2 TileCols/TileRows/context_update_tile_id checks are live."
+notes = "Child row of AV2-5.18-FRAME-HEADER. tile_info() (§5.18.7.2, MiCols/MiRows per §5.18.4.4) and segmentation_params() (§5.18.7.1, reusing seg_info()) are typed and parsed on the intra frame-header path for both reference forms: cur_mfh_id == 0 (sequence/zero arm) and — under mfh-frame-header-state — cur_mfh_id > 0, where the MFH-gated arm derives haveSegParams = (mfh_ext_seg_flag == enable_ext_seg), allowChange = haveSegParams && mfh_allow_seg_info_change, mfhId = cur_mfh_id, and a reuse_seg_info copy draws from MfhFeatureEnabled/MfhFeatureData (mirror :6266-6298). The MFH branch takes priority over the sequence branch per the spec order; a cur_mfh_id > 0 frame whose in-band MFH is unresolvable still stops (no guessing). Under seq-tile-nonuniform-reuse-starts the §5.18.7.4 non-uniform sequence-reuse branch is fully wired: the persisted SeqSbColStarts / SeqSbRowStarts (AV2-5.4.2-SEQUENCE-TILE-CONFIG) flow into reuse_tile_params() (mirror :6449/:6469-6477), so a frame reusing a non-uniform sequence tile layout parses through tile_info() instead of stopping unimplemented. §6.17.7.2 TileCols/TileRows/context_update_tile_id checks are live. Remaining residual (keeps parse/tests partial): the inter frame-header paths."
 
 [feature.status]
 mapped = "done"
@@ -2842,6 +2842,9 @@ perf = "not-applicable"
 [feature.proof]
 tests = [
   "crates/splot-core/src/headers/frame/tiling.rs::tests",
+  "crates/splot-core/src/headers/frame/tiling.rs::tests::non_uniform_sequence_reuse_passes_recorded_starts_through",
+  "crates/splot-core/src/headers/frame/tiling.rs::tests::non_uniform_sequence_reuse_gate_mismatch_parses_fresh",
+  "crates/splot-core/src/headers/frame/tiling.rs::tests::non_uniform_sequence_reuse_eof_in_context_fields",
   "crates/splot-core/src/headers/frame/segmentation.rs::tests",
   "crates/splot-core/src/headers/frame/segmentation.rs::tests::mfh_arm_reuse_inferred_copies_mfh_feature_data_when_change_not_allowed",
   "crates/splot-core/src/headers/frame/segmentation.rs::tests::mfh_arm_ext_seg_mismatch_yields_no_seg_params_and_parses_fresh",

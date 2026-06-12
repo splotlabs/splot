@@ -912,6 +912,8 @@ fn test_sub_views() -> (CoreSeqQuantView, CoreSeqSegView, CoreSeqTileView) {
             seq_tile_info_present_flag: false,
             allow_tile_info_change: false,
             seq_tile_params: None,
+            seq_sb_col_starts: Vec::new(),
+            seq_sb_row_starts: Vec::new(),
             seq_sb_size: SuperblockSize::Block128x128,
             use_256x256_superblock: false,
             use_128x128_superblock: true,
@@ -1959,8 +1961,12 @@ mod proptests {
             (0u32..=2048, 0u32..=2048),
             any::<[u8; 2]>(),
             (any::<bool>(), 0u8..=3, any::<bool>(), 0u8..=31),
+            (
+                proptest::collection::vec(0u32..=4096, 0..=64),
+                proptest::collection::vec(0u32..=4096, 0..=64),
+            ),
         )
-            .prop_map(|(flags, counts, grid, sbs, misc)| {
+            .prop_map(|(flags, counts, grid, sbs, misc, starts)| {
                 let (use_256, use_128) = match sbs[0] % 3 {
                     0 => (false, false),
                     1 => (false, true),
@@ -1980,6 +1986,8 @@ mod proptests {
                         covers_cols: true,
                         covers_rows: true,
                     }),
+                    seq_sb_col_starts: starts.0,
+                    seq_sb_row_starts: starts.1,
                     seq_sb_size: sb_size(sbs[1]),
                     use_256x256_superblock: use_256,
                     use_128x128_superblock: use_128,
