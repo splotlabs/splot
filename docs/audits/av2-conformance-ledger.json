@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "6964c9631df3c86849cfb87b1de4b8b9e94f1109",
+  "audited_commit": "2615da93cc1e3c9ddf36d80eebb9cb8accc778d0",
   "outcome": "success",
   "files": [
     {
@@ -3120,6 +3120,33 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-12-frame-header-copy-bit-accounting/proposal.md",
+      "sha256": "6c17cce401115403b4fdbba3795161a90ce12b4e48413287823a39e6c294b61d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.1-FRAME-HEADER-GENERAL",
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.19-TILE-GROUP"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-frame-header-copy-bit-accounting/specs/bitstream/spec.md",
+      "sha256": "d0073365217a3ce4d1df6466b01d5eab69dc17bb75d237a76ecce50a97c2e413",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.1-FRAME-HEADER-GENERAL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-frame-header-copy-bit-accounting/tasks.md",
+      "sha256": "218c0b4a622663133d3003711b0e703962e7bff52c2f3041d2c4e97fd2e2dc46",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-12-frame-header-intra-tail-completion/proposal.md",
       "sha256": "575fa85fffa191f5fd2811c27b89d92619db7b6967f846f64dc5177ba7043837",
       "scope_kind": "openspec",
@@ -3262,33 +3289,6 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/frame-header-copy-bit-accounting/proposal.md",
-      "sha256": "6c17cce401115403b4fdbba3795161a90ce12b4e48413287823a39e6c294b61d",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18.1-FRAME-HEADER-GENERAL",
-        "AV2-5.18.2-FRAME-HEADER-INFO",
-        "AV2-5.19-TILE-GROUP"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-header-copy-bit-accounting/specs/bitstream/spec.md",
-      "sha256": "d0073365217a3ce4d1df6466b01d5eab69dc17bb75d237a76ecce50a97c2e413",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18.1-FRAME-HEADER-GENERAL"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/frame-header-copy-bit-accounting/tasks.md",
-      "sha256": "218c0b4a622663133d3003711b0e703962e7bff52c2f3041d2c4e97fd2e2dc46",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
       "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
       "sha256": "ec25589a8a02879087f03de9cc0c8b07e5fedf96f9a48c8f3dd99be91c14d240",
       "scope_kind": "openspec",
@@ -3336,7 +3336,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "ee0de3c93cdfe0900260b39a53b773f2a951c70a96ecb9ccad1f2318de85ca51",
+      "sha256": "79b6ff35c2d6e5722e9ae78f231c1202523061590be07ac36bc9d6c23a0f5e2b",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
