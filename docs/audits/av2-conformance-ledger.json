@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "211531b75aadd2728ca823d85ab583f617ea16d8",
+  "audited_commit": "eea9b60ade92375bf37c4b9c03d818b5403376eb",
   "outcome": "success",
   "files": [
     {
@@ -283,7 +283,7 @@
     },
     {
       "path": "crates/splot-cli/src/commands/inspect.rs",
-      "sha256": "7e1001a69feb40a9c8f7157519183bd0cbe301ce015eb5770be2146b74df46f2",
+      "sha256": "adf344bcef559669f80f9bef1895772620fe85e1000b626e409f051a90041002",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.2.1-OBU-DISPATCH",
@@ -317,7 +317,7 @@
     },
     {
       "path": "crates/splot-cli/tests/cli.rs",
-      "sha256": "ed5814122c871f93b6971d0545b89f17f56c19f9aba909231d0da2260f7c1e8c",
+      "sha256": "15f9a671bce6740ef61bce06a3c99a6f691fa4a1ce0d7c75af9a4e2928c4fed6",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.4-SEQUENCE-HEADER",
@@ -439,16 +439,17 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/info.rs",
-      "sha256": "56be854b47cbd94cd1a34cb409bc6c73cb7a33bfbb31703d06d2a1d9bbe2aae7",
+      "sha256": "a60cf613ea58c84c2059856356debe30a0c7b4a3b46294e98760920c5faa60d3",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
-        "AV2-5.18.2-FRAME-HEADER-INFO"
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.7-SEGMENTATION-TILING"
       ],
       "outcome": "success"
     },
     {
       "path": "crates/splot-core/src/headers/frame/mod.rs",
-      "sha256": "8ac5d1f080c8bbe6146abe62fa6c002da820a241561d4d9160663cada8ca2eb5",
+      "sha256": "7a6796f121a5150a0e15b2c18934d4d6045192521b8162be799ef1e69afb5b1d",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -462,6 +463,15 @@
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.6-QUANTIZATION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/frame/restoration.rs",
+      "sha256": "71031105d56e55d2b9d73502736426884309827a10ddd88b4239d0b16b262c92",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.18.7-SEGMENTATION-TILING"
       ],
       "outcome": "success"
     },
@@ -785,7 +795,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "b27b6867f85676447643cec21d696c43272b25e03db22acfd5763887cef59b81",
+      "sha256": "a0d533b1db5266d39705be2ab6b2535fafcd0d3d0b34b3c507c6c831ec7573cc",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -856,7 +866,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "0901c667c9b003d75817ef2532f5aff0afafcff29e0af898f356368c6360b691",
+      "sha256": "fe3cbcbfcb8e4c9b704e9e0feff4cd8de41ff58b0428c9309ec93f2db09b0c0c",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1088,7 +1098,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "b5ea4c75bf816754e1eea461e543d7cd0b9e34b6e59409fc3bf3ebe5005b8a23",
+      "sha256": "e052cd7be93f109128fd933a8080812d73a0121f1521915bc2104e7ac86fb071",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1225,7 +1235,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "be948e5bdd7399c70a9737a98551ed1f75625a61b5852e60740abd037e1698e9",
+      "sha256": "d5990eba636f0a669d49166019322fd34f2549b7d991e47d4294dd28e468992e",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1378,7 +1388,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "85281abc5af7800959c55927cdc31b6d07f2ae1f82508d5b0a2905f49c9713dc",
+      "sha256": "f9fbf3d5fe794cbec8a55fc3342e0d968e25855519ebecfc805fcc5d6f22d916",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -1393,7 +1403,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "ed186bfd7a0b3e49bdb5496aebec25e6904bfed0d44f647b71624aa39b4491fb",
+      "sha256": "e8088652439c2defb2d82fe85794ee2c1c7125677bba1c8e71aa9cbda454d989",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -3179,6 +3189,33 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/frame-loop-restoration-ccso-params/proposal.md",
+      "sha256": "b0bac9a2eeda08a7202baca36c2a59c5dc049dbe4b05d25a9e1eb06d2cbd6c6b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.7-SEGMENTATION-TILING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/frame-loop-restoration-ccso-params/specs/bitstream/spec.md",
+      "sha256": "b976ea60c002de7e6dac0f124f84830c5ad18d9e2425ccfb19f64b5d9b86d9ac",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.7-SEGMENTATION-TILING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/frame-loop-restoration-ccso-params/tasks.md",
+      "sha256": "2dc0fe3f980e93bf4703e2c8a669c06b76bc2352d287d9c0e2410f1ee0ed7ee5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
       "sha256": "ec25589a8a02879087f03de9cc0c8b07e5fedf96f9a48c8f3dd99be91c14d240",
       "scope_kind": "openspec",
@@ -3226,7 +3263,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "7081309c617a60f7e09e71da5a2a243b55c2e528e58b23fe723beb3716df7856",
+      "sha256": "592e07a5a55ecaed839fc85c2cdc4ebbeb3583fbe18be6aec1d6b3e2d8c82f5f",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -3316,7 +3353,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "12bdc4986cf46e3b76c72e913fd5c05562227545e803ebfa68bb6d14f1ac017e",
+      "sha256": "5b4e428d598388a2cc34c5bb918817e0676e6a5db6849638af0873d8302832bf",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
