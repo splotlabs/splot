@@ -359,9 +359,13 @@ Acceptance:
 and the intra tail through `AV2-5.18.6-QUANTIZATION`,
 `AV2-5.18.7-SEGMENTATION-TILING` (`AV2-5.18.7.3-TILE-PARAMS` done; `gdf_params()`
 §5.18.7.9, `cdef_params()` §5.18.7.10, `lr_params()` §5.18.7.11, and
-`ccso_params()` §5.18.7.12 parse on the intra path), and
-`AV2-5.18.5-FILTERING` (`deblocking_filter_params()` §5.18.5.2 on the intra path)
-is partial; the §5.18.8–§5.18.10 child rows are todo.
+`ccso_params()` §5.18.7.12 parse on the intra path),
+`AV2-5.18.5-FILTERING` (`deblocking_filter_params()` §5.18.5.2 on the intra path),
+and the §5.18.8–§5.18.10 tail (`AV2-5.18.8-TRANSFORM-CODING-MODES`,
+`AV2-5.18.9-GLOBAL-MOTION` intra arm, `AV2-5.18.10-FILM-GRAIN-STRUCTURES`) all
+parse — the **complete** intra frame header reaches the `IntraHeaderComplete`
+terminal and the show-existing-frame path reaches `ShowExistingFrameComplete`.
+The inter-path arms of every child remain partial/todo.
 
 **Goal:** split the large frame header into implementable chunks.
 
@@ -413,10 +417,33 @@ is partial; the §5.18.8–§5.18.10 child rows are todo.
   CCSO_BAND_NUM`). The § 6.17.7.7 lr size / RU-divisibility bounds and the
   reference-state CCSO requirements remain deferred (the reuse/ref-state arm is
   dead on the intra path).
-- **Remaining:** the `read_wienerns_filter()` frame-level Wiener bank decode,
-  `read_tx_mode()` (§ 5.18.8.1) and the rest of the § 5.18.2 tail, inter
-  frame-header paths (including the inter `cur_mfh_id > 0` arms and § 5.18.5.1
-  `read_interpolation_filter()`), and the § 6.17.6.2 layer-dependency constraints
+- **Landed** (OpenSpec `frame-header-intra-tail-completion`): the intra path now
+  parses to completion. After `ccso_params()` the § 5.18.2 tail
+  (`crates/splot-core/src/headers/frame/tail.rs`) reads `read_tx_mode()`
+  (§ 5.18.8.1, `tx_mode_select` gated on the derived `CodedLossless`), the no-bit
+  intra inferences of `frame_reference_mode()` (§ 5.18.8.3) / `skip_mode_params()`
+  (§ 5.18.8.2) / `allow_bawp` / `allow_warpmv_mode`, `reduced_tx_set` `f(2)`, the
+  no-bit intra arm of `global_motion_params()` (§ 5.18.9.1), and
+  `film_grain_config()` (§ 5.18.10.1 — `apply_grain` / `fgm_id` / `grain_seed`;
+  `load_grain_model()` reads no bits per § 6.17.10.1, so the § 5.14 model parser is
+  not invoked here). The terminal status is `IntraHeaderComplete`; the
+  show-existing-frame path reaches `ShowExistingFrameComplete` after its
+  `film_grain_config()`. A payload that ends inside the tail reports the dedicated
+  `StoppedInsideIntraTail` status, preserving the loop-filter-cluster facts. The
+  `frame-header-core.av2` / `frame-header-core-mfh.av2` fixtures now parse to
+  `intra_header_complete`. No new diagnostic was added: § 5.18.8 / § 5.18.9 /
+  § 5.18.10.1 state no requirement of bitstream conformance on the parsed intra
+  fields, and the fgm_id HLS-availability checks need the cross-OBU film-grain
+  model store (deferred).
+- **Remaining:** trailing-bits validation of a complete frame-carrying OBU is not
+  yet decidable — the frame header is followed by the rest of `tile_group_obu()`
+  (§ 5.19, `AV2-5.19-TILE-GROUP`), whose `bru_inactive` `headerBits` /
+  `remainingBits` `trailing_bits()` tail needs `NumFrameHeaderBits` accounting (the
+  next backlog change). Also remaining: the `read_wienerns_filter()` frame-level
+  Wiener bank decode, the inter frame-header paths (including the inter § 5.18.8
+  coding-mode arms, the § 5.18.9 inter global-motion warp decode, the inter
+  `cur_mfh_id > 0` arms, § 5.18.5.1 `read_interpolation_filter()`), the bridge-frame
+  remainder, `frame_header_copy()`, and the § 6.17.6.2 layer-dependency constraints
   (the §5.4.1 dependency maps are now exposed by the sequence-header model; the
   checks themselves are not implemented yet).
   `AV2-5.18-FRAME-HEADER` and `AV2-5.19-TILE-GROUP` therefore stay `partial`,

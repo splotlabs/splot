@@ -40,6 +40,7 @@ mod quant;
 mod restoration;
 mod segmentation;
 mod size;
+mod tail;
 mod tiling;
 
 pub use filtering::{
@@ -48,7 +49,7 @@ pub use filtering::{
 };
 pub use info::{
     FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
-    FrameReferenceStateView, FrameType, parse_frame_header_core,
+    FrameReferenceStateView, FrameType, SefTrailingBits, parse_frame_header_core,
 };
 pub use quant::{
     CoreSeqQuantView, DeltaQParams, LosslessInfo, MAX_PIC_QM_NUM, QmSetLevels, QuantizationParams,
@@ -62,6 +63,10 @@ pub use restoration::{
 };
 pub use segmentation::{CoreSeqSegView, SegmentationParams, parse_segmentation_params};
 pub use size::FrameSize;
+pub use tail::{
+    FilmGrainConfig, FrameHeaderTail, FrameTailInput, TxMode, parse_film_grain_config,
+    parse_intra_tail, read_tx_mode,
+};
 pub use tiling::{CoreSeqTileView, TileInfo, parse_tile_info};
 
 /// How much of `frame_header()` the prefix parser consumed.

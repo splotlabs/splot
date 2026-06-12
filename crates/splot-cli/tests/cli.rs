@@ -279,7 +279,7 @@ fn inspect_json_exposes_frame_header_core() {
 
     let core = &records[2]["frame_header_core"];
     assert_eq!(core["payload_kind"], "frame_header_core");
-    assert_eq!(core["status"], "stopped_before_read_tx_mode");
+    assert_eq!(core["status"], "intra_header_complete");
     assert_eq!(core["frame_type"], "key");
     assert_eq!(core["frame_is_intra"], true);
     assert_eq!(core["show_existing_frame"], false);
@@ -326,14 +326,24 @@ fn inspect_json_exposes_frame_header_core() {
     assert_eq!(core["cdef"]["cdef_frame_enable"], false);
     // The § 5.18.7.11 / § 5.18.7.12 lr / ccso cluster: restoration and CCSO are disabled at
     // the sequence level, so lr_params() reports the default unit sizes with uses_lr false
-    // and ccso_params() returns with no ccso_frame_flag. The parser advances to the stop
-    // before read_tx_mode().
+    // and ccso_params() returns with no ccso_frame_flag.
     assert_eq!(core["lr"]["uses_lr"], false);
     assert_eq!(
         core["lr"]["loop_restoration_size"],
         serde_json::json!([64, 32, 32])
     );
     assert!(core["ccso"].get("ccso_frame_flag").is_none());
+    // The § 5.18.2 intra tail: read_tx_mode() (not lossless -> tx_mode_select == 0 ->
+    // TX_MODE_LARGEST), the inferred intra no-bit fields, reduced_tx_set, the no-bit
+    // global_motion intra arm, and film_grain_config() (grain absent in this sequence ->
+    // apply_grain == 0). The header is complete.
+    let tail = &core["intra_tail"];
+    assert_eq!(tail["tx_mode"], "tx_mode_largest");
+    assert_eq!(tail["reference_select"], false);
+    assert_eq!(tail["skip_mode_present"], false);
+    assert_eq!(tail["allow_bawp"], false);
+    assert_eq!(tail["use_global_motion"], false);
+    assert_eq!(tail["film_grain"]["apply_grain"], false);
 }
 
 #[test]
@@ -366,7 +376,7 @@ fn inspect_json_exposes_mfh_backed_frame_header_core() {
     assert_eq!(records[2]["header"]["obu_type"], "MultiFrameHeader");
     let core = &records[3]["frame_header_core"];
     assert_eq!(core["payload_kind"], "frame_header_core");
-    assert_eq!(core["status"], "stopped_before_read_tx_mode");
+    assert_eq!(core["status"], "intra_header_complete");
     assert_eq!(core["cur_mfh_id"], 1);
     assert_eq!(core["frame_type"], "key");
     assert_eq!(core["frame_is_intra"], true);
@@ -388,9 +398,13 @@ fn inspect_json_exposes_mfh_backed_frame_header_core() {
     assert_eq!(core["gdf"]["gdf_frame_enable"], false);
     assert_eq!(core["cdef"]["cdef_frame_enable"], false);
     // Restoration / CCSO disabled at the sequence level -> lr_params() reports the default
-    // sizes and the parser stops before read_tx_mode().
+    // sizes; the § 5.18.2 tail then completes the intra frame header.
     assert_eq!(core["lr"]["uses_lr"], false);
     assert!(core["ccso"].get("ccso_frame_flag").is_none());
+    let tail = &core["intra_tail"];
+    assert_eq!(tail["tx_mode"], "tx_mode_largest");
+    assert_eq!(tail["reduced_tx_set"], 2);
+    assert_eq!(tail["film_grain"]["apply_grain"], false);
 }
 
 #[test]
