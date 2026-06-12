@@ -200,10 +200,34 @@ is the canonical status. See
 
 ## License
 
-`splot` is licensed under **PolyForm Noncommercial 1.0.0** (see
-[LICENSE.md](./LICENSE.md)). It is free for noncommercial use. **Commercial
-use of any component** — validator, inspector, decoder, encoder, CLI, docs,
-tests — requires a separate commercial license: <bartekplus@gmail.com>.
+`splot` is source-available under the PolyForm Noncommercial License 1.0.0.
+
+You may use, fork, modify, and redistribute this project only for
+noncommercial purposes under the terms of the PolyForm Noncommercial License
+1.0.0.
+
+Commercial use is not permitted under this license and requires a separate
+written commercial license from Bartosz Tomczyk.
+
+Commercial use includes, without limitation:
+
+- use by or for a for-profit company or other commercial organization;
+- use in paid products, paid services, SaaS, hosted services, APIs, internal
+  tools, or customer deliverables;
+- use in CI/CD, QA, compliance, conformance testing, validation, benchmarking,
+  or certification of commercial codecs, encoders, decoders, media files,
+  products, or services;
+- linking, embedding, wrapping, vendoring, containerizing, modifying,
+  distributing, or operating any part of this project in a commercial
+  workflow;
+- using reports, diagnostics, validation results, or other outputs from this
+  project to support commercial work.
+
+For commercial licensing, contact: <bartekplus@gmail.com>.
+
+This section is a plain-language summary. The full license text in
+[LICENSE.md](./LICENSE.md) controls. Third-party materials remain under their
+own licenses where explicitly stated.
 
 OpenSpec-generated assistant integration files are MIT-licensed and isolated
 to agent/tooling directories; the committed AV2 spec mirror is verbatim
