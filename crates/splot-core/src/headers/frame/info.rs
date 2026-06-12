@@ -688,6 +688,20 @@ pub struct FrameHeaderCore {
     /// [`InterStop`](crate::headers::frame::inter::InterStop) recording where the inter
     /// region stopped. `None` on the intra / SEF paths.
     pub inter: Option<crate::headers::frame::inter::InterControl>,
+    /// `true` once the parse passes the § 5.18.2 `reset_qm()` call site (AV2 mirror
+    /// `05-syntax-structures.md` :4279-4283) with its trigger condition satisfied — i.e. the
+    /// parse reached the point AFTER `restricted_prediction_switch`, the
+    /// `num_key_ref_frames` / `ref_long_term_id[i]` list, and the SWITCH-restricted output
+    /// flush, with `obu_type == OBU_RAS_FRAME || (obu_type == OBU_SWITCH &&
+    /// restricted_prediction_switch)`. This is an explicit "reached reset_qm" fact: it stays
+    /// `true` even when the parse later truncates inside the inter control region (the
+    /// facts-preserving [`FrameHeaderParseStatus::StoppedInsideInterControl`] keeps the core),
+    /// so a consumer can confirm the § 7.3.8.9 quantizer-matrix availability reset from the
+    /// parsed bits alone rather than requiring the whole core parse to complete (codex F2).
+    /// `false` for every frame type whose `reset_qm()` trigger is not met, and for a RAS /
+    /// restricted SWITCH whose parse stops BEFORE the call site (truncated mid-prefix or
+    /// mid-`ref_long_term_id` — the reset is then unconfirmed).
+    pub reached_qm_reset: bool,
     /// Bits consumed by this parse (not necessarily the whole frame header).
     pub consumed_bits: u64,
 }
@@ -1040,6 +1054,7 @@ fn init_core_from_prefix(prefix: &FrameHeaderPrefix, obu_type: ObuType) -> Frame
         sef_film_grain: None,
         sef_trailing_bits: None,
         inter: None,
+        reached_qm_reset: false,
         consumed_bits: 0,
     }
 }
@@ -1165,6 +1180,19 @@ fn parse_core_body(
         }
         core.ref_long_term_ids = ref_long_term_ids;
     }
+
+    // AV2 § 5.18.2 reset_qm() call site (mirror :4279-4283): the parse has now passed
+    // `restricted_prediction_switch`, the `num_key_ref_frames` / `ref_long_term_id[i]` list,
+    // and the SWITCH-restricted output flush — the exact point the spec calls `reset_qm()`,
+    // BEFORE the output-control flags below and the inter control region. Record an explicit
+    // "reached reset_qm with its trigger met" fact so a consumer can confirm the § 7.3.8.9
+    // quantizer-matrix availability reset from the parsed bits even when the parse later
+    // truncates inside the inter control region (codex F2). The trigger is exactly the spec's
+    // `obu_type == OBU_RAS_FRAME || (obu_type == OBU_SWITCH && restricted_prediction_switch)`;
+    // for a SWITCH the gate reads `restricted_prediction_switch` (set above on the SWITCH /
+    // RAS frame-type arm), so an unread gate (`None`) leaves the fact `false` (unconfirmed).
+    core.reached_qm_reset = obu_type == ObuType::RasFrame
+        || (obu_type == ObuType::Switch && core.restricted_prediction_switch == Some(true));
 
     // AV2 § 5.18.2 output control (mirror :4295-4313). This block is in the non-SEF,
     // non-single-picture branch and applies to BOTH intra and inter frames. A bridge

@@ -7036,6 +7036,208 @@ mod tests {
     }
 
     #[test]
+    fn validator_qm_unresolvable_clk_reset_clears_unprotected_level() {
+        // F1(a): a CLK whose referenced sequence header cannot be resolved in-band still
+        // executes its § 5.18.2 reset_qm() — the CLK / OLK reset is decidable from the OBU
+        // type and FirstPictureInTU alone (mirror :4106 keyFrame reset, before any
+        // sequence-dependent read). A custom level made available + unprotected before the
+        // unresolvable CLK must therefore be CLEARED, so a later resolvable frame referencing
+        // that level fires §7.3.8.9 qm-level-unavailable. Pre-fix the reset call sat inside the
+        // `if let Some(seq_id) = resolved` gate, so the unresolvable CLK skipped reset handling
+        // entirely and the stale "available" record suppressed the diagnostic.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base()); // activates seq 0
+        data.extend(qm_reset_obu_chroma()); // TU1: level 0 available (mlayer_id -1) + protected
+        data.extend(temporal_delimiter_obu()); // TU2 starts: QmProtected cleared
+        // An unresolvable CLK (references seq id 5, never sent in-band) at FirstPictureInTU:
+        // its reset_qm() must still clear the now-unprotected level 0. It does not activate
+        // (resolved is None), so seq 0 stays the active header for the later intra frame.
+        data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 5));
+        data.extend(temporal_delimiter_obu()); // TU3 starts: QmProtected cleared
+        data.extend(intra_only_frame_with_qm_reference(0)); // references level 0 (no own reset)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "frame-header/qm-level-unavailable"
+                    && d.spec_section.as_deref() == Some("7.3.8.9")
+            }),
+            "an unresolvable CLK must still execute reset_qm() (decidable from obu_type + \
+             FirstPictureInTU), so the later reference fires unavailable; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_qm_unresolvable_ras_reset_poisons_availability() {
+        // F1(b): a RAS whose referenced sequence header cannot be resolved in-band cannot be
+        // known to have reached its § 5.18.2 reset_qm() call site (mirror :4283 sits past
+        // sequence-dependent reads), so the reset is UNCONFIRMED and the validator must POISON
+        // the availability state — never silently skip it. A later frame referencing the level
+        // therefore stays SILENT (the poison drops the §7.3.8.9 judgment). Pre-fix the reset
+        // call sat inside the `if let Some(seq_id) = resolved` gate, so the unresolvable RAS
+        // skipped handling entirely and the stale "available" record was asserted as valid.
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            long_term_frame_id_bits: 4, // § 6.4.6: RAS requires long_term_frame_id_bits != 0
+            ..FrameCoreSeq::base()
+        }); // activates seq 0
+        data.extend(qm_reset_obu_chroma()); // TU1: level 0 available (mlayer_id -1) + protected
+        data.extend(temporal_delimiter_obu()); // TU2 starts: QmProtected cleared
+        // An unresolvable RAS (references seq id 5): the reset is unconfirmed -> poison.
+        data.extend(frame_obu_direct_seq_ref(RAS_HEADER, 5));
+        data.extend(temporal_delimiter_obu()); // TU3 starts: QmProtected cleared
+        data.extend(intra_only_frame_with_qm_reference(0)); // references level 0 (no own reset)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/qm-level-unavailable"),
+            "an unresolvable RAS reset must POISON availability (not skip), so the later \
+             reference stays silent; report was: {report}"
+        );
+    }
+
+    /// A RAS frame whose parse passes the § 5.18.2 `reset_qm()` call site (mirror :4283) and
+    /// then truncates INSIDE the inter reference region's `ref_frame_idx[i]` reads (mirror
+    /// :4611-4625, well past :4283). `max_mlayer_id != 0` takes the explicit SWITCH
+    /// `refresh_frame_flags` arm (mirror :4507-4509) so the parse continues into the reference
+    /// region instead of stopping at the `max_mlayer_id == 0` refresh derivation. A
+    /// `num_total_refs` of 7 then demands 7 * f(CeilLog2(NumRefFrames)) `ref_frame_idx` reads;
+    /// the payload supplies none, so the parse hits EOF inside the loop and surfaces
+    /// `StoppedInsideInterControl` with the pre-reset facts preserved. Because the truncation
+    /// is past :4283 the RAS reset is provably CONFIRMED.
+    fn ras_frame_truncated_inside_ref_frame_idx(num_ref_frames: u32) -> Vec<u8> {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(0); // restricted_prediction_switch f(1)
+        fb.f(0, 3); // num_key_ref_frames == 0
+        fb.bit(0); // immediate_output_frame f(1) (RAS is not OLK; monotonic -> implicit 0)
+        // SWITCH_FRAME forces frame_size_override_flag == 1 (no bit).
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        // max_mlayer_id != 0 -> SWITCH refresh arm: refresh_frame_flags f(NumRefFrames).
+        fb.f(0, num_ref_frames); // refresh_frame_flags f(NumRefFrames)
+        fb.bit(1); // frame_explicit_ref_frame_map (explicit_ref_frame_map seq flag set)
+        fb.f(7, 3); // num_total_refs == 7 -> 7 ref_frame_idx reads demanded, none supplied
+        // Payload ends here: the ref_frame_idx[0..7] reads run past the byte-aligned padding,
+        // so the inter control region hits EOF AFTER the reset_qm() call site (mirror :4283).
+        annex_b_obu(RAS_HEADER, &fb.into_bytes())
+    }
+
+    #[test]
+    fn validator_qm_ras_truncated_after_reset_point_confirms_reset() {
+        // F2: a RAS that reaches reset_qm() (mirror :4283) and then truncates inside the inter
+        // reference region (EOF in ref_frame_idx) has PROVABLY executed the reset — the clear
+        // is decidable from the preserved partial facts (StoppedInsideInterControl keeps
+        // core.inter). The unprotected level made available in a prior TU must be CLEARED, so a
+        // later frame referencing it fires §7.3.8.9 unavailable. Pre-fix the confirmation gate
+        // required a full core parse (`frame_core_against_referenced_header(...).is_some()`),
+        // which dropped this provable reset and poisoned instead (silent).
+        let seq = FrameCoreSeq {
+            long_term_frame_id_bits: 4,
+            explicit_ref_frame_map: true,
+            max_mlayer_id: 1, // != 0 so the RAS refresh arm continues into the reference region
+            num_ref_frames_minus_1: 7, // NumRefFrames == 8
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq); // activates seq 0
+        data.extend(qm_reset_obu_chroma()); // TU1: level 0 available (mlayer_id -1) + protected
+        data.extend(temporal_delimiter_obu()); // TU2 starts: QmProtected cleared
+        data.extend(ras_frame_truncated_inside_ref_frame_idx(8)); // confirmed reset (past :4283)
+        data.extend(temporal_delimiter_obu()); // TU3 starts
+        data.extend(intra_only_frame_with_qm_reference(0)); // references level 0 (no own reset)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "frame-header/qm-level-unavailable"
+                    && d.spec_section.as_deref() == Some("7.3.8.9")
+            }),
+            "a RAS truncated AFTER reset_qm() (inside ref_frame_idx) must CONFIRM the reset \
+             from the preserved facts, so the later reference fires; report was: {report}"
+        );
+    }
+
+    /// A SWITCH frame (`OBU_SWITCH`) with `restricted_prediction_switch == 1` whose parse
+    /// passes the § 5.18.2 `reset_qm()` call site (mirror :4283, gated on
+    /// `restricted_prediction_switch`) and then truncates INSIDE `ref_frame_idx[i]` (mirror
+    /// :4611-4625). Like the RAS case, the truncation preserves the parsed
+    /// `restricted_prediction_switch` fact on `core.inter`, so the reset is CONFIRMED even
+    /// though the full core parse did not complete.
+    fn switch_frame_rps_truncated_inside_ref_frame_idx(num_ref_frames: u32) -> Vec<u8> {
+        // 0x28 = 0b0_01010_00 -> ext=0, type=10 (OBU_SWITCH), tlayer=0.
+        const SWITCH_HEADER: u8 = 0x28;
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id == 0
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        fb.bit(1); // restricted_prediction_switch == 1 -> reset_qm() fires (mirror :4283)
+        // SWITCH is not RAS/OLK, so no num_key_ref_frames / ref_long_term_id reads.
+        fb.bit(0); // immediate_output_frame f(1) (monotonic -> implicit 0)
+        // SWITCH_FRAME forces frame_size_override_flag == 1 (no bit).
+        fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+        // SWITCH refresh arm: refresh_frame_flags f(NumRefFrames).
+        fb.f(0, num_ref_frames); // refresh_frame_flags f(NumRefFrames)
+        // SWITCH forces frame_explicit_ref_frame_map == true (no bit, inter.rs :563).
+        fb.f(7, 3); // num_total_refs == 7 -> 7 ref_frame_idx reads demanded, none supplied
+        // Payload ends here: the ref_frame_idx reads hit EOF AFTER reset_qm() (mirror :4283).
+        annex_b_obu(SWITCH_HEADER, &fb.into_bytes())
+    }
+
+    #[test]
+    fn validator_qm_switch_truncated_after_reset_point_confirms_reset() {
+        // F2 (SWITCH symmetric): a restricted SWITCH (restricted_prediction_switch == 1) that
+        // reaches reset_qm() and then truncates inside ref_frame_idx has PROVABLY executed the
+        // reset — the parsed gate bit is preserved on core.inter. The unprotected level must be
+        // CLEARED, so a later reference fires §7.3.8.9 unavailable. Pre-fix the full-parse gate
+        // dropped this provable reset and poisoned instead (silent).
+        let seq = FrameCoreSeq {
+            explicit_ref_frame_map: true,
+            max_mlayer_id: 1,
+            num_ref_frames_minus_1: 7, // NumRefFrames == 8
+            ..FrameCoreSeq::base()
+        };
+        let mut data = td_and_frame_core_seq(seq); // activates seq 0
+        data.extend(qm_reset_obu_chroma()); // TU1: level 0 available (mlayer_id -1) + protected
+        data.extend(temporal_delimiter_obu()); // TU2 starts: QmProtected cleared
+        data.extend(switch_frame_rps_truncated_inside_ref_frame_idx(8)); // confirmed reset
+        data.extend(temporal_delimiter_obu()); // TU3 starts
+        data.extend(intra_only_frame_with_qm_reference(0)); // references level 0 (no own reset)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            report.errors().any(|d| {
+                d.rule_id == "frame-header/qm-level-unavailable"
+                    && d.spec_section.as_deref() == Some("7.3.8.9")
+            }),
+            "a restricted SWITCH truncated AFTER reset_qm() (inside ref_frame_idx) must CONFIRM \
+             the reset from the preserved gate bit, so the later reference fires; report was: {report}"
+        );
+    }
+
+    #[test]
+    fn validator_qm_ras_truncated_before_reset_still_poisons() {
+        // F2 guard: a RAS truncated BEFORE the reset_qm() call site (EOF inside the
+        // ref_long_term_id loop, mirror :4252) leaves the reset UNCONFIRMED -> poison. This is
+        // the existing `ras_frame_truncated_before_reset` shape; re-stated here to prove the F2
+        // reached-reset fact does NOT over-confirm an early truncation. A later reference must
+        // stay SILENT (poison drops the judgment).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq {
+            long_term_frame_id_bits: 4,
+            ..FrameCoreSeq::base()
+        });
+        data.extend(qm_reset_obu_chroma()); // TU1: level 0 available (mlayer_id -1) + protected
+        data.extend(temporal_delimiter_obu()); // TU2 starts: QmProtected cleared
+        data.extend(ras_frame_truncated_before_reset()); // truncated BEFORE :4283 -> poison
+        data.extend(temporal_delimiter_obu()); // TU3 starts: QmProtected cleared
+        data.extend(intra_only_frame_with_qm_reference(0)); // references level 0 (no own reset)
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id == "frame-header/qm-level-unavailable"),
+            "a RAS truncated BEFORE reset_qm() must still poison (unconfirmed), so the later \
+             reference stays silent; report was: {report}"
+        );
+    }
+
+    #[test]
     fn validator_preserves_existing_unavailable_sequence_header_check() {
         // The frame-header core wiring must not suppress the activation/HLS checks: a
         // frame referencing an unavailable sequence header still reports it.

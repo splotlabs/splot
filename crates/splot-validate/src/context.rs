@@ -5161,45 +5161,119 @@ impl ValidatorContext {
     /// the level's availability ([`QuantizerMatrixState::poison_qm_availability_for_unconfirmed_reset`]):
     /// the § 7.3.8.9 judgment DROPS until the level is re-grounded by a QM OBU re-sending it,
     /// or by a later *confirmed* reset that grounds it as definitively unavailable.
-    fn apply_qm_reset_for_frame(&mut self, obu: &ObuEnvelope<'_>, first_picture_in_tu: bool) {
+    fn apply_qm_reset_for_frame(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        first_picture_in_tu: bool,
+        resolved: Option<SequenceHeaderId>,
+    ) {
         match obu.header.obu_type {
-            // CLK / OLK reset_qm() runs at `keyFrame && FirstPictureInTU` (mirror :4106).
+            // CLK / OLK reset_qm() runs at `keyFrame && FirstPictureInTU` (mirror :4106 /
+            // :4279-4283). It is decidable from `obu_type` + `FirstPictureInTU` ALONE — no
+            // sequence-dependent read precedes it — so it clears regardless of whether the
+            // frame's referenced sequence header resolves (codex F1(a)).
             ObuType::ClosedLoopKey | ObuType::OpenLoopKey if first_picture_in_tu => {
                 self.qm.reset_qm_availability_for_key();
             }
-            // RAS resets at mirror :4283, which the parse only reaches when the core resolves
-            // (a `Some` RAS core read past restricted_prediction_switch into the inter path,
-            // past :4283). A `None` core never reached the reset call site, so the reset is
-            // unconfirmed -> poison rather than clear-to-fire.
-            ObuType::RasFrame => {
-                if self
-                    .frame_core_against_referenced_header(obu, first_picture_in_tu)
-                    .is_some()
-                {
-                    self.qm.reset_qm_availability_for_switch_or_ras();
-                } else {
-                    self.qm.poison_qm_availability_for_unconfirmed_reset();
-                }
-            }
-            // SWITCH resets only when restricted_prediction_switch == 1 (mirror :4280-4286).
-            // Resolve the core against the referenced header to read the recorded bit:
-            // `Some(true)` confirms the reset; `Some(false)` confirms NO reset (do nothing);
-            // `None` (truncated before the gate bit, unresolvable) leaves it unconfirmed ->
-            // poison (symmetric with the RAS unconfirmed arm).
-            ObuType::Switch => {
-                match self
-                    .frame_core_against_referenced_header(obu, first_picture_in_tu)
-                    .map(|core| core.restricted_prediction_switch)
-                {
-                    Some(Some(true)) => self.qm.reset_qm_availability_for_switch_or_ras(),
-                    Some(Some(false)) => {} // confirmed no reset
-                    // An unresolvable core, or one that never read the gate bit, cannot
-                    // decide whether the reset fired.
-                    Some(None) | None => self.qm.poison_qm_availability_for_unconfirmed_reset(),
+            // RAS / SWITCH reset_qm() sits at mirror :4279-4283, PAST sequence-dependent reads
+            // (`restricted_prediction_switch`, `num_key_ref_frames` / `ref_long_term_id[i]`),
+            // so confirming it needs the parsed bits. An unresolvable reference
+            // (`resolved == None`) cannot prove the reset fired -> POISON, never skip (codex
+            // F1(b)). A resolvable reference confirms from the parsed `reached_qm_reset` fact:
+            // the parse passes the :4283 call site with the trigger met. The fact survives a
+            // facts-preserving inter-control truncation (`StoppedInsideInterControl` keeps the
+            // core), so a RAS / restricted SWITCH that reaches the reset and then truncates
+            // inside the inter region (e.g. EOF in `ref_frame_idx`) still CONFIRMS — it no
+            // longer requires the whole core parse to complete (codex F2). A parse that stops
+            // BEFORE the call site leaves the fact `false` -> the reset stays unconfirmed ->
+            // poison. A SWITCH with `restricted_prediction_switch == 0` never sets the fact
+            // (its reset_qm() trigger is false), which is the confirmed NO-reset case the spec
+            // gate describes — the parse reaches the inter region but `reset_qm()` did not run.
+            ObuType::RasFrame | ObuType::Switch => {
+                match resolved.and_then(|seq_id| {
+                    self.frame_core_against_resolved_header(obu, first_picture_in_tu, seq_id)
+                }) {
+                    Some(core) if core.reached_qm_reset => {
+                        self.qm.reset_qm_availability_for_switch_or_ras();
+                    }
+                    // A resolvable SWITCH whose parse reached the reset point but whose
+                    // `restricted_prediction_switch == 0` (so `reached_qm_reset == false`)
+                    // confirms NO reset — nothing to do.
+                    Some(core)
+                        if obu.header.obu_type == ObuType::Switch
+                            && core.restricted_prediction_switch == Some(false) => {}
+                    // Unresolvable, or a resolvable core that stopped before the reset call
+                    // site (the SWITCH gate bit unread, or a RAS truncated mid-prefix /
+                    // mid-`ref_long_term_id`): the reset is unconfirmed.
+                    _ => self.qm.poison_qm_availability_for_unconfirmed_reset(),
                 }
             }
             _ => {}
         }
+    }
+
+    /// Parses a frame-bearing `obu`'s core against an explicitly given sequence header id
+    /// `seq_id`, applying the §7.3.8.7 referenced-header guard (the parse must run against the
+    /// header the frame references). Shared by two callers:
+    /// [`Self::frame_core_against_referenced_header`] passes the extended layer's currently
+    /// active header; [`Self::apply_qm_reset_for_frame`] passes the just-resolved `seq_id`
+    /// because it runs BEFORE the §5.18.2 activation that would set `active_sequence_by_xlayer`,
+    /// so it cannot read the active map. `None` when the sequence header is not modeled, the
+    /// core parse fails outright (a hard error, not the facts-preserving inter-control
+    /// truncation, which yields `Some`), or the frame references a different header.
+    fn frame_core_against_resolved_header(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        first_picture_in_tu: bool,
+        seq_id: SequenceHeaderId,
+    ) -> Option<FrameHeaderCore> {
+        let active_sequence = self.sequence_headers.get(&seq_id)?;
+
+        // Resolve the frame's `cur_mfh_id` (> 0) reference to its in-band multi-frame header,
+        // so the parser can be invoked with the resolving record (shared §7.3.8.7 discipline).
+        let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
+
+        // AV2 § 7.23: thread the modeled per-extended-layer reference-frame buffer view into
+        // the core parse (no §5.18 reference read precedes the §5.18.2 reset_qm() call site, so
+        // the `reached_qm_reset` fact this caller reads is independent of the buffer view). The
+        // scratch arrays must outlive the parse, so they are stack-local here.
+        let mut ref_valid = [false; NUM_REF_FRAMES];
+        let mut ref_oh = [0u32; NUM_REF_FRAMES];
+        let mut ref_w = [0u32; NUM_REF_FRAMES];
+        let mut ref_h = [0u32; NUM_REF_FRAMES];
+        let reference_state = if self
+            .reference_state
+            .view_into(
+                obu.header.extended_layer_id,
+                &mut ref_valid,
+                &mut ref_oh,
+                &mut ref_w,
+                &mut ref_h,
+            )
+            .is_some()
+        {
+            FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h)
+        } else {
+            FrameReferenceStateView::unknown()
+        };
+
+        let core = parse_frame_core(
+            obu,
+            first_picture_in_tu,
+            active_sequence,
+            mfh_record,
+            reference_state,
+        )?;
+
+        // The frame must reference `seq_id` (the header parsed against): for a `cur_mfh_id == 0`
+        // direct reference, the prefix's resolved id; for a `cur_mfh_id > 0` reference, the
+        // resolved in-band MFH record's `mfh_seq_header_id` (§ 7.3.8.7).
+        let referenced = if core.cur_mfh_id.is_zero() {
+            core.referenced_sequence_header_id
+        } else {
+            mfh_record.map(|record| record.mfh_seq_header_id)
+        };
+        (referenced == Some(seq_id)).then_some(core)
     }
 
     /// Derives the grounded § 7.23 [`FrameRefUpdate`] for a frame-bearing `obu` from its
@@ -5720,64 +5794,13 @@ impl ValidatorContext {
         obu: &ObuEnvelope<'_>,
         first_picture_in_tu: bool,
     ) -> Option<FrameHeaderCore> {
+        // The extended layer's currently active (§5.18.2-confirmed) sequence header is the one
+        // this frame parses against. The actual parse + referenced-header guard is shared with
+        // the pre-activation reset path via `frame_core_against_resolved_header`.
         let seq_id = *self
             .active_sequence_by_xlayer
             .get(&obu.header.extended_layer_id)?;
-        let active_sequence = self.sequence_headers.get(&seq_id)?;
-
-        // Resolve the frame's `cur_mfh_id` (> 0) reference to its in-band multi-frame header,
-        // so the parser can be invoked with the resolving record (shared §7.3.8.7 discipline).
-        let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
-
-        // AV2 § 7.23: thread the modeled per-extended-layer reference-frame buffer view
-        // into the core parse (forward plumbing for the §5.18 inter reference paths; no
-        // intra branch reads it today). The scratch arrays must outlive the parse, so
-        // they are stack-local here and borrowed by the view; an extended layer with no
-        // modeled buffer yet threads `unknown()`.
-        let mut ref_valid = [false; NUM_REF_FRAMES];
-        let mut ref_oh = [0u32; NUM_REF_FRAMES];
-        let mut ref_w = [0u32; NUM_REF_FRAMES];
-        let mut ref_h = [0u32; NUM_REF_FRAMES];
-        let reference_state = if self
-            .reference_state
-            .view_into(
-                obu.header.extended_layer_id,
-                &mut ref_valid,
-                &mut ref_oh,
-                &mut ref_w,
-                &mut ref_h,
-            )
-            .is_some()
-        {
-            FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h)
-        } else {
-            FrameReferenceStateView::unknown()
-        };
-
-        let core = parse_frame_core(
-            obu,
-            first_picture_in_tu,
-            active_sequence,
-            mfh_record,
-            reference_state,
-        )?;
-
-        // The referenced sequence header must be the one parsed against. For a `cur_mfh_id == 0`
-        // direct reference, `referenced_sequence_header_id` carries the §5.18.2 prefix's
-        // resolved id (set only when `seq_header_id_in_frame_header` is in range). For a
-        // `cur_mfh_id > 0` reference, the resolved in-band MFH record's `mfh_seq_header_id`
-        // is the referenced id (§ 7.3.8.7); a record only externally declared, out of range,
-        // absent, or naming a different sequence header leaves `mfh_record == None` (the shared
-        // resolver already enforced the seq-id match) and routes to Unknown.
-        let referenced = if core.cur_mfh_id.is_zero() {
-            core.referenced_sequence_header_id
-        } else {
-            mfh_record.map(|record| record.mfh_seq_header_id)
-        };
-        if referenced != Some(seq_id) {
-            return None;
-        }
-        Some(core)
+        self.frame_core_against_resolved_header(obu, first_picture_in_tu, seq_id)
     }
 
     /// Derives a frame-bearing OBU's output class (`immediate_output_frame == 1 ||
@@ -6828,6 +6851,21 @@ impl ValidatorContext {
         // snapshot as of this reference (intra-temporal-unit order).
         self.note_frame_rap_references(&prefix, resolved, obu.header.extended_layer_id, obu.offset);
 
+        // AV2 § 7.3.8.9 / § 5.18.2: apply the frame header's reset_qm() availability effect
+        // BEFORE the sequence-resolution gate below, so a reset-bearing frame whose sequence
+        // reference cannot be resolved still gets the right treatment instead of being skipped
+        // (codex F1). The partition is by what `reset_qm()` needs:
+        //   - CLK / OLK: the §5.18.2 `keyFrame && FirstPictureInTU` reset (mirror :4106 /
+        //     :4279-4283) is decidable from `obu_type` + `FirstPictureInTU` ALONE, with no
+        //     sequence-dependent read before it, so it clears regardless of resolution.
+        //   - RAS / restricted SWITCH: the reset sits past sequence-dependent reads, so an
+        //     unresolvable reference (no in-band sequence header, `resolved == None`) cannot
+        //     prove the reset fired — it POISONS, never silently skips. A resolvable reference
+        //     confirms the reset from the parsed `reached_qm_reset` fact (codex F2).
+        // This only mutates `self.qm` availability, independent of the §7.23 reference-buffer
+        // commit inside the gate, so running it here (before activation) is order-stable.
+        self.apply_qm_reset_for_frame(obu, first_picture_in_tu, resolved);
+
         // AV2 § 5.18.2: frame_header_info() calls load_sequence_header() for EVERY
         // frame (both cur_mfh_id == 0 and cur_mfh_id > 0), before the `if (keyFrame)`
         // block — so any parsed frame header, not only a CLK/OLK key frame, activates
@@ -6969,13 +7007,6 @@ impl ValidatorContext {
             if self.frame_unit.commits_pending_ref_update(obu, role) {
                 self.commit_pending_ref_update();
             }
-            // AV2 § 7.3.8.9 / § 5.18.2: apply the frame header's reset_qm() availability
-            // effect (CLK / OLK at FirstPictureInTU, or RAS / restricted SWITCH) BEFORE the
-            // §7.3.8.9 QM-availability check in frame_header_core_checks below — a CLK that
-            // references a level reset by its own reset_qm() must see the post-reset
-            // availability. Run after the deferred §7.23 commit above so ordering is stable,
-            // and before the immutable `mfh_record` / `active_sequence` borrows below.
-            self.apply_qm_reset_for_frame(obu, first_picture_in_tu);
             let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
             if let Some(active_sequence) = self.sequence_headers.get(&seq_id) {
                 // AV2 § 7.23: thread the modeled per-extended-layer reference-frame buffer

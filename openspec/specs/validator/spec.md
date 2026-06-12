@@ -2094,11 +2094,15 @@ random-access rules — § 7.3.9.1 long-term reference availability with
 the RAP-CELU first-frame-unit rule, the § 7.4.2/.4/.5 long-term, OLK,
 and RAS conditions in their header-observable forms, the § 7.3.8.9
 quantizer-matrix reference availability with the QmProtected resets, the
-§ 6.17.6.2 quantizer-matrix layer-dependency constraints, the § 6.8.9
+§ 6.17.6.2 quantizer-matrix plane-count constraint, the § 6.8.9
 expected-dimension bounds, and the remaining decidable § 6.17.2
 reference clauses — each with its governing citation, firing only on
 modeled-state-proven violations and dropping under poisoned or
-externally-declared state.
+externally-declared state. The § 6.17.6.2 quantizer-matrix
+layer-dependency constraints (the MLayer/TLayer dependency predicates
+over the defining QM OBU's layer identity) remain a named residual and
+are out of scope for this requirement until the availability state
+threads that layer identity.
 
 #### Scenario: long-term availability violation
 
