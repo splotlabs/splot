@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "cd09629892b94612e74fb2bb53a300fa07bb2b90",
+  "audited_commit": "6964c9631df3c86849cfb87b1de4b8b9e94f1109",
   "outcome": "success",
   "files": [
     {
@@ -283,7 +283,7 @@
     },
     {
       "path": "crates/splot-cli/src/commands/inspect.rs",
-      "sha256": "f049c193383c03ec4e5eb640c29969e52f902cae4d370646c2f02f3094904f16",
+      "sha256": "bf674c5ca176c8a4b45a3e8ef0df4e3b2944b8f383f32dfc7f292d062c01ea05",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.2.1-OBU-DISPATCH",
@@ -317,7 +317,7 @@
     },
     {
       "path": "crates/splot-cli/tests/cli.rs",
-      "sha256": "23ae0e4f2b9ccd588ed1e34dc453df4dbcc511ffb25317d33202becf63b4697c",
+      "sha256": "7edeae45f05fabad2d165a88c79d24d897101d6fcbab3bd2752109acd8180d2e",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.4-SEQUENCE-HEADER",
@@ -605,7 +605,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/tile_group.rs",
-      "sha256": "4423ab878d57199ac7978780ac537bd3573786df26663f5da1b919916d7d8104",
+      "sha256": "292a648f9248fc6c206303fe9314f14f88472250d4e3bf223890e3b21ff26dfb",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.19-TILE-GROUP"
@@ -804,7 +804,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "4d57b56f9ea8eba42bb65ce05975f7fed46c7720c6fd8a47fa28fab7dd6fe10f",
+      "sha256": "e5f80aa4e4775b6ae8bdc5b444683e54ad2c51794c6b0f168bded0e1a1c31385",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -875,7 +875,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "33615474a66ec7ad66061cb4c4651eac35ee3bbb14df2d566335cec6cb1d70ac",
+      "sha256": "ccffe31ce19b7b653314c765eb1add7c07ba27f2d0b4316ae8bd46e5afe9a065",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1107,7 +1107,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "137e44254c6a864c71ff8b27629463fca20452503939d5dd3279d28405422e08",
+      "sha256": "440489409c76c0dd011f8e57cc83eea9ddf6cb0bd40b30ff4c70059813c0a272",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1244,7 +1244,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "9822bae6be48df9594da3ca5768dfd4dc5a9b423118e8fe3dce6f83e5f16c767",
+      "sha256": "4bd393835371e3c5b325cb5ba496ad972f74f2b71b8d5016bce3b96c0915e9a1",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1397,7 +1397,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "fc2e9b1bc399712efe688923be3b82b41ecee96d01204cc3f093d27ab26be6f3",
+      "sha256": "c3dfc7af00051ce89f82133464cb0d9b9c26dcfabcdbb2e8fdc17c5b55b06f1a",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -1413,7 +1413,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "273856dfdb05626dcaaaceeb8e76b47f26276c642cdc487b8c171040b9379ad8",
+      "sha256": "95f8fac953192444b198b4b0e1dfe49482acc7c3bab8481714f928eb38d71cbd",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -3259,6 +3259,33 @@
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
       ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/frame-header-copy-bit-accounting/proposal.md",
+      "sha256": "6c17cce401115403b4fdbba3795161a90ce12b4e48413287823a39e6c294b61d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.1-FRAME-HEADER-GENERAL",
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.19-TILE-GROUP"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/frame-header-copy-bit-accounting/specs/bitstream/spec.md",
+      "sha256": "d0073365217a3ce4d1df6466b01d5eab69dc17bb75d237a76ecce50a97c2e413",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.1-FRAME-HEADER-GENERAL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/frame-header-copy-bit-accounting/tasks.md",
+      "sha256": "218c0b4a622663133d3003711b0e703962e7bff52c2f3041d2c4e97fd2e2dc46",
+      "scope_kind": "openspec",
+      "feature_ids": [],
       "outcome": "success"
     },
     {
