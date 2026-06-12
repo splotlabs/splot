@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "711b497d52c41e7381a1dadf8c0399045dce5cbf",
+  "audited_commit": "2bc1c68e56a03ba2a724b7792ffeb17d9da1ae9d",
   "outcome": "success",
   "files": [
     {
@@ -283,7 +283,7 @@
     },
     {
       "path": "crates/splot-cli/src/commands/inspect.rs",
-      "sha256": "b235d686f87b4c268508821dd225589121bdf4b340de91f2c08ae6528a4b3906",
+      "sha256": "3ec03367489483e0a51bbb23390fe4e7d3af0c977718b2fc5828eb4628025d0a",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.2.1-OBU-DISPATCH",
@@ -317,7 +317,7 @@
     },
     {
       "path": "crates/splot-cli/tests/cli.rs",
-      "sha256": "15f9a671bce6740ef61bce06a3c99a6f691fa4a1ce0d7c75af9a4e2928c4fed6",
+      "sha256": "23ae0e4f2b9ccd588ed1e34dc453df4dbcc511ffb25317d33202becf63b4697c",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.4-SEQUENCE-HEADER",
@@ -370,9 +370,6 @@
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
-        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
-        "AV2-5.18.8-TRANSFORM-CODING-MODES",
-        "AV2-5.18.9-GLOBAL-MOTION",
         "AV2-5.20-TILE-GROUP-PAYLOAD",
         "AV2-5.4-SEQUENCE-HEADER"
       ],
@@ -439,17 +436,18 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/info.rs",
-      "sha256": "7e41ec769a1a9dfe9e3d6c6e47e2659509df235192c8f1f96b26724070a86a72",
+      "sha256": "ab0d984e80e7cab2c94b4f26f777e0c2f5becc99e04e1ac057a75fc9185e7a64",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
-        "AV2-5.18.7-SEGMENTATION-TILING"
+        "AV2-5.18.7-SEGMENTATION-TILING",
+        "AV2-5.19-TILE-GROUP"
       ],
       "outcome": "success"
     },
     {
       "path": "crates/splot-core/src/headers/frame/mod.rs",
-      "sha256": "90a2dc570404e7029a2ab8f35cc67e5d75c47e3606857ff23bd579534efe0bc3",
+      "sha256": "eb7b438352dc0afcf2831bac31ad90ea106cced927e3ff773ee9a6858b8371fe",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -488,6 +486,17 @@
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.4-FRAME-SIZE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-core/src/headers/frame/tail.rs",
+      "sha256": "838e7eca32509907fa759a1c96caaf36260fa8155382c53300dac4f2dc3f4161",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
+        "AV2-5.18.8-TRANSFORM-CODING-MODES",
+        "AV2-5.18.9-GLOBAL-MOTION"
       ],
       "outcome": "success"
     },
@@ -931,7 +940,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "a88edbb3827b455c44153363ef149289b741341047a114a62d7ece17bb79dae6",
+      "sha256": "fe51efd0ee2337281a745b39c521e14c78e8dc8c08b29330a0f4cbae4d93f5e0",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1098,7 +1107,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "e052cd7be93f109128fd933a8080812d73a0121f1521915bc2104e7ac86fb071",
+      "sha256": "f8da3f9309d2425d2142075c99f6dabf6166449c76ff64fc0d9e8ff3eda59b80",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1235,7 +1244,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "d5990eba636f0a669d49166019322fd34f2549b7d991e47d4294dd28e468992e",
+      "sha256": "0a8dcda723fb05d16069b9e3ed172e294b795bc48dcf1162977c0bf7150de147",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1403,7 +1412,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "e8088652439c2defb2d82fe85794ee2c1c7125677bba1c8e71aa9cbda454d989",
+      "sha256": "273856dfdb05626dcaaaceeb8e76b47f26276c642cdc487b8c171040b9379ad8",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -1425,6 +1434,7 @@
         "AV2-5.17.10-METADATA-SCAN-TYPE",
         "AV2-5.17.3-METADATA-GROUP",
         "AV2-5.18-FRAME-HEADER",
+        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
         "AV2-5.18.2-FRAME-HEADER-INFO",
         "AV2-5.18.3-FRAME-CONFIGURATION",
         "AV2-5.18.4-FRAME-SIZE",
@@ -1432,6 +1442,8 @@
         "AV2-5.18.6-QUANTIZATION",
         "AV2-5.18.7-SEGMENTATION-TILING",
         "AV2-5.18.7.3-TILE-PARAMS",
+        "AV2-5.18.8-TRANSFORM-CODING-MODES",
+        "AV2-5.18.9-GLOBAL-MOTION",
         "AV2-5.19-TILE-GROUP",
         "AV2-5.2.1-OBU-DISPATCH",
         "AV2-5.2.3-TRAILING-BITS",
@@ -3216,6 +3228,39 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/frame-header-intra-tail-completion/proposal.md",
+      "sha256": "575fa85fffa191f5fd2811c27b89d92619db7b6967f846f64dc5177ba7043837",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.14-FILM-GRAIN",
+        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.8-TRANSFORM-CODING-MODES",
+        "AV2-5.18.9-GLOBAL-MOTION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/frame-header-intra-tail-completion/specs/bitstream/spec.md",
+      "sha256": "a354256a5abffbdfe377ae1b8fa8414c415ba3b34e156d3f81eb34be25512c3b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-5.18.8-TRANSFORM-CODING-MODES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/frame-header-intra-tail-completion/tasks.md",
+      "sha256": "5146708cbe408e22314dc6709e3d4f479078162a9519c4fefffaffeb42f2f350",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
+        "AV2-5.18.2-FRAME-HEADER-INFO"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
       "sha256": "ec25589a8a02879087f03de9cc0c8b07e5fedf96f9a48c8f3dd99be91c14d240",
       "scope_kind": "openspec",
@@ -3263,7 +3308,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "99707f3cf2e8f2262ae77f955a8d54ffb2c52f777ec2ee1ce953c00536988d7f",
+      "sha256": "c3884e175cc2d3bf680dc75b81958d52e866f3e7397f6a5650b9a6c66abf9d75",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -3353,7 +3398,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "5b4e428d598388a2cc34c5bb918817e0676e6a5db6849638af0873d8302832bf",
+      "sha256": "f0ad3658fb729e772220b8615a30d90abadea788c8279b075aaf647226bc3c70",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
