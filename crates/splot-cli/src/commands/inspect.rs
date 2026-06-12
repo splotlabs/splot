@@ -21,9 +21,10 @@ use splot_core::headers::content_interpretation::{
 };
 use splot_core::headers::film_grain::{FilmGrainObu, parse_film_grain};
 use splot_core::headers::frame::{
-    DeltaQParams, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderPrefix,
-    FrameReferenceStateView, LosslessInfo, QuantizationParams, SegmentationParams, SetupQmParams,
-    TileInfo, parse_frame_header_core, parse_frame_header_prefix,
+    CdefParams, CdefStrengthSet, DeblockingFilterParams, DeltaQParams, FrameHeaderCore,
+    FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderPrefix, FrameReferenceStateView,
+    GdfParams, LosslessInfo, QuantizationParams, SegmentationParams, SetupQmParams, TileInfo,
+    parse_frame_header_core, parse_frame_header_prefix,
 };
 use splot_core::headers::metadata::{MetadataUnit, parse_metadata_group, parse_metadata_short};
 use splot_core::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
@@ -687,6 +688,12 @@ struct FrameHeaderCoreView {
     delta_q: Option<DeltaQParamsView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     lossless: Option<LosslessInfoView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deblocking: Option<DeblockingFilterParamsView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gdf: Option<GdfParamsView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cdef: Option<CdefParamsView>,
     consumed_bits: u64,
 }
 
@@ -877,6 +884,99 @@ impl LosslessInfoView {
     }
 }
 
+/// Parsed `deblocking_filter_params()` for `--json` (AV2 § 5.18.5.2).
+#[derive(Serialize)]
+struct DeblockingFilterParamsView {
+    apply_deblocking_filter: [bool; 4],
+    df_delta_q_present: [bool; 4],
+    df_delta_q: [i32; 4],
+}
+
+impl DeblockingFilterParamsView {
+    fn new(params: &DeblockingFilterParams) -> Self {
+        Self {
+            apply_deblocking_filter: params.apply_deblocking_filter,
+            df_delta_q_present: params.df_delta_q_present,
+            df_delta_q: params.df_delta_q,
+        }
+    }
+}
+
+/// Parsed `gdf_params()` for `--json` (AV2 § 5.18.7.9). The per-frame fields are
+/// omitted when GDF is not frame-enabled.
+#[derive(Serialize)]
+struct GdfParamsView {
+    gdf_frame_enable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gdf_per_block: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gdf_pic_qc_idx: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gdf_pic_scale_idx: Option<u8>,
+}
+
+impl GdfParamsView {
+    fn new(params: &GdfParams) -> Self {
+        Self {
+            gdf_frame_enable: params.gdf_frame_enable,
+            gdf_per_block: params.gdf_per_block,
+            gdf_pic_qc_idx: params.gdf_pic_qc_idx,
+            gdf_pic_scale_idx: params.gdf_pic_scale_idx,
+        }
+    }
+}
+
+/// One CDEF strength set for `--json` (AV2 § 5.18.7.10).
+#[derive(Serialize)]
+struct CdefStrengthSetView {
+    y_pri_strength: u8,
+    y_sec_strength: u8,
+    uv_pri_strength: u8,
+    uv_sec_strength: u8,
+}
+
+impl CdefStrengthSetView {
+    fn new(set: &CdefStrengthSet) -> Self {
+        Self {
+            y_pri_strength: set.y_pri_strength,
+            y_sec_strength: set.y_sec_strength,
+            uv_pri_strength: set.uv_pri_strength,
+            uv_sec_strength: set.uv_sec_strength,
+        }
+    }
+}
+
+/// Parsed `cdef_params()` for `--json` (AV2 § 5.18.7.10). The per-frame fields are
+/// omitted when CDEF is not frame-enabled.
+#[derive(Serialize)]
+struct CdefParamsView {
+    cdef_frame_enable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cdef_damping: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cdef_strengths: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cdef_on_skip_txfm_frame_enable: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    strengths: Vec<CdefStrengthSetView>,
+}
+
+impl CdefParamsView {
+    fn new(params: &CdefParams) -> Self {
+        Self {
+            cdef_frame_enable: params.cdef_frame_enable,
+            cdef_damping: params.cdef_damping,
+            cdef_strengths: params.cdef_strengths,
+            cdef_on_skip_txfm_frame_enable: params.cdef_on_skip_txfm_frame_enable,
+            strengths: params
+                .strengths
+                .iter()
+                .map(CdefStrengthSetView::new)
+                .collect(),
+        }
+    }
+}
+
 impl FrameHeaderCoreView {
     fn new(core: &FrameHeaderCore) -> Self {
         Self {
@@ -907,6 +1007,12 @@ impl FrameHeaderCoreView {
             qm_params: core.setup_qm_params.as_ref().map(SetupQmParamsView::new),
             delta_q: core.delta_q_params.as_ref().map(DeltaQParamsView::new),
             lossless: core.lossless_info.as_ref().map(LosslessInfoView::new),
+            deblocking: core
+                .deblocking_filter_params
+                .as_ref()
+                .map(DeblockingFilterParamsView::new),
+            gdf: core.gdf_params.as_ref().map(GdfParamsView::new),
+            cdef: core.cdef_params.as_ref().map(CdefParamsView::new),
             consumed_bits: core.consumed_bits,
         }
     }
@@ -1183,6 +1289,7 @@ fn push_inspect_record(
                         mfh_allow_seg_info_change: mfh.mfh_allow_seg_info_change,
                         mfh_segment_info: mfh.segment_info,
                         mfh_deblocking_filter_update: mfh.mfh_deblocking_filter_update,
+                        mfh_apply_deblocking_filter: mfh.mfh_apply_deblocking_filter,
                         offset: obu.offset,
                     },
                 );

@@ -264,8 +264,8 @@ fn inspect_json_exposes_frame_header_core() {
     // The fixture is TemporalDelimiter, a non-single-picture SequenceHeader (id 0),
     // then an OBU_CLOSED_LOOP_KEY whose first tile group carries a frame header parsed
     // through the full § 5.18.2 intra structure cluster (tile_info, quantization,
-    // segmentation, QM setup, delta-q, lossless tail): a 16x16 key frame. The
-    // inspector surfaces the core summary.
+    // segmentation, QM setup, delta-q, lossless tail, and the loop-filter cluster
+    // deblocking/GDF/CDEF): a 16x16 key frame. The inspector surfaces the core summary.
     let path = fixture("frame-header-core.av2");
     let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0));
@@ -279,7 +279,7 @@ fn inspect_json_exposes_frame_header_core() {
 
     let core = &records[2]["frame_header_core"];
     assert_eq!(core["payload_kind"], "frame_header_core");
-    assert_eq!(core["status"], "stopped_before_deblocking_filter_params");
+    assert_eq!(core["status"], "stopped_before_loop_restoration_params");
     assert_eq!(core["frame_type"], "key");
     assert_eq!(core["frame_is_intra"], true);
     assert_eq!(core["show_existing_frame"], false);
@@ -315,6 +315,15 @@ fn inspect_json_exposes_frame_header_core() {
     assert_eq!(lossless["has_lossless_segment"], false);
     assert_eq!(lossless["allow_tcq"], false);
     assert_eq!(lossless["allow_parity_hiding"], false);
+    // The § 5.18.5.2 / § 5.18.7.9 / § 5.18.7.10 loop-filter cluster: deblocking with all
+    // apply flags off, and GDF / CDEF disabled at the sequence level.
+    let deblocking = &core["deblocking"];
+    assert_eq!(
+        deblocking["apply_deblocking_filter"],
+        serde_json::json!([false, false, false, false])
+    );
+    assert_eq!(core["gdf"]["gdf_frame_enable"], false);
+    assert_eq!(core["cdef"]["cdef_frame_enable"], false);
 }
 
 #[test]
@@ -347,7 +356,7 @@ fn inspect_json_exposes_mfh_backed_frame_header_core() {
     assert_eq!(records[2]["header"]["obu_type"], "MultiFrameHeader");
     let core = &records[3]["frame_header_core"];
     assert_eq!(core["payload_kind"], "frame_header_core");
-    assert_eq!(core["status"], "stopped_before_deblocking_filter_params");
+    assert_eq!(core["status"], "stopped_before_loop_restoration_params");
     assert_eq!(core["cur_mfh_id"], 1);
     assert_eq!(core["frame_type"], "key");
     assert_eq!(core["frame_is_intra"], true);
@@ -359,6 +368,15 @@ fn inspect_json_exposes_mfh_backed_frame_header_core() {
     assert_eq!(tile["tile_rows"], 1);
     assert_eq!(core["quantization"]["base_q_idx"], 100);
     assert_eq!(core["segmentation"]["segmentation_enabled"], false);
+    // The resolved MFH did not signal a deblocking update (mfh_deblocking_filter_update
+    // == 0), so apply_deblocking_filter[0]/[1] are read from the frame (both 0); GDF and
+    // CDEF are disabled at the sequence level.
+    assert_eq!(
+        core["deblocking"]["apply_deblocking_filter"],
+        serde_json::json!([false, false, false, false])
+    );
+    assert_eq!(core["gdf"]["gdf_frame_enable"], false);
+    assert_eq!(core["cdef"]["cdef_frame_enable"], false);
 }
 
 #[test]

@@ -100,10 +100,15 @@ pub struct MultiFrameHeaderRecord {
     /// `MfhFeatureData[mfhId]`, AV2 § 5.7 / § 5.4.9), present when
     /// `mfh_seg_info_present_flag`. Reused by the § 5.18.7.1 `reuse_seg_info` arm.
     pub mfh_segment_info: Option<SegmentInfo>,
-    /// `mfh_deblocking_filter_update[mfhId]` (AV2 § 5.7). Recorded as groundwork; the
-    /// deblocking parse it gates lands with the frame-filtering change
-    /// (`frame-filtering-deblocking-gdf-cdef`).
+    /// `mfh_deblocking_filter_update[mfhId]` (AV2 § 5.7): selects the § 5.18.5.2
+    /// `cur_mfh_id > 0` deblocking arm, where `apply_deblocking_filter` is copied from
+    /// the MFH instead of read from the frame header.
     pub mfh_deblocking_filter_update: bool,
+    /// `mfh_apply_deblocking_filter[mfhId][0..4]` (AV2 § 5.7): copied into
+    /// `apply_deblocking_filter[i]` by § 5.18.5.2 (mirror :5951-5965) when
+    /// `mfh_deblocking_filter_update` is set, gated by `NumPlanes`. All `false` when no
+    /// update was signalled.
+    pub mfh_apply_deblocking_filter: [bool; 4],
     /// Source byte offset of the multi-frame header OBU that produced this record.
     pub offset: ByteOffset,
 }

@@ -27,20 +27,27 @@
 //! - **Intra frame (key / intra-only / single-picture)** → reads the full control
 //!   region through `frame_size()`, `screen_content_params()`, `intrabc_params()`,
 //!   `disable_cdf_update`, `tile_info()`, `quantization_params()`,
-//!   `segmentation_params()`, `setup_qm_params()`, `delta_q_params()`, and the
-//!   § 5.18.2 lossless/`allow_tcq`/`allow_parity_hiding` tail, stopping before
-//!   `deblocking_filter_params()` (§ 5.18.5.2)
-//!   ([`FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams`]). On the
+//!   `segmentation_params()`, `setup_qm_params()`, `delta_q_params()`, the
+//!   § 5.18.2 lossless/`allow_tcq`/`allow_parity_hiding` tail, and the loop-filter
+//!   cluster `deblocking_filter_params()` (§ 5.18.5.2), `gdf_params()` (§ 5.18.7.9),
+//!   and `cdef_params()` (§ 5.18.7.10), stopping before `lr_params()` (loop
+//!   restoration, § 5.18.7.11)
+//!   ([`FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams`]). On the
 //!   `cur_mfh_id > 0` path the resolved in-band multi-frame header's § 5.7 state is
 //!   threaded in (the [`MultiFrameHeaderRecord`] passed via
-//!   [`FrameHeaderParseInput::mfh_record`]) so the § 5.18.4.1 default dimensions and
-//!   the § 5.18.7.1 MFH-gated segmentation arm parse the same as the direct path; a
-//!   `cur_mfh_id > 0` frame whose MFH is unresolvable still stops with
+//!   [`FrameHeaderParseInput::mfh_record`]) so the § 5.18.4.1 default dimensions, the
+//!   § 5.18.7.1 MFH-gated segmentation arm, and the § 5.18.5.2 MFH deblocking arm
+//!   parse the same as the direct path; a `cur_mfh_id > 0` frame whose MFH is
+//!   unresolvable still stops with
 //!   [`FrameHeaderParseStatus::UnsupportedUntilFeature`] rather than guessing.
 
 use crate::bitio::BitReader;
 use crate::error::{Error, Result};
 use crate::headers::frame::config::{parse_intrabc_params, parse_screen_content_params};
+use crate::headers::frame::filtering::{
+    CdefParams, CoreSeqFilterView, DeblockingFilterParams, GdfGeometry, GdfParams,
+    MfhDeblockingView, parse_cdef_params, parse_deblocking_filter_params, parse_gdf_params,
+};
 use crate::headers::frame::quant::{
     CoreSeqQuantView, DeltaQParams, LosslessInfo, QuantizationParams, SetupQmParams,
     parse_delta_q_params, parse_lossless_info, parse_quantization_params, parse_setup_qm_params,
@@ -90,10 +97,12 @@ pub enum FrameHeaderParseStatus {
     /// An intra frame's control region was read through `disable_cdf_update`,
     /// `tile_info()` (§ 5.18.7.2), `quantization_params()` (§ 5.18.6.1),
     /// `segmentation_params()` (§ 5.18.7.1), `setup_qm_params()` (§ 5.18.6.2),
-    /// `delta_q_params()` (§ 5.18.7.8), and the § 5.18.2 lossless/`allow_tcq`/
-    /// `allow_parity_hiding` tail; the parser stopped before
-    /// `deblocking_filter_params()` (§ 5.18.5.2).
-    StoppedBeforeDeblockingFilterParams,
+    /// `delta_q_params()` (§ 5.18.7.8), the § 5.18.2 lossless/`allow_tcq`/
+    /// `allow_parity_hiding` tail, and the loop-filter cluster
+    /// `deblocking_filter_params()` (§ 5.18.5.2), `gdf_params()` (§ 5.18.7.9), and
+    /// `cdef_params()` (§ 5.18.7.10); the parser stopped before `lr_params()`
+    /// (loop restoration, § 5.18.7.11).
+    StoppedBeforeLoopRestorationParams,
     /// A branch needs decoder/reference state or syntax this phase does not model
     /// (e.g. the inter reference map, or the rest of a bridge frame). `feature_id` is
     /// the implementation-matrix row that tracks the missing coverage.
@@ -111,7 +120,7 @@ impl FrameHeaderParseStatus {
             Self::ActivationFieldsOnly => "activation_fields_only",
             Self::CoreFieldsOnly => "core_fields_only",
             Self::ShowExistingFrameComplete => "show_existing_frame_complete",
-            Self::StoppedBeforeDeblockingFilterParams => "stopped_before_deblocking_filter_params",
+            Self::StoppedBeforeLoopRestorationParams => "stopped_before_loop_restoration_params",
             Self::UnsupportedUntilFeature { .. } => "unsupported_until_feature",
         }
     }
@@ -291,6 +300,15 @@ pub struct FrameHeaderCore {
     /// The § 5.18.2 per-segment lossless/QM derivation and the `allow_tcq` /
     /// `allow_parity_hiding` reads, when reached.
     pub lossless_info: Option<LosslessInfo>,
+    /// Parsed `deblocking_filter_params()` (AV2 § 5.18.5.2), when reached on the intra
+    /// tail (after the lossless derivation).
+    pub deblocking_filter_params: Option<DeblockingFilterParams>,
+    /// Parsed `gdf_params()` (AV2 § 5.18.7.9), when reached. Per § 5.18.2 call order it
+    /// is parsed **after** `deblocking_filter_params()`.
+    pub gdf_params: Option<GdfParams>,
+    /// Parsed `cdef_params()` (AV2 § 5.18.7.10), when reached. Per § 5.18.2 call order
+    /// it is parsed **after** `gdf_params()`.
+    pub cdef_params: Option<CdefParams>,
     /// Bits consumed by this parse (not necessarily the whole frame header).
     pub consumed_bits: u64,
 }
@@ -328,6 +346,8 @@ struct CoreSeqView {
     seg: CoreSeqSegView,
     /// § 5.18.7.2 tile-info inputs (AV2 § 5.4.2 / § 5.4.3 / § 5.4.8).
     tile: CoreSeqTileView,
+    /// § 5.18.5.2 / § 5.18.7.9 / § 5.18.7.10 loop-filter inputs (AV2 § 5.4.10).
+    filter: CoreSeqFilterView,
 }
 
 impl CoreSeqView {
@@ -338,6 +358,9 @@ impl CoreSeqView {
         let scc = seq.screen_content.as_ref()?;
         let tq = seq.transform_quant_entropy.as_ref()?;
         let tile = seq.tile.as_ref()?;
+        // `sequence_filter_config()` (§ 5.4.10) gates the § 5.18.2 tail loop-filter
+        // structures; without it the intra tail cannot reach deblocking/GDF/CDEF.
+        let filter = seq.filter.as_ref()?;
         let general = &seq.general;
         Some(Self {
             num_ref_frames: u32::from(inter.num_ref_frames),
@@ -357,6 +380,16 @@ impl CoreSeqView {
             quant: CoreSeqQuantView::from_sequence_configs(general, tq),
             seg: CoreSeqSegView::from_sequence_config(segment),
             tile: CoreSeqTileView::from_sequence_configs(general, partition, tq, tile),
+            // AV2 § 5.4.10: the loop-filter tool flags consumed by the § 5.18.2 tail.
+            filter: CoreSeqFilterView {
+                enable_cdef: filter.enable_cdef,
+                enable_gdf: filter.enable_gdf,
+                gdf_unit_matches_sb_size: filter.gdf_unit_matches_sb_size,
+                disable_loopfilters_across_tiles: filter.disable_loopfilters_across_tiles,
+                cdef_on_skip_txfm: filter.cdef_on_skip_txfm,
+                df_par_bits_minus_2: filter.df_par_bits_minus_2,
+                single_picture_header_flag: general.single_picture_header_flag,
+            },
         })
     }
 }
@@ -377,6 +410,10 @@ struct MfhFrameView {
     /// The § 5.18.7.1 MFH-gated segmentation inputs, `Some` only when
     /// `mfh_seg_info_present_flag` is set (the gate selecting the MFH branch).
     seg: Option<MfhSegView>,
+    /// The § 5.18.5.2 MFH deblocking-update inputs: `mfh_deblocking_filter_update`
+    /// and `mfh_apply_deblocking_filter[0..4]` (AV2 § 5.7), consulted by the
+    /// `cur_mfh_id > 0` deblocking arm (mirror :5949).
+    deblocking: MfhDeblockingView,
 }
 
 impl MfhFrameView {
@@ -417,7 +454,19 @@ impl MfhFrameView {
         } else {
             None
         };
-        Self { default_dims, seg }
+        // AV2 § 5.18.5.2 (mirror :5949): the resolved MFH's deblocking-update state
+        // for the `cur_mfh_id > 0` arm. `mfh_apply_deblocking_filter` is all-false
+        // unless the record signalled an update (§ 5.7 parse), so copying it is safe
+        // even when the update bit is clear (the arm is then not selected).
+        let deblocking = MfhDeblockingView {
+            mfh_deblocking_filter_update: record.mfh_deblocking_filter_update,
+            mfh_apply_deblocking_filter: record.mfh_apply_deblocking_filter,
+        };
+        Self {
+            default_dims,
+            seg,
+            deblocking,
+        }
     }
 }
 
@@ -514,6 +563,9 @@ fn init_core_from_prefix(prefix: &FrameHeaderPrefix, obu_type: ObuType) -> Frame
         setup_qm_params: None,
         delta_q_params: None,
         lossless_info: None,
+        deblocking_filter_params: None,
+        gdf_params: None,
+        cdef_params: None,
         consumed_bits: 0,
     }
 }
@@ -741,15 +793,17 @@ fn parse_intra_tail(
 /// `tile_info()` (§ 5.18.7.2), `quantization_params()` (§ 5.18.6.1),
 /// `set_primary_ref_frame_and_ctx( 1 )` (no bits), `segmentation_params()`
 /// (§ 5.18.7.1), `setup_qm_params()` (§ 5.18.6.2), `delta_q_params()` (§ 5.18.7.8),
-/// the per-segment lossless/QM derivation, and `allow_tcq` / `allow_parity_hiding`,
-/// in exactly that order (AV2 v1.0.0 § 5.18.2,
-/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`).
+/// the per-segment lossless/QM derivation, `allow_tcq` / `allow_parity_hiding`, and the
+/// loop-filter cluster `deblocking_filter_params()` (§ 5.18.5.2), `gdf_params()`
+/// (§ 5.18.7.9), and `cdef_params()` (§ 5.18.7.10), in exactly that order
+/// (AV2 v1.0.0 § 5.18.2, `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`). The
+/// parser then stops before `lr_params()` (§ 5.18.7.11).
 ///
 /// The intra path always has `TipFrameMode == TIP_FRAME_DISABLED` and `!IsBridge`.
 /// On the `cur_mfh_id > 0` path the resolved multi-frame-header state is supplied via
-/// `mfh` (the § 5.18.4.1 default dimensions and the § 5.18.7.1 MFH segmentation arm);
-/// a `cur_mfh_id > 0` frame whose in-band MFH is unresolvable never reaches here with a
-/// known `frame_size`, so it still stops with
+/// `mfh` (the § 5.18.4.1 default dimensions, the § 5.18.7.1 MFH segmentation arm, and
+/// the § 5.18.5.2 MFH deblocking arm); a `cur_mfh_id > 0` frame whose in-band MFH is
+/// unresolvable never reaches here with a known `frame_size`, so it still stops with
 /// [`FrameHeaderParseStatus::UnsupportedUntilFeature`] rather than guessing.
 fn parse_intra_structures(
     reader: &mut BitReader<'_>,
@@ -832,6 +886,10 @@ fn parse_intra_structures(
         &segmentation,
         seq.seg.max_segments,
     )?);
+    let coded_lossless = core
+        .lossless_info
+        .as_ref()
+        .is_some_and(|info| info.coded_lossless);
     // These were parsed earlier but are stored only after `parse_lossless_info`
     // releases its borrows; on error the core is never returned, so the deferred
     // assignment is unobservable.
@@ -839,9 +897,66 @@ fn parse_intra_structures(
     core.setup_qm_params = Some(qm);
     core.delta_q_params = Some(delta_q);
 
-    // AV2 § 5.18.2: deblocking_filter_params() (§ 5.18.5.2) is next; this phase
+    // AV2 § 5.18.2 tail (mirror :5297-5301): deblocking_filter_params() (§ 5.18.5.2),
+    // gdf_params() (§ 5.18.7.9), cdef_params() (§ 5.18.7.10), in that order. All three
+    // are determined by the parsed sequence filter config (§ 5.4.10), the frame state
+    // (CodedLossless, NumPlanes), the parsed tile_info() geometry, and — on the
+    // cur_mfh_id > 0 path — the resolved MFH's deblocking-update state.
+
+    // AV2 § 5.18.5.2: the cur_mfh_id > 0 arm copies apply_deblocking_filter from the
+    // resolved MFH; on the cur_mfh_id == 0 direct path no MFH view is supplied.
+    let mfh_deblocking = mfh.map(|view| &view.deblocking);
+    core.deblocking_filter_params = Some(parse_deblocking_filter_params(
+        reader,
+        coded_lossless,
+        seq.quant.num_planes,
+        seq.filter.df_par_bits_minus_2,
+        mfh_deblocking,
+    )?);
+
+    // AV2 § 5.18.7.9: gdf_params() needs the frame SbSize and the parsed tile_info()
+    // geometry (MiCols/MiRows via the start-array sentinels, TileCols/TileRows, and the
+    // per-tile MiColStarts/MiRowStarts for the SB-64x64 alignment scan). The intra path
+    // SbSize is frame_sb_size(frame_is_intra == true). The geometry borrow of
+    // `core.tile_info` is scoped so the later `core.gdf_params` write is unambiguous.
+    let gdf = {
+        // `tile_info` was set to `Some` earlier in this function (every other path
+        // returns before here), so this binding never falls through; the explicit guard
+        // keeps the parser panic-free even under direct API misuse rather than
+        // unwrapping. The borrow is scoped to this block so the later `core.gdf_params`
+        // write is unambiguous.
+        let Some(tile_info) = core.tile_info.as_ref() else {
+            core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+                feature_id: FRAME_HEADER_INFO_FEATURE,
+            };
+            return Ok(());
+        };
+        let geometry = GdfGeometry {
+            sb_size: seq.tile.frame_sb_size(true),
+            // MiColStarts[TileCols] / MiRowStarts[TileRows] are the MiCols / MiRows
+            // sentinels appended by parse_tile_info(); fall back to 0 when absent.
+            mi_cols: tile_info.mi_col_starts.last().copied().unwrap_or(0),
+            mi_rows: tile_info.mi_row_starts.last().copied().unwrap_or(0),
+            tile_cols: tile_info.tile_cols,
+            tile_rows: tile_info.tile_rows,
+            mi_col_starts: &tile_info.mi_col_starts,
+            mi_row_starts: &tile_info.mi_row_starts,
+        };
+        parse_gdf_params(reader, coded_lossless, &seq.filter, geometry)?
+    };
+    core.gdf_params = Some(gdf);
+
+    // AV2 § 5.18.7.10: cdef_params().
+    core.cdef_params = Some(parse_cdef_params(
+        reader,
+        coded_lossless,
+        seq.quant.num_planes,
+        &seq.filter,
+    )?);
+
+    // AV2 § 5.18.2: lr_params() (loop restoration, § 5.18.7.11) is next; this phase
     // stops before it.
-    core.status = FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams;
+    core.status = FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams;
     Ok(())
 }
 
@@ -977,6 +1092,22 @@ mod tests {
     /// A representative non-single-picture sequence view: OrderHintBits = 4,
     /// NumRefFrames = 8, no long-term ids, full refresh signaling, screen-content
     /// forced off, 12-bit frame dimensions, 4096x2304 maximum.
+    /// A test sequence filter view (§ 5.4.10) with CDEF and GDF disabled, so the
+    /// § 5.18.2 tail loop-filter cluster reads only the `deblocking_filter_params()`
+    /// `apply_deblocking_filter` bits (GDF / CDEF return without reading). Override the
+    /// individual flags in a test that needs the enabled arms.
+    fn base_filter() -> CoreSeqFilterView {
+        CoreSeqFilterView {
+            enable_cdef: false,
+            enable_gdf: false,
+            gdf_unit_matches_sb_size: false,
+            disable_loopfilters_across_tiles: false,
+            cdef_on_skip_txfm: crate::headers::sequence::CdefOnSkipTxfm::Adaptive,
+            df_par_bits_minus_2: 0,
+            single_picture_header_flag: false,
+        }
+    }
+
     fn base_seq() -> CoreSeqView {
         let (quant, seg, tile) = test_sub_views();
         CoreSeqView {
@@ -997,6 +1128,7 @@ mod tests {
             quant,
             seg,
             tile,
+            filter: base_filter(),
         }
     }
 
@@ -1056,13 +1188,17 @@ mod tests {
         bits.bit(0); // delta_q_present (§ 5.18.7.8, base_q_idx > 0)
         // § 5.18.2 lossless tail: base_q_idx 90 -> CodedLossless = 0; allow_tcq is
         // inferred enable_tcq (0) and allow_parity_hiding is forced 0 (no bits).
+        // deblocking_filter_params() (§ 5.18.5.2): not lossless -> apply[0]/[1] read.
+        bits.bit(0); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1] (both 0 -> no chroma pair, no delta-Q)
+        // gdf_params() / cdef_params(): enable_gdf == enable_cdef == 0 -> no bits.
         let data = bits.into_bytes();
         let (core, consumed) =
             parse_body(&data, ObuType::ClosedLoopKey, true, &base_seq()).unwrap();
 
         assert_eq!(
             core.status,
-            FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams
+            FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams
         );
         assert!(core.cur_mfh_id.is_zero());
         assert_eq!(core.seq_header_id_in_frame_header, Some(1));
@@ -1089,11 +1225,15 @@ mod tests {
         assert!(!lossless.has_lossless_segment);
         assert!(!lossless.allow_tcq);
         assert!(!lossless.allow_parity_hiding);
+        let deblocking = core.deblocking_filter_params.unwrap();
+        assert_eq!(deblocking.apply_deblocking_filter, [false; 4]);
+        assert!(!core.gdf_params.unwrap().gdf_frame_enable);
+        assert!(!core.cdef_params.unwrap().cdef_frame_enable);
         // uvlc(0)=1 + uvlc(1)=3 prefix bits, then 33 core bits (1+1+1+4 control/output,
         // 24 frame_size, 1 allow_intrabc, 1 disable_cdf_update), then 14 structure
         // bits (3 tile_info, 8 base_q_idx, 1 segmentation_enabled, 1 using_qmatrix,
-        // 1 delta_q_present).
-        assert_eq!(consumed, 4 + 33 + 14);
+        // 1 delta_q_present), then 2 deblocking apply bits (GDF/CDEF disabled -> 0 bits).
+        assert_eq!(consumed, 4 + 33 + 14 + 2);
     }
 
     /// A fixed in-band multi-frame-header record resolving `cur_mfh_id` for the
@@ -1118,8 +1258,110 @@ mod tests {
             mfh_allow_seg_info_change: allow,
             mfh_segment_info: info,
             mfh_deblocking_filter_update: false,
+            mfh_apply_deblocking_filter: [false; 4],
             offset: ByteOffset::new(0),
         }
+    }
+
+    /// Like [`mfh_record`] but sets the § 5.18.5.2 deblocking-update arm inputs.
+    fn mfh_record_with_deblocking(
+        mfh_frame_size: Option<crate::hls::MfhFrameSize>,
+        update: bool,
+        apply: [bool; 4],
+    ) -> MultiFrameHeaderRecord {
+        let mut record = mfh_record(mfh_frame_size, None);
+        record.mfh_deblocking_filter_update = update;
+        record.mfh_apply_deblocking_filter = apply;
+        record
+    }
+
+    #[test]
+    fn frame_header_core_mfh_deblocking_update_copies_apply_no_apply_bits() {
+        // cur_mfh_id == 1, resolved MFH with mfh_deblocking_filter_update == 1 and
+        // mfh_apply_deblocking_filter == [1, 0, 1, 1]: § 5.18.5.2 copies apply from the
+        // MFH (no apply bits read), and NumPlanes == 3 with apply[0] set copies the
+        // chroma pair. Only the per-i df_delta_q_present bits are read.
+        let mfh_size = Some(crate::hls::MfhFrameSize {
+            width_bits: 12,
+            height_bits: 12,
+            width_minus_1: 1920 - 1,
+            height_minus_1: 1080 - 1,
+        });
+        let record = mfh_record_with_deblocking(mfh_size, true, [true, false, true, true]);
+        let view = MfhFrameView::from_record(&record, &base_seq());
+
+        let mut bits = Bits::default();
+        bits.uvlc(1); // cur_mfh_id == 1
+        bits.bit(0); // immediate_output_frame
+        bits.bit(0); // implicit_output_frame
+        bits.bit(0); // frame_size_override_flag == 0 (MFH default dims, no bits)
+        bits.f(7, 4); // order_hint
+        bits.bit(0); // allow_intrabc
+        bits.bit(0); // disable_cdf_update
+        bits.bit(1); // uniform_tile_spacing_flag (single tile)
+        bits.bit(0); // increment_tile_cols_log2
+        bits.bit(0); // increment_tile_rows_log2
+        bits.f(70, 8); // base_q_idx (non-lossless)
+        bits.bit(0); // segmentation_enabled
+        bits.bit(0); // using_qmatrix
+        bits.bit(0); // delta_q_present
+        // deblocking_filter_params(): MFH arm -> apply copied [1,0,1,1], no apply bits.
+        // df_delta_q_present read for i in {0, 2, 3} (apply set); i == 1 skipped.
+        bits.bit(0); // df_delta_q_present[0]
+        bits.bit(0); // df_delta_q_present[2]
+        bits.bit(0); // df_delta_q_present[3]
+        let data = bits.into_bytes();
+        let (core, _) = parse_body_with_mfh(
+            &data,
+            ObuType::ClosedLoopKey,
+            true,
+            &base_seq(),
+            Some(&view),
+        )
+        .unwrap();
+
+        let deblocking = core.deblocking_filter_params.unwrap();
+        assert_eq!(
+            deblocking.apply_deblocking_filter,
+            [true, false, true, true],
+            "the MFH update arm copies apply_deblocking_filter from the record"
+        );
+        assert_eq!(deblocking.df_delta_q, [0; 4]);
+        assert_eq!(
+            core.status,
+            FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams
+        );
+    }
+
+    #[test]
+    fn frame_header_core_eof_inside_deblocking_filter_params() {
+        // A non-lossless intra frame whose payload is truncated so the
+        // deblocking_filter_params() apply bits overrun the buffer: the parser reports
+        // EOF without panicking. The frame parses through the structure cluster and into
+        // the loop-filter cluster; dropping the trailing byte removes the bits the
+        // apply_deblocking_filter reads would consume.
+        let mut bits = Bits::default();
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(0); // seq_header_id_in_frame_header
+        bits.bit(0); // immediate_output_frame
+        bits.bit(0); // implicit_output_frame
+        bits.bit(1); // frame_size_override_flag
+        bits.f(5, 4); // order_hint
+        bits.f(16 - 1, 12); // frame_width_minus_1
+        bits.f(16 - 1, 12); // frame_height_minus_1
+        bits.bit(0); // allow_intrabc
+        bits.bit(0); // disable_cdf_update
+        bits.bit(1); // uniform_tile_spacing_flag
+        bits.bit(0); // increment_tile_cols_log2
+        bits.bit(0); // increment_tile_rows_log2
+        bits.f(90, 8); // base_q_idx (non-lossless -> deblocking reads apply bits)
+        bits.bit(0); // segmentation_enabled
+        bits.bit(0); // using_qmatrix
+        bits.bit(0); // delta_q_present
+        let mut data = bits.into_bytes();
+        data.pop(); // drop the trailing (partial) byte so the apply reads overrun
+        let err = parse_body(&data, ObuType::ClosedLoopKey, true, &base_seq()).unwrap_err();
+        assert!(matches!(err, Error::UnexpectedEof { .. }));
     }
 
     #[test]
@@ -1243,6 +1485,11 @@ mod tests {
         bits.bit(0); // delta_q_present (base_q_idx 70 > 0; 0 -> no further delta_q bits)
         // lossless tail: base_q_idx 70 non-lossless, no QM -> no qm_index bits; base_seq
         // has choose_tcq_per_frame / enable_parity_hiding off -> no allow_* bits.
+        // deblocking_filter_params(): the resolved MFH did not signal an update
+        // (mfh_deblocking_filter_update == 0), so apply[0]/[1] are read from the
+        // bitstream. GDF/CDEF disabled in base_filter -> no bits.
+        bits.bit(0); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1]
         let data = bits.into_bytes();
         let (core, _) = parse_body_with_mfh(
             &data,
@@ -1269,7 +1516,7 @@ mod tests {
         assert!(!core.segmentation_params.unwrap().segmentation_enabled);
         assert_eq!(
             core.status,
-            FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams
+            FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams
         );
     }
 
@@ -1313,9 +1560,18 @@ mod tests {
             Some(FrameSize::new(4096, 2304)),
             "omitted MFH size infers the sequence maxima (:4101)"
         );
+        // CodedLossless == 1 here, so deblocking_filter_params() returns with all
+        // apply flags 0 and GDF/CDEF stay disabled, all without reading bits.
+        assert!(core.lossless_info.as_ref().unwrap().coded_lossless);
+        assert_eq!(
+            core.deblocking_filter_params
+                .unwrap()
+                .apply_deblocking_filter,
+            [false; 4]
+        );
         assert_eq!(
             core.status,
-            FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams
+            FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams
         );
     }
 
@@ -1367,6 +1623,10 @@ mod tests {
         bits.bit(0); // delta_q_present
         // lossless tail: segment 3 has alt-q feature data 7 -> non-lossless; others
         // disabled (qindex == base_q_idx 70, non-lossless). No QM -> no qm_index bits.
+        // deblocking_filter_params(): not lossless, MFH did not signal an update ->
+        // apply[0]/[1] read. GDF/CDEF disabled in base_filter.
+        bits.bit(0); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1]
         let data = bits.into_bytes();
         let (core, _) = parse_body_with_mfh(
             &data,
@@ -1393,7 +1653,7 @@ mod tests {
         assert_eq!(seg.last_active_seg_id, 3);
         assert_eq!(
             core.status,
-            FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams
+            FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams
         );
     }
 
@@ -1402,11 +1662,15 @@ mod tests {
         // The full § 5.18.2 intra tail in spec order: a 2x1-tile tile_info() with
         // context fields, quantization_params(), segmentation_params() (enabled,
         // fresh all-disabled seg_info), setup_qm_params() with two QM sets,
-        // delta_q_params(), per-segment qm_index reads, allow_tcq, and
-        // allow_parity_hiding.
+        // delta_q_params(), per-segment qm_index reads, allow_tcq,
+        // allow_parity_hiding, and the loop-filter cluster
+        // deblocking_filter_params() / gdf_params() / cdef_params() with both GDF and
+        // CDEF enabled.
         let mut seq = base_seq();
         seq.quant.choose_tcq_per_frame = true;
         seq.quant.enable_parity_hiding = true;
+        seq.filter.enable_gdf = true;
+        seq.filter.enable_cdef = true;
         let mut bits = Bits::default();
         bits.uvlc(0); // cur_mfh_id == 0
         bits.uvlc(0); // seq_header_id_in_frame_header
@@ -1451,12 +1715,40 @@ mod tests {
         }
         bits.bit(0); // allow_tcq (choose_tcq_per_frame)
         bits.bit(1); // allow_parity_hiding
+        // deblocking_filter_params() (§ 5.18.5.2): not lossless, df_par_bits_minus_2 == 0
+        // -> dfParBits = 2. apply[0]=1, apply[1]=0, NumPlanes 3 + luma set -> apply[2]/[3]
+        // read.
+        bits.bit(1); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1]
+        bits.bit(0); // apply_deblocking_filter[2]
+        bits.bit(0); // apply_deblocking_filter[3]
+        // i == 0 applies: df_delta_q_present[0]=1, df_delta_q[0] f(2)==3 -> 3-2==1.
+        bits.bit(1); // df_delta_q_present[0]
+        bits.f(3, 2); // df_delta_q[0]
+        // i == 1: apply==0 -> DfDeltaQ[1] = DfDeltaQ[0] == 1 (no bits).
+        // i == 2/3: apply==0 -> DfDeltaQ == 0 (no bits).
+        // gdf_params() (§ 5.18.7.9): not single picture -> gdf_frame_enable f(1)==1.
+        // SbSize 128x128, MiCols(480)*4 == 1920 > gdfBlkSize(128) -> gdf_per_block f(1).
+        bits.bit(1); // gdf_frame_enable
+        bits.bit(0); // gdf_per_block
+        bits.f(2, 2); // gdf_pic_qc_idx
+        bits.f(3, 2); // gdf_pic_scale_idx -> GdfPixScale = 4
+        // cdef_params() (§ 5.18.7.10): not single picture -> cdef_frame_enable f(1)==1.
+        bits.bit(1); // cdef_frame_enable
+        bits.f(1, 2); // cdef_damping_minus_3 -> CdefDamping = 4
+        bits.f(0, 3); // cdef_strengths_minus_1 -> CdefStrengths = 1
+        bits.bit(1); // cdef_on_skip_txfm_frame_enable (adaptive -> read)
+        bits.bit(0); // cdef_y_pri_zero -> read f(4)
+        bits.f(9, 4); // cdef_y_pri_strength[0]
+        bits.f(1, 2); // cdef_y_sec_strength[0]
+        bits.bit(1); // cdef_uv_pri_zero -> 0
+        bits.f(3, 2); // cdef_uv_sec_strength[0] == 3 -> 4
         let data = bits.into_bytes();
         let (core, consumed) = parse_body(&data, ObuType::ClosedLoopKey, true, &seq).unwrap();
 
         assert_eq!(
             core.status,
-            FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams
+            FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams
         );
         let tile_info = core.tile_info.as_ref().unwrap();
         assert_eq!(tile_info.tile_cols, 2);
@@ -1484,10 +1776,37 @@ mod tests {
         assert!(lossless.seg_qm_levels[..8].iter().all(|l| *l == [5, 5, 5]));
         assert!(!lossless.allow_tcq);
         assert!(lossless.allow_parity_hiding);
-        // 2 prefix bits + 33 control/size bits + 64 structure bits (7 tile_info,
-        // 8 base_q_idx, 25 segmentation, 13 setup_qm, 1 delta_q_present,
-        // 8 qm_index, 1 allow_tcq, 1 allow_parity_hiding).
-        assert_eq!(consumed, 2 + 33 + 64);
+        // deblocking_filter_params(): apply[0] set, df_delta_q[0] == 1; apply[1..4] == 0
+        // so DfDeltaQ[1..4] take the outer-else 0.
+        let deblocking = core.deblocking_filter_params.unwrap();
+        assert_eq!(
+            deblocking.apply_deblocking_filter,
+            [true, false, false, false]
+        );
+        assert_eq!(deblocking.df_delta_q_present, [true, false, false, false]);
+        assert_eq!(deblocking.df_delta_q, [1, 0, 0, 0]);
+        // gdf_params(): frame-enabled, per-block 0, qc 2, scale 3.
+        let gdf = core.gdf_params.unwrap();
+        assert!(gdf.gdf_frame_enable);
+        assert_eq!(gdf.gdf_per_block, Some(false));
+        assert_eq!(gdf.gdf_pic_qc_idx, Some(2));
+        assert_eq!(gdf.gdf_pic_scale_idx, Some(3));
+        // cdef_params(): one strength set, CdefDamping 4, y_sec remap 1, uv_sec 3->4.
+        let cdef = core.cdef_params.unwrap();
+        assert!(cdef.cdef_frame_enable);
+        assert_eq!(cdef.cdef_damping, Some(4));
+        assert_eq!(cdef.cdef_strengths, Some(1));
+        assert_eq!(cdef.cdef_on_skip_txfm_frame_enable, Some(true));
+        assert_eq!(cdef.strengths.len(), 1);
+        assert_eq!(cdef.strengths[0].y_pri_strength, 9);
+        assert_eq!(cdef.strengths[0].y_sec_strength, 1);
+        assert_eq!(cdef.strengths[0].uv_pri_strength, 0);
+        assert_eq!(cdef.strengths[0].uv_sec_strength, 4);
+        // 2 prefix bits + 33 control/size bits + 64 pre-filter structure bits (7 tile_info,
+        // 8 base_q_idx, 25 segmentation, 13 setup_qm, 1 delta_q_present, 8 qm_index,
+        // 1 allow_tcq, 1 allow_parity_hiding) + 30 loop-filter bits (7 deblocking,
+        // 6 gdf, 17 cdef).
+        assert_eq!(consumed, 2 + 33 + 64 + 30);
     }
 
     #[test]
@@ -1534,6 +1853,9 @@ mod tests {
         bits.bit(0); // segmentation_enabled
         bits.bit(0); // using_qmatrix
         bits.bit(0); // delta_q_present
+        // deblocking_filter_params(): not lossless -> apply[0]/[1] read (GDF/CDEF off).
+        bits.bit(0); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1]
         let data = bits.into_bytes();
         let (core, _) = parse_body(&data, ObuType::RegularTileGroup, true, &base_seq()).unwrap();
 
@@ -1544,7 +1866,7 @@ mod tests {
         assert_eq!(core.quantization_params.unwrap().base_q_idx, 45);
         assert_eq!(
             core.status,
-            FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams
+            FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams
         );
     }
 
@@ -1554,6 +1876,7 @@ mod tests {
         // the default (max) dimensions.
         let mut seq = base_seq();
         seq.single_picture_header_flag = true;
+        seq.filter.single_picture_header_flag = true;
         let mut bits = Bits::default();
         bits.uvlc(0); // cur_mfh_id == 0
         bits.uvlc(0); // seq_header_id_in_frame_header
@@ -1570,6 +1893,10 @@ mod tests {
         bits.bit(0); // segmentation_enabled
         bits.bit(0); // using_qmatrix
         bits.bit(0); // delta_q_present
+        // deblocking_filter_params(): not lossless -> apply[0]/[1] read. GDF/CDEF are
+        // disabled in base_filter, so the single-picture enable inference is not reached.
+        bits.bit(0); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1]
         let data = bits.into_bytes();
         let (core, _) = parse_body(&data, ObuType::ClosedLoopKey, true, &seq).unwrap();
 
@@ -1581,7 +1908,7 @@ mod tests {
         assert_eq!(core.frame_size, Some(FrameSize::new(4096, 2304)));
         assert_eq!(
             core.status,
-            FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams
+            FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams
         );
     }
 
@@ -1766,6 +2093,9 @@ mod tests {
         bits.bit(0); // segmentation_enabled
         bits.bit(0); // using_qmatrix
         bits.bit(0); // delta_q_present
+        // deblocking_filter_params(): not lossless -> apply[0]/[1] read (GDF/CDEF off).
+        bits.bit(0); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1]
         let data = bits.into_bytes();
         let (core, _) = parse_body(&data, ObuType::OpenLoopKey, true, &seq).unwrap();
 
@@ -1778,7 +2108,7 @@ mod tests {
         assert_eq!(core.frame_size, Some(FrameSize::new(4096, 2304)));
         assert_eq!(
             core.status,
-            FrameHeaderParseStatus::StoppedBeforeDeblockingFilterParams
+            FrameHeaderParseStatus::StoppedBeforeLoopRestorationParams
         );
     }
 
@@ -1999,8 +2329,35 @@ mod proptests {
             })
     }
 
+    /// Arbitrary `sequence_filter_config()` (§ 5.4.10) inputs consumed by the
+    /// § 5.18.2 tail loop-filter cluster.
+    fn arbitrary_filter_view() -> impl Strategy<Value = CoreSeqFilterView> {
+        use crate::headers::sequence::CdefOnSkipTxfm;
+        (
+            any::<[bool; 4]>(),
+            prop_oneof![
+                Just(CdefOnSkipTxfm::Adaptive),
+                Just(CdefOnSkipTxfm::AlwaysOn),
+                Just(CdefOnSkipTxfm::Disabled),
+            ],
+            0u8..=3,
+        )
+            .prop_map(
+                |(flags, skip_txfm, df_par_bits_minus_2)| CoreSeqFilterView {
+                    enable_cdef: flags[0],
+                    enable_gdf: flags[1],
+                    gdf_unit_matches_sb_size: flags[2],
+                    disable_loopfilters_across_tiles: flags[3],
+                    cdef_on_skip_txfm: skip_txfm,
+                    df_par_bits_minus_2,
+                    single_picture_header_flag: false,
+                },
+            )
+    }
+
     /// Arbitrary [`CoreSeqView`] values within their type ranges, including the
-    /// § 5.18.6 / § 5.18.7 sub-views consumed by the new intra structure cluster.
+    /// § 5.18.6 / § 5.18.7 / § 5.4.10 sub-views consumed by the new intra structure
+    /// cluster.
     fn arbitrary_seq_view() -> impl Strategy<Value = CoreSeqView> {
         (
             (
@@ -2016,8 +2373,9 @@ mod proptests {
             arbitrary_quant_view(),
             arbitrary_seg_view(),
             arbitrary_tile_view(),
+            arbitrary_filter_view(),
         )
-            .prop_map(|(general, quant, seg, tile)| {
+            .prop_map(|(general, quant, seg, tile, filter)| {
                 let (
                     num_ref_frames,
                     order_hint_bits,
@@ -2046,6 +2404,7 @@ mod proptests {
                     quant,
                     seg,
                     tile,
+                    filter,
                 }
             })
     }
@@ -2083,6 +2442,7 @@ mod proptests {
                 features,
             }),
             mfh_deblocking_filter_update: false,
+            mfh_apply_deblocking_filter: [false; 4],
             offset: ByteOffset::new(0),
         }
     }

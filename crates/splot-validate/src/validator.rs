@@ -4362,12 +4362,15 @@ mod tests {
     /// Appends the § 5.18.2 intra structure cluster the core parser consumes after
     /// `disable_cdf_update` for a [`frame_core_seq_payload`] sequence (10-bit,
     /// 4:2:0, BLOCK_64X64, no sequence tile/segmentation info, every optional
-    /// quantizer read disabled): a single-tile `tile_info()` (§ 5.18.7.2;
-    /// `uniform_tile_spacing_flag` plus `col_increment_bits` zero increment bits —
-    /// one for the 256-wide frame, none for the 16x16 default), `base_q_idx` f(9)
-    /// (§ 5.18.6.1), `segmentation_enabled = 0` (§ 5.18.7.1), `using_qmatrix = 0`
-    /// (§ 5.18.6.2), and `delta_q_present = 0` (§ 5.18.7.8). With a nonzero
-    /// `base_q_idx` the § 5.18.2 lossless tail reads no further bits.
+    /// quantizer read disabled, `enable_cdef == enable_gdf == 0`): a single-tile
+    /// `tile_info()` (§ 5.18.7.2; `uniform_tile_spacing_flag` plus `col_increment_bits`
+    /// zero increment bits — one for the 256-wide frame, none for the 16x16 default),
+    /// `base_q_idx` f(9) (§ 5.18.6.1), `segmentation_enabled = 0` (§ 5.18.7.1),
+    /// `using_qmatrix = 0` (§ 5.18.6.2), `delta_q_present = 0` (§ 5.18.7.8), and the
+    /// loop-filter cluster: `deblocking_filter_params()` reads `apply_deblocking_filter`
+    /// `[0]`/`[1]` (both 0 — nonzero `base_q_idx` keeps `CodedLossless == 0`), while
+    /// `gdf_params()` / `cdef_params()` read nothing (GDF / CDEF disabled). With a
+    /// nonzero `base_q_idx` the § 5.18.2 lossless tail reads no further bits.
     fn intra_structure_tail(fb: &mut Bits, col_increment_bits: u32) {
         fb.bit(1); // uniform_tile_spacing_flag (tile_info)
         for _ in 0..col_increment_bits {
@@ -4377,6 +4380,10 @@ mod tests {
         fb.bit(0); // segmentation_enabled
         fb.bit(0); // using_qmatrix
         fb.bit(0); // delta_q_present
+        // deblocking_filter_params() (§ 5.18.5.2): not lossless -> apply[0]/[1] read,
+        // both 0 (so no chroma pair, no delta-Q). gdf/cdef disabled -> no bits.
+        fb.bit(0); // apply_deblocking_filter[0]
+        fb.bit(0); // apply_deblocking_filter[1]
     }
 
     #[test]
@@ -18965,10 +18972,12 @@ mod tests {
         fb.bit(0); // disable_cdf_update
         intra_structure_tail(&mut fb, 0);
         // The cur_mfh_id > 0 prefix (`uvlc(cur_mfh_id)`) is one bit longer than the
-        // direct cur_mfh_id == 0 prefix, so the now-fully-parsed § 5.18.2 intra tail can
-        // need one more bit than byte-padding alone supplies; an extra padding byte gives
-        // the core parser room to reach its StoppedBeforeDeblockingFilterParams stop
-        // (trailing bits past the stop are ignored).
+        // direct cur_mfh_id == 0 prefix, so the now-fully-parsed § 5.18.2 intra tail and
+        // the loop-filter cluster (deblocking_filter_params() reads 2 apply bits with
+        // GDF/CDEF disabled) can need more bits than byte-padding alone supplies; an extra
+        // padding byte gives the core parser room to reach its
+        // StoppedBeforeLoopRestorationParams stop (trailing bits past the stop are
+        // ignored).
         fb.f(0, 8);
         annex_b_obu_with_header(&layer_obu_header(4, 0, 0, xlayer), &fb.into_bytes())
     }

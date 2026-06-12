@@ -2616,11 +2616,11 @@ spec_sections = ["5.18.2", "6.17.2"]
 sources = ["docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2", "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/frame/info.rs"
-openspec_change = "mfh-frame-header-state"
+openspec_change = "frame-filtering-deblocking-gdf-cdef"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. State-aware core parser (FrameHeaderParseMode::Core) over the control region: derived frame-kind flags, bridge_frame_ref_idx, the single-picture / show-existing-frame branch, frame-type determination, long-term id, output-control flags, order_hint, and refresh_frame_flags. Under mfh-frame-header-state the two cur_mfh_id > 0 stops that previously fired purely for missing MFH state are removed: with the resolved MultiFrameHeaderRecord threaded in, the intra path now parses through frame_size() (AV2-5.18.4-FRAME-SIZE) and segmentation_params() (AV2-5.18.7-SEGMENTATION-TILING) on the cur_mfh_id > 0 path the same as cur_mfh_id == 0. A cur_mfh_id > 0 frame whose in-band MFH is unresolvable still stops with UnsupportedUntilFeature (no guessing). It stops with an explicit FrameHeaderParseStatus before reference-state-dependent syntax (inter reference map, bridge remainder) and the deep §5.18.5+ cluster (deblocking lands with AV2-5.18.5-FILTERING). parse stays partial until all of §5.18.2 is consumed; the inter-path MFH arms, the explicit reference map, primary-reference range, and frame_header_copy() remain TODO."
+notes = "Child row of AV2-5.18-FRAME-HEADER. State-aware core parser (FrameHeaderParseMode::Core) over the control region: derived frame-kind flags, bridge_frame_ref_idx, the single-picture / show-existing-frame branch, frame-type determination, long-term id, output-control flags, order_hint, and refresh_frame_flags. Under mfh-frame-header-state the two cur_mfh_id > 0 stops that previously fired purely for missing MFH state are removed: with the resolved MultiFrameHeaderRecord threaded in, the intra path parses through frame_size() (AV2-5.18.4-FRAME-SIZE) and segmentation_params() (AV2-5.18.7-SEGMENTATION-TILING) on the cur_mfh_id > 0 path the same as cur_mfh_id == 0. Under frame-filtering-deblocking-gdf-cdef the intra-path stop advances past the §5.18.2 tail loop-filter cluster — deblocking_filter_params() (AV2-5.18.5-FILTERING), gdf_params(), and cdef_params() (both AV2-5.18.7-SEGMENTATION-TILING) — so the stop status is renamed StoppedBeforeLoopRestorationParams (the next unparsed structure is lr_params(), §5.18.7.11). A cur_mfh_id > 0 frame whose in-band MFH is unresolvable still stops with UnsupportedUntilFeature (no guessing). parse stays partial until all of §5.18.2 is consumed; lr_params()/ccso_params() and the rest of the §5.18.2 tail, the inter-path arms (including §5.18.5.1 read_interpolation_filter()), the explicit reference map, primary-reference range, and frame_header_copy() remain TODO."
 
 [feature.status]
 mapped = "done"
@@ -2635,7 +2635,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/frame/info.rs::tests", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_mfh_default_dims_parse_through_tile_info", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_unresolvable_mfh_default_size_stays_unsupported", "crates/splot-validate/src/validator.rs::tests::validator_flags_bridge_ref_index_out_of_range", "crates/splot-validate/src/validator.rs::tests::validator_flags_ras_requires_long_term_frame_id_bits", "crates/splot-validate/src/validator.rs::tests::celu_mfh_backed_frame_is_decided_not_unknown", "crates/splot-cli/tests/cli.rs::inspect_json_exposes_mfh_backed_frame_header_core"]
+tests = ["crates/splot-core/src/headers/frame/info.rs::tests", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_mfh_default_dims_parse_through_tile_info", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_unresolvable_mfh_default_size_stays_unsupported", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_intra_tail_parses_full_structure_cluster", "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_eof_inside_deblocking_filter_params", "crates/splot-validate/src/validator.rs::tests::validator_flags_bridge_ref_index_out_of_range", "crates/splot-validate/src/validator.rs::tests::validator_flags_ras_requires_long_term_frame_id_bits", "crates/splot-validate/src/validator.rs::tests::celu_mfh_backed_frame_is_decided_not_unknown", "crates/splot-cli/tests/cli.rs::inspect_json_exposes_mfh_backed_frame_header_core"]
 commands = ["cargo test -p splot-core frame_header", "cargo test -p splot-validate frame_header", "cargo test -p splot-validate celu_mfh", "cargo test -p splot-cli mfh"]
 fixtures = ["tests/fixtures/frame-header-core.av2", "tests/fixtures/frame-header-core-mfh.av2"]
 diagnostics = ["hls/unavailable-sequence-header", "hls/unavailable-multi-frame-header", "frame-header/seq-header-id-out-of-range", "frame-header/cur-mfh-id-out-of-range", "frame-header/bridge-ref-index-out-of-range", "frame-header/ras-requires-long-term-frame-id-bits"]
@@ -2744,32 +2744,40 @@ id = "AV2-5.18.5-FILTERING"
 name = "Frame filtering syntax"
 category = "normative"
 kind = "bitstream-syntax"
-spec_sections = ["5.18.5", "6.17"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+spec_sections = ["5.18.5", "5.18.5.2", "6.17.5.2"]
+sources = ["docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-5-2", "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-5-2"]
 crate = "splot-core"
-module = "crates/splot-core/src/headers.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-core/src/headers/frame/filtering.rs"
+openspec_change = "frame-filtering-deblocking-gdf-cdef"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. Requires parsed sequence state before implementation. When implementing, narrow spec_sections to the exact §6.17 subsection if the spec has one."
+notes = "Child row of AV2-5.18-FRAME-HEADER. deblocking_filter_params() (§5.18.5.2) is typed and parsed on the intra frame-header path under frame-filtering-deblocking-gdf-cdef: apply_deblocking_filter[0..4] (NumPlanes-gated chroma pair), df_delta_q_present[i], and the derived DfDeltaQ[i] (df_delta_q[i] - (1 << (dfParBits-1)) with the (i==1)?DfDeltaQ[0]:0 / outer-else-0 inferences), where dfParBits = df_par_bits_minus_2 + 2 (§5.4.10). The cur_mfh_id > 0 arm consults the resolved MultiFrameHeaderRecord's mfh_deblocking_filter_update / mfh_apply_deblocking_filter (§5.7, mirror :5949): when the update bit is set apply is copied from the MFH with no apply bits read; otherwise apply[0]/[1] (and the chroma pair) are read from the frame. CodedLossless short-circuits to all-0 apply (no bits). §6.17.5.2 states no requirement of bitstream conformance on these fields (all bounded by fixed widths), so no diagnostic is added. Residual (keeps parse/tests partial): §5.18.5.1 read_interpolation_filter() is inter-only and lands with the inter frame-header paths (AV2-5.18.2-FRAME-HEADER-INFO); the inter allow_df_sub_pu read (enable_df_sub_pu && FrameType == INTER_FRAME) is on the inter path too."
 
 [feature.status]
 mapped = "done"
-types = "todo"
-parse = "todo"
-validate = "todo"
+types = "partial"
+parse = "partial"
+validate = "not-applicable"
 write = "todo"
 encode = "todo"
-decode_check = "todo"
-tests = "todo"
+decode_check = "partial"
+tests = "partial"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
+tests = [
+  "crates/splot-core/src/headers/frame/filtering.rs::tests",
+  "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_intra_tail_parses_full_structure_cluster",
+  "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_mfh_deblocking_update_copies_apply_no_apply_bits",
+  "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_eof_inside_deblocking_filter_params",
+]
+commands = [
+  "cargo test -p splot-core headers::frame::filtering",
+  "cargo test -p splot-core deblocking",
+]
+fixtures = ["tests/fixtures/frame-header-core.av2", "tests/fixtures/frame-header-core-mfh.av2"]
 diagnostics = []
 
 [[feature]]
@@ -2825,7 +2833,7 @@ openspec_change = "seq-tile-nonuniform-reuse-starts"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. tile_info() (§5.18.7.2, MiCols/MiRows per §5.18.4.4) and segmentation_params() (§5.18.7.1, reusing seg_info()) are typed and parsed on the intra frame-header path for both reference forms: cur_mfh_id == 0 (sequence/zero arm) and — under mfh-frame-header-state — cur_mfh_id > 0, where the MFH-gated arm derives haveSegParams = (mfh_ext_seg_flag == enable_ext_seg), allowChange = haveSegParams && mfh_allow_seg_info_change, mfhId = cur_mfh_id, and a reuse_seg_info copy draws from MfhFeatureEnabled/MfhFeatureData (mirror :6266-6298). The MFH branch takes priority over the sequence branch per the spec order; a cur_mfh_id > 0 frame whose in-band MFH is unresolvable still stops (no guessing). Under seq-tile-nonuniform-reuse-starts the §5.18.7.4 non-uniform sequence-reuse branch is fully wired: the persisted SeqSbColStarts / SeqSbRowStarts (AV2-5.4.2-SEQUENCE-TILE-CONFIG) flow into reuse_tile_params() (mirror :6449/:6469-6477), so a frame reusing a non-uniform sequence tile layout parses through tile_info() instead of stopping unimplemented. §6.17.7.2 TileCols/TileRows/context_update_tile_id checks are live. Remaining residual (keeps parse/tests partial): the inter frame-header paths."
+notes = "Child row of AV2-5.18-FRAME-HEADER. tile_info() (§5.18.7.2, MiCols/MiRows per §5.18.4.4) and segmentation_params() (§5.18.7.1, reusing seg_info()) are typed and parsed on the intra frame-header path for both reference forms: cur_mfh_id == 0 (sequence/zero arm) and — under mfh-frame-header-state — cur_mfh_id > 0, where the MFH-gated arm derives haveSegParams = (mfh_ext_seg_flag == enable_ext_seg), allowChange = haveSegParams && mfh_allow_seg_info_change, mfhId = cur_mfh_id, and a reuse_seg_info copy draws from MfhFeatureEnabled/MfhFeatureData (mirror :6266-6298). The MFH branch takes priority over the sequence branch per the spec order; a cur_mfh_id > 0 frame whose in-band MFH is unresolvable still stops (no guessing). Under seq-tile-nonuniform-reuse-starts the §5.18.7.4 non-uniform sequence-reuse branch is fully wired: the persisted SeqSbColStarts / SeqSbRowStarts (AV2-5.4.2-SEQUENCE-TILE-CONFIG) flow into reuse_tile_params() (mirror :6449/:6469-6477), so a frame reusing a non-uniform sequence tile layout parses through tile_info() instead of stopping unimplemented. §6.17.7.2 TileCols/TileRows/context_update_tile_id checks are live. Under frame-filtering-deblocking-gdf-cdef the §5.18.7 filter-param children are parsed on the intra path in crates/splot-core/src/headers/frame/filtering.rs: gdf_params() (§5.18.7.9) — gdf_frame_enable (CodedLossless/!enable_gdf short-circuit; single_picture infers 1), the gdfBlkSize derivation (Block_Width[SbSize], GDF_MIN_SIZE, the SB-64x64 MiColStarts/MiRowStarts alignment scan, gdf_unit_matches_sb_size), gdf_per_block (gated on MiCols/MiRows*MI_SIZE vs gdfBlkSize and disable_loopfilters_across_tiles in a multi-tile frame), gdf_pic_qc_idx, gdf_pic_scale_idx — and cdef_params() (§5.18.7.10) — cdef_frame_enable (CodedLossless/!enable_cdef short-circuit; single_picture infers 1), CdefDamping = cdef_damping_minus_3 + 3, CdefStrengths = cdef_strengths_minus_1 + 1 (<= 8), cdef_on_skip_txfm_frame_enable per CdefOnSkipTxfm (§5.4.10), and the per-strength loop (cdef_y_pri_zero/strength, cdef_y_sec_strength with the 3->4 remap, and the NumPlanes>1 uv pair). §6.17.7.5 / §6.17.7.6 state no requirement of bitstream conformance on these fields (all fixed-width), so no diagnostic is added. Remaining residual (keeps parse/tests partial): the inter frame-header paths."
 
 [feature.status]
 mapped = "done"
@@ -2849,6 +2857,7 @@ tests = [
   "crates/splot-core/src/headers/frame/segmentation.rs::tests::mfh_arm_reuse_inferred_copies_mfh_feature_data_when_change_not_allowed",
   "crates/splot-core/src/headers/frame/segmentation.rs::tests::mfh_arm_ext_seg_mismatch_yields_no_seg_params_and_parses_fresh",
   "crates/splot-core/src/headers/frame/segmentation.rs::tests::mfh_arm_takes_priority_over_sequence_branch",
+  "crates/splot-core/src/headers/frame/filtering.rs::tests",
   "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_intra_tail_parses_full_structure_cluster",
   "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_mfh_segmentation_arm_reuses_mfh_feature_data",
   "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_unresolvable_mfh_with_explicit_size_stops_before_segmentation",
