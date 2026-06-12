@@ -5256,6 +5256,32 @@ mod tests {
     }
 
     #[test]
+    fn validator_frame_header_copy_silent_when_header_not_present() {
+        // A non-first tile group with frame_header_present_flag == 0 carries NO
+        // frame_header_copy() (AV2 § 5.19): the bytes after the flag are tile data, so
+        // even with a live first-header record nothing may be compared. Guards the
+        // check_frame_header_copy early-exit against regressions that would read tile
+        // bytes as copy bits (claude-review PR #60 integration gap).
+        let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+        data.extend(clk_first_tile_group());
+        let mut fb = Bits::default();
+        fb.bit(0); // is_first_tile_group == 0
+        fb.bit(0); // frame_header_present_flag == 0 (no copy region)
+        // Arbitrary tile-data bytes that deliberately do NOT match the first header.
+        for _ in 0..26 {
+            fb.bit(1);
+        }
+        data.extend(annex_b_obu(CLK_HEADER, &fb.into_bytes()));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(
+            !report
+                .errors()
+                .any(|d| d.rule_id.starts_with("frame-header/copy-bits-")),
+            "frame_header_present_flag == 0 carries no copy region; report was: {report}"
+        );
+    }
+
+    #[test]
     fn validator_frame_header_copy_silent_when_first_header_incomplete() {
         // The first tile group's frame header does NOT complete (an INTER first frame stops
         // at UnsupportedUntilFeature), so NumFrameHeaderBits is unknown and the non-first
