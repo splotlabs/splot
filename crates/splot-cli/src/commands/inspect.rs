@@ -2,6 +2,20 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! `splot inspect` — print OBUs and headers from a bitstream.
+//!
+//! ## Payload status vs. stateful frame-header views
+//!
+//! The per-OBU `payload_status` field comes from the **stateless** dispatcher
+//! ([`splot_core::obu::dispatch_obu_payload`]). For the 11 frame-carrying OBU types
+//! (the tile-group family and the SEF / TIP / bridge family) that dispatcher parses only
+//! the state-free § 5.18.2 / § 5.19 activation prefix and reports
+//! `prefix_parsed_awaiting_state` (the remainder needs the activated sequence header
+//! state it does not hold). The inspector's own `frame_header_prefix`,
+//! `frame_header_core`, `frame_header_copy`, and `tile_group_structure` views are the
+//! **richer surface**: they thread the running sequence-header and multi-frame-header
+//! state across OBUs and so resolve the deeper § 5.18 / § 5.19 syntax. The two surfaces
+//! are consistent by construction — the stateful views never contradict the stateless
+//! prefix, they extend it.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -520,16 +534,16 @@ struct FilmGrainModelView {
 /// Re-parses a frame-bearing OBU's prefix so `--json` can expose the
 /// activation/reference fields. This is **prefix-only** data, never a complete frame
 /// header. The inspector does not model temporal-unit state, so `FirstPictureInTU` is
-/// passed as `false` and `startCVS` is not surfaced.
+/// withheld (`None`) and `startCVS` is not surfaced.
 fn frame_header_prefix_view(obu: &ObuEnvelope<'_>) -> Option<FrameHeaderPrefixView> {
     let obu_type = obu.header.obu_type;
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
     let prefix = if obu_type.is_tile_group() {
-        parse_tile_group_prefix(&mut reader, obu_type, false)
+        parse_tile_group_prefix(&mut reader, obu_type, None)
             .ok()
             .and_then(|tile_group| tile_group.frame_header)?
     } else if obu_type.is_sef() || obu_type.is_tip_frame() || obu_type == ObuType::BridgeFrame {
-        parse_frame_header_prefix(&mut reader, obu_type, false).ok()?
+        parse_frame_header_prefix(&mut reader, obu_type, None).ok()?
     } else {
         return None;
     };
@@ -653,11 +667,11 @@ fn resolve_inspect_sequence<'a>(
     let obu_type = obu.header.obu_type;
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
     let prefix = if obu_type.is_tile_group() {
-        parse_tile_group_prefix(&mut reader, obu_type, false)
+        parse_tile_group_prefix(&mut reader, obu_type, None)
             .ok()?
             .frame_header?
     } else {
-        parse_frame_header_prefix(&mut reader, obu_type, false).ok()?
+        parse_frame_header_prefix(&mut reader, obu_type, None).ok()?
     };
     let seq_id = if prefix.cur_mfh_id.is_zero() {
         prefix.referenced_sequence_header_id?
@@ -778,11 +792,11 @@ fn resolve_inspect_mfh<'a>(
     let obu_type = obu.header.obu_type;
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
     let prefix = if obu_type.is_tile_group() {
-        parse_tile_group_prefix(&mut reader, obu_type, false)
+        parse_tile_group_prefix(&mut reader, obu_type, None)
             .ok()?
             .frame_header?
     } else {
-        parse_frame_header_prefix(&mut reader, obu_type, false).ok()?
+        parse_frame_header_prefix(&mut reader, obu_type, None).ok()?
     };
     let cur_mfh_id = prefix.cur_mfh_id;
     if cur_mfh_id.is_zero() || !cur_mfh_id.in_range() {
@@ -1551,6 +1565,13 @@ struct SequenceChildrenView {
 }
 
 /// A serializable summary of how much OBU payload syntax is currently parsed.
+///
+/// For the 11 frame-carrying OBU types the stateless dispatcher reaches only the
+/// `prefix_parsed_awaiting_state` status (its § 5.18.2 / § 5.19 activation prefix; the
+/// rest needs the activated sequence header). The richer, state-aware surface for those
+/// OBUs is the per-record `frame_header_prefix` / `frame_header_core` /
+/// `frame_header_copy` / `tile_group_structure` views, which thread the running
+/// sequence-header and multi-frame-header state.
 #[derive(Serialize)]
 struct InspectPayloadStatus {
     status: &'static str,
@@ -1558,6 +1579,8 @@ struct InspectPayloadStatus {
     syntax: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     feature: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blocked_on: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -1569,24 +1592,41 @@ impl InspectPayloadStatus {
                 status: "parsed",
                 syntax: Some(parsed.syntax_name()),
                 feature: Some(parsed.feature_id()),
+                blocked_on: None,
                 error: None,
             },
             Ok(PayloadStatus::Opaque(_)) => Self {
                 status: "opaque",
                 syntax: None,
                 feature: None,
+                blocked_on: None,
+                error: None,
+            },
+            // The dispatcher parsed the frame-carrying OBU's state-free prefix; the
+            // state-dependent remainder is surfaced by the stateful frame-header views.
+            Ok(PayloadStatus::PrefixParsed {
+                prefix,
+                blocked_on,
+                feature,
+            }) => Self {
+                status: "prefix_parsed_awaiting_state",
+                syntax: Some(prefix.label()),
+                feature: Some(feature),
+                blocked_on: Some(blocked_on),
                 error: None,
             },
             Ok(PayloadStatus::Unimplemented { feature, .. }) => Self {
                 status: "unimplemented",
                 syntax: None,
                 feature: Some(feature),
+                blocked_on: None,
                 error: None,
             },
             Err(error) => Self {
                 status: "invalid",
                 syntax: None,
                 feature: Some("AV2-5.2.1-OBU-DISPATCH"),
+                blocked_on: None,
                 error: Some(error.to_string()),
             },
         }

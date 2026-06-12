@@ -255,8 +255,14 @@ fn inspect_json_exposes_frame_header_prefix() {
     assert_eq!(prefix["seq_header_id_in_frame_header"], 0);
     assert_eq!(prefix["referenced_sequence_header_id"], 0);
     assert_eq!(prefix["is_key_frame"], true);
-    // The payload itself is only prefix-parsed, never a complete frame header.
-    assert_eq!(frame["payload_status"]["status"], "unimplemented");
+    // The stateless dispatcher parses only the §5.19 tile-group activation prefix and
+    // reports the honest state-dependent status; the richer surface is the stateful
+    // frame_header_prefix / frame_header_core views above.
+    let status = &frame["payload_status"];
+    assert_eq!(status["status"], "prefix_parsed_awaiting_state");
+    assert_eq!(status["syntax"], "tile_group_prefix");
+    assert_eq!(status["feature"], "AV2-5.19-TILE-GROUP");
+    assert_eq!(status["blocked_on"], "active sequence header state");
 }
 
 #[test]

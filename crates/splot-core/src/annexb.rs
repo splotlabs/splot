@@ -226,20 +226,22 @@ mod tests {
 
     #[test]
     fn envelope_payload_status_is_opt_in_and_preserves_raw_payload() {
-        // Tile-group payload parsing is intentionally not implemented yet, but the
-        // envelope still preserves the bounded raw payload bytes.
+        // The envelope preserves the bounded raw payload bytes, and the stateless
+        // dispatcher now parses the §5.19 tile-group activation prefix, reporting the
+        // honest state-dependent status (no longer a blanket Unimplemented).
         // 0x1C = 0b0_00111_00 -> ext=0, type=7 (RegularTileGroup).
         let stream = [0x02, 0x1C, 0xAB];
         let obus = parse_annex_b_obus(&stream).unwrap();
         assert_eq!(obus[0].payload, &[0xAB]);
         assert_eq!(obus[0].payload_offset(), ByteOffset::new(2));
-        assert_eq!(
+        assert!(matches!(
             obus[0].payload_status().unwrap(),
-            PayloadStatus::Unimplemented {
+            PayloadStatus::PrefixParsed {
                 feature: "AV2-5.19-TILE-GROUP",
-                payload: obus[0].payload,
+                blocked_on: "active sequence header state",
+                ..
             }
-        );
+        ));
     }
 
     #[test]
@@ -337,7 +339,14 @@ mod proptests {
         fn parsers_never_panic(data in proptest::collection::vec(any::<u8>(), 0..1024)) {
             let _ = read_leb128(&data, ByteOffset::new(0));
             let _ = read_obu_header(&data, ByteOffset::new(0));
-            let _ = parse_annex_b_obus(&data);
+            // Also exercise the stateless payload dispatch on every parsed OBU so the
+            // frame-carrying prefix arms (tile-group / SEF / TIP / bridge) are covered by
+            // the never-panic guarantee, not just the structural Annex B parse.
+            if let Ok(obus) = parse_annex_b_obus(&data) {
+                for obu in &obus {
+                    let _ = obu.payload_status();
+                }
+            }
         }
     }
 }

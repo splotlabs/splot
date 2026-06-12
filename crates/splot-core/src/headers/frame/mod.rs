@@ -121,9 +121,14 @@ pub struct FrameHeaderPrefix {
     pub is_bridge: bool,
     /// `IsRegular`: derived from `obu_type` per AV2 § 5.18.2.
     pub is_regular: bool,
-    /// `startCVS`: `obu_type == OBU_CLOSED_LOOP_KEY && FirstPictureInTU`. The
-    /// `FirstPictureInTU` input is decoder state supplied by the caller.
-    pub starts_cvs: bool,
+    /// `startCVS`: `obu_type == OBU_CLOSED_LOOP_KEY && FirstPictureInTU`
+    /// (AV2 § 5.18.2). `FirstPictureInTU` is decoder state the caller supplies.
+    /// `None` only when the carried type is `OBU_CLOSED_LOOP_KEY` *and* the caller
+    /// withheld `FirstPictureInTU` (the stateless dispatch front door): startCVS is
+    /// then genuinely unknown rather than fabricated `false`. For every non-CLK type
+    /// the derivation does not consult `FirstPictureInTU`, so it is always
+    /// `Some(false)` regardless of the input.
+    pub starts_cvs: Option<bool>,
     /// `cur_mfh_id` (inferred `0` for bridge frames). The raw value may be out of
     /// range; gate on [`MfhId::in_range`].
     pub cur_mfh_id: MfhId,
@@ -165,9 +170,14 @@ fn derive_is_regular(obu_type: ObuType) -> bool {
 ///
 /// `obu_type` is the OBU whose payload this frame header belongs to, and
 /// `first_picture_in_tu` is the decoder-state `FirstPictureInTU` used only to derive
-/// `startCVS`. The parser reads `cur_mfh_id` (unless this is a bridge frame, where it
-/// is inferred `0`) and, when `cur_mfh_id == 0`, `seq_header_id_in_frame_header`. It
-/// stops immediately afterward.
+/// `startCVS`. Pass `Some(known)` on a stateful path that tracks `FirstPictureInTU`;
+/// pass `None` on the stateless dispatch front door that does not. Per AV2 § 5.18.2,
+/// `startCVS = obu_type == OBU_CLOSED_LOOP_KEY && FirstPictureInTU`, so the derivation
+/// consults the input *only* for `OBU_CLOSED_LOOP_KEY`: a non-CLK type is always
+/// `Some(false)`, and a CLK with a withheld input is `None` (genuinely unknown, not a
+/// fabricated `false`). The parser reads `cur_mfh_id` (unless this is a bridge frame,
+/// where it is inferred `0`) and, when `cur_mfh_id == 0`, `seq_header_id_in_frame_header`.
+/// It stops immediately afterward.
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) or
@@ -176,14 +186,21 @@ fn derive_is_regular(obu_type: ObuType) -> bool {
 pub fn parse_frame_header_prefix(
     reader: &mut BitReader<'_>,
     obu_type: ObuType,
-    first_picture_in_tu: bool,
+    first_picture_in_tu: Option<bool>,
 ) -> Result<FrameHeaderPrefix> {
     let start_bits = reader.consumed_bits();
 
     let is_key_frame = derive_key_frame(obu_type);
     let is_bridge = obu_type == ObuType::BridgeFrame;
     let is_regular = derive_is_regular(obu_type);
-    let starts_cvs = obu_type == ObuType::ClosedLoopKey && first_picture_in_tu;
+    // AV2 § 5.18.2: startCVS = obu_type == OBU_CLOSED_LOOP_KEY && FirstPictureInTU. The
+    // derivation only consults FirstPictureInTU for a CLK, so a non-CLK type is decided
+    // Some(false) from the type alone; a CLK with a withheld input stays None (unknown).
+    let starts_cvs = if obu_type == ObuType::ClosedLoopKey {
+        first_picture_in_tu
+    } else {
+        Some(false)
+    };
 
     // AV2 § 5.18.2: a bridge frame infers cur_mfh_id = 0; otherwise it is read.
     let cur_mfh_id = if is_bridge {
@@ -272,11 +289,12 @@ mod tests {
         bits.uvlc(1); // seq_header_id_in_frame_header
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let prefix = parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, true).unwrap();
+        let prefix =
+            parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true)).unwrap();
         assert!(prefix.is_first);
         assert!(prefix.is_key_frame);
         assert!(!prefix.is_bridge);
-        assert!(prefix.starts_cvs); // CLK + FirstPictureInTU
+        assert_eq!(prefix.starts_cvs, Some(true)); // CLK + FirstPictureInTU
         assert!(prefix.cur_mfh_id.is_zero());
         assert_eq!(prefix.seq_header_id_in_frame_header, Some(1));
         assert_eq!(
@@ -293,8 +311,36 @@ mod tests {
         bits.uvlc(0);
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let prefix = parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, false).unwrap();
-        assert!(!prefix.starts_cvs);
+        let prefix =
+            parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, Some(false)).unwrap();
+        assert_eq!(prefix.starts_cvs, Some(false));
+    }
+
+    #[test]
+    fn frame_header_prefix_clk_unknown_first_picture_leaves_start_cvs_none() {
+        // AV2 § 5.18.2: a CLK's startCVS needs FirstPictureInTU. A stateless caller
+        // withholds it (None), so startCVS is genuinely unknown — never a fabricated
+        // Some(false).
+        let mut bits = Bits::default();
+        bits.uvlc(0);
+        bits.uvlc(0);
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let prefix = parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, None).unwrap();
+        assert_eq!(prefix.starts_cvs, None);
+    }
+
+    #[test]
+    fn frame_header_prefix_non_clk_unknown_first_picture_is_some_false() {
+        // A non-CLK type does not consult FirstPictureInTU, so startCVS is decided
+        // Some(false) from the type alone even when the input is withheld (None).
+        let mut bits = Bits::default();
+        bits.uvlc(0);
+        bits.uvlc(0);
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let prefix = parse_frame_header_prefix(&mut reader, ObuType::OpenLoopKey, None).unwrap();
+        assert_eq!(prefix.starts_cvs, Some(false));
     }
 
     #[test]
@@ -304,10 +350,10 @@ mod tests {
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let prefix =
-            parse_frame_header_prefix(&mut reader, ObuType::RegularTileGroup, false).unwrap();
+            parse_frame_header_prefix(&mut reader, ObuType::RegularTileGroup, Some(false)).unwrap();
         assert!(!prefix.is_key_frame);
         assert!(prefix.is_regular);
-        assert!(!prefix.starts_cvs); // not a CLK
+        assert_eq!(prefix.starts_cvs, Some(false)); // not a CLK
         assert_eq!(prefix.cur_mfh_id.get(), 2);
         assert!(prefix.cur_mfh_id.in_range());
         assert_eq!(prefix.seq_header_id_in_frame_header, None);
@@ -321,11 +367,12 @@ mod tests {
         bits.uvlc(3); // seq_header_id_in_frame_header (cur_mfh_id inferred 0)
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let prefix = parse_frame_header_prefix(&mut reader, ObuType::BridgeFrame, true).unwrap();
+        let prefix =
+            parse_frame_header_prefix(&mut reader, ObuType::BridgeFrame, Some(true)).unwrap();
         assert!(prefix.is_bridge);
         assert!(prefix.is_regular);
         assert!(!prefix.is_key_frame);
-        assert!(!prefix.starts_cvs); // bridge frame is not a CLK
+        assert_eq!(prefix.starts_cvs, Some(false)); // bridge frame is not a CLK
         assert!(prefix.cur_mfh_id.is_zero());
         assert_eq!(prefix.seq_header_id_in_frame_header, Some(3));
     }
@@ -337,7 +384,8 @@ mod tests {
         bits.uvlc(16); // seq_header_id_in_frame_header == MAX_SEQ_NUM -> out of range
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let prefix = parse_frame_header_prefix(&mut reader, ObuType::OpenLoopKey, true).unwrap();
+        let prefix =
+            parse_frame_header_prefix(&mut reader, ObuType::OpenLoopKey, Some(true)).unwrap();
         assert_eq!(prefix.seq_header_id_in_frame_header, Some(16));
         // Out of range -> no resolved typed id (validator reports the range error).
         assert_eq!(prefix.referenced_sequence_header_id, None);
@@ -347,7 +395,7 @@ mod tests {
     fn frame_header_prefix_eof_is_structured_error() {
         let mut reader = BitReader::new(&[], ByteOffset::new(0));
         assert!(matches!(
-            parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, true),
+            parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true)),
             Err(Error::UnexpectedEof { .. })
         ));
 
@@ -357,7 +405,7 @@ mod tests {
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         assert!(matches!(
-            parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, true),
+            parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true)),
             Err(Error::UnexpectedEof { .. })
         ));
     }
@@ -375,7 +423,7 @@ mod proptests {
         fn parse_frame_header_prefix_never_panics(
             data in proptest::collection::vec(any::<u8>(), 0..64),
             raw_type in 0u8..=31,
-            first_picture in any::<bool>(),
+            first_picture in any::<Option<bool>>(),
         ) {
             let obu_type = ObuType::from_raw(raw_type);
             let mut reader = BitReader::new(&data, ByteOffset::new(0));

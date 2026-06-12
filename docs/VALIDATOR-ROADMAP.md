@@ -81,8 +81,16 @@ docs, and drift gates exist; the OpenSpec change is archived
 **Status:** done — dispatch, `PayloadStatus`, and the `inspect --json`
 `payload_status` object landed with tests (`AV2-5.2.1-OBU-DISPATCH`). Raw Annex B
 and IVF-wrapped Annex B inputs are accepted through the shared
-`AV2-IVF-CONTAINER` stream layer. The dispatch row's `parse = partial` is the
-declared honest end-state until every payload variant exists.
+`AV2-IVF-CONTAINER` stream layer. Under `obu-dispatch-frame-payloads` the 11
+frame-carrying types (the tile-group family and the SEF/TIP/bridge family) no
+longer return a blanket `Unimplemented`: the stateless dispatcher parses their
+state-free §5.18.2 / §5.19 activation prefix and returns
+`PayloadStatus::PrefixParsed` with `blocked_on = "active sequence header state"`,
+surfaced by `inspect --json` as `prefix_parsed_awaiting_state` (the richer
+state-aware surface is the inspector's stateful frame-header views and the
+validator's direct-call path). The dispatch row's `parse = partial` is the
+declared honest end-state until the deeper §5.18 / §5.19 / §5.20 syntax beyond
+the prefix exists (owned by the frame-header / tile-group rows).
 
 ## Phase 3 — sequence header parser, split by §5.4 child rows
 

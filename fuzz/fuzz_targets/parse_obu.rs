@@ -21,5 +21,12 @@ use splot_core::span::ByteOffset;
 fuzz_target!(|data: &[u8]| {
     let _ = read_leb128(data, ByteOffset::new(0));
     let _ = read_obu_header(data, ByteOffset::new(0));
-    let _ = parse_annex_b_obus(data);
+    // Also drive the stateless payload dispatch on every parsed OBU so the
+    // frame-carrying prefix arms (tile-group / SEF / TIP / bridge) are fuzzed for the
+    // never-panic invariant, not just the structural Annex B parse.
+    if let Ok(obus) = parse_annex_b_obus(data) {
+        for obu in &obus {
+            let _ = obu.payload_status();
+        }
+    }
 });

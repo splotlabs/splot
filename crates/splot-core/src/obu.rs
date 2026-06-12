@@ -27,6 +27,7 @@ use crate::headers::atlas_segment::{AtlasSegment, parse_atlas_segment};
 use crate::headers::buffer_removal_timing::{BufferRemovalTiming, parse_buffer_removal_timing};
 use crate::headers::content_interpretation::{ContentInterpretation, parse_content_interpretation};
 use crate::headers::film_grain::{FilmGrainObu, parse_film_grain};
+use crate::headers::frame::{FrameHeaderPrefix, parse_frame_header_prefix};
 use crate::headers::layer_config_record::{LayerConfigurationRecord, parse_layer_config_record};
 use crate::headers::metadata::{
     MetadataGroupObu, MetadataShortObu, parse_metadata_group, parse_metadata_short,
@@ -35,11 +36,48 @@ use crate::headers::operating_point_set::{OperatingPointSet, parse_operating_poi
 use crate::headers::padding::{PaddingObu, parse_padding_obu};
 use crate::headers::quantizer_matrix::{QuantizerMatrixObu, parse_quantizer_matrix};
 use crate::headers::sequence::{SequenceHeader, parse_sequence_header};
+use crate::headers::tile_group::{TileGroupHeaderPrefix, parse_tile_group_prefix};
 use crate::hls::{
     MultiFrameHeader, MultistreamDecoderOperation, parse_msdo, parse_multi_frame_header,
 };
 use crate::span::ByteOffset;
 use crate::types::{EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID, ObuType, TemporalLayerId};
+
+/// The reason the state-dependent remainder of a frame-carrying OBU payload was not
+/// parsed by the stateless dispatcher: the rest of § 5.18 / § 5.19 needs the activated
+/// sequence header (and, on the `cur_mfh_id > 0` path, the referenced multi-frame
+/// header) plus per-extended-layer decoder state, none of which the stateless front
+/// door holds.
+const BLOCKED_ON_ACTIVE_SEQUENCE_HEADER_STATE: &str = "active sequence header state";
+
+/// The state-free prefix of a frame-carrying OBU payload parsed by the stateless
+/// dispatcher (AV2 v1.0.0 § 5.18.2 / § 5.19).
+///
+/// The dispatcher parses exactly the portion of `tile_group_obu()` / `frame_header()`
+/// that needs no cross-OBU state — the activation/reference fields — and returns this
+/// inside [`PayloadStatus::PrefixParsed`]. The richer, state-aware surface lives in the
+/// inspector's stateful frame-header views and the validator's direct-call path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FramePayloadPrefix {
+    /// The `tile_group_obu()` prefix (AV2 v1.0.0 § 5.19): `is_first_tile_group`,
+    /// `frame_header_present_flag`, and the first tile group's frame-header prefix.
+    TileGroup(TileGroupHeaderPrefix),
+    /// The `frame_header()` activation prefix (AV2 v1.0.0 § 5.18.2) carried directly by
+    /// an `OBU_*_SEF` / `OBU_*_TIP` / `OBU_BRIDGE_FRAME` payload.
+    FrameHeader(FrameHeaderPrefix),
+}
+
+impl FramePayloadPrefix {
+    /// Returns a stable snake-case label for tools and JSON output.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::TileGroup(_) => "tile_group_prefix",
+            Self::FrameHeader(_) => "frame_header_prefix",
+        }
+    }
+}
 
 /// Payload dispatch status for an OBU whose envelope and header have parsed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +86,22 @@ pub enum PayloadStatus<'a, T> {
     Parsed(T),
     /// Payload bytes are intentionally retained without syntax interpretation.
     Opaque(&'a [u8]),
+    /// A frame-carrying OBU whose state-free prefix parsed, but whose remainder needs
+    /// cross-OBU state the stateless dispatcher does not hold.
+    ///
+    /// This is the honest result for the 11 frame-carrying OBU types (the tile-group
+    /// family and the SEF / TIP / bridge family): their § 5.18.2 / § 5.19 activation
+    /// prefix is parsed into `prefix`, and `blocked_on` names what the rest needs (the
+    /// activated sequence header state). The richer state-aware surface is the
+    /// inspector's stateful frame-header views and the validator's direct-call path.
+    PrefixParsed {
+        /// The parsed state-free prefix.
+        prefix: FramePayloadPrefix,
+        /// Why the state-dependent remainder was not parsed here.
+        blocked_on: &'static str,
+        /// Feature ID that owns the state-dependent remainder.
+        feature: &'static str,
+    },
     /// The OBU type is recognized, but its payload parser has not been implemented yet.
     Unimplemented {
         /// Feature ID that tracks the missing payload parser.
@@ -157,14 +211,22 @@ pub struct ObuHeader {
 
 /// Dispatches an OBU payload according to `obu_type` (AV2 v1.0.0 § 5.2.1).
 ///
-/// This is intentionally a partial dispatcher: OBU types whose payload syntax is
-/// not yet implemented return [`PayloadStatus::Unimplemented`] with the matrix
-/// feature ID that owns the missing parser. Payload syntax errors for implemented
-/// cases are returned as typed [`Error`] values.
+/// This dispatcher is **stateless**: it never threads cross-OBU state (the activated
+/// sequence header, the multi-frame-header store, per-extended-layer decoder state).
+/// Fully-decidable payloads are parsed into a typed [`PayloadStatus::Parsed`]; the 11
+/// frame-carrying OBU types (the tile-group family and the SEF / TIP / bridge family)
+/// have their state-free § 5.18.2 / § 5.19 activation prefix parsed and returned as
+/// [`PayloadStatus::PrefixParsed`], whose `blocked_on` names the state the remainder
+/// needs. The richer, state-aware surface for those types is the inspector's stateful
+/// frame-header views and the validator's direct-call path. Reserved payloads stay
+/// [`PayloadStatus::Opaque`]; payload syntax errors are returned as typed [`Error`]
+/// values.
 ///
 /// # Errors
-/// Returns [`Error::InvalidTrailingBits`] or [`Error::UnexpectedEof`] if a
-/// currently implemented temporal-delimiter payload has malformed trailing bits.
+/// Returns [`Error::InvalidTrailingBits`] or [`Error::UnexpectedEof`] if a currently
+/// implemented payload has malformed trailing bits, or [`Error::UnexpectedEof`] /
+/// [`Error::InvalidUvlc`] if a frame-carrying OBU's payload ends or is malformed inside
+/// the state-free activation prefix.
 pub fn dispatch_obu_payload<'a>(
     header: ObuHeader,
     payload: &'a [u8],
@@ -291,6 +353,38 @@ pub fn dispatch_obu_payload<'a>(
                 metadata,
             ))))
         }
+        // The 11 frame-carrying types (the tile-group family and the SEF / TIP / bridge
+        // family). Dispatch stays stateless: it parses only the state-free § 5.18.2 /
+        // § 5.19 activation prefix and returns PrefixParsed with the reason the rest needs
+        // state. `first_picture_in_tu` is per-extended-layer decoder state the stateless
+        // front door does not hold, so it is passed `None` (it only affects the CLK-only
+        // `startCVS` derivation, not which bytes are read): a CLK then exposes
+        // `starts_cvs == None` rather than a fabricated `Some(false)`, while every other
+        // type is decided `Some(false)` from the type alone. The validator and inspector
+        // supply the real value on their stateful paths. An EOF inside the prefix returns
+        // the existing structured error path.
+        obu_type if obu_type.is_tile_group() => {
+            let mut reader = BitReader::new(payload, payload_offset);
+            let prefix = parse_tile_group_prefix(&mut reader, obu_type, None)?;
+            Ok(PayloadStatus::PrefixParsed {
+                prefix: FramePayloadPrefix::TileGroup(prefix),
+                blocked_on: BLOCKED_ON_ACTIVE_SEQUENCE_HEADER_STATE,
+                feature: "AV2-5.19-TILE-GROUP",
+            })
+        }
+        obu_type
+            if obu_type.is_sef() || obu_type.is_tip_frame() || obu_type == ObuType::BridgeFrame =>
+        {
+            let mut reader = BitReader::new(payload, payload_offset);
+            let prefix = parse_frame_header_prefix(&mut reader, obu_type, None)?;
+            Ok(PayloadStatus::PrefixParsed {
+                prefix: FramePayloadPrefix::FrameHeader(prefix),
+                blocked_on: BLOCKED_ON_ACTIVE_SEQUENCE_HEADER_STATE,
+                feature: "AV2-5.18-FRAME-HEADER",
+            })
+        }
+        // Any remaining type is parsed by an explicit arm above or kept opaque (reserved);
+        // none reach here. Kept as an honest fallback rather than an unreachable!.
         obu_type => Ok(PayloadStatus::Unimplemented {
             feature: unimplemented_payload_feature(obu_type),
             payload,
@@ -358,10 +452,12 @@ fn parse_empty_payload_syntax(payload: &[u8], payload_offset: ByteOffset) -> Res
 /// Returns the implementation-matrix feature ID that owns the payload parser for an
 /// `obu_type` that `dispatch_obu_payload` does not yet parse (its catch-all arm).
 ///
-/// Only the tile-group and frame-header OBU types currently reach this. Every other
-/// type is either parsed by an explicit dispatch arm or kept opaque (reserved types),
-/// so it can never reach the catch-all; those variants are matched only to keep the
-/// match exhaustive.
+/// As of the frame-carrying prefix dispatch, **no** type reaches this function: every
+/// frame-carrying type is handled by an explicit `PrefixParsed` arm, every other type is
+/// parsed by an explicit dispatch arm or kept opaque (reserved types). All variants are
+/// matched only to keep the match exhaustive and to keep an honest fallback feature ID if
+/// the dispatch arms ever change; the tile-group / frame-header arms below name the
+/// state-dependent residual owners directly.
 fn unimplemented_payload_feature(obu_type: ObuType) -> &'static str {
     match obu_type {
         ObuType::ClosedLoopKey
@@ -832,6 +928,216 @@ mod tests {
         if let PayloadStatus::Parsed(parsed) = &status {
             assert_eq!(parsed.syntax_name(), "film_grain_obu");
             assert_eq!(parsed.feature_id(), "AV2-5.14-FILM-GRAIN");
+        }
+    }
+
+    // --- frame-carrying payload dispatch (the 11 types) ---
+
+    #[test]
+    fn dispatch_parses_tile_group_prefix_and_blocks_on_state() {
+        // 0x10 = 0b0_00100_00 -> ext=0, type=4 (ClosedLoopKey, a tile-group type).
+        let header = read_obu_header(&[0x10], ByteOffset::new(0)).unwrap();
+        assert_eq!(header.obu_type, ObuType::ClosedLoopKey);
+        // is_first_tile_group=1 (frame_header_present_flag inferred 1), cur_mfh_id=uvlc(0)
+        // (a `1` bit), seq_header_id_in_frame_header=uvlc(2) (`011`): 1 1 0 1 1 -> 0xD8.
+        let payload = [0xD8];
+        let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
+        assert!(matches!(
+            &status,
+            PayloadStatus::PrefixParsed {
+                prefix: FramePayloadPrefix::TileGroup(_),
+                blocked_on: "active sequence header state",
+                feature: "AV2-5.19-TILE-GROUP",
+            }
+        ));
+        if let PayloadStatus::PrefixParsed { prefix, .. } = &status {
+            assert_eq!(prefix.label(), "tile_group_prefix");
+            if let FramePayloadPrefix::TileGroup(tg) = prefix {
+                assert!(tg.is_first_tile_group);
+                assert!(tg.frame_header_present_flag);
+                let fh = tg
+                    .frame_header
+                    .expect("first tile group carries a frame header");
+                assert!(fh.cur_mfh_id.is_zero());
+                assert_eq!(fh.seq_header_id_in_frame_header, Some(2));
+            }
+        }
+    }
+
+    #[test]
+    fn dispatch_parses_bridge_frame_prefix_and_blocks_on_state() {
+        // 0x4C = 0b0_10011_00 -> ext=0, type=19 (BridgeFrame, a frame-header type).
+        let header = read_obu_header(&[0x4C], ByteOffset::new(0)).unwrap();
+        assert_eq!(header.obu_type, ObuType::BridgeFrame);
+        // IsBridge infers cur_mfh_id=0 (no bits), then seq_header_id=uvlc(0) (a `1` bit) -> 0x80.
+        let payload = [0x80];
+        let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
+        assert!(matches!(
+            &status,
+            PayloadStatus::PrefixParsed {
+                prefix: FramePayloadPrefix::FrameHeader(_),
+                blocked_on: "active sequence header state",
+                feature: "AV2-5.18-FRAME-HEADER",
+            }
+        ));
+        if let PayloadStatus::PrefixParsed { prefix, .. } = &status {
+            assert_eq!(prefix.label(), "frame_header_prefix");
+            if let FramePayloadPrefix::FrameHeader(fh) = prefix {
+                assert!(fh.is_bridge);
+                assert!(fh.cur_mfh_id.is_zero());
+                assert_eq!(fh.seq_header_id_in_frame_header, Some(0));
+            }
+        }
+    }
+
+    #[test]
+    fn dispatch_parses_sef_prefix_and_blocks_on_state() {
+        // 0x30 = 0b0_01100_00 -> ext=0, type=12 (RegularSef, a frame-header type).
+        let header = read_obu_header(&[0x30], ByteOffset::new(0)).unwrap();
+        assert_eq!(header.obu_type, ObuType::RegularSef);
+        // Not bridge: cur_mfh_id=uvlc(0) (`1`), seq_header_id=uvlc(0) (`1`) -> 0xC0.
+        let payload = [0xC0];
+        let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
+        assert!(matches!(
+            &status,
+            PayloadStatus::PrefixParsed {
+                prefix: FramePayloadPrefix::FrameHeader(_),
+                feature: "AV2-5.18-FRAME-HEADER",
+                ..
+            }
+        ));
+        if let PayloadStatus::PrefixParsed {
+            prefix: FramePayloadPrefix::FrameHeader(fh),
+            ..
+        } = &status
+        {
+            assert!(!fh.is_bridge);
+            assert!(fh.is_regular);
+            assert!(fh.cur_mfh_id.is_zero());
+        }
+    }
+
+    #[test]
+    fn dispatch_tile_group_eof_in_prefix_is_structured_error() {
+        // A ClosedLoopKey with an empty payload: parse_tile_group_prefix cannot read
+        // is_first_tile_group, so dispatch surfaces the EOF error (not PrefixParsed).
+        let header = read_obu_header(&[0x10], ByteOffset::new(0)).unwrap();
+        assert!(matches!(
+            dispatch_obu_payload(header, &[], ByteOffset::new(1)),
+            Err(Error::UnexpectedEof { .. })
+        ));
+    }
+
+    #[test]
+    fn dispatch_frame_header_eof_in_prefix_is_structured_error() {
+        // A RegularSef with an empty payload: parse_frame_header_prefix cannot read the
+        // cur_mfh_id uvlc, so dispatch surfaces the EOF error (not PrefixParsed).
+        let header = read_obu_header(&[0x30], ByteOffset::new(0)).unwrap();
+        assert!(matches!(
+            dispatch_obu_payload(header, &[], ByteOffset::new(1)),
+            Err(Error::UnexpectedEof { .. })
+        ));
+    }
+
+    #[test]
+    fn dispatch_clk_tile_group_prefix_leaves_starts_cvs_unknown() {
+        // A ClosedLoopKey dispatched statelessly cannot know FirstPictureInTU, so its
+        // startCVS (AV2 § 5.18.2: obu_type == OBU_CLOSED_LOOP_KEY && FirstPictureInTU)
+        // is genuinely unknown — it must surface as None, NOT a fabricated Some(false).
+        // 0x10 = ext=0, type=4 (ClosedLoopKey). Payload 0xD8: is_first_tile_group=1,
+        // cur_mfh_id=uvlc(0), seq_header_id=uvlc(2).
+        let header = read_obu_header(&[0x10], ByteOffset::new(0)).unwrap();
+        assert_eq!(header.obu_type, ObuType::ClosedLoopKey);
+        let status = dispatch_obu_payload(header, &[0xD8], ByteOffset::new(1)).unwrap();
+        assert!(
+            matches!(
+                &status,
+                PayloadStatus::PrefixParsed {
+                    prefix: FramePayloadPrefix::TileGroup(_),
+                    ..
+                }
+            ),
+            "expected a tile-group prefix, got {status:?}"
+        );
+        if let PayloadStatus::PrefixParsed {
+            prefix: FramePayloadPrefix::TileGroup(tg),
+            ..
+        } = &status
+        {
+            let fh = tg
+                .frame_header
+                .expect("first tile group carries a frame header");
+            assert_eq!(fh.starts_cvs, None, "stateless CLK startCVS is unknown");
+        }
+    }
+
+    #[test]
+    fn dispatch_clk_frame_header_prefix_leaves_starts_cvs_unknown() {
+        // A ClosedLoopKey can also reach the frame-header dispatch arm via its
+        // frame-header-only families; assert the same None for a SEF-style frame-header
+        // prefix when the carried type would gate startCVS. RegularSef is non-CLK, so it
+        // is decided Some(false) (type-only). 0x30 = ext=0, type=12 (RegularSef).
+        let header = read_obu_header(&[0x30], ByteOffset::new(0)).unwrap();
+        assert_eq!(header.obu_type, ObuType::RegularSef);
+        let status = dispatch_obu_payload(header, &[0xC0], ByteOffset::new(1)).unwrap();
+        assert!(
+            matches!(
+                &status,
+                PayloadStatus::PrefixParsed {
+                    prefix: FramePayloadPrefix::FrameHeader(_),
+                    ..
+                }
+            ),
+            "expected a frame-header prefix, got {status:?}"
+        );
+        if let PayloadStatus::PrefixParsed {
+            prefix: FramePayloadPrefix::FrameHeader(fh),
+            ..
+        } = &status
+        {
+            // Non-CLK: startCVS is decided from the type alone (always false), independent
+            // of the unknown FirstPictureInTU — so it is Some(false), not None.
+            assert_eq!(fh.starts_cvs, Some(false));
+        }
+    }
+
+    #[test]
+    fn dispatch_covers_every_frame_carrying_type_without_unimplemented() {
+        // Every one of the 11 frame-carrying types must dispatch its prefix, never a
+        // blanket Unimplemented. A non-first tile group (is_first_tile_group=0,
+        // frame_header_present_flag=0) is the minimal tile-group payload; the
+        // frame-header types take the minimal cur_mfh_id=0 + seq_header_id=0 prefix.
+        for obu_type in [
+            ObuType::ClosedLoopKey,
+            ObuType::OpenLoopKey,
+            ObuType::LeadingTileGroup,
+            ObuType::RegularTileGroup,
+            ObuType::Switch,
+            ObuType::RasFrame,
+            ObuType::LeadingSef,
+            ObuType::RegularSef,
+            ObuType::LeadingTip,
+            ObuType::RegularTip,
+            ObuType::BridgeFrame,
+        ] {
+            // obu_header() = ext(0) | type(5) | tlayer(0): the type occupies bits 6..2.
+            let header_byte = obu_type.raw() << 2;
+            let header = read_obu_header(&[header_byte], ByteOffset::new(0)).unwrap();
+            assert_eq!(header.obu_type, obu_type);
+            // A two-zero-bit then a `1` payload satisfies both shapes: a non-first
+            // tile group (00 = is_first=0, frame_header_present=0) reads 2 bits, and a
+            // frame-header type reads cur_mfh_id=uvlc... the first `0` bit makes uvlc
+            // read more, so give the frame-header types a clean uvlc(0)+uvlc(0) instead.
+            let payload: &[u8] = if obu_type.is_tile_group() {
+                &[0x00] // is_first_tile_group=0, frame_header_present_flag=0
+            } else {
+                &[0xC0] // cur_mfh_id=uvlc(0), seq_header_id=uvlc(0) (bridge ignores the first)
+            };
+            let status = dispatch_obu_payload(header, payload, ByteOffset::new(1)).unwrap();
+            assert!(
+                matches!(status, PayloadStatus::PrefixParsed { .. }),
+                "{obu_type:?} must dispatch its prefix, got {status:?}"
+            );
         }
     }
 }
