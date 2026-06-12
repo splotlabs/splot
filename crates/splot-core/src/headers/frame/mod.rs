@@ -34,12 +34,17 @@ use crate::hls::MfhId;
 use crate::types::ObuType;
 
 mod config;
+mod filtering;
 mod info;
 mod quant;
 mod segmentation;
 mod size;
 mod tiling;
 
+pub use filtering::{
+    CdefParams, CdefStrengthSet, CoreSeqFilterView, DeblockingFilterParams, GdfGeometry, GdfParams,
+    MfhDeblockingView, parse_cdef_params, parse_deblocking_filter_params, parse_gdf_params,
+};
 pub use info::{
     FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
     FrameReferenceStateView, FrameType, parse_frame_header_core,

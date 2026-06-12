@@ -1000,10 +1000,14 @@ positives.
   that reference (the existing QM availability diagnostics own that case)
 
 ### Requirement: Frame-header parse coverage reporting stays honest
-The validator and inspector SHALL report the new stopped-before-deblocking
-parse status distinctly, and SHALL NOT claim full § 5.18 frame-header
-conformance for frame headers parsed only through the new stop point. Existing
-frame-header activation and HLS reference diagnostics SHALL be preserved
+The validator and inspector SHALL report each partial frame-header parse status
+distinctly — the intra-path stop before `lr_params()` and the truncation status
+for a payload that ends inside the loop-filter cluster — and SHALL NOT claim full
+§ 5.18 frame-header conformance for frame headers parsed only through a partial
+stop point. A frame header truncated inside the loop-filter cluster SHALL still
+expose its already-parsed control-region facts to the state-supported diagnostics
+(the truncation SHALL NOT silence earlier frame-size / output-class checks).
+Existing frame-header activation and HLS reference diagnostics SHALL be preserved
 unchanged.
 
 #### Scenario: Inspector surfaces new fields and status

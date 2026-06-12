@@ -7940,6 +7940,7 @@ impl ValidatorContext {
                 mfh_allow_seg_info_change: mfh.mfh_allow_seg_info_change,
                 mfh_segment_info: mfh.segment_info,
                 mfh_deblocking_filter_update: mfh.mfh_deblocking_filter_update,
+                mfh_apply_deblocking_filter: mfh.mfh_apply_deblocking_filter,
                 offset: obu.offset,
             });
             // AV2 § 7.3.8.1: note this MFH's in-band (re)send for the replay, and — when

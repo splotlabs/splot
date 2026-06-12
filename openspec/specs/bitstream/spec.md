@@ -833,18 +833,18 @@ only when `!(CodedLossless || !enable_parity_hiding || allow_tcq)`.
 - **WHEN** `using_qmatrix` is 1 and a segment is lossless per `LosslessArray`
 - **THEN** no `qm_index` is read for that segment and its QM levels are 15
 
-### Requirement: New frame-header stop point
-After `allow_parity_hiding`, the intra-path parser SHALL stop with a new
-explicit `FrameHeaderParseStatus` value indicating it stopped before
-`deblocking_filter_params()` (AV2 v1.0.0 § 5.18.5.2). The
-`StoppedBeforeFilteringQuantSegmentation` status SHALL no longer be produced on
-this path, and no full-payload trailing-bits conformance SHALL be inferred from
-the new partial status.
+### Requirement: Intra-path frame-header stop point
+The intra-path parser SHALL stop with an explicit `FrameHeaderParseStatus` value
+indicating it stopped before `lr_params()` (loop restoration, § 5.18.7.11) once it
+has read the § 5.18.2 lossless / `allow_tcq` / `allow_parity_hiding` tail and the
+loop-filter cluster `deblocking_filter_params()` (AV2 v1.0.0 § 5.18.5.2),
+`gdf_params()` (§ 5.18.7.9), and `cdef_params()` (§ 5.18.7.10). No full-payload
+trailing-bits conformance SHALL be inferred from a partial status.
 
 #### Scenario: Status reports the deeper stop point
-- **WHEN** a valid intra frame header parses through the new structures
-- **THEN** the parse status is the new stopped-before-deblocking value and
-  `consumed_bits` covers exactly the parsed prefix
+- **WHEN** a valid intra frame header parses through the loop-filter cluster
+- **THEN** the parse status names the next unparsed structure (loop restoration)
+  and `consumed_bits` covers exactly the parsed prefix
 
 ### Requirement: New frame parsers never panic
 All new frame-header parsing paths SHALL return typed errors on truncated or
@@ -927,4 +927,37 @@ stopping as unimplemented.
 
 - **WHEN** a frame reuses a uniform sequence tile layout
 - **THEN** parsing behaves exactly as before
+
+### Requirement: intra-path filter parameter parsing
+
+The frame-header core parser SHALL parse `deblocking_filter_params()`
+(§ 5.18.5.2, including the `cur_mfh_id > 0` arms consulting the resolved
+multi-frame header's `mfh_deblocking_filter_update` /
+`mfh_apply_deblocking_filter`), `gdf_params()` (§ 5.18.7.9), and
+`cdef_params()` (§ 5.18.7.10) on the intra path, gated on the parsed
+§ 5.4.10 sequence filter configuration, and SHALL advance its stop status
+past them to the next unparsed structure. A frame whose referenced
+multi-frame header is not resolvable in-band SHALL keep the existing
+unsupported routing.
+
+#### Scenario: intra frame parses filter params
+
+- **WHEN** an intra frame header reaches the § 5.18.2 tail with a parsed
+  sequence filter configuration
+- **THEN** the deblocking, GDF, and CDEF parameters are parsed and the
+  stop status names the next unparsed structure
+
+#### Scenario: MFH deblocking arm
+
+- **WHEN** a `cur_mfh_id > 0` frame's resolved MFH sets
+  `mfh_deblocking_filter_update == 1`
+- **THEN** the § 5.18.5.2 MFH arm is parsed per the mirror
+
+#### Scenario: EOF inside filter params
+
+- **WHEN** the payload ends inside any of the three loop-filter structures
+- **THEN** the parser reports the truncation without panicking, preserves the
+  already-parsed control-region facts (frame size, output flags, tile / quant /
+  segmentation), leaves the unreached filter fields unset, and records the
+  truncation through a dedicated stop status rather than failing the whole parse
 

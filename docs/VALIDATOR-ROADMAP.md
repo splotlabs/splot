@@ -356,9 +356,11 @@ Acceptance:
 
 **Status:** partial — beyond the activation skeleton,
 `AV2-5.18.3-FRAME-CONFIGURATION` and `AV2-5.18.4-FRAME-SIZE` parse with tests,
-and the intra tail through `AV2-5.18.6-QUANTIZATION` and
-`AV2-5.18.7-SEGMENTATION-TILING` is partial (`AV2-5.18.7.3-TILE-PARAMS` done);
-`AV2-5.18.5-FILTERING` and the §5.18.8–§5.18.10 child rows are todo.
+and the intra tail through `AV2-5.18.6-QUANTIZATION`,
+`AV2-5.18.7-SEGMENTATION-TILING` (`AV2-5.18.7.3-TILE-PARAMS` done; `gdf_params()`
+§5.18.7.9 and `cdef_params()` §5.18.7.10 parse on the intra path), and
+`AV2-5.18.5-FILTERING` (`deblocking_filter_params()` §5.18.5.2 on the intra path)
+is partial; the §5.18.8–§5.18.10 child rows are todo.
 
 **Goal:** split the large frame header into implementable chunks.
 
@@ -377,17 +379,32 @@ and the intra tail through `AV2-5.18.6-QUANTIZATION` and
   § 5.18.2 omitted-size inference) and § 5.18.7.1 `segmentation_params()` parses
   its MFH-gated arm — the same intra tail the `cur_mfh_id == 0` path reaches. A
   `cur_mfh_id > 0` frame whose in-band MFH is unresolvable still routes to
-  Unknown. `mfh_deblocking_filter_update` is recorded as groundwork only.
+  Unknown.
   The § 5.18.7.4 non-uniform sequence-reuse branch is now wired: § 5.4.2 parsing
   records `SeqSbColStarts` / `SeqSbRowStarts`, so a frame reusing a non-uniform
   sequence tile layout parses through `tile_info()` instead of stopping
   unimplemented.
+- **Landed** (OpenSpec `frame-filtering-deblocking-gdf-cdef`): the intra-path
+  stop advances past the § 5.18.2 tail loop-filter cluster —
+  `deblocking_filter_params()` (§ 5.18.5.2, including the `cur_mfh_id > 0`
+  `mfh_deblocking_filter_update` / `mfh_apply_deblocking_filter` arm),
+  `gdf_params()` (§ 5.18.7.9), and `cdef_params()` (§ 5.18.7.10) — so the core
+  stop status is now `StoppedBeforeLoopRestorationParams` (the next unparsed
+  structure is `lr_params()`, § 5.18.7.11). A payload that ends *inside* the
+  loop-filter cluster is reported through the dedicated `StoppedInsideFilterParams`
+  status: the already-parsed control-region facts (frame size, output flags,
+  tile / quant / segmentation) are preserved so the validator's state-supported
+  checks (e.g. `frame-header/frame-size-exceeds-sequence-max`) still fire on a
+  truncated frame, rather than the EOF failing the whole core parse and silently
+  skipping them. §6.17.5.2 / §6.17.7.5 / §6.17.7.6 state no requirement of
+  bitstream conformance on the parsed fields, so no diagnostic was added, and
+  there is no frame-header-payload truncation diagnostic surface to route the
+  truncation to (facts + Unknown routing are preserved instead).
 - **Remaining:** inter frame-header paths (including the inter `cur_mfh_id > 0`
-  arms), § 5.18.5 filtering onward (the `mfh_deblocking_filter_update`-gated
-  deblocking parse lands with `frame-filtering-deblocking-gdf-cdef`), and the
-  § 6.17.6.2 layer-dependency constraints (the §5.4.1 dependency maps are now
-  exposed by the sequence-header model; the checks themselves are not implemented
-  yet).
+  arms and § 5.18.5.1 `read_interpolation_filter()`), § 5.18.7.11+ loop
+  restoration / CCSO onward, and the § 6.17.6.2 layer-dependency constraints (the
+  §5.4.1 dependency maps are now exposed by the sequence-header model; the checks
+  themselves are not implemented yet).
   `AV2-5.18-FRAME-HEADER` and `AV2-5.19-TILE-GROUP` therefore stay `partial`,
   not `done`.
 

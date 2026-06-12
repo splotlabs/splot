@@ -550,10 +550,16 @@ fn run_audit() -> Result<()> {
 
 /// Checks XTASK-CONVENTIONAL-COMMITS: commit subjects follow Conventional Commits.
 fn check_conventional_commits(root: &Path, rev_range: Option<&str>) -> Result<()> {
-    let commits = git_commit_subjects(root, rev_range)?;
-    if commits.is_empty() {
+    let ListedCommits { commits, raw_count } = git_commit_subjects(root, rev_range)?;
+    if raw_count == 0 {
         let target = rev_range.unwrap_or("HEAD");
         bail!("check-conventional-commits: no commits found for `{target}`");
+    }
+    if commits.is_empty() {
+        // Every listed commit was a merge commit (exempt from the subject
+        // rule); nothing is left to validate.
+        eprintln!("check-conventional-commits: ok (only merge commit(s) in range)");
+        return Ok(());
     }
 
     let offenders: Vec<&CommitSubject> = commits
@@ -610,7 +616,17 @@ const CONVENTIONAL_COMMIT_TYPES: &[&str] = &[
     "build", "chore", "ci", "docs", "feat", "fix", "perf", "refactor", "revert", "style", "test",
 ];
 
-fn git_commit_subjects(root: &Path, rev_range: Option<&str>) -> Result<Vec<CommitSubject>> {
+/// The result of listing commit subjects for the Conventional Commits check:
+/// `commits` holds the non-merge commits to validate, while `raw_count` counts
+/// every commit git listed (so an empty revision range can be distinguished
+/// from a range containing only exempt merge commits).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ListedCommits {
+    commits: Vec<CommitSubject>,
+    raw_count: usize,
+}
+
+fn git_commit_subjects(root: &Path, rev_range: Option<&str>) -> Result<ListedCommits> {
     if let Some(range) = rev_range {
         if range.trim().is_empty() {
             bail!("revision range must not be empty");
@@ -621,25 +637,41 @@ fn git_commit_subjects(root: &Path, rev_range: Option<&str>) -> Result<Vec<Commi
     }
 
     let output = if let Some(range) = rev_range {
-        run_git(root, &["log", "--format=%H%x09%s", range])?
+        run_git(root, &["log", "--format=%H%x09%P%x09%s", range])?
     } else {
-        run_git(root, &["log", "-1", "--format=%H%x09%s"])?
+        run_git(root, &["log", "-1", "--format=%H%x09%P%x09%s"])?
     };
     parse_commit_subjects(&output)
 }
 
-fn parse_commit_subjects(output: &str) -> Result<Vec<CommitSubject>> {
+fn parse_commit_subjects(output: &str) -> Result<ListedCommits> {
     let mut commits = Vec::new();
+    let mut raw_count = 0usize;
     for line in output.lines().filter(|line| !line.is_empty()) {
-        let Some((sha, subject)) = line.split_once('\t') else {
+        let Some((sha, rest)) = line.split_once('\t') else {
             bail!("git log output line did not contain a tab separator: {line}");
         };
+        let Some((parents, subject)) = rest.split_once('\t') else {
+            bail!("git log output line did not contain a parents field: {line}");
+        };
+        raw_count += 1;
+        // A git-generated sync-merge commit (two or more parents AND the
+        // stock "Merge …" subject) is exempt from the Conventional Commits
+        // subject rule (AGENTS.md §5.1): syncing a pushed feature branch with
+        // main requires a merge commit (force-pushing a branch under review is
+        // not allowed), its subject cannot be rewritten afterwards, and the
+        // squash merge to main drops it from the default branch. A merge
+        // commit with a custom subject is still validated, and merges TO main
+        // stay squash/rebase-only.
+        if parents.split_whitespace().count() >= 2 && subject.starts_with("Merge ") {
+            continue;
+        }
         commits.push(CommitSubject {
             sha: sha.to_owned(),
             subject: subject.to_owned(),
         });
     }
-    Ok(commits)
+    Ok(ListedCommits { commits, raw_count })
 }
 
 fn is_conventional_commit_subject(subject: &str) -> bool {
@@ -1117,6 +1149,39 @@ mod tests {
     fn conventional_title_check_reuses_subject_rules() {
         assert!(check_conventional_title("ci: enforce conventional commits").is_ok());
         assert!(check_conventional_title("Enforce Conventional Commits in CI").is_err());
+    }
+
+    #[test]
+    fn parse_commit_subjects_skips_git_generated_merge_commits() -> Result<()> {
+        let output = "aaa\tp1\tfeat: real change\nbbb\tp1 p2\tMerge branch 'main' into feature\nccc\tp1\tchore: follow-up\n";
+        let listed = parse_commit_subjects(output)?;
+        assert_eq!(listed.raw_count, 3);
+        let subjects: Vec<&str> = listed
+            .commits
+            .iter()
+            .map(|commit| commit.subject.as_str())
+            .collect();
+        assert_eq!(subjects, ["feat: real change", "chore: follow-up"]);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_commit_subjects_keeps_custom_subject_merge_commits() -> Result<()> {
+        let output = "ddd\tp1 p2\tsync with main\n";
+        let listed = parse_commit_subjects(output)?;
+        assert_eq!(listed.raw_count, 1);
+        assert_eq!(listed.commits.len(), 1);
+        assert_eq!(listed.commits[0].subject, "sync with main");
+        Ok(())
+    }
+
+    #[test]
+    fn parse_commit_subjects_merge_only_output_keeps_raw_count() -> Result<()> {
+        let output = "bbb\tp1 p2\tMerge remote-tracking branch 'origin/main' into feature\n";
+        let listed = parse_commit_subjects(output)?;
+        assert_eq!(listed.raw_count, 1);
+        assert!(listed.commits.is_empty());
+        Ok(())
     }
 
     #[test]
