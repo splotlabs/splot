@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "f7d7370aecbc60ce1ac385e795fd395970c699cd",
+  "audited_commit": "e6b13a30a95fbf14e5bf1d1a99277d37465239eb",
   "outcome": "success",
   "files": [
     {
@@ -283,7 +283,7 @@
     },
     {
       "path": "crates/splot-cli/src/commands/inspect.rs",
-      "sha256": "416a6c7cab29a96c29d95d190ce59e091b3cc92d33d6199372a797f22baf4079",
+      "sha256": "df38f4f2f3ce85f15d6c3373688f03ce361150aa3f4460c6252c9df871910b8e",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.2.1-OBU-DISPATCH",
@@ -317,9 +317,10 @@
     },
     {
       "path": "crates/splot-cli/tests/cli.rs",
-      "sha256": "a0ec4940435df8b6fcd94e02b8b46abec18e005df529c9ad1442184340423aa0",
+      "sha256": "13650df4c3ddc6886a2ecce80ebe1b4a833775ea5a681e272df9ed058fbe0cec",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
+        "AV2-5.19-TILE-GROUP",
         "AV2-5.4-SEQUENCE-HEADER",
         "AV2-5.5-TEMPORAL-DELIMITER"
       ],
@@ -334,7 +335,7 @@
     },
     {
       "path": "crates/splot-core/src/annexb.rs",
-      "sha256": "ad9a64f2a0549a7be282444665442fca9495bfda93db7c3796c83d23307145fe",
+      "sha256": "0e09af5ce7b011663695e1a0309d4883688c88055114cade378dad4c77775015",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.19-TILE-GROUP",
@@ -667,7 +668,7 @@
     },
     {
       "path": "crates/splot-core/src/obu.rs",
-      "sha256": "a1860e1f74bcab4d42231e287290bce40177b12ce0fc20912e89b0f8cfb35b47",
+      "sha256": "f75699dcd62346006e5abe142f404d58d93d1296f1df6ce5f2825bb2f16d763f",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.10-OPERATING-POINT-SET",
@@ -1194,7 +1195,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "5c7e4608d7c48623f35635c4bb69c5a75be994aaa7cfa4750101d9b84bdfca80",
+      "sha256": "e1c9de99180b1ee25a64548a5be86de546d862e6cf190ae046e7da067c56f1be",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1507,7 +1508,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "4937cf4f1fb6e2221c6162f08ecbdd0ba5f429c0daf50e7c0c1663f61a936b54",
+      "sha256": "605e9f1a64cc979f45106932fcad168094f82b4a3ae9b5ef47539f7237f0e545",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -1662,7 +1663,7 @@
     },
     {
       "path": "fuzz/fuzz_targets/parse_obu.rs",
-      "sha256": "c93bcc481ed1b98e8d042506a82fe571b7311812787d1cf1589f38346b6e7160",
+      "sha256": "d5c3f123e0c6db44012cebb84c350c215c90d27ea0af6f02f2c0310acd50f6bb",
       "scope_kind": "fuzz",
       "feature_ids": [
         "CONF-FUZZ-NO-PANIC"
@@ -3549,6 +3550,33 @@
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
       ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/obu-dispatch-frame-payloads/proposal.md",
+      "sha256": "dcf94eaf0895ed7942c06e18513a92eaadd4257f4b04db2f0a7328b9a84a707f",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.2.1-OBU-DISPATCH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/obu-dispatch-frame-payloads/specs/bitstream/spec.md",
+      "sha256": "8e54e39c8c26d16a6448fb0ea8cff5426a337235dfdd81a0145a089b9c86a0c6",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.2.1-OBU-DISPATCH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/obu-dispatch-frame-payloads/tasks.md",
+      "sha256": "141a9f1c70cf65148e86c08dd316f875def2bcc781618696567090c1fed500a1",
+      "scope_kind": "openspec",
+      "feature_ids": [],
       "outcome": "success"
     },
     {
