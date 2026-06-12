@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "e6b13a30a95fbf14e5bf1d1a99277d37465239eb",
+  "audited_commit": "f9656dce18c26bbd6d3c7c0886ccfb397fefc189",
   "outcome": "success",
   "files": [
     {
@@ -3439,6 +3439,33 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-12-obu-dispatch-frame-payloads/proposal.md",
+      "sha256": "dcf94eaf0895ed7942c06e18513a92eaadd4257f4b04db2f0a7328b9a84a707f",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18-FRAME-HEADER",
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.2.1-OBU-DISPATCH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-obu-dispatch-frame-payloads/specs/bitstream/spec.md",
+      "sha256": "8e54e39c8c26d16a6448fb0ea8cff5426a337235dfdd81a0145a089b9c86a0c6",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.2.1-OBU-DISPATCH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-12-obu-dispatch-frame-payloads/tasks.md",
+      "sha256": "141a9f1c70cf65148e86c08dd316f875def2bcc781618696567090c1fed500a1",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-12-reference-state-and-random-access/proposal.md",
       "sha256": "76e657fb0fdc2824520e8bb615e1a7f331afe70bda17500d10de51aeab260b47",
       "scope_kind": "openspec",
@@ -3553,33 +3580,6 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/obu-dispatch-frame-payloads/proposal.md",
-      "sha256": "dcf94eaf0895ed7942c06e18513a92eaadd4257f4b04db2f0a7328b9a84a707f",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.18-FRAME-HEADER",
-        "AV2-5.19-TILE-GROUP",
-        "AV2-5.2.1-OBU-DISPATCH"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/obu-dispatch-frame-payloads/specs/bitstream/spec.md",
-      "sha256": "8e54e39c8c26d16a6448fb0ea8cff5426a337235dfdd81a0145a089b9c86a0c6",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.2.1-OBU-DISPATCH"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/obu-dispatch-frame-payloads/tasks.md",
-      "sha256": "141a9f1c70cf65148e86c08dd316f875def2bcc781618696567090c1fed500a1",
-      "scope_kind": "openspec",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
       "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
       "sha256": "ec25589a8a02879087f03de9cc0c8b07e5fedf96f9a48c8f3dd99be91c14d240",
       "scope_kind": "openspec",
@@ -3627,7 +3627,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "bc55e30c88dd6d2730b627900e5f16b2f93c389e838c3be78b0b97cd9c83ce36",
+      "sha256": "c66333d0ffcd4ae9f8dcdc6c23d8a7db7e436c8eb9f67c30a1a8b7e98f02d284",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
