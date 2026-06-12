@@ -318,13 +318,17 @@ impl FrameType {
     }
 }
 
-/// A read-only view of reference-frame buffer state for frame-header decisions.
+/// A read-only view of reference-frame buffer state for frame-header decisions
+/// (AV2 v1.0.0 § 7.23).
 ///
-/// This phase does not model the reference-frame buffers, so the validator passes
-/// [`FrameReferenceStateView::unknown`] and the core parser does not yet branch on it.
-/// The type exists so reference-state-dependent paths (explicit reference maps,
-/// `frame_size_with_refs()`, show-existing-frame slot validity) can be added later
-/// without changing the parser's call signature.
+/// The validator models the § 7.23 reference-frame buffer state and threads it in via
+/// [`FrameReferenceStateView::from_slots`]; callers with no modeled buffer (the
+/// inspector, a direct/fuzz caller) pass [`FrameReferenceStateView::unknown`]. The core
+/// parser does **not** yet branch on it: no § 5.18 intra parse path reads
+/// `RefValid`/`RefOrderHint`/dims, so today the view is forward plumbing for the § 5.18
+/// inter reference-state-dependent paths (explicit reference maps,
+/// `frame_size_with_refs()`, `primary_ref_frame`). The validator already consumes the
+/// modeled state directly for the § 6.17.2 show-existing-frame slot-validity check.
 #[derive(Debug, Clone, Copy, Default)]
 #[non_exhaustive]
 pub struct FrameReferenceStateView<'a> {
@@ -338,8 +342,9 @@ pub struct FrameReferenceStateView<'a> {
     pub ref_frame_height: Option<&'a [u32]>,
 }
 
-impl FrameReferenceStateView<'_> {
-    /// A fully-unknown reference state (the only state this phase models).
+impl<'a> FrameReferenceStateView<'a> {
+    /// A fully-unknown reference state (passed when the caller models no reference
+    /// buffer for this layer).
     #[must_use]
     pub const fn unknown() -> Self {
         Self {
@@ -347,6 +352,28 @@ impl FrameReferenceStateView<'_> {
             ref_order_hint: None,
             ref_frame_width: None,
             ref_frame_height: None,
+        }
+    }
+
+    /// Builds a reference state from the caller's modeled `RefValid[]` / `RefOrderHint[]`
+    /// / `RefFrameWidth[]` / `RefFrameHeight[]` slices (AV2 § 7.23).
+    ///
+    /// The slices are parallel, one entry per reference slot. The caller (the validator's
+    /// § 7.23 buffer model) owns the backing storage; the view borrows it for the parse.
+    /// A `cur_mfh_id == 0` / intra parse does not read these today — the constructor is
+    /// the forward-plumbing entry point for the § 5.18 inter reference paths.
+    #[must_use]
+    pub const fn from_slots(
+        ref_valid: &'a [bool],
+        ref_order_hint: &'a [u32],
+        ref_frame_width: &'a [u32],
+        ref_frame_height: &'a [u32],
+    ) -> Self {
+        Self {
+            ref_valid: Some(ref_valid),
+            ref_order_hint: Some(ref_order_hint),
+            ref_frame_width: Some(ref_frame_width),
+            ref_frame_height: Some(ref_frame_height),
         }
     }
 }

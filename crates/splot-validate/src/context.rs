@@ -66,6 +66,9 @@ use crate::metadata_lifetime::{
     PersistenceMode,
 };
 use crate::options::{ExternalHlsMode, ValidationOptions};
+use crate::reference_state::{
+    FrameRefUpdate, NUM_REF_FRAMES, ReferenceStateTracker, SlotState, is_key_or_switch, slot_facts,
+};
 
 /// Maximum conformant `num_*_points` for a film-grain scaling function
 /// (AV2 v1.0.0 § 6.17.10.2).
@@ -392,6 +395,25 @@ pub(crate) struct ValidatorContext {
     /// presence judgment is therefore deferred to the boundary rather than fired eagerly at
     /// CI-observation time (round-6 F3). See [`Self::resolve_ci_first_celu_for_tu`].
     ci_observed_in_tu: BTreeMap<(ExtendedLayerId, EmbeddedLayerId), ByteOffset>,
+    /// The § 7.23 reference-frame buffer state model, per extended layer (see
+    /// [`ReferenceStateTracker`]). Updated at each completed frame's coded-frame
+    /// boundary from the parsed `refresh_frame_flags` / `OrderHint` / dimensions
+    /// (`ReferenceStateView::pending_ref_update` derives the grounded update kind), with
+    /// honest all-slot poisoning whenever the refresh mask is unparsed and a grounded
+    /// CLK reset at a new coded video sequence. The state is threaded into the
+    /// frame-header parse input ([`FrameReferenceStateView`]) and gates the
+    /// show-existing-frame slot-validity diagnostic (§ 6.17.2). Validator-derived: the
+    /// buffers are written only in-band by the § 7.23 process, so the tracker never
+    /// consults external HLS.
+    reference_state: ReferenceStateTracker,
+    /// The just-completed frame's pending § 7.23 update, deferred until the frame's
+    /// coded-frame UNIT closes. § 7.23 runs at `decode_frame_wrapup` AFTER the frame is
+    /// decoded, so the update must land before any *later* frame's reference checks read
+    /// the buffer but after the current frame's own reference checks. The pending update
+    /// (and its extended layer) is committed when the segmenter reports the next frame
+    /// `OpensNewUnit` for that layer, or at the end-of-bitstream flush (no trailing
+    /// delimiter). `None` between a commit and the next frame's parse.
+    pending_ref_update: Option<(ExtendedLayerId, FrameRefUpdate)>,
 }
 
 /// One in-band global layer configuration record's § 6.8.2 agreement fields (AV2
@@ -4849,6 +4871,17 @@ impl ValidatorContext {
         };
         self.celu.observe(obu, celu_role, report);
 
+        // AV2 § 7.23: maintain the per-extended-layer reference-frame buffer state. A
+        // frame-bearing OBU that OPENS a new coded frame first commits the previous
+        // frame's pending § 7.23 update (decode_frame_wrapup runs after that frame was
+        // decoded, so its update must land before this frame's reference checks read the
+        // buffer), then runs this frame's reference checks against the post-update buffer
+        // and records this frame's own pending update. A non-frame OBU and a
+        // continuation (non-first tile group) leave the pending update untouched.
+        if is_frame_bearing(obu.header.obu_type) {
+            self.observe_reference_state(obu, first_picture_in_tu, boundary, report);
+        }
+
         // AV2 § 6.16.5 / § 6.16.6: mark this embedded layer's first coded picture
         // seen once its first coded frame (any frame-bearing OBU) is observed, for
         // the "shall be indicated at the first coded picture" check. A SEF is a
@@ -4859,6 +4892,194 @@ impl ValidatorContext {
             self.embedded_layer_first_picture_seen
                 .entry((obu.header.extended_layer_id, obu.header.embedded_layer_id))
                 .or_insert(self.cvs.tu_index);
+        }
+    }
+
+    /// Maintains the § 7.23 reference-frame buffer state for a frame-bearing `obu`.
+    ///
+    /// § 7.23 runs at `decode_frame_wrapup`, the final step of decoding a frame, AFTER the
+    /// frame is decoded. To keep later frames' reference checks consistent with that
+    /// ordering, each frame's § 7.23 update is *deferred* in [`Self::pending_ref_update`]
+    /// and committed at the next frame's coded-frame boundary (or the end-of-bitstream
+    /// flush). The segmenter's `boundary` is the coded-frame-unit authority:
+    ///
+    /// - [`FrameBoundary::OpensNewUnit`]: this OBU opens a NEW coded frame. The previous
+    ///   frame is complete, so commit its pending update FIRST (its decode finished),
+    ///   then run this frame's reference checks against the post-update buffer, then
+    ///   record this frame's own pending update.
+    /// - [`FrameBoundary::ContinuesUnit`]: a non-first tile group of the SAME coded
+    ///   frame. The frame's update was already derived from its first tile group; nothing
+    ///   to do (no double-update, no premature commit).
+    /// - [`FrameBoundary::Ambiguous`]: an unreadable frame delimiter — the OBU may open a
+    ///   new coded frame or continue one. Commit any pending update (the prior frame is
+    ///   done either way) and poison ALL slots: an ambiguous boundary makes this frame's
+    ///   refresh effect on the buffer unknowable (the Unknown invariant).
+    ///
+    /// A `None` boundary is a global frame-bearing OBU (the segmenter ignores globals);
+    /// such an OBU is invalid (diagnosed elsewhere) and not part of any coded frame unit,
+    /// so it neither commits nor produces a reference-state update.
+    fn observe_reference_state(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        first_picture_in_tu: bool,
+        boundary: Option<FrameBoundary>,
+        report: &mut ValidationReport,
+    ) {
+        let Some(boundary) = boundary else {
+            return;
+        };
+        match boundary {
+            FrameBoundary::ContinuesUnit => {
+                // Same coded frame as its first tile group; its pending update already
+                // captured the §7.23 effect. Nothing to commit or re-derive.
+            }
+            FrameBoundary::OpensNewUnit => {
+                // The previous coded frame completed: commit its deferred §7.23 update so
+                // this frame's reference checks see the post-decode buffer.
+                self.commit_pending_ref_update();
+                // Run this frame's reference-state checks against the committed buffer
+                // (the §6.17.2 show-existing-frame slot-validity diagnostic).
+                self.reference_state_checks(obu, first_picture_in_tu, report);
+                // Derive and stage this frame's own §7.23 update (committed at the NEXT
+                // frame boundary or the end-of-bitstream flush).
+                let update = self.derive_ref_update(obu, first_picture_in_tu);
+                self.pending_ref_update = Some((obu.header.extended_layer_id, update));
+            }
+            FrameBoundary::Ambiguous => {
+                // The prior frame is done; commit its update. This frame's own refresh
+                // effect is unknowable, so stage a poison-all (no reference checks fire —
+                // a poisoned buffer proves nothing).
+                self.commit_pending_ref_update();
+                self.pending_ref_update =
+                    Some((obu.header.extended_layer_id, FrameRefUpdate::PoisonAll));
+            }
+        }
+    }
+
+    /// Commits the deferred § 7.23 update (if any) into the reference-state tracker. Used
+    /// at each frame boundary that closes the previous coded frame and at the
+    /// end-of-bitstream flush (the final frame has no following delimiter).
+    fn commit_pending_ref_update(&mut self) {
+        if let Some((xlayer, update)) = self.pending_ref_update.take() {
+            self.reference_state.apply(xlayer, update);
+        }
+    }
+
+    /// Derives the grounded § 7.23 [`FrameRefUpdate`] for a frame-bearing `obu` from its
+    /// parsed core, honestly poisoning when the refresh mask / frame type / dims / order
+    /// hint cannot be grounded.
+    ///
+    /// - A show-existing-frame sets `refresh_frame_flags = 0` (§ 5.18.2 :4180), so it
+    ///   updates no slot ([`FrameRefUpdate::SefNoUpdate`]).
+    /// - A CLK that starts a new CVS (`OBU_CLOSED_LOOP_KEY && FirstPictureInTU`) resets
+    ///   `RefValid[i] = 0` over `0..NumRefFrames` (§ 5.18.2 :4449-4455) then applies its
+    ///   own refresh ([`FrameRefUpdate::ClkReset`]).
+    /// - Any other frame whose `refresh_frame_flags`, `frame_type`, dims, and order hint
+    ///   all parsed applies the § 7.23 update with the key/switch `first` rule.
+    /// - Otherwise (the core did not resolve, an inter/TIP/bridge path, a truncation, or
+    ///   any missing fact) the mask could touch any slot, so poison all
+    ///   ([`FrameRefUpdate::PoisonAll`]).
+    fn derive_ref_update(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        first_picture_in_tu: bool,
+    ) -> FrameRefUpdate {
+        // The core must resolve to the active (== referenced) sequence header, exactly as
+        // the output-class / order-hint derivation requires — otherwise the parsed fields
+        // were read against a stale header and cannot be trusted (the same guard
+        // `frame_celu_facts` uses).
+        let Some(core) = self.frame_core_against_referenced_header(obu, first_picture_in_tu) else {
+            return FrameRefUpdate::PoisonAll;
+        };
+
+        // A show-existing-frame updates no slot (§ 5.18.2 :4180).
+        if core.show_existing_frame == Some(true) {
+            return FrameRefUpdate::SefNoUpdate;
+        }
+
+        // Every grounded update needs the refresh mask, the frame type (for the §7.23
+        // RefValid `first` rule), and the stored facts (OrderHint + dims). Any missing
+        // fact poisons (the mask could refresh any slot, and a partial store is a guess).
+        let (Some(refresh_frame_flags), Some(frame_type)) =
+            (core.refresh_frame_flags, core.frame_type)
+        else {
+            return FrameRefUpdate::PoisonAll;
+        };
+        let Some(facts) = slot_facts(
+            core.order_hint_lsb,
+            core.frame_size.map(|size| size.width),
+            core.frame_size.map(|size| size.height),
+        ) else {
+            return FrameRefUpdate::PoisonAll;
+        };
+
+        // The §5.18.2 CLK reset (`OBU_CLOSED_LOOP_KEY && FirstPictureInTU`) clears
+        // RefValid[i] over 0..NumRefFrames before the refresh (mirror :4449-4455). The
+        // core records `starts_cvs` for exactly this condition.
+        if core.starts_cvs && obu.header.obu_type == ObuType::ClosedLoopKey {
+            let num_ref_frames = self
+                .active_sequence_by_xlayer
+                .get(&obu.header.extended_layer_id)
+                .and_then(|seq_id| self.sequence_headers.get(seq_id))
+                .and_then(|seq| seq.inter.as_ref())
+                .map_or(NUM_REF_FRAMES, |inter| usize::from(inter.num_ref_frames));
+            return FrameRefUpdate::ClkReset {
+                num_ref_frames,
+                refresh_frame_flags,
+                facts,
+            };
+        }
+
+        FrameRefUpdate::Refresh {
+            refresh_frame_flags,
+            is_key_or_switch: is_key_or_switch(frame_type),
+            facts,
+        }
+    }
+
+    /// Emits the reference-state-gated frame-header diagnostics that the modeled § 7.23
+    /// buffer makes locally decidable (AV2 § 6.17.2).
+    ///
+    /// Currently: a show-existing-frame whose `frame_to_show_map_idx` names a slot the
+    /// modeled buffer **proves** invalid (`RefValid == 0`). A *poisoned* (Unknown) slot
+    /// drops to silence — the buffer cannot prove a violation there (the Unknown
+    /// invariant). The check runs only when the frame's core resolved against its active
+    /// sequence header (the parsed `frame_to_show_map_idx` is trustworthy).
+    fn reference_state_checks(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        first_picture_in_tu: bool,
+        report: &mut ValidationReport,
+    ) {
+        let Some(core) = self.frame_core_against_referenced_header(obu, first_picture_in_tu) else {
+            return;
+        };
+        if core.show_existing_frame != Some(true) {
+            return;
+        }
+        let Some(idx) = core.frame_to_show_map_idx else {
+            return;
+        };
+        // AV2 § 6.17.2 (mirror :4178-4179) / § 7.23: a show-existing-frame outputs the
+        // frame stored at `frame_to_show_map_idx`; that reference frame must be valid
+        // (`RefValid[ frame_to_show_map_idx ] == 1`). The buffer fires ONLY when it
+        // PROVES the slot invalid (a CLK reset with no re-validating refresh since); a
+        // poisoned (Unknown) slot stays silent.
+        if self
+            .reference_state
+            .slot(obu.header.extended_layer_id, idx as usize)
+            == SlotState::ProvenInvalid
+        {
+            report.push(frame_header_error(
+                "frame-header/show-existing-frame-invalid-slot",
+                "6.17.2",
+                obu,
+                format!(
+                    "show-existing-frame references reference slot frame_to_show_map_idx {idx}, \
+                     but the §7.23 reference-frame buffer state proves RefValid[{idx}] == 0 \
+                     (the slot was invalidated by a CLK reset and not refreshed since)"
+                ),
+            ));
         }
     }
 
@@ -5138,7 +5359,38 @@ impl ValidatorContext {
         // so the parser can be invoked with the resolving record (shared §7.3.8.7 discipline).
         let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
 
-        let core = parse_frame_core(obu, first_picture_in_tu, active_sequence, mfh_record)?;
+        // AV2 § 7.23: thread the modeled per-extended-layer reference-frame buffer view
+        // into the core parse (forward plumbing for the §5.18 inter reference paths; no
+        // intra branch reads it today). The scratch arrays must outlive the parse, so
+        // they are stack-local here and borrowed by the view; an extended layer with no
+        // modeled buffer yet threads `unknown()`.
+        let mut ref_valid = [false; NUM_REF_FRAMES];
+        let mut ref_oh = [0u32; NUM_REF_FRAMES];
+        let mut ref_w = [0u32; NUM_REF_FRAMES];
+        let mut ref_h = [0u32; NUM_REF_FRAMES];
+        let reference_state = if self
+            .reference_state
+            .view_into(
+                obu.header.extended_layer_id,
+                &mut ref_valid,
+                &mut ref_oh,
+                &mut ref_w,
+                &mut ref_h,
+            )
+            .is_some()
+        {
+            FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h)
+        } else {
+            FrameReferenceStateView::unknown()
+        };
+
+        let core = parse_frame_core(
+            obu,
+            first_picture_in_tu,
+            active_sequence,
+            mfh_record,
+            reference_state,
+        )?;
 
         // The referenced sequence header must be the one parsed against. For a `cur_mfh_id == 0`
         // direct reference, `referenced_sequence_header_id` carries the §5.18.2 prefix's
@@ -6153,6 +6405,12 @@ impl ValidatorContext {
         // advance runs at the end of the bitstream); its CLK boundary events were already
         // applied at the CLK OBU, so each CI's CVS membership is final.
         self.resolve_ci_first_celu_for_tu(self.cvs.tu_index, options, report);
+        // AV2 § 7.23: the final frame has no following coded-frame boundary, so its
+        // deferred reference-frame-update process runs at the end of the bitstream. This
+        // commit keeps the modeled buffer consistent with the decoded state (no reference
+        // check reads it after the end of the bitstream, but the flush is the symmetric
+        // no-trailing-delimiter completion of the per-frame deferral).
+        self.commit_pending_ref_update();
     }
 
     /// Returns the per-extended-layer `FirstPictureInTU` — "the first frame unit in
@@ -12988,6 +13246,7 @@ fn parse_frame_core(
     first_picture_in_tu: bool,
     active_sequence: &SequenceHeader,
     mfh_record: Option<&MultiFrameHeaderRecord>,
+    reference_state: FrameReferenceStateView<'_>,
 ) -> Option<FrameHeaderCore> {
     let obu_type = obu.header.obu_type;
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
@@ -13005,7 +13264,14 @@ fn parse_frame_core(
         first_picture_in_tu,
         active_sequence: Some(active_sequence),
         mfh_record,
-        reference_state: FrameReferenceStateView::unknown(),
+        // AV2 § 7.23: the modeled per-extended-layer reference-frame buffer view. No
+        // §5.18 INTRA parse branch consumes it today (the intra paths derive their state
+        // without RefValid/RefOrderHint/dims); it is forward plumbing so the §5.18 INTER
+        // reference paths (explicit reference map, frame_size_with_refs, primary-ref) can
+        // read the modeled state once they land (AV2-5.18.2-FRAME-HEADER-INFO inter path)
+        // without changing the parser's call signature. The validator already consumes
+        // the modeled state directly for the §6.17.2 show-existing-frame slot check.
+        reference_state,
         mode: FrameHeaderParseMode::Core,
     };
     parse_frame_header_core(&mut reader, &input).ok()
@@ -13157,7 +13423,19 @@ fn frame_header_core_checks(
     // For a `cur_mfh_id == 0` frame, or a `cur_mfh_id > 0` frame whose in-band MFH is
     // unresolvable, this is `None` and the core parser keeps its existing early-stop. The
     // §6.17.2 stored-MFH bound above already ran, so it is not lost when the core parse stops.
-    let Some(core) = parse_frame_core(obu, first_picture_in_tu, active_sequence, mfh_record) else {
+    //
+    // The §7.23 reference-frame buffer view is `unknown()` here: this free function holds
+    // no reference-state tracker, and none of the §6.17 diagnostics it emits consult
+    // reference state (they are decidable from the active sequence header alone). The
+    // modeled buffer is threaded into the method core parse
+    // (`frame_core_against_referenced_header`) instead, where the validator owns it.
+    let Some(core) = parse_frame_core(
+        obu,
+        first_picture_in_tu,
+        active_sequence,
+        mfh_record,
+        FrameReferenceStateView::unknown(),
+    ) else {
         return;
     };
 
