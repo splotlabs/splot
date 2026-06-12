@@ -655,12 +655,15 @@ fn parse_commit_subjects(output: &str) -> Result<ListedCommits> {
             bail!("git log output line did not contain a parents field: {line}");
         };
         raw_count += 1;
-        // Merge commits (two or more parents) are exempt from the Conventional
-        // Commits subject rule: git generates their subjects ("Merge branch
-        // 'main' into …") when syncing a feature branch with main, and squash
-        // merges drop them from the default branch anyway. Only the merge TO
-        // main is constrained (squash/rebase only, per AGENTS.md §5.1).
-        if parents.split_whitespace().count() >= 2 {
+        // A git-generated sync-merge commit (two or more parents AND the
+        // stock "Merge …" subject) is exempt from the Conventional Commits
+        // subject rule (AGENTS.md §5.1): syncing a pushed feature branch with
+        // main requires a merge commit (force-pushing a branch under review is
+        // not allowed), its subject cannot be rewritten afterwards, and the
+        // squash merge to main drops it from the default branch. A merge
+        // commit with a custom subject is still validated, and merges TO main
+        // stay squash/rebase-only.
+        if parents.split_whitespace().count() >= 2 && subject.starts_with("Merge ") {
             continue;
         }
         commits.push(CommitSubject {
@@ -1149,7 +1152,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_commit_subjects_skips_merge_commits() -> Result<()> {
+    fn parse_commit_subjects_skips_git_generated_merge_commits() -> Result<()> {
         let output = "aaa\tp1\tfeat: real change\nbbb\tp1 p2\tMerge branch 'main' into feature\nccc\tp1\tchore: follow-up\n";
         let listed = parse_commit_subjects(output)?;
         assert_eq!(listed.raw_count, 3);
@@ -1159,6 +1162,16 @@ mod tests {
             .map(|commit| commit.subject.as_str())
             .collect();
         assert_eq!(subjects, ["feat: real change", "chore: follow-up"]);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_commit_subjects_keeps_custom_subject_merge_commits() -> Result<()> {
+        let output = "ddd\tp1 p2\tsync with main\n";
+        let listed = parse_commit_subjects(output)?;
+        assert_eq!(listed.raw_count, 1);
+        assert_eq!(listed.commits.len(), 1);
+        assert_eq!(listed.commits[0].subject, "sync with main");
         Ok(())
     }
 

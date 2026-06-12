@@ -125,6 +125,11 @@ Allowed types are `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`,
 (tracked as `XTASK-CONVENTIONAL-COMMITS`).
 Use squash or rebase merges only; generated GitHub merge commits are not
 Conventional Commits subjects.
+One exemption: a git-generated sync merge on a feature branch (a
+multi-parent commit whose subject starts with `Merge `) is skipped by
+`check-conventional-commits` — never force-push a pushed branch to sync it
+with `main`; merge `main` in instead. The squash merge to `main` drops the
+merge commit, so it never reaches the default branch.
 
 ## 6. AV2 spec honesty
 
