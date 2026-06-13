@@ -1,6 +1,6 @@
 ## 1. CLI Diagnostic
 
-- [x] 1.1 Add a private decode diagnostic payload with stable `code`, `severity`, `spec_section`, `matrix_row`, `feature_id`, `message`, and `remediation` fields.
+- [x] 1.1 Add a private decode diagnostic payload with stable `rule_id`, `severity`, `spec_section`, `matrix_row`, `feature_id`, `message`, and `remediation` fields.
 - [x] 1.2 Add `--json` to `splot decode`.
 - [x] 1.3 Render the unsupported diagnostic in text mode and JSON mode.
 - [x] 1.4 Keep `splot decode` from reading input, creating output, invoking external tools, or changing the dependency graph.

@@ -25,7 +25,7 @@ pub struct DecodeArgs {
 
 #[derive(Serialize)]
 struct DecodeUnsupportedDiagnostic {
-    code: &'static str,
+    rule_id: &'static str,
     severity: &'static str,
     spec_section: &'static str,
     matrix_row: &'static str,
@@ -35,8 +35,8 @@ struct DecodeUnsupportedDiagnostic {
 }
 
 const UNSUPPORTED_DIAGNOSTIC: DecodeUnsupportedDiagnostic = DecodeUnsupportedDiagnostic {
-    code: "decode/unsupported-feature",
-    severity: "error",
+    rule_id: "decode/unsupported-feature",
+    severity: "Error",
     spec_section: "7.1",
     matrix_row: "cli-decode-entrypoint",
     feature_id: "CLI-DECODE",
@@ -57,7 +57,7 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
             .context("failed to serialize decode unsupported diagnostic")?;
         println!("{json}");
     } else {
-        eprintln!("code: {}", UNSUPPORTED_DIAGNOSTIC.code);
+        eprintln!("rule_id: {}", UNSUPPORTED_DIAGNOSTIC.rule_id);
         eprintln!("severity: {}", UNSUPPORTED_DIAGNOSTIC.severity);
         eprintln!("spec_section: {}", UNSUPPORTED_DIAGNOSTIC.spec_section);
         eprintln!("matrix_row: {}", UNSUPPORTED_DIAGNOSTIC.matrix_row);

@@ -35,13 +35,13 @@ Agent id: `019ec0be-034e-7b83-9ca6-6b193028b9bf`
 Findings:
 
 - The unsupported CLI diagnostic should cite `decode/unsupported-feature`,
-  severity `error`, AV2 § 7.1, Feature ID `CLI-DECODE`, and matrix row
+  severity `Error`, AV2 § 7.1, Feature ID `CLI-DECODE`, and matrix row
   `cli-decode-entrypoint`.
 - Do not cite deeper decode sections such as § 5.20, § 7.13, or § 8.2 until
   code actually reaches those stages.
-- Decoder diagnostic JSON should deliberately use the roadmap contract fields
-  (`code`, lowercase `severity`, `matrix_row`, `feature_id`, `remediation`)
-  rather than validator JSON's `rule_id` shape.
+- Decoder diagnostic JSON keeps decoder-specific fields (`matrix_row`,
+  `feature_id`, `remediation`) while using the validator-aligned `rule_id` and
+  `Error` severity shape for shared diagnostic fields.
 
 ### @api-designer
 
@@ -138,7 +138,7 @@ creation.
 Agent id: `019ec0c9-0d26-7fd0-a723-f938e99ab40a`
 
 Result: no findings. The diagnostic fields match the requested
-`decode/unsupported-feature` contract with severity `error`, AV2 § 7.1,
+`decode/unsupported-feature` contract with severity `Error`, AV2 § 7.1,
 Feature ID `CLI-DECODE`, and matrix row `cli-decode-entrypoint`; the docs keep
 the row `unsupported-intentional` and do not cite deeper decode sections.
 
@@ -149,3 +149,11 @@ Agent id: `019ec0c9-100e-72c3-9ca0-dd1b4e0adfcc`
 Result: no actionable findings. The review confirmed no dependency graph,
 encoder-facing crate, `xtask`, CI/workflow, manifest, AVM/dav2d, or external
 decoder integration changes were introduced.
+
+## PR Review Follow-up
+
+Claude review on PR #83 raised a non-blocking consistency concern that the
+decode JSON diagnostic used `code` and lowercase severity while validator JSON
+uses `rule_id` and the serialized `Severity::Error` value. The final contract
+was aligned with validator JSON for the shared fields while keeping
+decoder-specific `matrix_row`, `feature_id`, and `remediation` fields.

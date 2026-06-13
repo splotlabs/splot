@@ -62,9 +62,9 @@ name any local reference evidence as portable metadata only.
 
 ### Requirement: Structured decode unsupported diagnostics
 Unsupported decoder features SHALL be represented in docs and matrix rows as
-structured diagnostics with a stable code, severity, optional spec section,
+structured diagnostics with a stable rule id, severity, optional spec section,
 matrix row id, human-readable message, and remediation. The `splot decode`
-CLI entry point SHALL emit `decode/unsupported-feature` with severity `error`,
+CLI entry point SHALL emit `decode/unsupported-feature` with severity `Error`,
 spec section `7.1`, matrix row `cli-decode-entrypoint`, and Feature ID
 `CLI-DECODE` until a supported decoder path replaces the intentional
 unsupported implementation.
@@ -78,9 +78,9 @@ unsupported implementation.
 - **WHEN** `splot decode <input> -o <output>` is run before decode support is
   implemented
 - **THEN** it exits with code `1`
-- **AND** stderr contains diagnostic code `decode/unsupported-feature`, severity
-  `error`, spec section `7.1`, matrix row `cli-decode-entrypoint`, and Feature
-  ID `CLI-DECODE`
+- **AND** stderr contains diagnostic rule id `decode/unsupported-feature`,
+  severity `Error`, spec section `7.1`, matrix row `cli-decode-entrypoint`,
+  and Feature ID `CLI-DECODE`
 - **AND** no AVM, dav2d, ffmpeg, or external decoder is located or invoked
 
 #### Scenario: Decode command emits JSON diagnostic
@@ -88,7 +88,7 @@ unsupported implementation.
   is implemented
 - **THEN** it exits with code `1`
 - **AND** stdout is a machine-readable diagnostic object containing
-  `code = "decode/unsupported-feature"`, `severity = "error"`,
+  `rule_id = "decode/unsupported-feature"`, `severity = "Error"`,
   `spec_section = "7.1"`, `matrix_row = "cli-decode-entrypoint"`, and
   `feature_id = "CLI-DECODE"`
 - **AND** stderr remains empty unless an operational error occurs

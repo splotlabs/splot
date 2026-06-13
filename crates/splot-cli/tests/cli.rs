@@ -84,8 +84,8 @@ fn decode_unsupported_text_mode_emits_stable_diagnostic() {
     assert!(out.stdout.is_empty(), "stdout was not empty");
     let stderr = String::from_utf8_lossy(&out.stderr);
     for expected in [
-        "decode/unsupported-feature",
-        "severity: error",
+        "rule_id: decode/unsupported-feature",
+        "severity: Error",
         "spec_section: 7.1",
         "matrix_row: cli-decode-entrypoint",
         "feature_id: CLI-DECODE",
@@ -120,8 +120,8 @@ fn decode_unsupported_json_mode_emits_diagnostic_object() {
     assert_eq!(out.status.code(), Some(1));
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(json["code"], "decode/unsupported-feature");
-    assert_eq!(json["severity"], "error");
+    assert_eq!(json["rule_id"], "decode/unsupported-feature");
+    assert_eq!(json["severity"], "Error");
     assert_eq!(json["spec_section"], "7.1");
     assert_eq!(json["matrix_row"], "cli-decode-entrypoint");
     assert_eq!(json["feature_id"], "CLI-DECODE");

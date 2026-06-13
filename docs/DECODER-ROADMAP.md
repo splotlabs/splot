@@ -110,8 +110,8 @@ supported decode tier lands:
 
 ```json
 {
-  "code": "decode/unsupported-feature",
-  "severity": "error",
+  "rule_id": "decode/unsupported-feature",
+  "severity": "Error",
   "spec_section": "7.1",
   "matrix_row": "cli-decode-entrypoint",
   "feature_id": "CLI-DECODE",
