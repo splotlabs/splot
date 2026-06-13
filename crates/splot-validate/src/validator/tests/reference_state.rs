@@ -974,3 +974,176 @@ fn ref_state_inter_frame_size_with_refs_sees_prior_frame_refresh() {
          size poisoned and the check was skipped. report was: {report}"
     );
 }
+
+/// True when the report contains the § 6.17.2 reference-scaling-ratio diagnostic.
+pub(in crate::validator::tests) fn has_ref_scale_ratio_error(report: &ValidationReport) -> bool {
+    report
+        .errors()
+        .any(|d| d.rule_id == "frame-header/ref-frame-scale-ratio")
+}
+
+/// A regular-tile-group INTER frame (explicit reference map, `num_total_refs == 1`,
+/// `ref_frame_idx[0] == ref_slot`) whose frame size is sent EXPLICITLY (`width`x`height`,
+/// each f(frame_width/height_bits == 8)) rather than copied from a reference. The OVERRIDE
+/// `frame_size_with_refs()` path reads one `found_ref == 0` bit, then falls through to
+/// `frame_size()` explicit dims (§5.18.4.3 mirror :4641 / inter.rs:907-912). Built against
+/// the base inter sequence (NumRefFrames == 8 -> CeilLog2 == 3, OrderHintBits == 1,
+/// enable_ref_frame_mvs == 0), exercising the §6.17.2 reference-scaling-ratio check with a
+/// current frame size chosen independently of the referenced slot's stored dims.
+pub(in crate::validator::tests) fn inter_frame_explicit_size(
+    ref_slot: u32,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let mut fb = Bits::default();
+    fb.bit(1); // is_first_tile_group
+    fb.uvlc(0); // cur_mfh_id == 0
+    fb.uvlc(0); // seq_header_id_in_frame_header
+    fb.bit(1); // frame_is_inter == 1 -> INTER_FRAME
+    fb.bit(1); // immediate_output_frame
+    fb.bit(1); // frame_size_override_flag == 1 -> frame_size_with_refs() on the inter path
+    fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+    fb.bit(0); // signal_primary_ref_frame
+    fb.bit(0); // disable_cross_frame_cdf_init (not TIP)
+    fb.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8)
+    fb.bit(1); // frame_explicit_ref_frame_map
+    fb.f(1, 3); // num_total_refs == 1
+    fb.f(ref_slot, 3); // ref_frame_idx[0] f(CeilLog2(8) == 3)
+    // frame_size_with_refs(): override && !SWITCH -> found_ref f(1) per ref; no hit on the
+    // single ref -> frame_size() reads explicit f(8) width/height (inter.rs:907-912).
+    fb.bit(0); // found_ref == 0
+    fb.f(width - 1, 8); // frame_width_minus_1 f(frame_width_bits == 8)
+    fb.f(height - 1, 8); // frame_height_minus_1 f(frame_height_bits == 8)
+    // use_ref_frame_mvs: enable_ref_frame_mvs == 0 -> inferred 0 (no bit).
+    // frame_opfl_refine_type: enable_opfl_refine != REFINE_AUTO -> no bits.
+    fb.bit(0); // allow_screen_content_tools (SELECT) -> force_integer_mv = 0
+    fb.bit(0); // allow_intrabc
+    fb.bit(0); // use_qtr_precision_mv
+    fb.bit(0); // allow_high_precision_mv -> HALF_PEL
+    fb.bit(1); // is_filter_switchable -> SWITCHABLE (no interpolation_filter f(2))
+    // motion modes: seq_frame_motion_modes_present_flag == 0 -> no bits.
+    fb.bit(0); // disable_cdf_update f(1) (mirror :5041), just before the shared tail.
+    annex_b_obu(REGULAR_TILE_GROUP_HEADER, &fb.into_bytes())
+}
+
+/// Builds a stream: TD + base inter sequence (`explicit_ref_frame_map`), a CLK that grounds
+/// every slot with dims `ref_w`x`ref_h`, then an inter frame referencing slot 0 with an
+/// explicit `frame_w`x`frame_h` size. The CLK (`clk_frame_override_size`) is an allFrames
+/// key refresh, so slot 0 is `SlotState::Valid { width: ref_w, height: ref_h }`.
+fn scale_ratio_stream(ref_w: u32, ref_h: u32, frame_w: u32, frame_h: u32) -> Vec<u8> {
+    let seq = FrameCoreSeq {
+        explicit_ref_frame_map: true,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(clk_frame_override_size(ref_w, ref_h));
+    data.extend(inter_frame_explicit_size(0, frame_w, frame_h));
+    data
+}
+
+#[test]
+fn ref_scale_ratio_unit_ratio_is_silent() {
+    // §6.17.2 :4638-4644: a 1:1 ratio (frame 16x16, ref 16x16) satisfies every inequality.
+    let report = Validator::new(false).validate_bytes(&scale_ratio_stream(16, 16, 16, 16));
+    assert!(
+        !has_ref_scale_ratio_error(&report),
+        "a 1:1 reference ratio must be silent; report was: {report}"
+    );
+}
+
+#[test]
+fn ref_scale_ratio_upscale_boundary_is_silent() {
+    // §6.17.2 lower-bound boundary: frame 8x8, ref 16x16 -> 2*8 == 16 == RefFrameWidth (the
+    // `>=` boundary, not a violation).
+    let report = Validator::new(false).validate_bytes(&scale_ratio_stream(16, 16, 8, 8));
+    assert!(
+        !has_ref_scale_ratio_error(&report),
+        "the 2x-upscale boundary (2*FrameWidth == RefFrameWidth) must be silent; report \
+         was: {report}"
+    );
+}
+
+#[test]
+fn ref_scale_ratio_unknown_slot_drops_to_silence() {
+    // No CLK -> slot 0 is Unknown; the referenced slot has no proven dims, so even an
+    // extreme current size cannot be judged and the check drops to silence (Unknown invariant).
+    let seq = FrameCoreSeq {
+        explicit_ref_frame_map: true,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(inter_frame_explicit_size(0, 1, 1)); // tiny frame, Unknown ref slot
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        !has_ref_scale_ratio_error(&report),
+        "an Unknown reference slot has no proven dims -> no scaling judgment; report was: \
+         {report}"
+    );
+}
+
+#[test]
+fn ref_scale_ratio_width_too_small_fires() {
+    // §6.17.2 :4641: frame 7x16, ref 16x16 -> 2*7 == 14 < 16 == RefFrameWidth violates the
+    // 2x-upscale bound on width.
+    let report = Validator::new(false).validate_bytes(&scale_ratio_stream(16, 16, 7, 16));
+    assert!(
+        has_ref_scale_ratio_error(&report),
+        "2*FrameWidth < RefFrameWidth must fire the scaling-ratio check; report was: {report}"
+    );
+}
+
+#[test]
+fn ref_scale_ratio_height_too_small_fires() {
+    // §6.17.2 :4642: frame 16x7, ref 16x16 -> 2*7 == 14 < 16 == RefFrameHeight.
+    let report = Validator::new(false).validate_bytes(&scale_ratio_stream(16, 16, 16, 7));
+    assert!(
+        has_ref_scale_ratio_error(&report),
+        "2*FrameHeight < RefFrameHeight must fire; report was: {report}"
+    );
+}
+
+#[test]
+fn ref_scale_ratio_width_too_large_fires() {
+    // §6.17.2 :4643: frame 241x15, ref 15x15 -> 241 > 16*15 == 240 violates the 16x-downscale
+    // bound on width (the lower bounds 2*241>=15, 2*15>=15 hold).
+    let report = Validator::new(false).validate_bytes(&scale_ratio_stream(15, 15, 241, 15));
+    assert!(
+        has_ref_scale_ratio_error(&report),
+        "FrameWidth > 16*RefFrameWidth must fire; report was: {report}"
+    );
+}
+
+#[test]
+fn ref_scale_ratio_height_too_large_fires() {
+    // §6.17.2 :4644: frame 15x241, ref 15x15 -> 241 > 16*15 == 240 on height.
+    let report = Validator::new(false).validate_bytes(&scale_ratio_stream(15, 15, 15, 241));
+    assert!(
+        has_ref_scale_ratio_error(&report),
+        "FrameHeight > 16*RefFrameHeight must fire; report was: {report}"
+    );
+}
+
+#[test]
+fn ref_scale_ratio_skips_proven_invalid_slot() {
+    // A ProvenInvalid slot has no stored dims, so the scaling check must NOT fire there — it
+    // is the existing ref-frame-idx-invalid-slot check's domain. A CLK reset re-validates only
+    // slot 0; referencing slot 3 (ProvenInvalid) with any current size fires invalid-slot but
+    // never scale-ratio (the `SlotState::Valid` guard structurally excludes it).
+    let seq = FrameCoreSeq {
+        explicit_ref_frame_map: true,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(clk_frame_decidable(true, true)); // reset + allFrames refresh -> slot 3 invalid
+    data.extend(inter_frame_explicit_size(3, 7, 16)); // would-violate dims, but slot 3 invalid
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        has_ref_frame_idx_error(&report),
+        "the ProvenInvalid slot must fire ref-frame-idx-invalid-slot; report was: {report}"
+    );
+    assert!(
+        !has_ref_scale_ratio_error(&report),
+        "a ProvenInvalid slot has no proven dims -> the scaling check must not fire; report \
+         was: {report}"
+    );
+}

@@ -258,6 +258,91 @@ impl ValidatorContext {
             }
         }
 
+        // AV2 § 6.17.2 (mirror :4638-4644): "Once the frame size has been determined, it is a
+        // requirement of bitstream conformance that all the following conditions are satisfied
+        // for i=0..NumTotalRefs-1:
+        //   2 * FrameWidth  >= RefFrameWidth [ ref_frame_idx[ i ] ]
+        //   2 * FrameHeight >= RefFrameHeight[ ref_frame_idx[ i ] ]
+        //       FrameWidth  <= 16 * RefFrameWidth [ ref_frame_idx[ i ] ]
+        //       FrameHeight <= 16 * RefFrameHeight[ ref_frame_idx[ i ] ]"
+        // (§6.17.4.3 mirror :5251-5258 restates the same four inequalities over the full
+        // 0..REFS_PER_FRAME-1 reference set; the validator models only the explicit map's
+        // ref_frame_idx[0..NumTotalRefs], so the implicit-map slots beyond NumTotalRefs — which
+        // need the unmodeled get_ref_frames() derivation — are a named residual.)
+        //
+        // Decidable once the frame size has been determined — §6.17.2 (mirror :4638) gates the
+        // constraint on exactly that — so the resolved FrameWidth/FrameHeight on `core.frame_size`
+        // (parsed via the §5.18.4 frame-size syntax) AND the referenced slot being PROVEN valid so
+        // RefFrameWidth/RefFrameHeight are known (`SlotState::Valid`) are both required. An
+        // Unknown / ProvenInvalid slot has no proven dims and drops to silence (the Unknown
+        // invariant; a ProvenInvalid slot is already flagged by the ref-frame-idx check above).
+        // The implicit reference map (get_ref_frames(), unmodeled) records no ref_frame_idx and
+        // is silent. A reference used to *derive* the size satisfies the bounds trivially
+        // (FrameWidth == RefFrameWidth there); the constraint bites the other references.
+        if let Some(inter) = core.inter.as_ref()
+            && let Some(size) = core.frame_size
+        {
+            for &idx in &inter.ref_frame_idx {
+                let SlotState::Valid(facts) = self
+                    .reference_state
+                    .slot(obu.header.extended_layer_id, idx as usize)
+                else {
+                    continue;
+                };
+                // RefFrame*/FrameWidth are u32; the 2x and 16x products can overflow. Saturate:
+                // a saturated lower bound (2*FrameWidth -> u32::MAX) still dominates any u32 ref
+                // (no violation), and a saturated upper bound (16*RefFrame* -> u32::MAX) still
+                // dominates any u32 frame dim (no violation) — so saturation never invents a
+                // violation, it only suppresses one that overflow would otherwise misjudge.
+                let two_width = size.width.saturating_mul(2);
+                let two_height = size.height.saturating_mul(2);
+                let max_width = facts.width.saturating_mul(16);
+                let max_height = facts.height.saturating_mul(16);
+                let violation = if two_width < facts.width {
+                    Some(format!(
+                        "2*FrameWidth ({two_width}) < RefFrameWidth[{idx}] ({}) — an inter frame \
+                         may upscale a reference by at most 2x in width",
+                        facts.width
+                    ))
+                } else if two_height < facts.height {
+                    Some(format!(
+                        "2*FrameHeight ({two_height}) < RefFrameHeight[{idx}] ({}) — an inter \
+                         frame may upscale a reference by at most 2x in height",
+                        facts.height
+                    ))
+                } else if size.width > max_width {
+                    Some(format!(
+                        "FrameWidth ({}) > 16*RefFrameWidth[{idx}] ({max_width}) — an inter frame \
+                         may downscale a reference by at most 16x in width",
+                        size.width
+                    ))
+                } else if size.height > max_height {
+                    Some(format!(
+                        "FrameHeight ({}) > 16*RefFrameHeight[{idx}] ({max_height}) — an inter \
+                         frame may downscale a reference by at most 16x in height",
+                        size.height
+                    ))
+                } else {
+                    None
+                };
+                if let Some(detail) = violation {
+                    report.push(frame_header_error(
+                        "frame-header/ref-frame-scale-ratio",
+                        "6.17.2",
+                        obu,
+                        format!(
+                            "inter frame reference scaling is out of range: {detail} (§6.17.2 \
+                             requires every ref_frame_idx[i] reference to satisfy \
+                             FrameWidth/16 <= RefFrameWidth <= 2*FrameWidth and likewise for \
+                             height, once the frame size is determined)"
+                        ),
+                    ));
+                    // One diagnostic per frame is enough to flag the defect.
+                    break;
+                }
+            }
+        }
+
         // AV2 § 6.17.2 (mirror :4615-4616): "If obu_type is equal to OBU_RAS_FRAME, it is a
         // requirement of bitstream conformance that
         // long_term_id_in_use( RefLongTermId[ ref_frame_idx[ i ] ] ) is equal to 1." A RAS
