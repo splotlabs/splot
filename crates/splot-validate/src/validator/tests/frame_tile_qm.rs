@@ -663,6 +663,35 @@ fn validator_qm_layer_dependency_satisfied_is_silent() {
 }
 
 #[test]
+fn validator_qm_layer_dependency_suppressed_under_external_provided() {
+    // The §6.17.6.2 layer-dependency check suppresses under any Provided external-HLS mode
+    // (like the QM availability and film-grain dependency checks): ExternalHlsSet cannot
+    // express QM OBUs, so the level's recorded layer identity — and the activated sequence
+    // header whose §5.4.1 maps this check reads — MAY be external. The same firing
+    // construction as validator_flags_qm_mlayer_dependency_missing must stay silent here.
+    let seq = FrameCoreSeq {
+        max_mlayer_id: 1,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(qm_default_level_obu_chroma_at_layer(0, 0, 1)); // level 0 at undepended mlayer 1
+    data.extend(intra_only_frame_with_qm_reference(0)); // frame at layer 0
+    use crate::options::{ExternalHlsMode, ExternalHlsSet};
+    let options = ValidationOptions {
+        external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
+    };
+    let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+    assert!(
+        !report.errors().any(|d| {
+            d.rule_id == "frame-header/qm-mlayer-dependency-missing"
+                || d.rule_id == "frame-header/qm-tlayer-dependency-missing"
+        }),
+        "a Provided external-HLS mode must suppress the §6.17.6.2 QM layer-dependency checks; \
+         report was: {report}"
+    );
+}
+
+#[test]
 fn validator_qm_resend_after_truncated_ras_poison_regrounds_availability() {
     // After a truncated RAS poisons QM availability, a QM OBU re-sending the level
     // re-grounds it (the level is definitively available again), so a referencing frame

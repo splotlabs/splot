@@ -337,7 +337,14 @@ pub(super) fn frame_qm_reference_checks(
         // and is not subject to the constraint. Decidable from the recorded layer identity, the
         // frame's obu_mlayer_id/obu_tlayer_id, and the activated header's § 5.4.1 maps — the
         // proven pattern of frame-header/film-grain-{mlayer,tlayer}-dependency-missing.
-        if let Some(qm_mlayer) = record.mlayer_id {
+        //
+        // Suppressed under any Provided external-HLS mode (gated on `availability_decidable`,
+        // i.e. Disabled), exactly like the film-grain dependency check: QM OBUs cannot be
+        // expressed by `ExternalHlsSet`, so the level's recorded layer identity MAY be supplied
+        // externally, and the activated sequence header (whose § 5.4.1 maps this check reads)
+        // MAY itself be external with different maps — either makes the in-band join unsound
+        // (Codex P2). Only the external-disabled case is decidable from the bitstream alone.
+        if availability_decidable && let Some(qm_mlayer) = record.mlayer_id {
             let general = &active_sequence.general;
             let frame_mlayer = obu.header.embedded_layer_id;
             if !general
