@@ -631,3 +631,139 @@ fn rap_replay_external_hls_declaring_exact_seq_header_suppresses() {
         "report was: {report}"
     );
 }
+
+// ----- Film-grain model references in the § 7.3.8.1 random-access-point replay -----
+
+/// A § 5.4 sequence header OBU (seq 0) with `film_grain_params_present == 1`, so a
+/// referencing output frame reads `apply_grain` and can reference a film-grain model.
+fn film_grain_seq_obu() -> Vec<u8> {
+    annex_b_obu(
+        0x04,
+        &frame_core_seq_payload(FrameCoreSeq {
+            film_grain_params_present: true,
+            ..FrameCoreSeq::base()
+        }),
+    )
+}
+
+/// A complete intra KEY frame (a § 7.4.1 random access point) that applies grain at
+/// `fgm_id` through its § 5.18.2 intra tail, referencing in-band seq 0.
+fn clk_intra_frame_applying_grain(fgm_id: u8) -> Vec<u8> {
+    let mut fb = Bits::default();
+    fb.bit(1); // is_first_tile_group
+    fb.uvlc(0); // cur_mfh_id == 0
+    fb.uvlc(0); // seq_header_id_in_frame_header
+    fb.bit(1); // immediate_output_frame == 1 (output frame -> apply_grain readable)
+    fb.bit(0); // frame_size_override_flag == 0 (max dims 16x16)
+    fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+    fb.bit(0); // allow_screen_content_tools
+    fb.bit(0); // allow_intrabc
+    fb.bit(0); // disable_cdf_update
+    intra_structure_tail(&mut fb, 0); // §5.18.2 structure + loop-filter cluster
+    fb.bit(0); // tx_mode_select = 0
+    fb.f(0, 2); // reduced_tx_set = 0
+    fb.bit(1); // apply_grain = 1
+    fb.f(u32::from(fgm_id), 3); // fgm_id f(3)
+    fb.f(0, 16); // grain_seed f(16) — complete film_grain_config()
+    annex_b_obu(CLK_HEADER, &fb.into_bytes())
+}
+
+/// `true` if a film-grain-family § 7.3.8.1 replay finding is present.
+fn has_film_grain_rap(report: &ValidationReport) -> bool {
+    report
+        .errors()
+        .any(|d| d.rule_id == RAP_RULE && d.message.contains("film grain model"))
+}
+
+#[test]
+fn rap_replay_film_grain_only_before_rap_is_flagged() {
+    // TU0: seq(0, film grain) + a film grain OBU defining slot 0. TU1: seq(0) resent (so the
+    // sequence-header replay is satisfied and only the film-grain one can fire) + a CLK (a
+    // §7.4.1 random access point) applying grain at fgm_id 0. Slot 0 is not resent in TU1, so
+    // a decode starting at the CLK cannot supply it (§7.3.8.1) even though the monotonic
+    // linear availability test sees it present.
+    let mut data = temporal_delimiter_obu();
+    data.extend(film_grain_seq_obu());
+    data.extend(film_grain_obu_bytes(1 << 0, 0)); // defines slot 0 in TU0
+    data.extend(temporal_delimiter_obu());
+    data.extend(film_grain_seq_obu()); // seq resent -> its own replay is satisfied
+    data.extend(clk_intra_frame_applying_grain(0));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        has_film_grain_rap(&report),
+        "a film-grain model sent only before the random access point must fire the replay; \
+         report was: {report}"
+    );
+    // Disjoint from the linear check: the model IS linearly available (monotonic).
+    assert!(
+        !report
+            .errors()
+            .any(|d| d.rule_id == "frame-header/film-grain-model-unavailable"),
+        "the model is linearly available, so the linear check must stay silent; report was: \
+         {report}"
+    );
+}
+
+#[test]
+fn rap_replay_film_grain_resent_in_rap_temporal_unit_passes() {
+    // TU1 resends the film grain model (slot 0) before the CLK, so the random access point's
+    // own temporal unit supplies it (§7.3.8.1) — no replay finding.
+    let mut data = temporal_delimiter_obu();
+    data.extend(film_grain_seq_obu());
+    data.extend(film_grain_obu_bytes(1 << 0, 0));
+    data.extend(temporal_delimiter_obu());
+    data.extend(film_grain_seq_obu());
+    data.extend(film_grain_obu_bytes(1 << 0, 0)); // resent in the random access point's TU
+    data.extend(clk_intra_frame_applying_grain(0));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        !has_film_grain_rap(&report),
+        "a film-grain model resent in the random access point's temporal unit must not fire \
+         the replay; report was: {report}"
+    );
+}
+
+#[test]
+fn rap_replay_film_grain_disjoint_from_linear_unavailable() {
+    // No film grain OBU ever defines slot 0: the linear frame-header/film-grain-model-unavailable
+    // owns the case, and the replay (which only buffers linearly-available references) stays
+    // silent — the two predicates are disjoint by construction.
+    let mut data = temporal_delimiter_obu();
+    data.extend(film_grain_seq_obu());
+    data.extend(temporal_delimiter_obu());
+    data.extend(film_grain_seq_obu());
+    data.extend(clk_intra_frame_applying_grain(0)); // references undefined slot 0
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        report
+            .errors()
+            .any(|d| d.rule_id == "frame-header/film-grain-model-unavailable"),
+        "an undefined model must fire the linear check; report was: {report}"
+    );
+    assert!(
+        !has_film_grain_rap(&report),
+        "the replay must not fire for a model the linear check already owns; report was: \
+         {report}"
+    );
+}
+
+#[test]
+fn rap_replay_film_grain_suppressed_under_external_hls() {
+    use crate::options::{ExternalHlsMode, ExternalHlsSet};
+    // ExternalHlsSet cannot express film-grain OBUs, so any Provided mode suppresses the
+    // film-grain replay (the model MAY be supplied by external means).
+    let mut data = temporal_delimiter_obu();
+    data.extend(film_grain_seq_obu());
+    data.extend(film_grain_obu_bytes(1 << 0, 0));
+    data.extend(temporal_delimiter_obu());
+    data.extend(film_grain_seq_obu());
+    data.extend(clk_intra_frame_applying_grain(0));
+    let options = ValidationOptions {
+        external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new().with_sequence_header_id(0)),
+    };
+    let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+    assert!(
+        !has_film_grain_rap(&report),
+        "a Provided external-HLS mode must suppress the film-grain replay; report was: {report}"
+    );
+}

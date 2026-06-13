@@ -40,7 +40,7 @@ pub(super) fn frame_header_core_checks(
     reference_state: FrameReferenceAvailability<'_>,
     options: &ValidationOptions,
     report: &mut ValidationReport,
-) {
+) -> Option<u8> {
     let FrameReferenceAvailability {
         qm: qm_state,
         film_grain: film_grain_state,
@@ -167,15 +167,13 @@ pub(super) fn frame_header_core_checks(
     // inter `ref_frame_idx` validity check below consults the same `RefValid[]` the
     // celu/output decisions do. The other §6.17 diagnostics this function emits are
     // decidable from the active sequence header alone and ignore the view.
-    let Some(core) = parse_frame_core(
+    let core = parse_frame_core(
         obu,
         first_picture_in_tu,
         active_sequence,
         mfh_record,
         reference_buffer,
-    ) else {
-        return;
-    };
+    )?;
 
     // AV2 § 6.2.1 / § 5.18.2: the frame_header_info() syntax elements (§ 5.18.2) are
     // mandatory — `frame_header( )` reads them sequentially from the OBU payload inside
@@ -478,7 +476,7 @@ pub(super) fn frame_header_core_checks(
     // constraints must hold against the active sequence header's § 5.4.1 maps. The parsed
     // film_grain_config() lives on the SEF path (`sef_film_grain`) or the intra tail
     // (`intra_tail.film_grain`).
-    if let Some(film_grain) = core
+    let film_grain_rap_slot = if let Some(film_grain) = core
         .sef_film_grain
         .as_ref()
         .or_else(|| core.intra_tail.as_ref().map(|tail| &tail.film_grain))
@@ -490,8 +488,10 @@ pub(super) fn frame_header_core_checks(
             options,
             obu,
             report,
-        );
-    }
+        )
+    } else {
+        None
+    };
 
     // The remaining checks compare refresh_frame_flags against NumRefFrames.
     let Some(num_ref_frames) = active_sequence
@@ -499,14 +499,14 @@ pub(super) fn frame_header_core_checks(
         .as_ref()
         .map(|inter| u32::from(inter.num_ref_frames))
     else {
-        return;
+        return film_grain_rap_slot;
     };
     let Some(refresh) = core.refresh_frame_flags else {
-        return;
+        return film_grain_rap_slot;
     };
     // 1 << NumRefFrames as the exclusive upper bound of a valid refresh mask.
     let Some(all_slots_plus_1) = 1u32.checked_shl(num_ref_frames) else {
-        return;
+        return film_grain_rap_slot;
     };
 
     // AV2 § 6.17.2: frame_to_refresh < NumRefFrames. In the compact refresh mode
@@ -541,4 +541,6 @@ pub(super) fn frame_header_core_checks(
             ),
         ));
     }
+
+    film_grain_rap_slot
 }
