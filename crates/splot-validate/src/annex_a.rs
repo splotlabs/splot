@@ -338,6 +338,18 @@ pub(crate) fn is_reserved_level(level_idx: u8) -> bool {
     (FIRST_RESERVED_LEVEL_IDX..=LAST_RESERVED_LEVEL_IDX).contains(&level_idx)
 }
 
+/// Returns `true` when `interop` names a defined Annex A.3 interoperability point.
+///
+/// Table A.3 (mirror lines 125-138) defines interoperability points `0`, `1`, `2`, and
+/// `15` ("15 (max)"); values `3..=14` are "Reserved" (line 136). `lcr_max_interop` is a
+/// 4-bit field, so its whole `0..=15` value space is covered by this table. Used by the
+/// § 6.8.4 value-space check; the `15` "max" point is *not* a per-profile interoperability
+/// point ([`interoperability_point`] only yields `0`/`1`/`2`), so it is enumerated here.
+#[must_use]
+pub(crate) fn is_defined_max_interop(interop: u8) -> bool {
+    matches!(interop, 0..=2 | 15)
+}
+
 /// Returns `true` when `chroma_format_idc` is permitted under `profile_idc`
 /// (Annex A.2 Table A.1 column "chroma_format_idc", mirror lines 61-90):
 ///
@@ -454,6 +466,17 @@ mod tests {
         assert!(is_reserved_level(22));
         assert!(is_reserved_level(30));
         assert!(!is_reserved_level(31));
+    }
+
+    #[test]
+    fn defined_max_interop_values_match_table_a3() {
+        // Table A.3 (mirror lines 130-138): 0, 1, 2 and 15 ("max") are defined; 3-14 reserved.
+        assert!(is_defined_max_interop(0));
+        assert!(is_defined_max_interop(1));
+        assert!(is_defined_max_interop(2));
+        assert!(!is_defined_max_interop(3));
+        assert!(!is_defined_max_interop(14));
+        assert!(is_defined_max_interop(15));
     }
 
     #[test]

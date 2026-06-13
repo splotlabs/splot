@@ -430,6 +430,120 @@ fn lcr_dependent_xlayers_flag_nonzero_is_warned() {
 }
 
 #[test]
+fn lcr_config_idc_reserved_value_is_flagged() {
+    // AV2 § 6.8.4: a global LCR's lcr_config_idc shall not take a value outside Annex A.
+    // Annex A.3 Table A.5 defines multi-sequence configurations 0..=2, so 3..=63 are reserved.
+    // config_idc 3 (the first reserved value) must fire from the parsed global LCR alone.
+    let agg = super::lcr_msdo_cmvs::AggInfo {
+        config_idc: 3,
+        aggregate_level_idx: 0,
+        max_tier_flag: 0,
+        max_interop: 0,
+    };
+    let mut data = temporal_delimiter_obu();
+    data.extend(super::lcr_msdo_cmvs::global_lcr_obu_agreement(
+        1,
+        0b1,
+        Some(agg),
+        None,
+        false,
+    ));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        report
+            .errors()
+            .any(|d| d.rule_id == "lcr/config-idc-reserved"),
+        "a reserved lcr_config_idc must fire; report was: {report}"
+    );
+}
+
+#[test]
+fn lcr_aggregate_level_idx_reserved_value_is_flagged() {
+    // AV2 § 6.8.4: lcr_aggregate_level_idx shall not be outside Annex A. Annex A.4 Table A.7
+    // reserves level indices 22..=30; 22 (the first reserved value) must fire.
+    let agg = super::lcr_msdo_cmvs::AggInfo {
+        config_idc: 0,
+        aggregate_level_idx: 22,
+        max_tier_flag: 0,
+        max_interop: 0,
+    };
+    let mut data = temporal_delimiter_obu();
+    data.extend(super::lcr_msdo_cmvs::global_lcr_obu_agreement(
+        1,
+        0b1,
+        Some(agg),
+        None,
+        false,
+    ));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        report
+            .errors()
+            .any(|d| d.rule_id == "lcr/aggregate-level-idx-reserved"),
+        "a reserved lcr_aggregate_level_idx must fire; report was: {report}"
+    );
+}
+
+#[test]
+fn lcr_max_interop_reserved_value_is_flagged() {
+    // AV2 § 6.8.4: lcr_max_interop shall not be outside Annex A. Annex A.3 Table A.3 defines
+    // interoperability points 0, 1, 2, and 15 ("max"); 3 (the first reserved value) must fire.
+    let agg = super::lcr_msdo_cmvs::AggInfo {
+        config_idc: 0,
+        aggregate_level_idx: 0,
+        max_tier_flag: 0,
+        max_interop: 3,
+    };
+    let mut data = temporal_delimiter_obu();
+    data.extend(super::lcr_msdo_cmvs::global_lcr_obu_agreement(
+        1,
+        0b1,
+        Some(agg),
+        None,
+        false,
+    ));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        report
+            .errors()
+            .any(|d| d.rule_id == "lcr/max-interop-reserved"),
+        "a reserved lcr_max_interop must fire; report was: {report}"
+    );
+}
+
+#[test]
+fn lcr_aggregate_info_defined_values_are_accepted() {
+    // AV2 § 6.8.4 boundaries: config_idc 2 (highest Table A.5 config), aggregate_level_idx 31
+    // ("Maximum parameters", Table A.7), and max_interop 15 ("max", Table A.3) are all defined,
+    // so none of the three § 6.8.4 value-space diagnostics may fire.
+    let agg = super::lcr_msdo_cmvs::AggInfo {
+        config_idc: 2,
+        aggregate_level_idx: 31,
+        max_tier_flag: 0,
+        max_interop: 15,
+    };
+    let mut data = temporal_delimiter_obu();
+    data.extend(super::lcr_msdo_cmvs::global_lcr_obu_agreement(
+        1,
+        0b1,
+        Some(agg),
+        None,
+        false,
+    ));
+    let report = Validator::new(false).validate_bytes(&data);
+    for rule in [
+        "lcr/config-idc-reserved",
+        "lcr/aggregate-level-idx-reserved",
+        "lcr/max-interop-reserved",
+    ] {
+        assert!(
+            !report.errors().any(|d| d.rule_id == rule),
+            "defined § 6.8.4 aggregate values must not trip {rule}; report was: {report}"
+        );
+    }
+}
+
+#[test]
 fn atlas_multistream_outside_global_xlayer_is_flagged() {
     // AV2 §6.9: MULTISTREAM_ATLAS requires obu_xlayer_id == GLOBAL_XLAYER_ID.
     let mut data = temporal_delimiter_obu();
