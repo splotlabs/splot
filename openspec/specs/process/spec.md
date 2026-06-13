@@ -421,14 +421,13 @@ decoder registry when they do not use the `decode/*` namespace. Tracked by
   unsupported namespace
 
 ### Requirement: Decoder crate dependency direction
-
 The repository SHALL enforce the approved decoder/reconstruction dependency
 boundary through `cargo xtask check-dependency-direction`. `splot-recon` SHALL
 depend on no other `splot-*` crate. `splot-decode` MAY depend on `splot-core`
 and `splot-recon` when implementation code needs those crates. `splot-cli` MAY
-depend on `splot-decode` only when a future CLI integration change wires decode
-behavior. `splot-encode` MAY depend on `splot-recon` only through a future
-encoder/reconstruction API change.
+depend on `splot-decode` for library-owned decoder diagnostics and future CLI
+decode integration. `splot-encode` MAY depend on `splot-recon` only through a
+future encoder/reconstruction API change.
 
 #### Scenario: Approved decoder graph is accepted
 

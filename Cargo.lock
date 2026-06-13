@@ -637,6 +637,7 @@ dependencies = [
  "serde",
  "serde_json",
  "splot-core",
+ "splot-decode",
  "splot-encode",
  "splot-validate",
  "toml",

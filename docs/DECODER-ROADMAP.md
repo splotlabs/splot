@@ -21,14 +21,14 @@ It is not a production media player, not an optimized decoder, and not an
 AVM/dav2d wrapper.
 
 Current state: `splot decode` is an intentional unsupported entry point. It
-emits the structured `decode/unsupported-feature` diagnostic and does not
-reconstruct pixels, produce frame hashes, write Y4M output, read input bytes, or
-touch the output path. Decode resource limits are a contract-only planning item:
-`decode/resource-limit` is documented as a planned diagnostic, but is not emitted
-by source yet. The workspace now includes scaffolded `splot-recon` and
-`splot-decode` crates for future reconstruction primitives and the future decode
-driver. They intentionally expose no runtime reconstruction or byte-consuming
-decode API yet.
+renders the structured `decode/unsupported-feature` diagnostic owned by
+`splot-decode` and does not reconstruct pixels, produce frame hashes, write Y4M
+output, read input bytes, or touch the output path. Decode resource limits are a
+contract-only planning item: `decode/resource-limit` is documented as a planned
+diagnostic, but is not emitted by source yet. The workspace now includes
+scaffolded `splot-recon` and `splot-decode` crates for future reconstruction
+primitives and the future decode driver. They intentionally expose no runtime
+reconstruction or byte-consuming decode API yet.
 
 Canonical decoder status lives in
 [`DECODER-SUPPORT-MATRIX.toml`](./DECODER-SUPPORT-MATRIX.toml), rendered to
@@ -367,13 +367,13 @@ Maintainer approval for the decoder/reconstruction dependency graph landed on
 ```text
 crates/splot-core      bitstream model + parsers
 crates/splot-recon     pixel buffers, hashes, reconstruction primitives, references
-crates/splot-decode    decode driver using splot-core + splot-recon
+crates/splot-decode    unsupported diagnostic API; future driver using splot-core + splot-recon
 crates/splot-encode    future encoder, not yet depending on splot-recon
-crates/splot-cli       thin CLI only
+crates/splot-cli       thin CLI rendering splot-decode diagnostics
 ```
 
 The scaffold is an ownership boundary only. `splot-recon` exposes no runtime
 reconstruction API, `splot-decode` exposes no byte-consuming decode API,
-`splot-cli` still owns the current unsupported diagnostic path, and
+`splot-cli` only renders the current unsupported diagnostic path, and
 `splot-encode` remains unchanged until a later encoder/reconstruction API
 change explicitly adds reuse of `splot-recon`.

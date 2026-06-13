@@ -8,11 +8,13 @@ canonical for the rules summarized here.
 
 ```text
 splot-cli ───────┬──> splot-validate ───> splot-core
+                 ├──> splot-decode
                  ├──> splot-encode   ───> splot-core
                  └──> splot-core
 
-splot-decode is scaffolded; its approved future dependencies are splot-core
-and splot-recon once decode source code needs them.
+splot-decode owns the current unsupported diagnostic API. Its approved future
+dependencies are splot-core and splot-recon once runtime decode source code
+needs them.
 
 splot-recon has no splot-* dependencies.
 xtask is standalone automation.
@@ -24,12 +26,12 @@ by `cargo xtask check-dependency-direction`):
 
 - `splot-core` depends on no other `splot-*` crate.
 - `splot-recon` depends on no other `splot-*` crate.
-- `splot-decode` depends only on `splot-core` and `splot-recon` once decode
-  source code needs internal dependencies.
+- `splot-decode` depends only on `splot-core` and `splot-recon` once runtime
+  decode source code needs internal dependencies.
 - `splot-validate` depends only on `splot-core`.
 - `splot-encode` depends only on `splot-core`.
-- `splot-cli` depends only on `splot-core`, `splot-validate`, and
-  `splot-encode`.
+- `splot-cli` depends only on `splot-core`, `splot-decode`,
+  `splot-validate`, and `splot-encode`.
 - Nothing depends on `splot-cli`.
 - Nothing depends on `splot-encode` except `splot-cli`.
 - `xtask` depends on no `splot-*` crate.
@@ -56,9 +58,11 @@ by `cargo xtask check-dependency-direction`):
   initializes logging (tracing), reads/writes files, and calls library APIs. No
   codec logic: the `inspect`/`validate` text and JSON rendering in
   `crates/splot-cli/src/commands/` are presentation over `splot-core` and
-  `splot-validate` output. Exit codes are part of the contract: `0` clean;
-  `1` findings (`validate`: validation errors, or warnings under `--strict`;
-  `inspect`: a parse error); `2` operational error.
+  `splot-validate` output, and `decode` renders the current `splot-decode`
+  unsupported diagnostic. Exit codes are part of the contract: `0` clean; `1`
+  findings (`validate`: validation errors, or warnings under `--strict`;
+  `inspect`: a parse error; `decode`: unsupported diagnostic); `2`
+  operational error.
 - **`splot-recon`** — scaffold for future decoded frame buffers, planes,
   deterministic decoded-frame hashes, reconstruction primitives, and
   reference-frame storage shared by decoder and encoder roundtrip work. It
@@ -66,9 +70,9 @@ by `cargo xtask check-dependency-direction`):
   other `splot-*` crate.
 - **`splot-decode`** — scaffold for the future AV2 decode driver, which will
   coordinate parsed facts from `splot-core` with reconstruction/output state
-  from `splot-recon`. It intentionally exposes no byte-consuming decode API yet;
-  current `splot decode` behavior remains the CLI-owned
-  `decode/unsupported-feature` diagnostic.
+  from `splot-recon`. It owns the current structured
+  `decode/unsupported-feature` diagnostic API and intentionally exposes no
+  byte-consuming decode API yet.
 - **`xtask`** — project automation: the `ci` pipeline; the repository checks
   (`check-license-headers`, `check-dependency-direction`, `check-spec-mirror`,
   `check-feature-status`, `check-diagnostic-registry`,
