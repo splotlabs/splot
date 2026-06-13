@@ -19,6 +19,7 @@ mod diagnostic_registry;
 mod feature_status;
 mod gen_tables;
 mod git_util;
+mod reference_evidence;
 mod source_lines;
 
 use audit_scope::{AuditScopeFormat, AuditScopeOptions};
@@ -143,6 +144,8 @@ enum Task {
     },
     /// Verify docs/DECODER-SUPPORT-STATUS.md is up to date.
     CheckDecoderSupport,
+    /// Verify docs/LOCAL-REFERENCE-EVIDENCE.toml is portable metadata.
+    CheckReferenceEvidence,
     /// Generate the AV2 § 9 additional tables into `crates/splot-core/src/tables/`.
     GenTables {
         /// Verify the committed generated tables are up to date instead of writing.
@@ -219,6 +222,9 @@ fn main() -> Result<()> {
             decoder_support::run_decoder_support(&workspace_root()?, format, output)
         }
         Task::CheckDecoderSupport => decoder_support::run_check_decoder_support(&workspace_root()?),
+        Task::CheckReferenceEvidence => {
+            reference_evidence::run_check_reference_evidence(&workspace_root()?)
+        }
         Task::GenTables { check } => gen_tables::run_gen_tables(&workspace_root()?, check),
         Task::FetchVectors => {
             fetch_vectors_stub();

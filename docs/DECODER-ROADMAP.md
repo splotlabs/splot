@@ -103,7 +103,7 @@ other external decoder is forbidden.
 | 7 | Constrained intra tile syntax | planned |
 | 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | planned |
 | 9 | Y4M output and reconstructed reference-frame store | planned |
-| 10 | Portable local-reference evidence manifests | planned |
+| 10 | Portable local-reference evidence manifests | metadata contract and offline checker wired; no entries yet |
 | 11 | Encoder reconstruction API contract | planned |
 
 ## Spec Anchors
@@ -303,6 +303,12 @@ Local AVM/dav2d MD5 output can be useful evidence, but committed `splot` tests
 must not require those tools. Existing archived local reference evidence records
 AVM/dav2d raw MD5 agreement for two tiny fixtures; it is non-executable
 metadata only and does not prove that `splot` hash computation is implemented.
+Future decoder local-reference evidence belongs in
+[`LOCAL-REFERENCE-EVIDENCE.toml`](./LOCAL-REFERENCE-EVIDENCE.toml), which is
+checked by `cargo xtask check-reference-evidence` and
+`cargo xtask check-decoder-support`. The manifest stores portable metadata only:
+repo-relative fixture identity, upstream reference-tool identity, sanitized
+command summaries, digest metadata, and assertions.
 
 ## Unsupported Feature Contract
 

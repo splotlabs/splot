@@ -44,6 +44,20 @@ local_reference_evidence = []
 notes = "Generates and checks docs/DECODER-SUPPORT-STATUS.md without invoking local reference tools."
 
 [[row]]
+id = "local-reference-evidence-manifest"
+name = "Portable local-reference evidence manifest"
+feature_id = "XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST"
+spec_sections = []
+parser_source = "n/a"
+decode_module = "xtask/src/reference_evidence.rs"
+tier = "foundation"
+status = "supported"
+self_contained_tests = ["xtask/src/reference_evidence/tests.rs::tests", "cargo test -p xtask reference_evidence --locked", "cargo xtask check-reference-evidence", "cargo xtask check-decoder-support"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Versioned docs/LOCAL-REFERENCE-EVIDENCE.toml schema and offline checker for future local AVM/dav2d digest metadata. The checker validates manifest portability, repo-relative fixture paths, committed fixture hashes, digest metadata, and equality assertions without invoking external decoders. The manifest currently has no evidence entries and does not prove runtime decode, reconstruction, hash, or Y4M support."
+
+[[row]]
 id = "decoder-diagnostic-registry"
 name = "Decoder diagnostic registry"
 feature_id = "DOC-DECODER-DIAGNOSTICS"

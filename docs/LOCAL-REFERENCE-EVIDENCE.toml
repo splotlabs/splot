@@ -1,0 +1,49 @@
+# Local reference evidence manifest for decoder work.
+#
+# This file records portable metadata only. It is checked by
+# `cargo xtask check-reference-evidence` and by `cargo xtask check-decoder-support`.
+# The checker reads committed metadata and committed fixture bytes, but never
+# locates, builds, or runs AVM, dav2d, ffmpeg, the network, or `splot decode`.
+#
+# Future entries use this shape:
+#
+# [[evidence]]
+# id = "lref-avm-dav2d-example"
+# feature_id = "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT"
+# decoder_support_rows = ["deterministic-frame-hash"]
+# kind = "reference-output-agreement"
+# summary = "Local AVM and dav2d raw decoder output digests agreed."
+# recorded_at = "2026-06-13"
+#
+# [[evidence.fixture]]
+# id = "input"
+# role = "input-bitstream"
+# path = "tests/conformance/vectors/valid/syn-key-intra-64x64.ivf"
+# sha256 = "<64 lowercase hex>"
+# size_bytes = 1234
+# format = "ivf"
+# provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+# provenance_summary = "Generated locally from project-owned synthetic YUV input; AVM is not vendored."
+# license = "PolyForm-Noncommercial-1.0.0"
+#
+# [[evidence.reference_run]]
+# id = "avm"
+# tool = "avm"
+# executable_name = "avmdec"
+# tool_role = "decode-reference"
+# source_url = "https://github.com/AOMediaCodec/avm"
+# revision = "<tag-or-commit>"
+# version_summary = "sanitized version output with no local paths"
+# command_summary = "avmdec {fixture:input} as raw decoder output"
+# output_digest_id = "avm-raw-md5"
+# output_digest_algorithm = "md5"
+# output_digest = "<32 lowercase hex>"
+# output_scope = "reference raw decoder output, not splot-dfh-sha256-v1"
+#
+# [[evidence.assertion]]
+# kind = "digest-equality"
+# left = "avm-raw-md5"
+# right = "dav2d-raw-md5"
+
+manifest_version = 1
+last_reviewed = "2026-06-13"

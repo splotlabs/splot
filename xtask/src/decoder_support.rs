@@ -104,6 +104,8 @@ pub(crate) fn run_check_decoder_support(root: &Path) -> Result<()> {
         bail!("{STATUS_DOC_PATH} is out of date; regenerate with `{REGEN_COMMAND}`");
     }
 
+    crate::reference_evidence::run_check_reference_evidence(root)?;
+
     eprintln!("check-decoder-support: ok ({} row(s))", checked.rows.len());
     Ok(())
 }
@@ -834,6 +836,10 @@ notes = "done"
         std::fs::write(docs.join("DECODER-SUPPORT-MATRIX.toml"), SAMPLE)?;
         let expected = render_markdown(&validate_matrix(parse_matrix(SAMPLE)?)?);
         std::fs::write(docs.join("DECODER-SUPPORT-STATUS.md"), expected)?;
+        std::fs::write(
+            docs.join("LOCAL-REFERENCE-EVIDENCE.toml"),
+            "manifest_version = 1\nlast_reviewed = \"2026-06-13\"\n",
+        )?;
 
         run_check_decoder_support(&root)?;
 
