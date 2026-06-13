@@ -177,6 +177,41 @@ fn inspect_ivf_json_includes_container_metadata() {
 }
 
 #[test]
+fn inspect_ivf_trailing_partial_frame_header_prints_warning() {
+    let mut data = ivf_stream(&[&[0x01, 0x08]]);
+    data.extend_from_slice(&1148u32.to_le_bytes());
+    data.extend_from_slice(&6480u64.to_le_bytes()[..6]);
+    let path = temp_input("ivf", &data);
+    let out = splot(&["inspect", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("1 OBU(s)"), "stdout was: {stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("warning: ivf/trailing-partial-frame-header"),
+        "stderr was: {stderr}"
+    );
+}
+
+#[test]
+fn inspect_ivf_json_trailing_partial_frame_header_prints_warning_on_stderr() {
+    let mut data = ivf_stream(&[&[0x01, 0x08]]);
+    data.extend_from_slice(&1148u32.to_le_bytes());
+    data.extend_from_slice(&6480u64.to_le_bytes()[..6]);
+    let path = temp_input("ivf", &data);
+    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let records = json.as_array().expect("inspect output is an array");
+    assert_eq!(records.len(), 1);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("warning: ivf/trailing-partial-frame-header"),
+        "stderr was: {stderr}"
+    );
+}
+
+#[test]
 fn inspect_json_includes_payload_status_without_dropping_header_fields() {
     let path = fixture("conformant.av2");
     let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
