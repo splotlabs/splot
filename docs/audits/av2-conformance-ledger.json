@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "4589566a9f682cbacb57f7e81fce7d6831e904b8",
+  "audited_commit": "78fbb25270f2c76834611f7dca880a06fcef7689",
   "outcome": "success",
   "files": [
     {
@@ -1013,7 +1013,7 @@
     },
     {
       "path": "docs/CONFORMANCE.md",
-      "sha256": "34fbd8ac217b87bf7ecdb2ca12a3afa9555c1aa47c38b7e6b308d0a7a5de1f68",
+      "sha256": "09ddfe443cb2559a298900551c7daa0ed88dcccdb56da3ade4383d23b0eb8f89",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-INSPECT",
@@ -1207,7 +1207,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "421dc5c92cadec810bbf2bd2ff7a6c01389df5c07606adad8cfa4ca1c6dce31a",
+      "sha256": "2bf1efac163c7845395b902702cea99b6090d9b7f79602e9724cdea2034ad984",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -3625,7 +3625,7 @@
     },
     {
       "path": "openspec/changes/avm-differential-harness/proposal.md",
-      "sha256": "ca4e00373763656046a33836c38af7626641afedb9e473897f7ae9b2a3572b5f",
+      "sha256": "7cd1b2206d0a06d3f69a7d7dde6bb7aa6c6cd697be51bfc8ad2618b052a5df60",
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
@@ -3641,7 +3641,7 @@
     },
     {
       "path": "openspec/changes/avm-differential-harness/tasks.md",
-      "sha256": "b987bd3c477928efcb6b8c322f4ef51c9779af90573ac8dc161c8335f834e0a0",
+      "sha256": "6efb1eaad217cccd421e8123e3d9a69cd4d35154ae124fbb57c8c2b3282f64f1",
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
@@ -3864,7 +3864,7 @@
     },
     {
       "path": "xtask/src/conformance.rs",
-      "sha256": "91b5ac6adc1a278840f5be3958983c9b7cba6cc7387611cb0a35048513d3a37c",
+      "sha256": "2b5b24aa26a5fade6b26a241b1115bffd59640fdb984e418051377b6704dc88e",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
