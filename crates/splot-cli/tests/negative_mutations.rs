@@ -122,7 +122,8 @@ const MUTATIONS: &[MutationCase] = &[
         },
         expect_rule_id: "ivf/invalid-header-length",
     },
-    // --- LEB128 / OBU-framing layer (AV2 v1.0.0 Annex B § B.2) ---
+    // --- LEB128 / OBU-framing layer (AV2 v1.0.0 Annex B § B.2,
+    //     docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) ---
     // num_bytes_in_obu is a leb128() length prefix; open_bitstream_unit receives
     // exactly that many bytes. Bumping OBU #2's one-byte obu_size (byte 59) from
     // 80 to 127 makes the declared payload run past the end of the IVF frame /
@@ -138,7 +139,8 @@ const MUTATIONS: &[MutationCase] = &[
         },
         expect_rule_id: "bitstream/parse-error",
     },
-    // --- OBU-header layer (AV2 v1.0.0 § 6.2.2) ---
+    // --- OBU-header layer (AV2 v1.0.0 § 6.2.2,
+    //     docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2) ---
     // OBU_CLOSED_LOOP_KEY (a key-frame type) requires obu_tlayer_id == 0. Byte 60
     // is its 1-byte obu_header() 0x10 = 0b0_00100_00 (ext=0, type=4, tlayer=0);
     // setting the low two bits to 1 (0x11 = 0b0_00100_01) makes obu_tlayer_id = 1,
@@ -153,7 +155,8 @@ const MUTATIONS: &[MutationCase] = &[
         },
         expect_rule_id: "obu-header/temporal-layer-zero-only-types",
     },
-    // --- OBU-header layer (AV2 v1.0.0 § 6.2.2), second distinct id ---
+    // --- OBU-header layer (AV2 v1.0.0 § 6.2.2,
+    //     docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2), second distinct id ---
     // OBU_SEQUENCE_HEADER is a base-layer-only type (obu_tlayer_id and
     // obu_mlayer_id must be 0). Byte 47 is its 1-byte obu_header() 0x04 =
     // 0b0_00001_00 (ext=0, type=1, tlayer=0); setting the low two bits to 1
