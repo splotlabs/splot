@@ -20,8 +20,10 @@ encoder roundtrips and reconstruction correctness:
 It is not a production media player, not an optimized decoder, and not an
 AVM/dav2d wrapper.
 
-Current state: `splot decode` is still a CLI stub. It does not reconstruct
-pixels, produce frame hashes, or write Y4M output.
+Current state: `splot decode` is an intentional unsupported entry point. It
+emits the structured `decode/unsupported-feature` diagnostic and does not
+reconstruct pixels, produce frame hashes, write Y4M output, read input bytes, or
+touch the output path.
 
 Canonical decoder status lives in
 [`DECODER-SUPPORT-MATRIX.toml`](./DECODER-SUPPORT-MATRIX.toml), rendered to
@@ -102,21 +104,25 @@ documented before any row becomes `supported`.
 
 ## Unsupported Feature Contract
 
-Future decoder unsupported-feature output must carry structured data:
+Decoder unsupported-feature output carries structured data. The current
+`splot decode` entry point emits this diagnostic for all inputs until a
+supported decode tier lands:
 
 ```json
 {
-  "code": "decode/unsupported-feature",
-  "severity": "error",
-  "spec_section": "7.13",
-  "matrix_row": "intra-reconstruction",
-  "message": "splot decode does not yet support intra prediction.",
-  "remediation": "Use a stream within the supported decode tier, or inspect with local reference tools outside the splot repo."
+  "rule_id": "decode/unsupported-feature",
+  "severity": "Error",
+  "spec_section": "7.1",
+  "matrix_row": "cli-decode-entrypoint",
+  "feature_id": "CLI-DECODE",
+  "message": "`splot decode` is not implemented for AV2 bitstreams yet.",
+  "remediation": "Use `splot validate` or `splot inspect` for bitstream analysis until CLI-DECODE is implemented."
 }
 ```
 
-The concrete CLI rendering may be text or JSON, but the library-facing shape must
-remain stable enough for tests and future encoder roundtrips.
+The CLI renders the diagnostic as text by default and as JSON with
+`splot decode --json`. Future library-facing decode diagnostics must preserve
+stable field names for tests and encoder roundtrips.
 
 ## Local References
 

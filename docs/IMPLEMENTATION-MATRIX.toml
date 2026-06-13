@@ -4719,11 +4719,11 @@ spec_sections = ["7.1"]
 sources = ["docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1"]
 crate = "splot-cli"
 module = "crates/splot-cli/src/commands/decode.rs"
-openspec_change = "decoder-roadmap-matrix-boundary"
+openspec_change = "cli-decode-unsupported-diagnostic"
 tracking_issue = ""
 owner = "cli"
 risk = "medium"
-notes = "Tracks the existing `splot decode` CLI surface. It remains an intentional stub in this change; a later decoder API/limits change must replace the generic stub with structured unsupported-feature diagnostics backed by library code."
+notes = "Tracks the existing `splot decode` CLI surface. The command intentionally does not decode yet, but it now emits a structured `decode/unsupported-feature` diagnostic with AV2 §7.1, `CLI-DECODE`, and `cli-decode-entrypoint`, without reading input, touching output, invoking external decoders, or changing the dependency graph. Real stream traversal, hashes, Y4M output, and library-backed decode remain future decoder-support rows."
 
 [feature.status]
 mapped = "done"
@@ -4732,16 +4732,16 @@ parse = "not-applicable"
 validate = "not-applicable"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
+decode_check = "partial"
+tests = "done"
 avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-cli/tests/cli.rs::decode_unsupported_text_mode_emits_stable_diagnostic", "crates/splot-cli/tests/cli.rs::decode_unsupported_json_mode_emits_diagnostic_object", "crates/splot-cli/tests/cli.rs::decode_unsupported_missing_input_does_not_touch_files"]
+commands = ["cargo test -p splot-cli --test cli decode_unsupported --locked"]
 fixtures = []
-diagnostics = []
+diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
 id = "VALIDATOR-CONTEXT-SPLIT"
