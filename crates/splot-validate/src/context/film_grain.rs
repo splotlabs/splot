@@ -110,12 +110,17 @@ pub(super) fn emit_scaling_point_order_diagnostics(
 ///   OBU has defined the slot, so they are checked only when a record is present.
 /// - **Random-access-point visibility (§ 7.3.8.1).** A model available only from an earlier
 ///   position is unavailable at a later random access point that drops it. `available[]` is
-///   monotonic (never reset at a random access point), so the availability check
-///   OVER-approximates presence and silently UNDER-reports that
-///   random-access-point-unavailability direction. That is a named residual on
-///   AV2-7.3.8-HLS-AVAILABILITY (no random-access-point replay for film-grain references
-///   yet), not a false positive: the linear absence test can only miss findings, never
-///   invent them.
+///   monotonic (never reset at a random access point), so the linear availability check
+///   OVER-approximates presence — the random-access-point-unavailability direction is covered
+///   separately by the § 7.3.8.1 replay (`RapHlsKey::FilmGrain`, AV2-7.3.8-HLS-AVAILABILITY):
+///   this function returns the linearly-available `fgm_id` so the caller buffers it as a
+///   replay reference, keeping the two predicates disjoint.
+///
+/// Returns `Some(fgm_id)` when the referenced film-grain model was linearly available in-band
+/// (so the linear `frame-header/film-grain-model-unavailable` did NOT fire) — the caller
+/// buffers that slot as a § 7.3.8.1 random-access-point replay reference. `None` when no
+/// replay reference applies (no apply_grain, external-HLS provided, unresolved/unavailable
+/// slot).
 pub(super) fn frame_film_grain_reference_checks(
     film_grain: &splot_core::headers::frame::FilmGrainConfig,
     film_grain_state: &FilmGrainState,
@@ -123,31 +128,28 @@ pub(super) fn frame_film_grain_reference_checks(
     options: &ValidationOptions,
     obu: &ObuEnvelope<'_>,
     report: &mut ValidationReport,
-) {
+) -> Option<u8> {
     // The fgm_id reference (and its § 6.17.10.1 requirements) exists only when apply_grain.
     if !film_grain.apply_grain {
-        return;
+        return None;
     }
     // Film grain OBUs cannot be expressed by ExternalHlsSet, so under any Provided mode the
     // referenced model — and its stored layer identity / chroma idc — MAY be supplied
     // externally and is unknown to the validator. Suppress to avoid a false positive; only
     // the external-disabled case is decidable from the bitstream alone.
     if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
-        return;
+        return None;
     }
-    let Some(fgm_id) = film_grain.fgm_id else {
-        return;
-    };
+    let fgm_id = film_grain.fgm_id?;
     let slot = usize::from(fgm_id);
     // A slot outside the modeled range cannot be matched against availability state; the
     // fgm_id field is f(3) (0..=7), so this never trips for a parsed config, but guard it.
-    let Some(slot_record) = film_grain_state.available.get(slot) else {
-        return;
-    };
+    let slot_record = film_grain_state.available.get(slot)?;
     let Some(record) = slot_record else {
         // AV2 § 6.17.10.1: FilmGrainPresent[ fgm_id ] == 1. No in-band model was recorded
         // (and none can be external under Disabled); the layer-dependency constraints below
-        // reference the (absent) model's identity, so they are not evaluated.
+        // reference the (absent) model's identity, so they are not evaluated. The linear
+        // check owns this case, so no random-access-point replay reference is buffered.
         report.push(frame_header_error(
             "frame-header/film-grain-model-unavailable",
             "6.17.10.1",
@@ -158,7 +160,7 @@ pub(super) fn frame_film_grain_reference_checks(
                  that slot)"
             ),
         ));
-        return;
+        return None;
     };
 
     // The model is recorded in-band; check the three § 6.17.10.1 layer-dependency / chroma
@@ -232,6 +234,10 @@ pub(super) fn frame_film_grain_reference_checks(
             ),
         ));
     }
+
+    // The model was linearly available in-band: buffer it for the § 7.3.8.1
+    // random-access-point replay (the caller, in &mut self context, notes the reference).
+    Some(fgm_id)
 }
 
 impl ValidatorContext {
@@ -389,7 +395,10 @@ impl ValidatorContext {
         }
     }
 
-    /// Updates the §6.13 coded-frame-unit window and per-slot availability.
+    /// Updates the §6.13 coded-frame-unit window and per-slot availability, and records each
+    /// updated slot as a § 7.3.8.1 random-access-point replay (re)send event (AV2 § 7.3.8.8:
+    /// a film-grain OBU defines a model that a later frame may reference; the replay catches a
+    /// model sent before a random access point and not resent in or after it).
     pub(super) fn record_film_grain(&mut self, obu: &ObuEnvelope<'_>, fg: &FilmGrainObu) {
         self.film_grain.updated_slots_since_coded_frame |= fg.update_flags;
         for update in &fg.models {
@@ -400,6 +409,10 @@ impl ValidatorContext {
                     mlayer_id: obu.header.embedded_layer_id,
                     tlayer_id: obu.header.temporal_layer_id,
                 });
+                self.rap_replay.note_resend(
+                    RapHlsKey::FilmGrain { slot: update.slot },
+                    obu.header.extended_layer_id,
+                );
             }
         }
     }

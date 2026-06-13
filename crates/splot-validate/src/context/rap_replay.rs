@@ -11,10 +11,11 @@ use super::*;
 ///
 /// The key is whatever uniquely names the object within its family at the reference
 /// site: a `seq_header_id` for sequence headers, a `cur_mfh_id` (as `mfhId`) for
-/// multi-frame headers, an `(obu_xlayer_id, ops_id)` for operating point sets. Only
-/// families with a concrete, parsed reference site participate; film-grain / quantizer-
-/// matrix references await frame-header parsing (named residual on
-/// AV2-7.3.8-HLS-AVAILABILITY).
+/// multi-frame headers, an `(obu_xlayer_id, ops_id)` for operating point sets, an `fgm_id`
+/// slot for film-grain models. Only families with a concrete, parsed reference site
+/// participate; the quantizer-matrix reference (`using_qmatrix`/`qm_*`) is the remaining
+/// residual on AV2-7.3.8-HLS-AVAILABILITY (its reset/poison interaction is wired in a
+/// follow-up).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum RapHlsKey {
     /// Sequence header `seq_header_id` (§ 7.3.8.6), referenced by a frame header's
@@ -38,6 +39,12 @@ pub(super) enum RapHlsKey {
     /// global atlas "can be available" (§ 7.3.8.4 is permissive, not "shall"), so — like
     /// the linear checks — it is excluded from the replay.
     Atlas { xlayer: u8, id: u8 },
+    /// Film-grain model slot `fgm_id` (§ 7.3.8.8), defined by a film-grain OBU's
+    /// `fgm_update_flags` and referenced by a frame `film_grain_config()` with
+    /// `apply_grain == 1`. Film-grain availability is monotonic (no reset), so a model sent
+    /// only before a random access point and not resent is unavailable from that start — the
+    /// case the linear monotonic `frame-header/film-grain-model-unavailable` under-reports.
+    FilmGrain { slot: u8 },
 }
 
 impl RapHlsKey {
@@ -52,6 +59,7 @@ impl RapHlsKey {
             }
             Self::LayerConfigurationRecord { .. } => "local layer configuration record",
             Self::Atlas { .. } => "local atlas segment",
+            Self::FilmGrain { .. } => "film grain model",
         }
     }
 
@@ -64,6 +72,7 @@ impl RapHlsKey {
             Self::OperatingPointSet { .. } => "7.3.8.5",
             Self::LayerConfigurationRecord { .. } => "7.3.8.3",
             Self::Atlas { .. } => "7.3.8.4",
+            Self::FilmGrain { .. } => "7.3.8.8",
         }
     }
 
@@ -84,6 +93,7 @@ impl RapHlsKey {
             Self::Atlas { xlayer, id } => {
                 format!("atlas_segment_id {id} for obu_xlayer_id {xlayer}")
             }
+            Self::FilmGrain { slot } => format!("fgm_id {slot}"),
         }
     }
 }
@@ -617,9 +627,9 @@ pub(super) fn rap_replay_unavailable(
 /// For an externally-*declarable* kind ([`RapHlsKey::SequenceHeader`],
 /// [`RapHlsKey::OperatingPointSet`]) the caller's [`crate::options::ExternalHlsSet`] is
 /// authoritative: suppress only when the *exact* referenced key is declared external. For
-/// a kind the set cannot express ([`RapHlsKey::MultiFrameHeader`], and — once wired —
-/// LCRs / atlas segments), any `Provided` mode keeps the blanket suppression, since such
-/// an OBU may exist externally without being (or being expressible as) declared.
+/// a kind the set cannot express ([`RapHlsKey::MultiFrameHeader`], LCRs, atlas segments, and
+/// film-grain models), any `Provided` mode keeps the blanket suppression, since such an OBU
+/// may exist externally without being (or being expressible as) declared.
 pub(super) fn rap_replay_suppressed_by_external_hls(
     key: RapHlsKey,
     external_hls: &ExternalHlsMode,
@@ -635,9 +645,13 @@ pub(super) fn rap_replay_suppressed_by_external_hls(
             set.has_operating_point_set(xlayer, ops_id)
         }
         // Inexpressible kinds: any Provided mode suppresses (partial-declaration policy).
+        // ExternalHlsSet cannot express film-grain OBUs, so a film-grain model MAY be
+        // supplied externally under any Provided mode — matching the linear
+        // `frame-header/film-grain-model-unavailable` suppression.
         RapHlsKey::MultiFrameHeader(_)
         | RapHlsKey::LayerConfigurationRecord { .. }
-        | RapHlsKey::Atlas { .. } => true,
+        | RapHlsKey::Atlas { .. }
+        | RapHlsKey::FilmGrain { .. } => true,
     }
 }
 

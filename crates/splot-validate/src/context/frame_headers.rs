@@ -211,6 +211,10 @@ impl ValidatorContext {
                 self.commit_pending_ref_update();
             }
             let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
+            // The frame's linearly-available film-grain reference slot (if any), surfaced by
+            // the §6.17.10.1 reference checks so the §7.3.8.1 replay reference can be buffered
+            // below in &mut self context (the checks borrow self immutably).
+            let mut film_grain_rap_slot: Option<u8> = None;
             if let Some(active_sequence) = self.sequence_headers.get(&seq_id) {
                 // AV2 § 7.23: thread the modeled per-extended-layer reference-frame buffer
                 // into the §6.17 frame-header checks so the §6.17.2 inter `ref_frame_idx`
@@ -235,7 +239,7 @@ impl ValidatorContext {
                 } else {
                     FrameReferenceStateView::unknown()
                 };
-                frame_header_core_checks(
+                film_grain_rap_slot = frame_header_core_checks(
                     obu,
                     first_picture_in_tu,
                     active_sequence,
@@ -247,6 +251,17 @@ impl ValidatorContext {
                     },
                     options,
                     report,
+                );
+            }
+            // AV2 § 7.3.8.1: buffer the frame's linearly-available film-grain model reference
+            // for the random-access-point availability replay (disjoint from the linear
+            // `frame-header/film-grain-model-unavailable`, which already owns the unavailable
+            // case). Governed by the frame's own extended layer.
+            if let Some(slot) = film_grain_rap_slot {
+                self.note_rap_reference(
+                    RapHlsKey::FilmGrain { slot },
+                    obu.header.extended_layer_id,
+                    obu.offset,
                 );
             }
         }
