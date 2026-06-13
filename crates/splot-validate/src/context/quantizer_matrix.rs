@@ -207,6 +207,12 @@ impl QuantizerMatrixState {
 /// analogue) remain a named TODO below — the QM-side check needs the defining QM OBU's layer
 /// identity joined against the §5.4.1 dependency maps in a way the availability state does
 /// not yet thread.
+///
+/// Returns the referenced custom levels that were linearly available in-band under
+/// external-disabled (so the linear `frame-header/qm-level-unavailable` did NOT fire) — the
+/// caller buffers each as a § 7.3.8.1 random-access-point replay reference, keeping the
+/// replay predicate disjoint from this linear check. Empty when no replay reference applies
+/// (no using_qmatrix, external-HLS provided, or every referenced level unavailable/poisoned).
 pub(super) fn frame_qm_reference_checks(
     setup_qm: &SetupQmParams,
     active_sequence: &SequenceHeader,
@@ -214,11 +220,11 @@ pub(super) fn frame_qm_reference_checks(
     options: &ValidationOptions,
     obu: &ObuEnvelope<'_>,
     report: &mut ValidationReport,
-) {
+) -> Vec<u8> {
     // The qm_y/qm_u/qm_v syntax (and its conformance bullets) exists only when
     // using_qmatrix == 1 (AV2 § 5.18.6.2).
     if !setup_qm.using_qmatrix {
-        return;
+        return Vec::new();
     }
     // AV2 § 6.4.1: NumPlanes = Monochrome ? 1 : 3.
     let num_planes: u8 = if active_sequence.general.chroma_format_idc.is_monochrome() {
@@ -258,6 +264,10 @@ pub(super) fn frame_qm_reference_checks(
     // (ExternalHlsSet cannot express QM OBUs, so any Provided mode means the levels MAY be
     // external — the inexpressible-kind blanket suppression).
     let availability_decidable = matches!(options.external_hls, ExternalHlsMode::Disabled);
+    // The referenced custom levels that resolved linearly-available (under Disabled), buffered
+    // by the caller for the § 7.3.8.1 random-access-point replay — disjoint from the linear
+    // checks below (an unavailable/poisoned level is not replayed).
+    let mut replay_levels = Vec::new();
     for (level, _) in referenced
         .iter()
         .enumerate()
@@ -307,7 +317,14 @@ pub(super) fn frame_qm_reference_checks(
                 ),
             ));
         }
+        // The level is linearly available in-band: buffer it for the § 7.3.8.1 replay (only
+        // under Disabled — under any Provided mode the level MAY be external, and the QM
+        // family is inexpressible by ExternalHlsSet, so the replay would suppress anyway).
+        if availability_decidable {
+            replay_levels.push(level as u8);
+        }
     }
+    replay_levels
 }
 
 impl ValidatorContext {
@@ -519,6 +536,16 @@ impl ValidatorContext {
             self.qm.availability_poisoned = 0;
             // AV2 § 5.13 mirror :3010: QmProtected[level] = 1 for every level.
             self.qm.qm_protected = (1u16 << NUM_CUSTOM_QMS) - 1;
+            // AV2 § 7.3.8.1 replay: a reset-to-defaults makes EVERY custom level available
+            // (as a default), so record a (re)send for all of them — a later frame reference
+            // to any level is satisfied at a random access point only if some QM OBU (this
+            // reset included) sent it in or after that start.
+            for level in 0..NUM_CUSTOM_QMS {
+                self.rap_replay.note_resend(
+                    RapHlsKey::QmLevel { level: level as u8 },
+                    obu.header.extended_layer_id,
+                );
+            }
             return;
         }
         self.qm.seen_levels_since_coded_frame |= qm.qm_bit_map;
@@ -537,6 +564,11 @@ impl ValidatorContext {
                 // AV2 § 5.13 mirror :3033: QmProtected[level] = 1 for each sent level, so a
                 // level (re)sent in this temporal unit survives a later reset_qm().
                 self.qm.qm_protected |= 1u16 << index;
+                // AV2 § 7.3.8.1 replay: record the (re)send of this custom level.
+                self.rap_replay.note_resend(
+                    RapHlsKey::QmLevel { level: level.level },
+                    obu.header.extended_layer_id,
+                );
             }
         }
     }

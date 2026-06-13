@@ -22,6 +22,20 @@ pub(super) struct FrameReferenceAvailability<'a> {
     pub(super) reference_buffer: FrameReferenceStateView<'a>,
 }
 
+/// The frame's linearly-available § 7.3.8.1 random-access-point HLS references, surfaced by
+/// [`frame_header_core_checks`] so the caller (in `&mut self` context) can buffer them in the
+/// [`RapReplayTracker`]. Each is recorded ONLY when its linear availability check found the
+/// object present in-band under external-disabled, keeping the replay predicate disjoint from
+/// the linear `frame-header/film-grain-model-unavailable` / `frame-header/qm-level-unavailable`
+/// checks.
+#[derive(Default)]
+pub(super) struct FrameRapReferences {
+    /// The referenced film-grain model slot (`fgm_id`), when linearly available.
+    pub(super) film_grain_slot: Option<u8>,
+    /// The referenced custom quantizer-matrix levels that were linearly available.
+    pub(super) qm_levels: Vec<u8>,
+}
+
 /// Emits the locally decidable frame-header-info / frame-size diagnostics for a frame
 /// whose active sequence header is available (AV2 § 6.17.2 / § 6.17.4 / § 6.4.6).
 ///
@@ -40,7 +54,7 @@ pub(super) fn frame_header_core_checks(
     reference_state: FrameReferenceAvailability<'_>,
     options: &ValidationOptions,
     report: &mut ValidationReport,
-) -> Option<u8> {
+) -> FrameRapReferences {
     let FrameReferenceAvailability {
         qm: qm_state,
         film_grain: film_grain_state,
@@ -167,13 +181,15 @@ pub(super) fn frame_header_core_checks(
     // inter `ref_frame_idx` validity check below consults the same `RefValid[]` the
     // celu/output decisions do. The other §6.17 diagnostics this function emits are
     // decidable from the active sequence header alone and ignore the view.
-    let core = parse_frame_core(
+    let Some(core) = parse_frame_core(
         obu,
         first_picture_in_tu,
         active_sequence,
         mfh_record,
         reference_buffer,
-    )?;
+    ) else {
+        return FrameRapReferences::default();
+    };
 
     // AV2 § 6.2.1 / § 5.18.2: the frame_header_info() syntax elements (§ 5.18.2) are
     // mandatory — `frame_header( )` reads them sequentially from the OBU payload inside
@@ -461,9 +477,11 @@ pub(super) fn frame_header_core_checks(
     // AV2 § 6.17.6.2 / § 7.3.8.9: custom-QM plane-count references and the §7.3.8.9
     // availability presence for a parsed `setup_qm_params()`, gated on recorded
     // quantizer-matrix availability state.
-    if let Some(setup_qm) = core.setup_qm_params.as_ref() {
-        frame_qm_reference_checks(setup_qm, active_sequence, qm_state, options, obu, report);
-    }
+    let qm_rap_levels = if let Some(setup_qm) = core.setup_qm_params.as_ref() {
+        frame_qm_reference_checks(setup_qm, active_sequence, qm_state, options, obu, report)
+    } else {
+        Vec::new()
+    };
 
     // AV2 § 6.17.7.8: per-plane CCSO field bounds for a parsed `ccso_params()`.
     if let Some(ccso) = core.ccso_params.as_ref() {
@@ -493,20 +511,27 @@ pub(super) fn frame_header_core_checks(
         None
     };
 
+    // The frame's linearly-available § 7.3.8.1 random-access-point replay references (the
+    // caller buffers them in &mut self context, disjoint from the linear checks above).
+    let rap_refs = FrameRapReferences {
+        film_grain_slot: film_grain_rap_slot,
+        qm_levels: qm_rap_levels,
+    };
+
     // The remaining checks compare refresh_frame_flags against NumRefFrames.
     let Some(num_ref_frames) = active_sequence
         .inter
         .as_ref()
         .map(|inter| u32::from(inter.num_ref_frames))
     else {
-        return film_grain_rap_slot;
+        return rap_refs;
     };
     let Some(refresh) = core.refresh_frame_flags else {
-        return film_grain_rap_slot;
+        return rap_refs;
     };
     // 1 << NumRefFrames as the exclusive upper bound of a valid refresh mask.
     let Some(all_slots_plus_1) = 1u32.checked_shl(num_ref_frames) else {
-        return film_grain_rap_slot;
+        return rap_refs;
     };
 
     // AV2 § 6.17.2: frame_to_refresh < NumRefFrames. In the compact refresh mode
@@ -542,5 +567,5 @@ pub(super) fn frame_header_core_checks(
         ));
     }
 
-    film_grain_rap_slot
+    rap_refs
 }

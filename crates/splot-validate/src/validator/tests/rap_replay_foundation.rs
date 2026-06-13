@@ -767,3 +767,134 @@ fn rap_replay_film_grain_suppressed_under_external_hls() {
         "a Provided external-HLS mode must suppress the film-grain replay; report was: {report}"
     );
 }
+
+// ----- Quantizer-matrix level references in the § 7.3.8.1 random-access-point replay -----
+
+/// `true` if a quantizer-matrix-family § 7.3.8.1 replay finding is present.
+fn has_qm_rap(report: &ValidationReport) -> bool {
+    report
+        .errors()
+        .any(|d| d.rule_id == RAP_RULE && d.message.contains("quantizer matrix level"))
+}
+
+/// A § 5.4 sequence header for the QM random-access tests: 4:2:0 (NumPlanes 3, matching the
+/// `qm_chroma_info_present_flag == 1` QM OBUs) with `long_term_frame_id_bits != 0` (§ 6.4.6,
+/// required for the RAS frame).
+fn qm_rap_seq() -> FrameCoreSeq {
+    FrameCoreSeq {
+        long_term_frame_id_bits: 4,
+        ..FrameCoreSeq::base()
+    }
+}
+
+#[test]
+fn rap_replay_qm_level_only_before_rap_is_flagged() {
+    // TU1: a normal QM OBU defines custom level 0 (QmMLayerId == 0, NOT the -1 arm). TU2: a
+    // RAS (a §7.4.1 random access point) whose confirmed reset_qm() clears only the
+    // QmMLayerId == -1 arm — so level 0 SURVIVES linearly (the linear qm-level-unavailable
+    // stays silent). TU3: an INTRA_ONLY frame (no reset_qm of its own) references level 0.
+    // The model's only send was before the RAS and was not resent in or after it, so a decode
+    // starting at the RAS cannot supply it — the replay fires even though the linear test sees
+    // it present.
+    let mut data = td_and_frame_core_seq(qm_rap_seq());
+    data.extend(qm_default_level_obu_chroma(0)); // TU1: level 0, QmMLayerId 0 (survives RAS)
+    data.extend(temporal_delimiter_obu());
+    data.extend(ras_frame_confirmed_reset()); // TU2: RAP; reset clears only the -1 arm
+    data.extend(temporal_delimiter_obu());
+    data.extend(intra_only_frame_with_qm_reference(0)); // TU3: references level 0 (no own reset)
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        has_qm_rap(&report),
+        "a QM level sent only before the random access point must fire the replay; report \
+         was: {report}"
+    );
+    // Disjoint from the linear check: level 0 survives the RAS reset, so it IS linearly
+    // available and the linear unavailable check stays silent.
+    assert!(
+        !report
+            .errors()
+            .any(|d| d.rule_id == "frame-header/qm-level-unavailable"),
+        "level 0 survives the RAS reset, so the linear check must stay silent; report was: \
+         {report}"
+    );
+}
+
+#[test]
+fn rap_replay_qm_level_resent_after_rap_passes() {
+    // Same as above, but the QM level is resent (TU3) after the RAS random access point and
+    // before the reference, so a decode starting at the RAS can supply it — no replay finding.
+    let mut data = td_and_frame_core_seq(qm_rap_seq());
+    data.extend(qm_default_level_obu_chroma(0)); // TU1
+    data.extend(temporal_delimiter_obu());
+    data.extend(ras_frame_confirmed_reset()); // TU2: RAP
+    data.extend(temporal_delimiter_obu());
+    data.extend(qm_default_level_obu_chroma(0)); // TU3: resent after the random access point
+    data.extend(intra_only_frame_with_qm_reference(0));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        !has_qm_rap(&report),
+        "a QM level resent after the random access point must not fire the replay; report \
+         was: {report}"
+    );
+}
+
+#[test]
+fn rap_replay_qm_reset_to_defaults_after_rap_counts_as_resend() {
+    // A `qm_bit_map == 0` reset-to-defaults makes EVERY custom level available; the replay
+    // records a (re)send for all of them. So a reset-to-defaults after the random access point
+    // (TU3) supplies level 0 to a decoder starting at the RAS — no replay finding. (Without
+    // the all-levels note_resend on the reset path this would falsely fire.)
+    let mut data = td_and_frame_core_seq(qm_rap_seq());
+    data.extend(qm_default_level_obu_chroma(0)); // TU1
+    data.extend(temporal_delimiter_obu());
+    data.extend(ras_frame_confirmed_reset()); // TU2: RAP
+    data.extend(temporal_delimiter_obu());
+    data.extend(qm_reset_obu_chroma()); // TU3: reset-to-defaults -> all levels (re)sent
+    data.extend(intra_only_frame_with_qm_reference(0));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        !has_qm_rap(&report),
+        "a qm_bit_map == 0 reset-to-defaults after the random access point must satisfy the \
+         replay for every level; report was: {report}"
+    );
+}
+
+#[test]
+fn rap_replay_qm_disjoint_from_linear_unavailable() {
+    // No QM OBU ever defines level 0: the linear frame-header/qm-level-unavailable owns the
+    // case, and the replay (which buffers only linearly-available references) stays silent.
+    let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
+    data.extend(clk_frame_with_qm_reference(0)); // references undefined custom level 0
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        report
+            .errors()
+            .any(|d| d.rule_id == "frame-header/qm-level-unavailable"),
+        "an undefined QM level must fire the linear check; report was: {report}"
+    );
+    assert!(
+        !has_qm_rap(&report),
+        "the replay must not fire for a level the linear check already owns; report was: \
+         {report}"
+    );
+}
+
+#[test]
+fn rap_replay_qm_suppressed_under_external_hls() {
+    use crate::options::{ExternalHlsMode, ExternalHlsSet};
+    // ExternalHlsSet cannot express QM OBUs, so any Provided mode suppresses the QM replay.
+    let mut data = td_and_frame_core_seq(qm_rap_seq());
+    data.extend(qm_default_level_obu_chroma(0));
+    data.extend(temporal_delimiter_obu());
+    data.extend(ras_frame_confirmed_reset());
+    data.extend(temporal_delimiter_obu());
+    data.extend(intra_only_frame_with_qm_reference(0));
+    let options = ValidationOptions {
+        external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new().with_sequence_header_id(0)),
+    };
+    let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+    assert!(
+        !has_qm_rap(&report),
+        "a Provided external-HLS mode must suppress the QM replay; report was: {report}"
+    );
+}
