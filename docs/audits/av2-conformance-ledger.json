@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "a10e9ddb3a9adeb8b4c3bf3efd96dd98da4092e5",
+  "audited_commit": "245c4d09badc067a13712c267ccfe5d4f7b13ab9",
   "outcome": "success",
   "files": [
     {
@@ -271,7 +271,7 @@
     },
     {
       "path": "crates/splot-cli/src/commands/decode.rs",
-      "sha256": "106e1d8842334792c8ba01597e9289a3a9f9a9f44c1171b025c14f02ec0b6243",
+      "sha256": "1d30a13b040be178a8c18d10cc06dbd52d14e31c7ad27aad211e78b3ddccebc5",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "CLI-DECODE"
@@ -322,12 +322,13 @@
     },
     {
       "path": "crates/splot-cli/tests/cli.rs",
-      "sha256": "8e546e68f81dc17c7af5e604cc31c388237e37f31fc49b2ea8228af94e5f2096",
+      "sha256": "d544aee05be1e73b9def396aef615dbcccf2b2276bd1ebdfb30d33b308d60633",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.19-TILE-GROUP",
         "AV2-5.4-SEQUENCE-HEADER",
-        "AV2-5.5-TEMPORAL-DELIMITER"
+        "AV2-5.5-TEMPORAL-DELIMITER",
+        "CLI-DECODE"
       ],
       "outcome": "success"
     },
@@ -899,7 +900,7 @@
     },
     {
       "path": "crates/splot-validate/src/context/annex_a_iop.rs",
-      "sha256": "f9085dd70c01b4d6c16d8db5c0148db07aa1aad2ab429b70c3a85cd31e318263",
+      "sha256": "f8dc76378c9f12c077877a098519a8f3c092d5ea05d53f5c491d80352b5737c2",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
@@ -913,7 +914,6 @@
         "AV2-7.3.8-HLS-AVAILABILITY",
         "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
         "AV2-7.4-RANDOM-ACCESS",
-        "AV2-A-LEVELS-TIERS",
         "VALIDATOR-CONTEXT-SPLIT"
       ],
       "outcome": "success"
@@ -1588,7 +1588,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator/tests/annex_a_iop.rs",
-      "sha256": "9235b96c35fb53918147cb33e5c17dba0cff17470f0ad19d3f16e51c315e9f9d",
+      "sha256": "f24fec3b7540c304c6e40228bb048f5b4b174d0e1d6d514b77a178d46057023e",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -1927,16 +1927,17 @@
     },
     {
       "path": "docs/DECODER-ROADMAP.md",
-      "sha256": "abad0cb5e130bd2593482ddb09fcbbbf456436048edf9a419e0753f6293cb47c",
+      "sha256": "0a8da39c32e5015bca2dde1583d15dd31c0786baf038465212f21f3ae65ab423",
       "scope_kind": "docs",
       "feature_ids": [
+        "CLI-DECODE",
         "DOC-DECODER-ROADMAP"
       ],
       "outcome": "success"
     },
     {
       "path": "docs/DECODER-SUPPORT-MATRIX.toml",
-      "sha256": "b790828aaa5b6d61d22bacc63941dca0a7da91c1d7ad9dca8be8396260605874",
+      "sha256": "187cd6d60fd901437122c9be67cfdc3e23bfbe41ec5b3ad77bf3f0fff48b1d3b",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-DECODE",
@@ -1948,7 +1949,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-STATUS.md",
-      "sha256": "f723a520812ad24fa83a0e0f0f82824ddce15d8cea22f2d03adc70fc5c551ef9",
+      "sha256": "19396cd3f85dd9dc5059d60a605e521849010f900c9f7c3f9d620114bc4c0592",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-DECODE",
@@ -1960,7 +1961,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "3e28d28f1ae1e0456f81c97dd7e36d3d831989ce571111870460522d692b26b4",
+      "sha256": "5104eef221dd984e0c4d88edc5673ad399dda1e3f0f11c6a6d293c10bb749237",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2137,7 +2138,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "550b5a5d92196303c47c9a945e974fc60f4d352f87a1db7cf547f9d679bde9fd",
+      "sha256": "c6a831f30d9b505080b1fbfd21fe01782c66ac77b16ae12c0b31b80dd24c57f3",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2284,7 +2285,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "a69d1597475b72653ed404de1412e9dc3d64ca854ccfe8d4609d1a552f537b2d",
+      "sha256": "c2ba3636c0758ac70cee12b4b70b24dc42e0c76b4c787be92c55e0950e3f5086",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2447,7 +2448,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "d0aa414ca9e3e67df6ba719604347a1ad2cf707b9246650cbf1659f539d37830",
+      "sha256": "ebc3984b260f2146382a226ab5b2c3ac49520927c541580014ca5274b3c6945b",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -4538,6 +4539,35 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-annex-a-iop-layer-budget/proposal.md",
+      "sha256": "5f6800511ac4e71dd9f12eca10a0968a5c7b3671fd862e64c5168b64a2aae7e5",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-A-LEVELS-TIERS",
+        "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-annex-a-iop-layer-budget/specs/validator/spec.md",
+      "sha256": "ea6a40eaa94915ac7f5ee9bec08dbbd836b9a0049448ede24665e59c8ce6f5fd",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-annex-a-iop-layer-budget/tasks.md",
+      "sha256": "ea84d4f9bc27e53d08c309a4f2618d63ee619c32ed91373a3668dc6b0b7dfbb8",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-A-LEVELS-TIERS",
+        "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-13-avm-positive-vector-generation/proposal.md",
       "sha256": "4b9d9dc105185cea6f46901d6694c10058f2a04256580c0664c0ceea06bcfa27",
       "scope_kind": "openspec",
@@ -4561,6 +4591,58 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-VALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-cli-decode-unsupported-diagnostic/.openspec.yaml",
+      "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-cli-decode-unsupported-diagnostic/agent-log.md",
+      "sha256": "cd845bcb6111f4f8d584f7e71d1409d2fe334c74793b2366b6a30ca39b40a393",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CLI-DECODE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-cli-decode-unsupported-diagnostic/design.md",
+      "sha256": "ba14adaff9f9c279e43f139b317a89f9f0c66874d61789c685a0858ad9c2283d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CLI-DECODE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-cli-decode-unsupported-diagnostic/proposal.md",
+      "sha256": "15774280701c9e2ca1c14407c3f7d386b45d77721d87a3b358e73591ae511f29",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CLI-DECODE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-cli-decode-unsupported-diagnostic/specs/decoder-support/spec.md",
+      "sha256": "215f890a4dd914ea5765984b0b7152d7ab02a7209acb709208fb97e4a7eb7240",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CLI-DECODE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-cli-decode-unsupported-diagnostic/tasks.md",
+      "sha256": "9a84652fd06bc8b8810f6b14d083d8d60f83a8d7e0db1b5974c65fe7b17b0318",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CLI-DECODE"
       ],
       "outcome": "success"
     },
@@ -4957,9 +5039,11 @@
     },
     {
       "path": "openspec/specs/decoder-support/spec.md",
-      "sha256": "15633bae8908abb977d3a3aaef27dba089c26ec0a16e7c4ed6fd94a286d616c0",
+      "sha256": "f239ec1af62585df337402da6b8b700f9e23bbf09f2200f57c7489909a4a08e7",
       "scope_kind": "openspec",
-      "feature_ids": [],
+      "feature_ids": [
+        "CLI-DECODE"
+      ],
       "outcome": "success"
     },
     {
@@ -5022,7 +5106,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "f9fca594969ba3fcd56d0468021e6bfb6fdfcdee4944715dd0b9ae52442f9a05",
+      "sha256": "35842387ba7c47d18a296d096e086ac503aa5de3121dbb532b198ad96b2c9331",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",

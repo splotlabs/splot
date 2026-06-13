@@ -479,10 +479,18 @@ impl ValidatorContext {
         let m = window.max_embedded_layers.max(1) > 1;
         let offset = window.anchor_offset;
         let global_lcr = window.activated_global_count.is_some();
-        // TODO(spec: AV2-A-LEVELS-TIERS): the Table A.3 layer-budget bound (the combination
-        // flag must be 0 for IOP 0/1, mirror lines 154-158) is not enforced here; an IOP1
-        // window with both E and M exceeds that budget but has no Table A.4 row, so Table A.4
-        // alone makes no presence requirement for it.
+        // AV2 Annex A Table A.3 (mirror lines 125-170): the per-IOP layer budget. Checked
+        // before the Table A.4 presence rules — an IOP1 window with both E and M exceeds the
+        // budget and has no Table A.4 row, so the budget bound is the only constraint on it.
+        self.emit_iop_layer_budget(
+            iop,
+            extended_layers,
+            window.max_embedded_layers.max(1),
+            e,
+            m,
+            offset,
+            report,
+        );
         match iop {
             InteroperabilityPoint::Iop0 => {
                 // Rows 1-2 (lines 183-185): embedded layers are N/A.
@@ -502,6 +510,70 @@ impl ValidatorContext {
             InteroperabilityPoint::Iop2 => {
                 self.evaluate_iop2(e, m, window, global_lcr, extended_layers, offset, report);
             }
+        }
+    }
+
+    /// AV2 Annex A Table A.3 layer-budget bound (mirror lines 125-170) for the window's
+    /// interoperability point. Table A.3 caps, per IOP, the Number of Extended Layers, the
+    /// Number of Embedded Layers, and whether the Extended-and-Embedded *combination*
+    /// (`E && M`, both counts > 1) is permitted:
+    ///
+    /// - IOP0 (line 130): extended 1-4, embedded 1, combination 0.
+    /// - IOP1 (line 132): extended 1-4, embedded 1-2, combination 0.
+    /// - IOP2 (line 134): extended 1-4, embedded 1-3, combination 0 or 1.
+    ///
+    /// **Zero-false-positive (AGENTS.md § 7).** `extended_layers`
+    /// ([`annex_a_extended_layers`]) and `embedded_layers` (`max_embedded_layers`) are
+    /// conservative LOWER bounds — they under-count when activations are missing, never
+    /// over-count — so a count that exceeds its IOP limit is a proven violation. The IOP is
+    /// table-determined here (the caller already returned for a reserved / Configurable /
+    /// disagreeing profile). The Table A.3 "Number of Layers" (sum of embedded counts across
+    /// singlestreams) bound is not tracked and stays a named residual.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn emit_iop_layer_budget(
+        &self,
+        iop: InteroperabilityPoint,
+        extended_layers: u32,
+        embedded_layers: u32,
+        e: bool,
+        m: bool,
+        offset: ByteOffset,
+        report: &mut ValidationReport,
+    ) {
+        // (max extended layers, max embedded layers, is the E && M combination permitted).
+        let (max_extended, max_embedded, combination_allowed) = match iop {
+            InteroperabilityPoint::Iop0 => (4, 1, false),
+            InteroperabilityPoint::Iop1 => (4, 2, false),
+            InteroperabilityPoint::Iop2 => (4, 3, true),
+        };
+        let mut violations = Vec::new();
+        if extended_layers > max_extended {
+            violations.push(format!(
+                "{extended_layers} extended layers exceed the maximum {max_extended}"
+            ));
+        }
+        if embedded_layers > max_embedded {
+            violations.push(format!(
+                "{embedded_layers} embedded layers exceed the maximum {max_embedded}"
+            ));
+        }
+        if e && m && !combination_allowed {
+            violations.push(
+                "more than one extended layer and more than one embedded layer (the \
+                 Extended-and-Embedded combination is not permitted)"
+                    .to_owned(),
+            );
+        }
+        if !violations.is_empty() {
+            report.push(annex_a_iop_error(
+                "annex-a/layer-budget-exceeds-iop",
+                offset,
+                format!(
+                    "Annex A Table A.3: interoperability point {} layer budget exceeded: {}",
+                    iop.value(),
+                    violations.join("; ")
+                ),
+            ));
         }
     }
 
