@@ -171,6 +171,24 @@ pub(in crate::validator::tests) fn qm_default_level_obu_chroma(level: u32) -> Ve
     annex_b_obu(QM_HEADER, &bits.into_bytes())
 }
 
+/// As [`qm_default_level_obu_chroma`], but the QM OBU is at `(obu_tlayer_id, obu_mlayer_id) ==
+/// (tlayer, mlayer)` on xlayer 0 (QM OBU type 22), so the recorded level's `QmMLayerId` /
+/// `QmTLayerId` is `(mlayer, tlayer)`. Lets a test record a QM level at a layer the
+/// referencing frame does not depend on (the § 6.17.6.2 layer-dependency check).
+pub(in crate::validator::tests) fn qm_default_level_obu_chroma_at_layer(
+    level: u32,
+    tlayer: u8,
+    mlayer: u8,
+) -> Vec<u8> {
+    let mut bits = Bits::default();
+    bits.f(1 << level, 15); // qm_bit_map: set `level`
+    bits.bit(1); // qm_chroma_info_present_flag = 1 -> 3 planes
+    bits.bit(1); // qm_is_default_flag for `level`
+    bits.bit(1); // trailing_one_bit (QM is non-extensible)
+    bits.align();
+    annex_b_obu_with_header(&layer_obu_header(22, tlayer, mlayer, 0), &bits.into_bytes())
+}
+
 /// A `quantizer_matrix_obu()` with `qm_bit_map == 0` (the § 5.13 reset/default path)
 /// and `qm_chroma_info_present_flag == 1` (`QmNumPlanes == 3`). This makes EVERY custom
 /// level available as a default record with `QmMLayerId == -1` (the validator's
@@ -562,6 +580,85 @@ fn validator_qm_confirmed_ras_reset_preserves_cross_layer_level_via_presence_map
             .any(|d| d.rule_id == "frame-header/qm-level-unavailable"),
         "a cross-layer RAS (MLayerPresenceMap[0][1] == 0) must not reset the layer-0 level; \
          report was: {report}"
+    );
+}
+
+#[test]
+fn validator_flags_qm_mlayer_dependency_missing() {
+    // §6.17.6.2 (mirror :5413-5415): a QM OBU at embedded layer 1 defines custom level 0
+    // (QmMLayerId 1). An INTRA_ONLY frame at obu_mlayer_id 0 references level 0 via
+    // using_qmatrix. Under the default lower-triangular fill (max_mlayer_id 1),
+    // MLayerDependencyMap[0][1] == 0, so the frame does not depend on the level's defining
+    // embedded layer -> frame-header/qm-mlayer-dependency-missing.
+    let seq = FrameCoreSeq {
+        max_mlayer_id: 1,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(qm_default_level_obu_chroma_at_layer(0, 0, 1)); // level 0 defined at mlayer 1
+    data.extend(intra_only_frame_with_qm_reference(0)); // frame at layer 0 references level 0
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        report.errors().any(|d| {
+            d.rule_id == "frame-header/qm-mlayer-dependency-missing"
+                && d.spec_section.as_deref() == Some("6.17.6.2")
+        }),
+        "a QM level defined at an undepended embedded layer must fire \
+         qm-mlayer-dependency-missing; report was: {report}"
+    );
+}
+
+#[test]
+fn validator_flags_qm_tlayer_dependency_missing() {
+    // §6.17.6.2 (mirror :5417-5419): a QM OBU at temporal layer 1 defines custom level 0
+    // (QmTLayerId 1, QmMLayerId 0). An INTRA_ONLY frame at obu_tlayer_id 0 references it; the
+    // embedded-layer dependency is satisfied (MLayerDependencyMap[0][0] == 1) but the default
+    // fill (max_tlayer_id 1) leaves TLayerDependencyMap[0][0][1] == 0 -> qm-tlayer-dependency.
+    let seq = FrameCoreSeq {
+        max_tlayer_id: 1,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(qm_default_level_obu_chroma_at_layer(0, 1, 0)); // level 0 defined at tlayer 1
+    data.extend(intra_only_frame_with_qm_reference(0)); // frame at tlayer 0 references level 0
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        report.errors().any(|d| {
+            d.rule_id == "frame-header/qm-tlayer-dependency-missing"
+                && d.spec_section.as_deref() == Some("6.17.6.2")
+        }),
+        "a QM level defined at an undepended temporal layer must fire \
+         qm-tlayer-dependency-missing; report was: {report}"
+    );
+    assert!(
+        !report
+            .errors()
+            .any(|d| d.rule_id == "frame-header/qm-mlayer-dependency-missing"),
+        "the embedded-layer dependency is satisfied (reflexive), so only the tlayer rule \
+         fires; report was: {report}"
+    );
+}
+
+#[test]
+fn validator_qm_layer_dependency_satisfied_is_silent() {
+    // A QM level defined at the base layer (mlayer 0, tlayer 0) referenced by a layer-0 frame
+    // is fully depended-on (MLayerDependencyMap[0][0] == TLayerDependencyMap[0][0][0] == 1):
+    // neither §6.17.6.2 layer-dependency diagnostic fires.
+    let seq = FrameCoreSeq {
+        max_mlayer_id: 1,
+        max_tlayer_id: 1,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(qm_default_level_obu_chroma_at_layer(0, 0, 0)); // level 0 at base layer
+    data.extend(intra_only_frame_with_qm_reference(0)); // frame at base layer references it
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        !report.errors().any(|d| {
+            d.rule_id == "frame-header/qm-mlayer-dependency-missing"
+                || d.rule_id == "frame-header/qm-tlayer-dependency-missing"
+        }),
+        "a satisfied QM layer dependency must be silent; report was: {report}"
     );
 }
 

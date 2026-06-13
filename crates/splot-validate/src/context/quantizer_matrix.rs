@@ -220,11 +220,11 @@ impl QuantizerMatrixState {
 /// externally-suppressed level, until a QM OBU re-sends it or a later confirmed reset grounds
 /// it. This is the QM-availability analogue of the § 7.23 unconfirmed-effect staging gate.
 ///
-/// **Residual.** The § 6.17.6.2 layer-dependency constraints
-/// (MLayerDependencyMap[obu_mlayer_id][QmMLayerId[...]] == 1 and the TLayerDependencyMap
-/// analogue) remain a named TODO below — the QM-side check needs the defining QM OBU's layer
-/// identity joined against the §5.4.1 dependency maps in a way the availability state does
-/// not yet thread.
+/// The § 6.17.6.2 layer-dependency constraints
+/// (MLayerDependencyMap[obu_mlayer_id][QmMLayerId[level]] == 1 and the TLayerDependencyMap
+/// analogue) now land here for every referenced custom level with a recorded layer identity
+/// (QmMLayerId >= 0): frame-header/qm-mlayer-dependency-missing /
+/// frame-header/qm-tlayer-dependency-missing, mirroring the film-grain dependency checks.
 ///
 /// Returns the referenced custom levels that were linearly available in-band under
 /// external-disabled (so the linear `frame-header/qm-level-unavailable` did NOT fire) — the
@@ -250,13 +250,6 @@ pub(super) fn frame_qm_reference_checks(
     } else {
         3
     };
-    // TODO(spec: AV2-5.18.6-QUANTIZATION): the § 6.17.6.2 layer-dependency
-    // constraints (MLayerDependencyMap[obu_mlayer_id][QmMLayerId[...]] == 1 and the
-    // TLayerDependencyMap analogue) are deferred rather than fabricated: the
-    // sequence-header model now exposes the § 5.4.1 dependency maps (consumed by
-    // the § 6.10.7 / § 6.8.9 / § 7.3.8.7 agreement checks), but the QM-side check
-    // also needs the defining QM OBU's layer identity threaded through the
-    // availability state and is not implemented yet.
     let qm_num = usize::from(setup_qm.pic_qm_num_minus_1) + 1;
     // Distinct referenced custom slots: qm_uv_same_as_y / shared-UV copies and
     // repeated levels across the qmNum sets reference the same slot, which violates
@@ -334,6 +327,61 @@ pub(super) fn frame_qm_reference_checks(
                     record.num_planes
                 ),
             ));
+        }
+        // AV2 § 6.17.6.2 (mirror :5413-5419): when a referenced custom level's defining QM OBU
+        // recorded a layer identity (QmMLayerId[level] >= 0, i.e. record.mlayer_id == Some(m)),
+        // the frame's embedded/temporal layer must DEPEND on that defining layer —
+        // MLayerDependencyMap[obu_mlayer_id][QmMLayerId[level]] == 1 and
+        // TLayerDependencyMap[obu_mlayer_id][obu_tlayer_id][QmTLayerId[level]] == 1. A level
+        // reset to defaults (QmMLayerId == -1, record.mlayer_id == None) has no defining layer
+        // and is not subject to the constraint. Decidable from the recorded layer identity, the
+        // frame's obu_mlayer_id/obu_tlayer_id, and the activated header's § 5.4.1 maps — the
+        // proven pattern of frame-header/film-grain-{mlayer,tlayer}-dependency-missing.
+        if let Some(qm_mlayer) = record.mlayer_id {
+            let general = &active_sequence.general;
+            let frame_mlayer = obu.header.embedded_layer_id;
+            if !general
+                .mlayer_dependency_map
+                .depends_on(frame_mlayer, EmbeddedLayerId::from_bits(qm_mlayer))
+            {
+                report.push(frame_header_error(
+                    "frame-header/qm-mlayer-dependency-missing",
+                    "6.17.6.2",
+                    obu,
+                    format!(
+                        "setup_qm_params() at obu_mlayer_id {fm} references custom quantizer \
+                         matrix level {level} defined at embedded layer {qm_mlayer}, but the \
+                         active sequence header's MLayerDependencyMap[{fm}][{qm_mlayer}] is 0 \
+                         (§ 6.17.6.2)",
+                        fm = frame_mlayer.get(),
+                    ),
+                ));
+            }
+            // The § 6.17.6.2 TLayerDependencyMap constraint is gated on the SAME QmMLayerId >= 0
+            // condition (mirror :5417); QmTLayerId is recorded with QmMLayerId, so a Some
+            // mlayer_id implies a Some tlayer_id (a reset clears both to -1 together).
+            if let Some(qm_tlayer) = record.tlayer_id {
+                let frame_tlayer = obu.header.temporal_layer_id;
+                if !general.tlayer_dependency_map.depends_on(
+                    frame_mlayer,
+                    frame_tlayer,
+                    TemporalLayerId::from_bits(qm_tlayer),
+                ) {
+                    report.push(frame_header_error(
+                        "frame-header/qm-tlayer-dependency-missing",
+                        "6.17.6.2",
+                        obu,
+                        format!(
+                            "setup_qm_params() at obu_tlayer_id {ft} references custom quantizer \
+                             matrix level {level} defined at temporal layer {qm_tlayer}, but the \
+                             active sequence header's \
+                             TLayerDependencyMap[{fm}][{ft}][{qm_tlayer}] is 0 (§ 6.17.6.2)",
+                            ft = frame_tlayer.get(),
+                            fm = frame_mlayer.get(),
+                        ),
+                    ));
+                }
+            }
         }
         // The level is linearly available in-band: buffer it for the § 7.3.8.1 replay (only
         // under Disabled — under any Provided mode the level MAY be external, and the QM
