@@ -749,6 +749,18 @@ fn frame_header_core_view(
 /// frame header reaches [`FrameHeaderParseStatus::IntraHeaderComplete`] on the intra path
 /// (so `use_bru`/`bru_inactive` derive to 0 and the BRU arms are dead) with a parsed
 /// `tile_info()`; otherwise `None` (the BRU-undecidable honest stop).
+///
+/// A CONTINUATION tile group (`is_first_tile_group == 0`) is deliberately NOT surfaced
+/// here: its § 5.19 structure derives from the first tile group of the SAME coded frame
+/// in the SAME layer triple, and that pairing is the validator's state — the
+/// `(xlayer, mlayer, tlayer)` key plus the segmenter's `FrameBoundary` decisions
+/// (including the Ambiguous poison). A most-recent-first heuristic would mis-pair
+/// interleaved-layer streams and fabricate a false framing view, so the per-OBU
+/// inspector omits the view instead (the same scoping as [`frame_header_copy_view`],
+/// which surfaces presence only). The continuation's framing IS validated — the
+/// `tile-payload/*` diagnostics run on continuations via the validator's recorded
+/// first-header layout. A stateful inspect surface for continuations is a named
+/// residual of `AV2-5.20-TILE-GROUP-PAYLOAD`.
 fn tile_group_structure_view(
     obu: &ObuEnvelope<'_>,
     sequences: &BTreeMap<u8, SequenceHeader>,

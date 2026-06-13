@@ -526,7 +526,8 @@ The inter-path arms of every child remain partial/todo.
   `tile-payload/size-field-truncated` (the `le(TileSizeBytes)` field runs past the region;
   § 4.11.5 / § 6.2.1) and `tile-payload/tile-size-overflows-payload` (mirror :8571 would go
   negative), anchored at the offending tile's byte offset; `inspect` surfaces the per-tile
-  `tile_framing`. § 8.2 grounding: a zero-size non-bridge tile IS framing-provable
+  `tile_framing` on first tile groups (a continuation's surface needs the validator's
+  pairing state — named residual; its framing is validated). § 8.2 grounding: a zero-size non-bridge tile IS framing-provable
   (`tile-payload/zero-size-tile` — init at `8*0-15 = -15`, monotone decreasing, below
   § 8.2.4's `>= -14` exit floor); the remaining `exit_symbol()` conformance for nonzero
   tiles needs the symbol decoder (named residual).
@@ -579,8 +580,9 @@ surfaces the `tile_group_structure` view. The § 5.20.1 per-tile FRAMING SLICE a
 le(TileSizeBytes)` for each non-last, non-bridge tile, the `sz -= tileSize + TileSizeBytes`
 bookkeeping, and the last-tile/bridge arms — and the validator flags the two provable framing
 defects (`tile-payload/size-field-truncated`, `tile-payload/tile-size-overflows-payload`,
-anchored at the offending tile's byte offset); `inspect` surfaces the per-tile `tile_framing`.
-The § 8.2 decision is grounded honestly: `init_symbol(tileSize)` tolerates `tileSize == 0` and
+anchored at the offending tile's byte offset); `inspect` surfaces the per-tile `tile_framing`
+on first tile groups (a continuation's inspect surface is a named residual; its framing is
+validated via the recorded first-header layout). The § 8.2 decision is grounded honestly: `init_symbol(tileSize)` tolerates `tileSize == 0` and
 reads no further than the tile's own bytes; the zero-size case landed as
 `tile-payload/zero-size-tile` (framing-provable via the § 8.2.4 floor), while the remaining
 `exit_symbol()` conformance for nonzero tiles depends on symbol-decoder consumption
