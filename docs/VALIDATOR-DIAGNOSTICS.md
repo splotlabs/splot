@@ -138,6 +138,8 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 |---|---|---|---|
 | `decoder-model/buffer-delay-sum-changed` | error | § 6.10.5 | the same (obu_xlayer_id, ops_id, operating-point index) is redefined within one coded video sequence with no intervening OPS reset, both signalings explicitly carry decoder-model info, and the ops_decoder_buffer_delay + ops_encoder_buffer_delay sum differs (non-conforming under § 6.4.13 / § 6.10.5 sum-constancy on every candidate "video sequence" reading) |
 | `decoder-model/buffer-delay-sum-changed-across-cvs` | warning | § 6.4.13 / § 6.10.5 | an explicitly signaled buffer-delay sum changes across a coded-video-sequence or OPS-reset boundary — the activated sequence header's seq_decoder_model_info() sum across a CLK boundary (frame-confirmed activations only; emitted with spec_section § 6.4.13) or an OPS sum across a CVS/reset boundary for the same triple (emitted with spec_section § 6.10.5); advisory because the § 6.4.13 / § 6.10.5 "video sequence" scope is unspecified |
+| `decoder-model/schedule-decoder-buffer-delay-exceeds-bound` | error | § E.7.8 | a frame-confirmed activated sequence header signals decoding-schedule mode — all three § E.4.2 conditions established (decoder_model_info_present_flag == 1, seq_decoder_model_info_present_flag == 1, and ci_timing_info_present_flag == 1 in the layer's content interpretation OBU, observed at/after the layer's § 7.3.8.11 RAP epoch) — with decoder_buffer_delay > 90000 * (BufferSize / BitRate), which equals exactly 90000 for every defined level/tier (the BitrateProfileFactor and MaxBitrate cancel via the Table A.9 / Annex E.3 identities). Suppressed when ci_timing is not established (never signaled, or reset to 0 by a CLK/OLK and not re-established). Honest-stops at reserved/Maximum-parameters levels (incl. the § E.7.1 seq_level_idx == 31 exemption) where the bitrate is undefined. Extended-layer arm only; the OPS per-op arm is a named residual |
+| `decoder-model/schedule-decoder-buffer-delay-zero` | error | § E.7.8 | a frame-confirmed activated sequence header signals decoding-schedule mode (all three § E.4.2 conditions established: both decoder-model present flags set and ci_timing_info_present_flag == 1 established for the layer at/after its § 7.3.8.11 RAP epoch) with decoder_buffer_delay == 0, which § E.7.8 forbids when operating in the decoding schedule mode. Suppressed when ci_timing is not established (no CI, ci_timing_info_present_flag == 0, or reset to 0 by a CLK/OLK and not re-established). Same level/tier defined-bitrate gate and § E.7.1 exemption as the bound check above; extended-layer arm only |
 
 ### `film-grain/`
 
@@ -509,11 +511,20 @@ from the enforced registry above** because nothing emits them yet:
 - `hls-availability/` — a dedicated high-level-syntax availability namespace; today the landed
   availability checks live under `hls/` (see the registry above).
 - `obu-payload/` — strict-mode payload constraints.
-  (The `decoder-model/` namespace has landed — see the registry tables above — but is limited to
-  signaled buffer-delay sum-constancy; Annex E decoder-schedule simulation remains future. The
-  `annex-a/` namespace has also landed for the static profile/level/tier subset — see the registry
-  tables above — but the rate-based / decoder-model Annex A constraints remain future, tracked by
-  the Annex E change.)
+  (The `decoder-model/` namespace has landed — see the registry tables above. It covers signaled
+  buffer-delay sum-constancy and the § E.7.8 schedule-mode `DecoderBufferDelay` bounds
+  (extended-layer arm). The remaining Annex E decoder-schedule conformance — § E.7.1 availability /
+  presentation monotonicity, § E.7.2 buffer-delay-across-RAP, § E.7.3 overflow, § E.7.4 underflow,
+  § E.7.5 minimum decode time, § E.7.6 minimum presentation interval, § E.7.7 decode deadline, and
+  the § E.7.8 OPS per-op arm — remains future: it needs the Annex E.5.5 / E.6 resource-availability
+  buffer-pool simulation (`CodedBits[i]` DFG byte accounting, `Removal[]`, `TimeToDecode[i]`,
+  per-frame `DecoderRefCount` / `PlayerRefCount`), whose inter-frame inputs route to Unknown today,
+  so those checks cannot fire without risking false positives. The `annex-a/` namespace has also
+  landed for the static profile/level/tier subset — see the registry tables above — but the
+  rate-based Annex A.4 *dynamic* constraints (`TotalDisplayLumaSampleRate`, `NumFrameHeadersPerSec`,
+  the per-frame `LumaSampleCount` / `CompressedSize` / `FrameSymbolCount` / tile bounds) all consume
+  `Removal[]` / `FrameParsingTime` / per-second output durations from that same unmodeled
+  simulation, so they remain named residuals on `AV2-A-LEVELS-TIERS` / `AV2-E-DECODER-MODEL`.)
 
 Design sketches and phase plans for these live in the planned-diagnostics backlog of
 [`VALIDATOR-ROADMAP.md`](./VALIDATOR-ROADMAP.md).

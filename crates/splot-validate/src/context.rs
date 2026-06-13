@@ -57,7 +57,7 @@ use splot_core::types::{
 use crate::annex_a::{
     InteroperabilityPoint, MIN_FRAME_DIMENSION, config_idc_allows_profile, interoperability_point,
     is_defined_config_idc, is_reserved_level, is_reserved_profile, level_limits,
-    profile_allows_chroma,
+    profile_allows_chroma, schedule_buffer_delay_upper_bound_90khz,
 };
 use crate::celu::{CeluRole, CodedExtendedLayerTracker, FrameFacts, Leadingness};
 use crate::diagnostic::{Diagnostic, ValidationReport};
@@ -10350,6 +10350,179 @@ impl ValidatorContext {
                 .with_byte_offset(offset),
             );
         }
+
+        // Annex E.7.8 (mirror `annex-e-decoder-model.md` lines 1104-1108): "When
+        // operating in the decoding schedule mode, DecoderBufferDelay shall not be equal
+        // to 0 and shall not exceed 90000 * ( BufferSize ÷ BitRate)." This is the
+        // decoder-model schedule consumer of the activated sequence header's
+        // seq_decoder_model_info() (§ 5.4.13). Schedule mode requires all three E.4.2
+        // parameters (incl. ci_timing_info_present_flag == 1 for this extended layer), so
+        // `xlayer` is threaded through to gate on the established ci_timing record.
+        // Reserved/Maximum-parameters levels and the High-tier-below-4.0 case are
+        // honest-stops (no defined bitrate); the seq_level_idx == 31 exemption (Annex
+        // E.7.1, mirror lines 981-982) is honored because
+        // schedule_buffer_delay_upper_bound_90khz returns None for level 31.
+        self.check_schedule_mode_decoder_buffer_delay(xlayer, &general, offset, report);
+    }
+
+    /// Emits the Annex E.7.8 schedule-mode `DecoderBufferDelay` bounds for the
+    /// **extended-layer** decoder-model arm (`seq_decoder_model_info()`, § 5.4.13),
+    /// against the just-activated sequence header `general` (Annex E.2 "When the decoder
+    /// model is applied to the whole extended layer xId … DecoderBufferDelay is assigned
+    /// the value of decoder_buffer_delay", mirror lines 100-105).
+    ///
+    /// Decoding-schedule mode (Annex E.4.2, mirror lines 281-306,
+    /// `annex-e-decoder-model.md#s-annex-e-4-2`) is established for the extended-layer arm
+    /// by **all THREE** signaled parameters, not two:
+    ///   1. `decoder_model_info_present_flag == 1` (mirror line 295),
+    ///   2. `seq_decoder_model_info_present_flag == 1` (the extended-layer arm of mirror
+    ///      line 296; the `ops_…` disjunct is the operating-point arm, unmodeled here), and
+    ///   3. `ci_timing_info_present_flag == 1` in the content interpretation OBU associated
+    ///      with this extended layer (mirror lines 293-294).
+    ///
+    /// The resource-availability mode (Annex E.4.1, mirror lines 250-251) is mutually
+    /// exclusive with (1)+(2) — it requires `seq_decoder_model_info_present_flag == 0`. But
+    /// (1)+(2) alone do **not** prove schedule mode: E.4.2 also requires the per-layer
+    /// `ci_timing_info_present_flag == 1`, and E.4.2 closes (mirror lines 330-336) that if
+    /// the listed parameters "are not specified by the bitstream … it is not possible to
+    /// check conformance of the stream to the claimed level with this model." E.7.8 binds
+    /// only "when operating in the decoding schedule mode", so a stream with both
+    /// decoder-model flags but no established ci_timing is **not** in schedule mode and
+    /// firing would be a false positive — hence the third gate
+    /// ([`Self::ci_timing_established_for_xlayer`]). This is the strict, zero-false-positive
+    /// reading: when ci_timing cannot be confirmed established (never signaled, or reset to
+    /// 0 by a § 7.3.8.11 random access point and not re-established), the check suppresses.
+    ///
+    /// Both diagnostics are then decided entirely from parsed syntax (the three present
+    /// flags / records, the `decoder_buffer_delay` value, and the activated `seq_level_idx`
+    /// / `seq_tier`), so they fire only on a modeled-state-proven violation. When the
+    /// bitrate is undefined for the level/tier (reserved/Maximum-parameters level, or High
+    /// tier below 4.0) the upper-bound check honest-stops; the zero check is still
+    /// decidable because the bound it compares against (`!= 0`) needs no rate variable, but
+    /// to keep both arms on the same honest schedule-mode footing the whole check is gated
+    /// on the bitrate being defined (so the seq_level_idx == 31 exemption and the
+    /// reserved-level silence are a single, auditable gate rather than two divergent ones).
+    ///
+    /// NAMED RESIDUAL (`AV2-E-DECODER-MODEL` ordering/CI-arrival miss): this sub-check sits
+    /// after the `emitted_annex_a_value_space` dedup insert in
+    /// [`Self::check_annex_a_value_space`], so it evaluates once at the first
+    /// frame-confirmation of the activation. If the establishing content-interpretation OBU
+    /// (ci_timing_info_present_flag == 1) arrives only *after* that first confirmation,
+    /// ci_timing is not yet established at evaluation time and the check suppresses
+    /// permanently for that activation/epoch — a sound-over-complete miss. Re-architecting
+    /// the dedup to re-enter on a later CI is out of scope; suppression here is FP-safe by
+    /// construction.
+    fn check_schedule_mode_decoder_buffer_delay(
+        &self,
+        xlayer: ExtendedLayerId,
+        general: &SequenceHeaderGeneral,
+        offset: ByteOffset,
+        report: &mut ValidationReport,
+    ) {
+        // Decoding-schedule mode for the extended-layer arm: both decoder-model present
+        // flags set (E.4.2 conditions 1 and 2).
+        if !general.decoder_model_info_present_flag || !general.seq_decoder_model_info_present_flag
+        {
+            return;
+        }
+        // E.4.2 condition 3: ci_timing_info_present_flag == 1 must be established for this
+        // extended layer at/after its current § 7.3.8.11 epoch. When it cannot be confirmed
+        // established the layer is not in schedule mode and E.7.8 does not bind — suppress
+        // (zero false positives) rather than fire on an unproven mode.
+        if !self.ci_timing_established_for_xlayer(xlayer) {
+            return;
+        }
+        // The seq_decoder_model_info() body must have parsed (it is read inline when both
+        // flags are set; a parse failure would have left the header unactivatable).
+        let Some(model) = general.decoder_model_info else {
+            return;
+        };
+
+        let level_idx = general.seq_level_idx.get();
+        let high_tier = matches!(general.seq_tier, Tier::High);
+        // Honest-stop when the bitrate is undefined: reserved/Maximum-parameters level
+        // (incl. the Annex E.7.1 seq_level_idx == 31 exemption) or High tier below 4.0.
+        let Some(upper_bound) = schedule_buffer_delay_upper_bound_90khz(level_idx, high_tier)
+        else {
+            return;
+        };
+
+        let delay = u64::from(model.decoder_buffer_delay);
+        if delay == 0 {
+            report.push(
+                Diagnostic::error(
+                    "decoder-model/schedule-decoder-buffer-delay-zero",
+                    "seq_decoder_model_info() signals decoding-schedule mode \
+                     (decoder_model_info_present_flag and seq_decoder_model_info_present_flag both \
+                     set) with decoder_buffer_delay == 0; Annex E.7.8 requires DecoderBufferDelay \
+                     not to be equal to 0 when operating in the decoding schedule mode"
+                        .to_string(),
+                )
+                .with_spec_section("E.7.8")
+                .with_byte_offset(offset),
+            );
+        } else if delay > upper_bound {
+            report.push(
+                Diagnostic::error(
+                    "decoder-model/schedule-decoder-buffer-delay-exceeds-bound",
+                    format!(
+                        "seq_decoder_model_info() signals decoding-schedule mode with \
+                         decoder_buffer_delay {delay} exceeding the Annex E.7.8 bound \
+                         90000 * (BufferSize / BitRate) = {upper_bound} (the BitrateProfileFactor \
+                         and MaxBitrate cancel, so BufferSize / BitRate = 1 second for every \
+                         defined level/tier)"
+                    ),
+                )
+                .with_spec_section("E.7.8")
+                .with_byte_offset(offset),
+            );
+        }
+    }
+
+    /// Whether `ci_timing_info_present_flag == 1` is established for extended layer
+    /// `xlayer` — the Annex E.4.2 third schedule-mode condition (mirror lines 293-294,
+    /// `annex-e-decoder-model.md#s-annex-e-4-2`: "ci_timing_info_present_flag equal to 1 in
+    /// the content interpretation OBU associated with this extended layer").
+    ///
+    /// `ci_timing_info_present_flag == 1` corresponds to a parsed content-interpretation
+    /// record whose `content.timing_info.is_some()` (the `TimingInfo` is `Some` exactly
+    /// when the flag is 1; see `parse_content_interpretation` in `splot-core`). A
+    /// § 7.3.8.11 random access point (CLK / OLK) reinitializes
+    /// `ci_timing_info_present_flag` to 0 for the extended layer (mirror
+    /// `07-decoding-process.md#s-7-3-8-11` line 916: "ci_timing_info_present_flag = 0"
+    /// among the reset defaults), and [`Self::observe_ci_rap`] does **not** remove the
+    /// stored record — the reset is tracked semantically via [`Self::ci_rap_epoch`]. So
+    /// presence of a `timing_info`-bearing record is necessary but not sufficient: the
+    /// record must also have been observed at/after the layer's current epoch.
+    ///
+    /// This mirrors the exact predicate the § 6.16.7 `metadata/timecode-n-frames-exceeds-rate`
+    /// path uses to decide a CI "establishes ci_timing_info_present_flag 1" for a layer
+    /// (the n_frames loop in [`Self::observe_timecode`]: iterate
+    /// [`Self::content_interpretations`], skip records with
+    /// `record.tu_index < self.ci_rap_epoch(ci_xlayer)`, then require
+    /// `record.content.timing_info.is_some()`). Reusing it keeps the two § E.4.2 / § 6.16.7
+    /// "ci_timing established post-RAP" determinations consistent.
+    ///
+    /// Maximally conservative for firing (zero false positives): the layer counts as in
+    /// schedule mode only when at least one content-interpretation record keyed to `xlayer`
+    /// has `timing_info.is_some()` **and** `tu_index >= ci_rap_epoch(xlayer)` (the RAP's
+    /// reinit-to-0 has been superseded by a re-establishing CI at/after the epoch). The
+    /// `>=` boundary is the FP-safe same-TU choice: a CI observed in the very temporal unit
+    /// that started the epoch is one in which the CLK/OLK already re-establishes the
+    /// parameters (§ 7.3.8.11 step 2: "If a content interpretation OBU is present in the
+    /// same temporal unit … the content interpretation parameters are set to the values
+    /// specified in that OBU"), so `tu_index == ci_rap_epoch` is treated as established —
+    /// the same `< epoch` skip / `>= epoch` keep boundary the n_frames loop applies, so the
+    /// two checks never diverge on the same-TU edge.
+    fn ci_timing_established_for_xlayer(&self, xlayer: ExtendedLayerId) -> bool {
+        let epoch = self.ci_rap_epoch(xlayer);
+        self.content_interpretations
+            .iter()
+            .any(|((ci_xlayer, _ci_mlayer), record)| {
+                *ci_xlayer == xlayer
+                    && record.tu_index >= epoch
+                    && record.content.timing_info.is_some()
+            })
     }
 
     /// Emits the § 6.6 sub-stream PTL-ceiling errors
@@ -13673,7 +13846,15 @@ fn is_global_hls_prefix_obu(obu: &ObuEnvelope<'_>) -> bool {
     //
     // TODO(spec: AV2-7.3-OBU-ORDERING): a hard `brt/global-ordering-position`
     // diagnostic for a global BRT would need the § 7.3.8 decoder-model / random-access
-    // state that is not yet modeled.
+    // *schedule* state that is still not modeled. The Annex E work landed only the
+    // § E.7.8 schedule-mode buffer-delay bound (a pure-arithmetic consumer of the
+    // activated seq_decoder_model_info()); it did NOT model the § 7.3.8 per-RAP
+    // resource-availability buffer-pool replay (Annex E.5.5 / E.6: DecoderRefCount /
+    // PlayerRefCount / Removal[] across random access points) that would fix a global
+    // BRT's position relative to the decoder-model removal schedule. Until that replay is
+    // modeled, a global BRT has no § 7.3.7 prefix position to enforce here, so it stays
+    // unclassified rather than flagged (sound-over-complete; the residual is recorded on
+    // AV2-7.3-OBU-ORDERING / AV2-E-DECODER-MODEL).
     obu.header.extended_layer_id.is_global()
         && matches!(
             obu.header.obu_type,
@@ -13732,17 +13913,35 @@ struct AnnexAValueSpaceFingerprint {
     bit_depth_idc: u8,
     tier: u8,
     level_idx: u8,
+    /// The § E.7.8 schedule-mode `DecoderBufferDelay` operand
+    /// ([`ValidatorContext::check_schedule_mode_decoder_buffer_delay`]):
+    /// `Some(decoder_buffer_delay)` only when the extended-layer arm is in the
+    /// decoding-schedule mode (both decoder-model present flags set and the
+    /// `seq_decoder_model_info()` body parsed), else `None`. Captured so a § 7.3.6
+    /// same-`seq_header_id` redefinition that changes only the buffer delay — or toggles
+    /// schedule mode on/off — re-runs the E.7.8 check rather than being suppressed by the
+    /// prior activation's key (the level/tier bound operands are the `tier` / `level_idx`
+    /// fields above).
+    schedule_mode_buffer_delay: Option<u32>,
 }
 
 /// Projects the Annex A value-space dedup fingerprint out of an activated sequence
 /// header's general fields (see [`AnnexAValueSpaceFingerprint`]).
 fn annex_a_value_space_fingerprint(general: &SequenceHeaderGeneral) -> AnnexAValueSpaceFingerprint {
+    // The schedule-mode buffer-delay operand the § E.7.8 check reads: present only when
+    // both decoder-model flags are set and the seq_decoder_model_info() body parsed (the
+    // exact gate in check_schedule_mode_decoder_buffer_delay).
+    let schedule_mode_buffer_delay = (general.decoder_model_info_present_flag
+        && general.seq_decoder_model_info_present_flag)
+        .then(|| general.decoder_model_info.map(|m| m.decoder_buffer_delay))
+        .flatten();
     AnnexAValueSpaceFingerprint {
         profile_idc: general.seq_profile_idc.get(),
         chroma_format_idc: general.chroma_format_idc.get(),
         bit_depth_idc: general.bit_depth_idc.get(),
         tier: u8::from(matches!(general.seq_tier, Tier::High)),
         level_idx: general.seq_level_idx.get(),
+        schedule_mode_buffer_delay,
     }
 }
 

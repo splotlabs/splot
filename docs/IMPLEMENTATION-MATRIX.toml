@@ -937,7 +937,7 @@ openspec_change = "sequence-hls-validator-coverage"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. §6.4.13 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-13, lines 1290-1310) states one locally-citable requirement of bitstream conformance — for a video sequence with random access points the sum decoder_buffer_delay + encoder_buffer_delay shall be kept constant (lines 1301-1302). That seq-header tier landed under buffer-delay-sum-constancy as the advisory decoder-model/buffer-delay-sum-changed-across-cvs and is tracked on AV2-6.4-SEQUENCE-HEADER-SEMANTICS (its proof.diagnostics carry the rule id), not on this syntax row. Residual: the remaining §6.4.13 elements (decoder_buffer_delay / encoder_buffer_delay smoothing-buffer arrival/removal timing and low_delay_mode_flag, lines 1293-1306) are Annex E decoder-model schedule semantics with no locally-decidable bitstream constraint of their own; decoder-model-blocked, owned by AV2-E-DECODER-MODEL. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. §6.4.13 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-13, lines 1290-1310) states one locally-citable requirement of bitstream conformance — for a video sequence with random access points the sum decoder_buffer_delay + encoder_buffer_delay shall be kept constant (lines 1301-1302). That seq-header tier landed under buffer-delay-sum-constancy as the advisory decoder-model/buffer-delay-sum-changed-across-cvs and is tracked on AV2-6.4-SEQUENCE-HEADER-SEMANTICS (its proof.diagnostics carry the rule id), not on this syntax row. The decoder_buffer_delay element now also has a landed Annex E consumer: the § E.7.8 decoding-schedule-mode bound (decoder-model/schedule-decoder-buffer-delay-zero / -exceeds-bound), tracked on AV2-E-DECODER-MODEL. Residual: the remaining §6.4.13 schedule semantics (encoder_buffer_delay smoothing-buffer arrival timing and low_delay_mode_flag's effect on E.5.4/E.7.4 removal/underflow, lines 1293-1306) still need the unmodeled Annex E.5/E.6 frame-timing simulation; decoder-model-blocked, owned by AV2-E-DECODER-MODEL. Do not mark the umbrella done until this child is proven."
 
 [feature.status]
 mapped = "done"
@@ -3106,11 +3106,11 @@ spec_sections = ["7.3"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
 module = "crates/splot-validate/src/context.rs"
-openspec_change = "validator-coverage-roadmap"
+openspec_change = "annex-e-decoder-model-schedule"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Umbrella row. Initial temporal-unit header ordering is implemented in ValidatorContext; frame-unit, metadata suffix, random-access, and long-term-reference ordering remain future work."
+notes = "Umbrella row. Initial temporal-unit header ordering is implemented in ValidatorContext; frame-unit, metadata suffix, random-access, and long-term-reference ordering remain future work. brt/global-ordering-position residual (re-grounded by the Annex E change): a hard ordering diagnostic for a GLOBAL OBU_BUFFER_REMOVAL_TIMING is still not implementable. § 7.3.7 does not list BRT as a global temporal-unit prefix OBU, and a global BRT's position would need the § 7.3.8 per-RAP decoder-model removal *schedule* (Annex E.5.5/E.6 resource-availability buffer-pool replay over DecoderRefCount/PlayerRefCount/Removal[]) to fix. The Annex E change landed only the § E.7.8 schedule-mode buffer-delay bound (pure arithmetic over parsed seq_decoder_model_info()), which does NOT model that replay, so the global BRT stays unclassified rather than flagged (sound-over-complete; see the TODO(spec: AV2-7.3-OBU-ORDERING) in is_global_hls_prefix_obu). The local BRT § 7.3.3/§ 7.3.4 placement is already enforced via the frame-unit segmenter."
 
 [feature.status]
 mapped = "done"
@@ -3542,11 +3542,11 @@ spec_sections = ["Annex A"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
 module = "crates/splot-validate/src/annex_a.rs"
-openspec_change = "annex-a-profile-level-skeleton"
+openspec_change = "annex-e-decoder-model-schedule"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Landed (static subset): the Annex A.4 level/tier value-space checks (annex-a/level-reserved on the activated seq_level_idx and on observed ops_level_idx for reserved 22-30; annex-a/high-tier-below-4-0 warning, sourced from the Table A.9 NOTE and unreachable in conformant syntax since seq_tier is only signaled for level_idx > 3) plus the Annex A.4 static level-limit checks on the parsed intra frame path (annex-a/frame-size-exceeds-level for MaxPicSize/MaxHSize/MaxVSize, annex-a/frame-size-below-minimum for the >= 16 rule, annex-a/tile-count-exceeds-level for MaxTiles/MaxTileCols), all skipped at seq_level_idx 31 and for reserved levels. The Table A.7/A.8/A.9 columns (LevelIdx 0-21 -> MaxPicSize, MaxHSize/MaxVSize, MaxTiles, MaxTileCols) are transcribed verbatim from the mirror in crates/splot-validate/src/annex_a.rs with per-row citations; rate columns are NOT transcribed. Remains (partial): the rate-based level constraints (MaxDisplayRate/MaxDecodeRate/MaxHeaderRate, CompressedSize, FrameSymbolCount, MaxLevelRefFrames, buffer model — owned by the Annex E change), the per-tile TileWidth/TileHeight scaling-factor constraints (TODO(spec: AV2-A-LEVELS-TIERS) in check_active_sequence_limits), the MultiStreamDecoderMode == 1 substream level scaling and the Table A.4 layer-budget bound (the IOP 0/1 combination flag must be 0; a TODO(spec: AV2-A-LEVELS-TIERS) in evaluate_annex_a_iop_window — the Table A.4 IOP-presence checks themselves landed on AV2-A-PROFILES under msdo-global-lcr-agreement), the § 6.10.4 per-frame conformance against each OPS-advertised ops_level_idx (the static level limits run only against the activated seq_level_idx; running them against operating-point levels needs operating-point-to-frame mapping the validator does not model yet, so the planned annex-a/frame-exceeds-ops-level diagnostic is backlogged — see the Planned diagnostics backlog in docs/VALIDATOR-ROADMAP.md and the TODO(spec: AV2-A-LEVELS-TIERS) in check_ops_level_tier_value_space), still-picture-gated constraints, and no AVM differential oracle has been run (avm_diff pending)."
+notes = "Landed (static subset): the Annex A.4 level/tier value-space checks (annex-a/level-reserved on the activated seq_level_idx and on observed ops_level_idx for reserved 22-30; annex-a/high-tier-below-4-0 warning, sourced from the Table A.9 NOTE and unreachable in conformant syntax since seq_tier is only signaled for level_idx > 3) plus the Annex A.4 static level-limit checks on the parsed intra frame path (annex-a/frame-size-exceeds-level for MaxPicSize/MaxHSize/MaxVSize, annex-a/frame-size-below-minimum for the >= 16 rule, annex-a/tile-count-exceeds-level for MaxTiles/MaxTileCols), all skipped at seq_level_idx 31 and for reserved levels. The Table A.7/A.8/A.9 columns (LevelIdx 0-21 -> MaxPicSize, MaxHSize/MaxVSize, MaxTiles, MaxTileCols) are transcribed verbatim from the mirror in crates/splot-validate/src/annex_a.rs with per-row citations. The Table A.9 bitrate columns (MainMbps present for all levels 0-21, HighMbps present only for level 4.0+ / LevelIdx >= 4) are now modeled as a definedness predicate (annex_a::bitrate_is_defined, mirror 390-432 + NOTE 436-437) backing the § E.7.8 schedule-mode buffer-delay bound on AV2-E-DECODER-MODEL; the literal Mbps cell values are not needed because the § E.7.8 bound cancels to a constant (see that row). The other rate columns (MaxDisplayRate/MaxDecodeRate/MaxHeaderRate, MainCR/HighCR) are still NOT transcribed. NAMED RESIDUAL (Annex A.4 DYNAMIC / rate-based constraints, mirror annex-a:634-647): TotalDisplayLumaSampleRate <= MaxDisplayRate, NumFrameHeadersPerSec <= MaxNumFrameHeadersPerSec, the per-frame LumaSampleCount <= FrameParsingTime*MaxDecodeRate, CompressedSize, FrameSymbolCount, NumTiles, and MaxTileSizeInLumaSamples*NumFrameHeadersPerSec bounds ALL consume Removal[] (annex-a:554-563: FrameParsingTime = (Removal[i+1]-Removal[i])/DecodeCount) or per-second output durations, which come from the Annex E.5.5/E.6 resource-availability buffer-pool simulation whose inter-frame inputs route to Unknown today — not soundly decidable without false-positive risk, so deferred (FrameSymbolCount additionally needs symbol decoding, annex-a:573-575, which the validator never does). Also remains: the per-tile TileWidth/TileHeight scaling-factor constraints (TODO(spec: AV2-A-LEVELS-TIERS) in check_active_sequence_limits), the MultiStreamDecoderMode == 1 substream level scaling and the Table A.4 layer-budget bound (the IOP 0/1 combination flag must be 0; a TODO(spec: AV2-A-LEVELS-TIERS) in evaluate_annex_a_iop_window — the Table A.4 IOP-presence checks themselves landed on AV2-A-PROFILES under msdo-global-lcr-agreement), the § 6.10.4 per-frame conformance against each OPS-advertised ops_level_idx (the static level limits run only against the activated seq_level_idx; running them against operating-point levels needs operating-point-to-frame mapping the validator does not model yet, so the planned annex-a/frame-exceeds-ops-level diagnostic is backlogged — see the Planned diagnostics backlog in docs/VALIDATOR-ROADMAP.md and the TODO(spec: AV2-A-LEVELS-TIERS) in check_ops_level_tier_value_space), still-picture-gated constraints, and no AVM differential oracle has been run (avm_diff pending)."
 
 [feature.status]
 mapped = "done"
@@ -3561,7 +3561,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-validate/src/annex_a.rs::tests", "crates/splot-validate/src/validator.rs::tests"]
+tests = ["crates/splot-validate/src/annex_a.rs::tests", "crates/splot-validate/src/validator.rs::tests", "splot_validate::annex_a::tests::bitrate_defined_matches_table_a9_mbps_columns", "splot_validate::annex_a::tests::schedule_buffer_delay_bound_is_90000_when_rate_defined"]
 commands = ["cargo test -p splot-validate annex_a"]
 fixtures = []
 diagnostics = ["annex-a/level-reserved", "annex-a/high-tier-below-4-0", "annex-a/frame-size-exceeds-level", "annex-a/frame-size-below-minimum", "annex-a/tile-count-exceeds-level"]
@@ -3574,30 +3574,53 @@ kind = "bitstream-semantics"
 spec_sections = ["Annex E"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-validate"
-module = "crates/splot-validate/src/checks/mod.rs"
-openspec_change = "validator-coverage-roadmap"
+module = "crates/splot-validate/src/context.rs"
+openspec_change = "annex-e-decoder-model-schedule"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Decoder-model checks depend on timing, buffer-removal, and stream-level state."
+notes = "Partial. The § E.7.8 decoding-schedule-mode DecoderBufferDelay bounds (extended-layer arm) landed: when an activated sequence header is in schedule mode, decoder_buffer_delay must be != 0 and <= 90000*(BufferSize/BitRate). Decoding-schedule mode is gated on ALL THREE § E.4.2 conditions (mirror annex-e-decoder-model.md:293-296), not two: decoder_model_info_present_flag == 1, seq_decoder_model_info_present_flag == 1, AND ci_timing_info_present_flag == 1 in the content interpretation OBU associated with the extended layer. The third condition is decided by ci_timing_established_for_xlayer (context.rs), which reuses the EXACT predicate the § 6.16.7 n_frames check applies: a content_interpretations record keyed to the xlayer with content.timing_info.is_some() AND tu_index >= ci_rap_epoch(xlayer) (observed at/after the layer's § 7.3.8.11 random-access-point epoch; a CLK/OLK resets ci_timing_info_present_flag to 0, mirror 07-decoding-process.md:916). Absent the third condition the layer is NOT in schedule mode — E.4.2 closes (mirror 330-336) that conformance cannot be checked — so the check SUPPRESSES (zero false positives: a stream with both decoder-model flags but no established ci_timing no longer false-fires). The bound collapses to exactly 90000 for every defined level/tier by the Table A.9 / Annex E.3 identities (BufferSize/BitRate = 1 second; BitrateProfileFactor and MaxBitrate cancel, annex-a:671-672 + annex-e:173-177), so the check needs no per-DFG byte accounting — purely the parsed delay + the three schedule-mode conditions + activated seq_level_idx/seq_tier. The § E.7.1 seq_level_idx==31 exemption (annex-e:981-982) and the reserved/High-tier-below-4.0 honest-stops fall out of the defined-bitrate gate (annex_a::bitrate_is_defined). NAMED RESIDUAL (ordering / CI-arrival miss): the § E.7.8 sub-check runs once at first frame-confirmation, after the emitted_annex_a_value_space dedup insert (check_annex_a_value_space), so it evaluates ci_timing established-ness only at that moment. If the establishing CI (ci_timing_info_present_flag == 1) arrives only AFTER that first confirmation, ci_timing is not yet established and the check suppresses permanently for that activation/epoch — a sound-over-complete miss (never a false positive). RESIDUALS (decoder-model-blocked, named honestly, no false-positive-safe path today): (1) the § E.7.8 OPS per-op arm needs the cross-OBU schedule-mode determination tying the OPS op to the activated seq header's timing/decoder-model flags + ci_timing_info_present_flag. (2) The whole § E.5 frame-timing simulation and the rest of § E.7 (E.7.1 availability ScheduledRemoval>=LastBitArrival + presentation monotonicity + signaled-BRT floor, E.7.2 buffer-delay-across-RAP, E.7.3 overflow, E.7.4 underflow, E.7.5 min decode time, E.7.6 min presentation interval, E.7.7 decode deadline) all need CodedBits[i] (DFG byte accounting), Removal[] (incl. the E.5.5/E.6 resource-availability buffer-pool replay over DecoderRefCount/PlayerRefCount/refresh_frame_flags), and/or TimeToDecode[i] (E.5.6, needs MaxDecodeRate + frame dims + the allow_global_intrabc&&InloopFilteringEnabled doubling). Those inter-frame inputs route to Unknown on the current parse paths, so firing them would risk false positives. (3) frame_presentation_time RAP-relative monotonicity (E.7.1) needs per-output-frame ordering + RAP attribution of temporal_point_info metadata (annex-e:949-952). See VALIDATOR-ROADMAP.md and docs/VALIDATOR-DIAGNOSTICS.md decoder-model footer for the full residual list."
 
 [feature.status]
 mapped = "done"
-types = "todo"
+types = "not-applicable"
 parse = "not-applicable"
-validate = "todo"
+validate = "partial"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
-avm_diff = "pending"
+decode_check = "partial"
+tests = "partial"
+avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = [
+  "splot_validate::validator::tests::schedule_decoder_buffer_delay_zero_is_flagged",
+  "splot_validate::validator::tests::schedule_decoder_buffer_delay_above_bound_is_flagged",
+  "splot_validate::validator::tests::schedule_decoder_buffer_delay_at_bound_is_silent",
+  "splot_validate::validator::tests::schedule_decoder_buffer_delay_in_range_is_silent",
+  "splot_validate::validator::tests::schedule_decoder_buffer_delay_max_parameters_level_is_exempt",
+  "splot_validate::validator::tests::schedule_decoder_buffer_delay_high_tier_defined_level_binds",
+  "splot_validate::validator::tests::schedule_decoder_buffer_delay_reserved_level_honest_stops",
+  "splot_validate::validator::tests::schedule_decoder_buffer_delay_without_decoder_model_info_is_silent",
+  "splot_validate::validator::tests::schedule_decoder_buffer_delay_unconfirmed_activation_is_silent",
+  "splot_validate::validator::tests::schedule_decoder_buffer_delay_truncated_header_is_silent",
+  "splot_validate::validator::tests::schedule_decoder_buffer_delay_without_ci_timing_is_silent",
+  "splot_validate::validator::tests::schedule_decoder_buffer_delay_ci_with_timing_flag_zero_is_silent",
+  "splot_validate::validator::tests::schedule_decoder_buffer_delay_after_rap_reset_is_silent",
+  "splot_validate::annex_a::tests::bitrate_defined_matches_table_a9_mbps_columns",
+  "splot_validate::annex_a::tests::schedule_buffer_delay_bound_is_90000_when_rate_defined",
+]
+commands = ["env RUSTUP_TOOLCHAIN=1.96.0-aarch64-apple-darwin cargo test -p splot-validate --locked"]
 fixtures = []
-diagnostics = []
+diagnostics = [
+  "decoder-model/schedule-decoder-buffer-delay-zero",
+  "decoder-model/schedule-decoder-buffer-delay-exceeds-bound",
+]
+# AVM differential: not-applicable. AVM parses the decoder-model syntax sites but never
+# enforces or consumes the signaled buffer-delay values for conformance (its only consumer
+# hardcodes 70000/20000), so there is no AVM oracle for § E.7.8 — proof is hand-crafted
+# unit vectors only (consistent with the rest of the decoder-model/ namespace).
 
 # ---------------------------------------------------------------------------
 # Encoder roadmap (strategy is not always a direct spec section)

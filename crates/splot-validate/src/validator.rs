@@ -8344,6 +8344,451 @@ mod tests {
         annex_b_obu_with_header(&layer_obu_header(4, 0, 0, xlayer), &bits.into_bytes())
     }
 
+    /// An activatable sequence header (`seq_header_id`, `max_tlayer_id == 1`,
+    /// `max_mlayer_id == 1`) carrying explicit `seq_decoder_model_info()` (§ 5.4.13) in
+    /// **decoding-schedule mode** (`decoder_model_info_present_flag == 1` and
+    /// `seq_decoder_model_info_present_flag == 1`), with a tunable `seq_level_idx`,
+    /// `seq_tier` (High when `high_tier`), and `decoder_buffer_delay`. Used by the
+    /// Annex E.7.8 schedule-mode buffer-delay tests.
+    fn schedule_mode_seq_header_payload(
+        seq_header_id: u32,
+        level_idx: u32,
+        high_tier: bool,
+        decoder_buffer_delay: u32,
+    ) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.uvlc(seq_header_id); // seq_header_id
+        bits.f(0, 5); // seq_profile_idc (0 -> BitrateProfileFactor defined; not Configurable)
+        bits.bit(0); // single_picture_header_flag
+        bits.f(level_idx, 5); // seq_level_idx
+        // seq_tier is read only when seq_level_idx > 3 && !single_picture_header_flag.
+        if level_idx > 3 {
+            bits.bit(u8::from(high_tier)); // seq_tier
+        }
+        bits.uvlc(0); // chroma_format_idc
+        bits.uvlc(0); // bit_depth_idc
+        bits.f(0, 3); // seq_lcr_id
+        bits.bit(0); // still_picture
+        bits.f(1, 2); // max_tlayer_id
+        bits.f(1, 3); // max_mlayer_id
+        bits.f(1, 1); // seq_max_mlayer_cnt_minus_1 -> SeqMaxMlayerCnt = 2
+        bits.bit(1); // monotonic_output_order_flag
+        bits.f(3, 4); // frame_width_bits_minus_1
+        bits.f(3, 4); // frame_height_bits_minus_1
+        bits.f(15, 4); // max_frame_width_minus_1
+        bits.f(7, 4); // max_frame_height_minus_1
+        bits.bit(0); // seq_cropping_window_present_flag
+        bits.bit(0); // seq_initial_display_delay_present_flag
+        bits.bit(1); // decoder_model_info_present_flag
+        bits.f(1, 32); // num_units_in_decoding_tick
+        bits.bit(1); // seq_decoder_model_info_present_flag
+        // seq_decoder_model_info() (§ 5.4.13)
+        bits.uvlc(decoder_buffer_delay); // decoder_buffer_delay
+        bits.uvlc(0); // encoder_buffer_delay
+        bits.bit(0); // low_delay_mode_flag
+        bits.bit(0); // mlayer_dependency_present_flag (max_mlayer_id == 1)
+        bits.bit(0); // tlayer_dependency_present_flag (max_tlayer_id == 1)
+        append_non_single_child_configs(&mut bits);
+        bits.into_bytes()
+    }
+
+    /// A complete bitstream (TD + schedule-mode sequence header + a
+    /// content-interpretation OBU establishing `ci_timing_info_present_flag == 1` for
+    /// xlayer 0 + a CLK that frame-confirms the activation) for the Annex E.7.8 tests.
+    ///
+    /// Annex E.4.2 (mirror lines 293-296) requires all THREE schedule-mode parameters,
+    /// including `ci_timing_info_present_flag == 1` in the content interpretation OBU
+    /// associated with the extended layer. The CI OBU is placed BEFORE the CLK so it is
+    /// recorded into `content_interpretations` first; the CLK's `observe_ci_rap`
+    /// (§ 7.3.8.11) then advances the epoch to this same temporal unit, and the CI's
+    /// `tu_index == ci_rap_epoch` satisfies the `>= epoch` "established at/after the RAP"
+    /// gate (`ci_timing_established_for_xlayer`). Without this CI the third E.4.2 condition
+    /// is unmet and the E.7.8 check suppresses (see
+    /// `schedule_mode_stream_without_ci_timing`).
+    fn schedule_mode_stream(level_idx: u32, high_tier: bool, decoder_buffer_delay: u32) -> Vec<u8> {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(
+            0x04,
+            &schedule_mode_seq_header_payload(0, level_idx, high_tier, decoder_buffer_delay),
+        ));
+        // Establish ci_timing_info_present_flag == 1 for xlayer 0 (E.4.2 condition 3),
+        // before the CLK so the record exists when the activation is confirmed.
+        data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING)));
+        data.extend(clk_frame_for_xlayer(0, 0)); // frame-confirm the activation
+        data
+    }
+
+    /// The same schedule-mode stream as [`schedule_mode_stream`] but with the
+    /// `ci_timing`-establishing content-interpretation OBU controlled by `with_ci_timing`:
+    /// when `false`, NO content interpretation OBU is emitted, so the Annex E.4.2
+    /// `ci_timing_info_present_flag == 1` condition is unmet and the layer is not in
+    /// decoding-schedule mode. Used by the false-positive-closing tests.
+    fn schedule_mode_stream_without_ci_timing(
+        level_idx: u32,
+        high_tier: bool,
+        decoder_buffer_delay: u32,
+        with_ci_timing: bool,
+    ) -> Vec<u8> {
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(
+            0x04,
+            &schedule_mode_seq_header_payload(0, level_idx, high_tier, decoder_buffer_delay),
+        ));
+        if with_ci_timing {
+            // A CI with ci_timing_info_present_flag == 1 establishes schedule mode.
+            data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING)));
+        } else {
+            // A CI with ci_timing_info_present_flag == 0 (None) does NOT establish it;
+            // the layer stays out of schedule mode.
+            data.extend(content_interpretation_obu(0, 0, None));
+        }
+        data.extend(clk_frame_for_xlayer(0, 0)); // frame-confirm the activation
+        data
+    }
+
+    fn schedule_delay_error_count(report: &ValidationReport, rule: &str) -> usize {
+        report.errors().filter(|d| d.rule_id == rule).count()
+    }
+
+    #[test]
+    fn schedule_decoder_buffer_delay_zero_is_flagged() {
+        // Annex E.7.8: schedule mode with decoder_buffer_delay == 0 is non-conformant.
+        // schedule_mode_stream now establishes the third E.4.2 condition
+        // (ci_timing_info_present_flag == 1) via a content-interpretation OBU, so the
+        // layer is provably in decoding-schedule mode and the zero check binds.
+        let report = Validator::new(false).validate_bytes(&schedule_mode_stream(0, false, 0));
+        assert_eq!(
+            schedule_delay_error_count(&report, "decoder-model/schedule-decoder-buffer-delay-zero"),
+            1,
+            "schedule-mode decoder_buffer_delay == 0 must fire E.7.8 zero check: {report}"
+        );
+    }
+
+    #[test]
+    fn schedule_decoder_buffer_delay_above_bound_is_flagged() {
+        // Annex E.7.8: schedule mode with decoder_buffer_delay > 90000 is non-conformant.
+        let report = Validator::new(false).validate_bytes(&schedule_mode_stream(0, false, 90_001));
+        assert_eq!(
+            schedule_delay_error_count(
+                &report,
+                "decoder-model/schedule-decoder-buffer-delay-exceeds-bound"
+            ),
+            1,
+            "schedule-mode decoder_buffer_delay > 90000 must fire E.7.8 bound check: {report}"
+        );
+    }
+
+    #[test]
+    fn schedule_decoder_buffer_delay_at_bound_is_silent() {
+        // decoder_buffer_delay == 90000 is exactly at the bound (<=), so conformant.
+        // Anti-vacuity: the same fixture with a different delay DOES fire (proven by the
+        // two tests above), so this silence is meaningful, not a missed code path.
+        let report = Validator::new(false).validate_bytes(&schedule_mode_stream(0, false, 90_000));
+        assert_eq!(
+            schedule_delay_error_count(&report, "decoder-model/schedule-decoder-buffer-delay-zero"),
+            0,
+            "delay == 90000 is non-zero: {report}"
+        );
+        assert_eq!(
+            schedule_delay_error_count(
+                &report,
+                "decoder-model/schedule-decoder-buffer-delay-exceeds-bound"
+            ),
+            0,
+            "delay == 90000 is at the bound (<=), not over it: {report}"
+        );
+    }
+
+    #[test]
+    fn schedule_decoder_buffer_delay_in_range_is_silent() {
+        // A mid-range conformant value (0 < delay <= 90000) fires neither check.
+        let report = Validator::new(false).validate_bytes(&schedule_mode_stream(0, false, 45_000));
+        assert_eq!(
+            schedule_delay_error_count(&report, "decoder-model/schedule-decoder-buffer-delay-zero"),
+            0,
+            "{report}"
+        );
+        assert_eq!(
+            schedule_delay_error_count(
+                &report,
+                "decoder-model/schedule-decoder-buffer-delay-exceeds-bound"
+            ),
+            0,
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn schedule_decoder_buffer_delay_max_parameters_level_is_exempt() {
+        // Annex E.7.1 (mirror lines 981-982): conformance requirements based on a decoder
+        // model are not applicable to a bitstream with seq_level_idx == 31. A delay of 0
+        // (which would otherwise fire the zero check at a defined level) is silent here.
+        // Anti-vacuity: the same delay==0 at level 0 fires (proven above), so the level-31
+        // exemption is the reason for silence, not an unreached path.
+        let report = Validator::new(false).validate_bytes(&schedule_mode_stream(31, false, 0));
+        assert_eq!(
+            schedule_delay_error_count(&report, "decoder-model/schedule-decoder-buffer-delay-zero"),
+            0,
+            "seq_level_idx == 31 exempts the decoder-model checks (E.7.1): {report}"
+        );
+        assert_eq!(
+            schedule_delay_error_count(
+                &report,
+                "decoder-model/schedule-decoder-buffer-delay-exceeds-bound"
+            ),
+            0,
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn schedule_decoder_buffer_delay_high_tier_defined_level_binds() {
+        // A defined High-tier level (4.1, LevelIdx 5) has a HighMbps cell (Table A.9), so
+        // the bitrate is defined and the E.7.8 bound (90000) binds. A delay of 200000 >
+        // 90000 fires. This exercises the High-tier path of the bound derivation.
+        //
+        // NB: the High-tier-*below*-4.0 honest-stop is unreachable through the
+        // sequence-header arm — seq_tier is only signaled for seq_level_idx > 3 (level
+        // 4.0+), so a parseable seq header cannot carry High tier below 4.0. That
+        // honest-stop is an OPS-arm concern, a named residual (the OPS PTL carries
+        // ops_tier_flag unconditionally).
+        let report = Validator::new(false).validate_bytes(&schedule_mode_stream(5, true, 200_000));
+        assert_eq!(
+            schedule_delay_error_count(
+                &report,
+                "decoder-model/schedule-decoder-buffer-delay-exceeds-bound"
+            ),
+            1,
+            "level 4.1 High tier has a defined bitrate, so the E.7.8 bound binds: {report}"
+        );
+    }
+
+    #[test]
+    fn schedule_decoder_buffer_delay_reserved_level_honest_stops() {
+        // A reserved seq_level_idx (22..=30) has no Table A.9 row, so the bitrate is
+        // undefined and the E.7.8 bound cannot be derived: honest-stop (no decoder-model
+        // judgment). The zero delay is silent. (annex-a/level-reserved covers the reserved
+        // level itself.)
+        let report = Validator::new(false).validate_bytes(&schedule_mode_stream(22, false, 0));
+        assert_eq!(
+            schedule_delay_error_count(&report, "decoder-model/schedule-decoder-buffer-delay-zero"),
+            0,
+            "a reserved level honest-stops the decoder-model bound: {report}"
+        );
+        // Anti-vacuity: the reserved-level diagnostic DID fire, proving the activation was
+        // reached and the decoder-model silence is a deliberate honest-stop, not a dead path.
+        assert!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "annex-a/level-reserved"),
+            "the activation must be reached (reserved-level error proves it): {report}"
+        );
+    }
+
+    #[test]
+    fn schedule_decoder_buffer_delay_without_decoder_model_info_is_silent() {
+        // A sequence header that omits seq_decoder_model_info() (resource-availability mode
+        // or no decoder model) is not in schedule mode, so the E.7.8 buffer-delay checks
+        // never fire. Anti-vacuity: pair with a frame-confirmed activation whose Annex A
+        // value-space checks run (the header is otherwise conformant), proving the
+        // activation path executed.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
+        data.extend(clk_frame_for_xlayer(0, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            schedule_delay_error_count(&report, "decoder-model/schedule-decoder-buffer-delay-zero"),
+            0,
+            "no seq_decoder_model_info() means no schedule-mode judgment: {report}"
+        );
+        assert_eq!(
+            schedule_delay_error_count(
+                &report,
+                "decoder-model/schedule-decoder-buffer-delay-exceeds-bound"
+            ),
+            0,
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn schedule_decoder_buffer_delay_unconfirmed_activation_is_silent() {
+        // A staged-but-unactivated schedule-mode sequence header (no frame references it)
+        // must NOT fire the E.7.8 checks: the check gates on a frame-confirmed activation
+        // (§ 5.18.2), like every other Annex A value-space check. delay == 0 is silent.
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(
+            0x04,
+            &schedule_mode_seq_header_payload(0, 0, false, 0),
+        ));
+        // No CLK / frame referencing seq_header_id 0 -> activation never confirmed.
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            schedule_delay_error_count(&report, "decoder-model/schedule-decoder-buffer-delay-zero"),
+            0,
+            "an unconfirmed (staged) activation must not fire the E.7.8 check: {report}"
+        );
+    }
+
+    #[test]
+    fn schedule_decoder_buffer_delay_truncated_header_is_silent() {
+        // EOF inside the schedule-mode sequence header (truncated mid-decoder-model-info):
+        // the header cannot activate, so no E.7.8 judgment, and earlier parsed facts (the
+        // TD) are preserved (the stream is not a panic). The parse error is reported, not
+        // a decoder-model false positive.
+        let full = schedule_mode_seq_header_payload(0, 0, false, 5);
+        let truncated = &full[..full.len().saturating_sub(2)];
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(0x04, truncated));
+        data.extend(clk_frame_for_xlayer(0, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            schedule_delay_error_count(&report, "decoder-model/schedule-decoder-buffer-delay-zero"),
+            0,
+            "a truncated header that cannot activate must not fire the E.7.8 check: {report}"
+        );
+        assert_eq!(
+            schedule_delay_error_count(
+                &report,
+                "decoder-model/schedule-decoder-buffer-delay-exceeds-bound"
+            ),
+            0,
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn schedule_decoder_buffer_delay_without_ci_timing_is_silent() {
+        // FALSE-POSITIVE CLOSE (Annex E.4.2 third condition): a schedule-mode stream with
+        // BOTH decoder-model flags set and decoder_buffer_delay == 0, but NO content
+        // interpretation establishing ci_timing_info_present_flag == 1, is NOT in
+        // decoding-schedule mode (E.4.2 requires all three: ci_timing_info_present_flag,
+        // decoder_model_info_present_flag, and seq_decoder_model_info_present_flag, mirror
+        // lines 293-296). E.7.8 binds only "when operating in the decoding schedule mode",
+        // and E.4.2 closes (mirror lines 330-336) that absent the listed parameters "it is
+        // not possible to check conformance". So both E.7.8 diagnostics must be SILENT.
+        let report = Validator::new(false)
+            .validate_bytes(&schedule_mode_stream_without_ci_timing(0, false, 0, false));
+        assert_eq!(
+            schedule_delay_error_count(&report, "decoder-model/schedule-decoder-buffer-delay-zero"),
+            0,
+            "no ci_timing established means the layer is not in schedule mode (E.4.2): {report}"
+        );
+        assert_eq!(
+            schedule_delay_error_count(
+                &report,
+                "decoder-model/schedule-decoder-buffer-delay-exceeds-bound"
+            ),
+            0,
+            "{report}"
+        );
+
+        // ANTI-VACUITY: the otherwise-identical stream that DOES establish ci_timing
+        // (with_ci_timing == true) DOES fire the zero check — proving the silence above is
+        // the ci_timing gate, not an unreached activation path. (Mirrors the firing test
+        // schedule_decoder_buffer_delay_zero_is_flagged, here via the same builder.)
+        let firing = Validator::new(false)
+            .validate_bytes(&schedule_mode_stream_without_ci_timing(0, false, 0, true));
+        assert_eq!(
+            schedule_delay_error_count(&firing, "decoder-model/schedule-decoder-buffer-delay-zero"),
+            1,
+            "establishing ci_timing puts the layer in schedule mode, so the zero check \
+             fires — proving the silence above is the ci_timing gate: {firing}"
+        );
+    }
+
+    #[test]
+    fn schedule_decoder_buffer_delay_ci_with_timing_flag_zero_is_silent() {
+        // A content interpretation OBU is PRESENT but carries ci_timing_info_present_flag
+        // == 0 (timing == None). It does not establish the E.4.2 third condition, so the
+        // layer is not in decoding-schedule mode and the E.7.8 zero check (delay == 0) is
+        // silent. This is the "CI with ci_timing_info_present_flag == 0" arm of the
+        // false-positive close, distinct from "no CI at all" above.
+        let report = Validator::new(false)
+            .validate_bytes(&schedule_mode_stream_without_ci_timing(0, false, 0, false));
+        // The first-CELU CI is present (so § 7.3.6 first-CELU presence is satisfied) yet it
+        // does not bear timing — confirm both schedule diagnostics stay silent.
+        assert_eq!(
+            schedule_delay_error_count(&report, "decoder-model/schedule-decoder-buffer-delay-zero"),
+            0,
+            "a CI with ci_timing_info_present_flag == 0 does not establish schedule mode: {report}"
+        );
+        assert_eq!(
+            schedule_delay_error_count(
+                &report,
+                "decoder-model/schedule-decoder-buffer-delay-exceeds-bound"
+            ),
+            0,
+            "{report}"
+        );
+    }
+
+    /// An OLK frame for `xlayer` referencing `seq_header_id`, mirroring
+    /// [`clk_frame_for_xlayer`] but with `obu_type == 5` (OBU_OPEN_LOOP_KEY) so it is a
+    /// § 7.3.8.11 random access point that does NOT begin a new coded video sequence.
+    fn olk_frame_for_xlayer(xlayer: u8, seq_header_id: u32) -> Vec<u8> {
+        let mut bits = Bits::default();
+        bits.bit(1); // is_first_tile_group
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(seq_header_id); // seq_header_id_in_frame_header
+        annex_b_obu_with_header(&layer_obu_header(5, 0, 0, xlayer), &bits.into_bytes())
+    }
+
+    #[test]
+    fn schedule_decoder_buffer_delay_after_rap_reset_is_silent() {
+        // RAP-RESET (§ 7.3.8.11, mirror line 916: "ci_timing_info_present_flag = 0" among
+        // the reset defaults): ci_timing is established by a CI in TU1 but the schedule-mode
+        // sequence header is only STAGED there (no frame confirms it). An OLK in TU2 is a
+        // random access point that reinitializes ci_timing_info_present_flag to 0 and
+        // advances the layer's epoch to TU2; that OLK frame then confirms the staged
+        // activation. At confirmation time the only ci_timing-bearing CI (TU1) precedes the
+        // current epoch (TU2), so ci_timing_established_for_xlayer is false and the E.7.8
+        // zero check is silent — the same `tu_index < ci_rap_epoch` epoch skip the
+        // § 6.16.7 n_frames machinery applies.
+        let mut data = temporal_delimiter_obu();
+        // TU1: stage the schedule-mode header (delay == 0) without confirming it, and a CI
+        // establishing ci_timing for xlayer 0.
+        data.extend(annex_b_obu(
+            0x04,
+            &schedule_mode_seq_header_payload(0, 0, false, 0),
+        ));
+        data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING)));
+        // TU2: an OLK (RAP) that reinitializes ci_timing to 0, then frame-confirms the
+        // staged activation. No CI re-establishes ci_timing in this epoch.
+        data.extend(temporal_delimiter_obu());
+        data.extend(olk_frame_for_xlayer(0, 0));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            schedule_delay_error_count(&report, "decoder-model/schedule-decoder-buffer-delay-zero"),
+            0,
+            "the OLK reinitializes ci_timing_info_present_flag to 0 (§ 7.3.8.11), so the \
+             pre-RAP CI no longer establishes schedule mode at the post-RAP activation: {report}"
+        );
+
+        // ANTI-VACUITY: re-establishing ci_timing AFTER the OLK (a CI in TU2, at/after the
+        // new epoch) DOES put the layer back in schedule mode, so the zero check fires —
+        // proving the silence above is the RAP reset, not an unreached activation.
+        let mut firing = temporal_delimiter_obu();
+        firing.extend(annex_b_obu(
+            0x04,
+            &schedule_mode_seq_header_payload(0, 0, false, 0),
+        ));
+        firing.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING)));
+        firing.extend(temporal_delimiter_obu());
+        firing.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING))); // re-establish post-RAP
+        firing.extend(olk_frame_for_xlayer(0, 0));
+        let firing_report = Validator::new(false).validate_bytes(&firing);
+        assert_eq!(
+            schedule_delay_error_count(
+                &firing_report,
+                "decoder-model/schedule-decoder-buffer-delay-zero"
+            ),
+            1,
+            "re-establishing ci_timing at/after the new epoch restores schedule mode, so \
+             the zero check fires — proving the silence above is the RAP reset: {firing_report}"
+        );
+    }
+
     fn decoder_model_warning_count(report: &ValidationReport, rule: &str) -> usize {
         report.warnings().filter(|d| d.rule_id == rule).count()
     }

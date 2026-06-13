@@ -113,7 +113,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-9-ADDITIONAL-TABLES` | Additional spec tables (codegen) | normative | bitstream-semantics | done | partial | partial | n/a | n/a | n/a | todo | partial | pending | `crates/splot-core/src/tables/` |
 | `AV2-A-PROFILES` | Annex A profile constraints | normative | bitstream-semantics | done | todo | n/a | partial | n/a | n/a | todo | done | pending | `crates/splot-validate/src/annex_a.rs` |
 | `AV2-A-LEVELS-TIERS` | Annex A level and tier constraints | normative | bitstream-semantics | done | todo | n/a | partial | n/a | n/a | todo | done | pending | `crates/splot-validate/src/annex_a.rs` |
-| `AV2-E-DECODER-MODEL` | Annex E decoder model constraints | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/checks/mod.rs` |
+| `AV2-E-DECODER-MODEL` | Annex E decoder model constraints | normative | bitstream-semantics | done | n/a | n/a | partial | n/a | n/a | partial | partial | n/a | `crates/splot-validate/src/context.rs` |
 | `ENC-BITSTREAM-WRITER` | Bitstream writer foundation | encoder | writer | partial | todo | n/a | n/a | todo | todo | todo | todo | pending | `crates/splot-core/src/bitio.rs` |
 | `ENC-Y4M-INPUT` | Y4M input reader integration | encoder | encoder-api | partial | todo | n/a | n/a | n/a | todo | n/a | todo | n/a | `crates/splot-encode/src/context.rs` |
 | `ENC-INTRA-TOY-V0` | Minimal toy intra encoder path | encoder | encoder-tool | partial | todo | n/a | n/a | todo | todo | todo | todo | pending | `crates/splot-encode/src/context.rs` |

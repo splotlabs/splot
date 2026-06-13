@@ -8,15 +8,25 @@
 //! This module holds the table data transcribed **verbatim** from the committed
 //! spec mirror — the AV2 profile definitions (Annex A.2 Table A.1) and the static
 //! level limits (Annex A.4 Tables A.7/A.8/A.9) — plus pure helper functions over
-//! them. Every value cell carries a mirror line citation; the rate columns
-//! (`MaxDisplayRate`/`MaxDecodeRate`/`MaxHeaderRate`/`MainMbps`/`HighMbps`/`MainCR`/
-//! `HighCR`) are deliberately **not** transcribed: they belong to the Annex E
-//! decoder-model change (Feature ID `AV2-E-DECODER-MODEL`).
+//! them. Every value cell carries a mirror line citation.
+//!
+//! The decoder-model bitrate columns of Table A.9 (`MainMbps` / `HighMbps`) are
+//! transcribed here under the Annex E decoder-model change (Feature ID
+//! `AV2-E-DECODER-MODEL`): they back the § E.7.8 schedule-mode `DecoderBufferDelay`
+//! bound (see [`schedule_buffer_delay_upper_bound_90khz`]). The remaining rate
+//! columns (`MaxDisplayRate` / `MaxDecodeRate` / `MaxHeaderRate` / `MainCR` /
+//! `HighCR`) are still **not** transcribed: the Annex A.4 *dynamic* rate constraints
+//! that would consume them (`TotalDisplayLumaSampleRate`, `NumFrameHeadersPerSec`,
+//! `LumaSampleCount`/`CompressedSize`/`FrameSymbolCount` per-frame bounds) all depend
+//! on `Removal[]` from the full Annex E resource-availability buffer-pool simulation
+//! (Annex E.5.5 / E.6) and per-second output durations, which are not soundly
+//! decidable from parsed syntax alone — they remain named residuals on
+//! `AV2-A-LEVELS-TIERS` / `AV2-E-DECODER-MODEL`.
 //!
 //! The check wiring that consumes these tables lives in
 //! [`crate::context`]; the rule semantics and the Table A.4 interoperability-point
 //! presence requirements are documented there. Feature IDs: `AV2-A-PROFILES`,
-//! `AV2-A-LEVELS-TIERS`.
+//! `AV2-A-LEVELS-TIERS`, `AV2-E-DECODER-MODEL`.
 
 use splot_core::headers::sequence::ChromaFormatIdc;
 
@@ -338,6 +348,78 @@ pub(crate) fn is_reserved_level(level_idx: u8) -> bool {
     (FIRST_RESERVED_LEVEL_IDX..=LAST_RESERVED_LEVEL_IDX).contains(&level_idx)
 }
 
+/// First `LevelIdx` at which the High tier (`seq_tier == 1`) has a defined `HighMbps`
+/// cell (Annex A.4 Table A.9, mirror line 398: LevelIdx 4 / level 4.0 is the first row
+/// with a non-`-` HighMbps), and the Table A.9 NOTE (mirror lines 436-437): "seq_tier
+/// equal to 1 can only be signaled for level 4.0 and above". Below this index the High
+/// tier bitrate is undefined, so a High-tier decoder-model rate variable cannot be
+/// derived — the § E.7.8 check honest-stops there.
+pub(crate) const HIGH_MBPS_FIRST_LEVEL_IDX: u8 = 4;
+
+/// Whether the decoder-model bitrate variable `BitRate` is *defined* for the
+/// `(level_idx, high_tier)` pair, i.e. the relevant `MaxMbps` cell of Annex A.4
+/// Table A.9 (`MainMbps` for the Main tier, `HighMbps` for the High tier) is present.
+///
+/// `BitRate = MaxBitrate * BitrateProfileFactor = (MaxMbps * 1_000_000) *
+/// BitrateProfileFactor` (Annex E.3, mirror line 173; Annex A.4, mirror line 671).
+/// `MainMbps` is present for every defined level `0..=21`; `HighMbps` is present only
+/// for level `4.0` and above (`LevelIdx >= 4`, Table A.9 mirror lines 390-432 and the
+/// NOTE at lines 436-437: "HighMbps … values are not defined for levels below level
+/// 4.0"). For a reserved level (`22..=30`), the Maximum-parameters level (`31`), or any
+/// `5`-bit value above `31`, no row exists and the rate is undefined. When this returns
+/// `false` the decoder-model rate variables cannot be derived and the dependent
+/// schedule checks must honest-stop.
+#[must_use]
+pub(crate) fn bitrate_is_defined(level_idx: u8, high_tier: bool) -> bool {
+    // Reserved / Maximum-parameters / out-of-range: no Table A.9 row.
+    if level_idx > 21 {
+        return false;
+    }
+    // Main tier: MainMbps is defined for every level 0..=21 (Table A.9, mirror lines
+    // 390-432, the MainMbps column has a numeric cell on every row).
+    if !high_tier {
+        return true;
+    }
+    // High tier: HighMbps is defined only for LevelIdx >= 4 (level 4.0+); the rows below
+    // carry "-" in the HighMbps column (Table A.9, mirror lines 390-397).
+    level_idx >= HIGH_MBPS_FIRST_LEVEL_IDX
+}
+
+/// The § E.7.8 upper bound `90000 * (BufferSize / BitRate)` on `DecoderBufferDelay`
+/// when operating in the decoding-schedule mode (Annex E.7.8, mirror lines 1104-1108),
+/// expressed in the same `1/90000`-second units `decoder_buffer_delay` is measured in
+/// (§ 6.4.13, mirror lines 1293-1295), or `None` when the level/tier pair has no
+/// defined bitrate (see [`bitrate_is_defined`]).
+///
+/// The bound collapses to the exact constant **90000** for *every* defined level, tier,
+/// and profile, by the Annex A.4 table identities (mirror lines 671-672, 173-177):
+///
+/// - `BitRate    = MaxBitrate   * BitrateProfileFactor`,
+/// - `BufferSize = MaxBufferSize * BitrateProfileFactor`,
+/// - `MaxBufferSize = MaxBitrate * 1 second` (mirror line 672).
+///
+/// So `BufferSize / BitRate = (MaxBitrate * 1 s * bpf) / (MaxBitrate * bpf) = 1 second`,
+/// the `BitrateProfileFactor` and `MaxBitrate` cancelling exactly, leaving
+/// `90000 * (BufferSize / BitRate) = 90000 * 1 = 90000`. The bound is therefore
+/// independent of the (undefined-for-the-Configurable-profile) `BitrateProfileFactor`,
+/// which is why a Configurable-profile (`seq_profile_idc == 31`) stream is *not* a
+/// honest-stop for this particular bound: the factor cancels before it is needed. The
+/// only precondition is that `BitRate` is non-zero and finite, i.e. that the level/tier
+/// pair has a defined `MaxMbps` cell — hence the [`bitrate_is_defined`] gate.
+#[must_use]
+pub(crate) fn schedule_buffer_delay_upper_bound_90khz(
+    level_idx: u8,
+    high_tier: bool,
+) -> Option<u64> {
+    if bitrate_is_defined(level_idx, high_tier) {
+        // 90000 * (BufferSize / BitRate) = 90000 * 1 second = 90000 (see the doc comment
+        // for the exact Table A.9 / Annex E.3 cancellation).
+        Some(90_000)
+    } else {
+        None
+    }
+}
+
 /// Returns `true` when `chroma_format_idc` is permitted under `profile_idc`
 /// (Annex A.2 Table A.1 column "chroma_format_idc", mirror lines 61-90):
 ///
@@ -454,6 +536,62 @@ mod tests {
         assert!(is_reserved_level(22));
         assert!(is_reserved_level(30));
         assert!(!is_reserved_level(31));
+    }
+
+    #[test]
+    fn bitrate_defined_matches_table_a9_mbps_columns() {
+        // Table A.9 (mirror lines 390-432): MainMbps is present on every defined level
+        // row 0..=21; HighMbps is "-" for levels below 4.0 (LevelIdx < 4) and numeric
+        // from LevelIdx 4 (level 4.0, mirror line 398) upward.
+        for idx in 0u8..=21 {
+            assert!(bitrate_is_defined(idx, false), "Main tier level {idx}");
+        }
+        // High tier: undefined below LevelIdx 4, defined at/above (NOTE, mirror 436-437).
+        for idx in 0u8..HIGH_MBPS_FIRST_LEVEL_IDX {
+            assert!(
+                !bitrate_is_defined(idx, true),
+                "High tier level {idx} undefined"
+            );
+        }
+        for idx in HIGH_MBPS_FIRST_LEVEL_IDX..=21 {
+            assert!(
+                bitrate_is_defined(idx, true),
+                "High tier level {idx} defined"
+            );
+        }
+        // Reserved (22..=30), Maximum-parameters (31), out-of-range: no Table A.9 row.
+        for idx in [22u8, 30, 31, u8::MAX] {
+            assert!(
+                !bitrate_is_defined(idx, false),
+                "no row for level {idx} (Main)"
+            );
+            assert!(
+                !bitrate_is_defined(idx, true),
+                "no row for level {idx} (High)"
+            );
+        }
+    }
+
+    #[test]
+    fn schedule_buffer_delay_bound_is_90000_when_rate_defined() {
+        // The bound collapses to exactly 90000 for every defined level/tier by the
+        // Table A.9 / Annex E.3 identity (BufferSize / BitRate = 1 second).
+        assert_eq!(
+            schedule_buffer_delay_upper_bound_90khz(0, false),
+            Some(90_000)
+        );
+        assert_eq!(
+            schedule_buffer_delay_upper_bound_90khz(21, false),
+            Some(90_000)
+        );
+        assert_eq!(
+            schedule_buffer_delay_upper_bound_90khz(4, true),
+            Some(90_000)
+        );
+        // High tier below 4.0 and reserved/max-parameters levels have no defined rate.
+        assert_eq!(schedule_buffer_delay_upper_bound_90khz(3, true), None);
+        assert_eq!(schedule_buffer_delay_upper_bound_90khz(22, false), None);
+        assert_eq!(schedule_buffer_delay_upper_bound_90khz(31, false), None);
     }
 
     #[test]

@@ -53,7 +53,7 @@ dependency order:
 | Activated sequence state | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` |
 | HLS availability | `AV2-7.3.8-HLS-AVAILABILITY` |
 | Temporal-unit ordering completion | `AV2-7.3.7-TEMPORAL-UNIT-ORDER`, then §7.3.2–§7.3.6 children as parse dependencies allow (the minimal §7.3.2 CMVS tracker landed) |
-| Deeper HLS semantics | the `validate = partial` HLS rows (LCR, atlas, OPS/BRT, metadata); the §6.10.7/§6.8.9/§7.3.8.7 dependency-map agreement checks, the §6.8.5 LCR PTL-ceiling and §6.8.8 LCR rep-info equality checks against the activated sequence header (`lcr/ptl-*-exceeds-max`, `lcr/rep-info-mismatch`; `lcr-ptl-activated-sequence-agreement`), the §6.4.13/§6.10.5 signaled buffer-delay sum-constancy checks (`decoder-model/*`), and the **static** Annex A profile/level/tier value-space subset (`annex-a/*`: Table A.1 profile + Table A.7/A.8/A.9 level/tier value-space and static level limits) are landed, with the Table A.4 interoperability-point OBU-presence checks deferred to the `msdo-global-lcr-agreement` backlog change (see the Planned diagnostics backlog), the LCR-declared PTL maxima Annex A value-space range checks (`lcr_seq_profile_idc[i]`/`lcr_max_level_idx[i]`/etc.) still on the Annex A table backlog, and the **rate-based** Annex A/E operating-point *semantics* (decoder-schedule simulation, buffer model) still future |
+| Deeper HLS semantics | the `validate = partial` HLS rows (LCR, atlas, OPS/BRT, metadata); the §6.10.7/§6.8.9/§7.3.8.7 dependency-map agreement checks, the §6.8.5 LCR PTL-ceiling and §6.8.8 LCR rep-info equality checks against the activated sequence header (`lcr/ptl-*-exceeds-max`, `lcr/rep-info-mismatch`; `lcr-ptl-activated-sequence-agreement`), the §6.4.13/§6.10.5 signaled buffer-delay sum-constancy checks (`decoder-model/*`), the **§E.7.8** decoding-schedule-mode `DecoderBufferDelay` bound (`decoder-model/schedule-decoder-buffer-delay-zero`/`-exceeds-bound`, extended-layer arm), and the **static** Annex A profile/level/tier value-space subset (`annex-a/*`: Table A.1 profile + Table A.7/A.8/A.9 level/tier value-space and static level limits) are landed, with the Table A.4 interoperability-point OBU-presence checks deferred to the `msdo-global-lcr-agreement` backlog change (see the Planned diagnostics backlog), the LCR-declared PTL maxima Annex A value-space range checks (`lcr_seq_profile_idc[i]`/`lcr_max_level_idx[i]`/etc.) still on the Annex A table backlog, and the rest of the **rate-based** Annex A/E operating-point *semantics* (the full Annex E.5/E.6 frame-timing + buffer-pool simulation, the rest of §E.7, the §E.7.8 OPS per-op arm, and the Annex A.4 dynamic rate constraints) still future — all blocked on `Removal[]`/`CodedBits[i]`/`TimeToDecode[i]` from Unknown-routing inter-frame state |
 | Frame-header continuation | the Phase 8 remaining work below |
 
 **Do not start yet** as a primary task: a full tile-group payload parser,
@@ -282,10 +282,31 @@ value-space, Table A.7/A.9 level/tier value-space, and the Table A.8/A.9 static
 level-limit checks on the parsed intra frame path; the Table A.4
 interoperability-point OBU-presence checks are deferred to the
 `msdo-global-lcr-agreement` backlog change), so the table data in
-`crates/splot-validate/src/annex_a.rs` is transcribed verbatim from the mirror;
-remaining work is deeper semantic validation across the board — the **rate-based**
-Annex A/E operating-point semantics (MaxDisplayRate/MaxDecodeRate, buffer model)
-and decoder-schedule simulation are still future.
+`crates/splot-validate/src/annex_a.rs` is transcribed verbatim from the mirror.
+The first decoder-schedule conformance check has also landed: the **§ E.7.8**
+decoding-schedule-mode `DecoderBufferDelay` bound for the extended-layer arm
+(`decoder-model/schedule-decoder-buffer-delay-zero` / `-exceeds-bound`), a
+pure-arithmetic consumer of the activated `seq_decoder_model_info()` whose bound
+cancels to the constant 90000 (Table A.9 / Annex E.3 identities). It fires only
+when all **three** § E.4.2 decoding-schedule-mode conditions are established for
+the extended layer — `decoder_model_info_present_flag == 1`,
+`seq_decoder_model_info_present_flag == 1`, and `ci_timing_info_present_flag == 1`
+in the layer's content interpretation OBU (observed at/after the layer's
+§ 7.3.8.11 random-access-point epoch, reusing the § 6.16.7 n_frames "ci_timing
+established" determination) — and suppresses otherwise (zero false positives:
+both decoder-model flags without an established ci_timing is not schedule mode).
+The `seq_level_idx == 31` exemption and the reserved/High-tier-below-4.0
+honest-stops fall out of the defined-bitrate gate. Named residual: the check
+evaluates once at first frame-confirmation, so an establishing CI arriving only
+afterward is a sound-over-complete miss. Remaining work is deeper semantic validation across the board —
+the full Annex E.5/E.6 frame-timing + resource-availability buffer-pool
+simulation, the rest of § E.7 (E.7.1-.7, the E.7.8 OPS per-op arm), and the
+**rate-based** Annex A.4 dynamic operating-point constraints
+(`TotalDisplayLumaSampleRate`/`NumFrameHeadersPerSec`/per-frame
+`LumaSampleCount`/`CompressedSize`/`FrameSymbolCount`) are still future — all
+blocked on `CodedBits[i]` / `Removal[]` / `TimeToDecode[i]` from Unknown-routing
+inter-frame state (see the matrix `AV2-E-DECODER-MODEL` / `AV2-A-LEVELS-TIERS`
+residual notes).
 
 **Goal:** parse HLS OBUs referenced by sequence/frame validation and OBU ordering.
 
@@ -647,7 +668,7 @@ lands, add it to the registry tables there (the CI gate will require it).
 
 | Planned ID | Severity | Section | Feature | Trigger |
 |---|---|---|---|---|
-| `brt/global-ordering-position` | error | §7.3.7 | `AV2-7.3-OBU-ORDERING` | A global BRT in an invalid temporal-unit position. Deferred: §7.3.7 does not list BRT among the global prefix OBUs, so a hard ordering error needs the §7.3.8 decoder-model / random-access state (tracked by a spec TODO under `AV2-7.3-OBU-ORDERING` in `splot-validate`). |
+| `brt/global-ordering-position` | error | §7.3.7 | `AV2-7.3-OBU-ORDERING` | A global BRT in an invalid temporal-unit position. Deferred (re-grounded by the Annex E change): §7.3.7 does not list BRT among the global prefix OBUs, so a hard ordering error needs the §7.3.8 per-RAP decoder-model removal *schedule* — the Annex E.5.5/E.6 resource-availability buffer-pool replay over `DecoderRefCount`/`PlayerRefCount`/`Removal[]`. The Annex E change landed only the §E.7.8 schedule-mode buffer-delay bound (pure arithmetic over `seq_decoder_model_info()`), which does NOT model that replay, so the global BRT stays unclassified (sound-over-complete). Tracked by the `TODO(spec: AV2-7.3-OBU-ORDERING)` in `is_global_hls_prefix_obu` (`splot-validate`). |
 | `annex-a/frame-exceeds-ops-level` | error | §A.4/§6.10.4 | `AV2-A-LEVELS-TIERS` | A frame's size / tile geometry exceeds the Annex A.4 Table A.8/A.9 limits for an *operating-point-advertised* level: §6.10.4 requires the operating point's bitstream to satisfy A.4 with `seq_level_idx` set to the OPS-signaled `ops_level_idx`, so the static level-limit checks must also run against OPS levels, not only the activated `seq_level_idx`. Deferred from `annex-a-profile-level-skeleton`: blocked on operating-point-to-frame mapping (which frames belong to which operating point), which the validator does not model yet — `check_ops_level_tier_value_space` currently only checks the OPS-carried value space (reserved-level / high-tier), not per-frame conformance against the advertised level. |
 
 Naming rules live in [`FEATURE-TRACKING.md`](./FEATURE-TRACKING.md) § 12
