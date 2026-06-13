@@ -304,3 +304,114 @@ pub(in crate::validator::tests) const MFH_HEADER: u8 = 3 << 2; // OBU_MULTI_FRAM
 pub(in crate::validator::tests) const BRT_HEADER: u8 = 15 << 2; // OBU_BUFFER_REMOVAL_TIMING (0x3C)
 pub(in crate::validator::tests) const LEADING_SEF_HEADER: u8 = 11 << 2; // OBU_LEADING_SEF (0x2C)
 pub(in crate::validator::tests) const REGULAR_SEF_HEADER: u8 = 12 << 2; // OBU_REGULAR_SEF (0x30)
+
+// -- Annex A Table A.3 interoperability-point layer budget --------------------
+
+#[test]
+fn annex_a_iop0_more_than_one_embedded_layer_exceeds_budget() {
+    // Table A.3 IOP0 (mirror line 130): Number of Embedded Layers must be 1. A profile-0
+    // (IOP0) single-extended-layer CVS that declares max_mlayer_id 1 (two embedded layers)
+    // exceeds the budget.
+    let mut data = temporal_delimiter_obu();
+    // profile 0, level 0, seq_lcr_id 0, max_mlayer_id 1 (-> SeqMaxMlayerCnt 2).
+    data.extend(annex_b_obu(
+        0x04,
+        &seq_header_payload_lcr_ref(0, 0, 0, false, true, 0, 1),
+    ));
+    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 confirms activation
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        report.errors().any(|d| {
+            d.rule_id == "annex-a/layer-budget-exceeds-iop"
+                && d.spec_section.as_deref() == Some("A.2")
+        }),
+        "an IOP0 CVS with two embedded layers exceeds the Table A.3 budget; report was: {report}"
+    );
+}
+
+#[test]
+fn annex_a_iop1_extended_and_embedded_combination_exceeds_budget() {
+    // Table A.3 IOP1 (mirror line 132): the Extended-and-Embedded combination must be 0. A
+    // profile-1 (IOP1) CVS with two extended layers (E) and two embedded layers (M) sets the
+    // combination flag to 1, which IOP1 forbids. This is exactly the E && M case that has no
+    // Table A.4 row, so the layer budget is its only constraint.
+    let mut data = temporal_delimiter_obu();
+    // xlayer 0: profile 1, max_mlayer_id 1 (M); xlayer 1: profile 1, max_mlayer_id 0.
+    data.extend(annex_b_obu(
+        0x04,
+        &seq_header_payload_lcr_ref(0, 1, 0, false, true, 0, 1),
+    ));
+    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0
+    data.extend(seq_header_obu_ptl(1, 1, 1, 0, false, true)); // xlayer 1, profile 1
+    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 1)); // CLK xlayer 1 (E)
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        report.errors().any(|d| {
+            d.rule_id == "annex-a/layer-budget-exceeds-iop"
+                && d.spec_section.as_deref() == Some("A.2")
+        }),
+        "an IOP1 CVS with both >1 extended and >1 embedded layer exceeds the Table A.3 budget; \
+         report was: {report}"
+    );
+}
+
+#[test]
+fn annex_a_iop0_single_embedded_layer_is_within_budget() {
+    // A conformant IOP0 single-extended-single-embedded-layer CVS is within the Table A.3
+    // budget — no layer-budget diagnostic.
+    let mut data = temporal_delimiter_obu();
+    data.extend(seq_header_obu_ptl(0, 0, 0, 0, false, true)); // profile 0, max_mlayer_id 0
+    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        !report
+            .errors()
+            .any(|d| d.rule_id == "annex-a/layer-budget-exceeds-iop"),
+        "a single-layer IOP0 CVS is within budget; report was: {report}"
+    );
+}
+
+#[test]
+fn annex_a_iop2_extended_and_embedded_combination_is_within_budget() {
+    // Table A.3 IOP2 (mirror line 134): the Extended-and-Embedded combination MAY be 1. The
+    // same E && M shape that IOP1 forbids is permitted at IOP2, so the layer-budget check
+    // does not fire (other Table A.4 presence rules may, but those are a different rule_id).
+    let mut data = temporal_delimiter_obu();
+    data.extend(annex_b_obu(
+        0x04,
+        &seq_header_payload_lcr_ref(0, 2, 0, false, true, 0, 1),
+    )); // xlayer 0: profile 2, max_mlayer_id 1
+    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0));
+    data.extend(seq_header_obu_ptl(1, 1, 2, 0, false, true)); // xlayer 1: profile 2
+    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 1));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        !report
+            .errors()
+            .any(|d| d.rule_id == "annex-a/layer-budget-exceeds-iop"),
+        "IOP2 permits the Extended-and-Embedded combination; report was: {report}"
+    );
+}
+
+#[test]
+fn annex_a_layer_budget_suppressed_under_external_hls() {
+    use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+    // The Annex A IOP window (including the Table A.3 budget) needs in-band HLS completeness,
+    // so it is suppressed under any Provided external HLS.
+    let mut data = temporal_delimiter_obu();
+    data.extend(annex_b_obu(
+        0x04,
+        &seq_header_payload_lcr_ref(0, 0, 0, false, true, 0, 1),
+    ));
+    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0));
+    let options = ValidationOptions {
+        external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new().with_sequence_header_id(0)),
+    };
+    let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+    assert!(
+        !report
+            .errors()
+            .any(|d| d.rule_id == "annex-a/layer-budget-exceeds-iop"),
+        "external HLS suppresses the Table A.3 layer-budget check; report was: {report}"
+    );
+}
