@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "a1f6452b734bddfee208fa1a3b04b0b1d7e21925",
+  "audited_commit": "e8a41899e5103fac722caf3058457529b3cb1fcc",
   "outcome": "success",
   "files": [
     {
@@ -1050,7 +1050,7 @@
     },
     {
       "path": "crates/splot-recon/src/error.rs",
-      "sha256": "7c8987fc231a9571a459e47df0d9ff0e6f6eb3f4ba6bd840d8c2008067a8c6f2",
+      "sha256": "539212f4cf76d22c8e31716c88d061898fcdc824d1bd3de7a3296a0e2567d3fa",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -1078,10 +1078,11 @@
     },
     {
       "path": "crates/splot-recon/src/lib.rs",
-      "sha256": "9abfeae19d934a35899ad7af644570e9208e049de9b3dc3e0ca6692e7d3e2dda",
+      "sha256": "690fcb956841f022b5950addd97d228acda0d26b0e0967a493eb42361d7a2a13",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
-        "INFRA-RECON-FRAME-PLANE-TYPES"
+        "INFRA-RECON-FRAME-PLANE-TYPES",
+        "RECON-REFERENCE-FRAME-STORE"
       ],
       "outcome": "success"
     },
@@ -1090,6 +1091,15 @@
       "sha256": "dc6e7e4d194f8f48cbad18461d7563b0fb520021d55942b781c829694d33636e",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-recon/src/reference.rs",
+      "sha256": "e19d81552dc49fd585b75324f8f1e1c764dec68d0d0a6dcc8781e2082f377828",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [
+        "RECON-REFERENCE-FRAME-STORE"
+      ],
       "outcome": "success"
     },
     {
@@ -1578,7 +1588,7 @@
     },
     {
       "path": "crates/splot-validate/src/context/reference_frames.rs",
-      "sha256": "a37411ef717d286d228048bcfbfaa662ca681e24ec17b88958c3e741b77fcac8",
+      "sha256": "81b4360425840657cc0489ebae3bce0c94bd49fb98299d5382da86e29837c96d",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
@@ -2057,7 +2067,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator/tests/reference_state.rs",
-      "sha256": "a6c0cca54494e77c2b3baad4094bca47f3c67edb47a7d96d2d6e17ec7c900597",
+      "sha256": "49f9c9a4de9375a61cc1e06c1e4f07b63d55919acdf488030ebb5eee8dba042f",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -2171,7 +2181,7 @@
     },
     {
       "path": "docs/DECODER-ROADMAP.md",
-      "sha256": "62f83085ee81457be9a7c31e46d0d99c365b2a335e3f6c469e64912a8c6a845c",
+      "sha256": "7cab20567e003eb462d67b2698dad9f2ab7c5e5b39c8949ed6d1215863ff719d",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-DECODE",
@@ -2185,7 +2195,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-MATRIX.toml",
-      "sha256": "43b8e06d8541bfe0582774b3d21bb11be3b943848081f2baeaa8002b210bce90",
+      "sha256": "1f358f0b969174e14e482c4cc93e4d1224e154fc42284aa9fb5eb779016c4c81",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-DECODE",
@@ -2201,6 +2211,7 @@
         "DOC-MINIMAL-DECODE-TIER-CONTRACT",
         "INFRA-DECODER-CRATE-SCAFFOLDING",
         "INFRA-RECON-FRAME-PLANE-TYPES",
+        "RECON-REFERENCE-FRAME-STORE",
         "XTASK-DECODER-SUPPORT-STATUS",
         "XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST"
       ],
@@ -2208,7 +2219,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-STATUS.md",
-      "sha256": "5b137603815452fde0e6b5abd50763e7caeb61ec4c88e14663a7ffb3234b5358",
+      "sha256": "ae038a0f4635c97ffd173e9b22f73ddb16d1512a389e566b311b5ff34674d9c8",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-DECODE",
@@ -2224,6 +2235,7 @@
         "DOC-MINIMAL-DECODE-TIER-CONTRACT",
         "INFRA-DECODER-CRATE-SCAFFOLDING",
         "INFRA-RECON-FRAME-PLANE-TYPES",
+        "RECON-REFERENCE-FRAME-STORE",
         "XTASK-DECODER-SUPPORT-STATUS",
         "XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST"
       ],
@@ -2231,7 +2243,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "0d70b11f9f4a0b3f04c388aefed1b67430aedd94bfbaf6d434fca9f1c66a4469",
+      "sha256": "10575c06508eeac4f001d864ba79152db56447c597ed918f2270ce99c54536b9",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2373,6 +2385,7 @@
         "ENC-Y4M-INPUT",
         "INFRA-DECODER-CRATE-SCAFFOLDING",
         "INFRA-RECON-FRAME-PLANE-TYPES",
+        "RECON-REFERENCE-FRAME-STORE",
         "VALIDATOR-CONTEXT-SPLIT",
         "XTASK-AUDIT-SCOPE",
         "XTASK-CI-QUALITY-GATES",
@@ -2420,7 +2433,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "caa22d32cc4179fae3f5e355817b17aaef3358835571cf7043e08e0cc6ff0bf9",
+      "sha256": "8f357a6e9129f0f7b1d6c26ac22ff55e363c6f3f128556248ac96a1d617f5cbd",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2562,6 +2575,7 @@
         "ENC-Y4M-INPUT",
         "INFRA-DECODER-CRATE-SCAFFOLDING",
         "INFRA-RECON-FRAME-PLANE-TYPES",
+        "RECON-REFERENCE-FRAME-STORE",
         "VALIDATOR-CONTEXT-SPLIT",
         "XTASK-AUDIT-SCOPE",
         "XTASK-CI-QUALITY-GATES",
@@ -2588,7 +2602,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "98cad7f40e4115d15e2204129ba25d80911021d209b9d943797f500a7cb76c6f",
+      "sha256": "0807bbeec2caeca4e8b6315c97b324e1db63fd39705162099eff144e2276ab98",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2730,6 +2744,7 @@
         "ENC-Y4M-INPUT",
         "INFRA-DECODER-CRATE-SCAFFOLDING",
         "INFRA-RECON-FRAME-PLANE-TYPES",
+        "RECON-REFERENCE-FRAME-STORE",
         "VALIDATOR-CONTEXT-SPLIT",
         "XTASK-AUDIT-SCOPE",
         "XTASK-CI-QUALITY-GATES",
@@ -2763,7 +2778,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "4ff98d7acae38f166a32bb36f8ad25beab73ce6257d8d3820a399d23974703d9",
+      "sha256": "fa2e0c4f44a4835e0efc65d37ac2b6522a198e69391ce603206c1e46e2688bac",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -5658,6 +5673,34 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-inter-bru-ref-frame-size/proposal.md",
+      "sha256": "62bae64e7a3209994e770b5e97a9e9f7210a9b77b999e7a8c379e4774d9ed14f",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-inter-bru-ref-frame-size/specs/validator/spec.md",
+      "sha256": "ab7b4a87ac4404e60fab623c21b04804028ba7fe659bff6dc82f0ace2c83afa8",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-inter-bru-ref-frame-size/tasks.md",
+      "sha256": "46d5bc31b1aff902feb2c9e8450284459de17dda2f2063312a223d05260a5b2f",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-13-inter-ref-frame-scale-ratio/proposal.md",
       "sha256": "cf5e2fbc9aa3cf6dffc1127b1c94023b091eab6c2782ff846a233d0c481bd530",
       "scope_kind": "openspec",
@@ -5873,6 +5916,54 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-recon-reference-frame-store/.openspec.yaml",
+      "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-recon-reference-frame-store/agent-log.md",
+      "sha256": "d11c579a82ddb4052caecd5021cf4d31b213488401b658e48d4b0a7a28d6126c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-REFERENCE-FRAME-STORE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-recon-reference-frame-store/design.md",
+      "sha256": "f04ac4ac54ae58c2be237ef52b616878d8f1ad646a7086477a0a7807bbef722a",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-recon-reference-frame-store/proposal.md",
+      "sha256": "c4dfa2b0b33c59dedb6d993d4af3c6eeadac01e9c1533b1c3bc4853302b8101d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-REFERENCE-FRAME-STORE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-recon-reference-frame-store/specs/decoder-support/spec.md",
+      "sha256": "fa1a1a4f4223db01114f6c27f31ffdcf95983e598cf8f3fbe9917cb143ef7ace",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-recon-reference-frame-store/tasks.md",
+      "sha256": "6c5ee23ebe758cc096b386d5241e67bd9c849102a004e77e8c87ed94a660c86b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-REFERENCE-FRAME-STORE"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-13-validator-source-line-budget/.openspec.yaml",
       "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
       "scope_kind": "openspec",
@@ -6053,7 +6144,7 @@
     },
     {
       "path": "openspec/specs/decoder-support/spec.md",
-      "sha256": "08c943ff65d704f7b011c1dfb22531556ce24488c6f612279ca0007fc3c7914c",
+      "sha256": "f5428121f2c3add3850aa18a92026bf6cbdeaaeafc4228bcb9635f58620c1875",
       "scope_kind": "openspec",
       "feature_ids": [
         "CLI-DECODE",
@@ -6131,7 +6222,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "f380a587104075ce3ba14535a8b39da52c8d04e4eae681bb76bc38376987b9df",
+      "sha256": "e3057220dea6144a68357e8eac4cdc96a61266ed768866b1c40462d109dd59f3",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
