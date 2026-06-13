@@ -105,30 +105,48 @@ impl QuantizerMatrixState {
     /// `restricted_prediction_switch == 1`) or RAS frame (mirror :4278-4286 / :5350-5354).
     ///
     /// For these frame types `needsReset = QmMLayerId[level] == -1 ||
-    /// MLayerPresenceMap[QmMLayerId[level]][obu_mlayer_id]`. Only the **provable** arm is
+    /// MLayerPresenceMap[QmMLayerId[level]][obu_mlayer_id]` (mirror :5350-5352). Both arms are
     /// modeled: a level whose recorded `QmMLayerId == -1` (the record's `mlayer_id == None`,
     /// set by a `qm_bit_map == 0` reset QM OBU, or by a prior `reset_qm`) is unconditionally
-    /// reset. The `MLayerPresenceMap[...]` arm needs the §5.4.1 presence map joined against
-    /// the level's defining layer — clearing on it would risk falsely marking an
-    /// in-presence level unavailable — so it stays a named residual (the level is left
-    /// available, never falsely cleared). Protected levels (`qm_protected` set) are untouched.
+    /// reset; a level with a recorded `QmMLayerId == m` (`mlayer_id == Some(m)`) resets when
+    /// `MLayerPresenceMap[m][obu_mlayer_id] == 1` — i.e. the current frame's embedded layer is
+    /// (transitively) present whenever the level's defining layer is, so the level cannot
+    /// survive into this frame. `presence` is the § 5.4.1 [`MLayerPresenceMap`] of the frame's
+    /// activated sequence header; when it is `None` (the activated header is unavailable) the
+    /// presence arm cannot be decided, so the level is left available (never falsely cleared —
+    /// the zero-false-positive direction for an availability reset). Protected levels
+    /// (`qm_protected` set) are untouched.
     ///
     /// This is the *confirmed*-reset path: the caller only invokes it once the frame's core
     /// parse has reached the § 5.18.2 reset call site (mirror :4283) — a resolved RAS core,
     /// or a SWITCH core with `restricted_prediction_switch == 1`
-    /// ([`ValidatorContext::apply_qm_reset_for_frame`]). A level it provably clears therefore
-    /// also re-grounds out of any prior poison (`availability_poisoned` bit cleared): the
-    /// level is now definitively unavailable.
-    pub(super) fn reset_qm_availability_for_switch_or_ras(&mut self) {
+    /// ([`ValidatorContext::apply_qm_reset_for_frame`]). A level it clears therefore also
+    /// re-grounds out of any prior poison (`availability_poisoned` bit cleared): the level is
+    /// now definitively unavailable.
+    pub(super) fn reset_qm_availability_for_switch_or_ras(
+        &mut self,
+        obu_mlayer_id: EmbeddedLayerId,
+        presence: Option<&MLayerPresenceMap>,
+    ) {
         for level in 0..NUM_CUSTOM_QMS {
             if (self.qm_protected >> level) & 1 != 0 {
                 continue;
             }
-            // Only the `QmMLayerId[level] == -1` arm is provably a reset; the
-            // MLayerPresenceMap arm is a residual (do not clear — no false unavailability).
-            let provably_resets =
-                self.available[level].is_none_or(|record| record.mlayer_id.is_none());
-            if provably_resets {
+            let needs_reset = match self.available[level] {
+                // No available record: a reset is a no-op on the record but still re-grounds
+                // any poison, exactly as the `QmMLayerId == -1` arm did before.
+                None => true,
+                // `QmMLayerId == -1`: unconditionally reset (mirror :5351).
+                Some(record) if record.mlayer_id.is_none() => true,
+                // `QmMLayerId == m`: reset iff MLayerPresenceMap[m][obu_mlayer_id] (mirror
+                // :5352). Undecidable without the activated header's presence map -> leave
+                // available (no false unavailability).
+                Some(record) => record.mlayer_id.is_some_and(|m| {
+                    presence
+                        .is_some_and(|p| p.is_present(EmbeddedLayerId::from_bits(m), obu_mlayer_id))
+                }),
+            };
+            if needs_reset {
                 self.available[level] = None;
                 self.availability_poisoned &= !(1u16 << level);
             }
@@ -397,11 +415,23 @@ impl ValidatorContext {
             // (its reset_qm() trigger is false), which is the confirmed NO-reset case the spec
             // gate describes — the parse reaches the inter region but `reset_qm()` did not run.
             ObuType::RasFrame | ObuType::Switch => {
+                // The § 5.18.2 SWITCH/RAS reset_qm() presence arm reads
+                // MLayerPresenceMap[QmMLayerId[level]][obu_mlayer_id] (mirror :5352), where the
+                // presence map is the § 5.4.1 reflexive-transitive closure of the frame's
+                // ACTIVATED sequence header's MLayerDependencyMap. Derive it once (owned, so the
+                // immutable `sequence_headers` borrow ends before the mutable `self.qm` reset).
+                let presence = resolved
+                    .and_then(|seq_id| self.sequence_headers.get(&seq_id))
+                    .map(|header| header.general.mlayer_dependency_map.presence_map());
+                let obu_mlayer_id = obu.header.embedded_layer_id;
                 match resolved.and_then(|seq_id| {
                     self.frame_core_against_resolved_header(obu, first_picture_in_tu, seq_id)
                 }) {
                     Some(core) if core.reached_qm_reset => {
-                        self.qm.reset_qm_availability_for_switch_or_ras();
+                        self.qm.reset_qm_availability_for_switch_or_ras(
+                            obu_mlayer_id,
+                            presence.as_ref(),
+                        );
                     }
                     // A resolvable SWITCH whose parse reached the reset point but whose
                     // `restricted_prediction_switch == 0` (so `reached_qm_reset == false`)

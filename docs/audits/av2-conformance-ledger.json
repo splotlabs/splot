@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "e8a41899e5103fac722caf3058457529b3cb1fcc",
+  "audited_commit": "972035e9a83a06d3f9993b0732c419edd630628b",
   "outcome": "success",
   "files": [
     {
@@ -771,7 +771,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/sequence.rs",
-      "sha256": "f6dc26530ace78926deb872f50c30ee5047c0db410ecc424aaa1c6a3dd310340",
+      "sha256": "67fecc5d1241142fc21221ff3b5594fe18690d87fa807684331b84bb2fcc9c6c",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
@@ -1077,11 +1077,21 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-recon/src/hash_input.rs",
+      "sha256": "6d9855d0eeb25228e370f8da9cf13dfcb02effdbd446501148648e1508c66bdd",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [
+        "RECON-HASH-INPUT-SERIALIZATION"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-recon/src/lib.rs",
-      "sha256": "690fcb956841f022b5950addd97d228acda0d26b0e0967a493eb42361d7a2a13",
+      "sha256": "e2f99141243769719fbceb831f1cebfc44210ce1f2c4b0ecdeab59d4cea3bb22",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "INFRA-RECON-FRAME-PLANE-TYPES",
+        "RECON-HASH-INPUT-SERIALIZATION",
         "RECON-REFERENCE-FRAME-STORE"
       ],
       "outcome": "success"
@@ -1466,7 +1476,7 @@
     },
     {
       "path": "crates/splot-validate/src/context/mod.rs",
-      "sha256": "2fc43f8069eb9351eaa405c7ffc894b4720227e932d70ad9a401964131ef86e9",
+      "sha256": "4c3e7fe527938fb9254c93f0cb14c6b66ed368df5f2bfc2f40ecb9fcc4dd76cd",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
@@ -1547,7 +1557,7 @@
     },
     {
       "path": "crates/splot-validate/src/context/quantizer_matrix.rs",
-      "sha256": "18098e6615192cd77cd90a42bd39c268a40d9ef5172be4e64d0782589392e3f0",
+      "sha256": "514fd9713950111b0354874eccdc04da779d3d9819dac6381ea7d3e9bf5d3bd0",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.18.6-QUANTIZATION",
@@ -1904,7 +1914,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator/tests/frame_tile_qm.rs",
-      "sha256": "b546108f69496aa1ec3e35aa2b19ec9a63ccddc3d59a147b00329bff7ca5dd97",
+      "sha256": "a218dd8208645e35b410a9018bbf11ef9a6fc804dc65bd48b506a8ba888f91ea",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -2053,7 +2063,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs",
-      "sha256": "2a82d6feb1d90998153123b6b28eee2a0895a39884cad2c6f104cee7f40ad688",
+      "sha256": "a8d19d4ef0e6608ef36b248cfe97b0c7ab354fa810bc660f1395e94609e97cc9",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -2067,7 +2077,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator/tests/reference_state.rs",
-      "sha256": "49f9c9a4de9375a61cc1e06c1e4f07b63d55919acdf488030ebb5eee8dba042f",
+      "sha256": "684d5dcbf7182b653125276b7ff5e9cb6384c375b7a51ca4ab4cbe5840ee5126",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -2181,7 +2191,7 @@
     },
     {
       "path": "docs/DECODER-ROADMAP.md",
-      "sha256": "7cab20567e003eb462d67b2698dad9f2ab7c5e5b39c8949ed6d1215863ff719d",
+      "sha256": "19b19574016296bab974bacecdb97bbdaa47e453d5ab0fcc705814f270211b9d",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-DECODE",
@@ -2195,7 +2205,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-MATRIX.toml",
-      "sha256": "1f358f0b969174e14e482c4cc93e4d1224e154fc42284aa9fb5eb779016c4c81",
+      "sha256": "3d57cf37440cac8b8243268a9a0bf4f968e11a8a874e1acf7e26cce63a0c62f9",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-DECODE",
@@ -2207,10 +2217,10 @@
         "DOC-DECODER-DIAGNOSTICS",
         "DOC-DECODER-ROADMAP",
         "DOC-DECODER-SUPPORT-MATRIX",
-        "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT",
         "DOC-MINIMAL-DECODE-TIER-CONTRACT",
         "INFRA-DECODER-CRATE-SCAFFOLDING",
         "INFRA-RECON-FRAME-PLANE-TYPES",
+        "RECON-HASH-INPUT-SERIALIZATION",
         "RECON-REFERENCE-FRAME-STORE",
         "XTASK-DECODER-SUPPORT-STATUS",
         "XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST"
@@ -2219,7 +2229,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-STATUS.md",
-      "sha256": "ae038a0f4635c97ffd173e9b22f73ddb16d1512a389e566b311b5ff34674d9c8",
+      "sha256": "65189e5616c6f56ae634e2b3e75ca0c84d35c9813625b96bfed840134aec9cb7",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-DECODE",
@@ -2231,10 +2241,10 @@
         "DOC-DECODER-DIAGNOSTICS",
         "DOC-DECODER-ROADMAP",
         "DOC-DECODER-SUPPORT-MATRIX",
-        "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT",
         "DOC-MINIMAL-DECODE-TIER-CONTRACT",
         "INFRA-DECODER-CRATE-SCAFFOLDING",
         "INFRA-RECON-FRAME-PLANE-TYPES",
+        "RECON-HASH-INPUT-SERIALIZATION",
         "RECON-REFERENCE-FRAME-STORE",
         "XTASK-DECODER-SUPPORT-STATUS",
         "XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST"
@@ -2243,7 +2253,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "10575c06508eeac4f001d864ba79152db56447c597ed918f2270ce99c54536b9",
+      "sha256": "9493dc146733f69f31f0c1679e59017fdd7d731263e23de67c4bb7c40c8166b8",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2385,6 +2395,7 @@
         "ENC-Y4M-INPUT",
         "INFRA-DECODER-CRATE-SCAFFOLDING",
         "INFRA-RECON-FRAME-PLANE-TYPES",
+        "RECON-HASH-INPUT-SERIALIZATION",
         "RECON-REFERENCE-FRAME-STORE",
         "VALIDATOR-CONTEXT-SPLIT",
         "XTASK-AUDIT-SCOPE",
@@ -2433,7 +2444,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "8f357a6e9129f0f7b1d6c26ac22ff55e363c6f3f128556248ac96a1d617f5cbd",
+      "sha256": "f353e6e6baa41a0364acb7b72a51c4f4e373d1188dd140ad3dafd68b1c6b2a99",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2575,6 +2586,7 @@
         "ENC-Y4M-INPUT",
         "INFRA-DECODER-CRATE-SCAFFOLDING",
         "INFRA-RECON-FRAME-PLANE-TYPES",
+        "RECON-HASH-INPUT-SERIALIZATION",
         "RECON-REFERENCE-FRAME-STORE",
         "VALIDATOR-CONTEXT-SPLIT",
         "XTASK-AUDIT-SCOPE",
@@ -2602,7 +2614,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "0807bbeec2caeca4e8b6315c97b324e1db63fd39705162099eff144e2276ab98",
+      "sha256": "28d228a02054d659337f0a26ae469b55977f9deb8fa5f98eb17c7d1c5abfc8c7",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2744,6 +2756,7 @@
         "ENC-Y4M-INPUT",
         "INFRA-DECODER-CRATE-SCAFFOLDING",
         "INFRA-RECON-FRAME-PLANE-TYPES",
+        "RECON-HASH-INPUT-SERIALIZATION",
         "RECON-REFERENCE-FRAME-STORE",
         "VALIDATOR-CONTEXT-SPLIT",
         "XTASK-AUDIT-SCOPE",
@@ -5859,6 +5872,36 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-qm-reset-mlayer-presence-arm/proposal.md",
+      "sha256": "97fa2001e7bb5e59c77d8f148efcf39a96ce3c7e3c76767709b3d751d07d0829",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.13-QUANTIZATION-MATRIX",
+        "AV2-5.18.6-QUANTIZATION",
+        "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-qm-reset-mlayer-presence-arm/specs/validator/spec.md",
+      "sha256": "a0c145af58eb80e2edaa488796fb37aa37c3f019af7a9bdd2f2b92db90067bc1",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-qm-reset-mlayer-presence-arm/tasks.md",
+      "sha256": "0b980b574e0f56b92d5648e56bf34044bc2e2f9688ab4172922131be923cc36c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.13-QUANTIZATION-MATRIX",
+        "AV2-5.18.6-QUANTIZATION",
+        "AV2-5.4.1-SEQUENCE-HEADER-GENERAL"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-13-rap-replay-film-grain-references/proposal.md",
       "sha256": "321a09cb02c10fef75d4792da62a55ea385ca50229c6777af23cf5f3d2fdd352",
       "scope_kind": "openspec",
@@ -5912,6 +5955,54 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-recon-hash-input-serialization/.openspec.yaml",
+      "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-recon-hash-input-serialization/agent-log.md",
+      "sha256": "8ecc988c59784e137d163691add2e48f11bc39be3e5f9b452bc642aca6928ad4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-HASH-INPUT-SERIALIZATION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-recon-hash-input-serialization/design.md",
+      "sha256": "15bba69634facfc87e2c4db1ac344984cfeebf29a0da826e83a0ec0bd40edc84",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-recon-hash-input-serialization/proposal.md",
+      "sha256": "02cb4a90a929a404464f6a4f5602ddae7ac4bb205be1627fc936227fc20509b2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-HASH-INPUT-SERIALIZATION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-recon-hash-input-serialization/specs/decoder-support/spec.md",
+      "sha256": "b6c2518b923596285127830be1d98e38cde818df547c4664e86b7c8423f6e61c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-recon-hash-input-serialization/tasks.md",
+      "sha256": "f2f07f471d526e59dec391cc3d184372cf6bf274e6e30df1fbb2a7b4071c7fc8",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-HASH-INPUT-SERIALIZATION"
       ],
       "outcome": "success"
     },
@@ -6144,7 +6235,7 @@
     },
     {
       "path": "openspec/specs/decoder-support/spec.md",
-      "sha256": "f5428121f2c3add3850aa18a92026bf6cbdeaaeafc4228bcb9635f58620c1875",
+      "sha256": "54aa3affb43559e30a63e91e64c278904bed4e5e174dc510fbad35dfb8ee491e",
       "scope_kind": "openspec",
       "feature_ids": [
         "CLI-DECODE",
@@ -6222,7 +6313,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "e3057220dea6144a68357e8eac4cdc96a61266ed768866b1c40462d109dd59f3",
+      "sha256": "2b9ed971f717a46affa18de6c1f8a0c68bb300aaab098906735926721690c7b0",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
@@ -6463,7 +6554,7 @@
     },
     {
       "path": "xtask/src/source_lines.rs",
-      "sha256": "075fb535dc18872068aacf09c37b9a1420924cd4f8b3eda8e30bf6ce2e84d6e4",
+      "sha256": "a3c0a0332a7a2af63129c130a7b373dcf6662c6eeeae5c0d1ceda572b0fdbff3",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "XTASK-SOURCE-LINES"
