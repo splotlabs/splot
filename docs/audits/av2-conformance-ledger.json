@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "9792fe013c730f9410f1636a2e0be0aff64187d3",
+  "audited_commit": "4c3ab3db078ac24d5c567e2bc64e332852ea291d",
   "outcome": "success",
   "files": [
     {
@@ -1688,23 +1688,16 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "bc8ce110ab43e4096fe14316ed88add7f743fa984eb9dbd762356d7383b84f28",
+      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
-        "AV2-5.11.3-OPS-DECODER-MODEL-INFO",
-        "AV2-5.12-BUFFER-REMOVAL-TIMING",
-        "AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO",
         "AV2-5.18-FRAME-HEADER",
         "AV2-5.19-TILE-GROUP",
         "AV2-5.2.2-OBU-HEADER",
         "AV2-5.2.3-TRAILING-BITS",
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
-        "AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO",
-        "AV2-7.3-OBU-ORDERING",
-        "AV2-A-LEVELS-TIERS",
-        "AV2-E-DECODER-MODEL",
         "CONF-AVM-DIFF-HARNESS",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
@@ -1737,42 +1730,6 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "ENC-BITSTREAM-WRITER"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/annex-e-decoder-model-schedule/proposal.md",
-      "sha256": "4642389086457c09ea859829aec26321bd75eee8d9781bad41d2bb8008555d72",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-5.11.3-OPS-DECODER-MODEL-INFO",
-        "AV2-5.12-BUFFER-REMOVAL-TIMING",
-        "AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO",
-        "AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO",
-        "AV2-7.3-OBU-ORDERING",
-        "AV2-A-LEVELS-TIERS",
-        "AV2-E-DECODER-MODEL"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/annex-e-decoder-model-schedule/specs/bitstream/spec.md",
-      "sha256": "3593acc5fa67c02d94ed0d2d63dce28a633dfceee1d45e4c6d0ae57a074d7b65",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-A-LEVELS-TIERS",
-        "AV2-E-DECODER-MODEL"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/annex-e-decoder-model-schedule/tasks.md",
-      "sha256": "f744e9e83bc9f1a73ca7e3ee949f4a5e7b26881b9ee2dd4f16a66ba69ec884e6",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "AV2-7.3-OBU-ORDERING",
-        "AV2-A-LEVELS-TIERS",
-        "AV2-E-DECODER-MODEL"
       ],
       "outcome": "success"
     },
@@ -3626,6 +3583,42 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-annex-e-decoder-model-schedule/proposal.md",
+      "sha256": "4642389086457c09ea859829aec26321bd75eee8d9781bad41d2bb8008555d72",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.11.3-OPS-DECODER-MODEL-INFO",
+        "AV2-5.12-BUFFER-REMOVAL-TIMING",
+        "AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO",
+        "AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-A-LEVELS-TIERS",
+        "AV2-E-DECODER-MODEL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-annex-e-decoder-model-schedule/specs/bitstream/spec.md",
+      "sha256": "3593acc5fa67c02d94ed0d2d63dce28a633dfceee1d45e4c6d0ae57a074d7b65",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-A-LEVELS-TIERS",
+        "AV2-E-DECODER-MODEL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-annex-e-decoder-model-schedule/tasks.md",
+      "sha256": "f744e9e83bc9f1a73ca7e3ee949f4a5e7b26881b9ee2dd4f16a66ba69ec884e6",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-A-LEVELS-TIERS",
+        "AV2-E-DECODER-MODEL"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/avm-differential-harness/proposal.md",
       "sha256": "ca4e00373763656046a33836c38af7626641afedb9e473897f7ae9b2a3572b5f",
       "scope_kind": "openspec",
@@ -3698,7 +3691,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "fea6f80fd04e529563c66afa76c353a4d22b0e3212ae6d4918df168a40560511",
+      "sha256": "8ecc5ca1c20167dbaeb37fc1b979a637955723efed7856df0d4d0ac8b0efdf5c",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
