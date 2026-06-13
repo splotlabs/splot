@@ -350,10 +350,11 @@ impl ValidatorContext {
         // the resolved current size (`core.frame_size`) and the proven-valid bru_ref slot's stored
         // dims (`SlotState::Valid`). The other use_bru == 1 conformance items are either already
         // checked (immediate_output_frame == 1 -> frame-header/bru-without-immediate-output;
-        // bru_ref < NumTotalRefs -> frame-header/bru-ref-out-of-range) or need the unmodeled
-        // get_ref_frames() RefOrderHint / inter refresh_frame_flags derivation (OrderHint >=
-        // RefOrderHint[i], the RESTRICTED_OH and refresh-mask-bit items) and stay residual. An
-        // Unknown / ProvenInvalid bru_ref slot has no proven dims and drops to silence; bru_ref is
+        // bru_ref < NumTotalRefs -> frame-header/bru-ref-out-of-range; the refresh-mask-bit ->
+        // frame-header/bru-ref-refresh-flag-unset below) or need the unmodeled get_ref_frames()
+        // RefOrderHint derivation (OrderHint >= RefOrderHint[i], the RESTRICTED_OH item) and stay
+        // residual. An Unknown / ProvenInvalid bru_ref slot has no proven dims and drops to
+        // silence; bru_ref is
         // bounds-checked against the recorded ref_frame_idx (a separate bru-ref-out-of-range home).
         if let Some(inter) = core.inter.as_ref()
             && inter.use_bru == Some(true)
@@ -375,6 +376,36 @@ impl ValidatorContext {
                      {}x{} (§6.17.2 requires RefFrameWidth/RefFrameHeight[ref_frame_idx[bru_ref]] \
                      == FrameWidth/FrameHeight — a BRU frame must match the reference it updates)",
                     size.width, size.height, facts.width, facts.height
+                ),
+            ));
+        }
+
+        // AV2 § 6.17.2 (mirror :4596): when use_bru == 1, "The value of refresh_frame_flags &
+        // (1 << ref_frame_idx[ bru_ref ]) must be non-zero" — a backward-reference-update frame
+        // must refresh the very slot it updates. Decidable from parsed header state alone:
+        // refresh_frame_flags (read on the inter path, inter.rs:477), bru_ref, and
+        // ref_frame_idx[bru_ref] — no reference-state lookup (unlike the dims / RefOrderHint
+        // clauses). bru_ref is bounds-checked against the recorded ref_frame_idx, and the shift
+        // is guarded against an out-of-range slot index (one already flagged by
+        // frame-header/ref-frame-idx-invalid-slot), so it cannot panic.
+        if let Some(inter) = core.inter.as_ref()
+            && inter.use_bru == Some(true)
+            && let Some(refresh_frame_flags) = inter.refresh_frame_flags
+            && let Some(bru_ref) = inter.bru_ref
+            && let Some(&idx) = inter.ref_frame_idx.get(bru_ref as usize)
+            && idx < u32::BITS
+            && (refresh_frame_flags & (1u32 << idx)) == 0
+        {
+            report.push(frame_header_error(
+                "frame-header/bru-ref-refresh-flag-unset",
+                "6.17.2",
+                obu,
+                format!(
+                    "use_bru == 1 backward-reference-update frame does not refresh its bru_ref \
+                     reference: refresh_frame_flags {refresh_frame_flags:#x} has the \
+                     ref_frame_idx[bru_ref={bru_ref}] = slot {idx} bit clear (§6.17.2 requires \
+                     refresh_frame_flags & (1 << ref_frame_idx[bru_ref]) != 0 — a BRU frame must \
+                     refresh the reference it updates)"
                 ),
             ));
         }
