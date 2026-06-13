@@ -4732,6 +4732,39 @@ fixtures = ["docs/DECODER-ROADMAP.md", "docs/DECODER-SUPPORT-MATRIX.toml"]
 diagnostics = []
 
 [[feature]]
+id = "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
+name = "Decoded frame and plane model contract documentation"
+category = "docs"
+kind = "docs"
+spec_sections = []
+sources = []
+crate = "docs"
+module = "docs/DECODER-ROADMAP.md"
+openspec_change = "decoded-frame-plane-model-contract"
+tracking_issue = ""
+owner = "docs"
+risk = "medium"
+notes = "Documents the future `DecodedFrame`, `Plane<T>`, `PixelFormat`, and `BitDepth` semantic contract before runtime frame/plane types exist. The contract separates cropped §7.21 output frames from padded §7.23 reference storage, requires explicit storage dimensions and `stride_samples`, records a splot-owned zero-based output emission index, excludes padding from hashes/Y4M/fixtures, requires checked sample and byte allocation arithmetic, charges full backing allocations against limits, requires immutable emitted output via immutable sharing, owned copies, or copy-on-write before mutation, and does not claim normative runtime implementation coverage."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = ["openspec validate --all --no-interactive", "cargo xtask check-decoder-support"]
+fixtures = ["docs/DECODER-ROADMAP.md", "docs/DECODER-SUPPORT-MATRIX.toml"]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODER-SUPPORT-MATRIX"
 name = "Decoder support matrix documentation"
 category = "docs"
