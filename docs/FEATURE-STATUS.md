@@ -145,5 +145,5 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DOC-DECODER-ROADMAP` | Decoder roadmap documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `docs/DECODER-ROADMAP.md` |
 | `DOC-DECODER-SUPPORT-MATRIX` | Decoder support matrix documentation | docs | docs | done | n/a | n/a | done | n/a | n/a | n/a | done | n/a | `docs/DECODER-SUPPORT-MATRIX.toml` |
 | `XTASK-DECODER-SUPPORT-STATUS` | Decoder support status reporting and checks | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/decoder_support.rs` |
-| `CLI-DECODE` | splot decode command | cli | cli | done | n/a | n/a | n/a | n/a | n/a | todo | todo | n/a | `crates/splot-cli/src/commands/decode.rs` |
+| `CLI-DECODE` | splot decode command | cli | cli | done | n/a | n/a | n/a | n/a | n/a | partial | done | n/a | `crates/splot-cli/src/commands/decode.rs` |
 | `VALIDATOR-CONTEXT-SPLIT` | Validator context module split | infrastructure | infrastructure | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-validate/src/context` |

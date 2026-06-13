@@ -52,10 +52,10 @@ parser_source = "crates/splot-core/src/stream.rs"
 decode_module = "crates/splot-cli/src/commands/decode.rs"
 tier = "foundation"
 status = "unsupported-intentional"
-self_contained_tests = []
-diagnostics = ["decode/unsupported-feature (planned)"]
+self_contained_tests = ["crates/splot-cli/tests/cli.rs::decode_unsupported_text_mode_emits_stable_diagnostic", "crates/splot-cli/tests/cli.rs::decode_unsupported_json_mode_emits_diagnostic_object", "crates/splot-cli/tests/cli.rs::decode_unsupported_missing_input_does_not_touch_files"]
+diagnostics = ["decode/unsupported-feature"]
 local_reference_evidence = []
-notes = "Current CLI command is a stub. A later change must replace the generic stub with structured unsupported-feature diagnostics from a library decoder path."
+notes = "The CLI entry point intentionally does not decode yet; it emits a structured unsupported-feature diagnostic without reading input, touching output, or invoking external decoders."
 
 [[row]]
 id = "decode-limits-budget"
