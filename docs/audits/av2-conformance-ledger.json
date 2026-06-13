@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "02d1af1822e9fdf6a1cb8f24b92b890aab01517b",
+  "audited_commit": "fb74608ee0db7255b47a378c5aaaf9cea78b0b3f",
   "outcome": "success",
   "files": [
     {
@@ -200,7 +200,7 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "dd225cc251b65e08c1e39a4db64edaa8ddbdd2e98d0480c1aa781cef1c8d67ce",
+      "sha256": "331509469edb5756b138fe9a3304e7f890bf8a86644009a2cb2f17923cdb18c2",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
@@ -221,7 +221,7 @@
     },
     {
       "path": "AGENTS.md",
-      "sha256": "67be6d8479fecbbf29b6b906ee52f1c881aaf58e1d36bd9715e746ae66474d3b",
+      "sha256": "9a8831b976d5b8dc9c304393a20d933e37188124f0e724a018fcb0a3749789e8",
       "scope_kind": "repository-process",
       "feature_ids": [
         "DOC-AUDIT-PROTOCOLS",
@@ -980,14 +980,311 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "832475f8529ba56c7d0a86eb07314e21b9f3d6cdb81f04a79ee8f40bc99a04f4",
+      "path": "crates/splot-validate/src/validator/diagnostics.rs",
+      "sha256": "1e5c601291c02161c6f118b887e89faa6f07c4b8d92419d6ecb2ff15a631bb0f",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/mod.rs",
+      "sha256": "b44f589f1bc83132072d433e323eddf867334fe51ad4859c34cb2e4fcc7f5900",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
-        "AV2-5.6-MSDO",
+        "XTASK-VALIDATOR-MODULE-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/runner.rs",
+      "sha256": "f369acb1a43790e7c8519e4205a3998e95ff5886dbb5c182b2ca867cbe6aa598",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/annex_a_iop.rs",
+      "sha256": "9235b96c35fb53918147cb33e5c17dba0cff17470f0ad19d3f16e51c315e9f9d",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/annex_a_levels.rs",
+      "sha256": "3ec2057c83e1ef0820cb6f7b5259e4d51e367432f53fd9e9af899ae6693f7997",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/annex_a_profiles.rs",
+      "sha256": "3b2083cda2f80e74ada4942dadfebb6d0ad83948b49999315fc33d56ab66cbd9",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
         "AV2-A-LEVELS-TIERS",
         "AV2-A-PROFILES"
       ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/celu.rs",
+      "sha256": "d9937b326f051833148cf4cbcc6c9b8990d4462901ac7625165e5bc636fc0f3e",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/content_interpretation_timing.rs",
+      "sha256": "89b439dce5d35a15e529eead02ad3e3a25dbd0787d40d5db8f05a20fd86a146d",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/decoder_model.rs",
+      "sha256": "6221725d068a6c4fbd11f7555070f198bb791e4be46b18a30608cce4ecbff45c",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/distinct_mlayer.rs",
+      "sha256": "0dd9f07d92f2a9437ff8c8b5684d67e1f7f03583c72b53e4a7d37828f440dc1c",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/fixtures.rs",
+      "sha256": "a942e67ce2e79a3e9d42c427e6334369ad1822017c19f8adad717abd49d7143d",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/frame_header_core.rs",
+      "sha256": "a6b358d6dcf4ebc5f02b454894a3aa4b4f04e9c5d2a4533c0fbac38ad4beff07",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/frame_size_semantics.rs",
+      "sha256": "3c5bc505ff263e87f2db7dd32b6e5bebf742d6be1690f5c6b692aeda6b34d654",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/frame_tile_qm.rs",
+      "sha256": "b546108f69496aa1ec3e35aa2b19ec9a63ccddc3d59a147b00329bff7ca5dd97",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/frame_unit_metadata.rs",
+      "sha256": "4264d75d4fdd671f77e263d15548fca2eba5125ca69e5571d850af6d7d983096",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/frame_unit_order.rs",
+      "sha256": "5fd9e61634d94c70f5a24334b2a2b51d4a91c6b2de62328796aa1e70acd50c0b",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/hls_frame_header.rs",
+      "sha256": "904272beea54251feeee46b4a70a257fe24c6d696716d0b5f5492b8ccd81ed73",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/hls_syntax.rs",
+      "sha256": "7be634f2265a3bb54dbc35b39d72fdfd4b5efc6c11eb9c5f865fb03b740ba798",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/layer_dependency_core.rs",
+      "sha256": "412e6347f6e3420f4536e37a0bd0b750cb1aea021bb8906dffd4f5d20bd93b61",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/layer_dependency_deferred.rs",
+      "sha256": "f8b74d9f7365e52039159452ceaaeab5ae5e21dbe66029506cdef4a56193dd0d",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/lcr_atlas.rs",
+      "sha256": "454ecdf70343d82380288adac386b935a303b0479d351ad6eded44364368e20c",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs",
+      "sha256": "c7159dcf283d516b7639060311a09a6a2d3f243e56cdc3c015d3e9f009d20f73",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/lcr_ptl.rs",
+      "sha256": "d8345984b0d2b6384e7552ad474c50a41c352ff5ede3c5ac52fa341a5b3d5113",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/lcr_rep_info.rs",
+      "sha256": "1c8fe6f35c3d22990932a0456d2b60eaf44b3c6bd7a712a71a1d972bd5a0a673",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/metadata_lifetime.rs",
+      "sha256": "f9ea0aa7b93b8ca0df66c03c8f20ce4b1ab51633c5df6cf837847a072b720928",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/metadata_syntax.rs",
+      "sha256": "065c21d7677362bdd8d68bcd0f22146d9fe1a9b2c501f179132b87a7c9627abd",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/mfh_external_hls.rs",
+      "sha256": "c61764747a363e6ff157f5601dc42711a5213842e8da4da09f3aae41706f11a6",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/mod.rs",
+      "sha256": "71ddadb91995efca699cc8c64842e5c7c9393ed174bc82bc98c85e5f55fe13ee",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/monotonic_output_order.rs",
+      "sha256": "215eb86296ea82f96867f039dfb0fc9f39d2f80a5dc0f009a51ab7f6ce989f29",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/msdo_substream.rs",
+      "sha256": "dee80127ebf036e5bb5be749340b7a707a037b479dbec4ca46982747619dce3f",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-5.6-MSDO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/obu_header_and_syntax.rs",
+      "sha256": "54866e84d89893d2ae85154853b2d7cdec8e1c0b7379e9c49c3929da37f062f7",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/ops_brt.rs",
+      "sha256": "8b896c5ac7e73e9ca6acc649da54c551c04a7ac1db67f77f7a21fe167d51f288",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/public_api.rs",
+      "sha256": "ba5432bd7ad6f4e51f2e98380ab35130e15bd344834b053197a1d29ac7926837",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/qm_film_grain.rs",
+      "sha256": "53a2c1d4151c77bd0324c491ea09fdf8d7efe75dd6f30e99577b5ca754973d11",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs",
+      "sha256": "dfc18cbe9c28f9217b709869db49dfbb02f7b0d959d880676b5c2f986bd4e96e",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/rap_replay_layers.rs",
+      "sha256": "dc90e7532070937db39c4d77a0983fa27abe4f2020d5a9e2cd113a95bffb4320",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/reference_state.rs",
+      "sha256": "8dbd9f4be415cb0ad9d8156d0993e53ac1c72e5f888261647068c4ffab438499",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/scan_type.rs",
+      "sha256": "e30ddcf89bfe50f3e5051254a9db9736c714f5061f9c1efb9d3acfcc9774eebb",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/sequence_activation.rs",
+      "sha256": "023eb0c2e499ed72a06ee33d97c0e57a1af687807db62ff544414e784a9e971b",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/sequence_state.rs",
+      "sha256": "169307e16c8d011fe1d49ada170df8a01a95b21b49b9a6d3c2c7baf5326560b0",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/tile_group.rs",
+      "sha256": "886c38c7950a26599445112ac3a33de276b1208ffe1e79c9a5b48331cd9646bf",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/timecode_basic.rs",
+      "sha256": "747453382fe6d6826a5fb5f89c72c305fc998b2fb7933ddf401f4badbcc766b1",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/validator/tests/timecode_targeting.rs",
+      "sha256": "8e7b656c6d1fd94a874f59975fea7bc4d367767b6fdde2a59ff6e3f08fccd6cd",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [],
       "outcome": "success"
     },
     {
@@ -1022,7 +1319,7 @@
     },
     {
       "path": "docs/CONFORMANCE.md",
-      "sha256": "139daf11a94f00c119352439f6f31c8db008d2aa7eb6581a0cdf1a5c0eeaa519",
+      "sha256": "79c234ab09c35d89ae3002cc35540a8452e0ce99ba569320ba7d91eebdfe2afd",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-INSPECT",
@@ -1046,7 +1343,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "343e2140879f31e71dd8ad1aa21e9538fbfe65117799027de75f89fa859af90e",
+      "sha256": "b4329d33fab0f53a3f4bb7f8751eafc177b415519658f7f9b541a1e440d0695a",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1180,7 +1477,9 @@
         "XTASK-CONVENTIONAL-COMMITS",
         "XTASK-DIAGNOSTIC-REGISTRY",
         "XTASK-FEATURE-STATUS",
-        "XTASK-GEN-TABLES"
+        "XTASK-GEN-TABLES",
+        "XTASK-SOURCE-LINES",
+        "XTASK-VALIDATOR-MODULE-SPLIT"
       ],
       "outcome": "success"
     },
@@ -1216,7 +1515,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "6bcf6629652fe56211c94b9c5961c941122a647357dc4b0b4a2d15476f76bc8b",
+      "sha256": "7d469e00c4fe31a3f727d84bb58f7ff99d8f1c700ab7578a7a137c458aa5ec19",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1350,13 +1649,15 @@
         "XTASK-CONVENTIONAL-COMMITS",
         "XTASK-DIAGNOSTIC-REGISTRY",
         "XTASK-FEATURE-STATUS",
-        "XTASK-GEN-TABLES"
+        "XTASK-GEN-TABLES",
+        "XTASK-SOURCE-LINES",
+        "XTASK-VALIDATOR-MODULE-SPLIT"
       ],
       "outcome": "success"
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "902d5cce61b838885b42a55101a1bba782fd55ba95cb8d5afcba2029f78ed096",
+      "sha256": "22d33b9b6f1c59f392d8c9c5c6cf824dcae2260abb3b9db6b90ae5c06c19769c",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1490,7 +1791,9 @@
         "XTASK-CONVENTIONAL-COMMITS",
         "XTASK-DIAGNOSTIC-REGISTRY",
         "XTASK-FEATURE-STATUS",
-        "XTASK-GEN-TABLES"
+        "XTASK-GEN-TABLES",
+        "XTASK-SOURCE-LINES",
+        "XTASK-VALIDATOR-MODULE-SPLIT"
       ],
       "outcome": "success"
     },
@@ -3603,6 +3906,33 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-avm-positive-vector-generation/proposal.md",
+      "sha256": "4b9d9dc105185cea6f46901d6694c10058f2a04256580c0664c0ceea06bcfa27",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-AVM-VALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-avm-positive-vector-generation/specs/conformance/spec.md",
+      "sha256": "20891e9d24dea57d271bb04858139b05fd7174b6133f5fd634fca31aeaca0681",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-AVM-VALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-avm-positive-vector-generation/tasks.md",
+      "sha256": "fe6c83c6e46ab41e70af6152ba7a53915ad5875c5e9f1a20ad66e7e563cb9536",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-AVM-VALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-13-conformance-corpus-foundation/proposal.md",
       "sha256": "27c4b656750b41322deab429e14742e8727c985938ae4162766f51fd1c3430e4",
       "scope_kind": "openspec",
@@ -3656,6 +3986,53 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-INVALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-validator-source-line-budget/.openspec.yaml",
+      "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-validator-source-line-budget/design.md",
+      "sha256": "eb8e138125e164b95773a61b2ca287cf280fba3b9e7110b279d552a6b9501d5d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-SOURCE-LINES",
+        "XTASK-VALIDATOR-MODULE-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-validator-source-line-budget/proposal.md",
+      "sha256": "0a5c178148488b3420f57e9c1e0ef1348793920518a813e528d5bf4153656aa2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-SOURCE-LINES",
+        "XTASK-VALIDATOR-MODULE-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-validator-source-line-budget/specs/process/spec.md",
+      "sha256": "dff217b03d1b388f149d153790fed6f525a84410bce83cdcb38ac3bb4f56d0e0",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-SOURCE-LINES",
+        "XTASK-VALIDATOR-MODULE-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-validator-source-line-budget/tasks.md",
+      "sha256": "1fc34a5a2d4dc03e2a3169a90b178c34527a823d45404a4eb755c4fb0113ec5d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-SOURCE-LINES",
+        "XTASK-VALIDATOR-MODULE-SPLIT"
       ],
       "outcome": "success"
     },
@@ -3754,7 +4131,7 @@
     },
     {
       "path": "openspec/specs/conformance/spec.md",
-      "sha256": "b95a9399327b05d4ed43996b993380ea895c9e289d275d9e7a776f7cf41d9543",
+      "sha256": "e1a95a2a9c7c183138bfef91f71e899559b168ebe8b585dbc27ea8185d492118",
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
@@ -3807,7 +4184,7 @@
     },
     {
       "path": "openspec/specs/process/spec.md",
-      "sha256": "6b9703eac4d226ea3dd08a4d8513080bae187cd6cfa5d39348d459408edb0ab3",
+      "sha256": "b7da21af50d3c4c1759c2b71f94cdfab9ab22a8505006ee3c62ca0c073227dcf",
       "scope_kind": "openspec",
       "feature_ids": [
         "DOC-AUDIT-PROTOCOLS",
@@ -3816,7 +4193,8 @@
         "XTASK-AUDIT-SCOPE",
         "XTASK-CONVENTIONAL-COMMITS",
         "XTASK-DIAGNOSTIC-REGISTRY",
-        "XTASK-FEATURE-STATUS"
+        "XTASK-FEATURE-STATUS",
+        "XTASK-SOURCE-LINES"
       ],
       "outcome": "success"
     },
@@ -3883,7 +4261,7 @@
     },
     {
       "path": "tests/conformance/manifest.toml",
-      "sha256": "017a222d05687e1ea4162d0249ae9f23559e4cd8b98193cea899c30ad5b6b3d8",
+      "sha256": "aaba8c00dd59d683b9da90965f088f9e790fb2da2125c963ca9fc31ea7d5b592",
       "scope_kind": "conformance-corpus",
       "feature_ids": [
         "CONF-AVM-VALID-STREAMS"
@@ -3898,6 +4276,41 @@
       "outcome": "success"
     },
     {
+      "path": "tests/conformance/vectors/needs-external-hls/syn-lcr-64x64.ivf",
+      "sha256": "057711a91d705882b4406c8e53062f004fca4f43d674e33af543dc4501b58f64",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/needs-external-hls/syn-qm-64x64.ivf",
+      "sha256": "398a2529e1cd62fb9fe66d05ffd7b950e61601f030c4a18571e803889ef8ce7d",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-inter-96x64.ivf",
+      "sha256": "dba7ad79bc1524b9e94fbc82f5b2b5021ca6b4157571f1cfc13beea2765e9dec",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-intra-128x128.ivf",
+      "sha256": "62e2b1b10282b9c090e82801ace0c13bb9cb099bebfebba66e508014988ef56e",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-intra-64x64-10bit.ivf",
+      "sha256": "83f36347e4fab4d083acb6ba227d3e8296115fd0efe89fa3f8ff1db4b76208e2",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "tests/conformance/vectors/valid/syn-key-inter-64x64.ivf",
       "sha256": "ae09182ed9d0c1fde1533a0215abfcfcdd69b21676cf72dde903c9c34d07420c",
       "scope_kind": "conformance-corpus",
@@ -3907,6 +4320,13 @@
     {
       "path": "tests/conformance/vectors/valid/syn-key-intra-64x64.ivf",
       "sha256": "8310661d3b68ee9560be0c61f5bae65fe10f3667b8b65e18a4ad5db1fbc4127d",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-ops-64x64.ivf",
+      "sha256": "fca2a05ac5b2e63b1cf2a2fa8e6f6cd5da51c06852fe6816022626db50b2a3af",
       "scope_kind": "conformance-corpus",
       "feature_ids": [],
       "outcome": "success"
@@ -3940,7 +4360,7 @@
     },
     {
       "path": "xtask/src/diagnostic_registry.rs",
-      "sha256": "69074fd489e6a883b98f0d2ea45f5c3aa0945b11409e42aa6b1b2ee2f9622442",
+      "sha256": "4522d7f9ee17a212cd6458a7e57629e0a011f99e43f430c326f66a2bd5475df3",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "XTASK-DIAGNOSTIC-REGISTRY"
@@ -3979,7 +4399,7 @@
     },
     {
       "path": "xtask/src/main.rs",
-      "sha256": "cf5c197a3c026b435b039eaf04f6f8d8cbf3dd378f9cbc3c0da484099f95a02e",
+      "sha256": "1f9cf0dded48d9da5dfa911e52c18dec1147926b52bb014dbd4429f3a9341395",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "CONF-AVM-PARSER-TRACES",
@@ -3987,6 +4407,15 @@
         "DOC-AV2-SPEC-MIRROR",
         "XTASK-CI-QUALITY-GATES",
         "XTASK-CONVENTIONAL-COMMITS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "xtask/src/source_lines.rs",
+      "sha256": "149de43027c9c5e960efb1c37e5efeb1727280821c659523117880b6ac65bd50",
+      "scope_kind": "workspace:xtask",
+      "feature_ids": [
+        "XTASK-SOURCE-LINES"
       ],
       "outcome": "success"
     }

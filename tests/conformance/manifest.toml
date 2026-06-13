@@ -47,3 +47,50 @@ header declares the full payload length but the file ends short, so the \
 container layer flags exactly one truncation error. Bootstrap negative that \
 exercises the manifest's diagnostics arm so the runner is not vacuous."""
 expect = { diagnostics = ["ivf/truncated-frame-payload"] }
+
+# --- Diverse AVM positive vectors (avm-positive-vector-generation) ---
+# All from project-owned synthetic YUV input; --lag-in-frames=0 keeps the IVF
+# frame counts internally consistent.
+
+[[vector]]
+path = "vectors/valid/syn-intra-128x128.ivf"
+description = "Intra key frame at 128x128 (larger resolution / multi-block); validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-inter-96x64.ivf"
+description = "Non-square key + inter frames at 96x64; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-intra-64x64-10bit.ivf"
+description = "10-bit intra key frame at 64x64 (bit_depth_idc path); validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-ops-64x64.ivf"
+description = "Stream carrying an OBU_OPERATING_POINT_SET (--enable-operating-point-sets); validates clean."
+expect = "clean"
+
+# These two are VALID AVM streams that AVM produces for EXTERNAL-HLS provision:
+# AVM's --enable-lcr emits a local LCR referencing an absent global LCR, and
+# --enable-qm emits using_qmatrix referencing a QM level with no QM OBU in-band.
+# Validated standalone (external HLS disabled), the validator CORRECTLY flags the
+# missing resource (§7.3.8.3 / §7.3.8.9) — a real differential check that splot's
+# availability diagnostics fire on reference-encoder output.
+
+[[vector]]
+path = "vectors/needs-external-hls/syn-lcr-64x64.ivf"
+description = """
+AVM --enable-lcr stream: a local layer configuration record references a global \
+LCR id that is not present in-band. Standalone (external HLS disabled), the \
+validator emits the §7.3.8.3 global-LCR-unavailable diagnostic."""
+expect = { diagnostics = ["lcr/global-lcr-unavailable"] }
+
+[[vector]]
+path = "vectors/needs-external-hls/syn-qm-64x64.ivf"
+description = """
+AVM --enable-qm stream: a frame has using_qmatrix == 1 referencing a quantizer \
+matrix level with no quantizer matrix OBU in-band. Standalone (external HLS \
+disabled), the validator emits the §7.3.8.9 qm-level-unavailable diagnostic."""
+expect = { diagnostics = ["frame-header/qm-level-unavailable"] }
