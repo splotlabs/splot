@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "afda1496b596338f327359ccac433a769530a7ad",
+  "audited_commit": "a10e9ddb3a9adeb8b4c3bf3efd96dd98da4092e5",
   "outcome": "success",
   "files": [
     {
@@ -1304,7 +1304,7 @@
     },
     {
       "path": "crates/splot-validate/src/context/quantizer_matrix.rs",
-      "sha256": "0fc7327a1cb989feae11e491a5ade7959a3d4711fd608879598552b3f64e6058",
+      "sha256": "18098e6615192cd77cd90a42bd39c268a40d9ef5172be4e64d0782589392e3f0",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.18.6-QUANTIZATION",
