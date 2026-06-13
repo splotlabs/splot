@@ -4739,6 +4739,50 @@ fixtures = ["docs/DECODER-ROADMAP.md", "docs/DECODER-SUPPORT-MATRIX.toml"]
 diagnostics = []
 
 [[feature]]
+id = "RECON-HASH-INPUT-SERIALIZATION"
+name = "Decoded frame hash input serialization"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["6.16.13", "7.21.2"]
+sources = [
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-2",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/hash_input.rs"
+openspec_change = "recon-hash-input-serialization"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds dependency-free canonical decoded-frame hash input serialization in `splot-recon`: `DecodedFrameHashInput<'_, T>` exposes `BYTE_STREAM_ID == av2-output-samples-v1`, `VARIANT_ID == raw_intermediate_output`, checked `byte_len`, and `write_to` over caller-supplied `DecodedFrame<T>` visible rows. The byte stream follows AV2 §6.16.13 sample-byte conversion for modeled visible output rows: Y/U/V plane order, monochrome Y only, raster scan order, one byte for 8-bit output, and little-endian two-byte samples for >8-bit output. This is digest-input infrastructure only: no SHA-256 computation, AV2 metadata MD5 verification, output ordering, film-grain synthesis, byte-consuming decode, Y4M output, external decoder invocation, new dependency, or dependency graph change."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-recon/src/hash_input.rs::tests"]
+commands = [
+    "cargo test -p splot-recon --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "crates/splot-recon/src/hash_input.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
 name = "Decoded frame and plane model contract documentation"
 category = "docs"

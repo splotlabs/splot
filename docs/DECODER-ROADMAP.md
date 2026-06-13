@@ -31,8 +31,9 @@ The workspace now includes scaffolded `splot-recon` and `splot-decode` crates
 for future reconstruction primitives and the future decode driver.
 `splot-recon` now exposes immutable decoded output frame and plane model types
 with constructor invariants plus a bounded immutable reference-slot container,
-but no reconstruction algorithm, byte-consuming decode path, frame hash
-computation, Y4M output, or AV2 reference refresh semantics exists yet.
+and canonical decoded-frame hash input serialization, but no reconstruction
+algorithm, byte-consuming decode path, hash digest computation, Y4M output, or
+AV2 reference refresh semantics exists yet.
 
 Canonical decoder status lives in
 [`DECODER-SUPPORT-MATRIX.toml`](./DECODER-SUPPORT-MATRIX.toml), rendered to
@@ -102,7 +103,7 @@ other external decoder is forbidden.
 |---|---|---|
 | 0 | Roadmap, support matrix, generated status, drift gate | supported |
 | 1 | Decode API contract, limits, resource diagnostics, crate scaffolding, plan-only byte entry point | crate scaffolding and limits runtime API supported; byte-consuming enforcement partial |
-| 2 | Shared decoded frame, plane, pixel format, and deterministic hash types | frame/plane model types supported; hash contract documented; hash runtime planned |
+| 2 | Shared decoded frame, plane, pixel format, and deterministic hash types | frame/plane model types and hash-input serialization supported; digest computation planned |
 | 3 | CLI `splot decode` contract backed by library diagnostics | hash output parse contract wired; runtime unsupported |
 | 4 | Container traversal, layer/operating-point selection, transactional decode planning | minimal tier contract documented; runtime planned |
 | 5 | Self-contained decode fuzz target and fixture smoke | planned |
@@ -350,6 +351,14 @@ The canonical byte stream is defined as follows:
   and signaled decoded-frame-hash metadata are excluded from the digest input
   and must be asserted separately when relevant.
 
+`splot-recon` source-backs the byte-stream portion of this contract with
+`DecodedFrameHashInput<'_, T>`. That API serializes a caller-supplied
+`DecodedFrame<T>`'s modeled visible rows and exposes
+`byte_stream_id = "av2-output-samples-v1"` plus
+`variant_id = "raw_intermediate_output"`. It does not compute SHA-256, verify
+AV2 metadata MD5, select output order, synthesize film grain, read bitstreams,
+or invoke AVM/dav2d.
+
 The default future hash variant is `raw_intermediate_output`, corresponding to
 AV2 § 6.16.13 `has_grain = 0`: `OutY`/`OutU`/`OutV` from the § 7.21.2
 intermediate output preparation process before § 7.21.7 film-grain synthesis.
@@ -420,16 +429,17 @@ Maintainer approval for the decoder/reconstruction dependency graph landed on
 
 ```text
 crates/splot-core      bitstream model + parsers
-crates/splot-recon     decoded output model types; future hashes, reconstruction primitives, references
+crates/splot-recon     decoded output model types; hash-input bytes; future reconstruction primitives, references
 crates/splot-decode    unsupported diagnostic API; future driver using splot-core + splot-recon
 crates/splot-encode    future encoder, not yet depending on splot-recon
 crates/splot-cli       thin CLI rendering splot-decode diagnostics
 ```
 
 The scaffold is still an ownership boundary for decode. `splot-recon` exposes a
-runtime decoded output frame/plane model and reference-slot container, but no
-reconstruction algorithm, AV2 reference refresh process, deterministic hash, or
-Y4M writer. `splot-decode` exposes no byte-consuming decode API, `splot-cli`
-only renders the current unsupported diagnostic path, and `splot-encode` remains
-unchanged until a later encoder/reconstruction API change explicitly adds reuse
-of `splot-recon`.
+runtime decoded output frame/plane model, reference-slot container, and
+deterministic hash-input byte serializer, but no reconstruction algorithm, AV2
+reference refresh process, hash digest computation, or Y4M writer.
+`splot-decode` exposes no byte-consuming decode API, `splot-cli` only renders
+the current unsupported diagnostic path, and `splot-encode` remains unchanged
+until a later encoder/reconstruction API change explicitly adds reuse of
+`splot-recon`.
