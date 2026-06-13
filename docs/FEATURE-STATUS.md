@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-10. 132 feature(s).
+Matrix version 1. Last reviewed 2026-06-10. 134 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -133,6 +133,8 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `XTASK-FEATURE-STATUS` | xtask feature status reporting and checks | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/feature_status.rs` |
 | `XTASK-AUDIT-SCOPE` | Changed-file AV2 audit scope | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/audit_scope.rs` |
 | `XTASK-DIAGNOSTIC-REGISTRY` | Validator diagnostic registry enforcement | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/diagnostic_registry.rs` |
+| `XTASK-VALIDATOR-MODULE-SPLIT` | Validator module split | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `crates/splot-validate/src/validator/mod.rs` |
+| `XTASK-SOURCE-LINES` | Rust source-file line budget | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/source_lines.rs` |
 | `XTASK-GEN-TABLES` | AV2 § 9 tables code generator | automation | automation | done | done | done | done | done | n/a | n/a | done | n/a | `xtask/src/gen_tables.rs` |
 | `XTASK-CI-QUALITY-GATES` | CI quality gates (docs build + coverage threshold) | automation | automation | done | n/a | n/a | done | n/a | n/a | n/a | n/a | n/a | `xtask/src/main.rs` |
 | `DOC-FEATURE-TRACKING` | Feature tracking documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `docs/FEATURE-TRACKING.md` |

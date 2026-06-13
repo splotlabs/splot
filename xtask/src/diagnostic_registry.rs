@@ -8,7 +8,9 @@
 //! and a few `&'static str` helper fns; every rule id is a plain string literal (there are
 //! no `format!`-built ids). The canonical set of emitted ids is therefore extracted
 //! *syntactically*: every `"<ns>/<id>"` literal in non-test, non-comment validator source.
-//! That set must equal the ids documented between the
+//! Inline `#[cfg(test)] mod ...` blocks and standalone files under `tests/` directories are
+//! skipped so assertion literals and prefixes do not look like emitted diagnostics. That set
+//! must equal the ids documented between the
 //! `<!-- diagnostics-registry:begin -->` / `:end` markers in the registry doc.
 //!
 //! This is the full-id superset of the prefix-level `scan_diagnostics` guard in
@@ -76,6 +78,9 @@ fn emitted_ids(root: &Path) -> Result<BTreeSet<String>> {
     let dir = root.join(VALIDATE_SRC);
     let mut ids = BTreeSet::new();
     for path in collect_files(&dir, &["rs"])? {
+        if is_standalone_test_source(&dir, &path) {
+            continue;
+        }
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", display_path(root, &path)))?;
         for literal in string_literals_skipping_comments(strip_test_modules(&text)) {
@@ -85,6 +90,13 @@ fn emitted_ids(root: &Path) -> Result<BTreeSet<String>> {
         }
     }
     Ok(ids)
+}
+
+fn is_standalone_test_source(src_root: &Path, path: &Path) -> bool {
+    path.strip_prefix(src_root)
+        .unwrap_or(path)
+        .components()
+        .any(|component| component.as_os_str().to_str() == Some("tests"))
 }
 
 /// The rule ids documented inside the enforced registry region of [`REGISTRY_DOC`].
@@ -412,10 +424,52 @@ mod tests {
         assert!(!emitted.contains("sequence-header/timing-"));
     }
 
+    #[test]
+    fn emitted_ids_skips_split_test_files_under_tests_dirs() {
+        let root = temp_root("split-tests");
+        let src = root.join(VALIDATE_SRC);
+        std::fs::create_dir_all(src.join("validator/tests")).unwrap();
+        std::fs::write(src.join("real.rs"), r#"fn real() { d("ops/real"); }"#).unwrap();
+        std::fs::write(
+            src.join("validator/tests/fake.rs"),
+            r#"fn test_only() { d("ops/test-only"); }"#,
+        )
+        .unwrap();
+
+        let emitted = emitted_ids(&root).unwrap();
+        assert_eq!(emitted, BTreeSet::from(["ops/real".to_owned()]));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn standalone_test_source_detection_uses_path_components() {
+        let src = std::path::Path::new("crates/splot-validate/src");
+        assert!(is_standalone_test_source(
+            src,
+            &src.join("validator/tests/fake.rs")
+        ));
+        assert!(!is_standalone_test_source(
+            src,
+            &src.join("contest/fake.rs")
+        ));
+    }
+
     fn repo_root() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("xtask has a parent dir")
             .to_path_buf()
+    }
+
+    fn temp_root(name: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "splot-xtask-diagnostic-registry-{name}-{}-{nonce}",
+            std::process::id()
+        ))
     }
 }
