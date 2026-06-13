@@ -24,8 +24,8 @@ struct SourceLineAllowance {
 const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[
     SourceLineAllowance {
         path: "crates/splot-core/src/headers/sequence.rs",
-        max_lines: 3245,
-        reason: "large cohesive sequence-header parser (incl. the ProfileIdc Table A.1 enum + canonical-identity trait impls); split separately from this validator refactor",
+        max_lines: 3328,
+        reason: "large cohesive sequence-header parser (incl. the ProfileIdc Table A.1 enum + canonical-identity trait impls, and the §5.4.1 MLayerPresenceMap reflexive-transitive closure derivation + its closure test); split separately from this validator refactor",
     },
     SourceLineAllowance {
         path: "crates/splot-core/src/headers/frame/info.rs",

@@ -789,17 +789,34 @@ fn qm_rap_seq() -> FrameCoreSeq {
 
 #[test]
 fn rap_replay_qm_level_only_before_rap_is_flagged() {
-    // TU1: a normal QM OBU defines custom level 0 (QmMLayerId == 0, NOT the -1 arm). TU2: a
-    // RAS (a §7.4.1 random access point) whose confirmed reset_qm() clears only the
-    // QmMLayerId == -1 arm — so level 0 SURVIVES linearly (the linear qm-level-unavailable
-    // stays silent). TU3: an INTRA_ONLY frame (no reset_qm of its own) references level 0.
-    // The model's only send was before the RAS and was not resent in or after it, so a decode
+    // The replay's disjoint-from-linear value is inherently MULTI-LAYER: a single-layer RAS
+    // resets EVERY level (QmMLayerId == obu_mlayer_id == 0, so MLayerPresenceMap[0][0] == 1,
+    // mirror :5352), which the linear check already catches. To exercise the replay we need a
+    // level that SURVIVES the random-access reset linearly yet is missing from a decode that
+    // starts at the random access point.
+    //
+    // TU1: a normal QM OBU at obu_mlayer_id 0 defines custom level 0 (QmMLayerId == 0). TU2: a
+    // confirmed RAS (a §7.4.1 random access point) at obu_mlayer_id 1. Its reset_qm() clears a
+    // level only when MLayerPresenceMap[QmMLayerId[level]][obu_mlayer_id] == 1; here
+    // MLayerPresenceMap[0][1] == 0 (decoding embedded layer 0 does not require layer 1), so
+    // level 0 SURVIVES the reset linearly (the linear qm-level-unavailable stays silent). TU3:
+    // an INTRA_ONLY frame at layer 0 (no reset_qm of its own) references level 0. The only send
+    // was before the random access point and was not resent in or after it, so a decode
     // starting at the RAS cannot supply it — the replay fires even though the linear test sees
-    // it present.
-    let mut data = td_and_frame_core_seq(qm_rap_seq());
-    data.extend(qm_default_level_obu_chroma(0)); // TU1: level 0, QmMLayerId 0 (survives RAS)
+    // it present. (The default §5.4.1 fill makes layer 1 depend on layer 0, so the RAS at
+    // layer 1 also trips the unrelated §6.4.1 self-containment check; the QM assertions below
+    // are rule-id-specific and unaffected.)
+    let seq = FrameCoreSeq {
+        long_term_frame_id_bits: 4, // §6.4.6: the RAS requires long_term_frame_id_bits != 0
+        max_mlayer_id: 1,           // != 0 -> the RAS refresh takes the explicit arm
+        explicit_ref_frame_map: true,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(qm_default_level_obu_chroma(0)); // TU1: level 0 at layer 0, QmMLayerId 0
     data.extend(temporal_delimiter_obu());
-    data.extend(ras_frame_confirmed_reset()); // TU2: RAP; reset clears only the -1 arm
+    // TU2: confirmed RAS at obu_mlayer_id 1 (NumRefFrames 8, num_total_refs 1, slot 0 Unknown).
+    data.extend(ras_frame_explicit_map_at_layer(1, 0, 1, 8, 1));
     data.extend(temporal_delimiter_obu());
     data.extend(intra_only_frame_with_qm_reference(0)); // TU3: references level 0 (no own reset)
     let report = Validator::new(false).validate_bytes(&data);
@@ -808,14 +825,14 @@ fn rap_replay_qm_level_only_before_rap_is_flagged() {
         "a QM level sent only before the random access point must fire the replay; report \
          was: {report}"
     );
-    // Disjoint from the linear check: level 0 survives the RAS reset, so it IS linearly
-    // available and the linear unavailable check stays silent.
+    // Disjoint from the linear check: level 0 (defined at layer 0) survives a RAS at layer 1,
+    // so it IS linearly available and the linear unavailable check stays silent.
     assert!(
         !report
             .errors()
             .any(|d| d.rule_id == "frame-header/qm-level-unavailable"),
-        "level 0 survives the RAS reset, so the linear check must stay silent; report was: \
-         {report}"
+        "level 0 survives the cross-layer RAS reset, so the linear check must stay silent; \
+         report was: {report}"
     );
 }
 

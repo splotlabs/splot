@@ -35,8 +35,9 @@ use splot_core::headers::quantizer_matrix::{
     NUM_CUSTOM_QMS, QuantizerMatrixObu, parse_quantizer_matrix,
 };
 use splot_core::headers::sequence::{
-    MAX_NUM_MLAYERS, MAX_SEQ_NUM, MLayerDependencyMap, SequenceHeader, SequenceHeaderGeneral,
-    SequenceHeaderId, TLayerDependencyMap, Tier, TimingInfo, parse_sequence_header,
+    MAX_NUM_MLAYERS, MAX_SEQ_NUM, MLayerDependencyMap, MLayerPresenceMap, SequenceHeader,
+    SequenceHeaderGeneral, SequenceHeaderId, TLayerDependencyMap, Tier, TimingInfo,
+    parse_sequence_header,
 };
 use splot_core::headers::tile_group::{
     FrameHeaderCopyOutcome, RecordedFrameHeaderBits, TileFramingDefect, TileGroupLayout,
