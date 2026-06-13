@@ -74,16 +74,16 @@ notes = "The CLI entry point intentionally does not decode yet; it emits a struc
 [[row]]
 id = "decode-limits-budget"
 name = "Decode limits and allocation budget"
-feature_id = ""
-spec_sections = ["6.4.1", "6.17.4.1", "7.1"]
+feature_id = "DOC-DECODE-LIMITS-CONTRACT"
+spec_sections = ["6.4.1", "6.4.6", "6.17.4.1", "6.17.7.2", "5.19", "5.20", "7.1", "7.21", "7.23"]
 parser_source = "crates/splot-core/src/headers/sequence.rs"
-decode_module = "planned"
+decode_module = "docs/DECODER-ROADMAP.md"
 tier = "foundation"
-status = "todo"
-self_contained_tests = []
+status = "partial"
+self_contained_tests = ["openspec validate --all --no-interactive", "cargo xtask check-decoder-support"]
 diagnostics = ["decode/resource-limit (planned)"]
 local_reference_evidence = []
-notes = "Must exist before any bitstream-derived pixel allocation. Covers max dimensions, frame count, tiles, bytes, references, and output bytes."
+notes = "Contract-only foundation for future `DecodeOptions { limits: DecodeLimits }`: covers input bytes, OBU count, decoded/output frame counts, frame dimensions, luma samples, decoded frame bytes, reference frames, tile count, tile payload bytes, and output bytes. No runtime limit enforcement or emitted `decode/resource-limit` diagnostic exists yet."
 
 [[row]]
 id = "decoded-frame-plane-model"

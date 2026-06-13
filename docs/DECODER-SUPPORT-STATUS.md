@@ -8,8 +8,8 @@ Matrix version 1. Last reviewed 2026-06-13. 15 row(s).
 
 | Status | Rows |
 |---|---:|
-| `todo` | 10 |
-| `partial` | 0 |
+| `todo` | 9 |
+| `partial` | 1 |
 | `supported` | 4 |
 | `unsupported-intentional` | 1 |
 | `blocked` | 0 |
@@ -32,7 +32,7 @@ Matrix version 1. Last reviewed 2026-06-13. 15 row(s).
 | `decoder-status-drift-gate` | Decoder support drift gate | `XTASK-DECODER-SUPPORT-STATUS` | `foundation` | `supported` | none | decoder_support::tests::check_decoder_support_detects_drift<br>cargo xtask check-decoder-support | none | none | `xtask/src/decoder_support.rs` |
 | `decoder-diagnostic-registry` | Decoder diagnostic registry | `DOC-DECODER-DIAGNOSTICS` | `foundation` | `supported` | none | xtask/src/diagnostic_registry.rs::tests::decoder_registry_accepts_matching_source_and_doc<br>cargo xtask check-diagnostic-registry | none | none | `docs/DECODER-DIAGNOSTICS.md` |
 | `cli-decode-entrypoint` | splot decode CLI entry point | `CLI-DECODE` | `foundation` | `unsupported-intentional` | 7.1 | crates/splot-cli/tests/cli.rs::decode_unsupported_text_mode_emits_stable_diagnostic<br>crates/splot-cli/tests/cli.rs::decode_unsupported_json_mode_emits_diagnostic_object<br>crates/splot-cli/tests/cli.rs::decode_unsupported_missing_input_does_not_touch_files | decode/unsupported-feature | none | `crates/splot-cli/src/commands/decode.rs` |
-| `decode-limits-budget` | Decode limits and allocation budget | none | `foundation` | `todo` | 6.4.1<br>6.17.4.1<br>7.1 | none | decode/resource-limit (planned) | none | `planned` |
+| `decode-limits-budget` | Decode limits and allocation budget | `DOC-DECODE-LIMITS-CONTRACT` | `foundation` | `partial` | 6.4.1<br>6.4.6<br>6.17.4.1<br>6.17.7.2<br>5.19<br>5.20<br>7.1<br>7.21<br>7.23 | openspec validate --all --no-interactive<br>cargo xtask check-decoder-support | decode/resource-limit (planned) | none | `docs/DECODER-ROADMAP.md` |
 | `decoded-frame-plane-model` | Decoded frame and plane model | none | `foundation` | `todo` | 6.4.1<br>7.21 | none | none | none | `planned` |
 | `deterministic-frame-hash` | Deterministic decoded-frame hash | none | `foundation` | `todo` | 6.16.13<br>7.21 | none | none | Local AVM/dav2d raw MD5 matched for existing tiny fixtures; see openspec/changes/archive/2026-06-13-decoder-roadmap-matrix-boundary/agent-log.md. | `planned` |
 | `decode-stream-state` | Decode stream traversal and layer selection | none | `tier0-plan` | `todo` | 5.2.1<br>7.1<br>7.3<br>7.4 | none | decode/unsupported-feature (planned) | none | `planned` |

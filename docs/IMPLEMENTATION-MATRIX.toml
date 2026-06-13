@@ -4666,6 +4666,39 @@ fixtures = ["docs/DECODER-DIAGNOSTICS.md"]
 diagnostics = []
 
 [[feature]]
+id = "DOC-DECODE-LIMITS-CONTRACT"
+name = "Decode limits contract documentation"
+category = "docs"
+kind = "docs"
+spec_sections = []
+sources = []
+crate = "docs"
+module = "docs/DECODER-ROADMAP.md"
+openspec_change = "decoder-limits-contract"
+tracking_issue = ""
+owner = "docs"
+risk = "medium"
+notes = "Documents the future `DecodeOptions { limits: DecodeLimits }` contract for byte-consuming decoder planning before any bitstream-derived allocation. The contract cites AV2-derived dimension, tile, output, and reference-state surfaces in decoder support docs, but this docs-only row does not claim normative implementation coverage. `decode/resource-limit` remains planned and unemitted until future source and tests land."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = ["openspec validate --all --no-interactive", "cargo xtask check-decoder-support"]
+fixtures = ["docs/DECODER-ROADMAP.md", "docs/DECODER-SUPPORT-MATRIX.toml", "docs/DECODER-DIAGNOSTICS.md"]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODER-SUPPORT-MATRIX"
 name = "Decoder support matrix documentation"
 category = "docs"

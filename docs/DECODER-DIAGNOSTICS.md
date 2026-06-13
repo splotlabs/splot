@@ -41,3 +41,17 @@ Every emitted decoder diagnostic uses stable field names:
 | `decode/unsupported-feature` | Error | § 7.1 | `CLI-DECODE` | `cli-decode-entrypoint` | `splot decode` is not implemented for AV2 bitstreams yet. | Use `splot validate` or `splot inspect` for bitstream analysis until `CLI-DECODE` is implemented. |
 
 <!-- diagnostics-registry:end -->
+
+## Planned diagnostics
+
+These IDs are not emitted yet and intentionally stay outside the enforced
+registry region above. Move a planned ID into the emitted registry only in the
+same change that adds source emission and tests.
+
+| Rule ID | Planned Feature | Matrix Row | Purpose |
+|---|---|---|---|
+| `decode/resource-limit` | `DOC-DECODE-LIMITS-CONTRACT` | `decode-limits-budget` | Future decoder planning diagnostic for inputs whose spec-derived dimensions, tile sizes, frame counts, reference storage, or output sizes exceed caller-configured `DecodeLimits`. |
+
+When emitted, `decode/resource-limit` must include the stable decoder diagnostic
+fields plus `limit_name`, `limit`, `actual`, `unit`, `byte_offset`, and
+`bit_offset`.

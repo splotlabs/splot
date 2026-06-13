@@ -23,7 +23,9 @@ AVM/dav2d wrapper.
 Current state: `splot decode` is an intentional unsupported entry point. It
 emits the structured `decode/unsupported-feature` diagnostic and does not
 reconstruct pixels, produce frame hashes, write Y4M output, read input bytes, or
-touch the output path.
+touch the output path. Decode resource limits are a contract-only planning item:
+`decode/resource-limit` is documented as a planned diagnostic, but is not emitted
+by source yet.
 
 Canonical decoder status lives in
 [`DECODER-SUPPORT-MATRIX.toml`](./DECODER-SUPPORT-MATRIX.toml), rendered to
@@ -57,8 +59,8 @@ other external decoder is forbidden.
 
 | Stage | Scope | Status |
 |---|---|---|
-| 0 | Roadmap, support matrix, generated status, drift gate | active in `decoder-roadmap-matrix-boundary` |
-| 1 | Decode API contract, limits, resource diagnostics, plan-only byte entry point | planned |
+| 0 | Roadmap, support matrix, generated status, drift gate | supported |
+| 1 | Decode API contract, limits, resource diagnostics, plan-only byte entry point | active in `decoder-limits-contract` |
 | 2 | Shared decoded frame, plane, pixel format, and deterministic hash types | planned |
 | 3 | CLI `splot decode` contract backed by library diagnostics | planned |
 | 4 | Container traversal, layer/operating-point selection, transactional decode planning | planned |
@@ -86,6 +88,52 @@ Decoder and reconstruction work must cite the committed AV2 v1.0.0 mirror:
 
 Do not infer AV2 syntax from AV1 projects or copy source, constants, tables,
 comments, or prose from AVM, dav2d, rav1e, SVT-AV1, or any other implementation.
+
+## Decode Limits Contract
+
+Future byte-consuming decode entry points must accept explicit resource limits
+before they allocate from bitstream-derived values. The conceptual API shape is:
+
+```text
+DecodeOptions {
+    limits: DecodeLimits
+}
+```
+
+This is repository policy layered over AV2 syntax-derived values, not an AV2
+conformance rule. The diagnostic must cite the AV2 section that supplied the
+measured value, while the configured threshold comes from `DecodeLimits`.
+
+The first contract covers:
+
+- `max_input_bytes`;
+- `max_obus`;
+- `max_frames_to_decode`;
+- `max_output_frames`;
+- `max_frame_width`;
+- `max_frame_height`;
+- `max_luma_samples_per_frame`;
+- `max_decoded_frame_bytes`;
+- `max_reference_frames`;
+- `max_tile_count`;
+- `max_tile_bytes`;
+- `max_output_bytes`.
+
+The primary spec-derived surfaces are sequence maximum dimensions (§ 6.4.1),
+reference-frame count (§ 6.4.6), per-frame dimensions (§ 6.17.4.1), tile grid
+counts (§ 6.17.7.2), tile group count derivation (§ 5.19), tile payload
+traversal (§ 5.20), the general decode input/output model (§ 7.1), decoded
+output arrays (§ 7.21), and reference frame storage (§ 7.23). A future planner
+must check `max_input_bytes` before buffering or accepting input bytes, check
+`max_obus` before continuing OBU traversal or accumulating OBU state, and check
+the relevant derived resource limit before allocating decoded frames, traversing
+tile payloads, storing reference frames, producing frame hashes, or writing Y4M
+output.
+
+Every derived `actual` resource value must be computed with checked arithmetic
+before comparison or allocation. Overflow while deriving dimensions, strides,
+tile products, plane sizes, reference-storage bytes, output bytes, or frame
+counts is a `decode/resource-limit` failure, not a wraparound or panic.
 
 ## Hash Policy
 
@@ -127,6 +175,11 @@ The CLI renders the diagnostic as text by default and as JSON with
 `splot decode --json`. Future library-facing decode diagnostics must preserve
 stable field names for tests and encoder roundtrips. The emitted `rule_id` set
 is registered in [`DECODER-DIAGNOSTICS.md`](./DECODER-DIAGNOSTICS.md).
+
+Planned future resource-limit diagnostics use `decode/resource-limit`, but that
+ID must stay outside the emitted decoder registry until source emits it. The
+planned diagnostic extends the stable decoder fields with `limit_name`, `limit`,
+`actual`, `unit`, `byte_offset`, and `bit_offset`.
 
 ## Local References
 
