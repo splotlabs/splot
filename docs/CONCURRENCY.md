@@ -164,12 +164,12 @@ fn run(pool: &WorkerPool, items: &[Item]) -> Vec<Output> {
 
 `cargo xtask check-concurrency-policy` (run in `cargo xtask ci` and CI) enforces:
 
-- Only `splot-parallel` may depend on `rayon` or `crossbeam-channel`.
+- Only `splot-parallel` may depend on `rayon`, `rayon-core`, or `crossbeam-channel`.
 - No crate depends on a banned runtime/channel library (`tokio`, `async-std`,
-  the whole `futures`/`futures-*` family, `threadpool`, `scoped_threadpool`,
-  `flume`, `async-channel`). Dependency names are resolved through
-  `package = "..."` and `workspace = true` aliases, so a banned crate cannot hide
-  behind a rename.
+  the whole `futures`/`futures-*` family, every `crossbeam`/`crossbeam-*` crate
+  other than the approved `crossbeam-channel`, `threadpool`, `scoped_threadpool`,
+  `flume`, `async-channel`). Dependency names are resolved through `package = "..."`
+  and `workspace = true` aliases, so a banned crate cannot hide behind a rename.
 - `splot-core` stays runtime-free (no concurrency dependency at all).
 - `splot-validate` stays single-threaded (no `splot-parallel` or restricted
   parallel dependency).
@@ -177,14 +177,15 @@ fn run(pool: &WorkerPool, items: &[Item]) -> Vec<Output> {
   `build_global` nor the `rayon::spawn` / `rayon::join` / `rayon::scope` (and
   related) free functions — open an unbounded channel (any import/call/alias form
   of `crossbeam_channel::unbounded` / `unbounded_queue`), build a
-  `std::sync::mpsc` pipeline, or spawn ad-hoc OS threads (`thread::spawn`,
-  `thread::Builder`, or a `std::thread` alias) outside tests.
+  `std::sync::mpsc` pipeline (any import/alias/`mpsc::channel` call form), or spawn
+  ad-hoc OS threads (`thread::spawn`, `thread::Builder`, or a `std::thread` alias)
+  outside tests.
 - Aliased imports that could hide one of those calls (e.g. `use std::thread as t;`
   or `use crossbeam_channel as cc;`) are flagged at the rename declaration.
 - Outside `splot-parallel`, a Rayon parallel-iteration call (`par_iter`,
-  `par_chunks`, `par_bridge`) must sit inside `WorkerPool::install`: a file that
-  uses one but never calls `install` is flagged, since it would run on the global
-  pool and not scale with `--threads`.
+  `par_chunks`, `par_bridge`) must sit inside a `WorkerPool::install` closure — a
+  call outside any `install` closure is flagged (tracked by brace depth), since it
+  would run on the global pool and not scale with `--threads`.
 
 The source scan is a line-based **defense-in-depth** check: it does not perform
 full syntactic alias resolution, so a deliberately obfuscated multi-hop re-export

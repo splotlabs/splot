@@ -8,19 +8,21 @@
 //! (`crossbeam-channel`, bounded only). Both restricted crates may be depended
 //! on **only** by `splot-parallel`; every other workspace crate must reach
 //! parallelism through `splot-parallel`'s API. No crate may pull in an async
-//! runtime or a competing thread/channel library — the whole `futures` family is
-//! banned by prefix, and dependency names are resolved through `package`/`workspace`
-//! aliases so a banned crate cannot hide behind a rename. Codec source must not
-//! initialize or use the global Rayon pool (`build_global`, or the `rayon::spawn` /
-//! `rayon::join` / `rayon::scope` free functions), open an unbounded channel (any
-//! import or call form), build a `std::sync::mpsc` pipeline, or spawn ad-hoc OS
-//! threads (`thread::spawn`, `thread::Builder`, or a `std::thread` alias) outside
-//! tests. Aliased imports that could hide such a call (for example
-//! `use std::thread as t;` or `use crossbeam_channel as cc;`) are flagged at the
-//! rename declaration. And outside `splot-parallel`, a Rayon parallel-iteration call
-//! (`par_iter`, `par_chunks`, `par_bridge`) must sit inside `WorkerPool::install`: a
-//! file that uses one but never calls `install` is flagged, since it would run on
-//! Rayon's global pool and would not scale with the configured thread count. The
+//! runtime or a competing thread/channel library — the whole `futures` family and
+//! every `crossbeam` crate except `crossbeam-channel` are banned by prefix,
+//! `rayon`/`rayon-core` are restricted to `splot-parallel`, and dependency names are
+//! resolved through `package`/`workspace` aliases so a banned crate cannot hide
+//! behind a rename. Codec source must not initialize or use the global Rayon pool
+//! (`build_global`, or the `rayon::spawn` / `rayon::join` / `rayon::scope` free
+//! functions), open an unbounded channel (any import or call form), build a
+//! `std::sync::mpsc` pipeline (any import or call form), or spawn ad-hoc OS threads
+//! (`thread::spawn`, `thread::Builder`, or a `std::thread` alias) outside tests.
+//! Aliased imports that could hide such a call (for example `use std::thread as t;`
+//! or `use crossbeam_channel as cc;`) are flagged at the rename declaration. And
+//! outside `splot-parallel`, a Rayon parallel-iteration call (`par_iter`,
+//! `par_chunks`, `par_bridge`) must sit inside a `WorkerPool::install` closure: a
+//! call outside any `install` closure is flagged, since it would run on Rayon's
+//! global pool and would not scale with the configured thread count. The
 //! source scan is a line-based defense-in-depth check: it does not resolve multi-hop
 //! re-exports, so the dependency-direction gate and code review remain the backstop.
 //!
@@ -28,15 +30,16 @@
 //! [`evaluate_concurrency_policy`] evaluator so the rules can be unit-tested
 //! against synthetic fixtures.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
 
 /// Crates that only `splot-parallel` may depend on directly: the single data-parallel
-/// engine (`rayon`) and the single coarse-pipeline queue primitive (`crossbeam-channel`).
+/// engine (`rayon`, plus its lower-level `rayon-core` so the umbrella cannot be
+/// bypassed) and the single coarse-pipeline queue primitive (`crossbeam-channel`).
 /// Every other workspace crate must route parallelism through `splot-parallel`'s API.
-const RESTRICTED_PARALLEL_CRATES: &[&str] = &["rayon", "crossbeam-channel"];
+const RESTRICTED_PARALLEL_CRATES: &[&str] = &["rayon", "rayon-core", "crossbeam-channel"];
 
 /// Runtime/concurrency crates no workspace crate may depend on directly — async
 /// runtimes, alternative thread pools, and competing channel libraries. Banning
@@ -55,10 +58,22 @@ const BANNED_RUNTIME_CRATES: &[&str] = &[
 ];
 
 /// Returns `true` if `name` is a banned runtime/channel crate: an exact entry in
-/// [`BANNED_RUNTIME_CRATES`], or any crate in the `futures` family (`futures` itself
-/// or a `futures-*` crate).
+/// [`BANNED_RUNTIME_CRATES`]; any crate in the `futures` family (`futures` itself or a
+/// `futures-*` crate); or any `crossbeam` crate **other than** the approved
+/// `crossbeam-channel` (which is restricted to `splot-parallel` via
+/// [`RESTRICTED_PARALLEL_CRATES`]) — e.g. `crossbeam-utils`, `crossbeam-queue`,
+/// `crossbeam-deque`, `crossbeam-epoch`, or the `crossbeam` umbrella.
 fn is_banned_runtime_crate(name: &str) -> bool {
-    BANNED_RUNTIME_CRATES.contains(&name) || name == "futures" || name.starts_with("futures-")
+    if BANNED_RUNTIME_CRATES.contains(&name) {
+        return true;
+    }
+    if name == "futures" || name.starts_with("futures-") {
+        return true;
+    }
+    if (name == "crossbeam" || name.starts_with("crossbeam-")) && name != "crossbeam-channel" {
+        return true;
+    }
+    false
 }
 
 /// The one crate allowed to depend on [`RESTRICTED_PARALLEL_CRATES`]: the approved
@@ -93,8 +108,17 @@ const UNBOUNDED_NEEDLES: &[&str] = &[
     "unbounded_queue",
 ];
 
-/// `std::sync::mpsc` pipelines are banned: use a bounded crossbeam queue instead.
-const STD_MPSC: &str = concat!("std::sync::", "mpsc");
+/// `std::sync::mpsc` pipeline needles — banned anywhere. Covers the qualified path,
+/// the braced import (`use std::sync::{mpsc};`), the aliased import (`mpsc as`), and
+/// the channel constructors (`mpsc::channel` / `mpsc::sync_channel`) regardless of how
+/// `mpsc` is imported. Use a bounded crossbeam queue instead.
+const STD_MPSC_NEEDLES: &[&str] = &[
+    concat!("std::sync::", "mpsc"),
+    concat!("std::sync::{", "mpsc"),
+    concat!("mpsc::", "channel"),
+    concat!("mpsc::", "sync_channel"),
+    concat!("mpsc", " as "),
+];
 
 /// Ad-hoc OS-thread-spawn needles — banned outside tests (the local `WorkerPool`
 /// owns every worker thread). Covers the bare `spawn` call (catches
@@ -250,10 +274,10 @@ pub(crate) fn evaluate_concurrency_policy(
             ));
         }
 
-        // Rule 7: banned `std::sync::mpsc` pipelines.
-        if line.text.contains(STD_MPSC) {
+        // Rule 7: banned `std::sync::mpsc` pipelines (any import/alias/call form).
+        if let Some(needle) = STD_MPSC_NEEDLES.iter().find(|n| line.text.contains(**n)) {
             violations.push(format!(
-                "{where_at}: `{STD_MPSC}` pipelines are banned; use a bounded crossbeam queue"
+                "{where_at}: `std::sync::mpsc` pipelines (`{needle}`) are banned; use a bounded crossbeam queue"
             ));
         }
 
@@ -291,40 +315,61 @@ pub(crate) fn evaluate_concurrency_policy(
         }
     }
 
-    // Rule 10: outside `splot-parallel`, a Rayon parallel-iteration entry point must
-    // be driven inside `WorkerPool::install`, or it runs on Rayon's global pool and
-    // will not scale with `--threads`. File-level heuristic: a non-test code line
-    // names a par-iter token, but the file never calls `install(`. `splot-parallel`
-    // (the trusted Rayon wrapper) is exempt, as are test lines and allowlisted files.
-    struct ParIterFile {
-        trigger: Option<(usize, &'static str)>,
-        has_install: bool,
-    }
-    let mut by_file: BTreeMap<&str, ParIterFile> = BTreeMap::new();
+    // Rule 10: outside `splot-parallel`, a Rayon parallel-iteration call must run
+    // *inside* a `WorkerPool::install` closure, or it runs on Rayon's global pool and
+    // will not scale with `--threads`. `sources` is sorted by (path, line), so we scan
+    // each file in order and track whether the current line is lexically inside an
+    // `install(...)` closure with a brace-depth tracker (same heuristic as the
+    // cfg(test) detector): an `install(` that opens a net brace pushes a scope until
+    // the matching `}`; a multi-line `install(` whose `{` lands on a later line arms a
+    // pending scope. `splot-parallel`, test lines, and allowlisted files are exempt; a
+    // par-iter on the same line as the `install(` counts as inside.
+    let mut current_path: &str = "";
+    let mut depth: i32 = 0;
+    let mut install_stack: Vec<i32> = Vec::new();
+    let mut pending_install = false;
     for line in sources {
-        let entry = by_file.entry(line.path.as_str()).or_insert(ParIterFile {
-            trigger: None,
-            has_install: false,
-        });
-        if line.text.contains(INSTALL_CALL) {
-            entry.has_install = true;
+        if line.path.as_str() != current_path {
+            current_path = line.path.as_str();
+            depth = 0;
+            install_stack.clear();
+            pending_install = false;
         }
-        if entry.trigger.is_none()
-            && !line.in_test
+        let opens_install = line.text.contains(INSTALL_CALL);
+        let inside_install = !install_stack.is_empty() || opens_install || pending_install;
+        if !line.in_test
+            && !inside_install
+            && !current_path.starts_with(PARALLEL_CRATE_PREFIX)
+            && !PAR_ITER_RULE_ALLOWLIST.contains(&current_path)
             && let Some(token) = PAR_ITER_TOKENS.iter().find(|t| line.text.contains(**t))
         {
-            entry.trigger = Some((line.line_no, *token));
-        }
-    }
-    for (&path, file) in &by_file {
-        if let Some((line_no, token)) = file.trigger
-            && !file.has_install
-            && !path.starts_with(PARALLEL_CRATE_PREFIX)
-            && !PAR_ITER_RULE_ALLOWLIST.contains(&path)
-        {
             violations.push(format!(
-                "{path}:{line_no}: parallel iteration (`{token}`) must run inside `WorkerPool::install` so it uses the configured worker pool, not Rayon's global pool"
+                "{}:{}: parallel iteration (`{token}`) must run inside `WorkerPool::install` so it uses the configured worker pool, not Rayon's global pool",
+                line.path, line.line_no
             ));
+        }
+        let pre_depth = depth;
+        depth += brace_delta(&line.text);
+        if opens_install {
+            if depth > pre_depth {
+                install_stack.push(pre_depth);
+                pending_install = false;
+            } else {
+                // A multi-line `install(` whose closure `{` lands on a later line.
+                pending_install = true;
+            }
+        } else if pending_install {
+            if depth > pre_depth {
+                install_stack.push(pre_depth);
+            }
+            pending_install = false;
+        }
+        while let Some(&entry) = install_stack.last() {
+            if depth <= entry {
+                install_stack.pop();
+            } else {
+                break;
+            }
         }
     }
 
@@ -730,8 +775,116 @@ mod tests {
         let src = [line(&format!("    use {token}::channel;"), false)];
         let violations = evaluate_concurrency_policy(&[], &src);
         assert!(
-            violations.iter().any(|v| v.contains(STD_MPSC)),
+            violations.iter().any(|v| v.contains("mpsc")),
             "expected a std-mpsc violation, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn braced_and_aliased_mpsc_imports_are_violations() {
+        // `use std::sync::{mpsc};` / `{mpsc as chan};` then `mpsc::channel()` /
+        // `chan::sync_channel()` must be caught despite the missing qualified path.
+        for code in [
+            "    use std::sync::{mpsc};",
+            "    use std::sync::{mpsc as chan};",
+            "    let (tx, rx) = mpsc::channel();",
+            "    let (tx, rx) = mpsc::sync_channel(4);",
+        ] {
+            let violations = evaluate_concurrency_policy(&[], &[line(code, false)]);
+            assert!(
+                violations.iter().any(|v| v.contains("mpsc")),
+                "expected an mpsc violation for `{code}`, got {violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rayon_core_is_restricted_to_splot_parallel() {
+        // Only splot-parallel may depend on rayon-core (like rayon itself).
+        let offender = [krate("splot-decode", &["rayon-core"])];
+        assert!(
+            evaluate_concurrency_policy(&offender, &[])
+                .iter()
+                .any(|v| v.contains("rayon-core")),
+            "a non-parallel crate depending on rayon-core must be flagged"
+        );
+        assert!(
+            evaluate_concurrency_policy(&[krate(PARALLEL_CRATE, &["rayon-core"])], &[]).is_empty(),
+            "splot-parallel may depend on rayon-core"
+        );
+    }
+
+    #[test]
+    fn adjacent_crossbeam_crates_are_banned_but_channel_is_allowed() {
+        assert!(is_banned_runtime_crate("crossbeam-utils"));
+        assert!(is_banned_runtime_crate("crossbeam-queue"));
+        assert!(is_banned_runtime_crate("crossbeam-deque"));
+        assert!(is_banned_runtime_crate("crossbeam"));
+        assert!(!is_banned_runtime_crate("crossbeam-channel"));
+
+        let offender = [krate("splot-decode", &["crossbeam-utils"])];
+        assert!(
+            evaluate_concurrency_policy(&offender, &[])
+                .iter()
+                .any(|v| v.contains("crossbeam-utils")),
+            "a crate depending on crossbeam-utils must be flagged"
+        );
+        // splot-parallel may still depend on the approved crossbeam-channel.
+        assert!(
+            evaluate_concurrency_policy(&[krate(PARALLEL_CRATE, &["crossbeam-channel"])], &[])
+                .is_empty(),
+            "splot-parallel's crossbeam-channel dependency must remain allowed"
+        );
+    }
+
+    #[test]
+    fn par_iter_after_install_closure_closes_is_a_violation() {
+        // install closure on lines 10-12, then a top-level par_iter at line 20 — the
+        // later iterator is outside install and must be flagged (file-level `has_install`
+        // would have missed it).
+        let src = [
+            line_at(
+                "crates/splot-encode/src/x.rs",
+                10,
+                "    pool.install(|| {",
+                false,
+            ),
+            line_at("crates/splot-encode/src/x.rs", 11, "        work();", false),
+            line_at("crates/splot-encode/src/x.rs", 12, "    });", false),
+            line_at(
+                "crates/splot-encode/src/x.rs",
+                20,
+                "    let v: Vec<_> = items.par_iter().collect();",
+                false,
+            ),
+        ];
+        let violations = evaluate_concurrency_policy(&[], &src);
+        assert!(
+            violations.iter().any(|v| v.contains("WorkerPool::install")),
+            "a par-iter after the install closure closes must be flagged, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn par_iter_inside_install_closure_is_ok() {
+        let src = [
+            line_at(
+                "crates/splot-encode/src/x.rs",
+                10,
+                "    pool.install(|| {",
+                false,
+            ),
+            line_at(
+                "crates/splot-encode/src/x.rs",
+                11,
+                "        let v: Vec<_> = items.par_iter().collect();",
+                false,
+            ),
+            line_at("crates/splot-encode/src/x.rs", 12, "    });", false),
+        ];
+        assert!(
+            evaluate_concurrency_policy(&[], &src).is_empty(),
+            "a par-iter inside the install closure must be accepted"
         );
     }
 

@@ -42,7 +42,7 @@ const SPDX_COPYRIGHT_PREFIX: &str = "// SPDX-FileCopyrightText: ";
 /// adding a workspace crate that should not gate here, or it joins the
 /// threshold scope.
 const SPLOT_VALIDATE_COVERAGE_IGNORE_REGEX: &str =
-    r"crates/splot-(core|recon|decode|encode|cli)/|(^|/)xtask/|(^|/)fuzz/";
+    r"crates/splot-(core|parallel|recon|decode|encode|cli)/|(^|/)xtask/|(^|/)fuzz/";
 
 /// Committed AV2 spec mirrors, each pinned to `(dir, pdf_sha256, checksums_sha256)`.
 ///
