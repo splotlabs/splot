@@ -33,7 +33,7 @@ Matrix version 1. Last reviewed 2026-06-13. 14 row(s).
 | `cli-decode-entrypoint` | splot decode CLI entry point | `CLI-DECODE` | `foundation` | `unsupported-intentional` | 7.1 | none | decode/unsupported-feature (planned) | none | `crates/splot-cli/src/commands/decode.rs` |
 | `decode-limits-budget` | Decode limits and allocation budget | none | `foundation` | `todo` | 6.4.1<br>6.17.4.1<br>7.1 | none | decode/resource-limit (planned) | none | `planned` |
 | `decoded-frame-plane-model` | Decoded frame and plane model | none | `foundation` | `todo` | 6.4.1<br>7.21 | none | none | none | `planned` |
-| `deterministic-frame-hash` | Deterministic decoded-frame hash | none | `foundation` | `todo` | 6.16.13<br>7.21 | none | none | Local AVM/dav2d raw MD5 matched for existing tiny fixtures; see openspec/changes/decoder-roadmap-matrix-boundary/agent-log.md. | `planned` |
+| `deterministic-frame-hash` | Deterministic decoded-frame hash | none | `foundation` | `todo` | 6.16.13<br>7.21 | none | none | Local AVM/dav2d raw MD5 matched for existing tiny fixtures; see openspec/changes/archive/2026-06-13-decoder-roadmap-matrix-boundary/agent-log.md. | `planned` |
 | `decode-stream-state` | Decode stream traversal and layer selection | none | `tier0-plan` | `todo` | 5.2.1<br>7.1<br>7.3<br>7.4 | none | decode/unsupported-feature (planned) | none | `planned` |
 | `symbol-decoder` | Symbol and CDF decoder foundation | none | `tier1-intra` | `todo` | 8.2<br>8.3<br>9 | none | decode/unsupported-feature (planned) | none | `planned` |
 | `tile-payload-decode` | Tile payload decode boundary | none | `tier1-intra` | `todo` | 5.20<br>7.1<br>8.3 | none | decode/unsupported-feature (planned) | none | `planned` |

@@ -96,7 +96,7 @@ tier = "foundation"
 status = "todo"
 self_contained_tests = []
 diagnostics = []
-local_reference_evidence = ["Local AVM/dav2d raw MD5 matched for existing tiny fixtures; see openspec/changes/decoder-roadmap-matrix-boundary/agent-log.md."]
+local_reference_evidence = ["Local AVM/dav2d raw MD5 matched for existing tiny fixtures; see openspec/changes/archive/2026-06-13-decoder-roadmap-matrix-boundary/agent-log.md."]
 notes = "Hash policy must define frame order, visible area, plane order, stride handling, bit-depth representation, chroma subsampling, and film-grain policy."
 
 [[row]]
