@@ -3881,11 +3881,11 @@ spec_sections = []
 sources = ["https://github.com/AOMediaCodec/avm"]
 crate = "xtask"
 module = "xtask/src/conformance.rs"
-openspec_change = "conformance-corpus-foundation"
+openspec_change = "avm-positive-vector-generation"
 tracking_issue = ""
 owner = "conformance"
 risk = "high"
-notes = "Committed, self-contained conformance corpus under tests/conformance/: small AVM-generated valid AV2 vectors (IVF) plus a manifest.toml of expected outcomes, validated by a committed runner with NO AVM dependency (the CI gate is crates/splot-cli/tests/conformance.rs; the ergonomic entry is `cargo xtask conformance`). AVM is the LOCAL generator of the committed vectors only — never invoked/vendored by the runner/build/CI — so the proof is the committed-vector runner, not a live avm_diff run (avm_diff stays pending). One bootstrap negative (a truncated copy) exercises the manifest's diagnostics arm. Broad positive sweeps and mutated negatives are later changes (avm-positive-vector-generation, conformance-negative-mutator)."
+notes = "Committed, self-contained conformance corpus under tests/conformance/: AVM-generated valid AV2 vectors (IVF) plus a manifest.toml of expected outcomes, validated by a committed runner with NO AVM dependency (the CI gate is crates/splot-cli/tests/conformance.rs; the ergonomic entry is `cargo xtask conformance`). AVM is the LOCAL generator of the committed vectors only — never invoked/vendored by the runner/build/CI — so the proof is the committed-vector runner, not a live avm_diff run (avm_diff stays pending). The positive set spans diverse codec features (avm-positive-vector-generation): 64x64 + 128x128 + non-square 96x64 resolutions, 8-bit and 10-bit, intra-only and key+inter, and an OBU_OPERATING_POINT_SET stream — all validate clean. DIFFERENTIAL FINDING: AVM's --enable-lcr / --enable-qm produce streams that reference EXTERNAL-HLS-provided resources (a global LCR id with no in-band global LCR; using_qmatrix referencing a QM level with no QM OBU); validated standalone with external HLS disabled, the validator CORRECTLY emits lcr/global-lcr-unavailable (§7.3.8.3) / frame-header/qm-level-unavailable (§7.3.8.9) — confirming those availability checks fire on real reference-encoder output (these two live under tests/conformance/vectors/needs-external-hls/ with the diagnostic as the expected outcome). One bootstrap negative (a truncated copy) exercises the truncation arm. Mutated negatives are conformance-negative-mutator; the live AVM differential harness remains avm-differential-harness."
 
 [feature.status]
 mapped = "done"
@@ -3912,9 +3912,15 @@ fixtures = [
     "tests/conformance/manifest.toml",
     "tests/conformance/vectors/valid/syn-key-intra-64x64.ivf",
     "tests/conformance/vectors/valid/syn-key-inter-64x64.ivf",
+    "tests/conformance/vectors/valid/syn-intra-128x128.ivf",
+    "tests/conformance/vectors/valid/syn-inter-96x64.ivf",
+    "tests/conformance/vectors/valid/syn-intra-64x64-10bit.ivf",
+    "tests/conformance/vectors/valid/syn-ops-64x64.ivf",
+    "tests/conformance/vectors/needs-external-hls/syn-lcr-64x64.ivf",
+    "tests/conformance/vectors/needs-external-hls/syn-qm-64x64.ivf",
     "tests/conformance/vectors/invalid/syn-key-intra-64x64-truncated.ivf",
 ]
-diagnostics = ["ivf/truncated-frame-payload"]
+diagnostics = ["ivf/truncated-frame-payload", "lcr/global-lcr-unavailable", "frame-header/qm-level-unavailable"]
 
 [[feature]]
 id = "CONF-AVM-INVALID-STREAMS"

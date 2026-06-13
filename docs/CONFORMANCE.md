@@ -47,7 +47,11 @@ committed vectors.
 tests/conformance/
   manifest.toml                 expected-outcome manifest (one [[vector]] per file)
   vectors/
-    valid/                      valid AV2 streams (IVF, AVM-generated)
+    valid/                      valid AV2 streams (IVF, AVM-generated): diverse
+                                resolutions, 8-bit + 10-bit, intra + inter, OPS
+    needs-external-hls/         valid AVM streams referencing external-HLS-provided
+                                resources (global LCR / QM level); validated
+                                standalone they emit the §7.3.8.3 / §7.3.8.9 diagnostic
     invalid/                    negative vectors (truncations, mutations)
 ```
 
