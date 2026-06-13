@@ -34,11 +34,12 @@ section); `docs/SPEC-MAPPING.md` holds the spec sources and rules, not per-featu
 
 ```text
 crates/splot-core      AV2 bitstream model + parsers (no other splot-* dependency)
+crates/splot-parallel  approved concurrency primitives (Rayon pool + bounded crossbeam queues); no other splot-* dependency
 crates/splot-recon     future reconstruction primitives (no other splot-* dependency)
-crates/splot-decode    decoder diagnostic API; future driver (approved future -> splot-core, splot-recon)
+crates/splot-decode    decoder diagnostic API; future driver -> splot-parallel (approved future -> splot-core, splot-recon)
 crates/splot-validate  parser-driven conformance diagnostics  -> splot-core
-crates/splot-encode    future encoder API (stub)              -> splot-core
-crates/splot-cli       thin `splot` binary -> splot-core, splot-decode, splot-validate, splot-encode
+crates/splot-encode    future encoder API (stub)              -> splot-core, splot-parallel
+crates/splot-cli       thin `splot` binary -> splot-core, splot-parallel, splot-decode, splot-validate, splot-encode
 xtask                  standalone automation (no splot-* dependency)
 fuzz                   cargo-fuzz target (outside the workspace)
 ```
@@ -46,19 +47,24 @@ fuzz                   cargo-fuzz target (outside the workspace)
 **Hard rule (one-way dependencies):**
 
 - `splot-core` depends on no other `splot-*` crate.
+- `splot-parallel` depends on no other `splot-*` crate.
 - `splot-recon` depends on no other `splot-*` crate.
-- `splot-decode` depends only on `splot-core` and `splot-recon` once runtime
-  decode source code needs internal dependencies.
+- `splot-decode` depends on `splot-parallel` today; its approved future internal
+  dependencies are `splot-core` and `splot-recon` once runtime decode source code
+  needs them.
 - `splot-validate` depends only on `splot-core`.
-- `splot-encode` depends only on `splot-core`.
-- `splot-cli` depends only on `splot-core`, `splot-decode`,
+- `splot-encode` depends only on `splot-core` and `splot-parallel`.
+- `splot-cli` depends only on `splot-core`, `splot-parallel`, `splot-decode`,
   `splot-validate`, and `splot-encode`.
 - Nothing depends on `splot-cli`.
 - Nothing depends on `splot-encode` except `splot-cli`.
 - `xtask` is standalone.
 
-This is enforced by `cargo xtask check-dependency-direction`. Crate
-responsibilities, the error model, and the unsafe/SIMD policy are expanded in
+This is enforced by `cargo xtask check-dependency-direction`.
+`cargo xtask check-concurrency-policy` additionally enforces the
+Rayon/`crossbeam-channel` concurrency-primitives policy: only `splot-parallel`
+may depend on those two crates (`docs/CONCURRENCY.md`). Crate responsibilities,
+the error model, and the unsafe/SIMD policy are expanded in
 [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md); the review checklist is
 [docs/CODE_REVIEW.md](./docs/CODE_REVIEW.md).
 
@@ -86,6 +92,7 @@ openspec validate --all --no-interactive    # OpenSpec specs + active changes (o
 cargo xtask audit                           # networked supply-chain advisories (cargo-deny)
 cargo xtask coverage                        # local HTML coverage report (cargo-llvm-cov)
 cargo xtask fuzz [--time <secs>]            # local fuzz smoke over every target (nightly + cargo-fuzz), default 30s each
+cargo xtask check-concurrency-policy        # enforce the concurrency-runtime policy (also part of `cargo xtask ci`)
 cargo xtask check-conventional-commits      # validates the current HEAD commit subject
 cargo +nightly fuzz run parse_obu   # full local fuzz run of one target (nightly-only; `cargo install cargo-fuzz --locked`).
                                     # Targets: parse_obu, validate_bytes, parse_ivf, parse_bitstream (`cargo +nightly fuzz list`).

@@ -4887,6 +4887,49 @@ fixtures = ["crates/splot-recon/src/lib.rs", "crates/splot-decode/src/lib.rs"]
 diagnostics = []
 
 [[feature]]
+id = "INFRA-PARALLEL-RUNTIME-POLICY"
+name = "Parallel runtime policy (Rayon worker pool + bounded crossbeam queues)"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = []
+sources = []
+crate = "splot-parallel"
+module = "crates/splot-parallel/src/lib.rs"
+openspec_change = "parallel-runtime-policy"
+tracking_issue = ""
+owner = "core"
+risk = "low"
+notes = "Adds the maintainer-authorized `splot-parallel` crate owning the only approved concurrency primitives: a local Rayon `WorkerPool` (never the global pool or `build_global`) and bounded `crossbeam-channel` queues (never unbounded). Introduces a `ThreadCount` policy (`auto` default, fixed positive integer, `0` aliases to `auto`) wired through `EncoderRuntimeConfig`/`DecodeRuntimeConfig` and the `splot encode|decode --threads` flag; each encode/decode context owns exactly one `WorkerPool`. Enforced by `cargo xtask check-concurrency-policy`. No AV2 conformance behavior changes and no decoder/encoder algorithmic stage is implemented; tokio/async-std/futures/threadpool and other competing runtimes are banned."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = [
+    "cargo test -p splot-parallel --all-targets --locked",
+    "cargo xtask check-concurrency-policy",
+    "cargo xtask check-dependency-direction",
+]
+fixtures = [
+    "crates/splot-parallel/src/lib.rs",
+    "crates/splot-parallel/src/pool.rs",
+    "crates/splot-parallel/src/thread_count.rs",
+    "crates/splot-parallel/src/queue.rs",
+    "xtask/src/concurrency_policy.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "INFRA-RECON-FRAME-PLANE-TYPES"
 name = "Decoded frame and plane runtime types"
 category = "infrastructure"
