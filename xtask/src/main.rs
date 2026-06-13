@@ -13,6 +13,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 
 mod audit_scope;
+mod concurrency_policy;
 mod conformance;
 mod decoder_support;
 mod diagnostic_registry;
@@ -101,6 +102,8 @@ enum Task {
     CheckSourceLines,
     /// Verify member crates honor the one-way dependency direction.
     CheckDependencyDirection,
+    /// Verify the workspace honors the Rayon + crossbeam-channel concurrency policy.
+    CheckConcurrencyPolicy,
     /// Verify the committed AV2 spec mirror matches its CHECKSUMS and provenance.
     CheckSpecMirror,
     /// Verify diagnostic registry docs list exactly the emitted diagnostic rule ids.
@@ -203,6 +206,9 @@ fn main() -> Result<()> {
         Task::CheckLicenseHeaders => check_license_headers(&workspace_root()?),
         Task::CheckSourceLines => source_lines::check_source_lines(&workspace_root()?),
         Task::CheckDependencyDirection => check_dependency_direction(&workspace_root()?),
+        Task::CheckConcurrencyPolicy => {
+            concurrency_policy::check_concurrency_policy(&workspace_root()?)
+        }
         Task::CheckSpecMirror => check_spec_mirror(&workspace_root()?),
         Task::CheckDiagnosticRegistry => {
             diagnostic_registry::check_diagnostic_registry(&workspace_root()?)
@@ -290,6 +296,7 @@ fn run_ci() -> Result<()> {
     check_license_headers(&root)?;
     source_lines::check_source_lines(&root)?;
     check_dependency_direction(&root)?;
+    concurrency_policy::check_concurrency_policy(&root)?;
     check_spec_mirror(&root)?;
     check_fuzz_targets(&root)?;
     gen_tables::run_gen_tables(&root, true)?;
@@ -760,7 +767,7 @@ fn short_sha(sha: &str) -> &str {
 }
 
 /// Returns the workspace root (the parent of this xtask crate).
-fn workspace_root() -> Result<PathBuf> {
+pub(crate) fn workspace_root() -> Result<PathBuf> {
     let manifest_dir =
         std::env::var("CARGO_MANIFEST_DIR").context("CARGO_MANIFEST_DIR is not set")?;
     let root = Path::new(&manifest_dir)
@@ -1102,7 +1109,7 @@ fn is_internal_crate(name: &str) -> bool {
         .any(|(crate_name, _)| *crate_name == name)
 }
 
-fn workspace_members(root: &Path) -> Result<Vec<String>> {
+pub(crate) fn workspace_members(root: &Path) -> Result<Vec<String>> {
     let manifest = read_manifest(&root.join("Cargo.toml"))?;
     let members = manifest
         .get("workspace")
@@ -1119,7 +1126,7 @@ fn workspace_members(root: &Path) -> Result<Vec<String>> {
     Ok(out)
 }
 
-fn read_manifest(path: &Path) -> Result<toml::Table> {
+pub(crate) fn read_manifest(path: &Path) -> Result<toml::Table> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     toml::from_str::<toml::Table>(&text)
