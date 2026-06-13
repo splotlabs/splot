@@ -55,6 +55,11 @@ pub(in crate::validator::tests) struct FrameCoreSeq {
     /// SWITCH `refresh_frame_flags f(NumRefFrames)` arm (mirror :4507-4509), so the parse
     /// continues into the reference region and records `ref_frame_idx`.
     pub(in crate::validator::tests) max_mlayer_id: u32,
+    /// `max_tlayer_id` (§ 5.4.1, mirror :385): the highest temporal layer the CVS may
+    /// declare. When `> 0` the header reads `tlayer_dependency_present_flag` f(1) after
+    /// `mlayer_dependency_present_flag` (here cleared, so the § 5.4.1 lower-triangular
+    /// default `TLayerDependencyMap` fill stands).
+    pub(in crate::validator::tests) max_tlayer_id: u32,
 }
 
 impl FrameCoreSeq {
@@ -79,6 +84,7 @@ impl FrameCoreSeq {
             explicit_ref_frame_map: false,
             enable_bru: false,
             max_mlayer_id: 0,
+            max_tlayer_id: 0,
         }
     }
 }
@@ -103,7 +109,7 @@ pub(in crate::validator::tests) fn frame_core_seq_payload(o: FrameCoreSeq) -> Ve
     bits.uvlc(0); // bit_depth_idc
     bits.f(0, 3); // seq_lcr_id
     bits.bit(u8::from(o.still_picture)); // still_picture
-    bits.f(0, 2); // max_tlayer_id
+    bits.f(o.max_tlayer_id, 2); // max_tlayer_id (mirror :385)
     bits.f(o.max_mlayer_id, 3); // max_mlayer_id (mirror :387)
     if o.max_mlayer_id > 0 {
         // mirror :389-395: seq_max_mlayer_cnt_minus_1 f(CeilLog2(max_mlayer_id + 1)).
@@ -121,10 +127,15 @@ pub(in crate::validator::tests) fn frame_core_seq_payload(o: FrameCoreSeq) -> Ve
     bits.bit(0); // seq_initial_display_delay_present_flag
     bits.bit(0); // decoder_model_info_present_flag
     if o.max_mlayer_id > 0 {
-        // mirror :507-509: max_tlayer_id == 0 so the §5.4.1 tlayer-dependency block reads
-        // nothing, but max_mlayer_id > 0 reads mlayer_dependency_present_flag f(1). Clearing
-        // it (0) skips the dependency-map loop, so the cascade stops here.
+        // mirror :507-509: max_mlayer_id > 0 reads mlayer_dependency_present_flag f(1).
+        // Clearing it (0) skips the dependency-map loop, so the § 5.4.1 lower-triangular
+        // default fill stands.
         bits.bit(0); // mlayer_dependency_present_flag
+    }
+    if o.max_tlayer_id > 0 {
+        // mirror :507-509: max_tlayer_id > 0 reads tlayer_dependency_present_flag f(1) after
+        // the mlayer flag. Clearing it (0) keeps the § 5.4.1 default TLayerDependencyMap.
+        bits.bit(0); // tlayer_dependency_present_flag
     }
     // sequence_partition_config (BLOCK_64X64, SDP off)
     bits.bit(0); // use_256x256_superblock

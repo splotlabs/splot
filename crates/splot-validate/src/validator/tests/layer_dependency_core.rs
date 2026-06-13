@@ -803,3 +803,218 @@ fn frame_mfh_unresolvable_sequence_header_is_not_layer_checked() {
         "an unresolvable sequence header must not be layer-checked; report was: {report}"
     );
 }
+
+// ----- Frame film-grain config § 6.17.10.1 layer-dependency / chroma constraints -----
+
+/// A `film_grain_obu()` at `(tlayer, mlayer)` on xlayer 0 (film-grain OBU type 23) with the
+/// given `update_flags` and `fgm_chroma_idc`, one minimal model per set update-flag bit. The
+/// layered header lets a test record `FgmMLayerId` / `FgmTLayerId` at a layer the
+/// grain-applying frame does not depend on.
+fn film_grain_obu_at_layer(update_flags: u32, chroma_idc: u32, tlayer: u8, mlayer: u8) -> Vec<u8> {
+    let mut bits = Bits::default();
+    bits.f(update_flags, 8); // fgm_update_flags
+    bits.uvlc(chroma_idc); // fgm_chroma_idc
+    for _ in 0..update_flags.count_ones() {
+        append_minimal_film_grain_model(&mut bits);
+    }
+    bits.bit(1); // trailing_one_bit (FG is non-extensible)
+    bits.align();
+    annex_b_obu_with_header(&layer_obu_header(23, tlayer, mlayer, 0), &bits.into_bytes())
+}
+
+#[test]
+fn frame_film_grain_mlayer_dependency_missing_is_flagged() {
+    // §6.17.10.1: a SEF at obu_mlayer_id 0 applies grain from a model defined by a film
+    // grain OBU at embedded layer 1. Under the default lower-triangular fill
+    // (max_mlayer_id 1), MLayerDependencyMap[0][1] == 0, so the frame does not depend on the
+    // model's embedded layer.
+    let seq = FrameCoreSeq {
+        film_grain_params_present: true,
+        max_mlayer_id: 1,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(film_grain_obu_at_layer(1 << 0, 0, 0, 1)); // slot 0 defined at mlayer 1
+    data.extend(sef_with_applied_grain(0)); // frame at mlayer 0 references fgm_id 0
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        has_error(&report, "frame-header/film-grain-mlayer-dependency-missing"),
+        "a film-grain model at an undepended embedded layer must fire \
+         film-grain-mlayer-dependency-missing; report was: {report}"
+    );
+}
+
+#[test]
+fn frame_film_grain_tlayer_dependency_missing_is_flagged() {
+    // §6.17.10.1: a SEF at obu_tlayer_id 0 applies grain from a model defined by a film
+    // grain OBU at temporal layer 1. Under the default lower-triangular fill
+    // (max_tlayer_id 1), TLayerDependencyMap[0][0][1] == 0.
+    let seq = FrameCoreSeq {
+        film_grain_params_present: true,
+        max_tlayer_id: 1,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(film_grain_obu_at_layer(1 << 0, 0, 1, 0)); // slot 0 defined at tlayer 1
+    data.extend(sef_with_applied_grain(0)); // frame at tlayer 0 references fgm_id 0
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        has_error(&report, "frame-header/film-grain-tlayer-dependency-missing"),
+        "a film-grain model at an undepended temporal layer must fire \
+         film-grain-tlayer-dependency-missing; report was: {report}"
+    );
+}
+
+#[test]
+fn frame_film_grain_chroma_idc_mismatch_is_flagged() {
+    // §6.17.10.1: the model's FgmChromaIdc (2 == 4:4:4) differs from the active sequence
+    // header's chroma_format_idc (0 == 4:2:0). No layer manipulation needed: the film grain
+    // OBU and the SEF are both at layer 0 (a satisfied dependency).
+    let seq = FrameCoreSeq {
+        film_grain_params_present: true,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(film_grain_obu_bytes(1 << 0, 2)); // slot 0, fgm_chroma_idc = 2
+    data.extend(sef_with_applied_grain(0));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        has_error(&report, "frame-header/film-grain-chroma-idc-mismatch"),
+        "a film-grain model whose FgmChromaIdc differs from chroma_format_idc must fire \
+         film-grain-chroma-idc-mismatch; report was: {report}"
+    );
+}
+
+#[test]
+fn frame_film_grain_satisfied_constraints_are_silent() {
+    // A model defined at (mlayer 0, tlayer 0) with the matching chroma_format_idc is fully
+    // depended-on by a layer-0 frame: none of the three §6.17.10.1 diagnostics fire.
+    let seq = FrameCoreSeq {
+        film_grain_params_present: true,
+        max_mlayer_id: 1,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(film_grain_obu_bytes(1 << 0, 0)); // slot 0, chroma 0, layer 0
+    data.extend(sef_with_applied_grain(0));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        !has_error(&report, "frame-header/film-grain-mlayer-dependency-missing")
+            && !has_error(&report, "frame-header/film-grain-tlayer-dependency-missing")
+            && !has_error(&report, "frame-header/film-grain-chroma-idc-mismatch"),
+        "satisfied film-grain layer-dependency / chroma constraints must be silent; \
+         report was: {report}"
+    );
+}
+
+#[test]
+fn frame_film_grain_unavailable_is_not_layer_checked() {
+    // No film grain OBU defines the slot: the availability diagnostic owns the case, and the
+    // layer-dependency constraints (which reference the absent model's identity) stay silent.
+    let seq = FrameCoreSeq {
+        film_grain_params_present: true,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(sef_with_applied_grain(0)); // references fgm_id 0, never defined
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        has_error(&report, "frame-header/film-grain-model-unavailable"),
+        "report was: {report}"
+    );
+    assert!(
+        !has_error(&report, "frame-header/film-grain-mlayer-dependency-missing")
+            && !has_error(&report, "frame-header/film-grain-tlayer-dependency-missing")
+            && !has_error(&report, "frame-header/film-grain-chroma-idc-mismatch"),
+        "an unavailable film-grain model must not be layer-checked; report was: {report}"
+    );
+}
+
+#[test]
+fn frame_film_grain_layer_checks_suppressed_under_external_hls() {
+    use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+    // Under any Provided external-HLS mode the model — and its stored layer identity /
+    // chroma idc — MAY be supplied externally (film grain is inexpressible by ExternalHlsSet),
+    // so the layer-dependency / chroma checks suppress even when an in-band model violates.
+    let seq = FrameCoreSeq {
+        film_grain_params_present: true,
+        max_mlayer_id: 1,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(film_grain_obu_at_layer(1 << 0, 2, 0, 1)); // mlayer 1 + chroma 2: both violate
+    data.extend(sef_with_applied_grain(0));
+    let options = ValidationOptions {
+        external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
+    };
+    let report = Validator::new(false).validate_bytes_with_options(&data, &options);
+    assert!(
+        !has_error(&report, "frame-header/film-grain-mlayer-dependency-missing")
+            && !has_error(&report, "frame-header/film-grain-tlayer-dependency-missing")
+            && !has_error(&report, "frame-header/film-grain-chroma-idc-mismatch"),
+        "a Provided external-HLS mode must suppress the film-grain layer-dependency / chroma \
+         checks; report was: {report}"
+    );
+}
+
+#[test]
+fn frame_film_grain_intra_tail_path_is_checked() {
+    // Coverage: the §6.17.10.1 checks run on the CLK / intra-tail film_grain_config() route
+    // (core.intra_tail.film_grain at frame_header_checks.rs) too, not only the SEF path. A
+    // complete intra KEY frame applies grain at fgm_id 0 from a model whose FgmChromaIdc (2)
+    // differs from the sequence chroma_format_idc (0), so it fires the chroma mismatch — the
+    // simplest of the three rules (no layered OBU needed), proving the path-agnostic plumbing.
+    let seq = FrameCoreSeq {
+        film_grain_params_present: true,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(film_grain_obu_bytes(1 << 0, 2)); // slot 0, fgm_chroma_idc = 2
+    let mut fb = Bits::default();
+    fb.bit(1); // is_first_tile_group
+    fb.uvlc(0); // cur_mfh_id == 0
+    fb.uvlc(0); // seq_header_id_in_frame_header
+    fb.bit(1); // immediate_output_frame == 1 (output frame -> apply_grain readable)
+    fb.bit(0); // frame_size_override_flag == 0 (cur_mfh_id == 0 -> max dims 16x16)
+    fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+    fb.bit(0); // allow_screen_content_tools
+    fb.bit(0); // allow_intrabc
+    fb.bit(0); // disable_cdf_update
+    intra_structure_tail(&mut fb, 0); // §5.18.2 structure + loop-filter cluster
+    fb.bit(0); // tx_mode_select = 0
+    fb.f(0, 2); // reduced_tx_set = 0
+    fb.bit(1); // apply_grain = 1
+    fb.f(0, 3); // fgm_id = 0
+    fb.f(0, 16); // grain_seed f(16) — full, so film_grain_config() parses to completion
+    data.extend(annex_b_obu(CLK_HEADER, &fb.into_bytes()));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        has_error(&report, "frame-header/film-grain-chroma-idc-mismatch"),
+        "the §6.17.10.1 constraints must be checked on the intra-tail (CLK) film_grain_config \
+         path, not only the SEF path; report was: {report}"
+    );
+}
+
+#[test]
+fn frame_film_grain_out_of_range_chroma_idc_does_not_double_fire_mismatch() {
+    // §6.13 owns an out-of-range fgm_chroma_idc (> 3) via film-grain/chroma-idc-out-of-range;
+    // the §6.17.10.1 chroma-mismatch check is gated on a conformant stored value so the same
+    // malformed byte is not reported twice.
+    let seq = FrameCoreSeq {
+        film_grain_params_present: true,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(film_grain_obu_bytes(1 << 0, 4)); // slot 0, fgm_chroma_idc = 4 (> 3)
+    data.extend(sef_with_applied_grain(0));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        has_error(&report, "film-grain/chroma-idc-out-of-range"),
+        "the §6.13 out-of-range check owns the malformed value; report was: {report}"
+    );
+    assert!(
+        !has_error(&report, "frame-header/film-grain-chroma-idc-mismatch"),
+        "an out-of-range fgm_chroma_idc must not also fire the §6.17.10.1 mismatch; \
+         report was: {report}"
+    );
+}

@@ -473,15 +473,24 @@ pub(super) fn frame_header_core_checks(
     }
 
     // AV2 § 6.17.10.1 / § 7.3.8.8: when `apply_grain == 1`, a film grain OBU that has set
-    // FilmGrainPresent[ fgm_id ] == 1 for the referenced fgm_id must be available. The
-    // parsed film_grain_config() lives on the SEF path (`sef_film_grain`) or the intra tail
+    // FilmGrainPresent[ fgm_id ] == 1 for the referenced fgm_id must be available, and (when
+    // an in-band model is recorded) the three § 6.17.10.1 layer-dependency / chroma
+    // constraints must hold against the active sequence header's § 5.4.1 maps. The parsed
+    // film_grain_config() lives on the SEF path (`sef_film_grain`) or the intra tail
     // (`intra_tail.film_grain`).
     if let Some(film_grain) = core
         .sef_film_grain
         .as_ref()
         .or_else(|| core.intra_tail.as_ref().map(|tail| &tail.film_grain))
     {
-        frame_film_grain_reference_checks(film_grain, film_grain_state, options, obu, report);
+        frame_film_grain_reference_checks(
+            film_grain,
+            film_grain_state,
+            active_sequence,
+            options,
+            obu,
+            report,
+        );
     }
 
     // The remaining checks compare refresh_frame_flags against NumRefFrames.
