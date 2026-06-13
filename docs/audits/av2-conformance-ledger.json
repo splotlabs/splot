@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "c36b24659d1f14b0a11ec6e626c9c0a34f6b7170",
+  "audited_commit": "e5887846b8e1c369b6a35825bdecf2f1a0085b9f",
   "outcome": "success",
   "files": [
     {
@@ -625,7 +625,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/sequence.rs",
-      "sha256": "9a02c07ae779ffcf2bdde6f1109a16c3044f16acff9ee3254b10431684e5fb95",
+      "sha256": "f6dc26530ace78926deb872f50c30ee5047c0db410ecc424aaa1c6a3dd310340",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
@@ -638,7 +638,8 @@
         "AV2-5.4.5-SEQUENCE-INTRA-CONFIG",
         "AV2-5.4.6-SEQUENCE-INTER-CONFIG",
         "AV2-5.4.7-SEQUENCE-SCC-CONFIG",
-        "AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG"
+        "AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG",
+        "AV2-A-PROFILES"
       ],
       "outcome": "success"
     },
@@ -5439,7 +5440,7 @@
     },
     {
       "path": "xtask/src/source_lines.rs",
-      "sha256": "0a3ce59a1a74a68d8c206125b8ff8d031d07b53176912c300fcda9746a85972a",
+      "sha256": "075fb535dc18872068aacf09c37b9a1420924cd4f8b3eda8e30bf6ce2e84d6e4",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "XTASK-SOURCE-LINES"
