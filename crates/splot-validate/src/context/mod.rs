@@ -102,6 +102,8 @@ mod tests;
 mod tile_groups;
 mod timecode;
 
+// This is a mechanical split of the former context.rs monolith: the submodules
+// intentionally share this crate-private helper namespace via `use super::*`.
 use self::annex_a_iop::*;
 use self::annex_a_value_space::*;
 use self::cmvs::*;
@@ -127,6 +129,9 @@ use self::shared::*;
 use self::temporal_unit::*;
 use self::tile_groups::*;
 use self::timecode::*;
+// frame_headers, lcr_sequence_agreement, and reference_frames only add
+// ValidatorContext impl methods; they are included by `mod` declarations above
+// and export no standalone helper symbols for this glob list.
 
 /// Stateful validator data derived from parseable high-level syntax OBUs.
 #[derive(Debug, Default)]
