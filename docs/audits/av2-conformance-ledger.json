@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "67a45179d9f52a728bd4a0d36e4ab66425fb7c80",
+  "audited_commit": "4589566a9f682cbacb57f7e81fce7d6831e904b8",
   "outcome": "success",
   "files": [
     {
@@ -1699,7 +1699,7 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "86fc5284da66fd613eda0d613f4e8a03d7af220ab84f4d3b027395033184607f",
+      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -1710,7 +1710,6 @@
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
         "CONF-AVM-DIFF-HARNESS",
-        "CONF-AVM-VALID-STREAMS",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
       ],
@@ -3595,6 +3594,36 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-conformance-corpus-foundation/proposal.md",
+      "sha256": "27c4b656750b41322deab429e14742e8727c985938ae4162766f51fd1c3430e4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-AVM-DIFF-HARNESS",
+        "CONF-AVM-VALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-conformance-corpus-foundation/specs/conformance/spec.md",
+      "sha256": "7d7622201887d839654ca388a25174fbb9396f2ec3b0770422e3a4a36e809fdf",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-AVM-DIFF-HARNESS",
+        "CONF-AVM-VALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-conformance-corpus-foundation/tasks.md",
+      "sha256": "8d871ca1e9eaab0e6379754a7547a553e0da34d75b5e34e09a8d50bf787154ea",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-AVM-DIFF-HARNESS",
+        "CONF-AVM-VALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/avm-differential-harness/proposal.md",
       "sha256": "ca4e00373763656046a33836c38af7626641afedb9e473897f7ae9b2a3572b5f",
       "scope_kind": "openspec",
@@ -3616,36 +3645,6 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/conformance-corpus-foundation/proposal.md",
-      "sha256": "27c4b656750b41322deab429e14742e8727c985938ae4162766f51fd1c3430e4",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "CONF-AVM-DIFF-HARNESS",
-        "CONF-AVM-VALID-STREAMS"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/conformance-corpus-foundation/specs/conformance/spec.md",
-      "sha256": "7d7622201887d839654ca388a25174fbb9396f2ec3b0770422e3a4a36e809fdf",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "CONF-AVM-DIFF-HARNESS",
-        "CONF-AVM-VALID-STREAMS"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/conformance-corpus-foundation/tasks.md",
-      "sha256": "8d871ca1e9eaab0e6379754a7547a553e0da34d75b5e34e09a8d50bf787154ea",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "CONF-AVM-DIFF-HARNESS",
-        "CONF-AVM-VALID-STREAMS"
       ],
       "outcome": "success"
     },
@@ -3719,7 +3718,7 @@
     },
     {
       "path": "openspec/specs/conformance/spec.md",
-      "sha256": "883a509bd1fbd35d51e2ee2fac40cd8ee2a59f67cf0754cb0318f26114a1d659",
+      "sha256": "1af620abdc7dbe02d5d5dc2d3340da5dc8e8a9f878b088f44e8e781ed76d5972",
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
