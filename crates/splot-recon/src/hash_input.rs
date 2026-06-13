@@ -266,6 +266,27 @@ mod tests {
     }
 
     #[test]
+    fn ten_bit_yuv_samples_emit_little_endian_y_then_u_then_v() {
+        let luma_size = size(2, 2);
+        let luma_rect = rect(0, 0, 2, 2);
+        let chroma_size = size(1, 1);
+        let chroma_rect = rect(0, 0, 1, 1);
+        let y = plane(luma_size, 2, luma_rect, vec![1_u16, 0x0102, 511, 1023]);
+        let u = plane(chroma_size, 1, chroma_rect, vec![33_u16]);
+        let v = plane(chroma_size, 1, chroma_rect, vec![0x0201_u16]);
+        let frame = yuv_frame(
+            0,
+            BitDepth::Ten,
+            PixelFormat::Yuv420,
+            luma_size,
+            luma_rect,
+            FramePlanes::new(y, Some(u), Some(v)),
+        );
+
+        assert_eq!(bytes(&frame), vec![1, 0, 2, 1, 255, 1, 255, 3, 33, 0, 1, 2]);
+    }
+
+    #[test]
     fn yuv420_odd_luma_dimensions_emit_y_then_u_then_v() {
         let luma_size = size(3, 3);
         let luma_rect = rect(0, 0, 3, 3);
