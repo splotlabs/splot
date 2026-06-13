@@ -37,11 +37,6 @@ const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[
         max_lines: 3_693,
         reason: "large CELU state machine; split separately from this validator refactor",
     },
-    SourceLineAllowance {
-        path: "crates/splot-validate/src/context.rs",
-        max_lines: 16_025,
-        reason: "large validator context state machine; split separately from this validator refactor",
-    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
