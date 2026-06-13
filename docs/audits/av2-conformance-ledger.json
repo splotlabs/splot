@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "a200927cda00aa28ce84961f60f2ee67a6353292",
+  "audited_commit": "b905d332eb18fa7a3f02370ee72920e66ccda2e6",
   "outcome": "success",
   "files": [
     {
@@ -896,18 +896,497 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-validate/src/context.rs",
-      "sha256": "1178bdd4d1345c4fe3c19b73ea6b260ae8ababd1ac54bd431833284c817342f5",
+      "path": "crates/splot-validate/src/context/annex_a_iop.rs",
+      "sha256": "f9085dd70c01b4d6c16d8db5c0148db07aa1aad2ab429b70c3a85cd31e318263",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "AV2-A-LEVELS-TIERS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/annex_a_value_space.rs",
+      "sha256": "36bd1835a020c85cec8a26358d981ec4eed92311ab5896708f2b25968ba4b704",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
-        "AV2-5.17.7-METADATA-TIMECODE",
-        "AV2-5.18-FRAME-HEADER",
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "AV2-A-LEVELS-TIERS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/cmvs.rs",
+      "sha256": "aeb446467434940537568f0897bf160db13b8a3609ec49922c480fb1a7cf0638",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/content_interpretation.rs",
+      "sha256": "5e719d69fb442e998c8df50a7c78cd300f37d300789241324ed83b252b2e0661",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/cvs.rs",
+      "sha256": "905fcdd86f507f12255a4ee332f45b442426a3b3a0d624842778cc0419b650f0",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/film_grain.rs",
+      "sha256": "5a8f05d325319ea2cfa631758e6587d91d648ddb8cf6f595854c77a4b4f7195f",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/frame_facts.rs",
+      "sha256": "0ebf4dfa9c173aff918df7430ba80d5b7471516f8e12d8f70c4f4f910cdcfba2",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
-        "AV2-5.18.6-QUANTIZATION",
-        "AV2-5.2.4-BYTE-ALIGNMENT",
-        "AV2-5.20-TILE-GROUP-PAYLOAD",
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/frame_header_checks.rs",
+      "sha256": "f134c145c37eb013f8e28ea7e759b2cc6cb69617b5a9b532dfc2938670938f10",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/frame_header_copy.rs",
+      "sha256": "b09a933ebabc757acee00ea3c2e54bd96a05095a14f4e66d32409085e3497c94",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/frame_header_diagnostics.rs",
+      "sha256": "5107a9fa4fca1cb43bec04061d967408bcb5d49e56110618277e4e12918d5c75",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/frame_headers.rs",
+      "sha256": "af23efeccdd2519a645ed4d9fe47af3fa047ca29c447cd8e148142811e478012",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/hls.rs",
+      "sha256": "60c39fea59de84cff1e060054a356e4e9f4d1d12d5c2c9bd64a1f51be5c38a70",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/lcr.rs",
+      "sha256": "2fd8144c652b1b102cccef4630660a4dd859aed3941af0c4352e633f3959e540",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/lcr_agreement.rs",
+      "sha256": "ec02c1a9bb72aa51ac439154ae77a0f54b28b13626ab6b3eab9d094f679bd863",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/lcr_sequence_agreement.rs",
+      "sha256": "5672c0b830a14de01fcfc1a32fbb97d66851ee2359b152696069a59fea35e38b",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/metadata.rs",
+      "sha256": "a9442523e7ad28f8b2630f50fbfb39fbfe8f5dbc430faed6b64bd0f08003a175",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/mod.rs",
+      "sha256": "2fc43f8069eb9351eaa405c7ffc894b4720227e932d70ad9a401964131ef86e9",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/msdo.rs",
+      "sha256": "48956ecc3ef66d90f07e1ce3d6b39204eeefd03fea30edc519d28de8fb90a49d",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
         "AV2-5.6-MSDO",
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/ops.rs",
+      "sha256": "3a3723d6bbc85fca87cb1fa334fdd8f3d287585b61e0aa9c0d392a70c1d1b19b",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/ops_buffer_delay.rs",
+      "sha256": "a83a48f228ce1d7d0d52ecd59f534e1660f3a74b31baa608ecb454b511473665",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/quantizer_matrix.rs",
+      "sha256": "883aa8d8868db9e6bc5a4aa5ca927838bd281e7185c9a77a8356626f779434fb",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-5.18.6-QUANTIZATION",
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/rap_replay.rs",
+      "sha256": "1a1278bbf6a593bcf1d89f607ac30802ece0396cef08e25718f8d75dca6bd3eb",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/reference_frames.rs",
+      "sha256": "cacd3fdea10d3293b99ca058dbdd7e92b72013581a995af9ad4c34b46f50c787",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/scan_type.rs",
+      "sha256": "c0ae3484899b90210159a0e51bc27f1bac03708a764b9f2009310125feccf40f",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/sequence.rs",
+      "sha256": "69eb3aed08bfe0c0ebaf91090aed2690dcecffa7ab2388d9de988e247d6a355b",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-5.18-FRAME-HEADER",
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
         "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
         "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
@@ -920,7 +1399,110 @@
         "AV2-7.3.8-HLS-AVAILABILITY",
         "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
         "AV2-7.4-RANDOM-ACCESS",
-        "AV2-A-LEVELS-TIERS"
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/shared.rs",
+      "sha256": "30ddabf9c6375d3fb34e7690d7f04bf2bc15e5b773f13e7d886539e01c365fd5",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/temporal_unit.rs",
+      "sha256": "20d278bf131a75ef376451c13b93b15a42652b66c5365175cfab97c38e79fb39",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/tests/mod.rs",
+      "sha256": "bab57670d13d0d0888f5545c86c9a71facbc0b8be25edc22094f5578a86e9476",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/tile_groups.rs",
+      "sha256": "912faf78f0f80e98fb0850169016dbf55872a6ae1c741aa4dd948362556aa5f4",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-5.2.4-BYTE-ALIGNMENT",
+        "AV2-5.20-TILE-GROUP-PAYLOAD",
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-validate/src/context/timecode.rs",
+      "sha256": "f9227152a1fa1fafe5393facff6052b8d9be1b73f0361a8cc5b79c7f4076a6cb",
+      "scope_kind": "workspace:splot-validate",
+      "feature_ids": [
+        "AV2-5.17.7-METADATA-TIMECODE",
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-7.3.2-CMVS-BOUNDARIES",
+        "AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT",
+        "AV2-7.3.5-CODED-FRAME-UNIT",
+        "AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT",
+        "AV2-7.3.7-TEMPORAL-UNIT-ORDER",
+        "AV2-7.3.8-HLS-AVAILABILITY",
+        "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
+        "AV2-7.4-RANDOM-ACCESS",
+        "VALIDATOR-CONTEXT-SPLIT"
       ],
       "outcome": "success"
     },
@@ -1063,7 +1645,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator/tests/frame_header_core.rs",
-      "sha256": "a6b358d6dcf4ebc5f02b454894a3aa4b4f04e9c5d2a4533c0fbac38ad4beff07",
+      "sha256": "b053a56971b34625150fb93cef6408243acb8448a7ddda557772597cc0d2b277",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -1112,7 +1694,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator/tests/layer_dependency_core.rs",
-      "sha256": "412e6347f6e3420f4536e37a0bd0b750cb1aea021bb8906dffd4f5d20bd93b61",
+      "sha256": "bf01ab207daf1b850abb5ecec00924bf6d177959ac8b502fd7d8ed9e3f62809f",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -1343,7 +1925,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "b4329d33fab0f53a3f4bb7f8751eafc177b415519658f7f9b541a1e440d0695a",
+      "sha256": "acc53e49946519b5667c8c48383d9ba27e00e615cc1b30f881ccac8904bb7139",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1472,6 +2054,7 @@
         "ENC-RATE-CONTROL-V0",
         "ENC-SPEED-PRESETS",
         "ENC-Y4M-INPUT",
+        "VALIDATOR-CONTEXT-SPLIT",
         "XTASK-AUDIT-SCOPE",
         "XTASK-CI-QUALITY-GATES",
         "XTASK-CONVENTIONAL-COMMITS",
@@ -1515,7 +2098,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "7d469e00c4fe31a3f727d84bb58f7ff99d8f1c700ab7578a7a137c458aa5ec19",
+      "sha256": "08e3efeccf6068d6c073c52b0ef4cc58152e8d124cd4cbe11595dacf37e880e3",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1644,6 +2227,7 @@
         "ENC-RATE-CONTROL-V0",
         "ENC-SPEED-PRESETS",
         "ENC-Y4M-INPUT",
+        "VALIDATOR-CONTEXT-SPLIT",
         "XTASK-AUDIT-SCOPE",
         "XTASK-CI-QUALITY-GATES",
         "XTASK-CONVENTIONAL-COMMITS",
@@ -1657,7 +2241,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "22d33b9b6f1c59f392d8c9c5c6cf824dcae2260abb3b9db6b90ae5c06c19769c",
+      "sha256": "4dcc8cbdc9518d9ce7f09bcad6a083aacfa7254631f90fc4f2219e603f5bf470",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1786,6 +2370,7 @@
         "ENC-RATE-CONTROL-V0",
         "ENC-SPEED-PRESETS",
         "ENC-Y4M-INPUT",
+        "VALIDATOR-CONTEXT-SPLIT",
         "XTASK-AUDIT-SCOPE",
         "XTASK-CI-QUALITY-GATES",
         "XTASK-CONVENTIONAL-COMMITS",
@@ -1815,7 +2400,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "542fc9bf6633290c42f294dd8ca18346337d85efd2fb89e7f6b3f8dc3d95a3bf",
+      "sha256": "57f2b0007f52bbca0f347ea6edca2bc8d0a283eb1f58753f676d074ee999702f",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -3990,6 +4575,37 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-film-grain-layer-dependency-constraints/proposal.md",
+      "sha256": "1521d8b5081c6a2675f6890329f9561cc7930027247daf9b22f694f3fd3def1a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.14-FILM-GRAIN",
+        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-film-grain-layer-dependency-constraints/specs/validator/spec.md",
+      "sha256": "85ba60edd5b6d8770c1598811fb50f92662c23c0b8e553712ad51115df0d214d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.14-FILM-GRAIN",
+        "AV2-5.18.10-FILM-GRAIN-STRUCTURES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-film-grain-layer-dependency-constraints/tasks.md",
+      "sha256": "68c92faf79c191f96bc0eafa337c8a1645cabd13a48b9144b346632a2b65aa56",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.14-FILM-GRAIN",
+        "AV2-5.18.10-FILM-GRAIN-STRUCTURES"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-13-validator-source-line-budget/.openspec.yaml",
       "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
       "scope_kind": "openspec",
@@ -4088,6 +4704,33 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "ENC-INTRA-TOY-V0"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/validator-context-split/proposal.md",
+      "sha256": "8a8f2de6e45c0ce7b6dac2b8405621a8ab962975947251a83f4f442946476061",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/validator-context-split/specs/process/spec.md",
+      "sha256": "b20cb1fb9cdfda760a94e0b7f6e4b38255220a7f8e0cc9c44912c18b5ae64f22",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "VALIDATOR-CONTEXT-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/validator-context-split/tasks.md",
+      "sha256": "92e9abebf6f8d427c465712a8f24df3786bfe2e34f3c5bf6f51d8ad3970ff7f3",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "VALIDATOR-CONTEXT-SPLIT"
       ],
       "outcome": "success"
     },
@@ -4200,7 +4843,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "4d24c02247e33d23495d74d178bf14275ab35e01b3a0353c719b09f3a881c579",
+      "sha256": "c737c07ce7de5bcf570c2b341d3b82a7cfeb415879878998ec0ec0f211ba366b",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
@@ -4412,7 +5055,7 @@
     },
     {
       "path": "xtask/src/source_lines.rs",
-      "sha256": "149de43027c9c5e960efb1c37e5efeb1727280821c659523117880b6ac65bd50",
+      "sha256": "ca4f6e97a7acea6e6a4c2fec98907674a3943de5896ddca609036fd0f0c05aea",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "XTASK-SOURCE-LINES"
