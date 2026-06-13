@@ -24,6 +24,7 @@
 
 use crate::bitio::BitReader;
 use crate::error::Result;
+use crate::headers::sequence::ProfileIdc;
 use crate::types::ExtendedLayerId;
 
 /// `ops_id` is a 4-bit field (`f(4)`); the OPS identifier within an extended layer.
@@ -215,8 +216,8 @@ pub struct OpsAggregateInfo {
 pub struct OpsSeqProfileTierLevelInfo {
     /// The extended layer this PTL info targets (`xId` locally, `j` globally).
     pub target_xlayer_id: ExtendedLayerId,
-    /// `ops_seq_profile_idc` (`f(5)`).
-    pub seq_profile_idc: u8,
+    /// `ops_seq_profile_idc` (`f(5)`; Annex A Table A.1 value space).
+    pub seq_profile_idc: ProfileIdc,
     /// `ops_level_idx` (`f(5)`).
     pub level_idx: u8,
     /// `ops_tier_flag` (`f(1)`).
@@ -499,7 +500,7 @@ fn parse_ops_seq_profile_tier_level_info(
     reader: &mut BitReader<'_>,
     target_xlayer_id: ExtendedLayerId,
 ) -> Result<OpsSeqProfileTierLevelInfo> {
-    let seq_profile_idc = reader.read_bits_u8(5)?;
+    let seq_profile_idc = ProfileIdc::from_bits(reader.read_bits_u8(5)?);
     let level_idx = reader.read_bits_u8(5)?;
     let tier_flag = reader.read_bit()? != 0;
     let mlayer_count = reader.read_bits_u8(3)?;

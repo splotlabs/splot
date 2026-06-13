@@ -14,6 +14,7 @@
 
 use crate::bitio::BitReader;
 use crate::error::{Error, LayerConfigRecordErrorKind, Result};
+use crate::headers::sequence::ProfileIdc;
 use crate::types::ExtendedLayerId;
 
 /// `MAX_NUM_TLAYERS` (AV2 § 3): the bit width of `lcr_tlayer_map` (`f(n)`,
@@ -164,8 +165,8 @@ pub struct LcrAggregateInfo {
 pub struct LcrSeqProfileTierLevelInfo {
     /// The `i` / `xId` argument: which xlayer this PTL describes.
     pub xlayer_id: u8,
-    /// `lcr_seq_profile_idc[i]` (`f(5)`).
-    pub seq_profile_idc: u8,
+    /// `lcr_seq_profile_idc[i]` (`f(5)`; Annex A Table A.1 value space).
+    pub seq_profile_idc: ProfileIdc,
     /// `lcr_max_level_idx[i]` (`f(5)`).
     pub max_level_idx: u8,
     /// `lcr_tier_flag[i]` (`f(1)`).
@@ -522,7 +523,7 @@ fn parse_lcr_seq_profile_tier_level_info(
 ) -> Result<LcrSeqProfileTierLevelInfo> {
     Ok(LcrSeqProfileTierLevelInfo {
         xlayer_id,
-        seq_profile_idc: reader.read_bits_u8(5)?,
+        seq_profile_idc: ProfileIdc::from_bits(reader.read_bits_u8(5)?),
         max_level_idx: reader.read_bits_u8(5)?,
         tier_flag: reader.read_bit()? != 0,
         max_mlayer_count: reader.read_bits_u8(3)?,

@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "245c4d09badc067a13712c267ccfe5d4f7b13ab9",
+  "audited_commit": "e5887846b8e1c369b6a35825bdecf2f1a0085b9f",
   "outcome": "success",
   "files": [
     {
@@ -550,7 +550,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/layer_config_record.rs",
-      "sha256": "c992704e247e06c1f9e2364a32ea692796a41a98cc83eff6700c3b67868a540a",
+      "sha256": "5b4e232e87a0b70278bc8c30e1e7563a9713380fedca1ff4ba3ae95187278e62",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.8-LAYER-CONFIG-RECORD",
@@ -590,7 +590,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/operating_point_set.rs",
-      "sha256": "39e5fc4aa7e28f4ba5ac78b429cd130401a3b03810bf07e26fb5c7e0ca7ed940",
+      "sha256": "38909c05533a71060c3b5d56b90309da370c26b10591c502a982911b1f1c386d",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.10-OPERATING-POINT-SET",
@@ -625,7 +625,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/sequence.rs",
-      "sha256": "30b451b6016180b21d8f819f6126282b7caaea755bc016befde761cae4a40c42",
+      "sha256": "f6dc26530ace78926deb872f50c30ee5047c0db410ecc424aaa1c6a3dd310340",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
@@ -638,7 +638,8 @@
         "AV2-5.4.5-SEQUENCE-INTRA-CONFIG",
         "AV2-5.4.6-SEQUENCE-INTER-CONFIG",
         "AV2-5.4.7-SEQUENCE-SCC-CONFIG",
-        "AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG"
+        "AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG",
+        "AV2-A-PROFILES"
       ],
       "outcome": "success"
     },
@@ -654,7 +655,7 @@
     },
     {
       "path": "crates/splot-core/src/hls.rs",
-      "sha256": "2b65d96f085da956b73755c1c420c4707ff6911363f9e2bc8aab655dbcd4c83c",
+      "sha256": "f849ecc5e80b694950de0895fac288e5455fb8956f50d77113981e958894b48a",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -888,7 +889,7 @@
     },
     {
       "path": "crates/splot-validate/src/checks/mod.rs",
-      "sha256": "cd8a5356c41972c22ff6d40d81ea90f508ec47ef63fd76ce4fd21a1ff6110e71",
+      "sha256": "69441652b82f8fef8cd21bcc53d515e338ca4e567748516b6fffcabbcd433091",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.3-RESERVED-OBU",
@@ -920,7 +921,7 @@
     },
     {
       "path": "crates/splot-validate/src/context/annex_a_value_space.rs",
-      "sha256": "36bd1835a020c85cec8a26358d981ec4eed92311ab5896708f2b25968ba4b704",
+      "sha256": "1a2790c043f669f61f0044f46f6ad83bc93b0ad2c72ff9ea30f4f462ba08ef43",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -1143,7 +1144,7 @@
     },
     {
       "path": "crates/splot-validate/src/context/lcr.rs",
-      "sha256": "2fd8144c652b1b102cccef4630660a4dd859aed3941af0c4352e633f3959e540",
+      "sha256": "468e35a8fe06885978b2aa198e736c52c19fd1fb7ab8d0b1744ff50193708629",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
@@ -1243,7 +1244,7 @@
     },
     {
       "path": "crates/splot-validate/src/context/msdo.rs",
-      "sha256": "48956ecc3ef66d90f07e1ce3d6b39204eeefd03fea30edc519d28de8fb90a49d",
+      "sha256": "0b28eb5fa73b5109228a7d14c8310263b5a6c778f190d8b0776b299e1642f357",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1926,8 +1927,18 @@
       "outcome": "success"
     },
     {
+      "path": "docs/DECODER-DIAGNOSTICS.md",
+      "sha256": "6dd7db4e724e5ac8801117851ff5902bbbc0ffc6e2065d1751bdc37268b128af",
+      "scope_kind": "docs",
+      "feature_ids": [
+        "CLI-DECODE",
+        "DOC-DECODER-DIAGNOSTICS"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "docs/DECODER-ROADMAP.md",
-      "sha256": "0a8da39c32e5015bca2dde1583d15dd31c0786baf038465212f21f3ae65ab423",
+      "sha256": "7485d86da0bde83e2b6ba4124fb2f40db32034573b244cc00e81b5fd751ee3da",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-DECODE",
@@ -1937,10 +1948,11 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-MATRIX.toml",
-      "sha256": "187cd6d60fd901437122c9be67cfdc3e23bfbe41ec5b3ad77bf3f0fff48b1d3b",
+      "sha256": "a3a11ca3d9b109ec4442213083af44334c95eebd787a92c54544f388e8641b8d",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-DECODE",
+        "DOC-DECODER-DIAGNOSTICS",
         "DOC-DECODER-ROADMAP",
         "DOC-DECODER-SUPPORT-MATRIX",
         "XTASK-DECODER-SUPPORT-STATUS"
@@ -1949,10 +1961,11 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-STATUS.md",
-      "sha256": "19396cd3f85dd9dc5059d60a605e521849010f900c9f7c3f9d620114bc4c0592",
+      "sha256": "be479b0c2703659e0d048a7f8c92b2e9c0e00dd3f27f62683d67a690c7a2438b",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-DECODE",
+        "DOC-DECODER-DIAGNOSTICS",
         "DOC-DECODER-ROADMAP",
         "DOC-DECODER-SUPPORT-MATRIX",
         "XTASK-DECODER-SUPPORT-STATUS"
@@ -1961,7 +1974,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "5104eef221dd984e0c4d88edc5673ad399dda1e3f0f11c6a6d293c10bb749237",
+      "sha256": "c2d4e9b73facf1ff4f935f0d6dbbb94f67c03b23139aa5c49649f2a5f8ef626e",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2083,6 +2096,7 @@
         "CONF-PUBLIC-VECTORS",
         "DOC-AUDIT-PROTOCOLS",
         "DOC-AV2-SPEC-MIRROR",
+        "DOC-DECODER-DIAGNOSTICS",
         "DOC-DECODER-ROADMAP",
         "DOC-DECODER-SUPPORT-MATRIX",
         "DOC-ENCODER-REFERENCE-GATE",
@@ -2097,6 +2111,7 @@
         "XTASK-AUDIT-SCOPE",
         "XTASK-CI-QUALITY-GATES",
         "XTASK-CONVENTIONAL-COMMITS",
+        "XTASK-DECODER-DIAGNOSTIC-REGISTRY",
         "XTASK-DECODER-SUPPORT-STATUS",
         "XTASK-DIAGNOSTIC-REGISTRY",
         "XTASK-FEATURE-STATUS",
@@ -2108,7 +2123,7 @@
     },
     {
       "path": "docs/FEATURE-TRACKING.md",
-      "sha256": "b8e0a25bbce26a9faeff5bb63c521d01b16ab21ee4343a61d6f5b0ee976552b0",
+      "sha256": "a2f8bd7fe7ea048d577859a2d862a8efaa8a9470d4590578de2b3330c7b03bc0",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -2138,7 +2153,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "c6a831f30d9b505080b1fbfd21fe01782c66ac77b16ae12c0b31b80dd24c57f3",
+      "sha256": "80696914ad7255a9e6e95bc9e9c8731c0b01afbd9e35d877bf06f1f38074133d",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2260,6 +2275,7 @@
         "CONF-PUBLIC-VECTORS",
         "DOC-AUDIT-PROTOCOLS",
         "DOC-AV2-SPEC-MIRROR",
+        "DOC-DECODER-DIAGNOSTICS",
         "DOC-DECODER-ROADMAP",
         "DOC-DECODER-SUPPORT-MATRIX",
         "DOC-ENCODER-REFERENCE-GATE",
@@ -2274,6 +2290,7 @@
         "XTASK-AUDIT-SCOPE",
         "XTASK-CI-QUALITY-GATES",
         "XTASK-CONVENTIONAL-COMMITS",
+        "XTASK-DECODER-DIAGNOSTIC-REGISTRY",
         "XTASK-DECODER-SUPPORT-STATUS",
         "XTASK-DIAGNOSTIC-REGISTRY",
         "XTASK-FEATURE-STATUS",
@@ -2285,7 +2302,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "c2ba3636c0758ac70cee12b4b70b24dc42e0c76b4c787be92c55e0950e3f5086",
+      "sha256": "39f3a09ce33e95aaea2989732ce6023bed373ad8c27cc06b760ffeef53882947",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2407,6 +2424,7 @@
         "CONF-PUBLIC-VECTORS",
         "DOC-AUDIT-PROTOCOLS",
         "DOC-AV2-SPEC-MIRROR",
+        "DOC-DECODER-DIAGNOSTICS",
         "DOC-DECODER-ROADMAP",
         "DOC-DECODER-SUPPORT-MATRIX",
         "DOC-ENCODER-REFERENCE-GATE",
@@ -2421,6 +2439,7 @@
         "XTASK-AUDIT-SCOPE",
         "XTASK-CI-QUALITY-GATES",
         "XTASK-CONVENTIONAL-COMMITS",
+        "XTASK-DECODER-DIAGNOSTIC-REGISTRY",
         "XTASK-DECODER-SUPPORT-STATUS",
         "XTASK-DIAGNOSTIC-REGISTRY",
         "XTASK-FEATURE-STATUS",
@@ -2432,7 +2451,7 @@
     },
     {
       "path": "docs/SPEC-MAPPING.md",
-      "sha256": "b2a40a61145c3472b4e2f6cd210a086183a7a9385fa08fe213817edd72a8b78c",
+      "sha256": "2aca8cbf8420bfc21ecdd383580feeeab8d3e38f286d1dedc6f55816944e3174",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-IVF-CONTAINER"
@@ -4568,6 +4587,33 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-annex-a-profile-newtype/proposal.md",
+      "sha256": "309ccb43b9102f826a03bfaa2d8a9a01111a67ef7037b50e8a548df33ca9bc03",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-annex-a-profile-newtype/specs/bitstream/spec.md",
+      "sha256": "19ced1aa734b6579cc0c3d28a58c636c100c02e67b23253843ca5d071e9130b3",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-annex-a-profile-newtype/tasks.md",
+      "sha256": "46ec31a4313994dc36201ed25493d25569784a8b2edbe58b9fe79e2f1e418115",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-A-PROFILES"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-13-avm-positive-vector-generation/proposal.md",
       "sha256": "4b9d9dc105185cea6f46901d6694c10058f2a04256580c0664c0ceea06bcfa27",
       "scope_kind": "openspec",
@@ -4700,6 +4746,70 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-INVALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-diagnostic-registry/.openspec.yaml",
+      "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-diagnostic-registry/agent-log.md",
+      "sha256": "23eca89f6f8b647bff99fe501fb936f90a6538598bf64c5ecc85e8f9e3e711d4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CLI-DECODE",
+        "DOC-DECODER-DIAGNOSTICS",
+        "XTASK-DECODER-DIAGNOSTIC-REGISTRY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-diagnostic-registry/design.md",
+      "sha256": "359e1361e389d8059b5844030a753f72ee54700d36d4b9b6e21bacf1ffcb03b2",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-diagnostic-registry/proposal.md",
+      "sha256": "db86dd2353ba4718a64c3fce6a13fb59280542fd4b58a77d5eb2c3a35ba43589",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-DECODER-DIAGNOSTICS",
+        "XTASK-DECODER-DIAGNOSTIC-REGISTRY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-diagnostic-registry/specs/decoder-support/spec.md",
+      "sha256": "f3e1d6a39c1652961edc06d1e184e98549f117282e9f5ca5ba8fe322eb6c7aba",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CLI-DECODE",
+        "DOC-DECODER-DIAGNOSTICS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-diagnostic-registry/specs/process/spec.md",
+      "sha256": "35f4468571b1a240511f5d22d0bdb3fb42861016758ea6b1aebe3fceb5e92118",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-DECODER-DIAGNOSTIC-REGISTRY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-diagnostic-registry/tasks.md",
+      "sha256": "0f9b3bd845229d7499c9427d1228c8c391fdef227613be8d0426e6ec91eee329",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-DECODER-DIAGNOSTICS",
+        "XTASK-DECODER-DIAGNOSTIC-REGISTRY"
       ],
       "outcome": "success"
     },
@@ -5005,7 +5115,7 @@
     },
     {
       "path": "openspec/specs/bitstream/spec.md",
-      "sha256": "fea6f80fd04e529563c66afa76c353a4d22b0e3212ae6d4918df168a40560511",
+      "sha256": "6a726e8a75cedb31cc9951e203ec6e8f5cfa1869024f75af8217a6d5087ac107",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -5039,10 +5149,11 @@
     },
     {
       "path": "openspec/specs/decoder-support/spec.md",
-      "sha256": "f239ec1af62585df337402da6b8b700f9e23bbf09f2200f57c7489909a4a08e7",
+      "sha256": "7518ecaf3c9385c267a06cbaaeafdd342b83eb835ff4553c9f61c7a7f649b701",
       "scope_kind": "openspec",
       "feature_ids": [
-        "CLI-DECODE"
+        "CLI-DECODE",
+        "DOC-DECODER-DIAGNOSTICS"
       ],
       "outcome": "success"
     },
@@ -5089,7 +5200,7 @@
     },
     {
       "path": "openspec/specs/process/spec.md",
-      "sha256": "916906f1aeaceac6fb96c824e8536179e64c210f83381684b51753a40ef3f5a9",
+      "sha256": "f13a8138c4475f3e43ebb02c743c1be9b5a690691540c9d0632a973796700a84",
       "scope_kind": "openspec",
       "feature_ids": [
         "DOC-AUDIT-PROTOCOLS",
@@ -5097,6 +5208,7 @@
         "DOC-ENCODER-REFERENCE-GATE",
         "XTASK-AUDIT-SCOPE",
         "XTASK-CONVENTIONAL-COMMITS",
+        "XTASK-DECODER-DIAGNOSTIC-REGISTRY",
         "XTASK-DECODER-SUPPORT-STATUS",
         "XTASK-DIAGNOSTIC-REGISTRY",
         "XTASK-FEATURE-STATUS",
@@ -5275,16 +5387,17 @@
     },
     {
       "path": "xtask/src/diagnostic_registry.rs",
-      "sha256": "4522d7f9ee17a212cd6458a7e57629e0a011f99e43f430c326f66a2bd5475df3",
+      "sha256": "d66f6847677903a1f2a076d67d3d8233dc55a88ba432baf5f14fca5488e7a445",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
+        "XTASK-DECODER-DIAGNOSTIC-REGISTRY",
         "XTASK-DIAGNOSTIC-REGISTRY"
       ],
       "outcome": "success"
     },
     {
       "path": "xtask/src/feature_status.rs",
-      "sha256": "5af30f7907f294e66309ddcab18114a6c2667334c1474550317fbeacad5e90d5",
+      "sha256": "5c051bf987ad7ba9dab7c0f0864c140e9caf9d7f1522fcef4856f98f95e95d37",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "AV2-5.2.2-OBU-HEADER",
@@ -5314,7 +5427,7 @@
     },
     {
       "path": "xtask/src/main.rs",
-      "sha256": "dc2650547d7ceb2dca8b21fab54368fc12a2b2dc7ee38d415849659a967bbdb2",
+      "sha256": "e4b1d14ec349ac854c33645de84606aa1e2848e54caca5d94345c946f7a48a16",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "CONF-AVM-PARSER-TRACES",
@@ -5327,7 +5440,7 @@
     },
     {
       "path": "xtask/src/source_lines.rs",
-      "sha256": "ca4f6e97a7acea6e6a4c2fec98907674a3943de5896ddca609036fd0f0c05aea",
+      "sha256": "075fb535dc18872068aacf09c37b9a1420924cd4f8b3eda8e30bf6ce2e84d6e4",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "XTASK-SOURCE-LINES"

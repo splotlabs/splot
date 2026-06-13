@@ -234,7 +234,7 @@ pub(super) fn check_ops_level_tier_value_space(
             // Annex A.2 Table A.1: a reserved ops_seq_profile_idc (5-30) conforms to no
             // defined profile. Annex A applies its profile constraints per sub-bitstream
             // using the OPS-derived profile id (§ 6.10.4, mirror lines 443-451).
-            if is_reserved_profile(ptl.seq_profile_idc) {
+            if is_reserved_profile(ptl.seq_profile_idc.get()) {
                 report.push(
                     Diagnostic::error(
                         "annex-a/profile-reserved",
@@ -242,7 +242,7 @@ pub(super) fn check_ops_level_tier_value_space(
                             "ops_seq_profile_idc {} for extended layer {} in OPS {} operating \
                              point {} is reserved (5..=30); it conforms to no AV2 profile defined \
                              in this version of the specification",
-                            ptl.seq_profile_idc,
+                            ptl.seq_profile_idc.get(),
                             entry.xlayer_id.get(),
                             ops.ops_id,
                             payload.index
