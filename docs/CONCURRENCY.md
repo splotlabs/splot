@@ -166,13 +166,19 @@ fn run(pool: &WorkerPool, items: &[Item]) -> Vec<Output> {
 
 - Only `splot-parallel` may depend on `rayon` or `crossbeam-channel`.
 - No crate depends on a banned runtime/channel library (`tokio`, `async-std`,
-  `futures*`, `threadpool`, `scoped_threadpool`, `flume`, `async-channel`).
+  the whole `futures`/`futures-*` family, `threadpool`, `scoped_threadpool`,
+  `flume`, `async-channel`). Dependency names are resolved through
+  `package = "..."` and `workspace = true` aliases, so a banned crate cannot hide
+  behind a rename.
 - `splot-core` stays runtime-free (no concurrency dependency at all).
 - `splot-validate` stays single-threaded (no `splot-parallel` or restricted
   parallel dependency).
-- Codec source under `crates/` does not call `build_global`, open an unbounded
-  channel (`crossbeam_channel::unbounded` / `unbounded_queue`), build a
-  `std::sync::mpsc` pipeline, or `thread::spawn` outside tests.
+- Codec source under `crates/` does not use the global Rayon pool — neither
+  `build_global` nor the `rayon::spawn` / `rayon::join` / `rayon::scope` (and
+  related) free functions — open an unbounded channel (any import/call/alias form
+  of `crossbeam_channel::unbounded` / `unbounded_queue`), build a
+  `std::sync::mpsc` pipeline, or spawn ad-hoc OS threads (`thread::spawn`,
+  `thread::Builder`, or a `std::thread` alias) outside tests.
 - Aliased imports that could hide one of those calls (e.g. `use std::thread as t;`
   or `use crossbeam_channel as cc;`) are flagged at the rename declaration.
 - Outside `splot-parallel`, a Rayon parallel-iteration call (`par_iter`,

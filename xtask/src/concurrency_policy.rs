@@ -8,23 +8,27 @@
 //! (`crossbeam-channel`, bounded only). Both restricted crates may be depended
 //! on **only** by `splot-parallel`; every other workspace crate must reach
 //! parallelism through `splot-parallel`'s API. No crate may pull in an async
-//! runtime or a competing thread/channel library, and codec source must not
-//! initialize a global Rayon pool, open an unbounded channel, build a
-//! `std::sync::mpsc` pipeline, or spawn ad-hoc OS threads outside tests. Aliased
-//! imports that could hide such a call (for example `use std::thread as t;` or
-//! `use crossbeam_channel as cc;`) are flagged at the rename declaration. And
-//! outside `splot-parallel`, a Rayon parallel-iteration call (`par_iter`,
-//! `par_chunks`, `par_bridge`) must sit inside `WorkerPool::install`: a file that
-//! uses one but never calls `install` is flagged, since it would run on Rayon's
-//! global pool and would not scale with the configured thread count. The source
-//! scan is a line-based defense-in-depth check: it does not resolve multi-hop
+//! runtime or a competing thread/channel library — the whole `futures` family is
+//! banned by prefix, and dependency names are resolved through `package`/`workspace`
+//! aliases so a banned crate cannot hide behind a rename. Codec source must not
+//! initialize or use the global Rayon pool (`build_global`, or the `rayon::spawn` /
+//! `rayon::join` / `rayon::scope` free functions), open an unbounded channel (any
+//! import or call form), build a `std::sync::mpsc` pipeline, or spawn ad-hoc OS
+//! threads (`thread::spawn`, `thread::Builder`, or a `std::thread` alias) outside
+//! tests. Aliased imports that could hide such a call (for example
+//! `use std::thread as t;` or `use crossbeam_channel as cc;`) are flagged at the
+//! rename declaration. And outside `splot-parallel`, a Rayon parallel-iteration call
+//! (`par_iter`, `par_chunks`, `par_bridge`) must sit inside `WorkerPool::install`: a
+//! file that uses one but never calls `install` is flagged, since it would run on
+//! Rayon's global pool and would not scale with the configured thread count. The
+//! source scan is a line-based defense-in-depth check: it does not resolve multi-hop
 //! re-exports, so the dependency-direction gate and code review remain the backstop.
 //!
 //! This module is a thin IO wrapper around a pure
 //! [`evaluate_concurrency_policy`] evaluator so the rules can be unit-tested
 //! against synthetic fixtures.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
@@ -37,19 +41,25 @@ const RESTRICTED_PARALLEL_CRATES: &[&str] = &["rayon", "crossbeam-channel"];
 /// Runtime/concurrency crates no workspace crate may depend on directly — async
 /// runtimes, alternative thread pools, and competing channel libraries. Banning
 /// them keeps the concurrency surface to the two approved primitives in
-/// `splot-parallel` and keeps the codec runtime-free of async executors.
+/// `splot-parallel` and keeps the codec runtime-free of async executors. The whole
+/// `futures` family is banned by prefix (see [`is_banned_runtime_crate`]) rather
+/// than by an exhaustive list, so `futures-channel` / `futures-task` / `futures-io`
+/// / `futures-sink` / etc. cannot slip in.
 const BANNED_RUNTIME_CRATES: &[&str] = &[
     "tokio",
     "async-std",
-    "futures",
-    "futures-core",
-    "futures-util",
-    "futures-executor",
     "threadpool",
     "scoped_threadpool",
     "flume",
     "async-channel",
 ];
+
+/// Returns `true` if `name` is a banned runtime/channel crate: an exact entry in
+/// [`BANNED_RUNTIME_CRATES`], or any crate in the `futures` family (`futures` itself
+/// or a `futures-*` crate).
+fn is_banned_runtime_crate(name: &str) -> bool {
+    BANNED_RUNTIME_CRATES.contains(&name) || name == "futures" || name.starts_with("futures-")
+}
 
 /// The one crate allowed to depend on [`RESTRICTED_PARALLEL_CRATES`]: the approved
 /// concurrency-primitives crate that wraps Rayon and bounded crossbeam channels.
@@ -71,29 +81,53 @@ const VALIDATE_CRATE: &str = "splot-validate";
 /// Global Rayon pool initialization is banned: splot uses a local owned pool only.
 const BUILD_GLOBAL: &str = concat!("build", "_global");
 
-/// Unbounded channels are banned: only bounded crossbeam queues are permitted.
-const UNBOUNDED: &str = concat!("crossbeam_channel::", "unbounded");
-
-/// Identifier form of an unbounded queue helper (also banned).
-const UNBOUNDED_QUEUE: &str = "unbounded_queue";
+/// Unbounded-channel needles — banned anywhere under `crates/`. Covers the qualified
+/// path, the bare call (any import form, e.g. `use crossbeam_channel::{unbounded};`
+/// then `unbounded()`), the aliased import (`unbounded as ub`), and the helper
+/// identifier. Only `splot-parallel` may depend on `crossbeam-channel`, and it must
+/// stay bounded-only, so none of these belongs in any crate.
+const UNBOUNDED_NEEDLES: &[&str] = &[
+    concat!("crossbeam_channel::", "unbounded"),
+    concat!("unbounded", "("),
+    concat!("unbounded", " as "),
+    "unbounded_queue",
+];
 
 /// `std::sync::mpsc` pipelines are banned: use a bounded crossbeam queue instead.
 const STD_MPSC: &str = concat!("std::sync::", "mpsc");
 
-/// Ad-hoc OS-thread spawning is banned outside tests: use the local worker pool.
-const THREAD_SPAWN: &str = concat!("thread::", "spawn");
+/// Ad-hoc OS-thread-spawn needles — banned outside tests (the local `WorkerPool`
+/// owns every worker thread). Covers the bare `spawn` call (catches
+/// `std::thread::spawn` and `use std::thread::spawn; spawn(...)`), the
+/// `thread::Builder` form (`Builder::new().spawn(...)`), and the two `std::thread`
+/// alias forms (`use std::thread as t;`, `use std::thread::{self as t};`) that would
+/// otherwise hide an aliased `t::spawn`. Scoped to full paths so numeric casts such
+/// as `worker_thread as u32` are never matched.
+const THREAD_SPAWN_NEEDLES: &[&str] = &[
+    concat!("thread::", "spawn"),
+    concat!("thread::", "Builder"),
+    concat!("std::thread", " as "),
+    concat!("std::thread::{", "self"),
+];
 
-/// Aliased import of `std::thread` (`use std::thread as t;`) would let `t::spawn()`
-/// slip past [`THREAD_SPAWN`]. The rename declaration is flagged instead; like the
-/// thread-spawn rule it is test-exempt. Scoped to the full path so numeric casts
-/// such as `worker_thread as u32` are never matched.
-const THREAD_ALIAS: &str = concat!("std::thread", " as ");
-
-/// Aliased import of `crossbeam_channel` (`use crossbeam_channel as cc;`) would let
-/// `cc::unbounded()` slip past [`UNBOUNDED`]. The rename declaration is flagged
-/// (everywhere, matching the unbounded rule). Only `splot-parallel` may import
-/// `crossbeam_channel` at all, and it never aliases it.
+/// Aliasing the `crossbeam_channel` crate (`use crossbeam_channel as cc;`) — flagged
+/// everywhere as an extra guard against hiding `cc::unbounded()`.
 const CROSSBEAM_ALIAS: &str = concat!("crossbeam_channel", " as ");
+
+/// Rayon global-pool entry points — the free functions that run on Rayon's implicit
+/// **global** registry instead of a local pool. Banned everywhere under `crates/`
+/// (including `splot-parallel`): the scoped equivalents are methods on the owned
+/// `WorkerPool`/`ThreadPool` (`pool.install`, `inner.join`, `inner.scope`, …), never
+/// these `rayon::` free functions.
+const RAYON_GLOBAL_NEEDLES: &[&str] = &[
+    concat!("rayon::", "spawn"),
+    concat!("rayon::", "join"),
+    concat!("rayon::", "scope"),
+    concat!("rayon::", "in_place_scope"),
+    concat!("rayon::", "broadcast"),
+    concat!("rayon::", "yield_now"),
+    concat!("rayon::", "yield_local"),
+];
 
 /// Rayon parallel-iteration entry points. Calling one of these *outside*
 /// `WorkerPool::install` silently runs on Rayon's implicit **global** pool, so the
@@ -165,8 +199,9 @@ pub(crate) fn evaluate_concurrency_policy(
             }
 
             // Rule 2: no crate (including `splot-parallel`) may depend on a banned
-            // runtime crate (async runtimes, alternative pools, rival channels).
-            if BANNED_RUNTIME_CRATES.contains(&dep.as_str()) {
+            // runtime crate (async runtimes, alternative pools, rival channels, the
+            // whole `futures` family).
+            if is_banned_runtime_crate(dep) {
                 violations.push(format!(
                     "{}: must not depend on banned runtime crate `{}` (no async runtime or competing thread/channel library)",
                     krate.name, dep
@@ -177,7 +212,7 @@ pub(crate) fn evaluate_concurrency_policy(
             if krate.name == CORE_CRATE
                 && (dep == PARALLEL_CRATE
                     || RESTRICTED_PARALLEL_CRATES.contains(&dep.as_str())
-                    || BANNED_RUNTIME_CRATES.contains(&dep.as_str()))
+                    || is_banned_runtime_crate(dep))
             {
                 violations.push(format!(
                     "{}: must remain runtime-free but depends on `{}`",
@@ -208,10 +243,10 @@ pub(crate) fn evaluate_concurrency_policy(
             ));
         }
 
-        // Rule 6: banned unbounded channels (call form or helper identifier).
-        if line.text.contains(UNBOUNDED) || line.text.contains(UNBOUNDED_QUEUE) {
+        // Rule 6: banned unbounded channels — any import/call/alias/helper form.
+        if let Some(needle) = UNBOUNDED_NEEDLES.iter().find(|n| line.text.contains(**n)) {
             violations.push(format!(
-                "{where_at}: unbounded channels are banned; use a bounded crossbeam queue"
+                "{where_at}: unbounded channels (`{needle}`) are banned; use a bounded crossbeam queue"
             ));
         }
 
@@ -222,24 +257,36 @@ pub(crate) fn evaluate_concurrency_policy(
             ));
         }
 
-        // Rule 8: ad-hoc thread spawning is banned outside tests; test lines are exempt.
-        if !line.in_test && line.text.contains(THREAD_SPAWN) {
+        // Rule 8: ad-hoc OS-thread spawning (call, `thread::Builder`, or `std::thread`
+        // alias forms) is banned outside tests; the local `WorkerPool` owns every
+        // worker thread. Test lines are exempt.
+        if !line.in_test
+            && let Some(needle) = THREAD_SPAWN_NEEDLES
+                .iter()
+                .find(|n| line.text.contains(**n))
+        {
             violations.push(format!(
-                "{where_at}: ad-hoc thread spawning (`{THREAD_SPAWN}`) is banned outside tests; use the local worker pool"
+                "{where_at}: ad-hoc OS-thread spawning (`{needle}`) is banned outside tests; use the local `WorkerPool`"
             ));
         }
 
-        // Rule 9: aliased imports of a sensitive module defeat the qualified needles
-        // above; flag the rename declaration itself (the alias cannot be used without
-        // first being declared). The `std::thread` alias is test-exempt, matching Rule 8.
-        if !line.in_test && line.text.contains(THREAD_ALIAS) {
-            violations.push(format!(
-                "{where_at}: aliasing `std::thread` (`{THREAD_ALIAS}…`) is banned outside tests; it can hide an aliased thread spawn from the policy scanner"
-            ));
-        }
+        // Rule 9: aliasing the `crossbeam_channel` crate (everywhere) — an extra guard
+        // against hiding `cc::unbounded()` behind a rename declaration.
         if line.text.contains(CROSSBEAM_ALIAS) {
             violations.push(format!(
-                "{where_at}: aliasing `crossbeam_channel` (`{CROSSBEAM_ALIAS}…`) is banned; it can hide an aliased unbounded channel from the policy scanner"
+                "{where_at}: aliasing `crossbeam_channel` (`{CROSSBEAM_ALIAS}…`) is banned; it can hide an unbounded channel from the policy scanner"
+            ));
+        }
+
+        // Rule 11: Rayon global-pool entry points (free functions) — banned everywhere,
+        // including `splot-parallel`. They run on Rayon's implicit global registry; use
+        // the owned `WorkerPool`/`ThreadPool` scoped methods (e.g. `install`) instead.
+        if let Some(needle) = RAYON_GLOBAL_NEEDLES
+            .iter()
+            .find(|n| line.text.contains(**n))
+        {
+            violations.push(format!(
+                "{where_at}: Rayon global-pool entry point (`{needle}`) is banned; run work through the local `WorkerPool`, not Rayon's global pool"
             ));
         }
     }
@@ -315,7 +362,14 @@ pub(crate) fn check_concurrency_policy(root: &Path) -> Result<()> {
 }
 
 /// Builds the per-crate direct-dependency view from every workspace member's manifest.
+///
+/// Dependency names are resolved to real package names, including `package = "..."`
+/// renames AND `x.workspace = true` entries whose rename lives in the root
+/// `[workspace.dependencies]` map — so a banned crate cannot hide behind a workspace
+/// alias (e.g. root `rt = { package = "tokio" }` + member `rt.workspace = true`).
 fn collect_crate_manifest_info(root: &Path) -> Result<Vec<CrateManifestInfo>> {
+    let root_manifest = crate::read_manifest(&root.join("Cargo.toml"))?;
+    let workspace_deps = crate::workspace_dep_names(&root_manifest);
     let mut crates = Vec::new();
     for member in crate::workspace_members(root)? {
         let manifest_path = root.join(&member).join("Cargo.toml");
@@ -326,7 +380,7 @@ fn collect_crate_manifest_info(root: &Path) -> Result<Vec<CrateManifestInfo>> {
             .and_then(toml::Value::as_str)
             .map(str::to_owned)
             .with_context(|| format!("{} has no [package].name", manifest_path.display()))?;
-        let direct_deps = direct_dependency_names(&manifest);
+        let direct_deps = direct_dependency_names(&manifest, &workspace_deps);
         crates.push(CrateManifestInfo { name, direct_deps });
     }
     Ok(crates)
@@ -334,15 +388,19 @@ fn collect_crate_manifest_info(root: &Path) -> Result<Vec<CrateManifestInfo>> {
 
 /// Collects the real crate names of every direct dependency across the
 /// `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, and any
-/// `[target.*.dependencies]` tables, deduplicated and sorted.
-fn direct_dependency_names(manifest: &toml::Table) -> Vec<String> {
+/// `[target.*.dependencies]` tables, deduplicated and sorted. `workspace_deps` maps a
+/// workspace-dependency alias to its real package name (from the root manifest).
+fn direct_dependency_names(
+    manifest: &toml::Table,
+    workspace_deps: &HashMap<String, String>,
+) -> Vec<String> {
     let mut names = Vec::new();
-    collect_dependency_names(manifest, &mut names);
+    collect_dependency_names(manifest, workspace_deps, &mut names);
     // Platform-specific `[target.'cfg(...)'.dependencies]` tables count as direct deps.
     if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
         for target in targets.values() {
             if let Some(table) = target.as_table() {
-                collect_dependency_names(table, &mut names);
+                collect_dependency_names(table, workspace_deps, &mut names);
             }
         }
     }
@@ -351,30 +409,21 @@ fn direct_dependency_names(manifest: &toml::Table) -> Vec<String> {
     names
 }
 
-/// Appends the resolved crate name of each entry in the dependency tables found
-/// directly under `parent`.
-fn collect_dependency_names(parent: &toml::Table, names: &mut Vec<String>) {
+/// Appends the resolved real crate name of each entry in the dependency tables found
+/// directly under `parent`, resolving `package = "..."` renames and `workspace = true`
+/// aliases through `workspace_deps` (shared with `check-dependency-direction`).
+fn collect_dependency_names(
+    parent: &toml::Table,
+    workspace_deps: &HashMap<String, String>,
+    names: &mut Vec<String>,
+) {
     for table_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
         if let Some(table) = parent.get(table_name).and_then(toml::Value::as_table) {
             for (key, value) in table {
-                names.push(resolved_crate_name(key, value));
+                names.push(crate::resolved_dep_name(key, value, workspace_deps));
             }
         }
     }
-}
-
-/// Resolves a dependency entry's real crate name: a `package = "real"` rename when
-/// the value is a table, otherwise the table key itself (which covers
-/// `x.workspace = true` and plain version strings).
-fn resolved_crate_name(key: &str, value: &toml::Value) -> String {
-    if let Some(package) = value
-        .as_table()
-        .and_then(|table| table.get("package"))
-        .and_then(toml::Value::as_str)
-    {
-        return package.to_owned();
-    }
-    key.to_owned()
 }
 
 /// Walks every `.rs` file under `crates/` (never `xtask/`, `fuzz/`, `target/`, or
@@ -694,7 +743,7 @@ mod tests {
         let outside = [line(&code, false)];
         let violations = evaluate_concurrency_policy(&[], &outside);
         assert!(
-            violations.iter().any(|v| v.contains(THREAD_SPAWN)),
+            violations.iter().any(|v| v.contains(token)),
             "expected a thread-spawn violation outside tests, got {violations:?}"
         );
 
@@ -842,6 +891,115 @@ mod tests {
         assert!(
             evaluate_concurrency_policy(&[], &src).is_empty(),
             "par-iter on a test line must not trigger Rule 10"
+        );
+    }
+
+    #[test]
+    fn unbounded_bare_call_is_a_violation() {
+        // `use crossbeam_channel::{unbounded}; let (s, r) = unbounded();` — the call
+        // form must be caught regardless of how `unbounded` was imported.
+        let src = [line("    let (s, r) = unbounded();", false)];
+        let violations = evaluate_concurrency_policy(&[], &src);
+        assert!(
+            violations.iter().any(|v| v.contains("unbounded")),
+            "expected an unbounded bare-call violation, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn unbounded_aliased_import_is_a_violation() {
+        let src = [line(
+            "    use crossbeam_channel::{bounded, unbounded as ub};",
+            false,
+        )];
+        let violations = evaluate_concurrency_policy(&[], &src);
+        assert!(
+            violations.iter().any(|v| v.contains("unbounded")),
+            "expected an aliased-unbounded-import violation, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn thread_builder_spawn_is_a_violation_outside_tests_but_exempt_in_tests() {
+        let code = "    std::thread::Builder::new().spawn(work)?;";
+        assert!(
+            !evaluate_concurrency_policy(&[], &[line(code, false)]).is_empty(),
+            "thread::Builder spawn outside tests must be flagged"
+        );
+        assert!(
+            evaluate_concurrency_policy(&[], &[line(code, true)]).is_empty(),
+            "thread::Builder spawn inside tests is exempt"
+        );
+    }
+
+    #[test]
+    fn thread_self_alias_import_is_a_violation_outside_tests() {
+        let src = [line("    use std::thread::{self as t};", false)];
+        assert!(
+            !evaluate_concurrency_policy(&[], &src).is_empty(),
+            "aliasing std::thread via {{self as t}} must be flagged"
+        );
+    }
+
+    #[test]
+    fn rayon_global_entry_points_are_violations() {
+        for call in [
+            "    rayon::join(a, b);",
+            "    rayon::spawn(|| work());",
+            "    rayon::scope(|s| s.spawn(|_| work()));",
+        ] {
+            let violations = evaluate_concurrency_policy(&[], &[line(call, false)]);
+            assert!(
+                violations.iter().any(|v| v.contains("global-pool")),
+                "expected a Rayon global-pool violation for `{call}`, got {violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn futures_family_crates_are_banned_by_prefix() {
+        assert!(is_banned_runtime_crate("futures"));
+        assert!(is_banned_runtime_crate("futures-channel"));
+        assert!(is_banned_runtime_crate("futures-sink"));
+        assert!(is_banned_runtime_crate("futures-task"));
+        assert!(!is_banned_runtime_crate("futuristic"));
+        assert!(!is_banned_runtime_crate("future-proof"));
+
+        let crates = [krate("splot-decode", &["futures-channel"])];
+        let violations = evaluate_concurrency_policy(&crates, &[]);
+        assert!(
+            violations.iter().any(|v| v.contains("futures-channel")),
+            "expected a futures-channel ban, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn workspace_aliased_banned_dependency_is_resolved() {
+        // A member inheriting a workspace dependency aliased to a banned crate
+        // (`rt.workspace = true`, root maps `rt = { package = "tokio" }`) must resolve
+        // to the real package name, not the alias.
+        let manifest: toml::Table = toml::from_str(
+            "[package]\nname = \"splot-decode\"\n[dependencies]\nrt.workspace = true\n",
+        )
+        .unwrap();
+        let mut workspace_deps: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        workspace_deps.insert("rt".to_owned(), "tokio".to_owned());
+
+        let deps = direct_dependency_names(&manifest, &workspace_deps);
+        assert!(
+            deps.contains(&"tokio".to_owned()),
+            "workspace alias must resolve to the real package name, got {deps:?}"
+        );
+
+        let crates = [CrateManifestInfo {
+            name: "splot-decode".to_owned(),
+            direct_deps: deps,
+        }];
+        let violations = evaluate_concurrency_policy(&crates, &[]);
+        assert!(
+            violations.iter().any(|v| v.contains("tokio")),
+            "the resolved banned crate must be flagged, got {violations:?}"
         );
     }
 

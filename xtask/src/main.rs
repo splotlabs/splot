@@ -1143,7 +1143,7 @@ fn manifest_package_name(manifest: &toml::Table) -> Option<String> {
 
 /// Maps each `[workspace.dependencies]` alias to the real crate name it resolves
 /// to (honoring a `package = "..."` rename), for resolving `x.workspace = true`.
-fn workspace_dep_names(root_manifest: &toml::Table) -> HashMap<String, String> {
+pub(crate) fn workspace_dep_names(root_manifest: &toml::Table) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let deps = root_manifest
         .get("workspace")
@@ -1199,7 +1199,7 @@ fn collect_internal_deps(
 /// Resolves a dependency's real crate name: a local `package = "..."` rename, then
 /// a workspace-inherited alias (`x.workspace = true`, resolved via the root
 /// `[workspace.dependencies]`), else the dependency key itself.
-fn resolved_dep_name(
+pub(crate) fn resolved_dep_name(
     key: &str,
     value: &toml::Value,
     workspace_deps: &HashMap<String, String>,
