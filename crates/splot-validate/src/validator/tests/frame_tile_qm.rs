@@ -508,6 +508,64 @@ fn validator_qm_confirmed_ras_reset_fires_unavailable_without_resend() {
 }
 
 #[test]
+fn validator_qm_confirmed_ras_reset_clears_same_layer_level_via_presence_map() {
+    // The § 5.18.2 reset_qm() SWITCH/RAS presence-map arm (mirror :5352): a level with a
+    // recorded QmMLayerId == m (NOT the -1 arm) is reset when
+    // MLayerPresenceMap[m][obu_mlayer_id] == 1. Here the QM OBU and the RAS are both at the
+    // base embedded layer 0, so QmMLayerId == 0 == obu_mlayer_id and MLayerPresenceMap[0][0]
+    // == 1 (reflexive) — the level is reset. A later INTRA_ONLY frame referencing level 0
+    // without re-sending it must fire §7.3.8.9 unavailable. (Before the presence arm was
+    // modeled this under-reported: the QmMLayerId == 0 level was wrongly left available.)
+    let mut data = td_and_frame_core_seq(FrameCoreSeq {
+        long_term_frame_id_bits: 4,
+        ..FrameCoreSeq::base()
+    });
+    // A NORMAL QM OBU (qm_bit_map sets level 0): the level records QmMLayerId == 0 (the OBU's
+    // obu_mlayer_id), the presence-arm case — distinct from qm_reset_obu_chroma's -1 arm.
+    data.extend(qm_default_level_obu_chroma(0)); // TU1: level 0 available, QmMLayerId 0 + protected
+    data.extend(temporal_delimiter_obu()); // TU2 starts: QmProtected cleared
+    data.extend(ras_frame_confirmed_reset()); // confirmed RAS at layer 0: reflexive presence reset
+    data.extend(temporal_delimiter_obu()); // TU3 starts
+    data.extend(intra_only_frame_with_qm_reference(0)); // references level 0 (no own reset)
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        report.errors().any(|d| {
+            d.rule_id == "frame-header/qm-level-unavailable"
+                && d.spec_section.as_deref() == Some("7.3.8.9")
+        }),
+        "a confirmed same-layer RAS reset must clear the QmMLayerId == obu_mlayer_id level via \
+         the reflexive MLayerPresenceMap arm; report was: {report}"
+    );
+}
+
+#[test]
+fn validator_qm_confirmed_ras_reset_preserves_cross_layer_level_via_presence_map() {
+    // The negative of the presence-map arm: a level defined at embedded layer 0 (QmMLayerId 0)
+    // is NOT reset by a confirmed RAS at obu_mlayer_id 1, because MLayerPresenceMap[0][1] == 0
+    // (decoding layer 0 does not require layer 1, default §5.4.1 fill). The level stays
+    // available, so a later INTRA_ONLY frame at layer 0 referencing it must NOT fire §7.3.8.9.
+    let mut data = td_and_frame_core_seq(FrameCoreSeq {
+        long_term_frame_id_bits: 4,
+        max_mlayer_id: 1,
+        explicit_ref_frame_map: true,
+        ..FrameCoreSeq::base()
+    });
+    data.extend(qm_default_level_obu_chroma(0)); // TU1: level 0 at layer 0, QmMLayerId 0
+    data.extend(temporal_delimiter_obu()); // TU2 starts
+    data.extend(ras_frame_explicit_map_at_layer(1, 0, 1, 8, 1)); // confirmed RAS at layer 1
+    data.extend(temporal_delimiter_obu()); // TU3 starts
+    data.extend(intra_only_frame_with_qm_reference(0)); // references the surviving level 0
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        !report
+            .errors()
+            .any(|d| d.rule_id == "frame-header/qm-level-unavailable"),
+        "a cross-layer RAS (MLayerPresenceMap[0][1] == 0) must not reset the layer-0 level; \
+         report was: {report}"
+    );
+}
+
+#[test]
 fn validator_qm_resend_after_truncated_ras_poison_regrounds_availability() {
     // After a truncated RAS poisons QM availability, a QM OBU re-sending the level
     // re-grounds it (the level is definitively available again), so a referencing frame

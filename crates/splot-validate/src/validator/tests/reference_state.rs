@@ -307,6 +307,26 @@ pub(in crate::validator::tests) fn ras_frame_explicit_map(
     num_ref_frames: u32,
     num_total_refs: u32,
 ) -> Vec<u8> {
+    ras_frame_explicit_map_at_layer(
+        0,
+        ref_long_term_id,
+        max_mlayer_id,
+        num_ref_frames,
+        num_total_refs,
+    )
+}
+
+/// As [`ras_frame_explicit_map`], but the RAS OBU is at `obu_mlayer_id == mlayer` (the
+/// frame-header payload is identical — `obu_mlayer_id` lives in the OBU header extension).
+/// Used to exercise the § 5.18.2 `reset_qm()` SWITCH/RAS `MLayerPresenceMap[QmMLayerId[level]]
+/// [obu_mlayer_id]` arm at a non-base embedded layer.
+pub(in crate::validator::tests) fn ras_frame_explicit_map_at_layer(
+    mlayer: u8,
+    ref_long_term_id: u32,
+    max_mlayer_id: u32,
+    num_ref_frames: u32,
+    num_total_refs: u32,
+) -> Vec<u8> {
     let mut fb = Bits::default();
     fb.bit(1); // is_first_tile_group
     fb.uvlc(0); // cur_mfh_id == 0
@@ -335,7 +355,12 @@ pub(in crate::validator::tests) fn ras_frame_explicit_map(
     // frame_size_with_refs, since frame_type == Switch).
     fb.f(15, 8); // frame_width_minus_1 f(8) -> 16 (== max_frame_width)
     fb.f(15, 8); // frame_height_minus_1 f(8) -> 16 (== max_frame_height)
-    annex_b_obu(RAS_HEADER, &fb.into_bytes())
+    if mlayer == 0 {
+        annex_b_obu(RAS_HEADER, &fb.into_bytes())
+    } else {
+        // OBU_RAS_FRAME (obu_type 21) at obu_mlayer_id `mlayer`, tlayer 0, xlayer 0.
+        annex_b_obu_with_header(&layer_obu_header(21, 0, mlayer, 0), &fb.into_bytes())
+    }
 }
 
 #[test]

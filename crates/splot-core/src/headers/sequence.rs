@@ -446,6 +446,60 @@ impl MLayerDependencyMap {
             *entry = value;
         }
     }
+
+    /// Derives `MLayerPresenceMap` (AV2 § 5.4.1, mirror
+    /// `docs/spec/av2/1.0.0/05-syntax-structures.md` :583-601): the reflexive-transitive
+    /// closure of this `MLayerDependencyMap`, computed verbatim per the spec double loop.
+    /// `MLayerPresenceMap[mlayerId][refMlayer]` is `1` when embedded layer `refMlayer` is
+    /// (transitively) present whenever `mlayerId` is decoded — i.e. `mlayerId == refMlayer`,
+    /// or `mlayerId` depends on `refMlayer`, or `mlayerId` depends on some layer that
+    /// (transitively) requires `refMlayer`.
+    #[must_use]
+    pub fn presence_map(&self) -> MLayerPresenceMap {
+        let mut presence = [[false; MAX_NUM_MLAYERS]; MAX_NUM_MLAYERS];
+        for mlayer_id in 0..MAX_NUM_MLAYERS {
+            for ref_mlayer in 0..MAX_NUM_MLAYERS {
+                // presence[mlayer_id][ref_mlayer] starts `false` (zero-init above).
+                if mlayer_id == ref_mlayer || self.0[mlayer_id][ref_mlayer] {
+                    presence[mlayer_id][ref_mlayer] = true;
+                    // Fold in everything refMlayer (transitively) requires over `dep < refMlayer`.
+                    // Rows with refMlayer < mlayer_id are already fully computed; snapshotting
+                    // the refMlayer row (a `Copy` `[bool; N]`) avoids aliasing the array on the
+                    // read and the write (and makes the refMlayer == mlayer_id case a no-op `x|=x`).
+                    let inherited_row = presence[ref_mlayer];
+                    for (curr, inherited) in presence[mlayer_id]
+                        .iter_mut()
+                        .zip(inherited_row.iter())
+                        .take(ref_mlayer)
+                    {
+                        *curr |= *inherited;
+                    }
+                }
+            }
+        }
+        MLayerPresenceMap(presence)
+    }
+}
+
+/// Derived `MLayerPresenceMap[mlayerId][refMlayer]` (AV2 § 5.4.1): `true` when embedded
+/// layer `refMlayer` is present (transitively required) whenever embedded layer `mlayerId`
+/// is decoded. It is the reflexive-transitive closure of [`MLayerDependencyMap`] and is
+/// consumed by the § 5.18.2 `reset_qm()` SWITCH/RAS arm
+/// (`MLayerPresenceMap[QmMLayerId[level]][obu_mlayer_id]`, mirror :5352).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MLayerPresenceMap([[bool; MAX_NUM_MLAYERS]; MAX_NUM_MLAYERS]);
+
+impl MLayerPresenceMap {
+    /// Returns `MLayerPresenceMap[mlayer][reference]`. Ids outside the 3-bit `obu_mlayer_id`
+    /// range read as `false` (no panic).
+    #[must_use]
+    pub fn is_present(&self, mlayer: EmbeddedLayerId, reference: EmbeddedLayerId) -> bool {
+        self.0
+            .get(usize::from(mlayer.get()))
+            .and_then(|row| row.get(usize::from(reference.get())))
+            .copied()
+            .unwrap_or(false)
+    }
 }
 
 /// Derived `TLayerDependencyMap[mLayer][currTLayer][refTLayer]` (AV2 § 5.4.1):
@@ -2354,6 +2408,35 @@ mod tests {
                 .tlayer_dependency_map
                 .depends_on(mlayer(2), tlayer(0), tlayer(0))
         );
+    }
+
+    #[test]
+    fn mlayer_presence_map_closes_transitive_dependency() {
+        // A sparse chain 2 -> 1 -> 0 where layer 2 does NOT depend on layer 0 directly
+        // (the same shape as `mlayer_dependency_override_bit_order`'s parsed map).
+        let mut dep = MLayerDependencyMap::default_for(mlayer(2));
+        dep.set(1, 1, false); // signaled diagonal zero (irrelevant to presence — reflexive)
+        dep.set(2, 0, false); // clear the DIRECT 2 -> 0 edge
+        assert!(!dep.depends_on(mlayer(2), mlayer(0)));
+        assert!(dep.depends_on(mlayer(2), mlayer(1)));
+        assert!(dep.depends_on(mlayer(1), mlayer(0)));
+
+        let presence = dep.presence_map();
+        // Reflexive (the spec `mlayerId == refMlayer` arm): each layer present to itself.
+        assert!(presence.is_present(mlayer(0), mlayer(0)));
+        assert!(presence.is_present(mlayer(1), mlayer(1)));
+        assert!(presence.is_present(mlayer(2), mlayer(2)));
+        // Direct edges.
+        assert!(presence.is_present(mlayer(1), mlayer(0)));
+        assert!(presence.is_present(mlayer(2), mlayer(1)));
+        // TRANSITIVE (mirror :595-599): layer 0 is present whenever layer 2 is decoded, via
+        // 2 -> 1 -> 0, even though the direct 2 -> 0 dependency was cleared. This is exactly
+        // what makes MLayerPresenceMap stronger than MLayerDependencyMap.
+        assert!(presence.is_present(mlayer(2), mlayer(0)));
+        // A lower layer never requires a higher one.
+        assert!(!presence.is_present(mlayer(0), mlayer(1)));
+        assert!(!presence.is_present(mlayer(0), mlayer(2)));
+        assert!(!presence.is_present(mlayer(1), mlayer(2)));
     }
 
     #[test]
