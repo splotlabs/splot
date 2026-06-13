@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "6a6068d63926f99c4c40ec5c23260ec044ff4104",
+  "audited_commit": "9792fe013c730f9410f1636a2e0be0aff64187d3",
   "outcome": "success",
   "files": [
     {
@@ -845,7 +845,7 @@
     },
     {
       "path": "crates/splot-validate/src/annex_a.rs",
-      "sha256": "6f2ca8d2e50543363f9d10784569a40e9efc2e022e543d2f86b20c4454322bf6",
+      "sha256": "ffdafd2c793f6b6cbf9387c577a03c74a5897f128aed023a84883f8cbbf9db77",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-A-LEVELS-TIERS",
@@ -870,14 +870,13 @@
       "feature_ids": [
         "AV2-5.3-RESERVED-OBU",
         "AV2-6.4-SEQUENCE-HEADER-SEMANTICS",
-        "AV2-7.3-OBU-ORDERING",
-        "AV2-E-DECODER-MODEL"
+        "AV2-7.3-OBU-ORDERING"
       ],
       "outcome": "success"
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "1178bdd4d1345c4fe3c19b73ea6b260ae8ababd1ac54bd431833284c817342f5",
+      "sha256": "f94cfb607fd18fc8787cf6c66cc46a4afea506b6504514bc1464f1fb40ccdd96",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
@@ -900,7 +899,8 @@
         "AV2-7.3.8-HLS-AVAILABILITY",
         "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
         "AV2-7.4-RANDOM-ACCESS",
-        "AV2-A-LEVELS-TIERS"
+        "AV2-A-LEVELS-TIERS",
+        "AV2-E-DECODER-MODEL"
       ],
       "outcome": "success"
     },
@@ -961,7 +961,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "02d949c2bcf1110b58ea984ee71e5f8102920c673b50c60b9e54bf7bcfb0e756",
+      "sha256": "a35c3f6d5ca167b2ea6a39b39f288a9a40ffd9f2b22d04a40fc91faf7b570371",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1026,7 +1026,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "522aab30e887ec1eda3d4db0364dd1b062e51d2e72017deaa5ef8d9669cf7d95",
+      "sha256": "d10123746b99cca1310ce79a6d2a36fb191a3127472f3662dd3046b4f7929d37",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1196,7 +1196,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "b44fec1dd219cec3bdba2c8e5ea0abfaf511b374a69d60adc8a6b776e3f7233c",
+      "sha256": "487457a637a1259680cf6406d9a9332977041e4a5d57afd3cf706a90a3ebadc2",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1336,7 +1336,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "902d5cce61b838885b42a55101a1bba782fd55ba95cb8d5afcba2029f78ed096",
+      "sha256": "e7c205d3e675bcc9f2286a699bf072f24f2f74788c9d9ffceb1f24ebffc51425",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1492,7 +1492,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "026408968adef5cdd5b68503291c200820425bbb91c32c060923f2522ce28ad0",
+      "sha256": "044eed41a963281478639dde7c91543bbd5862c3563d81ed193ee7a98380a01a",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -1503,13 +1503,14 @@
         "AV2-7.3.8-HLS-AVAILABILITY",
         "AV2-A-LEVELS-TIERS",
         "AV2-A-PROFILES",
+        "AV2-E-DECODER-MODEL",
         "XTASK-DIAGNOSTIC-REGISTRY"
       ],
       "outcome": "success"
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "06510bb8518ad470185c5205849a0a2daecee2682aeeb06feeacc7f790cf200f",
+      "sha256": "f580e19ff672109925ac6d5645bef5ec1a5ee8c5751e2f8d655ecd92ef4603b5",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -1687,16 +1688,23 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
+      "sha256": "bc8ce110ab43e4096fe14316ed88add7f743fa984eb9dbd762356d7383b84f28",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
+        "AV2-5.11.3-OPS-DECODER-MODEL-INFO",
+        "AV2-5.12-BUFFER-REMOVAL-TIMING",
+        "AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO",
         "AV2-5.18-FRAME-HEADER",
         "AV2-5.19-TILE-GROUP",
         "AV2-5.2.2-OBU-HEADER",
         "AV2-5.2.3-TRAILING-BITS",
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-A-LEVELS-TIERS",
+        "AV2-E-DECODER-MODEL",
         "CONF-AVM-DIFF-HARNESS",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
@@ -1729,6 +1737,42 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "ENC-BITSTREAM-WRITER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/annex-e-decoder-model-schedule/proposal.md",
+      "sha256": "4642389086457c09ea859829aec26321bd75eee8d9781bad41d2bb8008555d72",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.11.3-OPS-DECODER-MODEL-INFO",
+        "AV2-5.12-BUFFER-REMOVAL-TIMING",
+        "AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO",
+        "AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO",
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-A-LEVELS-TIERS",
+        "AV2-E-DECODER-MODEL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/annex-e-decoder-model-schedule/specs/bitstream/spec.md",
+      "sha256": "3593acc5fa67c02d94ed0d2d63dce28a633dfceee1d45e4c6d0ae57a074d7b65",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-A-LEVELS-TIERS",
+        "AV2-E-DECODER-MODEL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/annex-e-decoder-model-schedule/tasks.md",
+      "sha256": "f744e9e83bc9f1a73ca7e3ee949f4a5e7b26881b9ee2dd4f16a66ba69ec884e6",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-7.3-OBU-ORDERING",
+        "AV2-A-LEVELS-TIERS",
+        "AV2-E-DECODER-MODEL"
       ],
       "outcome": "success"
     },
