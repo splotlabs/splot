@@ -10,7 +10,11 @@
 //! parallelism through `splot-parallel`'s API. No crate may pull in an async
 //! runtime or a competing thread/channel library, and codec source must not
 //! initialize a global Rayon pool, open an unbounded channel, build a
-//! `std::sync::mpsc` pipeline, or spawn ad-hoc OS threads outside tests.
+//! `std::sync::mpsc` pipeline, or spawn ad-hoc OS threads outside tests. Aliased
+//! imports that could hide such a call (for example `use std::thread as t;` or
+//! `use crossbeam_channel as cc;`) are flagged at the rename declaration. The source
+//! scan is a line-based defense-in-depth check: it does not resolve multi-hop
+//! re-exports, so the dependency-direction gate and code review remain the backstop.
 //!
 //! This module is a thin IO wrapper around a pure
 //! [`evaluate_concurrency_policy`] evaluator so the rules can be unit-tested
@@ -73,6 +77,18 @@ const STD_MPSC: &str = concat!("std::sync::", "mpsc");
 
 /// Ad-hoc OS-thread spawning is banned outside tests: use the local worker pool.
 const THREAD_SPAWN: &str = concat!("thread::", "spawn");
+
+/// Aliased import of `std::thread` (`use std::thread as t;`) would let `t::spawn()`
+/// slip past [`THREAD_SPAWN`]. The rename declaration is flagged instead; like the
+/// thread-spawn rule it is test-exempt. Scoped to the full path so numeric casts
+/// such as `worker_thread as u32` are never matched.
+const THREAD_ALIAS: &str = concat!("std::thread", " as ");
+
+/// Aliased import of `crossbeam_channel` (`use crossbeam_channel as cc;`) would let
+/// `cc::unbounded()` slip past [`UNBOUNDED`]. The rename declaration is flagged
+/// (everywhere, matching the unbounded rule). Only `splot-parallel` may import
+/// `crossbeam_channel` at all, and it never aliases it.
+const CROSSBEAM_ALIAS: &str = concat!("crossbeam_channel", " as ");
 
 /// One workspace crate's manifest, reduced to its direct dependency crate names
 /// (resolved real names, deduplicated across dependency tables).
@@ -180,6 +196,20 @@ pub(crate) fn evaluate_concurrency_policy(
         if !line.in_test && line.text.contains(THREAD_SPAWN) {
             violations.push(format!(
                 "{where_at}: ad-hoc thread spawning (`{THREAD_SPAWN}`) is banned outside tests; use the local worker pool"
+            ));
+        }
+
+        // Rule 9: aliased imports of a sensitive module defeat the qualified needles
+        // above; flag the rename declaration itself (the alias cannot be used without
+        // first being declared). The `std::thread` alias is test-exempt, matching Rule 8.
+        if !line.in_test && line.text.contains(THREAD_ALIAS) {
+            violations.push(format!(
+                "{where_at}: aliasing `std::thread` (`{THREAD_ALIAS}…`) is banned outside tests; it can hide an aliased thread spawn from the policy scanner"
+            ));
+        }
+        if line.text.contains(CROSSBEAM_ALIAS) {
+            violations.push(format!(
+                "{where_at}: aliasing `crossbeam_channel` (`{CROSSBEAM_ALIAS}…`) is banned; it can hide an aliased unbounded channel from the policy scanner"
             ));
         }
     }
@@ -631,6 +661,45 @@ mod tests {
         assert!(
             violations.is_empty(),
             "comment prose naming a banned token must not be flagged, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn unbounded_queue_identifier_is_a_violation() {
+        // The `unbounded_queue` helper-identifier needle (Rule 6, second form).
+        let src = [line("    let queue = unbounded_queue();", false)];
+        let violations = evaluate_concurrency_policy(&[], &src);
+        assert!(
+            violations.iter().any(|v| v.contains("unbounded")),
+            "expected an unbounded-queue identifier violation, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn aliased_thread_import_is_a_violation_outside_tests_but_exempt_in_tests() {
+        // `use std::thread as t;` then `t::spawn()` would evade THREAD_SPAWN; the
+        // rename declaration is caught instead, and is test-exempt like Rule 8.
+        let code = "    use std::thread as t;";
+        let outside = [line(code, false)];
+        assert!(
+            !evaluate_concurrency_policy(&[], &outside).is_empty(),
+            "aliasing std::thread outside tests must be flagged"
+        );
+        let inside = [line(code, true)];
+        assert!(
+            evaluate_concurrency_policy(&[], &inside).is_empty(),
+            "aliasing std::thread inside tests is exempt (matches the thread-spawn rule)"
+        );
+    }
+
+    #[test]
+    fn aliased_crossbeam_import_is_a_violation() {
+        // `use crossbeam_channel as cc;` then `cc::unbounded()` would evade UNBOUNDED.
+        let src = [line("    use crossbeam_channel as cc;", false)];
+        let violations = evaluate_concurrency_policy(&[], &src);
+        assert!(
+            !violations.is_empty(),
+            "aliasing crossbeam_channel must be flagged, got {violations:?}"
         );
     }
 

@@ -140,8 +140,12 @@ fn run(pool: &WorkerPool, items: &[Item]) -> Vec<Output> {
 - Codec source under `crates/` does not call `build_global`, open an unbounded
   channel (`crossbeam_channel::unbounded` / `unbounded_queue`), build a
   `std::sync::mpsc` pipeline, or `thread::spawn` outside tests.
+- Aliased imports that could hide one of those calls (e.g. `use std::thread as t;`
+  or `use crossbeam_channel as cc;`) are flagged at the rename declaration.
 
-The dependency-graph edges are independently enforced by
-`cargo xtask check-dependency-direction`. See the
-[CODE_REVIEW.md](./CODE_REVIEW.md) `## Concurrency` checklist for the per-change
-review gate.
+The source scan is a line-based **defense-in-depth** check: it does not perform
+full syntactic alias resolution, so a deliberately obfuscated multi-hop re-export
+could still evade it. The dependency-graph edges are independently enforced by
+`cargo xtask check-dependency-direction`, and the
+[CODE_REVIEW.md](./CODE_REVIEW.md) `## Concurrency` checklist is the per-change
+human backstop for anything the line scanner cannot see.
