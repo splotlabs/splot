@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "bfb7afc9e232f0b903620571640883afe84b127b",
+  "audited_commit": "72ba2f3870fd45298672e89f86ebd5153301f076",
   "outcome": "success",
   "files": [
     {
@@ -2011,7 +2011,7 @@
     },
     {
       "path": "openspec/changes/README.md",
-      "sha256": "063d244b17d96363729a669616330f978d7e2ab8cdbfe9eb3df4bf9c8efc45b9",
+      "sha256": "cf43dd76dfd888c2ceef985e5730b8819c81d97b8010fe0b54557a87b5332aa2",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-4.11.6-LEB128",
@@ -2022,7 +2022,6 @@
         "AV2-5.2.4-BYTE-ALIGNMENT",
         "AV2-5.4-SEQUENCE-HEADER",
         "CONF-AVM-DIFF-HARNESS",
-        "CONF-AVM-VALID-STREAMS",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0"
       ],
@@ -3907,6 +3906,33 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-avm-positive-vector-generation/proposal.md",
+      "sha256": "e1fe9917fdf9a41dba6368284a3b437a8effdb46b2a22780cf286e547d380eb0",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-AVM-VALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-avm-positive-vector-generation/specs/conformance/spec.md",
+      "sha256": "20891e9d24dea57d271bb04858139b05fd7174b6133f5fd634fca31aeaca0681",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-AVM-VALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-avm-positive-vector-generation/tasks.md",
+      "sha256": "298b396772cc1fbf31f2075ed4ec8db6a27397bae0c32e411727747ea61eb688",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-AVM-VALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-13-conformance-corpus-foundation/proposal.md",
       "sha256": "27c4b656750b41322deab429e14742e8727c985938ae4162766f51fd1c3430e4",
       "scope_kind": "openspec",
@@ -4036,33 +4062,6 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/avm-positive-vector-generation/proposal.md",
-      "sha256": "e1fe9917fdf9a41dba6368284a3b437a8effdb46b2a22780cf286e547d380eb0",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "CONF-AVM-VALID-STREAMS"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/avm-positive-vector-generation/specs/conformance/spec.md",
-      "sha256": "20891e9d24dea57d271bb04858139b05fd7174b6133f5fd634fca31aeaca0681",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "CONF-AVM-VALID-STREAMS"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "openspec/changes/avm-positive-vector-generation/tasks.md",
-      "sha256": "298b396772cc1fbf31f2075ed4ec8db6a27397bae0c32e411727747ea61eb688",
-      "scope_kind": "openspec",
-      "feature_ids": [
-        "CONF-AVM-VALID-STREAMS"
-      ],
-      "outcome": "success"
-    },
-    {
       "path": "openspec/changes/toy-intra-encoder-v0/proposal.md",
       "sha256": "ec25589a8a02879087f03de9cc0c8b07e5fedf96f9a48c8f3dd99be91c14d240",
       "scope_kind": "openspec",
@@ -4132,7 +4131,7 @@
     },
     {
       "path": "openspec/specs/conformance/spec.md",
-      "sha256": "b95a9399327b05d4ed43996b993380ea895c9e289d275d9e7a776f7cf41d9543",
+      "sha256": "e1a95a2a9c7c183138bfef91f71e899559b168ebe8b585dbc27ea8185d492118",
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
