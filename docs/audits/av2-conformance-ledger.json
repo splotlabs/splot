@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "bacc68a4954df06e98b663c33964473b8d11b9bf",
+  "audited_commit": "02d1af1822e9fdf6a1cb8f24b92b890aab01517b",
   "outcome": "success",
   "files": [
     {
@@ -285,7 +285,7 @@
     },
     {
       "path": "crates/splot-cli/src/commands/inspect.rs",
-      "sha256": "148f79437f853ca1f45a3ed8fa185a8af38a8f3a12c3be6e32b499741ade4dc4",
+      "sha256": "b579f568d778fc010a84c23a953c921b29a8940392f27cec1d29ce1190e6a3c9",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.2.1-OBU-DISPATCH",
@@ -320,7 +320,7 @@
     },
     {
       "path": "crates/splot-cli/tests/cli.rs",
-      "sha256": "13dbc042cecfe8263feb0171ae11eab9c31d2fce4d20c0fb41a64e2eca9ef8e6",
+      "sha256": "8e546e68f81dc17c7af5e604cc31c388237e37f31fc49b2ea8228af94e5f2096",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.19-TILE-GROUP",
@@ -335,6 +335,15 @@
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "CONF-AVM-VALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/tests/negative_mutations.rs",
+      "sha256": "d5023645aadf01c51a8b5f50afef8ba2877710107f67c165b208de8e56ae82d3",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [
+        "CONF-AVM-INVALID-STREAMS"
       ],
       "outcome": "success"
     },
@@ -652,7 +661,7 @@
     },
     {
       "path": "crates/splot-core/src/ivf.rs",
-      "sha256": "1becf31f9d4dc46d3b9e5b4a3734366e945b3af1e75d7329f599d415e47a2a5d",
+      "sha256": "191b2fd6ec6635024fe02df81b4ba9474d6f908174c13ef077f58201eabc9fca",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-IVF-CONTAINER"
@@ -722,7 +731,7 @@
     },
     {
       "path": "crates/splot-core/src/stream.rs",
-      "sha256": "2710bdea1e5ba52610da24848869db44d82125f798d2f9bb31c9705cd848d115",
+      "sha256": "19b364331b6db269b87bbd6c215c98bfee61143196578aa336dedd82caf0efa1",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-IVF-CONTAINER"
@@ -972,7 +981,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator.rs",
-      "sha256": "02d949c2bcf1110b58ea984ee71e5f8102920c673b50c60b9e54bf7bcfb0e756",
+      "sha256": "832475f8529ba56c7d0a86eb07314e21b9f3d6cdb81f04a79ee8f40bc99a04f4",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.6-MSDO",
@@ -1013,7 +1022,7 @@
     },
     {
       "path": "docs/CONFORMANCE.md",
-      "sha256": "09ddfe443cb2559a298900551c7daa0ed88dcccdb56da3ade4383d23b0eb8f89",
+      "sha256": "139daf11a94f00c119352439f6f31c8db008d2aa7eb6581a0cdf1a5c0eeaa519",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-INSPECT",
@@ -1037,7 +1046,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "bf5b4fe898bc257c4b8afe023eb506150f91c683314038f7c5cfa56537ec9675",
+      "sha256": "343e2140879f31e71dd8ad1aa21e9538fbfe65117799027de75f89fa859af90e",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1207,7 +1216,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "2bf1efac163c7845395b902702cea99b6090d9b7f79602e9724cdea2034ad984",
+      "sha256": "6bcf6629652fe56211c94b9c5961c941122a647357dc4b0b4a2d15476f76bc8b",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1503,7 +1512,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "026408968adef5cdd5b68503291c200820425bbb91c32c060923f2522ce28ad0",
+      "sha256": "542fc9bf6633290c42f294dd8ca18346337d85efd2fb89e7f6b3f8dc3d95a3bf",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -3624,6 +3633,33 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-conformance-negative-mutator/proposal.md",
+      "sha256": "ab974df201c274a95dbb666dd0aed31c57c5fa934c63f1d7fe771a44c5f5d828",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-AVM-INVALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-conformance-negative-mutator/specs/conformance/spec.md",
+      "sha256": "b035291d9a65222c92ac98e149c2b491609bbaa495c770d9f8e51fff2e6db5ac",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-AVM-INVALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-conformance-negative-mutator/tasks.md",
+      "sha256": "2a285ffd582b2246a8915f512df3ba45c91d99e936102eea7e86582310febcf8",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-AVM-INVALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/avm-differential-harness/proposal.md",
       "sha256": "7cd1b2206d0a06d3f69a7d7dde6bb7aa6c6cd697be51bfc8ad2618b052a5df60",
       "scope_kind": "openspec",
@@ -3718,7 +3754,7 @@
     },
     {
       "path": "openspec/specs/conformance/spec.md",
-      "sha256": "1af620abdc7dbe02d5d5dc2d3340da5dc8e8a9f878b088f44e8e781ed76d5972",
+      "sha256": "b95a9399327b05d4ed43996b993380ea895c9e289d275d9e7a776f7cf41d9543",
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
@@ -3946,7 +3982,6 @@
       "sha256": "cf5c197a3c026b435b039eaf04f6f8d8cbf3dd378f9cbc3c0da484099f95a02e",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
-        "CONF-AVM-INVALID-STREAMS",
         "CONF-AVM-PARSER-TRACES",
         "CONF-PUBLIC-VECTORS",
         "DOC-AV2-SPEC-MIRROR",
