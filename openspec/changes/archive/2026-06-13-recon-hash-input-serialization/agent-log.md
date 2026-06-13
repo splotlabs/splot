@@ -115,3 +115,24 @@
   leaks, AVM/dav2d boundary language, or hash-input-vs-digest overclaims. The
   only finding was to record final sign-offs and complete task 5.6, addressed
   here.
+
+## PR Review Follow-up
+
+- Claude review initially recommended merge with one non-blocking test-coverage
+  nit: add a 10-bit multi-plane case. Fixed with
+  `ten_bit_yuv_samples_emit_little_endian_y_then_u_then_v`; Claude re-review
+  confirmed the nit was resolved and again recommended merge.
+- Codex review suggested adding pinned spec mirror paths to public AV2 citations.
+  Fixed the `DecodedFrameHashInput` type docs and `VARIANT_ID` docs to include
+  the corresponding mirror anchors.
+- Codex review suggested batching sample writes before calling the caller's
+  writer. Fixed `write_to()` to reuse a row buffer and write one visible row at a
+  time, with a regression test covering YUV row batching.
+- Follow-up verification after Codex review fixes:
+  - `cargo fmt --all -- --check`: passed.
+  - `cargo test -p splot-recon --locked hash_input`: passed, 10 tests.
+  - `cargo clippy -p splot-recon --all-targets --locked -- -D warnings`:
+    passed.
+  - `openspec validate --all --no-interactive`: passed, 14 items.
+  - `git diff --check`: passed.
+  - `cargo xtask ci`: passed.

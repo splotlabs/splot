@@ -10,9 +10,11 @@ use crate::{BitDepth, DecodedFrame, Plane, ReconError, ReconSample, Result};
 /// Canonical byte-stream view used as input to future decoded-frame hashes.
 ///
 /// This type serializes already materialized decoded output samples following
-/// AV2 § 6.16.13 sample-byte conversion for the repository-owned
-/// `av2-output-samples-v1` byte stream. It does not compute SHA-256, verify AV2
-/// decoded-frame-hash metadata, apply film grain, or determine output order.
+/// AV2 § 6.16.13 sample-byte conversion
+/// (`docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13`)
+/// for the repository-owned `av2-output-samples-v1` byte stream. It does not
+/// compute SHA-256, verify AV2 decoded-frame-hash metadata, apply film grain,
+/// or determine output order.
 #[derive(Clone, Copy, Debug)]
 pub struct DecodedFrameHashInput<'a, T: ReconSample> {
     frame: &'a DecodedFrame<T>,
@@ -22,7 +24,8 @@ impl<'a, T: ReconSample> DecodedFrameHashInput<'a, T> {
     /// Repository-owned canonical decoded-output sample byte stream identifier.
     pub const BYTE_STREAM_ID: &'static str = "av2-output-samples-v1";
 
-    /// Hash-input variant for raw § 7.21.2 intermediate output samples.
+    /// Hash-input variant for raw § 7.21.2 intermediate output samples
+    /// (`docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-2`).
     pub const VARIANT_ID: &'static str = "raw_intermediate_output";
 
     /// Creates a byte-stream view over `frame`.
@@ -58,9 +61,10 @@ impl<'a, T: ReconSample> DecodedFrameHashInput<'a, T> {
 
     /// Writes canonical decoded output sample bytes to `writer`.
     ///
-    /// This method may leave `writer` partially written if the writer returns an
-    /// error. Writer failures are propagated as [`io::Error`] values and are not
-    /// wrapped in [`ReconError`].
+    /// This method writes one visible row at a time and may leave `writer`
+    /// partially written if the writer returns an error. Writer failures and
+    /// internal row-buffer capacity/allocation failures are propagated as
+    /// [`io::Error`] values and are not wrapped in [`ReconError`].
     pub fn write_to<W: Write + ?Sized>(&self, writer: &mut W) -> io::Result<()> {
         let bit_depth = self.frame.bit_depth();
         for plane in self.planes() {
@@ -108,22 +112,38 @@ fn write_visible_plane<T: ReconSample, W: Write + ?Sized>(
     plane: &Plane<T>,
     writer: &mut W,
 ) -> io::Result<()> {
+    let bytes_per_sample = bytes_per_sample(bit_depth);
+    let row_byte_len = plane
+        .visible_size()
+        .width()
+        .checked_mul(bytes_per_sample)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "decoded frame hash input row byte length overflow",
+            )
+        })?;
+    let mut row_bytes = Vec::new();
+    row_bytes.try_reserve_exact(row_byte_len).map_err(|err| {
+        io::Error::other(format!(
+            "decoded frame hash input row buffer allocation failed: {err}"
+        ))
+    })?;
+
     for row in plane.visible_rows() {
+        row_bytes.clear();
         for sample in row {
-            write_sample(bit_depth, sample.to_u16(), writer)?;
+            push_sample(bit_depth, sample.to_u16(), &mut row_bytes);
         }
+        writer.write_all(&row_bytes)?;
     }
     Ok(())
 }
 
-fn write_sample<W: Write + ?Sized>(
-    bit_depth: BitDepth,
-    sample: u16,
-    writer: &mut W,
-) -> io::Result<()> {
+fn push_sample(bit_depth: BitDepth, sample: u16, row_bytes: &mut Vec<u8>) {
     match bit_depth {
-        BitDepth::Eight => writer.write_all(&[sample as u8]),
-        BitDepth::Ten => writer.write_all(&sample.to_le_bytes()),
+        BitDepth::Eight => row_bytes.push(sample as u8),
+        BitDepth::Ten => row_bytes.extend_from_slice(&sample.to_le_bytes()),
     }
 }
 
@@ -379,6 +399,51 @@ mod tests {
 
         assert_eq!(bytes(&compact), vec![77]);
         assert_eq!(bytes(&padded), vec![77]);
+    }
+
+    #[test]
+    fn write_to_batches_each_visible_row() {
+        #[derive(Default)]
+        struct CountingWriter {
+            writes: usize,
+            bytes: Vec<u8>,
+        }
+
+        impl Write for CountingWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                self.bytes.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let luma_size = size(2, 2);
+        let luma_rect = rect(0, 0, 2, 2);
+        let chroma_size = size(1, 1);
+        let chroma_rect = rect(0, 0, 1, 1);
+        let y = plane(luma_size, 2, luma_rect, vec![1_u16, 0x0102, 511, 1023]);
+        let u = plane(chroma_size, 1, chroma_rect, vec![33_u16]);
+        let v = plane(chroma_size, 1, chroma_rect, vec![0x0201_u16]);
+        let frame = yuv_frame(
+            0,
+            BitDepth::Ten,
+            PixelFormat::Yuv420,
+            luma_size,
+            luma_rect,
+            FramePlanes::new(y, Some(u), Some(v)),
+        );
+
+        let mut writer = CountingWriter::default();
+        DecodedFrameHashInput::new(&frame)
+            .write_to(&mut writer)
+            .unwrap();
+
+        assert_eq!(writer.writes, 4);
+        assert_eq!(writer.bytes, vec![1, 0, 2, 1, 255, 1, 255, 3, 33, 0, 1, 2]);
     }
 
     #[test]
