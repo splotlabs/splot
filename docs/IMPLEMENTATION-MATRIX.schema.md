@@ -41,11 +41,11 @@ Every `[[feature]]` row **must** define all of these top-level keys:
 | `kind` | string | One of the allowed kinds (§4). |
 | `spec_sections` | array of strings | AV2 section ids (e.g. `"5.2.2"`, `"Annex B"`). May be empty for non-normative work. |
 | `sources` | array of strings | URLs backing the row. May be empty. |
-| `crate` | string | Owning crate (`splot-core`, `splot-validate`, `splot-encode`, `splot-cli`, `xtask`, `fuzz`, or `docs`). |
+| `crate` | string | Owning crate (`splot-core`, `splot-recon`, `splot-decode`, `splot-validate`, `splot-encode`, `splot-cli`, `xtask`, `fuzz`, or `docs`). |
 | `module` | string | Repo-relative path to the primary module/file. |
 | `openspec_change` | string | OpenSpec change id. May name an existing folder under `openspec/changes/`, a *planned* change id that does not have a folder yet, or `""`. The checker does not require the folder to exist. |
 | `tracking_issue` | string | GitHub issue reference, or `""`. |
-| `owner` | string | Logical owner (`core`, `validator`, `encoder`, `conformance`, `cli`, `automation`, `docs`). |
+| `owner` | string | Logical owner (`core`, `decoder`, `validator`, `encoder`, `conformance`, `cli`, `automation`, `docs`). |
 | `risk` | string | One of the allowed risk values (§4). |
 | `notes` | string | Short status note. |
 | `replaces` | array of strings | *(optional)* IDs this row supersedes (§7). |

@@ -12,9 +12,11 @@ The canonical guide is [AGENTS.md](../AGENTS.md). Read it. The most critical rul
   `Error::Unimplemented { feature }`. `anyhow` is only for `splot-cli` and `xtask`.
 - **Diagnostics are structured data:** every validator finding needs a stable
   `rule_id`, `severity`, `spec_section`, byte/bit offset, and `message`.
-- **Preserve the dependency direction:** `splot-core` depends on no `splot-*` crate;
-  nothing depends on `splot-cli`; only `splot-cli` depends on `splot-encode`; `xtask`
-  is standalone. Enforced by `cargo xtask check-dependency-direction`.
+- **Preserve the dependency direction:** `splot-core` and `splot-recon` depend on
+  no `splot-*` crate; `splot-decode` may depend only on `splot-core` and
+  `splot-recon` once it has decode source needing them; nothing depends on
+  `splot-cli`; only `splot-cli` depends on `splot-encode`; `xtask` is standalone. Enforced by
+  `cargo xtask check-dependency-direction`.
 - **SPDX header** on every `.rs` file; **public docs** on every public item.
 - **Feature tracking:** use Feature IDs from `docs/IMPLEMENTATION-MATRIX.toml` (the
   canonical status) for non-trivial work. Do not create TODOs without

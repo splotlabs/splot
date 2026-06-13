@@ -30,10 +30,15 @@ const VALIDATE_SRC: &str = "crates/splot-validate/src";
 const VALIDATOR_REGISTRY_DOC: &str = "docs/VALIDATOR-DIAGNOSTICS.md";
 /// Current decoder diagnostic emission source roots.
 ///
-/// This intentionally starts at the CLI decode command because there is no approved
-/// decoder library crate yet. Add future decoder crate roots only with the corresponding
-/// dependency-graph approval.
-const DECODER_SOURCE_ROOTS: &[&str] = &["crates/splot-cli/src/commands/decode.rs"];
+/// The CLI still owns the only emitted decoder diagnostic, but the approved decoder
+/// crate root is scanned now that it exists. `splot-recon` is intentionally not
+/// scanned here because it is shared reconstruction infrastructure for future decoder
+/// and encoder work; add a narrower decoder-owned reconstruction path if one starts
+/// emitting `decode/*` diagnostics later.
+const DECODER_SOURCE_ROOTS: &[&str] = &[
+    "crates/splot-cli/src/commands/decode.rs",
+    "crates/splot-decode/src",
+];
 /// Documentation file that must mirror emitted decoder rule ids.
 const DECODER_REGISTRY_DOC: &str = "docs/DECODER-DIAGNOSTICS.md";
 /// Start of the CI-enforced registry region.
@@ -657,6 +662,9 @@ mod tests {
         let source_path = root.join(DECODER_SOURCE_ROOTS[0]);
         std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
         std::fs::write(source_path, source).unwrap();
+        for source_root in &DECODER_SOURCE_ROOTS[1..] {
+            std::fs::create_dir_all(root.join(source_root)).unwrap();
+        }
         let doc_path = root.join(DECODER_REGISTRY_DOC);
         std::fs::create_dir_all(doc_path.parent().unwrap()).unwrap();
         std::fs::write(

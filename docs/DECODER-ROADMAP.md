@@ -25,7 +25,10 @@ emits the structured `decode/unsupported-feature` diagnostic and does not
 reconstruct pixels, produce frame hashes, write Y4M output, read input bytes, or
 touch the output path. Decode resource limits are a contract-only planning item:
 `decode/resource-limit` is documented as a planned diagnostic, but is not emitted
-by source yet.
+by source yet. The workspace now includes scaffolded `splot-recon` and
+`splot-decode` crates for future reconstruction primitives and the future decode
+driver. They intentionally expose no runtime reconstruction or byte-consuming
+decode API yet.
 
 Canonical decoder status lives in
 [`DECODER-SUPPORT-MATRIX.toml`](./DECODER-SUPPORT-MATRIX.toml), rendered to
@@ -94,7 +97,7 @@ other external decoder is forbidden.
 | Stage | Scope | Status |
 |---|---|---|
 | 0 | Roadmap, support matrix, generated status, drift gate | supported |
-| 1 | Decode API contract, limits, resource diagnostics, plan-only byte entry point | partial contract documented |
+| 1 | Decode API contract, limits, resource diagnostics, crate scaffolding, plan-only byte entry point | crate scaffolding supported; runtime contracts partial |
 | 2 | Shared decoded frame, plane, pixel format, and deterministic hash types | frame/plane and hash contracts documented; types planned |
 | 3 | CLI `splot decode` contract backed by library diagnostics | hash output parse contract wired; runtime unsupported |
 | 4 | Container traversal, layer/operating-point selection, transactional decode planning | minimal tier contract documented; runtime planned |
@@ -356,18 +359,21 @@ They must not be added as:
 Committed evidence must be portable: no local absolute paths and no assumption
 that CI will rerun AVM or dav2d.
 
-## Next Decision
+## Crate Split
 
-The next implementation item must ask for explicit maintainer approval before
-changing the dependency graph. The likely crate split is:
+Maintainer approval for the decoder/reconstruction dependency graph landed on
+2026-06-13. The approved crate split is now scaffolded as:
 
 ```text
 crates/splot-core      bitstream model + parsers
 crates/splot-recon     pixel buffers, hashes, reconstruction primitives, references
 crates/splot-decode    decode driver using splot-core + splot-recon
-crates/splot-encode    future encoder, reusing splot-recon
+crates/splot-encode    future encoder, not yet depending on splot-recon
 crates/splot-cli       thin CLI only
 ```
 
-Until that approval lands, decoder planning must stay in docs, OpenSpec, and
-automation.
+The scaffold is an ownership boundary only. `splot-recon` exposes no runtime
+reconstruction API, `splot-decode` exposes no byte-consuming decode API,
+`splot-cli` still owns the current unsupported diagnostic path, and
+`splot-encode` remains unchanged until a later encoder/reconstruction API
+change explicitly adds reuse of `splot-recon`.

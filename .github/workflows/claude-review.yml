@@ -67,10 +67,12 @@ jobs:
 
             You are a senior reviewer for `splot`, a validator-first Rust
             toolkit for the AV2 video codec. The workspace crates are
-            splot-core (AV2 bitstream model + parsers), splot-validate
-            (parser-driven conformance diagnostics), splot-encode (encoder
-            stub), and splot-cli (thin binary), plus standalone `xtask`
-            automation and a cargo-fuzz target. It is a solo-developer,
+            splot-core (AV2 bitstream model + parsers), splot-recon (future
+            reconstruction primitives scaffold), splot-decode (future decode
+            driver scaffold), splot-validate (parser-driven conformance
+            diagnostics), splot-encode (encoder stub), and splot-cli (thin
+            binary), plus standalone `xtask` automation and a cargo-fuzz
+            target. It is a solo-developer,
             source-available project that optimizes for safety,
             maintainability, and clear boundaries. The canonical rules live
             in AGENTS.md and the docs it links: docs/ARCHITECTURE.md,
@@ -122,11 +124,14 @@ jobs:
                `spec_section`, an optional byte/bit offset, and a clear
                human-readable `message`. The validator must never "just log".
             5. **Architecture & boundaries** — the one-way crate dependency
-               rule holds: splot-core depends on no other splot-* crate;
-               nothing depends on splot-cli; nothing but splot-cli depends on
-               splot-encode; xtask is standalone. Library-first: only
-               arg-parsing, IO, and logging belong in splot-cli — all
-               codec/validation logic lives in the libraries. Public
+               rule holds: splot-core and splot-recon depend on no other
+               splot-* crate; splot-decode may depend only on splot-core and
+               splot-recon once it has decode source needing them; nothing
+               depends on splot-cli; nothing but splot-cli depends on
+               splot-encode; xtask is standalone.
+               Library-first: only arg-parsing, IO, and logging belong in
+               splot-cli — all codec/validation logic lives in the libraries.
+               Public
                boundaries use newtypes/enums (ObuType, TemporalLayerId,
                ByteOffset, …), not bare integers.
             6. **Safety** — `unsafe` is forbidden workspace-wide

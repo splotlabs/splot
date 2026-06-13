@@ -4798,6 +4798,44 @@ fixtures = ["docs/DECODER-ROADMAP.md", "docs/DECODER-SUPPORT-MATRIX.toml"]
 diagnostics = []
 
 [[feature]]
+id = "INFRA-DECODER-CRATE-SCAFFOLDING"
+name = "Decoder and reconstruction crate scaffolding"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = []
+sources = []
+crate = "splot-decode"
+module = "crates/splot-decode/src/lib.rs"
+openspec_change = "decoder-crate-scaffolding"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds approved workspace scaffolds for `splot-recon` and `splot-decode`, plus dependency-direction and coverage-scope automation updates. `splot-recon` has no `splot-*` dependencies; `splot-decode` may depend only on `splot-core` and `splot-recon`. The scaffolds expose no runtime reconstruction or byte-consuming decode API, emit no decoder diagnostics, and do not invoke or require AVM/dav2d."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = [
+    "cargo check -p splot-recon --locked",
+    "cargo check -p splot-decode --locked",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+]
+fixtures = ["crates/splot-recon/src/lib.rs", "crates/splot-decode/src/lib.rs"]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODER-SUPPORT-MATRIX"
 name = "Decoder support matrix documentation"
 category = "docs"
