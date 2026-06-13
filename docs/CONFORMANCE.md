@@ -187,6 +187,12 @@ panic.
 - On **nightly**, the `parse_obu` cargo-fuzz target covers the same invariant.
   CI runs a **blocking 60-second `parse_obu` smoke on every PR**
   (`.github/workflows/ci.yml`, `fuzz-smoke` job).
+- The `fuzz-smoke` job **seeds** each target's corpus from the curated
+  `tests/fixtures/*.av2` AND the committed conformance corpus
+  (`tests/conformance/vectors/**.ivf`): the diverse AVM-generated streams are
+  strong coverage-guided seeds — fed to `parse_ivf` directly, to
+  `validate_bytes` config-prefixed, and de-wrapped to a raw OBU stream for
+  `parse_obu` / `parse_bitstream`.
 
 Commands and the full test-layer breakdown live in [AGENTS.md](../AGENTS.md)
 § 4 and [`docs/TESTING.md`](./TESTING.md).

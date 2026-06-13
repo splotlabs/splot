@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "fb74608ee0db7255b47a378c5aaaf9cea78b0b3f",
+  "audited_commit": "a200927cda00aa28ce84961f60f2ee67a6353292",
   "outcome": "success",
   "files": [
     {
@@ -200,7 +200,7 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "331509469edb5756b138fe9a3304e7f890bf8a86644009a2cb2f17923cdb18c2",
+      "sha256": "30ba1617b2d47f59e6869a052265d075e9c4e24c1c26990615c1da391f64bb42",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
@@ -1319,7 +1319,7 @@
     },
     {
       "path": "docs/CONFORMANCE.md",
-      "sha256": "79c234ab09c35d89ae3002cc35540a8452e0ce99ba569320ba7d91eebdfe2afd",
+      "sha256": "8f19eb1f421f048844cf6ce5551fdb7950b163cb0ab83a82c1ed496a174d067e",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-INSPECT",
