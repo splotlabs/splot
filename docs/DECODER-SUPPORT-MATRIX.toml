@@ -111,7 +111,21 @@ status = "partial"
 self_contained_tests = ["openspec validate --all --no-interactive", "cargo xtask check-decoder-support"]
 diagnostics = []
 local_reference_evidence = ["Archived local AVM/dav2d raw MD5 agreement for two tiny fixtures is recorded in openspec/changes/archive/2026-06-13-decoder-roadmap-matrix-boundary/agent-log.md; this is non-executable metadata only and not proof of splot hash implementation."]
-notes = "Contract-only `splot.decoded_frame_hash` v1 policy: SHA-256 `splot-dfh-sha256-v1` over AV2 §6.16.13 sample-byte serialization in §7.21 output order, cropped visible output only, stride/padding and metadata excluded, Y/U/V plane order, 8-bit single-byte samples, >8-bit little-endian two-byte samples, and raw pre-film-grain output by default. No runtime hash computation exists yet."
+notes = "Contract-only `splot.decoded_frame_hash` v1 policy: SHA-256 `splot-dfh-sha256-v1` over AV2 §6.16.13 sample-byte serialization in the splot-owned zero-based output emission index order, cropped visible output only, stride/padding and metadata excluded, Y/U/V plane order, 8-bit single-byte samples, >8-bit little-endian two-byte samples, and raw pre-film-grain output by default. No runtime hash computation exists yet."
+
+[[row]]
+id = "minimal-decode-tier-contract"
+name = "Minimal decode tier contract"
+feature_id = "DOC-MINIMAL-DECODE-TIER-CONTRACT"
+spec_sections = ["Annex B.2", "Annex B.3", "5.2", "6.2", "6.4.1", "6.17.2", "6.17.4.1", "6.17.7.2", "6.18", "6.19.1", "7.1", "7.2", "7.3", "7.4", "7.21", "7.23", "Annex A.2", "Annex A.5"]
+parser_source = "crates/splot-core/src/stream.rs; crates/splot-core/src/headers/sequence.rs; crates/splot-core/src/headers/frame/info.rs; crates/splot-core/src/headers/tile_group.rs"
+decode_module = "docs/DECODER-ROADMAP.md"
+tier = "foundation"
+status = "partial"
+self_contained_tests = ["openspec validate --all --no-interactive", "cargo xtask check-decoder-support"]
+diagnostics = ["decode/unsupported-feature (planned for streams outside the supported tier)", "decode/resource-limit (planned)"]
+local_reference_evidence = []
+notes = "Contract-only `splot.decode.minimal_tier` v1 and `minimal-intra-8bit420-hash-v1` policy: Annex B input, single selected xlayer, mlayer, and tlayer, `seq_profile_idc == 0` Main 8-bit 4:2:0, `obu_type == OBU_CLOSED_LOOP_KEY` output, no crop, one tile and one tile group, hash-first success, and explicit unsupported-feature or resource-limit rejection outside the tier. This is not an Annex A level-conformant decoder claim. No runtime decode path, layer selection, reconstruction, hashes, Y4M output, new emitted diagnostic, or local reference evidence exists yet."
 
 [[row]]
 id = "decode-stream-state"

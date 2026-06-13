@@ -4765,6 +4765,39 @@ fixtures = ["docs/DECODER-ROADMAP.md", "docs/DECODER-SUPPORT-MATRIX.toml"]
 diagnostics = []
 
 [[feature]]
+id = "DOC-MINIMAL-DECODE-TIER-CONTRACT"
+name = "Minimal decode tier contract documentation"
+category = "docs"
+kind = "docs"
+spec_sections = []
+sources = []
+crate = "docs"
+module = "docs/DECODER-ROADMAP.md"
+openspec_change = "minimal-decode-tier-contract"
+tracking_issue = ""
+owner = "docs"
+risk = "medium"
+notes = "Documents the repository-owned `splot.decode.minimal_tier` v1 and `minimal-intra-8bit420-hash-v1` contract before runtime decode support exists. The contract is a splot implementation subset, not an Annex A decoder conformance claim, and covers Annex B input, single-layer selection, `seq_profile_idc == 0` Main 8-bit 4:2:0, `obu_type == OBU_CLOSED_LOOP_KEY` output, no crop, one tile, hash-first success, and explicit unsupported-feature or resource-limit rejection outside the tier. No runtime decode, reconstruction, hash, Y4M, new emitted diagnostic, or local reference evidence is claimed."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = ["openspec validate --all --no-interactive", "cargo xtask check-decoder-support"]
+fixtures = ["docs/DECODER-ROADMAP.md", "docs/DECODER-SUPPORT-MATRIX.toml"]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODER-SUPPORT-MATRIX"
 name = "Decoder support matrix documentation"
 category = "docs"

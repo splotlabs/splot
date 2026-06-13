@@ -2,14 +2,14 @@
 
 Generated from `docs/DECODER-SUPPORT-MATRIX.toml` by `cargo xtask decoder-support --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-13. 15 row(s).
+Matrix version 1. Last reviewed 2026-06-13. 16 row(s).
 
 ## Status Counts
 
 | Status | Rows |
 |---|---:|
 | `todo` | 7 |
-| `partial` | 3 |
+| `partial` | 4 |
 | `supported` | 4 |
 | `unsupported-intentional` | 1 |
 | `blocked` | 0 |
@@ -19,7 +19,7 @@ Matrix version 1. Last reviewed 2026-06-13. 15 row(s).
 | Tier | Rows |
 |---|---:|
 | `encoder-reuse` | 1 |
-| `foundation` | 9 |
+| `foundation` | 10 |
 | `tier0-plan` | 1 |
 | `tier1-intra` | 4 |
 
@@ -35,6 +35,7 @@ Matrix version 1. Last reviewed 2026-06-13. 15 row(s).
 | `decode-limits-budget` | Decode limits and allocation budget | `DOC-DECODE-LIMITS-CONTRACT` | `foundation` | `partial` | 6.4.1<br>6.4.6<br>6.17.4.1<br>6.17.7.2<br>5.19<br>5.20<br>7.1<br>7.21<br>7.23 | openspec validate --all --no-interactive<br>cargo xtask check-decoder-support | decode/resource-limit (planned) | none | `docs/DECODER-ROADMAP.md` |
 | `decoded-frame-plane-model` | Decoded frame and plane model | `DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT` | `foundation` | `partial` | 6.4.1<br>6.17.4.1<br>6.17.4.4<br>7.1<br>7.21.1<br>7.21.2<br>7.21.5<br>7.21.6<br>7.23 | openspec validate --all --no-interactive<br>cargo xtask check-decoder-support | decode/resource-limit (planned) | none | `docs/DECODER-ROADMAP.md` |
 | `deterministic-frame-hash` | Deterministic decoded-frame hash | `DOC-DETERMINISTIC-FRAME-HASH-CONTRACT` | `foundation` | `partial` | 5.17.12<br>6.16.13<br>7.21.1<br>7.21.2<br>7.21.7 | openspec validate --all --no-interactive<br>cargo xtask check-decoder-support | none | Archived local AVM/dav2d raw MD5 agreement for two tiny fixtures is recorded in openspec/changes/archive/2026-06-13-decoder-roadmap-matrix-boundary/agent-log.md; this is non-executable metadata only and not proof of splot hash implementation. | `docs/DECODER-ROADMAP.md` |
+| `minimal-decode-tier-contract` | Minimal decode tier contract | `DOC-MINIMAL-DECODE-TIER-CONTRACT` | `foundation` | `partial` | Annex B.2<br>Annex B.3<br>5.2<br>6.2<br>6.4.1<br>6.17.2<br>6.17.4.1<br>6.17.7.2<br>6.18<br>6.19.1<br>7.1<br>7.2<br>7.3<br>7.4<br>7.21<br>7.23<br>Annex A.2<br>Annex A.5 | openspec validate --all --no-interactive<br>cargo xtask check-decoder-support | decode/unsupported-feature (planned for streams outside the supported tier)<br>decode/resource-limit (planned) | none | `docs/DECODER-ROADMAP.md` |
 | `decode-stream-state` | Decode stream traversal and layer selection | none | `tier0-plan` | `todo` | 5.2.1<br>7.1<br>7.3<br>7.4 | none | decode/unsupported-feature (planned) | none | `planned` |
 | `symbol-decoder` | Symbol and CDF decoder foundation | none | `tier1-intra` | `todo` | 8.2<br>8.3<br>9 | none | decode/unsupported-feature (planned) | none | `planned` |
 | `tile-payload-decode` | Tile payload decode boundary | none | `tier1-intra` | `todo` | 5.20<br>7.1<br>8.3 | none | decode/unsupported-feature (planned) | none | `planned` |
