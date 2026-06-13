@@ -44,6 +44,20 @@ local_reference_evidence = []
 notes = "Generates and checks docs/DECODER-SUPPORT-STATUS.md without invoking local reference tools."
 
 [[row]]
+id = "decoder-diagnostic-registry"
+name = "Decoder diagnostic registry"
+feature_id = "DOC-DECODER-DIAGNOSTICS"
+spec_sections = []
+parser_source = "n/a"
+decode_module = "docs/DECODER-DIAGNOSTICS.md"
+tier = "foundation"
+status = "supported"
+self_contained_tests = ["xtask/src/diagnostic_registry.rs::tests::decoder_registry_accepts_matching_source_and_doc", "cargo xtask check-diagnostic-registry"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Canonical registry for emitted `splot decode` diagnostic rule IDs. The drift gate scans current decoder emission roots for `decode/*` IDs and does not invoke external decoders, AVM, or dav2d. AV2 §7.1 behavior and `decode/unsupported-feature` ownership stay on `cli-decode-entrypoint`."
+
+[[row]]
 id = "cli-decode-entrypoint"
 name = "splot decode CLI entry point"
 feature_id = "CLI-DECODE"

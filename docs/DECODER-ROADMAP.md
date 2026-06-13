@@ -29,6 +29,9 @@ Canonical decoder status lives in
 [`DECODER-SUPPORT-MATRIX.toml`](./DECODER-SUPPORT-MATRIX.toml), rendered to
 [`DECODER-SUPPORT-STATUS.md`](./DECODER-SUPPORT-STATUS.md). The global feature
 ledger remains [`IMPLEMENTATION-MATRIX.toml`](./IMPLEMENTATION-MATRIX.toml).
+Emitted `splot decode` diagnostic rule IDs are registered in
+[`DECODER-DIAGNOSTICS.md`](./DECODER-DIAGNOSTICS.md), enforced by
+`cargo xtask check-diagnostic-registry`.
 
 ## Supported Tier
 
@@ -122,7 +125,8 @@ supported decode tier lands:
 
 The CLI renders the diagnostic as text by default and as JSON with
 `splot decode --json`. Future library-facing decode diagnostics must preserve
-stable field names for tests and encoder roundtrips.
+stable field names for tests and encoder roundtrips. The emitted `rule_id` set
+is registered in [`DECODER-DIAGNOSTICS.md`](./DECODER-DIAGNOSTICS.md).
 
 ## Local References
 

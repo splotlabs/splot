@@ -156,19 +156,23 @@ are in [IMPLEMENTATION-MATRIX.schema.md](./IMPLEMENTATION-MATRIX.schema.md)
 For the current validator expansion plan, start with
 [VALIDATOR-ROADMAP.md](./VALIDATOR-ROADMAP.md) (phases, current focus,
 guardrails) and [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md) (the
-CI-enforced diagnostic registry). The matrix remains canonical. The rationale
-for this whole tracking system is recorded in
+CI-enforced validator diagnostic registry). Decoder-facing diagnostic IDs are
+registered in [DECODER-DIAGNOSTICS.md](./DECODER-DIAGNOSTICS.md). The matrix
+remains canonical. The rationale for this whole tracking system is recorded in
 [DECISIONS/0001-feature-tracking.md](./DECISIONS/0001-feature-tracking.md).
 
 ## 12. Diagnostic-ID convention
 
-Validator diagnostics use a kebab/slash namespace with a documented prefix,
-for example `obu-header/`, `sequence-header/`, `frame-header/`, and
+Diagnostics use a kebab/slash namespace with a documented prefix. Validator
+examples include `obu-header/`, `sequence-header/`, `frame-header/`, and
 `decoder-model/` (decoder-model buffer-delay sum-constancy, §6.4.13 / §6.10.5).
-The canonical allowlist is the `DIAGNOSTIC_PREFIXES` constant in
-`xtask/src/feature_status.rs`;
-[VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md) groups every emitted
-rule by namespace. Example: `obu-header/global-xlayer-required`.
+Decoder diagnostics emitted by `splot decode` use the `decode/` namespace. The
+validator prefix allowlist is the `DIAGNOSTIC_PREFIXES` constant in
+`xtask/src/feature_status.rs`; [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md)
+groups every emitted validator rule by namespace, and
+[DECODER-DIAGNOSTICS.md](./DECODER-DIAGNOSTICS.md) groups emitted decoder rules.
+Example validator rule: `obu-header/global-xlayer-required`. Example decoder
+rule: `decode/unsupported-feature`.
 
 A diagnostic that corresponds directly to a modeled feature MAY instead use the
 Feature ID as a base, optionally with a `.SUFFIX` for a narrower rule:
@@ -179,8 +183,10 @@ AV2-5.2.2-OBU-HEADER.MISSING-EXTENSION-BYTE
 AV2-B-ANNEXB-OBU-ENVELOPE.ZERO-LENGTH-OBU
 ```
 
-The base id (before the `.SUFFIX`) must be a known matrix id. A new kebab
-prefix lands by adding it to `DIAGNOSTIC_PREFIXES` and documenting its rules in
-[VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md); planned namespaces stay
-in that registry's "Planned / not yet emitted" section until their first rule
-is emitted.
+The base id (before the `.SUFFIX`) must be a known matrix id. A new validator
+kebab prefix lands by adding it to `DIAGNOSTIC_PREFIXES` and documenting its
+rules in [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md); planned
+validator namespaces stay in that registry's "Planned / not yet emitted"
+section until their first rule is emitted. Decoder `decode/` IDs are documented
+in [DECODER-DIAGNOSTICS.md](./DECODER-DIAGNOSTICS.md) and checked by the same
+`cargo xtask check-diagnostic-registry` command.
