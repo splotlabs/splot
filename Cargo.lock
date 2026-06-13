@@ -735,6 +735,7 @@ dependencies = [
  "splot-core",
  "splot-decode",
  "splot-encode",
+ "splot-parallel",
  "splot-validate",
  "toml",
  "tracing",

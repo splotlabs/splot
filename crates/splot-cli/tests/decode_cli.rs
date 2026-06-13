@@ -354,3 +354,66 @@ fn decode_explicit_y4m_output_format_matches_implicit_no_touch_behavior() {
         original_output
     );
 }
+
+#[test]
+fn decode_threads_fixed_is_accepted_emits_unsupported() {
+    let input = temp_input("av2", b"input must not be read");
+
+    let out = splot(&[
+        "decode",
+        "--threads",
+        "8",
+        "--output-format",
+        "hash",
+        input.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("decode/unsupported-feature"),
+        "stderr was: {stderr}"
+    );
+}
+
+#[test]
+fn decode_threads_auto_is_accepted() {
+    let input = temp_input("av2", b"input must not be read");
+
+    let out = splot(&[
+        "decode",
+        "--threads",
+        "auto",
+        "--output-format",
+        "hash",
+        input.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("decode/unsupported-feature"),
+        "stderr was: {stderr}"
+    );
+}
+
+#[test]
+fn decode_threads_invalid_is_usage_error() {
+    let input = temp_input("av2", b"input must not be read");
+
+    let out = splot(&[
+        "decode",
+        "--threads",
+        "nope",
+        "--output-format",
+        "hash",
+        input.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("decode/unsupported-feature"),
+        "stderr was: {stderr}"
+    );
+}
