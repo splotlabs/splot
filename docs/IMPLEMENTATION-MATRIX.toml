@@ -4901,6 +4901,68 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "DECODE-LIMITS-RUNTIME-API"
+name = "Decode limits runtime API"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["4.11.6", "Annex B.2", "Annex B.3", "5.2.1", "6.4.1", "6.4.6", "5.18.4.1", "6.17.4.1", "5.18.4.4", "6.17.4.4", "5.18.7.2", "6.17.7.2", "5.19", "6.18", "5.20.1", "6.19.1", "7.1", "7.21", "7.23"]
+sources = [
+    "docs/spec/av2/1.0.0/04-conventions.md#s-4-11-6",
+    "docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2",
+    "docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-6",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-4-4",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-2",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-7-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-18",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-23",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/limits.rs"
+openspec_change = "decode-limits-runtime-api"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a source-backed, dependency-free `splot-decode` runtime API for caller-provided decode resource policy: `DecodeOptions`, `DecodeLimits`, typed limit names and units, thresholds, inclusive pure checks, local typed limit errors, checked arithmetic helpers, and allocation-size handoff checks. The API uses `max_reference_slots`, `max_reference_store_bytes`, and `max_tile_payload_bytes` to avoid overclaiming AV2 semantics, provides finite defaults plus explicit zero/unlimited constructors, and keeps all thresholds as repository policy rather than AV2 conformance limits. This is policy infrastructure only: it does not consume bytes, allocate from bitstream-derived values, emit the planned resource-limit diagnostic, change CLI behavior, compute frame hashes, write Y4M, reconstruct pixels, store references, invoke external decoders, or change the dependency graph."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/limits.rs::tests",
+    "crates/splot-decode/src/lib.rs::tests::unsupported_feature_diagnostic_has_stable_fields",
+]
+commands = [
+    "cargo test -p splot-decode --locked",
+    "cargo clippy -p splot-decode --all-targets --locked -- -D warnings",
+    "cargo xtask check-diagnostic-registry",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+]
+fixtures = ["crates/splot-decode/src/limits.rs", "crates/splot-decode/src/lib.rs"]
+diagnostics = []
+
+[[feature]]
 id = "DECODE-UNSUPPORTED-DIAGNOSTIC-API"
 name = "Decode unsupported diagnostic API"
 category = "infrastructure"

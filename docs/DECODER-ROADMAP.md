@@ -23,14 +23,16 @@ AVM/dav2d wrapper.
 Current state: `splot decode` is an intentional unsupported entry point. It
 renders the structured `decode/unsupported-feature` diagnostic owned by
 `splot-decode` and does not reconstruct pixels, produce frame hashes, write Y4M
-output, read input bytes, or touch the output path. Decode resource limits are a
-contract-only planning item: `decode/resource-limit` is documented as a planned
-diagnostic, but is not emitted by source yet. The workspace now includes
-scaffolded `splot-recon` and `splot-decode` crates for future reconstruction
-primitives and the future decode driver. `splot-recon` now exposes immutable
-decoded output frame and plane model types with constructor invariants, but no
-reconstruction algorithm, byte-consuming decode path, frame hash computation,
-Y4M output, or reference-frame-store runtime behavior exists yet.
+output, read input bytes, or touch the output path. Decode resource limits now
+have a source-backed `splot-decode` policy API for configured thresholds and
+pure checks, but no byte-consuming enforcement exists yet. The planned
+`decode/resource-limit` diagnostic remains documented but not emitted by source.
+The workspace now includes scaffolded `splot-recon` and `splot-decode` crates
+for future reconstruction primitives and the future decode driver.
+`splot-recon` now exposes immutable decoded output frame and plane model types
+with constructor invariants, but no reconstruction algorithm, byte-consuming
+decode path, frame hash computation, Y4M output, or reference-frame-store
+runtime behavior exists yet.
 
 Canonical decoder status lives in
 [`DECODER-SUPPORT-MATRIX.toml`](./DECODER-SUPPORT-MATRIX.toml), rendered to
@@ -99,7 +101,7 @@ other external decoder is forbidden.
 | Stage | Scope | Status |
 |---|---|---|
 | 0 | Roadmap, support matrix, generated status, drift gate | supported |
-| 1 | Decode API contract, limits, resource diagnostics, crate scaffolding, plan-only byte entry point | crate scaffolding supported; runtime contracts partial |
+| 1 | Decode API contract, limits, resource diagnostics, crate scaffolding, plan-only byte entry point | crate scaffolding and limits runtime API supported; byte-consuming enforcement partial |
 | 2 | Shared decoded frame, plane, pixel format, and deterministic hash types | frame/plane model types supported; hash contract documented; hash runtime planned |
 | 3 | CLI `splot decode` contract backed by library diagnostics | hash output parse contract wired; runtime unsupported |
 | 4 | Container traversal, layer/operating-point selection, transactional decode planning | minimal tier contract documented; runtime planned |
@@ -140,7 +142,8 @@ comments, or prose from AVM, dav2d, rav1e, SVT-AV1, or any other implementation.
 ## Decode Limits Contract
 
 Future byte-consuming decode entry points must accept explicit resource limits
-before they allocate from bitstream-derived values. The conceptual API shape is:
+before they allocate from bitstream-derived values. The source-backed runtime
+API shape is:
 
 ```text
 DecodeOptions {
@@ -151,6 +154,10 @@ DecodeOptions {
 This is repository policy layered over AV2 syntax-derived values, not an AV2
 conformance rule. The diagnostic must cite the AV2 section that supplied the
 measured value, while the configured threshold comes from `DecodeLimits`.
+`splot-decode` now provides typed limit names, units, thresholds, actual values,
+and pure check helpers for this contract. Those helpers are not decoder
+diagnostics and do not read bytes, traverse OBUs, allocate frames, write output,
+or change the current unsupported `splot decode` behavior.
 
 The first contract covers:
 
@@ -162,17 +169,20 @@ The first contract covers:
 - `max_frame_height`;
 - `max_luma_samples_per_frame`;
 - `max_decoded_frame_bytes`;
-- `max_reference_frames`;
+- `max_reference_slots`;
+- `max_reference_store_bytes`;
 - `max_tile_count`;
-- `max_tile_bytes`;
+- `max_tile_payload_bytes`;
 - `max_output_bytes`.
 
-The primary spec-derived surfaces are sequence maximum dimensions (§ 6.4.1),
-reference-frame count (§ 6.4.6), per-frame dimensions (§ 6.17.4.1), tile grid
-counts (§ 6.17.7.2), tile group count derivation (§ 5.19), tile payload
-traversal (§ 5.20), the general decode input/output model (§ 7.1), decoded
-output arrays (§ 7.21), and reference frame storage (§ 7.23). A future planner
-must check `max_input_bytes` before buffering or accepting input bytes, check
+The primary spec-derived surfaces are leb128 length fields (§ 4.11.6), Annex B
+length-delimited input (Annex B.2-Annex B.3), OBU sizing (§ 5.2.1), sequence
+maximum dimensions (§ 6.4.1), reference-frame count (§ 6.4.6), per-frame
+dimensions (§ 6.17.4.1), tile grid counts (§ 6.17.7.2), tile group count and
+semantics (§ 5.19 and § 6.18), tile payload traversal and semantics (§ 5.20.1
+and § 6.19.1), the general decode input/output model (§ 7.1), decoded output
+arrays (§ 7.21), and reference frame storage (§ 7.23). A future planner must
+check `max_input_bytes` before buffering or accepting input bytes, check
 `max_obus` before continuing OBU traversal or accumulating OBU state, and check
 the relevant derived resource limit before allocating decoded frames, traversing
 tile payloads, storing reference frames, producing frame hashes, or writing Y4M
@@ -182,6 +192,11 @@ Every derived `actual` resource value must be computed with checked arithmetic
 before comparison or allocation. Overflow while deriving dimensions, strides,
 tile products, plane sizes, reference-storage bytes, output bytes, or frame
 counts is a `decode/resource-limit` failure, not a wraparound or panic.
+Runtime emission of that diagnostic remains future work and belongs at the
+byte-consuming decode boundary.
+`DecodeLimits::zero()` and `DecodeLimits::unlimited()` are explicit constructors
+for tests and callers; `DecodeLimits::default()` and `DecodeOptions::default()`
+use finite repository policy thresholds for CI, fuzzing, and early decoder work.
 
 ## Decoded Frame and Plane Model Contract
 

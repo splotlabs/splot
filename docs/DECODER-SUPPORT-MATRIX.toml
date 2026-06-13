@@ -145,7 +145,7 @@ notes = "CLI-only parse contract for future hash-first decode output: `--output-
 id = "decode-limits-budget"
 name = "Decode limits and allocation budget"
 feature_id = "DOC-DECODE-LIMITS-CONTRACT"
-spec_sections = ["6.4.1", "6.4.6", "6.17.4.1", "6.17.7.2", "5.19", "5.20", "7.1", "7.21", "7.23"]
+spec_sections = ["4.11.6", "Annex B.2", "Annex B.3", "5.2.1", "6.4.1", "6.4.6", "5.18.4.1", "6.17.4.1", "5.18.4.4", "6.17.4.4", "5.18.7.2", "6.17.7.2", "5.19", "6.18", "5.20.1", "6.19.1", "7.1", "7.21", "7.23"]
 parser_source = "crates/splot-core/src/headers/sequence.rs"
 decode_module = "docs/DECODER-ROADMAP.md"
 tier = "foundation"
@@ -153,7 +153,21 @@ status = "partial"
 self_contained_tests = ["openspec validate --all --no-interactive", "cargo xtask check-decoder-support"]
 diagnostics = ["decode/resource-limit (planned)"]
 local_reference_evidence = []
-notes = "Contract-only foundation for future `DecodeOptions { limits: DecodeLimits }`: covers input bytes, OBU count, decoded/output frame counts, frame dimensions, luma samples, decoded frame bytes, reference frames, tile count, tile payload bytes, and output bytes. No runtime limit enforcement or emitted `decode/resource-limit` diagnostic exists yet."
+notes = "Budget/enforcement contract for `DecodeOptions { limits: DecodeLimits }`: covers input bytes, OBU count, coded/output frame counts, coded frame dimensions, coded luma samples, decoded frame bytes, reference slots, reference-store bytes, tile count, tile payload bytes, and output bytes. Runtime policy types are tracked by `decode-limits-runtime-api`, but byte-consuming limit enforcement and emitted `decode/resource-limit` diagnostics do not exist yet."
+
+[[row]]
+id = "decode-limits-runtime-api"
+name = "Decode limits runtime API"
+feature_id = "DECODE-LIMITS-RUNTIME-API"
+spec_sections = ["4.11.6", "Annex B.2", "Annex B.3", "5.2.1", "6.4.1", "6.4.6", "5.18.4.1", "6.17.4.1", "5.18.4.4", "6.17.4.4", "5.18.7.2", "6.17.7.2", "5.19", "6.18", "5.20.1", "6.19.1", "7.1", "7.21", "7.23"]
+parser_source = "n/a"
+decode_module = "crates/splot-decode/src/limits.rs"
+tier = "foundation"
+status = "supported"
+self_contained_tests = ["crates/splot-decode/src/limits.rs::tests", "crates/splot-decode/src/lib.rs::tests::unsupported_feature_diagnostic_has_stable_fields", "cargo test -p splot-decode --locked", "cargo clippy -p splot-decode --all-targets --locked -- -D warnings", "cargo xtask check-diagnostic-registry", "cargo xtask check-dependency-direction", "cargo xtask check-decoder-support"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Source-backed runtime API for caller-provided `DecodeOptions { limits: DecodeLimits }`, typed limit names, units, thresholds, inclusive pure checks, checked arithmetic helpers, allocation-size handoff checks, finite defaults, explicit zero/unlimited policies, and local typed limit errors in `splot-decode`. The API uses `max_reference_slots`, `max_reference_store_bytes`, and `max_tile_payload_bytes` to avoid overclaiming AV2 semantics. It is policy-only: it does not consume bytes, allocate from bitstream-derived values, traverse OBUs or tiles, emit `decode/resource-limit`, compute hashes, write Y4M, reconstruct pixels, store references, change CLI behavior, or invoke AVM/dav2d."
 
 [[row]]
 id = "decoded-frame-plane-model"
