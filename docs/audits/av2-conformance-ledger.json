@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "d478c9c2f311afa17dd5dac06a93de6cf47d2533",
+  "audited_commit": "65d983d1a65e6c15e5416d5311c549eba6a85763",
   "outcome": "success",
   "files": [
     {
@@ -1084,7 +1084,7 @@
     },
     {
       "path": "crates/splot-validate/src/annex_a.rs",
-      "sha256": "6f2ca8d2e50543363f9d10784569a40e9efc2e022e543d2f86b20c4454322bf6",
+      "sha256": "30f71881da8a2028f0e91b86e7c74c8de9a99331f9a9e6508cb6934edc13b54a",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-A-LEVELS-TIERS",
@@ -1104,7 +1104,7 @@
     },
     {
       "path": "crates/splot-validate/src/checks/mod.rs",
-      "sha256": "69441652b82f8fef8cd21bcc53d515e338ca4e567748516b6fffcabbcd433091",
+      "sha256": "af3977fa9fa14357a2212072ff8c3513bb78c11524508788d55b23f2bc7b70fe",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.3-RESERVED-OBU",
@@ -1926,7 +1926,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator/tests/lcr_atlas.rs",
-      "sha256": "454ecdf70343d82380288adac386b935a303b0479d351ad6eded44364368e20c",
+      "sha256": "cb6a951ac73e0a24b622bf6ad021dd3bfec4c309ace7bb6306714322d884febd",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -2212,7 +2212,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "10ef73e0d0299db250261041693c1dc88344162589b9e75235f2c754ee45b7e0",
+      "sha256": "50608c6d1c9ac5b15655618b41f5fdcddb8499ab3a5f1dbfaf1eb1e1ba3f507d",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2400,7 +2400,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "37fcc4727c6b90554d63c2116b274ab0095db9b5346f793d8acb112386bad338",
+      "sha256": "402f7e8272b201af6a9f377cc0e61713d5b8895b8358ee6852fcd71cf70dcb16",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2567,7 +2567,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "50ed58cf8636e9cbcd4761e5459269419e409eb06350fc42d4fda0a600426a59",
+      "sha256": "0f2ff644e4474ebbe97a38d0dd89ece32aa941bbb43b6421233bf37c59ffea45",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2741,7 +2741,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "ebc3984b260f2146382a226ab5b2c3ac49520927c541580014ca5274b3c6945b",
+      "sha256": "af53e5dc011ebae5996af2ac50d3ed6e0771c487e54f27a2c44923ce2284c3d2",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -5584,6 +5584,33 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-lcr-aggregate-info-annex-a-range/proposal.md",
+      "sha256": "16c63de8600f0eabc59e9d6eaace808ca8fa274e2c234249e1c370e3a0c0106a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.8.3-LCR-AGGREGATE-INFO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-lcr-aggregate-info-annex-a-range/specs/validator/spec.md",
+      "sha256": "28296d39ffb8adf868131ef6f8d71c4ee545b13d4aa79fcb35fc2a1ab50976e7",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.8.3-LCR-AGGREGATE-INFO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-lcr-aggregate-info-annex-a-range/tasks.md",
+      "sha256": "5817ec98ff8baad54d2275be7dc6353bb950466d783cdc52fc08368fd825224a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.8.3-LCR-AGGREGATE-INFO"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-13-local-reference-evidence-manifest-contract/.openspec.yaml",
       "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
       "scope_kind": "openspec",
@@ -6001,7 +6028,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "35842387ba7c47d18a296d096e086ac503aa5de3121dbb532b198ad96b2c9331",
+      "sha256": "e375c3c10829c3b8d25072238493038e712cb9b5b5ebc52a0fdbdcbf25823500",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
