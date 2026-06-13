@@ -45,7 +45,7 @@ cargo install cargo-fuzz --locked
 cargo +nightly fuzz list            # parse_obu, parse_ivf, parse_bitstream, validate_bytes
 cargo +nightly fuzz run parse_obu   # run a single target (swap the name for any of the four)
 
-cargo xtask conformance         # stub for AVM differential testing
+cargo xtask conformance         # run the committed conformance corpus (no AVM)
 ```
 
 ## Conventions

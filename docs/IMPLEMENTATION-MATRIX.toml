@@ -3781,23 +3781,23 @@ kind = "conformance"
 spec_sections = []
 sources = ["https://github.com/AOMediaCodec/avm"]
 crate = "xtask"
-module = "xtask/src/main.rs"
+module = "xtask/src/conformance.rs"
 openspec_change = "avm-differential-harness"
 tracking_issue = ""
 owner = "conformance"
 risk = "high"
-notes = "Future oracle: avm encode -> splot validate, then splot encode -> avm decode. Only the `cargo xtask conformance` stub exists today."
+notes = "Reframed (maintainer decision): AVM is a LOCAL oracle/generator only — it is NOT vendored and NOT a build or CI dependency, and no committed code path invokes AVM. AVM locally encodes small AV2 streams (avmenc --codec=av2 --ivf ...) from project-owned synthetic input; those bytes MAY be committed as plain project fixtures and are then validated by the self-contained committed runner (CONF-AVM-VALID-STREAMS, `cargo xtask conformance` / crates/splot-cli/tests/conformance.rs) with no network or AVM. That committed-corpus runner landed under the archived conformance-corpus-foundation change. This row tracks what REMAINS: a LIVE local differential harness against an AVM checkout (opt-in, never CI) — the still-active openspec/changes/avm-differential-harness change — and the `splot encode -> avm decode` reverse direction (encoder is fenced). Kept partial / avm_diff pending."
 
 [feature.status]
 mapped = "partial"
-types = "todo"
+types = "not-applicable"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
-avm_diff = "todo"
+decode_check = "not-applicable"
+tests = "not-applicable"
+avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
@@ -3880,30 +3880,41 @@ kind = "conformance"
 spec_sections = []
 sources = ["https://github.com/AOMediaCodec/avm"]
 crate = "xtask"
-module = "xtask/src/main.rs"
-openspec_change = "avm-differential-harness"
+module = "xtask/src/conformance.rs"
+openspec_change = "conformance-corpus-foundation"
 tracking_issue = ""
 owner = "conformance"
 risk = "high"
-notes = "Future proof that representative AVM-generated valid streams pass implemented validator checks."
+notes = "Committed, self-contained conformance corpus under tests/conformance/: small AVM-generated valid AV2 vectors (IVF) plus a manifest.toml of expected outcomes, validated by a committed runner with NO AVM dependency (the CI gate is crates/splot-cli/tests/conformance.rs; the ergonomic entry is `cargo xtask conformance`). AVM is the LOCAL generator of the committed vectors only — never invoked/vendored by the runner/build/CI — so the proof is the committed-vector runner, not a live avm_diff run (avm_diff stays pending). One bootstrap negative (a truncated copy) exercises the manifest's diagnostics arm. Broad positive sweeps and mutated negatives are later changes (avm-positive-vector-generation, conformance-negative-mutator)."
 
 [feature.status]
-mapped = "todo"
-types = "todo"
+mapped = "done"
+types = "not-applicable"
 parse = "not-applicable"
-validate = "not-applicable"
+validate = "done"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
-avm_diff = "todo"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
+tests = [
+    "crates/splot-cli/tests/conformance.rs::conformance_corpus_matches_manifest",
+    "xtask/src/conformance.rs::tests",
+]
+commands = [
+    "cargo test -p splot-cli --test conformance",
+    "cargo xtask conformance",
+]
+fixtures = [
+    "tests/conformance/manifest.toml",
+    "tests/conformance/vectors/valid/syn-key-intra-64x64.ivf",
+    "tests/conformance/vectors/valid/syn-key-inter-64x64.ivf",
+    "tests/conformance/vectors/invalid/syn-key-intra-64x64-truncated.ivf",
+]
+diagnostics = ["ivf/truncated-frame-payload"]
 
 [[feature]]
 id = "CONF-AVM-INVALID-STREAMS"

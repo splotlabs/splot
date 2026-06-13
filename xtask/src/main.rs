@@ -13,6 +13,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 
 mod audit_scope;
+mod conformance;
 mod diagnostic_registry;
 mod feature_status;
 mod gen_tables;
@@ -134,7 +135,7 @@ enum Task {
     },
     /// (stub) Fetch AV2/AOMedia conformance vectors.
     FetchVectors,
-    /// (stub) Run AVM differential testing.
+    /// Validate the committed conformance corpus against its manifest (no AVM).
     Conformance,
     /// Generate a local HTML coverage report (requires `cargo-llvm-cov`).
     Coverage,
@@ -202,10 +203,7 @@ fn main() -> Result<()> {
             fetch_vectors_stub();
             Ok(())
         }
-        Task::Conformance => {
-            conformance_stub();
-            Ok(())
-        }
+        Task::Conformance => conformance::run_conformance(&workspace_root()?),
         Task::Coverage => run_coverage(),
         Task::Fuzz { time } => run_fuzz(time),
         Task::Audit => run_audit(),
@@ -1175,11 +1173,6 @@ fn resolved_dep_name(
 fn fetch_vectors_stub() {
     eprintln!("xtask fetch-vectors: not yet implemented.");
     eprintln!("Planned: fetch AV2/AOMedia conformance vectors into a gitignored tests/vectors/.");
-}
-
-fn conformance_stub() {
-    eprintln!("xtask conformance: not yet implemented.");
-    eprintln!("Planned: differential testing against AVM (avm encode -> splot validate).");
 }
 
 #[cfg(test)]

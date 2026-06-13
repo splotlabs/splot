@@ -45,5 +45,9 @@ Thumbs.db
 *.obu
 # ...but DO track the curated test fixtures.
 !/tests/fixtures/*.av2
+# ...and the committed conformance corpus vectors (CONF-AVM-VALID-STREAMS):
+# `.ivf` vectors are already tracked (`.ivf` is not in the globs above), but
+# future `.obu`/`.av2` corpus vectors would otherwise be excluded by them.
+!/tests/conformance/**
 
 # NOTE: Cargo.lock is intentionally committed (this repo builds binaries).

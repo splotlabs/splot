@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "6a6068d63926f99c4c40ec5c23260ec044ff4104",
+  "audited_commit": "bacc68a4954df06e98b663c33964473b8d11b9bf",
   "outcome": "success",
   "files": [
     {
@@ -239,7 +239,7 @@
     },
     {
       "path": "Cargo.lock",
-      "sha256": "e6a205751811f2e6fcbea88ec759f27be8ea0512a403f117d84cbd8357be19fa",
+      "sha256": "37e8a0e2948b266f0a81f18cf0e86fbbda7d8c2e6f57ee9774a43f5b81bedbe1",
       "scope_kind": "repository-process",
       "feature_ids": [],
       "outcome": "success"
@@ -262,9 +262,11 @@
     },
     {
       "path": "crates/splot-cli/Cargo.toml",
-      "sha256": "4790304ae418161777a8f268cd68f13cfb110ba740a46a6cf996910e981caa97",
+      "sha256": "3deed0836dba725b600824048fe8bc71e0ee10391beb31495f208582b8ad57d1",
       "scope_kind": "workspace:splot-cli",
-      "feature_ids": [],
+      "feature_ids": [
+        "CONF-AVM-VALID-STREAMS"
+      ],
       "outcome": "success"
     },
     {
@@ -324,6 +326,15 @@
         "AV2-5.19-TILE-GROUP",
         "AV2-5.4-SEQUENCE-HEADER",
         "AV2-5.5-TEMPORAL-DELIMITER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/tests/conformance.rs",
+      "sha256": "86854c3f742f38a7468f8aa6af3a8ccd92bb85af048466ef9b319edb9c78c0f8",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [
+        "CONF-AVM-VALID-STREAMS"
       ],
       "outcome": "success"
     },
@@ -1002,7 +1013,7 @@
     },
     {
       "path": "docs/CONFORMANCE.md",
-      "sha256": "7d220702b3bc5aa5fece979066a94439bc645047767b5af15f1361969a82748e",
+      "sha256": "09ddfe443cb2559a298900551c7daa0ed88dcccdb56da3ade4383d23b0eb8f89",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-INSPECT",
@@ -1026,7 +1037,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "522aab30e887ec1eda3d4db0364dd1b062e51d2e72017deaa5ef8d9669cf7d95",
+      "sha256": "bf5b4fe898bc257c4b8afe023eb506150f91c683314038f7c5cfa56537ec9675",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1196,7 +1207,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "b44fec1dd219cec3bdba2c8e5ea0abfaf511b374a69d60adc8a6b776e3f7233c",
+      "sha256": "2bf1efac163c7845395b902702cea99b6090d9b7f79602e9724cdea2034ad984",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1485,7 +1496,7 @@
     },
     {
       "path": "docs/TESTING.md",
-      "sha256": "202183ac7a49c5551fb22f402a5dc2f4d1f6b6f3eb4384519c68cdf3ee85a00f",
+      "sha256": "8488d3519ff399354143e9978d04b69d5a34ba9dcea69c2562bac3b9114dcd38",
       "scope_kind": "docs",
       "feature_ids": [],
       "outcome": "success"
@@ -1509,7 +1520,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "06510bb8518ad470185c5205849a0a2daecee2682aeeb06feeacc7f790cf200f",
+      "sha256": "5e22ca7a62313b2fba3460a77c67d95fc7726fd14972977abf2cc62bb4e01f8c",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
@@ -1577,6 +1588,7 @@
         "AV2-E-DECODER-MODEL",
         "AV2-IVF-CONTAINER",
         "CONF-AVM-DIFF-HARNESS",
+        "CONF-AVM-VALID-STREAMS",
         "CONF-INSPECT-SNAPSHOTS",
         "CONF-PUBLIC-VECTORS",
         "DOC-VALIDATOR-ROADMAP"
@@ -3582,8 +3594,38 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-conformance-corpus-foundation/proposal.md",
+      "sha256": "27c4b656750b41322deab429e14742e8727c985938ae4162766f51fd1c3430e4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-AVM-DIFF-HARNESS",
+        "CONF-AVM-VALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-conformance-corpus-foundation/specs/conformance/spec.md",
+      "sha256": "7d7622201887d839654ca388a25174fbb9396f2ec3b0770422e3a4a36e809fdf",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-AVM-DIFF-HARNESS",
+        "CONF-AVM-VALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-conformance-corpus-foundation/tasks.md",
+      "sha256": "8d871ca1e9eaab0e6379754a7547a553e0da34d75b5e34e09a8d50bf787154ea",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-AVM-DIFF-HARNESS",
+        "CONF-AVM-VALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/avm-differential-harness/proposal.md",
-      "sha256": "ca4e00373763656046a33836c38af7626641afedb9e473897f7ae9b2a3572b5f",
+      "sha256": "7cd1b2206d0a06d3f69a7d7dde6bb7aa6c6cd697be51bfc8ad2618b052a5df60",
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
@@ -3599,7 +3641,7 @@
     },
     {
       "path": "openspec/changes/avm-differential-harness/tasks.md",
-      "sha256": "b987bd3c477928efcb6b8c322f4ef51c9779af90573ac8dc161c8335f834e0a0",
+      "sha256": "6efb1eaad217cccd421e8123e3d9a69cd4d35154ae124fbb57c8c2b3282f64f1",
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
@@ -3676,7 +3718,7 @@
     },
     {
       "path": "openspec/specs/conformance/spec.md",
-      "sha256": "883a509bd1fbd35d51e2ee2fac40cd8ee2a59f67cf0754cb0318f26114a1d659",
+      "sha256": "1af620abdc7dbe02d5d5dc2d3340da5dc8e8a9f878b088f44e8e781ed76d5972",
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
@@ -3804,6 +3846,36 @@
       "outcome": "success"
     },
     {
+      "path": "tests/conformance/manifest.toml",
+      "sha256": "017a222d05687e1ea4162d0249ae9f23559e4cd8b98193cea899c30ad5b6b3d8",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [
+        "CONF-AVM-VALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/invalid/syn-key-intra-64x64-truncated.ivf",
+      "sha256": "86936b95397b9f0b282bee20d1ef73d2fb04229fe9b64b811787867956668af6",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-key-inter-64x64.ivf",
+      "sha256": "ae09182ed9d0c1fde1533a0215abfcfcdd69b21676cf72dde903c9c34d07420c",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-key-intra-64x64.ivf",
+      "sha256": "8310661d3b68ee9560be0c61f5bae65fe10f3667b8b65e18a4ad5db1fbc4127d",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "xtask/Cargo.toml",
       "sha256": "2c33bad65dcfc2a5baefc1766a2ffb7172b4255cabb14807ecfd7022b8c4e8ec",
       "scope_kind": "workspace:xtask",
@@ -3812,11 +3884,21 @@
     },
     {
       "path": "xtask/src/audit_scope.rs",
-      "sha256": "b4aba49efd98ab7775b1ce54717f441ab931fe2f035abbd6b61e9364572de3f2",
+      "sha256": "69358259d908f60175dd07128ff1fbbfd47712a9d26e51f5dafcf298e59fe1fc",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "AV2-5.2.2-OBU-HEADER",
         "XTASK-AUDIT-SCOPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "xtask/src/conformance.rs",
+      "sha256": "7f4f7418153d0f156927d2b84de9c295fcbd5d0d0b7fd3a094a75af6e5d904d2",
+      "scope_kind": "workspace:xtask",
+      "feature_ids": [
+        "CONF-AVM-DIFF-HARNESS",
+        "CONF-AVM-VALID-STREAMS"
       ],
       "outcome": "success"
     },
@@ -3861,13 +3943,11 @@
     },
     {
       "path": "xtask/src/main.rs",
-      "sha256": "71d743ba25f59bf3a5f3133617766b64f4b1f736fd5878ca361f491da26947ed",
+      "sha256": "cf5c197a3c026b435b039eaf04f6f8d8cbf3dd378f9cbc3c0da484099f95a02e",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
-        "CONF-AVM-DIFF-HARNESS",
         "CONF-AVM-INVALID-STREAMS",
         "CONF-AVM-PARSER-TRACES",
-        "CONF-AVM-VALID-STREAMS",
         "CONF-PUBLIC-VECTORS",
         "DOC-AV2-SPEC-MIRROR",
         "XTASK-CI-QUALITY-GATES",

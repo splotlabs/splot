@@ -29,3 +29,8 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+# Conformance-corpus integration test reads tests/conformance/manifest.toml
+# (CONF-AVM-VALID-STREAMS). `toml`/`serde` are workspace dependencies already.
+toml.workspace = true
