@@ -14,12 +14,13 @@ pub(super) const MAX_FILM_GRAIN_SCALING_POINTS: u8 = 14;
 /// phase reads it only to cite the conflicting update in a duplicate-slot diagnostic.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct FgmSlotRecord {
-    /// `FgmChromaIdc[slot]`.
+    /// `FgmChromaIdc[slot]` (the defining film-grain OBU's `fgm_chroma_idc`, sharing the
+    /// `chroma_format_idc` value space — AV2 § 6.17.10.1 requires equality).
     pub(super) chroma_idc: u32,
-    /// `FgmMLayerId[slot]`.
-    pub(super) mlayer_id: u8,
-    /// `FgmTLayerId[slot]`.
-    pub(super) tlayer_id: u8,
+    /// `FgmMLayerId[slot]` — the embedded layer of the film-grain OBU that defined the slot.
+    pub(super) mlayer_id: EmbeddedLayerId,
+    /// `FgmTLayerId[slot]` — the temporal layer of the film-grain OBU that defined the slot.
+    pub(super) tlayer_id: TemporalLayerId,
 }
 
 /// Film-grain validator state (AV2 § 6.13).
@@ -77,45 +78,60 @@ pub(super) fn emit_scaling_point_order_diagnostics(
     }
 }
 
-/// Emits the locally-decidable § 6.17.10.1 / § 7.3.8.8 film-grain *availability*
-/// diagnostic for a parsed `film_grain_config()`: when `apply_grain == 1`, the referenced
-/// `fgm_id` slot must have a received film-grain model (`FilmGrainPresent[ fgm_id ] == 1`).
+/// Emits the locally-decidable § 6.17.10.1 / § 7.3.8.8 film-grain frame-reference
+/// diagnostics for a parsed `film_grain_config()` with `apply_grain == 1`: the
+/// `FilmGrainPresent[ fgm_id ] == 1` availability requirement and, when an in-band model is
+/// recorded, the three § 6.17.10.1 layer-dependency / chroma constraints
+/// (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-10-1, lines 6020-6032):
 ///
-/// **Scope and under-reporting (zero-false-positive discipline, AGENTS.md § 7).** This
-/// covers ONLY the `FilmGrainPresent[ fgm_id ] == 1` requirement of § 6.17.10.1, and only
-/// the in-band-availability half:
+/// - `MLayerDependencyMap[obu_mlayer_id][FgmMLayerId[fgm_id]] == 1`,
+/// - `TLayerDependencyMap[obu_mlayer_id][obu_tlayer_id][FgmTLayerId[fgm_id]] == 1`,
+/// - `FgmChromaIdc[fgm_id] == chroma_format_idc`.
+///
+/// The model's stored layer identity (`FgmMLayerId` / `FgmTLayerId`) and chroma idc
+/// (`FgmChromaIdc`) come from the § 5.14 film-grain OBU that defined the slot, recorded in
+/// [`FgmSlotRecord`] by [`ValidatorContext::record_film_grain`]. The dependency maps and
+/// `chroma_format_idc` come from the active sequence header (AV2 § 5.4.1 / § 6.4.1; § 6.8
+/// makes `lcr_chroma_format_idc` equal to the single sequence-level `chroma_format_idc`, so
+/// the sequence value is the frame's). This mirrors the § 7.3.8.7 multi-frame-header
+/// layer-dependency check (`frame-header/mfh-{m,t}layer-dependency-missing`).
+///
+/// **Scope and under-reporting (zero-false-positive discipline, AGENTS.md § 7).**
 ///
 /// - **External means.** § 7.3.8.8 allows the model to be available "by provision through
 ///   external means". [`ExternalHlsSet`](crate::options::ExternalHlsSet) cannot express
 ///   film-grain OBUs (only sequence headers and operating point sets), so under any
-///   `ExternalHlsMode::Provided` the model MAY be external without being listed — exactly
-///   the inexpressible-kind case the blanket "any Provided suppresses" policy covers. The
-///   check therefore fires only under `ExternalHlsMode::Disabled`.
+///   `ExternalHlsMode::Provided` the model — and thus its layer identity / chroma idc — MAY
+///   be external and unknown to the validator. All of these checks therefore fire only under
+///   `ExternalHlsMode::Disabled`, where an in-band record is the authoritative model.
+/// - **Availability vs. layer-dependency.** A `None`-for-the-slot under `Disabled` is the
+///   availability defect (`frame-header/film-grain-model-unavailable`); the layer-dependency
+///   constraints reference the model's stored identity, which only exists once a film-grain
+///   OBU has defined the slot, so they are checked only when a record is present.
 /// - **Random-access-point visibility (§ 7.3.8.1).** A model available only from an earlier
 ///   position is unavailable at a later random access point that drops it. `available[]` is
-///   monotonic (never reset at a random access point), so this check OVER-approximates
-///   presence and silently UNDER-reports that random-access-point-unavailability direction.
-///   That is a named residual on AV2-7.3.8-HLS-AVAILABILITY (no random-access-point replay
-///   for film-grain references yet), not a false positive: the linear absence test can only
-///   miss findings, never invent them. The companion § 6.17.10.1 layer-dependency
-///   constraints (FgmTLayerId / FgmMLayerId / FgmChromaIdc) also remain a residual.
-///
-/// A `None`-for-the-slot under `Disabled` is therefore decidable and sound: no in-band film
-/// grain OBU ever set the slot before this frame and no external provision is possible.
+///   monotonic (never reset at a random access point), so the availability check
+///   OVER-approximates presence and silently UNDER-reports that
+///   random-access-point-unavailability direction. That is a named residual on
+///   AV2-7.3.8-HLS-AVAILABILITY (no random-access-point replay for film-grain references
+///   yet), not a false positive: the linear absence test can only miss findings, never
+///   invent them.
 pub(super) fn frame_film_grain_reference_checks(
     film_grain: &splot_core::headers::frame::FilmGrainConfig,
     film_grain_state: &FilmGrainState,
+    active_sequence: &SequenceHeader,
     options: &ValidationOptions,
     obu: &ObuEnvelope<'_>,
     report: &mut ValidationReport,
 ) {
-    // The fgm_id reference (and its § 6.17.10.1 requirement) exists only when apply_grain.
+    // The fgm_id reference (and its § 6.17.10.1 requirements) exists only when apply_grain.
     if !film_grain.apply_grain {
         return;
     }
     // Film grain OBUs cannot be expressed by ExternalHlsSet, so under any Provided mode the
-    // referenced model MAY be supplied externally without being listed — suppress to avoid a
-    // false positive. Only the external-disabled case is decidable from the bitstream alone.
+    // referenced model — and its stored layer identity / chroma idc — MAY be supplied
+    // externally and is unknown to the validator. Suppress to avoid a false positive; only
+    // the external-disabled case is decidable from the bitstream alone.
     if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
         return;
     }
@@ -125,10 +141,13 @@ pub(super) fn frame_film_grain_reference_checks(
     let slot = usize::from(fgm_id);
     // A slot outside the modeled range cannot be matched against availability state; the
     // fgm_id field is f(3) (0..=7), so this never trips for a parsed config, but guard it.
-    let Some(record) = film_grain_state.available.get(slot) else {
+    let Some(slot_record) = film_grain_state.available.get(slot) else {
         return;
     };
-    if record.is_none() {
+    let Some(record) = slot_record else {
+        // AV2 § 6.17.10.1: FilmGrainPresent[ fgm_id ] == 1. No in-band model was recorded
+        // (and none can be external under Disabled); the layer-dependency constraints below
+        // reference the (absent) model's identity, so they are not evaluated.
         report.push(frame_header_error(
             "frame-header/film-grain-model-unavailable",
             "6.17.10.1",
@@ -137,6 +156,75 @@ pub(super) fn frame_film_grain_reference_checks(
                 "film_grain_config() has apply_grain == 1 and references fgm_id {fgm_id}, but no \
                  film grain OBU has set FilmGrainPresent[{fgm_id}] == 1 (no received model for \
                  that slot)"
+            ),
+        ));
+        return;
+    };
+
+    // The model is recorded in-band; check the three § 6.17.10.1 layer-dependency / chroma
+    // constraints against the active sequence header's § 5.4.1 maps and chroma_format_idc.
+    let general = &active_sequence.general;
+    let frame_mlayer = obu.header.embedded_layer_id;
+    let frame_tlayer = obu.header.temporal_layer_id;
+
+    // AV2 § 6.17.10.1: MLayerDependencyMap[obu_mlayer_id][FgmMLayerId[fgm_id]] == 1.
+    if !general
+        .mlayer_dependency_map
+        .depends_on(frame_mlayer, record.mlayer_id)
+    {
+        report.push(frame_header_error(
+            "frame-header/film-grain-mlayer-dependency-missing",
+            "6.17.10.1",
+            obu,
+            format!(
+                "film_grain_config() at obu_mlayer_id {} references fgm_id {fgm_id} whose film \
+                 grain model was defined at embedded layer {}, but the active sequence header's \
+                 MLayerDependencyMap[{}][{}] is 0 (§ 6.17.10.1)",
+                frame_mlayer.get(),
+                record.mlayer_id.get(),
+                frame_mlayer.get(),
+                record.mlayer_id.get(),
+            ),
+        ));
+    }
+
+    // AV2 § 6.17.10.1: TLayerDependencyMap[obu_mlayer_id][obu_tlayer_id][FgmTLayerId[fgm_id]]
+    // == 1.
+    if !general
+        .tlayer_dependency_map
+        .depends_on(frame_mlayer, frame_tlayer, record.tlayer_id)
+    {
+        report.push(frame_header_error(
+            "frame-header/film-grain-tlayer-dependency-missing",
+            "6.17.10.1",
+            obu,
+            format!(
+                "film_grain_config() at obu_tlayer_id {} references fgm_id {fgm_id} whose film \
+                 grain model was defined at temporal layer {}, but the active sequence header's \
+                 TLayerDependencyMap[{}][{}][{}] is 0 (§ 6.17.10.1)",
+                frame_tlayer.get(),
+                record.tlayer_id.get(),
+                frame_mlayer.get(),
+                frame_tlayer.get(),
+                record.tlayer_id.get(),
+            ),
+        ));
+    }
+
+    // AV2 § 6.17.10.1: FgmChromaIdc[fgm_id] == chroma_format_idc. Both are the Table 6.2
+    // chroma_format_idc value space; § 6.8 makes any activated LCR's lcr_chroma_format_idc
+    // equal to this single sequence-level value, so the comparison is layer-independent.
+    let chroma_format_idc = u32::from(general.chroma_format_idc.get());
+    if record.chroma_idc != chroma_format_idc {
+        report.push(frame_header_error(
+            "frame-header/film-grain-chroma-idc-mismatch",
+            "6.17.10.1",
+            obu,
+            format!(
+                "film_grain_config() references fgm_id {fgm_id} whose film grain model has \
+                 FgmChromaIdc {} but the active sequence header's chroma_format_idc is {} \
+                 (§ 6.17.10.1)",
+                record.chroma_idc, chroma_format_idc,
             ),
         ));
     }
@@ -277,7 +365,9 @@ impl ValidatorContext {
                 Some(record) => format!(
                     " (previously updated by a film grain OBU at embedded layer {}, temporal \
                      layer {}, fgm_chroma_idc {})",
-                    record.mlayer_id, record.tlayer_id, record.chroma_idc,
+                    record.mlayer_id.get(),
+                    record.tlayer_id.get(),
+                    record.chroma_idc,
                 ),
                 None => String::new(),
             };
@@ -303,8 +393,8 @@ impl ValidatorContext {
             if index < MAX_FILM_GRAIN {
                 self.film_grain.available[index] = Some(FgmSlotRecord {
                     chroma_idc: fg.chroma_idc,
-                    mlayer_id: obu.header.embedded_layer_id.get(),
-                    tlayer_id: obu.header.temporal_layer_id.get(),
+                    mlayer_id: obu.header.embedded_layer_id,
+                    tlayer_id: obu.header.temporal_layer_id,
                 });
             }
         }
