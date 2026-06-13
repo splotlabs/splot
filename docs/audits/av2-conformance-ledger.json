@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "ab1579ed8e87fe1f01eb60786e8972f9df08d351",
+  "audited_commit": "46772fc19b78b0c37205039c85d16b914ee24227",
   "outcome": "success",
   "files": [
     {
@@ -876,7 +876,7 @@
     },
     {
       "path": "crates/splot-validate/src/context.rs",
-      "sha256": "6b7cacccbc5ee2994fdd3e387fa12060bf0fb9773a4fadfb73714a2be4c226fc",
+      "sha256": "1178bdd4d1345c4fe3c19b73ea6b260ae8ababd1ac54bd431833284c817342f5",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.11.2-OPS-SEQ-PTL-INFO",
