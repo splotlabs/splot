@@ -27,8 +27,10 @@ output, read input bytes, or touch the output path. Decode resource limits are a
 contract-only planning item: `decode/resource-limit` is documented as a planned
 diagnostic, but is not emitted by source yet. The workspace now includes
 scaffolded `splot-recon` and `splot-decode` crates for future reconstruction
-primitives and the future decode driver. They intentionally expose no runtime
-reconstruction or byte-consuming decode API yet.
+primitives and the future decode driver. `splot-recon` now exposes immutable
+decoded output frame and plane model types with constructor invariants, but no
+reconstruction algorithm, byte-consuming decode path, frame hash computation,
+Y4M output, or reference-frame-store runtime behavior exists yet.
 
 Canonical decoder status lives in
 [`DECODER-SUPPORT-MATRIX.toml`](./DECODER-SUPPORT-MATRIX.toml), rendered to
@@ -98,7 +100,7 @@ other external decoder is forbidden.
 |---|---|---|
 | 0 | Roadmap, support matrix, generated status, drift gate | supported |
 | 1 | Decode API contract, limits, resource diagnostics, crate scaffolding, plan-only byte entry point | crate scaffolding supported; runtime contracts partial |
-| 2 | Shared decoded frame, plane, pixel format, and deterministic hash types | frame/plane and hash contracts documented; types planned |
+| 2 | Shared decoded frame, plane, pixel format, and deterministic hash types | frame/plane model types supported; hash contract documented; hash runtime planned |
 | 3 | CLI `splot decode` contract backed by library diagnostics | hash output parse contract wired; runtime unsupported |
 | 4 | Container traversal, layer/operating-point selection, transactional decode planning | minimal tier contract documented; runtime planned |
 | 5 | Self-contained decode fuzz target and fixture smoke | planned |
@@ -183,18 +185,28 @@ counts is a `decode/resource-limit` failure, not a wraparound or panic.
 
 ## Decoded Frame and Plane Model Contract
 
-Future decoded-frame data structures must preserve AV2 output semantics while
-remaining reusable by reconstruction, reference-frame storage, hashes, Y4M, and
-encoder closed-loop tests. The conceptual names are:
+Decoded-frame data structures must preserve AV2 output semantics while
+remaining reusable by future reconstruction, reference-frame storage, hashes,
+Y4M, and encoder closed-loop tests. The source-backed `splot-recon` model now
+provides:
 
 ```text
+DecodedFrameInfo
 DecodedFrame
+FramePlanes<T>
 Plane<T>
+PlaneSize
+PlaneRect
 PixelFormat
 BitDepth
+OutputIndex
+ReconError
 ```
 
-This is a semantic contract, not a committed Rust API or crate placement.
+This is a committed Rust output-model API, not a byte-consuming decode API.
+The model validates AV2-derived frame/plane geometry and sample storage but
+does not reconstruct pixels, compute hashes, write Y4M, or store reference
+frames.
 
 `PixelFormat` is derived from AV2 § 6.4.1 `chroma_format_idc`:
 
@@ -224,22 +236,24 @@ The model must distinguish coded/reconstructed storage from cropped output:
   are `((w + subX) >> subX) x ((h + subY) >> subY)`;
 - U and V planes are absent or ignored when `NumPlanes == 1`.
 
-A future `Plane<T>` may include padding for efficient storage, but it must carry
-explicit storage `width`, storage `height`, `stride_samples`, and visible
-rectangle metadata when storage and visible output differ. Invariants:
+`Plane<T>` may include padding for efficient storage, and it carries explicit
+storage `width`, storage `height`, `stride_samples`, and visible rectangle
+metadata when storage and visible output differ. Invariants:
 
 - `stride_samples >= storage_width`;
 - `required_samples = stride_samples * storage_height` is computed with checked
   arithmetic;
-- the backing buffer exposes at least `required_samples` samples, and
+- the backing buffer exposes exactly `required_samples` samples, and
   `allocation_bytes = required_samples * bytes_per_sample` is computed with
-  checked arithmetic before allocation;
+  checked arithmetic before reporting backing size;
 - every product used for dimensions, strides, backing samples, byte sizes, hash
   lengths, Y4M output, or reference storage uses checked arithmetic;
-- the full backing allocation, including padding, is charged against
-  `DecodeLimits` before allocation;
-- allocation overflow or configured-limit excess is reported as
-  `decode/resource-limit`;
+- `splot-recon` constructors reject local arithmetic overflow with typed
+  `ReconError` values and do not emit decoder diagnostics directly;
+- future byte-consuming decode code must charge the full backing allocation,
+  including padding, against `DecodeLimits` before allocation;
+- future byte-consuming decode code reports allocation overflow or
+  configured-limit excess as `decode/resource-limit`;
 - padding and stride samples are not visible decoded output and must be excluded
   from frame hashes, Y4M output, and fixture expectations.
 
@@ -366,14 +380,15 @@ Maintainer approval for the decoder/reconstruction dependency graph landed on
 
 ```text
 crates/splot-core      bitstream model + parsers
-crates/splot-recon     pixel buffers, hashes, reconstruction primitives, references
+crates/splot-recon     decoded output model types; future hashes, reconstruction primitives, references
 crates/splot-decode    unsupported diagnostic API; future driver using splot-core + splot-recon
 crates/splot-encode    future encoder, not yet depending on splot-recon
 crates/splot-cli       thin CLI rendering splot-decode diagnostics
 ```
 
-The scaffold is an ownership boundary only. `splot-recon` exposes no runtime
-reconstruction API, `splot-decode` exposes no byte-consuming decode API,
-`splot-cli` only renders the current unsupported diagnostic path, and
-`splot-encode` remains unchanged until a later encoder/reconstruction API
-change explicitly adds reuse of `splot-recon`.
+The scaffold is still an ownership boundary for decode. `splot-recon` exposes a
+runtime decoded output frame/plane model, but no reconstruction algorithm,
+reference-frame store, deterministic hash, or Y4M writer. `splot-decode`
+exposes no byte-consuming decode API, `splot-cli` only renders the current
+unsupported diagnostic path, and `splot-encode` remains unchanged until a later
+encoder/reconstruction API change explicitly adds reuse of `splot-recon`.

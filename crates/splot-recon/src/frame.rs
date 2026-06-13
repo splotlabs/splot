@@ -1,0 +1,519 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+//! Immutable decoded output frame model.
+
+use crate::{
+    BitDepth, OutputIndex, PixelFormat, Plane, PlaneId, PlaneRect, PlaneSize, ReconError,
+    ReconSample, Result,
+};
+
+/// Decoded output frame metadata shared by all planes.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct DecodedFrameInfo {
+    output_index: OutputIndex,
+    bit_depth: BitDepth,
+    pixel_format: PixelFormat,
+    coded_luma_size: PlaneSize,
+    visible_luma_rect: PlaneRect,
+}
+
+impl DecodedFrameInfo {
+    /// Creates decoded output frame metadata after validating crop geometry.
+    ///
+    /// # Errors
+    /// Returns [`ReconError::VisibleRectOutOfBounds`] when the visible luma
+    /// rectangle exceeds the coded luma dimensions, or
+    /// [`ReconError::CropOriginNotAligned`] when a non-monochrome crop origin
+    /// is not aligned to the AV2 § 6.4.1 subsampling factors.
+    pub fn new(
+        output_index: OutputIndex,
+        bit_depth: BitDepth,
+        pixel_format: PixelFormat,
+        coded_luma_size: PlaneSize,
+        visible_luma_rect: PlaneRect,
+    ) -> Result<Self> {
+        visible_luma_rect.ensure_within(coded_luma_size)?;
+        validate_crop_alignment(pixel_format, visible_luma_rect)?;
+
+        Ok(Self {
+            output_index,
+            bit_depth,
+            pixel_format,
+            coded_luma_size,
+            visible_luma_rect,
+        })
+    }
+
+    /// Returns the repository-owned zero-based output emission index.
+    pub const fn output_index(self) -> OutputIndex {
+        self.output_index
+    }
+
+    /// Returns the decoded sample bit depth.
+    pub const fn bit_depth(self) -> BitDepth {
+        self.bit_depth
+    }
+
+    /// Returns the decoded output pixel format.
+    pub const fn pixel_format(self) -> PixelFormat {
+        self.pixel_format
+    }
+
+    /// Returns the coded luma frame size from AV2 § 6.17.4.1.
+    pub const fn coded_luma_size(self) -> PlaneSize {
+        self.coded_luma_size
+    }
+
+    /// Returns the visible luma crop rectangle.
+    pub const fn visible_luma_rect(self) -> PlaneRect {
+        self.visible_luma_rect
+    }
+}
+
+/// Candidate planes for a decoded output frame.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FramePlanes<T: ReconSample> {
+    y: Plane<T>,
+    u: Option<Plane<T>>,
+    v: Option<Plane<T>>,
+}
+
+impl<T: ReconSample> FramePlanes<T> {
+    /// Creates a plane set for later decoded-frame validation.
+    pub const fn new(y: Plane<T>, u: Option<Plane<T>>, v: Option<Plane<T>>) -> Self {
+        Self { y, u, v }
+    }
+
+    /// Returns the Y plane.
+    pub const fn y(&self) -> &Plane<T> {
+        &self.y
+    }
+
+    /// Returns the U plane when present.
+    pub const fn u(&self) -> Option<&Plane<T>> {
+        self.u.as_ref()
+    }
+
+    /// Returns the V plane when present.
+    pub const fn v(&self) -> Option<&Plane<T>> {
+        self.v.as_ref()
+    }
+
+    /// Returns a plane by identifier.
+    pub const fn plane(&self, plane: PlaneId) -> Option<&Plane<T>> {
+        match plane {
+            PlaneId::Y => Some(&self.y),
+            PlaneId::U => self.u.as_ref(),
+            PlaneId::V => self.v.as_ref(),
+        }
+    }
+}
+
+/// Immutable decoded output frame made of owned planes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecodedFrame<T: ReconSample> {
+    info: DecodedFrameInfo,
+    planes: FramePlanes<T>,
+}
+
+impl<T: ReconSample> DecodedFrame<T> {
+    /// Creates a decoded output frame after validating AV2-derived invariants.
+    ///
+    /// Chroma visible sizes are derived from the visible luma rectangle in
+    /// `info` and the AV2 § 6.4.1 subsampling facts for its pixel format.
+    ///
+    /// # Errors
+    /// Returns a [`ReconError`] if plane presence, visible plane sizes, sample
+    /// type, or sample ranges do not match the requested decoded frame format.
+    pub fn try_new(info: DecodedFrameInfo, planes: FramePlanes<T>) -> Result<Self> {
+        validate_sample_type::<T>(info.bit_depth)?;
+
+        let luma_visible_size = info.visible_luma_rect.size();
+        validate_plane_size(PlaneId::Y, luma_visible_size, planes.y.visible_size())?;
+        validate_plane_samples(PlaneId::Y, &planes.y, info.bit_depth.max_sample())?;
+
+        match info.pixel_format.chroma_size(luma_visible_size)? {
+            None => {
+                if planes.u.is_some() {
+                    return Err(ReconError::UnexpectedChromaPlane { plane: PlaneId::U });
+                }
+                if planes.v.is_some() {
+                    return Err(ReconError::UnexpectedChromaPlane { plane: PlaneId::V });
+                }
+            }
+            Some(chroma_visible_size) => {
+                let Some(u_plane) = planes.u.as_ref() else {
+                    return Err(ReconError::MissingChromaPlane { plane: PlaneId::U });
+                };
+                let Some(v_plane) = planes.v.as_ref() else {
+                    return Err(ReconError::MissingChromaPlane { plane: PlaneId::V });
+                };
+
+                validate_plane_size(PlaneId::U, chroma_visible_size, u_plane.visible_size())?;
+                validate_plane_size(PlaneId::V, chroma_visible_size, v_plane.visible_size())?;
+                validate_plane_samples(PlaneId::U, u_plane, info.bit_depth.max_sample())?;
+                validate_plane_samples(PlaneId::V, v_plane, info.bit_depth.max_sample())?;
+            }
+        }
+
+        Ok(Self { info, planes })
+    }
+
+    /// Returns the decoded output frame metadata.
+    pub const fn info(&self) -> DecodedFrameInfo {
+        self.info
+    }
+
+    /// Returns the repository-owned zero-based output emission index.
+    pub const fn output_index(&self) -> OutputIndex {
+        self.info.output_index
+    }
+
+    /// Returns the decoded sample bit depth.
+    pub const fn bit_depth(&self) -> BitDepth {
+        self.info.bit_depth
+    }
+
+    /// Returns the decoded output pixel format.
+    pub const fn pixel_format(&self) -> PixelFormat {
+        self.info.pixel_format
+    }
+
+    /// Returns the coded luma frame size from AV2 § 6.17.4.1.
+    pub const fn coded_luma_size(&self) -> PlaneSize {
+        self.info.coded_luma_size
+    }
+
+    /// Returns the visible luma crop rectangle.
+    pub const fn visible_luma_rect(&self) -> PlaneRect {
+        self.info.visible_luma_rect
+    }
+
+    /// Returns the Y plane.
+    pub const fn y(&self) -> &Plane<T> {
+        &self.planes.y
+    }
+
+    /// Returns the U plane when present.
+    pub const fn u(&self) -> Option<&Plane<T>> {
+        self.planes.u.as_ref()
+    }
+
+    /// Returns the V plane when present.
+    pub const fn v(&self) -> Option<&Plane<T>> {
+        self.planes.v.as_ref()
+    }
+
+    /// Returns a plane by identifier.
+    pub const fn plane(&self, plane: PlaneId) -> Option<&Plane<T>> {
+        self.planes.plane(plane)
+    }
+}
+
+fn validate_crop_alignment(pixel_format: PixelFormat, rect: PlaneRect) -> Result<()> {
+    if pixel_format.is_monochrome() {
+        return Ok(());
+    }
+
+    let sub_x = pixel_format.subsampling_x();
+    let sub_y = pixel_format.subsampling_y();
+    let x_aligned = is_aligned(rect.x(), sub_x);
+    let y_aligned = is_aligned(rect.y(), sub_y);
+    if x_aligned && y_aligned {
+        Ok(())
+    } else {
+        Err(ReconError::CropOriginNotAligned {
+            x: rect.x(),
+            y: rect.y(),
+            subsampling_x: sub_x,
+            subsampling_y: sub_y,
+        })
+    }
+}
+
+fn is_aligned(value: usize, subsampling: u8) -> bool {
+    if subsampling == 0 {
+        true
+    } else {
+        value.is_multiple_of(1_usize << subsampling)
+    }
+}
+
+fn validate_sample_type<T: ReconSample>(bit_depth: BitDepth) -> Result<()> {
+    if T::supports_bit_depth(bit_depth) {
+        Ok(())
+    } else {
+        Err(ReconError::SampleTypeUnsupportedBitDepth {
+            sample_type: T::TYPE_NAME,
+            bit_depth,
+        })
+    }
+}
+
+fn validate_plane_size(plane: PlaneId, expected: PlaneSize, actual: PlaneSize) -> Result<()> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(ReconError::PlaneSizeMismatch {
+            plane,
+            expected,
+            actual,
+        })
+    }
+}
+
+fn validate_plane_samples<T: ReconSample>(
+    plane: PlaneId,
+    samples: &Plane<T>,
+    max: u16,
+) -> Result<()> {
+    for (sample_index, sample) in samples.samples().iter().copied().enumerate() {
+        let value = sample.to_u16();
+        if value > max {
+            return Err(ReconError::SampleOutOfRange {
+                plane,
+                sample_index,
+                value,
+                max,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn size(width: usize, height: usize) -> PlaneSize {
+        PlaneSize::new(width, height).unwrap()
+    }
+
+    fn rect(x: usize, y: usize, width: usize, height: usize) -> PlaneRect {
+        PlaneRect::new(x, y, width, height).unwrap()
+    }
+
+    fn plane_u8(width: usize, height: usize, value: u8) -> Plane<u8> {
+        let size = size(width, height);
+        let rect = rect(0, 0, width, height);
+        Plane::from_vec(size, width, rect, vec![value; width * height]).unwrap()
+    }
+
+    fn plane_u16(width: usize, height: usize, value: u16) -> Plane<u16> {
+        let size = size(width, height);
+        let rect = rect(0, 0, width, height);
+        Plane::from_vec(size, width, rect, vec![value; width * height]).unwrap()
+    }
+
+    fn info(
+        bit_depth: BitDepth,
+        pixel_format: PixelFormat,
+        coded_luma_size: PlaneSize,
+        visible_luma_rect: PlaneRect,
+    ) -> DecodedFrameInfo {
+        DecodedFrameInfo::new(
+            OutputIndex::new(0),
+            bit_depth,
+            pixel_format,
+            coded_luma_size,
+            visible_luma_rect,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn accepts_monochrome_frame_without_chroma_planes() {
+        let y = plane_u8(4, 2, 7);
+        let frame = DecodedFrame::try_new(
+            info(
+                BitDepth::Eight,
+                PixelFormat::Monochrome,
+                size(4, 2),
+                rect(0, 0, 4, 2),
+            ),
+            FramePlanes::new(y, None, None),
+        )
+        .unwrap();
+
+        assert_eq!(frame.output_index().get(), 0);
+        assert_eq!(frame.pixel_format(), PixelFormat::Monochrome);
+        assert!(frame.u().is_none());
+        assert!(frame.v().is_none());
+    }
+
+    #[test]
+    fn rejects_chroma_planes_for_monochrome_frame() {
+        assert!(matches!(
+            DecodedFrame::try_new(
+                info(
+                    BitDepth::Eight,
+                    PixelFormat::Monochrome,
+                    size(4, 2),
+                    rect(0, 0, 4, 2),
+                ),
+                FramePlanes::new(plane_u8(4, 2, 0), Some(plane_u8(2, 1, 0)), None),
+            ),
+            Err(ReconError::UnexpectedChromaPlane { plane: PlaneId::U })
+        ));
+    }
+
+    #[test]
+    fn accepts_yuv420_frame_with_derived_chroma_size() {
+        let frame = DecodedFrame::try_new(
+            DecodedFrameInfo::new(
+                OutputIndex::new(3),
+                BitDepth::Eight,
+                PixelFormat::Yuv420,
+                size(5, 3),
+                rect(0, 0, 5, 3),
+            )
+            .unwrap(),
+            FramePlanes::new(
+                plane_u8(5, 3, 10),
+                Some(plane_u8(3, 2, 20)),
+                Some(plane_u8(3, 2, 30)),
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(frame.output_index().get(), 3);
+        assert_eq!(frame.u().map(Plane::visible_size), Some(size(3, 2)));
+        assert_eq!(frame.v().map(Plane::visible_size), Some(size(3, 2)));
+    }
+
+    #[test]
+    fn rejects_missing_non_monochrome_chroma_plane() {
+        assert!(matches!(
+            DecodedFrame::try_new(
+                info(
+                    BitDepth::Eight,
+                    PixelFormat::Yuv444,
+                    size(2, 2),
+                    rect(0, 0, 2, 2),
+                ),
+                FramePlanes::new(plane_u8(2, 2, 0), None, Some(plane_u8(2, 2, 0))),
+            ),
+            Err(ReconError::MissingChromaPlane { plane: PlaneId::U })
+        ));
+    }
+
+    #[test]
+    fn rejects_wrong_luma_plane_visible_size() {
+        assert!(matches!(
+            DecodedFrame::try_new(
+                info(
+                    BitDepth::Eight,
+                    PixelFormat::Monochrome,
+                    size(4, 4),
+                    rect(0, 0, 4, 4),
+                ),
+                FramePlanes::new(plane_u8(4, 3, 0), None, None),
+            ),
+            Err(ReconError::PlaneSizeMismatch {
+                plane: PlaneId::Y,
+                expected,
+                actual
+            }) if expected == size(4, 4) && actual == size(4, 3)
+        ));
+    }
+
+    #[test]
+    fn rejects_wrong_chroma_visible_size() {
+        assert!(matches!(
+            DecodedFrame::try_new(
+                info(
+                    BitDepth::Eight,
+                    PixelFormat::Yuv422,
+                    size(5, 3),
+                    rect(0, 0, 5, 3),
+                ),
+                FramePlanes::new(
+                    plane_u8(5, 3, 0),
+                    Some(plane_u8(2, 3, 0)),
+                    Some(plane_u8(3, 3, 0)),
+                ),
+            ),
+            Err(ReconError::PlaneSizeMismatch {
+                plane: PlaneId::U,
+                expected,
+                actual
+            }) if expected == size(3, 3) && actual == size(2, 3)
+        ));
+    }
+
+    #[test]
+    fn rejects_luma_crop_outside_coded_size() {
+        assert!(matches!(
+            DecodedFrameInfo::new(
+                OutputIndex::new(0),
+                BitDepth::Eight,
+                PixelFormat::Monochrome,
+                size(4, 4),
+                rect(1, 1, 4, 4),
+            ),
+            Err(ReconError::VisibleRectOutOfBounds { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_unaligned_non_monochrome_crop_origin() {
+        assert!(matches!(
+            DecodedFrameInfo::new(
+                OutputIndex::new(0),
+                BitDepth::Eight,
+                PixelFormat::Yuv420,
+                size(6, 4),
+                rect(1, 0, 4, 4),
+            ),
+            Err(ReconError::CropOriginNotAligned {
+                x: 1,
+                y: 0,
+                subsampling_x: 1,
+                subsampling_y: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_u8_storage_for_ten_bit_output() {
+        assert!(matches!(
+            DecodedFrame::try_new(
+                info(
+                    BitDepth::Ten,
+                    PixelFormat::Monochrome,
+                    size(2, 2),
+                    rect(0, 0, 2, 2),
+                ),
+                FramePlanes::new(plane_u8(2, 2, 0), None, None),
+            ),
+            Err(ReconError::SampleTypeUnsupportedBitDepth {
+                sample_type: "u8",
+                bit_depth: BitDepth::Ten
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_u16_sample_above_active_bit_depth() {
+        assert!(matches!(
+            DecodedFrame::try_new(
+                info(
+                    BitDepth::Ten,
+                    PixelFormat::Monochrome,
+                    size(2, 2),
+                    rect(0, 0, 2, 2),
+                ),
+                FramePlanes::new(plane_u16(2, 2, 1024), None, None),
+            ),
+            Err(ReconError::SampleOutOfRange {
+                plane: PlaneId::Y,
+                sample_index: 0,
+                value: 1024,
+                max: 1023
+            })
+        ));
+    }
+}

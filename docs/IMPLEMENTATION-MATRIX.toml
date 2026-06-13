@@ -14,7 +14,7 @@
 # Do NOT use percentages.
 
 matrix_version = 1
-last_reviewed = "2026-06-10"
+last_reviewed = "2026-06-13"
 
 # ---------------------------------------------------------------------------
 # Normative AV2 bitstream syntax and semantics
@@ -4833,6 +4833,64 @@ commands = [
     "cargo xtask check-decoder-support",
 ]
 fixtures = ["crates/splot-recon/src/lib.rs", "crates/splot-decode/src/lib.rs"]
+diagnostics = []
+
+[[feature]]
+id = "INFRA-RECON-FRAME-PLANE-TYPES"
+name = "Decoded frame and plane runtime types"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["6.4.1", "6.17.4.1", "6.17.4.4", "7.1", "7.21.1", "7.21.2", "7.23"]
+sources = [
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-23",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/lib.rs"
+openspec_change = "decoded-frame-plane-runtime-types"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds the first source-backed immutable decoded output model in `splot-recon`: AV2-derived `BitDepth`, `PixelFormat`, `PlaneId`, `OutputIndex`, `PlaneSize`, `PlaneRect`, `Plane<T>`, `FramePlanes<T>`, `DecodedFrameInfo`, `DecodedFrame<T>`, sealed `ReconSample` for `u8`/`u16`, and typed `ReconError`. Constructors enforce reserved bit-depth/chroma idc rejection, positive dimensions, crop bounds/alignment, stride, checked sample and byte accounting, exact backing length, visible-row access excluding padding, monochrome/non-monochrome plane presence, AV2-derived chroma visible sizes, sample-type compatibility, and sample-range checks. This is output model infrastructure only: no byte-consuming decode, reconstruction algorithm, frame hash computation, Y4M output, reference-frame-store behavior, external decoder invocation, or dependency graph change."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/format.rs::tests",
+    "crates/splot-recon/src/geometry.rs::tests",
+    "crates/splot-recon/src/plane.rs::tests",
+    "crates/splot-recon/src/frame.rs::tests",
+]
+commands = [
+    "cargo test -p splot-recon --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "crates/splot-recon/src/lib.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/format.rs",
+    "crates/splot-recon/src/geometry.rs",
+    "crates/splot-recon/src/plane.rs",
+    "crates/splot-recon/src/frame.rs",
+]
 diagnostics = []
 
 [[feature]]

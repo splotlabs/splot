@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-10. 149 feature(s); 108 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-13. 150 feature(s); 109 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -125,6 +125,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4) | Sequence header OBU semantics | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` | ✅ | ✅ | 🟡 | ✅ | 3 |
 | [§ 6.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4) | Sequence header OBU semantics | `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` | ✅ | ✅ | 🟡 | ✅ | 10 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `AV2-5.4.1-SEQUENCE-HEADER-GENERAL` | ✅ | ✅ | ✅ | ✅ | 6 |
+| [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
 | [§ 6.4.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-2) | Sequence tile config semantics | `AV2-5.4.2-SEQUENCE-TILE-CONFIG` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 6.4.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-3) | Sequence partition config semantics | `AV2-5.4.3-SEQUENCE-PARTITION-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.4.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-4) | Sequence segment config semantics | `AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
@@ -194,6 +195,8 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.17.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2) | Frame header info semantics | `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | ✅ | — | 🟡 | 🟡 | 1 |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `AV2-5.18.4-FRAME-SIZE` | ✅ | 🟡 | 🟡 | ✅ | 2 |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS` | ✅ | — | 🟡 | ✅ | 15 |
+| [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
+| [§ 6.17.4.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4) | Compute image size function semantics | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
 | [§ 6.17.5.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-5-2) | Deblocking filter params semantics | `AV2-5.18.5-FILTERING` | ✅ | 🟡 | — | 🟡 | — |
 | [§ 6.17.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-6) | Quantization structures | `AV2-5.18.6-QUANTIZATION` | ✅ | 🟡 | 🟡 | 🟡 | 2 |
 | [§ 6.17.7](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-7) | Segmentation and tiling structures | `AV2-5.18.7-SEGMENTATION-TILING` | ✅ | 🟡 | 🟡 | 🟡 | 5 |
@@ -211,6 +214,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `CLI-DECODE` | ✅ | — | — | ✅ | 1 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 1 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `DECODE-UNSUPPORTED-DIAGNOSTIC-API` | ✅ | — | — | ✅ | 1 |
+| [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
 | [§ 7.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-3) | Ordering of OBUs | `AV2-7.3-OBU-ORDERING` | ✅ | — | 🟡 | ✅ | 4 |
 | [§ 7.3.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-2) | Coded multistream video sequence boundaries | `AV2-7.3.2-CMVS-BOUNDARIES` | ✅ | — | 🟡 | 🟡 | 1 |
 | [§ 7.3.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-3) | Coded output frame unit | `AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT` | ✅ | — | 🟡 | ✅ | 7 |
@@ -229,7 +233,10 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.4.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-5) | Random Access Switch | `AV2-7.4-RANDOM-ACCESS` | ✅ | — | 🟡 | 🟡 | 2 |
 | [§ 7.4.6](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-6) | Multistream Random Access | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | ✅ | ✅ | 🟡 | ✅ | 7 |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 1 |
+| [§ 7.21.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-1) | Output process | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
+| [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `AV2-7.23-REFERENCE-FRAME-UPDATE` | ✅ | — | 🟡 | ✅ | 1 |
+| [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
 
 ## Chapter 9 — Additional tables
 
