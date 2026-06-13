@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-10. 133 feature(s).
+Matrix version 1. Last reviewed 2026-06-10. 135 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -123,7 +123,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `CONF-PUBLIC-VECTORS` | Public AV2 vector corpus integration | conformance | conformance | partial | todo | n/a | n/a | n/a | n/a | todo | todo | pending | `xtask/src/main.rs` |
 | `CONF-AVM-PARSER-TRACES` | AVM parser trace comparison | conformance | conformance | todo | todo | n/a | n/a | n/a | n/a | todo | todo | todo | `xtask/src/main.rs` |
 | `CONF-AVM-VALID-STREAMS` | AVM valid stream conformance | conformance | conformance | done | n/a | n/a | done | n/a | n/a | n/a | done | pending | `xtask/src/conformance.rs` |
-| `CONF-AVM-INVALID-STREAMS` | AVM invalid stream conformance | conformance | conformance | todo | todo | n/a | n/a | n/a | n/a | todo | todo | todo | `xtask/src/main.rs` |
+| `CONF-AVM-INVALID-STREAMS` | AVM invalid stream conformance | conformance | conformance | done | n/a | n/a | done | n/a | n/a | n/a | done | pending | `crates/splot-cli/tests/negative_mutations.rs` |
 | `CONF-PUBLIC-VECTOR-LICENSE-REVIEW` | Public vector license review | conformance | conformance | todo | n/a | n/a | n/a | n/a | n/a | todo | todo | pending | `docs/CONFORMANCE.md` |
 | `CONF-INSPECT-SNAPSHOTS` | Inspector snapshot tests | conformance | conformance | partial | n/a | n/a | n/a | n/a | n/a | partial | todo | n/a | `crates/splot-cli/src/commands/inspect.rs` |
 | `CONF-FUZZ-NO-PANIC` | Parser no-panic fuzzing | conformance | conformance | done | n/a | done | done | n/a | n/a | partial | done | n/a | `fuzz/fuzz_targets/parse_obu.rs` |
@@ -133,6 +133,8 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `XTASK-FEATURE-STATUS` | xtask feature status reporting and checks | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/feature_status.rs` |
 | `XTASK-AUDIT-SCOPE` | Changed-file AV2 audit scope | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/audit_scope.rs` |
 | `XTASK-DIAGNOSTIC-REGISTRY` | Validator diagnostic registry enforcement | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/diagnostic_registry.rs` |
+| `XTASK-VALIDATOR-MODULE-SPLIT` | Validator module split | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `crates/splot-validate/src/validator/mod.rs` |
+| `XTASK-SOURCE-LINES` | Rust source-file line budget | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/source_lines.rs` |
 | `XTASK-GEN-TABLES` | AV2 § 9 tables code generator | automation | automation | done | done | done | done | done | n/a | n/a | done | n/a | `xtask/src/gen_tables.rs` |
 | `XTASK-CI-QUALITY-GATES` | CI quality gates (docs build + coverage threshold) | automation | automation | done | n/a | n/a | done | n/a | n/a | n/a | n/a | n/a | `xtask/src/main.rs` |
 | `DOC-FEATURE-TRACKING` | Feature tracking documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `docs/FEATURE-TRACKING.md` |

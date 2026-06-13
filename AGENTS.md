@@ -108,6 +108,12 @@ prints an install hint and continues.
   // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
   ```
 
+- **Source file size budget:** Rust source files should stay at or below **1000
+  physical lines**. `cargo xtask check-source-lines` prints advisory warnings
+  above that soft limit and fails above the **2500-line hard cap** unless the file
+  has a documented temporary allowance in `xtask/src/source_lines.rs`. Split large
+  files by responsibility before adding new code; do not grow an allowlisted file
+  past its recorded cap without deliberately updating the allowance and rationale.
 - **Unsafe:** forbidden in the workspace (`unsafe_code = "forbid"`). Future SIMD/FFI
   must live behind narrowly-scoped, documented, tested modules.
 

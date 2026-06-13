@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+#![allow(unused_imports)]
+
+pub(in crate::validator::tests) use super::diagnostics::parse_error_diagnostic;
+pub(in crate::validator::tests) use super::*;
+pub(in crate::validator::tests) use crate::context::ValidatorContext;
+pub(in crate::validator::tests) use crate::diagnostic::{Diagnostic, ValidationReport};
+pub(in crate::validator::tests) use crate::options::{
+    ExternalHlsMode, ExternalHlsSet, ValidationOptions,
+};
+
+mod annex_a_iop;
+mod annex_a_levels;
+mod annex_a_profiles;
+mod celu;
+mod content_interpretation_timing;
+mod decoder_model;
+mod distinct_mlayer;
+mod fixtures;
+mod frame_header_core;
+mod frame_size_semantics;
+mod frame_tile_qm;
+mod frame_unit_metadata;
+mod frame_unit_order;
+mod hls_frame_header;
+mod hls_syntax;
+mod layer_dependency_core;
+mod layer_dependency_deferred;
+mod lcr_atlas;
+mod lcr_msdo_cmvs;
+mod lcr_ptl;
+mod lcr_rep_info;
+mod metadata_lifetime;
+mod metadata_syntax;
+mod mfh_external_hls;
+mod monotonic_output_order;
+mod msdo_substream;
+mod obu_header_and_syntax;
+mod ops_brt;
+mod public_api;
+mod qm_film_grain;
+mod rap_replay_foundation;
+mod rap_replay_layers;
+mod reference_state;
+mod scan_type;
+mod sequence_activation;
+mod sequence_state;
+mod tile_group;
+mod timecode_basic;
+mod timecode_targeting;
+pub(in crate::validator::tests) use annex_a_iop::*;
+pub(in crate::validator::tests) use annex_a_levels::*;
+pub(in crate::validator::tests) use annex_a_profiles::*;
+pub(in crate::validator::tests) use celu::*;
+pub(in crate::validator::tests) use content_interpretation_timing::*;
+pub(in crate::validator::tests) use decoder_model::*;
+pub(in crate::validator::tests) use distinct_mlayer::*;
+pub(in crate::validator::tests) use fixtures::*;
+pub(in crate::validator::tests) use frame_header_core::*;
+pub(in crate::validator::tests) use frame_size_semantics::*;
+pub(in crate::validator::tests) use frame_tile_qm::*;
+pub(in crate::validator::tests) use frame_unit_metadata::*;
+pub(in crate::validator::tests) use frame_unit_order::*;
+pub(in crate::validator::tests) use hls_frame_header::*;
+pub(in crate::validator::tests) use hls_syntax::*;
+pub(in crate::validator::tests) use layer_dependency_core::*;
+pub(in crate::validator::tests) use layer_dependency_deferred::*;
+pub(in crate::validator::tests) use lcr_atlas::*;
+pub(in crate::validator::tests) use lcr_msdo_cmvs::*;
+pub(in crate::validator::tests) use lcr_ptl::*;
+pub(in crate::validator::tests) use lcr_rep_info::*;
+pub(in crate::validator::tests) use metadata_lifetime::*;
+pub(in crate::validator::tests) use metadata_syntax::*;
+pub(in crate::validator::tests) use mfh_external_hls::*;
+pub(in crate::validator::tests) use monotonic_output_order::*;
+pub(in crate::validator::tests) use msdo_substream::*;
+pub(in crate::validator::tests) use obu_header_and_syntax::*;
+pub(in crate::validator::tests) use ops_brt::*;
+pub(in crate::validator::tests) use public_api::*;
+pub(in crate::validator::tests) use qm_film_grain::*;
+pub(in crate::validator::tests) use rap_replay_foundation::*;
+pub(in crate::validator::tests) use rap_replay_layers::*;
+pub(in crate::validator::tests) use reference_state::*;
+pub(in crate::validator::tests) use scan_type::*;
+pub(in crate::validator::tests) use sequence_activation::*;
+pub(in crate::validator::tests) use sequence_state::*;
+pub(in crate::validator::tests) use tile_group::*;
+pub(in crate::validator::tests) use timecode_basic::*;
+pub(in crate::validator::tests) use timecode_targeting::*;
