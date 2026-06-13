@@ -700,8 +700,9 @@ impl Check for LayerConfigRecordSyntax {
     }
 }
 
-/// Checks the locally decidable § 6.8.2 / § 6.8.3 layer-configuration-record id and
-/// map constraints on a parsed record and pushes any `lcr/*` diagnostics.
+/// Checks the locally decidable § 6.8.2 / § 6.8.3 / § 6.8.4 layer-configuration-record
+/// id, map, and aggregate-info value-space constraints on a parsed record and pushes any
+/// `lcr/*` diagnostics.
 fn check_layer_config_record_semantics(
     record: &LayerConfigurationRecord,
     obu: &ObuEnvelope<'_>,
@@ -742,6 +743,67 @@ fn check_layer_config_record_semantics(
                     .with_spec_section("6.8.2")
                     .with_byte_offset(obu.offset),
                 );
+            }
+            if let Some(aggregate) = global.aggregate_info.as_ref() {
+                // AV2 § 6.8.4 (mirror `06-syntax-structures-semantics.md` lines 1744-1759)
+                // gives three "shall not contain values outside Annex A" requirements on the
+                // aggregate info fields. Each is decidable from the parsed global LCR's
+                // lcr_aggregate_info() alone (no activation — the requirement is on the
+                // bitstream *containing* the value), so these are local value-space checks
+                // like `annex-a/profile-reserved`. lcr_max_tier_flag is a 1-bit field with no
+                // such clause, so it has no value-space check.
+                if !crate::annex_a::is_defined_config_idc(aggregate.config_idc) {
+                    // Mirror lines 1744-1747: Annex A.3 Table A.5 defines configurations 0..=2;
+                    // 3..=63 are reserved for future extensions.
+                    report.push(
+                        Diagnostic::error(
+                            "lcr/config-idc-reserved",
+                            format!(
+                                "lcr_config_idc {} is reserved (Annex A.3 Table A.5 defines \
+                                 multi-sequence configurations 0..=2; 3..=63 are reserved for \
+                                 future extensions of this specification)",
+                                aggregate.config_idc
+                            ),
+                        )
+                        .with_spec_section("6.8.4")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+                if crate::annex_a::is_reserved_level(aggregate.aggregate_level_idx) {
+                    // Mirror lines 1749-1752: lcr_aggregate_level_idx shall not be outside
+                    // Annex A. Annex A.4 Table A.7 (mirror line 321) reserves level indices
+                    // 22..=30; the 5-bit field's other values are defined levels (0..=21) or
+                    // "Maximum parameters" (31).
+                    report.push(
+                        Diagnostic::error(
+                            "lcr/aggregate-level-idx-reserved",
+                            format!(
+                                "lcr_aggregate_level_idx {} is reserved (Annex A.4 Table A.7 \
+                                 reserves level indices 22..=30)",
+                                aggregate.aggregate_level_idx
+                            ),
+                        )
+                        .with_spec_section("6.8.4")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+                if !crate::annex_a::is_defined_max_interop(aggregate.max_interop) {
+                    // Mirror lines 1757-1759: lcr_max_interop shall not be outside Annex A.
+                    // Annex A.3 Table A.3 (mirror lines 125-138) defines interoperability
+                    // points 0, 1, 2, and 15 ("max"); 3..=14 are reserved.
+                    report.push(
+                        Diagnostic::error(
+                            "lcr/max-interop-reserved",
+                            format!(
+                                "lcr_max_interop {} is reserved (Annex A.3 Table A.3 defines \
+                                 interoperability points 0, 1, 2, and 15; 3..=14 are reserved)",
+                                aggregate.max_interop
+                            ),
+                        )
+                        .with_spec_section("6.8.4")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
             }
         }
         // AV2 § 6.8.3: lcr_local_id is not equal to 0.

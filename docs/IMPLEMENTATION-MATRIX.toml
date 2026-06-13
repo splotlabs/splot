@@ -1231,17 +1231,17 @@ spec_sections = ["5.8.3", "6.8.4"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/layer_config_record.rs"
-openspec_change = "hls-lcr-atlas-foundation"
+openspec_change = "lcr-aggregate-info-annex-a-range"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.4 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-4, lines 1737-1760) states no requirement of bitstream conformance; its only constraints are that lcr_config_idc, lcr_aggregate_level_idx, and lcr_max_interop shall not take values outside those specified in Annex A. The validate residual is therefore Annex-A range enforcement (Annex A profiles/levels/tiers are not yet modeled); blocked on the Annex A profile/level/tier table backlog and explicitly out of this sweep's scope."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.4 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-4, lines 1737-1760) states no requirement of bitstream conformance other than three Annex-A value-space constraints: lcr_config_idc, lcr_aggregate_level_idx, and lcr_max_interop shall not take values outside those specified in Annex A (lcr_max_tier_flag is a 1-bit field with no such clause). All three now land in splot-validate (checks/mod.rs LayerConfigRecordSyntax, Global arm), decidable from the parsed global LCR's lcr_aggregate_info() alone (the requirement is on the bitstream *containing* the value — no activation): lcr/config-idc-reserved (Annex A.3 Table A.5 defines configs 0..=2; 3..=63 reserved, mirror lines 1744-1747), lcr/aggregate-level-idx-reserved (Annex A.4 Table A.7 reserves level indices 22..=30, mirror lines 1749-1752), and lcr/max-interop-reserved (Annex A.3 Table A.3 defines interoperability points 0, 1, 2, 15; 3..=14 reserved, mirror lines 1757-1759). Backed by annex_a.rs is_defined_config_idc / is_reserved_level / is_defined_max_interop helpers, each table-verified by a unit test. No §6.8.4 value-space residual remains."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
-validate = "partial"
+validate = "done"
 write = "todo"
 encode = "todo"
 decode_check = "done"
@@ -1250,8 +1250,15 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
-commands = ["cargo test -p splot-core lcr"]
+tests = [
+    "crates/splot-core/src/headers/layer_config_record.rs::tests",
+    "crates/splot-validate/src/validator/tests/lcr_atlas.rs::lcr_config_idc_reserved_value_is_flagged",
+    "crates/splot-validate/src/validator/tests/lcr_atlas.rs::lcr_aggregate_level_idx_reserved_value_is_flagged",
+    "crates/splot-validate/src/validator/tests/lcr_atlas.rs::lcr_max_interop_reserved_value_is_flagged",
+    "crates/splot-validate/src/validator/tests/lcr_atlas.rs::lcr_aggregate_info_defined_values_are_accepted",
+    "crates/splot-validate/src/annex_a.rs::tests::defined_max_interop_values_match_table_a3",
+]
+commands = ["cargo test -p splot-core lcr", "cargo test -p splot-validate lcr_"]
 fixtures = []
 diagnostics = []
 

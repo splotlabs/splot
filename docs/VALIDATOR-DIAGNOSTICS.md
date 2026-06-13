@@ -233,6 +233,8 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 
 | Rule ID | Severity | Section | Condition |
 |---|---|---|---|
+| `lcr/aggregate-level-idx-reserved` | error | § 6.8.4 | a global LCR's lcr_aggregate_level_idx is outside Annex A — Annex A.4 Table A.7 reserves level indices 22..=30 (mirror lines 1749-1752). Decidable from the parsed global LCR's lcr_aggregate_info alone |
+| `lcr/config-idc-reserved` | error | § 6.8.4 | a global LCR's lcr_config_idc is outside Annex A — Annex A.3 Table A.5 defines multi-sequence configurations 0..=2, so 3..=63 are reserved (mirror lines 1744-1747). Decidable from the parsed global LCR's lcr_aggregate_info alone |
 | `lcr/dependent-xlayers-flag-nonzero` | warning | § 6.8.2 | lcr_dependent_xlayers_flag is set (decoder-ignored) |
 | `lcr/doh-constraint-required` | error | § 6.8.2 | inside a CMVS, a frame-confirmed activated sequence header has monotonic_output_order_flag == 0 while the activated global LCR's lcr_doh_constraint_flag == 0 (mirror lines 1619-1621) |
 | `lcr/global-id-out-of-range` | error | § 6.8.2 | lcr_global_config_record_id is 0 (must be 1..7) |
@@ -240,6 +242,7 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 | `lcr/global-xlayer-map-missing-xlayer` | error | § 6.4.1 | sequence header xlayer is not set in the referenced global LCR lcr_xlayer_map |
 | `lcr/local-id-zero` | error | § 6.8.3 | lcr_local_id equals 0 |
 | `lcr/max-expected-dims-exceed-sequence-max` | error | § 6.8.9 | an activated LCR's `lcr_max_expected_width[..][j]` / `lcr_max_expected_height[..][j]` (per embedded layer j, present when `lcr_same_sh_max_resolution_flag == 0`) exceeds the activated sequence header's `max_frame_width/height_minus_1 + 1` (mirror :2135-2148). The pure-arithmetic clause of §6.8.9, decidable at activation from the snapshotted association + active-sequence maxima alone. Gated like the §6.8.8 rep-info agreement: fires only under `ExternalHlsMode::Disabled` (an unmodeled external local LCR could shadow the in-band association) and only on a strict frame-confirmed activation; anchored at the defining LCR OBU. The companion per-frame `FrameWidth/FrameHeight <= lcr_max_expected_*` clause (mirror :2137-2139 / :2144-2146) is a named residual — it needs each frame's `(obu_xlayer_id, obu_mlayer_id) -> (xId, j)` mapping joined against the activated LCR |
+| `lcr/max-interop-reserved` | error | § 6.8.4 | a global LCR's lcr_max_interop is outside Annex A — Annex A.3 Table A.3 defines interoperability points 0, 1, 2, and 15 ("max"), so 3..=14 are reserved (mirror lines 1757-1759). Decidable from the parsed global LCR's lcr_aggregate_info alone |
 | `lcr/mlayer-dependency-missing` | error | § 6.8.9 | activated LCR lcr_mlayer_map includes an embedded layer without a layer the activated sequence header's MLayerDependencyMap requires |
 | `lcr/msdo-aggregate-mismatch` | error | § 6.8.2 | with lcr_aggregate_info_present_flag == 1, multistream_profile_idc is inconsistent with lcr_config_idc (Table A.6), its interop point != lcr_max_interop (Table A.1), multistream_level_idx != lcr_aggregate_level_idx, or multistream_tier != lcr_max_tier_flag (mirror lines 1657-1664) |
 | `lcr/msdo-doh-flag-mismatch` | error | § 6.8.2 | multistream_doh_constraint_flag != the activated global LCR's lcr_doh_constraint_flag (mirror line 1673) |

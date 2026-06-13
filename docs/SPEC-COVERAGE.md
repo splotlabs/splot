@@ -49,7 +49,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8) | Layer config record OBU syntax | `AV2-5.8-LAYER-CONFIG-RECORD` | ✅ | ✅ | 🟡 | ✅ | 11 |
 | [§ 5.8.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-1) | LCR global info syntax | `AV2-5.8.1-LCR-GLOBAL-INFO` | ✅ | ✅ | 🟡 | ✅ | 6 |
 | [§ 5.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-2) | LCR local info syntax | `AV2-5.8.2-LCR-LOCAL-INFO` | ✅ | ✅ | ✅ | ✅ | 2 |
-| [§ 5.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-3) | LCR aggregate info syntax | `AV2-5.8.3-LCR-AGGREGATE-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
+| [§ 5.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-3) | LCR aggregate info syntax | `AV2-5.8.3-LCR-AGGREGATE-INFO` | ✅ | ✅ | ✅ | ✅ | — |
 | [§ 5.8.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-4) | LCR sequence profile tier level information syntax | `AV2-5.8.4-LCR-SEQ-PTL-INFO` | ✅ | ✅ | 🟡 | ✅ | 4 |
 | [§ 5.8.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-5) | LCR global payload syntax | `AV2-5.8.5-LCR-GLOBAL-PAYLOAD` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 5.8.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8-6) | LCR xlayer info syntax | `AV2-5.8.6-LCR-XLAYER-INFO` | ✅ | ✅ | ✅ | ✅ | 5 |
@@ -145,7 +145,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.8](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8) | Layer config record OBU semantics | `AV2-5.8-LAYER-CONFIG-RECORD` | ✅ | ✅ | 🟡 | ✅ | 11 |
 | [§ 6.8.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-2) | LCR global info semantics | `AV2-5.8.1-LCR-GLOBAL-INFO` | ✅ | ✅ | 🟡 | ✅ | 6 |
 | [§ 6.8.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-3) | LCR local info semantics | `AV2-5.8.2-LCR-LOCAL-INFO` | ✅ | ✅ | ✅ | ✅ | 2 |
-| [§ 6.8.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-4) | LCR aggregate info semantics | `AV2-5.8.3-LCR-AGGREGATE-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
+| [§ 6.8.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-4) | LCR aggregate info semantics | `AV2-5.8.3-LCR-AGGREGATE-INFO` | ✅ | ✅ | ✅ | ✅ | — |
 | [§ 6.8.5](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-5) | LCR sequence profile tier level information semantics | `AV2-5.8.4-LCR-SEQ-PTL-INFO` | ✅ | ✅ | 🟡 | ✅ | 4 |
 | [§ 6.8.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-6) | LCR global payload semantics | `AV2-5.8.5-LCR-GLOBAL-PAYLOAD` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 6.8.7](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-7) | LCR xlayer info semantics | `AV2-5.8.6-LCR-XLAYER-INFO` | ✅ | ✅ | ✅ | ✅ | 5 |
