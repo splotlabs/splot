@@ -14717,13 +14717,17 @@ fn tile_group_structure_checks(
 ///   `tileSize + TileSizeBytes` exceeds the remaining `sz`, so the mirror :8571 subtraction
 ///   would go negative.
 ///
+/// - **`tile-payload/zero-size-tile`** — a zero-size non-bridge tile: `init_symbol(0)`
+///   starts `SymbolMaxBits` at `8*0-15 = -15` (§ 8.2.2, mirror 08:87), the counter only
+///   decreases (08:327), and § 8.2.4 requires `>= -14` at `exit_symbol()` (08:342) —
+///   unsatisfiable regardless of content, so it is framing-decidable.
+///
 /// Named residuals (NOT framing checks; owned by `AV2-5.20-TILE-GROUP-PAYLOAD` / its child
-/// rows): a zero-size last tile is not provably defective from framing — the `exit_symbol()`
-/// trailing one-bit / `SymbolMaxBits >= -14` conformance (§ 8.2.4) depends on the symbol
-/// decoder's consumption during `decode_tile()`; `init_symbol(tileSize)` (§ 8.2.2) tolerates
-/// `tileSize == 0` and reads no further than the tile's own bytes, so it adds no
-/// framing-decidable minimum. The `IsBridge` / `BruTileActive` arms (mirror :8559 / :8585)
-/// are dead on this intra-complete tile-group path (`IsBridge == 0`, `use_bru == 0`).
+/// rows): the `exit_symbol()` conformance for NONZERO tiles (the exact exit value, the
+/// trailing one-bit at `trailingBitPosition`, § 8.2.4) depends on the symbol decoder's
+/// consumption during `decode_tile()`. The `IsBridge` / `BruTileActive` arms (mirror
+/// :8559 / :8585) are dead on this intra-complete tile-group path (`IsBridge == 0`,
+/// `use_bru == 0`).
 fn tile_group_framing_checks(
     obu: &ObuEnvelope<'_>,
     structure: &splot_core::headers::tile_group::TileGroupStructure,
