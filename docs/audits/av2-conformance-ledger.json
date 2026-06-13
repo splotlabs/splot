@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "a2eeb320fc7b8faacb578d20e8f56ddc6c21d5ee",
+  "audited_commit": "02d1af1822e9fdf6a1cb8f24b92b890aab01517b",
   "outcome": "success",
   "files": [
     {
@@ -340,7 +340,7 @@
     },
     {
       "path": "crates/splot-cli/tests/negative_mutations.rs",
-      "sha256": "32c0d651fb3417bb3b08eedd25997001a6208527944583fbc8a0e1d918080ab9",
+      "sha256": "d5023645aadf01c51a8b5f50afef8ba2877710107f67c165b208de8e56ae82d3",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "CONF-AVM-INVALID-STREAMS"
