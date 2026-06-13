@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "5c16f34351e4d2310734d5007a6b5cf4943e2fcc",
+  "audited_commit": "d478c9c2f311afa17dd5dac06a93de6cf47d2533",
   "outcome": "success",
   "files": [
     {
@@ -353,7 +353,7 @@
     },
     {
       "path": "crates/splot-cli/tests/inspect_snapshots.rs",
-      "sha256": "366e585262184a5a064cacbe945a028fd5f2b1065067bafec3f384ba0e8bbd02",
+      "sha256": "3f7670640edded66c0faf5c58cc4f964a7e21c38a7497455d2d90331ecb5f8c5",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "CONF-INSPECT-SNAPSHOTS"
@@ -461,6 +461,37 @@
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.5-TEMPORAL-DELIMITER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/tests/snapshots/inspect_snapshots__padding.av2.snap",
+      "sha256": "4400902dc3fda35d8d8fa1ba49ffe39c6a5a02f879a6a3112cb17b808ae9fd68",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [
+        "AV2-5.16-PADDING",
+        "AV2-5.5-TEMPORAL-DELIMITER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/tests/snapshots/inspect_snapshots__quantizer-matrix.av2.snap",
+      "sha256": "bdc4143b5465753abcf086469df295eb408cc237acc1e522533a766a01ff72ee",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [
+        "AV2-5.13-QUANTIZATION-MATRIX",
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.5-TEMPORAL-DELIMITER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/tests/snapshots/inspect_snapshots__seq-header-tile-params.av2.snap",
+      "sha256": "9ef37f9c41d3f93c141c8f0244c152ab6dee7fab7e2421951f9106e865d76ee1",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [
+        "AV2-5.4-SEQUENCE-HEADER",
         "AV2-5.5-TEMPORAL-DELIMITER"
       ],
       "outcome": "success"
@@ -2369,7 +2400,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "d7ceea414e97c5150a5a72f4ab584c32ac8114b252d8a1f29e2d95b5b2ed92c3",
+      "sha256": "37fcc4727c6b90554d63c2116b274ab0095db9b5346f793d8acb112386bad338",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
