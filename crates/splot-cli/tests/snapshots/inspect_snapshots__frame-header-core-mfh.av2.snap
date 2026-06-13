@@ -1,0 +1,234 @@
+---
+source: crates/splot-cli/tests/inspect_snapshots.rs
+expression: "inspect_json(\"frame-header-core-mfh.av2\")"
+---
+[
+  {
+    "index": 0,
+    "byte_offset": 1,
+    "size": 1,
+    "payload_len": 0,
+    "payload_status": {
+      "status": "parsed",
+      "syntax": "temporal_delimiter_obu",
+      "feature": "AV2-5.5-TEMPORAL-DELIMITER"
+    },
+    "header": {
+      "has_header_extension": false,
+      "obu_type": "TemporalDelimiter",
+      "temporal_layer_id": 0,
+      "embedded_layer_id": 0,
+      "extended_layer_id": 31,
+      "header_size_bytes": 1
+    }
+  },
+  {
+    "index": 1,
+    "byte_offset": 3,
+    "size": 19,
+    "payload_len": 18,
+    "payload_status": {
+      "status": "parsed",
+      "syntax": "sequence_header_obu",
+      "feature": "AV2-5.4-SEQUENCE-HEADER"
+    },
+    "sequence_header": {
+      "seq_header_id": 0,
+      "seq_profile_idc": 0,
+      "single_picture_header_flag": false,
+      "chroma_format_idc": 0,
+      "bit_depth": 10,
+      "max_tlayer_id": 0,
+      "max_mlayer_id": 0,
+      "fully_parsed": true,
+      "children": {
+        "partition": true,
+        "segment": true,
+        "intra": true,
+        "inter": true,
+        "screen_content": true,
+        "transform_quant_entropy": true,
+        "filter": true,
+        "tile": true,
+        "film_grain_params_present": true
+      }
+    },
+    "header": {
+      "has_header_extension": false,
+      "obu_type": "SequenceHeader",
+      "temporal_layer_id": 0,
+      "embedded_layer_id": 0,
+      "extended_layer_id": 0,
+      "header_size_bytes": 1
+    }
+  },
+  {
+    "index": 2,
+    "byte_offset": 23,
+    "size": 2,
+    "payload_len": 1,
+    "payload_status": {
+      "status": "parsed",
+      "syntax": "multi_frame_header_obu",
+      "feature": "AV2-5.7-MULTI-FRAME-HEADER"
+    },
+    "header": {
+      "has_header_extension": false,
+      "obu_type": "MultiFrameHeader",
+      "temporal_layer_id": 0,
+      "embedded_layer_id": 0,
+      "extended_layer_id": 0,
+      "header_size_bytes": 1
+    }
+  },
+  {
+    "index": 3,
+    "byte_offset": 26,
+    "size": 6,
+    "payload_len": 5,
+    "payload_status": {
+      "status": "prefix_parsed_awaiting_state",
+      "syntax": "tile_group_prefix",
+      "feature": "AV2-5.19-TILE-GROUP",
+      "blocked_on": "active sequence header state"
+    },
+    "frame_header_prefix": {
+      "payload_kind": "frame_header_prefix",
+      "prefix_status": "activation_fields_only",
+      "cur_mfh_id": 1,
+      "is_key_frame": true,
+      "is_bridge": false,
+      "is_regular": false
+    },
+    "frame_header_core": {
+      "payload_kind": "frame_header_core",
+      "status": "intra_header_complete",
+      "cur_mfh_id": 1,
+      "show_existing_frame": false,
+      "frame_type": "key",
+      "frame_is_intra": true,
+      "immediate_output_frame": true,
+      "implicit_output_frame": false,
+      "order_hint_lsb": 0,
+      "refresh_frame_flags": 255,
+      "frame_size": {
+        "width": 16,
+        "height": 16
+      },
+      "tile_layout": {
+        "reuse_tile_info": false,
+        "tile_cols": 1,
+        "tile_rows": 1,
+        "tile_cols_log2": 0,
+        "tile_rows_log2": 0,
+        "context_update_tile_id": 0
+      },
+      "quantization": {
+        "base_q_idx": 100,
+        "delta_q_y_dc": 0,
+        "delta_q_u_dc": 0,
+        "delta_q_u_ac": 0,
+        "delta_q_v_dc": 0,
+        "delta_q_v_ac": 0,
+        "diff_uv_delta": false
+      },
+      "segmentation": {
+        "segmentation_enabled": false,
+        "reuse_seg_info": false,
+        "segmentation_update_map": false,
+        "segmentation_temporal_update": false,
+        "seg_id_pre_skip": false,
+        "last_active_seg_id": 0,
+        "enabled_features": []
+      },
+      "qm_params": {
+        "using_qmatrix": false,
+        "pic_qm_num_minus_1": 0,
+        "levels": []
+      },
+      "delta_q": {
+        "delta_q_present": false,
+        "delta_q_res": 0
+      },
+      "lossless": {
+        "coded_lossless": false,
+        "has_lossless_segment": false,
+        "allow_tcq": false,
+        "allow_parity_hiding": false
+      },
+      "deblocking": {
+        "apply_deblocking_filter": [
+          false,
+          false,
+          false,
+          false
+        ],
+        "df_delta_q_present": [
+          false,
+          false,
+          false,
+          false
+        ],
+        "df_delta_q": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "gdf": {
+        "gdf_frame_enable": false
+      },
+      "cdef": {
+        "cdef_frame_enable": false
+      },
+      "lr": {
+        "uses_lr": false,
+        "loop_restoration_size": [
+          64,
+          32,
+          32
+        ]
+      },
+      "ccso": {},
+      "intra_tail": {
+        "tx_mode": "tx_mode_largest",
+        "reference_select": false,
+        "skip_mode_present": false,
+        "allow_bawp": false,
+        "allow_warpmv_mode": false,
+        "reduced_tx_set": 2,
+        "use_global_motion": false,
+        "film_grain": {
+          "apply_grain": false
+        }
+      },
+      "consumed_bits": 27
+    },
+    "tile_group_structure": {
+      "payload_kind": "tile_group_structure",
+      "num_tiles": 1,
+      "tile_start_and_end_present_flag": false,
+      "tg_start": 0,
+      "tg_end": 0,
+      "status": "complete",
+      "header_bytes": 4,
+      "payload_size": 1,
+      "tile_framing": [
+        {
+          "tile_num": 0,
+          "tile_data_offset": 0,
+          "tile_size": 1
+        }
+      ]
+    },
+    "header": {
+      "has_header_extension": false,
+      "obu_type": "ClosedLoopKey",
+      "temporal_layer_id": 0,
+      "embedded_layer_id": 0,
+      "extended_layer_id": 0,
+      "header_size_bytes": 1
+    }
+  }
+]

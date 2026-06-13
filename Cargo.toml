@@ -51,6 +51,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 toml = "1"
 proptest = "1"
+# Dev-only: golden snapshot tests of the `splot inspect` JSON output (CONF-INSPECT-SNAPSHOTS).
+insta = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
