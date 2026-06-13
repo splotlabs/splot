@@ -109,7 +109,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.18.10.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-10-2) | Film grain model syntax | `AV2-5.14-FILM-GRAIN` | ✅ | ✅ | 🟡 | ✅ | 6 |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `AV2-5.19-TILE-GROUP` | ✅ | 🟡 | 🟡 | ✅ | 7 |
 | [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `AV2-5.19-TILE-GROUP` | ✅ | 🟡 | 🟡 | ✅ | 7 |
-| [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `AV2-5.20-TILE-GROUP-PAYLOAD` | ✅ | 🟡 | 🟡 | ✅ | 2 |
+| [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `AV2-5.20-TILE-GROUP-PAYLOAD` | ✅ | 🟡 | 🟡 | ✅ | 3 |
 
 ## Chapter 6 — Syntax structures semantics
 
@@ -202,7 +202,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.17.10.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-10-2) | Film grain model semantics | `AV2-5.14-FILM-GRAIN` | ✅ | ✅ | 🟡 | ✅ | 6 |
 | [§ 6.18](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-18) | Tile group OBU semantics | `AV2-5.19-TILE-GROUP` | ✅ | 🟡 | 🟡 | ✅ | 7 |
 | [§ 6.19](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19) | Tile group payload semantics | `AV2-5.19-TILE-GROUP` | ✅ | 🟡 | 🟡 | ✅ | 7 |
-| [§ 6.19](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19) | Tile group payload semantics | `AV2-5.20-TILE-GROUP-PAYLOAD` | ✅ | 🟡 | 🟡 | ✅ | 2 |
+| [§ 6.19](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19) | Tile group payload semantics | `AV2-5.20-TILE-GROUP-PAYLOAD` | ✅ | 🟡 | 🟡 | ✅ | 3 |
 
 ## Chapter 7 — Decoding process
 
