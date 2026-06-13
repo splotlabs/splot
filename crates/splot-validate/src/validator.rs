@@ -8419,10 +8419,13 @@ mod tests {
     }
 
     /// The same schedule-mode stream as [`schedule_mode_stream`] but with the
-    /// `ci_timing`-establishing content-interpretation OBU controlled by `with_ci_timing`:
-    /// when `false`, NO content interpretation OBU is emitted, so the Annex E.4.2
-    /// `ci_timing_info_present_flag == 1` condition is unmet and the layer is not in
-    /// decoding-schedule mode. Used by the false-positive-closing tests.
+    /// content-interpretation OBU's `ci_timing_info_present_flag` controlled by
+    /// `with_ci_timing`: when `true` the CI carries timing (flag 1, establishes the
+    /// Annex E.4.2 third condition); when `false` the CI is still present but carries NO
+    /// timing (flag 0), so the condition is unmet and the layer is not in
+    /// decoding-schedule mode. (A CI is always emitted — the genuine zero-CI case is
+    /// built by hand in `schedule_decoder_buffer_delay_without_any_ci_is_silent`.) Used by
+    /// the false-positive-closing tests.
     fn schedule_mode_stream_without_ci_timing(
         level_idx: u32,
         high_tier: bool,
@@ -8658,21 +8661,29 @@ mod tests {
     }
 
     #[test]
-    fn schedule_decoder_buffer_delay_without_ci_timing_is_silent() {
-        // FALSE-POSITIVE CLOSE (Annex E.4.2 third condition): a schedule-mode stream with
-        // BOTH decoder-model flags set and decoder_buffer_delay == 0, but NO content
-        // interpretation establishing ci_timing_info_present_flag == 1, is NOT in
-        // decoding-schedule mode (E.4.2 requires all three: ci_timing_info_present_flag,
+    fn schedule_decoder_buffer_delay_without_any_ci_is_silent() {
+        // FALSE-POSITIVE CLOSE (Annex E.4.2 third condition), the genuine zero-CI arm: a
+        // schedule-mode stream with BOTH decoder-model flags set and decoder_buffer_delay
+        // == 0 but with NO content-interpretation OBU at all (the content_interpretations
+        // map stays empty, so ci_timing_established_for_xlayer returns false). The layer is
+        // NOT in decoding-schedule mode (E.4.2 requires all three: ci_timing_info_present_flag,
         // decoder_model_info_present_flag, and seq_decoder_model_info_present_flag, mirror
         // lines 293-296). E.7.8 binds only "when operating in the decoding schedule mode",
         // and E.4.2 closes (mirror lines 330-336) that absent the listed parameters "it is
         // not possible to check conformance". So both E.7.8 diagnostics must be SILENT.
-        let report = Validator::new(false)
-            .validate_bytes(&schedule_mode_stream_without_ci_timing(0, false, 0, false));
+        let mut data = temporal_delimiter_obu();
+        data.extend(annex_b_obu(
+            0x04,
+            &schedule_mode_seq_header_payload(0, 0, false, 0),
+        ));
+        // No content_interpretation_obu — the zero-CI path, distinct from the flag-0 CI in
+        // schedule_decoder_buffer_delay_ci_with_timing_flag_zero_is_silent.
+        data.extend(clk_frame_for_xlayer(0, 0)); // frame-confirm the activation
+        let report = Validator::new(false).validate_bytes(&data);
         assert_eq!(
             schedule_delay_error_count(&report, "decoder-model/schedule-decoder-buffer-delay-zero"),
             0,
-            "no ci_timing established means the layer is not in schedule mode (E.4.2): {report}"
+            "no content interpretation at all means the layer is not in schedule mode (E.4.2): {report}"
         );
         assert_eq!(
             schedule_delay_error_count(
@@ -8684,11 +8695,9 @@ mod tests {
         );
 
         // ANTI-VACUITY: the otherwise-identical stream that DOES establish ci_timing
-        // (with_ci_timing == true) DOES fire the zero check — proving the silence above is
-        // the ci_timing gate, not an unreached activation path. (Mirrors the firing test
-        // schedule_decoder_buffer_delay_zero_is_flagged, here via the same builder.)
-        let firing = Validator::new(false)
-            .validate_bytes(&schedule_mode_stream_without_ci_timing(0, false, 0, true));
+        // (schedule_mode_stream emits a flag-1 CI before the CLK) DOES fire the zero check —
+        // proving the silence above is the ci_timing gate, not an unreached activation path.
+        let firing = Validator::new(false).validate_bytes(&schedule_mode_stream(0, false, 0));
         assert_eq!(
             schedule_delay_error_count(&firing, "decoder-model/schedule-decoder-buffer-delay-zero"),
             1,
@@ -8702,8 +8711,9 @@ mod tests {
         // A content interpretation OBU is PRESENT but carries ci_timing_info_present_flag
         // == 0 (timing == None). It does not establish the E.4.2 third condition, so the
         // layer is not in decoding-schedule mode and the E.7.8 zero check (delay == 0) is
-        // silent. This is the "CI with ci_timing_info_present_flag == 0" arm of the
-        // false-positive close, distinct from "no CI at all" above.
+        // silent. This is the "CI present with ci_timing_info_present_flag == 0" arm of the
+        // false-positive close, distinct from the zero-CI arm in
+        // schedule_decoder_buffer_delay_without_any_ci_is_silent.
         let report = Validator::new(false)
             .validate_bytes(&schedule_mode_stream_without_ci_timing(0, false, 0, false));
         // The first-CELU CI is present (so § 7.3.6 first-CELU presence is satisfied) yet it
@@ -8720,6 +8730,19 @@ mod tests {
             ),
             0,
             "{report}"
+        );
+
+        // ANTI-VACUITY isolating the flag bit: the SAME fixture with the CI's
+        // ci_timing_info_present_flag flipped to 1 (with_ci_timing == true) DOES fire the
+        // zero check — so the silence above is specifically the flag-0 CI, not an unreached
+        // path or a missing CI.
+        let firing = Validator::new(false)
+            .validate_bytes(&schedule_mode_stream_without_ci_timing(0, false, 0, true));
+        assert_eq!(
+            schedule_delay_error_count(&firing, "decoder-model/schedule-decoder-buffer-delay-zero"),
+            1,
+            "flipping ci_timing_info_present_flag to 1 puts the layer in schedule mode and \
+             fires the zero check — proving the silence is the flag-0 CI: {firing}"
         );
     }
 

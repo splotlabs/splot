@@ -3605,7 +3605,7 @@ tests = [
   "splot_validate::validator::tests::schedule_decoder_buffer_delay_without_decoder_model_info_is_silent",
   "splot_validate::validator::tests::schedule_decoder_buffer_delay_unconfirmed_activation_is_silent",
   "splot_validate::validator::tests::schedule_decoder_buffer_delay_truncated_header_is_silent",
-  "splot_validate::validator::tests::schedule_decoder_buffer_delay_without_ci_timing_is_silent",
+  "splot_validate::validator::tests::schedule_decoder_buffer_delay_without_any_ci_is_silent",
   "splot_validate::validator::tests::schedule_decoder_buffer_delay_ci_with_timing_flag_zero_is_silent",
   "splot_validate::validator::tests::schedule_decoder_buffer_delay_after_rap_reset_is_silent",
   "splot_validate::annex_a::tests::bitrate_defined_matches_table_a9_mbps_columns",
