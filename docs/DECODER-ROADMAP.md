@@ -61,7 +61,7 @@ other external decoder is forbidden.
 |---|---|---|
 | 0 | Roadmap, support matrix, generated status, drift gate | supported |
 | 1 | Decode API contract, limits, resource diagnostics, plan-only byte entry point | partial contract documented |
-| 2 | Shared decoded frame, plane, pixel format, and deterministic hash types | hash contract documented; types planned |
+| 2 | Shared decoded frame, plane, pixel format, and deterministic hash types | frame/plane and hash contracts documented; types planned |
 | 3 | CLI `splot decode` contract backed by library diagnostics | planned |
 | 4 | Container traversal, layer/operating-point selection, transactional decode planning | planned |
 | 5 | Self-contained decode fuzz target and fixture smoke | planned |
@@ -135,6 +135,85 @@ before comparison or allocation. Overflow while deriving dimensions, strides,
 tile products, plane sizes, reference-storage bytes, output bytes, or frame
 counts is a `decode/resource-limit` failure, not a wraparound or panic.
 
+## Decoded Frame and Plane Model Contract
+
+Future decoded-frame data structures must preserve AV2 output semantics while
+remaining reusable by reconstruction, reference-frame storage, hashes, Y4M, and
+encoder closed-loop tests. The conceptual names are:
+
+```text
+DecodedFrame
+Plane<T>
+PixelFormat
+BitDepth
+```
+
+This is a semantic contract, not a committed Rust API or crate placement.
+
+`PixelFormat` is derived from AV2 § 6.4.1 `chroma_format_idc`:
+
+- `Monochrome` / 4:0:0: `SubsamplingX = 1`, `SubsamplingY = 1`,
+  `NumPlanes = 1`;
+- `Yuv420`: `SubsamplingX = 1`, `SubsamplingY = 1`, `NumPlanes = 3`;
+- `Yuv422`: `SubsamplingX = 1`, `SubsamplingY = 0`, `NumPlanes = 3`;
+- `Yuv444`: `SubsamplingX = 0`, `SubsamplingY = 0`, `NumPlanes = 3`.
+
+`BitDepth` is derived from AV2 § 6.4.1 `bit_depth_idc`: AV2 v1.0.0 permits
+10-bit samples for `bit_depth_idc = 0` and 8-bit samples for
+`bit_depth_idc = 1`. Future decoded sample storage must reject values outside
+`0..=(1 << bit_depth) - 1`.
+
+The model must distinguish coded/reconstructed storage from cropped output:
+
+- coded luma dimensions are `FrameWidth x FrameHeight` (§ 6.17.4.1);
+- the visible output luma rectangle is `CropLeft`, `CropTop`, `CropWidth`, and
+  `CropHeight`; `CropWidth` and `CropHeight` must be positive, and non-monochrome
+  crop origins must be aligned to `SubsamplingX` / `SubsamplingY` (§ 6.17.4.4);
+- decoded output frames are AV2 § 7.21 `OutY`/`OutU`/`OutV` arrays emitted by
+  the AV2 output processes (§ 7.1, § 7.21.5, § 7.21.6);
+- `splot` assigns a zero-based emission index in that output-process order after
+  supported stream/layer selection; this index is repository-owned metadata, not
+  an AV2 syntax element, and it is not decode order;
+- output luma dimensions are `w x h` from § 7.21.2, and output chroma dimensions
+  are `((w + subX) >> subX) x ((h + subY) >> subY)`;
+- U and V planes are absent or ignored when `NumPlanes == 1`.
+
+A future `Plane<T>` may include padding for efficient storage, but it must carry
+explicit storage `width`, storage `height`, `stride_samples`, and visible
+rectangle metadata when storage and visible output differ. Invariants:
+
+- `stride_samples >= storage_width`;
+- `required_samples = stride_samples * storage_height` is computed with checked
+  arithmetic;
+- the backing buffer exposes at least `required_samples` samples, and
+  `allocation_bytes = required_samples * bytes_per_sample` is computed with
+  checked arithmetic before allocation;
+- every product used for dimensions, strides, backing samples, byte sizes, hash
+  lengths, Y4M output, or reference storage uses checked arithmetic;
+- the full backing allocation, including padding, is charged against
+  `DecodeLimits` before allocation;
+- allocation overflow or configured-limit excess is reported as
+  `decode/resource-limit`;
+- padding and stride samples are not visible decoded output and must be excluded
+  from frame hashes, Y4M output, and fixture expectations.
+
+Reference-frame storage is related but not the same shape as output. AV2 § 7.23
+stores loop-restored `LrFrame` into `FrameStore` over padded coded dimensions
+(`MiCols * MI_SIZE` by `MiRows * MI_SIZE` for luma, shifted by subsampling for
+chroma) and records reference metadata such as `RefFrameWidth`,
+`RefFrameHeight`, `RefCropWidth`, `RefCropHeight`, `RefCropLeft`, `RefCropTop`,
+`RefSubsamplingX`, `RefSubsamplingY`, `RefBitDepth`, `RefNumPlanes`,
+`RefOutputOrder`, `RefOrderHint`, and `RefFilmGrainPresent`. Future APIs must
+not treat cropped output-frame dimensions and reference-store backing dimensions
+as interchangeable.
+
+Emitted output frames must remain immutable and valid after emission. Reference
+slots may own or share reconstructed buffers, but overwriting a reference slot
+must not mutate an already emitted output frame. Borrowed or shared views are
+allowed only when the backing samples are immutable for the output view, when the
+output owns an independent copy, or when copy-on-write or unique ownership is
+proven before any reference-slot mutation.
+
 ## Hash Policy
 
 Frame hashing is required before Y4M output is considered supported. The first
@@ -155,9 +234,9 @@ future verification path for `METADATA_TYPE_DECODED_FRAME_HASH` metadata.
 
 The canonical byte stream is defined as follows:
 
-- frame order is zero-based AV2 § 7.21 output order after supported
-  stream/layer selection, including show-existing and flush output frames once
-  those output paths are implemented;
+- frame order uses the `splot` zero-based emission index assigned in AV2
+  output-process order after supported stream/layer selection, including
+  show-existing and flush output frames once those output paths are implemented;
 - region is cropped visible output only: luma dimensions are `w x h`; chroma
   dimensions are `((w + subX) >> subX) x ((h + subY) >> subY)`;
 - backing allocation padding and `Plane` stride bytes are excluded;

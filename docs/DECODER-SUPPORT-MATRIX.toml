@@ -88,16 +88,16 @@ notes = "Contract-only foundation for future `DecodeOptions { limits: DecodeLimi
 [[row]]
 id = "decoded-frame-plane-model"
 name = "Decoded frame and plane model"
-feature_id = ""
-spec_sections = ["6.4.1", "7.21"]
-parser_source = "crates/splot-core/src/headers/sequence.rs"
-decode_module = "planned"
+feature_id = "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
+spec_sections = ["6.4.1", "6.17.4.1", "6.17.4.4", "7.1", "7.21.1", "7.21.2", "7.21.5", "7.21.6", "7.23"]
+parser_source = "crates/splot-core/src/headers/sequence.rs; crates/splot-core/src/headers/frame/info.rs"
+decode_module = "docs/DECODER-ROADMAP.md"
 tier = "foundation"
-status = "todo"
-self_contained_tests = []
-diagnostics = []
+status = "partial"
+self_contained_tests = ["openspec validate --all --no-interactive", "cargo xtask check-decoder-support"]
+diagnostics = ["decode/resource-limit (planned)"]
 local_reference_evidence = []
-notes = "Shared frame/plane model for decoder output and future encoder closed-loop reconstruction."
+notes = "Contract-only future `DecodedFrame`, `Plane<T>`, `PixelFormat`, and `BitDepth` policy: separates cropped §7.21 output frames from padded §7.23 reference storage, derives format from §6.4.1, requires explicit storage dimensions and `stride_samples`, records a splot-owned zero-based output emission index, excludes padding from hashes, Y4M, and fixtures, requires checked sample and byte allocation arithmetic, charges full backing allocations against limits, and keeps emitted output immutable through immutable sharing, owned copies, or copy-on-write before mutation. No runtime frame or plane types exist yet."
 
 [[row]]
 id = "deterministic-frame-hash"
