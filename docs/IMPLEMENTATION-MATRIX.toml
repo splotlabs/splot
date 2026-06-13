@@ -4012,24 +4012,24 @@ openspec_change = "inspect-snapshot-tests"
 tracking_issue = ""
 owner = "conformance"
 risk = "medium"
-notes = "Snapshot output should stabilize CLI inspector behavior. Basic CLI integration tests exist (see CLI-INSPECT); insta-style snapshots do not yet."
+notes = "insta golden snapshot tests of `splot inspect --json` now freeze the inspector's per-OBU JSON for a diverse set of committed fixtures (crates/splot-cli/tests/inspect_snapshots.rs, snapshots in crates/splot-cli/tests/snapshots/). The inspect output is deterministic — per-OBU byte offsets, sizes, and parsed fields, with no paths, timestamps, or filenames — so any future change to the inspect output for a committed fixture surfaces as a snapshot diff for explicit review (cargo insta review). insta is a dev-only workspace dependency. Basic CLI integration tests also exist (see CLI-INSPECT)."
 
 [feature.status]
-mapped = "partial"
+mapped = "done"
 types = "not-applicable"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "not-applicable"
 encode = "not-applicable"
 decode_check = "partial"
-tests = "todo"
+tests = "done"
 avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
+tests = ["crates/splot-cli/tests/inspect_snapshots.rs"]
+commands = ["cargo test -p splot-cli --test inspect_snapshots"]
+fixtures = ["tests/fixtures/conformant.av2", "tests/fixtures/operating-point-set.av2", "tests/fixtures/film-grain.av2", "tests/fixtures/buffer-removal-timing.av2", "tests/fixtures/metadata-group.av2", "tests/fixtures/metadata-short.av2", "tests/fixtures/frame-header-core.av2", "tests/fixtures/frame-header-core-mfh.av2", "tests/fixtures/frame-header-prefix.av2", "tests/fixtures/quantizer-matrix.av2", "tests/fixtures/seq-header-tile-params.av2", "tests/fixtures/padding.av2"]
 diagnostics = []
 
 [[feature]]

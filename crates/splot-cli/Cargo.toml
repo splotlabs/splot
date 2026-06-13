@@ -35,3 +35,5 @@ tracing-subscriber.workspace = true
 # Conformance-corpus integration test reads tests/conformance/manifest.toml
 # (CONF-AVM-VALID-STREAMS). `toml`/`serde` are workspace dependencies already.
 toml.workspace = true
+# Golden snapshot tests of the `splot inspect --json` output (CONF-INSPECT-SNAPSHOTS).
+insta.workspace = true

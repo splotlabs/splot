@@ -1,0 +1,78 @@
+---
+source: crates/splot-cli/tests/inspect_snapshots.rs
+expression: "inspect_json(\"buffer-removal-timing.av2\")"
+---
+[
+  {
+    "index": 0,
+    "byte_offset": 1,
+    "size": 1,
+    "payload_len": 0,
+    "payload_status": {
+      "status": "parsed",
+      "syntax": "temporal_delimiter_obu",
+      "feature": "AV2-5.5-TEMPORAL-DELIMITER"
+    },
+    "header": {
+      "has_header_extension": false,
+      "obu_type": "TemporalDelimiter",
+      "temporal_layer_id": 0,
+      "embedded_layer_id": 0,
+      "extended_layer_id": 31,
+      "header_size_bytes": 1
+    }
+  },
+  {
+    "index": 1,
+    "byte_offset": 3,
+    "size": 12,
+    "payload_len": 10,
+    "payload_status": {
+      "status": "parsed",
+      "syntax": "operating_point_set_obu",
+      "feature": "AV2-5.10-OPERATING-POINT-SET"
+    },
+    "operating_point_set": {
+      "xlayer_id": 31,
+      "is_global": true,
+      "reset_flag": false,
+      "ops_id": 0,
+      "ops_cnt": 1,
+      "payload_count": 1,
+      "mlayer_info_idc": 0
+    },
+    "header": {
+      "has_header_extension": true,
+      "obu_type": "OperatingPointSet",
+      "temporal_layer_id": 0,
+      "embedded_layer_id": 0,
+      "extended_layer_id": 31,
+      "header_size_bytes": 2
+    }
+  },
+  {
+    "index": 2,
+    "byte_offset": 16,
+    "size": 4,
+    "payload_len": 2,
+    "payload_status": {
+      "status": "parsed",
+      "syntax": "buffer_removal_timing_obu",
+      "feature": "AV2-5.12-BUFFER-REMOVAL-TIMING"
+    },
+    "buffer_removal_timing": {
+      "ops_dependent": true,
+      "br_ops_id": 0,
+      "br_ops_cnt": 1,
+      "op_count": 1
+    },
+    "header": {
+      "has_header_extension": true,
+      "obu_type": "BufferRemovalTiming",
+      "temporal_layer_id": 0,
+      "embedded_layer_id": 0,
+      "extended_layer_id": 31,
+      "header_size_bytes": 2
+    }
+  }
+]

@@ -1,0 +1,57 @@
+---
+source: crates/splot-cli/tests/inspect_snapshots.rs
+expression: "inspect_json(\"metadata-short.av2\")"
+---
+[
+  {
+    "index": 0,
+    "byte_offset": 1,
+    "size": 1,
+    "payload_len": 0,
+    "payload_status": {
+      "status": "parsed",
+      "syntax": "temporal_delimiter_obu",
+      "feature": "AV2-5.5-TEMPORAL-DELIMITER"
+    },
+    "header": {
+      "has_header_extension": false,
+      "obu_type": "TemporalDelimiter",
+      "temporal_layer_id": 0,
+      "embedded_layer_id": 0,
+      "extended_layer_id": 31,
+      "header_size_bytes": 1
+    }
+  },
+  {
+    "index": 1,
+    "byte_offset": 3,
+    "size": 9,
+    "payload_len": 7,
+    "payload_status": {
+      "status": "parsed",
+      "syntax": "metadata_short_obu",
+      "feature": "AV2-5.17.2-METADATA-SHORT"
+    },
+    "metadata_short": {
+      "is_suffix": false,
+      "layer_idc": 0,
+      "cancel": false,
+      "persistence_idc": 0,
+      "metadata_type": 1,
+      "metadata_type_name": "METADATA_TYPE_HDR_CLL",
+      "unit": {
+        "metadata_type": 1,
+        "metadata_type_name": "METADATA_TYPE_HDR_CLL",
+        "payload_size": 4
+      }
+    },
+    "header": {
+      "has_header_extension": true,
+      "obu_type": "MetadataShort",
+      "temporal_layer_id": 0,
+      "embedded_layer_id": 0,
+      "extended_layer_id": 31,
+      "header_size_bytes": 2
+    }
+  }
+]

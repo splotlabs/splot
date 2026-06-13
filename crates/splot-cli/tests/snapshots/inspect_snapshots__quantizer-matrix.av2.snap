@@ -1,0 +1,96 @@
+---
+source: crates/splot-cli/tests/inspect_snapshots.rs
+expression: "inspect_json(\"quantizer-matrix.av2\")"
+---
+[
+  {
+    "index": 0,
+    "byte_offset": 1,
+    "size": 1,
+    "payload_len": 0,
+    "payload_status": {
+      "status": "parsed",
+      "syntax": "temporal_delimiter_obu",
+      "feature": "AV2-5.5-TEMPORAL-DELIMITER"
+    },
+    "header": {
+      "has_header_extension": false,
+      "obu_type": "TemporalDelimiter",
+      "temporal_layer_id": 0,
+      "embedded_layer_id": 0,
+      "extended_layer_id": 31,
+      "header_size_bytes": 1
+    }
+  },
+  {
+    "index": 1,
+    "byte_offset": 3,
+    "size": 11,
+    "payload_len": 10,
+    "payload_status": {
+      "status": "parsed",
+      "syntax": "sequence_header_obu",
+      "feature": "AV2-5.4-SEQUENCE-HEADER"
+    },
+    "sequence_header": {
+      "seq_header_id": 0,
+      "seq_profile_idc": 0,
+      "single_picture_header_flag": true,
+      "chroma_format_idc": 0,
+      "bit_depth": 10,
+      "max_tlayer_id": 0,
+      "max_mlayer_id": 0,
+      "fully_parsed": true,
+      "children": {
+        "partition": true,
+        "segment": true,
+        "intra": true,
+        "inter": true,
+        "screen_content": true,
+        "transform_quant_entropy": true,
+        "filter": true,
+        "tile": true,
+        "film_grain_params_present": true
+      }
+    },
+    "header": {
+      "has_header_extension": false,
+      "obu_type": "SequenceHeader",
+      "temporal_layer_id": 0,
+      "embedded_layer_id": 0,
+      "extended_layer_id": 0,
+      "header_size_bytes": 1
+    }
+  },
+  {
+    "index": 2,
+    "byte_offset": 15,
+    "size": 4,
+    "payload_len": 3,
+    "payload_status": {
+      "status": "parsed",
+      "syntax": "quantizer_matrix_obu",
+      "feature": "AV2-5.13-QUANTIZATION-MATRIX"
+    },
+    "quantizer_matrix": {
+      "qm_bit_map": 1,
+      "num_planes": 1,
+      "is_reset": false,
+      "levels": [
+        {
+          "level": 0,
+          "is_default": true,
+          "matrix_shapes": []
+        }
+      ]
+    },
+    "header": {
+      "has_header_extension": false,
+      "obu_type": "QuantizationMatrix",
+      "temporal_layer_id": 0,
+      "embedded_layer_id": 0,
+      "extended_layer_id": 0,
+      "header_size_bytes": 1
+    }
+  }
+]
