@@ -634,6 +634,7 @@ dependencies = [
  "splot-core",
  "splot-encode",
  "splot-validate",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]

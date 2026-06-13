@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+#
+# Conformance corpus manifest (CONF-AVM-VALID-STREAMS).
+#
+# A self-contained, committed corpus: every vector is committed under
+# `tests/conformance/` and validated by the committed runner with NO AVM
+# dependency (see docs/CONFORMANCE.md). AVM is only the LOCAL generator of the
+# committed vectors; it is never invoked, vendored, or depended on by the
+# runner, build, or CI.
+#
+# Schema
+# ------
+# Each `[[vector]]` entry has:
+#
+#   path        Path to the committed vector, relative to `tests/conformance/`.
+#   description Human-readable note on what the vector exercises.
+#   expect      The expected validation outcome, one of:
+#                 expect = "clean"
+#                   -> the validator reports ZERO errors.
+#                 expect = { diagnostics = ["rule_id", ...] }
+#                   -> the validator emits EXACTLY this set of error `rule_id`s
+#                      (set equality: every listed id present, and no
+#                      unexpected error ids). Order and multiplicity are
+#                      ignored; warnings/info are not constrained.
+#
+# The runner (`cargo xtask conformance` and the splot-cli integration test)
+# reads each vector's committed bytes and runs
+# `splot_validate::Validator::validate_bytes` — the same entry point the CLI
+# `validate` command uses — then asserts the `expect` outcome.
+
+[[vector]]
+path = "vectors/valid/avm-key-intra-352x288.ivf"
+description = "AVM-generated single intra key frame (IVF, 352x288); validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/avm-key-inter-352x288.ivf"
+description = "AVM-generated key frame plus two inter frames (IVF, 352x288); validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/invalid/avm-key-intra-352x288-truncated.ivf"
+description = """
+The intra key-frame vector truncated to 100 bytes (mid-payload): the IVF frame \
+header declares the full payload length but the file ends short, so the \
+container layer flags exactly one truncation error. Bootstrap negative that \
+exercises the manifest's diagnostics arm so the runner is not vacuous."""
+expect = { diagnostics = ["ivf/truncated-frame-payload"] }

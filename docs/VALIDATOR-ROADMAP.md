@@ -16,7 +16,7 @@
 | 7 | Non-HLS payload OBUs | partial | `AV2-5.13-QUANTIZATION-MATRIX`, `AV2-5.14-FILM-GRAIN`, `AV2-5.17-METADATA` |
 | 8 | Frame header child features | partial | `AV2-5.18-FRAME-HEADER` |
 | 9 | Tile group and arithmetic payload boundaries | partial | `AV2-5.19-TILE-GROUP`, `AV2-5.20-TILE-GROUP-PAYLOAD` |
-| 10 | Conformance vectors and AVM differential harness | todo | `CONF-AVM-DIFF-HARNESS`, `CONF-PUBLIC-VECTORS` |
+| 10 | Conformance vectors and AVM differential harness | partial | `CONF-AVM-VALID-STREAMS` (corpus started), `CONF-AVM-DIFF-HARNESS`, `CONF-PUBLIC-VECTORS` |
 
 This is the single forward-looking validator planning document: it owns phase
 sequencing and rationale. The earlier validator planning docs were executed
@@ -57,11 +57,20 @@ dependency order:
 | Frame-header continuation | the Phase 8 remaining work below |
 
 **Do not start yet** as a primary task: a full tile-group payload parser,
-entropy/range coding, a decoder, an encoder, a bitstream writer, or the AVM
-differential harness. The active OpenSpec changes `add-bitstream-writer`,
+entropy/range coding, a decoder, an encoder, a bitstream writer, or a *live*
+AVM differential harness. The active OpenSpec changes `add-bitstream-writer`,
 `toy-intra-encoder-v0`, and `avm-differential-harness` are recorded intent
 behind this fence, not started work — none has implementation tasks checked.
 Prepare hooks and fixtures, but keep the core work focused on the gaps above.
+
+**Carve-out (started):** the **committed conformance corpus** is *out* from
+behind this fence (OpenSpec change `conformance-corpus-foundation`,
+`CONF-AVM-VALID-STREAMS`). A self-contained corpus of small AVM-generated valid
+AV2 vectors plus a manifest and a committed runner now lands and gates in CI —
+**with no AVM dependency** (AVM is a local generator only; the runner never
+invokes AVM or the network). Still fenced: the encoder/writer/decoder and the
+*live* `avm encode -> splot validate` / `splot encode -> avm decode`
+differential harness (`CONF-AVM-DIFF-HARNESS`).
 
 ## Phase 0 — matrix and OpenSpec hygiene
 
@@ -618,25 +627,43 @@ Acceptance:
 
 ## Phase 10 — conformance vectors and AVM differential harness
 
-**Status:** todo — mapping-only; `cargo xtask conformance` is an explicit
-stub. An active OpenSpec change (`avm-differential-harness`) plans the
-harness.
+**Status:** partial — the **committed corpus foundation** has landed
+(`conformance-corpus-foundation`, `CONF-AVM-VALID-STREAMS`): a self-contained
+`tests/conformance/` corpus of small AVM-generated valid AV2 vectors plus a
+`manifest.toml` and a committed runner (`cargo xtask conformance` and the CI
+gate `crates/splot-cli/tests/conformance.rs`) that validate the committed bytes
+with **no AVM dependency** and no network. A *live* AVM differential harness
+(`CONF-AVM-DIFF-HARNESS`) and the public-vector corpus remain mapping-only;
+`cargo xtask fetch-vectors` is still an explicit stub.
 
 **Goal:** turn validator confidence into reproducible external proof.
 
 Feature IDs:
 
-- `CONF-AVM-DIFF-HARNESS`
+- `CONF-AVM-VALID-STREAMS` (committed corpus + runner — **started**)
+- `CONF-AVM-DIFF-HARNESS` (live local harness — fenced, AVM is a local oracle only)
 - `CONF-PUBLIC-VECTORS`
 - `CONF-INSPECT-SNAPSHOTS`
 
-Work items:
+Done so far:
 
-- `cargo xtask conformance --avm-bin <path> --input <stream>`;
-- parser trace comparison mode;
-- store failing bitstreams under an ignored local corpus and optionally add minimized redistributable fixtures;
-- document where public AV2 vectors can be fetched and their license status;
-- never require AVM in normal CI until the maintainer opts in.
+- committed `tests/conformance/` corpus: AVM-generated valid IVF vectors and a
+  bootstrap negative (a truncated copy emitting `ivf/truncated-frame-payload`);
+- `manifest.toml` mapping each vector to `clean` or an expected `{ diagnostics }`
+  rule-id set;
+- a committed runner with **no AVM dependency**: a CI-gating integration test
+  and `cargo xtask conformance` (which shells out to the `splot` binary, not AVM);
+- AVM documented as the **local** oracle/generator (the `avmenc` recipe in
+  [`CONFORMANCE.md`](./CONFORMANCE.md)), never a build/CI dependency.
+
+Work items still open:
+
+- broaden the positive-vector set (`avm-positive-vector-generation`) and add
+  mutated negatives (`conformance-negative-mutator`);
+- a *live* local differential harness against an AVM checkout
+  (`cargo xtask conformance --avm-bin <path> --input <stream>`) and parser-trace
+  comparison mode — never required in normal CI until the maintainer opts in;
+- document where public AV2 vectors can be fetched and their license status.
 
 ## Planned diagnostics backlog
 
