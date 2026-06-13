@@ -1065,10 +1065,14 @@ fn check_dependency_direction(root: &Path) -> Result<()> {
 /// recognized as internal.
 const INTERNAL_DEP_RULES: &[(&str, &[&str])] = &[
     ("splot-core", &[]),
+    ("splot-parallel", &[]),
     ("splot-recon", &[]),
-    ("splot-decode", &["splot-core", "splot-recon"]),
+    (
+        "splot-decode",
+        &["splot-core", "splot-recon", "splot-parallel"],
+    ),
     ("splot-validate", &["splot-core"]),
-    ("splot-encode", &["splot-core"]),
+    ("splot-encode", &["splot-core", "splot-parallel"]),
     (
         "splot-cli",
         &[
@@ -1076,6 +1080,7 @@ const INTERNAL_DEP_RULES: &[(&str, &[&str])] = &[
             "splot-decode",
             "splot-validate",
             "splot-encode",
+            "splot-parallel",
         ],
     ),
     ("xtask", &[]),

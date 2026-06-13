@@ -4,6 +4,7 @@
 [workspace]
 members = [
     "crates/splot-core",
+    "crates/splot-parallel",
     "crates/splot-recon",
     "crates/splot-decode",
     "crates/splot-validate",
@@ -13,6 +14,7 @@ members = [
 ]
 default-members = [
     "crates/splot-core",
+    "crates/splot-parallel",
     "crates/splot-recon",
     "crates/splot-decode",
     "crates/splot-validate",
@@ -35,6 +37,7 @@ publish = false
 [workspace.dependencies]
 # Internal crates (path + version so the dependency direction is explicit).
 splot-core = { path = "crates/splot-core", version = "0.0.0" }
+splot-parallel = { path = "crates/splot-parallel", version = "0.0.0" }
 splot-recon = { path = "crates/splot-recon", version = "0.0.0" }
 splot-decode = { path = "crates/splot-decode", version = "0.0.0" }
 splot-validate = { path = "crates/splot-validate", version = "0.0.0" }
@@ -53,6 +56,8 @@ toml = "1"
 proptest = "1"
 # Dev-only: golden snapshot tests of the `splot inspect` JSON output (CONF-INSPECT-SNAPSHOTS).
 insta = "1"
+rayon = "1"
+crossbeam-channel = "0.5"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

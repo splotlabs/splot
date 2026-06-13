@@ -57,6 +57,7 @@ const RISKS: &[&str] = &["low", "medium", "high", "unknown"];
 /// Allowed `crate` values (workspace members plus the `docs` pseudo-crate).
 const CRATES: &[&str] = &[
     "splot-core",
+    "splot-parallel",
     "splot-recon",
     "splot-decode",
     "splot-validate",
