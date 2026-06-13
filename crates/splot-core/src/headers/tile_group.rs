@@ -322,6 +322,314 @@ pub fn parse_tile_group_structure(
     Ok(structure)
 }
 
+/// The byte framing of one tile inside `tile_group_payload()` (AV2 v1.0.0 § 5.20.1,
+/// mirror :8553-8640): where its `tile_size_minus_1 le(TileSizeBytes)` length field (if
+/// any) and its `tileSize`-byte coded-tile region sit relative to the start of the
+/// `tile_group_payload()` region.
+///
+/// All offsets are relative to the **first byte of `tile_group_payload()`** (the
+/// byte-aligned position right after the § 5.19 `byte_alignment()`, i.e. `headerBytes`
+/// into the OBU payload). A caller anchors a diagnostic at the absolute bitstream offset
+/// by adding `obu.payload_offset() + headerBytes + size_field_offset`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TileFraming {
+    /// `TileNum` (AV2 § 5.20.1, mirror :8553): the zero-based tile index within the frame.
+    pub tile_num: u32,
+    /// Byte offset of this tile's `tile_size_minus_1 le(TileSizeBytes)` length field within
+    /// the `tile_group_payload()` region, or `None` for the last tile and for every tile of
+    /// a bridge frame (neither reads a size field, mirror :8559-8571).
+    pub size_field_offset: Option<u64>,
+    /// Byte offset of this tile's `tileSize`-byte coded-tile region within the
+    /// `tile_group_payload()` region (right after the size field, or at the region cursor
+    /// for the last/bridge tiles).
+    pub tile_data_offset: u64,
+    /// `tileSize` (AV2 § 5.20.1, mirror :8557 / :8569): the coded-tile byte length. For the
+    /// last tile this is the remaining `sz` (mirror :8557); otherwise it is
+    /// `tile_size_minus_1 + 1` (mirror :8569).
+    pub tile_size: u64,
+}
+
+/// A provable § 5.20.1 tile-framing defect: a point where the per-tile bookkeeping
+/// (mirror :8559-8571) cannot be satisfied by the bytes the `tile_group_payload()` region
+/// actually contains. Both arms are decidable from the framing alone (no symbol decode).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TileFramingDefect {
+    /// The `tile_size_minus_1 le(TileSizeBytes)` length field of a non-last, non-bridge tile
+    /// runs past the end of the `tile_group_payload()` region — the size field itself is
+    /// truncated (AV2 § 4.11.5 `le(n)` reads exactly `n` bytes; § 6.2.1 requires the OBU
+    /// payload to contain every mandatory syntax element).
+    SizeFieldTruncated {
+        /// `TileNum` of the tile whose size field is truncated.
+        tile_num: u32,
+        /// Byte offset of the truncated size field within the `tile_group_payload()` region.
+        size_field_offset: u64,
+        /// Bytes that were available for the `TileSizeBytes`-byte size field before the
+        /// region ended (`< TileSizeBytes`).
+        available: u64,
+    },
+    /// A non-bridge tile's `tileSize` is zero, which can never satisfy the arithmetic
+    /// exit requirement: `init_symbol(tileSize)` sets `SymbolMaxBits = 8 * sz - 15`
+    /// (§ 8.2.2, mirror `08-parsing-process.md`:87), the counter only ever decreases
+    /// during decoding (:327), and § 8.2.4 (:342) requires `SymbolMaxBits >= -14` at
+    /// `exit_symbol()` — a zero-size tile starts at `-15`, below the floor, so the
+    /// defect is decidable from framing alone. Bridge tiles run no `init_symbol`
+    /// (§ 5.20.1 gates it on `!IsBridge`), so they are exempt.
+    ZeroSizeTile {
+        /// `TileNum` of the zero-size tile.
+        tile_num: u32,
+        /// Byte offset of the tile's (empty) data region within the payload region.
+        tile_data_offset: u64,
+    },
+    /// A non-last tile's `tileSize + TileSizeBytes` exceeds the remaining `sz`, so the
+    /// § 5.20.1 bookkeeping `sz -= tileSize + TileSizeBytes` (mirror :8571) would go
+    /// negative: the coded-tile region the size field claims runs past the bytes the
+    /// payload region still holds.
+    TileSizeOverflowsPayload {
+        /// `TileNum` of the overflowing tile.
+        tile_num: u32,
+        /// Byte offset of this tile's size field within the `tile_group_payload()` region.
+        size_field_offset: u64,
+        /// The coded `tileSize` (`tile_size_minus_1 + 1`).
+        tile_size: u64,
+        /// `TileSizeBytes` (the size-field width, included in the bookkeeping subtraction).
+        tile_size_bytes: u64,
+        /// The `sz` (remaining payload bytes) available when this tile was framed.
+        remaining: u64,
+    },
+}
+
+impl TileFramingDefect {
+    /// `TileNum` of the offending tile, for anchoring a diagnostic.
+    #[must_use]
+    pub const fn tile_num(self) -> u32 {
+        match self {
+            Self::SizeFieldTruncated { tile_num, .. }
+            | Self::TileSizeOverflowsPayload { tile_num, .. }
+            | Self::ZeroSizeTile { tile_num, .. } => tile_num,
+        }
+    }
+
+    /// Byte offset (within the `tile_group_payload()` region) of the offending tile's size
+    /// field, for anchoring a diagnostic at the defect site.
+    #[must_use]
+    pub const fn size_field_offset(self) -> u64 {
+        match self {
+            Self::SizeFieldTruncated {
+                size_field_offset, ..
+            }
+            | Self::TileSizeOverflowsPayload {
+                size_field_offset, ..
+            } => size_field_offset,
+            // A zero-size tile has no size field; its anchor is the (empty) data region.
+            Self::ZeroSizeTile {
+                tile_data_offset, ..
+            } => tile_data_offset,
+        }
+    }
+
+    /// A stable snake-case label for tools and JSON output.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SizeFieldTruncated { .. } => "size-field-truncated",
+            Self::TileSizeOverflowsPayload { .. } => "tile-size-overflows-payload",
+            Self::ZeroSizeTile { .. } => "zero-size-tile",
+        }
+    }
+}
+
+/// The result of parsing the § 5.20.1 per-tile framing over a `tile_group_payload()` region
+/// (AV2 v1.0.0 § 5.20.1, mirror :8553-8640).
+///
+/// `tiles` records the framing of every tile that could be framed before a defect (if any);
+/// a conformant tile group has one record per tile in `tg_start ..= tg_end` and `defect`
+/// is `None`. When a defect is found, `tiles` holds the records up to (but not including)
+/// the offending tile and `defect` carries the provable violation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TileGroupFraming {
+    /// Per-tile framing records, in `TileNum` order from `tg_start`.
+    pub tiles: Vec<TileFraming>,
+    /// The provable § 5.20.1 framing defect, or `None` for a conformant framing.
+    pub defect: Option<TileFramingDefect>,
+}
+
+/// Parses the § 5.20.1 per-tile framing of a `tile_group_payload()` region (AV2 v1.0.0
+/// § 5.20.1, mirror :8553-8640).
+///
+/// `payload` is the `tile_group_payload()` region — the `payload_size` bytes after the
+/// § 5.19 `byte_alignment()` (the structure's `payload_size`). `tg_start` / `tg_end` are the
+/// inclusive tile range (§ 5.19), `tile_size_bytes` is `TileSizeBytes` from the parsed
+/// `tile_info()` (§ 6.17.7.3; `1 ..= 4`), and `is_bridge` is the frame-level `IsBridge`.
+///
+/// The function walks the loop verbatim: each non-last, non-bridge tile reads
+/// `tile_size_minus_1 le(TileSizeBytes)` (mirror :8565), sets `tileSize = +1` (mirror :8569),
+/// and bookkeeps `sz -= tileSize + TileSizeBytes` (mirror :8571); the last tile takes the
+/// remaining `sz` (mirror :8557); a bridge frame's tiles read no size field and consume no
+/// bookkeeping (the `else if ( !IsBridge )` arm is skipped, mirror :8559). It records each
+/// tile's framing and stops at the first provable defect.
+///
+/// # § 8.2 residual (checkable-without-decoding)
+///
+/// `init_symbol(tileSize)` (mirror :8607) reads `f(Min(tileSize * 8, 15))` (§ 8.2.2) and
+/// sets `SymbolMaxBits = 8 * sz - 15` (08:87). The counter only ever decreases during
+/// decoding (08:327), and § 8.2.4 requires `SymbolMaxBits >= -14` at `exit_symbol()`
+/// (08:342) — so a zero-size non-bridge tile starts at `-15`, below the floor, and can
+/// never satisfy the exit requirement regardless of content: that violation IS decidable
+/// from framing alone and is reported here as [`TileFramingDefect::ZeroSizeTile`]
+/// (bridge tiles run no `init_symbol` and are exempt). The remaining `exit_symbol()`
+/// conformance for nonzero tiles (the exact `SymbolMaxBits` at exit; the trailing
+/// one-bit at `trailingBitPosition`) depends on the symbol decoder's consumption during
+/// `decode_tile()` and stays a named residual of `AV2-5.20-TILE-GROUP-PAYLOAD`.
+///
+/// # `IsBridge` / BRU residual
+///
+/// A bridge frame's tiles read no size field; the validator path that reaches this only does
+/// so for tile-group OBU types on the intra-complete path (where `IsBridge == 0` and
+/// `use_bru == 0`), so the bridge and `BruTileActive` arms (mirror :8585) are honest-stop
+/// residuals there. `is_bridge` is still honored here so the parser models the loop exactly.
+///
+/// This never errors and never panics; an undecidable / defective region is reported via
+/// [`TileGroupFraming::defect`].
+#[must_use]
+pub fn parse_tile_group_framing(
+    payload: &[u8],
+    tg_start: u32,
+    tg_end: u32,
+    tile_size_bytes: u32,
+    is_bridge: bool,
+) -> TileGroupFraming {
+    let region_len = payload.len() as u64;
+    // §5.18.7.2: TileSizeBytes = tile_size_bytes_minus_1 + 1 with a f(2) read, so the
+    // spec value space is 1..=4. This is a public function: a constructed out-of-spec
+    // value must not overflow the le() shift below (claude review, PR #68) — clamp to
+    // the spec ceiling; real parses can never exceed it.
+    let tsb = u64::from(tile_size_bytes.clamp(1, 4));
+    let mut tiles = Vec::new();
+
+    // §5.18.7.2 / §3: NumTiles = TileCols * TileRows <= MAX_TILE_COLS * MAX_TILE_ROWS,
+    // so no spec-conformant range exceeds 4096 tiles. This is a public function: an
+    // untrusted huge range (especially with is_bridge, which consumes no payload per
+    // tile) must not hang or exhaust memory (codex review, PR #68) — clamp the upper
+    // bound to the spec ceiling; real callers never exceed it.
+    let max_tiles = crate::tile::MAX_TILE_COLS * crate::tile::MAX_TILE_ROWS;
+    let tg_end = tg_end.min(tg_start.saturating_add(max_tiles - 1));
+
+    // `pos` is the running byte cursor into the region; `sz` is the §5.20.1 bookkeeping of
+    // bytes still unconsumed by framed tiles (mirror :8571). They stay in lockstep:
+    // sz == region_len - pos for the non-bridge path.
+    let mut pos = 0u64;
+    let mut sz = region_len;
+
+    // tg_end < tg_start cannot reach here (the §5.19 range checks gate it), but guard the
+    // empty range so the loop bound never underflows.
+    if tg_end < tg_start {
+        return TileGroupFraming {
+            tiles,
+            defect: None,
+        };
+    }
+
+    for tile_num in tg_start..=tg_end {
+        let last_tile = tile_num == tg_end;
+
+        if last_tile {
+            // §5.20.1 (:8555-8557): the last tile takes the remaining sz; no size field.
+            tiles.push(TileFraming {
+                tile_num,
+                size_field_offset: None,
+                tile_data_offset: pos,
+                tile_size: sz,
+            });
+            // A zero-size non-bridge tile can never satisfy §8.2.4's SymbolMaxBits >= -14
+            // exit floor (init at 8*0-15 = -15, monotone decreasing) — decidable from
+            // framing alone. Non-last non-bridge tiles always have tileSize >= 1 (the
+            // +1 in §5.20.1 :8569), so only the last tile can hit this.
+            if sz == 0 && !is_bridge {
+                return TileGroupFraming {
+                    tiles,
+                    defect: Some(TileFramingDefect::ZeroSizeTile {
+                        tile_num,
+                        tile_data_offset: pos,
+                    }),
+                };
+            }
+            // After this the loop ends; pos/sz are not used again.
+            break;
+        }
+
+        if is_bridge {
+            // §5.20.1 (:8559): a non-last bridge tile skips the `else if ( !IsBridge )` arm
+            // entirely — no size field is read and no bookkeeping subtraction happens. The
+            // tile data simply continues at the cursor; its size is not framed by a length
+            // field, so it is not knowable from framing alone (recorded as 0).
+            tiles.push(TileFraming {
+                tile_num,
+                size_field_offset: None,
+                tile_data_offset: pos,
+                tile_size: 0,
+            });
+            continue;
+        }
+
+        // §5.20.1 (:8565): tile_size_minus_1 le(TileSizeBytes). §4.11.5: le(n) reads exactly
+        // n bytes. If fewer than TileSizeBytes remain, the size field itself is truncated.
+        let size_field_offset = pos;
+        if pos.saturating_add(tsb) > region_len {
+            return TileGroupFraming {
+                tiles,
+                defect: Some(TileFramingDefect::SizeFieldTruncated {
+                    tile_num,
+                    size_field_offset,
+                    available: region_len.saturating_sub(pos),
+                }),
+            };
+        }
+
+        // Read le(TileSizeBytes) little-endian (§4.11.5). The bytes are present (checked
+        // above); tsb is clamped to the §5.18.7.2 value space 1..=4 at entry, so the
+        // value fits in u64 and the shift never overflows.
+        let mut tile_size_minus_1 = 0u64;
+        for i in 0..tsb {
+            let byte = payload[(pos + i) as usize];
+            tile_size_minus_1 |= u64::from(byte) << (i * 8);
+        }
+        let tile_size = tile_size_minus_1 + 1; // §5.20.1 (:8569): tileSize = +1.
+
+        // §5.20.1 (:8571): sz -= tileSize + TileSizeBytes. The subtraction must not go
+        // negative — the size field plus the coded tile must fit in the remaining sz.
+        let claimed = tile_size.saturating_add(tsb);
+        if claimed > sz {
+            return TileGroupFraming {
+                tiles,
+                defect: Some(TileFramingDefect::TileSizeOverflowsPayload {
+                    tile_num,
+                    size_field_offset,
+                    tile_size,
+                    tile_size_bytes: tsb,
+                    remaining: sz,
+                }),
+            };
+        }
+
+        tiles.push(TileFraming {
+            tile_num,
+            size_field_offset: Some(size_field_offset),
+            tile_data_offset: pos + tsb,
+            tile_size,
+        });
+        pos += claimed;
+        sz -= claimed;
+    }
+
+    TileGroupFraming {
+        tiles,
+        defect: None,
+    }
+}
+
 /// `NumFrameHeaderBits` plus the exact bits of a completed first frame header, recorded
 /// so a non-first tile group's `frame_header_copy()` can be checked bit-for-bit against
 /// it (AV2 v1.0.0 § 5.18.1, mirror :3924 / :3973-3981; § 6.17.1).
@@ -905,6 +1213,179 @@ mod tests {
         assert_eq!(s.header_bytes, Some(1));
         assert_eq!(s.payload_size, Some(0));
     }
+
+    // --- § 5.20.1 per-tile framing (parse_tile_group_framing) ---
+
+    /// Encodes `tile_size_minus_1` as a `TileSizeBytes`-byte little-endian `le(n)` field
+    /// (§ 4.11.5), the way a conformant tile group writes its tile size.
+    fn le_size_field(tile_size_minus_1: u64, tile_size_bytes: u32) -> Vec<u8> {
+        (0..tile_size_bytes)
+            .map(|i| ((tile_size_minus_1 >> (i * 8)) & 0xFF) as u8)
+            .collect()
+    }
+
+    #[test]
+    fn framing_single_tile_takes_whole_region_no_size_field() {
+        // A single-tile group: tg_start == tg_end == 0, the lone tile is the last tile and
+        // reads no size field — it takes the whole 5-byte region.
+        let region = vec![0xAA; 5];
+        let framing = parse_tile_group_framing(&region, 0, 0, 1, false);
+        assert_eq!(framing.defect, None);
+        assert_eq!(framing.tiles.len(), 1);
+        let t = framing.tiles[0];
+        assert_eq!(t.tile_num, 0);
+        assert_eq!(t.size_field_offset, None);
+        assert_eq!(t.tile_data_offset, 0);
+        assert_eq!(t.tile_size, 5);
+    }
+
+    #[test]
+    fn framing_multi_tile_records_sizes_and_offsets() {
+        // 3 tiles, TileSizeBytes = 2. Tiles 0,1 read le(2) size fields; tile 2 (last) takes
+        // the remainder. Tile0 size 3, tile1 size 2; region = [sf0(2)][d0(3)][sf1(2)][d1(2)]
+        // [last(remaining)]. Choose a 14-byte region so the last tile has 5 bytes.
+        let mut region = Vec::new();
+        region.extend(le_size_field(3 - 1, 2)); // tile0 tile_size_minus_1 = 2 -> tileSize 3
+        region.extend([0x10, 0x11, 0x12]); // tile0 data (3 bytes)
+        region.extend(le_size_field(2 - 1, 2)); // tile1 tile_size_minus_1 = 1 -> tileSize 2
+        region.extend([0x20, 0x21]); // tile1 data (2 bytes)
+        region.extend([0x30, 0x31, 0x32, 0x33, 0x34]); // tile2 (last) data (5 bytes)
+        assert_eq!(region.len(), 2 + 3 + 2 + 2 + 5);
+
+        let framing = parse_tile_group_framing(&region, 0, 2, 2, false);
+        assert_eq!(framing.defect, None);
+        assert_eq!(framing.tiles.len(), 3);
+
+        assert_eq!(framing.tiles[0].size_field_offset, Some(0));
+        assert_eq!(framing.tiles[0].tile_data_offset, 2);
+        assert_eq!(framing.tiles[0].tile_size, 3);
+
+        // tile1 size field sits after tile0's 2+3 = 5 bytes.
+        assert_eq!(framing.tiles[1].size_field_offset, Some(5));
+        assert_eq!(framing.tiles[1].tile_data_offset, 7);
+        assert_eq!(framing.tiles[1].tile_size, 2);
+
+        // tile2 (last) sits after tile1's 2+2 = 4 bytes -> offset 9, size = remaining 5.
+        assert_eq!(framing.tiles[2].size_field_offset, None);
+        assert_eq!(framing.tiles[2].tile_data_offset, 9);
+        assert_eq!(framing.tiles[2].tile_size, 5);
+    }
+
+    #[test]
+    fn framing_bridge_tiles_read_no_size_field() {
+        // A bridge frame: every tile (even non-last) reads no size field and consumes no
+        // bookkeeping. The framing records each tile at the cursor with size 0 (not framed).
+        let region = vec![0xCC; 8];
+        let framing = parse_tile_group_framing(&region, 0, 2, 2, true);
+        assert_eq!(framing.defect, None);
+        assert_eq!(framing.tiles.len(), 3);
+        // Non-last bridge tiles: no size field, cursor does not advance (size unknown == 0).
+        assert_eq!(framing.tiles[0].size_field_offset, None);
+        assert_eq!(framing.tiles[0].tile_size, 0);
+        assert_eq!(framing.tiles[1].size_field_offset, None);
+        // Last tile takes the whole remaining region (sz == region length, cursor at 0).
+        assert_eq!(framing.tiles[2].size_field_offset, None);
+        assert_eq!(framing.tiles[2].tile_size, 8);
+    }
+
+    #[test]
+    fn framing_flags_size_field_truncated() {
+        // 2 tiles, TileSizeBytes = 3, but the region is only 2 bytes — the first tile's
+        // le(3) size field cannot be read (truncated).
+        let region = vec![0x01, 0x02];
+        let framing = parse_tile_group_framing(&region, 0, 1, 3, false);
+        assert!(framing.tiles.is_empty());
+        assert_eq!(
+            framing.defect,
+            Some(TileFramingDefect::SizeFieldTruncated {
+                tile_num: 0,
+                size_field_offset: 0,
+                available: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn framing_flags_tile_size_overflows_payload() {
+        // 2 tiles, TileSizeBytes = 1. Tile0 codes tile_size_minus_1 = 250 -> tileSize 251,
+        // but the region is only 6 bytes: tileSize(251) + TileSizeBytes(1) = 252 > sz 6.
+        let mut region = Vec::new();
+        region.extend(le_size_field(250, 1)); // tile0 size field: tileSize = 251
+        region.extend([0u8; 5]); // 5 more bytes (far short of 251)
+        let framing = parse_tile_group_framing(&region, 0, 1, 1, false);
+        assert!(framing.tiles.is_empty());
+        assert_eq!(
+            framing.defect,
+            Some(TileFramingDefect::TileSizeOverflowsPayload {
+                tile_num: 0,
+                size_field_offset: 0,
+                tile_size: 251,
+                tile_size_bytes: 1,
+                remaining: 6,
+            })
+        );
+    }
+
+    #[test]
+    fn framing_exact_fit_two_tiles_is_conformant() {
+        // Boundary: tile0 size field + tile0 data + tile1 (last) data == region exactly.
+        // TileSizeBytes = 1, tile0 tileSize = 2 -> consumes 1 + 2 = 3; region = 4 bytes, so
+        // tile1 (last) takes the remaining 1 byte. The bookkeeping ends exactly at 0.
+        let mut region = Vec::new();
+        region.extend(le_size_field(2 - 1, 1)); // tile0 tileSize = 2
+        region.extend([0xA0, 0xA1]); // tile0 data
+        region.extend([0xB0]); // tile1 (last) data
+        assert_eq!(region.len(), 4);
+        let framing = parse_tile_group_framing(&region, 0, 1, 1, false);
+        assert_eq!(framing.defect, None);
+        assert_eq!(framing.tiles.len(), 2);
+        assert_eq!(framing.tiles[1].tile_size, 1); // last tile = remaining 1 byte
+    }
+
+    #[test]
+    fn framing_zero_size_last_tile_is_a_defect() {
+        // §8.2.2 (mirror 08:87): init_symbol(0) starts SymbolMaxBits at -15; the counter
+        // only decreases (08:327); §8.2.4 (08:342) requires >= -14 at exit_symbol() —
+        // unsatisfiable regardless of content, so a zero-size non-bridge tile is a
+        // framing-decidable defect (codex review, PR #68).
+        let mut region = Vec::new();
+        region.extend(le_size_field(2 - 1, 1)); // tile0 tileSize = 2 -> consumes 1 + 2 = 3
+        region.extend([0xA0, 0xA1]); // tile0 data; region length == 3, last tile gets 0
+        assert_eq!(region.len(), 3);
+        let framing = parse_tile_group_framing(&region, 0, 1, 1, false);
+        assert!(matches!(
+            framing.defect,
+            Some(TileFramingDefect::ZeroSizeTile { tile_num: 1, .. })
+        ));
+        assert_eq!(framing.tiles[1].tile_size, 0);
+    }
+
+    #[test]
+    fn framing_zero_size_last_bridge_tile_is_exempt() {
+        // Bridge tiles run no init_symbol (§5.20.1 gates it on !IsBridge), so the
+        // SymbolMaxBits argument does not apply: a zero-size bridge last tile frames
+        // cleanly.
+        let framing = parse_tile_group_framing(&[], 0, 0, 1, true);
+        assert_eq!(framing.defect, None);
+        assert_eq!(framing.tiles[0].tile_size, 0);
+    }
+
+    #[test]
+    fn framing_huge_range_is_bounded_by_the_spec_tile_ceiling() {
+        // A constructed 0..=u32::MAX range (especially with is_bridge, which consumes no
+        // payload per tile) must not hang or exhaust memory: the loop is clamped to the
+        // §3 MAX_TILE_COLS * MAX_TILE_ROWS ceiling (codex review, PR #68).
+        let framing = parse_tile_group_framing(&[], 0, u32::MAX, 1, true);
+        assert!(framing.tiles.len() <= 4096);
+    }
+
+    #[test]
+    fn framing_empty_range_records_nothing() {
+        // A degenerate tg_end < tg_start range (the §5.19 checks gate this) frames nothing.
+        let framing = parse_tile_group_framing(&[0u8; 4], 2, 1, 1, false);
+        assert!(framing.tiles.is_empty());
+        assert_eq!(framing.defect, None);
+    }
 }
 
 #[cfg(test)]
@@ -995,6 +1476,40 @@ mod proptests {
                 }
                 Err(crate::error::Error::InvalidByteAlignment { .. }) => {}
                 Err(other) => prop_assert!(false, "unexpected error: {other:?}"),
+            }
+        }
+
+        /// The §5.20.1 framing parser must never panic over arbitrary payload bytes, tile
+        /// ranges, TileSizeBytes, or IsBridge — and its recorded framing must stay within the
+        /// region (every recorded offset/size is bounded by the region length, and the
+        /// per-tile bookkeeping never overruns).
+        #[test]
+        fn parse_tile_group_framing_never_panics(
+            payload in proptest::collection::vec(any::<u8>(), 0..128),
+            tg_start in 0u32..=8,
+            tg_end in 0u32..=8,
+            tile_size_bytes in any::<u32>(),
+            is_bridge in any::<bool>(),
+        ) {
+            let framing =
+                parse_tile_group_framing(&payload, tg_start, tg_end, tile_size_bytes, is_bridge);
+            let region_len = payload.len() as u64;
+            // Every recorded non-bridge tile's framing stays inside the region: the size
+            // field (when present) and the coded-tile region both fit. Bridge tiles record a
+            // size of 0 (not framed), and the last tile's size is the remaining sz which is
+            // bounded by the region. The defect arms guarantee the loop stopped before any
+            // overrun, so the recorded tiles are always in-bounds.
+            for t in &framing.tiles {
+                if let Some(sf) = t.size_field_offset {
+                    prop_assert!(sf <= region_len);
+                }
+                prop_assert!(t.tile_data_offset <= region_len);
+                prop_assert!(t.tile_size <= region_len);
+                prop_assert!(t.tile_data_offset.saturating_add(t.tile_size) <= region_len);
+            }
+            // A defect's offset is within the region.
+            if let Some(defect) = framing.defect {
+                prop_assert!(defect.size_field_offset() <= region_len);
             }
         }
     }

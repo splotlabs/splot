@@ -39,8 +39,9 @@ use splot_core::headers::sequence::{
     SequenceHeaderId, TLayerDependencyMap, Tier, TimingInfo, parse_sequence_header,
 };
 use splot_core::headers::tile_group::{
-    FrameHeaderCopyOutcome, RecordedFrameHeaderBits, TileGroupLayout, TileGroupStructureOutcome,
-    parse_frame_header_copy, parse_tile_group_prefix, parse_tile_group_structure,
+    FrameHeaderCopyOutcome, RecordedFrameHeaderBits, TileFramingDefect, TileGroupLayout,
+    TileGroupStructureOutcome, parse_frame_header_copy, parse_tile_group_framing,
+    parse_tile_group_prefix, parse_tile_group_structure,
 };
 use splot_core::hls::{
     MAX_MFH_NUM, MfhId, MultiFrameHeaderRecord, MultistreamDecoderOperation, parse_msdo,
@@ -78,6 +79,47 @@ const MAX_FILM_GRAIN_SCALING_POINTS: u8 = 14;
 /// (Annex A.4 Table A.7 maps LevelIdx 4 to level 4.0, mirror line 281; the Table A.9
 /// NOTE, mirror lines 436-437, restricts High tier to "level 4.0 and above").
 const HIGH_TIER_MIN_LEVEL_IDX: u8 = 4;
+
+/// A coded frame's *first* tile group's recorded header, paired with the tile-layout facts
+/// every continuation tile group of the same coded frame needs to re-derive its §5.19
+/// `tile_group_obu()` structure (AV2 § 5.18.1 / § 5.19).
+///
+/// A non-first tile group carries `frame_header_copy()` (when `frame_header_present_flag ==
+/// 1`), not a fresh `tile_info()`: its `NumTiles` / `tileBits` / `TileSizeBytes` come from
+/// the coded frame's first tile group (§5.18.1). So the record carries both the first
+/// header's bits (for the §6.17.1 copy comparison) and that header's layout facts (for the
+/// §6.18 tg-range and §5.20.1 framing checks on every continuation). Captured from the same
+/// completed first-header core that records the bits, so the two are always consistent.
+#[derive(Debug, Clone)]
+struct FrameHeaderCopyRecord {
+    /// The first tile group's recorded `frame_header()` bits (`NumFrameHeaderBits`), for the
+    /// bit-for-bit `frame_header_copy()` comparison (§6.17.1).
+    header_bits: RecordedFrameHeaderBits,
+    /// `TileCols` from the first header's `tile_info()` (§5.18.7.2), for `NumTiles`.
+    tile_cols: u32,
+    /// `TileRows` from the first header's `tile_info()`, for `NumTiles`.
+    tile_rows: u32,
+    /// `TileColsLog2` from the first header's `tile_info()`, for `tileBits`.
+    tile_cols_log2: u8,
+    /// `TileRowsLog2` from the first header's `tile_info()`, for `tileBits`.
+    tile_rows_log2: u8,
+    /// `TileSizeBytes` from the first header's `tile_info()` (`None` when the single-tile
+    /// layout read no size field), for the §5.20.1 per-tile framing.
+    tile_size_bytes: Option<u32>,
+}
+
+impl FrameHeaderCopyRecord {
+    /// The first header's tile layout, as the [`TileGroupLayout`] the §5.19 structure parse
+    /// consumes for a continuation tile group.
+    fn layout(&self) -> TileGroupLayout {
+        TileGroupLayout::new(
+            self.tile_cols,
+            self.tile_rows,
+            self.tile_cols_log2,
+            self.tile_rows_log2,
+        )
+    }
+}
 
 /// Stateful validator data derived from parseable high-level syntax OBUs.
 #[derive(Debug, Default)]
@@ -353,7 +395,7 @@ pub(crate) struct ValidatorContext {
     /// re-records. Cleared at each global temporal delimiter (a coded frame does not span
     /// temporal units).
     frame_header_copy_record:
-        BTreeMap<(ExtendedLayerId, EmbeddedLayerId, TemporalLayerId), RecordedFrameHeaderBits>,
+        BTreeMap<(ExtendedLayerId, EmbeddedLayerId, TemporalLayerId), FrameHeaderCopyRecord>,
     /// Coded-extended-layer-unit constraints (§ 7.3.6) and the § 7.3.7 / § 7.4.6 DOH
     /// OrderHint / OrderHintBits checks; see [`CodedExtendedLayerTracker`]. Sits above
     /// the frame-unit segmenter (keyed per `obu_xlayer_id` across a temporal unit). Reset
@@ -5688,16 +5730,21 @@ impl ValidatorContext {
         }
     }
 
-    /// Records the bits of a first tile group's frame header when it parses to completion
-    /// (AV2 § 5.18.1 `NumFrameHeaderBits`). Returns `None` (record nothing → Unknown
-    /// routing) when the active sequence header is unavailable, the referenced header is
-    /// not the active one, the core parse did not reach
-    /// [`FrameHeaderParseStatus::IntraHeaderComplete`], or the bits cannot be re-read.
+    /// Records the bits AND tile layout of a first tile group's frame header when it parses
+    /// to completion (AV2 § 5.18.1 `NumFrameHeaderBits` + § 5.18.7.2 tile facts). Returns
+    /// `None` (record nothing → Unknown routing) when the active sequence header is
+    /// unavailable, the referenced header is not the active one, the core parse did not reach
+    /// [`FrameHeaderParseStatus::IntraHeaderComplete`], the bits cannot be re-read, or the
+    /// completed header carries no `tile_info()` (an `IntraHeaderComplete` core always parses
+    /// `tile_info()`, so the last case is defensive). The captured layout (`NumTiles` /
+    /// `tileBits` / `TileSizeBytes`) is what every *continuation* tile group of this coded
+    /// frame uses to re-derive its §5.19 structure (§5.18.1: a non-first tile group reads
+    /// `frame_header_copy()`, not a fresh `tile_info()`).
     fn record_first_frame_header(
         &self,
         obu: &ObuEnvelope<'_>,
         first_picture_in_tu: bool,
-    ) -> Option<RecordedFrameHeaderBits> {
+    ) -> Option<FrameHeaderCopyRecord> {
         let core = self.frame_core_against_referenced_header(obu, first_picture_in_tu)?;
         // Only a fully-consumed first header has a known NumFrameHeaderBits boundary. The
         // SEF/show-existing-frame completion is not reachable here: a tile-group first header
@@ -5708,6 +5755,11 @@ impl ValidatorContext {
         if core.status != FrameHeaderParseStatus::IntraHeaderComplete {
             return None;
         }
+        // The IntraHeaderComplete core always parsed tile_info() (the same fact the first
+        // tile group's range/framing checks rely on); capture the tile layout the
+        // continuation tile groups need. A missing tile_info would leave the continuation
+        // structure undecidable, so record nothing rather than guess a layout.
+        let tile_info = core.tile_info.as_ref()?;
         // The recorded bits are the frame_header() syntax — starting AFTER the
         // tile_group_obu() is_first_tile_group flag (§ 6.17.1 mirror :4303-4305: the copy
         // excludes the bits sent before frame_header). Re-read from the payload at that
@@ -5718,7 +5770,15 @@ impl ValidatorContext {
         if reader.read_bit().ok()? == 0 {
             return None;
         }
-        RecordedFrameHeaderBits::record(&mut reader, core.consumed_bits).ok()
+        let header_bits = RecordedFrameHeaderBits::record(&mut reader, core.consumed_bits).ok()?;
+        Some(FrameHeaderCopyRecord {
+            header_bits,
+            tile_cols: tile_info.tile_cols,
+            tile_rows: tile_info.tile_rows,
+            tile_cols_log2: tile_info.tile_cols_log2,
+            tile_rows_log2: tile_info.tile_rows_log2,
+            tile_size_bytes: tile_info.tile_size_bytes,
+        })
     }
 
     /// Parses a frame-bearing OBU's [`FrameHeaderCore`] against the layer's active sequence
@@ -14492,10 +14552,51 @@ fn tile_group_range_checks(
         tile_info.tile_cols_log2,
         tile_info.tile_rows_log2,
     );
-    let num_tiles = layout.num_tiles;
     // sz is the OBU payload size in bytes (§5.2.1); obu.payload is exactly that slice.
     let sz = obu.payload.len() as u64;
-    let Ok(structure) = parse_tile_group_structure(&mut reader, layout, sz) else {
+    // The reader sits exactly past frame_header() (the same span parse_frame_core consumes);
+    // parse the §5.19 remainder and run the §6.18 range + §5.20.1 framing checks. is_first is
+    // true here, so the FIRST-tile-group tg_start == 0 clause is enforced.
+    tile_group_structure_checks(
+        obu,
+        &mut reader,
+        layout,
+        tile_info.tile_size_bytes,
+        sz,
+        true,
+        report,
+    );
+}
+
+/// Parses the §5.19 `tile_group_obu()` structure that follows `frame_header()` /
+/// `frame_header_copy()` and emits the locally decidable §6.18 tile-group-range and
+/// §5.20.1 tile-payload framing diagnostics (AV2 v1.0.0 §5.19 / §6.18 / §5.20.1).
+///
+/// `reader` must be positioned at the first bit **after** the optional `frame_header()`
+/// (first tile group) or `frame_header_copy()` / `frame_header_present_flag == 0` flag
+/// (non-first tile group), and constructed at the OBU payload start so
+/// [`parse_tile_group_structure`] derives `headerBytes` from `reader.consumed_bits()`.
+/// `layout` is the coded frame's tile layout (always the FIRST tile group's `tile_info()`,
+/// §5.18.1), `tile_size_bytes_field` is that header's `TileSizeBytes`, and `sz` is the OBU
+/// payload size in bytes.
+///
+/// `is_first` gates the FIRST-tile-group `tg_start == 0` clause (§6.18 mirror :6215-6216):
+/// it is `true` for the first tile group (`TileNum == 0`) and `false` for a continuation,
+/// whose `tg_start == previous tg_end + 1` needs prior-tile-group state the segmenter does
+/// not thread (residual: tile-group-continuity-across-groups). The `tg_end >= tg_start`,
+/// `tg_end <= NumTiles - 1`, byte-alignment, truncation, and framing clauses apply to every
+/// tile group and run for both.
+fn tile_group_structure_checks(
+    obu: &ObuEnvelope<'_>,
+    reader: &mut BitReader<'_>,
+    layout: TileGroupLayout,
+    tile_size_bytes_field: Option<u32>,
+    sz: u64,
+    is_first: bool,
+    report: &mut ValidationReport,
+) {
+    let num_tiles = layout.num_tiles;
+    let Ok(structure) = parse_tile_group_structure(reader, layout, sz) else {
         // The only non-EOF error is a §6.2.4 byte_alignment() zero-bit defect. The
         // byte_alignment() reachability is owned by AV2-5.2.4-BYTE-ALIGNMENT and the
         // tile-group dispatch does not yet route that diagnostic to this OBU; surface it
@@ -14532,8 +14633,10 @@ fn tile_group_range_checks(
 
     // §6.18 (mirror :6215-6216): tg_start of the FIRST tile group equals TileNum == 0.
     // Only the explicit-range path (tile_start_and_end_present_flag == 1) can violate it;
-    // the inferred path sets tg_start = 0 by construction.
-    if structure.tile_start_and_end_present_flag && structure.tg_start != 0 {
+    // the inferred path sets tg_start = 0 by construction. A continuation tile group's
+    // tg_start is `previous tg_end + 1` (cross-group continuity the segmenter does not
+    // thread), so this clause is gated on the first tile group only.
+    if is_first && structure.tile_start_and_end_present_flag && structure.tg_start != 0 {
         report.push(frame_header_error(
             "tile-group/first-tg-start-not-zero",
             "6.18",
@@ -14586,6 +14689,166 @@ fn tile_group_range_checks(
     // NumTiles is still independently a §6.18 bounds defect worth its own anchor only when
     // the first-tg-start-not-zero rule did not already fire — which it always does for any
     // nonzero tg_start. So no separate tg_start-bounds rule is emitted for the first group.
+
+    // §5.20.1 (mirror :8553-8640): once the §5.19 structure is COMPLETE and the tg-range is
+    // self-consistent, parse the per-tile framing over the tile_group_payload() region and
+    // flag the provable framing defects (AV2-5.20-TILE-GROUP-PAYLOAD). Skip when the range is
+    // not self-consistent (the §6.18 diagnostics above already own that), so framing never
+    // runs over a meaningless tile count.
+    if structure.tg_end < structure.tg_start || (num_tiles > 0 && structure.tg_end > num_tiles - 1)
+    {
+        return;
+    }
+    tile_group_framing_checks(obu, &structure, tile_size_bytes_field, report);
+}
+
+/// Emits the locally decidable § 5.20.1 tile-payload framing diagnostics for a COMPLETE
+/// § 5.19 tile-group structure (AV2 v1.0.0 § 5.20.1, mirror :8553-8640;
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1`).
+///
+/// The framing slice is decidable from the bytes alone: each non-last, non-bridge tile reads
+/// `tile_size_minus_1 le(TileSizeBytes)` (§ 4.11.5: exactly `TileSizeBytes` bytes) and
+/// bookkeeps `sz -= tileSize + TileSizeBytes` (mirror :8571); the last tile takes the
+/// remaining `sz` (mirror :8557). Two arms are provable framing defects:
+///
+/// - **`tile-payload/size-field-truncated`** — the `le(TileSizeBytes)` size field of a
+///   non-last tile runs past the payload region (§ 4.11.5 / § 6.2.1);
+/// - **`tile-payload/tile-size-overflows-payload`** — a non-last tile's
+///   `tileSize + TileSizeBytes` exceeds the remaining `sz`, so the mirror :8571 subtraction
+///   would go negative.
+///
+/// - **`tile-payload/zero-size-tile`** — a zero-size non-bridge tile: `init_symbol(0)`
+///   starts `SymbolMaxBits` at `8*0-15 = -15` (§ 8.2.2, mirror 08:87), the counter only
+///   decreases (08:327), and § 8.2.4 requires `>= -14` at `exit_symbol()` (08:342) —
+///   unsatisfiable regardless of content, so it is framing-decidable.
+///
+/// Named residuals (NOT framing checks; owned by `AV2-5.20-TILE-GROUP-PAYLOAD` / its child
+/// rows): the `exit_symbol()` conformance for NONZERO tiles (the exact exit value, the
+/// trailing one-bit at `trailingBitPosition`, § 8.2.4) depends on the symbol decoder's
+/// consumption during `decode_tile()`. The `IsBridge` / `BruTileActive` arms (mirror
+/// :8559 / :8585) are dead on this intra-complete tile-group path (`IsBridge == 0`,
+/// `use_bru == 0`).
+fn tile_group_framing_checks(
+    obu: &ObuEnvelope<'_>,
+    structure: &splot_core::headers::tile_group::TileGroupStructure,
+    tile_size_bytes_field: Option<u32>,
+    report: &mut ValidationReport,
+) {
+    // The framing needs headerBytes / payload_size (the byte-aligned region boundary) and
+    // TileSizeBytes. headerBytes/payload_size are Some only on the Complete path.
+    let (Some(header_bytes), Some(payload_size)) = (structure.header_bytes, structure.payload_size)
+    else {
+        return;
+    };
+
+    // TileSizeBytes is present only when (TileCols > 1 || TileRows > 1) (§5.18.7.2). When it
+    // is absent the frame is a single tile, so this tile group's only tile is the last tile
+    // and reads no size field — the framing is trivially the whole region as one tile. When
+    // it is absent but the range spans >1 tile, the size-field width is unknown (an
+    // unparsed/ambiguous layout) — stay silent. A present, in-domain (1..=4) value frames the
+    // multi-tile case.
+    let num_tiles_in_group = u64::from(structure.tg_end - structure.tg_start) + 1;
+    let tile_size_bytes = match tile_size_bytes_field {
+        Some(tsb) if (1..=4).contains(&tsb) => tsb,
+        // Single-tile group with no size field: frame the whole region as the lone tile.
+        None if num_tiles_in_group == 1 => 1,
+        // Multi-tile group with no / out-of-domain TileSizeBytes: undecidable, stay silent.
+        _ => return,
+    };
+
+    // The tile_group_payload() region is the payload_size bytes after the §5.19
+    // byte_alignment(), i.e. starting at headerBytes into the OBU payload. Bound the slice
+    // defensively (the structure's payload_size is sz - headerBytes, already within the OBU
+    // payload, but a slice out of range must never panic).
+    let start = usize::try_from(header_bytes).unwrap_or(usize::MAX);
+    let end = usize::try_from(header_bytes.saturating_add(payload_size)).unwrap_or(usize::MAX);
+    let Some(region) = obu.payload.get(start..end.min(obu.payload.len())) else {
+        return;
+    };
+
+    // IsBridge is always 0 on this path: tile_group_range_checks only reaches here for an
+    // is_tile_group() OBU on the intra-complete path (a BRIDGE frame is its own OBU type, not
+    // a tile-group type, and the intra path never enters the FrameType==INTER_FRAME BRU gate).
+    let framing = parse_tile_group_framing(
+        region,
+        structure.tg_start,
+        structure.tg_end,
+        tile_size_bytes,
+        false,
+    );
+
+    let Some(defect) = framing.defect else {
+        return;
+    };
+
+    // Anchor at the offending tile's size-field byte offset within the bitstream:
+    // payload_offset + headerBytes + the offset within the tile_group_payload() region.
+    let region_base = obu.payload_offset().get().saturating_add(header_bytes);
+    let anchor = ByteOffset::new(region_base.saturating_add(defect.size_field_offset()));
+
+    match defect {
+        TileFramingDefect::SizeFieldTruncated {
+            tile_num,
+            available,
+            ..
+        } => {
+            report.push(
+                Diagnostic::error(
+                    "tile-payload/size-field-truncated",
+                    format!(
+                        "the §5.20.1 tile_group_payload() size field for TileNum={tile_num} is \
+                         truncated: tile_size_minus_1 le(TileSizeBytes={tile_size_bytes}) needs \
+                         {tile_size_bytes} bytes but only {available} remain in the payload \
+                         region (§4.11.5 reads exactly TileSizeBytes bytes; §6.2.1 the OBU \
+                         payload must contain every mandatory tile syntax element)"
+                    ),
+                )
+                .with_spec_section("5.20.1")
+                .with_byte_offset(anchor),
+            );
+        }
+        TileFramingDefect::TileSizeOverflowsPayload {
+            tile_num,
+            tile_size,
+            tile_size_bytes: tsb,
+            remaining,
+            ..
+        } => {
+            report.push(
+                Diagnostic::error(
+                    "tile-payload/tile-size-overflows-payload",
+                    format!(
+                        "the §5.20.1 tile_group_payload() framing for TileNum={tile_num} \
+                         overflows the payload region: tileSize={tile_size} + \
+                         TileSizeBytes={tsb} exceeds the {remaining} bytes still available, so \
+                         the bookkeeping sz -= tileSize + TileSizeBytes (mirror :8571) would go \
+                         negative"
+                    ),
+                )
+                .with_spec_section("5.20.1")
+                .with_byte_offset(anchor),
+            );
+        }
+        TileFramingDefect::ZeroSizeTile { tile_num, .. } => {
+            report.push(
+                Diagnostic::error(
+                    "tile-payload/zero-size-tile",
+                    format!(
+                        "the §5.20.1 tile_group_payload() framing gives TileNum={tile_num} a \
+                         zero-size coded tile: init_symbol(0) starts SymbolMaxBits at -15 \
+                         (§8.2.2, mirror 08:87) and the counter only decreases, so the \
+                         §8.2.4 exit_symbol() requirement SymbolMaxBits >= -14 (mirror 08:342) \
+                         can never be satisfied"
+                    ),
+                )
+                .with_spec_section("8.2.4")
+                .with_byte_offset(anchor),
+            );
+        }
+        // `TileFramingDefect` is `#[non_exhaustive]`; a future framing defect with no
+        // established conformance meaning is silent rather than guessed (zero false positives).
+        _ => {}
+    }
 }
 
 /// Emits the locally decidable § 6.17.7.2 tile-info diagnostics for a parsed frame
@@ -15176,33 +15439,48 @@ fn frame_film_grain_reference_checks(
     }
 }
 
-/// Parses a non-first tile group's `frame_header_copy()` region and compares it
-/// bit-for-bit against the recorded first header (AV2 § 5.18.1 / § 6.17.1).
+/// Parses a non-first tile group's `frame_header_copy()` region and the §5.19
+/// `tile_group_obu()` structure that follows it, comparing the copy bit-for-bit against the
+/// recorded first header (AV2 § 5.18.1 / § 6.17.1) and running the same §6.18 tg-range /
+/// §5.20.1 framing checks as the first tile group (AV2 § 5.19 / § 6.18 / § 5.20.1).
 ///
 /// `obu` is the non-first tile-group OBU; `recorded` is its coded frame's first tile
-/// group's recorded header bits. The function re-reads the `tile_group_obu()` prefix
-/// (`is_first_tile_group`, `frame_header_present_flag`), positions at the copy region, and:
+/// group's record (header bits + tile layout). The function re-reads the `tile_group_obu()`
+/// prefix (`is_first_tile_group`, `frame_header_present_flag`), then handles BOTH arms:
 ///
-/// - emits `frame-header/copy-bits-mismatch` (§ 6.17.1) when a copied `header_bit[i]`
-///   differs from the first header's bit at offset `i` — the conformance requirement that
-///   the copy be bit-identical — anchored at the precise byte+bit of the offending
-///   `header_bit` (the copy-region start translated through `mismatch_bit`), not the OBU
-///   header;
-/// - emits `frame-header/copy-bits-truncated` (§ 5.18.1 / § 6.2.1) when the payload ends
-///   before all `NumFrameHeaderBits` copy bits could be read.
+/// - **`frame_header_present_flag == 1`** — a `frame_header_copy()` region of exactly
+///   `NumFrameHeaderBits` follows (§5.18.1). It is compared bit-for-bit and:
+///   - emits `frame-header/copy-bits-mismatch` (§ 6.17.1) at the first differing
+///     `header_bit[i]`, anchored at the precise byte+bit of that bit (not the OBU header);
+///   - emits `frame-header/copy-bits-truncated` (§ 5.18.1 / § 6.2.1) when the payload ends
+///     before all `NumFrameHeaderBits` copy bits could be read.
+/// - **`frame_header_present_flag == 0`** — NO copy region; the §5.19 structure starts
+///   right after the flag.
 ///
-/// It is silent when the copy matches, and a no-op when the prefix is not the expected
-/// non-first-with-header shape (a flag/EOF the caller's segmenter has already judged).
+/// In BOTH arms, when the reader's position past the (absent or matched-or-mismatched) copy
+/// region is exact — which it always is, since `NumFrameHeaderBits` is known — the §5.19
+/// structure remainder (`tile_start_and_end_present_flag` gated on `NumTiles > 1`,
+/// `tg_start` / `tg_end`, `byte_alignment()`) and the §5.20.1 per-tile framing are parsed
+/// over the recorded first header's layout, so a malformed continuation payload fires the
+/// same `tile-group/*` and `tile-payload/*` diagnostics as the first tile group. The
+/// continuity-dependent FIRST-tile-group `tg_start == 0` clause does NOT run for a
+/// continuation (`is_first == false`). A `copy-bits-mismatch` does NOT suppress the framing
+/// checks: the bit position past the copy region is still exact (the copy is exactly
+/// `NumFrameHeaderBits` whether or not its content matches), so the structure remains
+/// decidable. After a `copy-bits-truncated` the payload has ended inside the copy region, so
+/// no structure bits remain and the framing checks do not run.
+///
+/// It is a no-op when the prefix is not the expected non-first shape, or the payload is too
+/// short even for the prefix flags (a flag/EOF the caller's segmenter has already judged).
 fn check_frame_header_copy(
     obu: &ObuEnvelope<'_>,
-    recorded: &RecordedFrameHeaderBits,
+    recorded: &FrameHeaderCopyRecord,
     report: &mut ValidationReport,
 ) {
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
     // tile_group_obu(): is_first_tile_group must be 0 here (the segmenter reported a
-    // continuation), and frame_header_present_flag is then read. A non-first tile group with
-    // frame_header_present_flag == 0 carries no copy (nothing to check). Any read failure
-    // leaves the copy unparsed (the payload is too short even for the prefix flags).
+    // continuation), and frame_header_present_flag is then read. Any read failure leaves the
+    // structure unparsed (the payload is too short even for the prefix flags).
     let Ok(is_first) = reader.read_bit() else {
         return;
     };
@@ -15214,8 +15492,23 @@ fn check_frame_header_copy(
     let Ok(frame_header_present) = reader.read_bit() else {
         return;
     };
+    // sz is the OBU payload size in bytes (§5.2.1); obu.payload is exactly that slice.
+    let sz = obu.payload.len() as u64;
     if frame_header_present == 0 {
-        // frame_header_present_flag == 0: no frame_header_copy() in this tile group.
+        // frame_header_present_flag == 0: NO frame_header_copy() in this tile group. The §5.19
+        // structure begins right after the flag, so the reader is already positioned at it.
+        // Run the same §6.18 tg-range / §5.20.1 framing checks (is_first == false: the
+        // continuity-dependent tg_start == 0 clause is skipped) using the recorded first
+        // header's layout (§5.18.1: the continuation has no tile_info() of its own).
+        tile_group_structure_checks(
+            obu,
+            &mut reader,
+            recorded.layout(),
+            recorded.tile_size_bytes,
+            sz,
+            false,
+            report,
+        );
         return;
     }
 
@@ -15228,7 +15521,12 @@ fn check_frame_header_copy(
     let start_byte = reader.byte_offset();
     let start_bit = u64::from(reader.bit_offset().get());
 
-    match parse_frame_header_copy(&mut reader, recorded) {
+    // The copy outcome determines whether the §5.19 structure that follows the copy region is
+    // still decidable. Matches / Mismatch both consumed exactly NumFrameHeaderBits (the reader
+    // sits precisely at the structure start), so the structure checks run; Truncated means the
+    // payload ended inside the copy, leaving no structure bits, so they do not.
+    let copy_outcome = parse_frame_header_copy(&mut reader, &recorded.header_bits);
+    match copy_outcome {
         FrameHeaderCopyOutcome::Matches => {}
         FrameHeaderCopyOutcome::Mismatch { mismatch_bit } => {
             // Translate the copy-region start (2 prefix bits already consumed) + mismatch_bit
@@ -15250,7 +15548,7 @@ fn check_frame_header_copy(
                          {mismatch_bit} of the first frame header (NumFrameHeaderBits == {}); \
                          the differing bit is at byte {mismatch_byte}, bit {mismatch_bit_in_byte} \
                          (MSB-first) of the OBU payload",
-                        recorded.num_frame_header_bits()
+                        recorded.header_bits.num_frame_header_bits()
                     ),
                 )
                 .with_spec_section("6.17.1")
@@ -15267,7 +15565,7 @@ fn check_frame_header_copy(
                     "the OBU payload ends inside frame_header_copy() after {available_bits} of \
                      {} header_bit f(1) reads; frame_header( isFirst == 0 ) must contain exactly \
                      NumFrameHeaderBits copied bits (§ 5.18.1), read from the § 6.2.1 OBU payload",
-                    recorded.num_frame_header_bits()
+                    recorded.header_bits.num_frame_header_bits()
                 ),
             ));
         }
@@ -15275,6 +15573,60 @@ fn check_frame_header_copy(
         // established conformance meaning is silent rather than guessed (zero false positives).
         _ => {}
     }
+
+    // §5.19 (mirror :8465-8527): the structure remainder follows the copy region. The
+    // structure starts at a fixed bit position — the 2 tile_group_obu() prefix bits plus
+    // exactly NumFrameHeaderBits — whether or not the copy content matched, so a malformed
+    // continuation payload is decidable on BOTH Matches and Mismatch (the after-mismatch
+    // decision: the bit boundary is exact even when the bits differ, so framing still runs).
+    // After Truncated the payload ended inside the copy region (fewer than NumFrameHeaderBits
+    // bits), so no structure bits remain and the structure stays unparsed.
+    //
+    // The live `reader` cannot be reused for the structure: parse_frame_header_copy
+    // short-circuits at the first differing bit on a Mismatch, leaving the reader mid-copy.
+    // Re-seek a fresh reader to the exact structure start instead so both arms parse from the
+    // right position.
+    if matches!(
+        copy_outcome,
+        FrameHeaderCopyOutcome::Matches | FrameHeaderCopyOutcome::Mismatch { .. }
+    ) {
+        // 2 prefix bits (is_first_tile_group + frame_header_present_flag) + NumFrameHeaderBits.
+        let structure_start_bit = 2u64.saturating_add(recorded.header_bits.num_frame_header_bits());
+        let mut structure_reader = BitReader::new(obu.payload, obu.payload_offset());
+        if skip_bits(&mut structure_reader, structure_start_bit) {
+            tile_group_structure_checks(
+                obu,
+                &mut structure_reader,
+                recorded.layout(),
+                recorded.tile_size_bytes,
+                sz,
+                false,
+                report,
+            );
+        }
+        // If the OBU payload is shorter than the copy region the live parse already returned
+        // Truncated (we are not in this arm); skip_bits failing here would mean the same, so
+        // there is nothing to parse.
+    }
+}
+
+/// Advances `reader` by exactly `bits` bits, returning `true` when all `bits` were available
+/// and `false` (leaving the reader at end of input) when the payload ran out first.
+///
+/// Used to re-seek a fresh [`BitReader`] to a known bit position without re-reading field
+/// contents (e.g. past a `frame_header_copy()` region of `NumFrameHeaderBits` bits). Reads in
+/// up-to-32-bit chunks so a long region does not loop bit-by-bit, respecting
+/// [`BitReader::read_bits`]'s 32-bit cap.
+fn skip_bits(reader: &mut BitReader<'_>, bits: u64) -> bool {
+    let mut remaining = bits;
+    while remaining > 0 {
+        let chunk = remaining.min(32) as u32;
+        if reader.read_bits(chunk).is_err() {
+            return false;
+        }
+        remaining -= u64::from(chunk);
+    }
+    true
 }
 
 /// Builds a frame-header reference diagnostic located at `obu`.

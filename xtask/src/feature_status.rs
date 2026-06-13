@@ -169,6 +169,7 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
     "frame-header/",
     "frame-unit/",
     "tile-group/",
+    "tile-payload/",
     "tile-params/",
     "lcr/",
     "atlas/",
