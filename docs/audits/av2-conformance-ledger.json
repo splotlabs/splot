@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "b6077f2389467495fffd23dd3e341c436c780bae",
+  "audited_commit": "bacc68a4954df06e98b663c33964473b8d11b9bf",
   "outcome": "success",
   "files": [
     {
@@ -331,7 +331,7 @@
     },
     {
       "path": "crates/splot-cli/tests/conformance.rs",
-      "sha256": "5e2a473c14c4e8609e871ebb8ffb4217116eb8b3b0d3a4ae8c9115db6f5c68cc",
+      "sha256": "86854c3f742f38a7468f8aa6af3a8ccd92bb85af048466ef9b319edb9c78c0f8",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "CONF-AVM-VALID-STREAMS"
@@ -3894,7 +3894,7 @@
     },
     {
       "path": "xtask/src/conformance.rs",
-      "sha256": "2d6123d3aed626823a35538ccb4635df766137a586b5b1adfba8076d0f7557a6",
+      "sha256": "7f4f7418153d0f156927d2b84de9c295fcbd5d0d0b7fd3a094a75af6e5d904d2",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
