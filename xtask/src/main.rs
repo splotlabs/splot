@@ -18,6 +18,7 @@ mod diagnostic_registry;
 mod feature_status;
 mod gen_tables;
 mod git_util;
+mod source_lines;
 
 use audit_scope::{AuditScopeFormat, AuditScopeOptions};
 use feature_status::{CoverageFormat, StatusFormat};
@@ -93,6 +94,8 @@ enum Task {
     },
     /// Verify every tracked `.rs` file starts with the SPDX license header.
     CheckLicenseHeaders,
+    /// Verify Rust source files stay within the repository source-line budget.
+    CheckSourceLines,
     /// Verify member crates honor the one-way dependency direction.
     CheckDependencyDirection,
     /// Verify the committed AV2 spec mirror matches its CHECKSUMS and provenance.
@@ -182,6 +185,7 @@ fn main() -> Result<()> {
         }
         Task::CheckConventionalTitle { title } => check_conventional_title(&title),
         Task::CheckLicenseHeaders => check_license_headers(&workspace_root()?),
+        Task::CheckSourceLines => source_lines::check_source_lines(&workspace_root()?),
         Task::CheckDependencyDirection => check_dependency_direction(&workspace_root()?),
         Task::CheckSpecMirror => check_spec_mirror(&workspace_root()?),
         Task::CheckDiagnosticRegistry => {
@@ -261,6 +265,7 @@ fn run_ci() -> Result<()> {
 
     let root = workspace_root()?;
     check_license_headers(&root)?;
+    source_lines::check_source_lines(&root)?;
     check_dependency_direction(&root)?;
     check_spec_mirror(&root)?;
     check_fuzz_targets(&root)?;
