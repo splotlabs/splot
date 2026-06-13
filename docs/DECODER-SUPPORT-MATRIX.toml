@@ -72,6 +72,20 @@ local_reference_evidence = []
 notes = "Approved workspace scaffolds for future reconstruction primitives and the future decode driver. `splot-recon` has no `splot-*` dependencies; `splot-decode` may depend only on `splot-core` and `splot-recon` once runtime decode source needs them. The crates expose no runtime reconstruction or byte-consuming decode API and do not invoke AVM/dav2d. The current unsupported diagnostic API is tracked by `decode-unsupported-diagnostic-api`."
 
 [[row]]
+id = "decoded-frame-plane-runtime-types"
+name = "Decoded frame and plane runtime types"
+feature_id = "INFRA-RECON-FRAME-PLANE-TYPES"
+spec_sections = ["6.4.1", "6.17.4.1", "6.17.4.4", "7.1", "7.21.1", "7.21.2", "7.23"]
+parser_source = "crates/splot-core/src/headers/sequence.rs; crates/splot-core/src/headers/frame/info.rs"
+decode_module = "crates/splot-recon/src/format.rs; crates/splot-recon/src/geometry.rs; crates/splot-recon/src/plane.rs; crates/splot-recon/src/frame.rs"
+tier = "foundation"
+status = "supported"
+self_contained_tests = ["crates/splot-recon/src/format.rs::tests", "crates/splot-recon/src/geometry.rs::tests", "crates/splot-recon/src/plane.rs::tests", "crates/splot-recon/src/frame.rs::tests", "cargo test -p splot-recon --locked", "cargo clippy -p splot-recon --all-targets --locked -- -D warnings", "cargo xtask check-dependency-direction", "cargo xtask check-decoder-support"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Source-backed immutable decoded output model in `splot-recon`: `BitDepth`, `PixelFormat`, `PlaneId`, `OutputIndex`, `PlaneSize`, `PlaneRect`, `Plane<T>`, `FramePlanes<T>`, `DecodedFrameInfo`, `DecodedFrame<T>`, `ReconSample`, and `ReconError`. Constructors enforce AV2-derived bit-depth/chroma mappings, positive dimensions, crop bounds/alignment, stride, checked sample/byte accounting, exact backing length, plane presence/shape, sample type, and sample range. No byte-consuming decode, reconstruction algorithm, frame hash, Y4M output, reference-frame-store behavior, AVM/dav2d invocation, or dependency graph change is included."
+
+[[row]]
 id = "decode-unsupported-diagnostic-api"
 name = "Decode unsupported diagnostic API"
 feature_id = "DECODE-UNSUPPORTED-DIAGNOSTIC-API"
@@ -149,11 +163,11 @@ spec_sections = ["6.4.1", "6.17.4.1", "6.17.4.4", "7.1", "7.21.1", "7.21.2", "7.
 parser_source = "crates/splot-core/src/headers/sequence.rs; crates/splot-core/src/headers/frame/info.rs"
 decode_module = "docs/DECODER-ROADMAP.md"
 tier = "foundation"
-status = "partial"
-self_contained_tests = ["openspec validate --all --no-interactive", "cargo xtask check-decoder-support"]
-diagnostics = ["decode/resource-limit (planned)"]
+status = "supported"
+self_contained_tests = ["openspec validate --all --no-interactive", "cargo test -p splot-recon --locked", "cargo xtask check-decoder-support"]
+diagnostics = []
 local_reference_evidence = []
-notes = "Contract-only future `DecodedFrame`, `Plane<T>`, `PixelFormat`, and `BitDepth` policy: separates cropped §7.21 output frames from padded §7.23 reference storage, derives format from §6.4.1, requires explicit storage dimensions and `stride_samples`, records a splot-owned zero-based output emission index, excludes padding from hashes, Y4M, and fixtures, requires checked sample and byte allocation arithmetic, charges full backing allocations against limits, and keeps emitted output immutable through immutable sharing, owned copies, or copy-on-write before mutation. No runtime frame or plane types exist yet."
+notes = "Source-backed decoded-frame and plane model contract: `splot-recon` now provides immutable output model types while the contract continues to separate cropped §7.21 output frames from padded §7.23 reference storage, derive format from §6.4.1, require explicit storage dimensions and `stride_samples`, record a splot-owned zero-based output emission index, exclude padding from hashes, Y4M, and fixtures, require checked sample and byte accounting, reserve `DecodeLimits` charging and `decode/resource-limit` emission for future byte-consuming decode code, and keep emitted output immutable. Runtime decode, frame hashes, Y4M, and reference-frame-store behavior remain unimplemented."
 
 [[row]]
 id = "deterministic-frame-hash"
