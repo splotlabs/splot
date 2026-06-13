@@ -8,9 +8,9 @@ Matrix version 1. Last reviewed 2026-06-13. 22 row(s).
 
 | Status | Rows |
 |---|---:|
-| `todo` | 7 |
+| `todo` | 6 |
 | `partial` | 4 |
-| `supported` | 10 |
+| `supported` | 11 |
 | `unsupported-intentional` | 1 |
 | `blocked` | 0 |
 
@@ -47,5 +47,5 @@ Matrix version 1. Last reviewed 2026-06-13. 22 row(s).
 | `tile-payload-decode` | Tile payload decode boundary | none | `tier1-intra` | `todo` | 5.20<br>7.1<br>8.3 | none | decode/unsupported-feature (planned) | none | `planned` |
 | `intra-reconstruction` | Scalar intra reconstruction | none | `tier1-intra` | `todo` | 7.13<br>7.14<br>7.15 | none | decode/unsupported-feature (planned) | none | `planned` |
 | `output-y4m` | Y4M output | none | `tier1-intra` | `todo` | 7.21 | none | none | none | `planned` |
-| `reference-frame-store` | Reconstructed reference-frame store | none | `encoder-reuse` | `todo` | 7.23 | none | none | none | `planned` |
+| `reference-frame-store` | Reconstructed reference-frame store | `RECON-REFERENCE-FRAME-STORE` | `encoder-reuse` | `supported` | 3<br>5.4.6<br>6.4.6<br>7.23 | crates/splot-recon/src/reference.rs::tests<br>cargo test -p splot-recon --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/reference.rs` |
 | `decode-fuzz-entrypoint` | Decode fuzz entry point | none | `foundation` | `todo` | none | none | none | none | `planned` |

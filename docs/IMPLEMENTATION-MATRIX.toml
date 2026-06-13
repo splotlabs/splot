@@ -4901,6 +4901,53 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-REFERENCE-FRAME-STORE"
+name = "Reference frame store runtime model"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["3", "5.4.6", "6.4.6", "7.23"]
+sources = [
+    "docs/spec/av2/1.0.0/03-symbols.md#s-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-6",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-6",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-23",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/reference.rs"
+openspec_change = "recon-reference-frame-store"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a source-backed dependency-free runtime reference-slot container in `splot-recon`: `ReferenceSlot` with `MAX_SLOTS == 16` (AV2 §3 NUM_REF_FRAMES), generic `ReferenceFrameStore<F>` with validated `1..=16` capacity, bounds-checked `put`/`get`/`take`, `clear`, occupancy, and immutable ascending slot-order entries over caller-owned frame payloads. The generic payload avoids coupling future reconstructed-reference storage to output-emission metadata. This is storage infrastructure only: it does not implement active NumRefFrames/ActiveNumRefFrames, RefValid, refresh_frame_flags, output scheduling, show-existing deduplication, motion vectors, CDFs, grain params, segment IDs, global motion state, CCSO params, byte-consuming decode, resource diagnostics, external decoder invocation, or dependency graph changes."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-recon/src/reference.rs::tests"]
+commands = [
+    "cargo test -p splot-recon --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "crates/splot-recon/src/reference.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "DECODE-LIMITS-RUNTIME-API"
 name = "Decode limits runtime API"
 category = "infrastructure"

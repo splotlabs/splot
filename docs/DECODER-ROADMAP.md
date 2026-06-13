@@ -30,9 +30,9 @@ pure checks, but no byte-consuming enforcement exists yet. The planned
 The workspace now includes scaffolded `splot-recon` and `splot-decode` crates
 for future reconstruction primitives and the future decode driver.
 `splot-recon` now exposes immutable decoded output frame and plane model types
-with constructor invariants, but no reconstruction algorithm, byte-consuming
-decode path, frame hash computation, Y4M output, or reference-frame-store
-runtime behavior exists yet.
+with constructor invariants plus a bounded immutable reference-slot container,
+but no reconstruction algorithm, byte-consuming decode path, frame hash
+computation, Y4M output, or AV2 reference refresh semantics exists yet.
 
 Canonical decoder status lives in
 [`DECODER-SUPPORT-MATRIX.toml`](./DECODER-SUPPORT-MATRIX.toml), rendered to
@@ -109,7 +109,7 @@ other external decoder is forbidden.
 | 6 | AV2 § 8 symbol/CDF decoder foundation | planned |
 | 7 | Constrained intra tile syntax | planned |
 | 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | planned |
-| 9 | Y4M output and reconstructed reference-frame store | planned |
+| 9 | Y4M output and reconstructed reference-frame store | reference-slot runtime store supported; Y4M and AV2 refresh semantics planned |
 | 10 | Portable local-reference evidence manifests | metadata contract and offline checker wired; no entries yet |
 | 11 | Encoder reconstruction API contract | planned |
 
@@ -215,13 +215,17 @@ PlaneRect
 PixelFormat
 BitDepth
 OutputIndex
+ReferenceSlot
+ReferenceFrameStore<F>
+ReferenceFrameEntry<'a, F>
+ReferenceFrameEntries<'a, F>
 ReconError
 ```
 
 This is a committed Rust output-model API, not a byte-consuming decode API.
-The model validates AV2-derived frame/plane geometry and sample storage but
-does not reconstruct pixels, compute hashes, write Y4M, or store reference
-frames.
+The model validates AV2-derived frame/plane geometry, sample storage, and
+reference-slot container bounds, but does not reconstruct pixels, compute
+hashes, write Y4M, or implement AV2 reference refresh semantics.
 
 `PixelFormat` is derived from AV2 § 6.4.1 `chroma_format_idc`:
 
@@ -281,6 +285,27 @@ chroma) and records reference metadata such as `RefFrameWidth`,
 `RefOutputOrder`, `RefOrderHint`, and `RefFilmGrainPresent`. Future APIs must
 not treat cropped output-frame dimensions and reference-store backing dimensions
 as interchangeable.
+
+The source-backed `splot-recon` reference store is a safe runtime container for
+future callers that have already derived AV2 reference update decisions:
+
+- `ReferenceSlot::MAX_SLOTS == 16`, matching AV2 § 3 `NUM_REF_FRAMES`;
+- `ReferenceSlot::new` validates indices in `0..16`;
+- `ReferenceFrameStore<F>::with_capacity` validates a fixed capacity in
+  `1..=16`;
+- `put`, `get`, `take`, `clear`, `occupied`, and `entries` manage immutable
+  caller-owned frame payloads without exposing mutable frame access;
+- entries iterate occupied slots in ascending `ReferenceSlot` order.
+
+The payload type is intentionally generic so future reference/reconstruction
+payloads do not need to fabricate output-emission metadata just to live in the
+store. This runtime store does not model active `NumRefFrames` or
+`ActiveNumRefFrames` from § 5.4.6 / § 6.4.6, AV2 `RefValid`,
+`refresh_frame_flags`, output scheduling, show-existing deduplication, motion
+vectors, CDFs, grain params, segment IDs, global motion state, CCSO params, or
+any other § 7.23 metadata. Future byte-consuming decode code must translate
+parsed AV2 state into store operations and charge allocations against
+`DecodeLimits` before storing frames.
 
 Emitted output frames must remain immutable and valid after emission. Reference
 slots may own or share reconstructed buffers, but overwriting a reference slot
@@ -402,8 +427,9 @@ crates/splot-cli       thin CLI rendering splot-decode diagnostics
 ```
 
 The scaffold is still an ownership boundary for decode. `splot-recon` exposes a
-runtime decoded output frame/plane model, but no reconstruction algorithm,
-reference-frame store, deterministic hash, or Y4M writer. `splot-decode`
-exposes no byte-consuming decode API, `splot-cli` only renders the current
-unsupported diagnostic path, and `splot-encode` remains unchanged until a later
-encoder/reconstruction API change explicitly adds reuse of `splot-recon`.
+runtime decoded output frame/plane model and reference-slot container, but no
+reconstruction algorithm, AV2 reference refresh process, deterministic hash, or
+Y4M writer. `splot-decode` exposes no byte-consuming decode API, `splot-cli`
+only renders the current unsupported diagnostic path, and `splot-encode` remains
+unchanged until a later encoder/reconstruction API change explicitly adds reuse
+of `splot-recon`.

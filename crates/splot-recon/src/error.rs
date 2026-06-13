@@ -5,7 +5,7 @@
 
 use core::fmt;
 
-use crate::{BitDepth, PlaneId, PlaneRect, PlaneSize};
+use crate::{BitDepth, PlaneId, PlaneRect, PlaneSize, ReferenceSlot};
 
 /// Result alias used by `splot-recon` constructors and helpers.
 pub type Result<T> = core::result::Result<T, ReconError>;
@@ -103,6 +103,27 @@ pub enum ReconError {
         /// Maximum sample value allowed by the active bit depth.
         max: u16,
     },
+    /// A reference frame store capacity was outside the supported slot range.
+    InvalidReferenceStoreCapacity {
+        /// Requested store capacity.
+        capacity: usize,
+        /// Maximum supported store capacity.
+        max_slots: usize,
+    },
+    /// A reference slot index was outside the source-backed slot ceiling.
+    InvalidReferenceSlotIndex {
+        /// Requested reference slot index.
+        index: usize,
+        /// Maximum supported slot count.
+        max_slots: usize,
+    },
+    /// A valid reference slot was outside a particular store's capacity.
+    ReferenceSlotOutOfBounds {
+        /// Requested reference slot.
+        slot: ReferenceSlot,
+        /// Store capacity used for the bounds check.
+        capacity: usize,
+    },
 }
 
 impl fmt::Display for ReconError {
@@ -193,6 +214,21 @@ impl fmt::Display for ReconError {
                 f,
                 "plane {} sample {sample_index} value {value} exceeds maximum {max}",
                 plane.name()
+            ),
+            Self::InvalidReferenceStoreCapacity {
+                capacity,
+                max_slots,
+            } => write!(
+                f,
+                "reference frame store capacity {capacity} is outside 1..={max_slots}"
+            ),
+            Self::InvalidReferenceSlotIndex { index, max_slots } => {
+                write!(f, "reference slot index {index} is outside 0..{max_slots}")
+            }
+            Self::ReferenceSlotOutOfBounds { slot, capacity } => write!(
+                f,
+                "reference slot {} is outside store capacity {capacity}",
+                slot.index()
             ),
         }
     }

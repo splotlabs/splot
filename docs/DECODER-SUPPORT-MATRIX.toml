@@ -181,7 +181,7 @@ status = "supported"
 self_contained_tests = ["openspec validate --all --no-interactive", "cargo test -p splot-recon --locked", "cargo xtask check-decoder-support"]
 diagnostics = []
 local_reference_evidence = []
-notes = "Source-backed decoded-frame and plane model contract: `splot-recon` now provides immutable output model types while the contract continues to separate cropped §7.21 output frames from padded §7.23 reference storage, derive format from §6.4.1, require explicit storage dimensions and `stride_samples`, record a splot-owned zero-based output emission index, exclude padding from hashes, Y4M, and fixtures, require checked sample and byte accounting, reserve `DecodeLimits` charging and `decode/resource-limit` emission for future byte-consuming decode code, and keep emitted output immutable. Runtime decode, frame hashes, Y4M, and reference-frame-store behavior remain unimplemented."
+notes = "Source-backed decoded-frame and plane model contract: `splot-recon` now provides immutable output model types while the contract continues to separate cropped §7.21 output frames from padded §7.23 reference storage, derive format from §6.4.1, require explicit storage dimensions and `stride_samples`, record a splot-owned zero-based output emission index, exclude padding from hashes, Y4M, and fixtures, require checked sample and byte accounting, reserve `DecodeLimits` charging and `decode/resource-limit` emission for future byte-consuming decode code, and keep emitted output immutable. Runtime decode, frame hashes, Y4M, and AV2 refresh and reference semantics remain unimplemented; the source-backed runtime store is tracked separately by the `reference-frame-store` row."
 
 [[row]]
 id = "deterministic-frame-hash"
@@ -284,16 +284,16 @@ notes = "Y4M output is useful after deterministic hashes are defined and tested.
 [[row]]
 id = "reference-frame-store"
 name = "Reconstructed reference-frame store"
-feature_id = ""
-spec_sections = ["7.23"]
-parser_source = "planned"
-decode_module = "planned"
+feature_id = "RECON-REFERENCE-FRAME-STORE"
+spec_sections = ["3", "5.4.6", "6.4.6", "7.23"]
+parser_source = "n/a"
+decode_module = "crates/splot-recon/src/reference.rs"
 tier = "encoder-reuse"
-status = "todo"
-self_contained_tests = []
+status = "supported"
+self_contained_tests = ["crates/splot-recon/src/reference.rs::tests", "cargo test -p splot-recon --locked", "cargo clippy -p splot-recon --all-targets --locked -- -D warnings", "cargo xtask check-dependency-direction", "cargo xtask check-decoder-support"]
 diagnostics = []
 local_reference_evidence = []
-notes = "Future decoder-owned pixel reference slots; validator-private fact tracking is not reusable enough for reconstruction."
+notes = "Source-backed `splot-recon` runtime reference-slot container for immutable caller-owned frame payloads: `ReferenceSlot::MAX_SLOTS == 16` (AV2 §3 NUM_REF_FRAMES), generic `ReferenceFrameStore<F>` payload ownership, slot construction and store capacity validation, bounds-checked `put`, `get`, and `take`, `clear`, occupancy tracking, and ascending slot-order immutable `entries` iteration. The payload is generic so future reconstructed-reference payloads do not need output-emission metadata. This is a safe storage model only: it does not model active NumRefFrames or ActiveNumRefFrames, RefValid, refresh_frame_flags, output scheduling, show-existing deduplication, motion vectors, CDFs, grain params, segment IDs, global motion state, CCSO params, byte-consuming decode, `decode/resource-limit` emission, or AVM/dav2d invocation."
 
 [[row]]
 id = "decode-fuzz-entrypoint"
