@@ -192,7 +192,10 @@ fn build_splot_binary(root: &Path) -> Result<PathBuf> {
         Some(dir) => root.join(dir),
         None => root.join("target"),
     };
-    let candidate = target_dir.join("debug").join("splot");
+    // Cargo names the binary with the platform executable suffix (`.exe` on
+    // Windows, empty elsewhere).
+    let bin_name = format!("splot{}", std::env::consts::EXE_SUFFIX);
+    let candidate = target_dir.join("debug").join(bin_name);
     if candidate.is_file() {
         Ok(candidate)
     } else {

@@ -624,6 +624,7 @@ fn scope_kind(path: &str, workspace_members: &[WorkspaceMember]) -> Option<Strin
         }
         _ if path.starts_with("docs/") => Some("docs".to_owned()),
         _ if path.starts_with("openspec/") => Some("openspec".to_owned()),
+        _ if path.starts_with("tests/conformance/") => Some("conformance-corpus".to_owned()),
         _ if path.starts_with("fuzz/") => Some("fuzz".to_owned()),
         _ if path.starts_with("scripts/") => Some("automation".to_owned()),
         _ if path.starts_with(".github/workflows/") => Some("automation".to_owned()),

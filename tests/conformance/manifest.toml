@@ -36,7 +36,7 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-key-inter-64x64.ivf"
-description = "Key frame plus three inter frames (IVF, 64x64) from project-owned synthetic input; validates clean."
+description = "Key frame plus two inter frames (IVF, 64x64) from project-owned synthetic input; validates clean."
 expect = "clean"
 
 [[vector]]
