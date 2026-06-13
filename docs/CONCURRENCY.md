@@ -53,14 +53,14 @@ crate reaches parallelism through `splot-parallel`'s API.
 The following are banned anywhere under `crates/` (the gate scans crate source,
 test-aware):
 
-- **Competing runtimes / libraries:** `tokio`, `futures` (`futures-core`,
-  `futures-util`, `futures-executor`), `async-std`, `threadpool`,
-  `scoped_threadpool`, `flume`, `async-channel`. No crate may depend on any of
-  them.
+- **Competing runtimes / libraries:** `tokio`, `futures` / any `futures-*`,
+  `async-std`, `threadpool`, `scoped_threadpool`, `flume`, `async-channel`, and
+  any `crossbeam` / `crossbeam-*` crate except the approved `crossbeam-channel`.
+  No crate may depend on any of them.
 - **`std::sync::mpsc` for codec pipelines** — use a bounded crossbeam queue
   instead.
-- **Unbounded channels** — `crossbeam_channel::unbounded` and any
-  `unbounded_queue` helper.
+- **Unbounded channels** — any import/call form of
+  `crossbeam_channel::unbounded` and any `unbounded_queue` helper.
 - **Ad-hoc `thread::spawn`** outside tests — use the local `WorkerPool`.
 - **The Rayon global pool / `ThreadPoolBuilder::build_global`** — use a local
   owned `WorkerPool`.
@@ -108,8 +108,9 @@ follow it so it scales with `--threads` and stays deterministic:
 2. **Drive every parallel iterator inside `WorkerPool::install`.** A parallel
    iterator written at the top level runs on Rayon's *global* pool — it will not
    use the context's configured workers and will not scale with `--threads`. The
-   gate flags a file that uses a `par_iter` / `par_chunks` / `par_bridge` call but
-   never calls `install`.
+   gate flags `par_iter` / `par_chunks` / `par_bridge` and the re-exported
+   parallel slice helpers (`par_windows`, `par_sort*`, …) when they are outside
+   an `install` closure.
 3. **Use indexed iterators and collect in order** for determinism (see §6).
 
 The canonical shape (works from any codec crate; no direct `rayon` dependency):
@@ -183,8 +184,9 @@ fn run(pool: &WorkerPool, items: &[Item]) -> Vec<Output> {
 - Aliased imports that could hide one of those calls (e.g. `use std::thread as t;`
   or `use crossbeam_channel as cc;`) are flagged at the rename declaration.
 - Outside `splot-parallel`, a Rayon parallel-iteration call (`par_iter`,
-  `par_chunks`, `par_bridge`) must sit inside a `WorkerPool::install` closure — a
-  call outside any `install` closure is flagged (tracked by brace depth), since it
+  `par_chunks`, `par_bridge`) or re-exported parallel slice helper (`par_windows`,
+  `par_sort*`, …) must sit inside a `WorkerPool::install` closure — a call outside
+  any `install` closure is flagged (tracked by brace/parenthesis depth), since it
   would run on the global pool and not scale with `--threads`.
 
 The source scan is a line-based **defense-in-depth** check: it does not perform

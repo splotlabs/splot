@@ -20,9 +20,10 @@
 //! Aliased imports that could hide such a call (for example `use std::thread as t;`
 //! or `use crossbeam_channel as cc;`) are flagged at the rename declaration. And
 //! outside `splot-parallel`, a Rayon parallel-iteration call (`par_iter`,
-//! `par_chunks`, `par_bridge`) must sit inside a `WorkerPool::install` closure: a
-//! call outside any `install` closure is flagged, since it would run on Rayon's
-//! global pool and would not scale with the configured thread count. The
+//! `par_chunks`, `par_bridge`, or the re-exported slice `par_*` helpers) must sit
+//! inside a `WorkerPool::install` closure: a call outside any `install` closure is
+//! flagged, since it would run on Rayon's global pool and would not scale with
+//! the configured thread count. The
 //! source scan is a line-based defense-in-depth check: it does not resolve multi-hop
 //! re-exports, so the dependency-direction gate and code review remain the backstop.
 //!
@@ -98,12 +99,14 @@ const BUILD_GLOBAL: &str = concat!("build", "_global");
 
 /// Unbounded-channel needles — banned anywhere under `crates/`. Covers the qualified
 /// path, the bare call (any import form, e.g. `use crossbeam_channel::{unbounded};`
-/// then `unbounded()`), the aliased import (`unbounded as ub`), and the helper
-/// identifier. Only `splot-parallel` may depend on `crossbeam-channel`, and it must
-/// stay bounded-only, so none of these belongs in any crate.
+/// then `unbounded()` / `unbounded::<T>()`), the braced or aliased import
+/// (`unbounded as ub`), and the helper identifier. Only `splot-parallel` may depend
+/// on `crossbeam-channel`, and it must stay bounded-only, so none of these belongs
+/// in any crate.
 const UNBOUNDED_NEEDLES: &[&str] = &[
     concat!("crossbeam_channel::", "unbounded"),
     concat!("unbounded", "("),
+    concat!("unbounded", "::"),
     concat!("unbounded", " as "),
     "unbounded_queue",
 ];
@@ -121,17 +124,17 @@ const STD_MPSC_NEEDLES: &[&str] = &[
 ];
 
 /// Ad-hoc OS-thread-spawn needles — banned outside tests (the local `WorkerPool`
-/// owns every worker thread). Covers the bare `spawn` call (catches
-/// `std::thread::spawn` and `use std::thread::spawn; spawn(...)`), the
-/// `thread::Builder` form (`Builder::new().spawn(...)`), and the two `std::thread`
+/// owns every worker thread). Covers direct and imported `spawn`, the
+/// `thread::Builder` form (`Builder::new().spawn(...)`), and the `std::thread`
 /// alias forms (`use std::thread as t;`, `use std::thread::{self as t};`) that would
-/// otherwise hide an aliased `t::spawn`. Scoped to full paths so numeric casts such
-/// as `worker_thread as u32` are never matched.
+/// otherwise hide an aliased `t::spawn`. Scoped to full paths / import declarations
+/// so numeric casts such as `worker_thread as u32` are never matched.
 const THREAD_SPAWN_NEEDLES: &[&str] = &[
     concat!("thread::", "spawn"),
     concat!("thread::", "Builder"),
     concat!("std::thread", " as "),
     concat!("std::thread::{", "self"),
+    concat!("std::thread::{", "spawn"),
 ];
 
 /// Aliasing the `crossbeam_channel` crate (`use crossbeam_channel as cc;`) — flagged
@@ -156,10 +159,15 @@ const RAYON_GLOBAL_NEEDLES: &[&str] = &[
 /// Rayon parallel-iteration entry points. Calling one of these *outside*
 /// `WorkerPool::install` silently runs on Rayon's implicit **global** pool, so the
 /// work would not scale with the context's configured worker count. The substring
-/// `par_iter` also matches `into_par_iter` / `par_iter_mut`.
+/// `par_iter` also matches `into_par_iter` / `par_iter_mut`; the other tokens cover
+/// the slice helpers re-exported by `splot_parallel::prelude`.
 const PAR_ITER_TOKENS: &[&str] = &[
     concat!("par", "_iter"),
     concat!("par", "_chunks"),
+    concat!("par", "_rchunks"),
+    concat!("par", "_windows"),
+    concat!("par", "_split"),
+    concat!("par", "_sort"),
     concat!("par", "_bridge"),
 ];
 
@@ -177,6 +185,72 @@ const PARALLEL_CRATE_PREFIX: &str = "crates/splot-parallel/";
 /// legitimate case where the `install` scoping lives in a different file. Empty by
 /// default; add a path with a documented reason rather than weakening the rule.
 const PAR_ITER_RULE_ALLOWLIST: &[&str] = &[];
+
+/// Returns the unbounded-channel source needle matched in `text`, including braced
+/// import forms such as `use crossbeam_channel::{bounded, unbounded};`.
+fn unbounded_channel_needle(text: &str) -> Option<&'static str> {
+    UNBOUNDED_NEEDLES
+        .iter()
+        .copied()
+        .find(|needle| text.contains(*needle))
+        .or_else(|| {
+            contains_braced_use_item(text, "crossbeam_channel::{", "unbounded")
+                .then_some("crossbeam_channel::{unbounded}")
+        })
+}
+
+/// Returns the ad-hoc OS-thread source needle matched in `text`.
+fn thread_spawn_needle(text: &str) -> Option<&'static str> {
+    THREAD_SPAWN_NEEDLES
+        .iter()
+        .copied()
+        .find(|needle| text.contains(*needle))
+        .or_else(|| {
+            contains_braced_use_item(text, "std::thread::{", "spawn")
+                .then_some("std::thread::{spawn}")
+        })
+}
+
+/// Returns the Rayon global-pool source needle matched in `text`, including braced
+/// import forms such as `use rayon::{join};`.
+fn rayon_global_needle(text: &str) -> Option<&'static str> {
+    RAYON_GLOBAL_NEEDLES
+        .iter()
+        .copied()
+        .find(|needle| text.contains(*needle))
+        .or_else(|| {
+            [
+                "spawn",
+                "join",
+                "scope",
+                "in_place_scope",
+                "broadcast",
+                "yield_now",
+                "yield_local",
+            ]
+            .into_iter()
+            .find(|item| contains_braced_use_item(text, "rayon::{", item))
+        })
+}
+
+/// Detects a single-line braced `use` item. This intentionally stays small and
+/// conservative; it only needs to catch review-reported bypass forms.
+fn contains_braced_use_item(text: &str, prefix: &str, item: &str) -> bool {
+    let Some(start) = text.find(prefix) else {
+        return false;
+    };
+    let after_prefix = &text[start + prefix.len()..];
+    let Some(close) = after_prefix.find('}') else {
+        return false;
+    };
+    after_prefix[..close].split(',').any(|part| {
+        let part = part.trim();
+        part == item
+            || part
+                .strip_prefix(item)
+                .is_some_and(|suffix| suffix.starts_with(" as ") || suffix.starts_with("::"))
+    })
+}
 
 /// One workspace crate's manifest, reduced to its direct dependency crate names
 /// (resolved real names, deduplicated across dependency tables).
@@ -268,7 +342,7 @@ pub(crate) fn evaluate_concurrency_policy(
         }
 
         // Rule 6: banned unbounded channels — any import/call/alias/helper form.
-        if let Some(needle) = UNBOUNDED_NEEDLES.iter().find(|n| line.text.contains(**n)) {
+        if let Some(needle) = unbounded_channel_needle(&line.text) {
             violations.push(format!(
                 "{where_at}: unbounded channels (`{needle}`) are banned; use a bounded crossbeam queue"
             ));
@@ -285,9 +359,7 @@ pub(crate) fn evaluate_concurrency_policy(
         // alias forms) is banned outside tests; the local `WorkerPool` owns every
         // worker thread. Test lines are exempt.
         if !line.in_test
-            && let Some(needle) = THREAD_SPAWN_NEEDLES
-                .iter()
-                .find(|n| line.text.contains(**n))
+            && let Some(needle) = thread_spawn_needle(&line.text)
         {
             violations.push(format!(
                 "{where_at}: ad-hoc OS-thread spawning (`{needle}`) is banned outside tests; use the local `WorkerPool`"
@@ -305,10 +377,7 @@ pub(crate) fn evaluate_concurrency_policy(
         // Rule 11: Rayon global-pool entry points (free functions) — banned everywhere,
         // including `splot-parallel`. They run on Rayon's implicit global registry; use
         // the owned `WorkerPool`/`ThreadPool` scoped methods (e.g. `install`) instead.
-        if let Some(needle) = RAYON_GLOBAL_NEEDLES
-            .iter()
-            .find(|n| line.text.contains(**n))
-        {
+        if let Some(needle) = rayon_global_needle(&line.text) {
             violations.push(format!(
                 "{where_at}: Rayon global-pool entry point (`{needle}`) is banned; run work through the local `WorkerPool`, not Rayon's global pool"
             ));
@@ -321,19 +390,22 @@ pub(crate) fn evaluate_concurrency_policy(
     // each file in order and track whether the current line is lexically inside an
     // `install(...)` closure with a brace-depth tracker (same heuristic as the
     // cfg(test) detector): an `install(` that opens a net brace pushes a scope until
-    // the matching `}`; a multi-line `install(` whose `{` lands on a later line arms a
-    // pending scope. `splot-parallel`, test lines, and allowlisted files are exempt; a
-    // par-iter on the same line as the `install(` counts as inside.
+    // the matching `}`; a multi-line `install(` whose closure body lands on a later
+    // line arms a pending scope until the call's parentheses close. `splot-parallel`,
+    // test lines, and allowlisted files are exempt; a par-iter on the same line as
+    // the `install(` counts as inside.
     let mut current_path: &str = "";
     let mut depth: i32 = 0;
     let mut install_stack: Vec<i32> = Vec::new();
     let mut pending_install = false;
+    let mut pending_install_paren_depth: i32 = 0;
     for line in sources {
         if line.path.as_str() != current_path {
             current_path = line.path.as_str();
             depth = 0;
             install_stack.clear();
             pending_install = false;
+            pending_install_paren_depth = 0;
         }
         let opens_install = line.text.contains(INSTALL_CALL);
         let inside_install = !install_stack.is_empty() || opens_install || pending_install;
@@ -350,19 +422,27 @@ pub(crate) fn evaluate_concurrency_policy(
         }
         let pre_depth = depth;
         depth += brace_delta(&line.text);
+        let paren_change = paren_delta(&line.text);
         if opens_install {
             if depth > pre_depth {
                 install_stack.push(pre_depth);
                 pending_install = false;
+                pending_install_paren_depth = 0;
             } else {
                 // A multi-line `install(` whose closure `{` lands on a later line.
-                pending_install = true;
+                pending_install_paren_depth = paren_change.max(0);
+                pending_install = pending_install_paren_depth > 0;
             }
         } else if pending_install {
+            pending_install_paren_depth += paren_change;
             if depth > pre_depth {
                 install_stack.push(pre_depth);
+                pending_install = false;
+                pending_install_paren_depth = 0;
+            } else if pending_install_paren_depth <= 0 {
+                pending_install = false;
+                pending_install_paren_depth = 0;
             }
-            pending_install = false;
         }
         while let Some(&entry) = install_stack.last() {
             if depth <= entry {
@@ -500,7 +580,7 @@ fn collect_source_lines(root: &Path) -> Result<Vec<SourceLine>> {
                     .unwrap_or(&path)
                     .to_string_lossy()
                     .replace('\\', "/");
-                let file_in_tests = display.contains("/tests/");
+                let file_in_tests = is_test_source_file(&display);
                 let contents = std::fs::read_to_string(&path)
                     .with_context(|| format!("failed to read {}", path.display()))?;
                 scan_source_text(&display, &contents, file_in_tests, &mut sources);
@@ -518,6 +598,11 @@ fn is_skipped_source_dir(path: &Path) -> bool {
         path.file_name().and_then(|name| name.to_str()),
         Some("target" | ".git")
     )
+}
+
+/// Returns whether a source path is test-only by repository layout convention.
+fn is_test_source_file(display: &str) -> bool {
+    display.contains("/tests/") || display.ends_with("/tests.rs")
 }
 
 /// Splits `contents` into [`SourceLine`]s, marking lines as test code and skipping
@@ -640,6 +725,14 @@ fn scan_source_lines(contents: &str, file_in_tests: bool) -> Vec<ScannedLine> {
 fn brace_delta(line: &str) -> i32 {
     let opens = line.matches('{').count() as i32;
     let closes = line.matches('}').count() as i32;
+    opens - closes
+}
+
+/// Net parenthesis delta of a line: `(` count minus `)` count. Coarse and
+/// comment/string unaware, matching the surrounding line-based scanner.
+fn paren_delta(line: &str) -> i32 {
+    let opens = line.matches('(').count() as i32;
+    let closes = line.matches(')').count() as i32;
     opens - closes
 }
 
@@ -866,6 +959,29 @@ mod tests {
     }
 
     #[test]
+    fn par_iter_after_expression_install_is_a_violation() {
+        let src = [
+            line_at(
+                "crates/splot-encode/src/x.rs",
+                10,
+                "    pool.install(|| work());",
+                false,
+            ),
+            line_at(
+                "crates/splot-encode/src/x.rs",
+                11,
+                "    let v: Vec<_> = items.par_iter().collect();",
+                false,
+            ),
+        ];
+        let violations = evaluate_concurrency_policy(&[], &src);
+        assert!(
+            violations.iter().any(|v| v.contains("WorkerPool::install")),
+            "a par-iter after a one-line install expression must be flagged, got {violations:?}"
+        );
+    }
+
+    #[test]
     fn par_iter_inside_install_closure_is_ok() {
         let src = [
             line_at(
@@ -885,6 +1001,29 @@ mod tests {
         assert!(
             evaluate_concurrency_policy(&[], &src).is_empty(),
             "a par-iter inside the install closure must be accepted"
+        );
+    }
+
+    #[test]
+    fn par_iter_inside_multiline_expression_install_is_ok() {
+        let src = [
+            line_at(
+                "crates/splot-encode/src/x.rs",
+                10,
+                "    pool.install(||",
+                false,
+            ),
+            line_at(
+                "crates/splot-encode/src/x.rs",
+                11,
+                "        items.par_iter().count()",
+                false,
+            ),
+            line_at("crates/splot-encode/src/x.rs", 12, "    );", false),
+        ];
+        assert!(
+            evaluate_concurrency_policy(&[], &src).is_empty(),
+            "a par-iter inside a multi-line install expression must be accepted"
         );
     }
 
@@ -922,6 +1061,26 @@ mod tests {
         assert!(
             spawn_line.in_test,
             "thread-spawn line inside a #[cfg(test)] module should be in_test"
+        );
+    }
+
+    #[test]
+    fn external_tests_rs_file_is_test_code() {
+        let token = concat!("thread::", "spawn");
+        let mut sources = Vec::new();
+        scan_source_text(
+            "crates/x/src/tests.rs",
+            &format!("fn helper() {{ std::{token}(|| ()); }}\n"),
+            is_test_source_file("crates/x/src/tests.rs"),
+            &mut sources,
+        );
+        assert!(
+            sources.iter().all(|line| line.in_test),
+            "src/tests.rs must be classified as test code"
+        );
+        assert!(
+            evaluate_concurrency_policy(&[], &sources).is_empty(),
+            "thread-spawn inside src/tests.rs must be test-exempt"
         );
     }
 
@@ -995,6 +1154,23 @@ mod tests {
             violations.iter().any(|v| v.contains("WorkerPool::install")),
             "expected a par-iter-outside-install violation, got {violations:?}"
         );
+    }
+
+    #[test]
+    fn rayon_parallel_slice_methods_outside_install_are_violations() {
+        for call in [
+            "    let _: Vec<_> = items.par_windows(2).collect();",
+            "    items.par_sort_unstable();",
+        ] {
+            let violations = evaluate_concurrency_policy(
+                &[],
+                &[line_at("crates/splot-encode/src/x.rs", 10, call, false)],
+            );
+            assert!(
+                violations.iter().any(|v| v.contains("WorkerPool::install")),
+                "expected a par-slice-method violation for `{call}`, got {violations:?}"
+            );
+        }
     }
 
     #[test]
@@ -1073,6 +1249,20 @@ mod tests {
     }
 
     #[test]
+    fn braced_unbounded_import_and_turbofish_call_are_violations() {
+        for code in [
+            "    use crossbeam_channel::{bounded, unbounded};",
+            "    let (s, r) = unbounded::<u8>();",
+        ] {
+            let violations = evaluate_concurrency_policy(&[], &[line(code, false)]);
+            assert!(
+                violations.iter().any(|v| v.contains("unbounded")),
+                "expected an unbounded violation for `{code}`, got {violations:?}"
+            );
+        }
+    }
+
+    #[test]
     fn thread_builder_spawn_is_a_violation_outside_tests_but_exempt_in_tests() {
         let code = "    std::thread::Builder::new().spawn(work)?;";
         assert!(
@@ -1095,6 +1285,15 @@ mod tests {
     }
 
     #[test]
+    fn thread_braced_spawn_import_is_a_violation_outside_tests() {
+        let src = [line("    use std::thread::{self, spawn};", false)];
+        assert!(
+            !evaluate_concurrency_policy(&[], &src).is_empty(),
+            "importing std::thread::spawn via a braced import must be flagged"
+        );
+    }
+
+    #[test]
     fn rayon_global_entry_points_are_violations() {
         for call in [
             "    rayon::join(a, b);",
@@ -1105,6 +1304,20 @@ mod tests {
             assert!(
                 violations.iter().any(|v| v.contains("global-pool")),
                 "expected a Rayon global-pool violation for `{call}`, got {violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rayon_global_entry_point_braced_imports_are_violations() {
+        for import in [
+            "    use rayon::{join};",
+            "    use rayon::{prelude::*, scope};",
+        ] {
+            let violations = evaluate_concurrency_policy(&[], &[line(import, false)]);
+            assert!(
+                violations.iter().any(|v| v.contains("global-pool")),
+                "expected a Rayon global-pool import violation for `{import}`, got {violations:?}"
             );
         }
     }
