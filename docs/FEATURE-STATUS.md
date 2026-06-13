@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-10. 145 feature(s).
+Matrix version 1. Last reviewed 2026-06-10. 146 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -152,4 +152,5 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `XTASK-DECODER-SUPPORT-STATUS` | Decoder support status reporting and checks | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/decoder_support.rs` |
 | `XTASK-DECODER-DIAGNOSTIC-REGISTRY` | Decoder diagnostic registry enforcement | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/diagnostic_registry.rs` |
 | `CLI-DECODE` | splot decode command | cli | cli | done | n/a | n/a | n/a | n/a | n/a | partial | done | n/a | `crates/splot-cli/src/commands/decode.rs` |
+| `CLI-DECODE-HASH-OUTPUT` | splot decode hash output CLI contract | cli | cli | done | done | n/a | n/a | n/a | n/a | partial | done | n/a | `crates/splot-cli/src/commands/decode.rs` |
 | `VALIDATOR-CONTEXT-SPLIT` | Validator context module split | infrastructure | infrastructure | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-validate/src/context` |

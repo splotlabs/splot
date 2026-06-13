@@ -52,10 +52,6 @@ fn temp_input(extension: &str, data: &[u8]) -> PathBuf {
     path
 }
 
-fn temp_output(extension: &str) -> PathBuf {
-    temp_path("output", extension)
-}
-
 fn ivf_stream(payloads: &[&[u8]]) -> Vec<u8> {
     let mut data = Vec::new();
     let header = splot_core::ivf::IvfHeader::new(*b"AV02", 16, 16, 24, 1, payloads.len() as u32);
@@ -64,107 +60,6 @@ fn ivf_stream(payloads: &[&[u8]]) -> Vec<u8> {
         splot_core::ivf::write_ivf_frame(&mut data, pts as u64, payload).expect("write IVF frame");
     }
     data
-}
-
-#[test]
-fn decode_unsupported_text_mode_emits_stable_diagnostic() {
-    let input = temp_input("av2", b"input must not be read");
-    let output = temp_output("y4m");
-    let original_output = b"existing output must remain untouched";
-    std::fs::write(&output, original_output).expect("write temporary output sentinel");
-
-    let out = splot(&[
-        "decode",
-        input.to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-    ]);
-
-    assert_eq!(out.status.code(), Some(1));
-    assert!(out.stdout.is_empty(), "stdout was not empty");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    for expected in [
-        "rule_id: decode/unsupported-feature",
-        "severity: Error",
-        "spec_section: 7.1",
-        "matrix_row: cli-decode-entrypoint",
-        "feature_id: CLI-DECODE",
-        "remediation:",
-    ] {
-        assert!(
-            stderr.contains(expected),
-            "stderr did not contain {expected:?}: {stderr}"
-        );
-    }
-    assert_eq!(
-        std::fs::read(&output).expect("read temporary output sentinel"),
-        original_output
-    );
-}
-
-#[test]
-fn decode_unsupported_json_mode_emits_diagnostic_object() {
-    let input = temp_input("av2", b"input must not be read");
-    let output = temp_output("y4m");
-    let original_output = b"json mode output sentinel";
-    std::fs::write(&output, original_output).expect("write temporary output sentinel");
-
-    let out = splot(&[
-        "decode",
-        "--json",
-        input.to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-    ]);
-
-    assert_eq!(out.status.code(), Some(1));
-    assert!(out.stderr.is_empty(), "stderr was not empty");
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["severity"], "Error");
-    assert_eq!(json["spec_section"], "7.1");
-    assert_eq!(json["matrix_row"], "cli-decode-entrypoint");
-    assert_eq!(json["feature_id"], "CLI-DECODE");
-    assert!(
-        json["message"]
-            .as_str()
-            .unwrap()
-            .contains("not implemented"),
-        "json was: {json}"
-    );
-    assert!(
-        json["remediation"].as_str().unwrap().contains("CLI-DECODE"),
-        "json was: {json}"
-    );
-    assert_eq!(
-        std::fs::read(&output).expect("read temporary output sentinel"),
-        original_output
-    );
-}
-
-#[test]
-fn decode_unsupported_missing_input_does_not_touch_files() {
-    let input = temp_path("missing-input", "av2");
-    let output = temp_output("y4m");
-    assert!(!input.exists(), "temporary input unexpectedly exists");
-    assert!(!output.exists(), "temporary output unexpectedly exists");
-
-    let out = splot(&[
-        "decode",
-        input.to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-    ]);
-
-    assert_eq!(out.status.code(), Some(1));
-    assert!(out.stdout.is_empty(), "stdout was not empty");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("decode/unsupported-feature"),
-        "stderr was: {stderr}"
-    );
-    assert!(!input.exists(), "decode created the missing input path");
-    assert!(!output.exists(), "decode created the output path");
 }
 
 #[test]

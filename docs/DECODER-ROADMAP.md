@@ -76,9 +76,12 @@ The tier is deliberately small:
 - deterministic decoded-frame hashes are the first success artifact.
 
 Y4M output remains unsupported until the `output-y4m` row is implemented and
-tested against the same cropped visible output samples. The current CLI still
-requires `-o`, so a future hash-output CLI mode may be needed before
-`splot decode` can become supported.
+tested against the same cropped visible output samples. The CLI parse contract
+accepts future hash-output selection with `--output-format hash`; the
+compatibility form `splot decode <input> -o <output>` remains the implicit Y4M
+form, and `--output-format y4m -o <output>` is the explicit Y4M form. All valid
+forms still emit the intentional unsupported diagnostic until runtime decode
+support lands.
 
 Everything outside the tier must fail explicitly with a structured diagnostic:
 `decode/unsupported-feature` for unsupported tools or tier violations, and
@@ -93,7 +96,7 @@ other external decoder is forbidden.
 | 0 | Roadmap, support matrix, generated status, drift gate | supported |
 | 1 | Decode API contract, limits, resource diagnostics, plan-only byte entry point | partial contract documented |
 | 2 | Shared decoded frame, plane, pixel format, and deterministic hash types | frame/plane and hash contracts documented; types planned |
-| 3 | CLI `splot decode` contract backed by library diagnostics | planned |
+| 3 | CLI `splot decode` contract backed by library diagnostics | hash output parse contract wired; runtime unsupported |
 | 4 | Container traversal, layer/operating-point selection, transactional decode planning | minimal tier contract documented; runtime planned |
 | 5 | Self-contained decode fuzz target and fixture smoke | planned |
 | 6 | AV2 § 8 symbol/CDF decoder foundation | planned |
