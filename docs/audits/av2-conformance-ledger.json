@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "46772fc19b78b0c37205039c85d16b914ee24227",
+  "audited_commit": "24f411944a0bc9ddbe210cc00e69ec707e128bec",
   "outcome": "success",
   "files": [
     {
@@ -1195,7 +1195,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "be64943444d904a11b5b886c8abaafd9a6cb84566131f38ba9165308e890a4ec",
+      "sha256": "d57b234251845627ea4768e7d72764d11478039f9546bfe4a6292bed9df0cb10",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1335,7 +1335,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "cf1275e2888228ef99122b194f21e93312fa9275eb5d81f22053223dc3f47f93",
+      "sha256": "902d5cce61b838885b42a55101a1bba782fd55ba95cb8d5afcba2029f78ed096",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
