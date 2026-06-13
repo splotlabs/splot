@@ -4876,6 +4876,57 @@ fixtures = ["docs/DECODER-SUPPORT-MATRIX.toml", "docs/DECODER-SUPPORT-STATUS.md"
 diagnostics = []
 
 [[feature]]
+id = "XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST"
+name = "Portable local-reference evidence manifest"
+category = "automation"
+kind = "automation"
+spec_sections = []
+sources = []
+crate = "xtask"
+module = "xtask/src/reference_evidence.rs"
+openspec_change = "local-reference-evidence-manifest-contract"
+tracking_issue = ""
+owner = "automation"
+risk = "medium"
+notes = "Adds docs/LOCAL-REFERENCE-EVIDENCE.toml and `cargo xtask check-reference-evidence` for future decoder local-reference metadata. The checker validates manifest versioning, evidence IDs, Feature IDs, decoder-support rows, repo-relative fixture paths, fixture SHA-256 and byte lengths, digest metadata, equality assertions, and local path leakage without locating or invoking AVM, dav2d, ffmpeg, the network, or `splot decode`. The manifest currently has no evidence entries and does not claim runtime decode, reconstruction, hash, or Y4M support."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "xtask/src/reference_evidence.rs::tests::valid_manifest_with_fixture_and_digest_assertion_passes",
+    "xtask/src/reference_evidence.rs::tests::duplicate_evidence_ids_are_rejected",
+    "xtask/src/reference_evidence.rs::tests::invalid_feature_and_decoder_support_rows_are_rejected",
+    "xtask/src/reference_evidence.rs::tests::local_and_absolute_paths_are_rejected",
+    "xtask/src/reference_evidence.rs::tests::command_summary_rejects_paths_and_shell_composition",
+    "xtask/src/reference_evidence.rs::tests::stale_fixture_hash_and_length_are_rejected",
+    "xtask/src/reference_evidence.rs::tests::symlink_fixture_is_rejected",
+    "xtask/src/reference_evidence.rs::tests::intermediate_symlink_fixture_is_rejected",
+    "xtask/src/reference_evidence.rs::tests::git_worktree_requires_tracked_fixture",
+    "xtask/src/reference_evidence.rs::tests::malformed_digest_and_broken_assertions_are_rejected",
+    "xtask/src/reference_evidence.rs::tests::duplicate_reference_run_ids_are_rejected",
+    "xtask/src/reference_evidence.rs::tests::tautological_digest_assertions_are_rejected",
+    "xtask/src/reference_evidence.rs::tests::unequal_digest_assertions_are_rejected",
+]
+commands = [
+    "cargo test -p xtask reference_evidence --locked",
+    "cargo xtask check-reference-evidence",
+    "cargo xtask check-decoder-support",
+]
+fixtures = ["docs/LOCAL-REFERENCE-EVIDENCE.toml"]
+diagnostics = []
+
+[[feature]]
 id = "XTASK-DECODER-DIAGNOSTIC-REGISTRY"
 name = "Decoder diagnostic registry enforcement"
 category = "automation"

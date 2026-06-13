@@ -153,6 +153,13 @@ no committed runner/test/CI path invokes it or requires an AVM checkout.
   reverse direction once an encoder exists. Neither runs in CI; both require the
   maintainer to opt in with a local AVM checkout.
 
+The decoder local-reference evidence manifest
+([`docs/LOCAL-REFERENCE-EVIDENCE.toml`](./LOCAL-REFERENCE-EVIDENCE.toml)) is
+separate from `tests/conformance/manifest.toml`. It records portable metadata
+for future local decoder/hash comparisons and is checked offline; it does not
+extend the validator conformance corpus and does not run AVM, dav2d, or
+`splot decode`.
+
 ## Public vectors
 
 `CONF-PUBLIC-VECTORS` integrates a public AV2 vector corpus when one is
