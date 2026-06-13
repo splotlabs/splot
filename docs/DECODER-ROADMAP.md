@@ -37,22 +37,53 @@ Emitted `splot decode` diagnostic rule IDs are registered in
 
 ## Supported Tier
 
-The first supported decode tier is planned, not implemented. The intended tier
-is deliberately small:
+The first supported decode tier is planned, not implemented. The repository
+contract is:
 
-- raw Annex B and IVF-wrapped Annex B inputs through the existing stream parser;
-- one operating point and one output layer;
-- 8-bit 4:2:0;
-- small dimensions under explicit decode limits;
-- key/all-intra frames only;
-- no film-grain application, multistream composition, inter prediction, loop
-  restoration, or external-HLS-dependent output effects unless a row marks them
-  supported with tests;
-- deterministic decoded-frame hashes before Y4M output is treated as a success
-  criterion.
+```text
+contract_id = "splot.decode.minimal_tier"
+contract_version = 1
+tier_id = "minimal-intra-8bit420-hash-v1"
+feature_id = "DOC-MINIMAL-DECODE-TIER-CONTRACT"
+```
 
-Every stream outside the supported tier must fail explicitly with a structured
-unsupported-feature diagnostic. Silent fallback to AVM, dav2d, ffmpeg, or any
+This is a `splot` implementation-supported subset, not an Annex A
+level-conformant decoder claim. Annex A decoder conformance is broader than the
+encoder-MVP subset below.
+
+The tier is deliberately small:
+
+- input is Annex B length-delimited OBU data, either raw or IVF/DKIF-wrapped
+  with Annex B frame payloads;
+- one selected stream/layer only: non-global OBUs use `obu_xlayer_id == 0`,
+  `obu_tlayer_id == 0`, and inferred `obu_mlayer_id == 0`;
+- no external HLS, multistream composition, sub-bitstream extraction, MSDO, LCR,
+  Atlas, or OPS selection path;
+- sequence format uses `seq_profile_idc == 0` (`Main_420_10_IP0`),
+  `chroma_format_idc == 0`, `bit_depth_idc == 1` (8-bit),
+  `max_tlayer_id == 0`, `max_mlayer_id == 0`, `SeqMaxMlayerCnt == 1`, and
+  `film_grain_params_present == 0`;
+- frame dimensions, tile counts, decoded-frame bytes, reference-store bytes,
+  hash bytes, and output bytes pass `DecodeLimits` using checked arithmetic
+  before allocation or output;
+- accepted frames are closed-loop key-frame output only, with parsed facts
+  proving `obu_type == OBU_CLOSED_LOOP_KEY`, `FrameType = KEY_FRAME`, and
+  `FrameIsIntra = 1`;
+- inline frame headers only: `cur_mfh_id == 0`, `frame_size_override_flag == 0`,
+  `immediate_output_frame == 1`, `implicit_output_frame == 0`, and no sequence
+  cropping window;
+- one tile and one first-and-only tile group;
+- deterministic decoded-frame hashes are the first success artifact.
+
+Y4M output remains unsupported until the `output-y4m` row is implemented and
+tested against the same cropped visible output samples. The current CLI still
+requires `-o`, so a future hash-output CLI mode may be needed before
+`splot decode` can become supported.
+
+Everything outside the tier must fail explicitly with a structured diagnostic:
+`decode/unsupported-feature` for unsupported tools or tier violations, and
+`decode/resource-limit` for configured limit excess or overflow once that
+diagnostic is emitted by source. Silent fallback to AVM, dav2d, ffmpeg, or any
 other external decoder is forbidden.
 
 ## Stages
@@ -63,7 +94,7 @@ other external decoder is forbidden.
 | 1 | Decode API contract, limits, resource diagnostics, plan-only byte entry point | partial contract documented |
 | 2 | Shared decoded frame, plane, pixel format, and deterministic hash types | frame/plane and hash contracts documented; types planned |
 | 3 | CLI `splot decode` contract backed by library diagnostics | planned |
-| 4 | Container traversal, layer/operating-point selection, transactional decode planning | planned |
+| 4 | Container traversal, layer/operating-point selection, transactional decode planning | minimal tier contract documented; runtime planned |
 | 5 | Self-contained decode fuzz target and fixture smoke | planned |
 | 6 | AV2 § 8 symbol/CDF decoder foundation | planned |
 | 7 | Constrained intra tile syntax | planned |
@@ -78,6 +109,15 @@ Decoder and reconstruction work must cite the committed AV2 v1.0.0 mirror:
 
 - general decoding process: § 7.1,
   `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1`;
+- Annex B length-delimited input: Annex B.2-Annex B.3,
+  `docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2`;
+- OBU syntax and OBU header semantics: § 5.2 and § 6.2,
+  `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2`;
+- sequence format, layer counts, and frame-size semantics: § 6.4.1 and
+  § 6.17.4.1,
+  `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1`;
+- temporal units, coded extended layer units, and random access: § 7.3-§ 7.4,
+  `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-3`;
 - tile group and tile payload syntax: § 5.19-§ 5.20,
   `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19`;
 - parsing process and symbol/CDF decoding: § 8.2-§ 8.3,
