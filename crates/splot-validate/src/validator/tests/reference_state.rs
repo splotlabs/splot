@@ -539,13 +539,16 @@ fn frame_header_primary_ref_frame_out_of_range_fires() {
 }
 
 /// A regular-tile-group INTER frame (explicit reference map, `enable_bru` sequence)
-/// that codes `num_total_refs`, the `ref_frame_idx` loop, then the §5.18.2 BRU triple
-/// (`use_bru == 1`, `bru_ref` f(CeilLog2(num_total_refs)), `bru_inactive == 0`) and
-/// completes the control region into the shared tail, for the §6.17.2 BRU checks.
+/// that codes `refresh_frame_flags`, `num_total_refs`, the `ref_frame_idx` loop, then the
+/// §5.18.2 BRU triple (`use_bru == 1`, `bru_ref` f(CeilLog2(num_total_refs)), `bru_inactive ==
+/// 0`) and completes the control region into the shared tail, for the §6.17.2 BRU checks. Each
+/// `ref_frame_idx[i]` points at slot 0, so `refresh_frame_flags` bit 0 governs the §6.17.2
+/// refresh-mask-bit check for `bru_ref`.
 pub(in crate::validator::tests) fn ref_inter_bru(
     immediate_output: bool,
     num_total_refs: u32,
     bru_ref: u32,
+    refresh_frame_flags: u32,
 ) -> Vec<u8> {
     let mut fb = Bits::default();
     fb.bit(1); // is_first_tile_group
@@ -557,7 +560,7 @@ pub(in crate::validator::tests) fn ref_inter_bru(
     fb.f(0, 1); // order_hint f(OrderHintBits == 1)
     fb.bit(0); // signal_primary_ref_frame == 0 -> PRIMARY_REF_CHOOSE (no f(3))
     fb.bit(0); // disable_cross_frame_cdf_init (not TIP)
-    fb.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8)
+    fb.f(refresh_frame_flags, 8); // refresh_frame_flags f(NumRefFrames == 8)
     fb.bit(1); // frame_explicit_ref_frame_map
     fb.f(num_total_refs, 3); // num_total_refs f(3)
     for _ in 0..num_total_refs {
@@ -592,7 +595,7 @@ fn frame_header_bru_ref_out_of_range_fires() {
         ..FrameCoreSeq::base()
     };
     let mut data = td_and_frame_core_seq(seq);
-    data.extend(ref_inter_bru(true, 3, 3));
+    data.extend(ref_inter_bru(true, 3, 3, 1));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
         report
@@ -604,22 +607,66 @@ fn frame_header_bru_ref_out_of_range_fires() {
 
 #[test]
 fn frame_header_bru_in_range_with_output_is_silent() {
-    // bru_ref 2 < NumTotalRefs 3 and immediate_output_frame == 1: both §6.17.2 BRU
-    // clauses hold -> neither BRU diagnostic fires.
+    // bru_ref 2 < NumTotalRefs 3, immediate_output_frame == 1, and refresh_frame_flags bit
+    // ref_frame_idx[bru_ref] == slot 0 SET (refresh == 1): all decidable §6.17.2 BRU clauses
+    // hold -> no BRU diagnostic fires.
     let seq = FrameCoreSeq {
         explicit_ref_frame_map: true,
         enable_bru: true,
         ..FrameCoreSeq::base()
     };
     let mut data = td_and_frame_core_seq(seq);
-    data.extend(ref_inter_bru(true, 3, 2));
+    data.extend(ref_inter_bru(true, 3, 2, 1));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
         !report
             .errors()
             .any(|d| d.rule_id == "frame-header/bru-ref-out-of-range"
-                || d.rule_id == "frame-header/bru-without-immediate-output"),
+                || d.rule_id == "frame-header/bru-without-immediate-output"
+                || d.rule_id == "frame-header/bru-ref-refresh-flag-unset"),
         "a conformant BRU frame must not fire the §6.17.2 BRU checks; report was: {report}"
+    );
+}
+
+#[test]
+fn frame_header_bru_ref_refresh_flag_unset_fires() {
+    // §6.17.2 (mirror :4596): use_bru == 1 requires refresh_frame_flags & (1 <<
+    // ref_frame_idx[bru_ref]) != 0. ref_frame_idx[bru_ref] == slot 0; refresh_frame_flags == 0
+    // leaves bit 0 clear, so the BRU frame does not refresh the reference it updates.
+    let seq = FrameCoreSeq {
+        explicit_ref_frame_map: true,
+        enable_bru: true,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(ref_inter_bru(true, 2, 0, 0)); // refresh_frame_flags == 0 -> bit 0 clear
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        report
+            .errors()
+            .any(|d| d.rule_id == "frame-header/bru-ref-refresh-flag-unset"),
+        "a BRU frame that does not refresh its bru_ref slot must fire \
+         bru-ref-refresh-flag-unset; report was: {report}"
+    );
+}
+
+#[test]
+fn frame_header_bru_ref_refresh_flag_set_is_silent() {
+    // The conformant boundary: refresh_frame_flags == 1 sets bit 0 == ref_frame_idx[bru_ref],
+    // so the §6.17.2 refresh-mask-bit clause holds and the check stays silent.
+    let seq = FrameCoreSeq {
+        explicit_ref_frame_map: true,
+        enable_bru: true,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(ref_inter_bru(true, 2, 0, 1)); // refresh_frame_flags == 1 -> bit 0 set
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        !report
+            .errors()
+            .any(|d| d.rule_id == "frame-header/bru-ref-refresh-flag-unset"),
+        "a BRU frame that refreshes its bru_ref slot must be silent; report was: {report}"
     );
 }
 
@@ -632,7 +679,7 @@ fn frame_header_bru_without_immediate_output_fires() {
         ..FrameCoreSeq::base()
     };
     let mut data = td_and_frame_core_seq(seq);
-    data.extend(ref_inter_bru(false, 3, 2));
+    data.extend(ref_inter_bru(false, 3, 2, 1));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
         report
@@ -1222,7 +1269,7 @@ fn bru_ref_frame_size_match_is_silent() {
     // 16x16, so RefFrameWidth/Height[ref_frame_idx[bru_ref=0]] == FrameWidth/Height -> silent.
     let mut data = td_and_frame_core_seq(bru_seq());
     data.extend(clk_override_size_small(16, 16));
-    data.extend(ref_inter_bru(true, 2, 0));
+    data.extend(ref_inter_bru(true, 2, 0, 1));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
         !has_bru_ref_size_error(&report),
@@ -1237,7 +1284,7 @@ fn bru_ref_frame_size_mismatch_fires() {
     // within the scaling bounds (2*16 >= 8, 16 <= 16*8), so ONLY the BRU equality fires.
     let mut data = td_and_frame_core_seq(bru_seq());
     data.extend(clk_override_size_small(16, 8));
-    data.extend(ref_inter_bru(true, 2, 0));
+    data.extend(ref_inter_bru(true, 2, 0, 1));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
         has_bru_ref_size_error(&report),
@@ -1255,7 +1302,7 @@ fn bru_ref_frame_size_unknown_slot_is_silent() {
     // No CLK -> slot 0 is Unknown; the bru_ref slot has no proven dims -> the equality drops
     // to silence (the Unknown invariant).
     let mut data = td_and_frame_core_seq(bru_seq());
-    data.extend(ref_inter_bru(true, 2, 0));
+    data.extend(ref_inter_bru(true, 2, 0, 1));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
         !has_bru_ref_size_error(&report),
