@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use splot_decode::unsupported_feature_diagnostic;
+
 static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn splot(args: &[&str]) -> Output {
@@ -75,19 +77,25 @@ fn decode_unsupported_text_mode_emits_stable_diagnostic() {
         output.to_str().unwrap(),
     ]);
 
+    let diagnostic = unsupported_feature_diagnostic();
     assert_eq!(out.status.code(), Some(1));
     assert!(out.stdout.is_empty(), "stdout was not empty");
     let stderr = String::from_utf8_lossy(&out.stderr);
     for expected in [
-        "rule_id: decode/unsupported-feature",
-        "severity: Error",
-        "spec_section: 7.1",
-        "matrix_row: cli-decode-entrypoint",
-        "feature_id: CLI-DECODE",
-        "remediation:",
+        format!("rule_id: {}", diagnostic.rule_id),
+        format!("severity: {}", diagnostic.severity),
+        format!(
+            "spec_section: {}",
+            diagnostic
+                .spec_section
+                .expect("diagnostic cites a spec section")
+        ),
+        format!("matrix_row: {}", diagnostic.matrix_row),
+        format!("feature_id: {}", diagnostic.feature_id),
+        "remediation:".to_string(),
     ] {
         assert!(
-            stderr.contains(expected),
+            stderr.contains(&expected),
             "stderr did not contain {expected:?}: {stderr}"
         );
     }
@@ -114,23 +122,20 @@ fn decode_unsupported_json_mode_emits_diagnostic_object() {
 
     assert_eq!(out.status.code(), Some(1));
     assert!(out.stderr.is_empty(), "stderr was not empty");
+    let diagnostic = unsupported_feature_diagnostic();
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["severity"], "Error");
-    assert_eq!(json["spec_section"], "7.1");
-    assert_eq!(json["matrix_row"], "cli-decode-entrypoint");
-    assert_eq!(json["feature_id"], "CLI-DECODE");
-    assert!(
-        json["message"]
-            .as_str()
-            .unwrap()
-            .contains("not implemented"),
-        "json was: {json}"
+    assert_eq!(json["rule_id"], diagnostic.rule_id);
+    assert_eq!(json["severity"], diagnostic.severity.as_str());
+    assert_eq!(
+        json["spec_section"],
+        diagnostic
+            .spec_section
+            .expect("diagnostic cites a spec section")
     );
-    assert!(
-        json["remediation"].as_str().unwrap().contains("CLI-DECODE"),
-        "json was: {json}"
-    );
+    assert_eq!(json["matrix_row"], diagnostic.matrix_row);
+    assert_eq!(json["feature_id"], diagnostic.feature_id);
+    assert_eq!(json["message"], diagnostic.message);
+    assert_eq!(json["remediation"], diagnostic.remediation);
     assert_eq!(
         std::fs::read(&output).expect("read temporary output sentinel"),
         original_output
@@ -171,15 +176,21 @@ fn decode_hash_output_format_emits_unsupported_text_without_output_path() {
     assert_eq!(out.status.code(), Some(1));
     assert!(out.stdout.is_empty(), "stdout was not empty");
     let stderr = String::from_utf8_lossy(&out.stderr);
+    let diagnostic = unsupported_feature_diagnostic();
     for expected in [
-        "rule_id: decode/unsupported-feature",
-        "severity: Error",
-        "spec_section: 7.1",
-        "matrix_row: cli-decode-entrypoint",
-        "feature_id: CLI-DECODE",
+        format!("rule_id: {}", diagnostic.rule_id),
+        format!("severity: {}", diagnostic.severity),
+        format!(
+            "spec_section: {}",
+            diagnostic
+                .spec_section
+                .expect("diagnostic cites a spec section")
+        ),
+        format!("matrix_row: {}", diagnostic.matrix_row),
+        format!("feature_id: {}", diagnostic.feature_id),
     ] {
         assert!(
-            stderr.contains(expected),
+            stderr.contains(&expected),
             "stderr did not contain {expected:?}: {stderr}"
         );
     }
@@ -229,12 +240,18 @@ fn decode_hash_output_format_json_emits_same_diagnostic() {
 
     assert_eq!(out.status.code(), Some(1));
     assert!(out.stderr.is_empty(), "stderr was not empty");
+    let diagnostic = unsupported_feature_diagnostic();
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["severity"], "Error");
-    assert_eq!(json["spec_section"], "7.1");
-    assert_eq!(json["matrix_row"], "cli-decode-entrypoint");
-    assert_eq!(json["feature_id"], "CLI-DECODE");
+    assert_eq!(json["rule_id"], diagnostic.rule_id);
+    assert_eq!(json["severity"], diagnostic.severity.as_str());
+    assert_eq!(
+        json["spec_section"],
+        diagnostic
+            .spec_section
+            .expect("diagnostic cites a spec section")
+    );
+    assert_eq!(json["matrix_row"], diagnostic.matrix_row);
+    assert_eq!(json["feature_id"], diagnostic.feature_id);
 }
 
 #[test]

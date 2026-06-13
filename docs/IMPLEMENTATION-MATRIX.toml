@@ -4645,7 +4645,7 @@ openspec_change = "decoder-diagnostic-registry"
 tracking_issue = ""
 owner = "docs"
 risk = "low"
-notes = "Adds docs/DECODER-DIAGNOSTICS.md as the canonical registry for emitted `splot decode` diagnostic rule IDs. The registry documents stable field names (`rule_id`, `severity`, `spec_section`, `matrix_row`, `feature_id`, `message`, `remediation`), the current CLI-only emission root until decoder crates are explicitly approved, and the `decode/*` namespace rule. AV2 §7.1 behavior and `decode/unsupported-feature` diagnostic ownership stay on CLI-DECODE."
+notes = "Adds docs/DECODER-DIAGNOSTICS.md as the canonical registry for emitted `splot decode` diagnostic rule IDs. The registry documents stable field names (`rule_id`, `severity`, `spec_section`, `matrix_row`, `feature_id`, `message`, `remediation`), current decoder emission roots, and the `decode/*` namespace rule. AV2 §7.1 behavior stays on CLI-DECODE; `decode/unsupported-feature` diagnostic ownership now lives in DECODE-UNSUPPORTED-DIAGNOSTIC-API."
 
 [feature.status]
 mapped = "done"
@@ -4836,6 +4836,48 @@ fixtures = ["crates/splot-recon/src/lib.rs", "crates/splot-decode/src/lib.rs"]
 diagnostics = []
 
 [[feature]]
+id = "DECODE-UNSUPPORTED-DIAGNOSTIC-API"
+name = "Decode unsupported diagnostic API"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.1"]
+sources = ["docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1"]
+crate = "splot-decode"
+module = "crates/splot-decode/src/lib.rs"
+openspec_change = "decode-unsupported-diagnostic-api"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Moves ownership of the current `decode/unsupported-feature` diagnostic into `splot-decode` as a public descriptor API rendered by the CLI. The API is metadata-only: it does not consume bytes, reconstruct pixels, compute hashes, produce Y4M, invoke external decoders, or claim runtime decode support."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/lib.rs::tests::unsupported_feature_diagnostic_has_stable_fields",
+    "crates/splot-decode/src/lib.rs::tests::unsupported_feature_diagnostic_function_returns_public_descriptor",
+    "crates/splot-decode/src/lib.rs::tests::decode_severity_displays_stable_spelling",
+]
+commands = [
+    "cargo test -p splot-decode --locked",
+    "cargo test -p splot-cli --test decode_cli decode_unsupported --locked",
+    "cargo xtask check-diagnostic-registry",
+    "cargo xtask check-dependency-direction",
+]
+fixtures = []
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DOC-DECODER-SUPPORT-MATRIX"
 name = "Decoder support matrix documentation"
 category = "docs"
@@ -4977,7 +5019,7 @@ openspec_change = "decoder-diagnostic-registry"
 tracking_issue = ""
 owner = "automation"
 risk = "low"
-notes = "Extends `cargo xtask check-diagnostic-registry` so it enforces docs/DECODER-DIAGNOSTICS.md against current decoder emission roots in addition to the existing validator registry. The decoder descriptor currently scans crates/splot-cli/src/commands/decode.rs and only accepts `decode/*` rule IDs; no external decoder, AVM, or dav2d tool is located or invoked."
+notes = "Extends `cargo xtask check-diagnostic-registry` so it enforces docs/DECODER-DIAGNOSTICS.md against current decoder emission roots in addition to the existing validator registry. The decoder descriptor scans crates/splot-cli/src/commands/decode.rs and crates/splot-decode/src, only accepts `decode/*` rule IDs, and never locates or invokes external decoder, AVM, or dav2d tools."
 
 [feature.status]
 mapped = "done"
@@ -5019,7 +5061,7 @@ openspec_change = "cli-decode-unsupported-diagnostic"
 tracking_issue = ""
 owner = "cli"
 risk = "medium"
-notes = "Tracks the existing `splot decode` CLI surface. The command intentionally does not decode yet, but it now emits a structured `decode/unsupported-feature` diagnostic with AV2 §7.1, `CLI-DECODE`, and `cli-decode-entrypoint`, without reading input, touching output, invoking external decoders, or changing the dependency graph. Real stream traversal, hashes, Y4M output, and library-backed decode remain future decoder-support rows."
+notes = "Tracks the existing `splot decode` CLI surface. The command intentionally does not decode yet, but it now renders the `splot-decode` structured `decode/unsupported-feature` diagnostic with AV2 §7.1, `CLI-DECODE`, and `cli-decode-entrypoint`, without reading input, touching output, or invoking external decoders. Real stream traversal, hashes, and Y4M output remain future decoder-support rows."
 
 [feature.status]
 mapped = "done"
@@ -5055,7 +5097,7 @@ openspec_change = "decode-hash-output-cli-contract"
 tracking_issue = ""
 owner = "cli"
 risk = "medium"
-notes = "Adds the CLI parse contract for future hash-first decode output: `--output-format hash` is valid without a Y4M output path, `-o` alone remains implicit Y4M, and every valid invocation still emits `decode/unsupported-feature` without reading input, writing output, computing hashes, invoking external decoders, or changing the dependency graph."
+notes = "Adds the CLI parse contract for future hash-first decode output: `--output-format hash` is valid without a Y4M output path, `-o` alone remains implicit Y4M, and every valid invocation still emits `decode/unsupported-feature` without reading input, writing output, computing hashes, or invoking external decoders."
 
 [feature.status]
 mapped = "done"

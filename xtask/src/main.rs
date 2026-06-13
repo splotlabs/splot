@@ -1071,7 +1071,12 @@ const INTERNAL_DEP_RULES: &[(&str, &[&str])] = &[
     ("splot-encode", &["splot-core"]),
     (
         "splot-cli",
-        &["splot-core", "splot-validate", "splot-encode"],
+        &[
+            "splot-core",
+            "splot-decode",
+            "splot-validate",
+            "splot-encode",
+        ],
     ),
     ("xtask", &[]),
 ];

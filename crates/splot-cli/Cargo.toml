@@ -21,6 +21,7 @@ path = "src/main.rs"
 
 [dependencies]
 splot-core.workspace = true
+splot-decode.workspace = true
 splot-validate.workspace = true
 splot-encode.workspace = true
 clap.workspace = true

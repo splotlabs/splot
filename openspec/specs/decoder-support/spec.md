@@ -63,16 +63,23 @@ name any local reference evidence as portable metadata only.
 ### Requirement: Structured decode unsupported diagnostics
 Unsupported decoder features SHALL be represented in docs and matrix rows as
 structured diagnostics with a stable rule id, severity, optional spec section,
-matrix row id, human-readable message, and remediation. The `splot decode`
-CLI entry point SHALL emit `decode/unsupported-feature` with severity `Error`,
-spec section `7.1`, matrix row `cli-decode-entrypoint`, and Feature ID
-`CLI-DECODE` until a supported decoder path replaces the intentional
-unsupported implementation.
+matrix row id, human-readable message, and remediation. `splot-decode` SHALL
+own the `decode/unsupported-feature` descriptor with severity `Error`, spec
+section `7.1`, matrix row `cli-decode-entrypoint`, and Feature ID `CLI-DECODE`
+until a supported decoder path replaces the intentional unsupported
+implementation. The `splot decode` CLI entry point SHALL render that
+library-owned descriptor without changing its text or JSON field values.
 
 #### Scenario: Unsupported feature is documented
 - **WHEN** a matrix row identifies an unsupported AV2 tool
 - **THEN** the row links the unsupported behavior to a stable diagnostic code or
   planned diagnostic code and a spec section where applicable
+
+#### Scenario: Decode crate owns the unsupported diagnostic descriptor
+- **WHEN** `splot-decode` is tested
+- **THEN** it exposes the `decode/unsupported-feature` descriptor with severity
+  `Error`, spec section `7.1`, matrix row `cli-decode-entrypoint`, and Feature
+  ID `CLI-DECODE`
 
 #### Scenario: Decode command emits text diagnostic
 - **WHEN** `splot decode <input> -o <output>` is run before decode support is

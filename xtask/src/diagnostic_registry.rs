@@ -30,11 +30,10 @@ const VALIDATE_SRC: &str = "crates/splot-validate/src";
 const VALIDATOR_REGISTRY_DOC: &str = "docs/VALIDATOR-DIAGNOSTICS.md";
 /// Current decoder diagnostic emission source roots.
 ///
-/// The CLI still owns the only emitted decoder diagnostic, but the approved decoder
-/// crate root is scanned now that it exists. `splot-recon` is intentionally not
-/// scanned here because it is shared reconstruction infrastructure for future decoder
-/// and encoder work; add a narrower decoder-owned reconstruction path if one starts
-/// emitting `decode/*` diagnostics later.
+/// The CLI renders the current unsupported diagnostic owned by `splot-decode`.
+/// `splot-recon` is intentionally not scanned here because it is shared reconstruction
+/// infrastructure for future decoder and encoder work; add a narrower decoder-owned
+/// reconstruction path if one starts emitting `decode/*` diagnostics later.
 const DECODER_SOURCE_ROOTS: &[&str] = &[
     "crates/splot-cli/src/commands/decode.rs",
     "crates/splot-decode/src",

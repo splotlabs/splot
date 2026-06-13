@@ -4,11 +4,124 @@
 //! `splot-decode` - scaffold for the future AV2 decode driver.
 //!
 //! This crate will coordinate parsed AV2 bitstream facts from `splot-core` with
-//! reconstruction and output state from `splot-recon`. It intentionally exposes
-//! no byte-consuming decode API yet, and current `splot decode` CLI behavior
-//! remains the CLI-owned `decode/unsupported-feature` diagnostic.
+//! reconstruction and output state from `splot-recon`. It owns the current
+//! structured `decode/unsupported-feature` diagnostic API and intentionally
+//! exposes no byte-consuming decode API yet.
 //!
-//! Feature tracking: `INFRA-DECODER-CRATE-SCAFFOLDING`.
+//! Feature tracking: `INFRA-DECODER-CRATE-SCAFFOLDING`,
+//! `DECODE-UNSUPPORTED-DIAGNOSTIC-API`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
+
+use core::fmt;
+
+/// Stable rule id for the current unsupported decode diagnostic.
+pub const UNSUPPORTED_FEATURE_RULE_ID: &str = "decode/unsupported-feature";
+
+/// Severity for a [`DecodeDiagnostic`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum DecodeSeverity {
+    /// A fatal diagnostic that exits the requested decode operation.
+    Error,
+}
+
+impl DecodeSeverity {
+    /// Returns the stable text representation used by CLI rendering and JSON.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "Error",
+        }
+    }
+}
+
+impl fmt::Display for DecodeSeverity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Structured diagnostic emitted by the decoder-facing API and rendered by the
+/// CLI.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct DecodeDiagnostic {
+    /// Stable, machine-readable diagnostic rule id.
+    pub rule_id: &'static str,
+    /// Diagnostic severity.
+    pub severity: DecodeSeverity,
+    /// Optional AV2 spec section associated with the diagnostic.
+    pub spec_section: Option<&'static str>,
+    /// Decoder support matrix row that owns the diagnostic.
+    pub matrix_row: &'static str,
+    /// Feature ID in `docs/IMPLEMENTATION-MATRIX.toml`.
+    pub feature_id: &'static str,
+    /// Human-readable diagnostic message.
+    pub message: &'static str,
+    /// Suggested remediation for users.
+    pub remediation: &'static str,
+}
+
+/// Current unsupported diagnostic descriptor for `splot decode`.
+///
+/// The descriptor cites AV2 §7.1 as context for the unimplemented decoding
+/// process, while keeping `cli-decode-entrypoint` intentionally unsupported.
+pub const UNSUPPORTED_FEATURE_DIAGNOSTIC: DecodeDiagnostic = DecodeDiagnostic {
+    rule_id: UNSUPPORTED_FEATURE_RULE_ID,
+    severity: DecodeSeverity::Error,
+    spec_section: Some("7.1"),
+    matrix_row: "cli-decode-entrypoint",
+    feature_id: "CLI-DECODE",
+    message: "`splot decode` is not implemented for AV2 bitstreams yet.",
+    remediation: "Use `splot validate` or `splot inspect` for bitstream analysis until CLI-DECODE is implemented.",
+};
+
+/// Returns the current unsupported diagnostic for `splot decode`.
+///
+/// This function is intentionally metadata-only: it does not accept or read
+/// bitstream bytes, inspect output paths, allocate decoded frames, or invoke
+/// external decoders.
+#[must_use]
+pub const fn unsupported_feature_diagnostic() -> DecodeDiagnostic {
+    UNSUPPORTED_FEATURE_DIAGNOSTIC
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_feature_diagnostic_has_stable_fields() {
+        let diagnostic = unsupported_feature_diagnostic();
+
+        assert_eq!(diagnostic.rule_id, UNSUPPORTED_FEATURE_RULE_ID);
+        assert_eq!(diagnostic.severity, DecodeSeverity::Error);
+        assert_eq!(diagnostic.severity.as_str(), "Error");
+        assert_eq!(diagnostic.spec_section, Some("7.1"));
+        assert_eq!(diagnostic.matrix_row, "cli-decode-entrypoint");
+        assert_eq!(diagnostic.feature_id, "CLI-DECODE");
+        assert_eq!(
+            diagnostic.message,
+            "`splot decode` is not implemented for AV2 bitstreams yet."
+        );
+        assert_eq!(
+            diagnostic.remediation,
+            "Use `splot validate` or `splot inspect` for bitstream analysis until CLI-DECODE is implemented."
+        );
+    }
+
+    #[test]
+    fn unsupported_feature_diagnostic_function_returns_public_descriptor() {
+        assert_eq!(
+            unsupported_feature_diagnostic(),
+            UNSUPPORTED_FEATURE_DIAGNOSTIC
+        );
+    }
+
+    #[test]
+    fn decode_severity_displays_stable_spelling() {
+        assert_eq!(DecodeSeverity::Error.to_string(), "Error");
+    }
+}

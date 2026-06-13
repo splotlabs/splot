@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-10. 148 feature(s); 107 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-10. 149 feature(s); 108 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -210,6 +210,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 |---|---|---|:-:|:-:|:-:|:-:|:-:|
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `CLI-DECODE` | ✅ | — | — | ✅ | 1 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 1 |
+| [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `DECODE-UNSUPPORTED-DIAGNOSTIC-API` | ✅ | — | — | ✅ | 1 |
 | [§ 7.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-3) | Ordering of OBUs | `AV2-7.3-OBU-ORDERING` | ✅ | — | 🟡 | ✅ | 4 |
 | [§ 7.3.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-2) | Coded multistream video sequence boundaries | `AV2-7.3.2-CMVS-BOUNDARIES` | ✅ | — | 🟡 | 🟡 | 1 |
 | [§ 7.3.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-3) | Coded output frame unit | `AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT` | ✅ | — | 🟡 | ✅ | 7 |

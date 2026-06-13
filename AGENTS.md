@@ -35,10 +35,10 @@ section); `docs/SPEC-MAPPING.md` holds the spec sources and rules, not per-featu
 ```text
 crates/splot-core      AV2 bitstream model + parsers (no other splot-* dependency)
 crates/splot-recon     future reconstruction primitives (no other splot-* dependency)
-crates/splot-decode    future decode driver scaffold (approved future -> splot-core, splot-recon)
+crates/splot-decode    decoder diagnostic API; future driver (approved future -> splot-core, splot-recon)
 crates/splot-validate  parser-driven conformance diagnostics  -> splot-core
 crates/splot-encode    future encoder API (stub)              -> splot-core
-crates/splot-cli       thin `splot` binary -> splot-core, splot-validate, splot-encode
+crates/splot-cli       thin `splot` binary -> splot-core, splot-decode, splot-validate, splot-encode
 xtask                  standalone automation (no splot-* dependency)
 fuzz                   cargo-fuzz target (outside the workspace)
 ```
@@ -47,12 +47,12 @@ fuzz                   cargo-fuzz target (outside the workspace)
 
 - `splot-core` depends on no other `splot-*` crate.
 - `splot-recon` depends on no other `splot-*` crate.
-- `splot-decode` depends only on `splot-core` and `splot-recon` once decode
-  source code needs internal dependencies.
+- `splot-decode` depends only on `splot-core` and `splot-recon` once runtime
+  decode source code needs internal dependencies.
 - `splot-validate` depends only on `splot-core`.
 - `splot-encode` depends only on `splot-core`.
-- `splot-cli` depends only on `splot-core`, `splot-validate`, and
-  `splot-encode`.
+- `splot-cli` depends only on `splot-core`, `splot-decode`,
+  `splot-validate`, and `splot-encode`.
 - Nothing depends on `splot-cli`.
 - Nothing depends on `splot-encode` except `splot-cli`.
 - `xtask` is standalone.
