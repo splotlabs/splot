@@ -9,10 +9,16 @@
 //! depends on no other `splot-*` crate. It does not use the global Rayon pool,
 //! `build_global`, unbounded channels, or any async runtime.
 //!
+//! Downstream codec crates write data-parallel loops with the [`prelude`] (the
+//! curated Rayon parallel-iterator traits) **inside** [`WorkerPool::install`], so
+//! work runs on the configured pool rather than Rayon's global pool. See the
+//! [`prelude`] docs and `docs/CONCURRENCY.md` for the required pattern.
+//!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
 pub mod error;
 pub mod pool;
+pub mod prelude;
 pub mod queue;
 pub mod thread_count;
 

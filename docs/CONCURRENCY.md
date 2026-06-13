@@ -95,6 +95,39 @@ worker count is available as `WorkerPool::threads`.
 - Nested parallelism runs **inside** `WorkerPool::install`. Never build a nested
   pool to get more parallelism; the owned pool already covers the context.
 
+### 5.1 Writing parallel code (the required pattern)
+
+There is exactly one sanctioned way to add data-parallel work, and new code MUST
+follow it so it scales with `--threads` and stays deterministic:
+
+1. **Reach Rayon only through `splot_parallel::prelude`.** Downstream codec crates
+   (`splot-encode`, `splot-decode`, …) MUST NOT depend on `rayon` directly — the
+   concurrency gate forbids it. The prelude re-exports the parallel-iterator traits
+   (`IntoParallelIterator`, `IndexedParallelIterator`, `ParallelIterator`,
+   `ParallelSlice`, …) so you get `par_iter()` without a direct `rayon` dependency.
+2. **Drive every parallel iterator inside `WorkerPool::install`.** A parallel
+   iterator written at the top level runs on Rayon's *global* pool — it will not
+   use the context's configured workers and will not scale with `--threads`. The
+   gate flags a file that uses a `par_iter` / `par_chunks` / `par_bridge` call but
+   never calls `install`.
+3. **Use indexed iterators and collect in order** for determinism (see §6).
+
+The canonical shape (works from any codec crate; no direct `rayon` dependency):
+
+```rust,ignore
+use splot_parallel::prelude::*;
+
+let outputs: Vec<Output> = ctx.pool().install(|| {
+    items
+        .par_iter()
+        .map(process_one) // pure; writes only to its own Output
+        .collect()        // indexed source → results land in input order
+});
+```
+
+Threads follow the same rule: never `std::thread::spawn` for codec work — every
+worker thread comes from the context's single `WorkerPool`, sized by `--threads`.
+
 ## 6. Determinism contract
 
 Concurrency must never change observable output. Once real decode/encode work
@@ -113,12 +146,12 @@ A future-shape illustration (illustrative only — not a compiled doctest):
 
 ```rust,ignore
 use splot_parallel::WorkerPool;
+use splot_parallel::prelude::*; // curated par-iter traits — never a direct `rayon` dep
 
 // Process N items in parallel inside the owned pool, then collect results in a
 // deterministic, index-ordered Vec — completion order is discarded.
 fn run(pool: &WorkerPool, items: &[Item]) -> Vec<Output> {
     pool.install(|| {
-        use rayon::prelude::*;
         items
             .par_iter()
             .map(process_one) // pure, writes only to its own Output
@@ -142,6 +175,10 @@ fn run(pool: &WorkerPool, items: &[Item]) -> Vec<Output> {
   `std::sync::mpsc` pipeline, or `thread::spawn` outside tests.
 - Aliased imports that could hide one of those calls (e.g. `use std::thread as t;`
   or `use crossbeam_channel as cc;`) are flagged at the rename declaration.
+- Outside `splot-parallel`, a Rayon parallel-iteration call (`par_iter`,
+  `par_chunks`, `par_bridge`) must sit inside `WorkerPool::install`: a file that
+  uses one but never calls `install` is flagged, since it would run on the global
+  pool and not scale with `--threads`.
 
 The source scan is a line-based **defense-in-depth** check: it does not perform
 full syntactic alias resolution, so a deliberately obfuscated multi-hop re-export

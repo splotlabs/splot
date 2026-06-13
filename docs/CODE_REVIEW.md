@@ -72,8 +72,13 @@ Only for encoder or encoder-facing syntax PRs.
       (`cargo xtask check-concurrency-policy`)?
 - [ ] Each encode/decode context owns exactly one `WorkerPool`; nested work via
       `install`, never nested pools?
-- [ ] Deterministic output preserved across thread counts (commit in
-      presentation/bitstream order)?
+- [ ] New parallel work reaches Rayon only through `splot_parallel::prelude` (no
+      direct `rayon` dep) and runs **inside** `WorkerPool::install` (never at top
+      level → global pool) (`cargo xtask check-concurrency-policy`)?
+- [ ] Worker threads come only from the context's `WorkerPool` sized by
+      `--threads` — no raw `std::thread::spawn` for codec work?
+- [ ] Deterministic output preserved across thread counts (indexed iterators /
+      ordered merge; commit in presentation/bitstream order)?
 
 ## Feature tracking
 

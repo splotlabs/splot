@@ -12,7 +12,11 @@
 //! initialize a global Rayon pool, open an unbounded channel, build a
 //! `std::sync::mpsc` pipeline, or spawn ad-hoc OS threads outside tests. Aliased
 //! imports that could hide such a call (for example `use std::thread as t;` or
-//! `use crossbeam_channel as cc;`) are flagged at the rename declaration. The source
+//! `use crossbeam_channel as cc;`) are flagged at the rename declaration. And
+//! outside `splot-parallel`, a Rayon parallel-iteration call (`par_iter`,
+//! `par_chunks`, `par_bridge`) must sit inside `WorkerPool::install`: a file that
+//! uses one but never calls `install` is flagged, since it would run on Rayon's
+//! global pool and would not scale with the configured thread count. The source
 //! scan is a line-based defense-in-depth check: it does not resolve multi-hop
 //! re-exports, so the dependency-direction gate and code review remain the backstop.
 //!
@@ -20,6 +24,7 @@
 //! [`evaluate_concurrency_policy`] evaluator so the rules can be unit-tested
 //! against synthetic fixtures.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
@@ -89,6 +94,31 @@ const THREAD_ALIAS: &str = concat!("std::thread", " as ");
 /// (everywhere, matching the unbounded rule). Only `splot-parallel` may import
 /// `crossbeam_channel` at all, and it never aliases it.
 const CROSSBEAM_ALIAS: &str = concat!("crossbeam_channel", " as ");
+
+/// Rayon parallel-iteration entry points. Calling one of these *outside*
+/// `WorkerPool::install` silently runs on Rayon's implicit **global** pool, so the
+/// work would not scale with the context's configured worker count. The substring
+/// `par_iter` also matches `into_par_iter` / `par_iter_mut`.
+const PAR_ITER_TOKENS: &[&str] = &[
+    concat!("par", "_iter"),
+    concat!("par", "_chunks"),
+    concat!("par", "_bridge"),
+];
+
+/// The pool-scoping call that binds parallel iteration to the local worker pool.
+/// A file that uses a [`PAR_ITER_TOKENS`] entry but never calls this is presumed to
+/// run on the global pool. Matched leniently (substring) to minimize false positives.
+const INSTALL_CALL: &str = concat!("install", "(");
+
+/// Path prefix of the one crate exempt from the par-iter-outside-`install` rule:
+/// `splot-parallel` is the trusted wrapper that owns Rayon and may use parallel
+/// iterators in helpers whose `install` scoping the file-level heuristic cannot see.
+const PARALLEL_CRATE_PREFIX: &str = "crates/splot-parallel/";
+
+/// Files exempt from the par-iter-outside-`install` rule (Rule 10) — for the rare
+/// legitimate case where the `install` scoping lives in a different file. Empty by
+/// default; add a path with a documented reason rather than weakening the rule.
+const PAR_ITER_RULE_ALLOWLIST: &[&str] = &[];
 
 /// One workspace crate's manifest, reduced to its direct dependency crate names
 /// (resolved real names, deduplicated across dependency tables).
@@ -210,6 +240,43 @@ pub(crate) fn evaluate_concurrency_policy(
         if line.text.contains(CROSSBEAM_ALIAS) {
             violations.push(format!(
                 "{where_at}: aliasing `crossbeam_channel` (`{CROSSBEAM_ALIAS}…`) is banned; it can hide an aliased unbounded channel from the policy scanner"
+            ));
+        }
+    }
+
+    // Rule 10: outside `splot-parallel`, a Rayon parallel-iteration entry point must
+    // be driven inside `WorkerPool::install`, or it runs on Rayon's global pool and
+    // will not scale with `--threads`. File-level heuristic: a non-test code line
+    // names a par-iter token, but the file never calls `install(`. `splot-parallel`
+    // (the trusted Rayon wrapper) is exempt, as are test lines and allowlisted files.
+    struct ParIterFile {
+        trigger: Option<(usize, &'static str)>,
+        has_install: bool,
+    }
+    let mut by_file: BTreeMap<&str, ParIterFile> = BTreeMap::new();
+    for line in sources {
+        let entry = by_file.entry(line.path.as_str()).or_insert(ParIterFile {
+            trigger: None,
+            has_install: false,
+        });
+        if line.text.contains(INSTALL_CALL) {
+            entry.has_install = true;
+        }
+        if entry.trigger.is_none()
+            && !line.in_test
+            && let Some(token) = PAR_ITER_TOKENS.iter().find(|t| line.text.contains(**t))
+        {
+            entry.trigger = Some((line.line_no, *token));
+        }
+    }
+    for (&path, file) in &by_file {
+        if let Some((line_no, token)) = file.trigger
+            && !file.has_install
+            && !path.starts_with(PARALLEL_CRATE_PREFIX)
+            && !PAR_ITER_RULE_ALLOWLIST.contains(&path)
+        {
+            violations.push(format!(
+                "{path}:{line_no}: parallel iteration (`{token}`) must run inside `WorkerPool::install` so it uses the configured worker pool, not Rayon's global pool"
             ));
         }
     }
@@ -506,6 +573,16 @@ mod tests {
         }
     }
 
+    /// Builds a `SourceLine` with an explicit path/line for multi-file Rule-10 tests.
+    fn line_at(path: &str, line_no: usize, text: &str, in_test: bool) -> SourceLine {
+        SourceLine {
+            path: path.to_owned(),
+            line_no,
+            text: text.to_owned(),
+            in_test,
+        }
+    }
+
     #[test]
     fn parallel_crate_may_use_restricted_parallel_deps() {
         let crates = [krate(
@@ -700,6 +777,71 @@ mod tests {
         assert!(
             !violations.is_empty(),
             "aliasing crossbeam_channel must be flagged, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn par_iter_outside_install_is_a_violation() {
+        let src = [line_at(
+            "crates/splot-encode/src/x.rs",
+            10,
+            "    let v: Vec<_> = (0..n).into_par_iter().map(f).collect();",
+            false,
+        )];
+        let violations = evaluate_concurrency_policy(&[], &src);
+        assert!(
+            violations.iter().any(|v| v.contains("WorkerPool::install")),
+            "expected a par-iter-outside-install violation, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn par_iter_inside_install_is_ok() {
+        let src = [
+            line_at(
+                "crates/splot-encode/src/x.rs",
+                10,
+                "        pool.install(|| {",
+                false,
+            ),
+            line_at(
+                "crates/splot-encode/src/x.rs",
+                11,
+                "            (0..n).into_par_iter().for_each(g);",
+                false,
+            ),
+        ];
+        assert!(
+            evaluate_concurrency_policy(&[], &src).is_empty(),
+            "par-iter in a file that calls install must be accepted"
+        );
+    }
+
+    #[test]
+    fn par_iter_in_splot_parallel_is_exempt() {
+        let src = [line_at(
+            "crates/splot-parallel/src/x.rs",
+            10,
+            "    let v: Vec<_> = (0..n).into_par_iter().collect();",
+            false,
+        )];
+        assert!(
+            evaluate_concurrency_policy(&[], &src).is_empty(),
+            "splot-parallel is the trusted Rayon wrapper and is exempt from Rule 10"
+        );
+    }
+
+    #[test]
+    fn par_iter_on_test_line_is_exempt_from_rule_ten() {
+        let src = [line_at(
+            "crates/splot-encode/src/x.rs",
+            10,
+            "    let v: Vec<_> = (0..n).into_par_iter().collect();",
+            true,
+        )];
+        assert!(
+            evaluate_concurrency_policy(&[], &src).is_empty(),
+            "par-iter on a test line must not trigger Rule 10"
         );
     }
 

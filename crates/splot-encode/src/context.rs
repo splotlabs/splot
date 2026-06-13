@@ -185,4 +185,23 @@ mod tests {
         .unwrap();
         assert_eq!(a.config(), b.config());
     }
+
+    #[test]
+    fn context_pool_runs_parallel_iterators_via_prelude_deterministically() {
+        // splot-encode has no direct `rayon` dependency: parallel iteration is
+        // reached only through `splot_parallel::prelude`, driven on the context's
+        // own `WorkerPool` (not Rayon's global pool). Indexed map + ordered collect
+        // is deterministic regardless of worker count.
+        use splot_parallel::prelude::*;
+
+        let ctx = Context::new(
+            EncoderConfig::default(),
+            EncoderRuntimeConfig::new(ThreadCount::from(4usize)),
+        )
+        .unwrap();
+        let doubled: Vec<u64> = ctx
+            .pool()
+            .install(|| (0..16u64).into_par_iter().map(|x| x * 2).collect());
+        assert_eq!(doubled, (0..16u64).map(|x| x * 2).collect::<Vec<_>>());
+    }
 }
