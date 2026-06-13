@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "972035e9a83a06d3f9993b0732c419edd630628b",
+  "audited_commit": "583b571712d2cd58f56c9f584dae539313740a11",
   "outcome": "success",
   "files": [
     {
@@ -1557,10 +1557,9 @@
     },
     {
       "path": "crates/splot-validate/src/context/quantizer_matrix.rs",
-      "sha256": "514fd9713950111b0354874eccdc04da779d3d9819dac6381ea7d3e9bf5d3bd0",
+      "sha256": "dcfac597e70d61f1c2dbca86899643fb6543df76f93edaf46730947badbb8b1b",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
-        "AV2-5.18.6-QUANTIZATION",
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
         "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS",
         "AV2-7.3-OBU-ORDERING",
@@ -1914,7 +1913,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator/tests/frame_tile_qm.rs",
-      "sha256": "a218dd8208645e35b410a9018bbf11ef9a6fc804dc65bd48b506a8ba888f91ea",
+      "sha256": "272f269310f9c10c0746dbb86b8bf7839286e67b8144c3bb549dc4a4d26dcbe3",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -2444,7 +2443,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "f353e6e6baa41a0364acb7b72a51c4f4e373d1188dd140ad3dafd68b1c6b2a99",
+      "sha256": "ea4c42235d761b3a79f9383512f7110419b020f7dc807c8f040f9ad826357480",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2614,7 +2613,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "28d228a02054d659337f0a26ae469b55977f9deb8fa5f98eb17c7d1c5abfc8c7",
+      "sha256": "45f5fb42c886d26c0df5e907d2ccb7c4cadc79b8f3a4cbf7a4c6187966a9f346",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2791,7 +2790,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "fa2e0c4f44a4835e0efc65d37ac2b6522a198e69391ce603206c1e46e2688bac",
+      "sha256": "128b2c544f98fbe10a02cdaa8d791f32a4494a6c6b724964643c7e13721de638",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -5872,6 +5871,33 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-qm-layer-dependency/proposal.md",
+      "sha256": "911a3b1d68af8629083fa350914900cdb52b17fc9230a21b119ee695460189a0",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.6-QUANTIZATION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-qm-layer-dependency/specs/validator/spec.md",
+      "sha256": "a1898dcd54aaa436c33c763004afab7a184efd45887601e5ed2e176f9daff285",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.6-QUANTIZATION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-qm-layer-dependency/tasks.md",
+      "sha256": "27dc126da7de080830977c4c5d2a83a0f71a569066e1fb7c1ff9c74676334fd8",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.6-QUANTIZATION"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-13-qm-reset-mlayer-presence-arm/proposal.md",
       "sha256": "97fa2001e7bb5e59c77d8f148efcf39a96ce3c7e3c76767709b3d751d07d0829",
       "scope_kind": "openspec",
@@ -6313,7 +6339,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "2b9ed971f717a46affa18de6c1f8a0c68bb300aaab098906735926721690c7b0",
+      "sha256": "6ae2151f420aacb2317ef14934e8e25319bac15d25a9fd5acf92cbce71113b1c",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
