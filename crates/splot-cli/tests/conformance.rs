@@ -93,8 +93,14 @@ fn conformance_corpus_matches_manifest() {
     // CLI default (errors fail, warnings do not).
     let validator = Validator::new(false);
 
+    // Track which committed vector files the manifest references, so we can fail
+    // on any committed vector that is NOT in the manifest (otherwise a committed
+    // vector would never be validated and the committed-corpus guarantee leaks).
+    let mut manifest_paths: BTreeSet<PathBuf> = BTreeSet::new();
+
     for entry in &manifest.vector {
         let vector_path = root.join(&entry.path);
+        manifest_paths.insert(vector_path.clone());
         // `expect` takes a `&str`, so build the path-bearing message first to
         // surface which committed vector is missing or unreadable.
         let read_msg = format!("read committed vector {}", vector_path.display());
@@ -136,4 +142,38 @@ fn conformance_corpus_matches_manifest() {
         saw_diagnostics,
         "manifest exercises no `diagnostics` vector; the diagnostics arm would be vacuous"
     );
+
+    // Every committed vector file must appear in the manifest — otherwise it is
+    // never validated and the committed-corpus guarantee silently leaks.
+    let mut committed = Vec::new();
+    collect_vector_files(&root.join("vectors"), &mut committed);
+    let orphans: Vec<String> = committed
+        .iter()
+        .filter(|p| !manifest_paths.contains(*p))
+        .map(|p| p.display().to_string())
+        .collect();
+    assert!(
+        orphans.is_empty(),
+        "committed vector(s) missing from manifest.toml (never validated): {orphans:?}"
+    );
+}
+
+/// Recursively collects committed vector files (`.ivf` / `.av2` / `.obu`) under
+/// `dir` into `out`. A missing directory yields nothing.
+fn collect_vector_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_vector_files(&path, out);
+        } else if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| matches!(e, "ivf" | "av2" | "obu"))
+        {
+            out.push(path);
+        }
+    }
 }

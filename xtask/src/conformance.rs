@@ -173,37 +173,67 @@ fn summarize_expect(expect: &Expect) -> String {
     }
 }
 
+/// One `cargo build --message-format=json` line we care about: the
+/// `compiler-artifact` message that carries the built binary's path.
+#[derive(Debug, Deserialize)]
+struct CargoArtifact {
+    reason: String,
+    target: CargoArtifactTarget,
+    /// The built executable's absolute path (present for binary artifacts).
+    executable: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoArtifactTarget {
+    name: String,
+}
+
 /// Builds the `splot` binary (debug) and returns its path. Building it here means
 /// `cargo xtask conformance` works from a clean checkout without a separate build
 /// step; it is a project binary, not AVM.
+///
+/// The path is taken from Cargo's own `--message-format=json` artifact output
+/// rather than reconstructed from a guessed `target/debug/` location, so it is
+/// correct regardless of `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET_DIR` /
+/// `[build] target-dir` configuration and the platform executable suffix.
 fn build_splot_binary(root: &Path) -> Result<PathBuf> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
-    let status = Command::new(&cargo)
+    let output = Command::new(&cargo)
         .current_dir(root)
-        .args(["build", "--locked", "-p", "splot-cli", "--bin", "splot"])
-        .status()
+        .args([
+            "build",
+            "--locked",
+            "-p",
+            "splot-cli",
+            "--bin",
+            "splot",
+            "--message-format=json",
+        ])
+        .output()
         .context("failed to spawn `cargo build -p splot-cli`")?;
-    if !status.success() {
-        bail!("`cargo build -p splot-cli` failed with {status}");
+    if !output.status.success() {
+        bail!(
+            "`cargo build -p splot-cli` failed with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
-    // Honor CARGO_TARGET_DIR (absolute, or relative to the workspace root) so the
-    // binary is found under a custom target directory; default to `<root>/target`.
-    let target_dir = match std::env::var_os("CARGO_TARGET_DIR") {
-        Some(dir) => root.join(dir),
-        None => root.join("target"),
-    };
-    // Cargo names the binary with the platform executable suffix (`.exe` on
-    // Windows, empty elsewhere).
-    let bin_name = format!("splot{}", std::env::consts::EXE_SUFFIX);
-    let candidate = target_dir.join("debug").join(bin_name);
-    if candidate.is_file() {
-        Ok(candidate)
-    } else {
-        Err(anyhow!(
-            "built splot binary not found at {}",
-            candidate.display()
-        ))
+    let stdout =
+        String::from_utf8(output.stdout).context("cargo build JSON output was not UTF-8")?;
+    for line in stdout.lines() {
+        let Ok(artifact) = serde_json::from_str::<CargoArtifact>(line) else {
+            continue; // non-artifact messages (build-script-executed, etc.)
+        };
+        if artifact.reason == "compiler-artifact"
+            && artifact.target.name == "splot"
+            && let Some(executable) = artifact.executable
+        {
+            return Ok(PathBuf::from(executable));
+        }
     }
+    Err(anyhow!(
+        "cargo build did not report a `splot` executable artifact"
+    ))
 }
 
 /// Runs `splot validate --json <vector>` and returns the set of emitted error
