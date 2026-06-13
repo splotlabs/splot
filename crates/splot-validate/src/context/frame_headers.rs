@@ -211,10 +211,10 @@ impl ValidatorContext {
                 self.commit_pending_ref_update();
             }
             let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
-            // The frame's linearly-available film-grain reference slot (if any), surfaced by
-            // the §6.17.10.1 reference checks so the §7.3.8.1 replay reference can be buffered
-            // below in &mut self context (the checks borrow self immutably).
-            let mut film_grain_rap_slot: Option<u8> = None;
+            // The frame's linearly-available §7.3.8.1 random-access-point HLS references (film
+            // grain + quantizer matrix), surfaced by the reference checks so they can be
+            // buffered below in &mut self context (the checks borrow self immutably).
+            let mut rap_refs = FrameRapReferences::default();
             if let Some(active_sequence) = self.sequence_headers.get(&seq_id) {
                 // AV2 § 7.23: thread the modeled per-extended-layer reference-frame buffer
                 // into the §6.17 frame-header checks so the §6.17.2 inter `ref_frame_idx`
@@ -239,7 +239,7 @@ impl ValidatorContext {
                 } else {
                     FrameReferenceStateView::unknown()
                 };
-                film_grain_rap_slot = frame_header_core_checks(
+                rap_refs = frame_header_core_checks(
                     obu,
                     first_picture_in_tu,
                     active_sequence,
@@ -253,16 +253,17 @@ impl ValidatorContext {
                     report,
                 );
             }
-            // AV2 § 7.3.8.1: buffer the frame's linearly-available film-grain model reference
-            // for the random-access-point availability replay (disjoint from the linear
-            // `frame-header/film-grain-model-unavailable`, which already owns the unavailable
-            // case). Governed by the frame's own extended layer.
-            if let Some(slot) = film_grain_rap_slot {
-                self.note_rap_reference(
-                    RapHlsKey::FilmGrain { slot },
-                    obu.header.extended_layer_id,
-                    obu.offset,
-                );
+            // AV2 § 7.3.8.1: buffer the frame's linearly-available film-grain and
+            // quantizer-matrix references for the random-access-point availability replay
+            // (disjoint from the linear `frame-header/film-grain-model-unavailable` /
+            // `frame-header/qm-level-unavailable`, which own the unavailable cases). Governed
+            // by the frame's own extended layer.
+            let xlayer = obu.header.extended_layer_id;
+            if let Some(slot) = rap_refs.film_grain_slot {
+                self.note_rap_reference(RapHlsKey::FilmGrain { slot }, xlayer, obu.offset);
+            }
+            for level in rap_refs.qm_levels {
+                self.note_rap_reference(RapHlsKey::QmLevel { level }, xlayer, obu.offset);
             }
         }
     }
