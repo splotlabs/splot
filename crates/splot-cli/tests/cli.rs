@@ -80,6 +80,22 @@ fn validate_ivf_conformant_exits_zero() {
 }
 
 #[test]
+fn validate_ivf_trailing_partial_frame_header_exits_zero() {
+    let mut data = ivf_stream(&[&[0x01, 0x08]]);
+    data.extend_from_slice(&1148u32.to_le_bytes());
+    data.extend_from_slice(&6480u64.to_le_bytes()[..6]);
+    let path = temp_input("ivf", &data);
+    let out = splot(&["validate", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("ivf/truncated-frame-header"),
+        "stdout was: {stdout}"
+    );
+    assert!(stdout.contains("conformant"), "stdout was: {stdout}");
+}
+
+#[test]
 fn validate_ivf_json_reports_container_diagnostic() {
     let mut data = ivf_stream(&[&[0x01, 0x08]]);
     data.extend_from_slice(&5u32.to_le_bytes());

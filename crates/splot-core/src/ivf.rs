@@ -336,6 +336,11 @@ pub fn parse_ivf_partial(input: &[u8]) -> PartialIvfParse<'_> {
     while cursor < input.len() {
         let remaining_header = input.len().saturating_sub(cursor);
         if remaining_header < IVF_FRAME_HEADER_SIZE {
+            if frame_index > 0 {
+                // Common IVF demuxers treat EOF while probing the next frame
+                // header as end-of-stream once at least one full frame exists.
+                break;
+            }
             return PartialIvfParse {
                 header: Some(header),
                 frames,
@@ -563,16 +568,25 @@ mod tests {
     }
 
     #[test]
-    fn truncated_frame_header_keeps_prefix() {
+    fn trailing_partial_frame_header_after_prefix_is_ignored() {
         let mut bytes = header_bytes();
         write_ivf_frame(&mut bytes, 0, &[0x01, 0x08]).unwrap();
         bytes.extend_from_slice(&[0x05, 0x00]);
         let parsed = parse_ivf_partial(&bytes);
         assert_eq!(parsed.frames.len(), 1);
+        assert_eq!(parsed.error, None);
+    }
+
+    #[test]
+    fn truncated_initial_frame_header_is_error() {
+        let mut bytes = header_bytes();
+        bytes.extend_from_slice(&[0x05, 0x00]);
+        let parsed = parse_ivf_partial(&bytes);
+        assert_eq!(parsed.frames.len(), 0);
         assert!(matches!(
             parsed.error,
             Some(IvfError::TruncatedFrameHeader {
-                frame_index: 1,
+                frame_index: 0,
                 offset,
                 needed: 10
             }) if offset == ByteOffset::new(bytes.len() as u64)

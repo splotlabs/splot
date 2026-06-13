@@ -514,6 +514,22 @@ mod tests {
     }
 
     #[test]
+    fn trailing_partial_ivf_frame_header_after_complete_frame_is_tolerated() {
+        let mut data = ivf_stream(&[&[0x01, 0x08]]);
+        data.extend_from_slice(&1148u32.to_le_bytes());
+        data.extend_from_slice(&6480u64.to_le_bytes()[..6]);
+        let report = Validator::new(false).validate_bytes(&data);
+        assert!(report.is_conformant(), "report was: {report}");
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .all(|d| d.rule_id != "ivf/truncated-frame-header"),
+            "report was: {report}"
+        );
+    }
+
+    #[test]
     fn annex_b_parse_error_inside_ivf_frame_is_a_bitstream_diagnostic() {
         let report = Validator::new(false).validate_bytes(&ivf_stream(&[&[0x05, 0x08]]));
         assert!(!report.is_conformant());
