@@ -3923,31 +3923,42 @@ category = "conformance"
 kind = "conformance"
 spec_sections = []
 sources = ["https://github.com/AOMediaCodec/avm"]
-crate = "xtask"
-module = "xtask/src/main.rs"
-openspec_change = "avm-differential-harness"
+crate = "splot-cli"
+module = "crates/splot-cli/tests/negative_mutations.rs"
+openspec_change = "conformance-negative-mutator"
 tracking_issue = ""
 owner = "conformance"
 risk = "high"
-notes = "Future proof that malformed/minimized streams produce expected diagnostics without panics."
+notes = "Committed, deterministic NEGATIVE MUTATOR (crates/splot-cli/tests/negative_mutations.rs): a table of (committed valid seed, documented in-memory byte/field mutation, expected registered diagnostic) rows. Each clones a committed valid seed from tests/conformance/vectors/valid/, asserts the UNMUTATED seed validates clean (causation), applies a deterministic mutation in memory (the committed file is never written), runs splot_validate::Validator::validate_bytes, and asserts the expected error rule_id is PRESENT with no panic (validate_bytes returning is itself proof of no-panic). Targets stable, decidable diagnostics across the IVF-container / OBU-header / LEB128-framing layers (4 distinct ids across 3 layers): ivf/invalid-header-length, bitstream/parse-error, obu-header/temporal-layer-zero-only-types, obu-header/base-layer-only-types. Exercises only EXISTING registered diagnostics (no new ones). These are hand-crafted, targeted mutations with named expected diagnostics — NOT random fuzzing (the cargo-fuzz targets own no-panic over arbitrary bytes) and NOT a live avm_diff run (avm_diff stays pending; AVM is the LOCAL generator of the seeds only). Note: the container auto-detect (parse_bitstream_partial) routes a corrupt-DKIF input to raw Annex B, so ivf/invalid-signature is unreachable via validate_bytes; the IVF-layer row keeps the magic intact and corrupts header_len instead."
 
 [feature.status]
-mapped = "todo"
-types = "todo"
+mapped = "done"
+types = "not-applicable"
 parse = "not-applicable"
-validate = "not-applicable"
+validate = "done"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
-avm_diff = "todo"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
-diagnostics = []
+tests = [
+    "crates/splot-cli/tests/negative_mutations.rs::negative_mutations_emit_expected_diagnostics",
+]
+commands = [
+    "cargo test -p splot-cli --test negative_mutations",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-key-intra-64x64.ivf",
+]
+diagnostics = [
+    "ivf/invalid-header-length",
+    "bitstream/parse-error",
+    "obu-header/temporal-layer-zero-only-types",
+    "obu-header/base-layer-only-types",
+]
 
 [[feature]]
 id = "CONF-PUBLIC-VECTOR-LICENSE-REVIEW"

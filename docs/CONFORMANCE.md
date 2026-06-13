@@ -18,7 +18,8 @@ What each `CONF-*` row proves:
   `splot encode -> avm decode` reverse direction) remains future work.
 - `CONF-AVM-PARSER-TRACES` — `splot` parser behavior matches AVM parser traces.
 - `CONF-AVM-INVALID-STREAMS` — malformed/minimized streams produce the
-  expected diagnostics without panics.
+  expected diagnostics without panics, proven by the committed
+  [negative mutator](#the-negative-mutator-conf-avm-invalid-streams).
 - `CONF-PUBLIC-VECTORS` — a public AV2 vector corpus runs against the
   validator.
 - `CONF-PUBLIC-VECTOR-LICENSE-REVIEW` — redistributability is reviewed before
@@ -91,6 +92,36 @@ read each committed vector's bytes and validate them with
   binary, not AVM.
 
 Neither path invokes AVM or the network.
+
+### The negative mutator (CONF-AVM-INVALID-STREAMS)
+
+`CONF-AVM-INVALID-STREAMS` is proven by a committed, deterministic **negative
+mutator**:
+[`crates/splot-cli/tests/negative_mutations.rs`](../crates/splot-cli/tests/negative_mutations.rs)
+(`negative_mutations_emit_expected_diagnostics`). It holds a table of
+`(committed valid seed, documented mutation, expected diagnostic)` rows. For each
+row it:
+
+1. reads a committed valid seed from `tests/conformance/vectors/valid/`;
+2. asserts the **unmutated** seed validates clean (causation: the diagnostic is
+   provably caused by the mutation, not a pre-broken seed);
+3. applies a documented, deterministic byte/field mutation **in memory** (the
+   committed file is never written);
+4. runs `splot_validate::Validator::validate_bytes` and asserts the expected
+   error `rule_id` is **present** (and that the validator did not panic —
+   `validate_bytes` returning at all is the no-panic proof).
+
+The mutations are **targeted, named-diagnostic** malformations — not random
+fuzzing (the cargo-fuzz targets own no-panic over arbitrary bytes), and not a
+live AVM diff. They hit stable, decidable diagnostics across the IVF-container,
+OBU-header, and LEB128/OBU-framing layers (e.g. shrinking the IVF `header_len`
+below the 32-byte baseline → `ivf/invalid-header-length`; inflating an
+`obu_size` LEB128 past the input → `bitstream/parse-error`; setting a key/switch
+frame's `obu_tlayer_id` non-zero → `obu-header/temporal-layer-zero-only-types`).
+Every expected id is an **existing registered diagnostic** (see
+[`docs/VALIDATOR-DIAGNOSTICS.md`](./VALIDATOR-DIAGNOSTICS.md)) verified
+empirically; the mutator adds no new diagnostics. It runs under `cargo test`
+(hence `cargo xtask ci`), with no AVM and no network.
 
 ## AVM is a local oracle (not a dependency)
 
