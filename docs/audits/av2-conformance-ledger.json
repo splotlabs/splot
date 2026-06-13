@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "583b571712d2cd58f56c9f584dae539313740a11",
+  "audited_commit": "3d26b284cf8b00bff1c9ee39dbb98f642f0c0b9d",
   "outcome": "success",
   "files": [
     {
@@ -1557,7 +1557,7 @@
     },
     {
       "path": "crates/splot-validate/src/context/quantizer_matrix.rs",
-      "sha256": "dcfac597e70d61f1c2dbca86899643fb6543df76f93edaf46730947badbb8b1b",
+      "sha256": "268250eb927975789082228d04f10ea96fc85351d640856342b46832a4f1884c",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
@@ -1913,7 +1913,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator/tests/frame_tile_qm.rs",
-      "sha256": "272f269310f9c10c0746dbb86b8bf7839286e67b8144c3bb549dc4a4d26dcbe3",
+      "sha256": "f446226bc093c256bfa9e4c3dde21305c6650b937b80cfc1a631432e94dba079",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -2443,7 +2443,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "ea4c42235d761b3a79f9383512f7110419b020f7dc807c8f040f9ad826357480",
+      "sha256": "7db3bc3fd1329255aca22f2d9eb9b5509adca8874a5adf8d109d7f282c2ac38c",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
