@@ -2,7 +2,7 @@
 
 Generated from `docs/DECODER-SUPPORT-MATRIX.toml` by `cargo xtask decoder-support --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-13. 18 row(s).
+Matrix version 1. Last reviewed 2026-06-13. 19 row(s).
 
 ## Status Counts
 
@@ -10,7 +10,7 @@ Matrix version 1. Last reviewed 2026-06-13. 18 row(s).
 |---|---:|
 | `todo` | 7 |
 | `partial` | 5 |
-| `supported` | 5 |
+| `supported` | 6 |
 | `unsupported-intentional` | 1 |
 | `blocked` | 0 |
 
@@ -19,7 +19,7 @@ Matrix version 1. Last reviewed 2026-06-13. 18 row(s).
 | Tier | Rows |
 |---|---:|
 | `encoder-reuse` | 1 |
-| `foundation` | 12 |
+| `foundation` | 13 |
 | `tier0-plan` | 1 |
 | `tier1-intra` | 4 |
 
@@ -31,6 +31,7 @@ Matrix version 1. Last reviewed 2026-06-13. 18 row(s).
 | `decoder-support-matrix` | Decoder support matrix and generated status | `DOC-DECODER-SUPPORT-MATRIX` | `foundation` | `supported` | none | cargo xtask check-decoder-support<br>cargo xtask ci | none | none | `docs/DECODER-SUPPORT-MATRIX.toml` |
 | `decoder-status-drift-gate` | Decoder support drift gate | `XTASK-DECODER-SUPPORT-STATUS` | `foundation` | `supported` | none | decoder_support::tests::check_decoder_support_detects_drift<br>cargo xtask check-decoder-support | none | none | `xtask/src/decoder_support.rs` |
 | `local-reference-evidence-manifest` | Portable local-reference evidence manifest | `XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST` | `foundation` | `supported` | none | xtask/src/reference_evidence/tests.rs::tests<br>cargo test -p xtask reference_evidence --locked<br>cargo xtask check-reference-evidence<br>cargo xtask check-decoder-support | none | none | `xtask/src/reference_evidence.rs` |
+| `decoder-crate-scaffolding` | Decoder and reconstruction crate scaffolding | `INFRA-DECODER-CRATE-SCAFFOLDING` | `foundation` | `supported` | none | cargo check -p splot-recon --locked<br>cargo check -p splot-decode --locked<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/lib.rs; crates/splot-decode/src/lib.rs` |
 | `decoder-diagnostic-registry` | Decoder diagnostic registry | `DOC-DECODER-DIAGNOSTICS` | `foundation` | `supported` | none | xtask/src/diagnostic_registry.rs::tests::decoder_registry_accepts_matching_source_and_doc<br>cargo xtask check-diagnostic-registry | none | none | `docs/DECODER-DIAGNOSTICS.md` |
 | `cli-decode-entrypoint` | splot decode CLI entry point | `CLI-DECODE` | `foundation` | `unsupported-intentional` | 7.1 | crates/splot-cli/tests/decode_cli.rs::decode_unsupported_text_mode_emits_stable_diagnostic<br>crates/splot-cli/tests/decode_cli.rs::decode_unsupported_json_mode_emits_diagnostic_object<br>crates/splot-cli/tests/decode_cli.rs::decode_unsupported_missing_input_does_not_touch_files | decode/unsupported-feature | none | `crates/splot-cli/src/commands/decode.rs` |
 | `cli-decode-hash-output-contract` | splot decode hash output CLI contract | `CLI-DECODE-HASH-OUTPUT` | `foundation` | `partial` | 7.1<br>7.21 | crates/splot-cli/tests/decode_cli.rs::decode_hash_output_format_emits_unsupported_text_without_output_path<br>crates/splot-cli/tests/decode_cli.rs::decode_hash_output_format_missing_input_does_not_touch_files<br>crates/splot-cli/tests/decode_cli.rs::decode_hash_output_format_json_emits_same_diagnostic<br>crates/splot-cli/tests/decode_cli.rs::decode_invalid_output_format_is_usage_error<br>crates/splot-cli/tests/decode_cli.rs::decode_hash_output_format_with_output_path_does_not_touch_file<br>crates/splot-cli/tests/decode_cli.rs::decode_without_output_selection_is_usage_error<br>crates/splot-cli/tests/decode_cli.rs::decode_explicit_y4m_output_format_requires_output_path<br>crates/splot-cli/tests/decode_cli.rs::decode_explicit_y4m_output_format_matches_implicit_no_touch_behavior | decode/unsupported-feature | none | `crates/splot-cli/src/commands/decode.rs` |

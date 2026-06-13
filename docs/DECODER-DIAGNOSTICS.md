@@ -14,11 +14,14 @@
 > the `rule_id` set only; severity, section, matrix row, feature id, message,
 > and remediation are protected by CLI tests, OpenSpec requirements, and review.
 
-The initial emitted-source root is
-`crates/splot-cli/src/commands/decode.rs` because no decoder library crate has
-been approved yet. Future emissions from `crates/splot-decode/src` or
-`crates/splot-recon/src` must be added only after the corresponding dependency
-graph change is explicitly approved.
+The current scanner roots are `crates/splot-cli/src/commands/decode.rs` and
+`crates/splot-decode/src`. The only emitted decoder diagnostic today lives in
+the CLI decode command; `splot-decode` is scaffolded, but intentionally emits no
+decoder diagnostics yet. `splot-recon` is shared reconstruction infrastructure
+for future decoder and encoder roundtrip work, so it is not scanned as a decoder
+diagnostic root unless a future change adds a narrower decoder-owned
+reconstruction emission path. Future emissions from scanner roots must be added
+only in the same change that adds source emission and tests.
 
 Every emitted decoder diagnostic uses stable field names:
 

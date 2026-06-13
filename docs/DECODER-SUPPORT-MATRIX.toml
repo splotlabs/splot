@@ -58,6 +58,20 @@ local_reference_evidence = []
 notes = "Versioned docs/LOCAL-REFERENCE-EVIDENCE.toml schema and offline checker for future local AVM/dav2d digest metadata. The checker validates manifest portability, repo-relative fixture paths, committed fixture hashes, digest metadata, and equality assertions without invoking external decoders. The manifest currently has no evidence entries and does not prove runtime decode, reconstruction, hash, or Y4M support."
 
 [[row]]
+id = "decoder-crate-scaffolding"
+name = "Decoder and reconstruction crate scaffolding"
+feature_id = "INFRA-DECODER-CRATE-SCAFFOLDING"
+spec_sections = []
+parser_source = "n/a"
+decode_module = "crates/splot-recon/src/lib.rs; crates/splot-decode/src/lib.rs"
+tier = "foundation"
+status = "supported"
+self_contained_tests = ["cargo check -p splot-recon --locked", "cargo check -p splot-decode --locked", "cargo xtask check-dependency-direction", "cargo xtask check-decoder-support"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Approved workspace scaffolds for future reconstruction primitives and the future decode driver. `splot-recon` has no `splot-*` dependencies; `splot-decode` may depend only on `splot-core` and `splot-recon`. The crates expose no runtime reconstruction or byte-consuming decode API, emit no decoder diagnostics, and do not invoke AVM/dav2d."
+
+[[row]]
 id = "decoder-diagnostic-registry"
 name = "Decoder diagnostic registry"
 feature_id = "DOC-DECODER-DIAGNOSTICS"

@@ -57,6 +57,8 @@ const RISKS: &[&str] = &["low", "medium", "high", "unknown"];
 /// Allowed `crate` values (workspace members plus the `docs` pseudo-crate).
 const CRATES: &[&str] = &[
     "splot-core",
+    "splot-recon",
+    "splot-decode",
     "splot-validate",
     "splot-encode",
     "splot-cli",
@@ -67,6 +69,7 @@ const CRATES: &[&str] = &[
 /// Allowed `owner` values.
 const OWNERS: &[&str] = &[
     "core",
+    "decoder",
     "validator",
     "encoder",
     "conformance",

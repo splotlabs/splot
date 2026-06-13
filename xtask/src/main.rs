@@ -41,7 +41,7 @@ const SPDX_COPYRIGHT_PREFIX: &str = "// SPDX-FileCopyrightText: ";
 /// adding a workspace crate that should not gate here, or it joins the
 /// threshold scope.
 const SPLOT_VALIDATE_COVERAGE_IGNORE_REGEX: &str =
-    r"crates/splot-(core|encode|cli)/|(^|/)xtask/|(^|/)fuzz/";
+    r"crates/splot-(core|recon|decode|encode|cli)/|(^|/)xtask/|(^|/)fuzz/";
 
 /// Committed AV2 spec mirrors, each pinned to `(dir, pdf_sha256, checksums_sha256)`.
 ///
@@ -1065,6 +1065,8 @@ fn check_dependency_direction(root: &Path) -> Result<()> {
 /// recognized as internal.
 const INTERNAL_DEP_RULES: &[(&str, &[&str])] = &[
     ("splot-core", &[]),
+    ("splot-recon", &[]),
+    ("splot-decode", &["splot-core", "splot-recon"]),
     ("splot-validate", &["splot-core"]),
     ("splot-encode", &["splot-core"]),
     (

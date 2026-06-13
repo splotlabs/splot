@@ -654,11 +654,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "splot-decode"
+version = "0.0.0"
+
+[[package]]
 name = "splot-encode"
 version = "0.0.0"
 dependencies = [
  "splot-core",
 ]
+
+[[package]]
+name = "splot-recon"
+version = "0.0.0"
 
 [[package]]
 name = "splot-validate"
