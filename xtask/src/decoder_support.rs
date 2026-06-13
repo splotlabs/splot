@@ -623,9 +623,9 @@ fn mentions_external_decoder(value: &str) -> bool {
 }
 
 fn reference_decoder_path(value: &str) -> Option<String> {
-    tokenized(value).into_iter().find(|token| {
-        let lower = token.to_ascii_lowercase();
-        looks_absolute_path(token)
+    path_fragments(value).into_iter().find(|fragment| {
+        let lower = fragment.to_ascii_lowercase();
+        looks_absolute_path(fragment)
             && EXTERNAL_DECODER_TOKENS
                 .iter()
                 .any(|decoder| lower.contains(decoder))
@@ -633,9 +633,26 @@ fn reference_decoder_path(value: &str) -> Option<String> {
 }
 
 fn local_absolute_path(value: &str) -> Option<String> {
+    path_fragments(value)
+        .into_iter()
+        .find(|fragment| looks_local_absolute_path(fragment))
+}
+
+fn path_fragments(value: &str) -> Vec<String> {
     tokenized(value)
         .into_iter()
-        .find(|token| looks_local_absolute_path(token))
+        .flat_map(|token| {
+            let mut fragments = vec![token.clone()];
+            fragments.extend(
+                token
+                    .split('=')
+                    .skip(1)
+                    .map(str::to_owned)
+                    .filter(|fragment| !fragment.is_empty()),
+            );
+            fragments
+        })
+        .collect()
 }
 
 fn tokenized(value: &str) -> Vec<String> {
@@ -768,6 +785,22 @@ notes = "done"
         );
         let err = validate_matrix(parse_matrix(&bad)?).expect_err("matrix should be rejected");
         assert!(err.to_string().contains("decoder support matrix problem"));
+        Ok(())
+    }
+
+    #[test]
+    fn reference_evidence_rejects_prefixed_local_absolute_paths() -> Result<()> {
+        for evidence in [
+            r#"local_reference_evidence = ["AVM=/Users/me/Devel/avm/build/avmdec"]"#,
+            r#"local_reference_evidence = ["--decoder=/home/me/dav2d/build/dav2d"]"#,
+        ] {
+            let bad = SAMPLE.replace(
+                r#"local_reference_evidence = ["AVM commit f6f0b9c89 raw hash metadata"]"#,
+                evidence,
+            );
+            let err = validate_matrix(parse_matrix(&bad)?).expect_err("matrix should be rejected");
+            assert!(err.to_string().contains("decoder support matrix problem"));
+        }
         Ok(())
     }
 
