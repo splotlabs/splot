@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "b905d332eb18fa7a3f02370ee72920e66ccda2e6",
+  "audited_commit": "802e97c573b8796102059a3016c451efa9075cb0",
   "outcome": "success",
   "files": [
     {
@@ -1000,7 +1000,7 @@
     },
     {
       "path": "crates/splot-validate/src/context/film_grain.rs",
-      "sha256": "5a8f05d325319ea2cfa631758e6587d91d648ddb8cf6f595854c77a4b4f7195f",
+      "sha256": "92a715984afae96d1ad26b4884d10ea0440f3afae87d85c71038f575ef66faf7",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
@@ -1694,7 +1694,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator/tests/layer_dependency_core.rs",
-      "sha256": "bf01ab207daf1b850abb5ecec00924bf6d177959ac8b502fd7d8ed9e3f62809f",
+      "sha256": "808f905d80cc258f705ada5b2271ed2be180bc8194d9f6059c96b837509807b9",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -2098,7 +2098,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "08e3efeccf6068d6c073c52b0ef4cc58152e8d124cd4cbe11595dacf37e880e3",
+      "sha256": "ec9123196d3597db7a2378201903afd103241008789caf3fa5f2d5c1f9968324",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2400,7 +2400,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "57f2b0007f52bbca0f347ea6edca2bc8d0a283eb1f58753f676d074ee999702f",
+      "sha256": "d0aa414ca9e3e67df6ba719604347a1ad2cf707b9246650cbf1659f539d37830",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
