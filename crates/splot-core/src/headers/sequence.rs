@@ -42,6 +42,7 @@ impl SequenceHeaderId {
 /// The AV2 profile a `seq_profile_idc` (AV2 v1.0.0 § 5.4.1) or `multistream_profile_idc`
 /// (§ 5.6) value names. Both 5-bit fields share this value space, defined by Annex A.2
 /// Table A.1 (docs/spec/av2/1.0.0/annex-a-profiles-levels-and-tiers.md, mirror lines 59-90).
+/// Feature: `AV2-A-PROFILES`.
 ///
 /// The raw 5-bit value returned by [`Self::get`] is the canonical identity: equality,
 /// ordering, hashing, and the [`Self::is_reserved`] / [`Self::is_configurable`] classifiers
