@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-13. 150 feature(s).
+Matrix version 1. Last reviewed 2026-06-13. 151 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -150,6 +150,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DOC-MINIMAL-DECODE-TIER-CONTRACT` | Minimal decode tier contract documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `docs/DECODER-ROADMAP.md` |
 | `INFRA-DECODER-CRATE-SCAFFOLDING` | Decoder and reconstruction crate scaffolding | infrastructure | infrastructure | done | n/a | n/a | done | n/a | n/a | n/a | done | n/a | `crates/splot-decode/src/lib.rs` |
 | `INFRA-RECON-FRAME-PLANE-TYPES` | Decoded frame and plane runtime types | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-recon/src/lib.rs` |
+| `DECODE-LIMITS-RUNTIME-API` | Decode limits runtime API | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-decode/src/limits.rs` |
 | `DECODE-UNSUPPORTED-DIAGNOSTIC-API` | Decode unsupported diagnostic API | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-decode/src/lib.rs` |
 | `DOC-DECODER-SUPPORT-MATRIX` | Decoder support matrix documentation | docs | docs | done | n/a | n/a | done | n/a | n/a | n/a | done | n/a | `docs/DECODER-SUPPORT-MATRIX.toml` |
 | `XTASK-DECODER-SUPPORT-STATUS` | Decoder support status reporting and checks | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/decoder_support.rs` |

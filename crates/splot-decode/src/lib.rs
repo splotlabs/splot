@@ -5,16 +5,24 @@
 //!
 //! This crate will coordinate parsed AV2 bitstream facts from `splot-core` with
 //! reconstruction and output state from `splot-recon`. It owns the current
-//! structured `decode/unsupported-feature` diagnostic API and intentionally
-//! exposes no byte-consuming decode API yet.
+//! structured `decode/unsupported-feature` diagnostic API plus local
+//! resource-limit policy types, and intentionally exposes no byte-consuming
+//! decode API yet.
 //!
 //! Feature tracking: `INFRA-DECODER-CRATE-SCAFFOLDING`,
-//! `DECODE-UNSUPPORTED-DIAGNOSTIC-API`.
+//! `DECODE-UNSUPPORTED-DIAGNOSTIC-API`, `DECODE-LIMITS-RUNTIME-API`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
 
 use core::fmt;
+
+mod limits;
+
+pub use limits::{
+    DecodeLimitCheck, DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimitResult,
+    DecodeLimitThreshold, DecodeLimitUnit, DecodeLimits, DecodeOptions,
+};
 
 /// Stable rule id for the current unsupported decode diagnostic.
 pub const UNSUPPORTED_FEATURE_RULE_ID: &str = "decode/unsupported-feature";
