@@ -447,7 +447,7 @@ impl ValidatorContext {
                     seq_ptl_by_xlayer.insert(
                         ptl.xlayer_id,
                         LcrSeqPtl {
-                            seq_profile_idc: ptl.seq_profile_idc,
+                            seq_profile_idc: ptl.seq_profile_idc.get(),
                             max_level_idx: ptl.max_level_idx,
                             tier_flag: u8::from(ptl.tier_flag),
                         },
@@ -489,7 +489,7 @@ impl ValidatorContext {
                         info.global_config_record_id,
                         ExtendedLayerId::from_bits(ptl.xlayer_id),
                         LcrPtlSnapshot {
-                            seq_profile_idc: ptl.seq_profile_idc,
+                            seq_profile_idc: ptl.seq_profile_idc.get(),
                             max_level_idx: ptl.max_level_idx,
                             tier_flag: u8::from(ptl.tier_flag),
                             max_mlayer_count: ptl.max_mlayer_count,
@@ -659,7 +659,7 @@ impl ValidatorContext {
                         xlayer,
                         info.local_id,
                         LcrPtlSnapshot {
-                            seq_profile_idc: ptl.seq_profile_idc,
+                            seq_profile_idc: ptl.seq_profile_idc.get(),
                             max_level_idx: ptl.max_level_idx,
                             tier_flag: u8::from(ptl.tier_flag),
                             max_mlayer_count: ptl.max_mlayer_count,

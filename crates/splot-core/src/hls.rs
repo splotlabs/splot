@@ -11,7 +11,7 @@
 
 use crate::bitio::BitReader;
 use crate::error::Result;
-use crate::headers::sequence::{MAX_SEQ_NUM, SequenceHeaderId};
+use crate::headers::sequence::{MAX_SEQ_NUM, ProfileIdc, SequenceHeaderId};
 use crate::segment::{SegmentInfo, parse_seg_info};
 use crate::span::ByteOffset;
 use crate::types::{EmbeddedLayerId, TemporalLayerId};
@@ -145,8 +145,9 @@ impl SubStreamConfig {
 pub struct MultistreamDecoderOperation {
     /// `num_streams_minus_2` (`f(3)`). Conformance requires this to be `<= 2`.
     pub num_streams_minus_2: u8,
-    /// `multistream_profile_idc`.
-    pub multistream_profile_idc: u8,
+    /// `multistream_profile_idc` (Annex A Table A.1 value space, shared with
+    /// `seq_profile_idc`).
+    pub multistream_profile_idc: ProfileIdc,
     /// `multistream_level_idx`.
     pub multistream_level_idx: u8,
     /// `multistream_tier`.
@@ -188,7 +189,7 @@ impl MultistreamDecoderOperation {
 /// payload ends mid-field.
 pub fn parse_msdo(reader: &mut BitReader<'_>) -> Result<MultistreamDecoderOperation> {
     let num_streams_minus_2 = reader.read_bits_u8(3)?;
-    let multistream_profile_idc = reader.read_bits_u8(5)?;
+    let multistream_profile_idc = ProfileIdc::from_bits(reader.read_bits_u8(5)?);
     let multistream_level_idx = reader.read_bits_u8(5)?;
     let multistream_tier = reader.read_bits_u8(1)?;
     let multistream_even_allocation_flag = reader.read_bit()? != 0;

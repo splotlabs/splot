@@ -529,7 +529,7 @@ impl Check for MsdoSyntax {
                 // in-band MSDO alone — it is never suppressed by external HLS (an
                 // external HLS set cannot redefine the in-band MSDO's own fields).
                 for (i, sub) in msdo.sub_streams().iter().enumerate() {
-                    if msdo.multistream_profile_idc < sub.sub_stream_max_profile {
+                    if msdo.multistream_profile_idc.get() < sub.sub_stream_max_profile {
                         report.push(
                             Diagnostic::error(
                                 "msdo/profile-below-substream-max",
@@ -538,7 +538,8 @@ impl Check for MsdoSyntax {
                                      sub_stream_max_profile[{i}] {} (§ 6.6: \
                                      multistream_profile_idc must be >= every \
                                      sub_stream_max_profile[i])",
-                                    msdo.multistream_profile_idc, sub.sub_stream_max_profile
+                                    msdo.multistream_profile_idc.get(),
+                                    sub.sub_stream_max_profile
                                 ),
                             )
                             .with_spec_section("6.6")
@@ -556,7 +557,7 @@ impl Check for MsdoSyntax {
                 // `annex-a/profile-reserved` id (the same value-space verdict the
                 // activated-header check emits for seq_profile_idc). Locally decidable;
                 // not suppressed by external HLS.
-                if crate::annex_a::is_reserved_profile(msdo.multistream_profile_idc) {
+                if crate::annex_a::is_reserved_profile(msdo.multistream_profile_idc.get()) {
                     report.push(
                         Diagnostic::error(
                             "annex-a/profile-reserved",
@@ -566,7 +567,7 @@ impl Check for MsdoSyntax {
                                  (§ 6.6 binds its value space to seq_profile_idc / Annex A.2 \
                                  Table A.1; the spec's \"Table A.4\" cross-reference is an \
                                  erratum)",
-                                msdo.multistream_profile_idc
+                                msdo.multistream_profile_idc.get()
                             ),
                         )
                         .with_spec_section("A.2")

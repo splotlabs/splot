@@ -149,7 +149,7 @@ impl MsdoKeyFields {
     /// Projects the § 7.3.2 condition-2 key fields out of a parsed MSDO.
     pub(super) fn from_msdo(msdo: &MultistreamDecoderOperation) -> Self {
         Self {
-            profile_idc: msdo.multistream_profile_idc,
+            profile_idc: msdo.multistream_profile_idc.get(),
             level_idx: msdo.multistream_level_idx,
             tier: msdo.multistream_tier,
             num_streams_minus_2: msdo.num_streams_minus_2,
@@ -321,8 +321,11 @@ impl ValidatorContext {
         // multistream_profile_idc is the Table A.4 interoperability-point source for the
         // current temporal unit (committed to the right coded-video-sequence window at
         // temporal-unit completion).
-        self.annex_a_iop
-            .note_msdo(msdo.num_streams(), msdo.multistream_profile_idc, obu.offset);
+        self.annex_a_iop.note_msdo(
+            msdo.num_streams(),
+            msdo.multistream_profile_idc.get(),
+            obu.offset,
+        );
 
         // AV2 § 7.3.8.2: buffer this MSDO's full-payload fingerprint and offset for the
         // temporal unit, resolved against the previous OBU_MSDO at temporal-unit end
@@ -365,7 +368,7 @@ impl ValidatorContext {
         // resolved at CMVS / coded-video-sequence boundaries.
         let aggregate = MsdoAggregate {
             num_streams: msdo.num_streams(),
-            profile_idc: msdo.multistream_profile_idc,
+            profile_idc: msdo.multistream_profile_idc.get(),
             level_idx: msdo.multistream_level_idx,
             tier: msdo.multistream_tier,
             doh_constraint_flag: msdo.multistream_doh_constraint_flag,
