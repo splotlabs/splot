@@ -62,7 +62,7 @@ same six fields, always:
   panics are banned in library code, and the never-panic invariant is hammered
   by over 700 tests, property tests across parser modules, and a libFuzzer
   target — including a blocking 60-second fuzz smoke on every pull request.
-- **Status you can audit, not vibes.** 128 tracked features in
+- **Status you can audit, not vibes.** The tracked feature ledger in
   [docs/IMPLEMENTATION-MATRIX.toml](./docs/IMPLEMENTATION-MATRIX.toml) render
   into generated, drift-gated coverage docs:
   [SPEC-COVERAGE.md](./docs/SPEC-COVERAGE.md) maps every cited spec section to
@@ -87,11 +87,14 @@ same six fields, always:
 
 Validator-first is deliberate: a validator/inspector is independently useful,
 has a small and verifiable surface, and forces an honest, spec-faithful model
-of the bitstream before any encoder decisions are made.
+of the bitstream before any encoder decisions are made. Decoder planning is
+tracked separately in [docs/DECODER-ROADMAP.md](./docs/DECODER-ROADMAP.md) and
+[docs/DECODER-SUPPORT-STATUS.md](./docs/DECODER-SUPPORT-STATUS.md); those docs
+do not change the current stub status.
 
 And to be clear about what `splot` is **not** (yet): it is not a decoder — it
 checks syntax and header-level conformance, it does not reconstruct pixels.
-It is not an encoder — `encode`/`decode` exit with a structured error. And it
+It is not an encoder — `encode`/`decode` exit with a clear error. And it
 is **not AV1**: the OBU header follows AV2 v1.0.0 § 5.2.2 (no
 `obu_forbidden_bit`, no `obu_has_size_field`, no AV1 OBU type table), and AV1
 bitstreams are out of scope.
@@ -150,10 +153,11 @@ One command is the acceptance gate:
 cargo xtask ci
 ```
 
-It runs 13 checks: `fmt`, `clippy -D warnings`, build, tests, doctests,
-spell-check (`typos`), unused dependencies (`cargo-machete`), supply-chain
-policy (`cargo-deny`), license headers, dependency direction, spec-mirror
-integrity, feature-status drift, and the diagnostics registry. CI adds
+It runs the local acceptance pipeline: `fmt`, `clippy -D warnings`, build,
+tests, doctests, rustdoc, spell-check (`typos`), unused dependencies
+(`cargo-machete`), supply-chain policy (`cargo-deny`), license headers,
+dependency direction, spec-mirror integrity, generated table drift,
+feature-status drift, decoder-support drift, and the diagnostics registry. CI adds
 Conventional Commits enforcement, the blocking per-PR fuzz smoke, a
 supply-chain job, and workflow linting on top. Testing strategy and layers are
 documented in [docs/TESTING.md](./docs/TESTING.md).
@@ -165,11 +169,15 @@ conformance, and sequence/frame-header parsing. In progress: validator depth
 across the remaining spec sections. Next: inspector snapshots and conformance
 vectors, AVM differential testing (with the
 [AVM reference implementation](https://github.com/AOMediaCodec/avm) as the
-oracle), then a bitstream writer and encoder experiments.
+oracle), staged decoder/reconstruction support for future encoder roundtrips,
+then a bitstream writer and encoder experiments.
 
-Details live in [docs/VALIDATOR-ROADMAP.md](./docs/VALIDATOR-ROADMAP.md)
-(validator coverage phases). Encoder milestones will get their own roadmap
-once the validator phases close; until then the `ENC-*` rows in
+Validator details live in
+[docs/VALIDATOR-ROADMAP.md](./docs/VALIDATOR-ROADMAP.md). Decoder scope and
+status live in [docs/DECODER-ROADMAP.md](./docs/DECODER-ROADMAP.md) and the
+generated [docs/DECODER-SUPPORT-STATUS.md](./docs/DECODER-SUPPORT-STATUS.md).
+Encoder milestones will get their own roadmap once the validator and decoder
+foundations justify it; until then the `ENC-*` rows in
 [`docs/IMPLEMENTATION-MATRIX.toml`](./docs/IMPLEMENTATION-MATRIX.toml) are the
 canonical encoder plan.
 

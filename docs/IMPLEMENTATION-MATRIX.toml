@@ -4600,6 +4600,150 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "DOC-DECODER-ROADMAP"
+name = "Decoder roadmap documentation"
+category = "docs"
+kind = "docs"
+spec_sections = []
+sources = []
+crate = "docs"
+module = "docs/DECODER-ROADMAP.md"
+openspec_change = "decoder-roadmap-matrix-boundary"
+tracking_issue = ""
+owner = "docs"
+risk = "medium"
+notes = "Documents the encoder-grade decoder/reconstruction scope, staged first tier, unsupported-feature contract, deterministic hash policy, local-only AVM/dav2d boundary, and the explicit dependency-graph approval needed before decoder crates are added."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "not-applicable"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "DOC-DECODER-SUPPORT-MATRIX"
+name = "Decoder support matrix documentation"
+category = "docs"
+kind = "docs"
+spec_sections = []
+sources = []
+crate = "docs"
+module = "docs/DECODER-SUPPORT-MATRIX.toml"
+openspec_change = "decoder-roadmap-matrix-boundary"
+tracking_issue = ""
+owner = "docs"
+risk = "medium"
+notes = "Adds docs/DECODER-SUPPORT-MATRIX.toml as the canonical decoder/reconstruction support matrix and docs/DECODER-SUPPORT-STATUS.md as its generated render. The matrix records supported tier, status, tests, diagnostics, local reference evidence, and notes without executing AVM/dav2d."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["xtask/src/decoder_support.rs::tests::valid_matrix_renders_rows_deterministically"]
+commands = ["cargo xtask check-decoder-support"]
+fixtures = ["docs/DECODER-SUPPORT-STATUS.md"]
+diagnostics = []
+
+[[feature]]
+id = "XTASK-DECODER-SUPPORT-STATUS"
+name = "Decoder support status reporting and checks"
+category = "automation"
+kind = "automation"
+spec_sections = []
+sources = []
+crate = "xtask"
+module = "xtask/src/decoder_support.rs"
+openspec_change = "decoder-roadmap-matrix-boundary"
+tracking_issue = ""
+owner = "automation"
+risk = "medium"
+notes = "Adds `cargo xtask decoder-support` and `cargo xtask check-decoder-support`, then wires the drift check into `cargo xtask ci`. The commands render and validate committed decoder support docs without locating, building, invoking, or requiring AVM/dav2d."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "xtask/src/decoder_support.rs::tests::valid_matrix_renders_rows_deterministically",
+    "xtask/src/decoder_support.rs::tests::invalid_status_and_missing_required_field_are_rejected",
+    "xtask/src/decoder_support.rs::tests::supported_row_requires_test_or_fixture",
+    "xtask/src/decoder_support.rs::tests::supported_proof_rejects_external_decoders",
+    "xtask/src/decoder_support.rs::tests::reference_evidence_rejects_local_absolute_paths",
+    "xtask/src/decoder_support.rs::tests::rendered_fields_reject_local_absolute_paths",
+    "xtask/src/decoder_support.rs::tests::metadata_rejects_local_absolute_paths",
+    "xtask/src/decoder_support.rs::tests::check_decoder_support_detects_drift",
+]
+commands = [
+    "cargo test -p xtask decoder_support --locked",
+    "cargo xtask check-decoder-support",
+]
+fixtures = ["docs/DECODER-SUPPORT-MATRIX.toml", "docs/DECODER-SUPPORT-STATUS.md"]
+diagnostics = []
+
+[[feature]]
+id = "CLI-DECODE"
+name = "splot decode command"
+category = "cli"
+kind = "cli"
+spec_sections = ["7.1"]
+sources = ["docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1"]
+crate = "splot-cli"
+module = "crates/splot-cli/src/commands/decode.rs"
+openspec_change = "decoder-roadmap-matrix-boundary"
+tracking_issue = ""
+owner = "cli"
+risk = "medium"
+notes = "Tracks the existing `splot decode` CLI surface. It remains an intentional stub in this change; a later decoder API/limits change must replace the generic stub with structured unsupported-feature diagnostics backed by library code."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "todo"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "VALIDATOR-CONTEXT-SPLIT"
 name = "Validator context module split"
 category = "infrastructure"

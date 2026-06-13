@@ -30,8 +30,11 @@ Normative reference: **AV2 Bitstream & Decoding Process Specification v1.0.0**
 | [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml) | Canonical per-feature status | `cargo xtask check-feature-status` |
 | [SPEC-COVERAGE.md](./SPEC-COVERAGE.md) | Generated per-spec-section view — start there for "is § X.Y implemented?" | Drift-gated by `check-feature-status` |
 | [FEATURE-STATUS.md](./FEATURE-STATUS.md) | Generated per-feature ledger | Drift-gated by `check-feature-status` |
+| [DECODER-SUPPORT-MATRIX.toml](./DECODER-SUPPORT-MATRIX.toml) | Canonical decoder/reconstruction support status | `cargo xtask check-decoder-support` |
+| [DECODER-SUPPORT-STATUS.md](./DECODER-SUPPORT-STATUS.md) | Generated decoder/reconstruction support view | Drift-gated by `check-decoder-support` |
 | [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md) | Registry of every emitted diagnostic rule ID | `cargo xtask check-diagnostic-registry` |
 | [VALIDATOR-ROADMAP.md](./VALIDATOR-ROADMAP.md) | Validator phases and the planned-diagnostics backlog | Hand-maintained |
+| [DECODER-ROADMAP.md](./DECODER-ROADMAP.md) | Decoder/reconstruction scope and staged tiering | Hand-maintained |
 
 The workflow and ID conventions are in
 [FEATURE-TRACKING.md](./FEATURE-TRACKING.md). This file deliberately carries no
