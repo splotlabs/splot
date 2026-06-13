@@ -1147,3 +1147,112 @@ fn ref_scale_ratio_skips_proven_invalid_slot() {
          was: {report}"
     );
 }
+
+/// True when the report contains the § 6.17.2 BRU reference-frame-size-equality diagnostic.
+fn has_bru_ref_size_error(report: &ValidationReport) -> bool {
+    report
+        .errors()
+        .any(|d| d.rule_id == "frame-header/bru-ref-frame-size-mismatch")
+}
+
+/// The base inter sequence with the explicit reference map and BRU both enabled, for the
+/// §6.17.2 BRU checks.
+fn bru_seq() -> FrameCoreSeq {
+    FrameCoreSeq {
+        explicit_ref_frame_map: true,
+        enable_bru: true,
+        ..FrameCoreSeq::base()
+    }
+}
+
+/// A COMPLETED override CLK key frame whose explicit frame size is `width`x`height` for a
+/// SMALL frame (`sbCols == sbRows == 1`, so `tile_info()` reads no column/row increment bits
+/// — `intra_structure_tail(.., 0)`, unlike `clk_frame_override_size` which is calibrated for a
+/// 256-wide frame's single column-increment bit). The CLK reset + allFrames refresh grounds
+/// every §7.23 slot with these stored `RefFrameWidth/Height`, which a later inter frame's
+/// bru_ref / scaling checks read.
+fn clk_override_size_small(width: u32, height: u32) -> Vec<u8> {
+    let mut fb = Bits::default();
+    fb.bit(1); // is_first_tile_group
+    fb.uvlc(0); // cur_mfh_id == 0
+    fb.uvlc(0); // seq_header_id_in_frame_header
+    fb.bit(1); // immediate_output_frame
+    fb.bit(1); // frame_size_override_flag
+    fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+    // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
+    fb.f(width - 1, 8); // frame_width_minus_1 f(8)
+    fb.f(height - 1, 8); // frame_height_minus_1 f(8)
+    fb.bit(0); // allow_screen_content_tools
+    fb.bit(0); // allow_intrabc
+    fb.bit(0); // disable_cdf_update
+    intra_structure_tail(&mut fb, 0); // small frame: sbCols == 1 -> no col increment bit
+    fb.bit(0); // tx_mode_select = 0
+    fb.f(0, 2); // reduced_tx_set = 0
+    annex_b_obu(CLK_HEADER, &fb.into_bytes())
+}
+
+#[test]
+fn bru_ref_frame_size_match_is_silent() {
+    // §6.17.2 :4594-4595: slot 0 grounded 16x16; a non-override BRU frame is the seq max
+    // 16x16, so RefFrameWidth/Height[ref_frame_idx[bru_ref=0]] == FrameWidth/Height -> silent.
+    let mut data = td_and_frame_core_seq(bru_seq());
+    data.extend(clk_override_size_small(16, 16));
+    data.extend(ref_inter_bru(true, 2, 0));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        !has_bru_ref_size_error(&report),
+        "matching BRU reference dims must be silent; report was: {report}"
+    );
+}
+
+#[test]
+fn bru_ref_frame_size_mismatch_fires() {
+    // slot 0 grounded 16x8; the non-override BRU frame is 16x16 (seq max), so
+    // RefFrameHeight[ref_frame_idx[bru_ref=0]] == 8 != FrameHeight 16 -> fires. The dims stay
+    // within the scaling bounds (2*16 >= 8, 16 <= 16*8), so ONLY the BRU equality fires.
+    let mut data = td_and_frame_core_seq(bru_seq());
+    data.extend(clk_override_size_small(16, 8));
+    data.extend(ref_inter_bru(true, 2, 0));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        has_bru_ref_size_error(&report),
+        "a BRU reference dimension mismatch must fire; report was: {report}"
+    );
+    assert!(
+        !has_ref_scale_ratio_error(&report),
+        "the dims are within the scaling bounds, so the scaling check must stay silent (the \
+         two §6.17.2 checks are distinct); report was: {report}"
+    );
+}
+
+#[test]
+fn bru_ref_frame_size_unknown_slot_is_silent() {
+    // No CLK -> slot 0 is Unknown; the bru_ref slot has no proven dims -> the equality drops
+    // to silence (the Unknown invariant).
+    let mut data = td_and_frame_core_seq(bru_seq());
+    data.extend(ref_inter_bru(true, 2, 0));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        !has_bru_ref_size_error(&report),
+        "an Unknown bru_ref slot must be silent; report was: {report}"
+    );
+}
+
+#[test]
+fn bru_ref_frame_size_not_checked_without_use_bru() {
+    // The equality applies only when use_bru == 1. A non-BRU inter frame referencing the same
+    // mismatched slot (current 16x16 vs slot 16x8) must NOT fire the BRU equality (and the
+    // dims are within the scaling bounds, so nothing fires).
+    let seq = FrameCoreSeq {
+        explicit_ref_frame_map: true,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(clk_override_size_small(16, 8));
+    data.extend(inter_frame_explicit_size(0, 16, 16));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        !has_bru_ref_size_error(&report),
+        "a non-BRU frame must not fire the use_bru==1 equality; report was: {report}"
+    );
+}

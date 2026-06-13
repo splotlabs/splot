@@ -343,6 +343,42 @@ impl ValidatorContext {
             }
         }
 
+        // AV2 § 6.17.2 (mirror :4594-4595): when use_bru == 1, "RefFrameWidth[ ref_frame_idx[
+        // bru_ref ] ] is equal to FrameWidth" and "RefFrameHeight[ ref_frame_idx[ bru_ref ] ] is
+        // equal to FrameHeight" — a backward-reference-update frame must match the dimensions of
+        // the reference it updates. Decidable from the same modeled state as the scaling ratio:
+        // the resolved current size (`core.frame_size`) and the proven-valid bru_ref slot's stored
+        // dims (`SlotState::Valid`). The other use_bru == 1 conformance items are either already
+        // checked (immediate_output_frame == 1 -> frame-header/bru-without-immediate-output;
+        // bru_ref < NumTotalRefs -> frame-header/bru-ref-out-of-range) or need the unmodeled
+        // get_ref_frames() RefOrderHint / inter refresh_frame_flags derivation (OrderHint >=
+        // RefOrderHint[i], the RESTRICTED_OH and refresh-mask-bit items) and stay residual. An
+        // Unknown / ProvenInvalid bru_ref slot has no proven dims and drops to silence; bru_ref is
+        // bounds-checked against the recorded ref_frame_idx (a separate bru-ref-out-of-range home).
+        if let Some(inter) = core.inter.as_ref()
+            && inter.use_bru == Some(true)
+            && let Some(size) = core.frame_size
+            && let Some(bru_ref) = inter.bru_ref
+            && let Some(&idx) = inter.ref_frame_idx.get(bru_ref as usize)
+            && let SlotState::Valid(facts) = self
+                .reference_state
+                .slot(obu.header.extended_layer_id, idx as usize)
+            && (facts.width != size.width || facts.height != size.height)
+        {
+            report.push(frame_header_error(
+                "frame-header/bru-ref-frame-size-mismatch",
+                "6.17.2",
+                obu,
+                format!(
+                    "use_bru == 1 backward-reference-update frame size {}x{} does not match its \
+                     bru_ref reference (ref_frame_idx[bru_ref={bru_ref}] -> slot {idx}) dimensions \
+                     {}x{} (§6.17.2 requires RefFrameWidth/RefFrameHeight[ref_frame_idx[bru_ref]] \
+                     == FrameWidth/FrameHeight — a BRU frame must match the reference it updates)",
+                    size.width, size.height, facts.width, facts.height
+                ),
+            ));
+        }
+
         // AV2 § 6.17.2 (mirror :4615-4616): "If obu_type is equal to OBU_RAS_FRAME, it is a
         // requirement of bitstream conformance that
         // long_term_id_in_use( RefLongTermId[ ref_frame_idx[ i ] ] ) is equal to 1." A RAS
