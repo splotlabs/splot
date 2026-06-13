@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "65d983d1a65e6c15e5416d5311c549eba6a85763",
+  "audited_commit": "a1f6452b734bddfee208fa1a3b04b0b1d7e21925",
   "outcome": "success",
   "files": [
     {
@@ -980,13 +980,30 @@
     },
     {
       "path": "crates/splot-decode/src/lib.rs",
-      "sha256": "0e3a690209c6d872b85cb2b9da80dcdebd78c15323e80ebd77904312439ce512",
+      "sha256": "99c7226d4f4e20d04d43b9e798db03314e7623e403bf259ac65758d0f85839f4",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "CLI-DECODE",
+        "DECODE-LIMITS-RUNTIME-API",
         "DECODE-UNSUPPORTED-DIAGNOSTIC-API",
         "INFRA-DECODER-CRATE-SCAFFOLDING"
       ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-decode/src/limits.rs",
+      "sha256": "66c87c899d1c923e3acc2a3fff5e93808d6b7e56bc9a140d1323374e0382fc14",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [
+        "DECODE-LIMITS-RUNTIME-API"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-decode/src/limits/tests.rs",
+      "sha256": "2ed606f502d584de7bcc300cf0e8c445e74908e6b1b4dbb169395a2ad1563f97",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [],
       "outcome": "success"
     },
     {
@@ -1561,7 +1578,7 @@
     },
     {
       "path": "crates/splot-validate/src/context/reference_frames.rs",
-      "sha256": "cacd3fdea10d3293b99ca058dbdd7e92b72013581a995af9ad4c34b46f50c787",
+      "sha256": "a37411ef717d286d228048bcfbfaa662ca681e24ec17b88958c3e741b77fcac8",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
@@ -2040,7 +2057,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator/tests/reference_state.rs",
-      "sha256": "8dbd9f4be415cb0ad9d8156d0993e53ac1c72e5f888261647068c4ffab438499",
+      "sha256": "a6c0cca54494e77c2b3baad4094bca47f3c67edb47a7d96d2d6e17ec7c900597",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -2154,7 +2171,7 @@
     },
     {
       "path": "docs/DECODER-ROADMAP.md",
-      "sha256": "316110ae086f8695f0148fadce1c3afe65f6a1922223594c7d30e90752335341",
+      "sha256": "62f83085ee81457be9a7c31e46d0d99c365b2a335e3f6c469e64912a8c6a845c",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-DECODE",
@@ -2168,11 +2185,12 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-MATRIX.toml",
-      "sha256": "9986ab345e0a08ad60844795eb21dd36178d9ca35575444ca28f516595a3b6bd",
+      "sha256": "43b8e06d8541bfe0582774b3d21bb11be3b943848081f2baeaa8002b210bce90",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-DECODE",
         "CLI-DECODE-HASH-OUTPUT",
+        "DECODE-LIMITS-RUNTIME-API",
         "DECODE-UNSUPPORTED-DIAGNOSTIC-API",
         "DOC-DECODE-LIMITS-CONTRACT",
         "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT",
@@ -2190,11 +2208,12 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-STATUS.md",
-      "sha256": "27bae456eca615764ef8a54683b4db7e2231a3228a6f52d95a553d4f189fe8ec",
+      "sha256": "5b137603815452fde0e6b5abd50763e7caeb61ec4c88e14663a7ffb3234b5358",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-DECODE",
         "CLI-DECODE-HASH-OUTPUT",
+        "DECODE-LIMITS-RUNTIME-API",
         "DECODE-UNSUPPORTED-DIAGNOSTIC-API",
         "DOC-DECODE-LIMITS-CONTRACT",
         "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT",
@@ -2212,7 +2231,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "50608c6d1c9ac5b15655618b41f5fdcddb8499ab3a5f1dbfaf1eb1e1ba3f507d",
+      "sha256": "0d70b11f9f4a0b3f04c388aefed1b67430aedd94bfbaf6d434fca9f1c66a4469",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2333,6 +2352,7 @@
         "CONF-INSPECT-SNAPSHOTS",
         "CONF-PUBLIC-VECTOR-LICENSE-REVIEW",
         "CONF-PUBLIC-VECTORS",
+        "DECODE-LIMITS-RUNTIME-API",
         "DECODE-UNSUPPORTED-DIAGNOSTIC-API",
         "DOC-AUDIT-PROTOCOLS",
         "DOC-AV2-SPEC-MIRROR",
@@ -2400,7 +2420,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "402f7e8272b201af6a9f377cc0e61713d5b8895b8358ee6852fcd71cf70dcb16",
+      "sha256": "caa22d32cc4179fae3f5e355817b17aaef3358835571cf7043e08e0cc6ff0bf9",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2521,6 +2541,7 @@
         "CONF-INSPECT-SNAPSHOTS",
         "CONF-PUBLIC-VECTOR-LICENSE-REVIEW",
         "CONF-PUBLIC-VECTORS",
+        "DECODE-LIMITS-RUNTIME-API",
         "DECODE-UNSUPPORTED-DIAGNOSTIC-API",
         "DOC-AUDIT-PROTOCOLS",
         "DOC-AV2-SPEC-MIRROR",
@@ -2567,7 +2588,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "0f2ff644e4474ebbe97a38d0dd89ece32aa941bbb43b6421233bf37c59ffea45",
+      "sha256": "98cad7f40e4115d15e2204129ba25d80911021d209b9d943797f500a7cb76c6f",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2688,6 +2709,7 @@
         "CONF-INSPECT-SNAPSHOTS",
         "CONF-PUBLIC-VECTOR-LICENSE-REVIEW",
         "CONF-PUBLIC-VECTORS",
+        "DECODE-LIMITS-RUNTIME-API",
         "DECODE-UNSUPPORTED-DIAGNOSTIC-API",
         "DOC-AUDIT-PROTOCOLS",
         "DOC-AV2-SPEC-MIRROR",
@@ -2741,7 +2763,7 @@
     },
     {
       "path": "docs/VALIDATOR-DIAGNOSTICS.md",
-      "sha256": "af53e5dc011ebae5996af2ac50d3ed6e0771c487e54f27a2c44923ce2284c3d2",
+      "sha256": "4ff98d7acae38f166a32bb36f8ad25beab73ce6257d8d3820a399d23974703d9",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -5076,6 +5098,58 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-decode-limits-runtime-api/.openspec.yaml",
+      "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decode-limits-runtime-api/agent-log.md",
+      "sha256": "1e6a61f6ad7ec0ae19d4e0e6212b6c166db5c3cbcb3cfc029b69d389cf0b1a5e",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-LIMITS-RUNTIME-API",
+        "DOC-DECODE-LIMITS-CONTRACT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decode-limits-runtime-api/design.md",
+      "sha256": "cc71cebea5f1f8755056973947759231730b48c3db06b04d286dda0b1db3f70e",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decode-limits-runtime-api/proposal.md",
+      "sha256": "5f143c7a7fd0669a69ee12de0c4f7545f43b0a935fa18eb4261ffb7cf2105ace",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-LIMITS-RUNTIME-API"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decode-limits-runtime-api/specs/decoder-support/spec.md",
+      "sha256": "1c84eb740b4b6e229f51889337abff1c3ecb4a1249bc82c03f2dd2afaccbbb93",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-LIMITS-RUNTIME-API",
+        "DOC-DECODE-LIMITS-CONTRACT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decode-limits-runtime-api/tasks.md",
+      "sha256": "8e14138c7ad42fd1af4c8b6e68a662a9c96601c1aa22435f3bb4fbe7d05e9151",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-LIMITS-RUNTIME-API"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-13-decode-unsupported-diagnostic-api/.openspec.yaml",
       "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
       "scope_kind": "openspec",
@@ -5584,6 +5658,34 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-inter-ref-frame-scale-ratio/proposal.md",
+      "sha256": "cf5e2fbc9aa3cf6dffc1127b1c94023b091eab6c2782ff846a233d0c481bd530",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-inter-ref-frame-scale-ratio/specs/validator/spec.md",
+      "sha256": "67966949c1b58f5ac60b050a2c52676d9c97eaf68295f82c820749c5d259c104",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-inter-ref-frame-scale-ratio/tasks.md",
+      "sha256": "0301f08cb380c1a18923480a312d09286ee932f11014b24d49b6d7f998caba33",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-13-lcr-aggregate-info-annex-a-range/proposal.md",
       "sha256": "16c63de8600f0eabc59e9d6eaace808ca8fa274e2c234249e1c370e3a0c0106a",
       "scope_kind": "openspec",
@@ -5951,11 +6053,12 @@
     },
     {
       "path": "openspec/specs/decoder-support/spec.md",
-      "sha256": "81a671ba3707dcbd4d3e6c20dd6cc21f667bbd3b9d1e6f389df3ff3c68ff42a8",
+      "sha256": "08c943ff65d704f7b011c1dfb22531556ce24488c6f612279ca0007fc3c7914c",
       "scope_kind": "openspec",
       "feature_ids": [
         "CLI-DECODE",
         "CLI-DECODE-HASH-OUTPUT",
+        "DECODE-LIMITS-RUNTIME-API",
         "DOC-DECODE-LIMITS-CONTRACT",
         "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT",
         "DOC-DECODER-DIAGNOSTICS",
@@ -6028,7 +6131,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "e375c3c10829c3b8d25072238493038e712cb9b5b5ebc52a0fdbdcbf25823500",
+      "sha256": "f380a587104075ce3ba14535a8b39da52c8d04e4eae681bb76bc38376987b9df",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
