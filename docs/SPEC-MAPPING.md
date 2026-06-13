@@ -33,6 +33,7 @@ Normative reference: **AV2 Bitstream & Decoding Process Specification v1.0.0**
 | [DECODER-SUPPORT-MATRIX.toml](./DECODER-SUPPORT-MATRIX.toml) | Canonical decoder/reconstruction support status | `cargo xtask check-decoder-support` |
 | [DECODER-SUPPORT-STATUS.md](./DECODER-SUPPORT-STATUS.md) | Generated decoder/reconstruction support view | Drift-gated by `check-decoder-support` |
 | [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md) | Registry of every emitted diagnostic rule ID | `cargo xtask check-diagnostic-registry` |
+| [DECODER-DIAGNOSTICS.md](./DECODER-DIAGNOSTICS.md) | Registry of every emitted decoder diagnostic rule ID | `cargo xtask check-diagnostic-registry` |
 | [VALIDATOR-ROADMAP.md](./VALIDATOR-ROADMAP.md) | Validator phases and the planned-diagnostics backlog | Hand-maintained |
 | [DECODER-ROADMAP.md](./DECODER-ROADMAP.md) | Decoder/reconstruction scope and staged tiering | Hand-maintained |
 

@@ -4633,6 +4633,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "DOC-DECODER-DIAGNOSTICS"
+name = "Decoder diagnostics registry documentation"
+category = "docs"
+kind = "docs"
+spec_sections = []
+sources = []
+crate = "docs"
+module = "docs/DECODER-DIAGNOSTICS.md"
+openspec_change = "decoder-diagnostic-registry"
+tracking_issue = ""
+owner = "docs"
+risk = "low"
+notes = "Adds docs/DECODER-DIAGNOSTICS.md as the canonical registry for emitted `splot decode` diagnostic rule IDs. The registry documents stable field names (`rule_id`, `severity`, `spec_section`, `matrix_row`, `feature_id`, `message`, `remediation`), the current CLI-only emission root until decoder crates are explicitly approved, and the `decode/*` namespace rule. AV2 §7.1 behavior and `decode/unsupported-feature` diagnostic ownership stay on CLI-DECODE."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["xtask/src/diagnostic_registry.rs::tests::decoder_registry_accepts_matching_source_and_doc"]
+commands = ["cargo xtask check-diagnostic-registry"]
+fixtures = ["docs/DECODER-DIAGNOSTICS.md"]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODER-SUPPORT-MATRIX"
 name = "Decoder support matrix documentation"
 category = "docs"
@@ -4708,6 +4741,48 @@ commands = [
     "cargo xtask check-decoder-support",
 ]
 fixtures = ["docs/DECODER-SUPPORT-MATRIX.toml", "docs/DECODER-SUPPORT-STATUS.md"]
+diagnostics = []
+
+[[feature]]
+id = "XTASK-DECODER-DIAGNOSTIC-REGISTRY"
+name = "Decoder diagnostic registry enforcement"
+category = "automation"
+kind = "automation"
+spec_sections = []
+sources = []
+crate = "xtask"
+module = "xtask/src/diagnostic_registry.rs"
+openspec_change = "decoder-diagnostic-registry"
+tracking_issue = ""
+owner = "automation"
+risk = "low"
+notes = "Extends `cargo xtask check-diagnostic-registry` so it enforces docs/DECODER-DIAGNOSTICS.md against current decoder emission roots in addition to the existing validator registry. The decoder descriptor currently scans crates/splot-cli/src/commands/decode.rs and only accepts `decode/*` rule IDs; no external decoder, AVM, or dav2d tool is located or invoked."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "xtask/src/diagnostic_registry.rs::tests::decoder_registry_accepts_matching_source_and_doc",
+    "xtask/src/diagnostic_registry.rs::tests::decoder_registry_reports_undocumented_id",
+    "xtask/src/diagnostic_registry.rs::tests::decoder_registry_reports_unemitted_id",
+    "xtask/src/diagnostic_registry.rs::tests::decoder_registry_rejects_wrong_prefix_in_source",
+    "xtask/src/diagnostic_registry.rs::tests::decoder_registry_rejects_wrong_prefix_in_doc",
+]
+commands = [
+    "cargo test -p xtask diagnostic_registry --locked",
+    "cargo xtask check-diagnostic-registry",
+]
+fixtures = ["docs/DECODER-DIAGNOSTICS.md"]
 diagnostics = []
 
 [[feature]]

@@ -102,7 +102,7 @@ enum Task {
     CheckDependencyDirection,
     /// Verify the committed AV2 spec mirror matches its CHECKSUMS and provenance.
     CheckSpecMirror,
-    /// Verify docs/VALIDATOR-DIAGNOSTICS.md lists exactly the emitted diagnostic rule ids.
+    /// Verify diagnostic registry docs list exactly the emitted diagnostic rule ids.
     CheckDiagnosticRegistry,
     /// Verify every fuzz_targets/*.rs file has a matching `[[bin]]` entry in fuzz/Cargo.toml.
     CheckFuzzTargets,

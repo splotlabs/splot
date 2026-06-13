@@ -861,8 +861,11 @@ fn coverage_markdown(matrix: &Matrix, index: &MirrorIndex) -> String {
         out,
         "Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked \
          · 🧪 experimental · — not applicable · (blank) todo. Diagnostics \
-         counts the rule IDs recorded in the feature's proof; the registry is \
-         [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md)."
+         counts the rule IDs recorded in the feature's proof; emitted \
+         validator IDs are registered in \
+         [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md), and emitted \
+         decoder IDs are registered in \
+         [DECODER-DIAGNOSTICS.md](./DECODER-DIAGNOSTICS.md)."
     );
 
     let mut current_chapter = String::new();

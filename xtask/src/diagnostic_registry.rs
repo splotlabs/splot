@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! `check-diagnostic-registry`: enforce that `docs/VALIDATOR-DIAGNOSTICS.md` lists
-//! exactly the diagnostic rule-id literals present in `crates/splot-validate/src`.
+//! `check-diagnostic-registry`: enforce that diagnostic registry docs list exactly the
+//! diagnostic rule-id literals emitted by their source owners.
 //!
 //! Validator diagnostics are built via `Diagnostic::{new,error,warning,info}(rule_id, …)`
 //! and a few `&'static str` helper fns; every rule id is a plain string literal (there are
 //! no `format!`-built ids). The canonical set of emitted ids is therefore extracted
-//! *syntactically*: every `"<ns>/<id>"` literal in non-test, non-comment validator source.
-//! Inline `#[cfg(test)] mod ...` blocks and standalone files under `tests/` directories are
-//! skipped so assertion literals and prefixes do not look like emitted diagnostics. That set
-//! must equal the ids documented between the
-//! `<!-- diagnostics-registry:begin -->` / `:end` markers in the registry doc.
+//! *syntactically*: every `"<ns>/<id>"` literal in non-test, non-comment source selected
+//! by a registry descriptor. Inline `#[cfg(test)] mod ...` blocks and, for the validator,
+//! standalone files under `tests/` directories are skipped so assertion literals and
+//! prefixes do not look like emitted diagnostics. Each emitted-id set must equal the ids
+//! documented between the `<!-- diagnostics-registry:begin -->` / `:end` markers in the
+//! matching registry doc.
 //!
 //! This is the full-id superset of the prefix-level `scan_diagnostics` guard in
 //! [`crate::feature_status`]; both are kept. Tracked as `XTASK-DIAGNOSTIC-REGISTRY`.
@@ -26,40 +27,107 @@ use crate::feature_status::{collect_files, display_path, is_diagnostic_id};
 /// Validator source root scanned for emitted rule-id literals.
 const VALIDATE_SRC: &str = "crates/splot-validate/src";
 /// Documentation file that must mirror the emitted rule ids.
-const REGISTRY_DOC: &str = "docs/VALIDATOR-DIAGNOSTICS.md";
-/// Start of the CI-enforced registry region in [`REGISTRY_DOC`].
+const VALIDATOR_REGISTRY_DOC: &str = "docs/VALIDATOR-DIAGNOSTICS.md";
+/// Current decoder diagnostic emission source roots.
+///
+/// This intentionally starts at the CLI decode command because there is no approved
+/// decoder library crate yet. Add future decoder crate roots only with the corresponding
+/// dependency-graph approval.
+const DECODER_SOURCE_ROOTS: &[&str] = &["crates/splot-cli/src/commands/decode.rs"];
+/// Documentation file that must mirror emitted decoder rule ids.
+const DECODER_REGISTRY_DOC: &str = "docs/DECODER-DIAGNOSTICS.md";
+/// Start of the CI-enforced registry region.
 const BEGIN_MARKER: &str = "<!-- diagnostics-registry:begin -->";
-/// End of the CI-enforced registry region in [`REGISTRY_DOC`].
+/// End of the CI-enforced registry region.
 const END_MARKER: &str = "<!-- diagnostics-registry:end -->";
+/// Diagnostic ids emitted by the decoder must live under this namespace.
+const DECODER_ID_PREFIX: &str = "decode/";
+
+#[derive(Clone, Copy)]
+struct RegistryConfig {
+    owner: &'static str,
+    source_roots: &'static [&'static str],
+    doc: &'static str,
+    required_prefix: Option<&'static str>,
+    skip_standalone_tests: bool,
+}
+
+const VALIDATOR_REGISTRY: RegistryConfig = RegistryConfig {
+    owner: "validator",
+    source_roots: &[VALIDATE_SRC],
+    doc: VALIDATOR_REGISTRY_DOC,
+    required_prefix: None,
+    skip_standalone_tests: true,
+};
+
+const DECODER_REGISTRY: RegistryConfig = RegistryConfig {
+    owner: "decoder",
+    source_roots: DECODER_SOURCE_ROOTS,
+    doc: DECODER_REGISTRY_DOC,
+    required_prefix: Some(DECODER_ID_PREFIX),
+    skip_standalone_tests: false,
+};
+
+const REGISTRIES: &[RegistryConfig] = &[VALIDATOR_REGISTRY, DECODER_REGISTRY];
 
 /// Entry point for `cargo xtask check-diagnostic-registry`.
 ///
-/// Fails when an emitted rule id is undocumented, or the registry documents an id that is
-/// not present in non-test validator source.
+/// Fails when an emitted rule id is undocumented, or a registry documents an id that is
+/// not present in the owner source.
 pub(crate) fn check_diagnostic_registry(root: &Path) -> Result<()> {
-    let emitted = emitted_ids(root)?;
-    let documented = documented_ids(root)?;
+    let mut problems = Vec::new();
+    for registry in REGISTRIES {
+        if let Err(err) = check_one_registry(root, registry) {
+            problems.push(err.to_string());
+        }
+    }
+
+    if problems.is_empty() {
+        return Ok(());
+    }
+
+    for problem in &problems {
+        eprintln!("{problem}");
+    }
+    bail!("diagnostic registry out of sync")
+}
+
+fn check_one_registry(root: &Path, registry: &RegistryConfig) -> Result<()> {
+    let emitted = emitted_ids_for(root, registry)?;
+    let documented = documented_ids_for(root, registry)?;
     let (undocumented, unemitted) = classify(&emitted, &documented);
 
     if undocumented.is_empty() && unemitted.is_empty() {
-        eprintln!("check-diagnostic-registry: ok ({} ids)", emitted.len());
+        eprintln!(
+            "check-diagnostic-registry: {} ok ({} ids)",
+            registry.owner,
+            emitted.len()
+        );
         return Ok(());
     }
 
     for id in &undocumented {
         eprintln!(
-            "diagnostic registry: rule id `{id}` is present in {VALIDATE_SRC} but not documented between the registry markers in {REGISTRY_DOC}"
+            "diagnostic registry: {} rule id `{id}` is present in {} but not documented between the registry markers in {}",
+            registry.owner,
+            registry.source_roots.join(", "),
+            registry.doc
         );
     }
     for id in &unemitted {
         eprintln!(
-            "diagnostic registry: rule id `{id}` is documented in {REGISTRY_DOC} but not present in non-test {VALIDATE_SRC} source"
+            "diagnostic registry: {} rule id `{id}` is documented in {} but not present in {} source",
+            registry.owner,
+            registry.doc,
+            registry.source_roots.join(", ")
         );
     }
     bail!(
-        "diagnostic registry out of sync: {} undocumented, {} unemitted; update the registry tables in {REGISTRY_DOC} (between the markers) or the validator source",
+        "{} diagnostic registry out of sync: {} undocumented, {} unemitted; update the registry tables in {} (between the markers) or the source",
+        registry.owner,
         undocumented.len(),
-        unemitted.len()
+        unemitted.len(),
+        registry.doc
     )
 }
 
@@ -73,19 +141,41 @@ fn classify(
     (undocumented, unemitted)
 }
 
-/// The diagnostic rule-id literals present in non-test, non-comment validator source.
-fn emitted_ids(root: &Path) -> Result<BTreeSet<String>> {
-    let dir = root.join(VALIDATE_SRC);
+/// The diagnostic rule-id literals present in a registry owner's non-test,
+/// non-comment source.
+fn emitted_ids_for(root: &Path, registry: &RegistryConfig) -> Result<BTreeSet<String>> {
     let mut ids = BTreeSet::new();
-    for path in collect_files(&dir, &["rs"])? {
-        if is_standalone_test_source(&dir, &path) {
-            continue;
+    for rel_root in registry.source_roots {
+        let source_root = root.join(rel_root);
+        if !source_root.exists() {
+            bail!(
+                "{} diagnostic source root does not exist: {}",
+                registry.owner,
+                display_path(root, &source_root)
+            );
         }
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", display_path(root, &path)))?;
-        for literal in string_literals_skipping_comments(strip_test_modules(&text)) {
-            if is_registry_id(&literal) {
-                ids.insert(literal);
+        let files = if source_root.is_file() {
+            vec![source_root.clone()]
+        } else {
+            collect_files(&source_root, &["rs"])?
+        };
+        for path in files {
+            if registry.skip_standalone_tests
+                && source_root.is_dir()
+                && is_standalone_test_source(&source_root, &path)
+            {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("failed to read {}", display_path(root, &path)))?;
+            for literal in string_literals_skipping_comments(strip_test_modules(&text)) {
+                if accepts_registry_id(
+                    registry,
+                    &literal,
+                    &format!("source {}", display_path(root, &path)),
+                )? {
+                    ids.insert(literal);
+                }
             }
         }
     }
@@ -99,19 +189,34 @@ fn is_standalone_test_source(src_root: &Path, path: &Path) -> bool {
         .any(|component| component.as_os_str().to_str() == Some("tests"))
 }
 
-/// The rule ids documented inside the enforced registry region of [`REGISTRY_DOC`].
-fn documented_ids(root: &Path) -> Result<BTreeSet<String>> {
-    let path = root.join(REGISTRY_DOC);
+/// The rule ids documented inside the enforced registry region of `registry.doc`.
+fn documented_ids_for(root: &Path, registry: &RegistryConfig) -> Result<BTreeSet<String>> {
+    let path = root.join(registry.doc);
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", display_path(root, &path)))?;
-    let region = registry_region(&text).with_context(|| format!("in {REGISTRY_DOC}"))?;
-    Ok(backtick_ids(region))
+    let region = registry_region(&text).with_context(|| format!("in {}", registry.doc))?;
+    backtick_ids_for(registry, region)
 }
 
 /// `true` if `s` is a registry rule id: a diagnostic id with exactly one `/` separator
 /// (`<ns>/<id>`). Slash-less or multi-slash strings are not rule ids.
 fn is_registry_id(s: &str) -> bool {
     is_diagnostic_id(s) && s.matches('/').count() == 1
+}
+
+fn accepts_registry_id(registry: &RegistryConfig, s: &str, origin: &str) -> Result<bool> {
+    if !is_registry_id(s) {
+        return Ok(false);
+    }
+    if let Some(prefix) = registry.required_prefix
+        && !s.starts_with(prefix)
+    {
+        bail!(
+            "{} diagnostic registry: rule id `{s}` in {origin} must use `{prefix}` prefix",
+            registry.owner
+        );
+    }
+    Ok(true)
 }
 
 /// Returns the slice of `text` before the first top-level `#[cfg(test)]` module.
@@ -257,10 +362,7 @@ fn registry_region(text: &str) -> Result<&str> {
     Ok(&text[after_begin..after_begin + end_rel])
 }
 
-/// Collects backtick-wrapped registry ids (`` `<ns>/<id>` ``) from `region`. Only
-/// backtick-delimited tokens are considered, so prose words and section numbers in table
-/// cells are never mistaken for ids.
-fn backtick_ids(region: &str) -> BTreeSet<String> {
+fn backtick_ids_for(registry: &RegistryConfig, region: &str) -> Result<BTreeSet<String>> {
     let mut ids = BTreeSet::new();
     let mut rest = region;
     while let Some(open) = rest.find('`') {
@@ -269,12 +371,12 @@ fn backtick_ids(region: &str) -> BTreeSet<String> {
             break;
         };
         let token = &after[..close];
-        if is_registry_id(token) {
+        if accepts_registry_id(registry, token, registry.doc)? {
             ids.insert(token.to_owned());
         }
         rest = &after[close + 1..];
     }
-    ids
+    Ok(ids)
 }
 
 #[cfg(test)]
@@ -364,7 +466,7 @@ mod tests {
     fn registry_region_extracts_between_markers() {
         let doc = "x `ops/before`\n<!-- diagnostics-registry:begin -->\n`ops/foo` `brt/bar`\n<!-- diagnostics-registry:end -->\ny `ops/after`\n";
         let region = registry_region(doc).unwrap();
-        let found = backtick_ids(region);
+        let found = backtick_ids_for(&VALIDATOR_REGISTRY, region).unwrap();
         assert!(found.contains("ops/foo") && found.contains("brt/bar"));
         assert!(!found.contains("ops/before") && !found.contains("ops/after"));
     }
@@ -372,7 +474,7 @@ mod tests {
     #[test]
     fn registry_region_ignores_non_ids() {
         let doc = "<!-- diagnostics-registry:begin -->\n| `ops/foo` | error | 6.10.2 | syntax thing |\n<!-- diagnostics-registry:end -->\n";
-        let found = backtick_ids(registry_region(doc).unwrap());
+        let found = backtick_ids_for(&VALIDATOR_REGISTRY, registry_region(doc).unwrap()).unwrap();
         assert_eq!(found.len(), 1);
         assert!(found.contains("ops/foo"));
     }
@@ -407,11 +509,89 @@ mod tests {
     }
 
     #[test]
+    fn decoder_registry_accepts_matching_source_and_doc() {
+        let root = temp_root("decoder-match");
+        write_decoder_fixture(
+            &root,
+            r#"const RULE: &str = "decode/unsupported-feature";"#,
+            "`decode/unsupported-feature`",
+        );
+
+        check_one_registry(&root, &DECODER_REGISTRY).unwrap();
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn decoder_registry_reports_undocumented_id() {
+        let root = temp_root("decoder-undocumented");
+        write_decoder_fixture(
+            &root,
+            r#"const RULE: &str = "decode/resource-limit";"#,
+            "`decode/unsupported-feature`",
+        );
+
+        let err = check_one_registry(&root, &DECODER_REGISTRY).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("1 undocumented"));
+        assert!(message.contains("1 unemitted"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn decoder_registry_reports_unemitted_id() {
+        let root = temp_root("decoder-unemitted");
+        write_decoder_fixture(
+            &root,
+            r#"const RULE: &str = "decode/unsupported-feature";"#,
+            "`decode/unsupported-feature` `decode/resource-limit`",
+        );
+
+        let err = check_one_registry(&root, &DECODER_REGISTRY).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("0 undocumented"));
+        assert!(message.contains("1 unemitted"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn decoder_registry_rejects_wrong_prefix_in_source() {
+        let root = temp_root("decoder-wrong-prefix-source");
+        write_decoder_fixture(&root, r#"const RULE: &str = "validator/not-decoder";"#, "");
+
+        let err = check_one_registry(&root, &DECODER_REGISTRY).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("validator/not-decoder"));
+        assert!(message.contains("must use `decode/` prefix"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn decoder_registry_rejects_wrong_prefix_in_doc() {
+        let root = temp_root("decoder-wrong-prefix-doc");
+        write_decoder_fixture(
+            &root,
+            r#"const RULE: &str = "decode/unsupported-feature";"#,
+            "`decode/unsupported-feature` `validator/not-decoder`",
+        );
+
+        let err = check_one_registry(&root, &DECODER_REGISTRY).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("validator/not-decoder"));
+        assert!(message.contains("must use `decode/` prefix"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn real_validate_source_has_known_anchors() {
         // Resilient: assert membership and a floor, not a frozen count (the registry check
         // itself enforces exactness against the doc).
         let root = repo_root();
-        let emitted = emitted_ids(&root).unwrap();
+        let emitted = emitted_ids_for(&root, &VALIDATOR_REGISTRY).unwrap();
         assert!(emitted.contains("bitstream/parse-error"));
         assert!(emitted.contains("ops/inherited-op-index-out-of-range"));
         assert!(
@@ -436,7 +616,7 @@ mod tests {
         )
         .unwrap();
 
-        let emitted = emitted_ids(&root).unwrap();
+        let emitted = emitted_ids_for(&root, &VALIDATOR_REGISTRY).unwrap();
         assert_eq!(emitted, BTreeSet::from(["ops/real".to_owned()]));
 
         std::fs::remove_dir_all(root).unwrap();
@@ -471,5 +651,18 @@ mod tests {
             "splot-xtask-diagnostic-registry-{name}-{}-{nonce}",
             std::process::id()
         ))
+    }
+
+    fn write_decoder_fixture(root: &Path, source: &str, registry_rows: &str) {
+        let source_path = root.join(DECODER_SOURCE_ROOTS[0]);
+        std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+        std::fs::write(source_path, source).unwrap();
+        let doc_path = root.join(DECODER_REGISTRY_DOC);
+        std::fs::create_dir_all(doc_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            doc_path,
+            format!("{BEGIN_MARKER}\n{registry_rows}\n{END_MARKER}\n"),
+        )
+        .unwrap();
     }
 }
