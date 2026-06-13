@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "7846d9860640e0a982c32cbecf2ebd03a89a30d1",
+  "audited_commit": "c36b24659d1f14b0a11ec6e626c9c0a34f6b7170",
   "outcome": "success",
   "files": [
     {
@@ -625,7 +625,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/sequence.rs",
-      "sha256": "1373d3c826c2c3ac2f32cfb53ef8f8b200062464f98f159d7e0622f4e728344f",
+      "sha256": "9a02c07ae779ffcf2bdde6f1109a16c3044f16acff9ee3254b10431684e5fb95",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.4.1-SEQUENCE-HEADER-GENERAL",
@@ -2152,7 +2152,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "45a3b94e6671c015c334a931d4fd96de33856a1d3c0cc3f638ae5a84c6ae794f",
+      "sha256": "80696914ad7255a9e6e95bc9e9c8731c0b01afbd9e35d877bf06f1f38074133d",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2301,7 +2301,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "40b646abbdcec5a0d6b642150605feba5aa667961ef71a3de6d034bf08d3f168",
+      "sha256": "39f3a09ce33e95aaea2989732ce6023bed373ad8c27cc06b760ffeef53882947",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -5439,7 +5439,7 @@
     },
     {
       "path": "xtask/src/source_lines.rs",
-      "sha256": "4b1954bf60967a8ab372282a94bfe9d290dd970aa60514c06fa8348fd372304d",
+      "sha256": "0a3ce59a1a74a68d8c206125b8ff8d031d07b53176912c300fcda9746a85972a",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "XTASK-SOURCE-LINES"
