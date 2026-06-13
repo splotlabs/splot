@@ -9,7 +9,7 @@ and tracked by the `CONF-*` rows.
 What each `CONF-*` row proves:
 
 - `CONF-AVM-VALID-STREAMS` — the committed, self-contained conformance corpus
-  under `tests/conformance/`: small AVM-generated valid AV2 streams (and a
+  under `tests/conformance/`: small valid AV2 streams (AVM-generated, and a
   bootstrap negative) validated against a manifest by a committed runner, with
   **no AVM dependency** (see [The committed corpus](#the-committed-corpus)).
 - `CONF-AVM-DIFF-HARNESS` — AVM as a **local oracle/generator only**: AVM
@@ -46,7 +46,7 @@ committed vectors.
 tests/conformance/
   manifest.toml                 expected-outcome manifest (one [[vector]] per file)
   vectors/
-    valid/                      AVM-generated valid AV2 streams (IVF)
+    valid/                      valid AV2 streams (IVF, AVM-generated)
     invalid/                    negative vectors (truncations, mutations)
 ```
 
@@ -58,12 +58,12 @@ in the manifest's header comment):
 
 ```toml
 [[vector]]
-path = "vectors/valid/avm-key-intra-352x288.ivf"  # relative to tests/conformance/
+path = "vectors/valid/syn-key-intra-64x64.ivf"  # relative to tests/conformance/
 description = "…"
 expect = "clean"                                   # validator reports ZERO errors
 
 [[vector]]
-path = "vectors/invalid/avm-key-intra-352x288-truncated.ivf"
+path = "vectors/invalid/syn-key-intra-64x64-truncated.ivf"
 description = "…"
 expect = { diagnostics = ["ivf/truncated-frame-payload"] }  # EXACTLY this error-id set
 ```
@@ -102,14 +102,16 @@ no committed runner/test/CI path invokes it or requires an AVM checkout.
 - **What AVM does:** locally encode small AV2 streams that `splot validate` must
   validate clean (or flag a real defect). Those generated bitstreams may be
   committed as plain project fixtures under `tests/conformance/vectors/valid/`.
-  The committed valid vectors were generated locally with, e.g.:
+  The committed valid vectors were generated locally from a **project-owned
+  synthetic input** (a small generated YUV pattern — no third-party video
+  content), e.g.:
 
   ```text
-  avmenc --codec=av2 --ivf --limit=N --cpu-used=8 -w 352 -h 288 -o out.ivf paris_352_288_30.y4m
+  avmenc --codec=av2 --ivf --limit=N --cpu-used=8 -w 64 -h 64 -o out.ivf synthetic.y4m
   ```
 
-  (`paris_352_288_30.y4m` is a public test input.) This recipe is the documented
-  local oracle step; it is **not** a committed or CI script.
+  This recipe is the documented local oracle step; it is **not** a committed or
+  CI script.
 
 - **What stays future work:** a *live* local differential harness against an AVM
   checkout (`CONF-AVM-DIFF-HARNESS`), and the `splot encode -> avm decode`
@@ -134,8 +136,10 @@ exceptions.
 AVM is **BSD-3-Clause-Clear**. AVM is used only as a local encoder to generate
 the committed corpus vectors; the AVM-generated AV2 bitstreams are committed as
 plain project fixtures (the `splot` project licensing applies to the corpus as a
-whole). No AVM source is vendored. The committed test input used to generate the
-bootstrap vectors (`paris_352_288_30.y4m`) is a public test sequence.
+whole). No AVM source is vendored. The committed bootstrap vectors are encoded
+from a **project-owned synthetic YUV input** — there is no third-party video
+content in the corpus, so no third-party media provenance applies (the encoder
+tool, AVM, is BSD-3-Clause-Clear and not committed).
 
 ## No-panic fuzzing
 

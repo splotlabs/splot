@@ -30,17 +30,17 @@
 # `validate` command uses — then asserts the `expect` outcome.
 
 [[vector]]
-path = "vectors/valid/avm-key-intra-352x288.ivf"
-description = "AVM-generated single intra key frame (IVF, 352x288); validates clean."
+path = "vectors/valid/syn-key-intra-64x64.ivf"
+description = "Single intra key frame (IVF, 64x64) from project-owned synthetic input; validates clean."
 expect = "clean"
 
 [[vector]]
-path = "vectors/valid/avm-key-inter-352x288.ivf"
-description = "AVM-generated key frame plus two inter frames (IVF, 352x288); validates clean."
+path = "vectors/valid/syn-key-inter-64x64.ivf"
+description = "Key frame plus three inter frames (IVF, 64x64) from project-owned synthetic input; validates clean."
 expect = "clean"
 
 [[vector]]
-path = "vectors/invalid/avm-key-intra-352x288-truncated.ivf"
+path = "vectors/invalid/syn-key-intra-64x64-truncated.ivf"
 description = """
 The intra key-frame vector truncated to 100 bytes (mid-payload): the IVF frame \
 header declares the full payload length but the file ends short, so the \

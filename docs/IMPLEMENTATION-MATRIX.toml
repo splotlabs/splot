@@ -3781,11 +3781,11 @@ spec_sections = []
 sources = ["https://github.com/AOMediaCodec/avm"]
 crate = "xtask"
 module = "xtask/src/conformance.rs"
-openspec_change = "conformance-corpus-foundation"
+openspec_change = "avm-differential-harness"
 tracking_issue = ""
 owner = "conformance"
 risk = "high"
-notes = "Reframed (maintainer decision): AVM is a LOCAL oracle/generator only — it is NOT vendored and NOT a build or CI dependency, and no committed code path invokes AVM. AVM locally encodes small AV2 streams (avmenc --codec=av2 --ivf ...); those bytes MAY be committed as plain project fixtures and are then validated by the self-contained committed runner (CONF-AVM-VALID-STREAMS, `cargo xtask conformance` / crates/splot-cli/tests/conformance.rs) with no network or AVM. This row is therefore NOT a live differential harness: there is no `splot encode -> avm decode` reverse direction (encoder is fenced) and no in-CI `avm encode -> splot validate` loop. A live local harness against an AVM checkout remains future work (kept partial / avm_diff pending)."
+notes = "Reframed (maintainer decision): AVM is a LOCAL oracle/generator only — it is NOT vendored and NOT a build or CI dependency, and no committed code path invokes AVM. AVM locally encodes small AV2 streams (avmenc --codec=av2 --ivf ...) from project-owned synthetic input; those bytes MAY be committed as plain project fixtures and are then validated by the self-contained committed runner (CONF-AVM-VALID-STREAMS, `cargo xtask conformance` / crates/splot-cli/tests/conformance.rs) with no network or AVM. That committed-corpus runner landed under the archived conformance-corpus-foundation change. This row tracks what REMAINS: a LIVE local differential harness against an AVM checkout (opt-in, never CI) — the still-active openspec/changes/avm-differential-harness change — and the `splot encode -> avm decode` reverse direction (encoder is fenced). Kept partial / avm_diff pending."
 
 [feature.status]
 mapped = "partial"
@@ -3909,9 +3909,9 @@ commands = [
 ]
 fixtures = [
     "tests/conformance/manifest.toml",
-    "tests/conformance/vectors/valid/avm-key-intra-352x288.ivf",
-    "tests/conformance/vectors/valid/avm-key-inter-352x288.ivf",
-    "tests/conformance/vectors/invalid/avm-key-intra-352x288-truncated.ivf",
+    "tests/conformance/vectors/valid/syn-key-intra-64x64.ivf",
+    "tests/conformance/vectors/valid/syn-key-inter-64x64.ivf",
+    "tests/conformance/vectors/invalid/syn-key-intra-64x64-truncated.ivf",
 ]
 diagnostics = ["ivf/truncated-frame-payload"]
 

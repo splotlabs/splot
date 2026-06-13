@@ -74,7 +74,18 @@ struct ValidationReportJson {
 #[derive(Debug, Deserialize)]
 struct DiagnosticJson {
     rule_id: String,
-    severity: String,
+    severity: JsonSeverity,
+}
+
+/// The `splot validate --json` severity values. Deserializing into a typed enum
+/// (rather than comparing a raw string) makes the cross-process coupling
+/// explicit: if `splot` renames or adds a severity, the JSON parse fails loudly
+/// here instead of silently miscounting which diagnostics are errors.
+#[derive(Debug, PartialEq, Eq, Deserialize)]
+enum JsonSeverity {
+    Error,
+    Warning,
+    Info,
 }
 
 /// Runs the committed conformance corpus against its manifest and prints a
@@ -175,7 +186,13 @@ fn build_splot_binary(root: &Path) -> Result<PathBuf> {
     if !status.success() {
         bail!("`cargo build -p splot-cli` failed with {status}");
     }
-    let candidate = root.join("target").join("debug").join("splot");
+    // Honor CARGO_TARGET_DIR (absolute, or relative to the workspace root) so the
+    // binary is found under a custom target directory; default to `<root>/target`.
+    let target_dir = match std::env::var_os("CARGO_TARGET_DIR") {
+        Some(dir) => root.join(dir),
+        None => root.join("target"),
+    };
+    let candidate = target_dir.join("debug").join("splot");
     if candidate.is_file() {
         Ok(candidate)
     } else {
@@ -204,7 +221,7 @@ fn validate_vector(splot_bin: &Path, vector: &Path) -> Result<BTreeSet<String>> 
     Ok(report
         .diagnostics
         .into_iter()
-        .filter(|d| d.severity == "Error")
+        .filter(|d| d.severity == JsonSeverity::Error)
         .map(|d| d.rule_id)
         .collect())
 }
