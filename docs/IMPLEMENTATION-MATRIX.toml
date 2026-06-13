@@ -4699,6 +4699,39 @@ fixtures = ["docs/DECODER-ROADMAP.md", "docs/DECODER-SUPPORT-MATRIX.toml", "docs
 diagnostics = []
 
 [[feature]]
+id = "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT"
+name = "Deterministic decoded-frame hash contract documentation"
+category = "docs"
+kind = "docs"
+spec_sections = []
+sources = []
+crate = "docs"
+module = "docs/DECODER-ROADMAP.md"
+openspec_change = "deterministic-frame-hash-contract"
+tracking_issue = ""
+owner = "docs"
+risk = "medium"
+notes = "Documents the future repo-owned `splot.decoded_frame_hash` v1 contract before runtime hash computation exists. The contract uses SHA-256 `splot-dfh-sha256-v1` over AV2 §6.16.13 sample-byte serialization in §7.21 output order, excluding stride/padding and metadata, with raw pre-film-grain output as the default variant. AV2 metadata MD5 remains a separate future interop verification path; this docs-only row does not claim normative runtime implementation coverage."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = ["openspec validate --all --no-interactive", "cargo xtask check-decoder-support"]
+fixtures = ["docs/DECODER-ROADMAP.md", "docs/DECODER-SUPPORT-MATRIX.toml"]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODER-SUPPORT-MATRIX"
 name = "Decoder support matrix documentation"
 category = "docs"

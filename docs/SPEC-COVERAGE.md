@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-10. 142 feature(s); 106 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-10. 143 feature(s); 106 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -245,7 +245,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 
 ## Features without a spec section
 
-36 feature(s) track conformance, encoder, CLI, automation, or documentation work with no single spec section; see [FEATURE-STATUS.md](./FEATURE-STATUS.md):
+37 feature(s) track conformance, encoder, CLI, automation, or documentation work with no single spec section; see [FEATURE-STATUS.md](./FEATURE-STATUS.md):
 
 - `AV2-IVF-CONTAINER` — IVF container support
 - `CLI-INSPECT` — splot inspect command
@@ -264,6 +264,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 - `DOC-DECODER-DIAGNOSTICS` — Decoder diagnostics registry documentation
 - `DOC-DECODER-ROADMAP` — Decoder roadmap documentation
 - `DOC-DECODER-SUPPORT-MATRIX` — Decoder support matrix documentation
+- `DOC-DETERMINISTIC-FRAME-HASH-CONTRACT` — Deterministic decoded-frame hash contract documentation
 - `DOC-ENCODER-REFERENCE-GATE` — Encoder reference gate documentation
 - `DOC-FEATURE-TRACKING` — Feature tracking documentation
 - `DOC-VALIDATOR-ROADMAP` — Validator coverage roadmap documentation

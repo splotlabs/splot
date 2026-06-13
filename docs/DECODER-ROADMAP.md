@@ -60,8 +60,8 @@ other external decoder is forbidden.
 | Stage | Scope | Status |
 |---|---|---|
 | 0 | Roadmap, support matrix, generated status, drift gate | supported |
-| 1 | Decode API contract, limits, resource diagnostics, plan-only byte entry point | active in `decoder-limits-contract` |
-| 2 | Shared decoded frame, plane, pixel format, and deterministic hash types | planned |
+| 1 | Decode API contract, limits, resource diagnostics, plan-only byte entry point | partial contract documented |
+| 2 | Shared decoded frame, plane, pixel format, and deterministic hash types | hash contract documented; types planned |
 | 3 | CLI `splot decode` contract backed by library diagnostics | planned |
 | 4 | Container traversal, layer/operating-point selection, transactional decode planning | planned |
 | 5 | Self-contained decode fuzz target and fixture smoke | planned |
@@ -137,21 +137,50 @@ counts is a `decode/resource-limit` failure, not a wraparound or panic.
 
 ## Hash Policy
 
-Frame hashing is required before Y4M output is considered supported. The exact
-hash format is still pending, but the supported format must define:
+Frame hashing is required before Y4M output is considered supported. The first
+repository-owned contract is:
 
-- frame order;
-- visible area versus padded area;
-- plane order;
-- stride handling;
-- bit-depth representation;
-- chroma subsampling;
-- metadata included or excluded;
-- whether film grain is applied or the intermediate decoded frame is hashed.
+```text
+contract_id = "splot.decoded_frame_hash"
+contract_version = 1
+algorithm_id = "splot-dfh-sha256-v1"
+byte_stream_id = "av2-output-samples-v1"
+```
+
+The `splot-dfh-sha256-v1` digest is SHA-256 over canonical decoded output sample
+bytes. The sample-byte stream follows AV2 § 6.16.13's decoded-frame-hash sample
+serialization, but the digest is `splot`-owned fixture and roundtrip identity,
+not the AV2 metadata MD5 value. AV2 `hash_type = 0` MD5 remains a separate
+future verification path for `METADATA_TYPE_DECODED_FRAME_HASH` metadata.
+
+The canonical byte stream is defined as follows:
+
+- frame order is zero-based AV2 § 7.21 output order after supported
+  stream/layer selection, including show-existing and flush output frames once
+  those output paths are implemented;
+- region is cropped visible output only: luma dimensions are `w x h`; chroma
+  dimensions are `((w + subX) >> subX) x ((h + subY) >> subY)`;
+- backing allocation padding and `Plane` stride bytes are excluded;
+- non-monochrome plane order is Y, then U, then V; monochrome output hashes only
+  Y;
+- samples are traversed left-to-right, top-to-bottom within each plane;
+- 8-bit samples are written as one byte;
+- samples with bit depth greater than 8 are written as two bytes in little-endian
+  order, least significant byte first, with no normalization;
+- codec metadata, OBU bytes, container timestamps, HDR/ICC/timecode metadata,
+  and signaled decoded-frame-hash metadata are excluded from the digest input
+  and must be asserted separately when relevant.
+
+The default future hash variant is `raw_intermediate_output`, corresponding to
+AV2 § 6.16.13 `has_grain = 0`: `OutY`/`OutU`/`OutV` from the § 7.21.2
+intermediate output preparation process before § 7.21.7 film-grain synthesis.
+A post-film-grain hash may be added later only as an explicit, separately named
+variant after film-grain synthesis is implemented and tested.
 
 Local AVM/dav2d MD5 output can be useful evidence, but committed `splot` tests
-must not require those tools. A future `splot` hash should be repo-owned and
-documented before any row becomes `supported`.
+must not require those tools. Existing archived local reference evidence records
+AVM/dav2d raw MD5 agreement for two tiny fixtures; it is non-executable
+metadata only and does not prove that `splot` hash computation is implemented.
 
 ## Unsupported Feature Contract
 
