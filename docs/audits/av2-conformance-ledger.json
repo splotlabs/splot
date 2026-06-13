@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "e5887846b8e1c369b6a35825bdecf2f1a0085b9f",
+  "audited_commit": "5c16f34351e4d2310734d5007a6b5cf4943e2fcc",
   "outcome": "success",
   "files": [
     {
@@ -120,7 +120,7 @@
     },
     {
       "path": ".github/copilot-instructions.md",
-      "sha256": "14305e5c5ea5de04a272363ea87a7c213714f0c958edf9000bb3bd5906d4e169",
+      "sha256": "a3aad68c6b7f0d476941d856168dae7c8e0cf85cbe6592a4842b94c37f2134d1",
       "scope_kind": "agent-guidance",
       "feature_ids": [
         "DOC-AUDIT-PROTOCOLS",
@@ -200,7 +200,7 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "30ba1617b2d47f59e6869a052265d075e9c4e24c1c26990615c1da391f64bb42",
+      "sha256": "7657d731d2b59c846b47d68ef37cb494da3ca7e74eeb9c285809e10a8670a377",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
@@ -221,7 +221,7 @@
     },
     {
       "path": "AGENTS.md",
-      "sha256": "9a8831b976d5b8dc9c304393a20d933e37188124f0e724a018fcb0a3749789e8",
+      "sha256": "bae003b592425118a47af28a83c6bae1452d79f9dc4e0dc74f13a28f17f1e88c",
       "scope_kind": "repository-process",
       "feature_ids": [
         "DOC-AUDIT-PROTOCOLS",
@@ -239,16 +239,18 @@
     },
     {
       "path": "Cargo.lock",
-      "sha256": "91b333c517173b2171b03e9851d289bed63e37256ec0bdcd0cbb1356931806ee",
+      "sha256": "27909599a76c6372159f87eaf780d1f0492198ac251a9da205c124a70c94a4c9",
       "scope_kind": "repository-process",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "Cargo.toml",
-      "sha256": "6f1d6195b0940acc3a9b538f62cd8f272caa628c317b512f79604c02668198f2",
+      "sha256": "ba69761616bb7db7352132ff5b0d7e292b4a3586197eb48471720aa843f3b144",
       "scope_kind": "repository-process",
-      "feature_ids": [],
+      "feature_ids": [
+        "CONF-INSPECT-SNAPSHOTS"
+      ],
       "outcome": "success"
     },
     {
@@ -262,19 +264,21 @@
     },
     {
       "path": "crates/splot-cli/Cargo.toml",
-      "sha256": "3deed0836dba725b600824048fe8bc71e0ee10391beb31495f208582b8ad57d1",
+      "sha256": "74c70ca168d0f9137070becea83121a1182598d4d75b314e46f2d88f9ff2e60f",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
-        "CONF-AVM-VALID-STREAMS"
+        "CONF-AVM-VALID-STREAMS",
+        "CONF-INSPECT-SNAPSHOTS"
       ],
       "outcome": "success"
     },
     {
       "path": "crates/splot-cli/src/commands/decode.rs",
-      "sha256": "1d30a13b040be178a8c18d10cc06dbd52d14e31c7ad27aad211e78b3ddccebc5",
+      "sha256": "63514be9833ed9d0efe18702cb9d6685804f8c941327cf83b1d5a7ce476a55bd",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
-        "CLI-DECODE"
+        "CLI-DECODE",
+        "CLI-DECODE-HASH-OUTPUT"
       ],
       "outcome": "success"
     },
@@ -322,13 +326,12 @@
     },
     {
       "path": "crates/splot-cli/tests/cli.rs",
-      "sha256": "d544aee05be1e73b9def396aef615dbcccf2b2276bd1ebdfb30d33b308d60633",
+      "sha256": "5b0bcca3321839e2cf44445b1f82e1f1cdcadc19f68e73b26f737ea8a397ac4d",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.19-TILE-GROUP",
         "AV2-5.4-SEQUENCE-HEADER",
-        "AV2-5.5-TEMPORAL-DELIMITER",
-        "CLI-DECODE"
+        "AV2-5.5-TEMPORAL-DELIMITER"
       ],
       "outcome": "success"
     },
@@ -342,11 +345,123 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-cli/tests/decode_cli.rs",
+      "sha256": "ca6ccbb224c6f44f41e48984c0d83071c8a6b177a71dac6ac4b5e14adddbd0be",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/tests/inspect_snapshots.rs",
+      "sha256": "366e585262184a5a064cacbe945a028fd5f2b1065067bafec3f384ba0e8bbd02",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [
+        "CONF-INSPECT-SNAPSHOTS"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-cli/tests/negative_mutations.rs",
       "sha256": "d5023645aadf01c51a8b5f50afef8ba2877710107f67c165b208de8e56ae82d3",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "CONF-AVM-INVALID-STREAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/tests/snapshots/inspect_snapshots__buffer-removal-timing.av2.snap",
+      "sha256": "7c1d3156d328d97b5ff09d99f738a297b1eb629a7afbf6876742f8877350b91c",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [
+        "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.12-BUFFER-REMOVAL-TIMING",
+        "AV2-5.5-TEMPORAL-DELIMITER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/tests/snapshots/inspect_snapshots__conformant.av2.snap",
+      "sha256": "b4713b53e72b3fb68a93699bf4b10193959e5525ba0dd2bd41b38c6b2b19b495",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.5-TEMPORAL-DELIMITER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/tests/snapshots/inspect_snapshots__film-grain.av2.snap",
+      "sha256": "5ec0c2e1e6c387f372db7a09ca584338472c1b1272911acd06b8c15e1f020d64",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [
+        "AV2-5.14-FILM-GRAIN",
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.5-TEMPORAL-DELIMITER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/tests/snapshots/inspect_snapshots__frame-header-core-mfh.av2.snap",
+      "sha256": "df73b7ad374a9816cadaca027da75239165ba9d2e5e551b1a138724ad82eb08c",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.5-TEMPORAL-DELIMITER",
+        "AV2-5.7-MULTI-FRAME-HEADER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/tests/snapshots/inspect_snapshots__frame-header-core.av2.snap",
+      "sha256": "80fae71de3f88c35d6992c186aa7155552a6f477217d8e81641b1946263cfc81",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.5-TEMPORAL-DELIMITER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/tests/snapshots/inspect_snapshots__frame-header-prefix.av2.snap",
+      "sha256": "ecfe6123b6869af47a0d7967951bf5d7ade840b8e324f03c394174ef059284ba",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [
+        "AV2-5.19-TILE-GROUP",
+        "AV2-5.4-SEQUENCE-HEADER",
+        "AV2-5.5-TEMPORAL-DELIMITER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/tests/snapshots/inspect_snapshots__metadata-group.av2.snap",
+      "sha256": "f18ca3347bc8b53c1613fa2054779e2630a0090cae695cfc4865ec6e4a7fcbab",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [
+        "AV2-5.17.3-METADATA-GROUP",
+        "AV2-5.5-TEMPORAL-DELIMITER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/tests/snapshots/inspect_snapshots__metadata-short.av2.snap",
+      "sha256": "4d0c038d0982814035bde779b38a2a228f93749b0364d9c972f7d2fd21ecae9c",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [
+        "AV2-5.17.2-METADATA-SHORT",
+        "AV2-5.5-TEMPORAL-DELIMITER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/tests/snapshots/inspect_snapshots__operating-point-set.av2.snap",
+      "sha256": "785c0268bafd8128e7bfbdfac1bab829914b9cd700beb42d06a0fcd8d15ef49f",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [
+        "AV2-5.10-OPERATING-POINT-SET",
+        "AV2-5.5-TEMPORAL-DELIMITER"
       ],
       "outcome": "success"
     },
@@ -826,6 +941,24 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-decode/Cargo.toml",
+      "sha256": "519ae338280b20017585a27c104b613ac73a7e3a7bac222ddf409da6266a2a07",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-decode/src/lib.rs",
+      "sha256": "0e3a690209c6d872b85cb2b9da80dcdebd78c15323e80ebd77904312439ce512",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [
+        "CLI-DECODE",
+        "DECODE-UNSUPPORTED-DIAGNOSTIC-API",
+        "INFRA-DECODER-CRATE-SCAFFOLDING"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-encode/Cargo.toml",
       "sha256": "dda16cce32a9fe30db400eda8b1493f166fd0cc0291cfcad732de116d9360d9e",
       "scope_kind": "workspace:splot-encode",
@@ -857,6 +990,57 @@
       "path": "crates/splot-encode/src/lib.rs",
       "sha256": "31bf1d17b37c851b3e34e1d283a1d771e312924622f9b02e976007f77427ecd7",
       "scope_kind": "workspace:splot-encode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-recon/Cargo.toml",
+      "sha256": "14927b0ffc5dba17dbf99c73de8175f8bc81c318481f39b261715c0508fbe7a9",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-recon/src/error.rs",
+      "sha256": "7c8987fc231a9571a459e47df0d9ff0e6f6eb3f4ba6bd840d8c2008067a8c6f2",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-recon/src/format.rs",
+      "sha256": "53c9d0ca3ec4bd64f6e7ab47111098ee8bee992aaa0c9afa9c17d59c2e5cd4a0",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-recon/src/frame.rs",
+      "sha256": "16e965463090776a721bdde84e765b7778c22b62c470f3c797b9affb05506bf2",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-recon/src/geometry.rs",
+      "sha256": "56bbbe14eb3e4831a96f6e72f009fd23dc3a98f1bd58fbb9e92624051082f3eb",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-recon/src/lib.rs",
+      "sha256": "9abfeae19d934a35899ad7af644570e9208e049de9b3dc3e0ca6692e7d3e2dda",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [
+        "INFRA-RECON-FRAME-PLANE-TYPES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-recon/src/plane.rs",
+      "sha256": "dc6e7e4d194f8f48cbad18461d7563b0fb520021d55942b781c829694d33636e",
+      "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
     },
@@ -1888,7 +2072,7 @@
     },
     {
       "path": "docs/ARCHITECTURE.md",
-      "sha256": "5f5f1f7b8ede99bdb9ee9acc9df231aa3ed517465330ae2a35ffa010d03edca8",
+      "sha256": "704e62f692469eef846bf71ee3a23686f87791678ddfa63311ebbbb280edfdc6",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-IVF-CONTAINER"
@@ -1904,7 +2088,7 @@
     },
     {
       "path": "docs/CONFORMANCE.md",
-      "sha256": "8f19eb1f421f048844cf6ce5551fdb7950b163cb0ab83a82c1ed496a174d067e",
+      "sha256": "2a76cdffd249661d9562bb2f4f3be9bdf60ff388688a8106fdebd12067389efd",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-INSPECT",
@@ -1928,53 +2112,76 @@
     },
     {
       "path": "docs/DECODER-DIAGNOSTICS.md",
-      "sha256": "6dd7db4e724e5ac8801117851ff5902bbbc0ffc6e2065d1751bdc37268b128af",
+      "sha256": "48b6df63764dd74d9c56283dab1feec9a98a08931d945a9b8f55b164cdc88cb1",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-DECODE",
+        "DOC-DECODE-LIMITS-CONTRACT",
         "DOC-DECODER-DIAGNOSTICS"
       ],
       "outcome": "success"
     },
     {
       "path": "docs/DECODER-ROADMAP.md",
-      "sha256": "7485d86da0bde83e2b6ba4124fb2f40db32034573b244cc00e81b5fd751ee3da",
+      "sha256": "316110ae086f8695f0148fadce1c3afe65f6a1922223594c7d30e90752335341",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-DECODE",
-        "DOC-DECODER-ROADMAP"
+        "DOC-DECODE-LIMITS-CONTRACT",
+        "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT",
+        "DOC-DECODER-ROADMAP",
+        "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT",
+        "DOC-MINIMAL-DECODE-TIER-CONTRACT"
       ],
       "outcome": "success"
     },
     {
       "path": "docs/DECODER-SUPPORT-MATRIX.toml",
-      "sha256": "a3a11ca3d9b109ec4442213083af44334c95eebd787a92c54544f388e8641b8d",
+      "sha256": "9986ab345e0a08ad60844795eb21dd36178d9ca35575444ca28f516595a3b6bd",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-DECODE",
+        "CLI-DECODE-HASH-OUTPUT",
+        "DECODE-UNSUPPORTED-DIAGNOSTIC-API",
+        "DOC-DECODE-LIMITS-CONTRACT",
+        "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT",
         "DOC-DECODER-DIAGNOSTICS",
         "DOC-DECODER-ROADMAP",
         "DOC-DECODER-SUPPORT-MATRIX",
-        "XTASK-DECODER-SUPPORT-STATUS"
+        "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT",
+        "DOC-MINIMAL-DECODE-TIER-CONTRACT",
+        "INFRA-DECODER-CRATE-SCAFFOLDING",
+        "INFRA-RECON-FRAME-PLANE-TYPES",
+        "XTASK-DECODER-SUPPORT-STATUS",
+        "XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST"
       ],
       "outcome": "success"
     },
     {
       "path": "docs/DECODER-SUPPORT-STATUS.md",
-      "sha256": "be479b0c2703659e0d048a7f8c92b2e9c0e00dd3f27f62683d67a690c7a2438b",
+      "sha256": "27bae456eca615764ef8a54683b4db7e2231a3228a6f52d95a553d4f189fe8ec",
       "scope_kind": "docs",
       "feature_ids": [
         "CLI-DECODE",
+        "CLI-DECODE-HASH-OUTPUT",
+        "DECODE-UNSUPPORTED-DIAGNOSTIC-API",
+        "DOC-DECODE-LIMITS-CONTRACT",
+        "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT",
         "DOC-DECODER-DIAGNOSTICS",
         "DOC-DECODER-ROADMAP",
         "DOC-DECODER-SUPPORT-MATRIX",
-        "XTASK-DECODER-SUPPORT-STATUS"
+        "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT",
+        "DOC-MINIMAL-DECODE-TIER-CONTRACT",
+        "INFRA-DECODER-CRATE-SCAFFOLDING",
+        "INFRA-RECON-FRAME-PLANE-TYPES",
+        "XTASK-DECODER-SUPPORT-STATUS",
+        "XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST"
       ],
       "outcome": "success"
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "c2d4e9b73facf1ff4f935f0d6dbbb94f67c03b23139aa5c49649f2a5f8ef626e",
+      "sha256": "10ef73e0d0299db250261041693c1dc88344162589b9e75235f2c754ee45b7e0",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2084,6 +2291,7 @@
         "AV2-E-DECODER-MODEL",
         "AV2-IVF-CONTAINER",
         "CLI-DECODE",
+        "CLI-DECODE-HASH-OUTPUT",
         "CLI-INSPECT",
         "CLI-VALIDATE",
         "CONF-AVM-DIFF-HARNESS",
@@ -2094,19 +2302,26 @@
         "CONF-INSPECT-SNAPSHOTS",
         "CONF-PUBLIC-VECTOR-LICENSE-REVIEW",
         "CONF-PUBLIC-VECTORS",
+        "DECODE-UNSUPPORTED-DIAGNOSTIC-API",
         "DOC-AUDIT-PROTOCOLS",
         "DOC-AV2-SPEC-MIRROR",
+        "DOC-DECODE-LIMITS-CONTRACT",
+        "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT",
         "DOC-DECODER-DIAGNOSTICS",
         "DOC-DECODER-ROADMAP",
         "DOC-DECODER-SUPPORT-MATRIX",
+        "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT",
         "DOC-ENCODER-REFERENCE-GATE",
         "DOC-FEATURE-TRACKING",
+        "DOC-MINIMAL-DECODE-TIER-CONTRACT",
         "DOC-VALIDATOR-ROADMAP",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0",
         "ENC-RATE-CONTROL-V0",
         "ENC-SPEED-PRESETS",
         "ENC-Y4M-INPUT",
+        "INFRA-DECODER-CRATE-SCAFFOLDING",
+        "INFRA-RECON-FRAME-PLANE-TYPES",
         "VALIDATOR-CONTEXT-SPLIT",
         "XTASK-AUDIT-SCOPE",
         "XTASK-CI-QUALITY-GATES",
@@ -2116,6 +2331,7 @@
         "XTASK-DIAGNOSTIC-REGISTRY",
         "XTASK-FEATURE-STATUS",
         "XTASK-GEN-TABLES",
+        "XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST",
         "XTASK-SOURCE-LINES",
         "XTASK-VALIDATOR-MODULE-SPLIT"
       ],
@@ -2140,7 +2356,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.schema.md",
-      "sha256": "07737eb434c7e408807b196c2dec3d8e11ccb0b6bbbabdbe5dbf0722e16eb976",
+      "sha256": "a6b9151c4bb9ba96ac4a0b513fec3af778622082878d2f3ab04bdcd1aa6a3bf0",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -2153,7 +2369,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "80696914ad7255a9e6e95bc9e9c8731c0b01afbd9e35d877bf06f1f38074133d",
+      "sha256": "d7ceea414e97c5150a5a72f4ab584c32ac8114b252d8a1f29e2d95b5b2ed92c3",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2263,6 +2479,7 @@
         "AV2-E-DECODER-MODEL",
         "AV2-IVF-CONTAINER",
         "CLI-DECODE",
+        "CLI-DECODE-HASH-OUTPUT",
         "CLI-INSPECT",
         "CLI-VALIDATE",
         "CONF-AVM-DIFF-HARNESS",
@@ -2273,19 +2490,26 @@
         "CONF-INSPECT-SNAPSHOTS",
         "CONF-PUBLIC-VECTOR-LICENSE-REVIEW",
         "CONF-PUBLIC-VECTORS",
+        "DECODE-UNSUPPORTED-DIAGNOSTIC-API",
         "DOC-AUDIT-PROTOCOLS",
         "DOC-AV2-SPEC-MIRROR",
+        "DOC-DECODE-LIMITS-CONTRACT",
+        "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT",
         "DOC-DECODER-DIAGNOSTICS",
         "DOC-DECODER-ROADMAP",
         "DOC-DECODER-SUPPORT-MATRIX",
+        "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT",
         "DOC-ENCODER-REFERENCE-GATE",
         "DOC-FEATURE-TRACKING",
+        "DOC-MINIMAL-DECODE-TIER-CONTRACT",
         "DOC-VALIDATOR-ROADMAP",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0",
         "ENC-RATE-CONTROL-V0",
         "ENC-SPEED-PRESETS",
         "ENC-Y4M-INPUT",
+        "INFRA-DECODER-CRATE-SCAFFOLDING",
+        "INFRA-RECON-FRAME-PLANE-TYPES",
         "VALIDATOR-CONTEXT-SPLIT",
         "XTASK-AUDIT-SCOPE",
         "XTASK-CI-QUALITY-GATES",
@@ -2295,14 +2519,24 @@
         "XTASK-DIAGNOSTIC-REGISTRY",
         "XTASK-FEATURE-STATUS",
         "XTASK-GEN-TABLES",
+        "XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST",
         "XTASK-SOURCE-LINES",
         "XTASK-VALIDATOR-MODULE-SPLIT"
       ],
       "outcome": "success"
     },
     {
+      "path": "docs/LOCAL-REFERENCE-EVIDENCE.toml",
+      "sha256": "98d13b1aa55cb4020afe6840bade6ecc534bcbe781bbb788629da7105a81d91a",
+      "scope_kind": "docs",
+      "feature_ids": [
+        "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "39f3a09ce33e95aaea2989732ce6023bed373ad8c27cc06b760ffeef53882947",
+      "sha256": "50ed58cf8636e9cbcd4761e5459269419e409eb06350fc42d4fda0a600426a59",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2412,6 +2646,7 @@
         "AV2-E-DECODER-MODEL",
         "AV2-IVF-CONTAINER",
         "CLI-DECODE",
+        "CLI-DECODE-HASH-OUTPUT",
         "CLI-INSPECT",
         "CLI-VALIDATE",
         "CONF-AVM-DIFF-HARNESS",
@@ -2422,19 +2657,26 @@
         "CONF-INSPECT-SNAPSHOTS",
         "CONF-PUBLIC-VECTOR-LICENSE-REVIEW",
         "CONF-PUBLIC-VECTORS",
+        "DECODE-UNSUPPORTED-DIAGNOSTIC-API",
         "DOC-AUDIT-PROTOCOLS",
         "DOC-AV2-SPEC-MIRROR",
+        "DOC-DECODE-LIMITS-CONTRACT",
+        "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT",
         "DOC-DECODER-DIAGNOSTICS",
         "DOC-DECODER-ROADMAP",
         "DOC-DECODER-SUPPORT-MATRIX",
+        "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT",
         "DOC-ENCODER-REFERENCE-GATE",
         "DOC-FEATURE-TRACKING",
+        "DOC-MINIMAL-DECODE-TIER-CONTRACT",
         "DOC-VALIDATOR-ROADMAP",
         "ENC-BITSTREAM-WRITER",
         "ENC-INTRA-TOY-V0",
         "ENC-RATE-CONTROL-V0",
         "ENC-SPEED-PRESETS",
         "ENC-Y4M-INPUT",
+        "INFRA-DECODER-CRATE-SCAFFOLDING",
+        "INFRA-RECON-FRAME-PLANE-TYPES",
         "VALIDATOR-CONTEXT-SPLIT",
         "XTASK-AUDIT-SCOPE",
         "XTASK-CI-QUALITY-GATES",
@@ -2444,6 +2686,7 @@
         "XTASK-DIAGNOSTIC-REGISTRY",
         "XTASK-FEATURE-STATUS",
         "XTASK-GEN-TABLES",
+        "XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST",
         "XTASK-SOURCE-LINES",
         "XTASK-VALIDATOR-MODULE-SPLIT"
       ],
@@ -4750,6 +4993,275 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-decode-hash-output-cli-contract/.openspec.yaml",
+      "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decode-hash-output-cli-contract/agent-log.md",
+      "sha256": "e29d71b3e283011c92548e936284e9a9317e20de79ff3d0f46b35a031f2e0313",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CLI-DECODE-HASH-OUTPUT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decode-hash-output-cli-contract/design.md",
+      "sha256": "47eb17a79e207962d8268f436c0dac22c2fcb79d9350e750b9fdf2a00e27d0ce",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CLI-DECODE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decode-hash-output-cli-contract/proposal.md",
+      "sha256": "afaed1b0e4bc4b6de8fd746453e91f02ecf07233e348791a3151d820f0de41f4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CLI-DECODE-HASH-OUTPUT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decode-hash-output-cli-contract/specs/decoder-support/spec.md",
+      "sha256": "03af9a265d15771f8cc9e1abc39904ee57cd9acb358289adcfe994864e590a34",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CLI-DECODE-HASH-OUTPUT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decode-hash-output-cli-contract/tasks.md",
+      "sha256": "8392726bee17be4483b5cf70646bcadd1e3ca0dbdc83d1557c687285848badd0",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CLI-DECODE-HASH-OUTPUT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decode-unsupported-diagnostic-api/.openspec.yaml",
+      "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decode-unsupported-diagnostic-api/agent-log.md",
+      "sha256": "fd02f1a94c9859268d92448cab8a625fd86f6032c60249ac7a6d1bc85e9f6095",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-4.11.6-LEB128",
+        "CLI-DECODE",
+        "DECODE-UNSUPPORTED-DIAGNOSTIC-API"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decode-unsupported-diagnostic-api/design.md",
+      "sha256": "49fc97220550010ad067b1e1e261530a00cb31b6ed8f34aa62ee1fe68eaab93e",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decode-unsupported-diagnostic-api/proposal.md",
+      "sha256": "ba4eaeff340b009301731c69530ec3a91a362dac88da8b1f1f23254f8bed41cf",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-UNSUPPORTED-DIAGNOSTIC-API"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decode-unsupported-diagnostic-api/specs/decoder-support/spec.md",
+      "sha256": "ba30b6d77615382c68f4ab4a522c39c7ec20c1ed3ae79c2e688e3e1ac6a88e49",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CLI-DECODE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decode-unsupported-diagnostic-api/specs/process/spec.md",
+      "sha256": "bde25645556d0b775a3afdd74c36fca7ee46a6d4d49902235ea5a3710fe5e7d4",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decode-unsupported-diagnostic-api/tasks.md",
+      "sha256": "e9b75f200dab6c14f22b087071c06c1c2b5d1d0916d213ea3b202ff275b530af",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-UNSUPPORTED-DIAGNOSTIC-API"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoded-frame-plane-model-contract/.openspec.yaml",
+      "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoded-frame-plane-model-contract/agent-log.md",
+      "sha256": "fe32ff917c65d2f4440ce212c9f5dac591fc50bb9c4ca06d37e4f0ba683bb808",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoded-frame-plane-model-contract/design.md",
+      "sha256": "6801f68e715e62251de21ea4e205a70e8d95bc8675c22482f3b7e8009ca84d67",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoded-frame-plane-model-contract/proposal.md",
+      "sha256": "3a44c1d977a07341058bec01ad8f2bd3787c2e08624a8e9e7bf2c2fb5c36b35c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoded-frame-plane-model-contract/specs/decoder-support/spec.md",
+      "sha256": "044f1d6c71c8ef93b330124a66a0e4e15a17947048df0cbb10830579193bdeec",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoded-frame-plane-model-contract/tasks.md",
+      "sha256": "dcf4b2ab1215493d3f6302a4aa786779563147aa8a38e2d6a1fe43536d7a0e19",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoded-frame-plane-runtime-types/.openspec.yaml",
+      "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoded-frame-plane-runtime-types/agent-log.md",
+      "sha256": "6c0c2f3b73e54a7d4f40ff2063cd52b69cd58bc915bd62f03906712eaabf15f8",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "INFRA-RECON-FRAME-PLANE-TYPES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoded-frame-plane-runtime-types/design.md",
+      "sha256": "25cc2cf528abdab813cc98a8b9946afff3ebdacf135e5c92c26422e9e07f09a4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "INFRA-RECON-FRAME-PLANE-TYPES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoded-frame-plane-runtime-types/proposal.md",
+      "sha256": "119b0e793b17079ac698de45cd7c4c132a1e5cb94296d4b8f1fa34bb533f2dff",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "INFRA-RECON-FRAME-PLANE-TYPES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoded-frame-plane-runtime-types/specs/decoder-support/spec.md",
+      "sha256": "b410b6f79f6fee0faa59ccc3963d0bcd1860bac7014721aa900804b5b30aa4f2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT",
+        "INFRA-RECON-FRAME-PLANE-TYPES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoded-frame-plane-runtime-types/tasks.md",
+      "sha256": "655e7070b45e5b07facc8465cca698aae956de2100e74080fb05657e2c5ae0a1",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-crate-scaffolding/.openspec.yaml",
+      "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-crate-scaffolding/agent-log.md",
+      "sha256": "b2a190e81f49d824e62cee5ee53ffeca0903a020aded66c65366493a363adc51",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "INFRA-DECODER-CRATE-SCAFFOLDING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-crate-scaffolding/design.md",
+      "sha256": "9484baa8d1990bb15c21dc9752053be5c9e4a00fa6b4ae38419afacaf68aefaf",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-crate-scaffolding/proposal.md",
+      "sha256": "252d53099e757ebdc947d0d13c2f97f92c63e0bc936af5a3b4372e8209a67c92",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "INFRA-DECODER-CRATE-SCAFFOLDING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-crate-scaffolding/specs/decoder-support/spec.md",
+      "sha256": "74906089d5e1ef9649565fce0d4c0e5cacd57347ce9c259ba1aeaeee9051826d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "INFRA-DECODER-CRATE-SCAFFOLDING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-crate-scaffolding/specs/process/spec.md",
+      "sha256": "bf11b55e070e8442ac49b7e076114b4a55aecb1163a5c7f700b1fabe89662469",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-crate-scaffolding/tasks.md",
+      "sha256": "9077ca13c5a40c247f3ce3895ec80ec0f3f167e8e69e496b6b949fd3f40c9588",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "INFRA-DECODER-CRATE-SCAFFOLDING"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-13-decoder-diagnostic-registry/.openspec.yaml",
       "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
       "scope_kind": "openspec",
@@ -4810,6 +5322,58 @@
       "feature_ids": [
         "DOC-DECODER-DIAGNOSTICS",
         "XTASK-DECODER-DIAGNOSTIC-REGISTRY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-limits-contract/.openspec.yaml",
+      "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-limits-contract/agent-log.md",
+      "sha256": "2ee57f9fad2ecdf691b757a45e26095d963c966dfbf2c744f1117d7f3913d484",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-DECODE-LIMITS-CONTRACT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-limits-contract/design.md",
+      "sha256": "e0454c1d7309d28bf1a2f1b01f4de6ac377eae45cbf6666007e221b0e500ddab",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-DECODE-LIMITS-CONTRACT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-limits-contract/proposal.md",
+      "sha256": "9e02707d92214a5a9a077eb450362034e4d204ee3a74db69585159c83dcebbdb",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-DECODE-LIMITS-CONTRACT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-limits-contract/specs/decoder-support/spec.md",
+      "sha256": "b415008e95dea9594cb51b9b73c276f877150d44a5832b5b07f3de06a82b5a4c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-DECODE-LIMITS-CONTRACT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-decoder-limits-contract/tasks.md",
+      "sha256": "ea1429ed6eecdd847382d621c3379ac7801844defd37dbef2570207548f132ec",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-DECODE-LIMITS-CONTRACT"
       ],
       "outcome": "success"
     },
@@ -4881,6 +5445,56 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-deterministic-frame-hash-contract/.openspec.yaml",
+      "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-deterministic-frame-hash-contract/agent-log.md",
+      "sha256": "edfd95167d020432a2409bde7e9d4fee5675b975aa34dc404cae0b5826d4d716",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-deterministic-frame-hash-contract/design.md",
+      "sha256": "66dbe7716fc53e5dcf2d10ddf5607536350a92545b2c3df6ce9d2fb53f4a26d0",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-deterministic-frame-hash-contract/proposal.md",
+      "sha256": "6e9c70fd980a49c3a2775597fb88754e3beb66c06a44a002e72a185444eabc9a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-deterministic-frame-hash-contract/specs/decoder-support/spec.md",
+      "sha256": "f14ccf0fc82e5e82864b80c4618c16e822e713203f52383b361a1deca20c2378",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-deterministic-frame-hash-contract/tasks.md",
+      "sha256": "a6222a545295c1ea725e300a9958b88103d6519753f8184844d836dcf6ff7957",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-13-film-grain-layer-dependency-constraints/proposal.md",
       "sha256": "1521d8b5081c6a2675f6890329f9561cc7930027247daf9b22f694f3fd3def1a",
       "scope_kind": "openspec",
@@ -4908,6 +5522,136 @@
       "feature_ids": [
         "AV2-5.14-FILM-GRAIN",
         "AV2-5.18.10-FILM-GRAIN-STRUCTURES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-inspect-snapshot-tests/proposal.md",
+      "sha256": "d43ccd6f3ab985c72e4217a922c501921d552a9b7ccd90655716704b01a35164",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-INSPECT-SNAPSHOTS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-inspect-snapshot-tests/specs/conformance/spec.md",
+      "sha256": "b216593e34f5ad7049396a4e4badea7488a3a0a5455bc9a728262ee3cf9f00be",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-INSPECT-SNAPSHOTS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-inspect-snapshot-tests/tasks.md",
+      "sha256": "1b4bd66fd62c7b7e55434d09290f929d1e8b9ae082991869e4d41ef5e9efb1e9",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CONF-INSPECT-SNAPSHOTS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-local-reference-evidence-manifest-contract/.openspec.yaml",
+      "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-local-reference-evidence-manifest-contract/agent-log.md",
+      "sha256": "d81440460ef09226cd20b6250a305ec8f011aa48cdadc0a689030d0bdb60f19a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-local-reference-evidence-manifest-contract/design.md",
+      "sha256": "439502e692f96d8d20021095cd9ed72895e1f147811b85a6cb65d386835114d1",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-local-reference-evidence-manifest-contract/proposal.md",
+      "sha256": "9c7c1ae57af334bdfa7e64fa68a0555b8aeec3777b4eb03f5b60aec62ee6a637",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-local-reference-evidence-manifest-contract/specs/decoder-support/spec.md",
+      "sha256": "c72f2a70a2fe8529269e3344e7946927c7d9256b0eb416c01ccac1c79d1c6f8c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-local-reference-evidence-manifest-contract/tasks.md",
+      "sha256": "8828e7f40e485d20ec21a15d90082347f8c687ee4b334c998da75a1d3c0d123a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-minimal-decode-tier-contract/.openspec.yaml",
+      "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-minimal-decode-tier-contract/agent-log.md",
+      "sha256": "a42664ddc55bd24e716d1890f01070b8db07d0087e01cddb97228a36366b5cb9",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-MINIMAL-DECODE-TIER-CONTRACT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-minimal-decode-tier-contract/design.md",
+      "sha256": "5fe7b60b5a8c6cccfa33953714f9a2436a4b43040fa60cf9da76fbe10427de79",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "CLI-DECODE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-minimal-decode-tier-contract/proposal.md",
+      "sha256": "209c023939cba03b33a6f512a704f17da6c8e8926bec7fe0461c350337464baf",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-MINIMAL-DECODE-TIER-CONTRACT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-minimal-decode-tier-contract/specs/decoder-support/spec.md",
+      "sha256": "8cb10866cbe725b52cbf0e039ebfc60cdea12d3a660346faddb028d01a85856f",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT",
+        "DOC-MINIMAL-DECODE-TIER-CONTRACT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-minimal-decode-tier-contract/tasks.md",
+      "sha256": "79aa93ed3f68c507c07c188597c77bbd65ceb42efe3904c268149a9013ebb9cb",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DOC-MINIMAL-DECODE-TIER-CONTRACT"
       ],
       "outcome": "success"
     },
@@ -5137,7 +5881,7 @@
     },
     {
       "path": "openspec/specs/conformance/spec.md",
-      "sha256": "e1a95a2a9c7c183138bfef91f71e899559b168ebe8b585dbc27ea8185d492118",
+      "sha256": "edb1f5641e8c90cee3a9bd59095c0c36c1fdbf0ee4020670547b97f808d6302f",
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
@@ -5149,11 +5893,19 @@
     },
     {
       "path": "openspec/specs/decoder-support/spec.md",
-      "sha256": "7518ecaf3c9385c267a06cbaaeafdd342b83eb835ff4553c9f61c7a7f649b701",
+      "sha256": "81a671ba3707dcbd4d3e6c20dd6cc21f667bbd3b9d1e6f389df3ff3c68ff42a8",
       "scope_kind": "openspec",
       "feature_ids": [
         "CLI-DECODE",
-        "DOC-DECODER-DIAGNOSTICS"
+        "CLI-DECODE-HASH-OUTPUT",
+        "DOC-DECODE-LIMITS-CONTRACT",
+        "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT",
+        "DOC-DECODER-DIAGNOSTICS",
+        "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT",
+        "DOC-MINIMAL-DECODE-TIER-CONTRACT",
+        "INFRA-DECODER-CRATE-SCAFFOLDING",
+        "INFRA-RECON-FRAME-PLANE-TYPES",
+        "XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST"
       ],
       "outcome": "success"
     },
@@ -5200,7 +5952,7 @@
     },
     {
       "path": "openspec/specs/process/spec.md",
-      "sha256": "f13a8138c4475f3e43ebb02c743c1be9b5a690691540c9d0632a973796700a84",
+      "sha256": "336f1f15a4eec97f2f115c514308162121262e293c2cb6ae7d7f7a1fa3d42f7e",
       "scope_kind": "openspec",
       "feature_ids": [
         "DOC-AUDIT-PROTOCOLS",
@@ -5378,7 +6130,7 @@
     },
     {
       "path": "xtask/src/decoder_support.rs",
-      "sha256": "209d62f66968552c37cf83dab5764744ab4a0976539b5162c0857ee08e298748",
+      "sha256": "397db12d512dbe003b2ef57e67be1949b9096732f6c29ef6c85a2f64693e2cf2",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "XTASK-DECODER-SUPPORT-STATUS"
@@ -5387,7 +6139,7 @@
     },
     {
       "path": "xtask/src/diagnostic_registry.rs",
-      "sha256": "d66f6847677903a1f2a076d67d3d8233dc55a88ba432baf5f14fca5488e7a445",
+      "sha256": "7423ac3a8e76b4615ac2a1d72e99de3cbdb06cd9e6e3a63c48060b75be233544",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "XTASK-DECODER-DIAGNOSTIC-REGISTRY",
@@ -5397,7 +6149,7 @@
     },
     {
       "path": "xtask/src/feature_status.rs",
-      "sha256": "5c051bf987ad7ba9dab7c0f0864c140e9caf9d7f1522fcef4856f98f95e95d37",
+      "sha256": "c5d832e2ff64e3a919ce65c3b6f41470fb8586b507a6367b5c0150f916d6f248",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "AV2-5.2.2-OBU-HEADER",
@@ -5427,7 +6179,7 @@
     },
     {
       "path": "xtask/src/main.rs",
-      "sha256": "e4b1d14ec349ac854c33645de84606aa1e2848e54caca5d94345c946f7a48a16",
+      "sha256": "7e0a3c473b0fc6b26cba549699658e317c705af19b073e9a38a4fe4851f4735a",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "CONF-AVM-PARSER-TRACES",
@@ -5435,6 +6187,25 @@
         "DOC-AV2-SPEC-MIRROR",
         "XTASK-CI-QUALITY-GATES",
         "XTASK-CONVENTIONAL-COMMITS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "xtask/src/reference_evidence.rs",
+      "sha256": "eb2280d4d70670b7798629a99adbcb5a50e092422af448e81a883379fac0fbce",
+      "scope_kind": "workspace:xtask",
+      "feature_ids": [
+        "XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "xtask/src/reference_evidence/tests.rs",
+      "sha256": "eea72b6c8eaf917538af5fa07ad7b86ecbf99cb7e7376ceadc403ccd171f4a9f",
+      "scope_kind": "workspace:xtask",
+      "feature_ids": [
+        "CLI-DECODE",
+        "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT"
       ],
       "outcome": "success"
     },
