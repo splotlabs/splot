@@ -40,17 +40,31 @@ use splot_validate::Validator;
 
 /// A documented, deterministic in-memory mutation of a committed seed's bytes.
 enum Mutation {
-    /// Overwrite a single byte at `offset` with `value`.
-    SetByte { offset: usize, value: u8 },
+    /// Overwrite the byte at `offset` — which MUST currently equal `from` — with
+    /// `to`. Pinning the expected original byte (`from`) makes the mutation
+    /// self-validating: if a regenerated seed shifts the byte layout, the row
+    /// fails with a clear "seed layout drifted" message instead of silently
+    /// mutating the wrong byte (or panicking on an out-of-range index).
+    SetByte { offset: usize, from: u8, to: u8 },
 }
 
 impl Mutation {
     /// Applies the mutation to a clone of `seed`, returning the mutated bytes.
-    fn apply(&self, seed: &[u8]) -> Vec<u8> {
+    fn apply(&self, seed: &[u8], what: &str) -> Vec<u8> {
         let mut bytes = seed.to_vec();
         match *self {
-            Mutation::SetByte { offset, value } => {
-                bytes[offset] = value;
+            Mutation::SetByte { offset, from, to } => {
+                assert!(
+                    offset < bytes.len(),
+                    "mutation offset {offset} ({what}) is past the {}-byte seed; the seed layout changed",
+                    bytes.len()
+                );
+                assert_eq!(
+                    bytes[offset], from,
+                    "mutation offset {offset} ({what}) holds 0x{:02x}, expected 0x{from:02x}; the seed layout drifted",
+                    bytes[offset]
+                );
+                bytes[offset] = to;
             }
         }
         bytes
@@ -65,7 +79,11 @@ struct MutationCase {
     what: &'static str,
     /// The deterministic mutation to apply in memory.
     mutation: Mutation,
-    /// The registered error `rule_id` the mutated stream MUST emit.
+    /// The PRIMARY registered error `rule_id` the mutated stream MUST emit. This
+    /// is matched by presence, not set-equality: a single low-level mutation can
+    /// legitimately cascade into downstream errors (each row's comment notes any
+    /// such known secondary diagnostics), so the row pins the anchor diagnostic
+    /// and tolerates benign cascades.
     expect_rule_id: &'static str,
 }
 
@@ -99,7 +117,8 @@ const MUTATIONS: &[MutationCase] = &[
         what: "byte 6: shrink IVF header_len below the 32-byte baseline (0x20=32 -> 0x1F=31)",
         mutation: Mutation::SetByte {
             offset: 6,
-            value: 0x1F,
+            from: 0x20,
+            to: 0x1F,
         },
         expect_rule_id: "ivf/invalid-header-length",
     },
@@ -114,7 +133,8 @@ const MUTATIONS: &[MutationCase] = &[
         what: "byte 59: inflate OBU #2 obu_size LEB128 (0x50=80 -> 0x7F=127) past end of input",
         mutation: Mutation::SetByte {
             offset: 59,
-            value: 0x7F,
+            from: 0x50,
+            to: 0x7F,
         },
         expect_rule_id: "bitstream/parse-error",
     },
@@ -128,7 +148,8 @@ const MUTATIONS: &[MutationCase] = &[
         what: "byte 60: set OBU_CLOSED_LOOP_KEY obu_tlayer_id to 1 (0x10 -> 0x11)",
         mutation: Mutation::SetByte {
             offset: 60,
-            value: 0x11,
+            from: 0x10,
+            to: 0x11,
         },
         expect_rule_id: "obu-header/temporal-layer-zero-only-types",
     },
@@ -143,7 +164,8 @@ const MUTATIONS: &[MutationCase] = &[
         what: "byte 47: set OBU_SEQUENCE_HEADER obu_tlayer_id to 1 (0x04 -> 0x05)",
         mutation: Mutation::SetByte {
             offset: 47,
-            value: 0x05,
+            from: 0x04,
+            to: 0x05,
         },
         expect_rule_id: "obu-header/base-layer-only-types",
     },
@@ -194,7 +216,7 @@ fn negative_mutations_emit_expected_diagnostics() {
 
         // Apply the documented, deterministic mutation in memory (the committed
         // file is never written).
-        let mutated = case.mutation.apply(&seed);
+        let mutated = case.mutation.apply(&seed, case.what);
         assert_ne!(
             mutated, seed,
             "mutation for {} ({}) did not change the bytes",
