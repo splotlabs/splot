@@ -46,7 +46,7 @@ no runner code changes.
 
 ## Acceptance criteria
 
-- [ ] Six diverse AVM-generated vectors are committed and in the manifest; the
+- [x] Six diverse AVM-generated vectors are committed and in the manifest; the
   four clean ones validate clean, the two external-HLS-dependent ones emit
   exactly their documented availability diagnostic. `CONF-AVM-VALID-STREAMS`
   proof updated. `cargo xtask ci` green.

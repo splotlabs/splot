@@ -11,13 +11,13 @@
 
 ## 2. Manifest + docs + matrix
 
-- [ ] 2.1 Add the six vectors to `tests/conformance/manifest.toml` (four
+- [x] 2.1 Add the six vectors to `tests/conformance/manifest.toml` (four
   `clean`, two `{ diagnostics = [...] }`).
-- [ ] 2.2 `CONF-AVM-VALID-STREAMS`: expand proof.fixtures; note the diverse
+- [x] 2.2 `CONF-AVM-VALID-STREAMS`: expand proof.fixtures; note the diverse
   feature coverage and the LCR/QM external-HLS-dependency differential finding;
   set `openspec_change`. Update `docs/CONFORMANCE.md` if warranted.
 
 ## 3. Verification
 
-- [ ] 3.1 The committed runner validates all new vectors against the manifest
+- [x] 3.1 The committed runner validates all new vectors against the manifest
   (no orphans). `cargo xtask ci` (bare, exit checked) passes.
