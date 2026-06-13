@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "802e97c573b8796102059a3016c451efa9075cb0",
+  "audited_commit": "d560506906fb9a67dbf1f56a70c5079ef65851aa",
   "outcome": "success",
   "files": [
     {
@@ -207,7 +207,7 @@
     },
     {
       "path": ".github/workflows/claude-review.yml",
-      "sha256": "9d5a4d41cbd5a9ad8b254871456969ab8fd47ec96f8455cc8d576d9ee19778c2",
+      "sha256": "4b5a9d2611d698cf55e3149fb2c4694493187f8d0a988c826bc632b68fc7e6fb",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
@@ -239,14 +239,14 @@
     },
     {
       "path": "Cargo.lock",
-      "sha256": "37e8a0e2948b266f0a81f18cf0e86fbbda7d8c2e6f57ee9774a43f5b81bedbe1",
+      "sha256": "91b333c517173b2171b03e9851d289bed63e37256ec0bdcd0cbb1356931806ee",
       "scope_kind": "repository-process",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "Cargo.toml",
-      "sha256": "7915e82004d63285ac5d9123f94029be22ff475560ede891dcc1592ea45b4e8c",
+      "sha256": "6f1d6195b0940acc3a9b538f62cd8f272caa628c317b512f79604c02668198f2",
       "scope_kind": "repository-process",
       "feature_ids": [],
       "outcome": "success"
@@ -1000,7 +1000,7 @@
     },
     {
       "path": "crates/splot-validate/src/context/film_grain.rs",
-      "sha256": "92a715984afae96d1ad26b4884d10ea0440f3afae87d85c71038f575ef66faf7",
+      "sha256": "3256d09b0004a5dea1495e8b7696841c503c54ff2b68da5a6c4efa5b11de1804",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
@@ -1041,7 +1041,7 @@
     },
     {
       "path": "crates/splot-validate/src/context/frame_header_checks.rs",
-      "sha256": "f134c145c37eb013f8e28ea7e759b2cc6cb69617b5a9b532dfc2938670938f10",
+      "sha256": "29df18c978c9ac7f9dd42d75046dd7cda3d5aa9b0091d79e47b3ab9812a33a2b",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
@@ -1101,7 +1101,7 @@
     },
     {
       "path": "crates/splot-validate/src/context/frame_headers.rs",
-      "sha256": "af23efeccdd2519a645ed4d9fe47af3fa047ca29c447cd8e148142811e478012",
+      "sha256": "92466718f2c8e191e7c6eae6358b2a700a9a6f542646c0388050808aca6daed8",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
@@ -1323,7 +1323,7 @@
     },
     {
       "path": "crates/splot-validate/src/context/rap_replay.rs",
-      "sha256": "1a1278bbf6a593bcf1d89f607ac30802ece0396cef08e25718f8d75dca6bd3eb",
+      "sha256": "7fd6e10baf2ce8d4822796845d72573b5524b139f41501e2d50115a83ebd843d",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
@@ -1808,7 +1808,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs",
-      "sha256": "dfc18cbe9c28f9217b709869db49dfbb02f7b0d959d880676b5c2f986bd4e96e",
+      "sha256": "5c644d2882afc689c22b94fc5bae881f73eab0b4fe9398016873c60b0922d491",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -2098,7 +2098,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "ec9123196d3597db7a2378201903afd103241008789caf3fa5f2d5c1f9968324",
+      "sha256": "30adbc4953d0b11a7ba649330e8f1dcbc1bdb94d74e6ec8f87d578775137a8ac",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -4606,6 +4606,36 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-13-rap-replay-film-grain-references/proposal.md",
+      "sha256": "321a09cb02c10fef75d4792da62a55ea385ca50229c6777af23cf5f3d2fdd352",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-rap-replay-film-grain-references/specs/validator/spec.md",
+      "sha256": "5a47c104dc86714b2f369414761eafe948bfd6647f07899d90f94bd2f23de19b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-13-rap-replay-film-grain-references/tasks.md",
+      "sha256": "76ba49bb1eb0a5fd53a714f246c2bda93dbec6f4a3a9a7a1752e95db60f25e9d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.10-FILM-GRAIN-STRUCTURES",
+        "AV2-7.3.8-HLS-AVAILABILITY"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-13-validator-source-line-budget/.openspec.yaml",
       "sha256": "845584ed9fa8196e8799b98c508c6a2dd39b8898f63a504fe0c0e8ed242cbcc5",
       "scope_kind": "openspec",
@@ -4843,7 +4873,7 @@
     },
     {
       "path": "openspec/specs/validator/spec.md",
-      "sha256": "c737c07ce7de5bcf570c2b341d3b82a7cfeb415879878998ec0ec0f211ba366b",
+      "sha256": "4f664648d74d213859c4bfa63788a2dcefdf0583ceeef43c820ab82841020a47",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.15-CONTENT-INTERPRETATION",
