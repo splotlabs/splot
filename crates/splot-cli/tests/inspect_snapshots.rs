@@ -56,3 +56,6 @@ inspect_snapshot!(inspect_metadata_short, "metadata-short.av2");
 inspect_snapshot!(inspect_frame_header_core, "frame-header-core.av2");
 inspect_snapshot!(inspect_frame_header_core_mfh, "frame-header-core-mfh.av2");
 inspect_snapshot!(inspect_frame_header_prefix, "frame-header-prefix.av2");
+inspect_snapshot!(inspect_quantizer_matrix, "quantizer-matrix.av2");
+inspect_snapshot!(inspect_seq_header_tile_params, "seq-header-tile-params.av2");
+inspect_snapshot!(inspect_padding, "padding.av2");

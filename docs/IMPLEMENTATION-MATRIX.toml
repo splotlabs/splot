@@ -4029,7 +4029,7 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-cli/tests/inspect_snapshots.rs"]
 commands = ["cargo test -p splot-cli --test inspect_snapshots"]
-fixtures = ["tests/fixtures/conformant.av2", "tests/fixtures/operating-point-set.av2", "tests/fixtures/film-grain.av2", "tests/fixtures/buffer-removal-timing.av2", "tests/fixtures/metadata-group.av2", "tests/fixtures/metadata-short.av2", "tests/fixtures/frame-header-core.av2", "tests/fixtures/frame-header-core-mfh.av2", "tests/fixtures/frame-header-prefix.av2"]
+fixtures = ["tests/fixtures/conformant.av2", "tests/fixtures/operating-point-set.av2", "tests/fixtures/film-grain.av2", "tests/fixtures/buffer-removal-timing.av2", "tests/fixtures/metadata-group.av2", "tests/fixtures/metadata-short.av2", "tests/fixtures/frame-header-core.av2", "tests/fixtures/frame-header-core-mfh.av2", "tests/fixtures/frame-header-prefix.av2", "tests/fixtures/quantizer-matrix.av2", "tests/fixtures/seq-header-tile-params.av2", "tests/fixtures/padding.av2"]
 diagnostics = []
 
 [[feature]]

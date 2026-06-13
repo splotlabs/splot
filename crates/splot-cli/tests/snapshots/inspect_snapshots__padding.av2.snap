@@ -1,0 +1,48 @@
+---
+source: crates/splot-cli/tests/inspect_snapshots.rs
+expression: "inspect_json(\"padding.av2\")"
+---
+[
+  {
+    "index": 0,
+    "byte_offset": 1,
+    "size": 1,
+    "payload_len": 0,
+    "payload_status": {
+      "status": "parsed",
+      "syntax": "temporal_delimiter_obu",
+      "feature": "AV2-5.5-TEMPORAL-DELIMITER"
+    },
+    "header": {
+      "has_header_extension": false,
+      "obu_type": "TemporalDelimiter",
+      "temporal_layer_id": 0,
+      "embedded_layer_id": 0,
+      "extended_layer_id": 31,
+      "header_size_bytes": 1
+    }
+  },
+  {
+    "index": 1,
+    "byte_offset": 3,
+    "size": 4,
+    "payload_len": 2,
+    "payload_status": {
+      "status": "parsed",
+      "syntax": "padding_obu",
+      "feature": "AV2-5.16-PADDING"
+    },
+    "padding": {
+      "padding_len": 1,
+      "trailing_len": 1
+    },
+    "header": {
+      "has_header_extension": true,
+      "obu_type": "Padding",
+      "temporal_layer_id": 0,
+      "embedded_layer_id": 0,
+      "extended_layer_id": 31,
+      "header_size_bytes": 2
+    }
+  }
+]
