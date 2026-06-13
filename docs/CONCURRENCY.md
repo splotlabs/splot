@@ -109,8 +109,8 @@ follow it so it scales with `--threads` and stays deterministic:
    iterator written at the top level runs on Rayon's *global* pool — it will not
    use the context's configured workers and will not scale with `--threads`. The
    gate flags `par_iter` / `par_chunks` / `par_bridge` and the re-exported
-   parallel slice helpers (`par_windows`, `par_sort*`, …) when they are outside
-   an `install` closure.
+   parallel slice helpers (`par_windows`, `par_chunk_by`, `par_sort*`, …) when
+   they are outside an `install` closure.
 3. **Use indexed iterators and collect in order** for determinism (see §6).
 
 The canonical shape (works from any codec crate; no direct `rayon` dependency):
@@ -185,9 +185,10 @@ fn run(pool: &WorkerPool, items: &[Item]) -> Vec<Output> {
   or `use crossbeam_channel as cc;`) are flagged at the rename declaration.
 - Outside `splot-parallel`, a Rayon parallel-iteration call (`par_iter`,
   `par_chunks`, `par_bridge`) or re-exported parallel slice helper (`par_windows`,
-  `par_sort*`, …) must sit inside a `WorkerPool::install` closure — a call outside
-  any `install` closure is flagged (tracked by brace/parenthesis depth), since it
-  would run on the global pool and not scale with `--threads`.
+  `par_chunk_by`, `par_sort*`, …) must sit inside a `WorkerPool::install`
+  closure — a call outside any `install` closure is flagged (tracked by
+  brace/parenthesis depth), since it would run on the global pool and not scale
+  with `--threads`.
 
 The source scan is a line-based **defense-in-depth** check: it does not perform
 full syntactic alias resolution, so a deliberately obfuscated multi-hop re-export

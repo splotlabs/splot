@@ -166,6 +166,7 @@ const PAR_ITER_TOKENS: &[&str] = &[
     concat!("par", "_chunks"),
     concat!("par", "_rchunks"),
     concat!("par", "_windows"),
+    concat!("par", "_chunk_by"),
     concat!("par", "_split"),
     concat!("par", "_sort"),
     concat!("par", "_bridge"),
@@ -1160,6 +1161,7 @@ mod tests {
     fn rayon_parallel_slice_methods_outside_install_are_violations() {
         for call in [
             "    let _: Vec<_> = items.par_windows(2).collect();",
+            "    let _: Vec<_> = items.par_chunk_by(|a, b| a == b).collect();",
             "    items.par_sort_unstable();",
         ] {
             let violations = evaluate_concurrency_policy(
