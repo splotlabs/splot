@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "72ba2f3870fd45298672e89f86ebd5153301f076",
+  "audited_commit": "fb74608ee0db7255b47a378c5aaaf9cea78b0b3f",
   "outcome": "success",
   "files": [
     {
@@ -3907,7 +3907,7 @@
     },
     {
       "path": "openspec/changes/archive/2026-06-13-avm-positive-vector-generation/proposal.md",
-      "sha256": "e1fe9917fdf9a41dba6368284a3b437a8effdb46b2a22780cf286e547d380eb0",
+      "sha256": "4b9d9dc105185cea6f46901d6694c10058f2a04256580c0664c0ceea06bcfa27",
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-VALID-STREAMS"
@@ -3925,7 +3925,7 @@
     },
     {
       "path": "openspec/changes/archive/2026-06-13-avm-positive-vector-generation/tasks.md",
-      "sha256": "298b396772cc1fbf31f2075ed4ec8db6a27397bae0c32e411727747ea61eb688",
+      "sha256": "fe6c83c6e46ab41e70af6152ba7a53915ad5875c5e9f1a20ad66e7e563cb9536",
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-VALID-STREAMS"
