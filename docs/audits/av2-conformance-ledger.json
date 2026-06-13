@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "24f411944a0bc9ddbe210cc00e69ec707e128bec",
+  "audited_commit": "6a6068d63926f99c4c40ec5c23260ec044ff4104",
   "outcome": "success",
   "files": [
     {
@@ -283,10 +283,11 @@
     },
     {
       "path": "crates/splot-cli/src/commands/inspect.rs",
-      "sha256": "ddcfc9d47565d2a3bce82c2488e58583fd5e084ab05da8c61ffac5dbe75f9a1d",
+      "sha256": "148f79437f853ca1f45a3ed8fa185a8af38a8f3a12c3be6e32b499741ade4dc4",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "AV2-5.2.1-OBU-DISPATCH",
+        "AV2-5.20-TILE-GROUP-PAYLOAD",
         "CLI-INSPECT",
         "CONF-INSPECT-SNAPSHOTS"
       ],
@@ -1195,7 +1196,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "d57b234251845627ea4768e7d72764d11478039f9546bfe4a6292bed9df0cb10",
+      "sha256": "b44fec1dd219cec3bdba2c8e5ea0abfaf511b374a69d60adc8a6b776e3f7233c",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -1508,7 +1509,7 @@
     },
     {
       "path": "docs/VALIDATOR-ROADMAP.md",
-      "sha256": "0987de2af5cc6d310eaeca7bc091e1644ef52e88613857661b4f96088381ace3",
+      "sha256": "06510bb8518ad470185c5205849a0a2daecee2682aeeb06feeacc7f790cf200f",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.4-SVLC",
