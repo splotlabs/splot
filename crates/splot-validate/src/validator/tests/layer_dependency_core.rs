@@ -956,3 +956,65 @@ fn frame_film_grain_layer_checks_suppressed_under_external_hls() {
          checks; report was: {report}"
     );
 }
+
+#[test]
+fn frame_film_grain_intra_tail_path_is_checked() {
+    // Coverage: the §6.17.10.1 checks run on the CLK / intra-tail film_grain_config() route
+    // (core.intra_tail.film_grain at frame_header_checks.rs) too, not only the SEF path. A
+    // complete intra KEY frame applies grain at fgm_id 0 from a model whose FgmChromaIdc (2)
+    // differs from the sequence chroma_format_idc (0), so it fires the chroma mismatch — the
+    // simplest of the three rules (no layered OBU needed), proving the path-agnostic plumbing.
+    let seq = FrameCoreSeq {
+        film_grain_params_present: true,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(film_grain_obu_bytes(1 << 0, 2)); // slot 0, fgm_chroma_idc = 2
+    let mut fb = Bits::default();
+    fb.bit(1); // is_first_tile_group
+    fb.uvlc(0); // cur_mfh_id == 0
+    fb.uvlc(0); // seq_header_id_in_frame_header
+    fb.bit(1); // immediate_output_frame == 1 (output frame -> apply_grain readable)
+    fb.bit(0); // frame_size_override_flag == 0 (cur_mfh_id == 0 -> max dims 16x16)
+    fb.f(0, 1); // order_hint f(OrderHintBits == 1)
+    fb.bit(0); // allow_screen_content_tools
+    fb.bit(0); // allow_intrabc
+    fb.bit(0); // disable_cdf_update
+    intra_structure_tail(&mut fb, 0); // §5.18.2 structure + loop-filter cluster
+    fb.bit(0); // tx_mode_select = 0
+    fb.f(0, 2); // reduced_tx_set = 0
+    fb.bit(1); // apply_grain = 1
+    fb.f(0, 3); // fgm_id = 0
+    fb.f(0, 16); // grain_seed f(16) — full, so film_grain_config() parses to completion
+    data.extend(annex_b_obu(CLK_HEADER, &fb.into_bytes()));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        has_error(&report, "frame-header/film-grain-chroma-idc-mismatch"),
+        "the §6.17.10.1 constraints must be checked on the intra-tail (CLK) film_grain_config \
+         path, not only the SEF path; report was: {report}"
+    );
+}
+
+#[test]
+fn frame_film_grain_out_of_range_chroma_idc_does_not_double_fire_mismatch() {
+    // §6.13 owns an out-of-range fgm_chroma_idc (> 3) via film-grain/chroma-idc-out-of-range;
+    // the §6.17.10.1 chroma-mismatch check is gated on a conformant stored value so the same
+    // malformed byte is not reported twice.
+    let seq = FrameCoreSeq {
+        film_grain_params_present: true,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(film_grain_obu_bytes(1 << 0, 4)); // slot 0, fgm_chroma_idc = 4 (> 3)
+    data.extend(sef_with_applied_grain(0));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        has_error(&report, "film-grain/chroma-idc-out-of-range"),
+        "the §6.13 out-of-range check owns the malformed value; report was: {report}"
+    );
+    assert!(
+        !has_error(&report, "frame-header/film-grain-chroma-idc-mismatch"),
+        "an out-of-range fgm_chroma_idc must not also fire the §6.17.10.1 mismatch; \
+         report was: {report}"
+    );
+}

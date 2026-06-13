@@ -213,9 +213,13 @@ pub(super) fn frame_film_grain_reference_checks(
 
     // AV2 § 6.17.10.1: FgmChromaIdc[fgm_id] == chroma_format_idc. Both are the Table 6.2
     // chroma_format_idc value space; § 6.8 makes any activated LCR's lcr_chroma_format_idc
-    // equal to this single sequence-level value, so the comparison is layer-independent.
+    // equal to this single sequence-level value, so the comparison is layer-independent. An
+    // out-of-range stored fgm_chroma_idc (> 3) is a malformed model already diagnosed at its
+    // § 6.13 observation (`film-grain/chroma-idc-out-of-range`); it owns that root cause, so
+    // the § 6.17.10.1 equality is checked only for a conformant stored value to avoid a
+    // double-fire on the same bad byte.
     let chroma_format_idc = u32::from(general.chroma_format_idc.get());
-    if record.chroma_idc != chroma_format_idc {
+    if record.chroma_idc <= 3 && record.chroma_idc != chroma_format_idc {
         report.push(frame_header_error(
             "frame-header/film-grain-chroma-idc-mismatch",
             "6.17.10.1",
