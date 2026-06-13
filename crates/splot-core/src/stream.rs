@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Error;
 use crate::annexb::{ObuEnvelope, PartialParse, parse_annex_b_obus_partial_at};
-use crate::ivf::{IvfError, IvfFrame, IvfHeader, is_ivf, parse_ivf_partial};
+use crate::ivf::{IvfError, IvfFrame, IvfHeader, IvfWarning, is_ivf, parse_ivf_partial};
 
 /// Detected input container format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +49,8 @@ pub struct ParsedIvfBitstream<'a> {
     pub header: Option<IvfHeader>,
     /// Parsed IVF frames and their Annex B payload parse results.
     pub frames: Vec<ParsedIvfFrame<'a>>,
+    /// Non-fatal IVF container warnings.
+    pub warnings: Vec<IvfWarning>,
     /// Container-level parse error, if frame parsing stopped early.
     pub error: Option<IvfError>,
 }
@@ -91,6 +93,7 @@ fn parse_ivf_bitstream_partial(input: &[u8]) -> ParsedIvfBitstream<'_> {
     ParsedIvfBitstream {
         header: parsed.header,
         frames,
+        warnings: parsed.warnings,
         error: parsed.error,
     }
 }

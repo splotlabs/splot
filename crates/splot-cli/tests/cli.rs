@@ -89,7 +89,11 @@ fn validate_ivf_trailing_partial_frame_header_exits_zero() {
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        !stdout.contains("ivf/truncated-frame-header"),
+        stdout.contains("[WARNING] ivf/trailing-partial-frame-header"),
+        "stdout was: {stdout}"
+    );
+    assert!(
+        stdout.contains("0 error(s), 1 warning(s)"),
         "stdout was: {stdout}"
     );
     assert!(stdout.contains("conformant"), "stdout was: {stdout}");

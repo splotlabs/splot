@@ -5,7 +5,7 @@
 
 use splot_core::Error;
 use splot_core::annexb::ObuEnvelope;
-use splot_core::ivf::IvfError;
+use splot_core::ivf::{IvfError, IvfWarning};
 use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 
 use crate::checks::{Check, default_checks, syntax_error_diagnostic};
@@ -21,6 +21,8 @@ const IVF_DIAGNOSTIC_RULE_IDS: [&str; 5] = [
     "ivf/truncated-frame-header",
     "ivf/truncated-frame-payload",
 ];
+
+const IVF_WARNING_DIAGNOSTIC_RULE_IDS: [&str; 1] = ["ivf/trailing-partial-frame-header"];
 
 /// Validates AV2 length-delimited bitstreams and produces a [`ValidationReport`].
 #[derive(Debug, Clone, Copy)]
@@ -107,6 +109,9 @@ impl Validator {
                 // The end of the IVF input completes the final temporal unit just like
                 // the end of a raw Annex B bitstream.
                 context.finish(options, &mut report);
+                for warning in &parsed.warnings {
+                    report.push(ivf_warning_diagnostic(warning));
+                }
                 if let Some(error) = &parsed.error {
                     report.push(ivf_error_diagnostic(error));
                 }
@@ -145,6 +150,13 @@ fn ivf_error_diagnostic(error: &IvfError) -> Diagnostic {
     Diagnostic::new(Severity::Error, error.rule_id(), error.to_string())
         .with_spec_section("IVF")
         .with_byte_offset(error.offset())
+}
+
+fn ivf_warning_diagnostic(warning: &IvfWarning) -> Diagnostic {
+    debug_assert!(IVF_WARNING_DIAGNOSTIC_RULE_IDS.contains(&warning.rule_id()));
+    Diagnostic::new(Severity::Warning, warning.rule_id(), warning.to_string())
+        .with_spec_section("IVF")
+        .with_byte_offset(warning.offset())
 }
 
 #[cfg(test)]
@@ -520,12 +532,14 @@ mod tests {
         data.extend_from_slice(&6480u64.to_le_bytes()[..6]);
         let report = Validator::new(false).validate_bytes(&data);
         assert!(report.is_conformant(), "report was: {report}");
-        assert!(
-            report
-                .diagnostics
-                .iter()
-                .all(|d| d.rule_id != "ivf/truncated-frame-header"),
-            "report was: {report}"
+        assert_eq!(report.errors().count(), 0);
+        let warning_offset = report
+            .warnings()
+            .find(|d| d.rule_id == "ivf/trailing-partial-frame-header")
+            .map(|d| d.byte_offset);
+        assert_eq!(
+            warning_offset,
+            Some(Some(splot_core::span::ByteOffset::new(data.len() as u64)))
         );
     }
 

@@ -391,6 +391,7 @@ fixtures = []
 diagnostics = [
     "ivf/invalid-header-length",
     "ivf/invalid-signature",
+    "ivf/trailing-partial-frame-header",
     "ivf/truncated-frame-header",
     "ivf/truncated-frame-payload",
     "ivf/truncated-header",
