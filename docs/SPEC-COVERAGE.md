@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-10. 135 feature(s); 105 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-10. 139 feature(s); 106 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -208,6 +208,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 
 | Section | Spec item | Feature | Mapped | Parse | Validate | Tests | Diagnostics |
 |---|---|---|:-:|:-:|:-:|:-:|:-:|
+| [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `CLI-DECODE` | ✅ | — | — |  | — |
 | [§ 7.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-3) | Ordering of OBUs | `AV2-7.3-OBU-ORDERING` | ✅ | — | 🟡 | ✅ | 4 |
 | [§ 7.3.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-2) | Coded multistream video sequence boundaries | `AV2-7.3.2-CMVS-BOUNDARIES` | ✅ | — | 🟡 | 🟡 | 1 |
 | [§ 7.3.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-3) | Coded output frame unit | `AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT` | ✅ | — | 🟡 | ✅ | 7 |
@@ -244,7 +245,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 
 ## Features without a spec section
 
-30 feature(s) track conformance, encoder, CLI, automation, or documentation work with no single spec section; see [FEATURE-STATUS.md](./FEATURE-STATUS.md):
+33 feature(s) track conformance, encoder, CLI, automation, or documentation work with no single spec section; see [FEATURE-STATUS.md](./FEATURE-STATUS.md):
 
 - `AV2-IVF-CONTAINER` — IVF container support
 - `CLI-INSPECT` — splot inspect command
@@ -259,6 +260,8 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 - `CONF-PUBLIC-VECTORS` — Public AV2 vector corpus integration
 - `DOC-AUDIT-PROTOCOLS` — Agent audit protocol skills
 - `DOC-AV2-SPEC-MIRROR` — AV2 specification mirror
+- `DOC-DECODER-ROADMAP` — Decoder roadmap documentation
+- `DOC-DECODER-SUPPORT-MATRIX` — Decoder support matrix documentation
 - `DOC-ENCODER-REFERENCE-GATE` — Encoder reference gate documentation
 - `DOC-FEATURE-TRACKING` — Feature tracking documentation
 - `DOC-VALIDATOR-ROADMAP` — Validator coverage roadmap documentation
@@ -271,6 +274,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 - `XTASK-AUDIT-SCOPE` — Changed-file AV2 audit scope
 - `XTASK-CI-QUALITY-GATES` — CI quality gates (docs build + coverage threshold)
 - `XTASK-CONVENTIONAL-COMMITS` — Conventional commit enforcement
+- `XTASK-DECODER-SUPPORT-STATUS` — Decoder support status reporting and checks
 - `XTASK-DIAGNOSTIC-REGISTRY` — Validator diagnostic registry enforcement
 - `XTASK-FEATURE-STATUS` — xtask feature status reporting and checks
 - `XTASK-GEN-TABLES` — AV2 § 9 tables code generator

@@ -35,6 +35,7 @@ cargo test --workspace --all-targets --locked   # unit, property, and CLI integr
 cargo test --doc --workspace --locked           # doctests (not covered by --all-targets)
 cargo xtask ci
 cargo xtask coverage            # local HTML coverage report (cargo-llvm-cov, run-if-present)
+cargo xtask check-decoder-support # generated decoder support docs drift gate
 
 # Fuzzing needs a NIGHTLY toolchain (cargo-fuzz uses AddressSanitizer + coverage,
 # which are nightly-only). On stable, the per-module `*_never_panic(s)` tests and

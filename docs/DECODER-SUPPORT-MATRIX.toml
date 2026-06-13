@@ -1,0 +1,198 @@
+matrix_version = 1
+last_reviewed = "2026-06-13"
+
+[[row]]
+id = "decoder-roadmap"
+name = "Decoder roadmap"
+feature_id = "DOC-DECODER-ROADMAP"
+spec_sections = []
+parser_source = "n/a"
+decode_module = "docs/DECODER-ROADMAP.md"
+tier = "foundation"
+status = "supported"
+self_contained_tests = ["cargo xtask check-decoder-support"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Documents the encoder-grade decoder scope, staged supported tier, unsupported-feature contract, deterministic hash policy, and local-only AVM/dav2d boundary."
+
+[[row]]
+id = "decoder-support-matrix"
+name = "Decoder support matrix and generated status"
+feature_id = "DOC-DECODER-SUPPORT-MATRIX"
+spec_sections = []
+parser_source = "n/a"
+decode_module = "docs/DECODER-SUPPORT-MATRIX.toml"
+tier = "foundation"
+status = "supported"
+self_contained_tests = ["cargo xtask check-decoder-support", "cargo xtask ci"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Canonical decoder/reconstruction support status source, rendered to docs/DECODER-SUPPORT-STATUS.md."
+
+[[row]]
+id = "decoder-status-drift-gate"
+name = "Decoder support drift gate"
+feature_id = "XTASK-DECODER-SUPPORT-STATUS"
+spec_sections = []
+parser_source = "n/a"
+decode_module = "xtask/src/decoder_support.rs"
+tier = "foundation"
+status = "supported"
+self_contained_tests = ["decoder_support::tests::check_decoder_support_detects_drift", "cargo xtask check-decoder-support"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Generates and checks docs/DECODER-SUPPORT-STATUS.md without invoking local reference tools."
+
+[[row]]
+id = "cli-decode-entrypoint"
+name = "splot decode CLI entry point"
+feature_id = "CLI-DECODE"
+spec_sections = ["7.1"]
+parser_source = "crates/splot-core/src/stream.rs"
+decode_module = "crates/splot-cli/src/commands/decode.rs"
+tier = "foundation"
+status = "unsupported-intentional"
+self_contained_tests = []
+diagnostics = ["decode/unsupported-feature (planned)"]
+local_reference_evidence = []
+notes = "Current CLI command is a stub. A later change must replace the generic stub with structured unsupported-feature diagnostics from a library decoder path."
+
+[[row]]
+id = "decode-limits-budget"
+name = "Decode limits and allocation budget"
+feature_id = ""
+spec_sections = ["6.4.1", "6.17.4.1", "7.1"]
+parser_source = "crates/splot-core/src/headers/sequence.rs"
+decode_module = "planned"
+tier = "foundation"
+status = "todo"
+self_contained_tests = []
+diagnostics = ["decode/resource-limit (planned)"]
+local_reference_evidence = []
+notes = "Must exist before any bitstream-derived pixel allocation. Covers max dimensions, frame count, tiles, bytes, references, and output bytes."
+
+[[row]]
+id = "decoded-frame-plane-model"
+name = "Decoded frame and plane model"
+feature_id = ""
+spec_sections = ["6.4.1", "7.21"]
+parser_source = "crates/splot-core/src/headers/sequence.rs"
+decode_module = "planned"
+tier = "foundation"
+status = "todo"
+self_contained_tests = []
+diagnostics = []
+local_reference_evidence = []
+notes = "Shared frame/plane model for decoder output and future encoder closed-loop reconstruction."
+
+[[row]]
+id = "deterministic-frame-hash"
+name = "Deterministic decoded-frame hash"
+feature_id = ""
+spec_sections = ["6.16.13", "7.21"]
+parser_source = "crates/splot-core/src/headers/metadata.rs"
+decode_module = "planned"
+tier = "foundation"
+status = "todo"
+self_contained_tests = []
+diagnostics = []
+local_reference_evidence = ["Local AVM/dav2d raw MD5 matched for existing tiny fixtures; see openspec/changes/decoder-roadmap-matrix-boundary/agent-log.md."]
+notes = "Hash policy must define frame order, visible area, plane order, stride handling, bit-depth representation, chroma subsampling, and film-grain policy."
+
+[[row]]
+id = "decode-stream-state"
+name = "Decode stream traversal and layer selection"
+feature_id = ""
+spec_sections = ["5.2.1", "7.1", "7.3", "7.4"]
+parser_source = "crates/splot-core/src/stream.rs"
+decode_module = "planned"
+tier = "tier0-plan"
+status = "todo"
+self_contained_tests = []
+diagnostics = ["decode/unsupported-feature (planned)"]
+local_reference_evidence = []
+notes = "Plan-only traversal should consume IVF/raw Annex B parse output, select the supported stream/layer, and reject unsupported structures transactionally."
+
+[[row]]
+id = "symbol-decoder"
+name = "Symbol and CDF decoder foundation"
+feature_id = ""
+spec_sections = ["8.2", "8.3", "9"]
+parser_source = "crates/splot-core/src/bitio.rs"
+decode_module = "planned"
+tier = "tier1-intra"
+status = "todo"
+self_contained_tests = []
+diagnostics = ["decode/unsupported-feature (planned)"]
+local_reference_evidence = []
+notes = "Required before non-empty tile payloads can be decoded. Must be derived from the AV2 spec and generated §9 tables, not copied from reference code."
+
+[[row]]
+id = "tile-payload-decode"
+name = "Tile payload decode boundary"
+feature_id = ""
+spec_sections = ["5.20", "7.1", "8.3"]
+parser_source = "crates/splot-core/src/headers/tile_group.rs"
+decode_module = "planned"
+tier = "tier1-intra"
+status = "todo"
+self_contained_tests = []
+diagnostics = ["decode/unsupported-feature (planned)"]
+local_reference_evidence = []
+notes = "Future decode_tile boundary for constrained all-intra streams."
+
+[[row]]
+id = "intra-reconstruction"
+name = "Scalar intra reconstruction"
+feature_id = ""
+spec_sections = ["7.13", "7.14", "7.15"]
+parser_source = "planned"
+decode_module = "planned"
+tier = "tier1-intra"
+status = "todo"
+self_contained_tests = []
+diagnostics = ["decode/unsupported-feature (planned)"]
+local_reference_evidence = []
+notes = "Prediction, dequant/reconstruction, and inverse transforms for the first all-intra tier."
+
+[[row]]
+id = "output-y4m"
+name = "Y4M output"
+feature_id = ""
+spec_sections = ["7.21"]
+parser_source = "n/a"
+decode_module = "planned"
+tier = "tier1-intra"
+status = "todo"
+self_contained_tests = []
+diagnostics = []
+local_reference_evidence = []
+notes = "Y4M output is useful after deterministic hashes are defined and tested."
+
+[[row]]
+id = "reference-frame-store"
+name = "Reconstructed reference-frame store"
+feature_id = ""
+spec_sections = ["7.23"]
+parser_source = "planned"
+decode_module = "planned"
+tier = "encoder-reuse"
+status = "todo"
+self_contained_tests = []
+diagnostics = []
+local_reference_evidence = []
+notes = "Future decoder-owned pixel reference slots; validator-private fact tracking is not reusable enough for reconstruction."
+
+[[row]]
+id = "decode-fuzz-entrypoint"
+name = "Decode fuzz entry point"
+feature_id = ""
+spec_sections = []
+parser_source = "fuzz/fuzz_targets/validate_bytes.rs"
+decode_module = "planned"
+tier = "foundation"
+status = "todo"
+self_contained_tests = []
+diagnostics = []
+local_reference_evidence = []
+notes = "First byte-consuming decode API must get a self-contained fuzz target with safe limits."

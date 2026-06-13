@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-10. 135 feature(s).
+Matrix version 1. Last reviewed 2026-06-10. 139 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -142,4 +142,8 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DOC-ENCODER-REFERENCE-GATE` | Encoder reference gate documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `docs/references/ENCODER-RESEARCH-NOTES.md` |
 | `DOC-AUDIT-PROTOCOLS` | Agent audit protocol skills | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `.codex/skills/splot-av2-conformance-audit/SKILL.md` |
 | `DOC-AV2-SPEC-MIRROR` | AV2 specification mirror | docs | docs | done | n/a | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/main.rs` |
+| `DOC-DECODER-ROADMAP` | Decoder roadmap documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `docs/DECODER-ROADMAP.md` |
+| `DOC-DECODER-SUPPORT-MATRIX` | Decoder support matrix documentation | docs | docs | done | n/a | n/a | done | n/a | n/a | n/a | done | n/a | `docs/DECODER-SUPPORT-MATRIX.toml` |
+| `XTASK-DECODER-SUPPORT-STATUS` | Decoder support status reporting and checks | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/decoder_support.rs` |
+| `CLI-DECODE` | splot decode command | cli | cli | done | n/a | n/a | n/a | n/a | n/a | todo | todo | n/a | `crates/splot-cli/src/commands/decode.rs` |
 | `VALIDATOR-CONTEXT-SPLIT` | Validator context module split | infrastructure | infrastructure | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-validate/src/context` |
