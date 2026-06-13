@@ -207,6 +207,7 @@ impl QuantizerMatrixState {
 /// analogue) remain a named TODO below — the QM-side check needs the defining QM OBU's layer
 /// identity joined against the §5.4.1 dependency maps in a way the availability state does
 /// not yet thread.
+///
 /// Returns the referenced custom levels that were linearly available in-band under
 /// external-disabled (so the linear `frame-header/qm-level-unavailable` did NOT fire) — the
 /// caller buffers each as a § 7.3.8.1 random-access-point replay reference, keeping the
