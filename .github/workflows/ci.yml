@@ -197,8 +197,13 @@ jobs:
           # coverage-guided seeds. parse_ivf takes the IVF bytes directly;
           # validate_bytes takes the config-prefixed copies (auto-detects IVF);
           # parse_obu / parse_bitstream take the de-wrapped raw OBU stream (strip
-          # the 32-byte IVF header and each frame's 12-byte header).
-          for f in $(find tests/conformance/vectors -name '*.ivf'); do
+          # the 32-byte IVF header and each frame's 12-byte header). The de-wrapped
+          # bytes are §5 low-overhead OBUs, not Annex B, so parse_obu's
+          # parse_annex_b_obus() returns Err (not a panic) on them — the seed still
+          # exercises read_leb128 / read_obu_header on real OBU data, and
+          # parse_bitstream auto-detects and parses the stream.
+          # -print0 + read -d '' is robust to any filename (no word-splitting).
+          find tests/conformance/vectors -name '*.ivf' -print0 | while IFS= read -r -d '' f; do
             name=$(echo "$f" | tr '/' '-')
             cp "$f" "fuzz/corpus/parse_ivf/conf-$name"
             printf '\001' | cat - "$f" > "fuzz/corpus/validate_bytes/conf-strict-$name"
@@ -208,6 +213,8 @@ jobs:
           import glob, os, struct
           for path in glob.glob("tests/conformance/vectors/**/*.ivf", recursive=True):
               d = open(path, "rb").read()
+              if len(d) < 32:  # shorter than the IVF header: skip rather than crash the step
+                  continue
               hl = struct.unpack("<H", d[6:8])[0]
               off, obu = hl, b""
               while off + 12 <= len(d):
