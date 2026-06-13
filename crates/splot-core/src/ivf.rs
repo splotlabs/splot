@@ -103,6 +103,8 @@ pub struct PartialIvfParse<'a> {
     pub header: Option<IvfHeader>,
     /// Frames parsed before the first structural container error.
     pub frames: Vec<IvfFrame<'a>>,
+    /// Non-fatal container warnings encountered while parsing complete frames.
+    pub warnings: Vec<IvfWarning>,
     /// Container error that stopped frame parsing, if any.
     pub error: Option<IvfError>,
 }
@@ -219,6 +221,54 @@ impl fmt::Display for IvfError {
 
 impl std::error::Error for IvfError {}
 
+/// Non-fatal warnings produced by the IVF container parser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum IvfWarning {
+    /// EOF occurred while probing a trailing IVF frame header after earlier frames.
+    TrailingPartialFrameHeader {
+        /// Zero-based frame index whose trailing header was partial.
+        frame_index: usize,
+        /// First missing byte offset.
+        offset: ByteOffset,
+        /// Number of additional bytes required for a complete frame header.
+        needed: usize,
+    },
+}
+
+impl IvfWarning {
+    /// Returns the stable validator diagnostic rule id for this warning.
+    #[must_use]
+    pub const fn rule_id(&self) -> &'static str {
+        match self {
+            Self::TrailingPartialFrameHeader { .. } => "ivf/trailing-partial-frame-header",
+        }
+    }
+
+    /// Returns the byte offset carried by this warning.
+    #[must_use]
+    pub const fn offset(&self) -> ByteOffset {
+        match self {
+            Self::TrailingPartialFrameHeader { offset, .. } => *offset,
+        }
+    }
+}
+
+impl fmt::Display for IvfWarning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TrailingPartialFrameHeader {
+                frame_index,
+                offset,
+                needed,
+            } => write!(
+                f,
+                "trailing partial IVF frame {frame_index} header at byte {offset}: needed {needed} more byte(s); treating EOF as end-of-stream"
+            ),
+        }
+    }
+}
+
 /// Returns `true` when `input` starts with the IVF `DKIF` signature.
 #[must_use]
 pub fn is_ivf(input: &[u8]) -> bool {
@@ -324,21 +374,34 @@ pub fn parse_ivf_partial(input: &[u8]) -> PartialIvfParse<'_> {
             return PartialIvfParse {
                 header: None,
                 frames: Vec::new(),
+                warnings: Vec::new(),
                 error: Some(error),
             };
         }
     };
 
     let mut frames = Vec::new();
+    let mut warnings = Vec::new();
     let mut cursor = usize::from(header.header_len);
     let mut frame_index = 0usize;
 
     while cursor < input.len() {
         let remaining_header = input.len().saturating_sub(cursor);
         if remaining_header < IVF_FRAME_HEADER_SIZE {
+            if frame_index > 0 {
+                // Common IVF demuxers treat EOF while probing the next frame
+                // header as end-of-stream once at least one full frame exists.
+                warnings.push(IvfWarning::TrailingPartialFrameHeader {
+                    frame_index,
+                    offset: ByteOffset::new(input.len() as u64),
+                    needed: IVF_FRAME_HEADER_SIZE.saturating_sub(remaining_header),
+                });
+                break;
+            }
             return PartialIvfParse {
                 header: Some(header),
                 frames,
+                warnings,
                 error: Some(IvfError::TruncatedFrameHeader {
                     frame_index,
                     offset: ByteOffset::new(input.len() as u64),
@@ -351,6 +414,7 @@ pub fn parse_ivf_partial(input: &[u8]) -> PartialIvfParse<'_> {
             return PartialIvfParse {
                 header: Some(header),
                 frames,
+                warnings,
                 error: Some(IvfError::TruncatedFrameHeader {
                     frame_index,
                     offset: ByteOffset::new(input.len() as u64),
@@ -362,6 +426,7 @@ pub fn parse_ivf_partial(input: &[u8]) -> PartialIvfParse<'_> {
             return PartialIvfParse {
                 header: Some(header),
                 frames,
+                warnings,
                 error: Some(IvfError::TruncatedFrameHeader {
                     frame_index,
                     offset: ByteOffset::new(input.len() as u64),
@@ -377,6 +442,7 @@ pub fn parse_ivf_partial(input: &[u8]) -> PartialIvfParse<'_> {
             return PartialIvfParse {
                 header: Some(header),
                 frames,
+                warnings,
                 error: Some(IvfError::TruncatedFramePayload {
                     frame_index,
                     offset: ByteOffset::new(input.len() as u64),
@@ -391,6 +457,7 @@ pub fn parse_ivf_partial(input: &[u8]) -> PartialIvfParse<'_> {
             return PartialIvfParse {
                 header: Some(header),
                 frames,
+                warnings,
                 error: Some(IvfError::TruncatedFramePayload {
                     frame_index,
                     offset: ByteOffset::new(input.len() as u64),
@@ -415,6 +482,7 @@ pub fn parse_ivf_partial(input: &[u8]) -> PartialIvfParse<'_> {
     PartialIvfParse {
         header: Some(header),
         frames,
+        warnings,
         error: None,
     }
 }
@@ -552,6 +620,7 @@ mod tests {
         write_ivf_frame(&mut bytes, 7, &[0x01, 0x08]).unwrap();
         let parsed = parse_ivf_partial(&bytes);
         assert!(parsed.error.is_none());
+        assert_eq!(parsed.warnings, Vec::new());
         assert_eq!(parsed.frames.len(), 1);
         let frame = parsed.frames[0];
         assert_eq!(frame.index, 0);
@@ -563,16 +632,34 @@ mod tests {
     }
 
     #[test]
-    fn truncated_frame_header_keeps_prefix() {
+    fn trailing_partial_frame_header_after_prefix_is_warning() {
         let mut bytes = header_bytes();
         write_ivf_frame(&mut bytes, 0, &[0x01, 0x08]).unwrap();
         bytes.extend_from_slice(&[0x05, 0x00]);
         let parsed = parse_ivf_partial(&bytes);
         assert_eq!(parsed.frames.len(), 1);
+        assert_eq!(parsed.error, None);
+        assert_eq!(
+            parsed.warnings,
+            vec![IvfWarning::TrailingPartialFrameHeader {
+                frame_index: 1,
+                offset: ByteOffset::new(bytes.len() as u64),
+                needed: 10,
+            }]
+        );
+    }
+
+    #[test]
+    fn truncated_initial_frame_header_is_error() {
+        let mut bytes = header_bytes();
+        bytes.extend_from_slice(&[0x05, 0x00]);
+        let parsed = parse_ivf_partial(&bytes);
+        assert_eq!(parsed.frames.len(), 0);
+        assert_eq!(parsed.warnings, Vec::new());
         assert!(matches!(
             parsed.error,
             Some(IvfError::TruncatedFrameHeader {
-                frame_index: 1,
+                frame_index: 0,
                 offset,
                 needed: 10
             }) if offset == ByteOffset::new(bytes.len() as u64)

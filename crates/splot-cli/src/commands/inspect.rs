@@ -51,7 +51,7 @@ use splot_core::headers::tile_group::{
     TileGroupLayout, parse_tile_group_framing, parse_tile_group_prefix, parse_tile_group_structure,
 };
 use splot_core::hls::{MfhId, MultiFrameHeaderRecord, parse_multi_frame_header};
-use splot_core::ivf::{IvfFrame, IvfHeader};
+use splot_core::ivf::{IvfFrame, IvfHeader, IvfWarning};
 use splot_core::obu::{ObuHeader, PayloadStatus};
 use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 use splot_core::types::ObuType;
@@ -1731,7 +1731,7 @@ pub fn run(args: &InspectArgs) -> Result<ExitCode> {
         print_human(&parsed, args.headers);
     }
 
-    if print_parse_errors(&parsed) {
+    if print_parse_issues(&parsed) {
         Ok(ExitCode::from(1))
     } else {
         Ok(ExitCode::from(0))
@@ -1888,7 +1888,7 @@ fn collect_obus<'data>(parsed: &ParsedBitstream<'data>) -> Vec<ObuEnvelope<'data
     }
 }
 
-fn print_parse_errors(parsed: &ParsedBitstream<'_>) -> bool {
+fn print_parse_issues(parsed: &ParsedBitstream<'_>) -> bool {
     let mut failed = false;
     match parsed {
         ParsedBitstream::AnnexB(parsed) => {
@@ -1907,6 +1907,9 @@ fn print_parse_errors(parsed: &ParsedBitstream<'_>) -> bool {
                     failed = true;
                 }
             }
+            for warning in &parsed.warnings {
+                eprintln!("warning: {}", inspect_ivf_warning(warning));
+            }
             if let Some(error) = &parsed.error {
                 eprintln!("error: failed to parse IVF container: {error}");
                 failed = true;
@@ -1914,4 +1917,8 @@ fn print_parse_errors(parsed: &ParsedBitstream<'_>) -> bool {
         }
     }
     failed
+}
+
+fn inspect_ivf_warning(warning: &IvfWarning) -> String {
+    format!("{}: {warning}", warning.rule_id())
 }

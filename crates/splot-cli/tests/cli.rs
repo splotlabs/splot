@@ -80,6 +80,26 @@ fn validate_ivf_conformant_exits_zero() {
 }
 
 #[test]
+fn validate_ivf_trailing_partial_frame_header_exits_zero() {
+    let mut data = ivf_stream(&[&[0x01, 0x08]]);
+    data.extend_from_slice(&1148u32.to_le_bytes());
+    data.extend_from_slice(&6480u64.to_le_bytes()[..6]);
+    let path = temp_input("ivf", &data);
+    let out = splot(&["validate", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("[WARNING] ivf/trailing-partial-frame-header"),
+        "stdout was: {stdout}"
+    );
+    assert!(
+        stdout.contains("0 error(s), 1 warning(s)"),
+        "stdout was: {stdout}"
+    );
+    assert!(stdout.contains("conformant"), "stdout was: {stdout}");
+}
+
+#[test]
 fn validate_ivf_json_reports_container_diagnostic() {
     let mut data = ivf_stream(&[&[0x01, 0x08]]);
     data.extend_from_slice(&5u32.to_le_bytes());
@@ -154,6 +174,41 @@ fn inspect_ivf_json_includes_container_metadata() {
     assert_eq!(record["ivf_header"]["width"], 16);
     assert_eq!(record["ivf_frame"]["index"], 0);
     assert_eq!(record["ivf_frame"]["payload_offset"], 44);
+}
+
+#[test]
+fn inspect_ivf_trailing_partial_frame_header_prints_warning() {
+    let mut data = ivf_stream(&[&[0x01, 0x08]]);
+    data.extend_from_slice(&1148u32.to_le_bytes());
+    data.extend_from_slice(&6480u64.to_le_bytes()[..6]);
+    let path = temp_input("ivf", &data);
+    let out = splot(&["inspect", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("1 OBU(s)"), "stdout was: {stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("warning: ivf/trailing-partial-frame-header"),
+        "stderr was: {stderr}"
+    );
+}
+
+#[test]
+fn inspect_ivf_json_trailing_partial_frame_header_prints_warning_on_stderr() {
+    let mut data = ivf_stream(&[&[0x01, 0x08]]);
+    data.extend_from_slice(&1148u32.to_le_bytes());
+    data.extend_from_slice(&6480u64.to_le_bytes()[..6]);
+    let path = temp_input("ivf", &data);
+    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let records = json.as_array().expect("inspect output is an array");
+    assert_eq!(records.len(), 1);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("warning: ivf/trailing-partial-frame-header"),
+        "stderr was: {stderr}"
+    );
 }
 
 #[test]

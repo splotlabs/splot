@@ -220,6 +220,7 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 |---|---|---|---|
 | `ivf/invalid-header-length` | error | IVF | IVF header length is smaller than the 32-byte baseline header |
 | `ivf/invalid-signature` | error | IVF | container signature is not `DKIF` when parsing as IVF |
+| `ivf/trailing-partial-frame-header` | warning | IVF | a partial next-frame header appears after at least one complete IVF frame; complete frame payloads are still validated and EOF is treated as end-of-stream |
 | `ivf/truncated-frame-header` | error | IVF | input ends before a complete 12-byte IVF frame header |
 | `ivf/truncated-frame-payload` | error | IVF | input ends before the declared IVF frame payload is complete |
 | `ivf/truncated-header` | error | IVF | input ends before the declared IVF header is complete |
@@ -479,8 +480,9 @@ the source (the `Parse §` column is the section the OBU's syntax is parsed from
 A parse failure — input ending before a required field, a malformed variable-length code, or
 a non-zero closing `byte_alignment()` pad bit — is converted into a `bitstream/parse-error`
 (or a specific `trailing-bits/*` / `byte-alignment/*`) diagnostic rather than a panic. IVF
-container failures use `ivf/*` diagnostics. Malformed payloads and containers are reported
-with byte offsets instead of silently accepted.
+container failures use `ivf/*` diagnostics. Malformed IVF payloads and required container
+structures are errors; a decoder-tolerated trailing partial IVF frame header is reported as
+a warning with a byte offset instead of being silently accepted.
 
 ## Planned / not yet emitted
 
