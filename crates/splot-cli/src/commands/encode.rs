@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Args;
-use splot_encode::{Context, EncoderConfig, Frame};
+use splot_encode::{Context, EncoderConfig, EncoderRuntimeConfig, Frame};
 
 /// Arguments for `splot encode`.
 #[derive(Args, Debug)]
@@ -33,7 +33,7 @@ pub struct EncodeArgs {
 /// Returns an error only if the encoder context cannot be created.
 pub fn run(args: &EncodeArgs) -> Result<ExitCode> {
     let _ = args;
-    let mut context = Context::new(EncoderConfig::default(), 1)?;
+    let mut context = Context::new(EncoderConfig::default(), EncoderRuntimeConfig::default())?;
     match context.send_frame(Frame::default()) {
         Ok(()) => Ok(ExitCode::from(0)),
         Err(error) => {

@@ -753,12 +753,18 @@ dependencies = [
 [[package]]
 name = "splot-decode"
 version = "0.0.0"
+dependencies = [
+ "splot-parallel",
+ "thiserror",
+]
 
 [[package]]
 name = "splot-encode"
 version = "0.0.0"
 dependencies = [
  "splot-core",
+ "splot-parallel",
+ "thiserror",
 ]
 
 [[package]]
