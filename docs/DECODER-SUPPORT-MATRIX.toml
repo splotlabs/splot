@@ -228,16 +228,16 @@ notes = "Contract-only `splot.decode.minimal_tier` v1 and `minimal-intra-8bit420
 [[row]]
 id = "decode-stream-state"
 name = "Decode stream traversal and layer selection"
-feature_id = ""
-spec_sections = ["5.2.1", "7.1", "7.3", "7.4"]
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+spec_sections = ["5.2.1", "6.2.2", "7.1", "7.3", "7.4"]
 parser_source = "crates/splot-core/src/stream.rs"
-decode_module = "planned"
+decode_module = "crates/splot-decode/src/stream_plan.rs; crates/splot-decode/src/context.rs"
 tier = "tier0-plan"
-status = "todo"
-self_contained_tests = []
-diagnostics = ["decode/unsupported-feature (planned)"]
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/stream_plan.rs::tests", "crates/splot-decode/src/stream_plan/tests.rs::tests", "cargo test -p splot-decode --locked", "cargo xtask check-dependency-direction", "cargo xtask check-concurrency-policy", "cargo xtask check-decoder-support"]
+diagnostics = ["decode/unsupported-feature (library unsupported-structure metadata; CLI emission unchanged)"]
 local_reference_evidence = []
-notes = "Plan-only traversal should consume IVF/raw Annex B parse output, select the supported stream/layer, and reject unsupported structures transactionally."
+notes = "Source-backed parsed-input stream planner: `DecodeContext::plan_stream` consumes already parsed `splot_core::stream::ParsedBitstream` plus caller-supplied input length, preserves raw Annex B and IVF OBU order/offset metadata, selects only the documented base layer while enforcing §6.2.2 global/local xlayer scope rules, treats `OBU_CLOSED_LOOP_KEY` as the only frame candidate, applies `max_input_bytes`, `max_obus`, `max_ivf_frame_records`, and `max_frames_to_decode`, and rejects malformed sources or unsupported structures transactionally. Operating-point selection remains rejected/planned. This is not a raw byte-consuming decode API: it does not read files, bound pre-parse parser allocation, parse tile payloads, call `payload_status()`, reconstruct pixels, compute hashes, write Y4M, refresh references, change `splot decode` CLI behavior, emit new CLI diagnostics, add a fuzz target, or invoke AVM/dav2d."
 
 [[row]]
 id = "symbol-decoder"

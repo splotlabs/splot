@@ -16,6 +16,11 @@ fn default_options_and_limits_are_finite_and_pinned() {
         ),
         (DecodeLimitName::MaxObus, limits.max_obus(), 4_096),
         (
+            DecodeLimitName::MaxIvfFrameRecords,
+            limits.max_ivf_frame_records(),
+            4_096,
+        ),
+        (
             DecodeLimitName::MaxFramesToDecode,
             limits.max_frames_to_decode(),
             128,
@@ -107,6 +112,7 @@ fn limit_names_and_units_are_stable() {
         [
             "max_input_bytes",
             "max_obus",
+            "max_ivf_frame_records",
             "max_frames_to_decode",
             "max_output_frames",
             "max_frame_width",
@@ -124,6 +130,7 @@ fn limit_names_and_units_are_stable() {
         DecodeLimitName::ALL.map(DecodeLimitName::unit),
         [
             DecodeLimitUnit::Bytes,
+            DecodeLimitUnit::Count,
             DecodeLimitUnit::Count,
             DecodeLimitUnit::Count,
             DecodeLimitUnit::Count,
@@ -153,66 +160,72 @@ fn threshold_lookup_and_field_helpers_route_to_typed_names() {
     let limits = DecodeLimits::unlimited()
         .with_max_input_bytes(MAX(1))
         .with_max_obus(MAX(2))
-        .with_max_frames_to_decode(MAX(3))
-        .with_max_output_frames(MAX(4))
-        .with_max_frame_width(MAX(5))
-        .with_max_frame_height(MAX(6))
-        .with_max_luma_samples_per_frame(MAX(7))
-        .with_max_decoded_frame_bytes(MAX(8))
-        .with_max_reference_slots(MAX(9))
-        .with_max_reference_store_bytes(MAX(10))
-        .with_max_tile_count(MAX(11))
-        .with_max_tile_payload_bytes(MAX(12))
-        .with_max_output_bytes(MAX(13));
+        .with_max_ivf_frame_records(MAX(3))
+        .with_max_frames_to_decode(MAX(4))
+        .with_max_output_frames(MAX(5))
+        .with_max_frame_width(MAX(6))
+        .with_max_frame_height(MAX(7))
+        .with_max_luma_samples_per_frame(MAX(8))
+        .with_max_decoded_frame_bytes(MAX(9))
+        .with_max_reference_slots(MAX(10))
+        .with_max_reference_store_bytes(MAX(11))
+        .with_max_tile_count(MAX(12))
+        .with_max_tile_payload_bytes(MAX(13))
+        .with_max_output_bytes(MAX(14));
     let cases = [
         (DecodeLimitName::MaxInputBytes, limits.max_input_bytes(), 1),
         (DecodeLimitName::MaxObus, limits.max_obus(), 2),
         (
+            DecodeLimitName::MaxIvfFrameRecords,
+            limits.max_ivf_frame_records(),
+            3,
+        ),
+        (
             DecodeLimitName::MaxFramesToDecode,
             limits.max_frames_to_decode(),
-            3,
+            4,
         ),
         (
             DecodeLimitName::MaxOutputFrames,
             limits.max_output_frames(),
-            4,
+            5,
         ),
-        (DecodeLimitName::MaxFrameWidth, limits.max_frame_width(), 5),
+        (DecodeLimitName::MaxFrameWidth, limits.max_frame_width(), 6),
         (
             DecodeLimitName::MaxFrameHeight,
             limits.max_frame_height(),
-            6,
+            7,
         ),
         (
             DecodeLimitName::MaxLumaSamplesPerFrame,
             limits.max_luma_samples_per_frame(),
-            7,
+            8,
         ),
         (
             DecodeLimitName::MaxDecodedFrameBytes,
             limits.max_decoded_frame_bytes(),
-            8,
+            9,
         ),
         (
             DecodeLimitName::MaxReferenceSlots,
             limits.max_reference_slots(),
-            9,
+            10,
         ),
         (
             DecodeLimitName::MaxReferenceStoreBytes,
             limits.max_reference_store_bytes(),
-            10,
+            11,
         ),
-        (DecodeLimitName::MaxTileCount, limits.max_tile_count(), 11),
+        (DecodeLimitName::MaxTileCount, limits.max_tile_count(), 12),
         (
             DecodeLimitName::MaxTilePayloadBytes,
             limits.max_tile_payload_bytes(),
-            12,
+            13,
         ),
         (
             DecodeLimitName::MaxOutputBytes,
             limits.max_output_bytes(),
-            13,
+            14,
         ),
     ];
 

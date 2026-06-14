@@ -16,5 +16,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+splot-core.workspace = true
 splot-parallel.workspace = true
 thiserror.workspace = true

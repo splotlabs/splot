@@ -8,14 +8,15 @@ canonical for the rules summarized here.
 
 ```text
 splot-cli ───────┬──> splot-validate ───> splot-core
-                 ├──> splot-decode   ───> splot-parallel
+                 ├──> splot-decode   ───> splot-core, splot-parallel
                  ├──> splot-encode   ───> splot-core, splot-parallel
                  ├──> splot-parallel
                  └──> splot-core
 
-splot-decode owns the current unsupported diagnostic API. It depends on
-splot-parallel today; its approved future dependencies are splot-core and
-splot-recon once runtime decode source code needs them.
+splot-decode owns the current unsupported diagnostic API, the decode runtime
+context, and a parsed stream planner over splot-core output. Its approved
+future dependency is splot-recon once runtime decode source code needs
+reconstruction/output state.
 
 splot-parallel owns the approved concurrency primitives (local Rayon worker
 pool + bounded crossbeam queues) and depends on no splot-* crate.
@@ -30,9 +31,9 @@ by `cargo xtask check-dependency-direction`):
 - `splot-core` depends on no other `splot-*` crate.
 - `splot-parallel` depends on no other `splot-*` crate.
 - `splot-recon` depends on no other `splot-*` crate.
-- `splot-decode` depends on `splot-parallel` today; its approved future internal
-  dependencies are `splot-core` and `splot-recon` once runtime decode source code
-  needs them.
+- `splot-decode` depends only on `splot-core` and `splot-parallel` today; its
+  approved future internal dependency is `splot-recon` once runtime decode
+  source code needs reconstruction/output state.
 - `splot-validate` depends only on `splot-core`.
 - `splot-encode` depends only on `splot-core` and `splot-parallel`.
 - `splot-cli` depends only on `splot-core`, `splot-decode`, `splot-parallel`,
@@ -81,11 +82,12 @@ by `cargo xtask check-dependency-direction`):
   reference-frame storage shared by decoder and encoder roundtrip work. It
   intentionally exposes no runtime reconstruction API yet and depends on no
   other `splot-*` crate.
-- **`splot-decode`** — scaffold for the future AV2 decode driver, which will
-  coordinate parsed facts from `splot-core` with reconstruction/output state
-  from `splot-recon`. It owns the current structured
-  `decode/unsupported-feature` diagnostic API and intentionally exposes no
-  byte-consuming decode API yet.
+- **`splot-decode`** — scaffold for the future AV2 decode driver. It owns the
+  current structured `decode/unsupported-feature` diagnostic API,
+  `DecodeRuntimeConfig` / `DecodeContext`, and a plan-only stream planner over
+  already parsed `splot-core` `ParsedBitstream` values. It intentionally exposes
+  no raw byte-consuming decode API, pixel reconstruction, frame-hash digest, Y4M
+  output, or reference update semantics yet.
 - **`xtask`** — project automation: the `ci` pipeline; the repository checks
   (`check-license-headers`, `check-dependency-direction`, `check-spec-mirror`,
   `check-feature-status`, `check-diagnostic-registry`,
