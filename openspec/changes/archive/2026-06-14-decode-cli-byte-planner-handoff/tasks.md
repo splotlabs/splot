@@ -27,4 +27,4 @@
 - [x] 5.1 Run targeted CLI/library tests and policy checks.
 - [x] 5.2 Run `cargo xtask feature-status`, `cargo xtask check-feature-status`, and `cargo xtask ci`.
 - [x] 5.3 Address latest-head Codex review feedback for bounded `max_input_bytes` CLI reads and precise malformed-source spec sections.
-- [ ] 5.4 Open a ready PR, request Codex review, and wait for explicit latest-head Codex completion before any merge.
+- [x] 5.4 Open a ready PR, request Codex review, and wait for explicit latest-head Codex completion before any merge.

@@ -64,47 +64,63 @@ name any local reference evidence as portable metadata only.
 Unsupported decoder features SHALL be represented in docs and matrix rows as
 structured diagnostics with a stable rule id, severity, optional spec section,
 matrix row id, human-readable message, and remediation. `splot-decode` SHALL
-own the `decode/unsupported-feature` descriptor with severity `Error`, spec
-section `7.1`, matrix row `cli-decode-entrypoint`, and Feature ID `CLI-DECODE`
-until a supported decoder path replaces the intentional unsupported
-implementation. The `splot decode` CLI entry point SHALL render that
-library-owned descriptor without changing its text or JSON field values.
+own the `decode/unsupported-feature` descriptor with severity `Error`. When
+`splot decode` reaches the runtime decode/output boundary after successful byte
+planning, the descriptor SHALL cite AV2 §7.1 with matrix row
+`cli-decode-entrypoint` and Feature ID `CLI-DECODE`. When the byte or stream
+planner rejects a parsed but unsupported structure, the diagnostic SHALL reuse
+`decode/unsupported-feature` with the planner-owned matrix row, Feature ID,
+spec section, reason, OBU type, and byte offset. The `splot decode` CLI entry
+point SHALL render library-owned diagnostic reports without changing their base
+text or JSON field values.
 
 #### Scenario: Unsupported feature is documented
 - **WHEN** a matrix row identifies an unsupported AV2 tool
 - **THEN** the row links the unsupported behavior to a stable diagnostic code or
   planned diagnostic code and a spec section where applicable
 
-#### Scenario: Decode crate owns the unsupported diagnostic descriptor
+#### Scenario: Decode crate owns the runtime unsupported diagnostic descriptor
 - **WHEN** `splot-decode` is tested
-- **THEN** it exposes the `decode/unsupported-feature` descriptor with severity
-  `Error`, spec section `7.1`, matrix row `cli-decode-entrypoint`, and Feature
-  ID `CLI-DECODE`
+- **THEN** it exposes the runtime `decode/unsupported-feature` descriptor with
+  severity `Error`, spec section `7.1`, matrix row `cli-decode-entrypoint`, and
+  Feature ID `CLI-DECODE`
 
-#### Scenario: Decode command emits text diagnostic
-- **WHEN** `splot decode <input> -o <output>` is run before decode support is
-  implemented
-- **THEN** it exits with code `1`
+#### Scenario: Decode command emits runtime unsupported text diagnostic
+- **WHEN** `splot decode <input> -o <output>` is run on bytes that can be
+  planned but runtime decode support is not implemented
+- **THEN** it reads the input bytes, plans them through `DecodeContext::plan_bytes`,
+  and exits with code `1`
 - **AND** stderr contains diagnostic rule id `decode/unsupported-feature`,
   severity `Error`, spec section `7.1`, matrix row `cli-decode-entrypoint`,
-  and Feature ID `CLI-DECODE`
+  Feature ID `CLI-DECODE`, and a plan summary
 - **AND** no AVM, dav2d, ffmpeg, or external decoder is located or invoked
+- **AND** the requested output path is not created, truncated, or written
 
-#### Scenario: Decode command emits JSON diagnostic
-- **WHEN** `splot decode --json <input> -o <output>` is run before decode support
-  is implemented
+#### Scenario: Decode command emits runtime unsupported JSON diagnostic
+- **WHEN** `splot decode --json <input> -o <output>` is run on bytes that can be
+  planned but runtime decode support is not implemented
 - **THEN** it exits with code `1`
 - **AND** stdout is a machine-readable diagnostic object containing
   `rule_id = "decode/unsupported-feature"`, `severity = "Error"`,
   `spec_section = "7.1"`, `matrix_row = "cli-decode-entrypoint"`, and
   `feature_id = "CLI-DECODE"`
+- **AND** stdout includes a runtime-unsupported detail block with input length,
+  detected bitstream format, OBU count, frame-candidate count, and selected
+  output format
 - **AND** stderr remains empty unless an operational error occurs
 
-#### Scenario: Decode command avoids file I/O while unsupported
-- **WHEN** `splot decode <missing-input> -o <output>` is run before decode
-  support is implemented
+#### Scenario: Decode command emits planner unsupported diagnostic
+- **WHEN** `splot decode <input> -o <output>` reads bytes whose source parses but
+  contains a structure outside the initial planner tier
 - **THEN** it exits with code `1`
-- **AND** it emits `decode/unsupported-feature`
+- **AND** it emits `decode/unsupported-feature` using the planner matrix row,
+  Feature ID, AV2 spec section, unsupported reason, OBU type, and byte offset
+- **AND** the requested output path is not created, truncated, or written
+
+#### Scenario: Decode command reports missing input as operational error
+- **WHEN** `splot decode <missing-input> -o <output>` is run
+- **THEN** it exits with code `2`
+- **AND** it does not emit a `decode/*` diagnostic
 - **AND** it does not create the missing input path or output path
 
 ### Requirement: Local reference evidence remains non-executable
@@ -230,31 +246,46 @@ enforcement and diagnostics exist.
 
 ### Requirement: Decode resource-limit diagnostic contract
 
-The repository SHALL document `decode/resource-limit` as a planned decoder
-diagnostic for future limit violations. Until source emits this diagnostic, it
-SHALL NOT appear in the marker-delimited emitted decoder diagnostic registry.
-When emitted, the diagnostic SHALL include the stable decoder diagnostic fields
-`rule_id`, `severity`, `spec_section`, `matrix_row`, `feature_id`, `message`,
-and `remediation`, plus resource fields `limit_name`, `limit`, `actual`, `unit`,
-`byte_offset`, and `bit_offset`.
+The repository SHALL document and emit `decode/resource-limit` when a
+byte-consuming `splot decode` path rejects an input because a measured
+spec-derived or repository-owned decode-planner value exceeds a configured
+`DecodeLimits` threshold. The diagnostic SHALL include the stable decoder
+diagnostic fields `rule_id`, `severity`, `spec_section`, `matrix_row`,
+`feature_id`, `message`, and `remediation`, plus resource fields `limit_name`,
+`limit`, `actual`, and `unit`; `byte_offset` and `bit_offset` SHALL be included
+only when the rejecting path knows them. Resource limits are `splot` policy over
+measured values and SHALL NOT be described as AV2 conformance failures.
 
-#### Scenario: Planned diagnostic stays out of emitted registry
+#### Scenario: Limit violation reports measured value
 
-- **WHEN** `cargo xtask check-diagnostic-registry` runs before
-  `decode/resource-limit` is emitted by source
-- **THEN** the decoder diagnostic registry contains only emitted `decode/*`
-  rule IDs inside its enforced marker region
-- **AND** the planned resource-limit diagnostic is documented outside that
-  emitted registry region or in support/roadmap text
-
-#### Scenario: Future limit violation reports measured value
-
-- **WHEN** a future `splot decode` path rejects an input because a measured
-  spec-derived value exceeds a `DecodeLimits` threshold
+- **WHEN** `splot decode` rejects an input because byte planning exceeds a
+  `DecodeLimits` threshold
 - **THEN** it emits `decode/resource-limit` with severity `Error`, matrix row
-  `decode-limits-budget`, Feature ID `DOC-DECODE-LIMITS-CONTRACT`, the AV2
-  section that supplied the measured value, the limit name, configured limit,
-  measured actual value, unit, and any known byte/bit offset
+  `decode-limits-budget`, Feature ID `DOC-DECODE-LIMITS-CONTRACT`, the relevant
+  AV2 or policy section, the limit name, configured limit, measured actual
+  value, unit, and known byte/bit offsets when available
+- **AND** it omits byte/bit offset fields when the rejecting planner path does
+  not know a precise location
+- **AND** the requested output path is not created, truncated, or written
+
+#### Scenario: Oversized input is bounded before full read
+
+- **WHEN** `splot decode` is given an input path whose byte length exceeds the
+  finite default `max_input_bytes` policy
+- **THEN** it limits file reading before constructing a full input buffer
+- **AND** it emits `decode/resource-limit` for `limit_name = "max_input_bytes"`
+  with the configured limit, measured actual value, and unit `bytes`
+- **AND** it leaves `spec_section` unset because `max_input_bytes` is repository
+  policy rather than AV2 syntax
+- **AND** the requested output path is not created, truncated, or written
+
+#### Scenario: Resource-limit diagnostic is in emitted registry
+
+- **WHEN** `cargo xtask check-diagnostic-registry` runs after source emits
+  `decode/resource-limit`
+- **THEN** `decode/resource-limit` appears inside the emitted decoder diagnostic
+  registry marker region
+- **AND** the decoder support matrix links the emitted diagnostic to a support row
 
 ### Requirement: Deterministic decoded-frame hash contract
 
@@ -504,7 +535,7 @@ source implements the tier and self-contained tests prove it.
 - **AND** streams outside the tier SHALL fail with structured
   `decode/unsupported-feature` diagnostics that identify the blocking matrix row
   where possible, while limit overflow or configured-limit excess SHALL use the
-  planned `decode/resource-limit` diagnostic
+  emitted `decode/resource-limit` diagnostic when surfaced through `splot decode`
 
 #### Scenario: Contract remains non-executable until implementation
 
@@ -524,25 +555,33 @@ Feature ID `CLI-DECODE-HASH-OUTPUT`. The CLI SHALL preserve
 `splot decode <input> -o <output>` as the compatibility form for future Y4M
 output, SHALL allow explicit `--output-format y4m`, and SHALL allow
 `--output-format hash` without a Y4M output path. Until runtime decode support
-lands, every valid `splot decode` invocation SHALL continue to emit the existing
-`decode/unsupported-feature` diagnostic, exit with code `1`, avoid input reads,
-avoid output writes, and avoid external decoder invocation.
+lands, every valid `splot decode` invocation SHALL route the input through the
+byte-planner handoff; if byte planning succeeds, it SHALL emit the runtime
+`decode/unsupported-feature` diagnostic and exit with code `1`, and if byte
+planning fails it SHALL emit the appropriate planner diagnostic. It SHALL avoid
+output writes, decoded hash/Y4M production, and external decoder invocation.
 
 #### Scenario: Compatibility Y4M form remains valid but unsupported
 
 - **WHEN** `splot decode <input> -o <output>` is run before runtime decode
-  support is implemented
+  support is implemented on input bytes that can be planned
 - **THEN** it remains a valid CLI invocation
-- **AND** it exits with code `1` and emits `decode/unsupported-feature`
-- **AND** it does not read `<input>` or modify `<output>`
+- **AND** it reads and byte-plans `<input>`
+- **AND** it exits with code `1` and emits the runtime
+  `decode/unsupported-feature` diagnostic
+- **AND** it does not modify `<output>`, produce Y4M, compute a decoded-frame
+  hash, or invoke an external decoder
 
 #### Scenario: Explicit hash format is accepted without Y4M output
 
 - **WHEN** `splot decode <input> --output-format hash` is run before runtime
-  decode support is implemented
+  decode support is implemented on input bytes that can be planned
 - **THEN** it is a valid CLI invocation
-- **AND** it exits with code `1` and emits `decode/unsupported-feature`
-- **AND** it does not read `<input>` or create any output file
+- **AND** it reads and byte-plans `<input>`
+- **AND** it exits with code `1` and emits the runtime
+  `decode/unsupported-feature` diagnostic
+- **AND** it does not create any output file, compute a decoded-frame hash, or
+  invoke an external decoder
 
 #### Scenario: Explicit Y4M format still requires an output path
 
@@ -561,7 +600,7 @@ avoid output writes, and avoid external decoder invocation.
 #### Scenario: JSON mode remains diagnostic-only while unsupported
 
 - **WHEN** `splot decode --json <input> --output-format hash` is run before
-  runtime decode support is implemented
+  runtime decode support is implemented on input bytes that can be planned
 - **THEN** stdout contains the existing machine-readable
   `decode/unsupported-feature` diagnostic object
 - **AND** stderr remains empty unless an operational error occurs
@@ -853,10 +892,14 @@ decoder output SHALL remain deterministic across `--threads 1`,
 #### Scenario: Current unsupported decode remains honest
 
 - **WHEN** this contract is added before runtime decode support exists
-- **THEN** `splot decode` continues to emit the existing
-  `decode/unsupported-feature` diagnostic for valid invocations
-- **AND** no byte-consuming decode path, reconstruction algorithm, frame-hash
-  digest computation, Y4M output, AVM/dav2d invocation, or new emitted decoder
+- **THEN** `splot decode` continues to emit the runtime
+  `decode/unsupported-feature` diagnostic for byte-planner-successful
+  invocations
+- **AND** newly emitted diagnostics remain limited to the byte-planner handoff
+  diagnostics for malformed sources, planner resource limits, and unsupported
+  planner structures
+- **AND** no tile-decoding runtime path, reconstruction algorithm, frame-hash
+  digest computation, Y4M output, AVM/dav2d invocation, or decoded-output
   diagnostic is claimed
 
 ### Requirement: Parsed decode stream planner
@@ -924,7 +967,7 @@ specified separately by the byte-consuming decode stream planner requirement.
   exceed `max_frames_to_decode`
 - **THEN** `DecodeContext::plan_stream` returns a typed local limit error
 - **AND** it returns no partial `DecodeStreamPlan`
-- **AND** it does not emit the planned `decode/resource-limit` CLI diagnostic
+- **AND** it does not itself emit the `decode/resource-limit` CLI diagnostic
 
 #### Scenario: Unsupported structures are rejected
 
@@ -947,13 +990,14 @@ specified separately by the byte-consuming decode stream planner requirement.
 - **AND** planner implementation does not use direct Rayon, direct crossbeam,
   a global pool, ad-hoc codec worker threads, or unbounded queues
 
-#### Scenario: CLI remains intentionally unsupported
+#### Scenario: CLI runtime remains intentionally unsupported
 
-- **WHEN** this planner API exists before runtime CLI decode support
-- **THEN** `splot decode` continues to emit the existing
-  `decode/unsupported-feature` diagnostic for valid invocations
-- **AND** it does not read input, write output, invoke AVM/dav2d, or render the
-  planner's local library errors as user-facing CLI diagnostics
+- **WHEN** the planner APIs exist before runtime CLI decode output support
+- **THEN** `splot decode` may read and plan input bytes through
+  `DecodeContext::plan_bytes`
+- **AND** successful planning still emits the runtime `decode/unsupported-feature`
+  diagnostic rather than decode success
+- **AND** it does not write output or invoke AVM/dav2d
 
 ### Requirement: Byte-consuming decode stream planner
 
@@ -1008,7 +1052,7 @@ success behavior.
   offset when known, IVF frame index when frame-local, and parser message
 - **AND** no partial plan is returned
 
-#### Scenario: Unsupported structures stay structured and CLI-neutral
+#### Scenario: Unsupported structures stay structured
 
 - **WHEN** the byte-consuming planner encounters a non-base layer, invalid
   global/local layer scope, unsupported multistream/external-HLS structure,
@@ -1018,8 +1062,8 @@ success behavior.
 - **AND** the unsupported metadata uses rule id `decode/unsupported-feature`,
   matrix row `decode-stream-state`, and Feature ID
   `DECODE-STREAM-STATE-PLANNER`
-- **AND** the `splot decode` CLI remains intentionally unsupported until a
-  later change adds a diagnostic adapter and input-read policy
+- **AND** the `splot decode` CLI adapter renders the unsupported metadata as a
+  structured user-facing diagnostic without changing the planner metadata
 
 #### Scenario: Byte planner is fuzzed without external decoders
 
@@ -1039,6 +1083,46 @@ success behavior.
   across thread counts
 - **AND** no direct Rayon, crossbeam, global worker pool, ad-hoc worker thread,
   or decode pipeline queue is introduced
+
+### Requirement: Decode byte-planner CLI handoff
+
+The `splot decode` CLI SHALL enforce finite default `max_input_bytes` before
+constructing a full input buffer, construct a `DecodeContext` from the requested
+thread policy for inputs within that bound, and call `DecodeContext::plan_bytes`
+with finite default `DecodeOptions` before reporting byte-planner diagnostics.
+The CLI SHALL NOT duplicate byte parsing or stream planning logic, call
+`WorkerPool::install` directly, spawn threads, use global pools, or add
+concurrency dependencies.
+
+#### Scenario: Malformed source emits structured diagnostic
+
+- **WHEN** `splot decode` reads malformed raw Annex B bytes, a malformed IVF
+  container, or malformed Annex B inside IVF
+- **THEN** it exits with code `1`
+- **AND** it emits `decode/malformed-source` with severity `Error`, matrix row
+  `decode-byte-stream-planner`, Feature ID `DECODE-BYTE-STREAM-PLANNER`,
+  source issue kind, parser rule ID when known, byte offset when known, IVF
+  frame index when known, and parser message
+- **AND** it leaves `spec_section` unset when the parser issue cannot be cited
+  to one precise AV2 section
+- **AND** the requested output path is not created, truncated, or written
+
+#### Scenario: Thread policy uses decode context
+
+- **WHEN** `splot decode --threads auto`, `--threads 1`, or another fixed
+  positive thread count is run on the same diagnostic-producing input
+- **THEN** each invocation reaches the same `DecodeContext::plan_bytes`
+  diagnostic result
+- **AND** the CLI code does not introduce direct Rayon, crossbeam, global-pool,
+  queue, or ad-hoc thread usage outside `splot_parallel`
+
+#### Scenario: Prior byte planner review feedback stays protected
+
+- **WHEN** tests exercise byte planning after the CLI handoff
+- **THEN** unsupported structures keep precedence over later traversal limits,
+  fatal IVF first-frame header errors remain retry-stable, `decode_plan_bytes`
+  fuzz seeds include prefixed valid fixture paths, and `DecodeContext` docs
+  accurately describe raw-byte planning
 
 ### Requirement: Byte planner review regressions stay fixed
 
