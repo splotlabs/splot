@@ -4727,6 +4727,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "DOC-VALIDATOR-EXAMPLES"
+name = "Validator CLI worked examples (README)"
+category = "docs"
+kind = "docs"
+spec_sections = []
+sources = []
+crate = "docs"
+module = "README.md"
+openspec_change = "docs-validator-examples"
+tracking_issue = ""
+owner = "docs"
+risk = "low"
+notes = "Documents the validator/inspector CLI surface in the README with worked, non-invented examples — `splot explain` (describe text, unknown-id did-you-mean hint, --json/--list) and the `splot validate` output controls (--max-diagnostics truncation notice, --summary-only), plus a Status-table row for the shipping `explain` command. Every shown output is captured verbatim from the built binary (the explain registry or the committed bad-global-xlayer.av2 fixture), so the README cannot drift into describing behavior that does not exist. Docs-only: no code, flags, or diagnostics change."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "not-applicable"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "DOC-ENCODER-REFERENCE-GATE"
 name = "Encoder reference gate documentation"
 category = "docs"

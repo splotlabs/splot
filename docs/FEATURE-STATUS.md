@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 164 feature(s).
+Matrix version 1. Last reviewed 2026-06-14. 165 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -144,6 +144,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `XTASK-CI-QUALITY-GATES` | CI quality gates (docs build + coverage threshold) | automation | automation | done | n/a | n/a | done | n/a | n/a | n/a | n/a | n/a | `xtask/src/main.rs` |
 | `DOC-FEATURE-TRACKING` | Feature tracking documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `docs/FEATURE-TRACKING.md` |
 | `DOC-VALIDATOR-ROADMAP` | Validator coverage roadmap documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `docs/VALIDATOR-ROADMAP.md` |
+| `DOC-VALIDATOR-EXAMPLES` | Validator CLI worked examples (README) | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `README.md` |
 | `DOC-ENCODER-REFERENCE-GATE` | Encoder reference gate documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `docs/references/ENCODER-RESEARCH-NOTES.md` |
 | `DOC-AUDIT-PROTOCOLS` | Agent audit protocol skills | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `.codex/skills/splot-av2-conformance-audit/SKILL.md` |
 | `DOC-AV2-SPEC-MIRROR` | AV2 specification mirror | docs | docs | done | n/a | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/main.rs` |
