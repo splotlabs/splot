@@ -7,13 +7,14 @@
 //! future decoder, frame-hash, Y4M, reference-frame storage, and encoder
 //! roundtrip work. The model is limited to immutable owned output frames,
 //! plane storage invariants, a safe reference-slot container, and deterministic
-//! frame-hash input serialization and digest computation; it does not implement
-//! byte-consuming decode, reconstruction algorithms, Y4M output, or AV2
-//! reference refresh semantics.
+//! frame-hash input serialization and digest computation, plus source-backed
+//! Y4M writing for caller-supplied decoded frames; it does not implement
+//! byte-consuming decode, reconstruction algorithms, runtime CLI Y4M output, or
+//! AV2 reference refresh semantics.
 //!
 //! Feature tracking: `INFRA-RECON-FRAME-PLANE-TYPES`,
 //! `RECON-REFERENCE-FRAME-STORE`, `RECON-HASH-INPUT-SERIALIZATION`,
-//! `RECON-FRAME-HASH-DIGEST`.
+//! `RECON-FRAME-HASH-DIGEST`, `RECON-Y4M-OUTPUT-WRITER`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
@@ -25,6 +26,7 @@ mod geometry;
 mod hash_input;
 mod plane;
 mod reference;
+mod y4m;
 
 pub use error::{ReconError, Result};
 pub use format::{BitDepth, PixelFormat, PlaneId, ReconSample};
@@ -34,4 +36,8 @@ pub use hash_input::{DecodedFrameHash, DecodedFrameHashInput};
 pub use plane::{Plane, VisibleRows};
 pub use reference::{
     ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameStore, ReferenceSlot,
+};
+pub use y4m::{
+    Y4mChromaTag, Y4mError, Y4mFrameFormat, Y4mFrameHeader, Y4mFrameRate, Y4mResult,
+    Y4mStreamHeader, Y4mWriter,
 };

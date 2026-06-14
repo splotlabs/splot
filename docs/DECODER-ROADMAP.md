@@ -47,10 +47,11 @@ decode tile payloads, reconstruct pixels, produce hashes, write Y4M, or provide
 runtime decode output.
 `splot-recon` now exposes immutable decoded output frame and plane model types
 with constructor invariants plus a bounded immutable reference-slot container,
-canonical decoded-frame hash input serialization, and source-backed
-`splot-dfh-sha256-v1` digest computation for caller-supplied decoded frames, but
-no reconstruction algorithm, Y4M output, or AV2 reference refresh semantics
-exists yet. `splot-recon` remains scheduler-free:
+canonical decoded-frame hash input serialization, source-backed
+`splot-dfh-sha256-v1` digest computation, and a source-backed Y4M writer for
+caller-supplied decoded frames, but no reconstruction algorithm, runtime decode
+output, output scheduling, or AV2 reference refresh semantics exists yet.
+`splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
 `splot-decode`, then call deterministic reconstruction primitives.
 
@@ -102,9 +103,10 @@ The tier is deliberately small:
 - one tile and one first-and-only tile group;
 - deterministic decoded-frame hashes are the first success artifact.
 
-Y4M output remains unsupported until the `output-y4m` row is implemented and
-tested against the same cropped visible output samples. The CLI parse contract
-accepts future hash-output selection with `--output-format hash`; the
+Runtime `splot decode` Y4M output remains unsupported until a future
+byte-consuming decode/output row wires the `splot-recon` Y4M writer to real
+decoded frames and tests the CLI output path. The CLI parse contract accepts
+future hash-output selection with `--output-format hash`; the
 compatibility form `splot decode <input> -o <output>` remains the implicit Y4M
 form, and `--output-format y4m -o <output>` is the explicit Y4M form. All valid
 forms still emit the intentional unsupported diagnostic until runtime decode
@@ -129,7 +131,7 @@ other external decoder is forbidden.
 | 6 | AV2 § 8 symbol/CDF decoder foundation | planned |
 | 7 | Constrained intra tile syntax | planned |
 | 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | planned |
-| 9 | Y4M output and reconstructed reference-frame store | reference-slot runtime store supported; Y4M and AV2 refresh semantics planned |
+| 9 | Y4M output and reconstructed reference-frame store | reference-slot runtime store and source-backed Y4M writer supported; runtime Y4M output and AV2 refresh semantics planned |
 | 10 | Portable local-reference evidence manifests | metadata contract and offline checker wired; two AVM/dav2d raw MD5 agreement entries recorded as non-executable metadata |
 | 11 | Encoder reconstruction API contract | planned |
 
@@ -505,7 +507,7 @@ Maintainer approval for the decoder/reconstruction dependency graph landed on
 
 ```text
 crates/splot-core      bitstream model + parsers
-crates/splot-recon     decoded output model types; hash-input bytes; future reconstruction primitives, references
+crates/splot-recon     decoded output model types; hash-input bytes, frame hashes, Y4M writer; future reconstruction primitives, references
 crates/splot-parallel  approved local worker-pool and bounded-queue runtime policy
 crates/splot-decode    unsupported diagnostic API; runtime context; parsed stream planner; future driver using splot-recon
 crates/splot-encode    future encoder, not yet depending on splot-recon
@@ -514,9 +516,9 @@ crates/splot-cli       thin CLI rendering splot-decode diagnostics
 
 The scaffold is still an ownership boundary for decode. `splot-recon` exposes a
 runtime decoded output frame/plane model, reference-slot container,
-deterministic hash-input byte serializer, and `splot-dfh-sha256-v1` digest API
-for caller-supplied decoded frames, but no reconstruction algorithm, AV2
-reference refresh process, or Y4M writer.
+deterministic hash-input byte serializer, `splot-dfh-sha256-v1` digest API, and
+Y4M writer for caller-supplied decoded frames, but no reconstruction algorithm,
+runtime decode output, output scheduling, or AV2 reference refresh process.
 `splot-decode` owns the future decode scheduler boundary through
 `DecodeRuntimeConfig` and `DecodeContext`, whose single `WorkerPool` is sized by
 the CLI/runtime `--threads` policy. It now depends on `splot-core` for parsed

@@ -8,8 +8,8 @@ Matrix version 1. Last reviewed 2026-06-14. 24 row(s).
 
 | Status | Rows |
 |---|---:|
-| `todo` | 4 |
-| `partial` | 4 |
+| `todo` | 3 |
+| `partial` | 5 |
 | `supported` | 15 |
 | `unsupported-intentional` | 1 |
 | `blocked` | 0 |
@@ -48,6 +48,6 @@ Matrix version 1. Last reviewed 2026-06-14. 24 row(s).
 | `symbol-decoder` | Symbol and CDF decoder foundation | none | `tier1-intra` | `todo` | 8.2<br>8.3<br>9 | none | decode/unsupported-feature (planned) | none | `planned` |
 | `tile-payload-decode` | Tile payload decode boundary | none | `tier1-intra` | `todo` | 5.20<br>7.1<br>8.3 | none | decode/unsupported-feature (planned) | none | `planned` |
 | `intra-reconstruction` | Scalar intra reconstruction | none | `tier1-intra` | `todo` | 7.13<br>7.14<br>7.15 | none | decode/unsupported-feature (planned) | none | `planned` |
-| `output-y4m` | Y4M output | none | `tier1-intra` | `todo` | 7.21 | none | none | none | `planned` |
+| `output-y4m` | Y4M output writer | `RECON-Y4M-OUTPUT-WRITER` | `tier1-intra` | `partial` | 6.4.1<br>6.16.13<br>6.17.4.4<br>7.21.1<br>7.21.2 | crates/splot-recon/src/y4m.rs::tests<br>cargo test -p splot-recon --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/y4m.rs; crates/splot-recon/src/lib.rs` |
 | `reference-frame-store` | Reconstructed reference-frame store | `RECON-REFERENCE-FRAME-STORE` | `encoder-reuse` | `supported` | 3<br>5.4.6<br>6.4.6<br>7.23 | crates/splot-recon/src/reference.rs::tests<br>cargo test -p splot-recon --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/reference.rs` |
 | `decode-fuzz-entrypoint` | Decode fuzz entry point | `DECODE-BYTE-STREAM-PLANNER` | `foundation` | `supported` | 4.11.6<br>Annex B.2<br>5.2.1<br>7.1 | cargo check --manifest-path fuzz/Cargo.toml --bins<br>cargo +nightly fuzz run decode_plan_bytes (local/nightly; CI fuzz smoke runs every target) | none | none | `crates/splot-decode/src/context.rs::DecodeContext::plan_bytes` |

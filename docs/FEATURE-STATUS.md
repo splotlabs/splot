@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 157 feature(s).
+Matrix version 1. Last reviewed 2026-06-14. 158 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -148,6 +148,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DOC-DETERMINISTIC-FRAME-HASH-CONTRACT` | Deterministic decoded-frame hash contract documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `docs/DECODER-ROADMAP.md` |
 | `RECON-HASH-INPUT-SERIALIZATION` | Decoded frame hash input serialization | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-recon/src/hash_input.rs` |
 | `RECON-FRAME-HASH-DIGEST` | Decoded frame SHA-256 digest computation | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-recon/src/hash_input.rs` |
+| `RECON-Y4M-OUTPUT-WRITER` | Y4M output writer | infrastructure | writer | done | done | n/a | done | done | n/a | n/a | done | n/a | `crates/splot-recon/src/y4m.rs` |
 | `DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT` | Decoded frame and plane model contract documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `docs/DECODER-ROADMAP.md` |
 | `DOC-MINIMAL-DECODE-TIER-CONTRACT` | Minimal decode tier contract documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `docs/DECODER-ROADMAP.md` |
 | `INFRA-DECODER-CRATE-SCAFFOLDING` | Decoder and reconstruction crate scaffolding | infrastructure | infrastructure | done | n/a | n/a | done | n/a | n/a | n/a | done | n/a | `crates/splot-decode/src/lib.rs` |
