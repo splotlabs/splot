@@ -2,15 +2,15 @@
 
 Generated from `docs/DECODER-SUPPORT-MATRIX.toml` by `cargo xtask decoder-support --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 23 row(s).
+Matrix version 1. Last reviewed 2026-06-14. 24 row(s).
 
 ## Status Counts
 
 | Status | Rows |
 |---|---:|
-| `todo` | 5 |
+| `todo` | 4 |
 | `partial` | 5 |
-| `supported` | 12 |
+| `supported` | 14 |
 | `unsupported-intentional` | 1 |
 | `blocked` | 0 |
 
@@ -20,7 +20,7 @@ Matrix version 1. Last reviewed 2026-06-14. 23 row(s).
 |---|---:|
 | `encoder-reuse` | 1 |
 | `foundation` | 17 |
-| `tier0-plan` | 1 |
+| `tier0-plan` | 2 |
 | `tier1-intra` | 4 |
 
 ## Rows
@@ -44,9 +44,10 @@ Matrix version 1. Last reviewed 2026-06-14. 23 row(s).
 | `deterministic-frame-hash` | Deterministic decoded-frame hash | `RECON-HASH-INPUT-SERIALIZATION` | `foundation` | `partial` | 5.17.12<br>6.16.13<br>7.21.1<br>7.21.2<br>7.21.7 | crates/splot-recon/src/hash_input.rs::tests<br>cargo test -p splot-recon --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support | none | Archived local AVM/dav2d raw MD5 agreement for two tiny fixtures is recorded in openspec/changes/archive/2026-06-13-decoder-roadmap-matrix-boundary/agent-log.md; this is non-executable metadata only and not proof of splot hash implementation. | `crates/splot-recon/src/hash_input.rs` |
 | `minimal-decode-tier-contract` | Minimal decode tier contract | `DOC-MINIMAL-DECODE-TIER-CONTRACT` | `foundation` | `partial` | Annex B.2<br>Annex B.3<br>5.2<br>6.2<br>6.4.1<br>6.17.2<br>6.17.4.1<br>6.17.7.2<br>6.18<br>6.19.1<br>7.1<br>7.2<br>7.3<br>7.4<br>7.21<br>7.23<br>Annex A.2<br>Annex A.5 | openspec validate --all --no-interactive<br>cargo xtask check-decoder-support | decode/unsupported-feature (planned for streams outside the supported tier)<br>decode/resource-limit (planned) | none | `docs/DECODER-ROADMAP.md` |
 | `decode-stream-state` | Decode stream traversal and layer selection | `DECODE-STREAM-STATE-PLANNER` | `tier0-plan` | `partial` | 5.2.1<br>6.2.2<br>7.1<br>7.3<br>7.4 | crates/splot-decode/src/stream_plan.rs::tests<br>crates/splot-decode/src/stream_plan/tests.rs::tests<br>cargo test -p splot-decode --locked<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | decode/unsupported-feature (library unsupported-structure metadata; CLI emission unchanged) | none | `crates/splot-decode/src/stream_plan.rs; crates/splot-decode/src/context.rs` |
+| `decode-byte-stream-planner` | Byte-consuming decode stream planner | `DECODE-BYTE-STREAM-PLANNER` | `tier0-plan` | `supported` | 4.11.6<br>Annex B.2<br>Annex B.3<br>5.2.1<br>5.2.2<br>6.2.1<br>6.2.2<br>7.1<br>7.3 | crates/splot-decode/src/byte_stream.rs::tests<br>crates/splot-decode/src/stream_plan/tests.rs::tests::byte_planner_raw_annex_b_matches_parsed_plan<br>crates/splot-decode/src/stream_plan/tests.rs::tests::ivf_plan_preserves_frame_context_and_warning_metadata<br>crates/splot-decode/src/stream_plan/tests.rs::tests::byte_planner_malformed_sources_are_transactional<br>crates/splot-decode/src/stream_plan/tests.rs::tests::byte_planner_limits_reject_before_unbounded_traversal<br>crates/splot-decode/src/stream_plan/tests.rs::tests::byte_planner_propagates_unsupported_structures<br>crates/splot-decode/src/stream_plan/tests.rs::tests::byte_planning_is_deterministic_across_thread_policies<br>cargo test -p splot-decode --locked<br>cargo check --manifest-path fuzz/Cargo.toml --bins<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | decode/unsupported-feature (library unsupported-structure metadata; CLI emission unchanged)<br>decode/resource-limit (typed library limit error; CLI diagnostic still planned/unemitted) | none | `crates/splot-decode/src/byte_stream.rs; crates/splot-decode/src/context.rs` |
 | `symbol-decoder` | Symbol and CDF decoder foundation | none | `tier1-intra` | `todo` | 8.2<br>8.3<br>9 | none | decode/unsupported-feature (planned) | none | `planned` |
 | `tile-payload-decode` | Tile payload decode boundary | none | `tier1-intra` | `todo` | 5.20<br>7.1<br>8.3 | none | decode/unsupported-feature (planned) | none | `planned` |
 | `intra-reconstruction` | Scalar intra reconstruction | none | `tier1-intra` | `todo` | 7.13<br>7.14<br>7.15 | none | decode/unsupported-feature (planned) | none | `planned` |
 | `output-y4m` | Y4M output | none | `tier1-intra` | `todo` | 7.21 | none | none | none | `planned` |
 | `reference-frame-store` | Reconstructed reference-frame store | `RECON-REFERENCE-FRAME-STORE` | `encoder-reuse` | `supported` | 3<br>5.4.6<br>6.4.6<br>7.23 | crates/splot-recon/src/reference.rs::tests<br>cargo test -p splot-recon --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/reference.rs` |
-| `decode-fuzz-entrypoint` | Decode fuzz entry point | none | `foundation` | `todo` | none | none | none | none | `planned` |
+| `decode-fuzz-entrypoint` | Decode fuzz entry point | `DECODE-BYTE-STREAM-PLANNER` | `foundation` | `supported` | 4.11.6<br>Annex B.2<br>5.2.1<br>7.1 | cargo check --manifest-path fuzz/Cargo.toml --bins<br>cargo +nightly fuzz run decode_plan_bytes (local/nightly; CI fuzz smoke runs every target) | none | none | `crates/splot-decode/src/context.rs::DecodeContext::plan_bytes` |

@@ -17,20 +17,20 @@ pub enum DecodeError {
         #[from]
         source: splot_parallel::ParallelError,
     },
-    /// A parsed stream failed a local decode resource policy.
+    /// A decode source failed a local decode resource policy.
     #[error("decode stream plan rejected by resource limit: {source}")]
     Limit {
         /// The underlying limit failure.
         #[from]
         source: DecodeLimitError,
     },
-    /// The supplied parsed stream recorded a fatal source/container parse issue.
-    #[error("malformed parsed decode source: {issue}")]
+    /// The supplied decode source recorded a fatal source/container parse issue.
+    #[error("malformed decode source: {issue}")]
     MalformedSource {
         /// Source issue that prevented transactional planning.
         issue: DecodeSourceIssue,
     },
-    /// The supplied stream uses AV2 structures outside the supported planner tier.
+    /// The supplied source uses AV2 structures outside the supported planner tier.
     #[error("unsupported decode stream structure: {unsupported}")]
     UnsupportedStructure {
         /// Unsupported structure metadata.

@@ -25,24 +25,27 @@ renders the structured `decode/unsupported-feature` diagnostic owned by
 `splot-decode` and does not reconstruct pixels, produce frame hashes, write Y4M
 output, read input bytes, or touch the output path. Decode resource limits now
 have a source-backed `splot-decode` policy API for configured thresholds and
-pure checks, but no byte-consuming enforcement exists yet. The planned
+pure checks, and the byte-stream planner applies the input-byte, OBU-count, IVF
+frame-record, and selected-frame-candidate limits during traversal. The planned
 `decode/resource-limit` diagnostic remains documented but not emitted by source.
 The workspace now includes scaffolded `splot-recon` and `splot-decode` crates
 for future reconstruction primitives and the future decode driver. `splot-decode`
 also exposes `DecodeRuntimeConfig` and `DecodeContext`; each context owns one
 `splot_parallel::WorkerPool` configured by the `--threads auto|N` runtime policy,
-and now provides a parsed-input stream planner over
-`splot_core::stream::ParsedBitstream`. The planner is a library-only
-`DecodeContext::plan_stream` API: it preserves raw Annex B / IVF OBU order and
-offset metadata, selects only the base minimal-tier layer, treats
-`OBU_CLOSED_LOOP_KEY` as the only frame candidate, and rejects malformed parsed
-sources or unsupported structures transactionally. It is not a raw
-byte-consuming decode API and does not change `splot decode` CLI behavior.
+and now provides library-only stream planners over raw bytes and already parsed
+`splot-core` stream structures. `DecodeContext::plan_bytes` walks raw Annex B or
+IVF/DKIF bytes with bounded traversal before returning the same
+`DecodeStreamPlan` as `DecodeContext::plan_stream`; both paths preserve raw
+Annex B / IVF OBU order and offset metadata, select only the base minimal-tier
+layer, treat `OBU_CLOSED_LOOP_KEY` as the only frame candidate, and reject
+malformed sources or unsupported structures transactionally. These APIs do not
+decode tile payloads, reconstruct pixels, produce hashes, write Y4M, or change
+`splot decode` CLI behavior.
 `splot-recon` now exposes immutable decoded output frame and plane model types
 with constructor invariants plus a bounded immutable reference-slot container,
 and canonical decoded-frame hash input serialization, but no reconstruction
-algorithm, byte-consuming decode path, hash digest computation, Y4M output, or
-AV2 reference refresh semantics exists yet. `splot-recon` remains scheduler-free:
+algorithm, hash digest computation, Y4M output, or AV2 reference refresh
+semantics exists yet. `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
 `splot-decode`, then call deterministic reconstruction primitives.
 
@@ -113,11 +116,11 @@ other external decoder is forbidden.
 | Stage | Scope | Status |
 |---|---|---|
 | 0 | Roadmap, support matrix, generated status, drift gate | supported |
-| 1 | Decode API contract, runtime context, limits, resource diagnostics, crate scaffolding, plan-only byte entry point | crate scaffolding, `DecodeContext` worker-pool runtime policy, and limits runtime API supported; byte-consuming enforcement planned |
+| 1 | Decode API contract, runtime context, limits, resource diagnostics, crate scaffolding, plan-only byte entry point | crate scaffolding, `DecodeContext` worker-pool runtime policy, limits runtime API, and bounded byte-stream planning supported; resource diagnostic emission planned |
 | 2 | Shared decoded frame, plane, pixel format, and deterministic hash types | frame/plane model types and hash-input serialization supported; digest computation planned |
 | 3 | CLI `splot decode` contract backed by library diagnostics | hash output parse contract wired; runtime unsupported |
-| 4 | Container traversal, base-layer parsed traversal, transactional decode planning | parsed `splot-core` stream planner supported; operating-point selection and raw-byte/CLI runtime planned |
-| 5 | Self-contained decode fuzz target and fixture smoke | planned for the first raw byte-consuming decode entry point |
+| 4 | Container traversal, base-layer parsed/raw traversal, transactional decode planning | parsed and raw-byte stream planners supported; operating-point selection and CLI runtime planned |
+| 5 | Self-contained decode fuzz target and fixture smoke | `decode_plan_bytes` fuzz target supported for the raw byte planner; decode fixtures planned |
 | 6 | AV2 § 8 symbol/CDF decoder foundation | planned |
 | 7 | Constrained intra tile syntax | planned |
 | 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | planned |
@@ -232,14 +235,13 @@ maximum dimensions (§ 6.4.1), reference-frame count (§ 6.4.6), per-frame
 dimensions (§ 6.17.4.1), tile grid counts (§ 6.17.7.2), tile group count and
 semantics (§ 5.19 and § 6.18), tile payload traversal and semantics (§ 5.20.1
 and § 6.19.1), the general decode input/output model (§ 7.1), decoded output
-arrays (§ 7.21), and reference frame storage (§ 7.23). A future planner must
-check `max_input_bytes` before buffering or accepting input bytes, check
-`max_obus` before continuing OBU traversal or accumulating OBU state, and check
-`max_ivf_frame_records` before traversing IVF frame records in a parsed
-container plan. Future runtime stages must check
-the relevant derived resource limit before allocating decoded frames, traversing
-tile payloads, storing reference frames, producing frame hashes, or writing Y4M
-output.
+arrays (§ 7.21), and reference frame storage (§ 7.23). The byte-stream planner
+checks `max_input_bytes` before traversing accepted input bytes, checks
+`max_obus` before continuing OBU traversal or accumulating OBU state, and checks
+`max_ivf_frame_records` before traversing each complete IVF frame record. Future
+runtime stages must check the relevant derived resource limit before allocating
+decoded frames, traversing tile payloads, storing reference frames, producing
+frame hashes, or writing Y4M output.
 
 Every derived `actual` resource value must be computed with checked arithmetic
 before comparison or allocation. Overflow while deriving dimensions, strides,
@@ -255,10 +257,11 @@ use finite repository policy thresholds for CI, fuzzing, and early decoder work.
 already parsed stream: `max_input_bytes` from the caller-supplied input length,
 `max_obus` before adding each planned OBU, `max_ivf_frame_records` before
 traversing each IVF frame record, and `max_frames_to_decode` before accepting
-each closed-loop-key frame candidate. Because the API accepts
-`ParsedBitstream` rather than raw bytes, it does not bound `splot-core` parser
-allocation before parsing. The first raw byte-consuming decode entry point must
-add bounded traversal/fuzz coverage before it is marked supported.
+each closed-loop-key frame candidate. `DecodeContext::plan_bytes` is the first
+raw byte-consuming planner: it performs bounded raw Annex B / IVF traversal and
+then reuses the same selected-frame-candidate limit and unsupported-structure
+classification as the parsed planner. It is still plan-only and does not parse
+tile payloads or allocate decoded frames.
 
 ## Decoded Frame and Plane Model Contract
 

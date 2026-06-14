@@ -22,6 +22,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 splot-core = { path = "../crates/splot-core" }
+splot-decode = { path = "../crates/splot-decode" }
+splot-parallel = { path = "../crates/splot-parallel" }
 splot-validate = { path = "../crates/splot-validate" }
 
 [[bin]]
@@ -48,6 +50,13 @@ bench = false
 [[bin]]
 name = "parse_bitstream"
 path = "fuzz_targets/parse_bitstream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_plan_bytes"
+path = "fuzz_targets/decode_plan_bytes.rs"
 test = false
 doc = false
 bench = false

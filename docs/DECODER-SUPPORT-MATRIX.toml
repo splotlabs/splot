@@ -69,7 +69,7 @@ status = "supported"
 self_contained_tests = ["cargo check -p splot-recon --locked", "cargo check -p splot-decode --locked", "cargo xtask check-dependency-direction", "cargo xtask check-decoder-support"]
 diagnostics = []
 local_reference_evidence = []
-notes = "Approved workspace scaffolds for future reconstruction primitives and the future decode driver. `splot-recon` has no `splot-*` dependencies and stays scheduler-free; `splot-decode` currently depends on `splot-parallel` for the context-owned worker-pool runtime scaffold, with future source-backed decode dependencies on `splot-core` and `splot-recon` added only when runtime decode needs them. The crates expose no runtime reconstruction or byte-consuming decode API and do not invoke AVM/dav2d. The current unsupported diagnostic API is tracked by `decode-unsupported-diagnostic-api`, and the runtime context is tracked by `decode-runtime-context`."
+notes = "Approved workspace scaffolds for future reconstruction primitives and the future decode driver. `splot-recon` has no `splot-*` dependencies and stays scheduler-free; `splot-decode` depends on `splot-core` for source-backed stream planning and `splot-parallel` for the context-owned worker-pool runtime scaffold, with a future `splot-recon` dependency added only when runtime decode/reconstruction needs it. The crates expose no runtime reconstruction, hash, Y4M, or decoded-output API and do not invoke AVM/dav2d. The current unsupported diagnostic API is tracked by `decode-unsupported-diagnostic-api`, and the runtime context is tracked by `decode-runtime-context`."
 
 [[row]]
 id = "decode-runtime-context"
@@ -167,7 +167,7 @@ status = "partial"
 self_contained_tests = ["openspec validate --all --no-interactive", "cargo xtask check-decoder-support"]
 diagnostics = ["decode/resource-limit (planned)"]
 local_reference_evidence = []
-notes = "Budget/enforcement contract for `DecodeOptions { limits: DecodeLimits }`: covers input bytes, OBU count, coded/output frame counts, coded frame dimensions, coded luma samples, decoded frame bytes, reference slots, reference-store bytes, tile count, tile payload bytes, and output bytes. Runtime policy types are tracked by `decode-limits-runtime-api`, but byte-consuming limit enforcement and emitted `decode/resource-limit` diagnostics do not exist yet."
+notes = "Budget/enforcement contract for `DecodeOptions { limits: DecodeLimits }`: covers input bytes, OBU count, coded/output frame counts, coded frame dimensions, coded luma samples, decoded frame bytes, reference slots, reference-store bytes, tile count, tile payload bytes, and output bytes. Runtime policy types are tracked by `decode-limits-runtime-api`; the byte-stream planner now applies the limits it can derive during traversal (`max_input_bytes`, `max_obus`, `max_ivf_frame_records`, and selected `max_frames_to_decode`). Emitted `decode/resource-limit` diagnostics and decode-stage dimension/tile/output/reference allocation enforcement do not exist yet."
 
 [[row]]
 id = "decode-limits-runtime-api"
@@ -181,7 +181,7 @@ status = "supported"
 self_contained_tests = ["crates/splot-decode/src/limits.rs::tests", "crates/splot-decode/src/lib.rs::tests::unsupported_feature_diagnostic_has_stable_fields", "cargo test -p splot-decode --locked", "cargo clippy -p splot-decode --all-targets --locked -- -D warnings", "cargo xtask check-diagnostic-registry", "cargo xtask check-dependency-direction", "cargo xtask check-decoder-support"]
 diagnostics = []
 local_reference_evidence = []
-notes = "Source-backed runtime API for caller-provided `DecodeOptions { limits: DecodeLimits }`, typed limit names, units, thresholds, inclusive pure checks, checked arithmetic helpers, allocation-size handoff checks, finite defaults, explicit zero/unlimited policies, and local typed limit errors in `splot-decode`. The API uses `max_reference_slots`, `max_reference_store_bytes`, and `max_tile_payload_bytes` to avoid overclaiming AV2 semantics. It is policy-only: it does not consume bytes, allocate from bitstream-derived values, traverse OBUs or tiles, emit `decode/resource-limit`, compute hashes, write Y4M, reconstruct pixels, store references, change CLI behavior, or invoke AVM/dav2d."
+notes = "Source-backed runtime API for caller-provided `DecodeOptions { limits: DecodeLimits }`, typed limit names, units, thresholds, inclusive pure checks, checked arithmetic helpers, allocation-size handoff checks, finite defaults, explicit zero/unlimited policies, and local typed limit errors in `splot-decode`. The API uses `max_reference_slots`, `max_reference_store_bytes`, and `max_tile_payload_bytes` to avoid overclaiming AV2 semantics. The `decode-byte-stream-planner` row covers the first byte-consuming use of input/OBU/IVF/frame-candidate limits. This row itself remains policy-only: it does not allocate decoded frames, traverse tile payloads, emit `decode/resource-limit`, compute hashes, write Y4M, reconstruct pixels, store references, change CLI behavior, or invoke AVM/dav2d."
 
 [[row]]
 id = "decoded-frame-plane-model"
@@ -223,7 +223,7 @@ status = "partial"
 self_contained_tests = ["openspec validate --all --no-interactive", "cargo xtask check-decoder-support"]
 diagnostics = ["decode/unsupported-feature (planned for streams outside the supported tier)", "decode/resource-limit (planned)"]
 local_reference_evidence = []
-notes = "Contract-only `splot.decode.minimal_tier` v1 and `minimal-intra-8bit420-hash-v1` policy: Annex B input, single selected xlayer, mlayer, and tlayer, `seq_profile_idc == 0` Main 8-bit 4:2:0, `obu_type == OBU_CLOSED_LOOP_KEY` output, no crop, one tile and one tile group, hash-first success, and explicit unsupported-feature or resource-limit rejection outside the tier. This is not an Annex A level-conformant decoder claim. No runtime decode path, layer selection, reconstruction, hashes, Y4M output, new emitted diagnostic, or local reference evidence exists yet."
+notes = "Contract-only `splot.decode.minimal_tier` v1 and `minimal-intra-8bit420-hash-v1` policy: Annex B input, single selected xlayer, mlayer, and tlayer, `seq_profile_idc == 0` Main 8-bit 4:2:0, `obu_type == OBU_CLOSED_LOOP_KEY` output, no crop, one tile and one tile group, hash-first success, and explicit unsupported-feature or resource-limit rejection outside the tier. This is not an Annex A level-conformant decoder claim. Source-backed base-layer stream planning now exists in `decode-stream-state` and `decode-byte-stream-planner`, but no tile payload decode, reconstruction, hashes, Y4M output, new emitted diagnostic, or local reference evidence exists yet."
 
 [[row]]
 id = "decode-stream-state"
@@ -237,7 +237,21 @@ status = "partial"
 self_contained_tests = ["crates/splot-decode/src/stream_plan.rs::tests", "crates/splot-decode/src/stream_plan/tests.rs::tests", "cargo test -p splot-decode --locked", "cargo xtask check-dependency-direction", "cargo xtask check-concurrency-policy", "cargo xtask check-decoder-support"]
 diagnostics = ["decode/unsupported-feature (library unsupported-structure metadata; CLI emission unchanged)"]
 local_reference_evidence = []
-notes = "Source-backed parsed-input stream planner: `DecodeContext::plan_stream` consumes already parsed `splot_core::stream::ParsedBitstream` plus caller-supplied input length, preserves raw Annex B and IVF OBU order/offset metadata, selects only the documented base layer while enforcing §6.2.2 global/local xlayer scope rules, treats `OBU_CLOSED_LOOP_KEY` as the only frame candidate, applies `max_input_bytes`, `max_obus`, `max_ivf_frame_records`, and `max_frames_to_decode`, and rejects malformed sources or unsupported structures transactionally. Operating-point selection remains rejected/planned. This is not a raw byte-consuming decode API: it does not read files, bound pre-parse parser allocation, parse tile payloads, call `payload_status()`, reconstruct pixels, compute hashes, write Y4M, refresh references, change `splot decode` CLI behavior, emit new CLI diagnostics, add a fuzz target, or invoke AVM/dav2d."
+notes = "Source-backed parsed-input stream planner: `DecodeContext::plan_stream` consumes already parsed `splot_core::stream::ParsedBitstream` plus caller-supplied input length, preserves raw Annex B and IVF OBU order/offset metadata, selects only the documented base layer while enforcing §6.2.2 global/local xlayer scope rules, treats `OBU_CLOSED_LOOP_KEY` as the only frame candidate, applies `max_input_bytes`, `max_obus`, `max_ivf_frame_records`, and `max_frames_to_decode`, and rejects malformed sources or unsupported structures transactionally. Operating-point selection remains rejected/planned. The raw byte-consuming planner is tracked separately by `decode-byte-stream-planner`. This row does not parse tile payloads, call `payload_status()`, reconstruct pixels, compute hashes, write Y4M, refresh references, change `splot decode` CLI behavior, emit new CLI diagnostics, invoke AVM/dav2d, or add AVM/dav2d integration."
+
+[[row]]
+id = "decode-byte-stream-planner"
+name = "Byte-consuming decode stream planner"
+feature_id = "DECODE-BYTE-STREAM-PLANNER"
+spec_sections = ["4.11.6", "Annex B.2", "Annex B.3", "5.2.1", "5.2.2", "6.2.1", "6.2.2", "7.1", "7.3"]
+parser_source = "crates/splot-decode/src/byte_stream.rs; crates/splot-core/src/annexb.rs; crates/splot-core/src/ivf.rs"
+decode_module = "crates/splot-decode/src/byte_stream.rs; crates/splot-decode/src/context.rs"
+tier = "tier0-plan"
+status = "supported"
+self_contained_tests = ["crates/splot-decode/src/byte_stream.rs::tests", "crates/splot-decode/src/stream_plan/tests.rs::tests::byte_planner_raw_annex_b_matches_parsed_plan", "crates/splot-decode/src/stream_plan/tests.rs::tests::ivf_plan_preserves_frame_context_and_warning_metadata", "crates/splot-decode/src/stream_plan/tests.rs::tests::byte_planner_malformed_sources_are_transactional", "crates/splot-decode/src/stream_plan/tests.rs::tests::byte_planner_limits_reject_before_unbounded_traversal", "crates/splot-decode/src/stream_plan/tests.rs::tests::byte_planner_propagates_unsupported_structures", "crates/splot-decode/src/stream_plan/tests.rs::tests::byte_planning_is_deterministic_across_thread_policies", "cargo test -p splot-decode --locked", "cargo check --manifest-path fuzz/Cargo.toml --bins", "cargo xtask check-dependency-direction", "cargo xtask check-concurrency-policy", "cargo xtask check-decoder-support"]
+diagnostics = ["decode/unsupported-feature (library unsupported-structure metadata; CLI emission unchanged)", "decode/resource-limit (typed library limit error; CLI diagnostic still planned/unemitted)"]
+local_reference_evidence = []
+notes = "Source-backed `DecodeContext::plan_bytes` byte-consuming stream planner: raw bytes are treated as Annex B unless they begin with IVF/DKIF, IVF frame payloads are traversed as Annex B, and the result is the same deterministic `DecodeStreamPlan` shape as the parsed-input planner. The byte walker checks `max_input_bytes` before traversal, `max_obus` before retaining the next OBU across the whole stream, `max_ivf_frame_records` before processing each complete IVF frame record, and reuses parsed-planner `max_frames_to_decode` enforcement for accepted `OBU_CLOSED_LOOP_KEY` candidates. It preserves OBU source order, offsets, sizes, payload lengths, headers, IVF frame context, and warnings, rejects malformed sources or unsupported structures transactionally, and runs inside `DecodeContext`'s context-owned `splot_parallel::WorkerPool`. It does not read files, change `splot decode` CLI behavior, parse tile payloads, call `payload_status()`, reconstruct pixels, compute hashes, write Y4M, refresh references, invoke AVM/dav2d, or add AVM/dav2d integration."
 
 [[row]]
 id = "symbol-decoder"
@@ -312,13 +326,13 @@ notes = "Source-backed `splot-recon` runtime reference-slot container for immuta
 [[row]]
 id = "decode-fuzz-entrypoint"
 name = "Decode fuzz entry point"
-feature_id = ""
-spec_sections = []
-parser_source = "fuzz/fuzz_targets/validate_bytes.rs"
-decode_module = "planned"
+feature_id = "DECODE-BYTE-STREAM-PLANNER"
+spec_sections = ["4.11.6", "Annex B.2", "5.2.1", "7.1"]
+parser_source = "fuzz/fuzz_targets/decode_plan_bytes.rs"
+decode_module = "crates/splot-decode/src/context.rs::DecodeContext::plan_bytes"
 tier = "foundation"
-status = "todo"
-self_contained_tests = []
+status = "supported"
+self_contained_tests = ["cargo check --manifest-path fuzz/Cargo.toml --bins", "cargo +nightly fuzz run decode_plan_bytes (local/nightly; CI fuzz smoke runs every target)"]
 diagnostics = []
 local_reference_evidence = []
-notes = "First byte-consuming decode API must get a self-contained fuzz target with safe limits."
+notes = "Self-contained cargo-fuzz target `decode_plan_bytes` feeds arbitrary bytes through `DecodeContext::plan_bytes` with finite safe limits and asserts only typed return/no panic. It does not require AVM, dav2d, network access, generated external fixtures, checked-in local reference paths, decoded output files, hashes, or Y4M output. Full local runs require nightly/cargo-fuzz; stable proof for this change is the fuzz crate build plus unit tests, while CI fuzz-smoke runs every target when cargo-fuzz is available."

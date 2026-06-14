@@ -55,6 +55,10 @@ not AV2 bitstream syntax and has no AV2 spec section; `splot-core` treats it as 
 container envelope, then parses frame payloads through the normal AV2 Annex B path.
 Use [Duck IVF](https://wiki.multimedia.cx/index.php/Duck_IVF) only for the generic
 container layout (header fields and frame records), not for AV2 semantics.
+Decoder byte-stream planning (`DECODE-BYTE-STREAM-PLANNER`) uses the same local
+container boundary: raw bytes are interpreted as AV2 Annex B unless they begin
+with `DKIF`, in which case IVF frame payloads are traversed as Annex B while IVF
+timestamps remain container metadata only.
 
 ## Encoder implementation precondition
 

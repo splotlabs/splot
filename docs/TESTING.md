@@ -8,7 +8,7 @@
 2. **Property / fuzz tests** — the parsers and the validator must never panic on
    arbitrary input. Implemented as `*_never_panic(s)` tests across the
    `splot-core` parser modules and `crates/splot-validate/tests/validator_never_panics.rs`
-   (mostly proptests, plus a few exhaustive-truncation unit tests). Four `cargo
+   (mostly proptests, plus a few exhaustive-truncation unit tests). Five `cargo
    fuzz` targets cover every public byte-consuming entry point and need a nightly
    toolchain; they run as a blocking per-target smoke (~45s each) in PR CI:
    - `parse_obu` — `read_leb128`, `read_obu_header`, `parse_annex_b_obus`.
@@ -19,12 +19,14 @@
    - `validate_bytes` — `Validator::validate_bytes_with_options` (the
      highest-coverage target: transitively reaches every OBU payload parser, both
      container formats, and every validator check).
+   - `decode_plan_bytes` — `DecodeContext::plan_bytes` with finite limits
+     (bounded plan-only traversal over arbitrary raw Annex B or IVF/DKIF bytes).
 3. **Decode planner unit tests** — `splot-decode` plan-only APIs over already
    parsed `splot-core` stream output must preserve OBU order/source metadata,
-   reject malformed parsed sources transactionally, enforce the limits they can
-   derive from parsed input, and prove deterministic plan metadata across decode
-   thread-count policies. The parsed stream planner is not a raw byte-consuming
-   decode entry point; the first raw decode planner must add a fuzz target.
+   reject malformed sources transactionally, enforce the limits they can derive
+   from parsed or raw byte input, and prove deterministic plan metadata across
+   decode thread-count policies. The raw byte planner is covered by the
+   `decode_plan_bytes` fuzz target.
 4. **CLI integration tests** — `crates/splot-cli/tests/cli.rs` runs the `splot`
    binary against the fixtures in `tests/fixtures/` and generated temporary IVF
    inputs (exit codes, `--json`, `inspect`). Implemented; snapshot tests for
@@ -49,8 +51,8 @@ cargo xtask check-decoder-support # generated decoder support docs drift gate
 # never-panic invariant with bounded random inputs.
 cargo xtask fuzz [--time <secs>]    # local fuzz smoke over every target (nightly + cargo-fuzz, run-if-present), default 30s each
 cargo install cargo-fuzz --locked
-cargo +nightly fuzz list            # parse_obu, parse_ivf, parse_bitstream, validate_bytes
-cargo +nightly fuzz run parse_obu   # run a single target (swap the name for any of the four)
+cargo +nightly fuzz list            # parse_obu, parse_ivf, parse_bitstream, validate_bytes, decode_plan_bytes
+cargo +nightly fuzz run parse_obu   # run a single target (swap the name for any target above)
 
 cargo xtask conformance         # run the committed conformance corpus (no AVM)
 ```
