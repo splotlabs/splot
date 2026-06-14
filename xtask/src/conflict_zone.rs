@@ -59,8 +59,11 @@ const SKIP_ENV: &str = "SPLOT_SKIP_CONFLICT_ZONE";
 /// branch for the decoder-stream exemption.
 const PR_HEAD_REF_ENV: &str = "SPLOT_PR_HEAD_REF";
 
-/// Candidate refs for the `main` base, tried in order.
-const BASE_REFS: &[&str] = &["origin/main", "main", "FETCH_HEAD"];
+/// Candidate refs for the `main` base, tried in order. Deliberately excludes
+/// `FETCH_HEAD`, which names the last fetched ref (often a PR head or a stale,
+/// unrelated ref), not `main`; when neither candidate resolves the guard skips
+/// with a notice rather than comparing against an unrelated base.
+const BASE_REFS: &[&str] = &["origin/main", "main"];
 
 /// Classifies a forward-slash repo-relative path against the conflict-zone
 /// denylist, returning a stable reason when the path is forbidden.
@@ -80,18 +83,14 @@ fn is_forbidden(path: &str) -> Option<&'static str> {
     None
 }
 
-/// Returns `true` when any path segment, split into alphanumeric tokens, equals
-/// `avm` or `dav2d` (case-insensitive). Tokenizing means `av2` (the codec name)
-/// never matches and only a real `avm`/`dav2d` component does.
+/// Returns `true` when the path contains `avm` or `dav2d` (case-insensitive).
+/// Substring (not exact-token) matching catches integration wrapper names such as
+/// `avmenc`, `avmdec`, and `libdav2d`; `av2` (the codec name) does not contain
+/// `avm`. This is only consulted for paths already under [`AVM_SCAN_ROOTS`], so
+/// material outside the code/build roots is never inspected.
 fn mentions_avm_or_dav2d(path: &str) -> bool {
-    path.split('/').any(|segment| {
-        segment
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|token| {
-                let token = token.to_ascii_lowercase();
-                token == "avm" || token == "dav2d"
-            })
-    })
+    let path = path.to_ascii_lowercase();
+    path.contains("avm") || path.contains("dav2d")
 }
 
 /// Returns the current branch name, or `None` when HEAD is detached (CI checks out
@@ -136,7 +135,10 @@ fn is_decoder_branch(branch: &str) -> bool {
         .split(|c: char| !c.is_ascii_alphanumeric())
         .any(|token| {
             let token = token.to_ascii_lowercase();
+            // `decode` covers decode/decoder/decoded/decodes/decoders; `decoding`
+            // needs its own prefix because its 6th letter is `i`, not `e`.
             token.starts_with("decode")
+                || token.starts_with("decoding")
                 || token.starts_with("reconstruct")
                 || token == "recon"
                 || token == "recons"
@@ -296,14 +298,17 @@ mod tests {
     }
 
     #[test]
-    fn avm_token_match_is_segment_scoped() {
+    fn avm_match_catches_integration_binaries() {
         assert!(mentions_avm_or_dav2d("crates/foo/avm.rs"));
         assert!(mentions_avm_or_dav2d("crates/foo/avm_oracle.rs"));
         assert!(mentions_avm_or_dav2d("scripts/run-dav2d.sh"));
+        // Integration wrapper names (substring match, not exact token).
+        assert!(mentions_avm_or_dav2d("scripts/run-avmenc.sh"));
+        assert!(mentions_avm_or_dav2d("scripts/run-avmdec.sh"));
+        assert!(mentions_avm_or_dav2d("scripts/build-libdav2d.sh"));
+        // `av2` (codec name) is not `avm`.
         assert!(!mentions_avm_or_dav2d("docs/spec/av2/1.0.0/index.md"));
-        // `av2` (codec name) and `cavm`-style substrings must not match the `avm` token.
         assert!(!mentions_avm_or_dav2d("crates/foo/av2.rs"));
-        assert!(!mentions_avm_or_dav2d("crates/splot-core/src/cavm.rs"));
     }
 
     #[test]
@@ -316,6 +321,7 @@ mod tests {
         // Family-prefix match: morphological variants of decode*/reconstruct* are
         // exempted so a real decoder branch is never gated (the prime directive).
         assert!(is_decoder_branch("codex/decoders-cleanup"));
+        assert!(is_decoder_branch("feat/decoding-pipeline"));
         assert!(is_decoder_branch("feat/reconstructed-frame-store"));
         assert!(is_decoder_branch("feat/reconstruct-pipeline"));
         assert!(is_decoder_branch("feat/recons-helper"));

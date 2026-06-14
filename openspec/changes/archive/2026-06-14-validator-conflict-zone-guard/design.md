@@ -24,14 +24,15 @@ New module `xtask/src/conflict_zone.rs` (standalone; depends only on
   `avm`/`dav2d` path is an integration attempt: `crates/`, `scripts/`, `tools/`,
   `fuzz/`, `xtask/`, `.github/`.
 - `fn is_forbidden(path: &str) -> Option<&'static str>` — pure classifier
-  (prefix / exact / scoped AVM-token match). The single unit-tested core.
-- `fn mentions_avm_or_dav2d(path) -> bool` — tokenizes each path segment on
-  non-alphanumeric chars and matches the tokens `avm` / `dav2d` exactly, so `av2`
-  (the codec name) never matches and `avm` only matters under a scan root.
+  (prefix / exact / scoped AVM substring match). The single unit-tested core.
+- `fn mentions_avm_or_dav2d(path) -> bool` — case-insensitive substring match for
+  `avm` / `dav2d` (catches wrappers like `avmenc`/`libdav2d`); `av2` (the codec
+  name) does not contain `avm`, and it is only consulted under a scan root.
 - `pub(crate) fn check_conflict_zone(root: &Path) -> Result<()>` — resolve base,
   diff, classify, report.
 
-Base resolution: try `origin/main`, then `main`, then `FETCH_HEAD`; compute
+Base resolution: try `origin/main`, then `main` (never `FETCH_HEAD`, which can
+name a PR head or stale ref); compute
 `merge-base <ref> HEAD` and diff `merge-base..HEAD` with
 `git diff --name-only` (three-dot `main...HEAD` semantics). Reporting mirrors
 `check_spec_mirror` / `check_license_headers`: accumulate offenders, `eprintln!`
