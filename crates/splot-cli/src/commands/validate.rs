@@ -48,9 +48,13 @@ pub fn run(args: &ValidateArgs) -> Result<ExitCode> {
     let validator = Validator::new(args.strict);
     let report = validator.validate_bytes(&data);
 
+    // The single pass/fail decision (honors --strict) drives both the exit code and
+    // the reported conformance, so the summary never contradicts the exit code.
+    let acceptable = validator.is_acceptable(&report);
     let render = RenderOptions {
         max_diagnostics: args.max_diagnostics,
         summary_only: args.summary_only,
+        acceptable: Some(acceptable),
     };
     if args.json {
         let json = serde_json::to_string_pretty(&report.rendered(&render))
@@ -60,7 +64,7 @@ pub fn run(args: &ValidateArgs) -> Result<ExitCode> {
         print!("{}", report.render_text(&render));
     }
 
-    Ok(if validator.is_acceptable(&report) {
+    Ok(if acceptable {
         ExitCode::from(0)
     } else {
         ExitCode::from(1)

@@ -30,6 +30,13 @@ pub struct RenderOptions {
     /// Show only the summary counts and the conformance line, no per-diagnostic
     /// lines. Takes precedence over [`RenderOptions::max_diagnostics`].
     pub summary_only: bool,
+    /// The authoritative pass/fail decision (e.g. `Validator::is_acceptable`,
+    /// which honors `--strict`) to report as "conformant". `None` (the default)
+    /// falls back to `ValidationReport::is_conformant` (no errors), which keeps the
+    /// default render byte-identical to the `Display` output. Set it so the printed
+    /// conformance line and the JSON `conformant` field match the exit code under
+    /// `--strict` (where a warning-only report is not acceptable).
+    pub acceptable: Option<bool>,
 }
 
 /// The summary counts for a report, derived from the full diagnostic list.
@@ -41,7 +48,8 @@ pub struct ReportSummary {
     pub warnings: usize,
     /// Number of [`crate::Severity::Info`] diagnostics.
     pub info: usize,
-    /// `true` when the report has no errors.
+    /// The pass/fail decision: [`RenderOptions::acceptable`] when set (so it tracks
+    /// the exit code under `--strict`), otherwise whether the report has no errors.
     pub conformant: bool,
 }
 
@@ -61,13 +69,14 @@ pub struct Truncation {
 ///
 /// With [`RenderOptions::default`] this serializes to exactly `{"diagnostics": […]}`
 /// — byte-compatible with the historical `serde_json` output of
-/// [`ValidationReport`]. `summary` is present only under
-/// [`RenderOptions::summary_only`]; `truncation` only when capping omitted some
-/// diagnostics. The `diagnostics` key is always present (empty under summary-only)
-/// so naive consumers never break.
+/// [`ValidationReport`]. `summary` is present under [`RenderOptions::summary_only`]
+/// and whenever `--max-diagnostics` truncated the list (so a consumer counting the
+/// capped array still has the true counts); `truncation` only when capping omitted
+/// some diagnostics. The `diagnostics` key is always present (empty under
+/// summary-only) so naive consumers never break.
 #[derive(Debug, Serialize)]
 pub struct RenderedReport<'a> {
-    /// Summary counts; present only under [`RenderOptions::summary_only`].
+    /// Summary counts; present under summary-only or when capping truncated the list.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<ReportSummary>,
     /// The (possibly capped) diagnostics; empty under summary-only.
@@ -87,21 +96,33 @@ impl ValidationReport {
         (errors, warnings, info)
     }
 
-    /// The summary counts derived from the full report.
+    /// The error-based summary counts derived from the full report (`conformant`
+    /// reflects [`ValidationReport::is_conformant`], i.e. no errors).
     #[must_use]
     pub fn summary(&self) -> ReportSummary {
+        self.build_summary(self.is_conformant())
+    }
+
+    /// Builds a [`ReportSummary`] over the full counts with the given conformance.
+    fn build_summary(&self, conformant: bool) -> ReportSummary {
         let (errors, warnings, info) = self.counts();
         ReportSummary {
             errors,
             warnings,
             info,
-            conformant: self.is_conformant(),
+            conformant,
         }
+    }
+
+    /// The conformance to report: [`RenderOptions::acceptable`] when set, else
+    /// [`ValidationReport::is_conformant`] (so the default render matches `Display`).
+    fn conformant_for(&self, options: &RenderOptions) -> bool {
+        options.acceptable.unwrap_or_else(|| self.is_conformant())
     }
 
     /// Renders the report as text under `options`. With
     /// [`RenderOptions::default`] this equals the [`core::fmt::Display`] output. The
-    /// summary lines are always computed from the full report.
+    /// summary line counts are always computed from the full report.
     #[must_use]
     pub fn render_text(&self, options: &RenderOptions) -> String {
         let mut out = String::new();
@@ -120,7 +141,7 @@ impl ValidationReport {
         }
         let (errors, warnings, info) = self.counts();
         let _ = writeln!(out, "{errors} error(s), {warnings} warning(s), {info} info");
-        if self.is_conformant() {
+        if self.conformant_for(options) {
             let _ = writeln!(out, "conformant: no errors found");
         } else {
             let _ = writeln!(out, "NOT conformant");
@@ -131,9 +152,10 @@ impl ValidationReport {
     /// Builds the machine-readable view of the report under `options`.
     #[must_use]
     pub fn rendered(&self, options: &RenderOptions) -> RenderedReport<'_> {
+        let conformant = self.conformant_for(options);
         if options.summary_only {
             return RenderedReport {
-                summary: Some(self.summary()),
+                summary: Some(self.build_summary(conformant)),
                 diagnostics: Vec::new(),
                 truncation: None,
             };
@@ -147,8 +169,11 @@ impl ValidationReport {
             total,
             omitted: total - shown,
         });
+        // When the list is capped, include the full counts so a consumer reading
+        // only the capped array still sees the true error/warning totals.
+        let summary = truncation.is_some().then(|| self.build_summary(conformant));
         RenderedReport {
-            summary: None,
+            summary,
             diagnostics,
             truncation,
         }
@@ -191,6 +216,7 @@ mod tests {
         let opts = RenderOptions {
             max_diagnostics: Some(1),
             summary_only: false,
+            acceptable: None,
         };
         let text = report.render_text(&opts);
         assert!(text.contains("obu-header/test-warning"), "{text}");
@@ -210,6 +236,7 @@ mod tests {
         let opts = RenderOptions {
             max_diagnostics: None,
             summary_only: true,
+            acceptable: None,
         };
         let text = report.render_text(&opts);
         assert!(!text.contains("obu-header/test-error-1"), "{text}");
@@ -233,6 +260,7 @@ mod tests {
         let opts = RenderOptions {
             max_diagnostics: Some(2),
             summary_only: false,
+            acceptable: None,
         };
         let rendered = report.rendered(&opts);
         assert_eq!(rendered.diagnostics.len(), 2);
@@ -248,6 +276,7 @@ mod tests {
         let opts = RenderOptions {
             max_diagnostics: Some(1),
             summary_only: true,
+            acceptable: None,
         };
         let rendered = report.rendered(&opts);
         assert!(rendered.diagnostics.is_empty());
@@ -264,6 +293,7 @@ mod tests {
         let opts = RenderOptions {
             max_diagnostics: Some(0),
             summary_only: false,
+            acceptable: None,
         };
         let text = report.render_text(&opts);
         assert!(
@@ -273,5 +303,56 @@ mod tests {
         let rendered = report.rendered(&opts);
         assert!(rendered.diagnostics.is_empty());
         assert_eq!(rendered.truncation.map(|t| t.omitted), Some(3));
+    }
+
+    #[test]
+    fn acceptable_override_drives_conformance() {
+        // A warning-only report is conformant by the error-only rule, but under
+        // `--strict` it is not acceptable; `acceptable` makes the rendered
+        // conformance match the exit code.
+        let mut report = ValidationReport::new();
+        report.push(Diagnostic::warning("obu-header/test-warning", "a warning"));
+        assert!(report.is_conformant());
+
+        let strict = RenderOptions {
+            max_diagnostics: None,
+            summary_only: true,
+            acceptable: Some(false),
+        };
+        let text = report.render_text(&strict);
+        assert!(text.contains("NOT conformant"), "{text}");
+        assert!(!report.rendered(&strict).summary.unwrap().conformant);
+
+        // Default (acceptable: None) falls back to is_conformant → conformant.
+        let default = RenderOptions {
+            summary_only: true,
+            ..RenderOptions::default()
+        };
+        assert!(
+            report
+                .render_text(&default)
+                .contains("conformant: no errors found")
+        );
+        assert!(report.rendered(&default).summary.unwrap().conformant);
+    }
+
+    #[test]
+    fn capped_json_includes_full_summary() {
+        let report = report();
+        let opts = RenderOptions {
+            max_diagnostics: Some(1),
+            summary_only: false,
+            acceptable: Some(false),
+        };
+        let rendered = report.rendered(&opts);
+        assert_eq!(rendered.diagnostics.len(), 1);
+        assert!(rendered.truncation.is_some());
+        // The full counts are present even though the array is capped.
+        let summary = rendered
+            .summary
+            .expect("capped output carries the full summary");
+        assert_eq!(summary.errors, 2);
+        assert_eq!(summary.warnings, 1);
+        assert!(!summary.conformant);
     }
 }

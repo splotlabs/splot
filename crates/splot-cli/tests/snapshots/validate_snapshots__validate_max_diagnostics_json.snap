@@ -3,6 +3,12 @@ source: crates/splot-cli/tests/validate_snapshots.rs
 expression: stdout
 ---
 {
+  "summary": {
+    "errors": 2,
+    "warnings": 0,
+    "info": 0,
+    "conformant": false
+  },
   "diagnostics": [
     {
       "rule_id": "obu-order/temporal-unit-missing-delimiter",
