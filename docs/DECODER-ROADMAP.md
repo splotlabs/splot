@@ -28,12 +28,17 @@ have a source-backed `splot-decode` policy API for configured thresholds and
 pure checks, but no byte-consuming enforcement exists yet. The planned
 `decode/resource-limit` diagnostic remains documented but not emitted by source.
 The workspace now includes scaffolded `splot-recon` and `splot-decode` crates
-for future reconstruction primitives and the future decode driver.
+for future reconstruction primitives and the future decode driver. `splot-decode`
+also exposes `DecodeRuntimeConfig` and `DecodeContext`; each context owns one
+`splot_parallel::WorkerPool` configured by the `--threads auto|N` runtime policy,
+but the scaffold still reads no bytes and schedules no decode work.
 `splot-recon` now exposes immutable decoded output frame and plane model types
 with constructor invariants plus a bounded immutable reference-slot container,
 and canonical decoded-frame hash input serialization, but no reconstruction
 algorithm, byte-consuming decode path, hash digest computation, Y4M output, or
-AV2 reference refresh semantics exists yet.
+AV2 reference refresh semantics exists yet. `splot-recon` remains scheduler-free:
+future decoder code must partition and schedule parallel work from
+`splot-decode`, then call deterministic reconstruction primitives.
 
 Canonical decoder status lives in
 [`DECODER-SUPPORT-MATRIX.toml`](./DECODER-SUPPORT-MATRIX.toml), rendered to
@@ -102,7 +107,7 @@ other external decoder is forbidden.
 | Stage | Scope | Status |
 |---|---|---|
 | 0 | Roadmap, support matrix, generated status, drift gate | supported |
-| 1 | Decode API contract, limits, resource diagnostics, crate scaffolding, plan-only byte entry point | crate scaffolding and limits runtime API supported; byte-consuming enforcement partial |
+| 1 | Decode API contract, runtime context, limits, resource diagnostics, crate scaffolding, plan-only byte entry point | crate scaffolding, `DecodeContext` worker-pool runtime policy, and limits runtime API supported; byte-consuming enforcement planned |
 | 2 | Shared decoded frame, plane, pixel format, and deterministic hash types | frame/plane model types and hash-input serialization supported; digest computation planned |
 | 3 | CLI `splot decode` contract backed by library diagnostics | hash output parse contract wired; runtime unsupported |
 | 4 | Container traversal, layer/operating-point selection, transactional decode planning | minimal tier contract documented; runtime planned |
@@ -113,6 +118,37 @@ other external decoder is forbidden.
 | 9 | Y4M output and reconstructed reference-frame store | reference-slot runtime store supported; Y4M and AV2 refresh semantics planned |
 | 10 | Portable local-reference evidence manifests | metadata contract and offline checker wired; no entries yet |
 | 11 | Encoder reconstruction API contract | planned |
+
+## Runtime Concurrency Contract
+
+Decoder and reconstruction work must follow the repository concurrency policy in
+[`CONCURRENCY.md`](./CONCURRENCY.md), tracked by
+`INFRA-PARALLEL-RUNTIME-POLICY`. This is project runtime policy, not an AV2
+conformance rule, and it does not make the current unsupported decode entry
+point byte-consuming.
+
+The decoder/reconstruction ownership rule is:
+
+- `splot-decode` owns runtime orchestration through `DecodeRuntimeConfig` and a
+  `DecodeContext` with exactly one `splot_parallel::WorkerPool`;
+- data-parallel decode work must reach Rayon traits only through
+  `splot_parallel::prelude::*` and must run inside
+  `ctx.pool().install(|| { ... })`;
+- `splot-recon` stays pool-agnostic and must not construct worker pools, spawn
+  codec worker threads, depend on Rayon/crossbeam directly, or own decode
+  pipeline queues;
+- bounded queues are allowed only through `splot_parallel::bounded_queue` at
+  coarse producer/consumer boundaries, never for per-pixel, per-block, per-row,
+  or other hot inner-loop signalling;
+- future decoded-frame hashes, Y4M output, diagnostics, stats, progress events,
+  and reference-state commits must be emitted in AV2 bitstream, presentation, or
+  `splot` emission-index order, not worker completion order.
+
+Future runtime decode rows may not be marked supported until self-contained tests
+prove the supported behavior across all required thread-count forms:
+`--threads 1`, `--threads auto`, and at least one fixed positive
+`--threads N`. `--threads 0` remains a CLI/runtime alias for `auto`, resolved
+once when the context-owned pool is created.
 
 ## Spec Anchors
 
@@ -430,7 +466,8 @@ Maintainer approval for the decoder/reconstruction dependency graph landed on
 ```text
 crates/splot-core      bitstream model + parsers
 crates/splot-recon     decoded output model types; hash-input bytes; future reconstruction primitives, references
-crates/splot-decode    unsupported diagnostic API; future driver using splot-core + splot-recon
+crates/splot-parallel  approved local worker-pool and bounded-queue runtime policy
+crates/splot-decode    unsupported diagnostic API; runtime context; future driver using splot-core + splot-recon
 crates/splot-encode    future encoder, not yet depending on splot-recon
 crates/splot-cli       thin CLI rendering splot-decode diagnostics
 ```
@@ -439,7 +476,9 @@ The scaffold is still an ownership boundary for decode. `splot-recon` exposes a
 runtime decoded output frame/plane model, reference-slot container, and
 deterministic hash-input byte serializer, but no reconstruction algorithm, AV2
 reference refresh process, hash digest computation, or Y4M writer.
-`splot-decode` exposes no byte-consuming decode API, `splot-cli` only renders
-the current unsupported diagnostic path, and `splot-encode` remains unchanged
-until a later encoder/reconstruction API change explicitly adds reuse of
-`splot-recon`.
+`splot-decode` owns the future decode scheduler boundary through
+`DecodeRuntimeConfig` and `DecodeContext`, whose single `WorkerPool` is sized by
+the CLI/runtime `--threads` policy. It still exposes no byte-consuming decode
+API. `splot-cli` only renders the current unsupported diagnostic path, and
+`splot-encode` remains unchanged until a later encoder/reconstruction API change
+explicitly adds reuse of `splot-recon`.

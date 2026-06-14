@@ -14,7 +14,7 @@
 # Do NOT use percentages.
 
 matrix_version = 1
-last_reviewed = "2026-06-13"
+last_reviewed = "2026-06-14"
 
 # ---------------------------------------------------------------------------
 # Normative AV2 bitstream syntax and semantics
@@ -4868,7 +4868,7 @@ openspec_change = "decoder-crate-scaffolding"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds approved workspace scaffolds for `splot-recon` and `splot-decode`, plus dependency-direction and coverage-scope automation updates. `splot-recon` has no `splot-*` dependencies; `splot-decode` may depend only on `splot-core` and `splot-recon`. The scaffolds expose no runtime reconstruction or byte-consuming decode API, emit no decoder diagnostics, and do not invoke or require AVM/dav2d."
+notes = "Adds approved workspace scaffolds for `splot-recon` and `splot-decode`, plus dependency-direction and coverage-scope automation updates. `splot-recon` has no `splot-*` dependencies and stays scheduler-free. `splot-decode` currently depends on `splot-parallel` for `DecodeRuntimeConfig`/`DecodeContext` and its single owned `WorkerPool`; future byte-consuming decode source may add `splot-core` and `splot-recon` dependencies when runtime decode needs them. The scaffolds expose no runtime reconstruction or byte-consuming decode API, emit no decoder diagnostics beyond the separately tracked unsupported diagnostic descriptor, and do not invoke or require AVM/dav2d."
 
 [feature.status]
 mapped = "done"
@@ -4890,7 +4890,13 @@ commands = [
     "cargo xtask check-dependency-direction",
     "cargo xtask check-decoder-support",
 ]
-fixtures = ["crates/splot-recon/src/lib.rs", "crates/splot-decode/src/lib.rs"]
+fixtures = [
+    "crates/splot-recon/src/lib.rs",
+    "crates/splot-decode/Cargo.toml",
+    "crates/splot-decode/src/lib.rs",
+    "crates/splot-decode/src/context.rs",
+    "crates/splot-decode/src/runtime.rs",
+]
 diagnostics = []
 
 [[feature]]

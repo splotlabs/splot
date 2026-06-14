@@ -1,5 +1,5 @@
 matrix_version = 1
-last_reviewed = "2026-06-13"
+last_reviewed = "2026-06-14"
 
 [[row]]
 id = "decoder-roadmap"
@@ -13,7 +13,7 @@ status = "supported"
 self_contained_tests = ["cargo xtask check-decoder-support"]
 diagnostics = []
 local_reference_evidence = []
-notes = "Documents the encoder-grade decoder scope, staged supported tier, unsupported-feature contract, deterministic hash policy, and local-only AVM/dav2d boundary."
+notes = "Documents the encoder-grade decoder scope, staged supported tier, unsupported-feature contract, deterministic hash policy, local-only AVM/dav2d boundary, and decoder/reconstruction runtime concurrency contract."
 
 [[row]]
 id = "decoder-support-matrix"
@@ -69,7 +69,21 @@ status = "supported"
 self_contained_tests = ["cargo check -p splot-recon --locked", "cargo check -p splot-decode --locked", "cargo xtask check-dependency-direction", "cargo xtask check-decoder-support"]
 diagnostics = []
 local_reference_evidence = []
-notes = "Approved workspace scaffolds for future reconstruction primitives and the future decode driver. `splot-recon` has no `splot-*` dependencies; `splot-decode` may depend only on `splot-core` and `splot-recon` once runtime decode source needs them. The crates expose no runtime reconstruction or byte-consuming decode API and do not invoke AVM/dav2d. The current unsupported diagnostic API is tracked by `decode-unsupported-diagnostic-api`."
+notes = "Approved workspace scaffolds for future reconstruction primitives and the future decode driver. `splot-recon` has no `splot-*` dependencies and stays scheduler-free; `splot-decode` currently depends on `splot-parallel` for the context-owned worker-pool runtime scaffold, with future source-backed decode dependencies on `splot-core` and `splot-recon` added only when runtime decode needs them. The crates expose no runtime reconstruction or byte-consuming decode API and do not invoke AVM/dav2d. The current unsupported diagnostic API is tracked by `decode-unsupported-diagnostic-api`, and the runtime context is tracked by `decode-runtime-context`."
+
+[[row]]
+id = "decode-runtime-context"
+name = "Decode runtime context and concurrency contract"
+feature_id = "INFRA-PARALLEL-RUNTIME-POLICY"
+spec_sections = []
+parser_source = "n/a"
+decode_module = "crates/splot-decode/src/context.rs; crates/splot-decode/src/runtime.rs; docs/DECODER-ROADMAP.md; docs/CONCURRENCY.md"
+tier = "foundation"
+status = "supported"
+self_contained_tests = ["crates/splot-decode/src/context.rs::tests", "crates/splot-cli/tests/decode_cli.rs::decode_threads_fixed_is_accepted_emits_unsupported", "crates/splot-cli/tests/decode_cli.rs::decode_threads_auto_is_accepted", "crates/splot-cli/tests/decode_cli.rs::decode_threads_invalid_is_usage_error", "cargo test -p splot-decode --locked", "cargo test -p splot-cli decode_threads --locked", "cargo xtask check-concurrency-policy", "cargo xtask check-dependency-direction", "cargo xtask check-decoder-support"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Source-backed decode runtime scaffold and design contract: `DecodeRuntimeConfig` carries `ThreadCount`, `DecodeContext` owns exactly one `splot_parallel::WorkerPool`, `splot decode --threads auto|N` accepts the runtime policy while still emitting the intentional unsupported diagnostic, and future decoder orchestration must drive parallel work through `splot_parallel::prelude::*` inside `WorkerPool::install`. `splot-recon` remains pool-agnostic and must not own scheduler state, direct Rayon/crossbeam APIs, or decode pipeline queues. This row proves the runtime context and concurrency policy only; no byte-consuming decode, reconstruction algorithm, deterministic hash digest, Y4M output, AV2 reference refresh semantics, or AVM/dav2d invocation is implemented."
 
 [[row]]
 id = "decoded-frame-plane-runtime-types"
