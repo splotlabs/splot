@@ -114,6 +114,8 @@ The toolchain is pinned to Rust **1.96.0**, edition **2024** (see
 splot validate sample.av2              # raw Annex B or IVF input; human-readable report
 splot validate sample.ivf --json       # machine-readable report (exit 1 if non-conformant)
 splot validate sample.av2 --strict     # treat warnings as conformance failures
+splot validate sample.av2 --max-diagnostics 20  # cap the listed diagnostics (presentation only; exit code unchanged)
+splot validate sample.av2 --summary-only        # only the counts + conformance line (machine-friendly; exit code unchanged)
 splot inspect sample.ivf --headers     # list OBUs and their headers
 splot inspect sample.av2 --json        # per-OBU JSON records with parsed payload views
 splot encode input.y4m -o output.av2   # not yet implemented (exits 1 with a clear error)

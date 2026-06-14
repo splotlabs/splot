@@ -1,0 +1,8 @@
+---
+source: crates/splot-cli/tests/validate_snapshots.rs
+expression: stdout
+---
+[ERROR] obu-order/temporal-unit-missing-delimiter (§7.3.7) @byte 1: OBU_TEMPORAL_DELIMITER appears before a global OBU_TEMPORAL_DELIMITER starts the temporal unit
+... 1 more diagnostic(s) not shown (--max-diagnostics 1)
+2 error(s), 0 warning(s), 0 info
+NOT conformant

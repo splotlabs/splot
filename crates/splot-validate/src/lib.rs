@@ -15,6 +15,7 @@
 pub mod checks;
 pub mod diagnostic;
 pub mod options;
+pub mod render;
 pub mod validator;
 
 mod annex_a;
@@ -27,4 +28,5 @@ mod reference_state;
 
 pub use diagnostic::{Diagnostic, Severity, ValidationReport};
 pub use options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+pub use render::{RenderOptions, RenderedReport, ReportSummary, Truncation};
 pub use validator::Validator;
