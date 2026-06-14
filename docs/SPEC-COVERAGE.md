@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 158 feature(s); 116 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-14. 159 feature(s); 116 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -306,7 +306,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 
 ## Features without a spec section
 
-42 feature(s) track conformance, encoder, CLI, automation, or documentation work with no single spec section; see [FEATURE-STATUS.md](./FEATURE-STATUS.md):
+43 feature(s) track conformance, encoder, CLI, automation, or documentation work with no single spec section; see [FEATURE-STATUS.md](./FEATURE-STATUS.md):
 
 - `AV2-IVF-CONTAINER` — IVF container support
 - `CLI-INSPECT` — splot inspect command
@@ -315,6 +315,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 - `CONF-AVM-INVALID-STREAMS` — AVM invalid stream conformance
 - `CONF-AVM-PARSER-TRACES` — AVM parser trace comparison
 - `CONF-AVM-VALID-STREAMS` — AVM valid stream conformance
+- `CONF-CLI-SNAPSHOT-COVERAGE` — CLI help + inspect text snapshots
 - `CONF-FUZZ-NO-PANIC` — Parser no-panic fuzzing
 - `CONF-INSPECT-SNAPSHOTS` — Inspector snapshot tests
 - `CONF-PUBLIC-VECTOR-LICENSE-REVIEW` — Public vector license review

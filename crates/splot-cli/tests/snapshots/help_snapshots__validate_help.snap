@@ -1,0 +1,18 @@
+---
+source: crates/splot-cli/tests/help_snapshots.rs
+expression: "help(\"validate\")"
+---
+Validate an AV2 length-delimited bitstream
+
+Usage: splot validate [OPTIONS] <INPUT>
+
+Arguments:
+  <INPUT>  Path to a raw AV2 Annex B bitstream or IVF-wrapped Annex B stream
+
+Options:
+      --json        Emit the validation report as JSON
+  -v, --verbose...  Increase logging verbosity (repeatable: -v, -vv, -vvv)
+      --quiet       Silence all logging except errors
+      --strict      Treat warnings as conformance failures
+  -h, --help        Print help
+  -V, --version     Print version
