@@ -120,6 +120,11 @@ splot encode input.y4m -o output.av2   # not yet implemented (exits 1 with a cle
 splot decode input.av2 -o output.y4m   # not yet implemented (exits 1 with a clear error)
 ```
 
+`encode` and `decode` already accept `--threads auto|N` (default `auto`) to size
+the worker pool, even though both remain unimplemented stubs that exit 1; the flag
+selects the concurrency policy ahead of any real codec work. See
+[docs/CONCURRENCY.md](./docs/CONCURRENCY.md).
+
 `inspect` keeps stdout clean for machine output (logs go to stderr) and prints
 every OBU it can parse even when the bitstream tail is malformed:
 
@@ -134,6 +139,9 @@ OBU #1  @byte 3  size=11  type=OBU_SEQUENCE_HEADER(1)  ext=false  tlayer=0 mlaye
 
 ```text
 crates/splot-core      AV2 bitstream model + parsers (LEB128, OBU header, Annex B, IVF, headers)
+crates/splot-parallel  approved concurrency primitives (local Rayon worker pool + bounded crossbeam queues)
+crates/splot-recon     future reconstruction primitives (decoded frame/plane types; no decode yet)
+crates/splot-decode    decoder diagnostic API + worker-pool scaffold (no byte-consuming decode yet)
 crates/splot-validate  parser-driven conformance diagnostics (the validator)
 crates/splot-encode    future encoder API (stub)
 crates/splot-cli       thin `splot` binary

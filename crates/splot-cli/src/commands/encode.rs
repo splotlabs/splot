@@ -8,7 +8,8 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Args;
-use splot_encode::{Context, EncoderConfig, Frame};
+use splot_encode::{Context, EncoderConfig, EncoderRuntimeConfig, Frame};
+use splot_parallel::ThreadCount;
 
 /// Arguments for `splot encode`.
 #[derive(Args, Debug)]
@@ -24,6 +25,9 @@ pub struct EncodeArgs {
     /// Quantizer parameter.
     #[arg(long)]
     pub qp: Option<u32>,
+    /// Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto).
+    #[arg(long, default_value_t = ThreadCount::Auto)]
+    pub threads: ThreadCount,
 }
 
 /// Runs `splot encode`. The AV2 encoder is a future milestone, so this exercises
@@ -32,8 +36,9 @@ pub struct EncodeArgs {
 /// # Errors
 /// Returns an error only if the encoder context cannot be created.
 pub fn run(args: &EncodeArgs) -> Result<ExitCode> {
-    let _ = args;
-    let mut context = Context::new(EncoderConfig::default(), 1)?;
+    let _ = (&args.input, &args.output, &args.speed, &args.qp);
+    let runtime = EncoderRuntimeConfig::new(args.threads);
+    let mut context = Context::new(EncoderConfig::default(), runtime)?;
     match context.send_frame(Frame::default()) {
         Ok(()) => Ok(ExitCode::from(0)),
         Err(error) => {

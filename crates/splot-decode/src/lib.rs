@@ -7,13 +7,23 @@
 //! reconstruction and output state from `splot-recon`. It owns the current
 //! structured `decode/unsupported-feature` diagnostic API plus local
 //! resource-limit policy types, and intentionally exposes no byte-consuming
-//! decode API yet.
+//! decode API yet. It also exposes a [`DecodeContext`]/[`DecodeRuntimeConfig`]
+//! worker-pool scaffold that owns a [`splot_parallel::WorkerPool`] but reads no
+//! bytes.
 //!
 //! Feature tracking: `INFRA-DECODER-CRATE-SCAFFOLDING`,
 //! `DECODE-UNSUPPORTED-DIAGNOSTIC-API`, `DECODE-LIMITS-RUNTIME-API`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
+
+pub mod context;
+pub mod error;
+pub mod runtime;
+
+pub use context::DecodeContext;
+pub use error::{DecodeError, Result};
+pub use runtime::DecodeRuntimeConfig;
 
 use core::fmt;
 

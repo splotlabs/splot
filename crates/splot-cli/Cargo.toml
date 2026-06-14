@@ -24,6 +24,7 @@ splot-core.workspace = true
 splot-decode.workspace = true
 splot-validate.workspace = true
 splot-encode.workspace = true
+splot-parallel.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 serde.workspace = true

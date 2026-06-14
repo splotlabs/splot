@@ -9,7 +9,8 @@ use std::process::ExitCode;
 use anyhow::{Context as _, Result};
 use clap::{Args, ValueEnum};
 use serde::Serialize;
-use splot_decode::{DecodeDiagnostic, unsupported_feature_diagnostic};
+use splot_decode::{DecodeDiagnostic, DecodeRuntimeConfig, unsupported_feature_diagnostic};
+use splot_parallel::ThreadCount;
 
 /// Output artifact selected for future `splot decode` success.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -35,6 +36,9 @@ pub struct DecodeArgs {
     /// Output path for the selected artifact.
     #[arg(short = 'o', long, required_unless_present = "output_format")]
     pub output: Option<PathBuf>,
+    /// Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto).
+    #[arg(long, default_value_t = ThreadCount::Auto)]
+    pub threads: ThreadCount,
 }
 
 #[derive(Debug)]
@@ -115,6 +119,10 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
         &args.input,
         target.as_ref().and_then(DecodeOutputTarget::path),
     );
+
+    // Forward-looking: a real decode driver will consume this. Decode remains
+    // unsupported today, so the runtime config is constructed and then dropped.
+    let _runtime = DecodeRuntimeConfig::new(args.threads);
 
     let diagnostic = unsupported_feature_diagnostic();
 

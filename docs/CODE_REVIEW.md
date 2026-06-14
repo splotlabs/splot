@@ -54,6 +54,32 @@ Only for encoder or encoder-facing syntax PRs.
 - [ ] Crate dependency graph unchanged (`cargo xtask check-dependency-direction`)?
 - [ ] Library-first: no codec/validation logic leaked into `splot-cli`?
 
+## Concurrency
+
+(Policy: [CONCURRENCY.md](./CONCURRENCY.md).)
+
+- [ ] No hidden/global Rayon pool; no `build_global`
+      (`cargo xtask check-concurrency-policy`)?
+- [ ] No ad-hoc `thread::spawn` outside tests
+      (`cargo xtask check-concurrency-policy`)?
+- [ ] No unbounded channels / `crossbeam_channel::unbounded`; bounded queues only,
+      at coarse pipeline boundaries (never hot per-pixel/block/row loops)
+      (`cargo xtask check-concurrency-policy`)?
+- [ ] No banned runtime crates (tokio/async-std/futures/threadpool/flume/
+      async-channel/…); only `splot-parallel` may depend on
+      `rayon`/`crossbeam-channel` (`cargo xtask check-concurrency-policy`)?
+- [ ] `splot-core` stays runtime-free; `splot-validate` stays single-threaded
+      (`cargo xtask check-concurrency-policy`)?
+- [ ] Each encode/decode context owns exactly one `WorkerPool`; nested work via
+      `install`, never nested pools?
+- [ ] New parallel work reaches Rayon only through `splot_parallel::prelude` (no
+      direct `rayon` dep) and runs **inside** `WorkerPool::install` (never at top
+      level → global pool) (`cargo xtask check-concurrency-policy`)?
+- [ ] Worker threads come only from the context's `WorkerPool` sized by
+      `--threads` — no raw `std::thread::spawn` for codec work?
+- [ ] Deterministic output preserved across thread counts (indexed iterators /
+      ordered merge; commit in presentation/bitstream order)?
+
 ## Feature tracking
 
 - [ ] Is the Feature ID present in the PR title/body?

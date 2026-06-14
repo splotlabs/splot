@@ -87,6 +87,7 @@ jobs:
       - run: cargo xtask check-license-headers
       - run: cargo xtask check-source-lines
       - run: cargo xtask check-dependency-direction
+      - run: cargo xtask check-concurrency-policy
       - run: cargo xtask check-spec-mirror
       - run: cargo xtask check-feature-status
       - run: cargo xtask check-diagnostic-registry
@@ -280,7 +281,7 @@ jobs:
       # in xtask): extend the regex when adding a workspace crate that should not
       # gate here, or it joins the threshold scope.
       - name: Gate splot-validate line coverage (>= 90%)
-        run: cargo llvm-cov report --fail-under-lines 90 --ignore-filename-regex 'crates/splot-(core|recon|decode|encode|cli)/|(^|/)xtask/|(^|/)fuzz/'
+        run: cargo llvm-cov report --fail-under-lines 90 --ignore-filename-regex 'crates/splot-(core|parallel|recon|decode|encode|cli)/|(^|/)xtask/|(^|/)fuzz/'
 
       # TODO: upload lcov.info to Codecov once a token is configured (the
       # splot-validate line-coverage threshold is now enforced above).

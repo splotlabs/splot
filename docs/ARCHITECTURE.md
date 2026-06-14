@@ -8,14 +8,17 @@ canonical for the rules summarized here.
 
 ```text
 splot-cli ───────┬──> splot-validate ───> splot-core
-                 ├──> splot-decode
-                 ├──> splot-encode   ───> splot-core
+                 ├──> splot-decode   ───> splot-parallel
+                 ├──> splot-encode   ───> splot-core, splot-parallel
+                 ├──> splot-parallel
                  └──> splot-core
 
-splot-decode owns the current unsupported diagnostic API. Its approved future
-dependencies are splot-core and splot-recon once runtime decode source code
-needs them.
+splot-decode owns the current unsupported diagnostic API. It depends on
+splot-parallel today; its approved future dependencies are splot-core and
+splot-recon once runtime decode source code needs them.
 
+splot-parallel owns the approved concurrency primitives (local Rayon worker
+pool + bounded crossbeam queues) and depends on no splot-* crate.
 splot-recon has no splot-* dependencies.
 xtask is standalone automation.
 fuzz lives outside the workspace and depends on splot-core only.
@@ -25,12 +28,14 @@ fuzz lives outside the workspace and depends on splot-core only.
 by `cargo xtask check-dependency-direction`):
 
 - `splot-core` depends on no other `splot-*` crate.
+- `splot-parallel` depends on no other `splot-*` crate.
 - `splot-recon` depends on no other `splot-*` crate.
-- `splot-decode` depends only on `splot-core` and `splot-recon` once runtime
-  decode source code needs internal dependencies.
+- `splot-decode` depends on `splot-parallel` today; its approved future internal
+  dependencies are `splot-core` and `splot-recon` once runtime decode source code
+  needs them.
 - `splot-validate` depends only on `splot-core`.
-- `splot-encode` depends only on `splot-core`.
-- `splot-cli` depends only on `splot-core`, `splot-decode`,
+- `splot-encode` depends only on `splot-core` and `splot-parallel`.
+- `splot-cli` depends only on `splot-core`, `splot-decode`, `splot-parallel`,
   `splot-validate`, and `splot-encode`.
 - Nothing depends on `splot-cli`.
 - Nothing depends on `splot-encode` except `splot-cli`.
@@ -46,6 +51,14 @@ by `cargo xtask check-dependency-direction`):
     and writing (`AV2-IVF-CONTAINER`), and payload dispatch.
   - The implemented § 5 payload parsers, in `crates/splot-core/src/headers/`;
     the generated [SPEC-COVERAGE.md](./SPEC-COVERAGE.md) is the live list.
+- **`splot-parallel`** — the only crate allowed to depend on `rayon` and
+  `crossbeam-channel`. It owns the approved concurrency primitives: a local Rayon
+  `WorkerPool` (one per encode/decode context, never the global pool or
+  `build_global`), bounded `crossbeam-channel` queues (never unbounded), and the
+  `ThreadCount` policy (`auto` default, fixed positive integer, `0` aliases to
+  `auto`). It depends on no other `splot-*` crate. `splot-core` and
+  `splot-validate` stay concurrency-runtime-free. See
+  [CONCURRENCY.md](./CONCURRENCY.md).
 - **`splot-validate`** — parser output → user-facing conformance diagnostics. A
   `Validator` parses raw Annex B or IVF-wrapped Annex B with `splot-core`, then
   runs a registry of `Check`s. Each `Diagnostic` is structured data (rule id,
@@ -104,6 +117,16 @@ functionality returns `Error::Unimplemented { feature }`.
 `unsafe` only inside narrowly-scoped, individually-documented, individually-tested
 modules, and only when justified by measurements. The `fuzz` crate sits outside the
 workspace so that libFuzzer's `unsafe` runtime is not subject to this lint.
+
+## Concurrency runtime
+
+Rayon (via a local owned `WorkerPool`) and `crossbeam-channel` (bounded queues
+only) are the **only** approved concurrency-runtime primitives, and only
+`splot-parallel` may depend on them. `splot-core` stays runtime-free so the spec
+model never carries a scheduler. Competing runtimes (tokio, async-std, futures,
+threadpool, …), the Rayon global pool, and unbounded channels are banned. The
+full policy is [CONCURRENCY.md](./CONCURRENCY.md) and it is enforced by
+`cargo xtask check-concurrency-policy` (run in `cargo xtask ci`).
 
 See [CODE_REVIEW.md](./CODE_REVIEW.md) for the review checklist and
 [TESTING.md](./TESTING.md) for the test layers.

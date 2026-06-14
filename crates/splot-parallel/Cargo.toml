@@ -2,8 +2,8 @@
 # SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 [package]
-name = "splot-decode"
-description = "Decoder driver scaffold for future AV2 reconstruction support in the splot toolkit."
+name = "splot-parallel"
+description = "Concurrency primitives (a local Rayon worker pool and bounded crossbeam-channel queues) for the splot codec runtime."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,5 +16,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-splot-parallel.workspace = true
+rayon.workspace = true
+crossbeam-channel.workspace = true
 thiserror.workspace = true
