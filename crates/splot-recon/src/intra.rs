@@ -587,7 +587,6 @@ mod tests {
         assert_eq!(four.log2_size(), 2);
         assert_eq!(four.side_len(), 4);
         assert_eq!(four.sample_count(), 16);
-
         let sixty_four = size(6);
         assert_eq!(sixty_four.side_len(), 64);
         assert_eq!(sixty_four.sample_count(), 4096);

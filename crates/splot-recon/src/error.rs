@@ -5,7 +5,7 @@
 
 use core::fmt;
 
-use crate::{BitDepth, IntraDcEdge, PlaneId, PlaneRect, PlaneSize, ReferenceSlot};
+use crate::{BitDepth, IntraDcEdge, IntraPaethEdge, PlaneId, PlaneRect, PlaneSize, ReferenceSlot};
 
 /// Result alias used by `splot-recon` constructors and helpers.
 pub type Result<T> = core::result::Result<T, ReconError>;
@@ -191,6 +191,26 @@ pub enum ReconError {
         /// Maximum sample value allowed by the active bit depth.
         max: u16,
     },
+    /// A supplied PAETH intra prediction edge did not match the block size.
+    IntraPaethEdgeLengthMismatch {
+        /// Edge whose sample count was checked.
+        edge: IntraPaethEdge,
+        /// Expected edge sample count.
+        expected: usize,
+        /// Actual edge sample count.
+        actual: usize,
+    },
+    /// A PAETH intra prediction edge sample exceeded the active bit depth.
+    IntraPaethSampleOutOfRange {
+        /// Edge containing the out-of-range sample.
+        edge: IntraPaethEdge,
+        /// Zero-based index within the edge samples.
+        sample_index: usize,
+        /// Observed sample value.
+        value: u16,
+        /// Maximum sample value allowed by the active bit depth.
+        max: u16,
+    },
     /// An intra prediction block backing allocation failed.
     IntraPredictionAllocationFailed {
         /// Short description of the failed allocation.
@@ -209,6 +229,15 @@ pub enum ReconError {
         expected: usize,
         /// Actual output slice length.
         actual: usize,
+    },
+    /// A workspace intra prediction helper could not read a required edge.
+    WorkspaceIntraPredictionEdgeUnavailable {
+        /// Plane whose workspace storage was checked.
+        plane: PlaneId,
+        /// Required edge that was outside workspace storage.
+        edge: IntraPaethEdge,
+        /// Prediction rectangle needing the edge.
+        rect: PlaneRect,
     },
     /// A reference frame store capacity was outside the supported slot range.
     InvalidReferenceStoreCapacity {
@@ -411,6 +440,25 @@ impl fmt::Display for ReconError {
                 "intra prediction {} edge sample {sample_index} value {value} exceeds maximum {max}",
                 edge.name()
             ),
+            Self::IntraPaethEdgeLengthMismatch {
+                edge,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "PAETH intra prediction {} edge length mismatch: expected {expected} samples, got {actual}",
+                edge.name()
+            ),
+            Self::IntraPaethSampleOutOfRange {
+                edge,
+                sample_index,
+                value,
+                max,
+            } => write!(
+                f,
+                "PAETH intra prediction {} edge sample {sample_index} value {value} exceeds maximum {max}",
+                edge.name()
+            ),
             Self::IntraPredictionAllocationFailed { context } => {
                 write!(f, "failed to allocate {context}")
             }
@@ -424,6 +472,16 @@ impl fmt::Display for ReconError {
             Self::IntraPredictionOutputTooSmall { expected, actual } => write!(
                 f,
                 "intra prediction output buffer is too small: expected at least {expected} samples, got {actual}"
+            ),
+            Self::WorkspaceIntraPredictionEdgeUnavailable { plane, edge, rect } => write!(
+                f,
+                "current-frame workspace {} intra prediction requires {} edge for rectangle x={} y={} width={} height={}",
+                plane.name(),
+                edge.name(),
+                rect.x(),
+                rect.y(),
+                rect.width(),
+                rect.height()
             ),
             Self::InvalidReferenceStoreCapacity {
                 capacity,

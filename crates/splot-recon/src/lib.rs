@@ -8,16 +8,17 @@
 //! roundtrip work. The model is limited to immutable owned output frames,
 //! plane storage invariants, a safe reference-slot container, and deterministic
 //! frame-hash input serialization and digest computation, plus source-backed
-//! Y4M writing for caller-supplied decoded frames, plus the first square DC
-//! and rectangular DC intra prediction primitives and a mutable current-frame
-//! workspace; it does not implement byte-consuming decode, full reconstruction,
-//! runtime CLI Y4M output, or AV2 reference refresh semantics.
+//! Y4M writing for caller-supplied decoded frames, plus square DC,
+//! rectangular DC, and basic/PAETH intra prediction primitives and a mutable
+//! current-frame workspace; it does not implement byte-consuming decode, full
+//! reconstruction, runtime CLI Y4M output, or AV2 reference refresh semantics.
 //!
 //! Feature tracking: `INFRA-RECON-FRAME-PLANE-TYPES`,
 //! `RECON-REFERENCE-FRAME-STORE`, `RECON-HASH-INPUT-SERIALIZATION`,
 //! `RECON-FRAME-HASH-DIGEST`, `RECON-Y4M-OUTPUT-WRITER`,
 //! `RECON-INTRA-DC-SQUARE-PREDICTION`,
 //! `RECON-INTRA-DC-RECTANGULAR-PREDICTION`,
+//! `RECON-INTRA-BASIC-PAETH-PREDICTION`,
 //! `RECON-CURRENT-FRAME-WORKSPACE`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
@@ -29,6 +30,7 @@ mod frame;
 mod geometry;
 mod hash_input;
 mod intra;
+mod intra_basic;
 mod plane;
 mod reference;
 mod workspace;
@@ -45,6 +47,7 @@ pub use intra::{
     predict_intra_dc_rect_value, predict_intra_dc_square, predict_intra_dc_square_into,
     predict_intra_dc_square_value,
 };
+pub use intra_basic::{IntraPaethEdge, IntraPaethEdges, predict_intra_paeth_rect_into};
 pub use plane::{Plane, VisibleRows};
 pub use reference::{
     ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameStore, ReferenceSlot,

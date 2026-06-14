@@ -5234,16 +5234,77 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-INTRA-BASIC-PAETH-PREDICTION"
+name = "Basic PAETH intra prediction"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.13.2.2"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-2",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/intra_basic.rs"
+openspec_change = "recon-basic-paeth-prediction"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds scheduler-free `splot-recon` AV2 §7.13.2.2 basic/PAETH intra prediction over prepared `LeftCol`, `AboveRow`, and `AboveRow[-1]` samples: callers provide an active bit depth, typed rectangular block size, mandatory left and above edge slices, a top-left sample, and caller-owned strided output. The primitive validates sample type, edge lengths by height and width, bit-depth ranges, output stride and length, and uses signed intermediates for the PAETH base while returning one of the prepared edge samples without clipping. Workspace helpers can write in-storage PAETH prediction only when top-left, left, and above neighbors exist. This row does not implement §7.13.2.1 availability/fallback sample preparation, full `predict_intra()` dispatch, directional prediction, smooth prediction, data-driven prediction, subsampled DC, IBP, CfL, tile syntax traversal, dequantization, inverse transforms, residual addition, runtime decoded-frame hashes, runtime Y4M output, reference refresh, AVM/dav2d invocation, or scheduler use inside `splot-recon`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/intra_basic.rs::tests::paeth_prediction_selects_left_candidate",
+    "crates/splot-recon/src/intra_basic.rs::tests::paeth_prediction_selects_above_candidate",
+    "crates/splot-recon/src/intra_basic.rs::tests::paeth_prediction_selects_top_left_candidate",
+    "crates/splot-recon/src/intra_basic.rs::tests::paeth_prediction_tie_order_is_left_then_above",
+    "crates/splot-recon/src/intra_basic.rs::tests::paeth_prediction_validates_edge_lengths_by_dimension",
+    "crates/splot-recon/src/intra_basic.rs::tests::paeth_prediction_validates_edge_samples_against_bit_depth",
+    "crates/splot-recon/src/intra_basic.rs::tests::paeth_prediction_validates_sample_type_against_bit_depth",
+    "crates/splot-recon/src/intra_basic.rs::tests::paeth_prediction_validates_output_stride_and_length",
+    "crates/splot-recon/src/intra_basic.rs::tests::paeth_prediction_rejects_overflowing_output_shape",
+    "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_rectangular_paeth_from_in_storage_edges",
+    "crates/splot-recon/src/workspace_tests.rs::workspace_paeth_rejects_missing_prepared_edges",
+]
+commands = [
+    "cargo test -p splot-recon --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "cargo xtask check-source-lines",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-concurrency-policy",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "crates/splot-recon/src/intra_basic.rs",
+    "crates/splot-recon/src/workspace.rs",
+    "crates/splot-recon/src/workspace_tests.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "RECON-CURRENT-FRAME-WORKSPACE"
 name = "Current-frame reconstruction workspace"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["6.4.1", "6.17.4.1", "6.17.4.4", "7.13.2.1", "7.13.2.10"]
+spec_sections = ["6.4.1", "6.17.4.1", "6.17.4.4", "7.13.2.1", "7.13.2.2", "7.13.2.10"]
 sources = [
     "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1",
     "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1",
     "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-2",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10",
 ]
 crate = "splot-recon"
@@ -5252,7 +5313,7 @@ openspec_change = "recon-current-frame-workspace"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a scheduler-free `splot-recon` mutable current-frame reconstruction workspace: `CurrentFrameWorkspace<T>` allocates Y/U/V plane buffers from `DecodedFrameInfo` using checked arithmetic and fallible allocation, validates sample type and active bit-depth range before writes, exposes bounded plane/rectangle reads, fills, row-strided writes, square/rectangular block writes, in-storage left/above edge extraction, and square/rectangular DC prediction write helpers that call the existing `RECON-INTRA-DC-SQUARE-PREDICTION` and `RECON-INTRA-DC-RECTANGULAR-PREDICTION` primitives. `freeze()` reuses existing `Plane::from_vec`, `FramePlanes::new`, and `DecodedFrame::try_new`, and tests prove interop with decoded-frame hash input, Y4M writer, and reference-frame store. This row does not add a `splot-decode -> splot-recon` dependency, `DecodeContext` API, runtime `splot decode` success path, tile syntax traversal, dequantization, inverse transforms, residual addition, loop filtering, output scheduling, runtime hashes, runtime Y4M, reference refresh, AVM/dav2d invocation, external tooling, or scheduler use inside `splot-recon`; future parallel orchestration remains owned by `DecodeContext` and `splot_parallel::WorkerPool`."
+notes = "Adds a scheduler-free `splot-recon` mutable current-frame reconstruction workspace: `CurrentFrameWorkspace<T>` allocates Y/U/V plane buffers from `DecodedFrameInfo` using checked arithmetic and fallible allocation, validates sample type and active bit-depth range before writes, exposes bounded plane/rectangle reads, fills, row-strided writes, square/rectangular block writes, in-storage left/above edge extraction, and square/rectangular DC plus rectangular PAETH prediction write helpers that call the existing `RECON-INTRA-DC-SQUARE-PREDICTION`, `RECON-INTRA-DC-RECTANGULAR-PREDICTION`, and `RECON-INTRA-BASIC-PAETH-PREDICTION` primitives. `freeze()` reuses existing `Plane::from_vec`, `FramePlanes::new`, and `DecodedFrame::try_new`, and tests prove interop with decoded-frame hash input, Y4M writer, and reference-frame store. This row does not add a `splot-decode -> splot-recon` dependency, `DecodeContext` API, runtime `splot decode` success path, tile syntax traversal, dequantization, inverse transforms, residual addition, loop filtering, output scheduling, runtime hashes, runtime Y4M, reference refresh, AVM/dav2d invocation, external tooling, or scheduler use inside `splot-recon`; future parallel orchestration remains owned by `DecodeContext` and `splot_parallel::WorkerPool`."
 
 [feature.status]
 mapped = "done"
