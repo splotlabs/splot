@@ -3,9 +3,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::cdf::{TileCdfError, TileCdfPolicyInput, TileCdfSelector};
 use super::*;
 use crate::{DecodeContext, DecodeLimitThreshold, DecodeRuntimeConfig};
 use splot_core::headers::tile_group::{TileGroupFraming, parse_tile_group_framing};
+use splot_core::symbol::{SymbolDecoder, SymbolDecoderConfig};
 use splot_core::types::ObuType;
 
 const MAX: fn(u64) -> DecodeLimitThreshold = DecodeLimitThreshold::Max;
@@ -60,7 +62,7 @@ fn input<'a>(
 fn single_tile_payload_yields_deterministic_work_unit_and_unsupported_boundary() {
     let payload = [0x80, 0x00];
     let framing = one_tile_framing(&payload);
-    let plan =
+    let mut plan =
         plan_tile_payload_boundary(input(&payload, &framing, DecodeLimits::unlimited())).unwrap();
 
     assert_eq!(plan.source(), base_source());
@@ -84,6 +86,39 @@ fn single_tile_payload_yields_deterministic_work_unit_and_unsupported_boundary()
     assert_eq!(unit.symbol().consumed_bits(), 15);
     assert_eq!(unit.symbol().symbol_max_bits(), 1);
     assert_eq!(unit.symbol().cdf_update_mode(), CdfUpdateMode::Enabled);
+    assert_eq!(unit.cdf().update_mode(), CdfUpdateMode::Enabled);
+    assert!(unit.cdf().save_policy().copy_cdf());
+    assert!(!unit.cdf().save_policy().avg_cdf());
+    let selector = TileCdfSelector::DoSplit {
+        plane_start: 0,
+        ctx: 0,
+    };
+    assert_eq!(
+        unit.cdf().tile_cdfs().row(selector).unwrap(),
+        splot_core::tables::cdf::DEFAULT_DO_SPLIT_CDF[0][0].as_slice()
+    );
+
+    let cdf_before = unit.cdf().tile_cdfs().row(selector).unwrap().to_vec();
+    let mut symbol = SymbolDecoder::with_base_and_config(
+        &payload,
+        ByteOffset::new(256),
+        SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
+    )
+    .unwrap();
+    plan.work_units_mut()[0]
+        .cdf_mut()
+        .tile_cdfs_mut()
+        .with_row_mut(selector, |row| symbol.read_symbol(row))
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        plan.work_units()[0]
+            .cdf()
+            .tile_cdfs()
+            .row(selector)
+            .unwrap(),
+        cdf_before.as_slice()
+    );
 
     let unsupported = plan.unsupported();
     assert_eq!(unsupported.rule_id(), UNSUPPORTED_FEATURE_RULE_ID);
@@ -124,11 +159,66 @@ fn cdf_update_disable_is_recorded_without_symbol_finish() {
         plan.work_units()[0].symbol().cdf_update_mode(),
         CdfUpdateMode::Disabled
     );
+    assert_eq!(
+        plan.work_units()[0].cdf().update_mode(),
+        CdfUpdateMode::Disabled
+    );
     assert_eq!(plan.work_units()[0].symbol().symbol_max_bits(), -7);
     assert_eq!(
         plan.unsupported().reason(),
         TilePayloadUnsupportedReason::DecodeTileSyntax
     );
+}
+
+#[test]
+fn cdf_policy_tile_dimensions_are_derived_from_planned_grid() {
+    let payload = [0x80, 0x00];
+    let framing = one_tile_framing(&payload);
+    let frame = base_frame().with_cdf_policy(TileCdfPolicyInput::new(16, 1, true, true, 0));
+    let input = TilePayloadBoundaryInput::new(
+        &payload,
+        ByteOffset::new(16),
+        &framing,
+        base_source(),
+        base_layer(),
+        one_tile_grid(),
+        frame,
+        DecodeLimits::unlimited(),
+    );
+    let plan = plan_tile_payload_boundary(input).unwrap();
+    let save_policy = plan.work_units()[0].cdf().save_policy();
+
+    assert_eq!(save_policy.num_log2(), 0);
+    assert!(save_policy.avg_cdf());
+    assert!(!save_policy.copy_cdf());
+}
+
+#[test]
+fn cdf_context_update_tile_id_is_validated_against_planned_grid() {
+    let payload = [0x80, 0x00];
+    let framing = one_tile_framing(&payload);
+    let frame = base_frame().with_cdf_policy(TileCdfPolicyInput::new(16, 1, false, false, 2));
+    let input = TilePayloadBoundaryInput::new(
+        &payload,
+        ByteOffset::new(16),
+        &framing,
+        base_source(),
+        base_layer(),
+        one_tile_grid(),
+        frame,
+        DecodeLimits::unlimited(),
+    );
+    let error = plan_tile_payload_boundary(input).unwrap_err();
+
+    let TilePayloadBoundaryError::Cdf(TileCdfError::ContextUpdateTileOutOfRange {
+        context_update_tile_id,
+        tile_count,
+    }) = error
+    else {
+        panic!("expected cdf context-update tile error");
+    };
+    assert_eq!(context_update_tile_id, 2);
+    assert_eq!(tile_count, 1);
 }
 
 #[test]
