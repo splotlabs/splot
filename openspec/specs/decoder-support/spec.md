@@ -662,6 +662,18 @@ output, AV2 decoder conformance, or AV2 bitstream conformance.
 - **AND** every decoder-support row exists in
   `docs/DECODER-SUPPORT-MATRIX.toml`
 
+#### Scenario: Matrix evidence pointers resolve reciprocally
+
+- **WHEN** a decoder-support row cites a local-reference evidence pointer of
+  the form `docs/LOCAL-REFERENCE-EVIDENCE.toml::<evidence-id>`
+- **THEN** `cargo xtask check-decoder-support` verifies that `<evidence-id>`
+  exists in the committed manifest
+- **AND** the referenced manifest entry lists the citing row in
+  `decoder_support_rows`
+- **AND** the check still does not locate, build, spawn, or require AVM, dav2d,
+  ffmpeg, the network, `splot decode`, reconstruction, `splot` deterministic
+  frame-hash computation, or Y4M output
+
 #### Scenario: Manifest assertions are self-contained metadata
 
 - **WHEN** a manifest entry records decoded-output digests or equality

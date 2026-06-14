@@ -17,18 +17,15 @@ use serde::Deserialize;
 
 use crate::git_util::sha256_hex;
 
-const MANIFEST_PATH: &str = "docs/LOCAL-REFERENCE-EVIDENCE.toml";
+pub(crate) const MANIFEST_PATH: &str = "docs/LOCAL-REFERENCE-EVIDENCE.toml";
+pub(crate) const MANIFEST_POINTER_PREFIX: &str = "docs/LOCAL-REFERENCE-EVIDENCE.toml::";
 const IMPLEMENTATION_MATRIX_PATH: &str = "docs/IMPLEMENTATION-MATRIX.toml";
 const DECODER_SUPPORT_MATRIX_PATH: &str = "docs/DECODER-SUPPORT-MATRIX.toml";
 const SUPPORTED_MANIFEST_VERSION: u32 = 1;
 
 /// Validates `docs/LOCAL-REFERENCE-EVIDENCE.toml`.
 pub(crate) fn run_check_reference_evidence(root: &Path) -> Result<()> {
-    let path = root.join(MANIFEST_PATH);
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read {MANIFEST_PATH}"))?;
-    let manifest: Manifest =
-        toml::from_str(&text).with_context(|| format!("failed to parse {MANIFEST_PATH}"))?;
+    let manifest = load_manifest(root)?;
     validate_manifest(root, &manifest)?;
     eprintln!(
         "check-reference-evidence: ok ({} evidence entr{})",
@@ -40,6 +37,57 @@ pub(crate) fn run_check_reference_evidence(root: &Path) -> Result<()> {
         }
     );
     Ok(())
+}
+
+#[derive(Debug)]
+pub(crate) struct ReferenceEvidenceIndex {
+    evidence_count: usize,
+    rows_by_evidence: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl ReferenceEvidenceIndex {
+    pub(crate) const fn evidence_count(&self) -> usize {
+        self.evidence_count
+    }
+
+    pub(crate) fn rows_for(&self, evidence_id: &str) -> Option<&BTreeSet<String>> {
+        self.rows_by_evidence.get(evidence_id)
+    }
+}
+
+pub(crate) fn canonical_evidence_pointer_id(value: &str) -> Option<&str> {
+    value.strip_prefix(MANIFEST_POINTER_PREFIX)
+}
+
+pub(crate) fn load_checked_reference_evidence_index(root: &Path) -> Result<ReferenceEvidenceIndex> {
+    let manifest = load_manifest(root)?;
+    validate_manifest(root, &manifest)?;
+    Ok(ReferenceEvidenceIndex::from_manifest(&manifest))
+}
+
+impl ReferenceEvidenceIndex {
+    fn from_manifest(manifest: &Manifest) -> Self {
+        let rows_by_evidence = manifest
+            .evidence
+            .iter()
+            .filter_map(|evidence| {
+                let id = evidence.id.as_ref()?;
+                let rows = evidence.decoder_support_rows.as_ref()?;
+                Some((id.clone(), rows.iter().cloned().collect()))
+            })
+            .collect();
+        Self {
+            evidence_count: manifest.evidence.len(),
+            rows_by_evidence,
+        }
+    }
+}
+
+fn load_manifest(root: &Path) -> Result<Manifest> {
+    let path = root.join(MANIFEST_PATH);
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {MANIFEST_PATH}"))?;
+    toml::from_str(&text).with_context(|| format!("failed to parse {MANIFEST_PATH}"))
 }
 
 #[derive(Debug, Deserialize)]
