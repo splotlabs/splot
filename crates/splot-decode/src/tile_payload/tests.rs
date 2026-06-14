@@ -264,6 +264,85 @@ fn payload_and_tile_count_limits_are_enforced_first() {
 }
 
 #[test]
+fn tile_payload_limit_is_per_framed_tile_not_group_payload() {
+    let payload = [0x00, 0x80, 0x80];
+    let framing = parse_tile_group_framing(&payload, 0, 1, 1, false);
+    assert_eq!(framing.tiles.len(), 2);
+    assert!(framing.tiles.iter().all(|tile| tile.tile_size == 1));
+
+    let limits = DecodeLimits::unlimited().with_max_tile_payload_bytes(MAX(1));
+    let error = plan_tile_payload_boundary(input(&payload, &framing, limits)).unwrap_err();
+
+    let TilePayloadBoundaryError::Unsupported(unsupported) = error else {
+        panic!("expected unsupported non-single-tile group");
+    };
+    assert_eq!(
+        unsupported.reason(),
+        TilePayloadUnsupportedReason::NonSingleTile
+    );
+}
+
+#[test]
+fn frame_tile_count_limit_uses_grid_not_current_group_len() {
+    let payload = [0x80];
+    let framing = parse_tile_group_framing(&payload, 1, 1, 1, false);
+    assert_eq!(framing.tiles.len(), 1);
+
+    let input = TilePayloadBoundaryInput::new(
+        &payload,
+        ByteOffset::new(0),
+        &framing,
+        base_source(),
+        base_layer(),
+        TileGridFacts::new(2, 1, &[0, 16, 32], &[0, 8]),
+        base_frame(),
+        DecodeLimits::unlimited().with_max_tile_count(MAX(1)),
+    );
+    let error = plan_tile_payload_boundary(input).unwrap_err();
+
+    let TilePayloadBoundaryError::Limit(limit) = error else {
+        panic!("expected frame tile count limit");
+    };
+    assert_eq!(limit.name(), DecodeLimitName::MaxTileCount);
+    assert_eq!(limit.actual(), Some(2));
+}
+
+#[test]
+fn bridge_frame_keeps_bridge_specific_unsupported_reason() {
+    let payload = [0x80];
+    let framing = one_tile_framing(&payload);
+    let input = TilePayloadBoundaryInput::new(
+        &payload,
+        ByteOffset::new(0),
+        &framing,
+        base_source(),
+        base_layer(),
+        one_tile_grid(),
+        TileFrameFacts::new(
+            ObuType::BridgeFrame,
+            false,
+            true,
+            true,
+            true,
+            TileBruPath::NotUsed,
+            0,
+            false,
+        ),
+        DecodeLimits::unlimited(),
+    );
+    let error = plan_tile_payload_boundary(input).unwrap_err();
+
+    let TilePayloadBoundaryError::Unsupported(unsupported) = error else {
+        panic!("expected bridge unsupported reason");
+    };
+    assert_eq!(
+        unsupported.reason(),
+        TilePayloadUnsupportedReason::BridgeTile
+    );
+    assert_eq!(unsupported.spec_section(), "5.20.1");
+}
+
+#[test]
 fn unsupported_minimal_tier_gates_are_structured() {
     let payload = [0x80];
     let framing = one_tile_framing(&payload);

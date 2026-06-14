@@ -605,18 +605,29 @@ impl fmt::Display for TilePayloadUnsupported {
 pub(crate) fn plan_tile_payload_boundary<'a>(
     input: TilePayloadBoundaryInput<'a>,
 ) -> Result<DecodeTilePayloadPlan<'a>, TilePayloadBoundaryError> {
-    let payload_len = input.payload.len() as u64;
-    input
-        .limits
-        .ensure(DecodeLimitName::MaxTilePayloadBytes, payload_len)?;
-    input.limits.ensure(
+    input.limits.ensure_mul(
         DecodeLimitName::MaxTileCount,
-        input.framing.tiles.len() as u64,
+        u64::from(input.grid.tile_cols),
+        u64::from(input.grid.tile_rows),
     )?;
+    for tile in &input.framing.tiles {
+        input
+            .limits
+            .ensure(DecodeLimitName::MaxTilePayloadBytes, tile.tile_size)?;
+    }
 
     if let Some(defect) = input.framing.defect {
         return Err(TilePayloadBoundaryError::Malformed(
             TilePayloadMalformed::FramingDefect(defect),
+        ));
+    }
+    if input.frame.is_bridge {
+        return Err(TilePayloadBoundaryError::Unsupported(
+            unsupported_without_tile(
+                TilePayloadUnsupportedReason::BridgeTile,
+                input.payload_base,
+                "bridge tile payload behavior is outside the current tile payload boundary tier.",
+            ),
         ));
     }
     if input.frame.obu_type != ObuType::ClosedLoopKey {
@@ -652,15 +663,6 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
                 TilePayloadUnsupportedReason::MultipleTileGroups,
                 input.payload_base,
                 "multiple tile groups are outside the current tile payload boundary tier.",
-            ),
-        ));
-    }
-    if input.frame.is_bridge {
-        return Err(TilePayloadBoundaryError::Unsupported(
-            unsupported_without_tile(
-                TilePayloadUnsupportedReason::BridgeTile,
-                input.payload_base,
-                "bridge tile payload behavior is outside the current tile payload boundary tier.",
             ),
         ));
     }
