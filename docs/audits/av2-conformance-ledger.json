@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "040feb187b5712c1b3202f25182fcb636ea624dc",
+  "audited_commit": "3770323c98bdb9c678b07c9b8970218f7b059299",
   "outcome": "success",
   "files": [
     {
@@ -1356,7 +1356,7 @@
     },
     {
       "path": "crates/splot-validate/src/context/frame_headers.rs",
-      "sha256": "dbcbe10e105d328e3908a3deeb9fe51d545d285eb8bc2fb830491ae3963324eb",
+      "sha256": "e2e7996d8f0e467a0e53d1bd8b1f800c1dba41e4f577e58d74f724d26c00e1c1",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
@@ -1476,7 +1476,7 @@
     },
     {
       "path": "crates/splot-validate/src/context/mod.rs",
-      "sha256": "4c3e7fe527938fb9254c93f0cb14c6b66ed368df5f2bfc2f40ecb9fcc4dd76cd",
+      "sha256": "c57f030ba9de8cc8ced7ef097da04eb38f8f82eb6c240667c5944a47ec009fdb",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS",
@@ -1637,7 +1637,7 @@
     },
     {
       "path": "crates/splot-validate/src/context/sequence.rs",
-      "sha256": "69eb3aed08bfe0c0ebaf91090aed2690dcecffa7ab2388d9de988e247d6a355b",
+      "sha256": "a55fff0661b7371426fffdb22ebf33dd6f69ddc5c992d20a447ed000ae1edbd5",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -2097,7 +2097,7 @@
     },
     {
       "path": "crates/splot-validate/src/validator/tests/sequence_state.rs",
-      "sha256": "169307e16c8d011fe1d49ada170df8a01a95b21b49b9a6d3c2c7baf5326560b0",
+      "sha256": "c9cf7538cfaea59df0e4b2c9b83b68811ee18808e92f86be3c5c73e5835fb5a5",
       "scope_kind": "workspace:splot-validate",
       "feature_ids": [],
       "outcome": "success"
@@ -2252,7 +2252,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "9493dc146733f69f31f0c1679e59017fdd7d731263e23de67c4bb7c40c8166b8",
+      "sha256": "5e58b8d8c4d5f1d0f74f293f356c516b7b9b54be848cf2a4436072010d7879dc",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2443,7 +2443,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "66911031241234cb5b9e4374e2623309be38f535ad5aa28745b5514e5877a76b",
+      "sha256": "11cb4ac2992b90b0ed08b622ab8a9b81086d35f65fb046c2e91e7b127e1da276",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -2613,7 +2613,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "8a5166879f7cb82c211d8da92bded46c59aa1ca35bcd78e613484abfb47b0e7e",
+      "sha256": "5ea8a3029a9aed51f8a5f1edd87a8825b7060709aa35a6d1302aa2cc8fffd453",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.3-UVLC",
@@ -6176,6 +6176,33 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/obu-header-rap-activation-window/proposal.md",
+      "sha256": "78d6cc324f13468923117b3148ea078296e7c1cadd33f3b0ac3a221da69f64b2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/obu-header-rap-activation-window/specs/validator/spec.md",
+      "sha256": "3c2fd50e773b84de83c817229ff0a0082466062a1e50ac18250f2812377fbb4a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/obu-header-rap-activation-window/tasks.md",
+      "sha256": "792f0bf8306a971d8c9b1f296644770e4e2b8a2a544d3ab184f3919963617a58",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS"
       ],
       "outcome": "success"
     },
