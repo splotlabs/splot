@@ -3677,7 +3677,7 @@ openspec_change = "bit-writer-primitives"
 tracking_issue = ""
 owner = "encoder"
 risk = "high"
-notes = "BitWriter (crates/splot-core/src/write/) inverts every BitReader primitive (f(n), su, uvlc, svlc, le, leb128, ns, rg, and zero-pad byte alignment), proven by read(write(x)) == x property tests; landed by the bit-writer-primitives change. The maintainer lifted the VALIDATOR-ROADMAP writer fence (2026-06-14). Remaining writer surface: OBU-header/size writer, sequence/frame/tile/metadata/payload writers, Annex B + IVF muxers, and the differential round-trip + fuzz harness. The RangeEncoder entropy stub is still unimplemented; no public encode CLI ships."
+notes = "BitWriter (crates/splot-core/src/write/) inverts every BitReader primitive (f(n), su, uvlc, svlc, le, leb128, ns, rg, and zero-pad byte alignment), proven by read(write(x)) == x property tests; landed by the bit-writer-primitives change. The maintainer lifted the VALIDATOR-ROADMAP writer fence (2026-06-14). Remaining writer surface: OBU-header/size writer, sequence/frame/tile/metadata/payload writers, the Annex B muxer plus writer-track muxer round-trip integration (the IVF container write helpers already exist via AV2-IVF-CONTAINER, write=done), and the differential round-trip + fuzz harness. The RangeEncoder entropy stub is still unimplemented; no public encode CLI ships."
 
 [feature.status]
 mapped = "partial"
