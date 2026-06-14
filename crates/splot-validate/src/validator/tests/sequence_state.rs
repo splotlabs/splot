@@ -228,6 +228,92 @@ fn active_sequence_header_bounds_embedded_layer_id() {
 }
 
 #[test]
+fn redefinition_tightening_before_reconfirming_frame_is_not_flagged() {
+    // § 6.2.2 NOTE (mirror `06-syntax-structures-semantics.md` lines 197-198): the
+    // obu_tlayer_id/obu_mlayer_id <= max constraints apply *after* a sequence header is
+    // activated. § 7.3.6 permits a same-seq_header_id redefinition at a coded-video-sequence
+    // boundary (a CLK). An OBU sitting between a redefined (tightened) header and the CLK
+    // frame that re-activates it is still in the PREVIOUS activation's window: under every
+    // decode start its in-force activated max is the prior (looser) one, not the
+    // freshly-stored (not-yet-reactivated) tighter one. The limit must be evaluated against
+    // the frame-confirmed activated header, not the latest-stored payload.
+    //
+    // TU0: header id 0 (max_tlayer_id 3) is frame-confirmed by a regular tile group.
+    // TU1 (CLK boundary): header id 0 is redefined to max_tlayer_id 1, then a layer OBU at
+    // obu_tlayer_id 2 appears BEFORE the CLK frame that re-confirms the redefinition. 2 <= 3
+    // (the in-force activated max) so nothing must fire; comparing 2 against the stored-but-
+    // not-yet-reactivated max 1 would be a false positive.
+    let mut data = temporal_delimiter_obu();
+    data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 3, 0)));
+    data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0)); // frame-confirm id 0 (max 3)
+    data.extend(temporal_delimiter_obu());
+    data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 0))); // redefine: max 1
+    data.extend(annex_b_obu_with_header(&layer_obu_header(6, 2, 0, 0), &[])); // tlayer 2, pre-CLK
+    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK re-confirms id 0
+
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        !report
+            .errors()
+            .any(|d| d.rule_id == "sequence-state/tlayer-exceeds-max"),
+        "obu_tlayer_id 2 between a tightened redefinition (max 1) and its re-confirming CLK \
+         frame conforms to the in-force activated max 3 (§ 6.2.2 NOTE); report was: {report}"
+    );
+}
+
+#[test]
+fn redefinition_before_reconfirming_frame_still_flags_old_limit_violation() {
+    // Companion true-positive: the § 6.2.2 NOTE refinement must not over-suppress. An OBU in
+    // the same pre-re-confirmation window whose obu_tlayer_id exceeds even the PRIOR activated
+    // max is a real violation under the start-from-beginning decode and must still fire,
+    // anchored at § 6.2.2. Same shape as above but obu_tlayer_id 3 > prior max 2.
+    let mut data = temporal_delimiter_obu();
+    data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 2, 0)));
+    data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0)); // frame-confirm id 0 (max 2)
+    data.extend(temporal_delimiter_obu());
+    data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 0))); // redefine: max 1
+    data.extend(annex_b_obu_with_header(&layer_obu_header(6, 3, 0, 0), &[])); // tlayer 3 > prior 2
+    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK re-confirms id 0
+
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        report.errors().any(|d| {
+            d.rule_id == "sequence-state/tlayer-exceeds-max"
+                && d.spec_section.as_deref() == Some("6.2.2")
+        }),
+        "obu_tlayer_id 3 exceeds the prior activated max 2 and must still fire; report was: \
+         {report}"
+    );
+}
+
+#[test]
+fn tightened_limit_applies_after_reconfirming_frame() {
+    // The refinement compares against the in-force activated header, which the re-confirming
+    // CLK frame advances to the redefinition: an OBU in the NEXT temporal unit (after the CLK
+    // frame re-activated id 0 with max_tlayer_id 1) at obu_tlayer_id 2 now exceeds the
+    // tightened max and must fire. Proves the snapshot tracks re-activation, not a frozen
+    // prior limit.
+    let mut data = temporal_delimiter_obu();
+    data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 3, 0)));
+    data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0)); // frame-confirm id 0 (max 3)
+    data.extend(temporal_delimiter_obu());
+    data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 0))); // redefine: max 1
+    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK re-confirms id 0 (max 1)
+    data.extend(temporal_delimiter_obu());
+    data.extend(annex_b_obu_with_header(&layer_obu_header(6, 2, 0, 0), &[])); // tlayer 2 > new 1
+
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        report.errors().any(|d| {
+            d.rule_id == "sequence-state/tlayer-exceeds-max"
+                && d.spec_section.as_deref() == Some("6.2.2")
+        }),
+        "after the CLK re-confirms the tightened header (max 1), obu_tlayer_id 2 must fire; \
+         report was: {report}"
+    );
+}
+
+#[test]
 fn stateful_diagnostics_from_prefix_survive_a_later_parse_error() {
     let mut data = stream_with_sequence_header(0, 0);
     data.extend(annex_b_obu_with_header(&layer_obu_header(6, 1, 0, 0), &[]));
