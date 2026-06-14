@@ -22,7 +22,8 @@ use serde::Deserialize;
 
 use crate::git_util::{run_git, sha256_hex};
 
-/// The fixture conflict-zone error string used in the parse-error `expect` arm.
+/// The canonical parse-error rule id: the sole `diagnostics` entry a
+/// `parse-error` fixture's `expect` arm must contain.
 const PARSE_ERROR_RULE_ID: &str = "bitstream/parse-error";
 
 /// The manifest root: an array of `[[fixture]]` entries.
