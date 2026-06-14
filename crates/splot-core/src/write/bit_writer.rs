@@ -12,9 +12,10 @@
 //! ```
 //!
 //! Bits are packed most-significant-bit first, matching the `f(n)` descriptor
-//! (AV2 v1.0.0 § 4.11.2) and every reader primitive built on it. The writer never
-//! panics: values or widths the corresponding reader could never have produced are
-//! rejected with a typed [`WriteError`].
+//! (AV2 v1.0.0 § 4.11.2, `docs/spec/av2/1.0.0/04-conventions.md#s-4-11-2`) and every
+//! reader primitive built on it. The writer never panics: values or widths the
+//! corresponding reader could never have produced are rejected with a typed
+//! [`WriteError`].
 //!
 //! `leb128()` and other byte-granular descriptors are only meaningful at
 //! byte-aligned positions (the AV2 syntax guarantees this at every site); the
@@ -28,9 +29,18 @@ use crate::write::error::{WriteError, WriteResult};
 ///
 /// The writer accumulates bits into an in-progress byte and flushes a completed
 /// byte to an internal buffer every eight bits. [`BitWriter::into_bytes`] returns
-/// the buffer, zero-padding any trailing partial byte so the result is whole bytes
-/// (the AV2 syntax ends payloads on byte boundaries via `trailing_bits()` /
-/// `byte_alignment()`, both of which pad with zero bits).
+/// the buffer, zero-padding any trailing partial byte so the result is whole bytes.
+/// That zero padding is the `byte_alignment()` rule (AV2 v1.0.0 § 5.2.4,
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2-4`) — all-zero bits — and is
+/// what [`BitWriter::align_to_byte`] and [`BitWriter::into_bytes`] emit.
+///
+/// This is **not** `trailing_bits()` (AV2 v1.0.0 § 5.2.3,
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2-3`), which writes a
+/// `trailing_one_bit == 1` marker *before* the zero padding. OBU payload tails that
+/// end with `trailing_bits()` must therefore write that marker `1` bit first (via
+/// [`BitWriter::write_bit`]) — `align_to_byte` / `into_bytes` alone would produce an
+/// invalid tail. A dedicated `trailing_bits` helper lands with the OBU-header/size
+/// writer; this module covers only zero-pad alignment.
 #[derive(Debug, Default, Clone)]
 pub struct BitWriter {
     /// Completed bytes, in emission order.
@@ -143,7 +153,8 @@ impl BitWriter {
         self.write_bits(u32::from(value), n)
     }
 
-    /// Writes an AV2 `su(n)` signed integer descriptor (AV2 v1.0.0 § 4.11.7), the
+    /// Writes an AV2 `su(n)` signed integer descriptor (AV2 v1.0.0 § 4.11.7,
+    /// `docs/spec/av2/1.0.0/04-conventions.md#s-4-11-7`), the
     /// inverse of [`crate::bitio::BitReader::read_su`].
     ///
     /// The value is encoded as its `n`-bit two's-complement pattern, MSB-first.
@@ -179,7 +190,8 @@ impl BitWriter {
         self.write_bits(coded, n)
     }
 
-    /// Writes an AV2 `uvlc()` descriptor (AV2 v1.0.0 § 4.11.3), the inverse of
+    /// Writes an AV2 `uvlc()` descriptor (AV2 v1.0.0 § 4.11.3,
+    /// `docs/spec/av2/1.0.0/04-conventions.md#s-4-11-3`), the inverse of
     /// [`crate::bitio::BitReader::read_uvlc`].
     ///
     /// # Errors
@@ -207,7 +219,8 @@ impl BitWriter {
     }
 
     /// Writes an AV2 `svlc()` signed variable-length descriptor (AV2 v1.0.0
-    /// § 4.11.4), the inverse of [`crate::bitio::BitReader::read_svlc`].
+    /// § 4.11.4, `docs/spec/av2/1.0.0/04-conventions.md#s-4-11-4`), the inverse of
+    /// [`crate::bitio::BitReader::read_svlc`].
     ///
     /// # Errors
     /// Returns [`WriteError::ValueOutOfRange`] if `value == i32::MIN`, whose
@@ -232,8 +245,9 @@ impl BitWriter {
     }
 
     /// Writes raw little-endian bytes for an AV2 `le(n)` descriptor (AV2 v1.0.0
-    /// § 4.11.5), the inverse of [`crate::bitio::BitReader::read_le`]. The `n` of
-    /// the descriptor is the slice length.
+    /// § 4.11.5, `docs/spec/av2/1.0.0/04-conventions.md#s-4-11-5`), the inverse of
+    /// [`crate::bitio::BitReader::read_le`]. The `n` of the descriptor is the slice
+    /// length.
     ///
     /// # Errors
     /// Never fails for whole bytes; returns [`WriteResult`] for symmetry with the
@@ -253,7 +267,8 @@ impl BitWriter {
         self.write_le(value.as_le_bytes())
     }
 
-    /// Writes an AV2 `le(n)` descriptor from a `u64`, the inverse of
+    /// Writes an AV2 `le(n)` descriptor from a `u64` (AV2 v1.0.0 § 4.11.5,
+    /// `docs/spec/av2/1.0.0/04-conventions.md#s-4-11-5`), the inverse of
     /// [`crate::bitio::BitReader::read_le_u64`].
     ///
     /// # Errors
@@ -279,7 +294,8 @@ impl BitWriter {
         Ok(())
     }
 
-    /// Writes an AV2 `leb128()` descriptor (AV2 v1.0.0 § 4.11.6) in its canonical
+    /// Writes an AV2 `leb128()` descriptor (AV2 v1.0.0 § 4.11.6,
+    /// `docs/spec/av2/1.0.0/04-conventions.md#s-4-11-6`) in its canonical
     /// minimal-length form, the inverse of [`crate::bitio::BitReader::read_leb128`].
     ///
     /// Every `u32` is encodable (in one to five bytes), so this never fails. The
@@ -305,8 +321,9 @@ impl BitWriter {
         Ok(())
     }
 
-    /// Writes an AV2 `ns(n)` non-symmetric integer descriptor (AV2 v1.0.0 § 4.11.8),
-    /// the inverse of [`crate::bitio::BitReader::read_ns`].
+    /// Writes an AV2 `ns(n)` non-symmetric integer descriptor (AV2 v1.0.0 § 4.11.8,
+    /// `docs/spec/av2/1.0.0/04-conventions.md#s-4-11-8`), the inverse of
+    /// [`crate::bitio::BitReader::read_ns`].
     ///
     /// # Errors
     /// Returns [`WriteError::ZeroWidth`] if `n == 0`, or
@@ -338,8 +355,9 @@ impl BitWriter {
         }
     }
 
-    /// Writes an AV2 `rg(n)` Rice-Golomb descriptor (AV2 v1.0.0 § 4.11.10), the
-    /// inverse of [`crate::bitio::BitReader::read_rg`]: a unary quotient prefix of
+    /// Writes an AV2 `rg(n)` Rice-Golomb descriptor (AV2 v1.0.0 § 4.11.10,
+    /// `docs/spec/av2/1.0.0/04-conventions.md#s-4-11-10`), the inverse of
+    /// [`crate::bitio::BitReader::read_rg`]: a unary quotient prefix of
     /// `value >> n` one bits, a terminating zero bit, then an `n`-bit remainder.
     ///
     /// # Errors
@@ -375,7 +393,9 @@ impl BitWriter {
 
     /// Pads the in-progress byte to the next byte boundary with zero bits, the
     /// inverse of [`crate::bitio::BitReader::byte_align_zero`] (AV2 v1.0.0 § 5.2.4 /
-    /// § 6.2.4). A no-op when already byte-aligned.
+    /// § 6.2.4, `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2-4`). This is
+    /// `byte_alignment()`, not `trailing_bits()` (§ 5.2.3) — see the type-level docs.
+    /// A no-op when already byte-aligned.
     pub fn align_to_byte(&mut self) {
         if self.nbits != 0 {
             // Left-justify the `nbits` written bits into the byte and zero-pad the
