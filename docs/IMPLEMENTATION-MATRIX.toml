@@ -4417,6 +4417,46 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "XTASK-CHECK-FIXTURES"
+name = "Test-fixture manifest gate"
+category = "automation"
+kind = "automation"
+spec_sections = []
+sources = []
+crate = "xtask"
+module = "xtask/src/fixtures.rs"
+openspec_change = "fixtures-manifest-and-check"
+tracking_issue = ""
+owner = "automation"
+risk = "low"
+notes = "Adds tests/fixtures/MANIFEST.toml (name/path/sha256/description/category/expect, reusing the conformance expect grammar) and `cargo xtask check-fixtures`: hermetic (no validator, no decoder, no network) verification that every committed tests/fixtures/*.av2 is listed once, exists, hashes to its recorded sha256, has a unique name/path, and a category consistent with expect, with no orphan committed fixtures. Wired into cargo xtask ci and a GitHub Actions step. The expect outcomes are separately verified against the real validator in-process by crates/splot-cli/tests/fixture_manifest.rs. Documented in docs/FIXTURES.md. Complements CONF-INSPECT-SNAPSHOTS and the conformance corpus."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "xtask/src/fixtures.rs::tests",
+    "crates/splot-cli/tests/fixture_manifest.rs",
+]
+commands = [
+    "cargo xtask check-fixtures",
+    "cargo test -p xtask fixtures",
+    "cargo test -p splot-cli --test fixture_manifest",
+]
+fixtures = ["tests/fixtures/MANIFEST.toml"]
+diagnostics = []
+
+[[feature]]
 id = "XTASK-GEN-TABLES"
 name = "AV2 § 9 tables code generator"
 category = "automation"

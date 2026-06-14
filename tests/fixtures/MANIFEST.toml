@@ -1,0 +1,149 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+# Machine-checkable manifest for the hand-crafted `tests/fixtures/*.av2` corpus.
+#
+# `cargo xtask check-fixtures` (hermetic; no decoder, no network) verifies that
+# every committed `.av2` fixture is listed here exactly once, exists, and matches
+# its recorded `sha256`, and that `category` is consistent with `expect`.
+# `crates/splot-cli/tests/fixture_manifest.rs` separately verifies each `expect`
+# against the actual validator (in-process). Byte-level details and the `printf`
+# regeneration recipes live in `tests/fixtures/README.md`; the workflow lives in
+# `docs/FIXTURES.md`. This file is the normative source for hashes and outcomes.
+#
+# Schema (one `[[fixture]]` per committed `.av2` file):
+#   name        stable short id (unique)
+#   path        path relative to tests/fixtures/ (unique)
+#   sha256      lowercase hex SHA-256 of the committed bytes
+#   description one-line human note
+#   category    "valid" | "validation-error" | "parse-error"
+#   expect      "clean"  | { diagnostics = ["rule-id", ...] }  (error rule-id set)
+#
+# category/expect consistency (enforced by check-fixtures):
+#   valid            <-> expect = "clean"
+#   parse-error      <-> expect = { diagnostics = ["bitstream/parse-error"] }
+#   validation-error <-> expect = { diagnostics = [...] }, non-empty and not the
+#                        bare parse-error set
+
+[[fixture]]
+name = "conformant"
+path = "conformant.av2"
+sha256 = "a2529aaea62ef348982aebc8841e334f993f94bff3d44314854d6478fc54c257"
+description = "TemporalDelimiter + a complete single-picture SequenceHeader; header-only CELU at obu_xlayer_id 0 (no frame-bearing OBU)."
+category = "validation-error"
+expect = { diagnostics = ["celu/missing-output-frame-unit"] }
+
+[[fixture]]
+name = "seq-header-tile-params"
+path = "seq-header-tile-params.av2"
+sha256 = "52d30e5be0cf307dcaa15e7c0215f79b5981ef6668fbe6c6d9327ba4ccb801cc"
+description = "Like conformant but seq_tile_info_present_flag = 1 with a uniform single-tile tile_params(); header-only CELU at obu_xlayer_id 0."
+category = "validation-error"
+expect = { diagnostics = ["celu/missing-output-frame-unit"] }
+
+[[fixture]]
+name = "bad-global-xlayer"
+path = "bad-global-xlayer.av2"
+sha256 = "42dfe29be2f5ccaaeb157da606094ea7b4d6cc188d7b8983842c29c75d896254"
+description = "TemporalDelimiter with an extension byte and obu_xlayer_id = 5; AV2 §6.2.2 requires GLOBAL_XLAYER_ID (31)."
+category = "validation-error"
+expect = { diagnostics = [
+    "obu-header/global-xlayer-required",
+    "obu-order/temporal-unit-missing-delimiter",
+] }
+
+[[fixture]]
+name = "truncated"
+path = "truncated.av2"
+sha256 = "b94f82274fe77dff278988a9ea096f8857d32ecf50518db9cb24c830880a2f5b"
+description = "Declares a 5-byte OBU but only the 1 header byte is present."
+category = "parse-error"
+expect = { diagnostics = ["bitstream/parse-error"] }
+
+[[fixture]]
+name = "prefix-then-truncated"
+path = "prefix-then-truncated.av2"
+sha256 = "e1a42e659a1f589a982e5817d70449d8e80f979b44f61ef0c7ed8799580fd4be"
+description = "A valid TemporalDelimiter followed by a truncated OBU; inspect prints the valid prefix, then the tail error."
+category = "parse-error"
+expect = { diagnostics = ["bitstream/parse-error"] }
+
+[[fixture]]
+name = "frame-header-prefix"
+path = "frame-header-prefix.av2"
+sha256 = "5695554b2b4b81c6f6cc615177aa89d651249a23642b7a00413150d4a573b43f"
+description = "conformant + an OBU_CLOSED_LOOP_KEY whose first tile group carries a frame-header activation prefix (cur_mfh_id = 0, seq_header_id = 0)."
+category = "valid"
+expect = "clean"
+
+[[fixture]]
+name = "frame-header-core"
+path = "frame-header-core.av2"
+sha256 = "390785d600182866c95ec4ebb50517c79e6b7e3a23e6101450387bbb21dff986"
+description = "TemporalDelimiter + non-single-picture SequenceHeader + OBU_CLOSED_LOOP_KEY parsed through the complete §5.18.2 intra path; 16x16 output key frame."
+category = "valid"
+expect = "clean"
+
+[[fixture]]
+name = "frame-header-core-mfh"
+path = "frame-header-core-mfh.av2"
+sha256 = "5171826e2214dd1db7b5d37d7235d76f2893325f4744f8192e4f6eb2e0b253a9"
+description = "frame-header-core with an in-band multi_frame_header_obu (mfhId 1); the key frame references cur_mfh_id = 1, resolved to its sequence header."
+category = "valid"
+expect = "clean"
+
+[[fixture]]
+name = "operating-point-set"
+path = "operating-point-set.av2"
+sha256 = "72362c3a53e561598d76dc08dfc24355432451abe4c7e50618e2203759f6ef79"
+description = "TemporalDelimiter + a global operating_point_set_obu (ops_id 0, ops_cnt 1) with one minimal operating point."
+category = "valid"
+expect = "clean"
+
+[[fixture]]
+name = "buffer-removal-timing"
+path = "buffer-removal-timing.av2"
+sha256 = "879cef57729a3f3fd98b67a2a77ad692ba84ffdff7d0d52aa349e097334c29df"
+description = "operating-point-set plus an OPS-dependent buffer_removal_timing_obu referencing it (br_ops_cnt matches ops_cnt)."
+category = "valid"
+expect = "clean"
+
+[[fixture]]
+name = "quantizer-matrix"
+path = "quantizer-matrix.av2"
+sha256 = "339ee331059450f49766c156ea44462fa711b4425a8957503792a8d272e83728"
+description = "TemporalDelimiter + the conformant sequence header + a quantizer_matrix_obu (level 0, default matrix); header-only CELU at obu_xlayer_id 0."
+category = "validation-error"
+expect = { diagnostics = ["celu/missing-output-frame-unit"] }
+
+[[fixture]]
+name = "film-grain"
+path = "film-grain.av2"
+sha256 = "beec6fc8e9f867f7984421d73e8594719ed6dcb84700b61f9ecac2eebca4bf56"
+description = "TemporalDelimiter + the conformant sequence header + a film_grain_obu (slot 0, one minimal model); header-only CELU at obu_xlayer_id 0."
+category = "validation-error"
+expect = { diagnostics = ["celu/missing-output-frame-unit"] }
+
+[[fixture]]
+name = "padding"
+path = "padding.av2"
+sha256 = "27a8119b2a621ec95852e2abcc7d9a3e86d6f89d10ef343a43199f4757c53c32"
+description = "TemporalDelimiter + a global padding_obu (one obu_padding_byte + trailing_bits)."
+category = "valid"
+expect = "clean"
+
+[[fixture]]
+name = "metadata-short"
+path = "metadata-short.av2"
+sha256 = "3bd5753814e0884bbf79a1fe88216ec87f52c4a8311aa0cf1acc6be61b9fdd5f"
+description = "TemporalDelimiter + a global metadata_short_obu carrying METADATA_TYPE_HDR_CLL."
+category = "valid"
+expect = "clean"
+
+[[fixture]]
+name = "metadata-group"
+path = "metadata-group.av2"
+sha256 = "9032d40149677b6f6f83d329c307384b15084ca550eca5261982253e9a61feb6"
+description = "TemporalDelimiter + a global metadata_group_obu with one non-cancelled METADATA_TYPE_HDR_CLL unit."
+category = "valid"
+expect = "clean"

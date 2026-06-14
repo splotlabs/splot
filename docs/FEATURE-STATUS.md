@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 159 feature(s).
+Matrix version 1. Last reviewed 2026-06-14. 160 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -136,6 +136,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `XTASK-DIAGNOSTIC-REGISTRY` | Validator diagnostic registry enforcement | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/diagnostic_registry.rs` |
 | `XTASK-VALIDATOR-MODULE-SPLIT` | Validator module split | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `crates/splot-validate/src/validator/mod.rs` |
 | `XTASK-SOURCE-LINES` | Rust source-file line budget | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/source_lines.rs` |
+| `XTASK-CHECK-FIXTURES` | Test-fixture manifest gate | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/fixtures.rs` |
 | `XTASK-GEN-TABLES` | AV2 § 9 tables code generator | automation | automation | done | done | done | done | done | n/a | n/a | done | n/a | `xtask/src/gen_tables.rs` |
 | `XTASK-CI-QUALITY-GATES` | CI quality gates (docs build + coverage threshold) | automation | automation | done | n/a | n/a | done | n/a | n/a | n/a | n/a | n/a | `xtask/src/main.rs` |
 | `DOC-FEATURE-TRACKING` | Feature tracking documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | `docs/FEATURE-TRACKING.md` |
