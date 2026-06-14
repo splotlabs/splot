@@ -4879,6 +4879,54 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-Y4M-OUTPUT-WRITER"
+name = "Y4M output writer"
+category = "infrastructure"
+kind = "writer"
+spec_sections = ["6.4.1", "6.16.13", "6.17.4.4", "7.21.1", "7.21.2"]
+sources = [
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-2",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/y4m.rs"
+openspec_change = "recon-y4m-output-writer"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a dependency-free source-backed Y4M stream/frame writer in `splot-recon` for caller-supplied `DecodedFrame<T>` values. It writes visible output samples only, uses repository-owned Y4M chroma tags, validates frame rates and stream/frame mismatches before payload output, and does not implement byte-consuming decode, CLI output, reconstruction algorithms, output scheduling, film-grain synthesis, AVM/dav2d invocation, or new dependencies."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "done"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-recon/src/y4m.rs::tests"]
+commands = [
+    "cargo test -p splot-recon --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-concurrency-policy",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/y4m.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
 name = "Decoded frame and plane model contract documentation"
 category = "docs"

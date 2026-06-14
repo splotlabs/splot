@@ -297,17 +297,17 @@ notes = "Prediction, dequant/reconstruction, and inverse transforms for the firs
 
 [[row]]
 id = "output-y4m"
-name = "Y4M output"
-feature_id = ""
-spec_sections = ["7.21"]
+name = "Y4M output writer"
+feature_id = "RECON-Y4M-OUTPUT-WRITER"
+spec_sections = ["6.4.1", "6.16.13", "6.17.4.4", "7.21.1", "7.21.2"]
 parser_source = "n/a"
-decode_module = "planned"
+decode_module = "crates/splot-recon/src/y4m.rs; crates/splot-recon/src/lib.rs"
 tier = "tier1-intra"
-status = "todo"
-self_contained_tests = []
+status = "partial"
+self_contained_tests = ["crates/splot-recon/src/y4m.rs::tests", "cargo test -p splot-recon --locked", "cargo clippy -p splot-recon --all-targets --locked -- -D warnings", "cargo xtask check-dependency-direction", "cargo xtask check-concurrency-policy", "cargo xtask check-decoder-support"]
 diagnostics = []
 local_reference_evidence = []
-notes = "Y4M output is useful after deterministic hashes are defined and tested."
+notes = "Source-backed library Y4M writer for caller-supplied `DecodedFrame<T>` values exists in `splot-recon`. It writes stream headers, `FRAME` headers, and cropped visible Y/U/V samples using repository-owned Y4M chroma tags, caller-supplied frame rate, progressive output, and the same visible-row byte policy as decoded-frame hashes. This row remains partial because runtime `splot decode -o` Y4M output, byte-consuming decode, reconstruction algorithms, output scheduling, film-grain synthesis, AV2 reference refresh, AVM/dav2d invocation, local-reference evidence, and CI reference-tool requirements are still unsupported."
 
 [[row]]
 id = "reference-frame-store"
