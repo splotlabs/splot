@@ -979,4 +979,7 @@ fn checked_byte_span(
 }
 
 #[cfg(test)]
+mod derived_tests;
+
+#[cfg(test)]
 mod tests;

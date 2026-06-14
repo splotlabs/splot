@@ -47,6 +47,7 @@ Feature ID: `DECODE-TILE-PAYLOAD-INPUT-DERIVATION`
 | `019ec7ed-f0b3-77b2-abf1-736ee872ffd0` | API/concurrency review | No findings. Confirmed the new derivation API remains crate-private, the split lifetimes return plans borrowing only payload bytes, the PR #101 `DecodeContext`/`WorkerPool::install` model is used, and `splot-decode` has no `splot-recon` dependency or direct Rayon/crossbeam/thread/global-pool usage. |
 | `019ec7ed-d9c1-7ef0-a7b8-be798d9babef` | Spec/conformance review | Found that accepting caller-supplied `TileGroupStructure` could trust forged public fields, and that the `disable_cdf_update` accepted-path test used only `new_for_test`. Fixed by removing `TileGroupStructure` from `FrameCandidateTileBoundaryInput`, deriving § 5.19 inside the bridge from the same envelope payload using the parser-derived post-frame-header bit position, and adding a fixture-backed `FrameCandidateTileFacts::from_frame_core` accepted-path test. |
 | `019ec7ee-4528-73c3-b723-bb29df273463` | Hostile-input/security/performance review | Found that matching envelope metadata was not enough to prove the payload slice came from the planned input bytes, and that `MaxTileCount` should fire before the unsupported multi-tile tier. Fixed by requiring the original input byte slice in the bridge input, checking the envelope payload is the exact slice inside that buffer, and moving the grid tile-count limit before unsupported single-tile gating with a regression test. |
+| GitHub Codex review `4493639796` | External PR review | Found two P3 issues after PR #135 opened: the proof ledger named a nonexistent `derived_boundary_rejects_malformed_tile_group_payload_region` test, and the new derived-boundary tests made `crates/splot-decode/src/tile_payload/tests.rs` exceed the 1000-line advisory limit. Fixed by renaming the ledger proof to the existing `derived_boundary_rejects_invalid_locally_parsed_tile_group_structure` test, moving derived-input tests and helpers into `crates/splot-decode/src/tile_payload/derived_tests.rs`, and regenerating decoder/feature status docs. |
 
 ## Verification
 
@@ -75,6 +76,10 @@ Feature ID: `DECODE-TILE-PAYLOAD-INPUT-DERIVATION`
   allowance instead of increasing it.
 - `cargo xtask ci` passed.
 - After review fixes, `cargo xtask ci` passed again.
+- After GitHub Codex review fixes, `cargo test -p splot-decode tile_payload --locked` passed with 37 cases.
+- After GitHub Codex review fixes, `cargo xtask check-source-lines` passed; the moved test files are below the 1000-line advisory limit.
+- After GitHub Codex review fixes, `cargo xtask check-feature-status`, `cargo xtask check-decoder-support`, `cargo xtask check-dependency-direction`, and `cargo xtask check-concurrency-policy` passed.
+- After GitHub Codex review fixes, `cargo xtask ci` passed.
 
 ## Fuzz Coverage Note
 
