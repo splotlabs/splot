@@ -44,7 +44,7 @@ Every emitted decoder diagnostic uses stable field names:
 |---|---|---|---|---|---|---|
 | `decode/malformed-source` | Error | optional parser section | `DECODE-BYTE-STREAM-PLANNER` | `decode-byte-stream-planner` | decode source is malformed and could not be planned. | Check the AV2 Annex B or IVF source bytes before retrying `splot decode`. |
 | `decode/resource-limit` | Error | optional policy / § 5.2.1 / § 7.1 | `DOC-DECODE-LIMITS-CONTRACT` | `decode-limits-budget` | decode planning stopped because a configured resource limit was exceeded. | Use a smaller input or raise the decode limit policy before retrying. |
-| `decode/unsupported-feature` | Error | § 7.1 or planner section | `CLI-DECODE` / `DECODE-STREAM-STATE-PLANNER` | `cli-decode-entrypoint` / `decode-stream-state` | Byte stream planning succeeded, but `splot decode` runtime output is not implemented yet. | Use `splot validate` or `splot inspect` for bitstream analysis until `CLI-DECODE` implements output. |
+| `decode/unsupported-feature` | Error | § 7.1 or planner / tile section | `CLI-DECODE` / `DECODE-STREAM-STATE-PLANNER` / `DECODE-TILE-PAYLOAD-BOUNDARY` | `cli-decode-entrypoint` / `decode-stream-state` / `tile-payload-decode` | Byte stream planning succeeded, but `splot decode` runtime output or tile syntax traversal is not implemented yet. | Use `splot validate` or `splot inspect` for bitstream analysis until `CLI-DECODE` implements output and tile decode support. |
 
 <!-- diagnostics-registry:end -->
 
@@ -67,3 +67,9 @@ Planner-level `decode/unsupported-feature` includes `detail_kind`,
 Runtime-deferral `decode/unsupported-feature` includes `detail_kind`,
 `bitstream_format`, `input_len_bytes`, `obu_count`, `frame_candidate_count`,
 `source_warning_count`, and selected base-layer ids.
+
+Tile-payload-boundary `decode/unsupported-feature` metadata is crate-private
+until a later runtime decode path surfaces it through CLI diagnostics. The
+boundary records the stable unsupported reason, matrix row
+`tile-payload-decode`, Feature ID `DECODE-TILE-PAYLOAD-BOUNDARY`, optional tile
+number, and byte offset.

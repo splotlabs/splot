@@ -25,6 +25,7 @@ pub mod diagnostic;
 pub mod error;
 pub mod runtime;
 pub mod stream_plan;
+pub(crate) mod tile_payload;
 
 pub use context::DecodeContext;
 pub use diagnostic::{
