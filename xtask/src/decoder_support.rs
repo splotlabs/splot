@@ -97,14 +97,13 @@ pub(crate) fn run_check_decoder_support(root: &Path) -> Result<()> {
 
     let matrix = load_matrix(root)?;
     let checked = validate_matrix(matrix)?;
+    validate_local_reference_evidence_links(root, &checked)?;
     let expected = render_markdown(&checked);
     let actual = std::fs::read_to_string(&status_path)
         .with_context(|| format!("failed to read {}", status_path.display()))?;
     if actual.trim_end() != expected.trim_end() {
         bail!("{STATUS_DOC_PATH} is out of date; regenerate with `{REGEN_COMMAND}`");
     }
-
-    crate::reference_evidence::run_check_reference_evidence(root)?;
 
     eprintln!("check-decoder-support: ok ({} row(s))", checked.rows.len());
     Ok(())
@@ -501,6 +500,70 @@ fn is_valid_feature_id(s: &str) -> bool {
     count >= 1
 }
 
+fn validate_local_reference_evidence_links(root: &Path, checked: &CheckedMatrix) -> Result<()> {
+    let evidence_index = crate::reference_evidence::load_checked_reference_evidence_index(root)?;
+    validate_reference_evidence_links(&checked.rows, &evidence_index)?;
+    eprintln!(
+        "check-reference-evidence: ok ({} evidence entr{})",
+        evidence_index.evidence_count(),
+        if evidence_index.evidence_count() == 1 {
+            "y"
+        } else {
+            "ies"
+        }
+    );
+    Ok(())
+}
+
+fn validate_reference_evidence_links(
+    rows: &[CheckedRow],
+    evidence_index: &crate::reference_evidence::ReferenceEvidenceIndex,
+) -> Result<()> {
+    let mut problems = Vec::new();
+    for row in rows {
+        for evidence in &row.reference_evidence {
+            let Some(evidence_id) =
+                crate::reference_evidence::canonical_evidence_pointer_id(evidence)
+            else {
+                continue;
+            };
+            if evidence_id.trim().is_empty() {
+                problems.push(format!(
+                    "row `{}`: local_reference_evidence pointer `{evidence}` is missing an evidence id",
+                    row.id
+                ));
+                continue;
+            }
+            let Some(rows_for_evidence) = evidence_index.rows_for(evidence_id) else {
+                problems.push(format!(
+                    "row `{}`: local_reference_evidence pointer `{evidence}` references unknown evidence id `{evidence_id}`",
+                    row.id
+                ));
+                continue;
+            };
+            if !rows_for_evidence.contains(&row.id) {
+                problems.push(format!(
+                    "row `{}`: local_reference_evidence pointer `{evidence}` is not reciprocal; evidence `{evidence_id}` does not list row `{}` in decoder_support_rows",
+                    row.id, row.id
+                ));
+            }
+        }
+    }
+
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        for problem in &problems {
+            eprintln!("error: {problem}");
+        }
+        bail!(
+            "{} decoder support reference evidence link problem(s); fix {MATRIX_PATH} or {}",
+            problems.len(),
+            crate::reference_evidence::MANIFEST_PATH
+        )
+    }
+}
+
 fn render_markdown(matrix: &CheckedMatrix) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# Decoder Support Status");
@@ -684,6 +747,10 @@ fn is_windows_absolute_path(token: &str) -> bool {
         && bytes[1] == b':'
         && matches!(bytes[2], b'\\' | b'/')
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod link_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
