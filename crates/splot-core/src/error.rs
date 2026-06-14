@@ -191,6 +191,157 @@ impl fmt::Display for PaddingErrorKind {
     }
 }
 
+/// Specific caller-supplied CDF row violations for AV2 § 8.2.6 symbol decoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolCdfErrorKind {
+    /// The row length is not `N + 1` for a supported `N` in `2..=8`.
+    UnsupportedLength {
+        /// Actual row length.
+        len: usize,
+    },
+    /// A cumulative probability entry is outside the supported AV2 coding range.
+    ProbabilityOutOfRange {
+        /// Offending CDF index.
+        index: usize,
+        /// Offending value.
+        value: i32,
+    },
+    /// Cumulative probability entries are not strictly increasing.
+    NonIncreasingCumulative {
+        /// Previous cumulative CDF index.
+        previous_index: usize,
+        /// Offending CDF index.
+        index: usize,
+    },
+    /// `cdf[N - 1]` is not a valid `Para_Adjustment_List` row.
+    AdaptationRateOutOfRange {
+        /// Offending CDF index.
+        index: usize,
+        /// Offending value.
+        value: i32,
+    },
+    /// `cdf[N]` is not in the AV2 capped use-count range `0..=32`.
+    CountOutOfRange {
+        /// Offending CDF index.
+        index: usize,
+        /// Offending value.
+        value: i32,
+    },
+}
+
+impl fmt::Display for SymbolCdfErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedLength { len } => {
+                write!(f, "CDF length {len} is not supported; expected 3..=9")
+            }
+            Self::ProbabilityOutOfRange { index, value } => write!(
+                f,
+                "CDF cumulative entry {index} has value {value}, expected 1..=32767"
+            ),
+            Self::NonIncreasingCumulative {
+                previous_index,
+                index,
+            } => write!(
+                f,
+                "CDF cumulative entry {index} must be greater than entry {previous_index}"
+            ),
+            Self::AdaptationRateOutOfRange { index, value } => write!(
+                f,
+                "CDF adaptation-rate entry {index} has value {value}, expected 0..=124"
+            ),
+            Self::CountOutOfRange { index, value } => write!(
+                f,
+                "CDF use-count entry {index} has value {value}, expected 0..=32"
+            ),
+        }
+    }
+}
+
+/// Specific symbol decoder state violations for AV2 § 8.2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolDecoderErrorKind {
+    /// The tile payload size cannot be represented by the signed `SymbolMaxBits` state.
+    PayloadTooLarge {
+        /// Payload length in bytes.
+        bytes: usize,
+    },
+    /// `read_literal(n)` was asked to return more than 32 bits.
+    LiteralWidthTooLarge {
+        /// Requested literal width.
+        requested: u32,
+        /// Maximum literal width returned as a `u32`.
+        max: u32,
+    },
+    /// `exit_symbol()` was invoked when `SymbolMaxBits < -14`.
+    SymbolMaxBitsTooSmall {
+        /// Current signed `SymbolMaxBits` value.
+        symbol_max_bits: i64,
+    },
+    /// The arithmetic interval collapsed before renormalization.
+    InvalidArithmeticRange,
+    /// The computed trailing bit position was outside the bounded tile payload.
+    TrailingBitOutOfRange {
+        /// Relative bit position inside the tile payload.
+        bit_position: u64,
+    },
+    /// The computed padding end position was outside the bounded tile payload.
+    PaddingEndOutOfRange {
+        /// Relative bit position inside the tile payload.
+        bit_position: u64,
+    },
+    /// `paddingEndPosition` was not byte-aligned.
+    PaddingEndNotByteAligned {
+        /// Relative bit position inside the tile payload.
+        bit_position: u64,
+    },
+    /// The required `exit_symbol()` trailing bit was not equal to `1`.
+    MissingTrailingOneBit,
+    /// An `exit_symbol()` padding bit after the trailing one was not equal to `0`.
+    NonZeroPaddingBit,
+}
+
+impl fmt::Display for SymbolDecoderErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PayloadTooLarge { bytes } => {
+                write!(
+                    f,
+                    "tile payload of {bytes} byte(s) is too large for SymbolMaxBits"
+                )
+            }
+            Self::LiteralWidthTooLarge { requested, max } => {
+                write!(
+                    f,
+                    "read_literal({requested}) exceeds the {max}-bit return width"
+                )
+            }
+            Self::SymbolMaxBitsTooSmall { symbol_max_bits } => write!(
+                f,
+                "SymbolMaxBits is {symbol_max_bits}, but exit_symbol() requires at least -14"
+            ),
+            Self::InvalidArithmeticRange => f.write_str("symbol arithmetic interval collapsed"),
+            Self::TrailingBitOutOfRange { bit_position } => write!(
+                f,
+                "trailingBitPosition {bit_position} is outside the tile payload"
+            ),
+            Self::PaddingEndOutOfRange { bit_position } => write!(
+                f,
+                "paddingEndPosition {bit_position} is outside the tile payload"
+            ),
+            Self::PaddingEndNotByteAligned { bit_position } => {
+                write!(f, "paddingEndPosition {bit_position} is not byte-aligned")
+            }
+            Self::MissingTrailingOneBit => {
+                f.write_str("exit_symbol() trailing bit must be equal to 1")
+            }
+            Self::NonZeroPaddingBit => {
+                f.write_str("exit_symbol() padding bits after the trailing bit must be zero")
+            }
+        }
+    }
+}
+
 /// Specific structural violations of the metadata OBUs (AV2 § 5.17 / § 6.16) that
 /// prevent further parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -438,6 +589,28 @@ pub enum Error {
         bit_offset: BitOffset,
         /// Specific metadata violation.
         kind: MetadataErrorKind,
+    },
+
+    /// A caller-supplied CDF row violated the constraints enforced before AV2 § 8.2.6.
+    #[error("invalid symbol CDF at byte {offset}.{bit_offset}: {kind}")]
+    InvalidSymbolCdf {
+        /// Offset of the symbol decoder when the row was rejected.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidSymbolCdf::offset`].
+        bit_offset: BitOffset,
+        /// Specific CDF-row violation.
+        kind: SymbolCdfErrorKind,
+    },
+
+    /// The AV2 § 8.2 symbol decoder reached a malformed or unsupported local state.
+    #[error("invalid symbol decoder state at byte {offset}.{bit_offset}: {kind}")]
+    InvalidSymbolDecoderState {
+        /// Offset of the offending bit or decoder state.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidSymbolDecoderState::offset`].
+        bit_offset: BitOffset,
+        /// Specific symbol-decoder violation.
+        kind: SymbolDecoderErrorKind,
     },
 }
 

@@ -54,6 +54,12 @@ output, output scheduling, or AV2 reference refresh semantics exists yet.
 `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
 `splot-decode`, then call deterministic reconstruction primitives.
+`splot-core` now also exposes a bounded AV2 § 8.2 `SymbolDecoder` foundation
+for caller-provided tile payload slices: initialization, pseudo-raw bool/literal
+reads, caller-supplied-CDF symbol reads with optional CDF updates, and
+`exit_symbol()` padding validation. This does not make runtime tile decode
+supported; § 8.3 CDF selection, tile CDF banks, `decode_tile()`, reconstruction,
+hash output, and runtime Y4M output remain future rows.
 
 Canonical decoder status lives in
 [`DECODER-SUPPORT-MATRIX.toml`](./DECODER-SUPPORT-MATRIX.toml), rendered to
@@ -128,7 +134,7 @@ other external decoder is forbidden.
 | 3 | CLI `splot decode` contract backed by library diagnostics | hash output parse contract wired; runtime unsupported |
 | 4 | Container traversal, base-layer parsed/raw traversal, transactional decode planning | parsed and raw-byte stream planners supported; operating-point selection and CLI runtime planned |
 | 5 | Self-contained decode fuzz target and fixture smoke | `decode_plan_bytes` fuzz target supported for the raw byte planner; decode fixtures planned |
-| 6 | AV2 § 8 symbol/CDF decoder foundation | planned |
+| 6 | AV2 § 8 symbol/CDF decoder foundation | § 8.2 generic primitive partial; § 8.3 and tile decode planned |
 | 7 | Constrained intra tile syntax | planned |
 | 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | planned |
 | 9 | Y4M output and reconstructed reference-frame store | reference-slot runtime store and source-backed Y4M writer supported; runtime Y4M output and AV2 refresh semantics planned |
