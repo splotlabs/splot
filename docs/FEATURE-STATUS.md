@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 163 feature(s).
+Matrix version 1. Last reviewed 2026-06-14. 164 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -131,6 +131,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `CONF-FUZZ-NO-PANIC` | Parser no-panic fuzzing | conformance | conformance | done | n/a | done | done | n/a | n/a | partial | done | n/a | `fuzz/fuzz_targets/parse_obu.rs` |
 | `CLI-VALIDATE` | splot validate command | cli | cli | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-cli/src/commands/validate.rs` |
 | `CLI-VALIDATE-OUTPUT-CONTROLS` | splot validate output controls (--max-diagnostics / --summary-only) | cli | cli | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-cli/src/commands/validate.rs` |
+| `CLI-VALIDATE-EXPLAIN` | splot explain command + diagnostic registry | cli | cli | done | done | done | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-cli/src/commands/explain.rs` |
 | `CLI-INSPECT` | splot inspect command | cli | cli | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-cli/src/commands/inspect.rs` |
 | `XTASK-CONVENTIONAL-COMMITS` | Conventional commit enforcement | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/main.rs` |
 | `XTASK-FEATURE-STATUS` | xtask feature status reporting and checks | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/feature_status.rs` |

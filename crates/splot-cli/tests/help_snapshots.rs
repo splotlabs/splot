@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Backward-compatibility snapshots of `splot validate --help` and
-//! `splot inspect --help` (CONF-CLI-SNAPSHOT-COVERAGE).
+//! Backward-compatibility snapshots of the validator-stream subcommands'
+//! `--help` — `validate`, `inspect`, and `explain` (CONF-CLI-SNAPSHOT-COVERAGE).
 //!
 //! `--help` is rendered from the static clap command definition, so it is fully
 //! deterministic and carries no version string. Freezing it as an `insta` golden
-//! makes every change to the `validate` / `inspect` argument surface — a new flag,
-//! a renamed flag, a changed help string, a reordered option — show up as a
+//! makes every change to those subcommands' argument surface — a new flag, a
+//! renamed flag, a changed help string, a reordered option — show up as a
 //! reviewable snapshot diff (`cargo insta review`). This is the public-surface
 //! tripwire for the validator productization work: additive flags update these
 //! snapshots intentionally; an accidental or breaking surface change is caught
@@ -42,4 +42,9 @@ fn validate_help() {
 #[test]
 fn inspect_help() {
     insta::assert_snapshot!("inspect_help", help("inspect"));
+}
+
+#[test]
+fn explain_help() {
+    insta::assert_snapshot!("explain_help", help("explain"));
 }

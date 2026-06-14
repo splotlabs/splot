@@ -1,0 +1,18 @@
+---
+source: crates/splot-cli/tests/help_snapshots.rs
+expression: "help(\"explain\")"
+---
+Describe a validator diagnostic rule id (or list them all)
+
+Usage: splot explain [OPTIONS] [RULE_ID]
+
+Arguments:
+  [RULE_ID]  The diagnostic rule id to describe (e.g. `obu-header/global-xlayer-required`). Omit it with `--list` to enumerate every rule id instead
+
+Options:
+      --list        List every known rule id instead of describing one
+  -v, --verbose...  Increase logging verbosity (repeatable: -v, -vv, -vvv)
+      --json        Emit the output as JSON
+      --quiet       Silence all logging except errors
+  -h, --help        Print help
+  -V, --version     Print version
