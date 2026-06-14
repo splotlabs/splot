@@ -200,16 +200,16 @@ notes = "Source-backed decoded-frame and plane model contract: `splot-recon` now
 [[row]]
 id = "deterministic-frame-hash"
 name = "Deterministic decoded-frame hash"
-feature_id = "RECON-HASH-INPUT-SERIALIZATION"
-spec_sections = ["5.17.12", "6.16.13", "7.21.1", "7.21.2", "7.21.7"]
-parser_source = "crates/splot-core/src/headers/metadata.rs"
+feature_id = "RECON-FRAME-HASH-DIGEST"
+spec_sections = ["6.16.13", "7.21.2"]
+parser_source = "crates/splot-recon/src/hash_input.rs"
 decode_module = "crates/splot-recon/src/hash_input.rs"
 tier = "foundation"
-status = "partial"
-self_contained_tests = ["crates/splot-recon/src/hash_input.rs::tests", "cargo test -p splot-recon --locked", "cargo clippy -p splot-recon --all-targets --locked -- -D warnings", "cargo xtask check-dependency-direction", "cargo xtask check-decoder-support"]
+status = "supported"
+self_contained_tests = ["crates/splot-recon/src/hash_input.rs::tests", "cargo test -p splot-recon --locked", "cargo clippy -p splot-recon --all-targets --locked -- -D warnings", "cargo xtask check-dependency-direction", "cargo xtask check-concurrency-policy", "cargo xtask check-decoder-support"]
 diagnostics = []
 local_reference_evidence = ["docs/LOCAL-REFERENCE-EVIDENCE.toml::lref-avm-dav2d-syn-key-intra-64x64", "docs/LOCAL-REFERENCE-EVIDENCE.toml::lref-avm-dav2d-syn-intra-64x64-10bit"]
-notes = "Source-backed `splot-recon` hash-input byte serialization for `splot.decoded_frame_hash` v1: `DecodedFrameHashInput<'_, T>` emits the repository-owned `av2-output-samples-v1` byte stream for caller-supplied raw `DecodedFrame<T>` visible rows, using AV2 §6.16.13 sample-byte order, Y/U/V plane order, one byte for 8-bit output, and little-endian two-byte samples for >8-bit output. It excludes stride, padding, output index, dimensions, pixel format metadata, OBU/container bytes, and decoded-frame-hash metadata. This is hash input only: SHA-256 digest computation, AV2 metadata MD5 verification, output ordering, film-grain synthesis, byte-consuming decode, Y4M output, and AVM/dav2d invocation remain unsupported."
+notes = "Source-backed `splot-recon` deterministic decoded-frame hash support for `splot.decoded_frame_hash` v1: `DecodedFrameHashInput<'_, T>` emits the repository-owned `av2-output-samples-v1` byte stream for caller-supplied raw `DecodedFrame<T>` visible rows, and `DecodedFrameHash` computes `splot-dfh-sha256-v1` over the same bytes. The byte stream uses AV2 §6.16.13 sample-byte order, Y/U/V plane order, one byte for 8-bit output, and little-endian two-byte samples for >8-bit output. It excludes stride, padding, output index, dimensions, pixel format metadata, OBU/container bytes, and decoded-frame-hash metadata. This uses the existing workspace `sha2` dependency as a direct `splot-recon` dependency, but adds no `splot-*` dependency edge and keeps `splot-recon` scheduler-free. AV2 metadata MD5 verification, output ordering, film-grain synthesis, byte-consuming decode, Y4M output, and AVM/dav2d invocation remain unsupported. Cited local-reference evidence is non-executable raw reference-output MD5 background metadata, not proof of `splot-dfh-sha256-v1` or runtime decode."
 
 [[row]]
 id = "minimal-decode-tier-contract"

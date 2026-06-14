@@ -47,9 +47,10 @@ decode tile payloads, reconstruct pixels, produce hashes, write Y4M, or provide
 runtime decode output.
 `splot-recon` now exposes immutable decoded output frame and plane model types
 with constructor invariants plus a bounded immutable reference-slot container,
-and canonical decoded-frame hash input serialization, but no reconstruction
-algorithm, hash digest computation, Y4M output, or AV2 reference refresh
-semantics exists yet. `splot-recon` remains scheduler-free:
+canonical decoded-frame hash input serialization, and source-backed
+`splot-dfh-sha256-v1` digest computation for caller-supplied decoded frames, but
+no reconstruction algorithm, Y4M output, or AV2 reference refresh semantics
+exists yet. `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
 `splot-decode`, then call deterministic reconstruction primitives.
 
@@ -121,7 +122,7 @@ other external decoder is forbidden.
 |---|---|---|
 | 0 | Roadmap, support matrix, generated status, drift gate | supported |
 | 1 | Decode API contract, runtime context, limits, resource diagnostics, crate scaffolding, plan-only byte entry point | crate scaffolding, `DecodeContext` worker-pool runtime policy, limits runtime API, and bounded byte-stream planning supported; resource diagnostic emission planned |
-| 2 | Shared decoded frame, plane, pixel format, and deterministic hash types | frame/plane model types and hash-input serialization supported; digest computation planned |
+| 2 | Shared decoded frame, plane, pixel format, and deterministic hash types | frame/plane model types, hash-input serialization, and `splot-dfh-sha256-v1` digest computation supported |
 | 3 | CLI `splot decode` contract backed by library diagnostics | hash output parse contract wired; runtime unsupported |
 | 4 | Container traversal, base-layer parsed/raw traversal, transactional decode planning | parsed and raw-byte stream planners supported; operating-point selection and CLI runtime planned |
 | 5 | Self-contained decode fuzz target and fixture smoke | `decode_plan_bytes` fuzz target supported for the raw byte planner; decode fixtures planned |
@@ -419,13 +420,15 @@ The canonical byte stream is defined as follows:
   and signaled decoded-frame-hash metadata are excluded from the digest input
   and must be asserted separately when relevant.
 
-`splot-recon` source-backs the byte-stream portion of this contract with
-`DecodedFrameHashInput<'_, T>`. That API serializes a caller-supplied
-`DecodedFrame<T>`'s modeled visible rows and exposes
+`splot-recon` source-backs this contract with
+`DecodedFrameHashInput<'_, T>` and `DecodedFrameHash`. The input API serializes
+a caller-supplied `DecodedFrame<T>`'s modeled visible rows and exposes
 `byte_stream_id = "av2-output-samples-v1"` plus
-`variant_id = "raw_intermediate_output"`. It does not compute SHA-256, verify
-AV2 metadata MD5, select output order, synthesize film grain, read bitstreams,
-or invoke AVM/dav2d.
+`variant_id = "raw_intermediate_output"`. The digest API computes
+`algorithm_id = "splot-dfh-sha256-v1"` over that same byte stream and exposes
+raw 32-byte digest access plus lowercase hex formatting. These APIs do not
+verify AV2 metadata MD5, select output order, synthesize film grain, read
+bitstreams, write Y4M, reconstruct pixels, or invoke AVM/dav2d.
 
 The default future hash variant is `raw_intermediate_output`, corresponding to
 AV2 § 6.16.13 `has_grain = 0`: `OutY`/`OutU`/`OutV` from the § 7.21.2
@@ -436,8 +439,9 @@ variant after film-grain synthesis is implemented and tested.
 Local AVM/dav2d MD5 output can be useful evidence, but committed `splot` tests
 must not require those tools. The checked local-reference evidence manifest now
 records AVM/dav2d raw MD5 agreement for two tiny committed fixtures; it is
-non-executable metadata only and does not prove that `splot` hash computation is
-implemented. Future decoder local-reference evidence also belongs in
+non-executable metadata only and does not prove runtime decode, reconstruction,
+or `splot-dfh-sha256-v1` pixel correctness for decoded bitstreams. Future
+decoder local-reference evidence also belongs in
 [`LOCAL-REFERENCE-EVIDENCE.toml`](./LOCAL-REFERENCE-EVIDENCE.toml), which is
 checked by `cargo xtask check-reference-evidence` and
 `cargo xtask check-decoder-support`. The manifest stores portable metadata only:
@@ -509,9 +513,10 @@ crates/splot-cli       thin CLI rendering splot-decode diagnostics
 ```
 
 The scaffold is still an ownership boundary for decode. `splot-recon` exposes a
-runtime decoded output frame/plane model, reference-slot container, and
-deterministic hash-input byte serializer, but no reconstruction algorithm, AV2
-reference refresh process, hash digest computation, or Y4M writer.
+runtime decoded output frame/plane model, reference-slot container,
+deterministic hash-input byte serializer, and `splot-dfh-sha256-v1` digest API
+for caller-supplied decoded frames, but no reconstruction algorithm, AV2
+reference refresh process, or Y4M writer.
 `splot-decode` owns the future decode scheduler boundary through
 `DecodeRuntimeConfig` and `DecodeContext`, whose single `WorkerPool` is sized by
 the CLI/runtime `--threads` policy. It now depends on `splot-core` for parsed
