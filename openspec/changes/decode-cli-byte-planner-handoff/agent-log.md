@@ -44,10 +44,27 @@
 - `discussion_r3409278215`: `DecodeContext` docs must mention raw-byte
   planning. Current docs do; this PR keeps CLI use aligned with those docs.
 
+## PR #116 Codex Review Follow-Up
+
+- Codex review URL:
+  <https://github.com/splotlabs/splot/pull/116#pullrequestreview-4492824905>.
+- `discussion_r3409441530`: `splot decode` must enforce finite
+  `max_input_bytes` before reading an entire input into memory. This follow-up
+  adds a decode-only bounded file reader that rejects oversized regular files
+  from metadata and otherwise reads at most `limit + 1` bytes before emitting
+  the existing `decode/resource-limit` diagnostic.
+- `discussion_r3409441531`: Annex B parser/container failures must not be
+  mis-cited to OBU syntax `§ 5.2.1`. This follow-up leaves malformed-source
+  `spec_section` unset when the source issue cannot be attributed to one precise
+  AV2 section; policy-only `max_input_bytes` also leaves `spec_section` unset.
+
 ## Implementation Notes
 
 - Use `DecodeContext::new(DecodeRuntimeConfig::new(args.threads))` and then
   `DecodeContext::plan_bytes(&bytes, DecodeOptions::default())`.
+- Enforce `DecodeOptions::default().limits().max_input_bytes()` before
+  constructing the full CLI input buffer. Oversized inputs are reported through
+  the same library-owned `decode/resource-limit` adapter as planner limits.
 - Do not write output artifacts in this slice. Output path resolution exists
   only for CLI argument validation and future artifact selection.
 - Missing input remains an operational read error with exit code `2`, not a

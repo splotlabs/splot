@@ -42,8 +42,8 @@ Every emitted decoder diagnostic uses stable field names:
 
 | Rule ID | Severity | Section | Feature | Matrix Row | Message | Remediation |
 |---|---|---|---|---|---|---|
-| `decode/malformed-source` | Error | optional § 5.2.1 | `DECODE-BYTE-STREAM-PLANNER` | `decode-byte-stream-planner` | decode source is malformed and could not be planned. | Check the AV2 Annex B or IVF source bytes before retrying `splot decode`. |
-| `decode/resource-limit` | Error | optional § 5.2.1 / § 7.1 | `DOC-DECODE-LIMITS-CONTRACT` | `decode-limits-budget` | decode planning stopped because a configured resource limit was exceeded. | Use a smaller input or raise the decode limit policy before retrying. |
+| `decode/malformed-source` | Error | optional parser section | `DECODE-BYTE-STREAM-PLANNER` | `decode-byte-stream-planner` | decode source is malformed and could not be planned. | Check the AV2 Annex B or IVF source bytes before retrying `splot decode`. |
+| `decode/resource-limit` | Error | optional policy / § 5.2.1 / § 7.1 | `DOC-DECODE-LIMITS-CONTRACT` | `decode-limits-budget` | decode planning stopped because a configured resource limit was exceeded. | Use a smaller input or raise the decode limit policy before retrying. |
 | `decode/unsupported-feature` | Error | § 7.1 or planner section | `CLI-DECODE` / `DECODE-STREAM-STATE-PLANNER` | `cli-decode-entrypoint` / `decode-stream-state` | Byte stream planning succeeded, but `splot decode` runtime output is not implemented yet. | Use `splot validate` or `splot inspect` for bitstream analysis until `CLI-DECODE` implements output. |
 
 <!-- diagnostics-registry:end -->
@@ -52,11 +52,14 @@ Every emitted decoder diagnostic uses stable field names:
 
 `decode/malformed-source` includes `detail_kind`, `source_issue_kind`,
 `parser_rule_id`, `byte_offset`, `ivf_frame_index`, and `parser_message` when
-known.
+known. Annex B wrapper errors and IVF container errors leave `spec_section`
+unset unless the underlying parser exposes one AV2 section precisely enough to
+cite.
 
 `decode/resource-limit` includes `detail_kind`, `limit_name`, `limit`, `actual`,
 `unit`, `byte_offset`, and `bit_offset`. Resource limits are `splot` policy over
-measured planner values, not AV2 conformance failures.
+measured planner values, not AV2 conformance failures; policy-only limits such
+as `max_input_bytes` leave `spec_section` unset.
 
 Planner-level `decode/unsupported-feature` includes `detail_kind`,
 `unsupported_reason`, `obu_type`, and `byte_offset`.

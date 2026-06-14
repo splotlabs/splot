@@ -3,6 +3,8 @@
 
 //! `splot decode` — future reference-style decode / round-trip entry point.
 
+use std::fs::File;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -10,12 +12,10 @@ use anyhow::{Context as _, Result};
 use clap::{Args, ValueEnum};
 use serde::Serialize;
 use splot_decode::{
-    DecodeContext, DecodeDiagnostic, DecodeDiagnosticDetails, DecodeDiagnosticReport,
-    DecodeOptions, DecodeRuntimeConfig,
+    DecodeContext, DecodeDiagnostic, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError,
+    DecodeLimitError, DecodeLimitName, DecodeOptions, DecodeRuntimeConfig,
 };
 use splot_parallel::ThreadCount;
-
-use super::read_input;
 
 /// Output artifact selected for future `splot decode` success.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -88,6 +88,12 @@ impl DecodeArgs {
             (DecodeOutputFormat::Hash, path) => Some(DecodeOutputTarget::Hash { path }),
         }
     }
+}
+
+#[derive(Debug)]
+enum DecodeInputRead {
+    Bytes(Vec<u8>),
+    Limit(DecodeLimitError),
 }
 
 fn render_text_diagnostic(report: &DecodeDiagnosticReport, output_format: DecodeOutputFormat) {
@@ -315,15 +321,23 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
     let target = args
         .output_target()
         .context("decode output target was not resolved")?;
+    // Resolve, but intentionally do not write, the future output artifact path.
     let _target_path = target.path();
     let output_format = target.format();
 
-    let bytes = read_input(&args.input)?;
-    let context = DecodeContext::new(DecodeRuntimeConfig::new(args.threads))?;
-    let report = match context.plan_bytes(&bytes, DecodeOptions::default()) {
-        Ok(plan) => DecodeDiagnosticReport::runtime_unsupported(&plan),
-        Err(error) => DecodeDiagnosticReport::from_decode_error(&error)
-            .ok_or_else(|| anyhow::anyhow!("failed to plan decode input: {error}"))?,
+    let options = DecodeOptions::default();
+    let report = match read_decode_input(&args.input, options)? {
+        DecodeInputRead::Bytes(bytes) => {
+            let context = DecodeContext::new(DecodeRuntimeConfig::new(args.threads))?;
+            match context.plan_bytes(&bytes, options) {
+                Ok(plan) => DecodeDiagnosticReport::runtime_unsupported(&plan),
+                Err(error) => decode_report_from_error(&error)?,
+            }
+        }
+        DecodeInputRead::Limit(source) => {
+            let error = DecodeError::Limit { source };
+            decode_report_from_error(&error)?
+        }
     };
 
     if args.json {
@@ -335,4 +349,46 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
     }
 
     Ok(ExitCode::from(1))
+}
+
+fn read_decode_input(path: &Path, options: DecodeOptions) -> Result<DecodeInputRead> {
+    let mut file = File::open(path)
+        .with_context(|| format!("failed to read input file: {}", path.display()))?;
+
+    if let Some(max_input_bytes) = options.limits().max_input_bytes().max_value() {
+        if let Ok(metadata) = file.metadata()
+            && let Some(error) = input_byte_limit_error(options, metadata.len())
+        {
+            return Ok(DecodeInputRead::Limit(error));
+        }
+
+        let read_limit = max_input_bytes.checked_add(1).unwrap_or(max_input_bytes);
+        let mut bytes = Vec::new();
+        file.take(read_limit)
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("failed to read input file: {}", path.display()))?;
+        let actual = bytes.len() as u64;
+        if let Some(error) = input_byte_limit_error(options, actual) {
+            return Ok(DecodeInputRead::Limit(error));
+        }
+
+        return Ok(DecodeInputRead::Bytes(bytes));
+    }
+
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("failed to read input file: {}", path.display()))?;
+    Ok(DecodeInputRead::Bytes(bytes))
+}
+
+fn input_byte_limit_error(options: DecodeOptions, actual: u64) -> Option<DecodeLimitError> {
+    options
+        .limits()
+        .ensure(DecodeLimitName::MaxInputBytes, actual)
+        .err()
+}
+
+fn decode_report_from_error(error: &DecodeError) -> Result<DecodeDiagnosticReport> {
+    DecodeDiagnosticReport::from_decode_error(error)
+        .ok_or_else(|| anyhow::anyhow!("failed to plan decode input: {error}"))
 }

@@ -18,7 +18,7 @@ fn malformed_source_report_has_stable_fields() {
 
     assert_eq!(report.diagnostic.rule_id, MALFORMED_SOURCE_RULE_ID);
     assert_eq!(report.diagnostic.severity, DecodeSeverity::Error);
-    assert_eq!(report.diagnostic.spec_section, Some("5.2.1"));
+    assert_eq!(report.diagnostic.spec_section, None);
     assert_eq!(report.diagnostic.matrix_row, "decode-byte-stream-planner");
     assert_eq!(report.diagnostic.feature_id, "DECODE-BYTE-STREAM-PLANNER");
     let DecodeDiagnosticDetails::MalformedSource(details) = report.details else {

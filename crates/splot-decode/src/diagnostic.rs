@@ -226,16 +226,17 @@ impl From<&DecodeStreamPlan> for DecodePlanSummary {
 
 const fn malformed_source_spec_section(kind: DecodeSourceIssueKind) -> Option<&'static str> {
     match kind {
-        DecodeSourceIssueKind::AnnexBParseError | DecodeSourceIssueKind::IvfFramePayloadError => {
-            Some("5.2.1")
-        }
-        DecodeSourceIssueKind::IvfContainerError | DecodeSourceIssueKind::IvfWarning => None,
+        DecodeSourceIssueKind::AnnexBParseError
+        | DecodeSourceIssueKind::IvfFramePayloadError
+        | DecodeSourceIssueKind::IvfContainerError
+        | DecodeSourceIssueKind::IvfWarning => None,
     }
 }
 
 const fn resource_limit_spec_section(name: DecodeLimitName) -> Option<&'static str> {
     match name {
-        DecodeLimitName::MaxInputBytes | DecodeLimitName::MaxObus => Some("5.2.1"),
+        DecodeLimitName::MaxInputBytes => None,
+        DecodeLimitName::MaxObus => Some("5.2.1"),
         DecodeLimitName::MaxIvfFrameRecords => None,
         DecodeLimitName::MaxFramesToDecode
         | DecodeLimitName::MaxOutputFrames

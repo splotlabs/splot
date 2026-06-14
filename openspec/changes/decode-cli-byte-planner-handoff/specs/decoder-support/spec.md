@@ -83,6 +83,16 @@ conformance failures.
   value, unit, and nullable byte/bit offsets
 - **AND** the requested output path is not created, truncated, or written
 
+#### Scenario: Oversized input is bounded before full read
+- **WHEN** `splot decode` is given an input path whose byte length exceeds the
+  finite default `max_input_bytes` policy
+- **THEN** it limits file reading before constructing a full input buffer
+- **AND** it emits `decode/resource-limit` for `limit_name = "max_input_bytes"`
+  with the configured limit, measured actual value, and unit `bytes`
+- **AND** it leaves `spec_section` unset because `max_input_bytes` is repository
+  policy rather than AV2 syntax
+- **AND** the requested output path is not created, truncated, or written
+
 #### Scenario: Resource-limit diagnostic is in emitted registry
 - **WHEN** `cargo xtask check-diagnostic-registry` runs after source emits
   `decode/resource-limit`
@@ -91,9 +101,11 @@ conformance failures.
 - **AND** the decoder support matrix links the emitted diagnostic to a support row
 
 ### Requirement: Decode byte-planner CLI handoff
-The `splot decode` CLI SHALL read input bytes, construct a `DecodeContext` from
-the requested thread policy, and call `DecodeContext::plan_bytes` with finite
-default `DecodeOptions` before reporting decoder-stage diagnostics. The CLI
+The `splot decode` CLI SHALL enforce finite default `max_input_bytes` before
+constructing a full input buffer, construct a `DecodeContext` from the requested
+thread policy for inputs within that bound, and call `DecodeContext::plan_bytes`
+with finite default `DecodeOptions` before reporting byte-planner diagnostics.
+The CLI
 SHALL NOT duplicate byte parsing or stream planning logic, call
 `WorkerPool::install` directly, spawn threads, use global pools, or add
 concurrency dependencies.
@@ -106,6 +118,8 @@ concurrency dependencies.
   `decode-byte-stream-planner`, Feature ID `DECODE-BYTE-STREAM-PLANNER`,
   source issue kind, parser rule ID when known, byte offset when known, IVF
   frame index when known, and parser message
+- **AND** it leaves `spec_section` unset when the parser issue cannot be cited
+  to one precise AV2 section
 - **AND** the requested output path is not created, truncated, or written
 
 #### Scenario: Thread policy uses decode context

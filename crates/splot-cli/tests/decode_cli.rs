@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use splot_decode::unsupported_feature_diagnostic;
+use splot_decode::{DecodeOptions, unsupported_feature_diagnostic};
 
 static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -56,6 +56,14 @@ fn repeated_sequence_header_obus(count: usize) -> Vec<u8> {
         bytes.extend_from_slice(&[0x01, 0x08]);
     }
     bytes
+}
+
+fn default_max_input_bytes() -> u64 {
+    DecodeOptions::default()
+        .limits()
+        .max_input_bytes()
+        .max_value()
+        .expect("default max_input_bytes is finite")
 }
 
 fn temp_output(extension: &str) -> PathBuf {
@@ -314,7 +322,6 @@ fn decode_malformed_source_text_mode_emits_structured_diagnostic() {
     for expected in [
         "rule_id: decode/malformed-source",
         "severity: Error",
-        "spec_section: 5.2.1",
         "matrix_row: decode-byte-stream-planner",
         "feature_id: DECODE-BYTE-STREAM-PLANNER",
         "detail_kind: malformed_source",
@@ -326,6 +333,14 @@ fn decode_malformed_source_text_mode_emits_structured_diagnostic() {
             "stderr did not contain {expected:?}: {stderr}"
         );
     }
+    assert!(
+        stderr.lines().any(|line| line == "spec_section: "),
+        "stderr did not contain an empty spec_section line: {stderr}"
+    );
+    assert!(
+        !stderr.contains("spec_section: 5.2.1"),
+        "Annex B parser issue was mis-cited to OBU syntax: {stderr}"
+    );
     assert_eq!(
         std::fs::read(&output).expect("read temporary output sentinel"),
         original_output
@@ -349,7 +364,7 @@ fn decode_malformed_source_json_mode_emits_detail_fields() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/malformed-source");
     assert_eq!(json["severity"], "Error");
-    assert_eq!(json["spec_section"], "5.2.1");
+    assert_eq!(json["spec_section"], "");
     assert_eq!(json["matrix_row"], "decode-byte-stream-planner");
     assert_eq!(json["feature_id"], "DECODE-BYTE-STREAM-PLANNER");
     assert_eq!(json["detail_kind"], "malformed_source");
@@ -428,6 +443,51 @@ fn decode_resource_limit_json_mode_reports_limit_values() {
     assert_eq!(json["limit"], 4_096);
     assert_eq!(json["actual"], 4_097);
     assert_eq!(json["unit"], "count");
+    assert_eq!(json["output_format"], "hash");
+    assert_eq!(
+        std::fs::read(&output).expect("read temporary output sentinel"),
+        original_output
+    );
+}
+
+#[test]
+fn decode_oversized_input_reports_resource_limit_without_touching_output() {
+    let input = temp_path("oversized-input", "av2");
+    let max_input_bytes = default_max_input_bytes();
+    let actual = max_input_bytes
+        .checked_add(1)
+        .expect("default max_input_bytes leaves room for sentinel byte");
+    std::fs::File::create(&input)
+        .expect("create sparse oversized input")
+        .set_len(actual)
+        .expect("size sparse oversized input");
+    let output = temp_output("hashes");
+    let original_output = b"oversized-input output sentinel";
+    std::fs::write(&output, original_output).expect("write temporary output sentinel");
+
+    let out = splot(&[
+        "decode",
+        "--json",
+        "--output-format",
+        "hash",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stderr.is_empty(), "stderr was not empty");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["rule_id"], "decode/resource-limit");
+    assert_eq!(json["severity"], "Error");
+    assert_eq!(json["spec_section"], "");
+    assert_eq!(json["matrix_row"], "decode-limits-budget");
+    assert_eq!(json["feature_id"], "DOC-DECODE-LIMITS-CONTRACT");
+    assert_eq!(json["detail_kind"], "resource_limit");
+    assert_eq!(json["limit_name"], "max_input_bytes");
+    assert_eq!(json["limit"], max_input_bytes);
+    assert_eq!(json["actual"], actual);
+    assert_eq!(json["unit"], "bytes");
     assert_eq!(json["output_format"], "hash");
     assert_eq!(
         std::fs::read(&output).expect("read temporary output sentinel"),

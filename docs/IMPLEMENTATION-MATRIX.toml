@@ -4692,7 +4692,7 @@ openspec_change = "decoder-limits-contract"
 tracking_issue = ""
 owner = "docs"
 risk = "medium"
-notes = "Documents the `DecodeOptions { limits: DecodeLimits }` contract for byte-consuming decoder planning before any bitstream-derived allocation. The contract cites AV2-derived dimension, tile, output, and reference-state surfaces in decoder support docs, but does not claim full runtime allocation coverage. `splot decode` now emits `decode/resource-limit` when byte-planner limits fail; future decode-stage dimension, tile, output, and reference allocation limits still remain unimplemented."
+notes = "Documents the `DecodeOptions { limits: DecodeLimits }` contract for byte-consuming decoder planning before any bitstream-derived allocation. The contract cites AV2-derived dimension, tile, output, and reference-state surfaces in decoder support docs, but does not claim full runtime allocation coverage. `splot decode` now emits `decode/resource-limit` when CLI pre-read or byte-planner limits fail, including bounded `max_input_bytes` rejection before constructing a full input buffer; future decode-stage dimension, tile, output, and reference allocation limits still remain unimplemented."
 
 [feature.status]
 mapped = "done"
@@ -4707,8 +4707,8 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = ["openspec validate --all --no-interactive", "cargo xtask check-decoder-support"]
+tests = ["crates/splot-cli/tests/decode_cli.rs::decode_oversized_input_reports_resource_limit_without_touching_output"]
+commands = ["openspec validate --all --no-interactive", "cargo test -p splot-cli --test decode_cli --locked", "cargo xtask check-decoder-support"]
 fixtures = ["docs/DECODER-ROADMAP.md", "docs/DECODER-SUPPORT-MATRIX.toml", "docs/DECODER-DIAGNOSTICS.md"]
 diagnostics = []
 
@@ -5454,7 +5454,7 @@ openspec_change = "decode-cli-byte-planner-handoff"
 tracking_issue = ""
 owner = "cli"
 risk = "medium"
-notes = "Tracks the `splot decode` CLI surface. The command intentionally does not decode yet, but it now reads input bytes, constructs `DecodeContext`, calls `DecodeContext::plan_bytes`, and renders `splot-decode` structured diagnostics for malformed sources, resource limits, planner unsupported structures, or runtime decode/output deferral. It does not touch output paths, reconstruct pixels, compute hashes, write Y4M, or invoke external decoders."
+notes = "Tracks the `splot decode` CLI surface. The command intentionally does not decode yet, but it now bounds file reads with the default `max_input_bytes` policy before constructing a full input buffer, constructs `DecodeContext` for in-policy inputs, calls `DecodeContext::plan_bytes`, and renders `splot-decode` structured diagnostics for malformed sources, resource limits, planner unsupported structures, or runtime decode/output deferral. It does not touch output paths, reconstruct pixels, compute hashes, write Y4M, or invoke external decoders."
 
 [feature.status]
 mapped = "done"
@@ -5469,7 +5469,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-cli/tests/decode_cli.rs::decode_plan_success_text_mode_emits_runtime_unsupported_diagnostic", "crates/splot-cli/tests/decode_cli.rs::decode_plan_success_json_mode_emits_runtime_unsupported_object", "crates/splot-cli/tests/decode_cli.rs::decode_missing_input_is_operational_error_and_does_not_touch_files", "crates/splot-cli/tests/decode_cli.rs::decode_malformed_source_text_mode_emits_structured_diagnostic", "crates/splot-cli/tests/decode_cli.rs::decode_unsupported_structure_json_mode_uses_planner_metadata", "crates/splot-cli/tests/decode_cli.rs::decode_resource_limit_json_mode_reports_limit_values", "crates/splot-cli/tests/decode_cli.rs::decode_thread_policies_emit_same_json_diagnostic"]
+tests = ["crates/splot-cli/tests/decode_cli.rs::decode_plan_success_text_mode_emits_runtime_unsupported_diagnostic", "crates/splot-cli/tests/decode_cli.rs::decode_plan_success_json_mode_emits_runtime_unsupported_object", "crates/splot-cli/tests/decode_cli.rs::decode_missing_input_is_operational_error_and_does_not_touch_files", "crates/splot-cli/tests/decode_cli.rs::decode_malformed_source_text_mode_emits_structured_diagnostic", "crates/splot-cli/tests/decode_cli.rs::decode_unsupported_structure_json_mode_uses_planner_metadata", "crates/splot-cli/tests/decode_cli.rs::decode_resource_limit_json_mode_reports_limit_values", "crates/splot-cli/tests/decode_cli.rs::decode_oversized_input_reports_resource_limit_without_touching_output", "crates/splot-cli/tests/decode_cli.rs::decode_thread_policies_emit_same_json_diagnostic"]
 commands = ["cargo test -p splot-cli --test decode_cli --locked", "cargo test -p splot-decode --locked", "cargo xtask check-concurrency-policy", "cargo xtask check-diagnostic-registry"]
 fixtures = []
 diagnostics = ["decode/unsupported-feature", "decode/malformed-source", "decode/resource-limit"]
