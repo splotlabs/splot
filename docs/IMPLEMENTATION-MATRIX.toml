@@ -5080,7 +5080,7 @@ openspec_change = "decode-limits-runtime-api"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a source-backed, dependency-free `splot-decode` runtime API for caller-provided decode resource policy: `DecodeOptions`, `DecodeLimits`, typed limit names and units, thresholds, inclusive pure checks, local typed limit errors, checked arithmetic helpers, and allocation-size handoff checks. The API uses `max_reference_slots`, `max_reference_store_bytes`, and `max_tile_payload_bytes` to avoid overclaiming AV2 semantics, provides finite defaults plus explicit zero/unlimited constructors, and keeps all thresholds as repository policy rather than AV2 conformance limits. This is policy infrastructure only: it does not consume bytes, allocate from bitstream-derived values, emit the planned resource-limit diagnostic, change CLI behavior, compute frame hashes, write Y4M, reconstruct pixels, store references, invoke external decoders, or change the dependency graph."
+notes = "Adds a source-backed, dependency-free `splot-decode` runtime API for caller-provided decode resource policy: `DecodeOptions`, `DecodeLimits`, typed limit names and units, thresholds, inclusive pure checks, local typed limit errors, checked arithmetic helpers, and allocation-size handoff checks. The API uses `max_ivf_frame_records`, `max_reference_slots`, `max_reference_store_bytes`, and `max_tile_payload_bytes` to avoid overclaiming AV2 semantics, provides finite defaults plus explicit zero/unlimited constructors, and keeps all thresholds as repository policy rather than AV2 conformance limits. This is policy infrastructure only: it does not consume bytes, allocate from bitstream-derived values, emit the planned resource-limit diagnostic, change CLI behavior, compute frame hashes, write Y4M, reconstruct pixels, store references, invoke external decoders, or change the dependency graph."
 
 [feature.status]
 mapped = "done"
@@ -5108,6 +5108,57 @@ commands = [
 ]
 fixtures = ["crates/splot-decode/src/limits.rs", "crates/splot-decode/src/lib.rs"]
 diagnostics = []
+
+[[feature]]
+id = "DECODE-STREAM-STATE-PLANNER"
+name = "Parsed decode stream planner"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.2.1", "6.2.2", "7.1", "7.3", "7.4"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-3",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-4",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/stream_plan.rs"
+openspec_change = "decode-stream-state-planner"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a source-backed parsed-input stream planner in `splot-decode`: `DecodeContext::plan_stream` consumes already parsed `splot_core::stream::ParsedBitstream` plus caller-supplied input length, preserves raw Annex B and IVF OBU order/offset metadata, selects the documented base layer while enforcing §6.2.2 global/local xlayer scope rules, treats `OBU_CLOSED_LOOP_KEY` as the only frame candidate, applies `max_input_bytes`, `max_obus`, `max_ivf_frame_records`, and `max_frames_to_decode`, and rejects malformed sources or unsupported structures transactionally with typed local errors. Operating-point selection remains rejected/planned. The planner runs through the context-owned `WorkerPool` boundary and tests deterministic metadata across thread policies, but the implementation is serial and uses no direct Rayon/crossbeam APIs. This is not a raw byte-consuming decode API: it does not read files, bound pre-parse parser allocation, parse tile payloads, call `payload_status()`, reconstruct pixels, compute hashes, write Y4M, refresh references, change `splot decode` CLI behavior, emit new CLI diagnostics, add a fuzz target, invoke external decoders, or add AVM/dav2d integration."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-decode/src/stream_plan.rs::tests"]
+commands = [
+    "cargo test -p splot-decode --locked",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-concurrency-policy",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "crates/splot-decode/Cargo.toml",
+    "crates/splot-decode/src/context.rs",
+    "crates/splot-decode/src/error.rs",
+    "crates/splot-decode/src/lib.rs",
+    "crates/splot-decode/src/stream_plan.rs",
+    "crates/splot-decode/src/stream_plan/tests.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
 id = "DECODE-UNSUPPORTED-DIAGNOSTIC-API"

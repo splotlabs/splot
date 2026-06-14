@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 154 feature(s); 112 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-14. 155 feature(s); 113 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -33,6 +33,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-1) | General OBU syntax | `AV2-5.2.1-OBU-DISPATCH` | ✅ | 🟡 | — | ✅ | — |
 | [§ 5.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-1) | General OBU syntax | `AV2-5.2.1-OBU-TYPE` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 5.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-1) | General OBU syntax | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
+| [§ 5.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-1) | General OBU syntax | `DECODE-STREAM-STATE-PLANNER` | ✅ | — | — | ✅ | 1 |
 | [§ 5.2.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2) | OBU header syntax | `AV2-5.2.2-OBU-HEADER` | ✅ | ✅ | ✅ | ✅ | 6 |
 | [§ 5.2.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-3) | Trailing bits syntax | `AV2-5.2.3-TRAILING-BITS` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 5.2.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-4) | Byte alignment syntax | `AV2-5.2.4-BYTE-ALIGNMENT` | ✅ | ✅ | 🟡 | ✅ | 1 |
@@ -132,6 +133,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.2.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2) | OBU header semantics | `AV2-5.2.1-OBU-TYPE` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 6.2.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2) | OBU header semantics | `AV2-5.2.2-OBU-HEADER` | ✅ | ✅ | ✅ | ✅ | 6 |
 | [§ 6.2.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2) | OBU header semantics | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` | ✅ | ✅ | ✅ | ✅ | 3 |
+| [§ 6.2.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2) | OBU header semantics | `DECODE-STREAM-STATE-PLANNER` | ✅ | — | — | ✅ | 1 |
 | [§ 6.2.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-3) | Trailing bits semantics | `AV2-5.2.3-TRAILING-BITS` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 6.2.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-3) | Trailing bits semantics | `AV2-5.3-RESERVED-OBU` | ✅ | — | ✅ | ✅ | 2 |
 | [§ 6.2.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-4) | Byte alignment semantics | `AV2-5.2.4-BYTE-ALIGNMENT` | ✅ | ✅ | 🟡 | ✅ | 1 |
@@ -237,9 +239,11 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `CLI-DECODE` | ✅ | — | — | ✅ | 1 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 1 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
+| [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `DECODE-STREAM-STATE-PLANNER` | ✅ | — | — | ✅ | 1 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `DECODE-UNSUPPORTED-DIAGNOSTIC-API` | ✅ | — | — | ✅ | 1 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
 | [§ 7.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-3) | Ordering of OBUs | `AV2-7.3-OBU-ORDERING` | ✅ | — | 🟡 | ✅ | 4 |
+| [§ 7.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-3) | Ordering of OBUs | `DECODE-STREAM-STATE-PLANNER` | ✅ | — | — | ✅ | 1 |
 | [§ 7.3.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-2) | Coded multistream video sequence boundaries | `AV2-7.3.2-CMVS-BOUNDARIES` | ✅ | — | 🟡 | 🟡 | 1 |
 | [§ 7.3.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-3) | Coded output frame unit | `AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT` | ✅ | — | 🟡 | ✅ | 7 |
 | [§ 7.3.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-4) | Coded non-output frame unit | `AV2-7.3.4-CODED-NONOUTPUT-FRAME-UNIT` | ✅ | — | 🟡 | ✅ | 1 |
@@ -251,6 +255,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.3.8.10](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-8-10) | Content interpretation OBU availability | `AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT` | ✅ | — | 🟡 | ✅ | 7 |
 | [§ 7.3.9](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-9) | Availability of long-term reference frames | `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | ✅ | — | 🟡 | 🟡 | 1 |
 | [§ 7.3.9](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-9) | Availability of long-term reference frames | `AV2-7.4-RANDOM-ACCESS` | ✅ | — | 🟡 | 🟡 | 2 |
+| [§ 7.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-4) | Random access decoding | `DECODE-STREAM-STATE-PLANNER` | ✅ | — | — | ✅ | 1 |
 | [§ 7.4.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-2) | Random access and use of long-term reference frames | `AV2-7.4-RANDOM-ACCESS` | ✅ | — | 🟡 | 🟡 | 2 |
 | [§ 7.4.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-4) | Open Random Access | `AV2-7.4-RANDOM-ACCESS` | ✅ | — | 🟡 | 🟡 | 2 |
 | [§ 7.4.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-5) | Random Access Switch | `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | ✅ | — | 🟡 | 🟡 | 1 |

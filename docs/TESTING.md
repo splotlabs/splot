@@ -19,13 +19,19 @@
    - `validate_bytes` — `Validator::validate_bytes_with_options` (the
      highest-coverage target: transitively reaches every OBU payload parser, both
      container formats, and every validator check).
-3. **CLI integration tests** — `crates/splot-cli/tests/cli.rs` runs the `splot`
+3. **Decode planner unit tests** — `splot-decode` plan-only APIs over already
+   parsed `splot-core` stream output must preserve OBU order/source metadata,
+   reject malformed parsed sources transactionally, enforce the limits they can
+   derive from parsed input, and prove deterministic plan metadata across decode
+   thread-count policies. The parsed stream planner is not a raw byte-consuming
+   decode entry point; the first raw decode planner must add a fuzz target.
+4. **CLI integration tests** — `crates/splot-cli/tests/cli.rs` runs the `splot`
    binary against the fixtures in `tests/fixtures/` and generated temporary IVF
    inputs (exit codes, `--json`, `inspect`). Implemented; snapshot tests for
    `inspect` output are planned (`insta`).
-4. **Conformance vectors** — from AOMedia. Planned, once vectors are available
+5. **Conformance vectors** — from AOMedia. Planned, once vectors are available
    (see [CONFORMANCE.md](./CONFORMANCE.md)).
-5. **Differential testing against AVM** — the reference software is the oracle.
+6. **Differential testing against AVM** — the reference software is the oracle.
    Planned (directions and harness plan in [CONFORMANCE.md](./CONFORMANCE.md)).
 
 ## Commands

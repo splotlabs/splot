@@ -31,7 +31,13 @@ The workspace now includes scaffolded `splot-recon` and `splot-decode` crates
 for future reconstruction primitives and the future decode driver. `splot-decode`
 also exposes `DecodeRuntimeConfig` and `DecodeContext`; each context owns one
 `splot_parallel::WorkerPool` configured by the `--threads auto|N` runtime policy,
-but the scaffold still reads no bytes and schedules no decode work.
+and now provides a parsed-input stream planner over
+`splot_core::stream::ParsedBitstream`. The planner is a library-only
+`DecodeContext::plan_stream` API: it preserves raw Annex B / IVF OBU order and
+offset metadata, selects only the base minimal-tier layer, treats
+`OBU_CLOSED_LOOP_KEY` as the only frame candidate, and rejects malformed parsed
+sources or unsupported structures transactionally. It is not a raw
+byte-consuming decode API and does not change `splot decode` CLI behavior.
 `splot-recon` now exposes immutable decoded output frame and plane model types
 with constructor invariants plus a bounded immutable reference-slot container,
 and canonical decoded-frame hash input serialization, but no reconstruction
@@ -110,8 +116,8 @@ other external decoder is forbidden.
 | 1 | Decode API contract, runtime context, limits, resource diagnostics, crate scaffolding, plan-only byte entry point | crate scaffolding, `DecodeContext` worker-pool runtime policy, and limits runtime API supported; byte-consuming enforcement planned |
 | 2 | Shared decoded frame, plane, pixel format, and deterministic hash types | frame/plane model types and hash-input serialization supported; digest computation planned |
 | 3 | CLI `splot decode` contract backed by library diagnostics | hash output parse contract wired; runtime unsupported |
-| 4 | Container traversal, layer/operating-point selection, transactional decode planning | minimal tier contract documented; runtime planned |
-| 5 | Self-contained decode fuzz target and fixture smoke | planned |
+| 4 | Container traversal, base-layer parsed traversal, transactional decode planning | parsed `splot-core` stream planner supported; operating-point selection and raw-byte/CLI runtime planned |
+| 5 | Self-contained decode fuzz target and fixture smoke | planned for the first raw byte-consuming decode entry point |
 | 6 | AV2 § 8 symbol/CDF decoder foundation | planned |
 | 7 | Constrained intra tile syntax | planned |
 | 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | planned |
@@ -149,6 +155,13 @@ prove the supported behavior across all required thread-count forms:
 `--threads 1`, `--threads auto`, and at least one fixed positive
 `--threads N`. `--threads 0` remains a CLI/runtime alias for `auto`, resolved
 once when the context-owned pool is created.
+
+The current parsed stream planner is intentionally serial but runs through
+`DecodeContext`, so future parallel planning or decode work already has the
+context-owned `WorkerPool` boundary. Its tests prove identical plan metadata
+across `ThreadCount::Auto`, one worker, and a fixed positive worker count. It
+does not call direct Rayon/crossbeam APIs, does not construct queues, and does
+not make `splot-recon` scheduler-aware.
 
 ## Spec Anchors
 
@@ -200,6 +213,7 @@ The first contract covers:
 
 - `max_input_bytes`;
 - `max_obus`;
+- `max_ivf_frame_records`;
 - `max_frames_to_decode`;
 - `max_output_frames`;
 - `max_frame_width`;
@@ -221,6 +235,8 @@ and § 6.19.1), the general decode input/output model (§ 7.1), decoded output
 arrays (§ 7.21), and reference frame storage (§ 7.23). A future planner must
 check `max_input_bytes` before buffering or accepting input bytes, check
 `max_obus` before continuing OBU traversal or accumulating OBU state, and check
+`max_ivf_frame_records` before traversing IVF frame records in a parsed
+container plan. Future runtime stages must check
 the relevant derived resource limit before allocating decoded frames, traversing
 tile payloads, storing reference frames, producing frame hashes, or writing Y4M
 output.
@@ -234,6 +250,15 @@ byte-consuming decode boundary.
 `DecodeLimits::zero()` and `DecodeLimits::unlimited()` are explicit constructors
 for tests and callers; `DecodeLimits::default()` and `DecodeOptions::default()`
 use finite repository policy thresholds for CI, fuzzing, and early decoder work.
+
+`DecodeContext::plan_stream` applies only the limits it can derive from an
+already parsed stream: `max_input_bytes` from the caller-supplied input length,
+`max_obus` before adding each planned OBU, `max_ivf_frame_records` before
+traversing each IVF frame record, and `max_frames_to_decode` before accepting
+each closed-loop-key frame candidate. Because the API accepts
+`ParsedBitstream` rather than raw bytes, it does not bound `splot-core` parser
+allocation before parsing. The first raw byte-consuming decode entry point must
+add bounded traversal/fuzz coverage before it is marked supported.
 
 ## Decoded Frame and Plane Model Contract
 
@@ -467,7 +492,7 @@ Maintainer approval for the decoder/reconstruction dependency graph landed on
 crates/splot-core      bitstream model + parsers
 crates/splot-recon     decoded output model types; hash-input bytes; future reconstruction primitives, references
 crates/splot-parallel  approved local worker-pool and bounded-queue runtime policy
-crates/splot-decode    unsupported diagnostic API; runtime context; future driver using splot-core + splot-recon
+crates/splot-decode    unsupported diagnostic API; runtime context; parsed stream planner; future driver using splot-recon
 crates/splot-encode    future encoder, not yet depending on splot-recon
 crates/splot-cli       thin CLI rendering splot-decode diagnostics
 ```
@@ -478,7 +503,8 @@ deterministic hash-input byte serializer, but no reconstruction algorithm, AV2
 reference refresh process, hash digest computation, or Y4M writer.
 `splot-decode` owns the future decode scheduler boundary through
 `DecodeRuntimeConfig` and `DecodeContext`, whose single `WorkerPool` is sized by
-the CLI/runtime `--threads` policy. It still exposes no byte-consuming decode
-API. `splot-cli` only renders the current unsupported diagnostic path, and
-`splot-encode` remains unchanged until a later encoder/reconstruction API change
-explicitly adds reuse of `splot-recon`.
+the CLI/runtime `--threads` policy. It now depends on `splot-core` for parsed
+stream-planner input, but still exposes no raw byte-consuming decode API.
+`splot-cli` only renders the current unsupported diagnostic path, and
+`splot-encode` remains unchanged until a later encoder/reconstruction API
+change explicitly adds reuse of `splot-recon`.

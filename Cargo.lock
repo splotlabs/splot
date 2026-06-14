@@ -755,6 +755,7 @@ dependencies = [
 name = "splot-decode"
 version = "0.0.0"
 dependencies = [
+ "splot-core",
  "splot-parallel",
  "thiserror",
 ]

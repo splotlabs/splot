@@ -9,6 +9,7 @@ use core::fmt;
 
 const DEFAULT_MAX_INPUT_BYTES: u64 = 16 * 1024 * 1024;
 const DEFAULT_MAX_OBUS: u64 = 4_096;
+const DEFAULT_MAX_IVF_FRAME_RECORDS: u64 = 4_096;
 const DEFAULT_MAX_FRAMES_TO_DECODE: u64 = 128;
 const DEFAULT_MAX_OUTPUT_FRAMES: u64 = 128;
 const DEFAULT_MAX_FRAME_WIDTH: u64 = 4_096;
@@ -64,6 +65,7 @@ impl Default for DecodeOptions {
 pub struct DecodeLimits {
     max_input_bytes: DecodeLimitThreshold,
     max_obus: DecodeLimitThreshold,
+    max_ivf_frame_records: DecodeLimitThreshold,
     max_frames_to_decode: DecodeLimitThreshold,
     max_output_frames: DecodeLimitThreshold,
     max_frame_width: DecodeLimitThreshold,
@@ -82,6 +84,7 @@ impl DecodeLimits {
     pub const DEFAULT: Self = Self {
         max_input_bytes: DecodeLimitThreshold::Max(DEFAULT_MAX_INPUT_BYTES),
         max_obus: DecodeLimitThreshold::Max(DEFAULT_MAX_OBUS),
+        max_ivf_frame_records: DecodeLimitThreshold::Max(DEFAULT_MAX_IVF_FRAME_RECORDS),
         max_frames_to_decode: DecodeLimitThreshold::Max(DEFAULT_MAX_FRAMES_TO_DECODE),
         max_output_frames: DecodeLimitThreshold::Max(DEFAULT_MAX_OUTPUT_FRAMES),
         max_frame_width: DecodeLimitThreshold::Max(DEFAULT_MAX_FRAME_WIDTH),
@@ -111,6 +114,7 @@ impl DecodeLimits {
         Self {
             max_input_bytes: threshold,
             max_obus: threshold,
+            max_ivf_frame_records: threshold,
             max_frames_to_decode: threshold,
             max_output_frames: threshold,
             max_frame_width: threshold,
@@ -131,6 +135,7 @@ impl DecodeLimits {
         match name {
             DecodeLimitName::MaxInputBytes => self.max_input_bytes,
             DecodeLimitName::MaxObus => self.max_obus,
+            DecodeLimitName::MaxIvfFrameRecords => self.max_ivf_frame_records,
             DecodeLimitName::MaxFramesToDecode => self.max_frames_to_decode,
             DecodeLimitName::MaxOutputFrames => self.max_output_frames,
             DecodeLimitName::MaxFrameWidth => self.max_frame_width,
@@ -155,6 +160,7 @@ impl DecodeLimits {
         match name {
             DecodeLimitName::MaxInputBytes => self.max_input_bytes = threshold,
             DecodeLimitName::MaxObus => self.max_obus = threshold,
+            DecodeLimitName::MaxIvfFrameRecords => self.max_ivf_frame_records = threshold,
             DecodeLimitName::MaxFramesToDecode => self.max_frames_to_decode = threshold,
             DecodeLimitName::MaxOutputFrames => self.max_output_frames = threshold,
             DecodeLimitName::MaxFrameWidth => self.max_frame_width = threshold,
@@ -262,6 +268,18 @@ impl DecodeLimits {
     #[must_use]
     pub const fn with_max_obus(self, threshold: DecodeLimitThreshold) -> Self {
         self.with_limit(DecodeLimitName::MaxObus, threshold)
+    }
+
+    /// Returns the maximum IVF frame-record traversal threshold.
+    #[must_use]
+    pub const fn max_ivf_frame_records(self) -> DecodeLimitThreshold {
+        self.threshold(DecodeLimitName::MaxIvfFrameRecords)
+    }
+
+    /// Returns a copy with the maximum IVF frame-record threshold replaced.
+    #[must_use]
+    pub const fn with_max_ivf_frame_records(self, threshold: DecodeLimitThreshold) -> Self {
+        self.with_limit(DecodeLimitName::MaxIvfFrameRecords, threshold)
     }
 
     /// Returns the maximum decoded frame count threshold.
@@ -411,6 +429,8 @@ pub enum DecodeLimitName {
     MaxInputBytes,
     /// Maximum number of traversed OBUs.
     MaxObus,
+    /// Maximum number of traversed IVF frame records.
+    MaxIvfFrameRecords,
     /// Maximum number of frames selected for decode.
     MaxFramesToDecode,
     /// Maximum number of emitted output frames.
@@ -437,9 +457,10 @@ pub enum DecodeLimitName {
 
 impl DecodeLimitName {
     /// Stable list of every decode resource limit name.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::MaxInputBytes,
         Self::MaxObus,
+        Self::MaxIvfFrameRecords,
         Self::MaxFramesToDecode,
         Self::MaxOutputFrames,
         Self::MaxFrameWidth,
@@ -459,6 +480,7 @@ impl DecodeLimitName {
         match self {
             Self::MaxInputBytes => "max_input_bytes",
             Self::MaxObus => "max_obus",
+            Self::MaxIvfFrameRecords => "max_ivf_frame_records",
             Self::MaxFramesToDecode => "max_frames_to_decode",
             Self::MaxOutputFrames => "max_output_frames",
             Self::MaxFrameWidth => "max_frame_width",
@@ -486,6 +508,7 @@ impl DecodeLimitName {
                 DecodeLimitUnit::LumaSamples
             }
             Self::MaxObus
+            | Self::MaxIvfFrameRecords
             | Self::MaxFramesToDecode
             | Self::MaxOutputFrames
             | Self::MaxReferenceSlots

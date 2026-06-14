@@ -1,22 +1,26 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! A decode-driver context scaffold that owns a worker pool but reads no bytes.
+//! A decode-driver context that owns a worker pool and parsed-stream planning
+//! entry points.
 
 use core::num::NonZeroUsize;
 
 use splot_parallel::{ThreadCount, WorkerPool};
 
+use crate::DecodeOptions;
 use crate::error::Result;
 use crate::runtime::DecodeRuntimeConfig;
+use crate::stream_plan::{DecodeStreamInput, DecodeStreamPlan, plan_stream};
 
-/// A scaffold decode context.
+/// A decode context.
 ///
 /// It owns exactly one [`WorkerPool`] and exposes the resolved worker count,
-/// but it intentionally does NOT read bitstream bytes, inspect input/output
-/// paths, allocate decoded frames, or invoke any external decoder yet. Runtime
-/// decode support remains unimplemented (`splot decode` still emits the stable
-/// `decode/unsupported-feature` diagnostic).
+/// but it intentionally does NOT read raw bitstream bytes, inspect
+/// input/output paths, allocate decoded frames, reconstruct pixels, or invoke
+/// any external decoder yet. Runtime decode support remains unimplemented
+/// (`splot decode` still emits the stable `decode/unsupported-feature`
+/// diagnostic).
 #[derive(Debug)]
 pub struct DecodeContext {
     runtime: DecodeRuntimeConfig,
@@ -55,6 +59,24 @@ impl DecodeContext {
     #[must_use]
     pub fn pool(&self) -> &WorkerPool {
         &self.pool
+    }
+
+    /// Builds a deterministic plan over an already parsed AV2 stream.
+    ///
+    /// This method runs inside the context-owned worker pool so future parallel
+    /// planner work inherits the configured runtime. The current planner is
+    /// serial and plan-only: it consumes no raw bytes, decodes no tile payloads,
+    /// reconstructs no pixels, and invokes no external decoder.
+    ///
+    /// # Errors
+    /// Returns [`crate::DecodeError`] for malformed parsed sources,
+    /// unsupported structures, or local decode resource-limit failures.
+    pub fn plan_stream<'a>(
+        &self,
+        input: DecodeStreamInput<'a>,
+        options: DecodeOptions,
+    ) -> Result<DecodeStreamPlan> {
+        self.pool.install(|| plan_stream(input, options))
     }
 }
 

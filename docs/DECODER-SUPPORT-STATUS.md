@@ -8,8 +8,8 @@ Matrix version 1. Last reviewed 2026-06-14. 23 row(s).
 
 | Status | Rows |
 |---|---:|
-| `todo` | 6 |
-| `partial` | 4 |
+| `todo` | 5 |
+| `partial` | 5 |
 | `supported` | 12 |
 | `unsupported-intentional` | 1 |
 | `blocked` | 0 |
@@ -43,7 +43,7 @@ Matrix version 1. Last reviewed 2026-06-14. 23 row(s).
 | `decoded-frame-plane-model` | Decoded frame and plane model | `DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT` | `foundation` | `supported` | 6.4.1<br>6.17.4.1<br>6.17.4.4<br>7.1<br>7.21.1<br>7.21.2<br>7.21.5<br>7.21.6<br>7.23 | openspec validate --all --no-interactive<br>cargo test -p splot-recon --locked<br>cargo xtask check-decoder-support | none | none | `docs/DECODER-ROADMAP.md` |
 | `deterministic-frame-hash` | Deterministic decoded-frame hash | `RECON-HASH-INPUT-SERIALIZATION` | `foundation` | `partial` | 5.17.12<br>6.16.13<br>7.21.1<br>7.21.2<br>7.21.7 | crates/splot-recon/src/hash_input.rs::tests<br>cargo test -p splot-recon --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support | none | Archived local AVM/dav2d raw MD5 agreement for two tiny fixtures is recorded in openspec/changes/archive/2026-06-13-decoder-roadmap-matrix-boundary/agent-log.md; this is non-executable metadata only and not proof of splot hash implementation. | `crates/splot-recon/src/hash_input.rs` |
 | `minimal-decode-tier-contract` | Minimal decode tier contract | `DOC-MINIMAL-DECODE-TIER-CONTRACT` | `foundation` | `partial` | Annex B.2<br>Annex B.3<br>5.2<br>6.2<br>6.4.1<br>6.17.2<br>6.17.4.1<br>6.17.7.2<br>6.18<br>6.19.1<br>7.1<br>7.2<br>7.3<br>7.4<br>7.21<br>7.23<br>Annex A.2<br>Annex A.5 | openspec validate --all --no-interactive<br>cargo xtask check-decoder-support | decode/unsupported-feature (planned for streams outside the supported tier)<br>decode/resource-limit (planned) | none | `docs/DECODER-ROADMAP.md` |
-| `decode-stream-state` | Decode stream traversal and layer selection | none | `tier0-plan` | `todo` | 5.2.1<br>7.1<br>7.3<br>7.4 | none | decode/unsupported-feature (planned) | none | `planned` |
+| `decode-stream-state` | Decode stream traversal and layer selection | `DECODE-STREAM-STATE-PLANNER` | `tier0-plan` | `partial` | 5.2.1<br>6.2.2<br>7.1<br>7.3<br>7.4 | crates/splot-decode/src/stream_plan.rs::tests<br>crates/splot-decode/src/stream_plan/tests.rs::tests<br>cargo test -p splot-decode --locked<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | decode/unsupported-feature (library unsupported-structure metadata; CLI emission unchanged) | none | `crates/splot-decode/src/stream_plan.rs; crates/splot-decode/src/context.rs` |
 | `symbol-decoder` | Symbol and CDF decoder foundation | none | `tier1-intra` | `todo` | 8.2<br>8.3<br>9 | none | decode/unsupported-feature (planned) | none | `planned` |
 | `tile-payload-decode` | Tile payload decode boundary | none | `tier1-intra` | `todo` | 5.20<br>7.1<br>8.3 | none | decode/unsupported-feature (planned) | none | `planned` |
 | `intra-reconstruction` | Scalar intra reconstruction | none | `tier1-intra` | `todo` | 7.13<br>7.14<br>7.15 | none | decode/unsupported-feature (planned) | none | `planned` |
