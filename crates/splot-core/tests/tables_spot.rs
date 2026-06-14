@@ -34,6 +34,29 @@ fn conversion_palette_color_hash_multipliers_matches_mirror() {
 }
 
 #[test]
+fn conversion_para_adjustment_list_matches_mirror() {
+    // docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md
+    // lines 908-946 (Para_Adjustment_List[NUM_PARA_COMBINATIONS][NUM_PARA_INTERVALS]).
+    let t = &tables::conversion::PARA_ADJUSTMENT_LIST;
+    assert_eq!(t.len(), 125);
+    assert_eq!(t[0], [0, 0, 0]); // line 910
+    assert_eq!(t[6], [0, -1, -1]); // line 911
+    assert_eq!(t[50], [-2, 0, 0]); // line 930
+    assert_eq!(t[124], [1, 1, 1]); // line 946
+}
+
+#[test]
+fn conversion_prob_inc_matches_mirror() {
+    // docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md
+    // lines 951-960 (Prob_Inc[7][8]).
+    let t = &tables::conversion::PROB_INC;
+    assert_eq!(t.len(), 7);
+    assert_eq!(t[0], [8, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(t[2], [12, 8, 4, 0, 0, 0, 0, 0]);
+    assert_eq!(t[6], [14, 12, 10, 8, 6, 4, 2, 0]);
+}
+
+#[test]
 fn transform_1d_adst_kernel4_matches_mirror() {
     // docs/spec/av2/1.0.0/09-additional-tables/09-06-1d-transform-tables.md
     // lines 195-202 (Adst_Kernel4[4][4]).

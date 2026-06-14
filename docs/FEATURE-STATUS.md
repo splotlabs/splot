@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 160 feature(s).
+Matrix version 1. Last reviewed 2026-06-14. 161 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -10,6 +10,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | `AV2-4.11.6-LEB128` | LEB128 descriptor | normative | bitstream-syntax | done | done | done | done | todo | n/a | done | done | pending | `crates/splot-core/src/leb128.rs` |
 | `AV2-4.11.3-UVLC` | Unsigned variable-length code descriptor | normative | bitstream-syntax | done | n/a | done | n/a | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
+| `AV2-8.2-SYMBOL-DECODER` | AV2 symbol decoder foundation | normative | bitstream-semantics | done | done | partial | partial | n/a | n/a | partial | partial | n/a | `crates/splot-core/src/symbol.rs` |
 | `AV2-4.11.4-SVLC` | Signed variable-length code descriptor | normative | bitstream-syntax | done | n/a | done | n/a | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
 | `AV2-4.11.5-LE` | Little-endian fixed-width descriptor | normative | bitstream-syntax | done | n/a | done | n/a | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
 | `AV2-4.11.8-NS` | Non-symmetric integer descriptor | normative | bitstream-syntax | done | n/a | done | n/a | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |

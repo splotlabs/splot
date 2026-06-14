@@ -34,6 +34,7 @@ pub mod obu;
 pub mod segment;
 pub mod span;
 pub mod stream;
+pub mod symbol;
 pub mod tables;
 pub mod tile;
 pub mod types;

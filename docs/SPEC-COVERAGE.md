@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 160 feature(s); 116 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-14. 161 feature(s); 117 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -12,6 +12,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 
 | Section | Spec item | Feature | Mapped | Parse | Validate | Tests | Diagnostics |
 |---|---|---|:-:|:-:|:-:|:-:|:-:|
+| [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `AV2-8.2-SYMBOL-DECODER` | ✅ | 🟡 | 🟡 | 🟡 | — |
 | [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `RECON-REFERENCE-FRAME-STORE` | ✅ | — | — | ✅ | — |
 
 ## Chapter 4 — Conventions
@@ -285,11 +286,22 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `RECON-REFERENCE-FRAME-STORE` | ✅ | — | — | ✅ | — |
 
+## Chapter 8 — Parsing process
+
+| Section | Spec item | Feature | Mapped | Parse | Validate | Tests | Diagnostics |
+|---|---|---|:-:|:-:|:-:|:-:|:-:|
+| [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `AV2-8.2-SYMBOL-DECODER` | ✅ | 🟡 | 🟡 | 🟡 | — |
+| [§ 8.2.3](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-3) | Boolean decoding process | `AV2-8.2-SYMBOL-DECODER` | ✅ | 🟡 | 🟡 | 🟡 | — |
+| [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `AV2-8.2-SYMBOL-DECODER` | ✅ | 🟡 | 🟡 | 🟡 | — |
+| [§ 8.2.5](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-5) | Parsing process for read_literal | `AV2-8.2-SYMBOL-DECODER` | ✅ | 🟡 | 🟡 | 🟡 | — |
+| [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `AV2-8.2-SYMBOL-DECODER` | ✅ | 🟡 | 🟡 | 🟡 | — |
+
 ## Chapter 9 — Additional tables
 
 | Section | Spec item | Feature | Mapped | Parse | Validate | Tests | Diagnostics |
 |---|---|---|:-:|:-:|:-:|:-:|:-:|
 | [§ 9](./spec/av2/1.0.0/09-additional-tables/09-00-overview.md#s-9) | Additional tables | `AV2-9-ADDITIONAL-TABLES` | ✅ | 🟡 | — | 🟡 | — |
+| [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `AV2-8.2-SYMBOL-DECODER` | ✅ | 🟡 | 🟡 | 🟡 | — |
 
 ## Annexes
 
