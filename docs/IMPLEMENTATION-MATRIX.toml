@@ -1020,7 +1020,7 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = ["crates/splot-validate/src/validator/tests/sequence_state.rs::active_sequence_header_bounds_temporal_layer_id", "crates/splot-validate/src/validator/tests/sequence_state.rs::active_sequence_header_bounds_embedded_layer_id", "crates/splot-validate/src/validator/tests/sequence_state.rs::redefinition_tightening_before_reconfirming_frame_is_not_flagged", "crates/splot-validate/src/validator/tests/sequence_state.rs::redefinition_before_reconfirming_frame_still_flags_old_limit_violation", "crates/splot-validate/src/validator/tests/sequence_state.rs::tightened_limit_applies_after_reconfirming_frame", "crates/splot-validate/src/validator/tests/sequence_state.rs::redefinition_window_padding_carrier_full_stream_is_conformant"]
-commands = ["cargo test -p splot-validate sequence_header", "cargo test -p splot-validate active_sequence"]
+commands = ["cargo test -p splot-validate sequence_header", "cargo test -p splot-validate active_sequence", "cargo test -p splot-validate redefinition"]
 fixtures = []
 diagnostics = ["sequence-state/tlayer-exceeds-max", "sequence-state/mlayer-exceeds-max", "sequence-state/no-active-sequence-header"]
 

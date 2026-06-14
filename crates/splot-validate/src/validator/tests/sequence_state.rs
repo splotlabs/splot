@@ -338,13 +338,19 @@ fn redefinition_window_padding_carrier_full_stream_is_conformant() {
     // conformant. This mirrors the AVM reference, whose §6.2.2 check runs only at frame
     // activation against the active (not the stored/redefined) sequence header. The pre-fix
     // live-store read evaluated X against L_new and produced a spurious tlayer-exceeds-max.
+    //
+    // Both coded video sequences begin with a CLK: § 7.3.6 (mirror
+    // `07-decoding-process.md` lines 604-606, 990-996) starts a CVS at a temporal unit
+    // containing an OBU_CLOSED_LOOP_KEY / closed random access point, so the *first* coded
+    // frame is a CLK too — otherwise the stream would begin outside any CVS and a future
+    // initial-CVS/RAP check could fail this regression for an unrelated reason.
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 3, 0))); // L_old, max_tlayer 3
-    data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0)); // frame-confirm L_old (max 3)
+    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK starts CVS_k, activates L_old (max 3)
     data.extend(temporal_delimiter_obu());
     data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 0))); // L_new redef, max_tlayer 1
     data.extend(annex_b_obu_with_header(&layer_obu_header(25, 2, 0, 0), &[])); // OBU_PADDING X, tlayer 2
-    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK re-activates L_new
+    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK starts CVS_(k+1), re-activates L_new
 
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
