@@ -48,6 +48,8 @@ enum Command {
     /// Future reference-style decode / round-trip test entry point.
     #[command(visible_alias = "dec")]
     Decode(commands::decode::DecodeArgs),
+    /// Describe a validator diagnostic rule id (or list them all).
+    Explain(commands::explain::ExplainArgs),
 }
 
 fn main() -> ExitCode {
@@ -59,6 +61,7 @@ fn main() -> ExitCode {
         Command::Inspect(args) => commands::inspect::run(&args),
         Command::Encode(args) => commands::encode::run(&args),
         Command::Decode(args) => commands::decode::run(&args),
+        Command::Explain(args) => commands::explain::run(&args),
     };
 
     match result {

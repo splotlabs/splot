@@ -118,6 +118,7 @@ splot validate sample.av2 --max-diagnostics 20  # cap the listed diagnostics (pr
 splot validate sample.av2 --summary-only        # only the counts + conformance line (machine-friendly; exit code unchanged)
 splot inspect sample.ivf --headers     # list OBUs and their headers
 splot inspect sample.av2 --json        # per-OBU JSON records with parsed payload views
+splot explain obu-header/global-xlayer-required  # describe a diagnostic rule id (--json, --list)
 splot encode input.y4m -o output.av2   # not yet implemented (exits 1 with a clear error)
 splot decode input.av2 -o output.y4m   # not yet implemented (exits 1 with a clear error)
 ```

@@ -4250,6 +4250,48 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "CLI-VALIDATE-EXPLAIN"
+name = "splot explain command + diagnostic registry"
+category = "cli"
+kind = "cli"
+spec_sections = []
+sources = []
+crate = "splot-cli"
+module = "crates/splot-cli/src/commands/explain.rs"
+openspec_change = "validate-explain-rule"
+tracking_issue = ""
+owner = "cli"
+risk = "low"
+notes = "Adds `splot explain <rule-id>` (--json / --list) backed by a doc-generated diagnostic registry in splot-validate (crates/splot-validate/src/explain/, DiagnosticInfo + explain/all/did_you_mean). The registry (generated.rs) is generated from docs/VALIDATOR-DIAGNOSTICS.md by `cargo xtask gen-explain` (xtask/src/explain_registry.rs): it parses the 4-col emitted-diagnostics tables into id/severity/section/summary; `--check` (folded into cargo xtask ci) fails on drift, so the registry can never diverge from the CI-enforced doc or invent data. The generated table is rustfmt-stable (#[rustfmt::skip] + fully-qualified paths) and its id literals (all documented) keep check-diagnostic-registry green. The CLI is read-only: it changes no validator behavior and emits no diagnostics; an unknown id / missing arg is a clean exit-2 error with a same-namespace hint, never a panic. The 13 */syntax registry identifiers are excluded (not user-visible). The summary is the doc's one-line condition (no invented prose); richer per-id text would be added to the doc and flow through."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "xtask/src/explain_registry.rs::tests",
+    "crates/splot-validate/src/explain/mod.rs::tests",
+    "crates/splot-cli/tests/explain_cli.rs",
+]
+commands = [
+    "cargo xtask gen-explain --check",
+    "cargo test -p xtask explain_registry",
+    "cargo test -p splot-validate explain",
+    "cargo test -p splot-cli --test explain_cli",
+]
+fixtures = ["docs/VALIDATOR-DIAGNOSTICS.md"]
+diagnostics = []
+
+[[feature]]
 id = "CLI-INSPECT"
 name = "splot inspect command"
 category = "cli"

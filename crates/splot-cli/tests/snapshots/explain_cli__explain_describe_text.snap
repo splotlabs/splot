@@ -1,0 +1,10 @@
+---
+source: crates/splot-cli/tests/explain_cli.rs
+expression: stdout
+---
+obu-header/global-xlayer-required
+  severity: ERROR
+  spec:     § 6.2.2 (AV2 v1.0.0; docs/spec/av2/1.0.0/)
+  summary:  OBU type requiring GLOBAL_XLAYER_ID uses a non-global obu_xlayer_id
+
+Full registry: docs/VALIDATOR-DIAGNOSTICS.md

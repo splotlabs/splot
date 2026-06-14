@@ -17,6 +17,7 @@ mod concurrency_policy;
 mod conformance;
 mod decoder_support;
 mod diagnostic_registry;
+mod explain_registry;
 mod feature_status;
 mod fixtures;
 mod gen_tables;
@@ -158,6 +159,12 @@ enum Task {
         #[arg(long)]
         check: bool,
     },
+    /// Generate the `splot explain` diagnostic registry from docs/VALIDATOR-DIAGNOSTICS.md.
+    GenExplain {
+        /// Verify the committed generated registry is up to date instead of writing.
+        #[arg(long)]
+        check: bool,
+    },
     /// (stub) Fetch AV2/AOMedia conformance vectors.
     FetchVectors,
     /// Validate the committed conformance corpus against its manifest (no AVM).
@@ -236,6 +243,7 @@ fn main() -> Result<()> {
             reference_evidence::run_check_reference_evidence(&workspace_root()?)
         }
         Task::GenTables { check } => gen_tables::run_gen_tables(&workspace_root()?, check),
+        Task::GenExplain { check } => explain_registry::run_gen_explain(&workspace_root()?, check),
         Task::FetchVectors => {
             fetch_vectors_stub();
             Ok(())
@@ -304,6 +312,7 @@ fn run_ci() -> Result<()> {
     check_spec_mirror(&root)?;
     check_fuzz_targets(&root)?;
     gen_tables::run_gen_tables(&root, true)?;
+    explain_registry::run_gen_explain(&root, true)?;
     feature_status::run_check_feature_status(&root)?;
     decoder_support::run_check_decoder_support(&root)?;
     diagnostic_registry::check_diagnostic_registry(&root)?;

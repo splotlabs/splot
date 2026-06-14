@@ -14,6 +14,7 @@
 
 pub mod checks;
 pub mod diagnostic;
+pub mod explain;
 pub mod options;
 pub mod render;
 pub mod validator;
@@ -27,6 +28,7 @@ mod metadata_lifetime;
 mod reference_state;
 
 pub use diagnostic::{Diagnostic, Severity, ValidationReport};
+pub use explain::DiagnosticInfo;
 pub use options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
 pub use render::{RenderOptions, RenderedReport, ReportSummary, Truncation};
 pub use validator::Validator;
