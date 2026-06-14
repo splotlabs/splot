@@ -4868,7 +4868,7 @@ openspec_change = "decoder-crate-scaffolding"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds approved workspace scaffolds for `splot-recon` and `splot-decode`, plus dependency-direction and coverage-scope automation updates. `splot-recon` has no `splot-*` dependencies and stays scheduler-free. `splot-decode` currently depends on `splot-parallel` for `DecodeRuntimeConfig`/`DecodeContext` and its single owned `WorkerPool`; future byte-consuming decode source may add `splot-core` and `splot-recon` dependencies when runtime decode needs them. The scaffolds expose no runtime reconstruction or byte-consuming decode API, emit no decoder diagnostics beyond the separately tracked unsupported diagnostic descriptor, and do not invoke or require AVM/dav2d."
+notes = "Adds approved workspace scaffolds for `splot-recon` and `splot-decode`, plus dependency-direction and coverage-scope automation updates. `splot-recon` has no `splot-*` dependencies and stays scheduler-free. `splot-decode` depends on `splot-core` for source-backed stream planning and `splot-parallel` for `DecodeRuntimeConfig`/`DecodeContext` plus its single owned `WorkerPool`; a future runtime decode/reconstruction change may add `splot-recon` when needed. The scaffolds expose no runtime reconstruction or decoded-output API, and the plan-only raw byte planner is tracked separately by `DECODE-BYTE-STREAM-PLANNER`. They emit no decoder diagnostics beyond the separately tracked unsupported diagnostic descriptor and do not invoke or require AVM/dav2d."
 
 [feature.status]
 mapped = "done"

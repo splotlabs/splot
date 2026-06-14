@@ -84,10 +84,11 @@ by `cargo xtask check-dependency-direction`):
   other `splot-*` crate.
 - **`splot-decode`** — scaffold for the future AV2 decode driver. It owns the
   current structured `decode/unsupported-feature` diagnostic API,
-  `DecodeRuntimeConfig` / `DecodeContext`, and a plan-only stream planner over
-  already parsed `splot-core` `ParsedBitstream` values. It intentionally exposes
-  no raw byte-consuming decode API, pixel reconstruction, frame-hash digest, Y4M
-  output, or reference update semantics yet.
+  `DecodeRuntimeConfig` / `DecodeContext`, a plan-only stream planner over
+  already parsed `splot-core` `ParsedBitstream` values, and a bounded
+  `DecodeContext::plan_bytes` planner for raw Annex B / IVF byte slices. It
+  intentionally exposes no runtime tile decode, pixel reconstruction,
+  frame-hash digest, Y4M output, or reference update semantics yet.
 - **`xtask`** — project automation: the `ci` pipeline; the repository checks
   (`check-license-headers`, `check-dependency-direction`, `check-spec-mirror`,
   `check-feature-status`, `check-diagnostic-registry`,
