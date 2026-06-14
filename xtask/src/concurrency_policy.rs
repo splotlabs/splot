@@ -60,15 +60,22 @@ const BANNED_RUNTIME_CRATES: &[&str] = &[
 
 /// Returns `true` if `name` is a banned runtime/channel crate: an exact entry in
 /// [`BANNED_RUNTIME_CRATES`]; any crate in the `futures` family (`futures` itself or a
-/// `futures-*` crate); or any `crossbeam` crate **other than** the approved
-/// `crossbeam-channel` (which is restricted to `splot-parallel` via
-/// [`RESTRICTED_PARALLEL_CRATES`]) — e.g. `crossbeam-utils`, `crossbeam-queue`,
-/// `crossbeam-deque`, `crossbeam-epoch`, or the `crossbeam` umbrella.
+/// `futures-*` crate); the async executor/runtime family (`smol` or any `async-*`
+/// crate such as `async-executor` / `async-io` / `async-task`); or any `crossbeam`
+/// crate **other than** the approved `crossbeam-channel` (which is restricted to
+/// `splot-parallel` via [`RESTRICTED_PARALLEL_CRATES`]) — e.g. `crossbeam-utils`,
+/// `crossbeam-queue`, `crossbeam-deque`, `crossbeam-epoch`, or the `crossbeam` umbrella.
 fn is_banned_runtime_crate(name: &str) -> bool {
     if BANNED_RUNTIME_CRATES.contains(&name) {
         return true;
     }
     if name == "futures" || name.starts_with("futures-") {
+        return true;
+    }
+    // The async executor/runtime family: `smol` and every `async-*` crate
+    // (`async-std`, `async-channel`, `async-executor`, `async-io`, `async-task`,
+    // `async-global-executor`, …). splot is sync-only, so none of these belong here.
+    if name == "smol" || name.starts_with("async-") {
         return true;
     }
     if (name == "crossbeam" || name.starts_with("crossbeam-")) && name != "crossbeam-channel" {
@@ -132,6 +139,10 @@ const STD_MPSC_NEEDLES: &[&str] = &[
 const THREAD_SPAWN_NEEDLES: &[&str] = &[
     concat!("thread::", "spawn"),
     concat!("thread::", "Builder"),
+    // Scoped threads (`std::thread::scope(|s| s.spawn(...))`) also spawn OS threads
+    // the WorkerPool does not own; flagging the `thread::scope` entry point catches
+    // the whole scoped-spawn form.
+    concat!("thread::", "scope"),
     concat!("std::thread", " as "),
     concat!("std::thread::{", "self"),
     concat!("std::thread::{", "spawn"),
@@ -175,7 +186,7 @@ const PAR_ITER_TOKENS: &[&str] = &[
 /// The pool-scoping call that binds parallel iteration to the local worker pool.
 /// A file that uses a [`PAR_ITER_TOKENS`] entry but never calls this is presumed to
 /// run on the global pool. Matched leniently (substring) to minimize false positives.
-const INSTALL_CALL: &str = concat!("install", "(");
+const INSTALL_CALL: &str = concat!(".install", "(");
 
 /// Path prefix of the one crate exempt from the par-iter-outside-`install` rule:
 /// `splot-parallel` is the trusted wrapper that owns Rayon and may use parallel
@@ -207,13 +218,16 @@ fn thread_spawn_needle(text: &str) -> Option<&'static str> {
         .copied()
         .find(|needle| text.contains(*needle))
         .or_else(|| {
-            contains_braced_use_item(text, "std::thread::{", "spawn")
-                .then_some("std::thread::{spawn}")
+            ["spawn", "scope"]
+                .into_iter()
+                .any(|item| contains_braced_use_item(text, "std::thread::{", item))
+                .then_some("std::thread::{spawn/scope}")
         })
 }
 
 /// Returns the Rayon global-pool source needle matched in `text`, including braced
-/// import forms such as `use rayon::{join};`.
+/// import forms such as `use rayon::{join};` and the opening line of a multi-line
+/// `use rayon::{ … }` group.
 fn rayon_global_needle(text: &str) -> Option<&'static str> {
     RAYON_GLOBAL_NEEDLES
         .iter()
@@ -232,6 +246,18 @@ fn rayon_global_needle(text: &str) -> Option<&'static str> {
             .into_iter()
             .find(|item| contains_braced_use_item(text, "rayon::{", item))
         })
+        // A multi-line `use rayon::{` group whose `}` lands on a later line cannot be
+        // item-checked here, so flag the opening line conservatively. The prelude uses
+        // `rayon::iter::{` / `rayon::slice::{` (deeper paths), which do not contain the
+        // bare `rayon::{` prefix and are not matched.
+        .or_else(|| open_braced_group(text, "rayon::{").then_some("rayon::{ (open import group)"))
+}
+
+/// Whether `text` opens a braced `use … prefix{` group that does not close on this
+/// line (a multi-line import group the single-line item check cannot inspect).
+fn open_braced_group(text: &str, prefix: &str) -> bool {
+    text.find(prefix)
+        .is_some_and(|start| !text[start + prefix.len()..].contains('}'))
 }
 
 /// Detects a single-line braced `use` item. This intentionally stays small and
@@ -1368,6 +1394,82 @@ mod tests {
         assert!(
             violations.iter().any(|v| v.contains("tokio")),
             "the resolved banned crate must be flagged, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn scoped_thread_spawn_is_a_violation_outside_tests_but_exempt_in_tests() {
+        let code = "    std::thread::scope(|s| { s.spawn(|| work()); });";
+        assert!(
+            !evaluate_concurrency_policy(&[], &[line(code, false)]).is_empty(),
+            "std::thread::scope scoped spawn must be flagged outside tests"
+        );
+        assert!(
+            evaluate_concurrency_policy(&[], &[line(code, true)]).is_empty(),
+            "scoped spawn inside tests is exempt"
+        );
+        // Braced import form is also caught.
+        assert!(
+            !evaluate_concurrency_policy(&[], &[line("    use std::thread::{scope};", false)])
+                .is_empty(),
+            "braced std::thread::{{scope}} import must be flagged outside tests"
+        );
+    }
+
+    #[test]
+    fn async_runtime_family_is_banned() {
+        assert!(is_banned_runtime_crate("smol"));
+        assert!(is_banned_runtime_crate("async-executor"));
+        assert!(is_banned_runtime_crate("async-io"));
+        assert!(is_banned_runtime_crate("async-task"));
+        assert!(!is_banned_runtime_crate("asynchronous-codec"));
+        let crates = [krate("splot-decode", &["smol"])];
+        assert!(
+            evaluate_concurrency_policy(&crates, &[])
+                .iter()
+                .any(|v| v.contains("smol")),
+            "a crate depending on smol must be flagged"
+        );
+    }
+
+    #[test]
+    fn multiline_rayon_import_group_is_a_violation() {
+        // The opening line of a multi-line `use rayon::{ … }` group is flagged, since
+        // its `}` (and any banned item) lands on a later line the item check can't see.
+        let src = [line("    use rayon::{", false)];
+        assert!(
+            evaluate_concurrency_policy(&[], &src)
+                .iter()
+                .any(|v| v.contains("global-pool")),
+            "open multi-line rayon import group must be flagged"
+        );
+    }
+
+    #[test]
+    fn par_iter_in_non_pool_install_is_a_violation() {
+        // A bare `install(...)` free function (no `.install(` method shape) does not
+        // count as a WorkerPool scope, so a par-iter inside it is still flagged.
+        let src = [line(
+            "    let n = install(|| items.par_iter().count());",
+            false,
+        )];
+        assert!(
+            evaluate_concurrency_policy(&[], &src)
+                .iter()
+                .any(|v| v.contains("WorkerPool::install")),
+            "par-iter inside a non-pool bare install() must be flagged"
+        );
+        // The real `pool.install(|| …)` method shape IS a scope.
+        assert!(
+            evaluate_concurrency_policy(
+                &[],
+                &[line(
+                    "    pool.install(|| items.par_iter().count());",
+                    false
+                )]
+            )
+            .is_empty(),
+            "par-iter inside pool.install(|| …) is scoped and accepted"
         );
     }
 
