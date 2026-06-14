@@ -2,7 +2,7 @@
 
 ## Context
 
-`explain` must describe any of the ~235 emitted validator diagnostics with data
+`explain` must describe any of the ~236 emitted validator diagnostics with data
 that is correct, never invented, and never drifts from what the validator actually
 emits. `docs/VALIDATOR-DIAGNOSTICS.md` is already the CI-enforced single source of
 truth (`check-diagnostic-registry` makes its id set equal the emitted set). The
@@ -34,7 +34,7 @@ cannot diverge from the doc. The output is rustfmt-stable by construction:
 reorder), so `--check`'s byte diff is reliable. The 3-column `*/syntax` table is
 excluded (its 2nd column is not a severity, so it is skipped naturally).
 
-The generated table embeds the 235 id literals; because they are exactly the
+The generated table embeds the 236 id literals; because they are exactly the
 documented ids, `check-diagnostic-registry` (which collects whole single-id string
 literals) still sees the same emitted set — no gate change is needed, and condition
 prose never matches `is_registry_id`.
@@ -70,7 +70,7 @@ None — `explain` emits no diagnostics and adds no rule ids.
 
 ## Alternatives considered
 
-- Hand-authored in-crate registry: rejected — 235 entries to maintain, drift risk
+- Hand-authored in-crate registry: rejected — 236 entries to maintain, drift risk
   vs the doc, and an invitation to invent prose.
 - Parse the doc at runtime (`include_str!`): rejected — couples the library to doc
   formatting at runtime, crosses the package boundary (no precedent), and is more

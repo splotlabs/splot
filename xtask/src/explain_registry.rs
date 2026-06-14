@@ -56,13 +56,31 @@ impl Severity {
         }
     }
 
-    fn parse(s: &str) -> Option<Severity> {
+    /// Severity ordering for picking the most severe of a dual cell.
+    fn rank(self) -> u8 {
+        match self {
+            Severity::Error => 2,
+            Severity::Warning => 1,
+            Severity::Info => 0,
+        }
+    }
+
+    fn parse_one(s: &str) -> Option<Severity> {
         match s {
             "error" => Some(Severity::Error),
             "warning" => Some(Severity::Warning),
             "info" => Some(Severity::Info),
             _ => None,
         }
+    }
+
+    /// Parses a severity cell. A dual cell like `error/warning` lists the
+    /// severities the id can carry (emitted with each in different contexts); the
+    /// registry records the most severe. `None` only when no token is a severity.
+    fn parse(s: &str) -> Option<Severity> {
+        s.split('/')
+            .filter_map(|token| Severity::parse_one(token.trim()))
+            .max_by_key(|severity| severity.rank())
     }
 }
 
@@ -105,26 +123,33 @@ fn parse_entries(doc: &str) -> Result<Vec<Entry>> {
         if !trimmed.starts_with('|') {
             continue;
         }
-        // Split a `| a | b | c | d |` row into its 4 cells (drop the outer empties).
+        // Split a `| id | severity | section | condition |` row. A 4-column row has
+        // at least 6 split parts (leading empty + 4 cells + trailing empty); the
+        // 3-column `*/syntax` table has only 5, so `< 6` excludes it.
         let cells: Vec<&str> = trimmed.split('|').collect();
-        // 4 columns => 6 split parts (leading + 4 + trailing).
-        if cells.len() != 6 {
+        if cells.len() < 6 {
             continue;
         }
         let id_cell = cells[1].trim();
         let Some(rule_id) = id_cell.strip_prefix('`').and_then(|s| s.strip_suffix('`')) else {
-            continue; // header row / separator / prose
-        };
-        let Some(severity) = Severity::parse(cells[2].trim()) else {
-            // A row whose 2nd column is not a severity is not a 4-col diagnostics
-            // row (e.g. the separator `|---|` or the 3-col syntax table).
-            continue;
+            continue; // header row / separator / prose, not a diagnostics row
         };
         if !is_rule_id(rule_id) {
-            bail!("gen-explain: malformed rule id `{rule_id}` in {DOC_REL}");
+            continue; // a backtick token that is not a rule id
         }
+        // From here the row IS a 4-column diagnostics row (a valid backtick rule id
+        // in the second cell), so its severity MUST parse — a silent skip would
+        // drop a real diagnostic (e.g. a dual `error/warning` cell).
+        let Some(severity) = Severity::parse(cells[2].trim()) else {
+            bail!(
+                "gen-explain: rule `{rule_id}` in {DOC_REL} has an unparsable severity `{}`",
+                cells[2].trim()
+            );
+        };
         let spec_section = parse_section(cells[3].trim());
-        let summary = cells[4].trim().to_owned();
+        // Rejoin any `|` that appeared inside the condition cell (defensive: the doc
+        // has none today) so an embedded pipe never silently drops the row.
+        let summary = cells[4..cells.len() - 1].join("|").trim().to_owned();
         if summary.is_empty() {
             bail!("gen-explain: empty condition for `{rule_id}` in {DOC_REL}");
         }
@@ -233,6 +258,8 @@ intro `ns/before`
 |---|---|---|---|
 | `ops/foo` | error | § 6.10.2 | a thing is wrong with \"quoted\" text |
 | `brt/bar` | warning |  | no section here |
+| `ops/dual` | error/warning | § 6.1 | emitted as either severity |
+| `ops/piped` | info | § 6.2 | left | right pipe in condition |
 
 ### check registry identifiers
 | Registry ID | Parse § | Routed through |
@@ -247,7 +274,31 @@ outro `ns/after`
         let entries = parse_entries(DOC).unwrap();
         let ids: Vec<&str> = entries.iter().map(|e| e.rule_id.as_str()).collect();
         // Sorted; the 3-col syntax row and prose ids are excluded.
-        assert_eq!(ids, ["brt/bar", "ops/foo"]);
+        assert_eq!(ids, ["brt/bar", "ops/dual", "ops/foo", "ops/piped"]);
+    }
+
+    #[test]
+    fn dual_severity_takes_the_most_severe() {
+        let entries = parse_entries(DOC).unwrap();
+        let dual = entries.iter().find(|e| e.rule_id == "ops/dual").unwrap();
+        assert_eq!(dual.severity, Severity::Error);
+    }
+
+    #[test]
+    fn pipe_inside_a_condition_is_rejoined_not_dropped() {
+        let entries = parse_entries(DOC).unwrap();
+        let piped = entries.iter().find(|e| e.rule_id == "ops/piped").unwrap();
+        assert_eq!(piped.summary, "left | right pipe in condition");
+    }
+
+    #[test]
+    fn valid_id_row_with_unparsable_severity_bails() {
+        let bad = "\
+<!-- diagnostics-registry:begin -->
+| `ops/foo` | notasev | § 6.1 | x |
+<!-- diagnostics-registry:end -->
+";
+        assert!(parse_entries(bad).is_err());
     }
 
     #[test]
