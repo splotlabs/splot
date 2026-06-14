@@ -30,6 +30,10 @@ const FORBIDDEN_PREFIXES: &[&str] = &[
     "crates/splot-recon/",
     "docs/DECODER-",
     "fuzz/fuzz_targets/decode",
+    // The decoder stream owns the `decode` CLI command and its tests; the prefix
+    // covers `crates/splot-cli/tests/decode_cli.rs` (and any future `decode_*`
+    // test) without claiming the encoder stream's `encode_cli.rs`.
+    "crates/splot-cli/tests/decode",
 ];
 
 /// Decoder-owned exact files.
@@ -117,26 +121,25 @@ fn branch_for_exemption(root: &Path) -> Option<String> {
 }
 
 /// Returns `true` when `branch` is a decoder-stream branch, which the guard
-/// exempts. Matches `decode`/`recon` as whole name *tokens* (split on
-/// non-alphanumeric chars), not bare substrings, so a validator branch such as
-/// `fix/reconcile-validator-output` is not falsely exempted. A `decode*` token
-/// (decode/decoder/decoded/decoding) or an exact `recon`/`reconstruct[ion]` token
-/// marks a decoder-stream branch.
+/// exempts. Matches whole name *tokens* (split on non-alphanumeric chars), not
+/// bare substrings, so a validator branch such as `fix/reconcile-validator-output`
+/// is not falsely exempted. A token in the `decode*` family (decode, decoder,
+/// decoded, decoding, decodes, decoders) or the `reconstruct*` family, or the
+/// exact `recon`/`recons` token, marks a decoder-stream branch. The error
+/// direction is deliberate: this exemption only ever skips the validator stream's
+/// own self-check (never the decoder stream's gate), so the family-prefix match
+/// errs toward exempting any plausible decoder-named branch; `reconcile`/
+/// `reconfigure`-style words match neither family and `SPLOT_SKIP_CONFLICT_ZONE=1`
+/// covers any branch the heuristic misses.
 fn is_decoder_branch(branch: &str) -> bool {
     branch
         .split(|c: char| !c.is_ascii_alphanumeric())
         .any(|token| {
-            matches!(
-                token.to_ascii_lowercase().as_str(),
-                "decode"
-                    | "decoder"
-                    | "decoded"
-                    | "decoding"
-                    | "decodes"
-                    | "recon"
-                    | "reconstruct"
-                    | "reconstruction"
-            )
+            let token = token.to_ascii_lowercase();
+            token.starts_with("decode")
+                || token.starts_with("reconstruct")
+                || token == "recon"
+                || token == "recons"
         })
 }
 
@@ -251,6 +254,7 @@ mod tests {
             "docs/DECODER-SUPPORT-MATRIX.toml",
             "docs/LOCAL-REFERENCE-EVIDENCE.toml",
             "crates/splot-cli/src/commands/decode.rs",
+            "crates/splot-cli/tests/decode_cli.rs",
             "fuzz/fuzz_targets/decode_plan_bytes.rs",
             "scripts/run-dav2d.sh",
             "crates/splot-validate/src/avm_oracle.rs",
@@ -270,6 +274,9 @@ mod tests {
             "crates/splot-cli/src/commands/validate.rs",
             "crates/splot-cli/src/commands/inspect.rs",
             "crates/splot-cli/src/commands/explain.rs",
+            // The decode-test prefix must not claim the encoder/inspect CLI tests.
+            "crates/splot-cli/tests/encode_cli.rs",
+            "crates/splot-cli/tests/inspect_snapshots.rs",
             "fuzz/fuzz_targets/parse_obu.rs",
             "xtask/src/conflict_zone.rs",
             "tests/fixtures/MANIFEST.toml",
@@ -306,10 +313,18 @@ mod tests {
         assert!(is_decoder_branch("feat/decoded-frame-plane-model-contract"));
         assert!(is_decoder_branch("feat/minimal-decode-tier-contract"));
         assert!(is_decoder_branch("feat/decoder-diagnostic-registry"));
+        // Family-prefix match: morphological variants of decode*/reconstruct* are
+        // exempted so a real decoder branch is never gated (the prime directive).
+        assert!(is_decoder_branch("codex/decoders-cleanup"));
+        assert!(is_decoder_branch("feat/reconstructed-frame-store"));
+        assert!(is_decoder_branch("feat/reconstruct-pipeline"));
+        assert!(is_decoder_branch("feat/recons-helper"));
         assert!(!is_decoder_branch("feat/validator-conflict-zone-guard"));
         assert!(!is_decoder_branch("feat/validate-output-controls"));
-        // Token match, not bare substring: these validator names must NOT be exempted.
+        // Token/family match, not bare substring: these validator names must NOT be
+        // exempted (neither decode* nor reconstruct* family, nor recon/recons).
         assert!(!is_decoder_branch("fix/reconcile-validator-output"));
+        assert!(!is_decoder_branch("chore/reconfigure-ci"));
         assert!(!is_decoder_branch("feat/decoy-handling"));
     }
 

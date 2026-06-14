@@ -16,7 +16,8 @@ New module `xtask/src/conflict_zone.rs` (standalone; depends only on
 
 - `const FORBIDDEN_PREFIXES: &[&str]` — decoder-owned directory trees / path
   prefixes: `crates/splot-decode/`, `crates/splot-recon/`, `docs/DECODER-`,
-  `fuzz/fuzz_targets/decode`.
+  `fuzz/fuzz_targets/decode`, `crates/splot-cli/tests/decode` (the decode CLI
+  tests, e.g. `decode_cli.rs`).
 - `const FORBIDDEN_EXACT: &[&str]` — `docs/LOCAL-REFERENCE-EVIDENCE.toml`,
   `crates/splot-cli/src/commands/decode.rs`.
 - `const AVM_SCAN_ROOTS: &[&str]` — code/build roots under which a new
