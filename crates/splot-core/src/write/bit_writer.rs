@@ -704,9 +704,14 @@ mod proptests {
             prop_assert_eq!(read_back(&bytes).read_leb128().unwrap(), value);
         }
 
-        /// `ns(n)`: round-trips every value in `0..n` for representative ranges.
+        /// `ns(n)`: round-trips values in `0..n` across the full width domain,
+        /// including the high `w == 32` paths where `n` has its top bit set
+        /// (`n >= 2^31`, up to `u32::MAX`).
         #[test]
-        fn roundtrip_ns(n in 1u32..=100_000, frac in 0u32..u32::MAX) {
+        fn roundtrip_ns(
+            n in prop_oneof![1u32..=100_000, (1u32 << 31)..=u32::MAX],
+            frac in 0u32..=u32::MAX,
+        ) {
             let value = ((u64::from(frac) * u64::from(n)) >> 32) as u32;
             let value = value.min(n - 1);
             let mut writer = BitWriter::new();
@@ -715,11 +720,23 @@ mod proptests {
             prop_assert_eq!(read_back(&bytes).read_ns(n).unwrap(), value);
         }
 
-        /// `rg(n)`: round-trips values built from a terminating quotient and remainder.
+        /// `rg(n)`: round-trips across the full width domain `0..=32`, exercising the
+        /// widths above 20 and the `n == 32` special branch (quotient always 0).
         #[test]
-        fn roundtrip_rg(quotient in 0u32..32, remainder in any::<u32>(), n in 0u32..=20) {
-            let remainder = if n == 0 { 0 } else { remainder & ((1u32 << n) - 1) };
-            let value = (quotient << n) | remainder;
+        fn roundtrip_rg(quotient in 0u32..32, remainder_bits in any::<u32>(), n in 0u32..=32) {
+            let remainder = match n {
+                0 => 0,
+                32 => remainder_bits,
+                _ => remainder_bits & ((1u32 << n) - 1),
+            };
+            // Build a value whose quotient terminates (`< 32`) without overflowing
+            // `u32`; for `n == 32` the quotient is always 0 and the value is the
+            // remainder, and any overflow at large `(quotient, n)` falls back to a
+            // quotient-0 value (still a valid `rg(n)` of width `n`).
+            let value = (u64::from(quotient) << n)
+                .checked_add(u64::from(remainder))
+                .and_then(|v| u32::try_from(v).ok())
+                .unwrap_or(remainder);
             let mut writer = BitWriter::new();
             writer.write_rg(value, n).unwrap();
             let bytes = writer.into_bytes();

@@ -26,10 +26,12 @@
 - [x] Advance the `write` stage `todo -> done` on `AV2-4.11.3-UVLC`,
       `AV2-4.11.4-SVLC`, `AV2-4.11.5-LE`, `AV2-4.11.6-LEB128`, `AV2-4.11.7-SU`,
       `AV2-4.11.8-NS`, and `AV2-5.2.4-BYTE-ALIGNMENT`, with write proof recorded.
+- [x] Create the `AV2-4.11.10-RG` row (parse + write `done`, proof recorded) so the
+      `rg(n)` descriptor is tracked independently like its `§ 4.11` siblings.
 - [x] Advance `ENC-BITSTREAM-WRITER` (`write` stub -> `partial`), point its module at
       `crates/splot-core/src/write/mod.rs`, and update its `openspec_change`/notes.
-- [x] Regenerate `docs/FEATURE-STATUS.md` from the matrix (SPEC-COVERAGE.md unchanged —
-      the `write` stage is not part of the coverage projection).
+- [x] Regenerate `docs/FEATURE-STATUS.md` and `docs/SPEC-COVERAGE.md` from the matrix
+      (the new `AV2-4.11.10-RG` row adds a `§ 4.11.10` coverage entry).
 - [x] Lift the bitstream writer from behind the `docs/VALIDATOR-ROADMAP.md`
       "do not start yet" fence (maintainer-approved).
 - [x] Add a writer-foundation note to `README.md`.

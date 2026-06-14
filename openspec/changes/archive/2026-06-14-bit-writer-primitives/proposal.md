@@ -6,6 +6,8 @@
   realized primitive layer; umbrella stays `partial`)
 - `AV2-4.11.3-UVLC`, `AV2-4.11.4-SVLC`, `AV2-4.11.5-LE`, `AV2-4.11.6-LEB128`,
   `AV2-4.11.7-SU`, `AV2-4.11.8-NS` (each advances its `write` stage `todo -> done`)
+- `AV2-4.11.10-RG` (new descriptor row created to track the `rg(n)` parse + write
+  stages independently, like its `§ 4.11` siblings)
 - `AV2-5.2.4-BYTE-ALIGNMENT` (advances its `write` stage for zero-pad alignment)
 
 ## Why
