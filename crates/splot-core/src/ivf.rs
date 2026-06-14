@@ -109,6 +109,141 @@ pub struct PartialIvfParse<'a> {
     pub error: Option<IvfError>,
 }
 
+/// One step produced by [`IvfFrameCursor`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IvfFrameRead<'a> {
+    /// A complete IVF frame record and payload.
+    Frame(IvfFrame<'a>),
+    /// A non-fatal IVF warning encountered after complete frames.
+    Warning(IvfWarning),
+    /// No more IVF bytes remain.
+    End,
+}
+
+/// Stateful cursor over IVF frame records after a parsed header.
+///
+/// This exposes the single-sourced IVF frame parser one record at a time,
+/// allowing higher-level crates to apply their own limits between frame records
+/// without copying container parsing logic.
+#[derive(Debug, Clone)]
+pub struct IvfFrameCursor<'a> {
+    input: &'a [u8],
+    cursor: usize,
+    frame_index: usize,
+    finished: bool,
+}
+
+impl<'a> IvfFrameCursor<'a> {
+    /// Creates a cursor positioned after `header`'s declared header length.
+    #[must_use]
+    pub fn new(input: &'a [u8], header: IvfHeader) -> Self {
+        Self {
+            input,
+            cursor: usize::from(header.header_len),
+            frame_index: 0,
+            finished: false,
+        }
+    }
+
+    /// Returns whether unread IVF bytes remain.
+    #[must_use]
+    pub fn has_remaining(&self) -> bool {
+        !self.finished && self.cursor < self.input.len()
+    }
+
+    /// Returns whether the cursor currently points at a complete frame header.
+    #[must_use]
+    pub fn has_complete_frame_header(&self) -> bool {
+        self.has_remaining()
+            && self.input.len().saturating_sub(self.cursor) >= IVF_FRAME_HEADER_SIZE
+    }
+
+    /// Returns the zero-based frame index that the next frame record would use.
+    #[must_use]
+    pub const fn next_frame_index(&self) -> usize {
+        self.frame_index
+    }
+
+    /// Parses the next IVF frame record, warning, or end marker.
+    ///
+    /// # Errors
+    /// Returns the first structural IVF frame-header or frame-payload error. The
+    /// cursor is not advanced on error.
+    pub fn next_frame_record(&mut self) -> Result<IvfFrameRead<'a>, IvfError> {
+        if !self.has_remaining() {
+            self.finished = true;
+            return Ok(IvfFrameRead::End);
+        }
+
+        let remaining_header = self.input.len().saturating_sub(self.cursor);
+        if remaining_header < IVF_FRAME_HEADER_SIZE {
+            self.finished = true;
+            if self.frame_index > 0 {
+                return Ok(IvfFrameRead::Warning(
+                    IvfWarning::TrailingPartialFrameHeader {
+                        frame_index: self.frame_index,
+                        offset: ByteOffset::new(self.input.len() as u64),
+                        needed: IVF_FRAME_HEADER_SIZE.saturating_sub(remaining_header),
+                    },
+                ));
+            }
+            return Err(IvfError::TruncatedFrameHeader {
+                frame_index: self.frame_index,
+                offset: ByteOffset::new(self.input.len() as u64),
+                needed: IVF_FRAME_HEADER_SIZE.saturating_sub(remaining_header),
+            });
+        }
+
+        let size = read_u32_le(self.input, self.cursor).ok_or(IvfError::TruncatedFrameHeader {
+            frame_index: self.frame_index,
+            offset: ByteOffset::new(self.input.len() as u64),
+            needed: IVF_FRAME_HEADER_SIZE.saturating_sub(remaining_header),
+        })?;
+        let pts = read_u64_le(self.input, self.cursor.saturating_add(4)).ok_or(
+            IvfError::TruncatedFrameHeader {
+                frame_index: self.frame_index,
+                offset: ByteOffset::new(self.input.len() as u64),
+                needed: IVF_FRAME_HEADER_SIZE.saturating_sub(remaining_header),
+            },
+        )?;
+
+        let payload_start = self.cursor.saturating_add(IVF_FRAME_HEADER_SIZE);
+        let remaining_payload = self.input.len().saturating_sub(payload_start);
+        let size_usize = size as usize;
+        if size_usize > remaining_payload {
+            return Err(IvfError::TruncatedFramePayload {
+                frame_index: self.frame_index,
+                offset: ByteOffset::new(self.input.len() as u64),
+                size,
+                remaining: remaining_payload,
+            });
+        }
+
+        let payload_end = payload_start.saturating_add(size_usize);
+        let payload =
+            self.input
+                .get(payload_start..payload_end)
+                .ok_or(IvfError::TruncatedFramePayload {
+                    frame_index: self.frame_index,
+                    offset: ByteOffset::new(self.input.len() as u64),
+                    size,
+                    remaining: remaining_payload,
+                })?;
+
+        let frame = IvfFrame {
+            index: self.frame_index,
+            header_offset: ByteOffset::new(self.cursor as u64),
+            payload_offset: ByteOffset::new(payload_start as u64),
+            size,
+            pts,
+            payload,
+        };
+        self.cursor = payload_end;
+        self.frame_index = self.frame_index.saturating_add(1);
+        Ok(IvfFrameRead::Frame(frame))
+    }
+}
+
 /// Errors produced by the IVF container parser.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -382,101 +517,25 @@ pub fn parse_ivf_partial(input: &[u8]) -> PartialIvfParse<'_> {
 
     let mut frames = Vec::new();
     let mut warnings = Vec::new();
-    let mut cursor = usize::from(header.header_len);
-    let mut frame_index = 0usize;
+    let mut cursor = IvfFrameCursor::new(input, header);
 
-    while cursor < input.len() {
-        let remaining_header = input.len().saturating_sub(cursor);
-        if remaining_header < IVF_FRAME_HEADER_SIZE {
-            if frame_index > 0 {
-                // Common IVF demuxers treat EOF while probing the next frame
-                // header as end-of-stream once at least one full frame exists.
-                warnings.push(IvfWarning::TrailingPartialFrameHeader {
-                    frame_index,
-                    offset: ByteOffset::new(input.len() as u64),
-                    needed: IVF_FRAME_HEADER_SIZE.saturating_sub(remaining_header),
-                });
+    while cursor.has_remaining() {
+        match cursor.next_frame_record() {
+            Ok(IvfFrameRead::Frame(frame)) => frames.push(frame),
+            Ok(IvfFrameRead::Warning(warning)) => {
+                warnings.push(warning);
                 break;
             }
-            return PartialIvfParse {
-                header: Some(header),
-                frames,
-                warnings,
-                error: Some(IvfError::TruncatedFrameHeader {
-                    frame_index,
-                    offset: ByteOffset::new(input.len() as u64),
-                    needed: IVF_FRAME_HEADER_SIZE.saturating_sub(remaining_header),
-                }),
-            };
+            Ok(IvfFrameRead::End) => break,
+            Err(error) => {
+                return PartialIvfParse {
+                    header: Some(header),
+                    frames,
+                    warnings,
+                    error: Some(error),
+                };
+            }
         }
-
-        let Some(size) = read_u32_le(input, cursor) else {
-            return PartialIvfParse {
-                header: Some(header),
-                frames,
-                warnings,
-                error: Some(IvfError::TruncatedFrameHeader {
-                    frame_index,
-                    offset: ByteOffset::new(input.len() as u64),
-                    needed: IVF_FRAME_HEADER_SIZE.saturating_sub(remaining_header),
-                }),
-            };
-        };
-        let Some(pts) = read_u64_le(input, cursor.saturating_add(4)) else {
-            return PartialIvfParse {
-                header: Some(header),
-                frames,
-                warnings,
-                error: Some(IvfError::TruncatedFrameHeader {
-                    frame_index,
-                    offset: ByteOffset::new(input.len() as u64),
-                    needed: IVF_FRAME_HEADER_SIZE.saturating_sub(remaining_header),
-                }),
-            };
-        };
-
-        let payload_start = cursor.saturating_add(IVF_FRAME_HEADER_SIZE);
-        let remaining_payload = input.len().saturating_sub(payload_start);
-        let size_usize = size as usize;
-        if size_usize > remaining_payload {
-            return PartialIvfParse {
-                header: Some(header),
-                frames,
-                warnings,
-                error: Some(IvfError::TruncatedFramePayload {
-                    frame_index,
-                    offset: ByteOffset::new(input.len() as u64),
-                    size,
-                    remaining: remaining_payload,
-                }),
-            };
-        }
-
-        let payload_end = payload_start.saturating_add(size_usize);
-        let Some(payload) = input.get(payload_start..payload_end) else {
-            return PartialIvfParse {
-                header: Some(header),
-                frames,
-                warnings,
-                error: Some(IvfError::TruncatedFramePayload {
-                    frame_index,
-                    offset: ByteOffset::new(input.len() as u64),
-                    size,
-                    remaining: remaining_payload,
-                }),
-            };
-        };
-
-        frames.push(IvfFrame {
-            index: frame_index,
-            header_offset: ByteOffset::new(cursor as u64),
-            payload_offset: ByteOffset::new(payload_start as u64),
-            size,
-            pts,
-            payload,
-        });
-        cursor = payload_end;
-        frame_index = frame_index.saturating_add(1);
     }
 
     PartialIvfParse {

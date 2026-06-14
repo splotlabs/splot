@@ -5183,7 +5183,7 @@ openspec_change = "decode-byte-stream-planner"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a bounded byte-consuming stream planner in `splot-decode`: `DecodeContext::plan_bytes` accepts raw Annex B or IVF/DKIF bytes, checks `max_input_bytes` before traversal, checks `max_obus` before retaining each OBU across the whole stream, checks `max_ivf_frame_records` before processing each complete IVF frame record, builds bounded `splot-core` parsed stream structures with public Annex B/IVF/OBU-header primitives, and reuses the existing parsed planner for base-layer selection, `OBU_CLOSED_LOOP_KEY` frame-candidate accounting, typed malformed-source errors, and typed unsupported-structure metadata. The API runs inside the context-owned `splot_parallel::WorkerPool` and tests deterministic results across thread policies. It also adds the `decode_plan_bytes` cargo-fuzz target with finite limits. This is still plan-only: it does not read files, change `splot decode` CLI behavior, parse tile payloads, call `payload_status()`, reconstruct pixels, compute hashes, write Y4M, refresh references, invoke AVM/dav2d, or add AVM/dav2d integration."
+notes = "Adds a bounded byte-consuming stream planner in `splot-decode`: `DecodeContext::plan_bytes` accepts raw Annex B or IVF/DKIF bytes, checks `max_input_bytes` before traversal, checks `max_obus` before retaining each OBU across the whole stream, checks `max_ivf_frame_records` before processing each complete IVF frame record, checks `max_frames_to_decode` before retaining each accepted `OBU_CLOSED_LOOP_KEY` candidate, builds bounded `splot-core` parsed stream structures by driving `AnnexBObuCursor` and `IvfFrameCursor`, and reuses the existing parsed planner for base-layer selection, typed malformed-source errors, and typed unsupported-structure metadata. The API runs inside the context-owned `splot_parallel::WorkerPool` and tests deterministic results across thread policies. It also adds the `decode_plan_bytes` cargo-fuzz target with finite limits. This is still plan-only: it does not read files, change `splot decode` CLI behavior, parse tile payloads, call `payload_status()`, reconstruct pixels, compute hashes, write Y4M, refresh references, invoke AVM/dav2d, or add AVM/dav2d integration."
 
 [feature.status]
 mapped = "done"
@@ -5208,6 +5208,8 @@ tests = [
     "crates/splot-decode/src/stream_plan/tests.rs::tests::byte_planning_is_deterministic_across_thread_policies",
 ]
 commands = [
+    "cargo test -p splot-core annexb --locked",
+    "cargo test -p splot-core ivf --locked",
     "cargo test -p splot-decode --locked",
     "cargo check --manifest-path fuzz/Cargo.toml --bins",
     "cargo xtask check-dependency-direction",
@@ -5215,6 +5217,8 @@ commands = [
     "cargo xtask check-decoder-support",
 ]
 fixtures = [
+    "crates/splot-core/src/annexb.rs",
+    "crates/splot-core/src/ivf.rs",
     "crates/splot-decode/src/byte_stream.rs",
     "crates/splot-decode/src/context.rs",
     "crates/splot-decode/src/stream_plan/tests.rs",

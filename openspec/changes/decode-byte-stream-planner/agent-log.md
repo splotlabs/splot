@@ -92,6 +92,14 @@ portable local-reference evidence manifest.
     dependencies on `splot-decode` and `splot-parallel`. Resolution: scoped the
     impact statement to no new production/workspace crate edge and explicitly
     called out the fuzz-only local path dependencies.
+  - PR #113 Claude review finding
+    (`https://github.com/splotlabs/splot/pull/113#discussion_r3409248110`):
+    `crates/splot-decode/src/byte_stream.rs` duplicated private Annex B and IVF
+    parser logic from `splot-core`, creating divergence risk. Resolution:
+    exposed allocation-free `AnnexBObuCursor` and `IvfFrameCursor` primitives in
+    `splot-core`, reused those cursors from `splot-core`'s existing partial
+    parsers, and changed `splot-decode` to drive the cursors with
+    `DecodeLimits` checks between parser steps instead of copying parser code.
 - Final review status:
   - @test-writer signed off with no remaining test coverage findings.
   - @documenter signed off after the proposal dependency wording correction.
@@ -107,3 +115,9 @@ portable local-reference evidence manifest.
   - `cargo xtask check-fuzz-targets`
   - `cargo xtask check-concurrency-policy`
   - `cargo xtask check-dependency-direction`
+- Additional verification after addressing PR #113 parser-duplication review:
+  - `cargo test -p splot-core annexb --locked`
+  - `cargo test -p splot-core ivf --locked`
+  - `cargo test -p splot-decode --locked`
+  - `cargo clippy -p splot-core --all-targets --all-features --locked -- -D warnings`
+  - `cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings`

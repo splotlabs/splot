@@ -11,9 +11,10 @@ The missing decoder-mission step is the first byte-consuming decode-side API.
 Calling `splot_core::stream::parse_bitstream_partial()` and then
 `plan_stream()` is not sufficient for this new surface because the parser
 materializes vectors before `splot-decode` can reject many tiny OBUs or IVF
-frame records. This change therefore adds a bounded walker owned by
-`splot-decode` that reuses public `splot-core` parsing primitives without
-copying payloads or adding dependencies.
+frame records. This change therefore adds single-step Annex B and IVF frame
+cursor primitives in `splot-core`, then drives them from `splot-decode` with
+decode limits between steps. The parser logic remains single-sourced in
+`splot-core`, and `splot-decode` does not copy payloads or add dependencies.
 
 The relevant AV2 citations are Annex B § B.2 for length-delimited bitstreams,
 § 5.2.1 for `open_bitstream_unit`, § 5.2.2 for OBU headers, § 6.2.2 for layer
@@ -48,16 +49,16 @@ non-normative container handled by `splot-core`'s IVF module, not by AV2.
 
 ## Decisions
 
-1. Add a bounded byte walker in `splot-decode`.
+1. Add bounded byte planning driven by `splot-core` cursors.
 
-   The walker will parse one Annex B envelope at a time with
-   `splot_core::leb128::read_leb128` and
-   `splot_core::obu::read_obu_header_from_slice`, then pass the resulting
-   `ObuEnvelope` through the existing `PlanBuilder`. For IVF, it will use
-   `splot_core::ivf::parse_ivf_header`, `IVF_HEADER_SIZE`, and
-   `IVF_FRAME_HEADER_SIZE` to walk frame records and parse each frame payload as
-   bounded Annex B. This avoids using the unbounded vector-producing
-   `parse_bitstream_partial()` path for the raw decode-side API.
+   `splot-core` exposes `AnnexBObuCursor` and `IvfFrameCursor` so callers can
+   consume one parsed OBU envelope or IVF frame record at a time without
+   materializing the full source up front. `splot-decode` checks
+   `DecodeLimits` before asking those cursors for the next retained OBU or
+   complete IVF frame record, then passes each resulting `ObuEnvelope` through
+   the existing `PlanBuilder`. This avoids using the vector-producing
+   `parse_bitstream_partial()` path for the raw decode-side API while keeping
+   structural parser logic single-sourced in `splot-core`.
 
 2. Keep one plan type and one classification path.
 
@@ -87,10 +88,10 @@ non-normative container handled by `splot-core`'s IVF module, not by AV2.
 
 ## Risks / Trade-offs
 
-- Bounded walking duplicates a small amount of envelope traversal logic already
-  present in `splot-core` -> keep it scoped to `splot-decode` byte-planning
-  needs, use public `splot-core` primitives, and cover behavior against the
-  existing parsed-input planner for small valid inputs.
+- Exposing cursor primitives expands `splot-core`'s parser API surface -> keep
+  the API structural and allocation-free, reuse it from the existing partial
+  parsers, and cover behavior against the existing parsed-input planner for
+  small valid inputs.
 - IVF with many empty frame records can be adversarial -> enforce
   `max_ivf_frame_records` before processing each frame payload.
 - Bounded parsing can diverge from `splot-core::stream` container detection ->

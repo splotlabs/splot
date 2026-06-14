@@ -66,6 +66,52 @@ pub struct PartialParse<'a> {
     pub error: Option<Error>,
 }
 
+/// Stateful cursor over an AV2 Annex B length-delimited bitstream.
+///
+/// This exposes the single-sourced structural OBU parser one envelope at a
+/// time, allowing higher-level crates to apply their own limits between OBUs
+/// without copying Annex B parsing logic.
+#[derive(Debug, Clone)]
+pub struct AnnexBObuCursor<'a> {
+    input: &'a [u8],
+    base_offset: ByteOffset,
+    cursor: usize,
+}
+
+impl<'a> AnnexBObuCursor<'a> {
+    /// Creates a cursor for `input`, whose first byte appears at `base_offset`
+    /// in a larger source.
+    #[must_use]
+    pub const fn new(input: &'a [u8], base_offset: ByteOffset) -> Self {
+        Self {
+            input,
+            base_offset,
+            cursor: 0,
+        }
+    }
+
+    /// Returns whether unread bytes remain in the cursor.
+    #[must_use]
+    pub fn has_remaining(&self) -> bool {
+        self.cursor < self.input.len()
+    }
+
+    /// Parses the next OBU envelope, or `Ok(None)` once the input is exhausted.
+    ///
+    /// # Errors
+    /// Returns the first malformed length prefix, bounded OBU header, or
+    /// out-of-range OBU size error. The cursor is not advanced on error.
+    pub fn next_obu(&mut self) -> Result<Option<ObuEnvelope<'a>>> {
+        if !self.has_remaining() {
+            return Ok(None);
+        }
+
+        let (envelope, next) = parse_one_obu(self.input, self.cursor, self.base_offset)?;
+        self.cursor = next;
+        Ok(Some(envelope))
+    }
+}
+
 /// Parses an AV2 Annex B bitstream, keeping every OBU parsed before the first
 /// structural error together with that error (AV2 v1.0.0 Annex B § B.2).
 ///
@@ -87,13 +133,15 @@ pub fn parse_annex_b_obus_partial(input: &[u8]) -> PartialParse<'_> {
 #[must_use]
 pub fn parse_annex_b_obus_partial_at(input: &[u8], base_offset: ByteOffset) -> PartialParse<'_> {
     let mut obus = Vec::new();
-    let mut cursor: usize = 0;
+    let mut cursor = AnnexBObuCursor::new(input, base_offset);
 
-    while cursor < input.len() {
-        match parse_one_obu(input, cursor, base_offset) {
-            Ok((envelope, next)) => {
+    while cursor.has_remaining() {
+        match cursor.next_obu() {
+            Ok(Some(envelope)) => {
                 obus.push(envelope);
-                cursor = next;
+            }
+            Ok(None) => {
+                break;
             }
             Err(error) => {
                 return PartialParse {
