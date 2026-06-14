@@ -307,6 +307,25 @@ pub enum DecodeSourceIssueKind {
     IvfWarning,
 }
 
+impl DecodeSourceIssueKind {
+    /// Stable snake-case issue kind label.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AnnexBParseError => "annex_b_parse_error",
+            Self::IvfContainerError => "ivf_container_error",
+            Self::IvfFramePayloadError => "ivf_frame_payload_error",
+            Self::IvfWarning => "ivf_warning",
+        }
+    }
+}
+
+impl fmt::Display for DecodeSourceIssueKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Source/container issue observed while planning.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecodeSourceIssue {

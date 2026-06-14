@@ -105,13 +105,13 @@ name = "Decode unsupported diagnostic API"
 feature_id = "DECODE-UNSUPPORTED-DIAGNOSTIC-API"
 spec_sections = ["7.1"]
 parser_source = "n/a"
-decode_module = "crates/splot-decode/src/lib.rs"
+decode_module = "crates/splot-decode/src/lib.rs; crates/splot-decode/src/diagnostic.rs"
 tier = "foundation"
 status = "supported"
-self_contained_tests = ["crates/splot-decode/src/lib.rs::tests::unsupported_feature_diagnostic_has_stable_fields", "crates/splot-decode/src/lib.rs::tests::unsupported_feature_diagnostic_function_returns_public_descriptor", "crates/splot-decode/src/lib.rs::tests::decode_severity_displays_stable_spelling", "cargo test -p splot-decode --locked", "cargo xtask check-diagnostic-registry", "cargo xtask check-decoder-support"]
+self_contained_tests = ["crates/splot-decode/src/lib.rs::tests::unsupported_feature_diagnostic_has_stable_fields", "crates/splot-decode/src/lib.rs::tests::unsupported_feature_diagnostic_function_returns_public_descriptor", "crates/splot-decode/src/lib.rs::tests::decode_severity_displays_stable_spelling", "crates/splot-decode/src/diagnostic.rs::tests", "cargo test -p splot-decode --locked", "cargo xtask check-diagnostic-registry", "cargo xtask check-decoder-support"]
 diagnostics = ["decode/unsupported-feature"]
 local_reference_evidence = []
-notes = "Library-owned structured diagnostic API for the current intentional unsupported `splot decode` result. The API returns stable fields for CLI text/JSON rendering without reading input, touching output, consuming AV2 bytes, reconstructing pixels, or invoking AVM/dav2d."
+notes = "Library-owned structured diagnostic API for runtime unsupported deferral and planner-level unsupported structures. The API returns stable fields for CLI text/JSON rendering after byte planning without touching output, reconstructing pixels, computing hashes, producing Y4M, or invoking AVM/dav2d."
 
 [[row]]
 id = "decoder-diagnostic-registry"
@@ -136,10 +136,10 @@ parser_source = "crates/splot-core/src/stream.rs"
 decode_module = "crates/splot-cli/src/commands/decode.rs; crates/splot-decode/src/lib.rs"
 tier = "foundation"
 status = "unsupported-intentional"
-self_contained_tests = ["crates/splot-cli/tests/decode_cli.rs::decode_unsupported_text_mode_emits_stable_diagnostic", "crates/splot-cli/tests/decode_cli.rs::decode_unsupported_json_mode_emits_diagnostic_object", "crates/splot-cli/tests/decode_cli.rs::decode_unsupported_missing_input_does_not_touch_files"]
-diagnostics = ["decode/unsupported-feature"]
+self_contained_tests = ["crates/splot-cli/tests/decode_cli.rs::decode_plan_success_text_mode_emits_runtime_unsupported_diagnostic", "crates/splot-cli/tests/decode_cli.rs::decode_plan_success_json_mode_emits_runtime_unsupported_object", "crates/splot-cli/tests/decode_cli.rs::decode_missing_input_is_operational_error_and_does_not_touch_files", "crates/splot-cli/tests/decode_cli.rs::decode_malformed_source_text_mode_emits_structured_diagnostic", "crates/splot-cli/tests/decode_cli.rs::decode_unsupported_structure_json_mode_uses_planner_metadata", "crates/splot-cli/tests/decode_cli.rs::decode_resource_limit_json_mode_reports_limit_values", "crates/splot-cli/tests/decode_cli.rs::decode_oversized_input_reports_resource_limit_without_touching_output"]
+diagnostics = ["decode/unsupported-feature", "decode/malformed-source", "decode/resource-limit"]
 local_reference_evidence = []
-notes = "The CLI entry point intentionally does not decode yet; it renders the structured unsupported-feature diagnostic from `splot-decode` without reading input, touching output, or invoking external decoders."
+notes = "The CLI entry point bounds file reads with the default `max_input_bytes` policy before constructing a full input buffer, constructs `DecodeContext` for in-policy inputs, calls `DecodeContext::plan_bytes`, and renders library-owned diagnostics for malformed source, resource limits, unsupported planner structures, or runtime decode/output deferral. It intentionally does not decode tile payloads, reconstruct pixels, compute hashes, write Y4M, touch output files, or invoke external decoders."
 
 [[row]]
 id = "cli-decode-hash-output-contract"
@@ -150,10 +150,10 @@ parser_source = "n/a"
 decode_module = "crates/splot-cli/src/commands/decode.rs"
 tier = "foundation"
 status = "partial"
-self_contained_tests = ["crates/splot-cli/tests/decode_cli.rs::decode_hash_output_format_emits_unsupported_text_without_output_path", "crates/splot-cli/tests/decode_cli.rs::decode_hash_output_format_missing_input_does_not_touch_files", "crates/splot-cli/tests/decode_cli.rs::decode_hash_output_format_json_emits_same_diagnostic", "crates/splot-cli/tests/decode_cli.rs::decode_invalid_output_format_is_usage_error", "crates/splot-cli/tests/decode_cli.rs::decode_hash_output_format_with_output_path_does_not_touch_file", "crates/splot-cli/tests/decode_cli.rs::decode_without_output_selection_is_usage_error", "crates/splot-cli/tests/decode_cli.rs::decode_explicit_y4m_output_format_requires_output_path", "crates/splot-cli/tests/decode_cli.rs::decode_explicit_y4m_output_format_matches_implicit_no_touch_behavior"]
-diagnostics = ["decode/unsupported-feature"]
+self_contained_tests = ["crates/splot-cli/tests/decode_cli.rs::decode_hash_output_format_emits_unsupported_text_without_output_path", "crates/splot-cli/tests/decode_cli.rs::decode_hash_output_format_missing_input_is_operational_error", "crates/splot-cli/tests/decode_cli.rs::decode_hash_output_format_json_emits_same_diagnostic", "crates/splot-cli/tests/decode_cli.rs::decode_invalid_output_format_is_usage_error", "crates/splot-cli/tests/decode_cli.rs::decode_hash_output_format_with_output_path_does_not_touch_file", "crates/splot-cli/tests/decode_cli.rs::decode_without_output_selection_is_usage_error", "crates/splot-cli/tests/decode_cli.rs::decode_explicit_y4m_output_format_requires_output_path", "crates/splot-cli/tests/decode_cli.rs::decode_explicit_y4m_output_format_matches_implicit_no_touch_behavior"]
+diagnostics = ["decode/unsupported-feature", "decode/malformed-source", "decode/resource-limit"]
 local_reference_evidence = []
-notes = "CLI-only parse contract for future hash-first decode output: `--output-format hash` selects the repository-owned `splot-dfh-sha256-v1` artifact format without requiring a Y4M output path, while `-o` alone remains implicit Y4M. Runtime decode, hash computation, Y4M output, input reads, output writes, and external decoder invocation remain unsupported."
+notes = "CLI-only parse contract for future hash-first decode output: `--output-format hash` selects the repository-owned `splot-dfh-sha256-v1` artifact format without requiring a Y4M output path, while `-o` alone remains implicit Y4M. Valid invocations now read input bytes and plan the stream, but runtime decode, hash computation, Y4M output, output writes, and external decoder invocation remain unsupported."
 
 [[row]]
 id = "decode-limits-budget"
@@ -164,10 +164,10 @@ parser_source = "crates/splot-core/src/headers/sequence.rs"
 decode_module = "docs/DECODER-ROADMAP.md"
 tier = "foundation"
 status = "partial"
-self_contained_tests = ["openspec validate --all --no-interactive", "cargo xtask check-decoder-support"]
-diagnostics = ["decode/resource-limit (planned)"]
+self_contained_tests = ["openspec validate --all --no-interactive", "crates/splot-decode/src/diagnostic.rs::tests::resource_limit_report_has_measured_values", "crates/splot-cli/tests/decode_cli.rs::decode_resource_limit_json_mode_reports_limit_values", "crates/splot-cli/tests/decode_cli.rs::decode_oversized_input_reports_resource_limit_without_touching_output", "cargo xtask check-decoder-support"]
+diagnostics = ["decode/resource-limit"]
 local_reference_evidence = []
-notes = "Budget/enforcement contract for `DecodeOptions { limits: DecodeLimits }`: covers input bytes, OBU count, coded/output frame counts, coded frame dimensions, coded luma samples, decoded frame bytes, reference slots, reference-store bytes, tile count, tile payload bytes, and output bytes. Runtime policy types are tracked by `decode-limits-runtime-api`; the byte-stream planner now applies the limits it can derive during traversal (`max_input_bytes`, `max_obus`, `max_ivf_frame_records`, and selected `max_frames_to_decode`). Emitted `decode/resource-limit` diagnostics and decode-stage dimension/tile/output/reference allocation enforcement do not exist yet."
+notes = "Budget/enforcement contract for `DecodeOptions { limits: DecodeLimits }`: covers input bytes, OBU count, coded/output frame counts, coded frame dimensions, coded luma samples, decoded frame bytes, reference slots, reference-store bytes, tile count, tile payload bytes, and output bytes. Runtime policy types are tracked by `decode-limits-runtime-api`; the byte-stream planner applies the limits it can derive during traversal (`max_input_bytes`, `max_obus`, `max_ivf_frame_records`, and selected `max_frames_to_decode`) and `splot decode` emits `decode/resource-limit` when CLI pre-read or planner limits fail. Decode-stage dimension/tile/output/reference allocation enforcement remains future work."
 
 [[row]]
 id = "decode-limits-runtime-api"
@@ -221,9 +221,9 @@ decode_module = "docs/DECODER-ROADMAP.md"
 tier = "foundation"
 status = "partial"
 self_contained_tests = ["openspec validate --all --no-interactive", "cargo xtask check-decoder-support"]
-diagnostics = ["decode/unsupported-feature (planned for streams outside the supported tier)", "decode/resource-limit (planned)"]
+diagnostics = ["decode/unsupported-feature (planned for future tier-specific rejections)", "decode/resource-limit"]
 local_reference_evidence = []
-notes = "Contract-only `splot.decode.minimal_tier` v1 and `minimal-intra-8bit420-hash-v1` policy: Annex B input, single selected xlayer, mlayer, and tlayer, `seq_profile_idc == 0` Main 8-bit 4:2:0, `obu_type == OBU_CLOSED_LOOP_KEY` output, no crop, one tile and one tile group, hash-first success, and explicit unsupported-feature or resource-limit rejection outside the tier. This is not an Annex A level-conformant decoder claim. Source-backed base-layer stream planning now exists in `decode-stream-state` and `decode-byte-stream-planner`, but no tile payload decode, reconstruction, hashes, Y4M output, new emitted diagnostic, or local reference evidence exists yet."
+notes = "Contract-only `splot.decode.minimal_tier` v1 and `minimal-intra-8bit420-hash-v1` policy: Annex B input, single selected xlayer, mlayer, and tlayer, `seq_profile_idc == 0` Main 8-bit 4:2:0, `obu_type == OBU_CLOSED_LOOP_KEY` output, no crop, one tile and one tile group, hash-first success, and explicit unsupported-feature or resource-limit rejection outside the tier. This is not an Annex A level-conformant decoder claim. Source-backed base-layer stream planning now exists in `decode-stream-state` and `decode-byte-stream-planner`, and generic resource-limit diagnostics are emitted by the CLI handoff, but no tile payload decode, reconstruction, hashes, Y4M output, tier-specific unsupported diagnostics, or local reference evidence exists yet."
 
 [[row]]
 id = "decode-stream-state"
@@ -235,9 +235,9 @@ decode_module = "crates/splot-decode/src/stream_plan.rs; crates/splot-decode/src
 tier = "tier0-plan"
 status = "partial"
 self_contained_tests = ["crates/splot-decode/src/stream_plan.rs::tests", "crates/splot-decode/src/stream_plan/tests.rs::tests", "cargo test -p splot-decode --locked", "cargo xtask check-dependency-direction", "cargo xtask check-concurrency-policy", "cargo xtask check-decoder-support"]
-diagnostics = ["decode/unsupported-feature (library unsupported-structure metadata; CLI emission unchanged)"]
+diagnostics = ["decode/unsupported-feature"]
 local_reference_evidence = []
-notes = "Source-backed parsed-input stream planner: `DecodeContext::plan_stream` consumes already parsed `splot_core::stream::ParsedBitstream` plus caller-supplied input length, preserves raw Annex B and IVF OBU order/offset metadata, selects only the documented base layer while enforcing §6.2.2 global/local xlayer scope rules, treats `OBU_CLOSED_LOOP_KEY` as the only frame candidate, applies `max_input_bytes`, `max_obus`, `max_ivf_frame_records`, and `max_frames_to_decode`, and rejects malformed sources or unsupported structures transactionally. Operating-point selection remains rejected/planned. The raw byte-consuming planner is tracked separately by `decode-byte-stream-planner`. This row does not parse tile payloads, call `payload_status()`, reconstruct pixels, compute hashes, write Y4M, refresh references, change `splot decode` CLI behavior, emit new CLI diagnostics, invoke AVM/dav2d, or add AVM/dav2d integration."
+notes = "Source-backed parsed-input stream planner: `DecodeContext::plan_stream` consumes already parsed `splot_core::stream::ParsedBitstream` plus caller-supplied input length, preserves raw Annex B and IVF OBU order/offset metadata, selects only the documented base layer while enforcing §6.2.2 global/local xlayer scope rules, treats `OBU_CLOSED_LOOP_KEY` as the only frame candidate, applies `max_input_bytes`, `max_obus`, `max_ivf_frame_records`, and `max_frames_to_decode`, and rejects malformed sources or unsupported structures transactionally. Planner unsupported structures are now adapted to emitted CLI `decode/unsupported-feature` diagnostics after byte handoff. Operating-point selection remains rejected/planned. The raw byte-consuming planner is tracked separately by `decode-byte-stream-planner`. This row does not parse tile payloads, call `payload_status()`, reconstruct pixels, compute hashes, write Y4M, refresh references, invoke AVM/dav2d, or add AVM/dav2d integration."
 
 [[row]]
 id = "decode-byte-stream-planner"
@@ -249,9 +249,9 @@ decode_module = "crates/splot-decode/src/byte_stream.rs; crates/splot-decode/src
 tier = "tier0-plan"
 status = "supported"
 self_contained_tests = ["crates/splot-decode/src/byte_stream.rs::tests", "crates/splot-decode/src/stream_plan/tests.rs::tests::byte_planner_raw_annex_b_matches_parsed_plan", "crates/splot-decode/src/stream_plan/tests.rs::tests::ivf_plan_preserves_frame_context_and_warning_metadata", "crates/splot-decode/src/stream_plan/tests.rs::tests::byte_planner_malformed_sources_are_transactional", "crates/splot-decode/src/stream_plan/tests.rs::tests::byte_planner_limits_reject_before_unbounded_traversal", "crates/splot-decode/src/stream_plan/tests.rs::tests::byte_planner_propagates_unsupported_structures", "crates/splot-decode/src/stream_plan/tests.rs::tests::byte_planning_is_deterministic_across_thread_policies", "cargo test -p splot-core annexb --locked", "cargo test -p splot-core ivf --locked", "cargo test -p splot-decode --locked", "cargo check --manifest-path fuzz/Cargo.toml --bins", "cargo xtask check-dependency-direction", "cargo xtask check-concurrency-policy", "cargo xtask check-decoder-support"]
-diagnostics = ["decode/unsupported-feature (library unsupported-structure metadata; CLI emission unchanged)", "decode/resource-limit (typed library limit error; CLI diagnostic still planned/unemitted)"]
+diagnostics = ["decode/unsupported-feature", "decode/malformed-source", "decode/resource-limit"]
 local_reference_evidence = []
-notes = "Source-backed `DecodeContext::plan_bytes` byte-consuming stream planner: raw bytes are treated as Annex B unless they begin with IVF/DKIF, IVF frame payloads are traversed as Annex B, and the result is the same deterministic `DecodeStreamPlan` shape as the parsed-input planner. The byte walker uses `splot-core`'s `AnnexBObuCursor` and `IvfFrameCursor` as the single source of parser truth while checking `max_input_bytes` before traversal, `max_obus` before retaining the next OBU across the whole stream, `max_ivf_frame_records` before processing each complete IVF frame record, and `max_frames_to_decode` before retaining each accepted `OBU_CLOSED_LOOP_KEY` candidate. It preserves OBU source order, offsets, sizes, payload lengths, headers, IVF frame context, and warnings, rejects malformed sources or unsupported structures transactionally, and runs inside `DecodeContext`'s context-owned `splot_parallel::WorkerPool`. It does not read files, change `splot decode` CLI behavior, parse tile payloads, call `payload_status()`, reconstruct pixels, compute hashes, write Y4M, refresh references, invoke AVM/dav2d, or add AVM/dav2d integration."
+notes = "Source-backed `DecodeContext::plan_bytes` byte-consuming stream planner: raw bytes are treated as Annex B unless they begin with IVF/DKIF, IVF frame payloads are traversed as Annex B, and the result is the same deterministic `DecodeStreamPlan` shape as the parsed-input planner. The byte walker uses `splot-core`'s `AnnexBObuCursor` and `IvfFrameCursor` as the single source of parser truth while checking `max_input_bytes` before traversal, `max_obus` before retaining the next OBU across the whole stream, `max_ivf_frame_records` before processing each complete IVF frame record, and `max_frames_to_decode` before retaining each accepted `OBU_CLOSED_LOOP_KEY` candidate. It preserves OBU source order, offsets, sizes, payload lengths, headers, IVF frame context, and warnings, rejects malformed sources or unsupported structures transactionally, and runs inside `DecodeContext`'s context-owned `splot_parallel::WorkerPool`. `splot decode` now uses this planner to emit malformed-source, resource-limit, planner unsupported, or runtime-deferral diagnostics. It does not parse tile payloads, call `payload_status()`, reconstruct pixels, compute hashes, write Y4M, refresh references, invoke AVM/dav2d, or add AVM/dav2d integration."
 
 [[row]]
 id = "symbol-decoder"
