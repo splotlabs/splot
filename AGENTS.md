@@ -93,7 +93,7 @@ cargo xtask audit                           # networked supply-chain advisories 
 cargo xtask coverage                        # local HTML coverage report (cargo-llvm-cov)
 cargo xtask fuzz [--time <secs>]            # local fuzz smoke over every target (nightly + cargo-fuzz), default 30s each
 cargo xtask check-concurrency-policy        # enforce the concurrency-runtime policy (also part of `cargo xtask ci`)
-cargo xtask check-conflict-zone             # fail if the diff vs main touches decoder-owned paths (also part of `cargo xtask ci`; decoder branches exempt)
+cargo xtask check-conflict-zone             # fail if the diff vs main touches decoder-owned paths (part of `cargo xtask ci`). Decoder-stream branches (name carries a `decode`/`recon` token) are exempt; any other branch legitimately editing a conflict-zone path sets SPLOT_SKIP_CONFLICT_ZONE=1.
 cargo xtask check-conventional-commits      # validates the current HEAD commit subject
 cargo +nightly fuzz run parse_obu   # full local fuzz run of one target (nightly-only; `cargo install cargo-fuzz --locked`).
                                     # Targets: parse_obu, validate_bytes, parse_ivf, parse_bitstream, decode_plan_bytes (`cargo +nightly fuzz list`).

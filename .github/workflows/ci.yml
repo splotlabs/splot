@@ -96,11 +96,14 @@ jobs:
       # file would be fuzzed by neither job without this check.
       - run: cargo xtask check-fuzz-targets
       # Conflict-zone guard for the validator productization stream: a validator
-      # PR must touch no decoder-owned path. Exempt for decoder-stream branches
-      # (whose name contains `decode`/`recon`) so this never gates decoder work;
-      # the checkout uses fetch-depth: 0 above, so the `main` base resolves.
+      # PR must touch no decoder-owned path. The PR head branch is passed via
+      # SPLOT_PR_HEAD_REF (the checkout is a detached HEAD, so the guard cannot
+      # read the branch locally); the guard exempts decoder-stream branches (a
+      # `decode`/`recon` name token) so this never gates decoder work. The
+      # checkout uses fetch-depth: 0 above, so the `main` base resolves.
       - name: Conflict-zone guard (validator stream)
-        if: ${{ !contains(github.head_ref, 'decode') && !contains(github.head_ref, 'recon') }}
+        env:
+          SPLOT_PR_HEAD_REF: ${{ github.head_ref }}
         run: cargo xtask check-conflict-zone
 
       - name: OpenSpec validation if available

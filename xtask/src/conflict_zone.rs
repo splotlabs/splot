@@ -4,16 +4,18 @@
 //! Conflict-zone guard for the validator productization stream.
 //!
 //! `cargo xtask check-conflict-zone` compares the working branch's committed diff
-//! against `main` (merge-base relative, i.e. `git diff --name-only main...HEAD`)
+//! against `main` (merge-base relative; equivalent to
+//! `git diff --name-only main...HEAD`, computed as `merge-base(main,HEAD)..HEAD`)
 //! to a committed denylist of decoder-owned paths and fails if any changed path
 //! falls inside the conflict zone. This lets each validator/inspector change prove
 //! mechanically that it touches nothing the concurrent decoder stream owns.
 //!
 //! The guard is scoped to the validator stream and never breaks the decoder
 //! stream: it skips (returns `Ok` with a notice) when there is no resolvable
-//! `main` base, when the diff is empty, when the current branch is a
-//! decoder-stream branch (its name contains `decode` or `recon`), or when
-//! `SPLOT_SKIP_CONFLICT_ZONE=1` is set.
+//! `main` base, when the diff is empty, when the branch is a decoder-stream
+//! branch (a `decode`/`recon` name token — resolved from `SPLOT_PR_HEAD_REF` in
+//! CI, where the PR checkout is a detached HEAD, otherwise from the local
+//! branch), or when `SPLOT_SKIP_CONFLICT_ZONE=1` is set.
 
 use std::path::Path;
 
@@ -46,6 +48,12 @@ const AVM_SCAN_ROOTS: &[&str] = &[
 /// Environment variable that, when set to `1`, makes the guard skip entirely. The
 /// explicit escape hatch for any legitimate conflict-zone edit.
 const SKIP_ENV: &str = "SPLOT_SKIP_CONFLICT_ZONE";
+
+/// Environment variable carrying the PR head branch name. CI sets this from
+/// `github.head_ref` because a `pull_request` checkout is a detached HEAD where
+/// the branch name is not locally derivable; it takes precedence over the local
+/// branch for the decoder-stream exemption.
+const PR_HEAD_REF_ENV: &str = "SPLOT_PR_HEAD_REF";
 
 /// Candidate refs for the `main` base, tried in order.
 const BASE_REFS: &[&str] = &["origin/main", "main", "FETCH_HEAD"];
@@ -94,11 +102,42 @@ fn current_branch(root: &Path) -> Option<String> {
     }
 }
 
-/// Returns `true` when `branch` is a decoder-stream branch (its name contains
-/// `decode` or `recon`), which the guard exempts.
+/// Resolves the branch name used for the decoder-stream exemption: the
+/// `SPLOT_PR_HEAD_REF` env (set by CI from `github.head_ref`) when present and
+/// non-empty, otherwise the local branch. CI checks out a detached merge ref, so
+/// the env is the only reliable source there.
+fn branch_for_exemption(root: &Path) -> Option<String> {
+    if let Ok(head_ref) = std::env::var(PR_HEAD_REF_ENV) {
+        let head_ref = head_ref.trim().to_owned();
+        if !head_ref.is_empty() {
+            return Some(head_ref);
+        }
+    }
+    current_branch(root)
+}
+
+/// Returns `true` when `branch` is a decoder-stream branch, which the guard
+/// exempts. Matches `decode`/`recon` as whole name *tokens* (split on
+/// non-alphanumeric chars), not bare substrings, so a validator branch such as
+/// `fix/reconcile-validator-output` is not falsely exempted. A `decode*` token
+/// (decode/decoder/decoded/decoding) or an exact `recon`/`reconstruct[ion]` token
+/// marks a decoder-stream branch.
 fn is_decoder_branch(branch: &str) -> bool {
-    let branch = branch.to_ascii_lowercase();
-    branch.contains("decode") || branch.contains("recon")
+    branch
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|token| {
+            matches!(
+                token.to_ascii_lowercase().as_str(),
+                "decode"
+                    | "decoder"
+                    | "decoded"
+                    | "decoding"
+                    | "decodes"
+                    | "recon"
+                    | "reconstruct"
+                    | "reconstruction"
+            )
+        })
 }
 
 /// Resolves the merge-base of the first available `main` candidate ref with HEAD,
@@ -120,8 +159,26 @@ fn resolve_base(root: &Path) -> Option<String> {
 }
 
 /// Lists the committed paths changed between `base` and HEAD (`base..HEAD`).
+///
+/// `--no-renames` decomposes a rename into a delete + add so a decoder-owned file
+/// renamed *out* of the conflict zone still surfaces its deleted decoder path
+/// (default rename detection would coalesce it and list only the new path).
+/// `core.quotepath=false` keeps non-ASCII paths raw (git would otherwise C-quote
+/// them, defeating the prefix match).
 fn changed_paths(root: &Path, base: &str) -> Result<Vec<String>> {
-    let output = run_git(root, &["diff", "--name-only", base, "HEAD", "--"])?;
+    let output = run_git(
+        root,
+        &[
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--no-renames",
+            "--name-only",
+            base,
+            "HEAD",
+            "--",
+        ],
+    )?;
     Ok(output
         .lines()
         .map(str::trim)
@@ -138,7 +195,7 @@ pub(crate) fn check_conflict_zone(root: &Path) -> Result<()> {
         eprintln!("check-conflict-zone: ok ({SKIP_ENV}=1; skipped)");
         return Ok(());
     }
-    if let Some(branch) = current_branch(root)
+    if let Some(branch) = branch_for_exemption(root)
         && is_decoder_branch(&branch)
     {
         eprintln!("check-conflict-zone: ok (decoder-stream branch `{branch}`; not applicable)");
@@ -178,7 +235,12 @@ pub(crate) fn check_conflict_zone(root: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_decoder_branch, is_forbidden, mentions_avm_or_dav2d};
+    use std::path::Path;
+    use std::process::Command;
+
+    use anyhow::{Result, ensure};
+
+    use super::{changed_paths, is_decoder_branch, is_forbidden, mentions_avm_or_dav2d, run_git};
 
     #[test]
     fn forbids_decoder_owned_paths() {
@@ -241,7 +303,76 @@ mod tests {
     fn decoder_branches_are_detected() {
         assert!(is_decoder_branch("codex/decode-cli-planner-handoff"));
         assert!(is_decoder_branch("feat/recon-frame-store"));
+        assert!(is_decoder_branch("feat/decoded-frame-plane-model-contract"));
+        assert!(is_decoder_branch("feat/minimal-decode-tier-contract"));
+        assert!(is_decoder_branch("feat/decoder-diagnostic-registry"));
         assert!(!is_decoder_branch("feat/validator-conflict-zone-guard"));
         assert!(!is_decoder_branch("feat/validate-output-controls"));
+        // Token match, not bare substring: these validator names must NOT be exempted.
+        assert!(!is_decoder_branch("fix/reconcile-validator-output"));
+        assert!(!is_decoder_branch("feat/decoy-handling"));
+    }
+
+    /// Runs `git` in `repo` with a hermetic identity, failing the test on a
+    /// non-zero exit.
+    fn git(repo: &Path, args: &[&str]) -> Result<()> {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args([
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "user.name=test",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .status()?;
+        ensure!(status.success(), "git {args:?} failed");
+        Ok(())
+    }
+
+    /// A decoder-owned file renamed *out* of the conflict zone must still surface
+    /// its deleted decoder path (the `--no-renames` requirement; openspec
+    /// `validator-conflict-zone-guard` "deletes any denylisted path" scenario).
+    #[test]
+    fn changed_paths_flags_rename_away_and_deletion_of_decoder_file() -> Result<()> {
+        let repo = std::env::temp_dir().join(format!("xtask-cz-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(repo.join("crates/splot-decode/src"))?;
+        git(&repo, &["init", "-q"])?;
+        std::fs::write(repo.join("crates/splot-decode/src/lib.rs"), "// decoder\n")?;
+        git(&repo, &["add", "-A"])?;
+        git(&repo, &["commit", "-q", "-m", "base"])?;
+        let base = run_git(&repo, &["rev-parse", "HEAD"])?.trim().to_owned();
+
+        // Rename the decoder file out of the conflict zone, with an edit so git
+        // would otherwise score it as a rename and hide the deleted path.
+        std::fs::create_dir_all(repo.join("crates/splot-validate/src"))?;
+        std::fs::remove_file(repo.join("crates/splot-decode/src/lib.rs"))?;
+        std::fs::write(
+            repo.join("crates/splot-validate/src/moved.rs"),
+            "// moved and edited\n",
+        )?;
+        git(&repo, &["add", "-A"])?;
+        git(&repo, &["commit", "-q", "-m", "rename-away"])?;
+
+        let changed = changed_paths(&repo, &base)?;
+        assert!(
+            changed
+                .iter()
+                .any(|path| path == "crates/splot-decode/src/lib.rs"),
+            "deleted decoder path not listed: {changed:?}"
+        );
+        assert!(
+            changed.iter().any(|path| is_forbidden(path).is_some()),
+            "rename-away of a decoder file was not flagged: {changed:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&repo);
+        Ok(())
     }
 }

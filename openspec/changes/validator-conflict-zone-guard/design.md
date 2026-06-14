@@ -46,15 +46,24 @@ when:
 
 - no `main` base is resolvable (fresh/shallow clone), or the diff is empty
   (on `main`, or a branch with no commits ahead);
-- the current branch name contains `decode` or `recon` (decoder-stream branches);
+- the branch is a decoder-stream branch — its name carries a `decode`/`recon`
+  *token* (whole-token match, so `fix/reconcile-…` is not falsely exempted);
 - `SPLOT_SKIP_CONFLICT_ZONE=1` is set (explicit escape hatch for any legitimate
-  conflict-zone edit).
+  conflict-zone edit on a non-decoder-named branch).
 
-The CI step is additionally guarded with
-`if: !contains(github.head_ref, 'decode') && !contains(github.head_ref, 'recon')`
-because a `pull_request` checkout is a detached HEAD where the branch name is not
-locally derivable. Together these keep the gate enforcing on validator PRs while
-never breaking the decoder stream's gate.
+The branch name is resolved from `SPLOT_PR_HEAD_REF` first, then the local branch.
+A `pull_request` checkout is a detached HEAD where the branch is not locally
+derivable, so the CI step passes `SPLOT_PR_HEAD_REF: ${{ github.head_ref }}` (the
+safe `env:` pattern, not interpolated into a shell command) and always runs — the
+guard's own tokenized logic, identical in CI and locally, decides the exemption.
+This keeps the gate enforcing on validator PRs while never breaking the decoder
+stream's gate. The convention (decoder-stream branches carry a `decode`/`recon`
+token) is documented in `AGENTS.md`; any other branch legitimately editing a
+conflict-zone path sets `SPLOT_SKIP_CONFLICT_ZONE=1`.
+
+Robustness notes: the diff uses `--no-renames` so a decoder file renamed *out* of
+the zone still surfaces its deleted path, and `core.quotepath=false` so non-ASCII
+paths are matched raw rather than C-quoted.
 
 ## Spec mapping
 
