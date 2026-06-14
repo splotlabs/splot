@@ -4761,7 +4761,7 @@ openspec_change = "recon-hash-input-serialization"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds dependency-free canonical decoded-frame hash input serialization in `splot-recon`: `DecodedFrameHashInput<'_, T>` exposes `BYTE_STREAM_ID == av2-output-samples-v1`, `VARIANT_ID == raw_intermediate_output`, checked `byte_len`, and `write_to` over caller-supplied `DecodedFrame<T>` visible rows. The byte stream follows AV2 §6.16.13 sample-byte conversion for modeled visible output rows: Y/U/V plane order, monochrome Y only, raster scan order, one byte for 8-bit output, and little-endian two-byte samples for >8-bit output. This is digest-input infrastructure only: no SHA-256 computation, AV2 metadata MD5 verification, output ordering, film-grain synthesis, byte-consuming decode, Y4M output, external decoder invocation, new dependency, or dependency graph change."
+notes = "Adds dependency-free canonical decoded-frame hash input serialization in `splot-recon`: `DecodedFrameHashInput<'_, T>` exposes `BYTE_STREAM_ID == av2-output-samples-v1`, `VARIANT_ID == raw_intermediate_output`, checked `byte_len`, and `write_to` over caller-supplied `DecodedFrame<T>` visible rows. The byte stream follows AV2 §6.16.13 sample-byte conversion for modeled visible output rows: Y/U/V plane order, monochrome Y only, raster scan order, one byte for 8-bit output, and little-endian two-byte samples for >8-bit output. `docs/LOCAL-REFERENCE-EVIDENCE.toml` records two checked AVM/dav2d raw MD5 agreement entries as local reference metadata for this future hash path. This is digest-input infrastructure only: no SHA-256 computation, AV2 metadata MD5 verification, output ordering, film-grain synthesis, byte-consuming decode, Y4M output, external decoder invocation, new dependency, or dependency graph change."
 
 [feature.status]
 mapped = "done"
@@ -5361,7 +5361,7 @@ openspec_change = "local-reference-evidence-manifest-contract"
 tracking_issue = ""
 owner = "automation"
 risk = "medium"
-notes = "Adds docs/LOCAL-REFERENCE-EVIDENCE.toml and `cargo xtask check-reference-evidence` for future decoder local-reference metadata. The checker validates manifest versioning, evidence IDs, Feature IDs, decoder-support rows, repo-relative fixture paths, fixture SHA-256 and byte lengths, digest metadata, equality assertions, and local path leakage without locating or invoking AVM, dav2d, ffmpeg, the network, or `splot decode`. The manifest currently has no evidence entries and does not claim runtime decode, reconstruction, hash, or Y4M support."
+notes = "Adds docs/LOCAL-REFERENCE-EVIDENCE.toml and `cargo xtask check-reference-evidence` for decoder local-reference metadata. The checker validates manifest versioning, evidence IDs, Feature IDs, decoder-support rows, repo-relative fixture paths, fixture SHA-256 and byte lengths, digest metadata, equality assertions, and local path leakage without locating or invoking AVM, dav2d, ffmpeg, the network, or `splot decode`. The manifest now contains two checked AVM/dav2d raw MD5 agreement entries for committed fixtures and does not claim runtime decode, reconstruction, hash, or Y4M support."
 
 [feature.status]
 mapped = "done"

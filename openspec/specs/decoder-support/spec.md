@@ -672,6 +672,39 @@ output, AV2 decoder conformance, or AV2 bitstream conformance.
 - **AND** equality assertions compare the recorded metadata values only, without
   rerunning external tools
 
+#### Scenario: Real reference agreement entries are portable metadata
+
+- **WHEN** `docs/LOCAL-REFERENCE-EVIDENCE.toml` contains real `[[evidence]]`
+  entries for local AVM/dav2d agreement
+- **THEN** each entry records committed fixture identity, reference tool
+  identity, upstream revisions, sanitized command summaries, raw
+  reference-output digest metadata, and digest-equality assertions only
+- **AND** the checker validates committed fixture size and SHA-256, known
+  Feature IDs, known decoder-support rows, digest format, and equality between
+  distinct reference runs
+- **AND** no AVM, dav2d, ffmpeg, network access, `splot decode`,
+  reconstruction, hash computation, or Y4M output is run or required
+
+#### Scenario: Evidence entries do not upgrade decoder support
+
+- **WHEN** a real local-reference evidence entry is added for a
+  decoder-support row
+- **THEN** the row may cite the evidence as `local_reference_evidence`
+- **AND** the entry does not change the row status to `supported`
+- **AND** it does not count as self-contained proof of runtime decode,
+  reconstruction, deterministic hash digest computation, Y4M output, AV2
+  decoder conformance, or AV2 bitstream conformance
+
+#### Scenario: Archived raw MD5 agreement is transcribed
+
+- **WHEN** archived local AVM/dav2d raw MD5 agreement is moved from prose into
+  the manifest
+- **THEN** each fixture is represented as a separate portable evidence entry
+- **AND** `output_scope` labels the digest as reference raw decoder output, not
+  `splot-dfh-sha256-v1`
+- **AND** `command_summary` remains descriptive metadata, not a runnable shell
+  command
+
 ### Requirement: Decoder crate scaffolding
 
 The repository SHALL provide approved workspace crate scaffolds for future

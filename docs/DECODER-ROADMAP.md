@@ -129,7 +129,7 @@ other external decoder is forbidden.
 | 7 | Constrained intra tile syntax | planned |
 | 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | planned |
 | 9 | Y4M output and reconstructed reference-frame store | reference-slot runtime store supported; Y4M and AV2 refresh semantics planned |
-| 10 | Portable local-reference evidence manifests | metadata contract and offline checker wired; no entries yet |
+| 10 | Portable local-reference evidence manifests | metadata contract and offline checker wired; two AVM/dav2d raw MD5 agreement entries recorded as non-executable metadata |
 | 11 | Encoder reconstruction API contract | planned |
 
 ## Runtime Concurrency Contract
@@ -434,10 +434,10 @@ A post-film-grain hash may be added later only as an explicit, separately named
 variant after film-grain synthesis is implemented and tested.
 
 Local AVM/dav2d MD5 output can be useful evidence, but committed `splot` tests
-must not require those tools. Existing archived local reference evidence records
-AVM/dav2d raw MD5 agreement for two tiny fixtures; it is non-executable
-metadata only and does not prove that `splot` hash computation is implemented.
-Future decoder local-reference evidence belongs in
+must not require those tools. The checked local-reference evidence manifest now
+records AVM/dav2d raw MD5 agreement for two tiny committed fixtures; it is
+non-executable metadata only and does not prove that `splot` hash computation is
+implemented. Future decoder local-reference evidence also belongs in
 [`LOCAL-REFERENCE-EVIDENCE.toml`](./LOCAL-REFERENCE-EVIDENCE.toml), which is
 checked by `cargo xtask check-reference-evidence` and
 `cargo xtask check-decoder-support`. The manifest stores portable metadata only:
