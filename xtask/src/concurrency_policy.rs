@@ -156,7 +156,7 @@ const CROSSBEAM_ALIAS: &str = concat!("crossbeam_channel", " as ");
 /// **global** registry instead of a local pool. Banned everywhere under `crates/`
 /// (including `splot-parallel`): the scoped equivalents are methods on the owned
 /// `WorkerPool`/`ThreadPool` (`pool.install`, `inner.join`, `inner.scope`, …), never
-/// these `rayon::` free functions.
+/// these `rayon::` (or lower-level `rayon_core::`) free functions.
 const RAYON_GLOBAL_NEEDLES: &[&str] = &[
     concat!("rayon::", "spawn"),
     concat!("rayon::", "join"),
@@ -165,6 +165,13 @@ const RAYON_GLOBAL_NEEDLES: &[&str] = &[
     concat!("rayon::", "broadcast"),
     concat!("rayon::", "yield_now"),
     concat!("rayon::", "yield_local"),
+    concat!("rayon_core::", "spawn"),
+    concat!("rayon_core::", "join"),
+    concat!("rayon_core::", "scope"),
+    concat!("rayon_core::", "in_place_scope"),
+    concat!("rayon_core::", "broadcast"),
+    concat!("rayon_core::", "yield_now"),
+    concat!("rayon_core::", "yield_local"),
 ];
 
 /// Rayon parallel-iteration entry points. Calling one of these *outside*
@@ -227,30 +234,41 @@ fn thread_spawn_needle(text: &str) -> Option<&'static str> {
 
 /// Returns the Rayon global-pool source needle matched in `text`, including braced
 /// import forms such as `use rayon::{join};` and the opening line of a multi-line
-/// `use rayon::{ … }` group.
+/// `use rayon::{ … }` group. Covers the lower-level `rayon_core::` crate too.
 fn rayon_global_needle(text: &str) -> Option<&'static str> {
+    const GLOBAL_ITEMS: &[&str] = &[
+        "spawn",
+        "join",
+        "scope",
+        "in_place_scope",
+        "broadcast",
+        "yield_now",
+        "yield_local",
+    ];
     RAYON_GLOBAL_NEEDLES
         .iter()
         .copied()
         .find(|needle| text.contains(*needle))
         .or_else(|| {
-            [
-                "spawn",
-                "join",
-                "scope",
-                "in_place_scope",
-                "broadcast",
-                "yield_now",
-                "yield_local",
-            ]
-            .into_iter()
-            .find(|item| contains_braced_use_item(text, "rayon::{", item))
+            GLOBAL_ITEMS
+                .iter()
+                .copied()
+                .find(|item| contains_braced_use_item(text, "rayon::{", item))
+        })
+        .or_else(|| {
+            GLOBAL_ITEMS
+                .iter()
+                .copied()
+                .find(|item| contains_braced_use_item(text, "rayon_core::{", item))
         })
         // A multi-line `use rayon::{` group whose `}` lands on a later line cannot be
         // item-checked here, so flag the opening line conservatively. The prelude uses
         // `rayon::iter::{` / `rayon::slice::{` (deeper paths), which do not contain the
         // bare `rayon::{` prefix and are not matched.
         .or_else(|| open_braced_group(text, "rayon::{").then_some("rayon::{ (open import group)"))
+        .or_else(|| {
+            open_braced_group(text, "rayon_core::{").then_some("rayon_core::{ (open import group)")
+        })
 }
 
 /// Whether `text` opens a braced `use … prefix{` group that does not close on this
@@ -709,18 +727,26 @@ fn scan_source_lines(contents: &str, file_in_tests: bool) -> Vec<ScannedLine> {
             continue;
         }
 
-        // A `#[cfg(test)]` attribute arms the next `mod ... {` to open a test region.
+        // A `#[cfg(test)]` attribute (alone, or inline with its item) opens a test
+        // region spanning the annotated item's body — `mod`, `fn`, `impl`, etc. — not
+        // just `mod`, so a test-only helper `#[cfg(test)] fn h() { thread::spawn(...) }`
+        // is treated as test code.
         if trimmed.starts_with("#[cfg(test)]") {
             pending_cfg_test = true;
-        } else if pending_cfg_test {
-            if trimmed.starts_with("mod ") && trimmed.contains('{') {
-                // The armed `mod ... {` line is the region opener: it and the lines
-                // through its matching `}` are test code. Seed the depth with its delta.
+        }
+        if pending_cfg_test {
+            // Inspect the item on this line, skipping an inline `#[cfg(test)]` prefix.
+            let item = trimmed
+                .strip_prefix("#[cfg(test)]")
+                .map_or(trimmed, str::trim_start);
+            if item.contains('{') {
+                // The annotated item opens its body here: this line through its matching
+                // `}` is test code (covers `mod tests {`, `fn helper() {`, `impl X {`).
                 pending_cfg_test = false;
                 depth = brace_delta(&line);
-                let one_line_mod = depth <= 0; // a self-closing `mod tests { ... }`
-                in_cfg_test = !one_line_mod;
-                if one_line_mod {
+                let one_liner = depth <= 0; // a self-closing `… { … }` on one line
+                in_cfg_test = !one_liner;
+                if one_liner {
                     depth = 0;
                 }
                 out.push(ScannedLine {
@@ -730,10 +756,10 @@ fn scan_source_lines(contents: &str, file_in_tests: bool) -> Vec<ScannedLine> {
                 });
                 continue;
             }
-            // An armed attribute followed by a non-`mod` meaningful line disarms it
-            // (e.g. `#[cfg(test)] fn helper()` — not a module). Blank lines and further
-            // attributes keep it armed.
-            if !trimmed.is_empty() && !trimmed.starts_with("#[") {
+            // No `{` yet. A `;`-terminated item (external `mod tests;`, `use`, `const`)
+            // has no inline body to exempt and is classified elsewhere — disarm. A bare
+            // attribute, blank line, or signature awaiting its `{` keeps the region armed.
+            if item.ends_with(';') {
                 pending_cfg_test = false;
             }
         }
@@ -1471,6 +1497,38 @@ mod tests {
             .is_empty(),
             "par-iter inside pool.install(|| …) is scoped and accepted"
         );
+    }
+
+    #[test]
+    fn cfg_test_helper_fn_body_is_marked_as_test() {
+        // A test-only helper *function* (not module) must be test code, so its spawn
+        // is exempt rather than scanned as production.
+        let token = concat!("thread::", "spawn");
+        let contents = format!("fn prod() {{}}\n#[cfg(test)]\nfn helper() {{ {token}(|| ()); }}\n");
+        let scanned = scan_source_lines(&contents, false);
+        let spawn_line = scanned
+            .iter()
+            .find(|l| l.text.contains(token))
+            .expect("scanned lines include the spawn call");
+        assert!(
+            spawn_line.in_test,
+            "a spawn inside a #[cfg(test)] helper fn must be marked in_test"
+        );
+    }
+
+    #[test]
+    fn rayon_core_global_entry_points_are_violations() {
+        for call in [
+            "    rayon_core::join(a, b);",
+            "    rayon_core::spawn(|| work());",
+            "    use rayon_core::{join};",
+        ] {
+            let violations = evaluate_concurrency_policy(&[], &[line(call, false)]);
+            assert!(
+                violations.iter().any(|v| v.contains("global-pool")),
+                "expected a rayon_core global-pool violation for `{call}`, got {violations:?}"
+            );
+        }
     }
 
     #[test]

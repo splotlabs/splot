@@ -35,6 +35,6 @@
 
 pub use rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
-    IntoParallelRefMutIterator, ParallelIterator,
+    IntoParallelRefMutIterator, ParallelBridge, ParallelIterator,
 };
 pub use rayon::slice::{ParallelSlice, ParallelSliceMut};
