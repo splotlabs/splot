@@ -143,7 +143,7 @@ fn multiple_tiles_are_unsupported_before_work_units_are_retained() {
     };
     assert_eq!(
         unsupported.reason(),
-        TilePayloadUnsupportedReason::MultipleTiles
+        TilePayloadUnsupportedReason::NonSingleTile
     );
     assert_eq!(unsupported.tile_num(), None);
 }
@@ -162,9 +162,30 @@ fn inverted_tile_group_range_is_unsupported_without_work_units() {
     };
     assert_eq!(
         unsupported.reason(),
-        TilePayloadUnsupportedReason::MultipleTiles
+        TilePayloadUnsupportedReason::NonSingleTile
     );
     assert_eq!(unsupported.tile_num(), None);
+}
+
+#[test]
+fn single_nonzero_tile_num_is_unsupported_before_grid_lookup() {
+    let payload = [0x80];
+    let framing = parse_tile_group_framing(&payload, 1, 1, 1, false);
+    assert_eq!(framing.tiles.len(), 1);
+    assert_eq!(framing.tiles[0].tile_num, 1);
+
+    let error = plan_tile_payload_boundary(input(&payload, &framing, DecodeLimits::unlimited()))
+        .unwrap_err();
+
+    let TilePayloadBoundaryError::Unsupported(unsupported) = error else {
+        panic!("expected unsupported nonzero tile number");
+    };
+    assert_eq!(
+        unsupported.reason(),
+        TilePayloadUnsupportedReason::MultipleTiles
+    );
+    assert_eq!(unsupported.tile_num(), Some(1));
+    assert_eq!(unsupported.byte_offset(), ByteOffset::new(256));
 }
 
 #[test]

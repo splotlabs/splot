@@ -398,6 +398,8 @@ pub(crate) enum TilePayloadUnsupportedReason {
     DecodeTileSyntax,
     /// Complete minimal-tier intra first tile-group facts are not available.
     MissingCompleteIntraFirstTileGroup,
+    /// The tile group does not contain exactly one framed tile.
+    NonSingleTile,
     /// Multiple tiles are outside the current minimal tier.
     MultipleTiles,
     /// Multiple tile groups are outside the current minimal tier.
@@ -421,6 +423,7 @@ impl TilePayloadUnsupportedReason {
         match self {
             Self::DecodeTileSyntax => "decode_tile_syntax",
             Self::MissingCompleteIntraFirstTileGroup => "missing_complete_intra_first_tile_group",
+            Self::NonSingleTile => "non_single_tile",
             Self::MultipleTiles => "multiple_tiles",
             Self::MultipleTileGroups => "multiple_tile_groups",
             Self::NonClosedLoopKey => "non_closed_loop_key",
@@ -437,6 +440,7 @@ impl TilePayloadUnsupportedReason {
         match self {
             Self::DecodeTileSyntax => "5.20.2.1",
             Self::MissingCompleteIntraFirstTileGroup
+            | Self::NonSingleTile
             | Self::MultipleTiles
             | Self::MultipleTileGroups
             | Self::BridgeTile
@@ -672,9 +676,9 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
     if input.framing.tiles.len() != 1 {
         return Err(TilePayloadBoundaryError::Unsupported(
             unsupported_without_tile(
-                TilePayloadUnsupportedReason::MultipleTiles,
+                TilePayloadUnsupportedReason::NonSingleTile,
                 input.payload_base,
-                "multiple tiles are outside the current tile payload boundary tier.",
+                "tile groups without exactly one tile are outside the current tile payload boundary tier.",
             ),
         ));
     }
