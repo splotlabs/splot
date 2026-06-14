@@ -669,7 +669,27 @@ impl ValidatorContext {
             return;
         };
 
-        if obu.header.temporal_layer_id > sequence_header.general.max_tlayer_id {
+        // AV2 § 6.2.2 NOTE (mirror `06-syntax-structures-semantics.md` lines 197-198): the
+        // limits "apply after a sequence header OBU is activated", so they are scoped to the
+        // *activated* header's window. For a frame-confirmed layer use the limits snapshotted
+        // at the latest § 5.18.2 `load_sequence_header` activation, not the live store: a
+        // § 7.3.6 same-`seq_header_id` redefinition (legal only at a coded-video-sequence
+        // boundary) overwrites the store the moment it is sent but does not re-activate until
+        // its confirming frame, so an OBU between the redefinition and that frame is still in
+        // the prior activation's window and must be bounded by the prior (e.g. looser) limits.
+        // A fallback-only layer (no frame confirmation) has no snapshot and keeps reading the
+        // live store, preserving the eager pre-frame behavior the `active_sequence_header_*`
+        // tests rely on.
+        let (max_tlayer_id, max_mlayer_id) = self
+            .frame_confirmed_activated_limits
+            .get(&obu.header.extended_layer_id)
+            .copied()
+            .unwrap_or((
+                sequence_header.general.max_tlayer_id,
+                sequence_header.general.max_mlayer_id,
+            ));
+
+        if obu.header.temporal_layer_id > max_tlayer_id {
             report.push(sequence_state_error(
                 "sequence-state/tlayer-exceeds-max",
                 "6.2.2",
@@ -678,12 +698,12 @@ impl ValidatorContext {
                 format!(
                     "obu_tlayer_id {} exceeds active sequence max_tlayer_id {}",
                     obu.header.temporal_layer_id.get(),
-                    sequence_header.general.max_tlayer_id.get()
+                    max_tlayer_id.get()
                 ),
             ));
         }
 
-        if obu.header.embedded_layer_id > sequence_header.general.max_mlayer_id {
+        if obu.header.embedded_layer_id > max_mlayer_id {
             let byte_offset = obu.offset.saturating_add(1);
             report.push(
                 Diagnostic::error(
@@ -691,7 +711,7 @@ impl ValidatorContext {
                     format!(
                         "obu_mlayer_id {} exceeds active sequence max_mlayer_id {}",
                         obu.header.embedded_layer_id.get(),
-                        sequence_header.general.max_mlayer_id.get()
+                        max_mlayer_id.get()
                     ),
                 )
                 .with_spec_section("6.2.2")

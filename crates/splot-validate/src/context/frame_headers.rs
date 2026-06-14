@@ -109,6 +109,24 @@ impl ValidatorContext {
             // § 6.6 DOH loops can scope to the current CMVS window (codex finding 3393129745).
             self.frame_confirmed_activation_tu
                 .insert(xlayer, self.cvs.tu_index);
+            // AV2 § 6.2.2 NOTE (mirror lines 197-198): snapshot the limits of the header as
+            // *activated* here, so the § 6.2.2 layer-id check follows the activation window
+            // rather than the live store. A later § 7.3.6 redefinition (legal only at a
+            // coded-video-sequence boundary) overwrites the store but does not re-activate
+            // until its own confirming frame reaches this path again; until then an OBU in the
+            // prior activation's window must be bounded by these limits, not the redefined
+            // ones. `seq_id` is an in-band reference (`resolved` is `Some`), so its header is
+            // stored; if a future eviction policy ever removes it, the snapshot is left stale
+            // (sound: still the last activated limits) rather than reset.
+            if let Some(activated) = self.sequence_headers.get(&seq_id) {
+                self.frame_confirmed_activated_limits.insert(
+                    xlayer,
+                    (
+                        activated.general.max_tlayer_id,
+                        activated.general.max_mlayer_id,
+                    ),
+                );
+            }
             if previous != Some(seq_id) || newly_confirmed {
                 self.on_sequence_activation(xlayer, options, report);
             } else if obu.header.obu_type == ObuType::ClosedLoopKey {

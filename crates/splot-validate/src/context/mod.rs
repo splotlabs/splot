@@ -275,6 +275,24 @@ pub(crate) struct ValidatorContext {
     /// active from an earlier, already-ended coded video sequence outside the current CMVS
     /// (codex finding 3393129745).
     frame_confirmed_activation_tu: BTreeMap<ExtendedLayerId, u64>,
+    /// For each extended layer with a frame-confirmed activation, the
+    /// `(max_tlayer_id, max_mlayer_id)` of the header *as activated* by the latest
+    /// § 5.18.2 `load_sequence_header` (frame-confirmed) path — the in-force activated
+    /// limits, snapshotted at activation rather than re-read from the live store.
+    ///
+    /// The § 6.2.2 `obu_tlayer_id`/`obu_mlayer_id <= max` constraints "apply after a
+    /// sequence header OBU is activated" (§ 6.2.2 NOTE, mirror
+    /// `06-syntax-structures-semantics.md` lines 197-198), so they are scoped to the
+    /// *activated* header's window. A § 7.3.6 same-`seq_header_id` redefinition (legal only
+    /// at a coded-video-sequence boundary) overwrites the live store the moment it is sent,
+    /// but does not re-activate until its confirming frame; an OBU between the redefinition
+    /// and that frame is still in the prior activation's window. Reading the live store there
+    /// would compare against the not-yet-activated (e.g. tightened) limits — a false positive.
+    /// `validate_active_sequence_limits` reads this snapshot for frame-confirmed layers so the
+    /// limit follows the activation window, not the parse-order live store. A layer with only
+    /// the first-seen OBU-order fallback (no frame confirmation) has no entry and falls back to
+    /// the live store, preserving the eager pre-frame behavior.
+    frame_confirmed_activated_limits: BTreeMap<ExtendedLayerId, (TemporalLayerId, EmbeddedLayerId)>,
     /// Last explicitly signalled `ops_decoder_buffer_delay + ops_encoder_buffer_delay`
     /// sum per `(obu_xlayer_id, ops_id, operating-point index)`, with the CVS epoch and
     /// § 6.10.1 reset generation in which it was observed, for the § 6.10.5
