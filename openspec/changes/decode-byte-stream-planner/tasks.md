@@ -44,5 +44,5 @@
 - [x] 4.3 Run `cargo xtask ci` before PR.
 - [x] 4.4 Invoke implementation/test/documentation/review agents and resolve all
   findings.
-- [ ] 4.5 Open a ready PR, request Codex review, and do not merge until Codex
+- [x] 4.5 Open a ready PR, request Codex review, and do not merge until Codex
   gives explicit approval/thumbs-up or final review sign-off.

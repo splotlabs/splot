@@ -121,3 +121,16 @@ portable local-reference evidence manifest.
   - `cargo test -p splot-decode --locked`
   - `cargo clippy -p splot-core --all-targets --all-features --locked -- -D warnings`
   - `cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings`
+  - `cargo xtask ci`
+- PR #113 review gate:
+  - Ready PR opened: `https://github.com/splotlabs/splot/pull/113`.
+  - `@codex review` was requested after the initial push. A completed job alone
+    was not treated as approval; the inline Claude review finding was read and
+    fixed.
+  - After commit `e4f2161`, a fresh `@codex review` was requested. Claude
+    re-review signed off: the parser-duplication finding was fully addressed,
+    no new blockers were found, and the review verdict was approve-worthy /
+    good to merge from a code-review standpoint.
+  - GitHub checks for commit `e4f2161` passed: `ci`, `coverage`, `fuzz-smoke`,
+    `supply-chain`, `zizmor`, and `claude-review`.
+  - No merge was performed by this agent.
