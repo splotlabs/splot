@@ -10,9 +10,11 @@ Arguments:
   <INPUT>  Path to a raw AV2 Annex B bitstream or IVF-wrapped Annex B stream
 
 Options:
-      --json        Emit the validation report as JSON
-  -v, --verbose...  Increase logging verbosity (repeatable: -v, -vv, -vvv)
-      --quiet       Silence all logging except errors
-      --strict      Treat warnings as conformance failures
-  -h, --help        Print help
-  -V, --version     Print version
+      --json                 Emit the validation report as JSON
+  -v, --verbose...           Increase logging verbosity (repeatable: -v, -vv, -vvv)
+      --quiet                Silence all logging except errors
+      --strict               Treat warnings as conformance failures
+      --max-diagnostics <N>  Show at most N diagnostics, with a truncation notice for the rest. Does not change which diagnostics are computed, the summary counts, or the exit code
+      --summary-only         Print only the summary counts and the conformance line (no per-diagnostic lines). Exit code is unchanged. Distinct from the global `--quiet` (logging)
+  -h, --help                 Print help
+  -V, --version              Print version

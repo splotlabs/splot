@@ -1,0 +1,21 @@
+---
+source: crates/splot-cli/tests/validate_snapshots.rs
+expression: stdout
+---
+{
+  "diagnostics": [
+    {
+      "rule_id": "obu-order/temporal-unit-missing-delimiter",
+      "spec_section": "7.3.7",
+      "severity": "Error",
+      "byte_offset": 1,
+      "bit_offset": null,
+      "message": "OBU_TEMPORAL_DELIMITER appears before a global OBU_TEMPORAL_DELIMITER starts the temporal unit"
+    }
+  ],
+  "truncation": {
+    "shown": 1,
+    "total": 2,
+    "omitted": 1
+  }
+}

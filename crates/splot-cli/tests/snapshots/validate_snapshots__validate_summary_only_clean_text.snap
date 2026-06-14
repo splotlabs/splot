@@ -1,0 +1,6 @@
+---
+source: crates/splot-cli/tests/validate_snapshots.rs
+expression: stdout
+---
+0 error(s), 0 warning(s), 0 info
+conformant: no errors found

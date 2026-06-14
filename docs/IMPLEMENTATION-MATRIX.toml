@@ -4206,6 +4206,50 @@ fixtures = ["tests/fixtures/conformant.av2", "tests/fixtures/bad-global-xlayer.a
 diagnostics = []
 
 [[feature]]
+id = "CLI-VALIDATE-OUTPUT-CONTROLS"
+name = "splot validate output controls (--max-diagnostics / --summary-only)"
+category = "cli"
+kind = "cli"
+spec_sections = []
+sources = []
+crate = "splot-cli"
+module = "crates/splot-cli/src/commands/validate.rs"
+openspec_change = "validate-output-controls"
+tracking_issue = ""
+owner = "cli"
+risk = "low"
+notes = "Adds --max-diagnostics N and --summary-only to `splot validate`, backed by a library-first RenderOptions/RenderedReport in splot-validate (crates/splot-validate/src/render.rs): render_text() reproduces the Display output at default options (parity-tested) and rendered() produces the JSON view. Presentation-only: which diagnostics are computed, the summary counts, and the exit code (Validator::is_acceptable over the FULL report) are unchanged. The truncation notice is render metadata, never a Diagnostic/rule_id (so it does not touch the diagnostic registry). --summary-only takes precedence over --max-diagnostics; default options are byte-compatible with the historical {\"diagnostics\":[...]} JSON. The validate --help golden updates intentionally (CONF-CLI-SNAPSHOT-COVERAGE)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-validate/src/render.rs::tests",
+    "crates/splot-cli/tests/validate_snapshots.rs",
+    "crates/splot-cli/tests/cli.rs",
+]
+commands = [
+    "cargo test -p splot-validate render",
+    "cargo test -p splot-cli --test validate_snapshots",
+    "cargo test -p splot-cli --test cli",
+]
+fixtures = [
+    "tests/fixtures/bad-global-xlayer.av2",
+    "tests/fixtures/operating-point-set.av2",
+]
+diagnostics = []
+
+[[feature]]
 id = "CLI-INSPECT"
 name = "splot inspect command"
 category = "cli"

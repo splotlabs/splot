@@ -809,3 +809,57 @@ fn missing_input_file_exits_two() {
     let out = validate("does-not-exist.av2", &[]);
     assert_eq!(out.status.code(), Some(2));
 }
+
+#[test]
+fn validate_max_diagnostics_preserves_exit_and_counts() {
+    // bad-global-xlayer.av2 has two errors. Capping to one is presentation-only:
+    // the exit code is identical to the uncapped run, and the summary counts stay
+    // computed from the full report.
+    let uncapped = validate("bad-global-xlayer.av2", &[]);
+    let capped = validate("bad-global-xlayer.av2", &["--max-diagnostics", "1"]);
+    assert_eq!(capped.status.code(), uncapped.status.code());
+    assert_eq!(capped.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&capped.stdout);
+    assert!(
+        stdout.contains("... 1 more diagnostic(s) not shown (--max-diagnostics 1)"),
+        "stdout was: {stdout}"
+    );
+    assert!(
+        stdout.contains("2 error(s), 0 warning(s), 0 info"),
+        "stdout was: {stdout}"
+    );
+}
+
+#[test]
+fn validate_summary_only_preserves_exit_codes() {
+    // A non-conformant fixture still exits 1; a conformant one still exits 0.
+    let bad = validate("bad-global-xlayer.av2", &["--summary-only"]);
+    assert_eq!(bad.status.code(), Some(1));
+    let bad_stdout = String::from_utf8_lossy(&bad.stdout);
+    assert!(
+        !bad_stdout.contains("obu-header/global-xlayer-required"),
+        "summary-only must omit per-diagnostic lines; stdout was: {bad_stdout}"
+    );
+    assert!(
+        bad_stdout.contains("2 error(s)"),
+        "stdout was: {bad_stdout}"
+    );
+
+    let good = validate("operating-point-set.av2", &["--summary-only"]);
+    assert_eq!(good.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&good.stdout).contains("conformant"),
+        "stdout was: {}",
+        String::from_utf8_lossy(&good.stdout)
+    );
+}
+
+#[test]
+fn validate_rejects_non_numeric_max_diagnostics() {
+    // clap rejects a non-integer value at parse time (operational error, exit 2).
+    let out = validate(
+        "bad-global-xlayer.av2",
+        &["--max-diagnostics", "notanumber"],
+    );
+    assert_eq!(out.status.code(), Some(2));
+}
