@@ -2,7 +2,7 @@
 
 Generated from `docs/DECODER-SUPPORT-MATRIX.toml` by `cargo xtask decoder-support --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-13. 22 row(s).
+Matrix version 1. Last reviewed 2026-06-14. 23 row(s).
 
 ## Status Counts
 
@@ -10,7 +10,7 @@ Matrix version 1. Last reviewed 2026-06-13. 22 row(s).
 |---|---:|
 | `todo` | 6 |
 | `partial` | 4 |
-| `supported` | 11 |
+| `supported` | 12 |
 | `unsupported-intentional` | 1 |
 | `blocked` | 0 |
 
@@ -19,7 +19,7 @@ Matrix version 1. Last reviewed 2026-06-13. 22 row(s).
 | Tier | Rows |
 |---|---:|
 | `encoder-reuse` | 1 |
-| `foundation` | 16 |
+| `foundation` | 17 |
 | `tier0-plan` | 1 |
 | `tier1-intra` | 4 |
 
@@ -32,6 +32,7 @@ Matrix version 1. Last reviewed 2026-06-13. 22 row(s).
 | `decoder-status-drift-gate` | Decoder support drift gate | `XTASK-DECODER-SUPPORT-STATUS` | `foundation` | `supported` | none | decoder_support::tests::check_decoder_support_detects_drift<br>cargo xtask check-decoder-support | none | none | `xtask/src/decoder_support.rs` |
 | `local-reference-evidence-manifest` | Portable local-reference evidence manifest | `XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST` | `foundation` | `supported` | none | xtask/src/reference_evidence/tests.rs::tests<br>cargo test -p xtask reference_evidence --locked<br>cargo xtask check-reference-evidence<br>cargo xtask check-decoder-support | none | none | `xtask/src/reference_evidence.rs` |
 | `decoder-crate-scaffolding` | Decoder and reconstruction crate scaffolding | `INFRA-DECODER-CRATE-SCAFFOLDING` | `foundation` | `supported` | none | cargo check -p splot-recon --locked<br>cargo check -p splot-decode --locked<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/lib.rs; crates/splot-decode/src/lib.rs` |
+| `decode-runtime-context` | Decode runtime context and concurrency contract | `INFRA-PARALLEL-RUNTIME-POLICY` | `foundation` | `supported` | none | crates/splot-decode/src/context.rs::tests<br>crates/splot-cli/tests/decode_cli.rs::decode_threads_fixed_is_accepted_emits_unsupported<br>crates/splot-cli/tests/decode_cli.rs::decode_threads_auto_is_accepted<br>crates/splot-cli/tests/decode_cli.rs::decode_threads_invalid_is_usage_error<br>cargo test -p splot-decode --locked<br>cargo test -p splot-cli decode_threads --locked<br>cargo xtask check-concurrency-policy<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support | none | none | `crates/splot-decode/src/context.rs; crates/splot-decode/src/runtime.rs; docs/DECODER-ROADMAP.md; docs/CONCURRENCY.md` |
 | `decoded-frame-plane-runtime-types` | Decoded frame and plane runtime types | `INFRA-RECON-FRAME-PLANE-TYPES` | `foundation` | `supported` | 6.4.1<br>6.17.4.1<br>6.17.4.4<br>7.1<br>7.21.1<br>7.21.2<br>7.23 | crates/splot-recon/src/format.rs::tests<br>crates/splot-recon/src/geometry.rs::tests<br>crates/splot-recon/src/plane.rs::tests<br>crates/splot-recon/src/frame.rs::tests<br>cargo test -p splot-recon --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/format.rs; crates/splot-recon/src/geometry.rs; crates/splot-recon/src/plane.rs; crates/splot-recon/src/frame.rs` |
 | `decode-unsupported-diagnostic-api` | Decode unsupported diagnostic API | `DECODE-UNSUPPORTED-DIAGNOSTIC-API` | `foundation` | `supported` | 7.1 | crates/splot-decode/src/lib.rs::tests::unsupported_feature_diagnostic_has_stable_fields<br>crates/splot-decode/src/lib.rs::tests::unsupported_feature_diagnostic_function_returns_public_descriptor<br>crates/splot-decode/src/lib.rs::tests::decode_severity_displays_stable_spelling<br>cargo test -p splot-decode --locked<br>cargo xtask check-diagnostic-registry<br>cargo xtask check-decoder-support | decode/unsupported-feature | none | `crates/splot-decode/src/lib.rs` |
 | `decoder-diagnostic-registry` | Decoder diagnostic registry | `DOC-DECODER-DIAGNOSTICS` | `foundation` | `supported` | none | xtask/src/diagnostic_registry.rs::tests::decoder_registry_accepts_matching_source_and_doc<br>cargo xtask check-diagnostic-registry | none | none | `docs/DECODER-DIAGNOSTICS.md` |
