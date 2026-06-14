@@ -8,20 +8,20 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 
 | ID | Name | Category | Kind | Mapped | Types | Parse | Validate | Write | Encode | DecChk | Tests | AVM | Module |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `AV2-4.11.6-LEB128` | LEB128 descriptor | normative | bitstream-syntax | done | done | done | done | todo | n/a | done | done | pending | `crates/splot-core/src/leb128.rs` |
-| `AV2-4.11.3-UVLC` | Unsigned variable-length code descriptor | normative | bitstream-syntax | done | n/a | done | n/a | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
+| `AV2-4.11.6-LEB128` | LEB128 descriptor | normative | bitstream-syntax | done | done | done | done | done | n/a | done | done | pending | `crates/splot-core/src/leb128.rs` |
+| `AV2-4.11.3-UVLC` | Unsigned variable-length code descriptor | normative | bitstream-syntax | done | n/a | done | n/a | done | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
 | `AV2-8.2-SYMBOL-DECODER` | AV2 symbol decoder foundation | normative | bitstream-semantics | done | done | partial | partial | n/a | n/a | partial | partial | n/a | `crates/splot-core/src/symbol.rs` |
-| `AV2-4.11.4-SVLC` | Signed variable-length code descriptor | normative | bitstream-syntax | done | n/a | done | n/a | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
-| `AV2-4.11.5-LE` | Little-endian fixed-width descriptor | normative | bitstream-syntax | done | n/a | done | n/a | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
-| `AV2-4.11.8-NS` | Non-symmetric integer descriptor | normative | bitstream-syntax | done | n/a | done | n/a | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
-| `AV2-4.11.7-SU` | Signed integer descriptor | normative | bitstream-syntax | done | n/a | done | n/a | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
+| `AV2-4.11.4-SVLC` | Signed variable-length code descriptor | normative | bitstream-syntax | done | n/a | done | n/a | done | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
+| `AV2-4.11.5-LE` | Little-endian fixed-width descriptor | normative | bitstream-syntax | done | n/a | done | n/a | done | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
+| `AV2-4.11.8-NS` | Non-symmetric integer descriptor | normative | bitstream-syntax | done | n/a | done | n/a | done | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
+| `AV2-4.11.7-SU` | Signed integer descriptor | normative | bitstream-syntax | done | n/a | done | n/a | done | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
 | `AV2-5.2.2-OBU-HEADER` | OBU header syntax | normative | bitstream-syntax | done | done | done | done | todo | n/a | done | done | pending | `crates/splot-core/src/obu.rs` |
 | `AV2-5.2.1-OBU-TYPE` | OBU type and OBU-class predicates | normative | bitstream-syntax | done | done | done | done | n/a | n/a | done | done | pending | `crates/splot-core/src/types.rs` |
 | `AV2-5.2.1-OBU-DISPATCH` | open_bitstream_unit payload dispatch | normative | bitstream-syntax | done | done | partial | n/a | todo | n/a | partial | done | pending | `crates/splot-core/src/obu.rs` |
 | `AV2-B-ANNEXB-OBU-ENVELOPE` | Annex B length-delimited OBU envelope | normative | bitstream-syntax | done | done | done | done | todo | n/a | done | done | pending | `crates/splot-core/src/annexb.rs` |
 | `AV2-IVF-CONTAINER` | IVF container support | conformance | bitstream-syntax | done | done | done | done | done | n/a | done | done | pending | `crates/splot-core/src/ivf.rs` |
 | `AV2-5.2.3-TRAILING-BITS` | Trailing bits syntax and semantics | normative | bitstream-syntax | done | done | done | partial | todo | n/a | done | done | pending | `crates/splot-core/src/obu.rs` |
-| `AV2-5.2.4-BYTE-ALIGNMENT` | Byte alignment syntax and semantics | normative | bitstream-syntax | done | done | done | partial | todo | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
+| `AV2-5.2.4-BYTE-ALIGNMENT` | Byte alignment syntax and semantics | normative | bitstream-syntax | done | done | done | partial | done | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
 | `AV2-5.3-RESERVED-OBU` | Reserved OBU handling | normative | validator-check | done | done | n/a | done | n/a | n/a | done | done | pending | `crates/splot-validate/src/checks/mod.rs` |
 | `AV2-5.4-SEQUENCE-HEADER` | Sequence header OBU syntax | normative | bitstream-syntax | done | partial | partial | partial | todo | todo | done | partial | pending | `crates/splot-core/src/headers.rs` |
 | `AV2-5.4.1-SEQUENCE-HEADER-GENERAL` | General sequence header syntax | normative | bitstream-syntax | done | done | done | done | todo | todo | done | done | pending | `crates/splot-core/src/headers/sequence.rs` |
@@ -115,7 +115,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-A-PROFILES` | Annex A profile constraints | normative | bitstream-semantics | done | done | n/a | partial | n/a | n/a | todo | done | pending | `crates/splot-validate/src/annex_a.rs` |
 | `AV2-A-LEVELS-TIERS` | Annex A level and tier constraints | normative | bitstream-semantics | done | todo | n/a | partial | n/a | n/a | todo | done | pending | `crates/splot-validate/src/annex_a.rs` |
 | `AV2-E-DECODER-MODEL` | Annex E decoder model constraints | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/checks/mod.rs` |
-| `ENC-BITSTREAM-WRITER` | Bitstream writer foundation | encoder | writer | partial | todo | n/a | n/a | todo | todo | todo | todo | pending | `crates/splot-core/src/bitio.rs` |
+| `ENC-BITSTREAM-WRITER` | Bitstream writer foundation | encoder | writer | partial | partial | n/a | n/a | partial | todo | todo | partial | pending | `crates/splot-core/src/write/mod.rs` |
 | `ENC-Y4M-INPUT` | Y4M input reader integration | encoder | encoder-api | partial | todo | n/a | n/a | n/a | todo | n/a | todo | n/a | `crates/splot-encode/src/context.rs` |
 | `ENC-INTRA-TOY-V0` | Minimal toy intra encoder path | encoder | encoder-tool | partial | todo | n/a | n/a | todo | todo | todo | todo | pending | `crates/splot-encode/src/context.rs` |
 | `ENC-RATE-CONTROL-V0` | Initial rate control strategy | encoder | encoder-tool | partial | todo | n/a | n/a | n/a | todo | n/a | todo | n/a | `crates/splot-encode/src/context.rs` |

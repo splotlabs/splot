@@ -83,6 +83,7 @@ same six fields, always:
 | Header-level and container conformance validation | working |
 | `splot inspect` OBU dump (text and JSON, partial-parse tolerant) | working |
 | `splot explain` diagnostic catalog (text and JSON, `--list`) | working |
+| Bitstream **writer** foundation (`BitWriter` — inverse of every reader primitive, round-trip-proven) | library-only |
 | Conformance vectors, AVM differential testing | planned |
 | `splot decode` / `splot encode` | stubs — exit with a clear error |
 
@@ -95,8 +96,10 @@ do not change the current stub status.
 
 And to be clear about what `splot` is **not** (yet): it is not a decoder — it
 checks syntax and header-level conformance, it does not reconstruct pixels.
-It is not an encoder — `encode`/`decode` exit with a clear error. And it
-is **not AV1**: the OBU header follows AV2 v1.0.0 § 5.2.2 (no
+It is not an encoder — `encode`/`decode` exit with a clear error (the
+bitstream **writer** foundation is library-only, validated by
+`read(write(x)) == x` round-trips against the parser, with no public `encode`
+command). And it is **not AV1**: the OBU header follows AV2 v1.0.0 § 5.2.2 (no
 `obu_forbidden_bit`, no `obu_has_size_field`, no AV1 OBU type table), and AV1
 bitstreams are out of scope.
 
