@@ -5132,6 +5132,51 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-INTRA-DC-SQUARE-PREDICTION"
+name = "Square DC intra prediction"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.13.2.10", "7.13.3.22"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-22",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/intra.rs"
+openspec_change = "recon-intra-dc-prediction"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a scheduler-free `splot-recon` square-block subset of AV2 §7.13.2.10 DC intra prediction: typed 4x4 through 64x64 square block sizes, caller-provided optional left/above edge samples, active bit-depth/sample-type validation, typed edge/sample/output/allocation errors, a no-allocation scalar value API, a caller-owned strided output API, and owned square row-major prediction block convenience output. The both-edge path is intentionally limited to square blocks because `w + h` is a power of two and therefore the §7.13.3.22 `resolve_divisor` path specializes to `Round2(sum, log2_size + 1)` without hand-transcribing `Div_Lut`. This row does not implement rectangular DC prediction, non-DC intra prediction modes, `predict_intra()` dispatch, tile syntax traversal, dequantization, inverse transforms, residual addition, runtime decoded-frame hashes, runtime Y4M output, reference refresh, AVM/dav2d invocation, or scheduler use outside the future `DecodeContext` orchestration policy."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-recon/src/intra.rs::tests"]
+commands = [
+    "cargo test -p splot-recon --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-concurrency-policy",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "crates/splot-recon/src/intra.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
 name = "Decoded frame and plane model contract documentation"
 category = "docs"

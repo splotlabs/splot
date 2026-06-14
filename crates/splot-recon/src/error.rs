@@ -5,7 +5,7 @@
 
 use core::fmt;
 
-use crate::{BitDepth, PlaneId, PlaneRect, PlaneSize, ReferenceSlot};
+use crate::{BitDepth, IntraDcEdge, PlaneId, PlaneRect, PlaneSize, ReferenceSlot};
 
 /// Result alias used by `splot-recon` constructors and helpers.
 pub type Result<T> = core::result::Result<T, ReconError>;
@@ -102,6 +102,63 @@ pub enum ReconError {
         value: u16,
         /// Maximum sample value allowed by the active bit depth.
         max: u16,
+    },
+    /// A decoded sample value cannot be represented by the requested storage type.
+    SampleValueUnsupportedStorage {
+        /// Rust sample storage type name.
+        sample_type: &'static str,
+        /// Observed sample value.
+        value: u16,
+        /// Maximum value representable by the storage type.
+        max: u16,
+    },
+    /// A square intra prediction block size is outside the modeled range.
+    InvalidIntraSquareBlockLog2 {
+        /// Supplied base-2 logarithm of the square block size.
+        log2_size: u8,
+        /// Minimum supported base-2 logarithm.
+        min: u8,
+        /// Maximum supported base-2 logarithm.
+        max: u8,
+    },
+    /// A supplied intra prediction edge did not match the block size.
+    IntraPredictionEdgeLengthMismatch {
+        /// Edge whose sample count was checked.
+        edge: IntraDcEdge,
+        /// Expected edge sample count.
+        expected: usize,
+        /// Actual edge sample count.
+        actual: usize,
+    },
+    /// An intra prediction edge sample exceeded the active bit depth.
+    IntraPredictionSampleOutOfRange {
+        /// Edge containing the out-of-range sample.
+        edge: IntraDcEdge,
+        /// Zero-based index within the edge samples.
+        sample_index: usize,
+        /// Observed sample value.
+        value: u16,
+        /// Maximum sample value allowed by the active bit depth.
+        max: u16,
+    },
+    /// An intra prediction block backing allocation failed.
+    IntraPredictionAllocationFailed {
+        /// Short description of the failed allocation.
+        context: &'static str,
+    },
+    /// A caller-provided intra prediction output stride was too small.
+    IntraPredictionStrideTooSmall {
+        /// Supplied output stride in samples.
+        stride_samples: usize,
+        /// Required prediction width in samples.
+        width: usize,
+    },
+    /// A caller-provided intra prediction output buffer was too small.
+    IntraPredictionOutputTooSmall {
+        /// Minimum required sample count for the supplied block and stride.
+        expected: usize,
+        /// Actual output slice length.
+        actual: usize,
     },
     /// A reference frame store capacity was outside the supported slot range.
     InvalidReferenceStoreCapacity {
@@ -214,6 +271,55 @@ impl fmt::Display for ReconError {
                 f,
                 "plane {} sample {sample_index} value {value} exceeds maximum {max}",
                 plane.name()
+            ),
+            Self::SampleValueUnsupportedStorage {
+                sample_type,
+                value,
+                max,
+            } => write!(
+                f,
+                "sample value {value} cannot be represented by {sample_type}; maximum is {max}"
+            ),
+            Self::InvalidIntraSquareBlockLog2 {
+                log2_size,
+                min,
+                max,
+            } => write!(
+                f,
+                "unsupported square intra block log2 size {log2_size}; expected {min} through {max}"
+            ),
+            Self::IntraPredictionEdgeLengthMismatch {
+                edge,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "intra prediction {} edge length mismatch: expected {expected} samples, got {actual}",
+                edge.name()
+            ),
+            Self::IntraPredictionSampleOutOfRange {
+                edge,
+                sample_index,
+                value,
+                max,
+            } => write!(
+                f,
+                "intra prediction {} edge sample {sample_index} value {value} exceeds maximum {max}",
+                edge.name()
+            ),
+            Self::IntraPredictionAllocationFailed { context } => {
+                write!(f, "failed to allocate {context}")
+            }
+            Self::IntraPredictionStrideTooSmall {
+                stride_samples,
+                width,
+            } => write!(
+                f,
+                "intra prediction output stride {stride_samples} samples is smaller than prediction width {width}"
+            ),
+            Self::IntraPredictionOutputTooSmall { expected, actual } => write!(
+                f,
+                "intra prediction output buffer is too small: expected at least {expected} samples, got {actual}"
             ),
             Self::InvalidReferenceStoreCapacity {
                 capacity,

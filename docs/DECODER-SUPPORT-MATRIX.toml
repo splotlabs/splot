@@ -296,6 +296,20 @@ local_reference_evidence = []
 notes = "Crate-private `splot-decode` tile CDF boundary for the minimal one-tile closed-loop-key tier: `tile_payload/cdf.rs` copies the first supported partition-entry CDF subset (`TileDoSplitCdf` and `TileDoSquareSplitCdf`) from generated AV2 §9.3 defaults, provides typed selector validation and closure-scoped mutable row access for §8.3 handoff into `SymbolDecoder::read_symbol(cdf)`, records the tile CDF update mode from `disable_cdf_update`, computes the §8.2 copy/average policy from `enable_avg_cdf`, `avg_cdf_type`, `context_update_tile_id`, `TileNum`, and `TileCols * TileRows`, and attaches the boundary metadata to the deterministic tile work unit. This row remains partial: it does not implement full §8.3 CDF selection, full Tile/Saved CDF banks, recursive `decode_tile()` or `read_partition()` traversal, `exit_symbol()` after real syntax, Saved CDF copy/average mutation after tile completion, `frame_end_update_cdf()`, reconstruction, decoded-frame hashes, runtime Y4M output, reference refresh, public API support, AVM/dav2d invocation, repo dependency, wrapper, script, or CI/runtime external-decoder path."
 
 [[row]]
+id = "intra-dc-square-prediction"
+name = "Square DC intra prediction"
+feature_id = "RECON-INTRA-DC-SQUARE-PREDICTION"
+spec_sections = ["7.13.2.10", "7.13.3.22"]
+parser_source = "n/a"
+decode_module = "crates/splot-recon/src/intra.rs; crates/splot-recon/src/lib.rs"
+tier = "tier1-intra"
+status = "supported"
+self_contained_tests = ["crates/splot-recon/src/intra.rs::tests", "cargo test -p splot-recon --locked", "cargo clippy -p splot-recon --all-targets --locked -- -D warnings", "cargo xtask check-dependency-direction", "cargo xtask check-concurrency-policy", "cargo xtask check-decoder-support"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Source-backed scheduler-free `splot-recon` square DC intra prediction primitive for AV2 §7.13.2.10: callers provide an active bit depth, a typed 4x4 through 64x64 square block size, and optional left/above edge samples; the primitive validates sample type, edge lengths, bit-depth ranges, storage conversion, caller-owned output stride/length, and owned-block allocation failure. It exposes a no-allocation scalar value API, a caller-owned strided output API, and an owned square row-major block convenience wrapper. The both-edge path is intentionally square-only because `w + h` is a power-of-two denominator, so the §7.13.3.22 `resolve_divisor` path specializes to `Round2(sum, log2_size + 1)` without adding `Div_Lut`. This row does not implement rectangular DC prediction, non-DC intra prediction modes, `predict_intra()` dispatch, tile syntax traversal, dequantization, inverse transforms, residual addition, runtime decoded-frame hashes, runtime Y4M output, reference refresh, AVM/dav2d invocation, repo dependency, wrapper, script, or CI/runtime external-decoder path."
+
+[[row]]
 id = "intra-reconstruction"
 name = "Scalar intra reconstruction"
 feature_id = ""
@@ -303,11 +317,11 @@ spec_sections = ["7.13", "7.14", "7.15"]
 parser_source = "planned"
 decode_module = "planned"
 tier = "tier1-intra"
-status = "todo"
+status = "partial"
 self_contained_tests = []
 diagnostics = ["decode/unsupported-feature (planned)"]
 local_reference_evidence = []
-notes = "Prediction, dequant/reconstruction, and inverse transforms for the first all-intra tier."
+notes = "Broad scalar intra reconstruction umbrella. The square DC intra prediction subset is supported by `intra-dc-square-prediction`, but rectangular DC prediction, non-DC intra prediction modes, `predict_intra()` dispatch, tile syntax traversal, dequantization, inverse transforms, residual addition, runtime decoded-frame hashes, runtime Y4M output, and reference refresh remain planned."
 
 [[row]]
 id = "output-y4m"
