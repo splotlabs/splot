@@ -177,8 +177,8 @@ impl<'a> IvfFrameCursor<'a> {
 
         let remaining_header = self.input.len().saturating_sub(self.cursor);
         if remaining_header < IVF_FRAME_HEADER_SIZE {
-            self.finished = true;
             if self.frame_index > 0 {
+                self.finished = true;
                 return Ok(IvfFrameRead::Warning(
                     IvfWarning::TrailingPartialFrameHeader {
                         frame_index: self.frame_index,
@@ -718,6 +718,27 @@ mod tests {
         assert!(matches!(
             parsed.error,
             Some(IvfError::TruncatedFrameHeader {
+                frame_index: 0,
+                offset,
+                needed: 10
+            }) if offset == ByteOffset::new(bytes.len() as u64)
+        ));
+    }
+
+    #[test]
+    fn frame_cursor_retry_preserves_truncated_initial_frame_header_error() {
+        let mut bytes = header_bytes();
+        bytes.extend_from_slice(&[0x05, 0x00]);
+        let header = parse_ivf_header(&bytes).unwrap();
+        let mut cursor = IvfFrameCursor::new(&bytes, header);
+
+        let first = cursor.next_frame_record();
+        let second = cursor.next_frame_record();
+
+        assert_eq!(first, second);
+        assert!(matches!(
+            first,
+            Err(IvfError::TruncatedFrameHeader {
                 frame_index: 0,
                 offset,
                 needed: 10

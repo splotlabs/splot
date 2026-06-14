@@ -12,8 +12,11 @@ use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfBitstream, ParsedIvfFrame};
 use splot_core::types::ObuType;
 
-use crate::error::Result;
-use crate::stream_plan::{DecodeLayerSelection, DecodeStreamInput, DecodeStreamPlan, plan_stream};
+use crate::error::{DecodeError, Result};
+use crate::stream_plan::{
+    DecodeLayerSelection, DecodeStreamInput, DecodeStreamPlan, DecodeUnsupportedStructure,
+    ensure_supported_obu, plan_stream,
+};
 use crate::{DecodeLimitName, DecodeLimits, DecodeOptions};
 
 /// Builds a deterministic decode stream plan from raw bytes.
@@ -40,12 +43,14 @@ fn parse_bounded_bitstream<'a>(
 
     let mut obu_count = 0u64;
     let mut frame_candidate_count = 0u64;
+    let mut first_unsupported = None;
     Ok(ParsedBitstream::AnnexB(parse_bounded_annex_b_at(
         bytes,
         ByteOffset::new(0),
         limits,
         &mut obu_count,
         &mut frame_candidate_count,
+        &mut first_unsupported,
     )?))
 }
 
@@ -55,26 +60,38 @@ fn parse_bounded_annex_b_at<'a>(
     limits: DecodeLimits,
     obu_count: &mut u64,
     frame_candidate_count: &mut u64,
+    first_unsupported: &mut Option<DecodeUnsupportedStructure>,
 ) -> Result<PartialParse<'a>> {
     let mut obus = Vec::new();
     let mut cursor = AnnexBObuCursor::new(input, base_offset);
 
     while cursor.has_remaining() {
         let next_obu_count = obu_count.saturating_add(1);
-        limits.ensure(DecodeLimitName::MaxObus, next_obu_count)?;
+        ensure_or_first_unsupported(
+            limits,
+            DecodeLimitName::MaxObus,
+            next_obu_count,
+            first_unsupported,
+        )?;
 
         match cursor.next_obu() {
             Ok(Some(envelope)) => {
                 if is_selected_frame_candidate(envelope.header) {
                     let next_frame_candidate_count = frame_candidate_count.saturating_add(1);
-                    limits.ensure(
+                    ensure_or_first_unsupported(
+                        limits,
                         DecodeLimitName::MaxFramesToDecode,
                         next_frame_candidate_count,
+                        first_unsupported,
                     )?;
                     *frame_candidate_count = next_frame_candidate_count;
                 }
                 obus.push(envelope);
                 *obu_count = next_obu_count;
+                record_first_unsupported(
+                    first_unsupported,
+                    ensure_supported_obu(envelope, DecodeLayerSelection::base()),
+                )?;
             }
             Ok(None) => {
                 break;
@@ -89,6 +106,39 @@ fn parse_bounded_annex_b_at<'a>(
     }
 
     Ok(PartialParse { obus, error: None })
+}
+
+fn ensure_or_first_unsupported(
+    limits: DecodeLimits,
+    name: DecodeLimitName,
+    value: u64,
+    first_unsupported: &Option<DecodeUnsupportedStructure>,
+) -> Result<()> {
+    match limits.ensure(name, value) {
+        Ok(_) => Ok(()),
+        Err(source) => match first_unsupported {
+            Some(unsupported) => Err(DecodeError::UnsupportedStructure {
+                unsupported: unsupported.clone(),
+            }),
+            None => Err(DecodeError::Limit { source }),
+        },
+    }
+}
+
+fn record_first_unsupported(
+    first_unsupported: &mut Option<DecodeUnsupportedStructure>,
+    result: Result<()>,
+) -> Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(DecodeError::UnsupportedStructure { unsupported }) => {
+            if first_unsupported.is_none() {
+                *first_unsupported = Some(unsupported);
+            }
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn parse_bounded_ivf<'a>(input: &'a [u8], limits: DecodeLimits) -> Result<ParsedIvfBitstream<'a>> {
@@ -109,6 +159,7 @@ fn parse_bounded_ivf<'a>(input: &'a [u8], limits: DecodeLimits) -> Result<Parsed
     let mut cursor = IvfFrameCursor::new(input, header);
     let mut obu_count = 0u64;
     let mut frame_candidate_count = 0u64;
+    let mut first_unsupported = None;
 
     while cursor.has_remaining() {
         if cursor.has_complete_frame_header() {
@@ -126,6 +177,7 @@ fn parse_bounded_ivf<'a>(input: &'a [u8], limits: DecodeLimits) -> Result<Parsed
                     limits,
                     &mut obu_count,
                     &mut frame_candidate_count,
+                    &mut first_unsupported,
                 )?;
                 let has_error = partial.error.is_some();
                 frames.push(ParsedIvfFrame {
@@ -173,6 +225,7 @@ fn is_selected_frame_candidate(header: ObuHeader) -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::DecodeUnsupportedReason;
 
     #[test]
     fn raw_obu_limit_is_checked_before_parsing_next_obu() {
@@ -188,6 +241,37 @@ mod tests {
             crate::DecodeError::Limit {
                 source
             } if source.name() == DecodeLimitName::MaxObus
+        ));
+    }
+
+    #[test]
+    fn unsupported_prefix_is_reported_before_later_obu_limit() {
+        let bytes = [0x01, 0x14, 0x01, 0x08];
+        let options = DecodeOptions::new(
+            DecodeLimits::unlimited().with_max_obus(crate::DecodeLimitThreshold::Max(1)),
+        );
+
+        let error = plan_byte_stream(&bytes, options).unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::DecodeError::UnsupportedStructure {
+                unsupported
+            } if unsupported.reason() == DecodeUnsupportedReason::UnsupportedFrameObu
+        ));
+    }
+
+    #[test]
+    fn malformed_suffix_is_reported_after_unsupported_prefix() {
+        let bytes = [0x01, 0x14, 0x05, 0x10];
+
+        let error = plan_byte_stream(&bytes, DecodeOptions::default()).unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::DecodeError::MalformedSource {
+                issue
+            } if issue.kind() == crate::DecodeSourceIssueKind::AnnexBParseError
         ));
     }
 

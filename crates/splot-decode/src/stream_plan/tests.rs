@@ -283,6 +283,112 @@ fn malformed_ivf_container_and_frame_payload_are_transactional() {
 }
 
 #[test]
+fn malformed_later_ivf_payload_wins_over_earlier_unsupported_obu() {
+    let unsupported = obu(OBU_OPEN_LOOP_KEY);
+    let malformed = [0x05, OBU_CLOSED_LOOP_KEY];
+    let bytes = ivf_with_payloads(&[&unsupported, &malformed]);
+
+    let parsed = parse_bitstream_partial(&bytes);
+    let parsed_error = context(ThreadCount::from(1usize))
+        .plan_stream(
+            DecodeStreamInput::new(&parsed, bytes.len() as u64),
+            DecodeOptions::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        parsed_error,
+        DecodeError::MalformedSource {
+            issue
+        } if issue.kind() == DecodeSourceIssueKind::IvfFramePayloadError
+            && issue.frame_index() == Some(1)
+    ));
+
+    let error = context(ThreadCount::from(1usize))
+        .plan_bytes(&bytes, DecodeOptions::default())
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        DecodeError::MalformedSource {
+            issue
+        } if issue.kind() == DecodeSourceIssueKind::IvfFramePayloadError
+            && issue.frame_index() == Some(1)
+    ));
+}
+
+#[test]
+fn parsed_ivf_obu_limits_win_before_later_payload_errors() {
+    let accepted = [
+        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
+        obu(OBU_SEQUENCE_HEADER).as_slice(),
+    ]
+    .concat();
+    let malformed = [0x05, OBU_CLOSED_LOOP_KEY];
+    let bytes = ivf_with_payloads(&[&accepted, &malformed]);
+    let parsed = parse_bitstream_partial(&bytes);
+
+    let obu_error = context(ThreadCount::from(1usize))
+        .plan_stream(
+            DecodeStreamInput::new(&parsed, bytes.len() as u64),
+            DecodeOptions::new(
+                DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(1)),
+            ),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        obu_error,
+        DecodeError::Limit {
+            source
+        } if source.name() == DecodeLimitName::MaxObus
+    ));
+
+    let frame_candidates = [
+        obu(OBU_CLOSED_LOOP_KEY).as_slice(),
+        obu(OBU_CLOSED_LOOP_KEY).as_slice(),
+    ]
+    .concat();
+    let bytes = ivf_with_payloads(&[&frame_candidates, &malformed]);
+    let parsed = parse_bitstream_partial(&bytes);
+    let frame_error = context(ThreadCount::from(1usize))
+        .plan_stream(
+            DecodeStreamInput::new(&parsed, bytes.len() as u64),
+            DecodeOptions::new(
+                DecodeLimits::unlimited().with_max_frames_to_decode(DecodeLimitThreshold::Max(1)),
+            ),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        frame_error,
+        DecodeError::Limit {
+            source
+        } if source.name() == DecodeLimitName::MaxFramesToDecode
+    ));
+}
+
+#[test]
+fn byte_ivf_record_limit_wins_over_earlier_unsupported_obu() {
+    let unsupported = obu(OBU_OPEN_LOOP_KEY);
+    let second = obu(OBU_TEMPORAL_DELIMITER);
+    let bytes = ivf_with_payloads(&[&unsupported, &second]);
+
+    let error = context(ThreadCount::from(1usize))
+        .plan_bytes(
+            &bytes,
+            DecodeOptions::new(
+                DecodeLimits::unlimited().with_max_ivf_frame_records(DecodeLimitThreshold::Max(1)),
+            ),
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        DecodeError::Limit {
+            source
+        } if source.name() == DecodeLimitName::MaxIvfFrameRecords
+    ));
+}
+
+#[test]
 fn local_limits_reject_input_obus_ivf_records_and_frame_candidates() {
     let bytes = [
         obu(OBU_SEQUENCE_HEADER).as_slice(),
