@@ -18,6 +18,7 @@ mod conformance;
 mod decoder_support;
 mod diagnostic_registry;
 mod feature_status;
+mod fixtures;
 mod gen_tables;
 mod git_util;
 mod reference_evidence;
@@ -110,6 +111,8 @@ enum Task {
     CheckDiagnosticRegistry,
     /// Verify every fuzz_targets/*.rs file has a matching `[[bin]]` entry in fuzz/Cargo.toml.
     CheckFuzzTargets,
+    /// Verify tests/fixtures hashes + metadata against tests/fixtures/MANIFEST.toml (no decoder).
+    CheckFixtures,
     /// Render the implementation matrix (docs/IMPLEMENTATION-MATRIX.toml).
     FeatureStatus {
         /// Output format.
@@ -214,6 +217,7 @@ fn main() -> Result<()> {
             diagnostic_registry::check_diagnostic_registry(&workspace_root()?)
         }
         Task::CheckFuzzTargets => check_fuzz_targets(&workspace_root()?),
+        Task::CheckFixtures => fixtures::check_fixtures(&workspace_root()?),
         Task::FeatureStatus {
             format,
             category,
@@ -303,6 +307,7 @@ fn run_ci() -> Result<()> {
     feature_status::run_check_feature_status(&root)?;
     decoder_support::run_check_decoder_support(&root)?;
     diagnostic_registry::check_diagnostic_registry(&root)?;
+    fixtures::check_fixtures(&root)?;
 
     eprintln!("ci: all checks passed");
     Ok(())

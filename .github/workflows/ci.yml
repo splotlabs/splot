@@ -95,6 +95,7 @@ jobs:
       # sees registered [[bin]] targets, so an unregistered fuzz_targets/*.rs
       # file would be fuzzed by neither job without this check.
       - run: cargo xtask check-fuzz-targets
+      - run: cargo xtask check-fixtures
 
       - name: OpenSpec validation if available
         run: |
