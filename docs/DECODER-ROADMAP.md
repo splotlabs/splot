@@ -52,10 +52,11 @@ canonical decoded-frame hash input serialization, source-backed
 caller-supplied decoded frames. It also exposes scheduler-free scalar
 prediction primitives for square and rectangular § 7.13.2.10 DC intra
 prediction over caller-provided left/above edge samples, plus § 7.13.2.2
-basic/PAETH prediction over prepared left/above/top-left edge samples;
+basic/PAETH prediction over prepared left/above/top-left edge samples, and
+§ 7.13.2.13 smooth prediction over prepared left/above sentinel edge samples;
 rectangular both-edge DC prediction uses the § 7.13.3.22 approximate divisor
-path. Directional prediction, smooth prediction, data-driven prediction,
-subsampled DC, IBP, CfL, full `predict_intra()` dispatch, dequantization,
+path. Directional prediction, data-driven prediction, subsampled DC, IBP, CfL,
+full `predict_intra()` dispatch, dequantization,
 inverse transforms, residual addition, runtime decode output, output
 scheduling, and AV2 reference refresh semantics remain unimplemented.
 `splot-recon` remains scheduler-free:
@@ -162,7 +163,7 @@ other external decoder is forbidden.
 | 5 | Self-contained decode fuzz target and fixture smoke | `decode_plan_bytes` fuzz target supported for the raw byte planner; decode fixtures planned |
 | 6 | AV2 § 8 symbol/CDF decoder foundation | § 8.2 generic primitive partial; first crate-private partition CDF subset boundary partial; broad § 8.3 and tile decode planned |
 | 7 | Constrained intra tile syntax | tile payload and tile CDF boundaries partial; `decode_tile()` syntax planned |
-| 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | current-frame workspace plus square DC, rectangular DC, and basic/PAETH prediction primitives supported; directional/smooth/DIP/subsampled DC/IBP/CfL modes, dequant/reconstruction, inverse transforms, runtime hashes planned |
+| 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | current-frame workspace plus square DC, rectangular DC, basic/PAETH, and smooth prediction primitives supported; directional/DIP/subsampled DC/IBP/CfL modes, dequant/reconstruction, inverse transforms, runtime hashes planned |
 | 9 | Y4M output and reconstructed reference-frame store | reference-slot runtime store and source-backed Y4M writer supported; runtime Y4M output and AV2 refresh semantics planned |
 | 10 | Portable local-reference evidence manifests | metadata contract and offline checker wired; two AVM/dav2d raw MD5 agreement entries recorded as non-executable metadata |
 | 11 | Encoder reconstruction API contract | planned |

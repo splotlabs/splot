@@ -5,17 +5,19 @@
 //!
 //! Feature tracking: `RECON-CURRENT-FRAME-WORKSPACE`,
 //! `RECON-INTRA-DC-RECTANGULAR-PREDICTION`,
-//! `RECON-INTRA-BASIC-PAETH-PREDICTION`.
+//! `RECON-INTRA-BASIC-PAETH-PREDICTION`,
+//! `RECON-INTRA-SMOOTH-PREDICTION`.
 
 use core::mem;
 use core::ops::Range;
 
 use crate::intra::predict_intra_dc_rect_value_from_sums;
 use crate::intra_basic::predict_paeth_sample;
+use crate::intra_smooth::{SmoothSampleEdges, SmoothSamplePosition, predict_smooth_sample_values};
 use crate::{
     DecodedFrame, DecodedFrameInfo, FramePlanes, IntraDcEdges, IntraPaethEdge, IntraRectBlockSize,
-    IntraSquareBlockSize, PixelFormat, Plane, PlaneId, PlaneRect, PlaneSize, ReconError,
-    ReconSample, Result,
+    IntraSmoothEdge, IntraSmoothMode, IntraSquareBlockSize, PixelFormat, Plane, PlaneId, PlaneRect,
+    PlaneSize, ReconError, ReconSample, Result,
 };
 
 /// Mutable current-frame reconstruction workspace.
@@ -300,6 +302,30 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     ) -> Result<()> {
         let rect = block_rect(x, y, size)?;
         self.plane_mut(plane)?.predict_intra_paeth_rect(rect)
+    }
+
+    /// Predicts rectangular smooth intra samples into the workspace.
+    ///
+    /// This helper uses in-storage left, above, bottom-left, and top-right
+    /// neighbor samples as the prepared AV2 §7.13.2.13 inputs. It does not
+    /// synthesize §7.13.2.1 fallback samples or decide AV2 edge availability,
+    /// MRL, tile-boundary, or superblock semantics.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for invalid target geometry, absent planes, or
+    /// missing in-storage prepared edges.
+    pub fn predict_intra_smooth_rect(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        mode: IntraSmoothMode,
+    ) -> Result<()> {
+        let rect = block_rect(x, y, size)?;
+        let bit_depth = self.info.bit_depth();
+        self.plane_mut(plane)?
+            .predict_intra_smooth_rect(rect, size, mode, bit_depth)
     }
 
     /// Freezes the workspace into an immutable decoded frame.
@@ -603,6 +629,87 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                 let above = self.samples[above_range.start + column];
                 self.samples[target_range.start + column] =
                     predict_paeth_sample(left, above, top_left);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn predict_intra_smooth_rect(
+        &mut self,
+        rect: PlaneRect,
+        size: IntraRectBlockSize,
+        mode: IntraSmoothMode,
+        bit_depth: crate::BitDepth,
+    ) -> Result<()> {
+        self.ensure_rect(rect)?;
+        if rect.x() == 0 {
+            return Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
+                plane: self.plane,
+                edge: IntraSmoothEdge::Left,
+                rect,
+            });
+        }
+        if rect.y() == 0 {
+            return Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
+                plane: self.plane,
+                edge: IntraSmoothEdge::Above,
+                rect,
+            });
+        }
+        let bottom_left_y =
+            rect.y()
+                .checked_add(rect.height())
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "smooth intra prediction bottom-left row",
+                })?;
+        if bottom_left_y >= self.storage_size.height() {
+            return Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
+                plane: self.plane,
+                edge: IntraSmoothEdge::BottomLeft,
+                rect,
+            });
+        }
+        let top_right_x =
+            rect.x()
+                .checked_add(rect.width())
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "smooth intra prediction top-right column",
+                })?;
+        if top_right_x >= self.storage_size.width() {
+            return Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
+                plane: self.plane,
+                edge: IntraSmoothEdge::TopRight,
+                rect,
+            });
+        }
+
+        let above_range = self.row_range(rect.y() - 1, rect.x(), rect.width() + 1)?;
+        let bottom_left = self.samples[self.sample_index(rect.x() - 1, bottom_left_y)?];
+        let top_right = self.samples[above_range.start + rect.width()];
+
+        for row_index in 0..rect.height() {
+            let row = rect.y() + row_index;
+            let left = self.samples[self.sample_index(rect.x() - 1, row)?];
+            let target_range = self.row_range(row, rect.x(), rect.width())?;
+            for column in 0..rect.width() {
+                let top = self.samples[above_range.start + column];
+                let sample = predict_smooth_sample_values(
+                    bit_depth,
+                    size,
+                    mode,
+                    SmoothSampleEdges {
+                        left,
+                        top,
+                        bottom_left,
+                        top_right,
+                    },
+                    SmoothSamplePosition {
+                        row: row_index,
+                        column,
+                    },
+                )?;
+                self.samples[target_range.start + column] = sample;
             }
         }
 

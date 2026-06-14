@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 172 feature(s).
+Matrix version 1. Last reviewed 2026-06-14. 173 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -158,6 +158,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `RECON-INTRA-DC-SQUARE-PREDICTION` | Square DC intra prediction | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/intra.rs` |
 | `RECON-INTRA-DC-RECTANGULAR-PREDICTION` | Rectangular DC intra prediction | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/intra.rs` |
 | `RECON-INTRA-BASIC-PAETH-PREDICTION` | Basic PAETH intra prediction | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/intra_basic.rs` |
+| `RECON-INTRA-SMOOTH-PREDICTION` | Smooth intra prediction | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/intra_smooth.rs` |
 | `RECON-CURRENT-FRAME-WORKSPACE` | Current-frame reconstruction workspace | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/workspace.rs` |
 | `DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT` | Decoded frame and plane model contract documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `docs/DECODER-ROADMAP.md` |
 | `DOC-MINIMAL-DECODE-TIER-CONTRACT` | Minimal decode tier contract documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `docs/DECODER-ROADMAP.md` |

@@ -5,7 +5,10 @@
 
 use core::fmt;
 
-use crate::{BitDepth, IntraDcEdge, IntraPaethEdge, PlaneId, PlaneRect, PlaneSize, ReferenceSlot};
+use crate::{
+    BitDepth, IntraDcEdge, IntraPaethEdge, IntraSmoothEdge, PlaneId, PlaneRect, PlaneSize,
+    ReferenceSlot,
+};
 
 /// Result alias used by `splot-recon` constructors and helpers.
 pub type Result<T> = core::result::Result<T, ReconError>;
@@ -211,6 +214,39 @@ pub enum ReconError {
         /// Maximum sample value allowed by the active bit depth.
         max: u16,
     },
+    /// A supplied smooth intra prediction edge did not match the block size.
+    IntraSmoothEdgeLengthMismatch {
+        /// Edge whose sample count was checked.
+        edge: IntraSmoothEdge,
+        /// Expected edge sample count.
+        expected: usize,
+        /// Actual edge sample count.
+        actual: usize,
+    },
+    /// A smooth intra prediction edge sample exceeded the active bit depth.
+    IntraSmoothSampleOutOfRange {
+        /// Edge containing the out-of-range sample.
+        edge: IntraSmoothEdge,
+        /// Zero-based index within the edge samples.
+        sample_index: usize,
+        /// Observed sample value.
+        value: u16,
+        /// Maximum sample value allowed by the active bit depth.
+        max: u16,
+    },
+    /// A smooth intra prediction sample was outside the active bit depth.
+    IntraSmoothPredictionOutOfRange {
+        /// Row of the predicted sample.
+        row: usize,
+        /// Column of the predicted sample.
+        column: usize,
+        /// Predicted sample value.
+        value: i64,
+        /// Minimum allowed sample value.
+        min: i64,
+        /// Maximum sample value allowed by the active bit depth.
+        max: i64,
+    },
     /// An intra prediction block backing allocation failed.
     IntraPredictionAllocationFailed {
         /// Short description of the failed allocation.
@@ -236,6 +272,15 @@ pub enum ReconError {
         plane: PlaneId,
         /// Required edge that was outside workspace storage.
         edge: IntraPaethEdge,
+        /// Prediction rectangle needing the edge.
+        rect: PlaneRect,
+    },
+    /// A workspace smooth intra helper could not read a required prepared edge.
+    WorkspaceSmoothIntraPredictionEdgeUnavailable {
+        /// Plane whose workspace storage was checked.
+        plane: PlaneId,
+        /// Required edge that was outside workspace storage.
+        edge: IntraSmoothEdge,
         /// Prediction rectangle needing the edge.
         rect: PlaneRect,
     },
@@ -459,6 +504,35 @@ impl fmt::Display for ReconError {
                 "PAETH intra prediction {} edge sample {sample_index} value {value} exceeds maximum {max}",
                 edge.name()
             ),
+            Self::IntraSmoothEdgeLengthMismatch {
+                edge,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "smooth intra prediction {} edge length mismatch: expected {expected} samples, got {actual}",
+                edge.name()
+            ),
+            Self::IntraSmoothSampleOutOfRange {
+                edge,
+                sample_index,
+                value,
+                max,
+            } => write!(
+                f,
+                "smooth intra prediction {} edge sample {sample_index} value {value} exceeds maximum {max}",
+                edge.name()
+            ),
+            Self::IntraSmoothPredictionOutOfRange {
+                row,
+                column,
+                value,
+                min,
+                max,
+            } => write!(
+                f,
+                "smooth intra prediction sample at row {row} column {column} value {value} is outside {min}..={max}"
+            ),
             Self::IntraPredictionAllocationFailed { context } => {
                 write!(f, "failed to allocate {context}")
             }
@@ -476,6 +550,16 @@ impl fmt::Display for ReconError {
             Self::WorkspaceIntraPredictionEdgeUnavailable { plane, edge, rect } => write!(
                 f,
                 "current-frame workspace {} intra prediction requires {} edge for rectangle x={} y={} width={} height={}",
+                plane.name(),
+                edge.name(),
+                rect.x(),
+                rect.y(),
+                rect.width(),
+                rect.height()
+            ),
+            Self::WorkspaceSmoothIntraPredictionEdgeUnavailable { plane, edge, rect } => write!(
+                f,
+                "current-frame workspace {} smooth intra prediction requires {} edge for rectangle x={} y={} width={} height={}",
                 plane.name(),
                 edge.name(),
                 rect.x(),
