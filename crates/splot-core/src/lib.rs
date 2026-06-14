@@ -13,6 +13,8 @@
 //! - [`ivf`] — IVF container envelopes around Annex B payloads
 //!   (`AV2-IVF-CONTAINER`)
 //! - [`types`] — strongly-typed `obu_type` and layer ids (AV2 Table 6.1, § 6.2.2)
+//! - [`write`](mod@write) — bitstream **writer** primitives, the inverse of
+//!   [`bitio`] (`ENC-BITSTREAM-WRITER`)
 //!
 //! Design rules enforced here:
 //!
@@ -38,5 +40,6 @@ pub mod symbol;
 pub mod tables;
 pub mod tile;
 pub mod types;
+pub mod write;
 
 pub use error::{Error, Result};
