@@ -112,6 +112,45 @@ pub enum ReconError {
         /// Maximum value representable by the storage type.
         max: u16,
     },
+    /// A current-frame workspace backing allocation failed.
+    WorkspaceAllocationFailed {
+        /// Plane whose workspace storage was being allocated.
+        plane: PlaneId,
+        /// Short description of the failed allocation.
+        context: &'static str,
+    },
+    /// A requested current-frame workspace plane is not present.
+    MissingWorkspacePlane {
+        /// Missing workspace plane.
+        plane: PlaneId,
+    },
+    /// A current-frame workspace rectangle fell outside plane storage.
+    WorkspaceRectOutOfBounds {
+        /// Plane whose storage bounds were checked.
+        plane: PlaneId,
+        /// Storage dimensions used for the bounds check.
+        storage: PlaneSize,
+        /// Rectangle that exceeded `storage`.
+        rect: PlaneRect,
+    },
+    /// A caller-provided workspace write stride was too small.
+    WorkspaceWriteStrideTooSmall {
+        /// Plane being written.
+        plane: PlaneId,
+        /// Supplied source stride in samples.
+        stride_samples: usize,
+        /// Required write width in samples.
+        width: usize,
+    },
+    /// A caller-provided workspace write buffer was too small.
+    WorkspaceWriteLengthMismatch {
+        /// Plane being written.
+        plane: PlaneId,
+        /// Minimum required sample count.
+        expected: usize,
+        /// Actual supplied sample count.
+        actual: usize,
+    },
     /// A square intra prediction block size is outside the modeled range.
     InvalidIntraSquareBlockLog2 {
         /// Supplied base-2 logarithm of the square block size.
@@ -279,6 +318,51 @@ impl fmt::Display for ReconError {
             } => write!(
                 f,
                 "sample value {value} cannot be represented by {sample_type}; maximum is {max}"
+            ),
+            Self::WorkspaceAllocationFailed { plane, context } => write!(
+                f,
+                "failed to allocate current-frame workspace {} plane {context}",
+                plane.name()
+            ),
+            Self::MissingWorkspacePlane { plane } => {
+                write!(
+                    f,
+                    "current-frame workspace plane {} is not present",
+                    plane.name()
+                )
+            }
+            Self::WorkspaceRectOutOfBounds {
+                plane,
+                storage,
+                rect,
+            } => write!(
+                f,
+                "current-frame workspace {} rectangle x={} y={} width={} height={} is outside storage {}x{}",
+                plane.name(),
+                rect.x(),
+                rect.y(),
+                rect.width(),
+                rect.height(),
+                storage.width(),
+                storage.height()
+            ),
+            Self::WorkspaceWriteStrideTooSmall {
+                plane,
+                stride_samples,
+                width,
+            } => write!(
+                f,
+                "current-frame workspace {} write stride {stride_samples} samples is smaller than write width {width}",
+                plane.name()
+            ),
+            Self::WorkspaceWriteLengthMismatch {
+                plane,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "current-frame workspace {} write buffer is too small: expected at least {expected} samples, got {actual}",
+                plane.name()
             ),
             Self::InvalidIntraSquareBlockLog2 {
                 log2_size,
