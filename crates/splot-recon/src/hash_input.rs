@@ -1,20 +1,87 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Canonical decoded-frame hash input byte serialization.
+//! Canonical decoded-frame hash input byte serialization and digest computation.
 
-use std::io::{self, Write};
+use std::{
+    fmt,
+    io::{self, Write},
+};
+
+use sha2::{Digest, Sha256};
 
 use crate::{BitDepth, DecodedFrame, Plane, ReconError, ReconSample, Result};
 
-/// Canonical byte-stream view used as input to future decoded-frame hashes.
+/// Byte length of a `splot-dfh-sha256-v1` digest.
+const SHA256_DIGEST_BYTES: usize = 32;
+const SHA256_HEX_CHARS: usize = SHA256_DIGEST_BYTES * 2;
+const BYTE_STREAM_ID: &str = "av2-output-samples-v1";
+const VARIANT_ID: &str = "raw_intermediate_output";
+
+/// Repository-owned decoded-frame hash digest.
+///
+/// The digest is SHA-256 over the canonical `av2-output-samples-v1` byte
+/// stream for the `raw_intermediate_output` variant.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct DecodedFrameHash([u8; SHA256_DIGEST_BYTES]);
+
+impl DecodedFrameHash {
+    /// Stable decoded-frame hash contract identifier.
+    pub const CONTRACT_ID: &'static str = "splot.decoded_frame_hash";
+
+    /// Stable decoded-frame hash contract version.
+    pub const CONTRACT_VERSION: u32 = 1;
+
+    /// Stable digest algorithm identifier.
+    pub const ALGORITHM_ID: &'static str = "splot-dfh-sha256-v1";
+
+    /// Stable digest byte-stream identifier.
+    pub const BYTE_STREAM_ID: &'static str = BYTE_STREAM_ID;
+
+    /// Stable digest variant identifier.
+    pub const VARIANT_ID: &'static str = VARIANT_ID;
+
+    /// Number of raw bytes in the digest.
+    pub const BYTE_LEN: usize = SHA256_DIGEST_BYTES;
+
+    /// Returns the raw 32-byte digest.
+    pub const fn as_bytes(&self) -> &[u8; SHA256_DIGEST_BYTES] {
+        &self.0
+    }
+
+    /// Returns the digest as 64 lowercase hexadecimal characters.
+    pub fn to_hex(&self) -> String {
+        let mut hex = String::with_capacity(SHA256_HEX_CHARS);
+        for byte in self.0.iter().copied() {
+            push_lower_hex_byte(byte, &mut hex);
+        }
+        hex
+    }
+}
+
+impl AsRef<[u8]> for DecodedFrameHash {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
+impl fmt::Display for DecodedFrameHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in self.0 {
+            write_lower_hex_byte(f, byte)?;
+        }
+        Ok(())
+    }
+}
+
+/// Canonical byte-stream view used as input to decoded-frame hashes.
 ///
 /// This type serializes already materialized decoded output samples following
 /// AV2 § 6.16.13 sample-byte conversion
 /// (`docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13`)
-/// for the repository-owned `av2-output-samples-v1` byte stream. It does not
-/// compute SHA-256, verify AV2 decoded-frame-hash metadata, apply film grain,
-/// or determine output order.
+/// for the repository-owned `av2-output-samples-v1` byte stream and computes
+/// `splot-dfh-sha256-v1` over that same stream. It does not verify AV2
+/// decoded-frame-hash metadata, apply film grain, or determine output order.
 #[derive(Clone, Copy, Debug)]
 pub struct DecodedFrameHashInput<'a, T: ReconSample> {
     frame: &'a DecodedFrame<T>,
@@ -22,11 +89,11 @@ pub struct DecodedFrameHashInput<'a, T: ReconSample> {
 
 impl<'a, T: ReconSample> DecodedFrameHashInput<'a, T> {
     /// Repository-owned canonical decoded-output sample byte stream identifier.
-    pub const BYTE_STREAM_ID: &'static str = "av2-output-samples-v1";
+    pub const BYTE_STREAM_ID: &'static str = BYTE_STREAM_ID;
 
     /// Hash-input variant for raw § 7.21.2 intermediate output samples
     /// (`docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-2`).
-    pub const VARIANT_ID: &'static str = "raw_intermediate_output";
+    pub const VARIANT_ID: &'static str = VARIANT_ID;
 
     /// Creates a byte-stream view over `frame`.
     pub const fn new(frame: &'a DecodedFrame<T>) -> Self {
@@ -71,6 +138,20 @@ impl<'a, T: ReconSample> DecodedFrameHashInput<'a, T> {
             write_visible_plane(bit_depth, plane, writer)?;
         }
         Ok(())
+    }
+
+    /// Computes the repository-owned `splot-dfh-sha256-v1` digest.
+    ///
+    /// This method hashes visible samples directly and does not call
+    /// [`Self::write_to`], so it is infallible for an already validated
+    /// decoded frame and does not allocate a row buffer.
+    pub fn compute_hash(&self) -> DecodedFrameHash {
+        let mut hasher = Sha256::new();
+        let bit_depth = self.frame.bit_depth();
+        for plane in self.planes() {
+            hash_visible_plane(bit_depth, plane, &mut hasher);
+        }
+        DecodedFrameHash(hasher.finalize().into())
     }
 
     fn planes(&self) -> impl Iterator<Item = &'a Plane<T>> {
@@ -147,11 +228,69 @@ fn push_sample(bit_depth: BitDepth, sample: u16, row_bytes: &mut Vec<u8>) {
     }
 }
 
+fn hash_visible_plane<T: ReconSample>(bit_depth: BitDepth, plane: &Plane<T>, hasher: &mut Sha256) {
+    for row in plane.visible_rows() {
+        for sample in row {
+            hash_sample(bit_depth, sample.to_u16(), hasher);
+        }
+    }
+}
+
+fn hash_sample(bit_depth: BitDepth, sample: u16, hasher: &mut Sha256) {
+    match bit_depth {
+        BitDepth::Eight => hasher.update([sample as u8]),
+        BitDepth::Ten => hasher.update(sample.to_le_bytes()),
+    }
+}
+
+fn push_lower_hex_byte(byte: u8, hex: &mut String) {
+    hex.push_str(lower_hex_digit(byte >> 4));
+    hex.push_str(lower_hex_digit(byte & 0x0f));
+}
+
+fn write_lower_hex_byte(f: &mut fmt::Formatter<'_>, byte: u8) -> fmt::Result {
+    f.write_str(lower_hex_digit(byte >> 4))?;
+    f.write_str(lower_hex_digit(byte & 0x0f))
+}
+
+fn lower_hex_digit(nibble: u8) -> &'static str {
+    match nibble {
+        0 => "0",
+        1 => "1",
+        2 => "2",
+        3 => "3",
+        4 => "4",
+        5 => "5",
+        6 => "6",
+        7 => "7",
+        8 => "8",
+        9 => "9",
+        10 => "a",
+        11 => "b",
+        12 => "c",
+        13 => "d",
+        14 => "e",
+        15 => "f",
+        _ => "",
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::{DecodedFrameInfo, FramePlanes, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
+
+    const MONOCHROME_VISIBLE_ROWS_SHA256: &str =
+        "224a16a96e1b0b8b96ee83ec8146eed4144a1fabeb478cceb9ca26cb22e6ed0f";
+    const EIGHT_BIT_U16_SHA256: &str =
+        "0526d0e18ea19dfaad9d79166bec1e18d6221ef6b1830385fe9bf67022ed5f96";
+    const TEN_BIT_MONOCHROME_SHA256: &str =
+        "2ac60eed0d8e830b4c8807c24809d6e4511cada2c1457a89fa1cc03ca00efd72";
+    const TEN_BIT_YUV420_SHA256: &str =
+        "a6f36b1a26e02def03117c77bac50366d6a7c77e37bcb874fd5dcbcd34eee99c";
+    const ODD_SIZE_YUV420_SHA256: &str =
+        "93d30f9d5c5bca8daf2ecaef55337ac84ba835d871b199bd5c581fcd53dff922";
 
     fn size(width: usize, height: usize) -> PlaneSize {
         PlaneSize::new(width, height).unwrap()
@@ -236,8 +375,22 @@ mod tests {
         bytes
     }
 
+    fn assert_digest_matches_emitted_bytes<T: ReconSample>(frame: &DecodedFrame<T>) {
+        let input = DecodedFrameHashInput::new(frame);
+        let emitted = bytes(frame);
+        let expected = Sha256::digest(&emitted);
+
+        assert_eq!(input.compute_hash().as_ref(), expected.as_slice());
+    }
+
     #[test]
     fn identifiers_are_stable() {
+        assert_eq!(DecodedFrameHash::CONTRACT_ID, "splot.decoded_frame_hash");
+        assert_eq!(DecodedFrameHash::CONTRACT_VERSION, 1);
+        assert_eq!(DecodedFrameHash::ALGORITHM_ID, "splot-dfh-sha256-v1");
+        assert_eq!(DecodedFrameHash::BYTE_STREAM_ID, "av2-output-samples-v1");
+        assert_eq!(DecodedFrameHash::VARIANT_ID, "raw_intermediate_output");
+        assert_eq!(DecodedFrameHash::BYTE_LEN, 32);
         assert_eq!(
             DecodedFrameHashInput::<u8>::BYTE_STREAM_ID,
             "av2-output-samples-v1"
@@ -263,6 +416,10 @@ mod tests {
         let frame = mono_frame(0, BitDepth::Eight, storage, visible, y);
 
         assert_eq!(bytes(&frame), vec![101, 102, 111, 112]);
+        assert_eq!(
+            DecodedFrameHashInput::new(&frame).compute_hash().to_hex(),
+            MONOCHROME_VISIBLE_ROWS_SHA256
+        );
     }
 
     #[test]
@@ -273,6 +430,10 @@ mod tests {
         let frame = mono_frame(0, BitDepth::Eight, storage, visible, y);
 
         assert_eq!(bytes(&frame), vec![1, 2, 255]);
+        assert_eq!(
+            DecodedFrameHashInput::new(&frame).compute_hash().to_hex(),
+            EIGHT_BIT_U16_SHA256
+        );
     }
 
     #[test]
@@ -283,6 +444,10 @@ mod tests {
         let frame = mono_frame(0, BitDepth::Ten, storage, visible, y);
 
         assert_eq!(bytes(&frame), vec![1, 0, 2, 1, 255, 3]);
+        assert_eq!(
+            DecodedFrameHashInput::new(&frame).compute_hash().to_hex(),
+            TEN_BIT_MONOCHROME_SHA256
+        );
     }
 
     #[test]
@@ -304,6 +469,10 @@ mod tests {
         );
 
         assert_eq!(bytes(&frame), vec![1, 0, 2, 1, 255, 1, 255, 3, 33, 0, 1, 2]);
+        assert_eq!(
+            DecodedFrameHashInput::new(&frame).compute_hash().to_hex(),
+            TEN_BIT_YUV420_SHA256
+        );
     }
 
     #[test]
@@ -327,6 +496,10 @@ mod tests {
         assert_eq!(
             bytes(&frame),
             vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20, 21, 22, 23]
+        );
+        assert_eq!(
+            DecodedFrameHashInput::new(&frame).compute_hash().to_hex(),
+            ODD_SIZE_YUV420_SHA256
         );
     }
 
@@ -399,6 +572,82 @@ mod tests {
 
         assert_eq!(bytes(&compact), vec![77]);
         assert_eq!(bytes(&padded), vec![77]);
+        assert_eq!(
+            DecodedFrameHashInput::new(&compact).compute_hash(),
+            DecodedFrameHashInput::new(&padded).compute_hash()
+        );
+    }
+
+    #[test]
+    fn digest_exposes_raw_bytes_lowercase_hex_display_and_as_ref() {
+        let storage = size(4, 3);
+        let visible = rect(1, 1, 2, 2);
+        let y = plane(
+            storage,
+            5,
+            visible,
+            vec![
+                90_u8, 91, 92, 93, 94, 100, 101, 102, 103, 104, 110, 111, 112, 113, 114,
+            ],
+        );
+        let frame = mono_frame(7, BitDepth::Eight, storage, visible, y);
+        let hash = DecodedFrameHashInput::new(&frame).compute_hash();
+
+        assert_eq!(hash.as_bytes().len(), DecodedFrameHash::BYTE_LEN);
+        assert_eq!(hash.as_ref(), hash.as_bytes());
+        assert_eq!(hash.to_hex(), MONOCHROME_VISIBLE_ROWS_SHA256);
+        assert_eq!(hash.to_string(), hash.to_hex());
+        assert_eq!(hash.to_hex().len(), 64);
+        assert!(hash.to_hex().chars().all(|ch| ch.is_ascii_hexdigit()));
+        assert!(hash.to_hex().chars().all(|ch| !ch.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn digest_matches_sha256_over_write_to_bytes() {
+        let luma_size = size(3, 3);
+        let luma_rect = rect(0, 0, 3, 3);
+        let chroma_size = size(2, 2);
+        let chroma_rect = rect(0, 0, 2, 2);
+        let y = plane(luma_size, 3, luma_rect, vec![1_u8, 2, 3, 4, 5, 6, 7, 8, 9]);
+        let u = plane(chroma_size, 2, chroma_rect, vec![10_u8, 11, 12, 13]);
+        let v = plane(chroma_size, 2, chroma_rect, vec![20_u8, 21, 22, 23]);
+        let frame = yuv_frame(
+            11,
+            BitDepth::Eight,
+            PixelFormat::Yuv420,
+            luma_size,
+            luma_rect,
+            FramePlanes::new(y, Some(u), Some(v)),
+        );
+        assert_digest_matches_emitted_bytes(&frame);
+
+        let ten_bit_luma_size = size(2, 2);
+        let ten_bit_luma_rect = rect(0, 0, 2, 2);
+        let ten_bit_chroma_size = size(1, 1);
+        let ten_bit_chroma_rect = rect(0, 0, 1, 1);
+        let ten_bit_y = plane(
+            ten_bit_luma_size,
+            2,
+            ten_bit_luma_rect,
+            vec![1_u16, 0x0102, 511, 1023],
+        );
+        let ten_bit_u = plane(ten_bit_chroma_size, 1, ten_bit_chroma_rect, vec![33_u16]);
+        let ten_bit_v = plane(
+            ten_bit_chroma_size,
+            1,
+            ten_bit_chroma_rect,
+            vec![0x0201_u16],
+        );
+        let ten_bit_frame = yuv_frame(
+            12,
+            BitDepth::Ten,
+            PixelFormat::Yuv420,
+            ten_bit_luma_size,
+            ten_bit_luma_rect,
+            FramePlanes::new(ten_bit_y, Some(ten_bit_u), Some(ten_bit_v)),
+        );
+
+        assert_digest_matches_emitted_bytes(&ten_bit_frame);
     }
 
     #[test]
