@@ -104,6 +104,15 @@ fn validate_metadata(entry: &FixtureEntry) -> Vec<String> {
     }
     if entry.path.is_empty() {
         problems.push(format!("fixture `{label}` has an empty path"));
+    } else if entry.path.contains('/') || entry.path.starts_with('.') {
+        // The corpus is flat: `path` must be a bare filename. Rejecting separators
+        // and dot-prefixes keeps it canonical, so variant spellings (e.g.
+        // `./conformant.av2`) cannot dodge the uniqueness / git-tracked checks.
+        problems.push(format!(
+            "fixture `{label}`: path `{}` must be a bare filename under tests/fixtures/ \
+             (no `/` or leading `.`)",
+            entry.path
+        ));
     }
     if !is_sha256_hex(&entry.sha256) {
         problems.push(format!(
@@ -172,6 +181,16 @@ pub(crate) fn check_fixtures(root: &Path) -> Result<()> {
         );
     }
 
+    // The git-tracked `.av2` fixtures (index, not just the working tree), so a new
+    // fixture that was added to the manifest but never `git add`ed is caught here
+    // and not just later in CI on a clean checkout.
+    let tracked: BTreeSet<String> = run_git(root, &["ls-files", "tests/fixtures"])?
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("tests/fixtures/"))
+        .filter(|rel| rel.ends_with(".av2"))
+        .map(str::to_owned)
+        .collect();
+
     let mut problems: Vec<String> = Vec::new();
     let mut seen_names: BTreeSet<&str> = BTreeSet::new();
     let mut seen_paths: BTreeSet<&str> = BTreeSet::new();
@@ -184,7 +203,17 @@ pub(crate) fn check_fixtures(root: &Path) -> Result<()> {
         if !entry.path.is_empty() && !seen_paths.insert(entry.path.as_str()) {
             problems.push(format!("duplicate fixture path `{}`", entry.path));
         }
-        // Presence + content hash.
+        // Presence (must be git-tracked) + content hash. `validate_metadata` has
+        // already rejected non-bare paths, so `entry.path` is a plain filename and
+        // matches the `git ls-files` spelling directly.
+        if !entry.path.is_empty() && !tracked.contains(&entry.path) {
+            problems.push(format!(
+                "fixture `{}`: path `{}` is not a git-tracked tests/fixtures/*.av2 \
+                 (a local file may exist untracked — `git add` it)",
+                entry.name, entry.path
+            ));
+            continue;
+        }
         let file_path = fixtures_dir.join(&entry.path);
         match std::fs::read(&file_path) {
             Ok(bytes) => {
@@ -200,19 +229,15 @@ pub(crate) fn check_fixtures(root: &Path) -> Result<()> {
                 }
             }
             Err(_) => problems.push(format!(
-                "fixture `{}`: manifest path `{}` does not exist",
+                "fixture `{}`: tracked path `{}` could not be read",
                 entry.name, entry.path
             )),
         }
     }
 
-    // Orphans: every committed `tests/fixtures/*.av2` must be in the manifest.
-    for tracked in run_git(root, &["ls-files", "tests/fixtures"])?.lines() {
-        let tracked = tracked.trim();
-        let Some(rel) = tracked.strip_prefix("tests/fixtures/") else {
-            continue;
-        };
-        if rel.ends_with(".av2") && !seen_paths.contains(rel) {
+    // Orphans: every git-tracked `tests/fixtures/*.av2` must be in the manifest.
+    for rel in &tracked {
+        if !seen_paths.contains(rel.as_str()) {
             problems.push(format!(
                 "committed fixture `{rel}` is not in MANIFEST.toml (never hash-checked)"
             ));
@@ -315,6 +340,20 @@ mod tests {
     #[test]
     fn empty_diagnostics_set_is_flagged() {
         assert!(!validate_metadata(&entry(Category::ValidationError, diags(&[]))).is_empty());
+    }
+
+    #[test]
+    fn non_bare_paths_are_flagged() {
+        // A bare filename is fine.
+        assert!(validate_metadata(&entry(Category::Valid, clean())).is_empty());
+        for bad in ["./conformant.av2", "sub/x.av2", "../x.av2", ".hidden.av2"] {
+            let mut e = entry(Category::Valid, clean());
+            e.path = bad.to_owned();
+            assert!(
+                !validate_metadata(&e).is_empty(),
+                "expected `{bad}` to be flagged as a non-bare path"
+            );
+        }
     }
 
     #[test]
