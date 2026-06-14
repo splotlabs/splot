@@ -507,7 +507,9 @@ reference refresh process, hash digest computation, or Y4M writer.
 `splot-decode` owns the future decode scheduler boundary through
 `DecodeRuntimeConfig` and `DecodeContext`, whose single `WorkerPool` is sized by
 the CLI/runtime `--threads` policy. It now depends on `splot-core` for parsed
-stream-planner input, but still exposes no raw byte-consuming decode API.
+stream-planner input and the bounded raw-byte `plan_bytes` planner, while still
+exposing no runtime tile decode, pixel reconstruction, hash digest, Y4M output,
+or reference update semantics.
 `splot-cli` only renders the current unsupported diagnostic path, and
 `splot-encode` remains unchanged until a later encoder/reconstruction API
 change explicitly adds reuse of `splot-recon`.

@@ -36,7 +36,7 @@ section); `docs/SPEC-MAPPING.md` holds the spec sources and rules, not per-featu
 crates/splot-core      AV2 bitstream model + parsers (no other splot-* dependency)
 crates/splot-parallel  approved concurrency primitives (Rayon pool + bounded crossbeam queues); no other splot-* dependency
 crates/splot-recon     future reconstruction primitives (no other splot-* dependency)
-crates/splot-decode    decoder diagnostic API; future driver -> splot-parallel (approved future -> splot-core, splot-recon)
+crates/splot-decode    decoder diagnostic API + stream planning -> splot-core, splot-parallel (approved future -> splot-recon)
 crates/splot-validate  parser-driven conformance diagnostics  -> splot-core
 crates/splot-encode    future encoder API (stub)              -> splot-core, splot-parallel
 crates/splot-cli       thin `splot` binary -> splot-core, splot-parallel, splot-decode, splot-validate, splot-encode
@@ -49,9 +49,9 @@ fuzz                   cargo-fuzz target (outside the workspace)
 - `splot-core` depends on no other `splot-*` crate.
 - `splot-parallel` depends on no other `splot-*` crate.
 - `splot-recon` depends on no other `splot-*` crate.
-- `splot-decode` depends on `splot-parallel` today; its approved future internal
-  dependencies are `splot-core` and `splot-recon` once runtime decode source code
-  needs them.
+- `splot-decode` depends only on `splot-core` and `splot-parallel` today; its
+  approved future internal dependency is `splot-recon` once runtime decode or
+  reconstruction handoff code needs it.
 - `splot-validate` depends only on `splot-core`.
 - `splot-encode` depends only on `splot-core` and `splot-parallel`.
 - `splot-cli` depends only on `splot-core`, `splot-parallel`, `splot-decode`,
