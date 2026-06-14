@@ -1,0 +1,9 @@
+---
+source: crates/splot-cli/tests/inspect_text_snapshots.rs
+expression: "inspect_text(\"conformant.av2\", &[])"
+---
+2 OBU(s)
+OBU #0  @byte 1  size=1  type=OBU_TEMPORAL_DELIMITER(2)  ext=false  tlayer=0 mlayer=0 xlayer=31
+        payload: 0 byte(s)
+OBU #1  @byte 3  size=11  type=OBU_SEQUENCE_HEADER(1)  ext=false  tlayer=0 mlayer=0 xlayer=0
+        payload: 10 byte(s)
