@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 166 feature(s).
+Matrix version 1. Last reviewed 2026-06-14. 167 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -15,6 +15,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-4.11.5-LE` | Little-endian fixed-width descriptor | normative | bitstream-syntax | done | n/a | done | n/a | done | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
 | `AV2-4.11.8-NS` | Non-symmetric integer descriptor | normative | bitstream-syntax | done | n/a | done | n/a | done | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
 | `AV2-4.11.7-SU` | Signed integer descriptor | normative | bitstream-syntax | done | n/a | done | n/a | done | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
+| `AV2-4.11.10-RG` | Rice-Golomb descriptor | normative | bitstream-syntax | done | n/a | done | n/a | done | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
 | `AV2-5.2.2-OBU-HEADER` | OBU header syntax | normative | bitstream-syntax | done | done | done | done | todo | n/a | done | done | pending | `crates/splot-core/src/obu.rs` |
 | `AV2-5.2.1-OBU-TYPE` | OBU type and OBU-class predicates | normative | bitstream-syntax | done | done | done | done | n/a | n/a | done | done | pending | `crates/splot-core/src/types.rs` |
 | `AV2-5.2.1-OBU-DISPATCH` | open_bitstream_unit payload dispatch | normative | bitstream-syntax | done | done | partial | n/a | todo | n/a | partial | done | pending | `crates/splot-core/src/obu.rs` |

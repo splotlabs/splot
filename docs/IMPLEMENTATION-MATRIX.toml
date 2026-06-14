@@ -265,6 +265,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "AV2-4.11.10-RG"
+name = "Rice-Golomb descriptor"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["4.11.10"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/bitio.rs"
+openspec_change = "bit-writer-primitives"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Implemented as BitReader::read_rg(n) from AV2 §4.11.10 (mirror docs/spec/av2/1.0.0/04-conventions.md#s-4-11-10): a unary quotient prefix, a terminating zero bit, then an n-bit remainder, with the prefix-must-terminate-within-32-bits conformance bound; used by ci_color_description_idc (§6.14). The inverse BitWriter::write_rg(value, n) (crates/splot-core/src/write/bit_writer.rs) landed with bit-writer-primitives, proven by the read(write(x)) == x property test. The parse stage predates this row; the row was added when the writer landed so the rg descriptor is tracked independently like its §4.11 siblings (the foundational f(n) read/write stays under the umbrella ENC-BITSTREAM-WRITER row)."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "done"
+validate = "not-applicable"
+write = "done"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests", "crates/splot-core/src/write/bit_writer.rs::tests", "crates/splot-core/src/write/bit_writer.rs::proptests"]
+commands = ["cargo test -p splot-core bitio", "cargo test -p splot-core write"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "AV2-5.2.2-OBU-HEADER"
 name = "OBU header syntax"
 category = "normative"
