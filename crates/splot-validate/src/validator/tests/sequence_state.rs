@@ -314,6 +314,54 @@ fn tightened_limit_applies_after_reconfirming_frame() {
 }
 
 #[test]
+fn redefinition_window_padding_carrier_full_stream_is_conformant() {
+    // The fully-conformant well-formed regression vector for the § 6.2.2 NOTE refinement
+    // (mirror `06-syntax-structures-semantics.md` lines 197-198). The sibling
+    // `redefinition_*` tests above assert only the absence/presence of the §6.2.2 diagnostic
+    // on minimal streams; this one asserts the WHOLE 7-OBU stream is conformant
+    // (`is_conformant()`), proving the fix does not false-positive on a genuinely conformant
+    // bitstream — not merely that one diagnostic is suppressed.
+    //
+    // OBU_PADDING is the carrier: a non-global padding OBU is subject to the §6.2.2
+    // obu_tlayer_id limit yet, unlike every frame-unit-bound §6.2.2-subject OBU (tile groups,
+    // QM/film-grain/metadata frame prefixes), §7.3.6 lets it sit anywhere inside a coded
+    // extended layer unit — including the pre-CLK window between a §7.3.6 same-id redefinition
+    // and the CLK frame that re-activates it. A frame carrier there is rejected by §7.3.6
+    // (the first coded frame unit of the lowest embedded layer must be the CLK), which is why
+    // a clean single-extended-layer vector requires padding.
+    //
+    // X = padding, obu_tlayer_id 2, in that pre-reactivation window. § 5.18.2 activation is a
+    // frame event: the redefined L_new (max_tlayer_id 1) is stored but not activated until the
+    // CLK frame that follows X, so X is bounded by the prior activated L_old (max_tlayer_id 3)
+    // — conformant. Under a random-access start at this temporal unit X still precedes the
+    // activating CLK, so it falls in the §6.2.2 NOTE pre-activation carve-out — also
+    // conformant. This mirrors the AVM reference, whose §6.2.2 check runs only at frame
+    // activation against the active (not the stored/redefined) sequence header. The pre-fix
+    // live-store read evaluated X against L_new and produced a spurious tlayer-exceeds-max.
+    //
+    // Both coded video sequences begin with a CLK: § 7.3.6 (mirror
+    // `07-decoding-process.md` lines 604-606, 990-996) starts a CVS at a temporal unit
+    // containing an OBU_CLOSED_LOOP_KEY / closed random access point, so the *first* coded
+    // frame is a CLK too — otherwise the stream would begin outside any CVS and a future
+    // initial-CVS/RAP check could fail this regression for an unrelated reason.
+    let mut data = temporal_delimiter_obu();
+    data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 3, 0))); // L_old, max_tlayer 3
+    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK starts CVS_k, activates L_old (max 3)
+    data.extend(temporal_delimiter_obu());
+    data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 0))); // L_new redef, max_tlayer 1
+    data.extend(annex_b_obu_with_header(&layer_obu_header(25, 2, 0, 0), &[])); // OBU_PADDING X, tlayer 2
+    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK starts CVS_(k+1), re-activates L_new
+
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        report.is_conformant(),
+        "the pre-reactivation padding (obu_tlayer_id 2) is bounded by the prior activated \
+         max_tlayer_id 3 (§ 6.2.2 NOTE), so the whole stream must be conformant; report was: \
+         {report}"
+    );
+}
+
+#[test]
 fn stateful_diagnostics_from_prefix_survive_a_later_parse_error() {
     let mut data = stream_with_sequence_header(0, 0);
     data.extend(annex_b_obu_with_header(&layer_obu_header(6, 1, 0, 0), &[]));
