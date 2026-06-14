@@ -95,24 +95,33 @@ fn parse_entries(doc: &str) -> Result<Vec<Entry>> {
         if !trimmed.starts_with('|') {
             continue;
         }
-        // Split a `| id | severity | section | condition |` row. A 4-column row has
-        // at least 6 split parts (leading empty + 4 cells + trailing empty); the
-        // 3-column `*/syntax` table has only 5, so `< 6` excludes it.
-        let cells: Vec<&str> = trimmed.split('|').collect();
-        if cells.len() < 6 {
-            continue;
+        // Split a `| id | severity | section | condition |` row into columns. Drop the
+        // leading empty (the row starts with `|`) and an optional trailing empty (a
+        // closing `|`), so rows with OR without a trailing pipe — both valid GitHub
+        // Markdown — parse to the same columns. A diagnostics row then has >= 4
+        // columns; the 3-column `*/syntax` table is shorter and stays excluded.
+        let mut cells: Vec<&str> = trimmed.split('|').collect();
+        cells.remove(0); // the empty before the opening `|` (row is `starts_with('|')`)
+        if cells.last().is_some_and(|cell| cell.trim().is_empty()) {
+            cells.pop(); // the empty after a closing `|`, when present
         }
-        let id_cell = cells[1].trim();
-        let Some(rule_id) = id_cell.strip_prefix('`').and_then(|s| s.strip_suffix('`')) else {
+        if cells.len() < 4 {
+            continue; // separator, prose, or the 3-column `*/syntax` table
+        }
+        let Some(rule_id) = cells[0]
+            .trim()
+            .strip_prefix('`')
+            .and_then(|s| s.strip_suffix('`'))
+        else {
             continue; // header row / separator / prose, not a diagnostics row
         };
         if !is_rule_id(rule_id) {
             continue; // a backtick token that is not a rule id
         }
-        // From here the row IS a 4-column diagnostics row (a valid backtick rule id
-        // in the second cell), so its severity MUST be valid — a silent skip would
-        // drop a real diagnostic (e.g. a dual `error/warning` cell).
-        let severity_cell = cells[2].trim();
+        // From here the row IS a diagnostics row (a valid backtick rule id in the
+        // first column), so its severity MUST be valid — a silent skip would drop a
+        // real diagnostic (e.g. a dual `error/warning` cell).
+        let severity_cell = cells[1].trim();
         if !is_severity_cell(severity_cell) {
             bail!(
                 "gen-explain: rule `{rule_id}` in {DOC_REL} has an unparsable severity `{severity_cell}`"
@@ -125,10 +134,10 @@ fn parse_entries(doc: &str) -> Result<Vec<Entry>> {
             .map(str::trim)
             .collect::<Vec<_>>()
             .join(", ");
-        let section = parse_section(cells[3].trim());
+        let section = parse_section(cells[2].trim());
         // Rejoin any `|` that appeared inside the condition cell (defensive: the doc
         // has none today) so an embedded pipe never silently drops the row.
-        let summary = cells[4..cells.len() - 1].join("|").trim().to_owned();
+        let summary = cells[3..].join("|").trim().to_owned();
         if summary.is_empty() {
             bail!("gen-explain: empty condition for `{rule_id}` in {DOC_REL}");
         }
@@ -237,6 +246,7 @@ intro `ns/before`
 | `brt/bar` | warning |  | no section here |
 | `ops/dual` | error/warning | § 6.1 | emitted as either severity |
 | `ops/piped` | info | § 6.2 | left | right pipe in condition |
+| `ops/notrail` | warning | § 6.3 | a valid row without a trailing pipe
 
 ### check registry identifiers
 | Registry ID | Parse § | Routed through |
@@ -251,7 +261,21 @@ outro `ns/after`
         let entries = parse_entries(DOC).unwrap();
         let ids: Vec<&str> = entries.iter().map(|e| e.rule_id.as_str()).collect();
         // Sorted; the 3-col syntax row and prose ids are excluded.
-        assert_eq!(ids, ["brt/bar", "ops/dual", "ops/foo", "ops/piped"]);
+        assert_eq!(
+            ids,
+            ["brt/bar", "ops/dual", "ops/foo", "ops/notrail", "ops/piped"]
+        );
+    }
+
+    #[test]
+    fn row_without_a_trailing_pipe_is_parsed() {
+        // GitHub Markdown allows a table row to omit the closing `|`; such a row must
+        // still be captured (and the 3-col `*/syntax` table still excluded by count).
+        let entries = parse_entries(DOC).unwrap();
+        let notrail = entries.iter().find(|e| e.rule_id == "ops/notrail").unwrap();
+        assert_eq!(notrail.severity, "warning");
+        assert_eq!(notrail.section.as_deref(), Some("§ 6.3"));
+        assert_eq!(notrail.summary, "a valid row without a trailing pipe");
     }
 
     #[test]
