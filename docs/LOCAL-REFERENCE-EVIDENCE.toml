@@ -5,7 +5,8 @@
 # The checker reads committed metadata and committed fixture bytes, but never
 # locates, builds, or runs AVM, dav2d, ffmpeg, the network, or `splot decode`.
 #
-# Future entries use this shape:
+# Entries use this shape (comments are illustrative only; real entries below are
+# checked by the offline manifest validator):
 #
 # [[evidence]]
 # id = "lref-avm-dav2d-example"
@@ -40,10 +41,128 @@
 # output_digest = "<32 lowercase hex>"
 # output_scope = "reference raw decoder output, not splot-dfh-sha256-v1"
 #
+# [[evidence.reference_run]]
+# id = "dav2d"
+# tool = "dav2d"
+# executable_name = "dav2d"
+# tool_role = "decode-reference"
+# source_url = "https://code.videolan.org/videolan/dav2d"
+# revision = "<tag-or-commit>"
+# version_summary = "sanitized version output with no local paths"
+# command_summary = "dav2d decoded the committed fixture input to raw output"
+# output_digest_id = "dav2d-raw-md5"
+# output_digest_algorithm = "md5"
+# output_digest = "<32 lowercase hex>"
+# output_scope = "reference raw decoder output, not splot-dfh-sha256-v1"
+#
 # [[evidence.assertion]]
 # kind = "digest-equality"
 # left = "avm-raw-md5"
 # right = "dav2d-raw-md5"
 
 manifest_version = 1
-last_reviewed = "2026-06-13"
+last_reviewed = "2026-06-14"
+
+[[evidence]]
+id = "lref-avm-dav2d-syn-key-intra-64x64"
+feature_id = "RECON-HASH-INPUT-SERIALIZATION"
+decoder_support_rows = ["deterministic-frame-hash"]
+kind = "reference-output-agreement"
+summary = "Archived local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 64x64 synthetic intra IVF fixture."
+recorded_at = "2026-06-13"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-key-intra-64x64.ivf"
+sha256 = "8310661d3b68ee9560be0c61f5bae65fe10f3667b8b65e18a4ad5db1fbc4127d"
+size_bytes = 140
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from project-owned synthetic YUV input; AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "decode_to_md5"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "f6f0b9c8914f38be39a953c0a9aa6a2e4050717c"
+version_summary = "AVM commit f6f0b9c8914f38be39a953c0a9aa6a2e4050717c recorded in archived agent log, exact version output not archived."
+command_summary = "Archived local AVM raw MD5 run for {fixture:input}, exact arguments not archived."
+output_digest_id = "avm-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "f2d45ae552bebe211f3156daf0a7fcf6"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d commit f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352 recorded in archived agent log, exact version output not archived."
+command_summary = "Archived local dav2d raw output MD5 run for {fixture:input}, exact arguments not archived."
+output_digest_id = "dav2d-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "f2d45ae552bebe211f3156daf0a7fcf6"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-raw-md5"
+right = "dav2d-raw-md5"
+
+[[evidence]]
+id = "lref-avm-dav2d-syn-intra-64x64-10bit"
+feature_id = "RECON-HASH-INPUT-SERIALIZATION"
+decoder_support_rows = ["deterministic-frame-hash"]
+kind = "reference-output-agreement"
+summary = "Archived local AVM and dav2d raw decoder output MD5 digests agreed for the 10-bit 64x64 synthetic intra IVF fixture."
+recorded_at = "2026-06-13"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-intra-64x64-10bit.ivf"
+sha256 = "83f36347e4fab4d083acb6ba227d3e8296115fd0efe89fa3f8ff1db4b76208e2"
+size_bytes = 126
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from project-owned synthetic YUV input; AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "decode_to_md5"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "f6f0b9c8914f38be39a953c0a9aa6a2e4050717c"
+version_summary = "AVM commit f6f0b9c8914f38be39a953c0a9aa6a2e4050717c recorded in archived agent log, exact version output not archived."
+command_summary = "Archived local AVM raw MD5 run for {fixture:input}, exact arguments not archived."
+output_digest_id = "avm-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "6c9c31585f56bcc7ca40cfbb319f7bb5"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d commit f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352 recorded in archived agent log, exact version output not archived."
+command_summary = "Archived local dav2d raw output MD5 run for {fixture:input}, exact arguments not archived."
+output_digest_id = "dav2d-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "6c9c31585f56bcc7ca40cfbb319f7bb5"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-raw-md5"
+right = "dav2d-raw-md5"

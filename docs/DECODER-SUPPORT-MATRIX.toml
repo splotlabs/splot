@@ -54,8 +54,8 @@ tier = "foundation"
 status = "supported"
 self_contained_tests = ["xtask/src/reference_evidence/tests.rs::tests", "cargo test -p xtask reference_evidence --locked", "cargo xtask check-reference-evidence", "cargo xtask check-decoder-support"]
 diagnostics = []
-local_reference_evidence = []
-notes = "Versioned docs/LOCAL-REFERENCE-EVIDENCE.toml schema and offline checker for future local AVM/dav2d digest metadata. The checker validates manifest portability, repo-relative fixture paths, committed fixture hashes, digest metadata, and equality assertions without invoking external decoders. The manifest currently has no evidence entries and does not prove runtime decode, reconstruction, hash, or Y4M support."
+local_reference_evidence = ["docs/LOCAL-REFERENCE-EVIDENCE.toml records two checked AVM/dav2d raw MD5 agreement entries as non-executable metadata."]
+notes = "Versioned docs/LOCAL-REFERENCE-EVIDENCE.toml schema and offline checker for local AVM/dav2d digest metadata. The checker validates manifest portability, repo-relative fixture paths, committed fixture hashes, digest metadata, and equality assertions without invoking external decoders. The manifest includes two checked raw reference-output agreement entries and does not prove runtime decode, reconstruction, hash, or Y4M support."
 
 [[row]]
 id = "decoder-crate-scaffolding"
@@ -208,7 +208,7 @@ tier = "foundation"
 status = "partial"
 self_contained_tests = ["crates/splot-recon/src/hash_input.rs::tests", "cargo test -p splot-recon --locked", "cargo clippy -p splot-recon --all-targets --locked -- -D warnings", "cargo xtask check-dependency-direction", "cargo xtask check-decoder-support"]
 diagnostics = []
-local_reference_evidence = ["Archived local AVM/dav2d raw MD5 agreement for two tiny fixtures is recorded in openspec/changes/archive/2026-06-13-decoder-roadmap-matrix-boundary/agent-log.md; this is non-executable metadata only and not proof of splot hash implementation."]
+local_reference_evidence = ["docs/LOCAL-REFERENCE-EVIDENCE.toml::lref-avm-dav2d-syn-key-intra-64x64", "docs/LOCAL-REFERENCE-EVIDENCE.toml::lref-avm-dav2d-syn-intra-64x64-10bit"]
 notes = "Source-backed `splot-recon` hash-input byte serialization for `splot.decoded_frame_hash` v1: `DecodedFrameHashInput<'_, T>` emits the repository-owned `av2-output-samples-v1` byte stream for caller-supplied raw `DecodedFrame<T>` visible rows, using AV2 §6.16.13 sample-byte order, Y/U/V plane order, one byte for 8-bit output, and little-endian two-byte samples for >8-bit output. It excludes stride, padding, output index, dimensions, pixel format metadata, OBU/container bytes, and decoded-frame-hash metadata. This is hash input only: SHA-256 digest computation, AV2 metadata MD5 verification, output ordering, film-grain synthesis, byte-consuming decode, Y4M output, and AVM/dav2d invocation remain unsupported."
 
 [[row]]
