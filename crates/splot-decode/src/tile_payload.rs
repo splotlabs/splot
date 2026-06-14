@@ -9,8 +9,13 @@
 // the boundary into `DecodeContext`; focused tests exercise the API in this PR.
 #![allow(dead_code)]
 
+mod cdf;
+
 use core::fmt;
 
+use cdf::{
+    FrameCdfSubset, TileCdfError, TileCdfPolicyInput, TileCdfWorkUnitBoundary, tile_cdf_save_policy,
+};
 use splot_core::headers::tile_group::{TileFramingDefect, TileGroupFraming};
 use splot_core::span::{ByteOffset, ByteSpan};
 use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
@@ -153,6 +158,7 @@ pub(crate) struct TileFrameFacts {
     bru_path: TileBruPath,
     base_q_idx: u32,
     disable_cdf_update: bool,
+    cdf_policy: TileCdfPolicyInput,
 }
 
 impl TileFrameFacts {
@@ -178,7 +184,15 @@ impl TileFrameFacts {
             bru_path,
             base_q_idx,
             disable_cdf_update,
+            cdf_policy: TileCdfPolicyInput::single_tile_default(),
         }
+    }
+
+    /// Returns a copy with explicit tile CDF policy facts.
+    #[must_use]
+    pub(crate) const fn with_cdf_policy(mut self, cdf_policy: TileCdfPolicyInput) -> Self {
+        self.cdf_policy = cdf_policy;
+        self
     }
 }
 
@@ -222,6 +236,11 @@ impl<'a> DecodeTilePayloadPlan<'a> {
         &self.work_units
     }
 
+    /// Mutable tile work units for future tile syntax traversal.
+    pub(crate) fn work_units_mut(&mut self) -> &mut [DecodeTileWorkUnit<'a>] {
+        &mut self.work_units
+    }
+
     /// Unsupported boundary reached after creating tile work units.
     #[must_use]
     pub(crate) const fn unsupported(&self) -> TilePayloadUnsupported {
@@ -251,6 +270,7 @@ pub(crate) struct DecodeTileWorkUnit<'a> {
     current_q_index_at_entry: u32,
     bru_path: TileBruPath,
     symbol: SymbolInitBoundary,
+    cdf: TileCdfWorkUnitBoundary,
 }
 
 impl<'a> DecodeTileWorkUnit<'a> {
@@ -324,6 +344,17 @@ impl<'a> DecodeTileWorkUnit<'a> {
     #[must_use]
     pub(crate) const fn symbol(&self) -> SymbolInitBoundary {
         self.symbol
+    }
+
+    /// Tile-local CDF selection boundary facts.
+    #[must_use]
+    pub(crate) const fn cdf(&self) -> &TileCdfWorkUnitBoundary {
+        &self.cdf
+    }
+
+    /// Mutable tile CDF boundary metadata attached to this work unit.
+    pub(crate) fn cdf_mut(&mut self) -> &mut TileCdfWorkUnitBoundary {
+        &mut self.cdf
     }
 }
 
@@ -458,6 +489,8 @@ pub(crate) struct TilePayloadUnsupported {
     tile_num: Option<u32>,
     byte_offset: ByteOffset,
     spec_section: &'static str,
+    matrix_row: &'static str,
+    feature_id: &'static str,
     message: &'static str,
 }
 
@@ -473,6 +506,8 @@ impl TilePayloadUnsupported {
             tile_num,
             byte_offset,
             spec_section: reason.spec_section(),
+            matrix_row: TILE_PAYLOAD_DECODE_MATRIX_ROW,
+            feature_id: TILE_PAYLOAD_DECODE_FEATURE_ID,
             message,
         }
     }
@@ -486,13 +521,13 @@ impl TilePayloadUnsupported {
     /// Decoder support matrix row.
     #[must_use]
     pub(crate) const fn matrix_row(self) -> &'static str {
-        TILE_PAYLOAD_DECODE_MATRIX_ROW
+        self.matrix_row
     }
 
     /// Feature ID.
     #[must_use]
     pub(crate) const fn feature_id(self) -> &'static str {
-        TILE_PAYLOAD_DECODE_FEATURE_ID
+        self.feature_id
     }
 
     /// AV2 spec section associated with the unsupported boundary.
@@ -556,6 +591,9 @@ pub(crate) enum TilePayloadBoundaryError {
     /// The boundary is outside the current supported tile payload tier.
     #[error("unsupported tile payload boundary: {0}")]
     Unsupported(TilePayloadUnsupported),
+    /// Tile CDF boundary facts are invalid.
+    #[error("tile CDF boundary failed: {0}")]
+    Cdf(#[from] TileCdfError),
     /// Symbol initialization failed for the bounded tile slice.
     #[error("tile payload symbol initialization failed: {0}")]
     Symbol(#[from] splot_core::Error),
@@ -730,6 +768,13 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         symbol_max_bits: symbol.symbol_max_bits(),
         cdf_update_mode,
     };
+    let frame_cdfs = FrameCdfSubset::from_defaults();
+    let cdf_policy = input
+        .frame
+        .cdf_policy
+        .with_tile_grid(input.grid.tile_cols, input.grid.tile_rows);
+    let save_policy = tile_cdf_save_policy(cdf_policy, tile.tile_num)?;
+    let cdf = TileCdfWorkUnitBoundary::new(cdf_update_mode, save_policy, frame_cdfs.tile_copy());
     let work_unit = DecodeTileWorkUnit {
         source: input.source,
         selected_layer: input.selected_layer,
@@ -744,12 +789,13 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         current_q_index_at_entry: input.frame.base_q_idx,
         bru_path: input.frame.bru_path,
         symbol,
+        cdf,
     };
     let unsupported = TilePayloadUnsupported::new(
         TilePayloadUnsupportedReason::DecodeTileSyntax,
         Some(tile.tile_num),
         absolute_tile_offset,
-        "tile bytes are framed and symbol initialization is bounded, but §5.20.2.1 decode_tile() and §8.3 CDF selection are not implemented yet.",
+        "tile bytes are framed, symbol initialization is bounded, and the first partition CDF subset is selectable, but §5.20.2.1 decode_tile() block syntax is not implemented yet.",
     );
 
     Ok(DecodeTilePayloadPlan {

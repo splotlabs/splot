@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 165 feature(s); 118 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-14. 166 feature(s); 119 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -129,8 +129,11 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `AV2-5.19-TILE-GROUP` | ✅ | 🟡 | 🟡 | ✅ | 7 |
 | [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `AV2-5.20-TILE-GROUP-PAYLOAD` | ✅ | 🟡 | 🟡 | ✅ | 3 |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
+| [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-TILE-PAYLOAD-BOUNDARY` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `DECODE-TILE-PAYLOAD-BOUNDARY` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.3.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2) | Read partition syntax | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 
 ## Chapter 6 — Syntax structures semantics
 
@@ -243,6 +246,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.19](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19) | Tile group payload semantics | `AV2-5.19-TILE-GROUP` | ✅ | 🟡 | 🟡 | ✅ | 7 |
 | [§ 6.19](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19) | Tile group payload semantics | `AV2-5.20-TILE-GROUP-PAYLOAD` | ✅ | 🟡 | 🟡 | ✅ | 3 |
 | [§ 6.19.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1) | General tile group payload semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
+| [§ 6.19.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1) | General tile group payload semantics | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 6.19.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1) | General tile group payload semantics | `DECODE-TILE-PAYLOAD-BOUNDARY` | ✅ | 🟡 | — | ✅ | 2 |
 
 ## Chapter 7 — Decoding process
@@ -295,12 +299,17 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | Section | Spec item | Feature | Mapped | Parse | Validate | Tests | Diagnostics |
 |---|---|---|:-:|:-:|:-:|:-:|:-:|
 | [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `AV2-8.2-SYMBOL-DECODER` | ✅ | 🟡 | 🟡 | 🟡 | — |
+| [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `DECODE-TILE-PAYLOAD-BOUNDARY` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 8.2.3](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-3) | Boolean decoding process | `AV2-8.2-SYMBOL-DECODER` | ✅ | 🟡 | 🟡 | 🟡 | — |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `AV2-8.2-SYMBOL-DECODER` | ✅ | 🟡 | 🟡 | 🟡 | — |
+| [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.2.5](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-5) | Parsing process for read_literal | `AV2-8.2-SYMBOL-DECODER` | ✅ | 🟡 | 🟡 | 🟡 | — |
 | [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `AV2-8.2-SYMBOL-DECODER` | ✅ | 🟡 | 🟡 | 🟡 | — |
+| [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3](./spec/av2/1.0.0/08-parsing-process.md#s-8-3) | Parsing process for CDF encoded syntax elements | `DECODE-TILE-PAYLOAD-BOUNDARY` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 8.3.1](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-1) | General | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 
 ## Chapter 9 — Additional tables
 
@@ -308,6 +317,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 |---|---|---|:-:|:-:|:-:|:-:|:-:|
 | [§ 9](./spec/av2/1.0.0/09-additional-tables/09-00-overview.md#s-9) | Additional tables | `AV2-9-ADDITIONAL-TABLES` | ✅ | 🟡 | — | 🟡 | — |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `AV2-8.2-SYMBOL-DECODER` | ✅ | 🟡 | 🟡 | 🟡 | — |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 
 ## Annexes
 

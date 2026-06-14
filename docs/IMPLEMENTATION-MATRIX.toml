@@ -5622,6 +5622,62 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
 
 [[feature]]
+id = "DECODE-TILE-CDF-SELECTION-BOUNDARY"
+name = "Tile CDF selection boundary"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.1", "5.20.2.1", "5.20.3.2", "6.19.1", "8.2.2", "8.2.4", "8.2.6", "8.3.1", "8.3.2", "9.3"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-2",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-4",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-6",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-1",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/cdf.rs"
+openspec_change = "tile-cdf-selection-boundary"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private `splot-decode` tile CDF selection boundary for the minimal single-tile closed-loop-key tier: a small partition-entry CDF subset (`TileDoSplitCdf` and `TileDoSquareSplitCdf`) is copied from generated §9.3 defaults, typed selector validation and closure-scoped mutable row access prove §8.3 handoff into `SymbolDecoder::read_symbol(cdf)`, the tile work unit records CDF update mode from `disable_cdf_update`, and the §8.2 copy/average decision is computed from `enable_avg_cdf`, `avg_cdf_type`, `context_update_tile_id`, `TileNum`, and `TileCols * TileRows`. This is a boundary only: it does not implement full §8.3 CDF selection, full Tile/Saved CDF banks, recursive `decode_tile()`/`read_partition()` traversal, `exit_symbol()` after real syntax, Saved CDF copy/average mutation after tile completion, `frame_end_update_cdf()`, reconstruction, hashes, runtime Y4M output, reference refresh, public API support, AVM/dav2d invocation, or scheduler use outside the `splot_parallel::WorkerPool` policy."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/cdf.rs::tests",
+    "crates/splot-decode/src/tile_payload/tests.rs",
+]
+commands = [
+    "cargo test -p splot-decode tile_payload --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo test -p splot-decode --locked",
+    "cargo xtask ci",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload.rs",
+    "crates/splot-decode/src/tile_payload/cdf.rs",
+    "crates/splot-decode/src/tile_payload/tests.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-UNSUPPORTED-DIAGNOSTIC-API"
 name = "Decode unsupported diagnostic API"
 category = "infrastructure"
