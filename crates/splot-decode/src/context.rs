@@ -14,7 +14,8 @@ use crate::error::Result;
 use crate::runtime::DecodeRuntimeConfig;
 use crate::stream_plan::{DecodeStreamInput, DecodeStreamPlan, plan_stream};
 use crate::tile_payload::{
-    DecodeTilePayloadPlan, TilePayloadBoundaryError, TilePayloadBoundaryInput,
+    DecodeTilePayloadPlan, FrameCandidateTileBoundaryError, FrameCandidateTileBoundaryInput,
+    TilePayloadBoundaryError, TilePayloadBoundaryInput, plan_derived_tile_payload_boundary,
     plan_tile_payload_boundary,
 };
 
@@ -117,9 +118,32 @@ impl DecodeContext {
     )]
     pub(crate) fn plan_tile_payload_boundary<'a>(
         &self,
-        input: TilePayloadBoundaryInput<'a>,
+        input: TilePayloadBoundaryInput<'a, '_>,
     ) -> core::result::Result<DecodeTilePayloadPlan<'a>, TilePayloadBoundaryError> {
         self.pool.install(|| plan_tile_payload_boundary(input))
+    }
+
+    /// Derives and plans a deterministic tile-payload boundary inside this
+    /// context's worker pool.
+    ///
+    /// This remains crate-private and plan-only. It validates source-backed
+    /// parser facts before slicing the § 5.20 payload region, then stops at the
+    /// existing unsupported `decode_tile()` boundary without reconstructing
+    /// pixels, updating references, writing output, or invoking external
+    /// decoders.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "crate-private derived tile handoff is tested before runtime decode wires it"
+        )
+    )]
+    pub(crate) fn plan_derived_tile_payload_boundary<'a>(
+        &self,
+        input: FrameCandidateTileBoundaryInput<'a, '_>,
+    ) -> core::result::Result<DecodeTilePayloadPlan<'a>, FrameCandidateTileBoundaryError> {
+        self.pool
+            .install(|| plan_derived_tile_payload_boundary(input))
     }
 }
 

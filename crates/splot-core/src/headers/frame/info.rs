@@ -572,6 +572,8 @@ pub struct FrameHeaderCore {
     pub immediate_output_frame: Option<bool>,
     /// `implicit_output_frame`, when reached.
     pub implicit_output_frame: Option<bool>,
+    /// `disable_cdf_update`, when reached on the intra or non-intra control path.
+    pub disable_cdf_update: Option<bool>,
     /// `OrderHintLsbs` (`order_hint` / `sef_order_hint`), when read.
     pub order_hint_lsb: Option<u32>,
     /// `refresh_frame_flags`, when derived or read.
@@ -1037,6 +1039,7 @@ fn init_core_from_prefix(
         frame_is_intra: None,
         immediate_output_frame: None,
         implicit_output_frame: None,
+        disable_cdf_update: None,
         order_hint_lsb: None,
         refresh_frame_flags: None,
         frame_size: None,
@@ -1327,6 +1330,7 @@ fn finish_inter_control(
     if let Some(flags) = control.refresh_frame_flags {
         core.refresh_frame_flags = Some(flags);
     }
+    core.disable_cdf_update = control.disable_cdf_update;
     core.inter = Some(control);
 
     match result {
@@ -1503,13 +1507,9 @@ fn parse_show_existing_frame(
     }
 }
 
-/// Parses the intra-frame tail (AV2 § 5.18.2): `frame_size_override_flag`,
-/// `order_hint`, `refresh_frame_flags`, then `frame_size()` /
-/// `screen_content_params()` / `intrabc_params()`, `disable_cdf_update`, and the
-/// § 5.18.2 structure cluster `tile_info()` → `quantization_params()` →
-/// `segmentation_params()` → `setup_qm_params()` → `delta_q_params()` → the
-/// per-segment lossless/QM derivation → `allow_tcq` / `allow_parity_hiding`,
-/// stopping before `deblocking_filter_params()` (§ 5.18.5.2).
+/// Parses the intra-frame tail (AV2 § 5.18.2), from frame-size provenance through
+/// `disable_cdf_update` and the structure cluster, stopping before
+/// `deblocking_filter_params()` (§ 5.18.5.2).
 ///
 /// `single_picture` is `single_picture_header_flag` (forces `frame_size_override_flag
 /// = 0`). For an intra frame `primary_ref_frame == PRIMARY_REF_NONE`, so no
@@ -1581,13 +1581,9 @@ fn parse_intra_tail(
 
     // Not a TIP-as-output / bru-inactive / bridge frame -> disable_cdf_update f(1)
     // (AV2 § 5.18.2 else-branch of `if ( bru_inactive || IsBridge )`).
-    reader.read_bit()?; // disable_cdf_update
+    core.disable_cdf_update = Some(reader.read_bit()? != 0);
 
-    // AV2 § 5.18.2: on the intra path `bru_inactive == 0` and `!IsBridge` (handled
-    // above), `use_ref_frame_mvs == 0` and `TipFrameMode == TIP_FRAME_DISABLED`
-    // (FrameIsIntra branch), so none of the bru / motion-field / TIP blocks between
-    // `disable_cdf_update` and `tile_info()` read bits or return, and parsing
-    // continues directly at the structure cluster.
+    // On the intra path, no BRU / motion-field / TIP block reads before `tile_info()`.
     parse_intra_structures(reader, core, seq, mfh)
 }
 
@@ -2264,6 +2260,7 @@ mod tests {
         assert_eq!(core.frame_size, Some(FrameSize::new(1920, 1080)));
         assert_eq!(core.allow_screen_content_tools, Some(false));
         assert_eq!(core.allow_intrabc, Some(false));
+        assert_eq!(core.disable_cdf_update, Some(false));
         let tile_info = core.tile_info.as_ref().unwrap();
         assert_eq!(tile_info.tile_cols, 1);
         assert_eq!(tile_info.tile_rows, 1);
@@ -3931,6 +3928,7 @@ mod tests {
             Some(InterpolationFilter::Switchable)
         );
         assert_eq!(inter.disable_cdf_update, Some(false));
+        assert_eq!(core.disable_cdf_update, Some(false));
         assert_eq!(
             inter.stop,
             Some(crate::headers::frame::inter::InterStop::ReachedSharedTail)

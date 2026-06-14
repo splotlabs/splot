@@ -5773,6 +5773,79 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
 
 [[feature]]
+id = "DECODE-TILE-PAYLOAD-INPUT-DERIVATION"
+name = "Tile payload input derivation"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.2.1", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20.1", "5.20.2.1", "6.17.1", "6.17.7.2", "6.18", "6.19.1", "8.2.2", "8.2.4", "8.3"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-6-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-7-2",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-18",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-2",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-4",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/input.rs"
+openspec_change = "decode-tile-payload-input-derivation"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private source-backed derivation bridge for the minimal one-tile closed-loop-key tile-payload tier: it validates a selected `DecodePlannedObu` against the borrowed `splot-core` `ObuEnvelope`, rejects forged source/container metadata before slicing, requires complete intra first-and-only tile-group facts, slices only the §5.20 tile_group_payload() region after a complete §5.19 structure with checked arithmetic, exposes and consumes `FrameHeaderCore::disable_cdf_update` instead of hardcoding CDF update mode, reuses the existing tile-payload boundary, and runs through `DecodeContext`'s context-owned `splot_parallel::WorkerPool`. It remains plan-only and crate-private: no public tile-payload API, multi-tile/multi-tile-group/bridge/BRU support, `decode_tile()`, reconstruction, hashes, Y4M output, reference refresh, AVM/dav2d invocation, or direct Rayon/crossbeam/global-pool/ad-hoc thread use is added."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/tests.rs::derived_annex_b_tile_payload_preserves_source_offsets_and_boundary",
+    "crates/splot-decode/src/tile_payload/tests.rs::derived_ivf_tile_payload_preserves_frame_context_and_offsets",
+    "crates/splot-decode/src/tile_payload/tests.rs::derived_boundary_rejects_candidate_envelope_mismatch_before_slicing",
+    "crates/splot-decode/src/tile_payload/tests.rs::derived_boundary_rejects_absent_frame_header_facts_without_guessing",
+    "crates/splot-decode/src/tile_payload/tests.rs::derived_boundary_rejects_incomplete_tile_group_structure",
+    "crates/splot-decode/src/tile_payload/tests.rs::derived_boundary_rejects_malformed_tile_group_payload_region",
+    "crates/splot-decode/src/tile_payload/tests.rs::derived_boundary_enforces_tile_count_and_payload_limits",
+    "crates/splot-decode/src/tile_payload/tests.rs::derived_boundary_rejects_unsupported_position_and_frame_paths",
+    "crates/splot-decode/src/tile_payload/tests.rs::derived_boundary_is_deterministic_across_decode_context_thread_policies",
+]
+commands = [
+    "cargo test -p splot-core frame_header_core --locked",
+    "cargo test -p splot-core reached_shared_tail_consumes_disable_cdf_update --locked",
+    "cargo test -p splot-decode tile_payload --locked",
+    "cargo check -p splot-decode --locked",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-concurrency-policy",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "crates/splot-core/src/headers/frame/info.rs",
+    "crates/splot-decode/src/context.rs",
+    "crates/splot-decode/src/tile_payload.rs",
+    "crates/splot-decode/src/tile_payload/input.rs",
+    "crates/splot-decode/src/tile_payload/tests.rs",
+]
+diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
+
+[[feature]]
 id = "DECODE-TILE-CDF-SELECTION-BOUNDARY"
 name = "Tile CDF selection boundary"
 category = "infrastructure"
