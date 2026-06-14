@@ -9,10 +9,16 @@ code and produce only deliberately simple, writer-validated streams at first.
 Tracked by Feature IDs: `ENC-BITSTREAM-WRITER`, `ENC-INTRA-TOY-V0`,
 `ENC-RATE-CONTROL-V0`, `AV2-IVF-CONTAINER`.
 
-**Status: planned.** No part of this capability is implemented yet (those rows are
-`todo`/proposed in the matrix). The requirements below are the accepted *target*
-contract; implementation is proposed in `openspec/changes/add-bitstream-writer` and
-`openspec/changes/toy-intra-encoder-v0`.
+**Status: in progress.** The bit/byte **writer primitive** layer is implemented and
+round-trip-tested: `ENC-BITSTREAM-WRITER` is `partial` and the § 4.11 descriptor
+`write` stages (plus § 5.2.4 byte alignment) are `done` in the matrix, landed by the
+archived `bit-writer-primitives` change (see the "bit-writer primitive inverses"
+requirement below). The remaining writer surface (OBU header, payload writers, the
+Annex B / IVF muxers), the toy intra path (`ENC-INTRA-TOY-V0`), and rate control
+(`ENC-RATE-CONTROL-V0`) remain planned; the parked `openspec/changes/add-bitstream-writer`
+stub is superseded by `bit-writer-primitives` for the primitive layer. The
+implementation matrix is the source of truth for per-row status.
+
 ## Requirements
 ### Requirement: writer symmetry
 
