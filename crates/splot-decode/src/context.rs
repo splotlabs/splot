@@ -13,6 +13,10 @@ use crate::byte_stream::plan_byte_stream;
 use crate::error::Result;
 use crate::runtime::DecodeRuntimeConfig;
 use crate::stream_plan::{DecodeStreamInput, DecodeStreamPlan, plan_stream};
+use crate::tile_payload::{
+    DecodeTilePayloadPlan, TilePayloadBoundaryError, TilePayloadBoundaryInput,
+    plan_tile_payload_boundary,
+};
 
 /// A decode context.
 ///
@@ -94,6 +98,28 @@ impl DecodeContext {
         options: DecodeOptions,
     ) -> Result<DecodeStreamPlan> {
         self.pool.install(|| plan_stream(input, options))
+    }
+
+    /// Builds a deterministic tile-payload boundary plan inside this context's
+    /// worker pool.
+    ///
+    /// This is intentionally crate-private until a runtime decode path derives
+    /// the input facts from parsed frame state and exposes stable public
+    /// diagnostics. The boundary remains plan-only: it does not run
+    /// `decode_tile()`, reconstruct pixels, update references, write output, or
+    /// invoke external decoders.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "crate-private tile handoff is tested before runtime decode derives tile facts"
+        )
+    )]
+    pub(crate) fn plan_tile_payload_boundary<'a>(
+        &self,
+        input: TilePayloadBoundaryInput<'a>,
+    ) -> core::result::Result<DecodeTilePayloadPlan<'a>, TilePayloadBoundaryError> {
+        self.pool.install(|| plan_tile_payload_boundary(input))
     }
 }
 

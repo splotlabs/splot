@@ -8,13 +8,16 @@
 //! roundtrip work. The model is limited to immutable owned output frames,
 //! plane storage invariants, a safe reference-slot container, and deterministic
 //! frame-hash input serialization and digest computation, plus source-backed
-//! Y4M writing for caller-supplied decoded frames; it does not implement
-//! byte-consuming decode, reconstruction algorithms, runtime CLI Y4M output, or
-//! AV2 reference refresh semantics.
+//! Y4M writing for caller-supplied decoded frames, plus the first square DC
+//! intra prediction primitive and a mutable current-frame workspace; it does
+//! not implement byte-consuming decode, full reconstruction, runtime CLI Y4M
+//! output, or AV2 reference refresh semantics.
 //!
 //! Feature tracking: `INFRA-RECON-FRAME-PLANE-TYPES`,
 //! `RECON-REFERENCE-FRAME-STORE`, `RECON-HASH-INPUT-SERIALIZATION`,
-//! `RECON-FRAME-HASH-DIGEST`, `RECON-Y4M-OUTPUT-WRITER`.
+//! `RECON-FRAME-HASH-DIGEST`, `RECON-Y4M-OUTPUT-WRITER`,
+//! `RECON-INTRA-DC-SQUARE-PREDICTION`,
+//! `RECON-CURRENT-FRAME-WORKSPACE`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
@@ -24,8 +27,10 @@ mod format;
 mod frame;
 mod geometry;
 mod hash_input;
+mod intra;
 mod plane;
 mod reference;
+mod workspace;
 mod y4m;
 
 pub use error::{ReconError, Result};
@@ -33,9 +38,17 @@ pub use format::{BitDepth, PixelFormat, PlaneId, ReconSample};
 pub use frame::{DecodedFrame, DecodedFrameInfo, FramePlanes};
 pub use geometry::{OutputIndex, PlaneRect, PlaneSize};
 pub use hash_input::{DecodedFrameHash, DecodedFrameHashInput};
+pub use intra::{
+    IntraDcEdge, IntraDcEdges, IntraSquareBlockSize, SquareIntraPredictionBlock,
+    SquareIntraPredictionRows, predict_intra_dc_square, predict_intra_dc_square_into,
+    predict_intra_dc_square_value,
+};
 pub use plane::{Plane, VisibleRows};
 pub use reference::{
     ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameStore, ReferenceSlot,
+};
+pub use workspace::{
+    CurrentFrameIntraEdges, CurrentFramePlane, CurrentFrameWorkspace, WorkspaceRectRows,
 };
 pub use y4m::{
     Y4mChromaTag, Y4mError, Y4mFrameFormat, Y4mFrameHeader, Y4mFrameRate, Y4mResult,

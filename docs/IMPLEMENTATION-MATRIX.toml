@@ -5165,6 +5165,102 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-INTRA-DC-SQUARE-PREDICTION"
+name = "Square DC intra prediction"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.13.2.10", "7.13.3.22"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-22",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/intra.rs"
+openspec_change = "recon-intra-dc-prediction"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a scheduler-free `splot-recon` square-block subset of AV2 §7.13.2.10 DC intra prediction: typed 4x4 through 64x64 square block sizes, caller-provided optional left/above edge samples, active bit-depth/sample-type validation, typed edge/sample/output/allocation errors, a no-allocation scalar value API, a caller-owned strided output API, and owned square row-major prediction block convenience output. The both-edge path is intentionally limited to square blocks because `w + h` is a power of two and therefore the §7.13.3.22 `resolve_divisor` path specializes to `Round2(sum, log2_size + 1)` without hand-transcribing `Div_Lut`. This row does not implement rectangular DC prediction, non-DC intra prediction modes, `predict_intra()` dispatch, tile syntax traversal, dequantization, inverse transforms, residual addition, runtime decoded-frame hashes, runtime Y4M output, reference refresh, AVM/dav2d invocation, or scheduler use outside the future `DecodeContext` orchestration policy."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-recon/src/intra.rs::tests"]
+commands = [
+    "cargo test -p splot-recon --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-concurrency-policy",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "crates/splot-recon/src/intra.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
+id = "RECON-CURRENT-FRAME-WORKSPACE"
+name = "Current-frame reconstruction workspace"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["6.4.1", "6.17.4.1", "6.17.4.4", "7.13.2.1", "7.13.2.10"]
+sources = [
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/workspace.rs"
+openspec_change = "recon-current-frame-workspace"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a scheduler-free `splot-recon` mutable current-frame reconstruction workspace: `CurrentFrameWorkspace<T>` allocates Y/U/V plane buffers from `DecodedFrameInfo` using checked arithmetic and fallible allocation, validates sample type and active bit-depth range before writes, exposes bounded plane/rectangle reads, fills, row-strided writes, square-block writes, in-storage left/above edge extraction, and a square DC prediction write helper that calls the existing `RECON-INTRA-DC-SQUARE-PREDICTION` primitive. `freeze()` reuses existing `Plane::from_vec`, `FramePlanes::new`, and `DecodedFrame::try_new`, and tests prove interop with decoded-frame hash input, Y4M writer, and reference-frame store. This row does not add a `splot-decode -> splot-recon` dependency, `DecodeContext` API, runtime `splot decode` success path, tile syntax traversal, dequantization, inverse transforms, residual addition, loop filtering, output scheduling, runtime hashes, runtime Y4M, reference refresh, AVM/dav2d invocation, external tooling, or scheduler use inside `splot-recon`; future parallel orchestration remains owned by `DecodeContext` and `splot_parallel::WorkerPool`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-recon/src/workspace_tests.rs"]
+commands = [
+    "cargo test -p splot-recon --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "cargo xtask check-source-lines",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-concurrency-policy",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "crates/splot-recon/src/workspace.rs",
+    "crates/splot-recon/src/workspace_tests.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
 name = "Decoded frame and plane model contract documentation"
 category = "docs"
@@ -5649,6 +5745,61 @@ commands = [
 ]
 fixtures = [
     "crates/splot-decode/src/lib.rs",
+    "crates/splot-decode/src/tile_payload.rs",
+    "crates/splot-decode/src/tile_payload/tests.rs",
+]
+diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
+
+[[feature]]
+id = "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF"
+name = "DecodeContext tile-payload handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.1", "5.20.2.1", "6.19.1", "7.1", "8.2.2", "8.3"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-2",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3",
+    "docs/CONCURRENCY.md",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/context.rs"
+openspec_change = "decode-context-tile-payload-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds a crate-private `DecodeContext` handoff for the existing tile-payload boundary: `DecodeContext::plan_tile_payload_boundary` runs the crate-private `plan_tile_payload_boundary` inside the context-owned `splot_parallel::WorkerPool`, preserving deterministic tile work-unit metadata and internal tile-boundary errors across `auto`, `1`, and fixed positive thread policies. The tile payload facts remain caller-provided and crate-private, with conditional non-test dead-code allowances documenting that runtime decode fact derivation is still future work. This row does not expose public tile-payload API support, derive tile facts from raw byte streams, implement `decode_tile()`, reconstruct pixels, compute hashes, write Y4M, refresh references, add a `splot-decode -> splot-recon` dependency, invoke AVM/dav2d, or use direct Rayon/crossbeam/global pools/ad-hoc threads."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/tests.rs::boundary_is_deterministic_through_decode_context_worker_pool",
+    "crates/splot-decode/src/tile_payload/tests.rs::decode_context_tile_payload_handoff_preserves_limit_errors",
+]
+commands = [
+    "cargo test -p splot-decode tile_payload --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo test -p splot-decode --locked",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-concurrency-policy",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "crates/splot-decode/src/context.rs",
     "crates/splot-decode/src/tile_payload.rs",
     "crates/splot-decode/src/tile_payload/tests.rs",
 ]

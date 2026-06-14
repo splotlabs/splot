@@ -279,7 +279,7 @@ status = "partial"
 self_contained_tests = ["crates/splot-decode/src/tile_payload/tests.rs", "cargo test -p splot-decode tile_payload --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo test -p splot-decode --locked", "cargo xtask check-dependency-direction", "cargo xtask check-concurrency-policy", "cargo xtask check-decoder-support"]
 diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
 local_reference_evidence = []
-notes = "Crate-private `splot-decode` tile-payload boundary for the minimal one-tile closed-loop-key tier: callers provide existing §5.20.1 `TileGroupFraming`, selected layer/source metadata, tile-grid facts, frame facts, and `DecodeLimits`; the boundary checks tile payload byte and tile-count limits first, rejects malformed framing and non-minimal tier paths with typed metadata, derives one deterministic tile work unit with exact tile number, row/column, MI ranges, payload byte span, `tileSize`, source OBU/IVF provenance, selected layer, and entry `CurrentQIndex`, initializes §8.2 symbol state over the bounded tile slice, and now attaches the crate-private CDF boundary tracked by `tile-cdf-selection-boundary`. This row remains partial: no multi-tile or multi-tile-group support, no bridge/BRU path support, no `exit_symbol()` after real syntax, no broad CDF bank support, no CDF copyback/averaging mutation, no reconstruction, hashes, runtime Y4M output, reference refresh, AVM/dav2d invocation, repo dependency, wrapper, script, or CI/runtime external-decoder path exists."
+notes = "Crate-private `splot-decode` tile-payload boundary for the minimal one-tile closed-loop-key tier: callers provide existing §5.20.1 `TileGroupFraming`, selected layer/source metadata, tile-grid facts, frame facts, and `DecodeLimits`; the boundary checks tile payload byte and tile-count limits first, rejects malformed framing and non-minimal tier paths with typed metadata, derives one deterministic tile work unit with exact tile number, row/column, MI ranges, payload byte span, `tileSize`, source OBU/IVF provenance, selected layer, and entry `CurrentQIndex`, initializes §8.2 symbol state over the bounded tile slice, and now attaches the crate-private CDF boundary tracked by `tile-cdf-selection-boundary`. It is entered through a crate-private `DecodeContext` and `WorkerPool` handoff tracked by `decode-context-tile-payload-handoff`. This row remains partial: no multi-tile or multi-tile-group support, no bridge/BRU path support, no `exit_symbol()` after real syntax, no broad CDF bank support, no CDF copyback/averaging mutation, no reconstruction, hashes, runtime Y4M output, reference refresh, AVM/dav2d invocation, repo dependency, wrapper, script, or CI/runtime external-decoder path exists."
 
 [[row]]
 id = "tile-cdf-selection-boundary"
@@ -296,6 +296,48 @@ local_reference_evidence = []
 notes = "Crate-private `splot-decode` tile CDF boundary for the minimal one-tile closed-loop-key tier: `tile_payload/cdf.rs` copies the first supported partition-entry CDF subset (`TileDoSplitCdf` and `TileDoSquareSplitCdf`) from generated AV2 §9.3 defaults, provides typed selector validation and closure-scoped mutable row access for §8.3 handoff into `SymbolDecoder::read_symbol(cdf)`, records the tile CDF update mode from `disable_cdf_update`, computes the §8.2 copy/average policy from `enable_avg_cdf`, `avg_cdf_type`, `context_update_tile_id`, `TileNum`, and `TileCols * TileRows`, and attaches the boundary metadata to the deterministic tile work unit. This row remains partial: it does not implement full §8.3 CDF selection, full Tile/Saved CDF banks, recursive `decode_tile()` or `read_partition()` traversal, `exit_symbol()` after real syntax, Saved CDF copy/average mutation after tile completion, `frame_end_update_cdf()`, reconstruction, decoded-frame hashes, runtime Y4M output, reference refresh, public API support, AVM/dav2d invocation, repo dependency, wrapper, script, or CI/runtime external-decoder path."
 
 [[row]]
+id = "decode-context-tile-payload-handoff"
+name = "DecodeContext tile-payload handoff"
+feature_id = "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF"
+spec_sections = ["5.20.1", "5.20.2.1", "6.19.1", "7.1", "8.2.2", "8.3"]
+parser_source = "crates/splot-core/src/headers/tile_group.rs; crates/splot-core/src/symbol.rs"
+decode_module = "crates/splot-decode/src/context.rs; crates/splot-decode/src/tile_payload.rs"
+tier = "tier1-intra"
+status = "supported"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/tests.rs::boundary_is_deterministic_through_decode_context_worker_pool", "crates/splot-decode/src/tile_payload/tests.rs::decode_context_tile_payload_handoff_preserves_limit_errors", "cargo test -p splot-decode tile_payload --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo test -p splot-decode --locked", "cargo xtask check-dependency-direction", "cargo xtask check-concurrency-policy", "cargo xtask check-decoder-support"]
+diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
+local_reference_evidence = []
+notes = "Crate-private `DecodeContext` handoff for the existing tile-payload boundary: internal decoder code can plan an already-framed minimal tile payload through the context-owned `splot_parallel::WorkerPool`, preserving deterministic work-unit metadata and internal `TilePayloadBoundaryError` variants across `auto`, `1`, and fixed positive thread policies. This proves the PR #101 concurrency model for the tile boundary without exposing public tile-payload APIs or deriving tile facts from raw byte streams. Runtime `splot decode` success, public tile diagnostics, `decode_tile()` syntax traversal, reconstruction, hashes, Y4M, reference refresh, a `splot-decode -> splot-recon` dependency, direct Rayon/crossbeam/global pool/thread usage, and AVM/dav2d invocation remain unsupported."
+
+[[row]]
+id = "intra-dc-square-prediction"
+name = "Square DC intra prediction"
+feature_id = "RECON-INTRA-DC-SQUARE-PREDICTION"
+spec_sections = ["7.13.2.10", "7.13.3.22"]
+parser_source = "n/a"
+decode_module = "crates/splot-recon/src/intra.rs; crates/splot-recon/src/lib.rs"
+tier = "tier1-intra"
+status = "supported"
+self_contained_tests = ["crates/splot-recon/src/intra.rs::tests", "cargo test -p splot-recon --locked", "cargo clippy -p splot-recon --all-targets --locked -- -D warnings", "cargo xtask check-dependency-direction", "cargo xtask check-concurrency-policy", "cargo xtask check-decoder-support"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Source-backed scheduler-free `splot-recon` square DC intra prediction primitive for AV2 §7.13.2.10: callers provide an active bit depth, a typed 4x4 through 64x64 square block size, and optional left/above edge samples; the primitive validates sample type, edge lengths, bit-depth ranges, storage conversion, caller-owned output stride/length, and owned-block allocation failure. It exposes a no-allocation scalar value API, a caller-owned strided output API, and an owned square row-major block convenience wrapper. The both-edge path is intentionally square-only because `w + h` is a power-of-two denominator, so the §7.13.3.22 `resolve_divisor` path specializes to `Round2(sum, log2_size + 1)` without adding `Div_Lut`. This row does not implement rectangular DC prediction, non-DC intra prediction modes, `predict_intra()` dispatch, tile syntax traversal, dequantization, inverse transforms, residual addition, runtime decoded-frame hashes, runtime Y4M output, reference refresh, AVM/dav2d invocation, repo dependency, wrapper, script, or CI/runtime external-decoder path."
+
+[[row]]
+id = "current-frame-workspace"
+name = "Current-frame reconstruction workspace"
+feature_id = "RECON-CURRENT-FRAME-WORKSPACE"
+spec_sections = ["6.4.1", "6.17.4.1", "6.17.4.4", "7.13.2.1", "7.13.2.10"]
+parser_source = "n/a"
+decode_module = "crates/splot-recon/src/workspace.rs; crates/splot-recon/src/workspace_tests.rs; crates/splot-recon/src/lib.rs"
+tier = "tier1-intra"
+status = "supported"
+self_contained_tests = ["crates/splot-recon/src/workspace_tests.rs", "cargo test -p splot-recon --locked", "cargo clippy -p splot-recon --all-targets --locked -- -D warnings", "cargo xtask check-source-lines", "cargo xtask check-dependency-direction", "cargo xtask check-concurrency-policy", "cargo xtask check-decoder-support"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Source-backed scheduler-free `splot-recon` mutable current-frame workspace for future reconstruction callers. It allocates Y/U/V plane buffers from `DecodedFrameInfo` with checked arithmetic and fallible allocation, validates sample type and active bit-depth ranges, provides bounded plane/rectangle reads, fills, row-strided writes, square-block writes, in-storage left/above edge extraction, and a square DC prediction write helper that calls the existing `intra-dc-square-prediction` primitive. Freezing reuses the existing immutable `Plane`, `FramePlanes`, and `DecodedFrame` validators, and tests prove interop with decoded-frame hash input, Y4M writer, and reference-frame store. This row does not add a `splot-decode -> splot-recon` dependency, `DecodeContext` API, runtime `splot decode` success path, tile syntax traversal, dequantization, inverse transforms, residual addition, loop filtering, output scheduling, runtime hashes, runtime Y4M, reference refresh, AVM/dav2d invocation, external tooling, or scheduler state in `splot-recon`; future parallel orchestration remains owned by `DecodeContext` and `splot_parallel::WorkerPool`."
+
+[[row]]
 id = "intra-reconstruction"
 name = "Scalar intra reconstruction"
 feature_id = ""
@@ -303,11 +345,11 @@ spec_sections = ["7.13", "7.14", "7.15"]
 parser_source = "planned"
 decode_module = "planned"
 tier = "tier1-intra"
-status = "todo"
+status = "partial"
 self_contained_tests = []
 diagnostics = ["decode/unsupported-feature (planned)"]
 local_reference_evidence = []
-notes = "Prediction, dequant/reconstruction, and inverse transforms for the first all-intra tier."
+notes = "Broad scalar intra reconstruction umbrella. The current-frame workspace and square DC intra prediction subset are supported by `current-frame-workspace` and `intra-dc-square-prediction`, but rectangular DC prediction, non-DC intra prediction modes, `predict_intra()` dispatch, tile syntax traversal, dequantization, inverse transforms, residual addition, runtime decoded-frame hashes, runtime Y4M output, and reference refresh remain planned."
 
 [[row]]
 id = "output-y4m"

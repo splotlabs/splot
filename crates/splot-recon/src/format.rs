@@ -191,6 +191,13 @@ pub trait ReconSample: private::Sealed + Copy + Default + 'static {
     /// Converts the sample to `u16` for bit-depth range validation.
     fn to_u16(self) -> u16;
 
+    /// Converts a decoded sample value into this storage type.
+    ///
+    /// # Errors
+    /// Returns [`ReconError::SampleValueUnsupportedStorage`] if `value` cannot
+    /// be represented by this storage type.
+    fn try_from_u16(value: u16) -> Result<Self>;
+
     /// Returns whether this storage type can represent the supplied bit depth.
     fn supports_bit_depth(bit_depth: BitDepth) -> bool {
         Self::MAX_VALUE >= bit_depth.max_sample()
@@ -204,6 +211,14 @@ impl ReconSample for u8 {
     fn to_u16(self) -> u16 {
         u16::from(self)
     }
+
+    fn try_from_u16(value: u16) -> Result<Self> {
+        u8::try_from(value).map_err(|_| ReconError::SampleValueUnsupportedStorage {
+            sample_type: Self::TYPE_NAME,
+            value,
+            max: Self::MAX_VALUE,
+        })
+    }
 }
 
 impl ReconSample for u16 {
@@ -212,6 +227,10 @@ impl ReconSample for u16 {
 
     fn to_u16(self) -> u16 {
         self
+    }
+
+    fn try_from_u16(value: u16) -> Result<Self> {
+        Ok(value)
     }
 }
 
@@ -236,6 +255,20 @@ mod tests {
         assert_eq!(BitDepth::Ten.bits(), 10);
         assert_eq!(BitDepth::Eight.max_sample(), 255);
         assert_eq!(BitDepth::Ten.max_sample(), 1023);
+    }
+
+    #[test]
+    fn sample_conversion_rejects_values_outside_storage_type() {
+        assert_eq!(u8::try_from_u16(255), Ok(255));
+        assert!(matches!(
+            u8::try_from_u16(256),
+            Err(ReconError::SampleValueUnsupportedStorage {
+                sample_type: "u8",
+                value: 256,
+                max: 255
+            })
+        ));
+        assert_eq!(u16::try_from_u16(1023), Ok(1023));
     }
 
     #[test]
