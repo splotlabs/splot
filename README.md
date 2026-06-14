@@ -82,6 +82,7 @@ same six fields, always:
 | Sequence-header and frame-header parsing (incl. tiling, quantization, segmentation) | working |
 | Header-level and container conformance validation | working |
 | `splot inspect` OBU dump (text and JSON, partial-parse tolerant) | working |
+| `splot explain` diagnostic catalog (text and JSON, `--list`) | working |
 | Conformance vectors, AVM differential testing | planned |
 | `splot decode` / `splot encode` | stubs — exit with a clear error |
 
@@ -136,6 +137,42 @@ $ splot inspect --headers conformant.av2
 2 OBU(s)
 OBU #0  @byte 1  size=1  type=OBU_TEMPORAL_DELIMITER(2)  ext=false  tlayer=0 mlayer=0 xlayer=31
 OBU #1  @byte 3  size=11  type=OBU_SEQUENCE_HEADER(1)  ext=false  tlayer=0 mlayer=0 xlayer=0
+```
+
+Every finding is a rule id you can look up. `splot explain` turns a rule id into
+its severity, spec section, and one-line summary — straight from the same
+CI-enforced registry the validator emits, no bitstream needed — so `validate` and
+`explain` compose:
+
+```console
+$ splot explain obu-header/global-xlayer-required
+obu-header/global-xlayer-required
+  severity: error
+  section:  § 6.2.2
+  summary:  OBU type requiring GLOBAL_XLAYER_ID uses a non-global obu_xlayer_id
+
+Full registry: docs/VALIDATOR-DIAGNOSTICS.md
+```
+
+`--json` emits the same record as an object, `--list` prints every rule id
+(sorted), and an unknown id exits `2` — never a panic — with same-namespace
+suggestions:
+
+```console
+$ splot explain obu-header/nope
+error: unknown rule id `obu-header/nope`; did you mean: obu-header/base-layer-only-types, obu-header/global-xlayer-required, … (run `splot explain --list` to see all)
+```
+
+For long reports, `--max-diagnostics N` caps the *listed* findings — the trailing
+counts and the exit code always reflect the full report — and `--summary-only`
+drops the per-finding lines for a machine-friendly digest:
+
+```console
+$ splot validate bad.av2 --max-diagnostics 1
+[ERROR] obu-order/temporal-unit-missing-delimiter (§7.3.7) @byte 1: OBU_TEMPORAL_DELIMITER appears before a global OBU_TEMPORAL_DELIMITER starts the temporal unit
+... 1 more diagnostic(s) not shown (--max-diagnostics 1)
+2 error(s), 0 warning(s), 0 info
+NOT conformant
 ```
 
 ## Project layout
