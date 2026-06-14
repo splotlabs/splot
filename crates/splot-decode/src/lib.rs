@@ -6,18 +6,20 @@
 //! This crate will coordinate parsed AV2 bitstream facts from `splot-core` with
 //! reconstruction and output state from `splot-recon`. It owns the current
 //! structured `decode/unsupported-feature` diagnostic API plus local
-//! resource-limit policy types, and intentionally exposes no raw byte-consuming
-//! decode API yet. It also exposes a [`DecodeContext`]/[`DecodeRuntimeConfig`]
-//! worker-pool scaffold that owns a [`splot_parallel::WorkerPool`]. The
-//! plan-only stream planner consumes already parsed `splot-core` stream facts.
+//! resource-limit policy types, plus a bounded, plan-only raw byte stream
+//! planner. It also exposes a [`DecodeContext`]/[`DecodeRuntimeConfig`]
+//! worker-pool scaffold that owns a [`splot_parallel::WorkerPool`]. The stream
+//! planners consume either bounded raw bytes or already parsed `splot-core`
+//! stream facts.
 //!
 //! Feature tracking: `INFRA-DECODER-CRATE-SCAFFOLDING`,
 //! `DECODE-UNSUPPORTED-DIAGNOSTIC-API`, `DECODE-LIMITS-RUNTIME-API`,
-//! `DECODE-STREAM-STATE-PLANNER`.
+//! `DECODE-STREAM-STATE-PLANNER`, `DECODE-BYTE-STREAM-PLANNER`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
 
+mod byte_stream;
 pub mod context;
 pub mod error;
 pub mod runtime;

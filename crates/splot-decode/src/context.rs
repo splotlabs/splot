@@ -9,6 +9,7 @@ use core::num::NonZeroUsize;
 use splot_parallel::{ThreadCount, WorkerPool};
 
 use crate::DecodeOptions;
+use crate::byte_stream::plan_byte_stream;
 use crate::error::Result;
 use crate::runtime::DecodeRuntimeConfig;
 use crate::stream_plan::{DecodeStreamInput, DecodeStreamPlan, plan_stream};
@@ -59,6 +60,21 @@ impl DecodeContext {
     #[must_use]
     pub fn pool(&self) -> &WorkerPool {
         &self.pool
+    }
+
+    /// Builds a deterministic plan over raw AV2 Annex B or IVF bytes.
+    ///
+    /// This method runs inside the context-owned worker pool so future parallel
+    /// byte planning inherits the configured runtime. The current byte planner
+    /// is still plan-only: it bounds byte traversal, decodes no tile payloads,
+    /// reconstructs no pixels, writes no output, and invokes no external
+    /// decoder.
+    ///
+    /// # Errors
+    /// Returns [`crate::DecodeError`] for malformed sources, unsupported
+    /// structures, local decode resource-limit failures, or pool failures.
+    pub fn plan_bytes(&self, bytes: &[u8], options: DecodeOptions) -> Result<DecodeStreamPlan> {
+        self.pool.install(|| plan_byte_stream(bytes, options))
     }
 
     /// Builds a deterministic plan over an already parsed AV2 stream.

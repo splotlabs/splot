@@ -95,7 +95,7 @@ cargo xtask fuzz [--time <secs>]            # local fuzz smoke over every target
 cargo xtask check-concurrency-policy        # enforce the concurrency-runtime policy (also part of `cargo xtask ci`)
 cargo xtask check-conventional-commits      # validates the current HEAD commit subject
 cargo +nightly fuzz run parse_obu   # full local fuzz run of one target (nightly-only; `cargo install cargo-fuzz --locked`).
-                                    # Targets: parse_obu, validate_bytes, parse_ivf, parse_bitstream (`cargo +nightly fuzz list`).
+                                    # Targets: parse_obu, validate_bytes, parse_ivf, parse_bitstream, decode_plan_bytes (`cargo +nightly fuzz list`).
                                     # CI also runs a blocking per-target smoke (~45s each) over every target on every PR.
 ```
 
