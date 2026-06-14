@@ -21,11 +21,17 @@
 
 mod byte_stream;
 pub mod context;
+pub mod diagnostic;
 pub mod error;
 pub mod runtime;
 pub mod stream_plan;
 
 pub use context::DecodeContext;
+pub use diagnostic::{
+    DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeMalformedSourceDetails,
+    DecodePlanSummary, DecodeResourceLimitDetails, DecodeUnsupportedStructureDetails,
+    MALFORMED_SOURCE_RULE_ID, RESOURCE_LIMIT_RULE_ID,
+};
 pub use error::{DecodeError, Result};
 pub use runtime::DecodeRuntimeConfig;
 pub use stream_plan::{
@@ -101,15 +107,14 @@ pub const UNSUPPORTED_FEATURE_DIAGNOSTIC: DecodeDiagnostic = DecodeDiagnostic {
     spec_section: Some("7.1"),
     matrix_row: "cli-decode-entrypoint",
     feature_id: "CLI-DECODE",
-    message: "`splot decode` is not implemented for AV2 bitstreams yet.",
-    remediation: "Use `splot validate` or `splot inspect` for bitstream analysis until CLI-DECODE is implemented.",
+    message: "Byte stream planning succeeded, but `splot decode` runtime output is not implemented yet.",
+    remediation: "Use `splot validate` or `splot inspect` for bitstream analysis until CLI-DECODE implements output.",
 };
 
 /// Returns the current unsupported diagnostic for `splot decode`.
 ///
-/// This function is intentionally metadata-only: it does not accept or read
-/// bitstream bytes, inspect output paths, allocate decoded frames, or invoke
-/// external decoders.
+/// This function is intentionally metadata-only: it does not allocate decoded
+/// frames, write output paths, or invoke external decoders.
 #[must_use]
 pub const fn unsupported_feature_diagnostic() -> DecodeDiagnostic {
     UNSUPPORTED_FEATURE_DIAGNOSTIC
@@ -131,11 +136,11 @@ mod tests {
         assert_eq!(diagnostic.feature_id, "CLI-DECODE");
         assert_eq!(
             diagnostic.message,
-            "`splot decode` is not implemented for AV2 bitstreams yet."
+            "Byte stream planning succeeded, but `splot decode` runtime output is not implemented yet."
         );
         assert_eq!(
             diagnostic.remediation,
-            "Use `splot validate` or `splot inspect` for bitstream analysis until CLI-DECODE is implemented."
+            "Use `splot validate` or `splot inspect` for bitstream analysis until CLI-DECODE implements output."
         );
     }
 

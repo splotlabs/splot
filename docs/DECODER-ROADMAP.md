@@ -20,14 +20,18 @@ encoder roundtrips and reconstruction correctness:
 It is not a production media player, not an optimized decoder, and not an
 AVM/dav2d wrapper.
 
-Current state: `splot decode` is an intentional unsupported entry point. It
-renders the structured `decode/unsupported-feature` diagnostic owned by
-`splot-decode` and does not reconstruct pixels, produce frame hashes, write Y4M
-output, read input bytes, or touch the output path. Decode resource limits now
-have a source-backed `splot-decode` policy API for configured thresholds and
-pure checks, and the byte-stream planner applies the input-byte, OBU-count, IVF
-frame-record, and selected-frame-candidate limits during traversal. The planned
-`decode/resource-limit` diagnostic remains documented but not emitted by source.
+Current state: `splot decode` is a plan-only unsupported runtime entry point.
+It reads input bytes, constructs `DecodeContext`, calls
+`DecodeContext::plan_bytes`, and renders structured diagnostics owned by
+`splot-decode`: `decode/malformed-source` for malformed source/container bytes,
+`decode/resource-limit` for byte-planner limit failures,
+`decode/unsupported-feature` for planner unsupported structures, and
+`decode/unsupported-feature` for runtime decode/output deferral after planning
+succeeds. It does not reconstruct pixels, produce frame hashes, write Y4M
+output, or touch the output path. Decode resource limits now have a
+source-backed `splot-decode` policy API for configured thresholds and pure
+checks, and the byte-stream planner applies the input-byte, OBU-count, IVF
+frame-record, and selected-frame-candidate limits during traversal.
 The workspace now includes scaffolded `splot-recon` and `splot-decode` crates
 for future reconstruction primitives and the future decode driver. `splot-decode`
 also exposes `DecodeRuntimeConfig` and `DecodeContext`; each context owns one
@@ -39,8 +43,8 @@ IVF/DKIF bytes with bounded traversal before returning the same
 Annex B / IVF OBU order and offset metadata, select only the base minimal-tier
 layer, treat `OBU_CLOSED_LOOP_KEY` as the only frame candidate, and reject
 malformed sources or unsupported structures transactionally. These APIs do not
-decode tile payloads, reconstruct pixels, produce hashes, write Y4M, or change
-`splot decode` CLI behavior.
+decode tile payloads, reconstruct pixels, produce hashes, write Y4M, or provide
+runtime decode output.
 `splot-recon` now exposes immutable decoded output frame and plane model types
 with constructor invariants plus a bounded immutable reference-slot container,
 and canonical decoded-frame hash input serialization, but no reconstruction
@@ -443,8 +447,8 @@ command summaries, digest metadata, and assertions.
 ## Unsupported Feature Contract
 
 Decoder unsupported-feature output carries structured data. The current
-`splot decode` entry point emits this diagnostic for all inputs until a
-supported decode tier lands:
+`splot decode` entry point emits this diagnostic after byte planning succeeds
+but before any runtime decode/output support exists:
 
 ```json
 {
@@ -453,20 +457,24 @@ supported decode tier lands:
   "spec_section": "7.1",
   "matrix_row": "cli-decode-entrypoint",
   "feature_id": "CLI-DECODE",
-  "message": "`splot decode` is not implemented for AV2 bitstreams yet.",
-  "remediation": "Use `splot validate` or `splot inspect` for bitstream analysis until CLI-DECODE is implemented."
+  "message": "Byte stream planning succeeded, but `splot decode` runtime output is not implemented yet.",
+  "remediation": "Use `splot validate` or `splot inspect` for bitstream analysis until CLI-DECODE implements output.",
+  "detail_kind": "runtime_unsupported"
 }
 ```
 
-The CLI renders the diagnostic as text by default and as JSON with
-`splot decode --json`. Future library-facing decode diagnostics must preserve
-stable field names for tests and encoder roundtrips. The emitted `rule_id` set
-is registered in [`DECODER-DIAGNOSTICS.md`](./DECODER-DIAGNOSTICS.md).
+Planner-level unsupported structures also use `decode/unsupported-feature`, but
+with `decode-stream-state` / `DECODE-STREAM-STATE-PLANNER` metadata and details
+such as `unsupported_reason`, `obu_type`, and `byte_offset`.
 
-Planned future resource-limit diagnostics use `decode/resource-limit`, but that
-ID must stay outside the emitted decoder registry until source emits it. The
-planned diagnostic extends the stable decoder fields with `limit_name`, `limit`,
-`actual`, `unit`, `byte_offset`, and `bit_offset`.
+The CLI renders diagnostics as text by default and as JSON with
+`splot decode --json`. Library-facing decode diagnostics must preserve stable
+field names for tests and encoder roundtrips. The emitted `rule_id` set is
+registered in [`DECODER-DIAGNOSTICS.md`](./DECODER-DIAGNOSTICS.md).
+
+Resource-limit diagnostics now use `decode/resource-limit` for byte-planner
+limit failures. The diagnostic extends the stable decoder fields with
+`limit_name`, `limit`, `actual`, `unit`, `byte_offset`, and `bit_offset`.
 
 ## Local References
 
@@ -510,6 +518,7 @@ the CLI/runtime `--threads` policy. It now depends on `splot-core` for parsed
 stream-planner input and the bounded raw-byte `plan_bytes` planner, while still
 exposing no runtime tile decode, pixel reconstruction, hash digest, Y4M output,
 or reference update semantics.
-`splot-cli` only renders the current unsupported diagnostic path, and
-`splot-encode` remains unchanged until a later encoder/reconstruction API
-change explicitly adds reuse of `splot-recon`.
+`splot-cli` reads input bytes for `splot decode`, calls the plan-only
+`splot-decode` handoff, and renders structured diagnostics without writing
+output artifacts. `splot-encode` remains unchanged until a later
+encoder/reconstruction API change explicitly adds reuse of `splot-recon`.

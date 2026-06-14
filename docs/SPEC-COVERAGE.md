@@ -22,7 +22,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 4.11.4](./spec/av2/1.0.0/04-conventions.md#s-4-11-4) | svlc() | `AV2-4.11.4-SVLC` | ✅ | ✅ | — | ✅ | — |
 | [§ 4.11.5](./spec/av2/1.0.0/04-conventions.md#s-4-11-5) | le(n) | `AV2-4.11.5-LE` | ✅ | ✅ | — | ✅ | — |
 | [§ 4.11.6](./spec/av2/1.0.0/04-conventions.md#s-4-11-6) | leb128() | `AV2-4.11.6-LEB128` | ✅ | ✅ | ✅ | ✅ | 1 |
-| [§ 4.11.6](./spec/av2/1.0.0/04-conventions.md#s-4-11-6) | leb128() | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 4.11.6](./spec/av2/1.0.0/04-conventions.md#s-4-11-6) | leb128() | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 3 |
 | [§ 4.11.6](./spec/av2/1.0.0/04-conventions.md#s-4-11-6) | leb128() | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 4.11.7](./spec/av2/1.0.0/04-conventions.md#s-4-11-7) | su(n) | `AV2-4.11.7-SU` | ✅ | ✅ | — | ✅ | — |
 | [§ 4.11.8](./spec/av2/1.0.0/04-conventions.md#s-4-11-8) | ns(n) | `AV2-4.11.8-NS` | ✅ | ✅ | — | ✅ | — |
@@ -33,11 +33,11 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 |---|---|---|:-:|:-:|:-:|:-:|:-:|
 | [§ 5.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-1) | General OBU syntax | `AV2-5.2.1-OBU-DISPATCH` | ✅ | 🟡 | — | ✅ | — |
 | [§ 5.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-1) | General OBU syntax | `AV2-5.2.1-OBU-TYPE` | ✅ | ✅ | ✅ | ✅ | 5 |
-| [§ 5.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-1) | General OBU syntax | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-1) | General OBU syntax | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 3 |
 | [§ 5.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-1) | General OBU syntax | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 5.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-1) | General OBU syntax | `DECODE-STREAM-STATE-PLANNER` | ✅ | — | — | ✅ | 1 |
 | [§ 5.2.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2) | OBU header syntax | `AV2-5.2.2-OBU-HEADER` | ✅ | ✅ | ✅ | ✅ | 6 |
-| [§ 5.2.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2) | OBU header syntax | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.2.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2) | OBU header syntax | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 3 |
 | [§ 5.2.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-3) | Trailing bits syntax | `AV2-5.2.3-TRAILING-BITS` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 5.2.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-4) | Byte alignment syntax | `AV2-5.2.4-BYTE-ALIGNMENT` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-3) | Reserved OBU syntax | `AV2-5.3-RESERVED-OBU` | ✅ | — | ✅ | ✅ | 2 |
@@ -133,11 +133,11 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 
 | Section | Spec item | Feature | Mapped | Parse | Validate | Tests | Diagnostics |
 |---|---|---|:-:|:-:|:-:|:-:|:-:|
-| [§ 6.2.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-1) | General OBU semantics | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 6.2.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-1) | General OBU semantics | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 3 |
 | [§ 6.2.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2) | OBU header semantics | `AV2-5.2.1-OBU-TYPE` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 6.2.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2) | OBU header semantics | `AV2-5.2.2-OBU-HEADER` | ✅ | ✅ | ✅ | ✅ | 6 |
 | [§ 6.2.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2) | OBU header semantics | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` | ✅ | ✅ | ✅ | ✅ | 3 |
-| [§ 6.2.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2) | OBU header semantics | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 6.2.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2) | OBU header semantics | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 3 |
 | [§ 6.2.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2) | OBU header semantics | `DECODE-STREAM-STATE-PLANNER` | ✅ | — | — | ✅ | 1 |
 | [§ 6.2.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-3) | Trailing bits semantics | `AV2-5.2.3-TRAILING-BITS` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 6.2.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-3) | Trailing bits semantics | `AV2-5.3-RESERVED-OBU` | ✅ | — | ✅ | ✅ | 2 |
@@ -241,15 +241,15 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 
 | Section | Spec item | Feature | Mapped | Parse | Validate | Tests | Diagnostics |
 |---|---|---|:-:|:-:|:-:|:-:|:-:|
-| [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `CLI-DECODE` | ✅ | — | — | ✅ | 1 |
-| [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 1 |
-| [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `CLI-DECODE` | ✅ | — | — | ✅ | 3 |
+| [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 3 |
+| [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 3 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `DECODE-STREAM-STATE-PLANNER` | ✅ | — | — | ✅ | 1 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `DECODE-UNSUPPORTED-DIAGNOSTIC-API` | ✅ | — | — | ✅ | 1 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
 | [§ 7.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-3) | Ordering of OBUs | `AV2-7.3-OBU-ORDERING` | ✅ | — | 🟡 | ✅ | 4 |
-| [§ 7.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-3) | Ordering of OBUs | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-3) | Ordering of OBUs | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 3 |
 | [§ 7.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-3) | Ordering of OBUs | `DECODE-STREAM-STATE-PLANNER` | ✅ | — | — | ✅ | 1 |
 | [§ 7.3.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-2) | Coded multistream video sequence boundaries | `AV2-7.3.2-CMVS-BOUNDARIES` | ✅ | — | 🟡 | 🟡 | 1 |
 | [§ 7.3.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-3-3) | Coded output frame unit | `AV2-7.3.3-CODED-OUTPUT-FRAME-UNIT` | ✅ | — | 🟡 | ✅ | 7 |
@@ -268,7 +268,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.4.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-5) | Random Access Switch | `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | ✅ | — | 🟡 | 🟡 | 1 |
 | [§ 7.4.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-5) | Random Access Switch | `AV2-7.4-RANDOM-ACCESS` | ✅ | — | 🟡 | 🟡 | 2 |
 | [§ 7.4.6](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-6) | Multistream Random Access | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | ✅ | ✅ | 🟡 | ✅ | 7 |
-| [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 1 |
+| [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 3 |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 7.21.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-1) | Output process | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
@@ -291,9 +291,9 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [Annex A](./spec/av2/1.0.0/annex-a-profiles-levels-and-tiers.md#s-annex-a) | Profiles, levels, and tiers | `AV2-A-LEVELS-TIERS` | ✅ | — | 🟡 | ✅ | 5 |
 | [Annex A](./spec/av2/1.0.0/annex-a-profiles-levels-and-tiers.md#s-annex-a) | Profiles, levels, and tiers | `AV2-A-PROFILES` | ✅ | — | 🟡 | ✅ | 7 |
 | [Annex B](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b) | Length delimited bitstream format | `AV2-B-ANNEXB-OBU-ENVELOPE` | ✅ | ✅ | ✅ | ✅ | 1 |
-| [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 1 |
+| [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 3 |
 | [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
-| [Annex B.3](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3) | Length delimited bitstream semantics | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 1 |
+| [Annex B.3](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3) | Length delimited bitstream semantics | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 3 |
 | [Annex B.3](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3) | Length delimited bitstream semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [Annex E](./spec/av2/1.0.0/annex-e-decoder-model.md#s-annex-e) | Decoder model | `AV2-E-DECODER-MODEL` | ✅ | — |  |  | — |
 
