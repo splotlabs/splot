@@ -5494,6 +5494,59 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature", "decode/malformed-source", "decode/resource-limit"]
 
 [[feature]]
+id = "DECODE-TILE-PAYLOAD-BOUNDARY"
+name = "Tile payload decode boundary"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.1", "5.20.2.1", "6.19.1", "7.1", "8.2.2", "8.3"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-2",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload.rs"
+openspec_change = "tile-payload-decode-boundary"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private `splot-decode` tile-payload boundary for the minimal single-tile closed-loop-key tier: it accepts already-framed §5.20.1 tile-group payload metadata, enforces `max_tile_payload_bytes` and `max_tile_count`, derives deterministic tile work units with exact source/layer/tile/MI-range/byte-span provenance, initializes §8.2 symbol state over the bounded tile slice, and then returns structured `decode/unsupported-feature` metadata for the unimplemented `decode_tile()` / §8.3 CDF-selection boundary. The boundary intentionally does not call `exit_symbol()`, mutate CDF banks, copy/average CDFs, reconstruct pixels, compute hashes, write runtime Y4M, refresh references, support multi-tile/multi-tile-group/bridge/BRU paths, invoke AVM/dav2d, or add scheduler use outside the `splot_parallel::WorkerPool` policy."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/tests.rs",
+]
+commands = [
+    "cargo test -p splot-decode tile_payload --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo test -p splot-decode --locked",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-concurrency-policy",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "crates/splot-decode/src/lib.rs",
+    "crates/splot-decode/src/tile_payload.rs",
+    "crates/splot-decode/src/tile_payload/tests.rs",
+]
+diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
+
+[[feature]]
 id = "DECODE-UNSUPPORTED-DIAGNOSTIC-API"
 name = "Decode unsupported diagnostic API"
 category = "infrastructure"

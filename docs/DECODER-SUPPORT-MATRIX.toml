@@ -270,16 +270,16 @@ notes = "Generic AV2 §8.2 symbol-decoder primitives are implemented in `splot-c
 [[row]]
 id = "tile-payload-decode"
 name = "Tile payload decode boundary"
-feature_id = ""
-spec_sections = ["5.20", "7.1", "8.3"]
-parser_source = "crates/splot-core/src/headers/tile_group.rs"
-decode_module = "planned"
+feature_id = "DECODE-TILE-PAYLOAD-BOUNDARY"
+spec_sections = ["5.20.1", "5.20.2.1", "6.19.1", "7.1", "8.2.2", "8.3"]
+parser_source = "crates/splot-core/src/headers/tile_group.rs; crates/splot-core/src/symbol.rs"
+decode_module = "crates/splot-decode/src/tile_payload.rs"
 tier = "tier1-intra"
-status = "todo"
-self_contained_tests = []
-diagnostics = ["decode/unsupported-feature (planned)"]
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/tests.rs", "cargo test -p splot-decode tile_payload --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo test -p splot-decode --locked", "cargo xtask check-dependency-direction", "cargo xtask check-concurrency-policy", "cargo xtask check-decoder-support"]
+diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
 local_reference_evidence = []
-notes = "Future decode_tile boundary for constrained all-intra streams."
+notes = "Crate-private `splot-decode` tile-payload boundary for the minimal one-tile closed-loop-key tier: callers provide existing §5.20.1 `TileGroupFraming`, selected layer/source metadata, tile-grid facts, frame facts, and `DecodeLimits`; the boundary checks tile payload byte and tile-count limits first, rejects malformed framing and non-minimal tier paths with typed metadata, derives one deterministic tile work unit with exact tile number, row/column, MI ranges, payload byte span, `tileSize`, source OBU/IVF provenance, selected layer, and entry `CurrentQIndex`, initializes §8.2 symbol state over the bounded tile slice, then stops at a structured `decode/unsupported-feature` metadata point for unimplemented §5.20.2.1 `decode_tile()` and §8.3 CDF selection. This row remains partial: no multi-tile or multi-tile-group support, no bridge/BRU path support, no `exit_symbol()` after real syntax, no CDF copyback/averaging, no reconstruction, hashes, runtime Y4M output, reference refresh, AVM/dav2d invocation, repo dependency, wrapper, script, or CI/runtime external-decoder path exists."
 
 [[row]]
 id = "intra-reconstruction"
