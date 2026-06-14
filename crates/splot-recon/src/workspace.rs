@@ -3,15 +3,17 @@
 
 //! Mutable current-frame reconstruction workspace.
 //!
-//! Feature tracking: `RECON-CURRENT-FRAME-WORKSPACE`.
+//! Feature tracking: `RECON-CURRENT-FRAME-WORKSPACE`,
+//! `RECON-INTRA-DC-RECTANGULAR-PREDICTION`.
 
 use core::mem;
 use core::ops::Range;
 
+use crate::intra::predict_intra_dc_rect_value_from_sums;
 use crate::{
-    DecodedFrame, DecodedFrameInfo, FramePlanes, IntraDcEdges, IntraSquareBlockSize, PixelFormat,
-    Plane, PlaneId, PlaneRect, PlaneSize, ReconError, ReconSample, Result,
-    predict_intra_dc_square_into,
+    DecodedFrame, DecodedFrameInfo, FramePlanes, IntraDcEdges, IntraRectBlockSize,
+    IntraSquareBlockSize, PixelFormat, Plane, PlaneId, PlaneRect, PlaneSize, ReconError,
+    ReconSample, Result,
 };
 
 /// Mutable current-frame reconstruction workspace.
@@ -165,6 +167,23 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         size: IntraSquareBlockSize,
         samples: &[T],
     ) -> Result<()> {
+        self.write_rect_block(plane, x, y, size.into(), samples)
+    }
+
+    /// Writes a contiguous rectangular prediction block into `plane`.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when the plane is absent, the target rectangle is
+    /// out of bounds, `samples.len()` is not the rectangular sample count, or a
+    /// source sample exceeds the active bit depth.
+    pub fn write_rect_block(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        samples: &[T],
+    ) -> Result<()> {
         if samples.len() != size.sample_count() {
             return Err(ReconError::WorkspaceWriteLengthMismatch {
                 plane,
@@ -173,8 +192,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             });
         }
 
-        let rect = square_rect(x, y, size)?;
-        self.write_rect(plane, rect, samples, size.side_len())
+        let rect = block_rect(x, y, size)?;
+        self.write_rect(plane, rect, samples, size.width())
     }
 
     /// Extracts left and above in-storage edges for a square block.
@@ -193,19 +212,39 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         y: usize,
         size: IntraSquareBlockSize,
     ) -> Result<CurrentFrameIntraEdges<T>> {
-        let rect = square_rect(x, y, size)?;
-        self.plane(plane)?.intra_dc_edges_for_square(rect)
+        self.intra_dc_edges_for_rect(plane, x, y, size.into())
+    }
+
+    /// Extracts left and above in-storage edges for a rectangular block.
+    ///
+    /// The helper only reads edges adjacent to the requested plane-local
+    /// rectangle when they are inside workspace storage. It does not decide AV2
+    /// block, tile, superblock, subsampled-DC, palette, or CfL availability
+    /// semantics.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when the plane is absent, the target rectangle is
+    /// out of bounds, or edge scratch allocation fails.
+    pub fn intra_dc_edges_for_rect(
+        &self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+    ) -> Result<CurrentFrameIntraEdges<T>> {
+        let rect = block_rect(x, y, size)?;
+        self.plane(plane)?.intra_dc_edges_for_rect(rect)
     }
 
     /// Predicts square DC intra samples into the workspace.
     ///
-    /// This is a convenience wrapper over the existing
-    /// [`predict_intra_dc_square_into`] primitive. Edge extraction is limited to
-    /// in-storage left/above neighbors and does not model AV2 availability.
+    /// This is a convenience wrapper over [`Self::predict_intra_dc_rect`]. Edge
+    /// extraction is limited to in-storage left/above neighbors and does not
+    /// model AV2 availability.
     ///
     /// # Errors
     /// Returns [`ReconError`] for invalid target geometry, absent planes,
-    /// invalid prediction inputs, or scratch allocation failure.
+    /// or invalid prediction inputs.
     pub fn predict_intra_dc_square(
         &mut self,
         plane: PlaneId,
@@ -213,19 +252,31 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         y: usize,
         size: IntraSquareBlockSize,
     ) -> Result<()> {
-        let edges = self.intra_dc_edges_for_square(plane, x, y, size)?;
-        let rect = square_rect(x, y, size)?;
-        let bit_depth = self.info.bit_depth();
-        let target = self.plane_mut(plane)?;
-        let start = target.sample_index(rect.x(), rect.y())?;
+        self.predict_intra_dc_rect(plane, x, y, size.into())
+    }
 
-        predict_intra_dc_square_into(
-            bit_depth,
-            size,
-            edges.as_dc_edges(),
-            &mut target.samples[start..],
-            target.stride_samples,
-        )
+    /// Predicts rectangular DC intra samples into the workspace.
+    ///
+    /// This computes the constant DC sample from in-storage left/above neighbor
+    /// sums and fills the target rectangle. Edge extraction is limited to
+    /// in-storage neighbors and does not model AV2 availability.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for invalid target geometry, absent planes,
+    /// or invalid prediction inputs.
+    pub fn predict_intra_dc_rect(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+    ) -> Result<()> {
+        let rect = block_rect(x, y, size)?;
+        let bit_depth = self.info.bit_depth();
+        let (left_sum, above_sum) = self.plane(plane)?.intra_dc_edge_sums_for_rect(rect)?;
+        let sample = predict_intra_dc_rect_value_from_sums(bit_depth, size, left_sum, above_sum)?;
+
+        self.plane_mut(plane)?.fill_rect(rect, sample)
     }
 
     /// Freezes the workspace into an immutable decoded frame.
@@ -433,7 +484,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         Ok(())
     }
 
-    fn intra_dc_edges_for_square(&self, rect: PlaneRect) -> Result<CurrentFrameIntraEdges<T>> {
+    fn intra_dc_edges_for_rect(&self, rect: PlaneRect) -> Result<CurrentFrameIntraEdges<T>> {
         self.ensure_rect(rect)?;
 
         let left = if rect.x() == 0 {
@@ -470,6 +521,36 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         };
 
         Ok(CurrentFrameIntraEdges { left, above })
+    }
+
+    fn intra_dc_edge_sums_for_rect(&self, rect: PlaneRect) -> Result<(Option<u64>, Option<u64>)> {
+        self.ensure_rect(rect)?;
+
+        let left = if rect.x() == 0 {
+            None
+        } else {
+            let mut sum = 0u64;
+            for row in rect.y()..rect.y() + rect.height() {
+                let index = self.sample_index(rect.x() - 1, row)?;
+                sum += u64::from(self.samples[index].to_u16());
+            }
+            Some(sum)
+        };
+
+        let above = if rect.y() == 0 {
+            None
+        } else {
+            let row = rect.y() - 1;
+            let range = self.row_range(row, rect.x(), rect.width())?;
+            Some(
+                self.samples[range]
+                    .iter()
+                    .map(|sample| u64::from(sample.to_u16()))
+                    .sum(),
+            )
+        };
+
+        Ok((left, above))
     }
 
     fn freeze(self) -> Result<Plane<T>> {
@@ -583,7 +664,7 @@ impl<T: ReconSample> CurrentFrameIntraEdges<T> {
         self.above.as_deref()
     }
 
-    /// Borrows the owned edges as square DC prediction inputs.
+    /// Borrows the owned edges as DC prediction inputs.
     pub fn as_dc_edges(&self) -> IntraDcEdges<'_, T> {
         IntraDcEdges::new(self.left_samples(), self.above_samples())
     }
@@ -639,8 +720,8 @@ fn chroma_plane_geometry(
     )))
 }
 
-fn square_rect(x: usize, y: usize, size: IntraSquareBlockSize) -> Result<PlaneRect> {
-    PlaneRect::new(x, y, size.side_len(), size.side_len())
+fn block_rect(x: usize, y: usize, size: IntraRectBlockSize) -> Result<PlaneRect> {
+    PlaneRect::new(x, y, size.width(), size.height())
 }
 
 fn required_row_strided_samples(rect: PlaneRect, row_stride_samples: usize) -> Result<usize> {

@@ -160,6 +160,17 @@ pub enum ReconError {
         /// Maximum supported base-2 logarithm.
         max: u8,
     },
+    /// A rectangular intra prediction block dimension is outside the modeled range.
+    InvalidIntraRectBlockLog2 {
+        /// Supplied base-2 logarithm of the block width.
+        log2_width: u8,
+        /// Supplied base-2 logarithm of the block height.
+        log2_height: u8,
+        /// Minimum supported base-2 logarithm.
+        min: u8,
+        /// Maximum supported base-2 logarithm.
+        max: u8,
+    },
     /// A supplied intra prediction edge did not match the block size.
     IntraPredictionEdgeLengthMismatch {
         /// Edge whose sample count was checked.
@@ -371,6 +382,15 @@ impl fmt::Display for ReconError {
             } => write!(
                 f,
                 "unsupported square intra block log2 size {log2_size}; expected {min} through {max}"
+            ),
+            Self::InvalidIntraRectBlockLog2 {
+                log2_width,
+                log2_height,
+                min,
+                max,
+            } => write!(
+                f,
+                "unsupported rectangular intra block log2 size {log2_width}x{log2_height}; expected each dimension {min} through {max}"
             ),
             Self::IntraPredictionEdgeLengthMismatch {
                 edge,

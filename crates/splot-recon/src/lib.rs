@@ -9,14 +9,15 @@
 //! plane storage invariants, a safe reference-slot container, and deterministic
 //! frame-hash input serialization and digest computation, plus source-backed
 //! Y4M writing for caller-supplied decoded frames, plus the first square DC
-//! intra prediction primitive and a mutable current-frame workspace; it does
-//! not implement byte-consuming decode, full reconstruction, runtime CLI Y4M
-//! output, or AV2 reference refresh semantics.
+//! and rectangular DC intra prediction primitives and a mutable current-frame
+//! workspace; it does not implement byte-consuming decode, full reconstruction,
+//! runtime CLI Y4M output, or AV2 reference refresh semantics.
 //!
 //! Feature tracking: `INFRA-RECON-FRAME-PLANE-TYPES`,
 //! `RECON-REFERENCE-FRAME-STORE`, `RECON-HASH-INPUT-SERIALIZATION`,
 //! `RECON-FRAME-HASH-DIGEST`, `RECON-Y4M-OUTPUT-WRITER`,
 //! `RECON-INTRA-DC-SQUARE-PREDICTION`,
+//! `RECON-INTRA-DC-RECTANGULAR-PREDICTION`,
 //! `RECON-CURRENT-FRAME-WORKSPACE`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
@@ -39,8 +40,9 @@ pub use frame::{DecodedFrame, DecodedFrameInfo, FramePlanes};
 pub use geometry::{OutputIndex, PlaneRect, PlaneSize};
 pub use hash_input::{DecodedFrameHash, DecodedFrameHashInput};
 pub use intra::{
-    IntraDcEdge, IntraDcEdges, IntraSquareBlockSize, SquareIntraPredictionBlock,
-    SquareIntraPredictionRows, predict_intra_dc_square, predict_intra_dc_square_into,
+    IntraDcEdge, IntraDcEdges, IntraRectBlockSize, IntraSquareBlockSize,
+    SquareIntraPredictionBlock, SquareIntraPredictionRows, predict_intra_dc_rect_into,
+    predict_intra_dc_rect_value, predict_intra_dc_square, predict_intra_dc_square_into,
     predict_intra_dc_square_value,
 };
 pub use plane::{Plane, VisibleRows};

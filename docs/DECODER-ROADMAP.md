@@ -49,12 +49,13 @@ runtime decode output.
 with constructor invariants plus a bounded immutable reference-slot container,
 canonical decoded-frame hash input serialization, source-backed
 `splot-dfh-sha256-v1` digest computation, and a source-backed Y4M writer for
-caller-supplied decoded frames. It also exposes the first scheduler-free scalar
-prediction primitive: square-block § 7.13.2.10 DC intra prediction over
-caller-provided left/above edge samples. Rectangular DC, other intra prediction
-modes, dequantization, inverse transforms, residual addition, runtime decode
-output, output scheduling, and AV2 reference refresh semantics remain
-unimplemented.
+caller-supplied decoded frames. It also exposes scheduler-free scalar
+prediction primitives for square and rectangular § 7.13.2.10 DC intra
+prediction over caller-provided left/above edge samples; rectangular both-edge
+prediction uses the § 7.13.3.22 approximate divisor path. Other intra
+prediction modes, dequantization, inverse transforms, residual addition,
+runtime decode output, output scheduling, and AV2 reference refresh semantics
+remain unimplemented.
 `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
 `splot-decode`, then call deterministic reconstruction primitives.
@@ -159,7 +160,7 @@ other external decoder is forbidden.
 | 5 | Self-contained decode fuzz target and fixture smoke | `decode_plan_bytes` fuzz target supported for the raw byte planner; decode fixtures planned |
 | 6 | AV2 § 8 symbol/CDF decoder foundation | § 8.2 generic primitive partial; first crate-private partition CDF subset boundary partial; broad § 8.3 and tile decode planned |
 | 7 | Constrained intra tile syntax | tile payload and tile CDF boundaries partial; `decode_tile()` syntax planned |
-| 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | current-frame workspace and square DC prediction primitive supported; rectangular DC, other intra modes, dequant/reconstruction, inverse transforms, runtime hashes planned |
+| 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | current-frame workspace plus square and rectangular DC prediction primitives supported; other intra modes, dequant/reconstruction, inverse transforms, runtime hashes planned |
 | 9 | Y4M output and reconstructed reference-frame store | reference-slot runtime store and source-backed Y4M writer supported; runtime Y4M output and AV2 refresh semantics planned |
 | 10 | Portable local-reference evidence manifests | metadata contract and offline checker wired; two AVM/dav2d raw MD5 agreement entries recorded as non-executable metadata |
 | 11 | Encoder reconstruction API contract | planned |
