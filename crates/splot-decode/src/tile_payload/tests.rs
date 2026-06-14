@@ -66,6 +66,10 @@ fn single_tile_payload_yields_deterministic_work_unit_and_unsupported_boundary()
         plan_tile_payload_boundary(input(&payload, &framing, DecodeLimits::unlimited())).unwrap();
 
     assert_eq!(plan.source(), base_source());
+    assert_eq!(plan.source().source_kind(), DecodeObuSourceKind::AnnexB);
+    assert_eq!(plan.source().ivf_frame(), None);
+    assert_eq!(plan.source().obu_index(), 7);
+    assert_eq!(plan.source().obu_offset(), ByteOffset::new(100));
     assert_eq!(plan.selected_layer(), DecodeLayerSelection::base());
     assert_eq!(plan.work_units().len(), 1);
     let unit = &plan.work_units()[0];
@@ -648,16 +652,31 @@ fn boundary_is_deterministic_through_decode_context_worker_pool() {
 
     let plans = runtimes.map(|runtime| {
         let ctx = DecodeContext::new(runtime).unwrap();
-        ctx.pool()
-            .install(|| {
-                plan_tile_payload_boundary(input(&payload, &framing, DecodeLimits::unlimited()))
-            })
+        ctx.plan_tile_payload_boundary(input(&payload, &framing, DecodeLimits::unlimited()))
             .unwrap()
     });
 
     assert_eq!(plans[0], plans[1]);
     assert_eq!(plans[1], plans[2]);
     assert_eq!(plans[0].work_units()[0].tile_bytes(), &payload);
+}
+
+#[test]
+fn decode_context_tile_payload_handoff_preserves_limit_errors() {
+    let payload = [0x80, 0x00];
+    let framing = one_tile_framing(&payload);
+    let ctx = DecodeContext::new(DecodeRuntimeConfig::default()).unwrap();
+    let limits = DecodeLimits::unlimited().with_max_tile_payload_bytes(MAX(1));
+
+    let error = ctx
+        .plan_tile_payload_boundary(input(&payload, &framing, limits))
+        .unwrap_err();
+
+    let TilePayloadBoundaryError::Limit(limit) = error else {
+        panic!("expected payload limit");
+    };
+    assert_eq!(limit.name(), DecodeLimitName::MaxTilePayloadBytes);
+    assert_eq!(limit.actual(), Some(2));
 }
 
 #[test]

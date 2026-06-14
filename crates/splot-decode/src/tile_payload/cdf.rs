@@ -10,9 +10,6 @@ use core::fmt;
 use splot_core::symbol::CdfUpdateMode;
 use splot_core::tables::cdf::{DEFAULT_DO_SPLIT_CDF, DEFAULT_DO_SQUARE_SPLIT_CDF};
 
-pub(crate) const TILE_CDF_SELECTION_MATRIX_ROW: &str = "tile-cdf-selection-boundary";
-pub(crate) const TILE_CDF_SELECTION_FEATURE_ID: &str = "DECODE-TILE-CDF-SELECTION-BOUNDARY";
-
 const CDF_PROB_SCALE: i32 = 1 << 15;
 const DO_SPLIT_PLANE_CONTEXTS: usize = 2;
 const DO_SPLIT_CONTEXTS: usize = 64;

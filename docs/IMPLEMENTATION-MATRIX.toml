@@ -5718,6 +5718,61 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
 
 [[feature]]
+id = "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF"
+name = "DecodeContext tile-payload handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.1", "5.20.2.1", "6.19.1", "7.1", "8.2.2", "8.3"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-2",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3",
+    "docs/CONCURRENCY.md",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/context.rs"
+openspec_change = "decode-context-tile-payload-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds a crate-private `DecodeContext` handoff for the existing tile-payload boundary: `DecodeContext::plan_tile_payload_boundary` runs the crate-private `plan_tile_payload_boundary` inside the context-owned `splot_parallel::WorkerPool`, preserving deterministic tile work-unit metadata and internal tile-boundary errors across `auto`, `1`, and fixed positive thread policies. The tile payload facts remain caller-provided and crate-private, with conditional non-test dead-code allowances documenting that runtime decode fact derivation is still future work. This row does not expose public tile-payload API support, derive tile facts from raw byte streams, implement `decode_tile()`, reconstruct pixels, compute hashes, write Y4M, refresh references, add a `splot-decode -> splot-recon` dependency, invoke AVM/dav2d, or use direct Rayon/crossbeam/global pools/ad-hoc threads."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/tests.rs::boundary_is_deterministic_through_decode_context_worker_pool",
+    "crates/splot-decode/src/tile_payload/tests.rs::decode_context_tile_payload_handoff_preserves_limit_errors",
+]
+commands = [
+    "cargo test -p splot-decode tile_payload --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo test -p splot-decode --locked",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-concurrency-policy",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "crates/splot-decode/src/context.rs",
+    "crates/splot-decode/src/tile_payload.rs",
+    "crates/splot-decode/src/tile_payload/tests.rs",
+]
+diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
+
+[[feature]]
 id = "DECODE-TILE-CDF-SELECTION-BOUNDARY"
 name = "Tile CDF selection boundary"
 category = "infrastructure"

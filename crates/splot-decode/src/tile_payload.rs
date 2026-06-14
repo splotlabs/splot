@@ -5,9 +5,15 @@
 //!
 //! Feature tracking: `DECODE-TILE-PAYLOAD-BOUNDARY`.
 
-// This module is intentionally crate-private until a later decode-path change wires
-// the boundary into `DecodeContext`; focused tests exercise the API in this PR.
-#![allow(dead_code)]
+// The boundary remains crate-private; `DecodeContext` owns the runtime handoff
+// until a later decode-path change derives these facts from parsed frame state.
+#![cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "crate-private tile boundary is tested before runtime decode derives tile facts"
+    )
+)]
 
 mod cdf;
 
