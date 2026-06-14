@@ -1,0 +1,18 @@
+---
+source: crates/splot-cli/tests/help_snapshots.rs
+expression: "help(\"inspect\")"
+---
+Print OBUs and headers from a bitstream
+
+Usage: splot inspect [OPTIONS] <INPUT>
+
+Arguments:
+  <INPUT>  Path to a raw AV2 Annex B bitstream or IVF-wrapped Annex B stream
+
+Options:
+      --json        Emit the inspection as JSON
+  -v, --verbose...  Increase logging verbosity (repeatable: -v, -vv, -vvv)
+      --headers     Print only OBU headers (omit payload sizes in text output)
+      --quiet       Silence all logging except errors
+  -h, --help        Print help
+  -V, --version     Print version

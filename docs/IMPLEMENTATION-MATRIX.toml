@@ -4047,6 +4047,49 @@ fixtures = ["tests/fixtures/conformant.av2", "tests/fixtures/operating-point-set
 diagnostics = []
 
 [[feature]]
+id = "CONF-CLI-SNAPSHOT-COVERAGE"
+name = "CLI help + inspect text snapshots"
+category = "conformance"
+kind = "conformance"
+spec_sections = []
+sources = []
+crate = "splot-cli"
+module = "crates/splot-cli/tests/help_snapshots.rs"
+openspec_change = "cli-snapshot-coverage"
+tracking_issue = ""
+owner = "conformance"
+risk = "low"
+notes = "Extends CONF-INSPECT-SNAPSHOTS beyond the --json surface. insta golden snapshots freeze (1) the `splot validate --help` and `splot inspect --help` text — the backward-compat tripwire for the validator productization flag work, so additive flags update the goldens intentionally and an accidental surface change is caught; the top-level `splot --help` is deliberately not snapshotted to stay decoupled from decode/encode wording — and (2) the `splot inspect` human dump (default + --headers) over representative committed fixtures. Goldens are deterministic (no paths/timestamps/version). Tests: crates/splot-cli/tests/help_snapshots.rs, crates/splot-cli/tests/inspect_text_snapshots.rs (snapshots in crates/splot-cli/tests/snapshots/)."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-cli/tests/help_snapshots.rs",
+    "crates/splot-cli/tests/inspect_text_snapshots.rs",
+]
+commands = [
+    "cargo test -p splot-cli --test help_snapshots --test inspect_text_snapshots",
+]
+fixtures = [
+    "tests/fixtures/conformant.av2",
+    "tests/fixtures/operating-point-set.av2",
+    "tests/fixtures/frame-header-core.av2",
+    "tests/fixtures/metadata-group.av2",
+]
+diagnostics = []
+
+[[feature]]
 id = "CONF-FUZZ-NO-PANIC"
 name = "Parser no-panic fuzzing"
 category = "conformance"

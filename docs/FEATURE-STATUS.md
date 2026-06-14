@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 157 feature(s).
+Matrix version 1. Last reviewed 2026-06-14. 158 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -126,6 +126,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `CONF-AVM-INVALID-STREAMS` | AVM invalid stream conformance | conformance | conformance | done | n/a | n/a | done | n/a | n/a | n/a | done | pending | `crates/splot-cli/tests/negative_mutations.rs` |
 | `CONF-PUBLIC-VECTOR-LICENSE-REVIEW` | Public vector license review | conformance | conformance | todo | n/a | n/a | n/a | n/a | n/a | todo | todo | pending | `docs/CONFORMANCE.md` |
 | `CONF-INSPECT-SNAPSHOTS` | Inspector snapshot tests | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | partial | done | n/a | `crates/splot-cli/src/commands/inspect.rs` |
+| `CONF-CLI-SNAPSHOT-COVERAGE` | CLI help + inspect text snapshots | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-cli/tests/help_snapshots.rs` |
 | `CONF-FUZZ-NO-PANIC` | Parser no-panic fuzzing | conformance | conformance | done | n/a | done | done | n/a | n/a | partial | done | n/a | `fuzz/fuzz_targets/parse_obu.rs` |
 | `CLI-VALIDATE` | splot validate command | cli | cli | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-cli/src/commands/validate.rs` |
 | `CLI-INSPECT` | splot inspect command | cli | cli | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-cli/src/commands/inspect.rs` |

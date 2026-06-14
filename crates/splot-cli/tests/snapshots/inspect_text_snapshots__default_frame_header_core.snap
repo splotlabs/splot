@@ -1,0 +1,11 @@
+---
+source: crates/splot-cli/tests/inspect_text_snapshots.rs
+expression: "inspect_text(\"frame-header-core.av2\", &[])"
+---
+3 OBU(s)
+OBU #0  @byte 1  size=1  type=OBU_TEMPORAL_DELIMITER(2)  ext=false  tlayer=0 mlayer=0 xlayer=31
+        payload: 0 byte(s)
+OBU #1  @byte 3  size=19  type=OBU_SEQUENCE_HEADER(1)  ext=false  tlayer=0 mlayer=0 xlayer=0
+        payload: 18 byte(s)
+OBU #2  @byte 23  size=8  type=OBU_CLOSED_LOOP_KEY(4)  ext=false  tlayer=0 mlayer=0 xlayer=0
+        payload: 7 byte(s)
