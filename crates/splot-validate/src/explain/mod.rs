@@ -13,21 +13,22 @@
 
 use serde::Serialize;
 
-use crate::diagnostic::Severity;
-
 mod generated;
 
-/// Catalog entry describing one validator diagnostic rule id.
+/// Catalog entry describing one validator diagnostic rule id. All fields are taken
+/// verbatim from `docs/VALIDATOR-DIAGNOSTICS.md`.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct DiagnosticInfo {
     /// The stable rule id (e.g. `"obu-header/global-xlayer-required"`).
     pub rule_id: &'static str,
-    /// The diagnostic's severity.
-    pub severity: Severity,
-    /// The AV2 v1.0.0 spec section the rule derives from (without the leading `§`),
-    /// when the registry records one.
+    /// The diagnostic's severity as the registry records it — `error`, `warning`,
+    /// `info`, or a comma-separated dual value (e.g. `error, warning`) for a rule
+    /// emitted at more than one severity.
+    pub severity: &'static str,
+    /// The registry's `Section` for the rule, verbatim (e.g. `"§ 6.2.2"`, `"§ A.4"`,
+    /// or a non-AV2 label like `"IVF"` / `"varies"`), when one is recorded.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub spec_section: Option<&'static str>,
+    pub section: Option<&'static str>,
     /// A one-line description of the condition the rule flags.
     pub summary: &'static str,
 }

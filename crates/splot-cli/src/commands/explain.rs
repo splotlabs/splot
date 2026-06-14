@@ -86,9 +86,9 @@ fn list(json: bool) -> Result<()> {
 fn print_info(info: &splot_validate::DiagnosticInfo) {
     println!("{}", info.rule_id);
     println!("  severity: {}", info.severity);
-    match info.spec_section {
-        Some(section) => println!("  spec:     § {section} (AV2 v1.0.0; docs/spec/av2/1.0.0/)"),
-        None => println!("  spec:     (none recorded)"),
+    match info.section {
+        Some(section) => println!("  section:  {section}"),
+        None => println!("  section:  (none recorded)"),
     }
     println!("  summary:  {}", info.summary);
     println!("\nFull registry: docs/VALIDATOR-DIAGNOSTICS.md");

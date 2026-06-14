@@ -29,59 +29,31 @@ const GENERATED_REL: &str = "crates/splot-validate/src/explain/generated.rs";
 const BEGIN_MARKER: &str = "<!-- diagnostics-registry:begin -->";
 const END_MARKER: &str = "<!-- diagnostics-registry:end -->";
 
-/// One parsed diagnostic catalog entry.
+/// One parsed diagnostic catalog entry. `severity` and `section` are stored
+/// verbatim from the doc (so a dual `error/warning` and non-AV2 section labels like
+/// `IVF` / `varies` survive); only `summary` and surrounding whitespace are trimmed.
 #[derive(Debug, PartialEq, Eq)]
 struct Entry {
     rule_id: String,
-    severity: Severity,
-    /// The spec section without its leading `§`, e.g. `A.4` / `6.2.2`. `None` when
-    /// the doc cell is empty or a dash.
-    spec_section: Option<String>,
+    /// The doc's `Severity` cell, e.g. `error` / `warning`; a dual cell is rendered
+    /// with a comma (`error, warning`) rather than a slash so the value cannot be
+    /// mistaken for a `ns/id` rule id by the registry scanners.
+    severity: String,
+    /// The doc's `Section` cell verbatim (e.g. `§ 6.2.2`, `§ A.4`, `IVF`,
+    /// `varies`). `None` when the cell is empty or a dash.
+    section: Option<String>,
     summary: String,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum Severity {
-    Error,
-    Warning,
-    Info,
+/// `true` when `token` (trimmed) is one of the doc's severity words.
+fn is_severity_token(token: &str) -> bool {
+    matches!(token.trim(), "error" | "warning" | "info")
 }
 
-impl Severity {
-    fn rust_path(self) -> &'static str {
-        match self {
-            Severity::Error => "crate::Severity::Error",
-            Severity::Warning => "crate::Severity::Warning",
-            Severity::Info => "crate::Severity::Info",
-        }
-    }
-
-    /// Severity ordering for picking the most severe of a dual cell.
-    fn rank(self) -> u8 {
-        match self {
-            Severity::Error => 2,
-            Severity::Warning => 1,
-            Severity::Info => 0,
-        }
-    }
-
-    fn parse_one(s: &str) -> Option<Severity> {
-        match s {
-            "error" => Some(Severity::Error),
-            "warning" => Some(Severity::Warning),
-            "info" => Some(Severity::Info),
-            _ => None,
-        }
-    }
-
-    /// Parses a severity cell. A dual cell like `error/warning` lists the
-    /// severities the id can carry (emitted with each in different contexts); the
-    /// registry records the most severe. `None` only when no token is a severity.
-    fn parse(s: &str) -> Option<Severity> {
-        s.split('/')
-            .filter_map(|token| Severity::parse_one(token.trim()))
-            .max_by_key(|severity| severity.rank())
-    }
+/// `true` when a severity cell is a non-empty `/`-separated list of severity words
+/// (e.g. `error`, `warning`, or a dual `error/warning`).
+fn is_severity_cell(cell: &str) -> bool {
+    !cell.trim().is_empty() && cell.split('/').all(is_severity_token)
 }
 
 /// Entry point for `cargo xtask gen-explain [--check]`.
@@ -138,15 +110,22 @@ fn parse_entries(doc: &str) -> Result<Vec<Entry>> {
             continue; // a backtick token that is not a rule id
         }
         // From here the row IS a 4-column diagnostics row (a valid backtick rule id
-        // in the second cell), so its severity MUST parse — a silent skip would
+        // in the second cell), so its severity MUST be valid — a silent skip would
         // drop a real diagnostic (e.g. a dual `error/warning` cell).
-        let Some(severity) = Severity::parse(cells[2].trim()) else {
+        let severity_cell = cells[2].trim();
+        if !is_severity_cell(severity_cell) {
             bail!(
-                "gen-explain: rule `{rule_id}` in {DOC_REL} has an unparsable severity `{}`",
-                cells[2].trim()
+                "gen-explain: rule `{rule_id}` in {DOC_REL} has an unparsable severity `{severity_cell}`"
             );
-        };
-        let spec_section = parse_section(cells[3].trim());
+        }
+        // Render a dual `error/warning` cell with a comma so the stored value is not
+        // a single-slash token a rule-id scanner would flag.
+        let severity = severity_cell
+            .split('/')
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let section = parse_section(cells[3].trim());
         // Rejoin any `|` that appeared inside the condition cell (defensive: the doc
         // has none today) so an embedded pipe never silently drops the row.
         let summary = cells[4..cells.len() - 1].join("|").trim().to_owned();
@@ -156,7 +135,7 @@ fn parse_entries(doc: &str) -> Result<Vec<Entry>> {
         entries.push(Entry {
             rule_id: rule_id.to_owned(),
             severity,
-            spec_section,
+            section,
             summary,
         });
     }
@@ -176,10 +155,11 @@ fn parse_entries(doc: &str) -> Result<Vec<Entry>> {
     Ok(entries)
 }
 
-/// Normalizes a `Section` cell to the bare section (no leading `§`), or `None` for
-/// an empty / dash cell.
+/// Returns the `Section` cell verbatim (trimmed), or `None` for an empty / dash
+/// cell. Kept verbatim — including the leading `§` for AV2 sections and non-AV2
+/// labels like `IVF` / `varies` — so `explain` never mis-labels a section.
 fn parse_section(cell: &str) -> Option<String> {
-    let section = cell.trim_start_matches('§').trim();
+    let section = cell.trim();
     if section.is_empty() || section == "—" || section == "-" {
         None
     } else {
@@ -229,16 +209,13 @@ fn render_generated(entries: &[Entry]) -> String {
     out.push_str("#[rustfmt::skip]\n");
     out.push_str("pub(super) const REGISTRY: &[super::DiagnosticInfo] = &[\n");
     for entry in entries {
-        let section = match &entry.spec_section {
+        let section = match &entry.section {
             Some(section) => format!("Some({section:?})"),
             None => "None".to_owned(),
         };
         out.push_str(&format!(
-            "    super::DiagnosticInfo {{ rule_id: {:?}, severity: {}, spec_section: {}, summary: {:?} }},\n",
-            entry.rule_id,
-            entry.severity.rust_path(),
-            section,
-            entry.summary,
+            "    super::DiagnosticInfo {{ rule_id: {:?}, severity: {:?}, section: {}, summary: {:?} }},\n",
+            entry.rule_id, entry.severity, section, entry.summary,
         ));
     }
     out.push_str("];\n");
@@ -278,10 +255,11 @@ outro `ns/after`
     }
 
     #[test]
-    fn dual_severity_takes_the_most_severe() {
+    fn dual_severity_preserved_as_comma_list() {
         let entries = parse_entries(DOC).unwrap();
         let dual = entries.iter().find(|e| e.rule_id == "ops/dual").unwrap();
-        assert_eq!(dual.severity, Severity::Error);
+        // Both severities survive; the slash is normalized to a comma.
+        assert_eq!(dual.severity, "error, warning");
     }
 
     #[test]
@@ -305,12 +283,13 @@ outro `ns/after`
     fn extracts_severity_section_and_summary() {
         let entries = parse_entries(DOC).unwrap();
         let foo = entries.iter().find(|e| e.rule_id == "ops/foo").unwrap();
-        assert_eq!(foo.severity, Severity::Error);
-        assert_eq!(foo.spec_section.as_deref(), Some("6.10.2"));
+        assert_eq!(foo.severity, "error");
+        // The section is kept verbatim, including the leading `§`.
+        assert_eq!(foo.section.as_deref(), Some("§ 6.10.2"));
         assert_eq!(foo.summary, "a thing is wrong with \"quoted\" text");
         let bar = entries.iter().find(|e| e.rule_id == "brt/bar").unwrap();
-        assert_eq!(bar.severity, Severity::Warning);
-        assert_eq!(bar.spec_section, None);
+        assert_eq!(bar.severity, "warning");
+        assert_eq!(bar.section, None);
     }
 
     #[test]
@@ -319,7 +298,8 @@ outro `ns/after`
         let generated = render_generated(&entries);
         // Quotes in the summary are escaped into a valid Rust literal.
         assert!(generated.contains(r#"summary: "a thing is wrong with \"quoted\" text""#));
-        assert!(generated.contains("spec_section: None"));
+        assert!(generated.contains(r#"severity: "error""#));
+        assert!(generated.contains("section: None"));
         assert!(generated.contains("#[rustfmt::skip]"));
         // Deterministic: rendering twice yields the same bytes.
         assert_eq!(generated, render_generated(&parse_entries(DOC).unwrap()));
