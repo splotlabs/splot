@@ -2,7 +2,7 @@
 
 Generated from `docs/DECODER-SUPPORT-MATRIX.toml` by `cargo xtask decoder-support --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 27 row(s).
+Matrix version 1. Last reviewed 2026-06-14. 28 row(s).
 
 ## Status Counts
 
@@ -10,7 +10,7 @@ Matrix version 1. Last reviewed 2026-06-14. 27 row(s).
 |---|---:|
 | `todo` | 0 |
 | `partial` | 9 |
-| `supported` | 17 |
+| `supported` | 18 |
 | `unsupported-intentional` | 1 |
 | `blocked` | 0 |
 
@@ -21,7 +21,7 @@ Matrix version 1. Last reviewed 2026-06-14. 27 row(s).
 | `encoder-reuse` | 1 |
 | `foundation` | 17 |
 | `tier0-plan` | 2 |
-| `tier1-intra` | 7 |
+| `tier1-intra` | 8 |
 
 ## Rows
 
@@ -48,6 +48,7 @@ Matrix version 1. Last reviewed 2026-06-14. 27 row(s).
 | `symbol-decoder` | Symbol and CDF decoder foundation | `AV2-8.2-SYMBOL-DECODER` | `tier1-intra` | `partial` | 8.2.2<br>8.2.3<br>8.2.4<br>8.2.5<br>8.2.6<br>9.2 | crates/splot-core/src/symbol.rs::tests<br>crates/splot-core/src/symbol.rs::proptests<br>cargo test -p splot-core symbol --locked<br>cargo test -p splot-core --test tables_spot --locked<br>cargo clippy -p splot-core --all-targets --all-features --locked -- -D warnings<br>cargo xtask check-decoder-support | decode/unsupported-feature | none | `crates/splot-core/src/symbol.rs` |
 | `tile-payload-decode` | Tile payload decode boundary | `DECODE-TILE-PAYLOAD-BOUNDARY` | `tier1-intra` | `partial` | 5.20.1<br>5.20.2.1<br>6.19.1<br>7.1<br>8.2.2<br>8.3 | crates/splot-decode/src/tile_payload/tests.rs<br>cargo test -p splot-decode tile_payload --locked<br>cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings<br>cargo test -p splot-decode --locked<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | decode/unsupported-feature<br>decode/resource-limit | none | `crates/splot-decode/src/tile_payload.rs` |
 | `tile-cdf-selection-boundary` | Tile CDF selection boundary | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | `tier1-intra` | `partial` | 5.20.1<br>5.20.2.1<br>5.20.3.2<br>6.19.1<br>8.2.2<br>8.2.4<br>8.2.6<br>8.3.1<br>8.3.2<br>9.3 | crates/splot-decode/src/tile_payload/cdf.rs::tests<br>crates/splot-decode/src/tile_payload/tests.rs<br>cargo test -p splot-decode tile_payload --locked<br>cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings<br>cargo test -p splot-decode --locked<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | decode/unsupported-feature | none | `crates/splot-decode/src/tile_payload.rs; crates/splot-decode/src/tile_payload/cdf.rs` |
+| `decode-context-tile-payload-handoff` | DecodeContext tile-payload handoff | `DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF` | `tier1-intra` | `supported` | 5.20.1<br>5.20.2.1<br>6.19.1<br>7.1<br>8.2.2<br>8.3 | crates/splot-decode/src/tile_payload/tests.rs::boundary_is_deterministic_through_decode_context_worker_pool<br>crates/splot-decode/src/tile_payload/tests.rs::decode_context_tile_payload_handoff_preserves_limit_errors<br>cargo test -p splot-decode tile_payload --locked<br>cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings<br>cargo test -p splot-decode --locked<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | decode/unsupported-feature<br>decode/resource-limit | none | `crates/splot-decode/src/context.rs; crates/splot-decode/src/tile_payload.rs` |
 | `intra-dc-square-prediction` | Square DC intra prediction | `RECON-INTRA-DC-SQUARE-PREDICTION` | `tier1-intra` | `supported` | 7.13.2.10<br>7.13.3.22 | crates/splot-recon/src/intra.rs::tests<br>cargo test -p splot-recon --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/intra.rs; crates/splot-recon/src/lib.rs` |
 | `current-frame-workspace` | Current-frame reconstruction workspace | `RECON-CURRENT-FRAME-WORKSPACE` | `tier1-intra` | `supported` | 6.4.1<br>6.17.4.1<br>6.17.4.4<br>7.13.2.1<br>7.13.2.10 | crates/splot-recon/src/workspace_tests.rs<br>cargo test -p splot-recon --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-source-lines<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/workspace.rs; crates/splot-recon/src/workspace_tests.rs; crates/splot-recon/src/lib.rs` |
 | `intra-reconstruction` | Scalar intra reconstruction | none | `tier1-intra` | `partial` | 7.13<br>7.14<br>7.15 | none | decode/unsupported-feature (planned) | none | `planned` |

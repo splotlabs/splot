@@ -73,8 +73,11 @@ crate-private first partition CDF subset (`TileDoSplitCdf` and
 `TileDoSquareSplitCdf`) copied from generated § 9.3 defaults with typed § 8.3
 row selection and § 8.2 copy/average policy metadata, and then stops at
 structured `decode/unsupported-feature` metadata for the unimplemented
-`decode_tile()` block syntax. It is not wired to a runtime decode success path
-and does not run `exit_symbol()` after real syntax, mutate Saved CDF banks,
+`decode_tile()` block syntax. A crate-private `DecodeContext` handoff now runs
+that boundary inside the context-owned `splot_parallel::WorkerPool`, preserving
+the PR #101 concurrency model without exposing public tile-payload APIs. It is
+not wired to a runtime decode success path and does not derive tile facts from
+raw byte streams, run `exit_symbol()` after real syntax, mutate Saved CDF banks,
 reconstruct pixels, compute hashes, write runtime Y4M, refresh references, or
 invoke external decoders.
 

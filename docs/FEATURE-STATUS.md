@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 168 feature(s).
+Matrix version 1. Last reviewed 2026-06-14. 169 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -167,6 +167,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-STREAM-STATE-PLANNER` | Parsed decode stream planner | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/stream_plan.rs` |
 | `DECODE-BYTE-STREAM-PLANNER` | Byte-consuming decode stream planner | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/byte_stream.rs` |
 | `DECODE-TILE-PAYLOAD-BOUNDARY` | Tile payload decode boundary | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload.rs` |
+| `DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF` | DecodeContext tile-payload handoff | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/context.rs` |
 | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | Tile CDF selection boundary | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf.rs` |
 | `DECODE-UNSUPPORTED-DIAGNOSTIC-API` | Decode unsupported diagnostic API | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-decode/src/lib.rs` |
 | `DOC-DECODER-SUPPORT-MATRIX` | Decoder support matrix documentation | docs | docs | done | n/a | n/a | done | n/a | n/a | n/a | done | n/a | `docs/DECODER-SUPPORT-MATRIX.toml` |
