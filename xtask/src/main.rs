@@ -14,6 +14,7 @@ use clap::{Parser, Subcommand};
 
 mod audit_scope;
 mod concurrency_policy;
+mod conflict_zone;
 mod conformance;
 mod decoder_support;
 mod diagnostic_registry;
@@ -110,6 +111,8 @@ enum Task {
     CheckDiagnosticRegistry,
     /// Verify every fuzz_targets/*.rs file has a matching `[[bin]]` entry in fuzz/Cargo.toml.
     CheckFuzzTargets,
+    /// Verify the diff vs `main` touches no decoder-stream conflict-zone path.
+    CheckConflictZone,
     /// Render the implementation matrix (docs/IMPLEMENTATION-MATRIX.toml).
     FeatureStatus {
         /// Output format.
@@ -214,6 +217,7 @@ fn main() -> Result<()> {
             diagnostic_registry::check_diagnostic_registry(&workspace_root()?)
         }
         Task::CheckFuzzTargets => check_fuzz_targets(&workspace_root()?),
+        Task::CheckConflictZone => conflict_zone::check_conflict_zone(&workspace_root()?),
         Task::FeatureStatus {
             format,
             category,
@@ -303,6 +307,7 @@ fn run_ci() -> Result<()> {
     feature_status::run_check_feature_status(&root)?;
     decoder_support::run_check_decoder_support(&root)?;
     diagnostic_registry::check_diagnostic_registry(&root)?;
+    conflict_zone::check_conflict_zone(&root)?;
 
     eprintln!("ci: all checks passed");
     Ok(())
