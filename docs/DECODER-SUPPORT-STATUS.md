@@ -2,7 +2,7 @@
 
 Generated from `docs/DECODER-SUPPORT-MATRIX.toml` by `cargo xtask decoder-support --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 26 row(s).
+Matrix version 1. Last reviewed 2026-06-14. 27 row(s).
 
 ## Status Counts
 
@@ -10,7 +10,7 @@ Matrix version 1. Last reviewed 2026-06-14. 26 row(s).
 |---|---:|
 | `todo` | 0 |
 | `partial` | 9 |
-| `supported` | 16 |
+| `supported` | 17 |
 | `unsupported-intentional` | 1 |
 | `blocked` | 0 |
 
@@ -21,7 +21,7 @@ Matrix version 1. Last reviewed 2026-06-14. 26 row(s).
 | `encoder-reuse` | 1 |
 | `foundation` | 17 |
 | `tier0-plan` | 2 |
-| `tier1-intra` | 6 |
+| `tier1-intra` | 7 |
 
 ## Rows
 
@@ -49,6 +49,7 @@ Matrix version 1. Last reviewed 2026-06-14. 26 row(s).
 | `tile-payload-decode` | Tile payload decode boundary | `DECODE-TILE-PAYLOAD-BOUNDARY` | `tier1-intra` | `partial` | 5.20.1<br>5.20.2.1<br>6.19.1<br>7.1<br>8.2.2<br>8.3 | crates/splot-decode/src/tile_payload/tests.rs<br>cargo test -p splot-decode tile_payload --locked<br>cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings<br>cargo test -p splot-decode --locked<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | decode/unsupported-feature<br>decode/resource-limit | none | `crates/splot-decode/src/tile_payload.rs` |
 | `tile-cdf-selection-boundary` | Tile CDF selection boundary | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | `tier1-intra` | `partial` | 5.20.1<br>5.20.2.1<br>5.20.3.2<br>6.19.1<br>8.2.2<br>8.2.4<br>8.2.6<br>8.3.1<br>8.3.2<br>9.3 | crates/splot-decode/src/tile_payload/cdf.rs::tests<br>crates/splot-decode/src/tile_payload/tests.rs<br>cargo test -p splot-decode tile_payload --locked<br>cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings<br>cargo test -p splot-decode --locked<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | decode/unsupported-feature | none | `crates/splot-decode/src/tile_payload.rs; crates/splot-decode/src/tile_payload/cdf.rs` |
 | `intra-dc-square-prediction` | Square DC intra prediction | `RECON-INTRA-DC-SQUARE-PREDICTION` | `tier1-intra` | `supported` | 7.13.2.10<br>7.13.3.22 | crates/splot-recon/src/intra.rs::tests<br>cargo test -p splot-recon --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/intra.rs; crates/splot-recon/src/lib.rs` |
+| `current-frame-workspace` | Current-frame reconstruction workspace | `RECON-CURRENT-FRAME-WORKSPACE` | `tier1-intra` | `supported` | 6.4.1<br>6.17.4.1<br>6.17.4.4<br>7.13.2.1<br>7.13.2.10 | crates/splot-recon/src/workspace_tests.rs<br>cargo test -p splot-recon --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-source-lines<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/workspace.rs; crates/splot-recon/src/workspace_tests.rs; crates/splot-recon/src/lib.rs` |
 | `intra-reconstruction` | Scalar intra reconstruction | none | `tier1-intra` | `partial` | 7.13<br>7.14<br>7.15 | none | decode/unsupported-feature (planned) | none | `planned` |
 | `output-y4m` | Y4M output writer | `RECON-Y4M-OUTPUT-WRITER` | `tier1-intra` | `partial` | 6.4.1<br>6.16.13<br>6.17.4.4<br>7.21.1<br>7.21.2 | crates/splot-recon/src/y4m.rs::tests<br>cargo test -p splot-recon --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/y4m.rs; crates/splot-recon/src/lib.rs` |
 | `reference-frame-store` | Reconstructed reference-frame store | `RECON-REFERENCE-FRAME-STORE` | `encoder-reuse` | `supported` | 3<br>5.4.6<br>6.4.6<br>7.23 | crates/splot-recon/src/reference.rs::tests<br>cargo test -p splot-recon --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/reference.rs` |

@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 167 feature(s); 120 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-14. 168 feature(s); 121 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -154,6 +154,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `AV2-5.4.1-SEQUENCE-HEADER-GENERAL` | ✅ | ✅ | ✅ | ✅ | 6 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
+| [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `RECON-Y4M-OUTPUT-WRITER` | ✅ | — | ✅ | ✅ | — |
 | [§ 6.4.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-2) | Sequence tile config semantics | `AV2-5.4.2-SEQUENCE-TILE-CONFIG` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 6.4.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-3) | Sequence partition config semantics | `AV2-5.4.3-SEQUENCE-PARTITION-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
@@ -231,8 +232,10 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS` | ✅ | — | 🟡 | ✅ | 18 |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
+| [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
 | [§ 6.17.4.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4) | Compute image size function semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 6.17.4.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4) | Compute image size function semantics | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
+| [§ 6.17.4.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4) | Compute image size function semantics | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
 | [§ 6.17.4.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4) | Compute image size function semantics | `RECON-Y4M-OUTPUT-WRITER` | ✅ | — | ✅ | ✅ | — |
 | [§ 6.17.5.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-5-2) | Deblocking filter params semantics | `AV2-5.18.5-FILTERING` | ✅ | 🟡 | — | 🟡 | — |
 | [§ 6.17.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-6) | Quantization structures | `AV2-5.18.6-QUANTIZATION` | ✅ | 🟡 | 🟡 | 🟡 | 4 |
@@ -281,6 +284,8 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.4.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-5) | Random Access Switch | `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | ✅ | — | 🟡 | 🟡 | 1 |
 | [§ 7.4.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-5) | Random Access Switch | `AV2-7.4-RANDOM-ACCESS` | ✅ | — | 🟡 | 🟡 | 2 |
 | [§ 7.4.6](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-6) | Multistream Random Access | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | ✅ | ✅ | 🟡 | ✅ | 7 |
+| [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.13.2.10](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10) | DC intra prediction process | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.2.10](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10) | DC intra prediction process | `RECON-INTRA-DC-SQUARE-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.3.22](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-22) | Resolve divisor process | `RECON-INTRA-DC-SQUARE-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 3 |

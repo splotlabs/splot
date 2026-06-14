@@ -5177,6 +5177,57 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-CURRENT-FRAME-WORKSPACE"
+name = "Current-frame reconstruction workspace"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["6.4.1", "6.17.4.1", "6.17.4.4", "7.13.2.1", "7.13.2.10"]
+sources = [
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/workspace.rs"
+openspec_change = "recon-current-frame-workspace"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a scheduler-free `splot-recon` mutable current-frame reconstruction workspace: `CurrentFrameWorkspace<T>` allocates Y/U/V plane buffers from `DecodedFrameInfo` using checked arithmetic and fallible allocation, validates sample type and active bit-depth range before writes, exposes bounded plane/rectangle reads, fills, row-strided writes, square-block writes, in-storage left/above edge extraction, and a square DC prediction write helper that calls the existing `RECON-INTRA-DC-SQUARE-PREDICTION` primitive. `freeze()` reuses existing `Plane::from_vec`, `FramePlanes::new`, and `DecodedFrame::try_new`, and tests prove interop with decoded-frame hash input, Y4M writer, and reference-frame store. This row does not add a `splot-decode -> splot-recon` dependency, `DecodeContext` API, runtime `splot decode` success path, tile syntax traversal, dequantization, inverse transforms, residual addition, loop filtering, output scheduling, runtime hashes, runtime Y4M, reference refresh, AVM/dav2d invocation, external tooling, or scheduler use inside `splot-recon`; future parallel orchestration remains owned by `DecodeContext` and `splot_parallel::WorkerPool`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-recon/src/workspace_tests.rs"]
+commands = [
+    "cargo test -p splot-recon --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "cargo xtask check-source-lines",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-concurrency-policy",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "crates/splot-recon/src/workspace.rs",
+    "crates/splot-recon/src/workspace_tests.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
 name = "Decoded frame and plane model contract documentation"
 category = "docs"
