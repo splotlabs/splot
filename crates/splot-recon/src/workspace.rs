@@ -4,14 +4,16 @@
 //! Mutable current-frame reconstruction workspace.
 //!
 //! Feature tracking: `RECON-CURRENT-FRAME-WORKSPACE`,
-//! `RECON-INTRA-DC-RECTANGULAR-PREDICTION`.
+//! `RECON-INTRA-DC-RECTANGULAR-PREDICTION`,
+//! `RECON-INTRA-BASIC-PAETH-PREDICTION`.
 
 use core::mem;
 use core::ops::Range;
 
 use crate::intra::predict_intra_dc_rect_value_from_sums;
+use crate::intra_basic::predict_paeth_sample;
 use crate::{
-    DecodedFrame, DecodedFrameInfo, FramePlanes, IntraDcEdges, IntraRectBlockSize,
+    DecodedFrame, DecodedFrameInfo, FramePlanes, IntraDcEdges, IntraPaethEdge, IntraRectBlockSize,
     IntraSquareBlockSize, PixelFormat, Plane, PlaneId, PlaneRect, PlaneSize, ReconError,
     ReconSample, Result,
 };
@@ -277,6 +279,27 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         let sample = predict_intra_dc_rect_value_from_sums(bit_depth, size, left_sum, above_sum)?;
 
         self.plane_mut(plane)?.fill_rect(rect, sample)
+    }
+
+    /// Predicts rectangular basic/PAETH intra samples into the workspace.
+    ///
+    /// This helper uses in-storage top-left, left, and above neighbor samples as
+    /// the prepared AV2 §7.13.2.2 inputs. It does not synthesize §7.13.2.1
+    /// fallback samples or decide AV2 edge availability, MRL, tile-boundary, or
+    /// superblock semantics.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for invalid target geometry, absent planes, or
+    /// missing in-storage top/left neighbors.
+    pub fn predict_intra_paeth_rect(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+    ) -> Result<()> {
+        let rect = block_rect(x, y, size)?;
+        self.plane_mut(plane)?.predict_intra_paeth_rect(rect)
     }
 
     /// Freezes the workspace into an immutable decoded frame.
@@ -551,6 +574,39 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         };
 
         Ok((left, above))
+    }
+
+    fn predict_intra_paeth_rect(&mut self, rect: PlaneRect) -> Result<()> {
+        self.ensure_rect(rect)?;
+        if rect.x() == 0 {
+            return Err(ReconError::WorkspaceIntraPredictionEdgeUnavailable {
+                plane: self.plane,
+                edge: IntraPaethEdge::Left,
+                rect,
+            });
+        }
+        if rect.y() == 0 {
+            return Err(ReconError::WorkspaceIntraPredictionEdgeUnavailable {
+                plane: self.plane,
+                edge: IntraPaethEdge::Above,
+                rect,
+            });
+        }
+
+        let top_left = self.samples[self.sample_index(rect.x() - 1, rect.y() - 1)?];
+        let above_range = self.row_range(rect.y() - 1, rect.x(), rect.width())?;
+        for row_index in 0..rect.height() {
+            let row = rect.y() + row_index;
+            let left = self.samples[self.sample_index(rect.x() - 1, row)?];
+            let target_range = self.row_range(row, rect.x(), rect.width())?;
+            for column in 0..rect.width() {
+                let above = self.samples[above_range.start + column];
+                self.samples[target_range.start + column] =
+                    predict_paeth_sample(left, above, top_left);
+            }
+        }
+
+        Ok(())
     }
 
     fn freeze(self) -> Result<Plane<T>> {

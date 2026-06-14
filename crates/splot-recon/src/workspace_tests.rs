@@ -357,6 +357,73 @@ fn workspace_rectangular_dc_rejects_out_of_bounds_target() {
 }
 
 #[test]
+fn workspace_predicts_rectangular_paeth_from_in_storage_edges() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(6, 6),
+            rect(0, 0, 6, 6),
+        ),
+        0,
+    )
+    .unwrap();
+    let block = rect_block(2, 2);
+
+    workspace
+        .write_rect(PlaneId::Y, rect(0, 0, 1, 1), &[10], 1)
+        .unwrap();
+    workspace
+        .write_rect(PlaneId::Y, rect(0, 1, 1, 4), &[30, 30, 30, 30], 1)
+        .unwrap();
+    workspace
+        .write_rect(PlaneId::Y, rect(1, 0, 4, 1), &[12, 12, 12, 12], 4)
+        .unwrap();
+
+    workspace
+        .predict_intra_paeth_rect(PlaneId::Y, 1, 1, block)
+        .unwrap();
+
+    let rows: Vec<&[u8]> = workspace
+        .rect_rows(PlaneId::Y, rect(1, 1, 4, 4))
+        .unwrap()
+        .collect();
+    assert_eq!(rows, vec![&[30, 30, 30, 30][..]; block.height()]);
+}
+
+#[test]
+fn workspace_paeth_rejects_missing_prepared_edges() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(8, 8),
+            rect(0, 0, 8, 8),
+        ),
+        0,
+    )
+    .unwrap();
+    let block = rect_block(2, 2);
+
+    assert!(matches!(
+        workspace.predict_intra_paeth_rect(PlaneId::Y, 0, 1, block),
+        Err(ReconError::WorkspaceIntraPredictionEdgeUnavailable {
+            plane: PlaneId::Y,
+            edge: IntraPaethEdge::Left,
+            rect
+        }) if rect == PlaneRect::new(0, 1, 4, 4).unwrap()
+    ));
+    assert!(matches!(
+        workspace.predict_intra_paeth_rect(PlaneId::Y, 1, 0, block),
+        Err(ReconError::WorkspaceIntraPredictionEdgeUnavailable {
+            plane: PlaneId::Y,
+            edge: IntraPaethEdge::Above,
+            rect
+        }) if rect == PlaneRect::new(1, 0, 4, 4).unwrap()
+    ));
+}
+
+#[test]
 fn workspace_extracts_edges_and_predicts_square_dc() {
     let mut workspace = CurrentFrameWorkspace::<u8>::new(
         info(

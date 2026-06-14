@@ -29,3 +29,6 @@ ist = "ist"  # enable_intra_ist / enable_inter_ist — AV2 Intra/Inter Secondary
 cll = "cll"  # HDR CLL = Content Light Level metadata (feature AV2-5.17.5-METADATA-HDR-CLL)
 mis = "mis"  # mode-info unit count; uniform_spacing() parameter (AV2 v1.0.0 § 5.18.7.5)
 muh = "muh"  # metadata unit header prefix: muh_layer_idc / muh_payload_size / ... (AV2 v1.0.0 § 5.17.3)
+paeth = "paeth"  # PAETH_PRED / AV2 §7.13.2.2 basic intra prediction mode and API names
+Paeth = "Paeth"  # Rust type names for PAETH prediction helpers
+PAETH = "PAETH"  # AV2 PAETH_PRED mode name and feature identifiers
