@@ -69,9 +69,10 @@ parser — its correctness is defined by `read(write(x)) == x` round-trips again
 `splot-core`, so it needs no decoder. The primitive layer landed via OpenSpec
 change `bit-writer-primitives` (`ENC-BITSTREAM-WRITER`, advancing the `write`
 stage of the §4.11 descriptors and §5.2.4 byte alignment); the bootstrap
-`add-bitstream-writer` stub is superseded by it. The only writer surface that
-depends on decode (the `writer minimal stream -> splot decode --hash` cross-tool
-test) stays deferred until intra reconstruction lands. Still fenced: the
+`add-bitstream-writer` stub has been removed, superseded by it and the upcoming
+`obu-header-and-size-writer` change. The only writer surface that depends on decode
+(the `writer minimal stream -> splot decode --hash` cross-tool test) stays deferred
+until intra reconstruction lands. Still fenced: the
 entropy/range *encoder*, the decoder, and the *live* AVM differential harness.
 
 **Carve-out (started):** the **committed conformance corpus** is *out* from

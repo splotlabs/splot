@@ -13,11 +13,14 @@ Tracked by Feature IDs: `ENC-BITSTREAM-WRITER`, `ENC-INTRA-TOY-V0`,
 round-trip-tested: `ENC-BITSTREAM-WRITER` is `partial` and the § 4.11 descriptor
 `write` stages (plus § 5.2.4 byte alignment) are `done` in the matrix, landed by the
 archived `bit-writer-primitives` change (see the "bit-writer primitive inverses"
-requirement below). The remaining writer surface (OBU header, payload writers, the
-Annex B / IVF muxers), the toy intra path (`ENC-INTRA-TOY-V0`), and rate control
-(`ENC-RATE-CONTROL-V0`) remain planned; the parked `openspec/changes/add-bitstream-writer`
-stub is superseded by `bit-writer-primitives` for the primitive layer. The
-implementation matrix is the source of truth for per-row status.
+requirement below). Remaining: the OBU header / payload writers, the **Annex B**
+muxer, and wiring the muxers into writer-track round-trip tests — the IVF container
+write helpers already exist (`AV2-IVF-CONTAINER`, `write` = `done`); plus the toy
+intra path (`ENC-INTRA-TOY-V0`) and rate control (`ENC-RATE-CONTROL-V0`). The
+bootstrap `add-bitstream-writer` stub has been removed, superseded by the
+properly-scoped `bit-writer-primitives` change and the upcoming
+`obu-header-and-size-writer` change. The implementation matrix is the source of truth
+for per-row status.
 
 ## Requirements
 ### Requirement: writer symmetry

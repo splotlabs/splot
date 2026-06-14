@@ -216,12 +216,14 @@ documented in [docs/TESTING.md](./docs/TESTING.md).
 ## Roadmap
 
 Shipped: the Annex B + IVF + OBU header validator, OBU ordering and header-level
-conformance, and sequence/frame-header parsing. In progress: validator depth
-across the remaining spec sections. Next: inspector snapshots and conformance
-vectors, AVM differential testing (with the
+conformance, sequence/frame-header parsing, and the library-only **bit-writer
+primitive** layer (`BitWriter`, the inverse of every reader primitive). In progress:
+validator depth across the remaining spec sections, and the higher-level bitstream
+writer (OBU header, payload writers, Annex B muxer) on top of the primitives. Next:
+inspector snapshots and conformance vectors, AVM differential testing (with the
 [AVM reference implementation](https://github.com/AOMediaCodec/avm) as the
-oracle), staged decoder/reconstruction support for future encoder roundtrips,
-then a bitstream writer and encoder experiments.
+oracle), staged decoder/reconstruction support for future encoder roundtrips, and
+encoder experiments.
 
 Validator details live in
 [docs/VALIDATOR-ROADMAP.md](./docs/VALIDATOR-ROADMAP.md). Decoder scope and
