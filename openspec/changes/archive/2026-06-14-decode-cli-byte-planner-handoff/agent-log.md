@@ -91,7 +91,18 @@
 - `cargo xtask check-concurrency-policy`: passed.
 - `cargo xtask check-dependency-direction`: passed.
 - `cargo xtask ci`: passed.
+- GitHub PR #116 latest head `05923f53af0ba19fa35d5e0eba55d97643ba7a5d`:
+  all required checks passed (`ci`, `coverage`, `supply-chain`, `fuzz-smoke`,
+  `zizmor`, `claude-review`) before merge.
 
 ## Review Sign-offs
 
-- Pending.
+- Claude review passed on latest head `05923f5`:
+  <https://github.com/splotlabs/splot/pull/116#issuecomment-4701596027>.
+- Codex review completed on latest head `05923f53af` with no major issues:
+  <https://github.com/splotlabs/splot/pull/116#issuecomment-4701606567>.
+- PR #116 merged into `main` at `2026-06-14T11:31:37Z`; merge commit
+  `62ea151c5bd16e1de8782d7f6909641f9af7a06b`.
+- Boundary review: no AVM/dav2d source, snippets, binaries, submodules,
+  dependencies, build probes, wrappers, CI jobs, required scripts, required
+  `xtask` commands, or mandatory tests were added.
