@@ -27,8 +27,8 @@ pub const DECODE_STREAM_STATE_FEATURE_ID: &str = "DECODE-STREAM-STATE-PLANNER";
 
 /// Parsed stream input for [`crate::DecodeContext::plan_stream`].
 ///
-/// This type deliberately holds parser output, not raw bytes. A future raw-byte
-/// decode planner must add bounded pre-parse traversal and fuzz coverage.
+/// This type deliberately holds parser output, not raw bytes. Raw-byte planning
+/// performs bounded pre-parse traversal before reusing this parsed input shape.
 #[derive(Clone, Copy, Debug)]
 pub struct DecodeStreamInput<'a> {
     parsed: &'a ParsedBitstream<'a>,
@@ -504,6 +504,7 @@ pub(crate) fn plan_stream(
         input_len_bytes: input.input_len_bytes,
         limits,
         obus: Vec::new(),
+        traversed_obu_count: 0,
         frame_candidate_count: 0,
         source_warnings: Vec::new(),
     };
@@ -534,6 +535,7 @@ pub(crate) fn plan_stream(
                     issue: issue_from_ivf_error(error),
                 });
             }
+            let mut first_unsupported = None;
             for (frame_record_index, frame) in ivf.frames.iter().enumerate() {
                 builder.limits.ensure(
                     DecodeLimitName::MaxIvfFrameRecords,
@@ -548,10 +550,19 @@ pub(crate) fn plan_stream(
                         ),
                     });
                 }
+
                 let context = Some(ivf_frame_context(frame));
                 for obu in &frame.obus {
-                    builder.push_obu(*obu, DecodeObuSourceKind::Ivf, context)?;
+                    builder.push_obu_or_first_unsupported(
+                        *obu,
+                        DecodeObuSourceKind::Ivf,
+                        context,
+                        &mut first_unsupported,
+                    )?;
                 }
+            }
+            if let Some(unsupported) = first_unsupported {
+                return Err(DecodeError::UnsupportedStructure { unsupported });
             }
         }
     }
@@ -565,6 +576,7 @@ struct PlanBuilder {
     input_len_bytes: u64,
     limits: crate::DecodeLimits,
     obus: Vec<DecodePlannedObu>,
+    traversed_obu_count: u64,
     frame_candidate_count: u64,
     source_warnings: Vec<DecodeSourceIssue>,
 }
@@ -576,9 +588,44 @@ impl PlanBuilder {
         source_kind: DecodeObuSourceKind,
         ivf_frame: Option<DecodeIvfFrameContext>,
     ) -> Result<()> {
-        let next_obu_count = self.obus.len() as u64 + 1;
+        let role = self.classify_limited_obu(envelope)?;
+        self.push_classified_obu(envelope, source_kind, ivf_frame, role);
+        Ok(())
+    }
+
+    fn push_obu_or_first_unsupported(
+        &mut self,
+        envelope: ObuEnvelope<'_>,
+        source_kind: DecodeObuSourceKind,
+        ivf_frame: Option<DecodeIvfFrameContext>,
+        first_unsupported: &mut Option<DecodeUnsupportedStructure>,
+    ) -> Result<()> {
+        match self.push_obu(envelope, source_kind, ivf_frame) {
+            Ok(()) => Ok(()),
+            Err(DecodeError::UnsupportedStructure { unsupported }) => {
+                if first_unsupported.is_none() {
+                    *first_unsupported = Some(unsupported);
+                }
+                Ok(())
+            }
+            Err(DecodeError::Limit { source }) => {
+                if let Some(unsupported) = first_unsupported.as_ref() {
+                    Err(DecodeError::UnsupportedStructure {
+                        unsupported: unsupported.clone(),
+                    })
+                } else {
+                    Err(DecodeError::Limit { source })
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn classify_limited_obu(&mut self, envelope: ObuEnvelope<'_>) -> Result<DecodePlannedObuRole> {
+        let next_obu_count = self.traversed_obu_count.saturating_add(1);
         self.limits
             .ensure(DecodeLimitName::MaxObus, next_obu_count)?;
+        self.traversed_obu_count = next_obu_count;
 
         let role = classify_obu(envelope, self.selected_layer)?;
         if role == DecodePlannedObuRole::FrameCandidate {
@@ -588,8 +635,18 @@ impl PlanBuilder {
             self.frame_candidate_count = next_frame_count;
         }
 
+        Ok(role)
+    }
+
+    fn push_classified_obu(
+        &mut self,
+        envelope: ObuEnvelope<'_>,
+        source_kind: DecodeObuSourceKind,
+        ivf_frame: Option<DecodeIvfFrameContext>,
+        role: DecodePlannedObuRole,
+    ) {
         self.obus.push(DecodePlannedObu {
-            index: next_obu_count - 1,
+            index: self.obus.len() as u64,
             source_kind,
             ivf_frame,
             offset: envelope.offset,
@@ -598,7 +655,6 @@ impl PlanBuilder {
             header: envelope.header,
             role,
         });
-        Ok(())
     }
 
     fn finish(self) -> DecodeStreamPlan {
@@ -611,6 +667,13 @@ impl PlanBuilder {
             source_warnings: self.source_warnings,
         }
     }
+}
+
+pub(crate) fn ensure_supported_obu(
+    envelope: ObuEnvelope<'_>,
+    selected_layer: DecodeLayerSelection,
+) -> Result<()> {
+    classify_obu(envelope, selected_layer).map(|_| ())
 }
 
 fn classify_obu(

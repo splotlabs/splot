@@ -886,9 +886,8 @@ The planner SHALL enforce only the resource limits it can derive honestly from
 the parsed stream model: `max_input_bytes` before planner traversal,
 `max_obus` before adding the next planned OBU, `max_ivf_frame_records` before
 traversing the next IVF frame record, and `max_frames_to_decode` before
-accepting the next closed-loop-key frame candidate. A future raw-byte decode
-planner SHALL add bounded pre-parse traversal and self-contained fuzz coverage
-before it is marked supported.
+accepting the next closed-loop-key frame candidate. Raw-byte traversal is
+specified separately by the byte-consuming decode stream planner requirement.
 
 #### Scenario: Raw Annex B is planned in order
 
@@ -955,3 +954,168 @@ before it is marked supported.
   `decode/unsupported-feature` diagnostic for valid invocations
 - **AND** it does not read input, write output, invoke AVM/dav2d, or render the
   planner's local library errors as user-facing CLI diagnostics
+
+### Requirement: Byte-consuming decode stream planner
+
+The decoder support system SHALL provide a source-backed byte-consuming stream
+planning entrypoint tracked by Feature ID `DECODE-BYTE-STREAM-PLANNER`. The
+entrypoint SHALL accept raw AV2 Annex B length-delimited bytes and IVF/DKIF
+bytes whose frame payloads contain Annex B bytes, SHALL return the existing
+`DecodeStreamPlan` type, and SHALL preserve the `decode-stream-state` base-layer
+selection policy. It SHALL not reconstruct pixels, decode tile payloads, compute
+hashes, write Y4M, invoke external decoders, or change `splot decode` CLI
+success behavior.
+
+#### Scenario: Raw Annex B bytes produce the same bounded plan
+
+- **WHEN** the byte-consuming planner receives a complete raw Annex B input that
+  contains only structures accepted by `decode-stream-state`
+- **THEN** it returns a `DecodeStreamPlan` with source format `annex_b`
+- **AND** planned OBUs retain source order, byte offsets, declared OBU size,
+  payload length, parsed OBU header metadata, and planner roles
+- **AND** the plan is equivalent to planning the same bytes through the existing
+  parsed-input planner for representative self-contained tests
+
+#### Scenario: IVF bytes preserve frame context
+
+- **WHEN** the byte-consuming planner receives a complete IVF/DKIF input whose
+  frame payloads are accepted Annex B payloads
+- **THEN** it returns a `DecodeStreamPlan` with source format `ivf`
+- **AND** each planned OBU from an IVF frame records the IVF frame index, frame
+  header offset, frame payload offset, declared frame payload size, and PTS
+  metadata
+- **AND** IVF timestamps are preserved only as container metadata and are not
+  used for output scheduling or media-player behavior
+
+#### Scenario: Limits are enforced during byte traversal
+
+- **WHEN** the byte-consuming planner receives configured `DecodeLimits`
+- **THEN** it checks `max_input_bytes` before traversing bytes
+- **AND** it checks `max_obus` before retaining the next OBU
+- **AND** it checks `max_ivf_frame_records` before processing the next IVF frame
+  record
+- **AND** it checks `max_frames_to_decode` before retaining the next accepted
+  frame candidate
+- **AND** a limit failure returns a typed `DecodeError::Limit` and no partial
+  plan
+
+#### Scenario: Malformed bytes are transactional
+
+- **WHEN** raw Annex B bytes, IVF container bytes, or Annex B bytes inside an IVF
+  frame payload are malformed
+- **THEN** the byte-consuming planner returns `DecodeError::MalformedSource`
+- **AND** the error records a `DecodeSourceIssue` with the source category,
+  offset when known, IVF frame index when frame-local, and parser message
+- **AND** no partial plan is returned
+
+#### Scenario: Unsupported structures stay structured and CLI-neutral
+
+- **WHEN** the byte-consuming planner encounters a non-base layer, invalid
+  global/local layer scope, unsupported multistream/external-HLS structure,
+  reserved OBU type, non-CLK frame-carrying OBU, or output-affecting OBU outside
+  the initial planner tier
+- **THEN** it returns `DecodeError::UnsupportedStructure`
+- **AND** the unsupported metadata uses rule id `decode/unsupported-feature`,
+  matrix row `decode-stream-state`, and Feature ID
+  `DECODE-STREAM-STATE-PLANNER`
+- **AND** the `splot decode` CLI remains intentionally unsupported until a
+  later change adds a diagnostic adapter and input-read policy
+
+#### Scenario: Byte planner is fuzzed without external decoders
+
+- **WHEN** the repository fuzz smoke is run for decoder entrypoints
+- **THEN** the byte-consuming stream planner has a finite-limit fuzz target that
+  feeds arbitrary bytes through `DecodeContext::plan_bytes`
+- **AND** the target does not require AVM, dav2d, network access, generated
+  external fixtures, or checked-in local reference paths
+
+#### Scenario: Runtime concurrency model is preserved
+
+- **WHEN** callers use the byte-consuming planner with thread count `1`, `auto`,
+  or a fixed non-zero count
+- **THEN** planning executes inside `DecodeContext`'s single owned
+  `splot_parallel::WorkerPool`
+- **AND** plan records, errors, and source issue ordering are deterministic
+  across thread counts
+- **AND** no direct Rayon, crossbeam, global worker pool, ad-hoc worker thread,
+  or decode pipeline queue is introduced
+
+### Requirement: Byte planner review regressions stay fixed
+
+The byte-consuming decode stream planner SHALL preserve the diagnostics,
+cursor contracts, fuzz smoke coverage, and public documentation promised by
+Feature ID `DECODE-BYTE-STREAM-PLANNER`.
+
+#### Scenario: Unsupported prefix wins over later traversal limits
+
+- **WHEN** raw Annex B byte traversal has retained an OBU prefix that the
+  existing stream planner classifies as `DecodeError::UnsupportedStructure`
+- **THEN** `DecodeContext::plan_bytes` preserves that unsupported-structure
+  error while continuing transactional byte traversal
+- **AND** a later `max_obus` or `max_frames_to_decode` failure does not mask the
+  earlier unsupported prefix
+
+#### Scenario: Malformed suffix wins over earlier unsupported prefix
+
+- **WHEN** raw Annex B byte traversal has retained an OBU prefix that the
+  existing stream planner classifies as `DecodeError::UnsupportedStructure`
+- **AND** later bytes in the same Annex B payload are malformed
+- **THEN** `DecodeContext::plan_bytes` returns `DecodeError::MalformedSource`
+- **AND** the malformed parser error is not masked by the earlier unsupported
+  prefix
+
+#### Scenario: Malformed IVF frame payload wins over earlier unsupported frame
+
+- **WHEN** IVF byte traversal has retained an earlier frame payload containing
+  an OBU that the existing stream planner classifies as
+  `DecodeError::UnsupportedStructure`
+- **AND** a later IVF frame payload contains malformed Annex B bytes
+- **THEN** `DecodeContext::plan_bytes` returns `DecodeError::MalformedSource`
+- **AND** the source issue records `IvfFramePayloadError` for the malformed
+  later frame
+
+#### Scenario: Parsed IVF OBU limits win before later payload errors
+
+- **WHEN** parsed IVF planning has traversed complete earlier frame payload OBUs
+  that exceed `max_obus` or `max_frames_to_decode`
+- **AND** a later IVF frame payload contains malformed Annex B bytes
+- **THEN** `DecodeContext::plan_stream` returns `DecodeError::Limit` for the
+  first exceeded OBU traversal or frame-candidate limit
+- **AND** the later payload parse error does not mask that already reached
+  limit failure
+
+#### Scenario: IVF frame-record limit stays typed after earlier unsupported frame
+
+- **WHEN** IVF byte traversal has retained an earlier frame payload containing
+  an OBU that the existing stream planner classifies as
+  `DecodeError::UnsupportedStructure`
+- **AND** a later complete IVF frame record exceeds `max_ivf_frame_records`
+- **THEN** `DecodeContext::plan_bytes` returns `DecodeError::Limit`
+- **AND** the limit source name is `DecodeLimitName::MaxIvfFrameRecords`
+- **AND** the unsupported-prefix carve-out remains scoped to `max_obus` and
+  `max_frames_to_decode`
+
+#### Scenario: IVF cursor retry preserves fatal frame-header errors
+
+- **WHEN** `IvfFrameCursor::next_frame_record()` returns a fatal IVF
+  frame-header error
+- **THEN** retrying the same public cursor returns the same fatal error
+- **AND** the cursor does not advance to `End` or a warning state before the
+  caller observes the retry
+
+#### Scenario: Decode byte planner fuzz seeds exercise valid traversal
+
+- **WHEN** CI seeds fuzz corpora from committed AV2 fixtures
+- **THEN** the `decode_plan_bytes` corpus receives flag-prefixed variants
+  because that target consumes byte zero as limit flags
+- **AND** those variants preserve the original fixture bytes as the bitstream
+  payload passed to `DecodeContext::plan_bytes`
+
+#### Scenario: Decode context docs match byte planning API
+
+- **WHEN** generated API docs describe `DecodeContext`
+- **THEN** they state that the context owns byte-consuming and parsed-stream
+  planning entry points
+- **AND** they do not claim the context avoids raw byte traversal
+- **AND** they continue to state that filesystem I/O, reconstruction, output
+  writing, and external decoder invocation remain unsupported

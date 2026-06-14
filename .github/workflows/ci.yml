@@ -179,6 +179,9 @@ jobs:
             name=$(basename "$f")
             printf '\001' | cat - "$f" > "fuzz/corpus/validate_bytes/strict-$name"
             printf '\003\377' | cat - "$f" > "fuzz/corpus/validate_bytes/hls-$name"
+            # decode_plan_bytes also consumes a leading limit-policy byte. Keep
+            # the fixture bytes intact as the bitstream payload after that flag.
+            printf '\377' | cat - "$f" > "fuzz/corpus/decode_plan_bytes/fixture-$name"
           done
           # parse_ivf rejects non-DKIF input at the signature, so raw Annex-B
           # fixtures only exercise the error path; wrap each one in a minimal
@@ -209,6 +212,7 @@ jobs:
             cp "$f" "fuzz/corpus/parse_ivf/conf-$name"
             printf '\001' | cat - "$f" > "fuzz/corpus/validate_bytes/conf-strict-$name"
             printf '\003\377' | cat - "$f" > "fuzz/corpus/validate_bytes/conf-hls-$name"
+            printf '\377' | cat - "$f" > "fuzz/corpus/decode_plan_bytes/conf-$name"
           done
           python3 -c '
           import glob, os, struct

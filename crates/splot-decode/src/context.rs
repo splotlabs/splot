@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! A decode-driver context that owns a worker pool and parsed-stream planning
-//! entry points.
+//! A decode-driver context that owns a worker pool plus byte-consuming and
+//! parsed-stream planning entry points.
 
 use core::num::NonZeroUsize;
 
@@ -17,11 +17,12 @@ use crate::stream_plan::{DecodeStreamInput, DecodeStreamPlan, plan_stream};
 /// A decode context.
 ///
 /// It owns exactly one [`WorkerPool`] and exposes the resolved worker count,
-/// but it intentionally does NOT read raw bitstream bytes, inspect
-/// input/output paths, allocate decoded frames, reconstruct pixels, or invoke
-/// any external decoder yet. Runtime decode support remains unimplemented
-/// (`splot decode` still emits the stable `decode/unsupported-feature`
-/// diagnostic).
+/// and it can build bounded, plan-only stream metadata from raw Annex B/IVF
+/// byte slices or already parsed stream structures. It intentionally does NOT
+/// inspect input/output paths, allocate decoded frames, reconstruct pixels,
+/// write output, or invoke any external decoder yet. Runtime decode support
+/// remains unimplemented (`splot decode` still emits the stable
+/// `decode/unsupported-feature` diagnostic).
 #[derive(Debug)]
 pub struct DecodeContext {
     runtime: DecodeRuntimeConfig,
