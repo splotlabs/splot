@@ -71,28 +71,76 @@ pub(crate) fn parse_screen_content_params_full(
     })
 }
 
-/// Parses `screen_content_params()` (AV2 v1.0.0 § 5.18.3.3) and returns
-/// `allow_screen_content_tools` only (the intra path does not consume `force_integer_mv`,
-/// since `FrameIsIntra` skips the MV-precision block). A thin wrapper over
-/// [`parse_screen_content_params_full`].
-///
-/// # Errors
-/// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if a signaled
-/// flag cannot be read.
-pub(crate) fn parse_screen_content_params(
-    reader: &mut BitReader<'_>,
-    seq_force_screen_content_tools: u8,
-    seq_force_integer_mv: u8,
-) -> Result<bool> {
-    Ok(parse_screen_content_params_full(
-        reader,
-        seq_force_screen_content_tools,
-        seq_force_integer_mv,
-    )?
-    .allow_screen_content_tools)
+/// Every field `intrabc_params()` reads (AV2 v1.0.0 § 5.18.3.4). Each conditionally-read
+/// field is `Some` exactly when the bit was present in the bitstream, so the structure is a
+/// faithful, byte-exact record of the syntax (consumed by the § 5.18.3.4 writer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntrabcParams {
+    /// `allow_intrabc` `f(1)` (always read).
+    pub allow_intrabc: bool,
+    /// `allow_global_intrabc` `f(1)`, read when `allow_intrabc && frame_is_intra`.
+    pub allow_global_intrabc: Option<bool>,
+    /// `allow_local_intrabc` `f(1)`, read only when `allow_global_intrabc == 1`
+    /// (otherwise inferred `1`, no bit).
+    pub allow_local_intrabc: Option<bool>,
+    /// `change_bvp_drl` `f(1)`, read when `allow_intrabc && allow_frame_max_bvp_drl_bits`.
+    pub change_bvp_drl: Option<bool>,
+    /// `max_bvp_drl_bits_minus_1` `ns(2)`, read when `change_bvp_drl == 1`.
+    pub max_bvp_drl_bits_minus_1: Option<u32>,
 }
 
-/// Parses `intrabc_params()` (AV2 v1.0.0 § 5.18.3.4) and returns `allow_intrabc`.
+/// Parses `intrabc_params()` (AV2 v1.0.0 § 5.18.3.4) and returns every field it reads.
+///
+/// `frame_is_intra` is `FrameIsIntra`; `allow_frame_max_bvp_drl_bits` comes from the
+/// active sequence's `sequence_inter_config()` (§ 5.4.6). The conditionally-read
+/// `allow_global_intrabc` / `allow_local_intrabc` / `change_bvp_drl` /
+/// `max_bvp_drl_bits_minus_1` are `Some` exactly when their bit was present, so the result
+/// records the syntax byte-for-byte even though the decode process derives nothing from them
+/// on the modeled path.
+///
+/// # Errors
+/// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) or
+/// [`Error::InvalidNs`](crate::error::Error::InvalidNs) if a signaled field is
+/// truncated.
+pub(crate) fn parse_intrabc_params_full(
+    reader: &mut BitReader<'_>,
+    frame_is_intra: bool,
+    allow_frame_max_bvp_drl_bits: bool,
+) -> Result<IntrabcParams> {
+    // AV2 § 5.18.3.4.
+    let allow_intrabc = reader.read_bit()? != 0;
+    let mut params = IntrabcParams {
+        allow_intrabc,
+        allow_global_intrabc: None,
+        allow_local_intrabc: None,
+        change_bvp_drl: None,
+        max_bvp_drl_bits_minus_1: None,
+    };
+    if allow_intrabc {
+        if frame_is_intra {
+            let allow_global_intrabc = reader.read_bit()? != 0;
+            params.allow_global_intrabc = Some(allow_global_intrabc);
+            if allow_global_intrabc {
+                params.allow_local_intrabc = Some(reader.read_bit()? != 0);
+            }
+            // else: allow_local_intrabc = 1 (inferred, no bit).
+        }
+
+        if allow_frame_max_bvp_drl_bits {
+            let change_bvp_drl = reader.read_bit()? != 0;
+            params.change_bvp_drl = Some(change_bvp_drl);
+            if change_bvp_drl {
+                params.max_bvp_drl_bits_minus_1 = Some(reader.read_ns(2)?);
+            }
+        }
+    }
+
+    Ok(params)
+}
+
+/// Parses `intrabc_params()` (AV2 v1.0.0 § 5.18.3.4) and returns `allow_intrabc` only. A
+/// thin wrapper over [`parse_intrabc_params_full`] for callers that do not surface the
+/// remaining fields (the inter control region).
 ///
 /// `frame_is_intra` is `FrameIsIntra`; `allow_frame_max_bvp_drl_bits` comes from the
 /// active sequence's `sequence_inter_config()` (§ 5.4.6).
@@ -106,30 +154,10 @@ pub(crate) fn parse_intrabc_params(
     frame_is_intra: bool,
     allow_frame_max_bvp_drl_bits: bool,
 ) -> Result<bool> {
-    // AV2 § 5.18.3.4.
-    let allow_intrabc = reader.read_bit()? != 0;
-    if allow_intrabc {
-        if frame_is_intra {
-            let allow_global_intrabc = reader.read_bit()? != 0;
-            if allow_global_intrabc {
-                // allow_local_intrabc f(1): read to stay bit-aligned (value not surfaced).
-                reader.read_bit()?;
-            }
-        }
-        // else: allow_global_intrabc = 0, allow_local_intrabc = 1 (no bits read).
-
-        if allow_frame_max_bvp_drl_bits {
-            let change_bvp_drl = reader.read_bit()? != 0;
-            if change_bvp_drl {
-                // max_bvp_drl_bits_minus_1 ns(2): read for alignment only; its value
-                // (and the +1 adjustment against the sequence default) gates DRL syntax
-                // this phase stops before, so it is not surfaced.
-                let _raw = reader.read_ns(2)?;
-            }
-        }
-    }
-
-    Ok(allow_intrabc)
+    Ok(
+        parse_intrabc_params_full(reader, frame_is_intra, allow_frame_max_bvp_drl_bits)?
+            .allow_intrabc,
+    )
 }
 
 #[cfg(test)]
@@ -167,7 +195,9 @@ mod tests {
         // seq_force_screen_content_tools = 0 (forced off) -> no flag bit.
         let data = [0u8; 0];
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let allow = parse_screen_content_params(&mut reader, 0, 0).unwrap();
+        let allow = parse_screen_content_params_full(&mut reader, 0, 0)
+            .unwrap()
+            .allow_screen_content_tools;
         assert!(!allow);
         assert_eq!(reader.consumed_bits(), 0);
     }
@@ -180,12 +210,13 @@ mod tests {
         bits.bit(1); // force_integer_mv
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let allow = parse_screen_content_params(
+        let allow = parse_screen_content_params_full(
             &mut reader,
             SELECT_SCREEN_CONTENT_TOOLS,
             SELECT_INTEGER_MV,
         )
-        .unwrap();
+        .unwrap()
+        .allow_screen_content_tools;
         assert!(allow);
         assert_eq!(reader.consumed_bits(), 2);
     }
@@ -197,12 +228,13 @@ mod tests {
         bits.bit(0); // allow_screen_content_tools
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let allow = parse_screen_content_params(
+        let allow = parse_screen_content_params_full(
             &mut reader,
             SELECT_SCREEN_CONTENT_TOOLS,
             SELECT_INTEGER_MV,
         )
-        .unwrap();
+        .unwrap()
+        .allow_screen_content_tools;
         assert!(!allow);
         assert_eq!(reader.consumed_bits(), 1);
     }
@@ -246,6 +278,54 @@ mod tests {
         let allow = parse_intrabc_params(&mut reader, true, true).unwrap();
         assert!(allow);
         assert_eq!(reader.consumed_bits(), 4);
+    }
+
+    #[test]
+    fn intrabc_full_surfaces_every_read_field() {
+        // allow_intrabc=1, intra, allow_global_intrabc=1 -> allow_local_intrabc read;
+        // allow_frame_max_bvp_drl_bits=1, change_bvp_drl=1 -> max_bvp_drl_bits_minus_1 ns(2).
+        let mut bits = Bits::default();
+        bits.bit(1); // allow_intrabc
+        bits.bit(1); // allow_global_intrabc
+        bits.bit(0); // allow_local_intrabc
+        bits.bit(1); // change_bvp_drl
+        bits.bit(0); // max_bvp_drl_bits_minus_1 ns(2) -> 0
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let p = parse_intrabc_params_full(&mut reader, true, true).unwrap();
+        assert_eq!(
+            p,
+            IntrabcParams {
+                allow_intrabc: true,
+                allow_global_intrabc: Some(true),
+                allow_local_intrabc: Some(false),
+                change_bvp_drl: Some(true),
+                max_bvp_drl_bits_minus_1: Some(0),
+            }
+        );
+        assert_eq!(reader.consumed_bits(), 5);
+    }
+
+    #[test]
+    fn intrabc_full_global_off_infers_local_no_bit() {
+        // allow_global_intrabc=0 -> allow_local_intrabc inferred (None, no bit); no DRL.
+        let mut bits = Bits::default();
+        bits.bit(1); // allow_intrabc
+        bits.bit(0); // allow_global_intrabc -> allow_local_intrabc inferred 1, no bit
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let p = parse_intrabc_params_full(&mut reader, true, false).unwrap();
+        assert_eq!(
+            p,
+            IntrabcParams {
+                allow_intrabc: true,
+                allow_global_intrabc: Some(false),
+                allow_local_intrabc: None,
+                change_bvp_drl: None,
+                max_bvp_drl_bits_minus_1: None,
+            }
+        );
+        assert_eq!(reader.consumed_bits(), 2);
     }
 
     #[test]

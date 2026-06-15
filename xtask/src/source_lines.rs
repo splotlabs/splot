@@ -29,8 +29,8 @@ const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[
     },
     SourceLineAllowance {
         path: "crates/splot-core/src/headers/frame/info.rs",
-        max_lines: 4_608,
-        reason: "large cohesive frame-header parser; split separately from this validator refactor",
+        max_lines: 4_624,
+        reason: "large cohesive frame-header parser; split separately from this validator refactor. +16 (2026-06-15): the maintainer-approved frame-config discarded-bit model extension adds FrameHeaderCore.force_integer_mv / .intrabc so the byte-exact §5.18.3 frame-header writer can reproduce every read-and-discarded bit (frame-header-writer-size-config)",
     },
     SourceLineAllowance {
         path: "crates/splot-validate/src/celu.rs",

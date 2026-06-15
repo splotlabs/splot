@@ -45,6 +45,7 @@ mod size;
 mod tail;
 mod tiling;
 
+pub use config::IntrabcParams;
 pub use filtering::{
     CdefParams, CdefStrengthSet, CoreSeqFilterView, DeblockingFilterParams, GdfGeometry, GdfParams,
     InterpolationFilter, MfhDeblockingView, parse_cdef_params, parse_deblocking_filter_params,

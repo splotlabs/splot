@@ -81,7 +81,9 @@
 
 use crate::bitio::BitReader;
 use crate::error::{Error, Result, TrailingBitsErrorKind};
-use crate::headers::frame::config::{parse_intrabc_params, parse_screen_content_params};
+use crate::headers::frame::config::{
+    IntrabcParams, parse_intrabc_params_full, parse_screen_content_params_full,
+};
 use crate::headers::frame::filtering::{
     CdefParams, CoreSeqFilterView, DeblockingFilterParams, GdfGeometry, GdfParams,
     MfhDeblockingView, parse_cdef_params, parse_deblocking_filter_params, parse_gdf_params,
@@ -596,8 +598,18 @@ pub struct FrameHeaderCore {
     pub frame_to_show_map_idx: Option<u32>,
     /// `allow_screen_content_tools`, when `screen_content_params()` was reached.
     pub allow_screen_content_tools: Option<bool>,
+    /// `force_integer_mv` from `screen_content_params()` (§ 5.18.3.3), when reached. The
+    /// modeled intra path derives nothing from it (`FrameIsIntra` skips the MV-precision
+    /// block), but it is surfaced so the § 5.18.3.3 writer can reproduce the bit exactly.
+    pub force_integer_mv: Option<bool>,
     /// `allow_intrabc`, when `intrabc_params()` was reached.
     pub allow_intrabc: Option<bool>,
+    /// The full `intrabc_params()` (§ 5.18.3.4) record, when reached. Surfaces the
+    /// conditionally-read `allow_global_intrabc` / `allow_local_intrabc` / `change_bvp_drl` /
+    /// `max_bvp_drl_bits_minus_1` bits (which the modeled path derives nothing from) so the
+    /// § 5.18.3.4 writer can reproduce them byte-for-byte. `allow_intrabc` is mirrored on the
+    /// flatter [`Self::allow_intrabc`] field above for existing consumers.
+    pub intrabc: Option<IntrabcParams>,
     /// `true` if any `ref_long_term_id[i]` equals the reserved value
     /// `(1 << long_term_frame_id_bits) - 1`, which AV2 § 6.17.2 forbids.
     pub forbidden_ref_long_term_id: bool,
@@ -1047,7 +1059,9 @@ fn init_core_from_prefix(
         bridge_frame_ref_idx: None,
         frame_to_show_map_idx: None,
         allow_screen_content_tools: None,
+        force_integer_mv: None,
         allow_intrabc: None,
+        intrabc: None,
         forbidden_ref_long_term_id: false,
         restricted_prediction_switch: None,
         long_term_id: None,
@@ -1568,16 +1582,16 @@ fn parse_intra_tail(
         seq.frame_height_bits,
         default_dims,
     )?;
-    core.allow_screen_content_tools = Some(parse_screen_content_params(
+    let scc = parse_screen_content_params_full(
         reader,
         seq.seq_force_screen_content_tools,
         seq.seq_force_integer_mv,
-    )?);
-    core.allow_intrabc = Some(parse_intrabc_params(
-        reader,
-        true,
-        seq.allow_frame_max_bvp_drl_bits,
-    )?);
+    )?;
+    core.allow_screen_content_tools = Some(scc.allow_screen_content_tools);
+    core.force_integer_mv = Some(scc.force_integer_mv);
+    let intrabc = parse_intrabc_params_full(reader, true, seq.allow_frame_max_bvp_drl_bits)?;
+    core.allow_intrabc = Some(intrabc.allow_intrabc);
+    core.intrabc = Some(intrabc);
 
     // Not a TIP-as-output / bru-inactive / bridge frame -> disable_cdf_update f(1)
     // (AV2 § 5.18.2 else-branch of `if ( bru_inactive || IsBridge )`).
