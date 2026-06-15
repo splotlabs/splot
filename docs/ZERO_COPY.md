@@ -146,6 +146,10 @@ rejects an unmarked `frame.clone()` / `make_mut` / `.to_vec()` on media. The poi
 is that a reviewer reading the marker can tell, without context, exactly which
 boundary forced the copy.
 
+Because the window is two lines, one marker can cover more than one copy within
+it; keep each marker directly above the single copy it explains so the reason
+always names the right boundary.
+
 ## 8. What the gate scans
 
 `cargo xtask check-zero-copy-policy` is deterministic, line-based defense-in-depth.
@@ -156,9 +160,10 @@ not flagged. Scope is deliberate:
 **Dependency checks (all manifests).** `zerocopy` may be a direct dependency only
 of approved crates (`splot-core` by default; `splot-recon` only with a documented
 raw-sample view; never `splot-decode`/`splot-encode`/`splot-validate`/`splot-cli`/
-`splot-parallel`) and must flow through the workspace dependency. Banned
-alternative byte/transmute crates (`bytes`, `bytemuck`, `safe-transmute`, `rkyv`,
-`memmap2`, `smallvec`, `arrayvec`) are rejected.
+`splot-parallel`) and must be inherited via the workspace dependency
+(`zerocopy.workspace = true`) — a local version/feature pin in an approved crate is
+flagged. Banned alternative byte/transmute crates (`bytes`, `bytemuck`,
+`safe-transmute`, `rkyv`, `memmap2`, `smallvec`, `arrayvec`) are rejected.
 
 **Source checks across `splot-recon` / `splot-decode` / `splot-encode` /
 `splot-core` src:**
@@ -249,13 +254,14 @@ let header = IvfHeader::try_from_wire(wire, offset)?; // validated domain type
 // Never return `*Wire` from a public function.
 ```
 
-> Status of the IVF use site: see the implementation matrix row
-> `INFRA-ZERO-COPY-MEDIA-POLICY`. `zerocopy` is added only when wired through a
-> real private fixed-layout use site that preserves all current IVF error
-> behavior; otherwise it remains an approved-future dependency with the allowed
-> locations above, recorded in
-> [`docs/references/THIRD-PARTY-NOTICES.md`](./references/THIRD-PARTY-NOTICES.md),
-> and is not added unused.
+> Status of the IVF use site: `zerocopy` **is in use** — wired through the private
+> `IvfFileHeaderWire` in `crates/splot-core/src/ivf.rs`, which is borrowed via
+> `ref_from_prefix` and validated into the public `IvfHeader` while preserving all
+> existing IVF error behavior. The governing rule above still holds: `zerocopy` is
+> added only for a real fixed-layout use site, never unused, and only in the
+> approved crates. See the implementation matrix row
+> `INFRA-ZERO-COPY-MEDIA-POLICY` and
+> [`docs/references/THIRD-PARTY-NOTICES.md`](./references/THIRD-PARTY-NOTICES.md) §12.
 
 ## 10. Determinism and parallel ownership
 

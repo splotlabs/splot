@@ -59,6 +59,9 @@ const MEDIA_TYPE_NAMES: &[&str] = &[
     "CurrentFrameWorkspace",
     "CurrentFramePlane",
     "ReferenceFrameStore",
+    // The explicit share handle: it MUST NOT derive Clone (sharing is the visible
+    // `.share()` Arc::clone only), so a Clone derive/impl on it is banned.
+    "SharedFrame",
     // Forward-looking generic media-storage names from docs/ZERO_COPY.md.
     "Frame",
     "CurrentFrame",
@@ -95,6 +98,9 @@ const SUSPICIOUS_CLONE_BINDINGS: &[&str] = &[
 /// `(needle, human-readable form)`.
 const SAMPLE_COPY_NEEDLES: &[(&str, &str)] = &[
     (".to_vec(", ".to_vec()"),
+    (".to_owned(", ".to_owned()"),
+    (".into_vec(", ".into_vec()"),
+    (".copy_within(", ".copy_within()"),
     ("Vec::from(&", "Vec::from(&…)"),
     ("extend_from_slice", "extend_from_slice"),
     ("copy_from_slice", "copy_from_slice"),
@@ -109,12 +115,21 @@ const VAGUE_MARKER_REASONS: &[&str] = &["temporary", "fix", "needed", "convenien
 /// The `splot-copy-ok:` marker token.
 const MARKER_TOKEN: &str = "splot-copy-ok";
 
-/// One workspace crate reduced to its name and resolved direct dependency names.
+/// One resolved direct dependency: its real crate name plus whether it is
+/// inherited from the workspace (`x.workspace = true`) rather than pinned locally.
+pub(crate) struct ZcDep {
+    /// Resolved real crate name (`package = "…"` renames resolved).
+    pub name: String,
+    /// `true` when the entry is `name.workspace = true` (workspace-inherited).
+    pub workspace_inherited: bool,
+}
+
+/// One workspace crate reduced to its name and resolved direct dependencies.
 pub(crate) struct ZcCrate {
     /// The crate's `[package].name`.
     pub name: String,
-    /// Direct dependency crate names (real names; `package = "…"` resolved).
-    pub deps: Vec<String>,
+    /// Direct dependencies (resolved names + workspace-inheritance).
+    pub deps: Vec<ZcDep>,
 }
 
 /// One scanned source line: display path (forward-slash normalized), 1-based line
@@ -284,17 +299,25 @@ pub(crate) fn evaluate_zero_copy_policy(
     // Dependency rules (all manifests).
     for krate in crates {
         for dep in &krate.deps {
-            if dep == "zerocopy" && !ZEROCOPY_APPROVED_CRATES.contains(&krate.name.as_str()) {
+            let approved = ZEROCOPY_APPROVED_CRATES.contains(&krate.name.as_str());
+            if dep.name == "zerocopy" && !approved {
                 violations.push(format!(
                     "{}: `zerocopy` may only be a direct dependency of {} (private fixed-layout wire views only)",
                     krate.name,
                     ZEROCOPY_APPROVED_CRATES.join(" or ")
                 ));
+            } else if dep.name == "zerocopy" && !dep.workspace_inherited {
+                // An approved crate that pins zerocopy locally (a bare version or a
+                // divergent feature set) escapes the centralized workspace shape.
+                violations.push(format!(
+                    "{}: `zerocopy` must be inherited via the workspace dependency (`zerocopy.workspace = true`), not pinned locally",
+                    krate.name
+                ));
             }
-            if BANNED_BYTE_CRATES.contains(&dep.as_str()) {
+            if BANNED_BYTE_CRATES.contains(&dep.name.as_str()) {
                 violations.push(format!(
                     "{}: banned byte/transmute crate `{}`; use splot views or the approved `zerocopy` wire surface",
-                    krate.name, dep
+                    krate.name, dep.name
                 ));
             }
         }
@@ -315,7 +338,7 @@ pub(crate) fn evaluate_zero_copy_policy(
             // Rule: `Clone` derive on a media-storage type.
             if let Some(name) = declared_type_name(text)
                 && MEDIA_TYPE_NAMES.contains(&name)
-                && preceding_clone_derive(sources, i)
+                && derive_has_clone(&attribute_block_above(sources, i))
             {
                 violations.push(format!(
                     "{where_at}: `Clone` derive on media-storage type `{name}`; remove it (borrow a view or share via `SharedFrame` instead)"
@@ -401,29 +424,78 @@ pub(crate) fn evaluate_zero_copy_policy(
     violations
 }
 
-/// Returns whether the attribute block immediately above `sources[i]` contains a
-/// `#[derive(... Clone ...)]`.
-fn preceding_clone_derive(sources: &[ZcSourceLine], i: usize) -> bool {
+/// Joins the contiguous attribute lines immediately above `sources[i]` (the type
+/// declaration), in source order, so a multi-line `#[derive(\n Clone,\n)]` is seen
+/// as one block. Comment and blank lines are traversed but excluded from the join
+/// (so doc-comment prose mentioning `Clone` cannot create a false positive);
+/// continuation lines of a multi-line attribute are included via bracket balance.
+/// Scanning stops at the first real code line above the preamble.
+fn attribute_block_above(sources: &[ZcSourceLine], i: usize) -> String {
     let path = &sources[i].path;
+    let mut lines: Vec<&str> = Vec::new();
+    // `depth` counts unmatched closers seen on lower lines: while it is positive we
+    // are inside a multi-line attribute and the current line is a continuation.
+    let mut depth: i32 = 0;
     let mut j = i;
     while j > 0 {
         j -= 1;
         let prev = &sources[j];
         if &prev.path != path {
-            return false;
+            break;
         }
-        let trimmed = prev.text.trim_start();
-        if trimmed.starts_with("#[") {
-            if trimmed.contains("derive(") && trimmed.contains("Clone") {
-                return true;
+        let text = prev.text.as_str();
+        let trimmed = text.trim_start();
+        let closers = (text.matches(']').count() + text.matches(')').count()) as i32;
+        let openers = (text.matches('[').count() + text.matches('(').count()) as i32;
+        let inside_attr = depth > 0;
+        let is_attr = inside_attr || trimmed.starts_with("#[") || closers > openers;
+        let is_comment = trimmed.starts_with("//");
+        let is_blank = trimmed.is_empty();
+        if !(is_attr || is_comment || is_blank) {
+            break;
+        }
+        if is_attr && !is_comment {
+            lines.push(text);
+        }
+        depth += closers - openers;
+        if depth < 0 {
+            depth = 0;
+        }
+    }
+    lines.reverse();
+    lines.join("\n")
+}
+
+/// Returns whether `block` (joined attribute text) contains a `derive(...)` that
+/// lists `Clone` (or a fully-qualified `…::Clone`) as a derived trait. Robust to
+/// multi-line derives and ignores unrelated text.
+fn derive_has_clone(block: &str) -> bool {
+    let mut rest = block;
+    while let Some(pos) = rest.find("derive(") {
+        let after = &rest[pos + "derive(".len()..];
+        let mut depth = 1i32;
+        let mut end = after.len();
+        for (k, c) in after.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = k;
+                        break;
+                    }
+                }
+                _ => {}
             }
-            continue;
         }
-        // Doc comments and blank lines may separate the derive from the item.
-        if trimmed.is_empty() || trimmed.starts_with("//") {
-            continue;
+        let inner = &after[..end];
+        let has_clone = inner
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .any(|token| token == "Clone" || token.ends_with("::Clone"));
+        if has_clone {
+            return true;
         }
-        return false;
+        rest = after.get(end..).unwrap_or("");
     }
     false
 }
@@ -483,41 +555,72 @@ fn collect_crate_deps(root: &Path) -> Result<Vec<ZcCrate>> {
             .and_then(toml::Value::as_str)
             .map(str::to_owned)
             .with_context(|| format!("{} has no [package].name", manifest_path.display()))?;
-        let deps = direct_dependency_names(&manifest, &workspace_deps);
+        let deps = direct_dependencies(&manifest, &workspace_deps);
         crates.push(ZcCrate { name, deps });
     }
     Ok(crates)
 }
 
-/// Resolved direct dependency names across the dependency tables (deduplicated).
-fn direct_dependency_names(
+/// Resolved direct dependencies across the dependency tables (deduplicated), each
+/// tagged with whether it is workspace-inherited. A dependency is reported as
+/// workspace-inherited only if every occurrence is (so a single local pin is
+/// surfaced).
+fn direct_dependencies(
     manifest: &toml::Table,
     workspace_deps: &HashMap<String, String>,
-) -> Vec<String> {
-    let mut names = Vec::new();
-    for table_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
-        if let Some(table) = manifest.get(table_name).and_then(toml::Value::as_table) {
-            for (key, value) in table {
-                names.push(crate::resolved_dep_name(key, value, workspace_deps));
-            }
-        }
-    }
+) -> Vec<ZcDep> {
+    let mut raw: Vec<(String, bool)> = Vec::new();
+    collect_dep_entries(manifest, workspace_deps, &mut raw);
     if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
         for target in targets.values() {
             if let Some(table) = target.as_table() {
-                for inner in ["dependencies", "dev-dependencies", "build-dependencies"] {
-                    if let Some(deps) = table.get(inner).and_then(toml::Value::as_table) {
-                        for (key, value) in deps {
-                            names.push(crate::resolved_dep_name(key, value, workspace_deps));
-                        }
-                    }
-                }
+                collect_dep_entries(table, workspace_deps, &mut raw);
             }
         }
     }
-    names.sort();
-    names.dedup();
-    names
+    raw.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut deps: Vec<ZcDep> = Vec::new();
+    for (name, workspace_inherited) in raw {
+        if let Some(last) = deps.last_mut()
+            && last.name == name
+        {
+            last.workspace_inherited = last.workspace_inherited && workspace_inherited;
+        } else {
+            deps.push(ZcDep {
+                name,
+                workspace_inherited,
+            });
+        }
+    }
+    deps
+}
+
+/// Appends `(resolved name, workspace_inherited)` for each entry in `parent`'s
+/// dependency tables.
+fn collect_dep_entries(
+    parent: &toml::Table,
+    workspace_deps: &HashMap<String, String>,
+    out: &mut Vec<(String, bool)>,
+) {
+    for table_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        if let Some(table) = parent.get(table_name).and_then(toml::Value::as_table) {
+            for (key, value) in table {
+                out.push((
+                    crate::resolved_dep_name(key, value, workspace_deps),
+                    is_workspace_inherited(value),
+                ));
+            }
+        }
+    }
+}
+
+/// Returns whether a dependency entry is `name.workspace = true`.
+fn is_workspace_inherited(value: &toml::Value) -> bool {
+    value
+        .as_table()
+        .and_then(|table| table.get("workspace"))
+        .and_then(toml::Value::as_bool)
+        == Some(true)
 }
 
 /// Walks the scanned crate `src` trees and returns every line, sorted by
@@ -578,10 +681,31 @@ mod tests {
 
     use super::*;
 
+    /// Builds a crate whose deps are all workspace-inherited.
     fn krate(name: &str, deps: &[&str]) -> ZcCrate {
         ZcCrate {
             name: name.to_owned(),
-            deps: deps.iter().map(|d| (*d).to_owned()).collect(),
+            deps: deps
+                .iter()
+                .map(|d| ZcDep {
+                    name: (*d).to_owned(),
+                    workspace_inherited: true,
+                })
+                .collect(),
+        }
+    }
+
+    /// Builds a crate with explicit `(name, workspace_inherited)` deps.
+    fn krate_deps(name: &str, deps: &[(&str, bool)]) -> ZcCrate {
+        ZcCrate {
+            name: name.to_owned(),
+            deps: deps
+                .iter()
+                .map(|(d, ws)| ZcDep {
+                    name: (*d).to_owned(),
+                    workspace_inherited: *ws,
+                })
+                .collect(),
         }
     }
 
@@ -650,6 +774,92 @@ mod tests {
             v.iter()
                 .any(|m| m.contains("Clone` derive on media-storage type `DecodedFrame")),
             "got {v:?}"
+        );
+    }
+
+    #[test]
+    fn multiline_media_clone_derive_is_a_violation() {
+        // rustfmt wraps long derive lists; the `Clone` token then lives on its own
+        // line. The block-aware lookback must still catch it.
+        let src = file(
+            RECON,
+            &[
+                "#[derive(",
+                "    Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd,",
+                ")]",
+                "pub struct DecodedFrame<T> {",
+            ],
+        );
+        let v = run_src(&src);
+        assert!(
+            v.iter()
+                .any(|m| m.contains("Clone` derive on media-storage type `DecodedFrame")),
+            "multi-line Clone derive must be flagged, got {v:?}"
+        );
+    }
+
+    #[test]
+    fn shared_frame_clone_derive_is_a_violation() {
+        // SharedFrame is the type most explicitly forbidden from deriving Clone.
+        let src = file(
+            RECON,
+            &["#[derive(Clone, Debug)]", "pub struct SharedFrame<T> {"],
+        );
+        let v = run_src(&src);
+        assert!(
+            v.iter().any(|m| m.contains("SharedFrame")),
+            "Clone on SharedFrame must be flagged, got {v:?}"
+        );
+        // Debug-only on SharedFrame (the real code) must NOT be flagged.
+        let ok = file(RECON, &["#[derive(Debug)]", "pub struct SharedFrame<T> {"]);
+        assert!(
+            run_src(&ok).is_empty(),
+            "Debug-only SharedFrame must not be flagged"
+        );
+    }
+
+    #[test]
+    fn doc_comment_naming_clone_above_a_media_type_is_not_flagged() {
+        // The real code documents "Does not implement `Clone`" above a Debug-only
+        // derive; the comment must not create a false positive.
+        let src = file(
+            RECON,
+            &[
+                "/// Does not implement `Clone`: it owns the sample buffer.",
+                "#[derive(Debug, Eq, PartialEq)]",
+                "pub struct Plane<T> {",
+            ],
+        );
+        assert!(
+            run_src(&src).is_empty(),
+            "doc comment mentioning Clone must not be flagged"
+        );
+    }
+
+    #[test]
+    fn to_owned_in_recon_is_a_violation() {
+        let v = run_src(&file(RECON, &["    let owned = samples.to_owned();"]));
+        assert!(
+            !v.is_empty(),
+            "`.to_owned()` bulk copy in recon must be flagged"
+        );
+    }
+
+    #[test]
+    fn zerocopy_locally_pinned_in_approved_crate_is_a_violation() {
+        // An approved crate that pins zerocopy locally (not `zerocopy.workspace = true`)
+        // escapes the centralized workspace shape.
+        let pinned = krate_deps("splot-core", &[("zerocopy", false)]);
+        let v = evaluate_zero_copy_policy(&[pinned], &[]);
+        assert!(
+            v.iter().any(|m| m.contains("workspace dependency")),
+            "locally-pinned zerocopy must be flagged, got {v:?}"
+        );
+        // Workspace-inherited zerocopy in an approved crate is fine.
+        let inherited = krate_deps("splot-core", &[("zerocopy", true)]);
+        assert!(
+            evaluate_zero_copy_policy(&[inherited], &[]).is_empty(),
+            "workspace-inherited zerocopy must pass"
         );
     }
 

@@ -569,8 +569,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             let target_row = rect.y() + row_index;
             let target_range = self.row_range(target_row, rect.x(), rect.width())?;
             let source_range = source_row_start..source_row_start + rect.width();
-            // splot-copy-ok: write caller-provided samples into the owned current-frame
-            // workspace plane storage (no external buffer is shared or retained)
+            // splot-copy-ok: write caller samples into owned current-frame workspace plane storage
             self.samples[target_range].copy_from_slice(&samples[source_range]);
         }
         Ok(())
@@ -608,8 +607,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                     context: "above intra edge",
                 }
             })?;
-            // splot-copy-ok: materialize bounded above-edge scratch for intra prediction
-            // (length is the block width, not frame storage)
+            // splot-copy-ok: materialize bounded above-edge scratch (block-width) for intra prediction
             above.extend_from_slice(&self.samples[range]);
             Some(above)
         };

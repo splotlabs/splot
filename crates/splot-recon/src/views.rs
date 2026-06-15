@@ -469,6 +469,25 @@ impl<'a, T: ReconSample> FrameMut<'a, T> {
         &self.y
     }
 
+    /// Returns the U plane view when present.
+    pub fn u(&self) -> Option<&PlaneMut<'a, T>> {
+        self.u.as_ref()
+    }
+
+    /// Returns the V plane view when present.
+    pub fn v(&self) -> Option<&PlaneMut<'a, T>> {
+        self.v.as_ref()
+    }
+
+    /// Returns a plane view by identifier.
+    pub fn plane(&self, plane: PlaneId) -> Option<&PlaneMut<'a, T>> {
+        match plane {
+            PlaneId::Y => Some(&self.y),
+            PlaneId::U => self.u.as_ref(),
+            PlaneId::V => self.v.as_ref(),
+        }
+    }
+
     /// Returns the luma plane view for exclusive access.
     pub fn y_mut(&mut self) -> &mut PlaneMut<'a, T> {
         &mut self.y
@@ -482,6 +501,15 @@ impl<'a, T: ReconSample> FrameMut<'a, T> {
     /// Returns the V plane view for exclusive access when present.
     pub fn v_mut(&mut self) -> Option<&mut PlaneMut<'a, T>> {
         self.v.as_mut()
+    }
+
+    /// Returns a plane view by identifier for exclusive access.
+    pub fn plane_mut(&mut self, plane: PlaneId) -> Option<&mut PlaneMut<'a, T>> {
+        match plane {
+            PlaneId::Y => Some(&mut self.y),
+            PlaneId::U => self.u.as_mut(),
+            PlaneId::V => self.v.as_mut(),
+        }
     }
 
     /// Borrows the frame immutably as a [`FrameRef`].
@@ -644,5 +672,23 @@ mod tests {
             FrameRef::new(frame_info, y, Some(u), None),
             Err(ReconError::UnexpectedChromaPlane { plane: PlaneId::U })
         ));
+    }
+
+    #[test]
+    fn frame_mut_exposes_immutable_plane_accessors_mirroring_frame_ref() {
+        let frame_info = info(PixelFormat::Yuv420, size(4, 4), rect(0, 0, 4, 4));
+        let mut y_samples = [0_u8; 16];
+        let mut u_samples = [0_u8; 4];
+        let mut v_samples = [0_u8; 4];
+        let y = PlaneMut::new(&mut y_samples, 4, rect(0, 0, 4, 4)).unwrap();
+        let u = PlaneMut::new(&mut u_samples, 2, rect(0, 0, 2, 2)).unwrap();
+        let v = PlaneMut::new(&mut v_samples, 2, rect(0, 0, 2, 2)).unwrap();
+        let frame = FrameMut::new(frame_info, y, Some(u), Some(v)).unwrap();
+        // Immutable chroma reads mirror FrameRef without an exclusive borrow.
+        assert_eq!(frame.u().map(PlaneMut::visible_size), Some(size(2, 2)));
+        assert_eq!(frame.v().map(PlaneMut::visible_size), Some(size(2, 2)));
+        assert!(frame.plane(PlaneId::Y).is_some());
+        assert!(frame.plane(PlaneId::U).is_some());
+        assert_eq!(frame.info().output_index().get(), 0);
     }
 }

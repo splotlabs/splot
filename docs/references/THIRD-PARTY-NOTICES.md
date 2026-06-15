@@ -54,7 +54,7 @@ as a deliberate legal/licensing event.
 | rav1e | Rust AV1 encoder architecture reference | `https://github.com/xiph/rav1e/blob/master/LICENSE` and `PATENTS` | Read, link, summarize, learn Rust/RDO/API patterns. |
 | SVT-AV1 | Production AV1 encoder architecture reference | `https://gitlab.com/AOMediaCodec/SVT-AV1/-/raw/master/LICENSE.md` and `PATENTS.md` | Read, link, summarize, learn pipeline/ME/RC/filter/search architecture. |
 | OpenSpec generated assistant integrations | Agent commands, prompts, and skills for OpenSpec workflows | OpenSpec init output; skill frontmatter declares `license: MIT`, `author: openspec`, `generatedBy: "1.4.1"` | Commit only under the approved assistant integration paths; preserve generated metadata when present. |
-| zerocopy | Approved tool dependency for private fixed-layout byte/wire view structs (e.g. IVF container headers) | crates.io; `BSD-2-Clause OR Apache-2.0 OR MIT` (permissive; allowed by `deny.toml`) | Use only in `splot-core`/`splot-recon`, via the workspace dep, for fixed-layout wire views — never in public APIs or AV2 bit-level/entropy parsing. Approved-future until wired through a real use site (see §12 and [ZERO_COPY.md](../ZERO_COPY.md)). |
+| zerocopy | Approved tool dependency for private fixed-layout byte/wire view structs (e.g. IVF container headers) | crates.io; `BSD-2-Clause OR Apache-2.0 OR MIT` (permissive; allowed by `deny.toml`) | Use only in `splot-core`/`splot-recon`, via the workspace dep, for fixed-layout wire views — never in public APIs or AV2 bit-level/entropy parsing. In use via the `splot-core` IVF container header (see §12 and [ZERO_COPY.md](../ZERO_COPY.md)). |
 
 ---
 
@@ -317,6 +317,8 @@ not vendored or relicensed material.
   byteorder-aware wrappers, the layout derives, and borrowed `ref_from_*` views
   converted immediately into validated domain types. **Never** in public APIs, and
   **never** for AV2 bit-level/LEB128/entropy/variable-length syntax.
-- **Status:** approved-future. It is added only when wired through a real
-  fixed-layout use site that preserves existing behavior; it is never added
-  unused. See the implementation matrix row `INFRA-ZERO-COPY-MEDIA-POLICY`.
+- **Status:** in use. It is wired through the private `IvfFileHeaderWire` in
+  `crates/splot-core/src/ivf.rs` (borrowed via `ref_from_prefix`, validated into
+  the public `IvfHeader`, preserving existing behavior). The governing rule still
+  holds — it is added only for a real fixed-layout use site and never unused. See
+  the implementation matrix row `INFRA-ZERO-COPY-MEDIA-POLICY`.

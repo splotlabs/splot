@@ -154,10 +154,9 @@ model. **Dependency direction:** `zerocopy` may be a direct dependency only of
 `splot-core` (and `splot-recon` with a documented raw-sample view); never
 `splot-decode`/`splot-encode`/`splot-validate`/`splot-cli`/`splot-parallel`. It
 never appears in public APIs and never parses AV2 bit-level/entropy/variable-length
-syntax. It is added only when wired through a real fixed-layout use site;
-otherwise it is an approved-future dependency (see
-[docs/references/THIRD-PARTY-NOTICES.md](./references/THIRD-PARTY-NOTICES.md)) and
-is not added unused.
+syntax. It is in use today for the IVF container header (`splot-core` `ivf.rs`),
+added only for that real fixed-layout use site and never unused (see
+[docs/references/THIRD-PARTY-NOTICES.md](./references/THIRD-PARTY-NOTICES.md) §12).
 
 This is non-normative codec-runtime infrastructure (no AV2 conformance coverage).
 The full policy is [ZERO_COPY.md](./ZERO_COPY.md); it is enforced by `cargo xtask
