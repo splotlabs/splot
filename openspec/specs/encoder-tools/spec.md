@@ -9,18 +9,18 @@ code and produce only deliberately simple, writer-validated streams at first.
 Tracked by Feature IDs: `ENC-BITSTREAM-WRITER`, `ENC-INTRA-TOY-V0`,
 `ENC-RATE-CONTROL-V0`, `AV2-IVF-CONTAINER`.
 
-**Status: in progress.** The bit/byte **writer primitive** layer is implemented and
-round-trip-tested: `ENC-BITSTREAM-WRITER` is `partial` and the § 4.11 descriptor
-`write` stages (plus § 5.2.4 byte alignment) are `done` in the matrix, landed by the
-archived `bit-writer-primitives` change (see the "bit-writer primitive inverses"
-requirement below). Remaining: the OBU header / payload writers, the **Annex B**
-muxer, and wiring the muxers into writer-track round-trip tests — the IVF container
-write helpers already exist (`AV2-IVF-CONTAINER`, `write` = `done`); plus the toy
-intra path (`ENC-INTRA-TOY-V0`) and rate control (`ENC-RATE-CONTROL-V0`). The
-bootstrap `add-bitstream-writer` stub has been removed, superseded by the
-properly-scoped `bit-writer-primitives` change and the upcoming
-`obu-header-and-size-writer` change. The implementation matrix is the source of truth
-for per-row status.
+**Status: in progress.** The bit/byte **writer primitive** layer and the **OBU
+header / trailing-bits / Annex B framing** writers are implemented and
+round-trip-tested: `ENC-BITSTREAM-WRITER` is `partial`; the § 4.11 descriptor `write`
+stages (plus § 5.2.4 byte alignment) and `AV2-5.2.2-OBU-HEADER` /
+`AV2-5.2.3-TRAILING-BITS` are `done` in the matrix, landed by the archived
+`bit-writer-primitives` and `obu-header-and-size-writer` changes (see the
+requirements below). Remaining: the sequence/frame/tile/metadata payload writers, the
+**Annex B** muxer, and wiring the muxers into writer-track round-trip tests — the IVF
+container write helpers already exist (`AV2-IVF-CONTAINER`, `write` = `done`); plus
+the toy intra path (`ENC-INTRA-TOY-V0`) and rate control (`ENC-RATE-CONTROL-V0`). The
+bootstrap `add-bitstream-writer` stub was removed, superseded by these properly-scoped
+changes. The implementation matrix is the source of truth for per-row status.
 
 ## Requirements
 ### Requirement: writer symmetry
@@ -100,4 +100,48 @@ rejected with a typed writer error.
 - **THEN** it SHALL pad with zero bits
 - **AND** the result SHALL parse back through `byte_align_zero()` without an
   alignment error.
+
+### Requirement: OBU header, trailing-bits, and Annex B framing writers
+
+`splot-core` SHALL provide writers that are the exact inverse of the § 5.2.2 OBU-header
+parser and the § 5.2.3 trailing-bits parser, plus an Annex B OBU framer
+(`leb128(num_bytes_in_obu)` + header + payload). For every header the parser can produce,
+and every payload, reparsing the written bytes SHALL yield the original
+(`read(write(x)) == x`). The writers SHALL be additive (no parser, model, or
+parser-error changes) and SHALL never panic: a header or width that could not have been
+produced by the parser SHALL be rejected with a typed writer error.
+
+#### Scenario: OBU header round-trips for every type and layer
+
+- **WHEN** a parsed OBU header is written and the bytes are reparsed
+- **THEN** the reparsed header SHALL equal the original
+- **AND** this SHALL hold for every `obu_type`, `obu_tlayer_id`, and (with the extension)
+  every `obu_mlayer_id` / `obu_xlayer_id`.
+
+#### Scenario: trailing_bits writes the marker bit, and rejects an empty field
+
+- **WHEN** `write_trailing_bits(nbBits)` is called with `nbBits >= 1`
+- **THEN** it SHALL write a `trailing_one_bit == 1` followed by `nbBits - 1` zero bits
+- **AND** the result SHALL parse through `parse_trailing_bits` without a § 5.2.3 error
+- **AND** `write_trailing_bits(0)` SHALL return a typed error rather than writing nothing.
+
+#### Scenario: Annex B framing emits a canonical size and reparses
+
+- **WHEN** an OBU header and payload are framed for Annex B
+- **THEN** the writer SHALL emit a canonical minimal-length `leb128` size prefix
+- **AND** the framed bytes SHALL parse back to the same header and payload.
+
+#### Scenario: byte-exact holds for canonical encodings, semantic holds universally
+
+- **WHEN** the input header is canonical and the original Annex B size prefix was minimal
+- **THEN** the written bytes SHALL be byte-identical to the input
+- **AND** for a non-minimal input size prefix, the re-emitted bytes MAY differ while the
+  reparsed header and payload SHALL remain equal.
+
+#### Scenario: unrepresentable headers are rejected
+
+- **WHEN** a header's `has_header_extension` flag disagrees with `header_size_bytes`, or a
+  no-extension header carries layer ids the § 5.2.2 inference could never produce
+- **THEN** the writer SHALL return a typed error
+- **AND** SHALL NOT panic.
 
