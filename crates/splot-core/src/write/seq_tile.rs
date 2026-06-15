@@ -934,8 +934,10 @@ fn check_sequence_header_encodable(header: &SequenceHeader) -> WriteResult<()> {
     Ok(())
 }
 
-// The unit-test and property-test modules live in a sibling file to keep this writer
-// source under the advisory source-line limit; `include!` pastes them into this module
-// so their `super::*` resolves to the writers and private helpers above.
+// The unit/byte-exact/reject tests and the property tests live in sibling files (each kept
+// under the advisory source-line limit); `include!` pastes them into this module so their
+// `super::*` resolves to the writers and private helpers above.
 #[cfg(test)]
 include!("seq_tile_tests.rs");
+#[cfg(test)]
+include!("seq_tile_proptests.rs");
