@@ -156,6 +156,13 @@ pub struct TileInfo {
     /// `TileSizeBytes = tile_size_bytes_minus_1 + 1`, present only when the
     /// multi-tile condition of § 5.18.7.2 read it.
     pub tile_size_bytes: Option<u32>,
+    /// The full [`TileParams`] the explicit `tile_params()` branch (§ 5.18.7.3,
+    /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-3`) derived, surfaced for
+    /// the writer (the byte-exact inverse re-runs that derivation, which needs the
+    /// `uniform_spacing` flag and the superblock grid that the other [`TileInfo`] fields
+    /// discard). `Some` on the explicit branch; `None` on the reuse branch (which writes
+    /// no `tile_params()` bits — the layout is recomputed from the stored sequence layout).
+    pub tile_params: Option<TileParams>,
 }
 
 /// Parses `tile_info()` (AV2 v1.0.0 § 5.18.7.2,
@@ -239,6 +246,9 @@ pub fn parse_tile_info(
     // § 5.18.7.2: seqSbSize = get_seq_sb_size() (§ 5.18.7.6).
     let seq_sb_size = tile.seq_sb_size;
 
+    // The explicit branch surfaces its derived `TileParams` for the writer (the reuse
+    // branch leaves it `None`: reuse writes no `tile_params()` bits).
+    let mut explicit_tile_params: Option<TileParams> = None;
     let (
         sb_col_starts,
         sb_row_starts,
@@ -331,6 +341,9 @@ pub fn parse_tile_info(
                 seq_level_idx: tile.seq_level_idx,
             },
         )?;
+        // Surface the derived TileParams so the writer can re-run the § 5.18.7.3
+        // derivation forward (it needs `uniform_spacing` and the superblock grid).
+        explicit_tile_params = Some(layout.params);
         (
             layout.sb_col_starts,
             layout.sb_row_starts,
@@ -391,6 +404,7 @@ pub fn parse_tile_info(
         mi_row_starts,
         context_update_tile_id,
         tile_size_bytes,
+        tile_params: explicit_tile_params,
     })
 }
 

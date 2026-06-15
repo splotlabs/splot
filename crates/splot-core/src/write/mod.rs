@@ -26,6 +26,7 @@ pub mod bit_writer;
 pub mod error;
 pub mod frame_config;
 pub mod frame_header;
+pub mod frame_tiling;
 pub mod obu;
 pub mod segment;
 pub mod seq_config;
@@ -36,6 +37,7 @@ pub use bit_writer::BitWriter;
 pub use error::{WriteError, WriteResult};
 pub use frame_config::{write_frame_size, write_intrabc_params, write_screen_content_params};
 pub use frame_header::write_frame_header_prefix;
+pub use frame_tiling::write_tile_info;
 pub use obu::{write_annexb_obu, write_obu_header, write_obu_header_extension};
 pub use segment::write_seg_info;
 pub use seq_config::{
