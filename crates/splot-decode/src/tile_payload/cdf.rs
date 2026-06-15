@@ -405,6 +405,66 @@ pub(crate) enum TileCdfError {
         /// Exclusive upper bound.
         max_exclusive: usize,
     },
+    /// A partition grid coordinate would underflow before lookup.
+    #[error(
+        "{array}[{plane_start}] {coordinate} coordinate underflow deriving {actual}-{subtract}"
+    )]
+    PartitionGridCoordinateUnderflow {
+        /// Grid array being indexed.
+        array: &'static str,
+        /// `PlaneStart` partition-structure context.
+        plane_start: usize,
+        /// Coordinate name.
+        coordinate: &'static str,
+        /// Actual supplied coordinate.
+        actual: usize,
+        /// Amount subtracted from the coordinate.
+        subtract: usize,
+    },
+    /// A partition grid row was not available.
+    #[error("{array}[{plane_start}][{row}] row is unavailable; rows {rows}")]
+    PartitionGridRowOutOfRange {
+        /// Grid array being indexed.
+        array: &'static str,
+        /// `PlaneStart` partition-structure context.
+        plane_start: usize,
+        /// Requested row index.
+        row: usize,
+        /// Available row count.
+        rows: usize,
+    },
+    /// A partition grid column was not available.
+    #[error("{array}[{plane_start}][{row}][{col}] column is unavailable; columns {cols}")]
+    PartitionGridColumnOutOfRange {
+        /// Grid array being indexed.
+        array: &'static str,
+        /// `PlaneStart` partition-structure context.
+        plane_start: usize,
+        /// Requested row index.
+        row: usize,
+        /// Requested column index.
+        col: usize,
+        /// Available column count in the requested row.
+        cols: usize,
+    },
+    /// A partition grid cell contained an invalid block-size index.
+    #[error(
+        "{array}[{plane_start}][{row}][{col}] block size {block_size} is outside 0..{max_exclusive}"
+    )]
+    PartitionGridBlockSizeOutOfRange {
+        /// Grid array being indexed.
+        array: &'static str,
+        /// `PlaneStart` partition-structure context.
+        plane_start: usize,
+        /// Requested row index.
+        row: usize,
+        /// Requested column index.
+        col: usize,
+        /// Invalid grid block-size index.
+        block_size: usize,
+        /// Exclusive upper bound.
+        max_exclusive: usize,
+    },
     /// Extended-partition second-neighbor index arithmetic overflowed.
     #[error("{array}[{plane_start}] index overflow deriving {base}+{offset}")]
     PartitionNeighborIndexOverflow {
