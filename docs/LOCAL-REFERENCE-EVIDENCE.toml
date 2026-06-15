@@ -61,7 +61,7 @@
 # right = "dav2d-raw-md5"
 
 manifest_version = 1
-last_reviewed = "2026-06-14"
+last_reviewed = "2026-06-15"
 
 [[evidence]]
 id = "lref-avm-dav2d-syn-key-intra-64x64"
@@ -114,6 +114,58 @@ output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
 kind = "digest-equality"
 left = "avm-raw-md5"
 right = "dav2d-raw-md5"
+
+[[evidence]]
+id = "lref-avm-dav2d-syn-flat-intra-64x64-minimal"
+feature_id = "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS"
+decoder_support_rows = ["decode-minimal-tier-runtime-success"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output SHA-256 digests agreed for the 8-bit flat 64x64 minimal-tier intra IVF fixture."
+recorded_at = "2026-06-15"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf"
+sha256 = "82ed37f2586ad9262185304911718322d74633698850a70e75033a67d734f5e0"
+size_bytes = 66
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from one project-owned flat 64x64 8-bit 4:2:0 I420 frame with broad decode tools disabled; AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "f6f0b9c8914f38be39a953c0a9aa6a2e4050717c"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-18-gf6f0b9c89"
+command_summary = "avmdec decoded {fixture:input} to raw 8-bit I420 output with rawvideo enabled."
+output_digest_id = "avm-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "cb11e05cb5da949c0e0f5b5a7cb310df35a96a22c45d1ada70d950859fe697d1"
+output_scope = "reference raw decoder output SHA-256, not an executable dependency"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0"
+command_summary = "dav2d decoded {fixture:input} with IVF demuxing to raw 8-bit YUV output."
+output_digest_id = "dav2d-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "cb11e05cb5da949c0e0f5b5a7cb310df35a96a22c45d1ada70d950859fe697d1"
+output_scope = "reference raw decoder output SHA-256, not an executable dependency"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-raw-sha256"
+right = "dav2d-raw-sha256"
 
 [[evidence]]
 id = "lref-avm-dav2d-syn-intra-64x64-10bit"

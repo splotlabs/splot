@@ -8,15 +8,15 @@ canonical for the rules summarized here.
 
 ```text
 splot-cli ───────┬──> splot-validate ───> splot-core
-                 ├──> splot-decode   ───> splot-core, splot-parallel
+                 ├──> splot-decode   ───> splot-core, splot-parallel, splot-recon
                  ├──> splot-encode   ───> splot-core, splot-parallel
                  ├──> splot-parallel
                  └──> splot-core
 
 splot-decode owns the current unsupported diagnostic API, the decode runtime
-context, and a parsed stream planner over splot-core output. Its approved
-future dependency is splot-recon once runtime decode source code needs
-reconstruction/output state.
+context, byte/parsed stream planning over splot-core output, and the narrow
+minimal hash runtime. Its splot-recon dependency is limited to runtime
+decode/reconstruction/hash handoff code.
 
 splot-parallel owns the approved concurrency primitives (local Rayon worker
 pool + bounded crossbeam queues) and depends on no splot-* crate.
@@ -31,9 +31,9 @@ by `cargo xtask check-dependency-direction`):
 - `splot-core` depends on no other `splot-*` crate.
 - `splot-parallel` depends on no other `splot-*` crate.
 - `splot-recon` depends on no other `splot-*` crate.
-- `splot-decode` depends only on `splot-core` and `splot-parallel` today; its
-  approved future internal dependency is `splot-recon` once runtime decode
-  source code needs reconstruction/output state.
+- `splot-decode` depends only on `splot-core`, `splot-parallel`, and
+  `splot-recon`; the `splot-recon` edge is limited to runtime
+  decode/reconstruction/hash handoff code.
 - `splot-validate` depends only on `splot-core`.
 - `splot-encode` depends only on `splot-core` and `splot-parallel`.
 - `splot-cli` depends only on `splot-core`, `splot-decode`, `splot-parallel`,

@@ -8,6 +8,7 @@ use core::num::NonZeroUsize;
 
 use splot_parallel::{ThreadCount, WorkerPool};
 
+use crate::DecodeHashReport;
 use crate::DecodeOptions;
 use crate::byte_stream::plan_byte_stream;
 use crate::error::Result;
@@ -22,12 +23,11 @@ use crate::tile_payload::{
 /// A decode context.
 ///
 /// It owns exactly one [`WorkerPool`] and exposes the resolved worker count,
-/// and it can build bounded, plan-only stream metadata from raw Annex B/IVF
-/// byte slices or already parsed stream structures. It intentionally does NOT
-/// inspect input/output paths, allocate decoded frames, reconstruct pixels,
-/// write output, or invoke any external decoder yet. Runtime decode support
-/// remains unimplemented (`splot decode` still emits the stable
-/// `decode/unsupported-feature` diagnostic).
+/// builds bounded stream metadata from raw Annex B/IVF byte slices or already
+/// parsed stream structures, and exposes the narrow documented
+/// `minimal-intra-8bit420-hash-v1` runtime hash path. It intentionally does NOT
+/// inspect input/output paths, write output, invoke any external decoder, or
+/// claim broad AV2 runtime decode support.
 #[derive(Debug)]
 pub struct DecodeContext {
     runtime: DecodeRuntimeConfig,
@@ -81,6 +81,28 @@ impl DecodeContext {
     /// structures, local decode resource-limit failures, or pool failures.
     pub fn plan_bytes(&self, bytes: &[u8], options: DecodeOptions) -> Result<DecodeStreamPlan> {
         self.pool.install(|| plan_byte_stream(bytes, options))
+    }
+
+    /// Decodes the documented minimal tier and returns a deterministic hash report.
+    ///
+    /// This method first runs [`Self::plan_bytes`] so malformed sources,
+    /// resource-limit failures, layer selection, and planner-level unsupported
+    /// structures stay transactional. Runtime support is intentionally limited to
+    /// the `minimal-intra-8bit420-hash-v1` tier.
+    ///
+    /// # Errors
+    /// Returns [`crate::DecodeError`] for malformed sources, unsupported
+    /// structures, runtime-tier rejections, resource-limit failures, worker-pool
+    /// failures, or reconstruction model errors.
+    pub fn decode_hash_report_bytes(
+        &self,
+        bytes: &[u8],
+        options: DecodeOptions,
+    ) -> Result<DecodeHashReport> {
+        let plan = self.plan_bytes(bytes, options)?;
+        self.pool.install(|| {
+            crate::runtime_hash::decode_hash_report_from_plan(bytes, options, &plan, self.threads())
+        })
     }
 
     /// Builds a deterministic plan over an already parsed AV2 stream.

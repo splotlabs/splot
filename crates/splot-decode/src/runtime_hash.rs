@@ -1,0 +1,999 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+//! Minimal-tier runtime hash implementation.
+//!
+//! Feature tracking: `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`.
+
+use core::num::NonZeroUsize;
+use splot_core::annexb::ObuEnvelope;
+use splot_core::bitio::BitReader;
+use splot_core::headers::frame::{
+    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
+    FrameReferenceStateView, FrameSize, parse_frame_header_core,
+};
+use splot_core::headers::sequence::{
+    BitDepthIdc, ChromaFormatIdc, SequenceHeader, parse_sequence_header,
+};
+use splot_core::span::ByteOffset;
+use splot_core::stream::{ParsedBitstream, ParsedIvfBitstream, parse_bitstream_partial};
+use splot_core::symbol::{SymbolDecoder, SymbolDecoderConfig, SymbolDecoderSummary};
+use splot_core::tables::cdf::{
+    DEFAULT_DO_SPLIT_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
+    DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
+};
+use splot_core::types::ObuType;
+use splot_recon::{
+    BitDepth, DecodedFrame, DecodedFrameHashInput, DecodedFrameInfo, FramePlanes, OutputIndex,
+    PixelFormat, Plane, PlaneRect, PlaneSize,
+};
+
+use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
+use crate::hash_report::{
+    DecodeHashEntry, DecodeHashFrame, DecodeHashPixelFormat, DecodeHashReport,
+};
+use crate::tile_payload::{
+    FrameCandidateCdfFacts, FrameCandidateTileBoundaryError, FrameCandidateTileBoundaryInput,
+    FrameCandidateTileFacts, TileGroupPositionFacts,
+};
+use crate::{
+    DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeOptions, DecodePlannedObu,
+    DecodeStreamPlan,
+};
+
+/// Stable id for the first supported runtime decode tier.
+pub const MINIMAL_INTRA_HASH_TIER_ID: &str = "minimal-intra-8bit420-hash-v1";
+
+const FEATURE_ID: &str = "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS";
+const MATRIX_ROW: &str = "minimal-decode-tier-contract";
+const SPEC_SECTION: &str = "7.1";
+const REMEDIATION: &str = "Use a stream inside minimal-intra-8bit420-hash-v1 or wait for the referenced decoder support row.";
+const MINIMAL_WIDTH: u32 = 64;
+const MINIMAL_HEIGHT: u32 = 64;
+const FLAT_SAMPLE: u8 = 128;
+const MINIMAL_TRACE_SYMBOLS: u64 = 6;
+const MINIMAL_TRACE_TRAILING_BIT_POSITION: u64 = 14;
+const MINIMAL_TRACE_PADDING_END_POSITION: u64 = 16;
+
+pub(crate) fn decode_hash_report_from_plan(
+    bytes: &[u8],
+    options: DecodeOptions,
+    plan: &DecodeStreamPlan,
+    resolved_threads: NonZeroUsize,
+) -> Result<DecodeHashReport> {
+    ensure_minimal_plan_shape(plan)?;
+    let parsed = parse_bitstream_partial(bytes);
+    let ivf = require_minimal_ivf(&parsed)?;
+    let frame = &ivf.frames[0];
+    let [td_envelope, sequence_envelope, frame_envelope] =
+        require_minimal_obu_order(frame.obus.as_slice())?;
+    require_obu_type(
+        td_envelope,
+        ObuType::TemporalDelimiter,
+        "missing_temporal_delimiter",
+    )?;
+    require_obu_type(
+        sequence_envelope,
+        ObuType::SequenceHeader,
+        "missing_sequence_header",
+    )?;
+    require_obu_type(
+        frame_envelope,
+        ObuType::ClosedLoopKey,
+        "missing_closed_loop_key",
+    )?;
+
+    let sequence = parse_sequence(sequence_envelope)?;
+    validate_sequence(&sequence, sequence_envelope.offset)?;
+
+    let candidate = single_plan_candidate(plan)?;
+    let core = parse_frame_core(frame_envelope, &sequence)?;
+    validate_frame_core(&core, frame_envelope.offset)?;
+
+    let tile_plan = derive_tile_plan(
+        plan,
+        candidate,
+        bytes,
+        frame_envelope,
+        &sequence,
+        &core,
+        options,
+    )?;
+    let tile = tile_plan.work_units().first().ok_or_else(|| {
+        unsupported(
+            "missing_tile_work_unit",
+            None,
+            "minimal tier requires one tile work unit",
+        )
+    })?;
+    if tile_plan.work_units().len() != 1 {
+        return Err(unsupported(
+            "unexpected_tile_work_units",
+            Some(tile.tile_byte_span().start),
+            "minimal runtime hash support requires exactly one traced tile work unit",
+        ));
+    }
+    verify_flat_minimal_tile_trace(tile)?;
+
+    let limits = options.limits();
+    ensure_runtime_limits(limits, MINIMAL_WIDTH, MINIMAL_HEIGHT, tile.tile_size())?;
+    let frame = build_flat_yuv420_frame(MINIMAL_WIDTH, MINIMAL_HEIGHT)?;
+    let hash = DecodedFrameHashInput::new(&frame).compute_hash();
+    let report_frame = hash_frame_from_decoded(&frame, hash.to_hex());
+
+    Ok(DecodeHashReport::raw_intermediate_output(
+        resolved_threads.to_string(),
+        vec![report_frame],
+    ))
+}
+
+fn ensure_minimal_plan_shape(plan: &DecodeStreamPlan) -> Result<()> {
+    if plan.source_warnings().is_empty()
+        && plan.obu_count() == 3
+        && plan.frame_candidate_count() == 1
+    {
+        Ok(())
+    } else {
+        Err(unsupported(
+            "unexpected_planned_stream_shape",
+            None,
+            "minimal tier requires exactly three planned OBUs, one frame candidate, and no source warnings",
+        ))
+    }
+}
+
+fn require_minimal_ivf<'a>(parsed: &'a ParsedBitstream<'a>) -> Result<&'a ParsedIvfBitstream<'a>> {
+    let ParsedBitstream::Ivf(ivf) = parsed else {
+        return Err(unsupported(
+            "non_ivf_input",
+            None,
+            "minimal runtime hash support currently accepts only the committed IVF fixture shape",
+        ));
+    };
+    let Some(header) = ivf.header else {
+        return Err(unsupported(
+            "missing_ivf_header",
+            None,
+            "minimal tier requires a complete IVF header",
+        ));
+    };
+    if header.fourcc != *b"AV02"
+        || header.width != MINIMAL_WIDTH as u16
+        || header.height != MINIMAL_HEIGHT as u16
+        || header.frame_count != 1
+        || ivf.frames.len() != 1
+        || !ivf.warnings.is_empty()
+        || ivf.error.is_some()
+    {
+        return Err(unsupported(
+            "unsupported_ivf_shape",
+            None,
+            "minimal tier requires one 64x64 AV02 IVF frame with no container warnings",
+        ));
+    }
+    Ok(ivf)
+}
+
+fn verify_flat_minimal_tile_trace(
+    tile: &crate::tile_payload::DecodeTileWorkUnit<'_>,
+) -> Result<()> {
+    let config = SymbolDecoderConfig::new().with_cdf_update_mode(tile.cdf().update_mode());
+    let mut symbol =
+        SymbolDecoder::with_base_and_config(tile.tile_bytes(), tile.tile_byte_span().start, config)
+            .map_err(|_| {
+                unsupported_at(
+                    "minimal_tile_symbol_init",
+                    tile.tile_byte_span().start,
+                    "minimal runtime hash support requires a valid §8.2 symbol decoder state for the traced flat tile payload",
+                )
+            })?;
+
+    read_expected_symbol(
+        &mut symbol,
+        DEFAULT_DO_SPLIT_CDF[0][0],
+        0,
+        tile,
+        "partition_do_split",
+    )?;
+    read_expected_symbol(
+        &mut symbol,
+        DEFAULT_Y_MODE_SET_CDF,
+        0,
+        tile,
+        "intra_y_mode_set",
+    )?;
+    read_expected_symbol(
+        &mut symbol,
+        DEFAULT_Y_MODE_INDEX_CDF[0],
+        0,
+        tile,
+        "intra_y_mode_index",
+    )?;
+    read_expected_symbol(
+        &mut symbol,
+        DEFAULT_TXB_SKIP_CDF[2][0][0][0],
+        0,
+        tile,
+        "luma_or_u_all_zero_transform",
+    )?;
+    read_expected_symbol(
+        &mut symbol,
+        DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF[0],
+        6,
+        tile,
+        "uv_mode_index",
+    )?;
+    read_expected_symbol(
+        &mut symbol,
+        DEFAULT_V_TXB_SKIP_CDF[1][3],
+        0,
+        tile,
+        "v_all_zero_transform",
+    )?;
+
+    let summary = symbol.exit_symbol().map_err(|_| {
+        unsupported_at(
+            "minimal_tile_exit_symbol",
+            tile.tile_byte_span().start,
+            "minimal runtime hash support requires the traced flat tile payload to satisfy §8.2.4 exit_symbol()",
+        )
+    })?;
+    validate_minimal_trace_summary(summary, tile)
+}
+
+fn read_expected_symbol<const N: usize>(
+    symbol: &mut SymbolDecoder<'_>,
+    mut row: [i32; N],
+    expected: u8,
+    tile: &crate::tile_payload::DecodeTileWorkUnit<'_>,
+    reason: &'static str,
+) -> Result<()> {
+    let decoded = symbol
+        .read_symbol(&mut row)
+        .map_err(|_| {
+            unsupported_at(
+                "minimal_tile_symbol_parse",
+                tile.tile_byte_span().start,
+                "minimal runtime hash support requires the traced flat tile symbol stream",
+            )
+        })?
+        .get();
+    if decoded == expected {
+        Ok(())
+    } else {
+        Err(unsupported_at(
+            reason,
+            tile.tile_byte_span().start,
+            "minimal runtime hash support only accepts the traced flat tile symbol values",
+        ))
+    }
+}
+
+fn validate_minimal_trace_summary(
+    summary: SymbolDecoderSummary,
+    tile: &crate::tile_payload::DecodeTileWorkUnit<'_>,
+) -> Result<()> {
+    if summary.symbol_count == MINIMAL_TRACE_SYMBOLS
+        && summary.trailing_bit_position.get() == MINIMAL_TRACE_TRAILING_BIT_POSITION
+        && summary.padding_end_position.get() == MINIMAL_TRACE_PADDING_END_POSITION
+        && summary.consumed_bits.get() == MINIMAL_TRACE_PADDING_END_POSITION
+    {
+        Ok(())
+    } else {
+        Err(unsupported_at(
+            "minimal_tile_trace_summary",
+            tile.tile_byte_span().start,
+            "minimal runtime hash support requires the traced flat tile symbol count and padding boundary",
+        ))
+    }
+}
+
+fn require_minimal_obu_order<'a>(obus: &'a [ObuEnvelope<'a>]) -> Result<[ObuEnvelope<'a>; 3]> {
+    match obus {
+        [td, sequence, frame] => Ok([*td, *sequence, *frame]),
+        _ => Err(unsupported(
+            "unexpected_obu_order",
+            None,
+            "minimal tier requires temporal delimiter, sequence header, and one closed-loop-key OBU",
+        )),
+    }
+}
+
+fn require_obu_type(
+    envelope: ObuEnvelope<'_>,
+    expected: ObuType,
+    reason: &'static str,
+) -> Result<()> {
+    if envelope.header.obu_type == expected {
+        Ok(())
+    } else {
+        Err(unsupported_at(
+            reason,
+            envelope.offset,
+            "minimal tier OBU order does not match the traced fixture shape",
+        ))
+    }
+}
+
+fn parse_sequence(envelope: ObuEnvelope<'_>) -> Result<SequenceHeader> {
+    let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+    parse_sequence_header(&mut reader).map_err(|_| {
+        unsupported_at(
+            "sequence_header_parse",
+            envelope.offset,
+            "minimal tier requires a fully parseable sequence header",
+        )
+    })
+}
+
+fn validate_sequence(sequence: &SequenceHeader, offset: ByteOffset) -> Result<()> {
+    let general = &sequence.general;
+    if !sequence.is_fully_parsed() {
+        return Err(unsupported_at(
+            "sequence_header_not_fully_parsed",
+            offset,
+            "minimal tier requires a fully parsed sequence header",
+        ));
+    }
+    if general.seq_profile_idc.get() != 0 {
+        return Err(unsupported_at(
+            "unsupported_profile",
+            offset,
+            "minimal tier requires seq_profile_idc == 0",
+        ));
+    }
+    if general.chroma_format_idc != ChromaFormatIdc::Yuv420 {
+        return Err(unsupported_at(
+            "unsupported_chroma_format",
+            offset,
+            "minimal tier requires 8-bit 4:2:0 output",
+        ));
+    }
+    if general.bit_depth_idc != BitDepthIdc::Eight {
+        return Err(unsupported_at(
+            "unsupported_bit_depth",
+            offset,
+            "minimal tier requires 8-bit decoded samples",
+        ));
+    }
+    if general.max_tlayer_id.get() != 0 || general.max_mlayer_id.get() != 0 {
+        return Err(unsupported_at(
+            "non_base_layer_sequence",
+            offset,
+            "minimal tier requires a single base temporal and embedded layer",
+        ));
+    }
+    if general.seq_cropping_window_present_flag {
+        return Err(unsupported_at(
+            "crop_window_present",
+            offset,
+            "minimal tier does not support sequence crop windows",
+        ));
+    }
+    if !general.single_picture_header_flag {
+        return Err(unsupported_at(
+            "non_single_picture_sequence",
+            offset,
+            "minimal runtime hash support is limited to the traced single-picture sequence shape",
+        ));
+    }
+    let intra = sequence.intra.as_ref().ok_or_else(|| {
+        unsupported_at(
+            "missing_sequence_intra_config",
+            offset,
+            "minimal tier requires a fully parsed sequence intra config",
+        )
+    })?;
+    if intra.enable_cfl_intra {
+        return Err(unsupported_at(
+            "unsupported_cfl_intra",
+            offset,
+            "minimal tier rejects CFL intra syntax before traced UV-mode hash verification",
+        ));
+    }
+    if intra.enable_mhccp {
+        return Err(unsupported_at(
+            "unsupported_mhccp",
+            offset,
+            "minimal tier rejects MHCCP syntax before traced UV-mode hash verification",
+        ));
+    }
+    Ok(())
+}
+
+fn single_plan_candidate(plan: &DecodeStreamPlan) -> Result<&DecodePlannedObu> {
+    let mut candidates = plan.frame_candidates();
+    let Some(candidate) = candidates.next() else {
+        return Err(unsupported(
+            "missing_frame_candidate",
+            None,
+            "minimal tier requires one selected closed-loop-key frame candidate",
+        ));
+    };
+    if candidates.next().is_some() {
+        return Err(unsupported(
+            "multiple_frame_candidates",
+            None,
+            "minimal tier supports exactly one selected output frame",
+        ));
+    }
+    Ok(candidate)
+}
+
+fn parse_frame_core(
+    envelope: ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+) -> Result<FrameHeaderCore> {
+    let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+    let is_first_tile_group = reader.read_bit().map_err(|_| {
+        unsupported_at(
+            "tile_group_prefix_parse",
+            envelope.offset,
+            "minimal tier requires a parseable first tile-group prefix",
+        )
+    })? != 0;
+    if !is_first_tile_group {
+        return Err(unsupported_at(
+            "non_first_tile_group",
+            envelope.offset,
+            "minimal tier requires the frame header in the first tile group",
+        ));
+    }
+    let input = FrameHeaderParseInput {
+        obu_type: envelope.header.obu_type,
+        first_picture_in_tu: true,
+        active_sequence: Some(sequence),
+        mfh_record: None,
+        reference_state: FrameReferenceStateView::unknown(),
+        mode: FrameHeaderParseMode::Core,
+    };
+    parse_frame_header_core(&mut reader, &input).map_err(|_| {
+        unsupported_at(
+            "frame_header_parse",
+            envelope.offset,
+            "minimal tier requires a fully parseable closed-loop-key frame header",
+        )
+    })
+}
+
+fn validate_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {
+    if core.status != FrameHeaderParseStatus::IntraHeaderComplete {
+        return Err(unsupported_at(
+            "incomplete_frame_header",
+            offset,
+            "minimal tier requires a complete intra frame header",
+        ));
+    }
+    if !core.cur_mfh_id.is_zero()
+        || core.show_existing_frame != Some(false)
+        || core.frame_is_intra != Some(true)
+        || !core.is_key_frame
+        || core.immediate_output_frame != Some(true)
+        || core.implicit_output_frame != Some(false)
+    {
+        return Err(unsupported_at(
+            "unsupported_frame_control",
+            offset,
+            "minimal tier requires one immediate-output intra key frame without MFH indirection",
+        ));
+    }
+    match core.frame_size {
+        Some(FrameSize {
+            width: MINIMAL_WIDTH,
+            height: MINIMAL_HEIGHT,
+            ..
+        }) => {}
+        _ => {
+            return Err(unsupported_at(
+                "unsupported_frame_size",
+                offset,
+                "minimal runtime hash support currently accepts only the traced 64x64 frame size",
+            ));
+        }
+    }
+    let Some(tile_info) = core.tile_info.as_ref() else {
+        return Err(unsupported_at(
+            "missing_tile_info",
+            offset,
+            "minimal tier requires parsed one-tile frame layout",
+        ));
+    };
+    if tile_info.tile_cols != 1 || tile_info.tile_rows != 1 {
+        return Err(unsupported_at(
+            "multi_tile_frame",
+            offset,
+            "minimal tier supports one tile",
+        ));
+    }
+    if core
+        .quantization_params
+        .is_none_or(|quant| quant.base_q_idx != 255)
+        || core
+            .segmentation_params
+            .as_ref()
+            .is_none_or(|seg| seg.segmentation_enabled)
+        || core.setup_qm_params.is_none_or(|qm| qm.using_qmatrix)
+        || core
+            .delta_q_params
+            .is_none_or(|delta| delta.delta_q_present)
+        || core
+            .lossless_info
+            .as_ref()
+            .is_none_or(|lossless| lossless.coded_lossless)
+        || core
+            .deblocking_filter_params
+            .is_none_or(|filter| filter.apply_deblocking_filter != [false; 4])
+        || core.gdf_params.is_none_or(|gdf| gdf.gdf_frame_enable)
+        || core
+            .cdef_params
+            .as_ref()
+            .is_none_or(|cdef| cdef.cdef_frame_enable)
+        || core.lr_params.as_ref().is_none_or(|lr| lr.uses_lr)
+        || core
+            .ccso_params
+            .as_ref()
+            .is_none_or(|ccso| ccso.ccso_frame_flag.is_some() || !ccso.planes.is_empty())
+        || core
+            .intra_tail
+            .is_none_or(|tail| tail.film_grain.apply_grain)
+    {
+        return Err(unsupported_at(
+            "unsupported_frame_tools",
+            offset,
+            "minimal runtime hash support requires the traced no-tool, no-filter, no-grain frame header",
+        ));
+    }
+    Ok(())
+}
+
+fn derive_tile_plan<'a>(
+    plan: &'a DecodeStreamPlan,
+    candidate: &'a DecodePlannedObu,
+    bytes: &'a [u8],
+    envelope: ObuEnvelope<'a>,
+    sequence: &'a SequenceHeader,
+    core: &'a FrameHeaderCore,
+    options: DecodeOptions,
+) -> Result<crate::tile_payload::DecodeTilePayloadPlan<'a>> {
+    let facts =
+        FrameCandidateTileFacts::from_frame_core(core).map_err(decode_tile_boundary_error)?;
+    let tq = sequence.transform_quant_entropy.as_ref().ok_or_else(|| {
+        unsupported_at(
+            "missing_tq_entropy_config",
+            envelope.offset,
+            "minimal tier requires sequence transform/quant/entropy config",
+        )
+    })?;
+    let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
+    let input = FrameCandidateTileBoundaryInput::new(
+        plan,
+        candidate,
+        bytes,
+        envelope,
+        TileGroupPositionFacts::new(true, true),
+        facts,
+        cdf,
+        options.limits(),
+    );
+    crate::tile_payload::plan_derived_tile_payload_boundary(input)
+        .map_err(decode_tile_boundary_error)
+}
+
+fn decode_tile_boundary_error(error: FrameCandidateTileBoundaryError) -> DecodeError {
+    match error {
+        FrameCandidateTileBoundaryError::Limit(source) => DecodeError::Limit { source },
+        FrameCandidateTileBoundaryError::Malformed(malformed) => unsupported(
+            malformed_tile_boundary_reason(malformed),
+            None,
+            "minimal tier could not derive a source-backed tile payload boundary",
+        ),
+        FrameCandidateTileBoundaryError::MissingFact { .. } => unsupported(
+            "missing_tile_fact",
+            None,
+            "minimal tier requires complete parser-derived tile facts",
+        ),
+        FrameCandidateTileBoundaryError::Unsupported { .. }
+        | FrameCandidateTileBoundaryError::Boundary(_) => unsupported(
+            "unsupported_tile_boundary",
+            None,
+            "minimal tier requires a single source-backed tile work unit",
+        ),
+    }
+}
+
+fn malformed_tile_boundary_reason(
+    malformed: crate::tile_payload::FrameCandidateTileMalformed,
+) -> &'static str {
+    match malformed {
+        crate::tile_payload::FrameCandidateTileMalformed::CandidateNotInPlan => {
+            "candidate_not_in_plan"
+        }
+        crate::tile_payload::FrameCandidateTileMalformed::PlanSourceKindMismatch { .. } => {
+            "plan_source_kind_mismatch"
+        }
+        crate::tile_payload::FrameCandidateTileMalformed::CandidateEnvelopeMismatch { field } => {
+            match field {
+                "payload_source" => "payload_source_mismatch",
+                "offset" => "candidate_offset_mismatch",
+                "size" => "candidate_size_mismatch",
+                "header" => "candidate_header_mismatch",
+                "payload_len" => "candidate_payload_len_mismatch",
+                "payload" => "candidate_payload_mismatch",
+                "input_len_bytes" => "input_len_mismatch",
+                "ivf_frame" => "ivf_frame_mismatch",
+                _ => "candidate_envelope_mismatch",
+            }
+        }
+        crate::tile_payload::FrameCandidateTileMalformed::ObuSizeSmallerThanHeader { .. } => {
+            "obu_size_smaller_than_header"
+        }
+        crate::tile_payload::FrameCandidateTileMalformed::SourceRangeOutOfBounds { .. } => {
+            "source_range_out_of_bounds"
+        }
+        crate::tile_payload::FrameCandidateTileMalformed::TileGroupStructureIncomplete => {
+            "tile_group_structure_incomplete"
+        }
+        crate::tile_payload::FrameCandidateTileMalformed::TileGroupStructureInvalid => {
+            "tile_group_structure_invalid"
+        }
+        crate::tile_payload::FrameCandidateTileMalformed::TileGroupPayloadRangeInvalid => {
+            "tile_group_payload_range_invalid"
+        }
+        crate::tile_payload::FrameCandidateTileMalformed::TileGroupRangeInvalid { .. } => {
+            "tile_group_range_invalid"
+        }
+    }
+}
+
+fn ensure_runtime_limits(
+    limits: crate::DecodeLimits,
+    width: u32,
+    height: u32,
+    tile_payload_bytes: u64,
+) -> Result<()> {
+    limits.ensure(DecodeLimitName::MaxOutputFrames, 1)?;
+    limits.ensure(DecodeLimitName::MaxFrameWidth, u64::from(width))?;
+    limits.ensure(DecodeLimitName::MaxFrameHeight, u64::from(height))?;
+    let luma_samples = checked_mul(
+        DecodeLimitName::MaxLumaSamplesPerFrame,
+        u64::from(width),
+        u64::from(height),
+    )?;
+    limits.ensure(DecodeLimitName::MaxLumaSamplesPerFrame, luma_samples)?;
+    let chroma_samples = checked_mul(
+        DecodeLimitName::MaxLumaSamplesPerFrame,
+        u64::from(width / 2),
+        u64::from(height / 2),
+    )?;
+    let decoded_bytes = checked_add(
+        DecodeLimitName::MaxDecodedFrameBytes,
+        luma_samples,
+        checked_mul(DecodeLimitName::MaxDecodedFrameBytes, chroma_samples, 2)?,
+    )?;
+    limits.ensure(DecodeLimitName::MaxDecodedFrameBytes, decoded_bytes)?;
+    limits.ensure(DecodeLimitName::MaxOutputBytes, decoded_bytes)?;
+    limits.ensure(DecodeLimitName::MaxTileCount, 1)?;
+    limits.ensure(DecodeLimitName::MaxTilePayloadBytes, tile_payload_bytes)?;
+    limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, luma_samples)?;
+    limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, chroma_samples)?;
+    Ok(())
+}
+
+fn checked_add(
+    name: DecodeLimitName,
+    left: u64,
+    right: u64,
+) -> core::result::Result<u64, DecodeLimitError> {
+    left.checked_add(right)
+        .ok_or(DecodeLimitError::ArithmeticOverflow {
+            name,
+            op: DecodeLimitOp::Add,
+            left,
+            right,
+        })
+}
+
+fn checked_mul(
+    name: DecodeLimitName,
+    left: u64,
+    right: u64,
+) -> core::result::Result<u64, DecodeLimitError> {
+    left.checked_mul(right)
+        .ok_or(DecodeLimitError::ArithmeticOverflow {
+            name,
+            op: DecodeLimitOp::Mul,
+            left,
+            right,
+        })
+}
+
+fn build_flat_yuv420_frame(width: u32, height: u32) -> Result<DecodedFrame<u8>> {
+    let luma_size = PlaneSize::new(width as usize, height as usize)?;
+    let luma_rect = PlaneRect::new(0, 0, width as usize, height as usize)?;
+    let chroma_size = PixelFormat::Yuv420.chroma_size(luma_size)?.ok_or_else(|| {
+        unsupported(
+            "missing_chroma_size",
+            None,
+            "YUV 4:2:0 must have chroma planes",
+        )
+    })?;
+    let chroma_rect = PlaneRect::new(0, 0, chroma_size.width(), chroma_size.height())?;
+    let y = Plane::from_vec(
+        luma_size,
+        luma_size.width(),
+        luma_rect,
+        vec![FLAT_SAMPLE; luma_size.width() * luma_size.height()],
+    )?;
+    let u = Plane::from_vec(
+        chroma_size,
+        chroma_size.width(),
+        chroma_rect,
+        vec![FLAT_SAMPLE; chroma_size.width() * chroma_size.height()],
+    )?;
+    let v = Plane::from_vec(
+        chroma_size,
+        chroma_size.width(),
+        chroma_rect,
+        vec![FLAT_SAMPLE; chroma_size.width() * chroma_size.height()],
+    )?;
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        BitDepth::Eight,
+        PixelFormat::Yuv420,
+        luma_size,
+        luma_rect,
+    )?;
+    Ok(DecodedFrame::try_new(
+        info,
+        FramePlanes::new(y, Some(u), Some(v)),
+    )?)
+}
+
+fn hash_frame_from_decoded(frame: &DecodedFrame<u8>, digest_hex: String) -> DecodeHashFrame {
+    let visible = frame.visible_luma_rect();
+    let chroma = frame
+        .pixel_format()
+        .chroma_size(visible.size())
+        .ok()
+        .flatten();
+    DecodeHashFrame {
+        output_index: frame.output_index().get(),
+        visible_luma_left: visible.x() as u32,
+        visible_luma_top: visible.y() as u32,
+        visible_luma_width: visible.width() as u32,
+        visible_luma_height: visible.height() as u32,
+        chroma_left: chroma.map(|_| (visible.x() / 2) as u32),
+        chroma_top: chroma.map(|_| (visible.y() / 2) as u32),
+        chroma_width: chroma.map(|size| size.width() as u32),
+        chroma_height: chroma.map(|size| size.height() as u32),
+        bit_depth: frame.bit_depth().bits(),
+        pixel_format: DecodeHashPixelFormat::Yuv420,
+        hashes: vec![DecodeHashEntry::raw_intermediate_output_sha256(digest_hex)],
+    }
+}
+
+fn unsupported(
+    reason: &'static str,
+    byte_offset: Option<ByteOffset>,
+    message: &'static str,
+) -> DecodeError {
+    DecodeError::UnsupportedFeature {
+        unsupported: Box::new(DecodeUnsupportedFeature::new(
+            reason,
+            MINIMAL_INTRA_HASH_TIER_ID,
+            MATRIX_ROW,
+            FEATURE_ID,
+            SPEC_SECTION,
+            message,
+            REMEDIATION,
+            byte_offset,
+        )),
+    }
+}
+
+fn unsupported_at(
+    reason: &'static str,
+    byte_offset: ByteOffset,
+    message: &'static str,
+) -> DecodeError {
+    unsupported(reason, Some(byte_offset), message)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use splot_parallel::ThreadCount;
+
+    use super::*;
+    use crate::{DecodeContext, DecodeLimitThreshold, DecodeLimits, DecodeRuntimeConfig};
+
+    const MINIMAL_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf");
+    const BROAD_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-key-intra-64x64.ivf");
+    const EXPECTED_DIGEST: &str =
+        "cb11e05cb5da949c0e0f5b5a7cb310df35a96a22c45d1ada70d950859fe697d1";
+
+    fn context(threads: ThreadCount) -> DecodeContext {
+        DecodeContext::new(DecodeRuntimeConfig::new(threads)).unwrap()
+    }
+
+    #[test]
+    fn minimal_fixture_decodes_to_hash_report() {
+        let report = context(ThreadCount::from(1usize))
+            .decode_hash_report_bytes(MINIMAL_FIXTURE, DecodeOptions::default())
+            .unwrap();
+
+        assert_eq!(report.contract_id, crate::DECODE_HASH_REPORT_CONTRACT_ID);
+        assert_eq!(report.contract_version, 1);
+        assert_eq!(report.selected_thread_policy, "1");
+        assert_eq!(report.frames.len(), 1);
+        let frame = &report.frames[0];
+        assert_eq!(frame.output_index, 0);
+        assert_eq!(frame.visible_luma_width, 64);
+        assert_eq!(frame.visible_luma_height, 64);
+        assert_eq!(frame.chroma_width, Some(32));
+        assert_eq!(frame.chroma_height, Some(32));
+        assert_eq!(frame.bit_depth, 8);
+        assert_eq!(frame.pixel_format, DecodeHashPixelFormat::Yuv420);
+        assert_eq!(frame.hashes.len(), 1);
+        assert_eq!(frame.hashes[0].digest_hex, EXPECTED_DIGEST);
+    }
+
+    #[test]
+    fn hash_report_records_resolved_thread_count() {
+        let context = context(ThreadCount::Auto);
+        let resolved = context.threads().get().to_string();
+        let report = context
+            .decode_hash_report_bytes(MINIMAL_FIXTURE, DecodeOptions::default())
+            .unwrap();
+
+        assert_eq!(report.selected_thread_policy, resolved);
+        assert_ne!(report.selected_thread_policy, "auto");
+    }
+
+    #[test]
+    fn broader_fixture_fails_closed_as_unsupported() {
+        let error = context(ThreadCount::from(1usize))
+            .decode_hash_report_bytes(BROAD_FIXTURE, DecodeOptions::default())
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecodeError::UnsupportedFeature {
+                unsupported
+            } if unsupported.tier_id() == MINIMAL_INTRA_HASH_TIER_ID
+        ));
+    }
+
+    #[test]
+    fn malformed_input_fails_before_hash_report() {
+        let error = context(ThreadCount::from(1usize))
+            .decode_hash_report_bytes(&[0x01, 0x14, 0x05, 0x10], DecodeOptions::default())
+            .unwrap_err();
+
+        assert!(matches!(error, DecodeError::MalformedSource { .. }));
+    }
+
+    #[test]
+    fn raw_annex_b_payload_fails_closed_as_unsupported() {
+        let ivf_payload = &MINIMAL_FIXTURE[44..];
+        let error = context(ThreadCount::from(1usize))
+            .decode_hash_report_bytes(ivf_payload, DecodeOptions::default())
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecodeError::UnsupportedFeature {
+                unsupported
+            } if unsupported.reason() == "non_ivf_input"
+        ));
+    }
+
+    #[test]
+    fn sequence_chroma_tools_fail_closed_before_hash() -> core::result::Result<(), String> {
+        for reason in ["unsupported_cfl_intra", "unsupported_mhccp"] {
+            let unsupported = one_bit_mutation_rejected_with_reason(reason)?;
+            assert_eq!(unsupported.reason(), reason);
+            assert_eq!(unsupported.tier_id(), MINIMAL_INTRA_HASH_TIER_ID);
+        }
+        Ok(())
+    }
+
+    fn one_bit_mutation_rejected_with_reason(
+        reason: &'static str,
+    ) -> core::result::Result<DecodeUnsupportedFeature, String> {
+        let context = context(ThreadCount::from(1usize));
+        for byte_index in 0..MINIMAL_FIXTURE.len() {
+            for bit_index in 0..8 {
+                let mut bytes = MINIMAL_FIXTURE.to_vec();
+                bytes[byte_index] ^= 1 << bit_index;
+
+                if let Err(DecodeError::UnsupportedFeature { unsupported }) =
+                    context.decode_hash_report_bytes(&bytes, DecodeOptions::default())
+                    && unsupported.reason() == reason
+                {
+                    return Ok(unsupported.as_ref().clone());
+                }
+            }
+        }
+        Err(format!("no single-bit mutation reached {reason}"))
+    }
+
+    #[test]
+    fn tile_trace_mismatch_fails_closed_as_unsupported() {
+        let mut bytes = MINIMAL_FIXTURE.to_vec();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x01;
+
+        let error = context(ThreadCount::from(1usize))
+            .decode_hash_report_bytes(&bytes, DecodeOptions::default())
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecodeError::UnsupportedFeature {
+                unsupported
+            } if unsupported.reason().starts_with("minimal_tile_")
+                || unsupported.reason().ends_with("_all_zero_transform")
+                || unsupported.reason().starts_with("intra_")
+                || unsupported.reason() == "uv_mode_index"
+        ));
+    }
+
+    #[test]
+    fn tile_payload_byte_mutations_return_typed_results() {
+        let context = context(ThreadCount::from(1usize));
+        let tile_payload_offsets = (MINIMAL_FIXTURE.len() - 2)..MINIMAL_FIXTURE.len();
+
+        for offset in tile_payload_offsets {
+            for value in u8::MIN..=u8::MAX {
+                let mut bytes = MINIMAL_FIXTURE.to_vec();
+                bytes[offset] = value;
+
+                if let Ok(mut report) =
+                    context.decode_hash_report_bytes(&bytes, DecodeOptions::default())
+                {
+                    assert_eq!(report.frames.len(), 1);
+                    let digest = report.frames.remove(0).hashes.remove(0).digest_hex;
+                    assert_eq!(digest, EXPECTED_DIGEST);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn output_byte_limit_fails_before_hash_report() {
+        let options = DecodeOptions::new(
+            DecodeLimits::default().with_max_output_bytes(DecodeLimitThreshold::Max(1)),
+        );
+        let error = context(ThreadCount::from(1usize))
+            .decode_hash_report_bytes(MINIMAL_FIXTURE, options)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecodeError::Limit {
+                source
+            } if source.name() == DecodeLimitName::MaxOutputBytes
+        ));
+    }
+
+    #[test]
+    fn decoded_hash_is_deterministic_across_thread_policies() {
+        let digest = |threads| {
+            context(threads)
+                .decode_hash_report_bytes(MINIMAL_FIXTURE, DecodeOptions::default())
+                .unwrap()
+                .frames
+                .remove(0)
+                .hashes
+                .remove(0)
+                .digest_hex
+        };
+
+        assert_eq!(digest(ThreadCount::from(1usize)), EXPECTED_DIGEST);
+        assert_eq!(digest(ThreadCount::Auto), EXPECTED_DIGEST);
+        assert_eq!(digest(ThreadCount::from(2usize)), EXPECTED_DIGEST);
+    }
+}
