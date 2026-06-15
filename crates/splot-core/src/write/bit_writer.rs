@@ -355,6 +355,32 @@ impl BitWriter {
         }
     }
 
+    /// Writes an AV2 `tu(mx)` truncated-unary descriptor (AV2 v1.0.0 § 4.11.9,
+    /// `docs/spec/av2/1.0.0/04-conventions.md#s-4-11-9`), the inverse of the `read_tu`
+    /// reader helper: `value` `1`-bits followed by a terminating `0`-bit, except that the
+    /// final `0` is omitted when `value == mx` (the all-ones form, the descriptor's maximum).
+    ///
+    /// # Errors
+    /// Returns [`WriteError::ValueOutOfRange`] if `value > mx` (the descriptor encodes
+    /// `0 ..= mx`), checked before any bit is written.
+    pub fn write_tu(&mut self, value: u32, mx: u32) -> WriteResult<()> {
+        if value > mx {
+            return Err(WriteError::ValueOutOfRange {
+                descriptor: "tu",
+                value: i64::from(value),
+            });
+        }
+        // § 4.11.9: a series of `value` 1-bits; the terminating 0 is omitted only when the
+        // maximum `mx` is reached (every bit a 1).
+        for _ in 0..value {
+            self.write_bit(1)?;
+        }
+        if value < mx {
+            self.write_bit(0)?;
+        }
+        Ok(())
+    }
+
     /// Writes an AV2 `rg(n)` Rice-Golomb descriptor (AV2 v1.0.0 § 4.11.10,
     /// `docs/spec/av2/1.0.0/04-conventions.md#s-4-11-10`), the inverse of
     /// [`crate::bitio::BitReader::read_rg`]: a unary quotient prefix of
@@ -652,6 +678,45 @@ mod tests {
         }
     }
 
+    /// Decodes a `tu(mx)` value MSB-first, mirroring `read_tu` in
+    /// `crate::headers::frame::restoration` (private there), so the writer can be
+    /// round-tripped here without re-exporting it.
+    fn read_tu(r: &mut BitReader<'_>, mx: u32) -> u32 {
+        for idx in 0..mx {
+            if r.read_bit().unwrap() == 0 {
+                return idx;
+            }
+        }
+        mx
+    }
+
+    #[test]
+    fn write_tu_round_trips_and_rejects_out_of_range() {
+        // tu(7): every value 0..=7 round-trips; 7 is the all-ones terminal form (no 0 bit).
+        for mx in [0u32, 1, 3, 7, 31] {
+            for value in 0..=mx {
+                let mut writer = BitWriter::new();
+                writer.write_tu(value, mx).unwrap();
+                let bytes = writer.into_bytes();
+                assert_eq!(read_tu(&mut reader(&bytes), mx), value, "tu({value}, {mx})");
+            }
+        }
+        // The maximum form writes exactly `mx` 1-bits and no terminator.
+        let mut max = BitWriter::new();
+        max.write_tu(7, 7).unwrap();
+        assert_eq!(max.bit_len(), 7);
+        // A value above the maximum is rejected before any bit is written.
+        let mut writer = BitWriter::new();
+        assert!(matches!(
+            writer.write_tu(8, 7),
+            Err(WriteError::ValueOutOfRange {
+                descriptor: "tu",
+                value: 8
+            })
+        ));
+        assert_eq!(writer.bit_len(), 0);
+    }
+
     #[test]
     fn trailing_bits_round_trip_and_reject_empty() {
         // `trailing_bits(0)` is rejected (the parser rejects an empty field).
@@ -684,6 +749,16 @@ mod proptests {
 
     fn read_back(bytes: &[u8]) -> BitReader<'_> {
         BitReader::new(bytes, ByteOffset::new(0))
+    }
+
+    /// Decodes a `tu(mx)` value MSB-first, mirroring the private `read_tu` reader helper.
+    fn read_tu(r: &mut BitReader<'_>, mx: u32) -> u32 {
+        for idx in 0..mx {
+            if r.read_bit().unwrap() == 0 {
+                return idx;
+            }
+        }
+        mx
     }
 
     proptest! {
@@ -787,6 +862,18 @@ mod proptests {
             prop_assert_eq!(read_back(&bytes).read_rg(n).unwrap(), value);
         }
 
+        /// `tu(mx)`: `read_tu(write_tu(x, mx)) == x` for every value in `0..=mx` across a
+        /// range of maxima (including `mx == 0` and the all-ones terminal value `mx`).
+        #[test]
+        fn roundtrip_tu(mx in 0u32..=64, frac in 0u32..=u32::MAX) {
+            let value = ((u64::from(frac) * (u64::from(mx) + 1)) >> 32) as u32;
+            let value = value.min(mx);
+            let mut writer = BitWriter::new();
+            writer.write_tu(value, mx).unwrap();
+            let bytes = writer.into_bytes();
+            prop_assert_eq!(read_tu(&mut read_back(&bytes), mx), value);
+        }
+
         /// `trailing_bits(nbBits)`: a `1` marker then zeros reparses cleanly for any
         /// width, the inverse of `crate::obu::parse_trailing_bits`.
         #[test]
@@ -811,6 +898,10 @@ mod proptests {
             let _ = writer.write_leb128(value);
             let _ = writer.write_ns(value, n);
             let _ = writer.write_rg(value, n.min(32));
+            // `tu` emits up to `mx` unary 1-bits, so keep the magnitude small (a huge `value`
+            // would emit billions of bits); exercise both the in-range and out-of-range arms.
+            let tu_value = value % 130;
+            let _ = writer.write_tu(tu_value, 64);
             writer.align_to_byte();
         }
     }

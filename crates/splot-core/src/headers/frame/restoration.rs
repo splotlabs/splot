@@ -47,8 +47,9 @@ use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 pub(crate) const WIENERNS_FILTER_FEATURE: &str = "AV2-5.18.7-SEGMENTATION-TILING";
 
 /// `RESTORATION_TILESIZE_MAX` (AV2 v1.0.0 § 3, `docs/spec/av2/1.0.0/03-symbols.md`):
-/// maximum size of a loop-restoration tile.
-const RESTORATION_TILESIZE_MAX: u32 = 512;
+/// maximum size of a loop-restoration tile. Exposed `pub(crate)` so the § 5.18.7.11 writer
+/// ([`crate::write::frame_restoration`]) can reproduce the same size-signaling base.
+pub(crate) const RESTORATION_TILESIZE_MAX: u32 = 512;
 
 /// `RESTORE_SWITCHABLE_TYPES` (AV2 § 3): `RESTORE_SWITCHABLE == 3`, the number of
 /// switchable loop-restoration types scanned by the per-plane `indexToTool` loop.
@@ -58,8 +59,10 @@ const RESTORE_SWITCHABLE_TYPES: usize = 3;
 /// `num_filter_classes_idx` to `NumFilterClasses`.
 const DECODE_NUM_FILTER_CLASSES: [u8; 8] = [1, 2, 3, 4, 6, 8, 12, 16];
 
-/// `CCSO_INPUT_INTERVAL` (AV2 § 3): number of CCSO edge classes (mirror :7572).
-const CCSO_INPUT_INTERVAL: u32 = 3;
+/// `CCSO_INPUT_INTERVAL` (AV2 § 3): number of CCSO edge classes (mirror :7572). Exposed
+/// `pub(crate)` so the § 5.18.7.12 writer ([`crate::write::frame_restoration`]) re-derives the
+/// same `maxEdgeInterval`.
+pub(crate) const CCSO_INPUT_INTERVAL: u32 = 3;
 
 /// `CCSO_BAND_NUM` (AV2 § 3): maximum number of bands allowed in CCSO. The § 6.17.7.8
 /// conformance bound is `1 << ccso_max_band_log2 <= CCSO_BAND_NUM`.
@@ -74,6 +77,19 @@ const CCSO_QUANT_SZ: [[u16; 4]; 4] = [
     [48, 24, 96, 192],
     [80, 112, 160, 256],
 ];
+
+/// `quantStep = CCSO_Quant_Sz[scale_idx][quant_idx]` (AV2 § 5.18.7.12, mirror :7552), the
+/// CCSO quantization step. A step of `0` suppresses the `ccso_edge_clf` read. Out-of-range
+/// indices (which the f(2) reads can never produce in-band) map to `0` rather than panicking.
+/// Shared with the § 5.18.7.12 writer ([`crate::write::frame_restoration`]) so the
+/// edge-clf-suppression derivation never drifts between parser and writer.
+pub(crate) fn ccso_quant_step(scale_idx: u8, quant_idx: u8) -> u16 {
+    CCSO_QUANT_SZ
+        .get(usize::from(scale_idx))
+        .and_then(|row| row.get(usize::from(quant_idx)))
+        .copied()
+        .unwrap_or(0)
+}
 
 /// `FrameRestorationType[plane]` (AV2 § 5.18.7.11 / § 6.17.7.7, mirror semantics
 /// :5680-5688): the loop-restoration tool selected for a plane.
@@ -100,6 +116,19 @@ impl FrameRestorationType {
             2 => Self::WienerNonsep,
             3 => Self::Switchable,
             _ => Self::None,
+        }
+    }
+
+    /// Maps the enum to its `RESTORE_*` tool id (the inverse of [`Self::from_tool`]):
+    /// `None -> 0`, `PcWiener -> 1`, `WienerNonsep -> 2`, `Switchable -> 3`. Used by the
+    /// § 5.18.7.11 writer ([`crate::write::frame_restoration`]) to find a plane's position in
+    /// the `indexToTool` table.
+    pub(crate) const fn to_tool(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::PcWiener => 1,
+            Self::WienerNonsep => 2,
+            Self::Switchable => 3,
         }
     }
 
@@ -316,21 +345,9 @@ pub fn parse_lr_params(
     // AV2 § 5.18.7.11: for ( plane = 0; plane < NumPlanes; plane++ ).
     for plane in 0..usize::from(num_planes) {
         let is_chroma = plane > 0;
-        // indexToTool[0] = RESTORE_NONE; for i in 1..RESTORE_SWITCHABLE_TYPES add enabled
-        // tools; indexToTool[toolsCount] = RESTORE_SWITCHABLE.
-        let mut index_to_tool = [0u8; RESTORE_SWITCHABLE_TYPES + 1];
-        let mut tools_count = 1usize; // indexToTool[0] = RESTORE_NONE.
-        for i in 1..RESTORE_SWITCHABLE_TYPES {
-            if !view.lr_tool_disabled(is_chroma, i) {
-                index_to_tool[tools_count] = i as u8;
-                tools_count += 1;
-            }
-        }
-        // indexToTool[toolsCount] = RESTORE_SWITCHABLE (3).
-        index_to_tool[tools_count] = RESTORE_SWITCHABLE_TYPES as u8;
-        let allow_switchable = tools_count > 2;
-        // n = toolsCount + allowSwitchable; tool_index ns(n).
-        let n = tools_count as u32 + u32::from(allow_switchable);
+        // indexToTool / toolsCount / n derivation, shared with the writer (see
+        // `lr_plane_tool_table`). tool_index ns(n).
+        let (index_to_tool, _tools_count, n) = lr_plane_tool_table(view, is_chroma);
         let tool_index = reader.read_ns(n)?;
         // FrameRestorationType[plane] = indexToTool[tool_index].
         let tool = index_to_tool.get(tool_index as usize).copied().unwrap_or(0);
@@ -466,9 +483,41 @@ fn read_lr_size_shift(reader: &mut BitReader<'_>, sb_size: SuperblockSize) -> Re
     }
 }
 
+/// Reconstructs the per-plane `indexToTool` selection table (AV2 § 5.18.7.11, mirror
+/// :7295-7312): index `0` is `RESTORE_NONE`; for `i in 1..RESTORE_SWITCHABLE_TYPES` the tool
+/// `i` is appended when `lr_tools_disable[isChroma][i]` is `0` (incrementing `toolsCount`);
+/// then `indexToTool[toolsCount] = RESTORE_SWITCHABLE`. Returns the filled
+/// `[RESTORE_SWITCHABLE_TYPES + 1]` table, `toolsCount`, and `n = toolsCount + allowSwitchable`
+/// (the `tool_index ns(n)` range, where `allowSwitchable = toolsCount > 2`).
+///
+/// Shared by [`parse_lr_params`] (the reader) and the § 5.18.7.11 writer
+/// ([`crate::write::frame_restoration`]) so the table never drifts between the two.
+pub(crate) fn lr_plane_tool_table(
+    view: &CoreSeqRestorationView,
+    is_chroma: bool,
+) -> ([u8; RESTORE_SWITCHABLE_TYPES + 1], usize, u32) {
+    // indexToTool[0] = RESTORE_NONE; for i in 1..RESTORE_SWITCHABLE_TYPES add enabled tools;
+    // indexToTool[toolsCount] = RESTORE_SWITCHABLE.
+    let mut index_to_tool = [0u8; RESTORE_SWITCHABLE_TYPES + 1];
+    let mut tools_count = 1usize; // indexToTool[0] = RESTORE_NONE.
+    for i in 1..RESTORE_SWITCHABLE_TYPES {
+        if !view.lr_tool_disabled(is_chroma, i) {
+            index_to_tool[tools_count] = i as u8;
+            tools_count += 1;
+        }
+    }
+    // indexToTool[toolsCount] = RESTORE_SWITCHABLE (3).
+    index_to_tool[tools_count] = RESTORE_SWITCHABLE_TYPES as u8;
+    let allow_switchable = tools_count > 2;
+    // n = toolsCount + allowSwitchable.
+    let n = tools_count as u32 + u32::from(allow_switchable);
+    (index_to_tool, tools_count, n)
+}
+
 /// `LoopRestorationSize` when restoration is disabled or before any signalling
-/// (AV2 § 5.18.7.11, mirror :7281-7285): the default unit sizes.
-const fn default_restoration_size(geometry: LrGeometry) -> [u32; 3] {
+/// (AV2 § 5.18.7.11, mirror :7281-7285): the default unit sizes. Exposed `pub(crate)` so the
+/// § 5.18.7.11 writer ([`crate::write::frame_restoration`]) validates the disabled-arm size.
+pub(crate) const fn default_restoration_size(geometry: LrGeometry) -> [u32; 3] {
     let max_subsampling = if geometry.subsampling_x > geometry.subsampling_y {
         geometry.subsampling_x as u32
     } else {
@@ -597,11 +646,7 @@ pub fn parse_ccso_params(
                 let ccso_quant_idx = reader.read_bits_u8(2)?;
                 let ccso_ext_filter = reader.read_bits_u8(3)?;
                 // quantStep = CCSO_Quant_Sz[ccso_scale_idx][ccso_quant_idx].
-                let quant_step = CCSO_QUANT_SZ
-                    .get(usize::from(ccso_scale_idx))
-                    .and_then(|row| row.get(usize::from(ccso_quant_idx)))
-                    .copied()
-                    .unwrap_or(0);
+                let quant_step = ccso_quant_step(ccso_scale_idx, ccso_quant_idx);
                 let ccso_edge_clf = if quant_step == 0 {
                     // ccso_edge_clf = 0 (no bit).
                     false

@@ -37,14 +37,21 @@ reusing the shared § 5.4.9 `write_seg_info`), and the loop-filter cluster
 (`deblocking_filter_params()` § 5.18.5.2, `gdf_params()` § 5.18.7.9, `cdef_params()`
 § 5.18.7.10) by `write/frame_filters.rs` (`frame-header-writer-loop-filters`;
 `AV2-5.18.5-FILTERING` and `AV2-5.18.7-SEGMENTATION-TILING` `write` stay `partial`, sharing the
-`gdf_per_block_is_coded` gate with the parser).
+`gdf_per_block_is_coded` gate with the parser), and the § 5.18.7.11 `lr_params()` /
+§ 5.18.7.12 `ccso_params()` cluster by `write/frame_restoration.rs`
+(`frame-header-writer-restoration-ccso`; `AV2-5.18.7-SEGMENTATION-TILING` `write` stays
+`partial`). The CCSO writer is byte-exact on a maintainer-approved model extension
+(`ccso-offset-index-model` surfaced the `ccso_offset_idx` values) via a new `BitWriter::write_tu`
+primitive; the LR writer is additive and rejects the unmodeled frame-level Wiener bank
+(`frame_filters_on == true`), shipping the `frame_filters_on == false` surface only.
 The size/config and tiling slices carry maintainer-approved model/parser surfacings of
 previously-discarded layout bits (`intrabc_params()` / `force_integer_mv`; the explicit-branch
-`TileParams`); the quant, segmentation, and loop-filter slices are additive (their few
-read-but-not-stored points are redundant encodings or parser derivations, canonicalized/re-derived
-like the § 5.4 leb128-minimal case).
-Remaining: the rest of the frame header (restoration/CCSO /
-tail + the composing `write_frame_header`), the tile-group/metadata payload writers, the
+`TileParams`; the CCSO `ccso_offset_idx`); the quant, segmentation, and loop-filter slices are
+additive (their few read-but-not-stored points are redundant encodings or parser derivations,
+canonicalized/re-derived like the § 5.4 leb128-minimal case).
+Remaining: the rest of the frame header (intra
+tail + the composing `write_frame_header`; the inter paths + the § 5.18.7.11 Wiener bank),
+the tile-group/metadata payload writers, the
 **Annex B** muxer, and wiring the muxers into writer-track round-trip tests — the IVF
 container write helpers already exist (`AV2-IVF-CONTAINER`, `write` = `done`); plus the
 toy intra path (`ENC-INTRA-TOY-V0`) and rate control (`ENC-RATE-CONTROL-V0`). The
@@ -470,5 +477,40 @@ and byte-exact on the canonical subset.
   disagrees with its gate (an `apply_deblocking_filter` not matching the MFH copy, a
   `gdf_per_block`/single-picture inference, an `Option` present on the wrong enabled/disabled
   branch), or a `strengths` length that disagrees with `CdefStrengths`
+- **THEN** the writer SHALL return a typed `WriteError` and write no bit.
+
+### Requirement: frame-header loop-restoration and CCSO writers
+
+`splot-core` SHALL provide writers that are the exact inverse of the `lr_params()` (§ 5.18.7.11)
+and `ccso_params()` (§ 5.18.7.12) parsers on the intra path, plus the `tu(mx)` truncated-unary
+writer primitive (§ 4.11.9) the CCSO writer needs. For every model the writer accepts, reparsing
+the written bits with the corresponding parser and the same gating inputs SHALL yield the original
+(`parse(write(x)) == x`). The writers SHALL be additive (no model or parser-error change; only
+`pub(crate)` visibility, a behavior-preserving tool-table extraction, and the new `write_tu`
+primitive) and SHALL never panic: a model the parser could not have produced SHALL be rejected with
+a typed writer error before any bit is written.
+
+Because the frame-level Wiener-bank decode (`read_wienerns_filter()`) is unmodeled — the parser
+*stops* before it rather than completing — a complete `lr_params()` model can never carry
+`frame_filters_on == true`. The loop-restoration writer SHALL reject any such model and SHALL write
+the `frame_filters_on == false` surface (the `tool_index` reverse-lookup and the `LoopRestorationSize`
+size-shift reversal). The CCSO writer SHALL reproduce the per-plane `ccso_offset_idx` loop
+byte-exactly from the modeled values.
+
+#### Scenario: each restoration/CCSO structure round-trips across every branch
+
+- **WHEN** a parsed `lr_params()` (a `Parsed` outcome) or `ccso_params()` structure is written with
+  the same gating inputs and reparsed
+- **THEN** the reparsed structure SHALL equal the original, across every conditional branch (the
+  disabled returns, the per-plane tool selection and `LoopRestorationSize` size signaling for each
+  `SbSize`, the CCSO single-picture / frame-flag / `ccso_bo_only` / quant-step inferences, the
+  `ccso_offset_idx` loop, and `NumPlanes` 1 vs 3).
+
+#### Scenario: an unwritable or non-reproducible model is rejected before any bit
+
+- **WHEN** an `lr_params()` model carries a plane with `frame_filters_on == true` (the unmodeled
+  Wiener bank), a `LoopRestorationSize` shift unreachable for the frame `SbSize`, or a disabled
+  restoration tool; or a `ccso_params()` model carries an `Option` present on the wrong branch, an
+  out-of-domain index, or a `ccso_offset_idx` length that disagrees with `maxEdgeInterval² * maxBand`
 - **THEN** the writer SHALL return a typed `WriteError` and write no bit.
 

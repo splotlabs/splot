@@ -79,6 +79,13 @@ pub use restoration::{
     FrameRestorationType, LrGeometry, LrParams, LrParseOutcome, LrPartialParams, LrPlaneParams,
     parse_ccso_params, parse_lr_params,
 };
+/// The § 5.18.7.11 / § 5.18.7.12 helpers and constants the
+/// [`crate::write::frame_restoration`] writer shares with the parser so the two never drift:
+/// the size-signaling base/default, the `indexToTool` table, and the CCSO quant-step lookup.
+pub(crate) use restoration::{
+    CCSO_INPUT_INTERVAL, RESTORATION_TILESIZE_MAX, ccso_quant_step, default_restoration_size,
+    lr_plane_tool_table,
+};
 pub use segmentation::{CoreSeqSegView, MfhSegView, SegmentationParams, parse_segmentation_params};
 pub use size::FrameSize;
 pub(crate) use size::ceil_log2;
