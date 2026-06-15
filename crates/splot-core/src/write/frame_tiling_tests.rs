@@ -495,6 +495,35 @@ mod tests {
     }
 
     #[test]
+    fn explicit_out_of_bounds_start_rejected() {
+        // A non-uniform explicit model whose recovered start is outside the superblock grid
+        // (sb_col_starts == [5] on a 2-SB-wide frame): the non-uniform write_tile_params
+        // subtracts grid-relative starts and would underflow-panic; reject before the replay.
+        let mut bits = Bits::default();
+        bits.bit(0).bit(0).f(0, 1).f(0, 2);
+        let base = parse(
+            &base_view(),
+            &bits.into_bytes(),
+            FrameSize::new(128, 8),
+            false,
+            false,
+        );
+        assert!(!base.tile_params.as_ref().unwrap().uniform_spacing);
+        let info = TileInfo {
+            // mi_col_starts recover (>> sbShift2 = 4) to sb [5], past sbCols = 2.
+            mi_col_starts: vec![80, 32],
+            ..base
+        };
+        let err = reject(&info, &base_view(), FrameSize::new(128, 8), false, false);
+        assert_eq!(
+            err,
+            WriteError::NonCanonicalFrameHeader {
+                what: "mi_col_starts"
+            }
+        );
+    }
+
+    #[test]
     fn context_update_width_above_32_rejected() {
         // tile_rows_log2 + tile_cols_log2 > 32 with the context field enabled exceeds the f(n)
         // descriptor max. The layout check bounds the log2s in write_tile_info, so the guard is

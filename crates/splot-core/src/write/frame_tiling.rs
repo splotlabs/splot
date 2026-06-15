@@ -254,12 +254,27 @@ fn explicit_sb_starts(info: &TileInfo, sb_shift2: u32) -> (Vec<u32>, Vec<u32>) {
     )
 }
 
-/// Returns `true` if `starts` is strictly increasing (each superblock tile start exceeds the
-/// previous). A parser-produced layout always satisfies this; the explicit-branch writer uses
-/// it to reject a non-canonical model before the `write_tile_params` replay (whose non-uniform
-/// branch subtracts consecutive starts).
-fn is_strictly_increasing(starts: &[u32]) -> bool {
-    starts.windows(2).all(|w| w[1] > w[0])
+/// Returns `true` if `starts` is a parser-reachable superblock-tile start array within a
+/// `bound`-superblock dimension: non-empty, beginning at `0`, strictly increasing, and with
+/// every start below `bound` (each tile is at least one superblock and lies inside the grid).
+/// The explicit non-uniform `write_tile_params` path subtracts `bound - startSb` and
+/// `next - startSb`, so a non-canonical model failing any of these would underflow-panic
+/// rather than return a typed error; the writer rejects it before the replay.
+fn valid_tile_starts(starts: &[u32], bound: u32) -> bool {
+    !starts.is_empty()
+        && starts[0] == 0
+        && starts.last().is_some_and(|&last| last < bound)
+        && starts.windows(2).all(|w| w[1] > w[0])
+}
+
+/// The superblock column / row counts for the frame `SbSize`
+/// (`sbCols = (MiCols + sb4x4 - 1) >> sbShift`), matching the parser's § 5.18.7.2 derivation.
+fn sb_dims(grid: &TileInfoGrid) -> (u32, u32) {
+    let sb4x4 = num_4x4_blocks_wide(grid.sb_size);
+    let sb_shift = mi_width_log2(grid.sb_size);
+    let sb_cols = grid.mi_cols.saturating_add(sb4x4 - 1) >> sb_shift;
+    let sb_rows = grid.mi_rows.saturating_add(sb4x4 - 1) >> sb_shift;
+    (sb_cols, sb_rows)
 }
 
 /// Builds the `tile_params()` input for the explicit branch (AV2 v1.0.0 § 5.18.7.3,
@@ -445,19 +460,36 @@ fn check_explicit_layout(
     let sb_shift2 = branch_sb_shift2(params.uniform_spacing, tile.seq_sb_size, grid.sb_size);
     let (sb_col_starts, sb_row_starts) = explicit_sb_starts(info, sb_shift2);
 
-    // A parser-produced layout has strictly-increasing superblock starts (each tile is >= 1
-    // superblock wide). Reject a non-canonical model whose recovered starts are not strictly
-    // increasing BEFORE the forward replay: `write_tile_params`'s non-uniform branch subtracts
-    // consecutive starts and would otherwise panic on the underflow rather than reject.
-    if !is_strictly_increasing(&sb_col_starts) {
-        return Err(WriteError::NonCanonicalFrameHeader {
-            what: "mi_col_starts",
-        });
-    }
-    if !is_strictly_increasing(&sb_row_starts) {
-        return Err(WriteError::NonCanonicalFrameHeader {
-            what: "mi_row_starts",
-        });
+    // Reject a non-canonical model BEFORE the forward replay so `write_tile_params` returns a
+    // typed error instead of panicking. The non-uniform branch subtracts grid-relative /
+    // consecutive starts, so it needs fully parser-reachable starts (non-empty, first `0`,
+    // strictly increasing, every start below the superblock-grid bound); the recovered starts
+    // are in frame-`SbSize` units there (the non-uniform `sbShift2`), matching `sb_dims`. The
+    // uniform branch searches for a reproducing `tileColsLog2` and returns a typed error on a
+    // bad layout (no subtraction), so a basic monotonicity guard suffices there.
+    if params.uniform_spacing {
+        if !sb_col_starts.windows(2).all(|w| w[1] > w[0]) {
+            return Err(WriteError::NonCanonicalFrameHeader {
+                what: "mi_col_starts",
+            });
+        }
+        if !sb_row_starts.windows(2).all(|w| w[1] > w[0]) {
+            return Err(WriteError::NonCanonicalFrameHeader {
+                what: "mi_row_starts",
+            });
+        }
+    } else {
+        let (sb_cols, sb_rows) = sb_dims(grid);
+        if !valid_tile_starts(&sb_col_starts, sb_cols) {
+            return Err(WriteError::NonCanonicalFrameHeader {
+                what: "mi_col_starts",
+            });
+        }
+        if !valid_tile_starts(&sb_row_starts, sb_rows) {
+            return Err(WriteError::NonCanonicalFrameHeader {
+                what: "mi_row_starts",
+            });
+        }
     }
 
     // Forward-replay the § 5.18.7.3 bits to a scratch writer, then reparse them with
