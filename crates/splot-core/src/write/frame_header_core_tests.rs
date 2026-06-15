@@ -824,4 +824,220 @@ mod tests {
         assert_eq!(core.frame_type, Some(FrameType::Key));
         assert_eq!(core.immediate_output_frame, Some(true));
     }
+
+    // ---- reject-completeness tests (#4i review findings 1-8) ---------------------------
+
+    /// A representative single-picture sequence (mirrors `single_picture_key_round_trips`),
+    /// with `single_picture_header_flag` set on every sub-view that consults it.
+    fn single_picture_seq() -> CoreSeqView {
+        let mut seq = base_seq();
+        seq.single_picture_header_flag = true;
+        seq.filter.single_picture_header_flag = true;
+        seq.ccso.single_picture_header_flag = true;
+        seq
+    }
+
+    /// The canonical single-picture CLK body bytes (the fixture from
+    /// `single_picture_key_round_trips`), parsing to an `IntraHeaderComplete` core.
+    fn single_picture_clk_bits() -> Bits {
+        let mut bits = Bits::default();
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(0); // seq_header_id
+        bits.f(9, 4); // order_hint
+        bits.bit(0); // allow_intrabc
+        bits.bit(0); // disable_cdf_update
+        bits.bit(1); // uniform_tile_spacing_flag
+        bits.bit(0); // increment_tile_cols_log2
+        bits.bit(0); // increment_tile_rows_log2
+        bits.f(120, 8); // base_q_idx
+        bits.bit(0); // segmentation_enabled
+        bits.bit(0); // using_qmatrix
+        bits.bit(0); // delta_q_present
+        bits.bit(0); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1]
+        bits.bit(0); // tx_mode_select
+        bits.f(0, 2); // reduced_tx_set
+        bits
+    }
+
+    /// Builds a valid single-picture CLK intra core for mutation in the single-picture-gated
+    /// rejection tests.
+    fn valid_single_picture_core() -> (FrameHeaderCore, CoreSeqView) {
+        let seq = single_picture_seq();
+        let data = single_picture_clk_bits().into_bytes();
+        let core = parse(&data, ObuType::ClosedLoopKey, true, &seq);
+        assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
+        (core, seq)
+    }
+
+    #[test]
+    fn reject_mismatched_inferred_frame_type() {
+        // Finding 1 (info.rs:1146/1183/1190): a single-picture / CLK / OLK core derives KEY with
+        // no frame_type bit; storing IntraOnly is parser-unreachable. valid_core() is a CLK key
+        // frame, so the expected derived type is KEY.
+        let (mut core, seq) = valid_core();
+        core.frame_type = Some(FrameType::IntraOnly);
+        assert_rejected_what(&core, &seq, "frame_type");
+    }
+
+    #[test]
+    fn reject_mfh_view_on_direct_reference() {
+        // Finding 2 (info.rs:1593-1596): a cur_mfh_id == 0 (direct) core takes the mfh = None
+        // arms; supplying an MFH view is parser-unreachable. valid_core() is cur_mfh_id == 0.
+        let (core, seq) = valid_core();
+        assert!(core.cur_mfh_id.is_zero());
+        let record = crate::hls::MultiFrameHeaderRecord {
+            mfh_id: crate::hls::MfhId::from_raw(1),
+            mfh_seq_header_id: crate::headers::sequence::SequenceHeaderId::try_new(0).unwrap(),
+            mfh_tlayer_id: crate::types::TemporalLayerId::from_bits(0),
+            mfh_mlayer_id: crate::types::EmbeddedLayerId::from_bits(0),
+            mfh_frame_size: None,
+            mfh_seg_info_present_flag: false,
+            mfh_ext_seg_flag: None,
+            mfh_allow_seg_info_change: None,
+            mfh_segment_info: None,
+            mfh_deblocking_filter_update: false,
+            mfh_apply_deblocking_filter: [false; 4],
+            offset: crate::span::ByteOffset::new(0),
+        };
+        let view = MfhFrameView::from_record(&record, &seq);
+        let mut writer = BitWriter::new();
+        let err = write_frame_header_core(&mut writer, &core, &seq, Some(&view)).unwrap_err();
+        assert_eq!(err, WriteError::NonCanonicalFrameHeader { what: "mfh_record" });
+        assert_eq!(writer.bit_len(), 0, "mfh_record: bits written on reject");
+    }
+
+    #[test]
+    fn reject_show_existing_frame_none() {
+        // Finding 3 (info.rs:1145/1167): every IntraHeaderComplete core sets
+        // show_existing_frame = Some(false); a None reparses to Some(false), so it must reject.
+        let (mut core, seq) = valid_core();
+        core.show_existing_frame = None;
+        assert_rejected_what(&core, &seq, "show_existing_frame");
+    }
+
+    #[test]
+    fn reject_mirrored_allow_intrabc_disagrees() {
+        // Finding 4 (info.rs:1613): the flat core.allow_intrabc mirrors intrabc.allow_intrabc;
+        // the writer emits from core.intrabc, so a disagreeing flat field is parser-unreachable.
+        let (mut core, seq) = valid_core();
+        let mirrored = core.intrabc.as_ref().unwrap().allow_intrabc;
+        core.allow_intrabc = Some(!mirrored);
+        assert_rejected_what(&core, &seq, "allow_intrabc");
+    }
+
+    #[test]
+    fn reject_forbidden_ref_long_term_id_mismatch() {
+        // Finding 5 (info.rs:1217/1222-1223): forbidden_ref_long_term_id is derived from the
+        // ref_long_term_ids vs the reserved all-ones value. valid_core() codes no ref ids, so the
+        // derived flag is false; storing true is parser-unreachable.
+        let (mut core, seq) = valid_core();
+        assert!(!core.forbidden_ref_long_term_id);
+        core.forbidden_ref_long_term_id = true;
+        assert_rejected_what(&core, &seq, "forbidden_ref_long_term_id");
+    }
+
+    #[test]
+    fn reject_single_picture_output_inference_disagrees() {
+        // Finding 6 (info.rs:1148-1149): single_picture infers immediate=true / implicit=false
+        // with no bits; any other pair is parser-unreachable.
+        let (mut core, seq) = valid_single_picture_core();
+        core.immediate_output_frame = Some(false);
+        assert_rejected_what(&core, &seq, "immediate_output_frame");
+
+        let (mut core, seq) = valid_single_picture_core();
+        core.implicit_output_frame = Some(true);
+        assert_rejected_what(&core, &seq, "implicit_output_frame");
+    }
+
+    #[test]
+    fn reject_stale_long_term_id_on_no_bit_arms() {
+        // Finding 7 (info.rs:1150/1207): single_picture leaves long_term_id None; a non-single
+        // INTRA_ONLY frame leaves it the Some(-1) sentinel. Any other value is parser-unreachable.
+        let (mut core, seq) = valid_single_picture_core();
+        assert_eq!(core.long_term_id, None);
+        core.long_term_id = Some(0);
+        assert_rejected_what(&core, &seq, "long_term_id");
+
+        // Non-single INTRA_ONLY: build via a RegularTileGroup deriving to IntraOnly.
+        let mut bits = Bits::default();
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(0); // seq_header_id
+        bits.bit(0); // frame_is_inter == 0 -> INTRA_ONLY_FRAME
+        bits.bit(0); // immediate_output_frame
+        bits.bit(0); // implicit_output_frame
+        bits.bit(1); // frame_size_override_flag
+        bits.f(7, 4); // order_hint
+        bits.f(0b0000_0010, 8); // refresh_frame_flags
+        bits.f(320 - 1, 12); // frame_width_minus_1
+        bits.f(240 - 1, 12); // frame_height_minus_1
+        bits.bit(0); // allow_intrabc
+        bits.bit(0); // disable_cdf_update
+        bits.bit(1); // uniform_tile_spacing_flag
+        bits.bit(0); // increment_tile_cols_log2
+        bits.bit(0); // increment_tile_rows_log2
+        bits.f(100, 8); // base_q_idx
+        bits.bit(0); // segmentation_enabled
+        bits.bit(0); // using_qmatrix
+        bits.bit(0); // delta_q_present
+        bits.bit(0); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1]
+        bits.bit(0); // tx_mode_select
+        bits.f(0, 2); // reduced_tx_set
+        let data = bits.into_bytes();
+        let seq = base_seq();
+        let mut core = parse(&data, ObuType::RegularTileGroup, false, &seq);
+        assert_eq!(core.frame_type, Some(FrameType::IntraOnly));
+        assert_eq!(core.long_term_id, Some(-1));
+        core.long_term_id = Some(0); // not the -1 sentinel
+        assert_rejected_what(&core, &seq, "long_term_id");
+    }
+
+    #[test]
+    fn reject_reached_qm_reset_true() {
+        // Finding 8 (info.rs:1242): every IntraHeaderComplete path leaves reached_qm_reset false
+        // (RAS/SWITCH are non-intra; single-picture returns before the derivation). A true value
+        // is parser-unreachable.
+        let (mut core, seq) = valid_core();
+        assert!(!core.reached_qm_reset);
+        core.reached_qm_reset = true;
+        assert_rejected_what(&core, &seq, "reached_qm_reset");
+    }
+
+    #[test]
+    fn single_picture_bridge_round_trips() {
+        // Finding 10 (info.rs:1127-1142, parser-tested by
+        // frame_header_core_single_picture_bridge_takes_intra_key_path): a single-picture
+        // OBU_BRIDGE_FRAME reads bridge_frame_ref_idx FIRST, then takes the single-picture intra
+        // KEY path. An end-to-end parse -> write -> parse byte-exact round-trip for that arm.
+        let mut seq = base_seq();
+        seq.single_picture_header_flag = true;
+        seq.filter.single_picture_header_flag = true;
+        let mut bits = Bits::default();
+        // Bridge prefix: cur_mfh_id inferred 0 (no bits), seq_header_id_in_frame_header.
+        bits.uvlc(0); // seq_header_id_in_frame_header
+        bits.f(5, 3); // bridge_frame_ref_idx = 5 f(CeilLog2(8) == 3) — read before single-pic
+        // Single-picture intra tail (no frame_size_override_flag / no type / no output bits):
+        bits.f(9, 4); // order_hint
+        bits.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8) (BridgeFrame not CLK)
+        bits.bit(0); // allow_intrabc
+        bits.bit(0); // disable_cdf_update
+        bits.bit(1); // uniform_tile_spacing_flag
+        bits.bit(0); // increment_tile_cols_log2
+        bits.bit(0); // increment_tile_rows_log2
+        bits.f(45, 8); // base_q_idx
+        bits.bit(0); // segmentation_enabled
+        bits.bit(0); // using_qmatrix
+        bits.bit(0); // delta_q_present
+        bits.bit(0); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1]
+        bits.bit(0); // tx_mode_select
+        bits.f(1, 2); // reduced_tx_set = 1
+        let data = bits.into_bytes();
+        let core = assert_roundtrip(&data, ObuType::BridgeFrame, true, &seq);
+        assert!(core.is_bridge);
+        assert_eq!(core.bridge_frame_ref_idx, Some(5));
+        assert_eq!(core.frame_type, Some(FrameType::Key));
+        assert_eq!(core.immediate_output_frame, Some(true));
+    }
 }

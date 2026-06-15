@@ -239,7 +239,10 @@ fn check_frame_header_core_encodable(
     if core.frame_is_intra != Some(true) {
         return reject("frame_is_intra");
     }
-    if core.show_existing_frame == Some(true) {
+    // Every parser-produced IntraHeaderComplete core sets `show_existing_frame == Some(false)`
+    // (info.rs:1145 single-picture; info.rs:1167 sets `is_sef()` == false on the non-single
+    // intra branch). A `Some(true)` or a `None` could not be produced on the intra path.
+    if core.show_existing_frame != Some(false) {
         return reject("show_existing_frame");
     }
     // `IntraHeaderComplete` always carries a complete `lr_params()`; a set partial means the
@@ -267,6 +270,22 @@ fn check_frame_header_core_encodable(
 
     // --- single-picture inference ---------------------------------------------------
     let single_picture = seq.single_picture_header_flag;
+
+    // frame_type is DERIVED, not coded, on every no-bit intra arm: the single-picture branch
+    // forces KEY (info.rs:1146); a CLK/OLK obu_type forces KEY (info.rs:1183); the remaining
+    // non-single "other" arm reads frame_is_inter f(1) and, for an intra header, that bit is 0
+    // -> INTRA_ONLY (info.rs:1190). So the only frame_type a parser could have stored is the
+    // derived one; a disagreeing model would skip/pick the wrong no-bit arm and mis-round-trip.
+    let expected_frame_type =
+        if single_picture || obu_type == ObuType::ClosedLoopKey || obu_type == ObuType::OpenLoopKey
+        {
+            FrameType::Key
+        } else {
+            FrameType::IntraOnly
+        };
+    if frame_type != expected_frame_type {
+        return reject("frame_type");
+    }
 
     // --- required Option presence ---------------------------------------------------
     // Every Option below is `Some` on the IntraHeaderComplete path; a `None` is a model the
@@ -348,6 +367,16 @@ fn check_frame_header_core_encodable(
     }
 
     // --- control-region inferred values vs derivation -------------------------------
+    // Single-picture output inferences (info.rs:1148-1149): the single-picture branch forces
+    // immediate_output_frame = true and implicit_output_frame = false with no bits, before the
+    // frame-type / output block is skipped. A single-picture core with any other pair could not
+    // have been produced (and the inferred pair gates the film-grain output check in the tail).
+    if single_picture && !immediate_output_frame {
+        return reject("immediate_output_frame");
+    }
+    if single_picture && implicit_output_frame {
+        return reject("implicit_output_frame");
+    }
     // immediate_output_frame: inferred `false` for an OLK (no bit), else coded. The
     // single-picture branch forces immediate_output_frame = 1 BEFORE the frame-type block (so an
     // OLK single-picture frame correctly carries `true`); only the non-single path infers the
@@ -369,6 +398,15 @@ fn check_frame_header_core_encodable(
         return reject("order_hint_lsb");
     }
 
+    // allow_intrabc: the parser sets the flat `core.allow_intrabc` from `intrabc.allow_intrabc`
+    // (info.rs:1613). The writer emits from `core.intrabc` and ignores the flat field, so a
+    // disagreeing flat value would silently reparse to the intrabc-derived one. Re-derive and
+    // reject any mismatch. (Both Options are confirmed `Some` by the presence checks above.)
+    match (core.allow_intrabc, core.intrabc.as_ref()) {
+        (Some(flat), Some(intrabc)) if flat == intrabc.allow_intrabc => {}
+        _ => return reject("allow_intrabc"),
+    }
+
     // --- frame-type arm coded fields ------------------------------------------------
     // restricted_prediction_switch f(1) for SWITCH/RAS; a key frame never has it. (A SWITCH
     // or RAS frame derives to Switch/Inter, not an intra type, so on the intra path only a
@@ -377,34 +415,51 @@ fn check_frame_header_core_encodable(
     if core.restricted_prediction_switch.is_some() {
         return reject("restricted_prediction_switch");
     }
+    // reached_qm_reset is derived `obu_type == RasFrame || (Switch && restricted_prediction_switch
+    // == Some(true))` (info.rs:1242). On every IntraHeaderComplete arm the obu_type is never RAS
+    // (a RAS frame derives to Switch, not intra) and the single-picture branch returns before the
+    // derivation (info.rs:1150), leaving the init `false`. So a parser-produced intra core always
+    // carries `reached_qm_reset == false`; a `true` is non-canonical.
+    if core.reached_qm_reset {
+        return reject("reached_qm_reset");
+    }
     // The single-picture branch returns before the frame-type / long-term reads (the whole
-    // show-existing / frame-type / long-term / output block is skipped, mirror :4131-4142),
-    // so long_term_id / ref_long_term_ids are never read and stay at their init defaults
-    // (`None` / empty). Validate them only on the non-single-picture path.
-    if !single_picture {
+    // show-existing / frame-type / long-term / output block is skipped, mirror :4131-4142,
+    // info.rs:1150), so long_term_id / ref_long_term_ids are never read and stay at their init
+    // defaults (`None` / empty). A single-picture core with any `long_term_id` set is therefore
+    // a model the parser could not have produced.
+    if single_picture {
+        if core.long_term_id.is_some() {
+            return reject("long_term_id");
+        }
+    } else if frame_type == FrameType::Key {
         // long_term_id (KEY): long_term_id + 1 == long_term_id_plus_1 must fit
-        // f(long_term_frame_id_bits). For non-KEY intra (INTRA_ONLY) long_term_id is the `-1`
-        // sentinel and codes nothing.
-        if frame_type == FrameType::Key {
-            let Some(long_term_id) = core.long_term_id else {
-                return reject("long_term_id");
-            };
-            // `checked_add` so a constructed `long_term_id == i64::MAX` rejects rather than
-            // panicking on the increment (workspace `overflow-checks = true` traps it).
-            let Some(plus_1) = long_term_id.checked_add(1) else {
-                return reject("long_term_id");
-            };
-            if plus_1 < 0
-                || u64::try_from(plus_1)
-                    .map(|v| v > u64::from(u32::MAX))
-                    .unwrap_or(true)
-            {
-                return reject("long_term_id");
-            }
-            // `plus_1` is in `0..=u32::MAX`; the cast is exact.
-            if !fits_in_f(plus_1 as u32, seq.long_term_frame_id_bits) {
-                return reject("long_term_id");
-            }
+        // f(long_term_frame_id_bits) (info.rs:1209-1210).
+        let Some(long_term_id) = core.long_term_id else {
+            return reject("long_term_id");
+        };
+        // `checked_add` so a constructed `long_term_id == i64::MAX` rejects rather than
+        // panicking on the increment (workspace `overflow-checks = true` traps it).
+        let Some(plus_1) = long_term_id.checked_add(1) else {
+            return reject("long_term_id");
+        };
+        if plus_1 < 0
+            || u64::try_from(plus_1)
+                .map(|v| v > u64::from(u32::MAX))
+                .unwrap_or(true)
+        {
+            return reject("long_term_id");
+        }
+        // `plus_1` is in `0..=u32::MAX`; the cast is exact.
+        if !fits_in_f(plus_1 as u32, seq.long_term_frame_id_bits) {
+            return reject("long_term_id");
+        }
+    } else {
+        // Non-single INTRA_ONLY: the parser sets `long_term_id = Some(-1)` (info.rs:1207) and
+        // does NOT take the KEY branch, so it stays the `-1` sentinel and codes nothing. Any
+        // other stored value is non-canonical.
+        if core.long_term_id != Some(-1) {
+            return reject("long_term_id");
         }
     }
     // ref_long_term_id[i] (RAS / OLK with long_term_frame_id_bits != 0): num_key_ref_frames
@@ -429,6 +484,42 @@ fn check_frame_header_core_encodable(
         return reject("ref_long_term_ids");
     }
 
+    // forbidden_ref_long_term_id is derived by the parser (info.rs:1217, 1222-1223): the reserved
+    // value is `(1 << long_term_frame_id_bits) - 1`, and the flag is `true` iff any read
+    // `ref_long_term_id[i]` equals it. The ids are only read on the `ref_lt_coded` gate; outside
+    // it the flag stays its init `false`. Re-derive and reject a disagreement.
+    //
+    // The `1 << long_term_frame_id_bits` shift is guarded: `long_term_frame_id_bits` is a
+    // (possibly hand-constructed) `u32`, so a `>= 32` value would overflow a bare shift. Use
+    // `wrapping_shl` (matching the parser's in-range `1u32 << bits` for bits 1..=31); for
+    // `bits >= 32` the reserved all-ones value conceptually exceeds `u32::MAX`, so no `u32` ref
+    // id can equal it — `reserved` then never matches, which is the correct derivation.
+    let derived_forbidden = if ref_lt_coded && seq.long_term_frame_id_bits < u32::BITS {
+        let reserved = 1u32
+            .wrapping_shl(seq.long_term_frame_id_bits)
+            .wrapping_sub(1);
+        core.ref_long_term_ids.contains(&reserved)
+    } else {
+        false
+    };
+    if core.forbidden_ref_long_term_id != derived_forbidden {
+        return reject("forbidden_ref_long_term_id");
+    }
+
+    // bridge_frame_ref_idx f(CeilLog2(NumRefFrames)) is read before the single-picture branch
+    // for a bridge frame (info.rs:1127-1128). On the intra path a bridge is reachable only via
+    // single_picture_header_flag, so it must carry a `bridge_frame_ref_idx` that fits its coded
+    // width. Validate presence + domain here (all domain validation lives in the pre-check); the
+    // emit reads the now-validated value.
+    if core.is_bridge {
+        let Some(idx) = core.bridge_frame_ref_idx else {
+            return reject("bridge_frame_ref_idx");
+        };
+        if !fits_in_f(idx, ceil_log2(seq.num_ref_frames)) {
+            return reject("bridge_frame_ref_idx");
+        }
+    }
+
     // --- refresh_frame_flags arm ----------------------------------------------------
     let refresh_arm = refresh_flags_arm(seq, obu_type, frame_type, refresh_frame_flags)?;
 
@@ -439,6 +530,13 @@ fn check_frame_header_core_encodable(
     // cur_mfh_id > 0 frame implies the parser had the record, so a missing view is a model the
     // parser could not have produced.
     if !core.cur_mfh_id.is_zero() && mfh.is_none() {
+        return reject("mfh_record");
+    }
+    // Conversely, a cur_mfh_id == 0 (direct-reference) frame takes the `mfh_view = None` arms
+    // (info.rs:1593-1596 default dims from seq maxima; the segmentation / deblocking sub-writers
+    // are threaded `None`). The parser never resolves an MFH view for it, so a supplied `mfh`
+    // would mis-invert those arms — reject it.
+    if core.cur_mfh_id.is_zero() && mfh.is_some() {
         return reject("mfh_record");
     }
 
@@ -516,16 +614,14 @@ fn write_intra_header_into(
     // through single_picture_header_flag (a non-single bridge takes the inter path), so it
     // reads bridge_frame_ref_idx, then the single-picture intra tail.
     if core.is_bridge {
+        // Presence + domain were validated up front by check_frame_header_core_encodable
+        // (gated on core.is_bridge); the `ok_or` keeps the emit panic-free under direct misuse.
         let idx = core
             .bridge_frame_ref_idx
             .ok_or(WriteError::NonCanonicalFrameHeader {
                 what: "bridge_frame_ref_idx",
             })?;
-        let bits = ceil_log2(seq.num_ref_frames);
-        if !fits_in_f(idx, bits) {
-            return reject("bridge_frame_ref_idx");
-        }
-        write_f(scratch, idx, bits)?;
+        write_f(scratch, idx, ceil_log2(seq.num_ref_frames))?;
     }
 
     if !glue.single_picture {
