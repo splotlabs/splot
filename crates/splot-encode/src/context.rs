@@ -15,8 +15,13 @@ use crate::error::Result;
 use crate::runtime::EncoderRuntimeConfig;
 
 /// An input video frame (stub).
-// TODO(spec: ENC-Y4M-INPUT): model plane data, stride, and color format.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+///
+/// Does not derive `Clone`: once this models plane data it will own sample
+/// storage, and the encoder must accept borrowed views rather than clone frames
+/// (see [`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)). Enforced by
+/// `cargo xtask check-zero-copy-policy`.
+// TODO(spec: ENC-Y4M-INPUT): model plane data, stride, and color format as borrowed views.
+#[derive(Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Frame {}
 

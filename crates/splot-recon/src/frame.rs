@@ -3,8 +3,10 @@
 
 //! Immutable decoded output frame model.
 
+use std::sync::Arc;
+
 use crate::{
-    BitDepth, OutputIndex, PixelFormat, Plane, PlaneId, PlaneRect, PlaneSize, ReconError,
+    BitDepth, FrameRef, OutputIndex, PixelFormat, Plane, PlaneId, PlaneRect, PlaneSize, ReconError,
     ReconSample, Result,
 };
 
@@ -72,7 +74,10 @@ impl DecodedFrameInfo {
 }
 
 /// Candidate planes for a decoded output frame.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// Does not implement `Clone`: it owns the plane sample buffers (see
+/// [`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)).
+#[derive(Debug, Eq, PartialEq)]
 pub struct FramePlanes<T: ReconSample> {
     y: Plane<T>,
     u: Option<Plane<T>>,
@@ -111,7 +116,12 @@ impl<T: ReconSample> FramePlanes<T> {
 }
 
 /// Immutable decoded output frame made of owned planes.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// Does not implement `Clone`: it owns the frame's sample storage. Borrow it as a
+/// [`FrameRef`] with [`DecodedFrame::as_frame_ref`], or share it without copying
+/// pixels via [`SharedFrame`] (see
+/// [`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)).
+#[derive(Debug, Eq, PartialEq)]
 pub struct DecodedFrame<T: ReconSample> {
     info: DecodedFrameInfo,
     planes: FramePlanes<T>,
@@ -208,6 +218,63 @@ impl<T: ReconSample> DecodedFrame<T> {
     /// Returns a plane by identifier.
     pub const fn plane(&self, plane: PlaneId) -> Option<&Plane<T>> {
         self.planes.plane(plane)
+    }
+
+    /// Borrows the whole frame as an immutable [`FrameRef`] without copying.
+    pub fn as_frame_ref(&self) -> FrameRef<'_, T> {
+        FrameRef::from_parts(
+            self.info,
+            self.planes.y().as_plane_ref(),
+            self.planes.u().map(Plane::as_plane_ref),
+            self.planes.v().map(Plane::as_plane_ref),
+        )
+    }
+}
+
+/// An immutable decoded frame shared without copying its pixels.
+///
+/// `SharedFrame` is the only way to give a second owner access to a decoded
+/// frame's storage. It is `Arc`-backed and intentionally does **not** implement
+/// `Clone`: sharing is always the explicit, review-visible [`SharedFrame::share`]
+/// (an `Arc::clone`), never a hidden full-frame copy. It exposes no mutable
+/// access to its storage and never uses copy-on-write (see
+/// [`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)).
+#[derive(Debug)]
+pub struct SharedFrame<T: ReconSample> {
+    inner: Arc<DecodedFrame<T>>,
+}
+
+impl<T: ReconSample> SharedFrame<T> {
+    /// Wraps an owned decoded frame in a shareable handle.
+    pub fn new(frame: DecodedFrame<T>) -> Self {
+        Self {
+            inner: Arc::new(frame),
+        }
+    }
+
+    /// Returns a second handle to the same frame storage without copying pixels.
+    ///
+    /// This is the explicit, review-visible sharing operation (an `Arc::clone`);
+    /// `SharedFrame` deliberately does not implement `Clone`.
+    pub fn share(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
+    /// Borrows the shared decoded frame.
+    pub fn get(&self) -> &DecodedFrame<T> {
+        &self.inner
+    }
+
+    /// Borrows the shared frame as an immutable [`FrameRef`] without copying.
+    pub fn as_frame_ref(&self) -> FrameRef<'_, T> {
+        self.inner.as_frame_ref()
+    }
+
+    /// Returns the number of live handles sharing this frame storage.
+    pub fn handle_count(&self) -> usize {
+        Arc::strong_count(&self.inner)
     }
 }
 
@@ -515,5 +582,32 @@ mod tests {
                 max: 1023
             })
         ));
+    }
+
+    #[test]
+    fn shared_frame_share_yields_two_handles_to_one_storage() {
+        let frame = DecodedFrame::try_new(
+            info(
+                BitDepth::Eight,
+                PixelFormat::Monochrome,
+                size(4, 2),
+                rect(0, 0, 4, 2),
+            ),
+            FramePlanes::new(plane_u8(4, 2, 7), None, None),
+        )
+        .unwrap();
+        let shared = SharedFrame::new(frame);
+        assert_eq!(shared.handle_count(), 1);
+
+        let second = shared.share();
+        assert_eq!(shared.handle_count(), 2);
+        // Both handles borrow the same storage: identical Y sample pointer, no copy.
+        assert_eq!(
+            shared.get().y().samples().as_ptr(),
+            second.get().y().samples().as_ptr()
+        );
+
+        drop(second);
+        assert_eq!(shared.handle_count(), 1);
     }
 }

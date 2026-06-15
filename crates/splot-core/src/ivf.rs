@@ -11,6 +11,8 @@ use core::fmt;
 use std::io;
 
 use serde::{Deserialize, Serialize};
+use zerocopy::byteorder::little_endian::{U16, U32};
+use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
 use crate::span::ByteOffset;
 
@@ -410,44 +412,53 @@ pub fn is_ivf(input: &[u8]) -> bool {
     input.starts_with(&IVF_SIGNATURE)
 }
 
+/// The fixed-layout 32-byte IVF file header as it appears on the wire.
+///
+/// Private fixed-layout wire view (see [`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)):
+/// [`parse_ivf_header`] borrows this from the input, then validates it into the
+/// public [`IvfHeader`] domain type. The byteorder wrappers make every multi-byte
+/// field little-endian and alignment-1, so the struct can be borrowed from an
+/// unaligned `&[u8]`. This struct is never exposed in a public API. The byte
+/// layout matches the original AV1/IVF `DKIF` header and is unchanged.
+#[repr(C)]
+#[derive(FromBytes, KnownLayout, Immutable, Unaligned)]
+struct IvfFileHeaderWire {
+    magic: [u8; 4],
+    version: U16,
+    header_len: U16,
+    fourcc: [u8; 4],
+    width: U16,
+    height: U16,
+    timebase_denominator: U32,
+    timebase_numerator: U32,
+    frame_count: U32,
+    unused: U32,
+}
+
 /// Parses a complete IVF header.
+///
+/// Borrows the fixed-layout `IvfFileHeaderWire` from `input` and validates it
+/// into the public [`IvfHeader`]; no bytes are copied until the validated fields
+/// are read out.
 ///
 /// # Errors
 /// Returns [`IvfError`] for a truncated header, invalid signature, or header length
 /// smaller than the 32-byte baseline. The parser never panics on malformed input.
 pub fn parse_ivf_header(input: &[u8]) -> Result<IvfHeader, IvfError> {
-    if input.len() < IVF_HEADER_SIZE_BYTES {
-        return Err(IvfError::TruncatedHeader {
+    let (wire, _rest) =
+        IvfFileHeaderWire::ref_from_prefix(input).map_err(|_| IvfError::TruncatedHeader {
             offset: ByteOffset::new(input.len() as u64),
             needed: IVF_HEADER_SIZE_BYTES.saturating_sub(input.len()),
-        });
-    }
+        })?;
 
-    let Some(header_bytes) = input
-        .get(..IVF_HEADER_SIZE_BYTES)
-        .and_then(|bytes| <&[u8; IVF_HEADER_SIZE_BYTES]>::try_from(bytes).ok())
-    else {
-        return Err(IvfError::TruncatedHeader {
-            offset: ByteOffset::new(input.len() as u64),
-            needed: IVF_HEADER_SIZE_BYTES.saturating_sub(input.len()),
-        });
-    };
-
-    let signature = [
-        header_bytes[0],
-        header_bytes[1],
-        header_bytes[2],
-        header_bytes[3],
-    ];
-    if signature != IVF_SIGNATURE {
+    if wire.magic != IVF_SIGNATURE {
         return Err(IvfError::InvalidSignature {
             offset: ByteOffset::new(0),
-            signature,
+            signature: wire.magic,
         });
     }
 
-    let version = u16::from_le_bytes([header_bytes[4], header_bytes[5]]);
-    let header_len = u16::from_le_bytes([header_bytes[6], header_bytes[7]]);
+    let header_len = wire.header_len.get();
     if header_len < IVF_HEADER_SIZE {
         return Err(IvfError::InvalidHeaderLength {
             offset: ByteOffset::new(6),
@@ -462,40 +473,15 @@ pub fn parse_ivf_header(input: &[u8]) -> Result<IvfHeader, IvfError> {
     }
 
     Ok(IvfHeader {
-        version,
+        version: wire.version.get(),
         header_len,
-        fourcc: [
-            header_bytes[8],
-            header_bytes[9],
-            header_bytes[10],
-            header_bytes[11],
-        ],
-        width: u16::from_le_bytes([header_bytes[12], header_bytes[13]]),
-        height: u16::from_le_bytes([header_bytes[14], header_bytes[15]]),
-        timebase_denominator: u32::from_le_bytes([
-            header_bytes[16],
-            header_bytes[17],
-            header_bytes[18],
-            header_bytes[19],
-        ]),
-        timebase_numerator: u32::from_le_bytes([
-            header_bytes[20],
-            header_bytes[21],
-            header_bytes[22],
-            header_bytes[23],
-        ]),
-        frame_count: u32::from_le_bytes([
-            header_bytes[24],
-            header_bytes[25],
-            header_bytes[26],
-            header_bytes[27],
-        ]),
-        unused: u32::from_le_bytes([
-            header_bytes[28],
-            header_bytes[29],
-            header_bytes[30],
-            header_bytes[31],
-        ]),
+        fourcc: wire.fourcc,
+        width: wire.width.get(),
+        height: wire.height.get(),
+        timebase_denominator: wire.timebase_denominator.get(),
+        timebase_numerator: wire.timebase_numerator.get(),
+        frame_count: wire.frame_count.get(),
+        unused: wire.unused.get(),
     })
 }
 
@@ -785,6 +771,16 @@ mod tests {
             let _ = parse_ivf_header(&bytes);
             let _ = parse_ivf_partial(&bytes);
         }
+    }
+
+    #[test]
+    fn wire_header_matches_baseline_layout() {
+        // The zerocopy wire view must stay exactly the 32-byte baseline header so
+        // `ref_from_prefix` borrows the right field offsets.
+        assert_eq!(
+            core::mem::size_of::<IvfFileHeaderWire>(),
+            IVF_HEADER_SIZE_BYTES
+        );
     }
 }
 

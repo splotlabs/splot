@@ -978,6 +978,13 @@ frame-level Wiener filter, the parser SHALL stop honestly before the unmodeled
 the pre-Wiener facts. An EOF inside the new cluster SHALL preserve the
 already-parsed frame facts.
 
+`ccso_params()` SHALL surface the per-plane `ccso_offset_idx` values (§ 5.18.7.12) in the
+parsed model — a `(d0, d1, band)`-ordered list of the `tu(7)` values, length
+`maxEdgeInterval * maxEdgeInterval * maxBand`, empty when the plane codes no offsets — rather
+than discarding them, so a § 5.18.7.12 writer can reproduce the structure byte-exactly. The
+parse SHALL otherwise be unchanged: the same bits are read in the same order and the
+consumed-bit count is identical.
+
 #### Scenario: intra frame parses lr and ccso params
 
 - **WHEN** an intra frame header reaches the post-CDEF tail with the
@@ -994,6 +1001,13 @@ already-parsed frame facts.
   `NumFilterClasses`, `UsesLr`, and `LoopRestorationSize`) are surfaced on a
   dedicated partial field — distinct from the complete-parse field so a
   partial parse is never mistaken for a complete one
+
+#### Scenario: ccso offset indices are surfaced in read order
+
+- **WHEN** a `ccso_params()` plane has `ccso_planes == 1`
+- **THEN** the `ccso_offset_idx` `tu(7)` values are surfaced on the parsed plane in
+  `(d0, d1, band)` read order, with length `maxEdgeInterval * maxEdgeInterval * maxBand`
+- **AND** a plane with `ccso_planes == 0` surfaces an empty list
 
 #### Scenario: EOF preserves facts
 
