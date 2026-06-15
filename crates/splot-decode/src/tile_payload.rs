@@ -16,6 +16,7 @@
 )]
 
 mod cdf;
+mod input;
 
 use core::fmt;
 
@@ -32,33 +33,40 @@ use crate::{
     DecodeLimits, DecodeObuSourceKind, UNSUPPORTED_FEATURE_RULE_ID,
 };
 
+#[cfg(test)]
+pub(crate) use input::{FrameCandidateCdfFacts, FrameCandidateTileFacts, TileGroupPositionFacts};
+pub(crate) use input::{
+    FrameCandidateTileBoundaryError, FrameCandidateTileBoundaryInput,
+    plan_derived_tile_payload_boundary,
+};
+
 pub(crate) const TILE_PAYLOAD_DECODE_MATRIX_ROW: &str = "tile-payload-decode";
 pub(crate) const TILE_PAYLOAD_DECODE_FEATURE_ID: &str = "DECODE-TILE-PAYLOAD-BOUNDARY";
 
 /// Input to the crate-private tile payload boundary planner.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct TilePayloadBoundaryInput<'a> {
-    payload: &'a [u8],
+pub(crate) struct TilePayloadBoundaryInput<'payload, 'facts> {
+    payload: &'payload [u8],
     payload_base: ByteOffset,
-    framing: &'a TileGroupFraming,
+    framing: &'facts TileGroupFraming,
     source: TilePayloadSource,
     selected_layer: DecodeLayerSelection,
-    grid: TileGridFacts<'a>,
+    grid: TileGridFacts<'facts>,
     frame: TileFrameFacts,
     limits: DecodeLimits,
 }
 
-impl<'a> TilePayloadBoundaryInput<'a> {
+impl<'payload, 'facts> TilePayloadBoundaryInput<'payload, 'facts> {
     /// Builds a tile payload boundary input from already-framed tile payload bytes.
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub(crate) const fn new(
-        payload: &'a [u8],
+        payload: &'payload [u8],
         payload_base: ByteOffset,
-        framing: &'a TileGroupFraming,
+        framing: &'facts TileGroupFraming,
         source: TilePayloadSource,
         selected_layer: DecodeLayerSelection,
-        grid: TileGridFacts<'a>,
+        grid: TileGridFacts<'facts>,
         frame: TileFrameFacts,
         limits: DecodeLimits,
     ) -> Self {
@@ -647,7 +655,7 @@ impl fmt::Display for TilePayloadUnsupported {
 
 /// Plans the minimal tile-payload boundary and stops at `decode_tile()`.
 pub(crate) fn plan_tile_payload_boundary<'a>(
-    input: TilePayloadBoundaryInput<'a>,
+    input: TilePayloadBoundaryInput<'a, '_>,
 ) -> Result<DecodeTilePayloadPlan<'a>, TilePayloadBoundaryError> {
     input.limits.ensure_mul(
         DecodeLimitName::MaxTileCount,
@@ -969,6 +977,9 @@ fn checked_byte_span(
     let _end = checked_byte_offset(start, len, name)?;
     Ok(ByteSpan::new(start, len))
 }
+
+#[cfg(test)]
+mod derived_tests;
 
 #[cfg(test)]
 mod tests;

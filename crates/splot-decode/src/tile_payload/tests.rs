@@ -11,7 +11,6 @@ use splot_core::symbol::{SymbolDecoder, SymbolDecoderConfig};
 use splot_core::types::ObuType;
 
 const MAX: fn(u64) -> DecodeLimitThreshold = DecodeLimitThreshold::Max;
-
 fn base_source() -> TilePayloadSource {
     TilePayloadSource::new(DecodeObuSourceKind::AnnexB, None, 7, ByteOffset::new(100))
 }
@@ -45,7 +44,7 @@ fn input<'a>(
     payload: &'a [u8],
     framing: &'a TileGroupFraming,
     limits: DecodeLimits,
-) -> TilePayloadBoundaryInput<'a> {
+) -> TilePayloadBoundaryInput<'a, 'a> {
     TilePayloadBoundaryInput::new(
         payload,
         ByteOffset::new(256),

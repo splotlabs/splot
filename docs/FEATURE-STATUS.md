@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 170 feature(s).
+Matrix version 1. Last reviewed 2026-06-14. 174 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -157,6 +157,9 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `RECON-FRAME-HASH-DIGEST` | Decoded frame SHA-256 digest computation | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-recon/src/hash_input.rs` |
 | `RECON-Y4M-OUTPUT-WRITER` | Y4M output writer | infrastructure | writer | done | done | n/a | done | done | n/a | n/a | done | n/a | `crates/splot-recon/src/y4m.rs` |
 | `RECON-INTRA-DC-SQUARE-PREDICTION` | Square DC intra prediction | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/intra.rs` |
+| `RECON-INTRA-DC-RECTANGULAR-PREDICTION` | Rectangular DC intra prediction | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/intra.rs` |
+| `RECON-INTRA-BASIC-PAETH-PREDICTION` | Basic PAETH intra prediction | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/intra_basic.rs` |
+| `RECON-INTRA-SMOOTH-PREDICTION` | Smooth intra prediction | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/intra_smooth.rs` |
 | `RECON-CURRENT-FRAME-WORKSPACE` | Current-frame reconstruction workspace | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/workspace.rs` |
 | `DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT` | Decoded frame and plane model contract documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `docs/DECODER-ROADMAP.md` |
 | `DOC-MINIMAL-DECODE-TIER-CONTRACT` | Minimal decode tier contract documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `docs/DECODER-ROADMAP.md` |
@@ -169,6 +172,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-BYTE-STREAM-PLANNER` | Byte-consuming decode stream planner | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/byte_stream.rs` |
 | `DECODE-TILE-PAYLOAD-BOUNDARY` | Tile payload decode boundary | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload.rs` |
 | `DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF` | DecodeContext tile-payload handoff | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/context.rs` |
+| `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | Tile payload input derivation | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/input.rs` |
 | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | Tile CDF selection boundary | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf.rs` |
 | `DECODE-UNSUPPORTED-DIAGNOSTIC-API` | Decode unsupported diagnostic API | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-decode/src/lib.rs` |
 | `DOC-DECODER-SUPPORT-MATRIX` | Decoder support matrix documentation | docs | docs | done | n/a | n/a | done | n/a | n/a | n/a | done | n/a | `docs/DECODER-SUPPORT-MATRIX.toml` |

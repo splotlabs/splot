@@ -3,12 +3,24 @@
 
 //! Scalar intra prediction primitives.
 //!
-//! Feature tracking: `RECON-INTRA-DC-SQUARE-PREDICTION`.
+//! Feature tracking: `RECON-INTRA-DC-SQUARE-PREDICTION`,
+//! `RECON-INTRA-DC-RECTANGULAR-PREDICTION`.
 
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
 const MIN_SQUARE_BLOCK_LOG2: u8 = 2;
 const MAX_SQUARE_BLOCK_LOG2: u8 = 6;
+const MIN_RECT_BLOCK_LOG2: u8 = 2;
+const MAX_RECT_BLOCK_LOG2: u8 = 6;
+const DIV_LUT_BITS: u8 = 7;
+const DIV_LUT_PREC_BITS: u8 = 9;
+#[rustfmt::skip]
+const DIV_LUT: [u16; 129] = [
+    512, 508, 504, 500, 496, 493, 489, 485, 482, 478, 475, 471, 468, 465, 462, 458, 455, 452, 449, 446, 443, 440, 437, 434, 431, 428, 426, 423, 420, 417, 415, 412,
+    410, 407, 405, 402, 400, 397, 395, 392, 390, 388, 386, 383, 381, 379, 377, 374, 372, 370, 368, 366, 364, 362, 360, 358, 356, 354, 352, 350, 349, 347, 345, 343,
+    341, 340, 338, 336, 334, 333, 331, 329, 328, 326, 324, 323, 321, 320, 318, 317, 315, 314, 312, 311, 309, 308, 306, 305, 303, 302, 301, 299, 298, 297, 295, 294,
+    293, 291, 290, 289, 287, 286, 285, 284, 282, 281, 280, 279, 278, 277, 275, 274, 273, 272, 271, 270, 269, 267, 266, 265, 264, 263, 262, 261, 260, 259, 258, 257, 256,
+];
 
 /// Square transform-block size supported by the first DC intra predictor.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -58,6 +70,86 @@ impl IntraSquareBlockSize {
     }
 }
 
+/// Rectangular transform-block size supported by DC intra prediction.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct IntraRectBlockSize {
+    log2_width: u8,
+    log2_height: u8,
+    width: usize,
+    height: usize,
+    sample_count: usize,
+}
+
+impl IntraRectBlockSize {
+    /// Creates a rectangular block size from AV2 transform-size log2 dimensions.
+    ///
+    /// # Errors
+    /// Returns [`ReconError::InvalidIntraRectBlockLog2`] for values outside the
+    /// source-backed transform-size dimension range 4 through 64 samples.
+    pub const fn new(log2_width: u8, log2_height: u8) -> Result<Self> {
+        if log2_width < MIN_RECT_BLOCK_LOG2
+            || log2_width > MAX_RECT_BLOCK_LOG2
+            || log2_height < MIN_RECT_BLOCK_LOG2
+            || log2_height > MAX_RECT_BLOCK_LOG2
+        {
+            return Err(ReconError::InvalidIntraRectBlockLog2 {
+                log2_width,
+                log2_height,
+                min: MIN_RECT_BLOCK_LOG2,
+                max: MAX_RECT_BLOCK_LOG2,
+            });
+        }
+
+        let width = 1usize << log2_width;
+        let height = 1usize << log2_height;
+        let sample_count = width * height;
+        Ok(Self {
+            log2_width,
+            log2_height,
+            width,
+            height,
+            sample_count,
+        })
+    }
+
+    /// Returns `log2(width)`.
+    pub const fn log2_width(self) -> u8 {
+        self.log2_width
+    }
+
+    /// Returns `log2(height)`.
+    pub const fn log2_height(self) -> u8 {
+        self.log2_height
+    }
+
+    /// Returns the block width in samples.
+    pub const fn width(self) -> usize {
+        self.width
+    }
+
+    /// Returns the block height in samples.
+    pub const fn height(self) -> usize {
+        self.height
+    }
+
+    /// Returns the number of samples in the rectangular block.
+    pub const fn sample_count(self) -> usize {
+        self.sample_count
+    }
+}
+
+impl From<IntraSquareBlockSize> for IntraRectBlockSize {
+    fn from(size: IntraSquareBlockSize) -> Self {
+        Self {
+            log2_width: size.log2_size,
+            log2_height: size.log2_size,
+            width: size.side_len,
+            height: size.side_len,
+            sample_count: size.sample_count,
+        }
+    }
+}
+
 /// Edge identifier for DC intra prediction inputs.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum IntraDcEdge {
@@ -77,7 +169,7 @@ impl IntraDcEdge {
     }
 }
 
-/// Caller-provided edge samples for square DC intra prediction.
+/// Caller-provided edge samples for DC intra prediction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IntraDcEdges<'a, T: ReconSample> {
     left: Option<&'a [T]>,
@@ -231,14 +323,46 @@ pub fn predict_intra_dc_square_value<T: ReconSample>(
     size: IntraSquareBlockSize,
     edges: IntraDcEdges<'_, T>,
 ) -> Result<T> {
-    validate_sample_type::<T>(bit_depth)?;
-    let left_sum = validate_edge(IntraDcEdge::Left, edges.left, size, bit_depth)?;
-    let above_sum = validate_edge(IntraDcEdge::Above, edges.above, size, bit_depth)?;
+    predict_intra_dc_rect_value(bit_depth, size.into(), edges)
+}
 
+/// Computes the constant sample value for rectangular AV2 §7.13.2.10 DC prediction.
+///
+/// This is the no-allocation entry point for future reconstruction workspaces
+/// and encoder RDO paths that only need the scalar DC value. For rectangular
+/// both-edge prediction, the average uses the AV2 §7.13.3.22
+/// `resolve_divisor` / `approx_divide` path rather than ordinary division.
+///
+/// # Errors
+/// Returns [`ReconError`] for unsupported sample type/bit depth combinations,
+/// wrong edge lengths, out-of-range edge samples, arithmetic overflow, or
+/// storage conversion failure.
+pub fn predict_intra_dc_rect_value<T: ReconSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    edges: IntraDcEdges<'_, T>,
+) -> Result<T> {
+    validate_sample_type::<T>(bit_depth)?;
+    let left_sum = validate_edge(IntraDcEdge::Left, edges.left, size.height(), bit_depth)?;
+    let above_sum = validate_edge(IntraDcEdge::Above, edges.above, size.width(), bit_depth)?;
+
+    predict_intra_dc_rect_value_from_sums(bit_depth, size, left_sum, above_sum)
+}
+
+pub(crate) fn predict_intra_dc_rect_value_from_sums<T: ReconSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    left_sum: Option<u64>,
+    above_sum: Option<u64>,
+) -> Result<T> {
+    validate_sample_type::<T>(bit_depth)?;
     let predicted = match (left_sum, above_sum) {
-        (Some(left), Some(above)) => clip1(round2(left + above, size.log2_size + 1), bit_depth),
-        (Some(left), None) => round2(left, size.log2_size),
-        (None, Some(above)) => round2(above, size.log2_size),
+        (Some(left), Some(above)) => clip1(
+            approx_divide(left + above, (size.width() + size.height()) as u64)?,
+            bit_depth,
+        ),
+        (Some(left), None) => round2(left, size.log2_height()),
+        (None, Some(above)) => round2(above, size.log2_width()),
         (None, None) => 1u16 << (bit_depth.bits() - 1),
     };
 
@@ -261,10 +385,29 @@ pub fn predict_intra_dc_square_into<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
+    predict_intra_dc_rect_into(bit_depth, size.into(), edges, output, stride_samples)
+}
+
+/// Writes rectangular AV2 §7.13.2.10 DC prediction into caller-owned storage.
+///
+/// `output` points at the top-left destination sample and `stride_samples` is
+/// the distance between adjacent output rows. Samples outside the predicted
+/// rectangle are left unchanged.
+///
+/// # Errors
+/// Returns [`ReconError`] for invalid prediction inputs, a too-small stride, a
+/// too-small output buffer, arithmetic overflow, or storage conversion failure.
+pub fn predict_intra_dc_rect_into<T: ReconSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    edges: IntraDcEdges<'_, T>,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
     let required = validate_output_shape(size, output.len(), stride_samples)?;
-    let sample = predict_intra_dc_square_value(bit_depth, size, edges)?;
-    let width = size.side_len();
-    let height = size.side_len();
+    let sample = predict_intra_dc_rect_value(bit_depth, size, edges)?;
+    let width = size.width();
+    let height = size.height();
 
     for row_index in 0..height {
         let row_start = row_index * stride_samples;
@@ -308,17 +451,17 @@ fn validate_sample_type<T: ReconSample>(bit_depth: BitDepth) -> Result<()> {
 fn validate_edge<T: ReconSample>(
     edge: IntraDcEdge,
     samples: Option<&[T]>,
-    size: IntraSquareBlockSize,
+    expected_len: usize,
     bit_depth: BitDepth,
 ) -> Result<Option<u64>> {
     let Some(samples) = samples else {
         return Ok(None);
     };
 
-    if samples.len() != size.side_len {
+    if samples.len() != expected_len {
         return Err(ReconError::IntraPredictionEdgeLengthMismatch {
             edge,
-            expected: size.side_len,
+            expected: expected_len,
             actual: samples.len(),
         });
     }
@@ -341,11 +484,11 @@ fn validate_edge<T: ReconSample>(
 }
 
 fn validate_output_shape(
-    size: IntraSquareBlockSize,
+    size: IntraRectBlockSize,
     output_len: usize,
     stride_samples: usize,
 ) -> Result<usize> {
-    let width = size.side_len();
+    let width = size.width();
     if stride_samples < width {
         return Err(ReconError::IntraPredictionStrideTooSmall {
             stride_samples,
@@ -353,7 +496,7 @@ fn validate_output_shape(
         });
     }
 
-    let required = (size.side_len() - 1)
+    let required = (size.height() - 1)
         .checked_mul(stride_samples)
         .and_then(|prefix| prefix.checked_add(width))
         .ok_or(ReconError::ArithmeticOverflow {
@@ -368,10 +511,57 @@ fn validate_output_shape(
     Ok(required)
 }
 
+fn approx_divide(num: u64, den: u64) -> Result<u16> {
+    if den == 0 {
+        return Err(ReconError::ArithmeticOverflow {
+            context: "intra DC approximate divisor",
+        });
+    }
+    let (shift, scale) = resolve_divisor(den)?;
+    let scaled = num
+        .checked_mul(u64::from(scale))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "intra DC approximate division product",
+        })?;
+    Ok(round2(scaled, shift))
+}
+
+fn resolve_divisor(den: u64) -> Result<(u8, u16)> {
+    if den == 0 {
+        return Err(ReconError::ArithmeticOverflow {
+            context: "intra DC divisor resolution",
+        });
+    }
+
+    let n = floor_log2(den);
+    let e = den - (1u64 << n);
+    let f = if n > DIV_LUT_BITS {
+        round2_u64(e, n - DIV_LUT_BITS) as usize
+    } else {
+        (e << (DIV_LUT_BITS - n)) as usize
+    };
+    let scale = DIV_LUT
+        .get(f)
+        .copied()
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "intra DC divisor lookup",
+        })?;
+    Ok((n + DIV_LUT_PREC_BITS, scale))
+}
+
+fn floor_log2(value: u64) -> u8 {
+    debug_assert!(value > 0);
+    (u64::BITS - 1 - value.leading_zeros()) as u8
+}
+
 fn round2(value: u64, shift: u8) -> u16 {
+    round2_u64(value, shift) as u16
+}
+
+fn round2_u64(value: u64, shift: u8) -> u64 {
     debug_assert!(shift > 0);
     let rounding = 1u64 << (shift - 1);
-    ((value + rounding) >> shift) as u16
+    (value + rounding) >> shift
 }
 
 fn clip1(value: u16, bit_depth: BitDepth) -> u16 {
@@ -387,13 +577,16 @@ mod tests {
         IntraSquareBlockSize::new(log2_size).unwrap()
     }
 
+    fn rect_size(log2_width: u8, log2_height: u8) -> IntraRectBlockSize {
+        IntraRectBlockSize::new(log2_width, log2_height).unwrap()
+    }
+
     #[test]
     fn square_block_size_accepts_av2_square_transform_range() {
         let four = size(2);
         assert_eq!(four.log2_size(), 2);
         assert_eq!(four.side_len(), 4);
         assert_eq!(four.sample_count(), 16);
-
         let sixty_four = size(6);
         assert_eq!(sixty_four.side_len(), 64);
         assert_eq!(sixty_four.sample_count(), 4096);
@@ -409,14 +602,36 @@ mod tests {
                 max: 6
             })
         ));
+        assert!(IntraSquareBlockSize::new(7).is_err());
+    }
+
+    #[test]
+    fn rect_block_size_accepts_av2_transform_dimension_range() {
+        let four_by_eight = rect_size(2, 3);
+        assert_eq!(four_by_eight.log2_width(), 2);
+        assert_eq!(four_by_eight.log2_height(), 3);
+        assert_eq!(four_by_eight.width(), 4);
+        assert_eq!(four_by_eight.height(), 8);
+        assert_eq!(four_by_eight.sample_count(), 32);
+
+        let sixty_four_by_four = rect_size(6, 2);
+        assert_eq!(sixty_four_by_four.width(), 64);
+        assert_eq!(sixty_four_by_four.height(), 4);
+        assert_eq!(sixty_four_by_four.sample_count(), 256);
+    }
+
+    #[test]
+    fn rect_block_size_rejects_out_of_range_log2_values() {
         assert!(matches!(
-            IntraSquareBlockSize::new(7),
-            Err(ReconError::InvalidIntraSquareBlockLog2 {
-                log2_size: 7,
+            IntraRectBlockSize::new(1, 2),
+            Err(ReconError::InvalidIntraRectBlockLog2 {
+                log2_width: 1,
+                log2_height: 2,
                 min: 2,
                 max: 6
             })
         ));
+        assert!(IntraRectBlockSize::new(2, 7).is_err());
     }
 
     #[test]
@@ -443,6 +658,83 @@ mod tests {
         .unwrap();
 
         assert_eq!(sample, 45);
+    }
+
+    #[test]
+    fn rect_dc_prediction_no_edges_uses_midpoint_sample() {
+        let sample = predict_intra_dc_rect_value::<u16>(
+            BitDepth::Ten,
+            rect_size(2, 3),
+            IntraDcEdges::none(),
+        )
+        .unwrap();
+
+        assert_eq!(sample, 512);
+    }
+
+    #[test]
+    fn rect_dc_prediction_with_left_edge_uses_height_average() {
+        let left = [1u8, 2, 3, 4, 5, 6, 7, 8];
+
+        let sample = predict_intra_dc_rect_value(
+            BitDepth::Eight,
+            rect_size(2, 3),
+            IntraDcEdges::left(&left),
+        )
+        .unwrap();
+
+        assert_eq!(sample, 5);
+    }
+
+    #[test]
+    fn rect_dc_prediction_with_above_edge_uses_width_average() {
+        let above = [100u16, 101, 102, 103];
+
+        let sample = predict_intra_dc_rect_value(
+            BitDepth::Ten,
+            rect_size(2, 3),
+            IntraDcEdges::above(&above),
+        )
+        .unwrap();
+
+        assert_eq!(sample, 102);
+    }
+
+    #[test]
+    fn rect_dc_prediction_with_both_edges_uses_av2_approximate_divide() {
+        let left = [1u8, 1, 1, 1, 1, 1, 1, 0];
+        let above = [0u8, 0, 0, 0];
+
+        let sample = predict_intra_dc_rect_value(
+            BitDepth::Eight,
+            rect_size(2, 3),
+            IntraDcEdges::both(&left, &above),
+        )
+        .unwrap();
+
+        let truncating_integer_division = 7u8 / 12;
+        assert_eq!(sample, 1);
+        assert_ne!(sample, truncating_integer_division);
+    }
+
+    #[test]
+    fn rect_dc_prediction_into_fills_rectangle_with_stride() {
+        let left = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        let mut output = [99u8; 48];
+
+        predict_intra_dc_rect_into(
+            BitDepth::Eight,
+            rect_size(2, 3),
+            IntraDcEdges::left(&left),
+            &mut output,
+            6,
+        )
+        .unwrap();
+
+        for row in 0..8 {
+            let start = row * 6;
+            assert_eq!(&output[start..start + 6], &[5, 5, 5, 5, 99, 99]);
+        }
     }
 
     #[test]
@@ -495,6 +787,28 @@ mod tests {
     }
 
     #[test]
+    fn square_dc_prediction_matches_rectangular_compatibility_path() {
+        let left = [0u8, 1, 2, 3, 4, 5, 6, 7];
+        let above = [8u8, 9, 10, 11, 12, 13, 14, 15];
+
+        let square = predict_intra_dc_square_value(
+            BitDepth::Eight,
+            size(3),
+            IntraDcEdges::both(&left, &above),
+        )
+        .unwrap();
+        let rect = predict_intra_dc_rect_value(
+            BitDepth::Eight,
+            IntraRectBlockSize::from(size(3)),
+            IntraDcEdges::both(&left, &above),
+        )
+        .unwrap();
+
+        assert_eq!(square, rect);
+        assert_eq!(rect, 8);
+    }
+
+    #[test]
     fn dc_prediction_validates_edge_lengths() {
         let left = [1u8, 2, 3];
         assert!(matches!(
@@ -503,6 +817,37 @@ mod tests {
                 edge: IntraDcEdge::Left,
                 expected: 4,
                 actual: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn rect_dc_prediction_validates_edge_lengths_by_dimension() {
+        let left = [1u8, 2, 3, 4];
+        let above = [1u8, 2, 3, 4, 5, 6, 7, 8];
+
+        assert!(matches!(
+            predict_intra_dc_rect_value(
+                BitDepth::Eight,
+                rect_size(2, 3),
+                IntraDcEdges::left(&left)
+            ),
+            Err(ReconError::IntraPredictionEdgeLengthMismatch {
+                edge: IntraDcEdge::Left,
+                expected: 8,
+                actual: 4
+            })
+        ));
+        assert!(matches!(
+            predict_intra_dc_rect_value(
+                BitDepth::Eight,
+                rect_size(2, 3),
+                IntraDcEdges::above(&above)
+            ),
+            Err(ReconError::IntraPredictionEdgeLengthMismatch {
+                edge: IntraDcEdge::Above,
+                expected: 4,
+                actual: 8
             })
         ));
     }
@@ -527,6 +872,24 @@ mod tests {
             Err(ReconError::IntraPredictionSampleOutOfRange {
                 edge: IntraDcEdge::Left,
                 sample_index: 0,
+                value: 256,
+                max: 255
+            })
+        ));
+    }
+
+    #[test]
+    fn rect_dc_prediction_validates_edge_samples_against_bit_depth() {
+        let above = [1u16, 2, 256, 4];
+        assert!(matches!(
+            predict_intra_dc_rect_value(
+                BitDepth::Eight,
+                rect_size(2, 3),
+                IntraDcEdges::above(&above)
+            ),
+            Err(ReconError::IntraPredictionSampleOutOfRange {
+                edge: IntraDcEdge::Above,
+                sample_index: 2,
                 value: 256,
                 max: 255
             })
@@ -563,6 +926,40 @@ mod tests {
             Err(ReconError::IntraPredictionOutputTooSmall {
                 expected: 16,
                 actual: 15
+            })
+        ));
+    }
+
+    #[test]
+    fn rect_dc_prediction_into_validates_output_stride_and_length() {
+        let left = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        let mut output = [0u8; 31];
+
+        assert!(matches!(
+            predict_intra_dc_rect_into(
+                BitDepth::Eight,
+                rect_size(2, 3),
+                IntraDcEdges::left(&left),
+                &mut output,
+                3
+            ),
+            Err(ReconError::IntraPredictionStrideTooSmall {
+                stride_samples: 3,
+                width: 4
+            })
+        ));
+
+        assert!(matches!(
+            predict_intra_dc_rect_into(
+                BitDepth::Eight,
+                rect_size(2, 3),
+                IntraDcEdges::left(&left),
+                &mut output,
+                4
+            ),
+            Err(ReconError::IntraPredictionOutputTooSmall {
+                expected: 32,
+                actual: 31
             })
         ));
     }

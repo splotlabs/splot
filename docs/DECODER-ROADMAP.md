@@ -49,12 +49,16 @@ runtime decode output.
 with constructor invariants plus a bounded immutable reference-slot container,
 canonical decoded-frame hash input serialization, source-backed
 `splot-dfh-sha256-v1` digest computation, and a source-backed Y4M writer for
-caller-supplied decoded frames. It also exposes the first scheduler-free scalar
-prediction primitive: square-block § 7.13.2.10 DC intra prediction over
-caller-provided left/above edge samples. Rectangular DC, other intra prediction
-modes, dequantization, inverse transforms, residual addition, runtime decode
-output, output scheduling, and AV2 reference refresh semantics remain
-unimplemented.
+caller-supplied decoded frames. It also exposes scheduler-free scalar
+prediction primitives for square and rectangular § 7.13.2.10 DC intra
+prediction over caller-provided left/above edge samples, plus § 7.13.2.2
+basic/PAETH prediction over prepared left/above/top-left edge samples, and
+§ 7.13.2.13 smooth prediction over prepared left/above sentinel edge samples;
+rectangular both-edge DC prediction uses the § 7.13.3.22 approximate divisor
+path. Directional prediction, data-driven prediction, subsampled DC, IBP, CfL,
+full `predict_intra()` dispatch, dequantization,
+inverse transforms, residual addition, runtime decode output, output
+scheduling, and AV2 reference refresh semantics remain unimplemented.
 `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
 `splot-decode`, then call deterministic reconstruction primitives.
@@ -64,8 +68,8 @@ reads, caller-supplied-CDF symbol reads with optional CDF updates, and
 `exit_symbol()` padding validation. This does not make runtime tile decode
 supported; broad § 8.3 CDF selection, full tile CDF banks, `decode_tile()`,
 reconstruction, hash output, and runtime Y4M output remain future rows.
-`splot-decode` now also has a crate-private tile-payload boundary for the
-minimal one-tile closed-loop-key tier. It consumes existing § 5.20.1
+`splot-decode` now also has crate-private tile-payload planning for the minimal
+one-tile closed-loop-key tier. The boundary consumes § 5.20.1
 `TileGroupFraming`, checks tile payload/count limits, derives one deterministic
 tile work unit with exact source/layer/tile/MI-range/byte-span provenance,
 initializes § 8.2 symbol state for the bounded tile slice, attaches a
@@ -73,13 +77,16 @@ crate-private first partition CDF subset (`TileDoSplitCdf` and
 `TileDoSquareSplitCdf`) copied from generated § 9.3 defaults with typed § 8.3
 row selection and § 8.2 copy/average policy metadata, and then stops at
 structured `decode/unsupported-feature` metadata for the unimplemented
-`decode_tile()` block syntax. A crate-private `DecodeContext` handoff now runs
-that boundary inside the context-owned `splot_parallel::WorkerPool`, preserving
-the PR #101 concurrency model without exposing public tile-payload APIs. It is
-not wired to a runtime decode success path and does not derive tile facts from
-raw byte streams, run `exit_symbol()` after real syntax, mutate Saved CDF banks,
-reconstruct pixels, compute hashes, write runtime Y4M, refresh references, or
-invoke external decoders.
+`decode_tile()` block syntax. A crate-private source-backed derivation bridge now
+validates a selected `DecodePlannedObu` against a borrowed `splot-core`
+`ObuEnvelope`, slices only the complete § 5.19-derived § 5.20 payload region,
+uses parser-derived tile grid, quantizer, CDF, and `disable_cdf_update` facts,
+and runs the resulting boundary inside the context-owned
+`splot_parallel::WorkerPool`, preserving the PR #101 concurrency model without
+exposing public tile-payload APIs. It is not wired to a runtime decode success
+path and does not support multiple tiles or tile groups, bridge/BRU paths,
+`exit_symbol()` after real syntax, Saved CDF mutation, reconstruction, hashes,
+runtime Y4M, reference refresh, or external decoders.
 
 Canonical decoder status lives in
 [`DECODER-SUPPORT-MATRIX.toml`](./DECODER-SUPPORT-MATRIX.toml), rendered to
@@ -156,7 +163,7 @@ other external decoder is forbidden.
 | 5 | Self-contained decode fuzz target and fixture smoke | `decode_plan_bytes` fuzz target supported for the raw byte planner; decode fixtures planned |
 | 6 | AV2 § 8 symbol/CDF decoder foundation | § 8.2 generic primitive partial; first crate-private partition CDF subset boundary partial; broad § 8.3 and tile decode planned |
 | 7 | Constrained intra tile syntax | tile payload and tile CDF boundaries partial; `decode_tile()` syntax planned |
-| 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | current-frame workspace and square DC prediction primitive supported; rectangular DC, other intra modes, dequant/reconstruction, inverse transforms, runtime hashes planned |
+| 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | current-frame workspace plus square DC, rectangular DC, basic/PAETH, and smooth prediction primitives supported; directional/DIP/subsampled DC/IBP/CfL modes, dequant/reconstruction, inverse transforms, runtime hashes planned |
 | 9 | Y4M output and reconstructed reference-frame store | reference-slot runtime store and source-backed Y4M writer supported; runtime Y4M output and AV2 refresh semantics planned |
 | 10 | Portable local-reference evidence manifests | metadata contract and offline checker wired; two AVM/dav2d raw MD5 agreement entries recorded as non-executable metadata |
 | 11 | Encoder reconstruction API contract | planned |

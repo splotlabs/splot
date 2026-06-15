@@ -21,6 +21,10 @@ fn square(log2_size: u8) -> IntraSquareBlockSize {
     IntraSquareBlockSize::new(log2_size).unwrap()
 }
 
+fn rect_block(log2_width: u8, log2_height: u8) -> IntraRectBlockSize {
+    IntraRectBlockSize::new(log2_width, log2_height).unwrap()
+}
+
 fn info(
     bit_depth: BitDepth,
     pixel_format: PixelFormat,
@@ -245,6 +249,14 @@ fn workspace_rect_writes_reject_invalid_shape_and_bounds() {
         })
     ));
     assert!(matches!(
+        workspace.write_rect_block(PlaneId::Y, 0, 0, rect_block(2, 3), &[1; 31]),
+        Err(ReconError::WorkspaceWriteLengthMismatch {
+            plane: PlaneId::Y,
+            expected: 32,
+            actual: 31
+        })
+    ));
+    assert!(matches!(
         workspace.fill_rect(PlaneId::Y, rect(3, 0, 2, 1), 4),
         Err(ReconError::WorkspaceRectOutOfBounds {
             plane: PlaneId::Y,
@@ -279,6 +291,248 @@ fn workspace_write_rejects_out_of_range_samples_without_partial_write() {
         }
     ));
     assert_eq!(workspace.samples(PlaneId::Y).unwrap(), &[1, 1, 1, 1]);
+}
+
+#[test]
+fn workspace_extracts_edges_and_predicts_rectangular_dc() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(8, 10),
+            rect(0, 0, 8, 10),
+        ),
+        0,
+    )
+    .unwrap();
+    let block = rect_block(2, 3);
+
+    workspace
+        .write_rect(PlaneId::Y, rect(1, 1, 1, 8), &[0, 1, 2, 3, 4, 5, 6, 7], 1)
+        .unwrap();
+    workspace
+        .write_rect(PlaneId::Y, rect(2, 0, 4, 1), &[8, 9, 10, 11], 4)
+        .unwrap();
+
+    let edges = workspace
+        .intra_dc_edges_for_rect(PlaneId::Y, 2, 1, block)
+        .unwrap();
+    assert_eq!(edges.left_samples(), Some(&[0, 1, 2, 3, 4, 5, 6, 7][..]));
+    assert_eq!(edges.above_samples(), Some(&[8, 9, 10, 11][..]));
+
+    workspace
+        .predict_intra_dc_rect(PlaneId::Y, 2, 1, block)
+        .unwrap();
+    let rows: Vec<&[u8]> = workspace
+        .rect_rows(PlaneId::Y, rect(2, 1, 4, 8))
+        .unwrap()
+        .collect();
+    assert_eq!(rows, vec![&[5, 5, 5, 5][..]; block.height()]);
+
+    let frame = workspace.freeze().unwrap();
+    let hash_input = DecodedFrameHashInput::new(&frame);
+    assert_eq!(hash_input.byte_len().unwrap(), 80);
+}
+
+#[test]
+fn workspace_rectangular_dc_rejects_out_of_bounds_target() {
+    let workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(8, 8),
+            rect(0, 0, 8, 8),
+        ),
+        0,
+    )
+    .unwrap();
+
+    assert!(matches!(
+        workspace.intra_dc_edges_for_rect(PlaneId::Y, 5, 1, rect_block(2, 3)),
+        Err(ReconError::WorkspaceRectOutOfBounds {
+            plane: PlaneId::Y,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn workspace_predicts_rectangular_paeth_from_in_storage_edges() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(6, 6),
+            rect(0, 0, 6, 6),
+        ),
+        0,
+    )
+    .unwrap();
+    let block = rect_block(2, 2);
+
+    workspace
+        .write_rect(PlaneId::Y, rect(0, 0, 1, 1), &[10], 1)
+        .unwrap();
+    workspace
+        .write_rect(PlaneId::Y, rect(0, 1, 1, 4), &[30, 30, 30, 30], 1)
+        .unwrap();
+    workspace
+        .write_rect(PlaneId::Y, rect(1, 0, 4, 1), &[12, 12, 12, 12], 4)
+        .unwrap();
+
+    workspace
+        .predict_intra_paeth_rect(PlaneId::Y, 1, 1, block)
+        .unwrap();
+
+    let rows: Vec<&[u8]> = workspace
+        .rect_rows(PlaneId::Y, rect(1, 1, 4, 4))
+        .unwrap()
+        .collect();
+    assert_eq!(rows, vec![&[30, 30, 30, 30][..]; block.height()]);
+}
+
+#[test]
+fn workspace_paeth_rejects_missing_prepared_edges() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(8, 8),
+            rect(0, 0, 8, 8),
+        ),
+        0,
+    )
+    .unwrap();
+    let block = rect_block(2, 2);
+
+    assert!(matches!(
+        workspace.predict_intra_paeth_rect(PlaneId::Y, 0, 1, block),
+        Err(ReconError::WorkspaceIntraPredictionEdgeUnavailable {
+            plane: PlaneId::Y,
+            edge: IntraPaethEdge::Left,
+            rect
+        }) if rect == PlaneRect::new(0, 1, 4, 4).unwrap()
+    ));
+    assert!(matches!(
+        workspace.predict_intra_paeth_rect(PlaneId::Y, 1, 0, block),
+        Err(ReconError::WorkspaceIntraPredictionEdgeUnavailable {
+            plane: PlaneId::Y,
+            edge: IntraPaethEdge::Above,
+            rect
+        }) if rect == PlaneRect::new(1, 0, 4, 4).unwrap()
+    ));
+}
+
+#[test]
+fn workspace_predicts_rectangular_smooth_from_in_storage_edges() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(6, 6),
+            rect(0, 0, 6, 6),
+        ),
+        0,
+    )
+    .unwrap();
+    let block = rect_block(2, 2);
+
+    workspace
+        .write_rect(PlaneId::Y, rect(0, 1, 1, 5), &[20, 40, 60, 80, 100], 1)
+        .unwrap();
+    workspace
+        .write_rect(PlaneId::Y, rect(1, 0, 5, 1), &[10, 30, 50, 70, 90], 5)
+        .unwrap();
+
+    workspace
+        .predict_intra_smooth_rect(PlaneId::Y, 1, 1, block, IntraSmoothMode::Smooth)
+        .unwrap();
+
+    let rows: Vec<&[u8]> = workspace
+        .rect_rows(PlaneId::Y, rect(1, 1, 4, 4))
+        .unwrap()
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            &[26, 45, 64, 82][..],
+            &[48, 62, 75, 87][..],
+            &[70, 77, 85, 91][..],
+            &[91, 92, 94, 95][..],
+        ]
+    );
+}
+
+#[test]
+fn workspace_smooth_rejects_missing_prepared_edges() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(8, 8),
+            rect(0, 0, 8, 8),
+        ),
+        0,
+    )
+    .unwrap();
+    let block = rect_block(2, 2);
+
+    assert!(matches!(
+        workspace.predict_intra_smooth_rect(
+            PlaneId::Y,
+            0,
+            1,
+            block,
+            IntraSmoothMode::Smooth
+        ),
+        Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
+            plane: PlaneId::Y,
+            edge: IntraSmoothEdge::Left,
+            rect
+        }) if rect == PlaneRect::new(0, 1, 4, 4).unwrap()
+    ));
+    assert!(matches!(
+        workspace.predict_intra_smooth_rect(
+            PlaneId::Y,
+            1,
+            0,
+            block,
+            IntraSmoothMode::Smooth
+        ),
+        Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
+            plane: PlaneId::Y,
+            edge: IntraSmoothEdge::Above,
+            rect
+        }) if rect == PlaneRect::new(1, 0, 4, 4).unwrap()
+    ));
+    assert!(matches!(
+        workspace.predict_intra_smooth_rect(
+            PlaneId::Y,
+            1,
+            4,
+            block,
+            IntraSmoothMode::Smooth
+        ),
+        Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
+            plane: PlaneId::Y,
+            edge: IntraSmoothEdge::BottomLeft,
+            rect
+        }) if rect == PlaneRect::new(1, 4, 4, 4).unwrap()
+    ));
+    assert!(matches!(
+        workspace.predict_intra_smooth_rect(
+            PlaneId::Y,
+            4,
+            1,
+            block,
+            IntraSmoothMode::Smooth
+        ),
+        Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
+            plane: PlaneId::Y,
+            edge: IntraSmoothEdge::TopRight,
+            rect
+        }) if rect == PlaneRect::new(4, 1, 4, 4).unwrap()
+    ));
 }
 
 #[test]

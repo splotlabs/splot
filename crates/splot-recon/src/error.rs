@@ -5,7 +5,10 @@
 
 use core::fmt;
 
-use crate::{BitDepth, IntraDcEdge, PlaneId, PlaneRect, PlaneSize, ReferenceSlot};
+use crate::{
+    BitDepth, IntraDcEdge, IntraPaethEdge, IntraSmoothEdge, PlaneId, PlaneRect, PlaneSize,
+    ReferenceSlot,
+};
 
 /// Result alias used by `splot-recon` constructors and helpers.
 pub type Result<T> = core::result::Result<T, ReconError>;
@@ -160,6 +163,17 @@ pub enum ReconError {
         /// Maximum supported base-2 logarithm.
         max: u8,
     },
+    /// A rectangular intra prediction block dimension is outside the modeled range.
+    InvalidIntraRectBlockLog2 {
+        /// Supplied base-2 logarithm of the block width.
+        log2_width: u8,
+        /// Supplied base-2 logarithm of the block height.
+        log2_height: u8,
+        /// Minimum supported base-2 logarithm.
+        min: u8,
+        /// Maximum supported base-2 logarithm.
+        max: u8,
+    },
     /// A supplied intra prediction edge did not match the block size.
     IntraPredictionEdgeLengthMismatch {
         /// Edge whose sample count was checked.
@@ -180,6 +194,59 @@ pub enum ReconError {
         /// Maximum sample value allowed by the active bit depth.
         max: u16,
     },
+    /// A supplied PAETH intra prediction edge did not match the block size.
+    IntraPaethEdgeLengthMismatch {
+        /// Edge whose sample count was checked.
+        edge: IntraPaethEdge,
+        /// Expected edge sample count.
+        expected: usize,
+        /// Actual edge sample count.
+        actual: usize,
+    },
+    /// A PAETH intra prediction edge sample exceeded the active bit depth.
+    IntraPaethSampleOutOfRange {
+        /// Edge containing the out-of-range sample.
+        edge: IntraPaethEdge,
+        /// Zero-based index within the edge samples.
+        sample_index: usize,
+        /// Observed sample value.
+        value: u16,
+        /// Maximum sample value allowed by the active bit depth.
+        max: u16,
+    },
+    /// A supplied smooth intra prediction edge did not match the block size.
+    IntraSmoothEdgeLengthMismatch {
+        /// Edge whose sample count was checked.
+        edge: IntraSmoothEdge,
+        /// Expected edge sample count.
+        expected: usize,
+        /// Actual edge sample count.
+        actual: usize,
+    },
+    /// A smooth intra prediction edge sample exceeded the active bit depth.
+    IntraSmoothSampleOutOfRange {
+        /// Edge containing the out-of-range sample.
+        edge: IntraSmoothEdge,
+        /// Zero-based index within the edge samples.
+        sample_index: usize,
+        /// Observed sample value.
+        value: u16,
+        /// Maximum sample value allowed by the active bit depth.
+        max: u16,
+    },
+    /// A smooth intra prediction sample was outside the active bit depth.
+    IntraSmoothPredictionOutOfRange {
+        /// Row of the predicted sample.
+        row: usize,
+        /// Column of the predicted sample.
+        column: usize,
+        /// Predicted sample value.
+        value: i64,
+        /// Minimum allowed sample value.
+        min: i64,
+        /// Maximum sample value allowed by the active bit depth.
+        max: i64,
+    },
     /// An intra prediction block backing allocation failed.
     IntraPredictionAllocationFailed {
         /// Short description of the failed allocation.
@@ -198,6 +265,24 @@ pub enum ReconError {
         expected: usize,
         /// Actual output slice length.
         actual: usize,
+    },
+    /// A workspace intra prediction helper could not read a required edge.
+    WorkspaceIntraPredictionEdgeUnavailable {
+        /// Plane whose workspace storage was checked.
+        plane: PlaneId,
+        /// Required edge that was outside workspace storage.
+        edge: IntraPaethEdge,
+        /// Prediction rectangle needing the edge.
+        rect: PlaneRect,
+    },
+    /// A workspace smooth intra helper could not read a required prepared edge.
+    WorkspaceSmoothIntraPredictionEdgeUnavailable {
+        /// Plane whose workspace storage was checked.
+        plane: PlaneId,
+        /// Required edge that was outside workspace storage.
+        edge: IntraSmoothEdge,
+        /// Prediction rectangle needing the edge.
+        rect: PlaneRect,
     },
     /// A reference frame store capacity was outside the supported slot range.
     InvalidReferenceStoreCapacity {
@@ -372,6 +457,15 @@ impl fmt::Display for ReconError {
                 f,
                 "unsupported square intra block log2 size {log2_size}; expected {min} through {max}"
             ),
+            Self::InvalidIntraRectBlockLog2 {
+                log2_width,
+                log2_height,
+                min,
+                max,
+            } => write!(
+                f,
+                "unsupported rectangular intra block log2 size {log2_width}x{log2_height}; expected each dimension {min} through {max}"
+            ),
             Self::IntraPredictionEdgeLengthMismatch {
                 edge,
                 expected,
@@ -391,6 +485,54 @@ impl fmt::Display for ReconError {
                 "intra prediction {} edge sample {sample_index} value {value} exceeds maximum {max}",
                 edge.name()
             ),
+            Self::IntraPaethEdgeLengthMismatch {
+                edge,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "PAETH intra prediction {} edge length mismatch: expected {expected} samples, got {actual}",
+                edge.name()
+            ),
+            Self::IntraPaethSampleOutOfRange {
+                edge,
+                sample_index,
+                value,
+                max,
+            } => write!(
+                f,
+                "PAETH intra prediction {} edge sample {sample_index} value {value} exceeds maximum {max}",
+                edge.name()
+            ),
+            Self::IntraSmoothEdgeLengthMismatch {
+                edge,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "smooth intra prediction {} edge length mismatch: expected {expected} samples, got {actual}",
+                edge.name()
+            ),
+            Self::IntraSmoothSampleOutOfRange {
+                edge,
+                sample_index,
+                value,
+                max,
+            } => write!(
+                f,
+                "smooth intra prediction {} edge sample {sample_index} value {value} exceeds maximum {max}",
+                edge.name()
+            ),
+            Self::IntraSmoothPredictionOutOfRange {
+                row,
+                column,
+                value,
+                min,
+                max,
+            } => write!(
+                f,
+                "smooth intra prediction sample at row {row} column {column} value {value} is outside {min}..={max}"
+            ),
             Self::IntraPredictionAllocationFailed { context } => {
                 write!(f, "failed to allocate {context}")
             }
@@ -404,6 +546,26 @@ impl fmt::Display for ReconError {
             Self::IntraPredictionOutputTooSmall { expected, actual } => write!(
                 f,
                 "intra prediction output buffer is too small: expected at least {expected} samples, got {actual}"
+            ),
+            Self::WorkspaceIntraPredictionEdgeUnavailable { plane, edge, rect } => write!(
+                f,
+                "current-frame workspace {} intra prediction requires {} edge for rectangle x={} y={} width={} height={}",
+                plane.name(),
+                edge.name(),
+                rect.x(),
+                rect.y(),
+                rect.width(),
+                rect.height()
+            ),
+            Self::WorkspaceSmoothIntraPredictionEdgeUnavailable { plane, edge, rect } => write!(
+                f,
+                "current-frame workspace {} smooth intra prediction requires {} edge for rectangle x={} y={} width={} height={}",
+                plane.name(),
+                edge.name(),
+                rect.x(),
+                rect.y(),
+                rect.width(),
+                rect.height()
             ),
             Self::InvalidReferenceStoreCapacity {
                 capacity,
