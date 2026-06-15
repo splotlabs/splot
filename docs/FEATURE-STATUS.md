@@ -19,7 +19,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-5.2.2-OBU-HEADER` | OBU header syntax | normative | bitstream-syntax | done | done | done | done | done | n/a | done | done | pending | `crates/splot-core/src/obu.rs` |
 | `AV2-5.2.1-OBU-TYPE` | OBU type and OBU-class predicates | normative | bitstream-syntax | done | done | done | done | n/a | n/a | done | done | pending | `crates/splot-core/src/types.rs` |
 | `AV2-5.2.1-OBU-DISPATCH` | open_bitstream_unit payload dispatch | normative | bitstream-syntax | done | done | partial | n/a | todo | n/a | partial | done | pending | `crates/splot-core/src/obu.rs` |
-| `AV2-B-ANNEXB-OBU-ENVELOPE` | Annex B length-delimited OBU envelope | normative | bitstream-syntax | done | done | done | done | todo | n/a | done | done | pending | `crates/splot-core/src/annexb.rs` |
+| `AV2-B-ANNEXB-OBU-ENVELOPE` | Annex B length-delimited OBU envelope | normative | bitstream-syntax | done | done | done | done | done | n/a | done | done | pending | `crates/splot-core/src/annexb.rs` |
 | `AV2-IVF-CONTAINER` | IVF container support | conformance | bitstream-syntax | done | done | done | done | done | n/a | done | done | pending | `crates/splot-core/src/ivf.rs` |
 | `AV2-5.2.3-TRAILING-BITS` | Trailing bits syntax and semantics | normative | bitstream-syntax | done | done | done | partial | done | n/a | done | done | pending | `crates/splot-core/src/obu.rs` |
 | `AV2-5.2.4-BYTE-ALIGNMENT` | Byte alignment syntax and semantics | normative | bitstream-syntax | done | done | done | partial | done | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |

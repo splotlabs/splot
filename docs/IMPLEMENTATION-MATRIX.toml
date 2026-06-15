@@ -423,7 +423,7 @@ mapped = "done"
 types = "done"
 parse = "done"
 validate = "done"
-write = "todo"
+write = "done"
 encode = "not-applicable"
 decode_check = "done"
 tests = "done"
@@ -431,8 +431,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/annexb.rs::tests", "crates/splot-core/src/annexb.rs::proptests"]
-commands = ["cargo test -p splot-core annexb"]
+tests = ["crates/splot-core/src/annexb.rs::tests", "crates/splot-core/src/annexb.rs::proptests", "crates/splot-core/src/write/obu.rs::tests", "crates/splot-core/src/write/obu.rs::proptests"]
+commands = ["cargo test -p splot-core annexb", "cargo test -p splot-core write::obu"]
 fixtures = ["tests/fixtures/conformant.av2", "tests/fixtures/truncated.av2", "tests/fixtures/prefix-then-truncated.av2"]
 diagnostics = ["bitstream/parse-error"]
 

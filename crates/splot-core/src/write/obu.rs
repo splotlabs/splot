@@ -27,6 +27,8 @@ use crate::write::error::{WriteError, WriteResult};
 /// [`write_annexb_obu`]).
 ///
 /// # Errors
+/// - [`WriteError::WriterNotByteAligned`] if the writer is not on a byte boundary
+///   (the OBU header is byte-granular).
 /// - [`WriteError::InconsistentHeader`] if `has_header_extension` disagrees with
 ///   `header_size_bytes` (the flag is `true` iff the header is two bytes).
 /// - [`WriteError::NonInferableLayerIds`] if a no-extension header carries layer ids
@@ -43,7 +45,12 @@ use crate::write::error::{WriteError, WriteResult};
 /// All checks run before any byte is written, so a rejected header leaves the writer
 /// unchanged.
 pub fn write_obu_header(writer: &mut BitWriter, header: &ObuHeader) -> WriteResult<()> {
-    // Validate fully up front so a rejected header leaves no bytes in the writer.
+    // The OBU header is byte-granular and the parser reparses it from a byte boundary,
+    // so a mid-byte write would not round-trip. Validate the writer state and the
+    // header fully up front, before any byte is written.
+    if !writer.is_byte_aligned() {
+        return Err(WriteError::WriterNotByteAligned);
+    }
     check_header_encodable(header)?;
 
     // Byte 0: obu_header_extension_flag f(1), obu_type f(5), obu_tlayer_id f(2).
@@ -129,14 +136,20 @@ fn check_field_width(value: u8, width_bits: u32) -> WriteResult<()> {
 /// public for symmetry and direct testing.
 ///
 /// # Errors
-/// Returns [`WriteError::ValueTooWide`] if `embedded_layer_id` exceeds 3 bits or
-/// `extended_layer_id` exceeds 5 bits (unreachable for parser-produced values).
+/// - [`WriteError::WriterNotByteAligned`] if the writer is not on a byte boundary
+///   (the extension is a whole byte).
+/// - [`WriteError::ValueTooWide`] if `embedded_layer_id` exceeds 3 bits or
+///   `extended_layer_id` exceeds 5 bits (unreachable for parser-produced values).
 pub fn write_obu_header_extension(
     writer: &mut BitWriter,
     embedded_layer_id: EmbeddedLayerId,
     extended_layer_id: ExtendedLayerId,
 ) -> WriteResult<()> {
-    // Validate both fields up front so a rejected value leaves the writer clean.
+    // Validate the writer state and both fields up front so a rejected call leaves
+    // the writer clean.
+    if !writer.is_byte_aligned() {
+        return Err(WriteError::WriterNotByteAligned);
+    }
     check_field_width(embedded_layer_id.get(), 3)?;
     check_field_width(extended_layer_id.get(), 5)?;
     writer.write_bits_u8(embedded_layer_id.get(), 3)?;
@@ -380,6 +393,15 @@ mod tests {
             Err(WriteError::WriterNotByteAligned)
         ));
         assert_eq!(unaligned.bit_len(), 1); // unchanged — the framer wrote nothing
+
+        // A direct `write_obu_header` on an unaligned writer is rejected too.
+        let mut unaligned_h = BitWriter::new();
+        unaligned_h.write_bit(1).unwrap();
+        assert!(matches!(
+            write_obu_header(&mut unaligned_h, &td),
+            Err(WriteError::WriterNotByteAligned)
+        ));
+        assert_eq!(unaligned_h.bit_len(), 1);
     }
 
     /// G: non-canonical caveat — a non-minimal LEB128 size re-emits canonically
