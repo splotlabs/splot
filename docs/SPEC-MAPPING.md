@@ -57,7 +57,8 @@ Decoder partition work uses these local mirror citations:
   [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1).
 - AV2 § 5.20.3.2 read partition syntax:
   [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2).
-- AV2 § 5.20.4.1 decode block syntax:
+- AV2 § 5.20.4.1 decode block syntax, cited only as a future boundary beyond
+  the current partition-frontier feature:
   [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1).
 - AV2 § 5.20.9.1 tile-local `is_inside` function:
   [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-9-1`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-9-1).
