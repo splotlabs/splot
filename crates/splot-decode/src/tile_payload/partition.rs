@@ -225,6 +225,10 @@ pub(crate) fn read_partition_decision(
     let trace = ReadPartitionDecisionTrace::default();
     if let Some(partition) = input.implied_partition {
         if !input.allowed.contains(partition) {
+            // AV2 §5.20.3.2 falls through when an implied partition is not
+            // allowed. Once `partition_implied` and `init_allowed_partitions`
+            // are derived by the same caller, this state means those caller
+            // facts disagree, so this boundary rejects it before reading syntax.
             return Err(PartitionDecisionError::ImpliedPartitionDisallowed { partition });
         }
         return Ok(ReadPartitionDecision::new(partition, trace));
@@ -236,6 +240,9 @@ pub(crate) fn read_partition_decision(
 
     if !input.bru_active {
         if !input.allowed.contains(PartitionType::None) {
+            // AV2 §5.20.3.2 returns PARTITION_NONE unconditionally outside
+            // BRU-active mode. A spec-derived allowed set that excludes NONE in
+            // this branch is an internal caller-fact invariant violation.
             return Err(PartitionDecisionError::InactiveBruPartitionDisallowed {
                 partition: PartitionType::None,
             });
@@ -334,6 +341,9 @@ pub(crate) fn read_partition_decision(
         rect_type,
     );
     if !input.allowed.contains(partition) {
+        // AV2 §5.20.3.2 returns the Rect_Part_Table result. If the caller's
+        // allowed facts reject that result, future full traversal must treat it
+        // as an invalid derived-state invariant rather than continuing decode.
         return Err(PartitionDecisionError::FinalPartitionDisallowed { partition });
     }
 
