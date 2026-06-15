@@ -254,6 +254,14 @@ fn explicit_sb_starts(info: &TileInfo, sb_shift2: u32) -> (Vec<u32>, Vec<u32>) {
     )
 }
 
+/// Returns `true` if `starts` is strictly increasing (each superblock tile start exceeds the
+/// previous). A parser-produced layout always satisfies this; the explicit-branch writer uses
+/// it to reject a non-canonical model before the `write_tile_params` replay (whose non-uniform
+/// branch subtracts consecutive starts).
+fn is_strictly_increasing(starts: &[u32]) -> bool {
+    starts.windows(2).all(|w| w[1] > w[0])
+}
+
 /// Builds the `tile_params()` input for the explicit branch (AV2 v1.0.0 § 5.18.7.3,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-3`), exactly as the parser's call
 /// site does: `tile_params(FrameWidth, FrameHeight, seqSbSize, SbSize, IsBridge)`.
@@ -321,6 +329,13 @@ fn check_reuse_layout(
     tile: &CoreSeqTileView,
     grid: &TileInfoGrid,
 ) -> WriteResult<()> {
+    // The reuse branch writes no tile_params() bits, so the parser leaves tile_params None;
+    // a stored Some could not have been produced and would reparse to None.
+    if info.tile_params.is_some() {
+        return Err(WriteError::NonCanonicalFrameHeader {
+            what: "tile_params",
+        });
+    }
     // reuse_tile_info is only set when eligible, which the None (reserved-level) case
     // already rejected in compute_tile_info_grid; seq is always Some here.
     let seq = tile
@@ -429,6 +444,21 @@ fn check_explicit_layout(
     }
     let sb_shift2 = branch_sb_shift2(params.uniform_spacing, tile.seq_sb_size, grid.sb_size);
     let (sb_col_starts, sb_row_starts) = explicit_sb_starts(info, sb_shift2);
+
+    // A parser-produced layout has strictly-increasing superblock starts (each tile is >= 1
+    // superblock wide). Reject a non-canonical model whose recovered starts are not strictly
+    // increasing BEFORE the forward replay: `write_tile_params`'s non-uniform branch subtracts
+    // consecutive starts and would otherwise panic on the underflow rather than reject.
+    if !is_strictly_increasing(&sb_col_starts) {
+        return Err(WriteError::NonCanonicalFrameHeader {
+            what: "mi_col_starts",
+        });
+    }
+    if !is_strictly_increasing(&sb_row_starts) {
+        return Err(WriteError::NonCanonicalFrameHeader {
+            what: "mi_row_starts",
+        });
+    }
 
     // Forward-replay the § 5.18.7.3 bits to a scratch writer, then reparse them with
     // `parse_tile_layout` and compare. This keeps the real `writer` untouched
@@ -548,6 +578,15 @@ fn check_trailing_fields(
         // !avg_cdf_type; otherwise the syntax leaves it 0.
         if !tile.enable_avg_cdf || tile.avg_cdf_type == 0 {
             let n = u32::from(info.tile_rows_log2) + u32::from(info.tile_cols_log2);
+            // context_update_tile_id is f(n); the descriptor accepts n <= 32. A malformed
+            // layout could drive TileRowsLog2 + TileColsLog2 above 32 — reject it before any
+            // bit rather than let write_bits fail mid-write.
+            if n > u32::BITS {
+                return Err(WriteError::BitWidthTooLarge {
+                    requested: n,
+                    max: u32::BITS,
+                });
+            }
             let fits = n >= u32::BITS || info.context_update_tile_id < (1u32 << n);
             if !fits {
                 return Err(WriteError::ValueTooWide {

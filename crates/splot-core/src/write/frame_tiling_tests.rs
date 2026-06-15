@@ -430,6 +430,94 @@ mod tests {
     }
 
     #[test]
+    fn reuse_branch_tile_params_some_rejected() {
+        // The reuse branch writes no tile_params() bits, so the parser leaves tile_params
+        // None; a stored Some would reparse to None (round-trip break).
+        let mut view = base_view();
+        view.seq_tile_info_present_flag = true;
+        view.seq_tile_params = Some(uniform_2x2_seq_params());
+        let mut bits = Bits::default();
+        bits.f(0, 2).f(0, 2); // inferred reuse; context f(2)=0, tile_size f(2)=0
+        let mut info = parse(&view, &bits.into_bytes(), FrameSize::new(256, 256), false, false);
+        assert!(info.reuse_tile_info);
+        assert!(info.tile_params.is_none());
+        // Graft a tile_params the reuse branch never carries.
+        let explicit = parse(
+            &base_view(),
+            &explicit_multi_tile_bits(),
+            FrameSize::new(256, 256),
+            false,
+            false,
+        );
+        info.tile_params = explicit.tile_params;
+        assert!(info.tile_params.is_some());
+        let err = reject(&info, &view, FrameSize::new(256, 256), false, false);
+        assert_eq!(
+            err,
+            WriteError::NonCanonicalFrameHeader {
+                what: "tile_params"
+            }
+        );
+    }
+
+    #[test]
+    fn explicit_non_monotonic_starts_rejected() {
+        // A non-canonical explicit model with non-monotonic mi_col_starts: the writer must
+        // reject (not panic in write_tile_params' consecutive-start subtraction). frame
+        // 256x256 -> MiCols 64; recovered sb starts (>> sbShift2) of [0,48,16] are not strictly
+        // increasing.
+        let explicit = parse(
+            &base_view(),
+            &explicit_multi_tile_bits(),
+            FrameSize::new(256, 256),
+            false,
+            false,
+        );
+        let info = TileInfo {
+            reuse_tile_info: false,
+            tile_cols: 3,
+            tile_rows: 1,
+            tile_cols_log2: 2,
+            tile_rows_log2: 0,
+            mi_col_starts: vec![0, 48, 16, 64],
+            mi_row_starts: vec![0, 64],
+            context_update_tile_id: 0,
+            tile_size_bytes: Some(1),
+            tile_params: explicit.tile_params,
+        };
+        let err = reject(&info, &base_view(), FrameSize::new(256, 256), false, false);
+        assert_eq!(
+            err,
+            WriteError::NonCanonicalFrameHeader {
+                what: "mi_col_starts"
+            }
+        );
+    }
+
+    #[test]
+    fn context_update_width_above_32_rejected() {
+        // tile_rows_log2 + tile_cols_log2 > 32 with the context field enabled exceeds the f(n)
+        // descriptor max. The layout check bounds the log2s in write_tile_info, so the guard is
+        // exercised directly on check_trailing_fields.
+        let mut view = base_view();
+        view.enable_avg_cdf = false; // context_update_tile_id field is signalled
+        let info = TileInfo {
+            reuse_tile_info: false,
+            tile_cols: 4,
+            tile_rows: 4,
+            tile_cols_log2: 20,
+            tile_rows_log2: 20, // sum 40 > 32
+            mi_col_starts: vec![0, 16, 32, 48, 64],
+            mi_row_starts: vec![0, 16, 32, 48, 64],
+            context_update_tile_id: 0,
+            tile_size_bytes: Some(1),
+            tile_params: None,
+        };
+        let err = check_trailing_fields(&info, &view, false, false).unwrap_err();
+        assert_eq!(err, WriteError::BitWidthTooLarge { requested: 40, max: 32 });
+    }
+
+    #[test]
     fn missing_explicit_tile_params_rejected() {
         // Explicit branch with tile_params() surfaced as None: the writer cannot replay.
         let mut info = parse(
