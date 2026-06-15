@@ -317,7 +317,7 @@ mapped = "done"
 types = "done"
 parse = "done"
 validate = "done"
-write = "todo"
+write = "done"
 encode = "not-applicable"
 decode_check = "done"
 tests = "done"
@@ -325,8 +325,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/obu.rs::tests", "crates/splot-validate/src/validator/tests/mod.rs"]
-commands = ["cargo test -p splot-core obu", "cargo test -p splot-validate"]
+tests = ["crates/splot-core/src/obu.rs::tests", "crates/splot-validate/src/validator/tests/mod.rs", "crates/splot-core/src/write/obu.rs::tests", "crates/splot-core/src/write/obu.rs::proptests"]
+commands = ["cargo test -p splot-core obu", "cargo test -p splot-validate", "cargo test -p splot-core write::obu"]
 fixtures = ["tests/fixtures/conformant.av2", "tests/fixtures/bad-global-xlayer.av2"]
 diagnostics = [
     "obu-header/global-xlayer-required",
@@ -496,7 +496,7 @@ mapped = "done"
 types = "done"
 parse = "done"
 validate = "partial"
-write = "todo"
+write = "done"
 encode = "not-applicable"
 decode_check = "done"
 tests = "done"
@@ -504,8 +504,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/obu.rs::tests", "crates/splot-core/src/obu.rs::proptests", "crates/splot-validate/src/validator/tests/mod.rs", "crates/splot-validate/src/checks/mod.rs::tests"]
-commands = ["cargo test -p splot-core trailing", "cargo test -p splot-validate trailing"]
+tests = ["crates/splot-core/src/obu.rs::tests", "crates/splot-core/src/obu.rs::proptests", "crates/splot-validate/src/validator/tests/mod.rs", "crates/splot-validate/src/checks/mod.rs::tests", "crates/splot-core/src/write/bit_writer.rs::tests", "crates/splot-core/src/write/bit_writer.rs::proptests"]
+commands = ["cargo test -p splot-core trailing", "cargo test -p splot-validate trailing", "cargo test -p splot-core write::bit_writer"]
 fixtures = []
 diagnostics = ["trailing-bits/missing-one-bit", "trailing-bits/zero-bit-not-zero"]
 
@@ -3710,7 +3710,7 @@ openspec_change = "bit-writer-primitives"
 tracking_issue = ""
 owner = "encoder"
 risk = "high"
-notes = "BitWriter (crates/splot-core/src/write/) inverts every BitReader primitive (f(n), su, uvlc, svlc, le, leb128, ns, rg, and zero-pad byte alignment), proven by read(write(x)) == x property tests; landed by the bit-writer-primitives change. The maintainer lifted the VALIDATOR-ROADMAP writer fence (2026-06-14). Remaining writer surface: OBU-header/size writer, sequence/frame/tile/metadata/payload writers, the Annex B muxer plus writer-track muxer round-trip integration (the IVF container write helpers already exist via AV2-IVF-CONTAINER, write=done), and the differential round-trip + fuzz harness. The RangeEncoder entropy stub is still unimplemented; no public encode CLI ships."
+notes = "BitWriter (crates/splot-core/src/write/) inverts every BitReader primitive (f(n), su, uvlc, svlc, le, leb128, ns, rg, and zero-pad byte alignment), proven by read(write(x)) == x property tests; landed by the bit-writer-primitives change. The maintainer lifted the VALIDATOR-ROADMAP writer fence (2026-06-14). The OBU-header, §5.2.3 trailing-bits, and Annex B OBU framing writers landed (obu-header-and-size-writer; crates/splot-core/src/write/obu.rs + BitWriter::write_trailing_bits). Remaining writer surface: sequence/frame/tile/metadata/payload writers, the Annex B muxer plus writer-track muxer round-trip integration (the IVF container write helpers already exist via AV2-IVF-CONTAINER, write=done), and the differential round-trip + fuzz harness. The RangeEncoder entropy stub is still unimplemented; no public encode CLI ships."
 
 [feature.status]
 mapped = "partial"
@@ -3725,7 +3725,7 @@ avm_diff = "pending"
 perf = "todo"
 
 [feature.proof]
-tests = ["crates/splot-core/src/write/bit_writer.rs::tests", "crates/splot-core/src/write/bit_writer.rs::proptests"]
+tests = ["crates/splot-core/src/write/bit_writer.rs::tests", "crates/splot-core/src/write/bit_writer.rs::proptests", "crates/splot-core/src/write/obu.rs::tests"]
 commands = ["cargo test -p splot-core write"]
 fixtures = []
 diagnostics = []
