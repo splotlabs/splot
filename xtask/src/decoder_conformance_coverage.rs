@@ -203,12 +203,13 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         feature_ids: &["CLI-DECODE", "DECODE-STREAM-STATE-PLANNER"],
         status: "unsupported",
         tests: &[
-            "crates/splot-cli/tests/decode_cli.rs::decode_plan_success_json_mode_emits_runtime_unsupported_object",
+            "crates/splot-cli/tests/decode_cli.rs::decode_hash_output_format_emits_unsupported_text_without_output_path",
+            "crates/splot-cli/tests/decode_y4m_cli.rs::decode_y4m_source_error_wins_before_missing_output_parent",
         ],
         fuzz_targets: &["decode_plan_bytes"],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Public decode still defers at the runtime output boundary, so general decoding, wrapup, output units, and random-access runtime behavior are unsupported.",
+        notes: "Broad public decode outside the minimal runtime tier still defers at the runtime tier boundary, so general decoding, wrapup, output units, and random-access runtime behavior are unsupported.",
     },
     CoverageRow {
         id: "cdf-layer-reference-and-motion-setup",

@@ -11,7 +11,7 @@ use splot_parallel::{ThreadCount, WorkerPool};
 use crate::DecodeHashReport;
 use crate::DecodeOptions;
 use crate::byte_stream::plan_byte_stream;
-use crate::error::Result;
+use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
 use crate::runtime::DecodeRuntimeConfig;
 use crate::stream_plan::{DecodeStreamInput, DecodeStreamPlan, plan_stream};
 use crate::tile_payload::{
@@ -25,9 +25,10 @@ use crate::tile_payload::{
 /// It owns exactly one [`WorkerPool`] and exposes the resolved worker count,
 /// builds bounded stream metadata from raw Annex B/IVF byte slices or already
 /// parsed stream structures, and exposes the narrow documented
-/// `minimal-intra-8bit420-hash-v1` runtime hash path. It intentionally does NOT
-/// inspect input/output paths, write output, invoke any external decoder, or
-/// claim broad AV2 runtime decode support.
+/// `minimal-intra-8bit420-hash-v1` runtime hash and Y4M byte paths. It
+/// intentionally does NOT inspect input/output paths, perform filesystem
+/// publication, invoke any external decoder, or claim broad AV2 runtime decode
+/// support.
 #[derive(Debug)]
 pub struct DecodeContext {
     runtime: DecodeRuntimeConfig,
@@ -103,6 +104,37 @@ impl DecodeContext {
         self.pool.install(|| {
             crate::runtime_hash::decode_hash_report_from_plan(bytes, options, &plan, self.threads())
         })
+    }
+
+    /// Decodes the documented minimal tier and writes a complete Y4M stream.
+    ///
+    /// This method first runs [`Self::plan_bytes`] so malformed sources,
+    /// resource-limit failures, layer selection, and planner-level unsupported
+    /// structures stay transactional. Runtime Y4M support is intentionally
+    /// limited to the same `minimal-intra-8bit420-hash-v1` IVF tier as the hash
+    /// path. The complete Y4M stream is buffered and checked against
+    /// [`crate::DecodeLimitName::MaxOutputBytes`] before any bytes are written
+    /// to `writer`.
+    ///
+    /// # Errors
+    /// Returns [`crate::DecodeError`] for malformed sources, unsupported
+    /// structures, runtime-tier rejections, resource-limit failures, worker-pool
+    /// failures, reconstruction model errors, Y4M serialization errors, or
+    /// caller-writer I/O errors.
+    pub fn decode_y4m_bytes<W: std::io::Write>(
+        &self,
+        bytes: &[u8],
+        options: DecodeOptions,
+        mut writer: W,
+    ) -> Result<()> {
+        let plan = self.plan_bytes(bytes, options)?;
+        let y4m = self
+            .pool
+            .install(|| crate::runtime_y4m::encode_y4m_stream_from_plan(bytes, options, &plan))?;
+        std::io::Write::write_all(&mut writer, &y4m).map_err(|source| {
+            DecodeOutputError::io(DecodeOutputOperation::WriteY4mStream, source)
+        })?;
+        Ok(())
     }
 
     /// Builds a deterministic plan over an already parsed AV2 stream.

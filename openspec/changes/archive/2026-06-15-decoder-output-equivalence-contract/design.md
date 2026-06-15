@@ -80,14 +80,14 @@ reference evidence supported.
    leave those writers partially written on I/O failure. Future successful
    `splot decode -o` modes must wrap them in same-directory temporary-file
    staging, complete serialization, flush user-space buffers, sync the temp
-   file's contents and metadata, rename only after those steps succeed, and sync
-   the parent directory after rename. Any output path creation, temp write,
-   flush, sync, rename, parent-directory sync, cleanup, or serialization failure
-   must become a registered `decode/output-error` diagnostic rather than a
-   partial success artifact. Pre-rename failures preserve the final path
-   unchanged; a parent-directory sync failure after a successful rename is a
-   durability failure where the final path may already contain the complete
-   serialized output, but never a partially serialized payload.
+   file's contents and metadata, rename only after those steps succeed, and
+   attempt best-effort parent-directory sync after rename where supported. Any
+   output path creation, temp write, flush, sync, rename, cleanup, or
+   serialization failure before the completed rename must become a registered
+   `decode/output-error` diagnostic rather than a partial success artifact.
+   Pre-rename failures preserve the final path unchanged; unsupported or failed
+   parent-directory sync after a successful rename does not convert a complete
+   publication into a failed decode.
 
 5. **Reference tools remain evidence only.**
    AVM/dav2d command summaries, tool revisions, fixture hashes, and output
@@ -106,11 +106,11 @@ reference evidence supported.
   syntax. Runtime Y4M remains unsupported until the future output row pins and
   tests that policy.
 - Cross-platform atomic replace behavior can be subtle. This contract requires
-  temp-file sync before rename and parent-directory sync after rename for any
-  future successful `-o` claim; the future runtime output change owns the helper
-  implementation details and platform support tests. Because parent-directory
-  sync happens after rename, its failure is not a no-touch failure; it is a
-  structured durability failure over a fully serialized candidate path.
+  temp-file sync before rename and best-effort parent-directory sync after
+  rename for any future successful `-o` claim; the future runtime output change
+  owns the helper implementation details and platform support tests. Because
+  parent-directory sync happens after rename, unsupported or failed directory
+  sync must not turn a completed publication into a failed decode.
 - A success hash report could be confused with current diagnostic JSON. The
   schema uses explicit `contract_id`, `contract_version`, and success-only
   fields to keep those surfaces separate.

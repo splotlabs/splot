@@ -10,11 +10,13 @@
 //! planner. It also exposes a [`DecodeContext`]/[`DecodeRuntimeConfig`]
 //! worker-pool scaffold that owns a [`splot_parallel::WorkerPool`]. The stream
 //! planners consume either bounded raw bytes or already parsed `splot-core`
-//! stream facts.
+//! stream facts, while the runtime adapters expose only the documented minimal
+//! hash and Y4M byte-output tier.
 //!
 //! Feature tracking: `INFRA-DECODER-CRATE-SCAFFOLDING`,
 //! `DECODE-UNSUPPORTED-DIAGNOSTIC-API`, `DECODE-LIMITS-RUNTIME-API`,
-//! `DECODE-STREAM-STATE-PLANNER`, `DECODE-BYTE-STREAM-PLANNER`.
+//! `DECODE-STREAM-STATE-PLANNER`, `DECODE-BYTE-STREAM-PLANNER`,
+//! `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`, `DECODE-Y4M-RUNTIME-OUTPUT`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
@@ -26,17 +28,20 @@ pub mod error;
 pub mod hash_report;
 pub mod runtime;
 mod runtime_hash;
+mod runtime_minimal;
+mod runtime_y4m;
 pub mod stream_plan;
 pub(crate) mod tile_payload;
 
 pub use context::DecodeContext;
 pub use diagnostic::{
     DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeMalformedSourceDetails,
-    DecodePlanSummary, DecodeResourceLimitDetails, DecodeUnsupportedStructureDetails,
-    MALFORMED_SOURCE_RULE_ID, RESOURCE_LIMIT_RULE_ID,
+    DecodeOutputErrorDetails, DecodePlanSummary, DecodeResourceLimitDetails,
+    DecodeUnsupportedStructureDetails, MALFORMED_SOURCE_RULE_ID, OUTPUT_ERROR_RULE_ID,
+    RESOURCE_LIMIT_RULE_ID,
 };
-pub use error::DecodeUnsupportedFeature;
 pub use error::{DecodeError, Result};
+pub use error::{DecodeOutputError, DecodeOutputOperation, DecodeUnsupportedFeature};
 pub use hash_report::{
     DECODE_HASH_REPORT_BYTE_STREAM_ID, DECODE_HASH_REPORT_CONTRACT_ID,
     DECODE_HASH_REPORT_CONTRACT_VERSION, DECODE_HASH_REPORT_HASH_ALGORITHM_ID,
