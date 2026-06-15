@@ -22,13 +22,16 @@
 //! § 5.18.2 quantization cluster (`quantization_params()`, `setup_qm_params()`,
 //! `read_delta_q()`, `delta_q_params()`, and the per-segment lossless/QM tail); and
 //! [`frame_segmentation`] writes the § 5.18.7.1 `segmentation_params()` intra path
-//! (reusing the shared § 5.4.9 `seg_info()` body writer).
+//! (reusing the shared § 5.4.9 `seg_info()` body writer); and [`frame_filters`] writes the
+//! § 5.18.5.2 / § 5.18.7.9 / § 5.18.7.10 loop-filter cluster
+//! (`deblocking_filter_params()`, `gdf_params()`, and `cdef_params()`).
 //! More payload writers will build on this module as the writer surface grows; see
 //! `docs/spec-coverage-writer.md` (once landed) for the per-structure coverage matrix.
 
 pub mod bit_writer;
 pub mod error;
 pub mod frame_config;
+pub mod frame_filters;
 pub mod frame_header;
 pub mod frame_quant;
 pub mod frame_segmentation;
@@ -42,6 +45,7 @@ pub mod seq_tile;
 pub use bit_writer::BitWriter;
 pub use error::{WriteError, WriteResult};
 pub use frame_config::{write_frame_size, write_intrabc_params, write_screen_content_params};
+pub use frame_filters::{write_cdef_params, write_deblocking_filter_params, write_gdf_params};
 pub use frame_header::write_frame_header_prefix;
 pub use frame_quant::{
     write_delta_q_params, write_lossless_info, write_quantization_params, write_read_delta_q,

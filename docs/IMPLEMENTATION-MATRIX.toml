@@ -2839,14 +2839,14 @@ openspec_change = "frame-filtering-deblocking-gdf-cdef"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. deblocking_filter_params() (§5.18.5.2) is typed and parsed on the intra frame-header path under frame-filtering-deblocking-gdf-cdef: apply_deblocking_filter[0..4] (NumPlanes-gated chroma pair), df_delta_q_present[i], and the derived DfDeltaQ[i] (df_delta_q[i] - (1 << (dfParBits-1)) with the (i==1)?DfDeltaQ[0]:0 / outer-else-0 inferences), where dfParBits = df_par_bits_minus_2 + 2 (§5.4.10). The in-tree sequence parser reads df_par_bits_minus_2 as f(2) (0..=3), but a direct/fuzz caller is not bound by that read; since the DfDeltaQ derivation shifts 1 << (dfParBits-1) and df_delta_q[i] is f(dfParBits), the parser rejects an out-of-range width with a structured Error::BitWidthTooLarge before the shift (dfParBits > 32) rather than panicking in debug (workspace no-reachable-panic rule). The deblocking never-panics proptest is widened to the full u8 df_par_bits_minus_2 range. The cur_mfh_id > 0 arm consults the resolved MultiFrameHeaderRecord's mfh_deblocking_filter_update / mfh_apply_deblocking_filter (§5.7, mirror :5949): when the update bit is set apply is copied from the MFH with no apply bits read; otherwise apply[0]/[1] (and the chroma pair) are read from the frame. CodedLossless short-circuits to all-0 apply (no bits). §6.17.5.2 states no requirement of bitstream conformance on these fields (all bounded by fixed widths), so no diagnostic is added. Under frame-header-inter-reference-paths §5.18.5.1 read_interpolation_filter() now LANDS (read_interpolation_filter, InterpolationFilter, filtering.rs): is_filter_switchable f(1) selects SWITCHABLE, else interpolation_filter f(2) names the fixed filter (EIGHTTAP / EIGHTTAP_SMOOTH / EIGHTTAP_SHARP / BILINEAR); it is parsed on the inter MV-precision block (mirror :4919) and surfaced on core.inter.interpolation_filter. Residual: the inter allow_df_sub_pu / apply_deblocking_filter_tip reads (mirror :4953-4967) live on the TIP_FRAME_AS_OUTPUT arm, which the inter path stops before (InterStop::TipAsOutputReturn) because that arm reads quantization_params() / tile_info() against reference-frame dims this phase does not thread; they land when the TIP-output arm completes."
+notes = "Child row of AV2-5.18-FRAME-HEADER. deblocking_filter_params() (§5.18.5.2) is typed and parsed on the intra frame-header path under frame-filtering-deblocking-gdf-cdef: apply_deblocking_filter[0..4] (NumPlanes-gated chroma pair), df_delta_q_present[i], and the derived DfDeltaQ[i] (df_delta_q[i] - (1 << (dfParBits-1)) with the (i==1)?DfDeltaQ[0]:0 / outer-else-0 inferences), where dfParBits = df_par_bits_minus_2 + 2 (§5.4.10). The in-tree sequence parser reads df_par_bits_minus_2 as f(2) (0..=3), but a direct/fuzz caller is not bound by that read; since the DfDeltaQ derivation shifts 1 << (dfParBits-1) and df_delta_q[i] is f(dfParBits), the parser rejects an out-of-range width with a structured Error::BitWidthTooLarge before the shift (dfParBits > 32) rather than panicking in debug (workspace no-reachable-panic rule). The deblocking never-panics proptest is widened to the full u8 df_par_bits_minus_2 range. The cur_mfh_id > 0 arm consults the resolved MultiFrameHeaderRecord's mfh_deblocking_filter_update / mfh_apply_deblocking_filter (§5.7, mirror :5949): when the update bit is set apply is copied from the MFH with no apply bits read; otherwise apply[0]/[1] (and the chroma pair) are read from the frame. CodedLossless short-circuits to all-0 apply (no bits). §6.17.5.2 states no requirement of bitstream conformance on these fields (all bounded by fixed widths), so no diagnostic is added. Under frame-header-inter-reference-paths §5.18.5.1 read_interpolation_filter() now LANDS (read_interpolation_filter, InterpolationFilter, filtering.rs): is_filter_switchable f(1) selects SWITCHABLE, else interpolation_filter f(2) names the fixed filter (EIGHTTAP / EIGHTTAP_SMOOTH / EIGHTTAP_SHARP / BILINEAR); it is parsed on the inter MV-precision block (mirror :4919) and surfaced on core.inter.interpolation_filter. Residual: the inter allow_df_sub_pu / apply_deblocking_filter_tip reads (mirror :4953-4967) live on the TIP_FRAME_AS_OUTPUT arm, which the inter path stops before (InterStop::TipAsOutputReturn) because that arm reads quantization_params() / tile_info() against reference-frame dims this phase does not thread; they land when the TIP-output arm completes. WRITER (frame-header-writer-loop-filters): deblocking_filter_params() (§5.18.5.2) is inverted by write_deblocking_filter_params (crates/splot-core/src/write/frame_filters.rs) — the CodedLossless all-default early return, the MFH-update arm (apply copied with no bits, validated against the derived array) vs the direct arm (apply[0]/[1] + the NumPlanes-gated chroma pair), and the per-index df_delta_q cascade (df_delta_q_present f(1); the f(dfParBits) raw recovered as DfDeltaQ[i] + (1 << (dfParBits-1)); the (i==1)?DfDeltaQ[0]:0 absent inference). ADDITIVE (no model change): the read-but-not-stored df_delta_q raw is a reversible derivation, validated into the f(dfParBits) domain. Reject-before-write throughout; an over-wide dfParBits (>32, a non-conformant §5.4.10 field) is rejected with WriteError::BitWidthTooLarge on the non-lossless path only (the CodedLossless path never codes the width, matching the parser). write stays partial — §5.18.5.1 read_interpolation_filter() is an inter-path element outside the intra writer scope."
 
 [feature.status]
 mapped = "done"
 types = "partial"
 parse = "partial"
 validate = "not-applicable"
-write = "todo"
+write = "partial"
 encode = "todo"
 decode_check = "partial"
 tests = "partial"
@@ -2866,11 +2866,15 @@ tests = [
   "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_eof_inside_gdf_params_preserves_facts",
   "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_eof_inside_cdef_params_preserves_facts",
   "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_inter_explicit_map_reaches_shared_tail",
+  "crates/splot-core/src/write/frame_filters.rs::tests::deblocking_coded_lossless_ignores_oversized_df_par_bits",
+  "crates/splot-core/src/write/frame_filters.rs::proptests::deblocking_round_trips",
+  "crates/splot-core/src/write/frame_filters.rs::proptests::deblocking_writer_never_panics_on_constructed_models",
 ]
 commands = [
   "cargo test -p splot-core headers::frame::filtering",
   "cargo test -p splot-core deblocking",
   "cargo test -p splot-core interpolation",
+  "cargo test -p splot-core write::frame_filters",
 ]
 fixtures = ["tests/fixtures/frame-header-core.av2", "tests/fixtures/frame-header-core-mfh.av2"]
 diagnostics = []
@@ -2944,7 +2948,7 @@ openspec_change = "frame-loop-restoration-ccso-params"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.18-FRAME-HEADER. tile_info() (§5.18.7.2, MiCols/MiRows per §5.18.4.4) and segmentation_params() (§5.18.7.1, reusing seg_info()) are typed and parsed on the intra frame-header path for both reference forms: cur_mfh_id == 0 (sequence/zero arm) and — under mfh-frame-header-state — cur_mfh_id > 0, where the MFH-gated arm derives haveSegParams = (mfh_ext_seg_flag == enable_ext_seg), allowChange = haveSegParams && mfh_allow_seg_info_change, mfhId = cur_mfh_id, and a reuse_seg_info copy draws from MfhFeatureEnabled/MfhFeatureData (mirror :6266-6298). The MFH branch takes priority over the sequence branch per the spec order; a cur_mfh_id > 0 frame whose in-band MFH is unresolvable still stops (no guessing). Under seq-tile-nonuniform-reuse-starts the §5.18.7.4 non-uniform sequence-reuse branch is fully wired: the persisted SeqSbColStarts / SeqSbRowStarts (AV2-5.4.2-SEQUENCE-TILE-CONFIG) flow into reuse_tile_params() (mirror :6449/:6469-6477), so a frame reusing a non-uniform sequence tile layout parses through tile_info() instead of stopping unimplemented. §6.17.7.2 TileCols/TileRows/context_update_tile_id checks are live. Under frame-filtering-deblocking-gdf-cdef the §5.18.7 filter-param children gdf_params() (§5.18.7.9) and cdef_params() (§5.18.7.10) are parsed on the intra path in crates/splot-core/src/headers/frame/filtering.rs (§6.17.7.5 / §6.17.7.6 state no requirement of bitstream conformance — all fixed-width — so no diagnostic). Under frame-loop-restoration-ccso-params the remaining §5.18.7 filter-param children lr_params() (§5.18.7.11) and ccso_params() (§5.18.7.12) are parsed on the intra path in crates/splot-core/src/headers/frame/restoration.rs. On the intra path NumTotalRefs == 0 (mirror :4573): lr_params()'s temporal-prediction arm (temporal_pred_flag/rst_ref_pic_idx) and ccso_params()'s reuse arm (reuse_ccso/sb_reuse_ccso/ccso_ref_idx/load_ccso_params) are dead, so both parse on plain f/ns/tu reads. lr_params() reads the per-plane tool_index ns(n) -> FrameRestorationType, frame_filters_on f(1) (WIENER_NONSEP/SWITCHABLE arm), num_filter_classes_idx f(3) -> NumFilterClasses (plane 0), and the luma/chroma LoopRestorationSize signaling (lr_*_use_half/max/quarter_size with the BLOCK_256X256/BLOCK_128X128 inferences). When a plane signals frame_filters_on the structure reaches the unmodeled read_wienerns_filter() frame-level Wiener bank decode (search_frame_filters/predict_group/decode_signed_subexp_with_ref over the Wiener_Ns_Taps_* tables) and the parser stops honestly with StoppedBeforeWienerNsFilter (residual, keeps parse/tests partial). ccso_params() reads ccso_frame_flag (single_picture infers 1), then per plane ccso_planes, ccso_bo_only, ccso_scale_idx f(2), the !ccso_bo_only ccso_quant_idx f(2)/ccso_ext_filter f(3)/ccso_edge_clf f(1) (the last gated on CCSO_Quant_Sz[scale][quant] != 0), ccso_max_band_log2 f(2 + ccso_bo_only), and the d0×d1×band offset loop of ccso_offset_idx tu(7). §6.17.7.8 yields two locally decidable diagnostics: frame-header/ccso-ext-filter-reserved (ccso_ext_filter != 7, mirror :5819) and frame-header/ccso-max-band-out-of-range (1 << ccso_max_band_log2 <= CCSO_BAND_NUM, mirror :5824). The §6.17.7.7 lr requirements (usesChromaLr 64>>SubsamplingY <= LoopRestorationSize[1]; check_ru_size() tile-boundary divisibility) and the §6.17.7.8 reference-state CCSO requirements (ccso_ref_idx < NumTotalRefs and the SavedCcso*/RefMi* reuse equalities) are not yet emitted — the reuse/ref-state arm is dead on the intra path, and the lr size/RU bounds are deferred (residual). Remaining residual (keeps parse/tests partial): the read_wienerns_filter() frame-level Wiener bank decode and the inter frame-header paths. WRITER (frame-header-writer-tiling): tile_info() (§5.18.7.2) is inverted by write_tile_info (crates/splot-core/src/write/frame_tiling.rs) — the reuse_tile_info inference, the reuse branch (no bits, validated against reuse_tile_params() §5.18.7.4), the explicit branch (reusing the shared write_tile_params §5.18.7.3 with a TileParams surfaced on TileInfo via a maintainer-approved model extension, like #4b), and the gated context_update_tile_id / tile_size_bytes tail; byte-exact + reject-before-write. WRITER (frame-header-writer-segmentation): segmentation_params() (§5.18.7.1) is inverted by write_segmentation_params (crates/splot-core/src/write/frame_segmentation.rs) on the intra path — segmentation_enabled f(1), the allowChange-gated reuse_seg_info f(1), the reuse branch (no bits, validated against the §5.18.7.1 reuse source: MfhFeatureData on the MFH arm, SeqFeatureData on the sequence arm, all-disabled when absent), and the fresh seg_info(MaxSegments) body (reusing the shared §5.4.9 write_seg_info, AV2-5.4.9-SEGMENT-INFO); the intra-inferred segmentation_update_map = 1 / segmentation_temporal_update = 0 and the derived SegIdPreSkip / LastActiveSegId are re-derived and rejected on mismatch, never coded; additive (no model change), byte-exact + reject-before-write. write stays partial — the filter-param children (lr/ccso/gdf/cdef) writers are the later #4f-#4g slices."
+notes = "Child row of AV2-5.18-FRAME-HEADER. tile_info() (§5.18.7.2, MiCols/MiRows per §5.18.4.4) and segmentation_params() (§5.18.7.1, reusing seg_info()) are typed and parsed on the intra frame-header path for both reference forms: cur_mfh_id == 0 (sequence/zero arm) and — under mfh-frame-header-state — cur_mfh_id > 0, where the MFH-gated arm derives haveSegParams = (mfh_ext_seg_flag == enable_ext_seg), allowChange = haveSegParams && mfh_allow_seg_info_change, mfhId = cur_mfh_id, and a reuse_seg_info copy draws from MfhFeatureEnabled/MfhFeatureData (mirror :6266-6298). The MFH branch takes priority over the sequence branch per the spec order; a cur_mfh_id > 0 frame whose in-band MFH is unresolvable still stops (no guessing). Under seq-tile-nonuniform-reuse-starts the §5.18.7.4 non-uniform sequence-reuse branch is fully wired: the persisted SeqSbColStarts / SeqSbRowStarts (AV2-5.4.2-SEQUENCE-TILE-CONFIG) flow into reuse_tile_params() (mirror :6449/:6469-6477), so a frame reusing a non-uniform sequence tile layout parses through tile_info() instead of stopping unimplemented. §6.17.7.2 TileCols/TileRows/context_update_tile_id checks are live. Under frame-filtering-deblocking-gdf-cdef the §5.18.7 filter-param children gdf_params() (§5.18.7.9) and cdef_params() (§5.18.7.10) are parsed on the intra path in crates/splot-core/src/headers/frame/filtering.rs (§6.17.7.5 / §6.17.7.6 state no requirement of bitstream conformance — all fixed-width — so no diagnostic). Under frame-loop-restoration-ccso-params the remaining §5.18.7 filter-param children lr_params() (§5.18.7.11) and ccso_params() (§5.18.7.12) are parsed on the intra path in crates/splot-core/src/headers/frame/restoration.rs. On the intra path NumTotalRefs == 0 (mirror :4573): lr_params()'s temporal-prediction arm (temporal_pred_flag/rst_ref_pic_idx) and ccso_params()'s reuse arm (reuse_ccso/sb_reuse_ccso/ccso_ref_idx/load_ccso_params) are dead, so both parse on plain f/ns/tu reads. lr_params() reads the per-plane tool_index ns(n) -> FrameRestorationType, frame_filters_on f(1) (WIENER_NONSEP/SWITCHABLE arm), num_filter_classes_idx f(3) -> NumFilterClasses (plane 0), and the luma/chroma LoopRestorationSize signaling (lr_*_use_half/max/quarter_size with the BLOCK_256X256/BLOCK_128X128 inferences). When a plane signals frame_filters_on the structure reaches the unmodeled read_wienerns_filter() frame-level Wiener bank decode (search_frame_filters/predict_group/decode_signed_subexp_with_ref over the Wiener_Ns_Taps_* tables) and the parser stops honestly with StoppedBeforeWienerNsFilter (residual, keeps parse/tests partial). ccso_params() reads ccso_frame_flag (single_picture infers 1), then per plane ccso_planes, ccso_bo_only, ccso_scale_idx f(2), the !ccso_bo_only ccso_quant_idx f(2)/ccso_ext_filter f(3)/ccso_edge_clf f(1) (the last gated on CCSO_Quant_Sz[scale][quant] != 0), ccso_max_band_log2 f(2 + ccso_bo_only), and the d0×d1×band offset loop of ccso_offset_idx tu(7). §6.17.7.8 yields two locally decidable diagnostics: frame-header/ccso-ext-filter-reserved (ccso_ext_filter != 7, mirror :5819) and frame-header/ccso-max-band-out-of-range (1 << ccso_max_band_log2 <= CCSO_BAND_NUM, mirror :5824). The §6.17.7.7 lr requirements (usesChromaLr 64>>SubsamplingY <= LoopRestorationSize[1]; check_ru_size() tile-boundary divisibility) and the §6.17.7.8 reference-state CCSO requirements (ccso_ref_idx < NumTotalRefs and the SavedCcso*/RefMi* reuse equalities) are not yet emitted — the reuse/ref-state arm is dead on the intra path, and the lr size/RU bounds are deferred (residual). Remaining residual (keeps parse/tests partial): the read_wienerns_filter() frame-level Wiener bank decode and the inter frame-header paths. WRITER (frame-header-writer-tiling): tile_info() (§5.18.7.2) is inverted by write_tile_info (crates/splot-core/src/write/frame_tiling.rs) — the reuse_tile_info inference, the reuse branch (no bits, validated against reuse_tile_params() §5.18.7.4), the explicit branch (reusing the shared write_tile_params §5.18.7.3 with a TileParams surfaced on TileInfo via a maintainer-approved model extension, like #4b), and the gated context_update_tile_id / tile_size_bytes tail; byte-exact + reject-before-write. WRITER (frame-header-writer-segmentation): segmentation_params() (§5.18.7.1) is inverted by write_segmentation_params (crates/splot-core/src/write/frame_segmentation.rs) on the intra path — segmentation_enabled f(1), the allowChange-gated reuse_seg_info f(1), the reuse branch (no bits, validated against the §5.18.7.1 reuse source: MfhFeatureData on the MFH arm, SeqFeatureData on the sequence arm, all-disabled when absent), and the fresh seg_info(MaxSegments) body (reusing the shared §5.4.9 write_seg_info, AV2-5.4.9-SEGMENT-INFO); the intra-inferred segmentation_update_map = 1 / segmentation_temporal_update = 0 and the derived SegIdPreSkip / LastActiveSegId are re-derived and rejected on mismatch, never coded; additive (no model change), byte-exact + reject-before-write. WRITER (frame-header-writer-loop-filters): gdf_params() (§5.18.7.9) and cdef_params() (§5.18.7.10) are inverted by write_gdf_params / write_cdef_params (crates/splot-core/src/write/frame_filters.rs) — the CodedLossless / enable-flag disabled returns, the single-picture inferences, the gdf_per_block coded/inferred gate (re-derived via the shared pub(crate) gdf_per_block_is_coded the parser now also calls, so the gdfBlkSize derivation never drifts), the gdf f(2) indices, and the cdef damping/strengths/skip-txfm cascade + per-set Y/UV strengths. ADDITIVE (no model change): the cdef_*_pri_zero zero-flag and the cdef_*_sec_strength 3<->4 remap are canonical forms / reversible derivations (like the §5.18.6 quant canonical forms). Reject-before-write throughout. write stays partial — the §5.18.7.11 lr_params() / §5.18.7.12 ccso_params() writers are the later #4g slice."
 
 [feature.status]
 mapped = "done"
@@ -2986,11 +2990,14 @@ tests = [
   "crates/splot-core/src/write/frame_tiling.rs::proptests",
   "crates/splot-core/src/write/frame_segmentation.rs::tests",
   "crates/splot-core/src/write/frame_segmentation.rs::proptests",
+  "crates/splot-core/src/write/frame_filters.rs::proptests::gdf_round_trips",
+  "crates/splot-core/src/write/frame_filters.rs::proptests::cdef_round_trips",
 ]
 commands = [
   "cargo test -p splot-core headers::frame",
   "cargo test -p splot-core write::frame_tiling",
   "cargo test -p splot-core write::frame_segmentation",
+  "cargo test -p splot-core write::frame_filters",
   "cargo test -p splot-validate",
 ]
 fixtures = ["tests/fixtures/frame-header-core.av2", "tests/fixtures/frame-header-core-mfh.av2"]
@@ -6280,11 +6287,11 @@ sources = [
 ]
 crate = "splot-decode"
 module = "crates/splot-decode/src/tile_payload/cdf.rs"
-openspec_change = "tile-partition-context-derivation"
+openspec_change = "tile-square-split-context-derivation"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a crate-private `splot-decode` tile CDF selection boundary for the minimal single-tile closed-loop-key tier: a small partition-entry CDF subset (`TileDoSplitCdf`, `TileDoSquareSplitCdf`, `TileRectTypeCdf`, `TileDoExtPartitionCdf`, and `TileDoUneven4wayPartitionCdf`) is copied from generated §9.3 defaults, typed selector validation and closure-scoped mutable row access prove §8.3 handoff into `SymbolDecoder::read_symbol(cdf)`, the tile work unit records CDF update mode from `disable_cdf_update`, the §8.2 copy/average decision is computed from `enable_avg_cdf`, `avg_cdf_type`, `context_update_tile_id`, `TileNum`, and `TileCols * TileRows`, and bounded left/above-neighbor §8.3.2 contexts are derived for `do_split`, `rect_type`, `do_ext_partition`, and `do_uneven_4way_partition` using generated §9.2 conversion tables plus the local §8.3.2 adjustment arrays. This is a boundary only: it does not implement `do_square_split` context derivation, actual partition syntax reads or decisions, full §8.3 CDF selection, full Tile/Saved CDF banks, recursive `decode_tile()`/`read_partition()` traversal, `exit_symbol()` after real syntax, Saved CDF copy/average mutation after tile completion, `frame_end_update_cdf()`, reconstruction, hashes, runtime Y4M output, reference refresh, public API support, AVM/dav2d invocation, or scheduler use outside the `splot_parallel::WorkerPool` policy."
+notes = "Adds a crate-private `splot-decode` tile CDF selection boundary for the minimal single-tile closed-loop-key tier: a small partition-entry CDF subset (`TileDoSplitCdf`, `TileDoSquareSplitCdf`, `TileRectTypeCdf`, `TileDoExtPartitionCdf`, and `TileDoUneven4wayPartitionCdf`) is copied from generated §9.3 defaults, typed selector validation and closure-scoped mutable row access prove §8.3 handoff into `SymbolDecoder::read_symbol(cdf)`, the tile work unit records CDF update mode from `disable_cdf_update`, the §8.2 copy/average decision is computed from `enable_avg_cdf`, `avg_cdf_type`, `context_update_tile_id`, `TileNum`, and `TileCols * TileRows`, and bounded §8.3.2 contexts are derived for `do_split`, `do_square_split`, `rect_type`, `do_ext_partition`, and `do_uneven_4way_partition` using generated §9.2 conversion tables, availability-gated `MiSizes` lookups, and the local §8.3.2 adjustment arrays. The individual partition-entry `S()` read boundary is tracked separately by `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY`. This is a boundary only: it does not implement partition decisions, full §8.3 CDF selection, full Tile/Saved CDF banks, recursive `decode_tile()`/`read_partition()` traversal, `exit_symbol()` after real syntax, Saved CDF copy/average mutation after tile completion, `frame_end_update_cdf()`, reconstruction, hashes, runtime Y4M output, reference refresh, public API support, AVM/dav2d invocation, or scheduler use outside the `splot_parallel::WorkerPool` policy."
 
 [feature.status]
 mapped = "done"
@@ -6318,6 +6325,58 @@ fixtures = [
     "crates/splot-decode/src/tile_payload/tests.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY"
+name = "Tile partition symbol read boundary"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.3.2", "8.2.6", "8.3.1", "8.3.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-6",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-1",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/cdf/partition_read.rs"
+openspec_change = "tile-partition-symbol-read-boundary"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private `splot-decode` boundary for individual AV2 §5.20.3.2 partition-entry `S()` reads over the existing `DECODE-TILE-CDF-SELECTION-BOUNDARY` selectors. `TileCdfSubset::read_partition_entry_symbol` validates a `TileCdfSelector`, passes the selected mutable CDF row to a caller-owned `SymbolDecoder::read_symbol(cdf)`, returns the raw `Symbol`, preserves selector errors separately from `splot-core` symbol/CDF errors, and keeps sequential symbol state owned by the caller. This row does not implement partition decisions, `partition_implied`, allowed partition derivation, `Rect_Part_Table`, `uneven_4way_partition_type L(1)`, recursive `read_partition()`/`decode_tile()` traversal, `exit_symbol()` after real syntax, full §8.3 CDF selection, full Tile/Saved CDF banks, reconstruction, hashes, Y4M output, reference refresh, public API support, AVM/dav2d invocation, or scheduler/dependency changes."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/cdf/partition_read.rs",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::selected_row_hands_off_to_symbol_decoder_update_modes",
+    "crates/splot-decode/src/tile_payload/tests.rs::single_tile_payload_yields_deterministic_work_unit_and_unsupported_boundary",
+]
+commands = [
+    "cargo test -p splot-decode tile_payload --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo test -p splot-decode --locked",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/cdf.rs",
+    "crates/splot-decode/src/tile_payload/cdf/partition_read.rs",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs",
+    "crates/splot-decode/src/tile_payload/tests.rs",
+]
+diagnostics = []
 
 [[feature]]
 id = "DECODE-UNSUPPORTED-DIAGNOSTIC-API"

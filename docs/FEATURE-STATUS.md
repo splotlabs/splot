@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 180 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 181 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -92,7 +92,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-5.18.3-FRAME-CONFIGURATION` | Frame configuration syntax | normative | bitstream-syntax | done | partial | partial | n/a | partial | todo | partial | done | pending | `crates/splot-core/src/headers/frame/config.rs` |
 | `AV2-5.18.4-FRAME-SIZE` | Frame size syntax | normative | bitstream-syntax | done | partial | partial | partial | partial | todo | partial | done | pending | `crates/splot-core/src/headers/frame/size.rs` |
 | `AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS` | Frame header info semantics | normative | validator-check | done | n/a | n/a | partial | n/a | n/a | partial | done | pending | `crates/splot-validate/src/context` |
-| `AV2-5.18.5-FILTERING` | Frame filtering syntax | normative | bitstream-syntax | done | partial | partial | n/a | todo | todo | partial | partial | pending | `crates/splot-core/src/headers/frame/filtering.rs` |
+| `AV2-5.18.5-FILTERING` | Frame filtering syntax | normative | bitstream-syntax | done | partial | partial | n/a | partial | todo | partial | partial | pending | `crates/splot-core/src/headers/frame/filtering.rs` |
 | `AV2-5.18.6-QUANTIZATION` | Frame quantization syntax | normative | bitstream-syntax | done | done | partial | partial | done | todo | partial | partial | pending | `crates/splot-core/src/headers/frame/quant.rs` |
 | `AV2-5.18.7-SEGMENTATION-TILING` | Frame segmentation and tiling syntax | normative | bitstream-syntax | done | done | partial | partial | partial | todo | partial | partial | pending | `crates/splot-core/src/headers/frame/tiling.rs` |
 | `AV2-5.18.7.3-TILE-PARAMS` | Tile params helper and tile-partitioning tables | normative | bitstream-syntax | done | done | done | done | done | todo | done | done | pending | `crates/splot-core/src/tile.rs` |
@@ -177,6 +177,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF` | DecodeContext tile-payload handoff | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/context.rs` |
 | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | Tile payload input derivation | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/input.rs` |
 | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | Tile CDF selection boundary | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf.rs` |
+| `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY` | Tile partition symbol read boundary | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/cdf/partition_read.rs` |
 | `DECODE-UNSUPPORTED-DIAGNOSTIC-API` | Decode unsupported diagnostic API | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-decode/src/lib.rs` |
 | `DOC-DECODER-SUPPORT-MATRIX` | Decoder support matrix documentation | docs | docs | done | n/a | n/a | done | n/a | n/a | n/a | done | n/a | `docs/DECODER-SUPPORT-MATRIX.toml` |
 | `XTASK-DECODER-SUPPORT-STATUS` | Decoder support status reporting and checks | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/decoder_support.rs` |

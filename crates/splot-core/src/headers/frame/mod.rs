@@ -51,6 +51,10 @@ pub use filtering::{
     InterpolationFilter, MfhDeblockingView, parse_cdef_params, parse_deblocking_filter_params,
     parse_gdf_params, read_interpolation_filter,
 };
+// Internal re-export the `crate::write` frame-filters writer needs to share the §5.18.7.9
+// `gdf_per_block` coded gate (the full `gdfBlkSize` derivation) with the parser; `filtering`
+// is private, so the writer cannot reach it directly.
+pub(crate) use filtering::gdf_per_block_is_coded;
 pub use global_motion::{
     GlobalMotionInput, GlobalMotionParams, GlobalMotionRef, GlobalMotionStop, GmType,
     decode_signed_subexp_with_ref, decode_subexp, decode_unsigned_subexp_with_ref,

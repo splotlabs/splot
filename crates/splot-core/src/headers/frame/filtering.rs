@@ -378,13 +378,67 @@ pub struct GdfGeometry<'a> {
     pub mi_row_starts: &'a [u32],
 }
 
+/// Whether the `gdf_per_block` bit is coded in `gdf_params()` (AV2 v1.0.0 § 5.18.7.9,
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-9`).
+///
+/// Returns `true` when the frame exceeds `gdfBlkSize` in either dimension, or when
+/// loop-filtering across tiles is disabled in a multi-tile frame; otherwise the bit is
+/// inferred `0` and `false` is returned. Encapsulates the full `gdfBlkSize` derivation
+/// (the `Max(Block_Width[SbSize], GDF_MIN_SIZE)` default, the `gdf_unit_matches_sb_size`
+/// override, and the `Block64x64` tile-start alignment scan) so the parser
+/// ([`parse_gdf_params`]) and the writer
+/// (`crate::write::frame_filters::write_gdf_params`) share one source of truth and never
+/// drift. `gdf_frame_enable` must already be `1` for this gate to be consulted.
+pub(crate) fn gdf_per_block_is_coded(
+    filter: &CoreSeqFilterView,
+    geometry: GdfGeometry<'_>,
+) -> bool {
+    // § 5.18.7.9: gdfBlkSize derivation.
+    let sb_block_width = block_width(geometry.sb_size);
+    // gdfBlkSize = Max(Block_Width[SbSize], GDF_MIN_SIZE).
+    let mut gdf_blk_size = sb_block_width.max(GDF_MIN_SIZE);
+    if filter.gdf_unit_matches_sb_size {
+        // gdfBlkSize = Block_Width[SbSize].
+        gdf_blk_size = sb_block_width;
+    } else if geometry.sb_size == SuperblockSize::Block64x64 {
+        // Scan tile-start alignment: a |= MiColStarts[i] for i < TileCols, then
+        // a |= MiRowStarts[i] for i < TileRows; if ( a & 16 ) gdfBlkSize = 64.
+        let mut a = 0u32;
+        for &start in geometry
+            .mi_col_starts
+            .iter()
+            .take(geometry.tile_cols as usize)
+        {
+            a |= start;
+        }
+        for &start in geometry
+            .mi_row_starts
+            .iter()
+            .take(geometry.tile_rows as usize)
+        {
+            a |= start;
+        }
+        if a & 16 != 0 {
+            gdf_blk_size = 64;
+        }
+    }
+
+    // § 5.18.7.9: gdf_per_block f(1) when MiCols*MI_SIZE > gdfBlkSize ||
+    // MiRows*MI_SIZE > gdfBlkSize || (disable_loopfilters_across_tiles &&
+    // (TileRows > 1 || TileCols > 1)); else gdf_per_block = 0.
+    let frame_exceeds_block = geometry.mi_cols.saturating_mul(MI_SIZE) > gdf_blk_size
+        || geometry.mi_rows.saturating_mul(MI_SIZE) > gdf_blk_size;
+    let multi_tile = geometry.tile_rows > 1 || geometry.tile_cols > 1;
+    frame_exceeds_block || (filter.disable_loopfilters_across_tiles && multi_tile)
+}
+
 /// Parses `gdf_params()` (AV2 v1.0.0 § 5.18.7.9,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-9`).
 ///
 /// `coded_lossless` is the frame `CodedLossless`; `filter` carries the § 5.4.10
 /// `enable_gdf` / `gdf_unit_matches_sb_size` / `disable_loopfilters_across_tiles` flags
 /// and `single_picture_header_flag`; `geometry` is the parsed `tile_info()` geometry
-/// used to evaluate the `gdf_per_block` gate.
+/// used to evaluate the `gdf_per_block` gate (via `gdf_per_block_is_coded`).
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
@@ -421,48 +475,13 @@ pub fn parse_gdf_params(
         });
     }
 
-    // AV2 § 5.18.7.9: gdfBlkSize derivation.
-    let sb_block_width = block_width(geometry.sb_size);
-    // gdfBlkSize = Max(Block_Width[SbSize], GDF_MIN_SIZE).
-    let mut gdf_blk_size = sb_block_width.max(GDF_MIN_SIZE);
-    if filter.gdf_unit_matches_sb_size {
-        // gdfBlkSize = Block_Width[SbSize].
-        gdf_blk_size = sb_block_width;
-    } else if geometry.sb_size == SuperblockSize::Block64x64 {
-        // Scan tile-start alignment: a |= MiColStarts[i] for i < TileCols, then
-        // a |= MiRowStarts[i] for i < TileRows; if ( a & 16 ) gdfBlkSize = 64.
-        let mut a = 0u32;
-        for &start in geometry
-            .mi_col_starts
-            .iter()
-            .take(geometry.tile_cols as usize)
-        {
-            a |= start;
-        }
-        for &start in geometry
-            .mi_row_starts
-            .iter()
-            .take(geometry.tile_rows as usize)
-        {
-            a |= start;
-        }
-        if a & 16 != 0 {
-            gdf_blk_size = 64;
-        }
-    }
-
-    // AV2 § 5.18.7.9: gdf_per_block f(1) when MiCols*MI_SIZE > gdfBlkSize ||
-    // MiRows*MI_SIZE > gdfBlkSize || (disable_loopfilters_across_tiles &&
-    // (TileRows > 1 || TileCols > 1)); else gdf_per_block = 0.
-    let frame_exceeds_block = geometry.mi_cols.saturating_mul(MI_SIZE) > gdf_blk_size
-        || geometry.mi_rows.saturating_mul(MI_SIZE) > gdf_blk_size;
-    let multi_tile = geometry.tile_rows > 1 || geometry.tile_cols > 1;
-    let gdf_per_block =
-        if frame_exceeds_block || (filter.disable_loopfilters_across_tiles && multi_tile) {
-            reader.read_bit()? != 0
-        } else {
-            false
-        };
+    // AV2 § 5.18.7.9: gdf_per_block f(1) when coded (the gdfBlkSize / tile gate, shared
+    // with the writer via gdf_per_block_is_coded); else inferred 0.
+    let gdf_per_block = if gdf_per_block_is_coded(filter, geometry) {
+        reader.read_bit()? != 0
+    } else {
+        false
+    };
 
     // AV2 § 5.18.7.9: gdf_pic_qc_idx f(2); gdf_pic_scale_idx f(2).
     let gdf_pic_qc_idx = reader.read_bits_u8(2)?;
