@@ -3,14 +3,14 @@
 - [x] 1.1 Split shared minimal-tier validation/frame construction out of `runtime_hash.rs` without changing existing hash behavior.
 - [x] 1.2 Add `DecodeContext::decode_y4m_bytes` and a runtime Y4M adapter that writes one minimal-tier Y4M stream through `splot-recon::Y4mWriter`.
 - [x] 1.3 Enforce complete Y4M stream `max_output_bytes` accounting before publication or success.
-- [x] 1.4 Add `splot-decode` unit tests for exact minimal Y4M bytes, output-byte-limit failure, unsupported-tier failure, and thread determinism.
+- [x] 1.4 Add `splot-decode` unit tests for exact minimal Y4M bytes, output-byte-limit failure, unsupported-tier failure, invalid timebase rejection, and thread determinism.
 
 ## 2. CLI Atomic Publication
 
 - [x] 2.1 Add structured `decode/output-error` support for output serialization/publication failures.
-- [x] 2.2 Implement same-directory temporary-file Y4M publication with flush, file sync, rename, parent sync where supported, and cleanup.
+- [x] 2.2 Implement same-directory temporary-file Y4M publication with source validation before temp creation, flush, file sync, rename, best-effort parent sync where supported, and cleanup.
 - [x] 2.3 Preserve hash-mode `-o` no-touch behavior and current diagnostic exit behavior.
-- [x] 2.4 Add CLI tests for explicit Y4M success, implicit Y4M success, deterministic bytes across thread policies, no-touch failure paths, output-error JSON/text diagnostics, and temp cleanup.
+- [x] 2.4 Add CLI tests for explicit Y4M success, implicit Y4M success, deterministic bytes across thread policies, no-touch failure paths, source-diagnostic priority before output publication, output-error JSON/text diagnostics, and temp cleanup.
 
 ## 3. Documentation And Matrix
 

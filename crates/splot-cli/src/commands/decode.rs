@@ -524,19 +524,17 @@ fn decode_y4m_to_file(
     options: DecodeOptions,
     path: &Path,
 ) -> core::result::Result<(), DecodeError> {
-    publish_y4m_output(path, |temp_file| {
-        context.decode_y4m_bytes(bytes, options, temp_file)
-    })
+    let mut y4m = Vec::new();
+    context.decode_y4m_bytes(bytes, options, &mut y4m)?;
+    publish_y4m_output(path, &y4m)
 }
 
-fn publish_y4m_output<F>(path: &Path, write: F) -> core::result::Result<(), DecodeError>
-where
-    F: FnOnce(&mut File) -> core::result::Result<(), DecodeError>,
-{
+fn publish_y4m_output(path: &Path, y4m: &[u8]) -> core::result::Result<(), DecodeError> {
     let (parent, final_name) = output_parent_and_name(path)?;
     let (mut temp_file, temp_path) = create_y4m_temp_file(parent, final_name)?;
 
-    if let Err(error) = write(&mut temp_file) {
+    if let Err(source) = temp_file.write_all(y4m) {
+        let error = output_io(DecodeOutputOperation::WriteY4mTempFile, source);
         return Err(close_and_cleanup_y4m_temp_file(
             temp_file, &temp_path, error,
         ));
@@ -556,12 +554,140 @@ where
     drop(temp_file);
 
     let final_path = parent.join(final_name);
-    if let Err(source) = fs::rename(&temp_path, &final_path) {
-        let error = output_io(DecodeOutputOperation::RenameY4mOutput, source);
-        return Err(cleanup_y4m_temp_file(&temp_path, error));
+    replace_y4m_output(&temp_path, &final_path)?;
+    sync_parent_directory_best_effort(parent);
+
+    Ok(())
+}
+
+fn replace_y4m_output(
+    temp_path: &Path,
+    final_path: &Path,
+) -> core::result::Result<(), DecodeError> {
+    #[cfg(windows)]
+    {
+        return replace_y4m_output_windows(temp_path, final_path);
     }
 
-    sync_parent_directory(parent)
+    #[cfg(not(windows))]
+    {
+        rename_y4m_temp_file(temp_path, final_path)
+    }
+}
+
+fn rename_y4m_temp_file(
+    temp_path: &Path,
+    final_path: &Path,
+) -> core::result::Result<(), DecodeError> {
+    fs::rename(temp_path, final_path)
+        .map_err(|source| output_io(DecodeOutputOperation::RenameY4mOutput, source))
+        .map_err(|error| cleanup_y4m_temp_file(temp_path, error))
+}
+
+#[cfg(windows)]
+fn replace_y4m_output_windows(
+    temp_path: &Path,
+    final_path: &Path,
+) -> core::result::Result<(), DecodeError> {
+    if final_path.exists() {
+        return replace_existing_y4m_output_windows(temp_path, final_path);
+    }
+
+    match fs::rename(temp_path, final_path) {
+        Ok(()) => Ok(()),
+        Err(_) if final_path.exists() => replace_existing_y4m_output_windows(temp_path, final_path),
+        Err(source) => {
+            let error = output_io(DecodeOutputOperation::RenameY4mOutput, source);
+            Err(cleanup_y4m_temp_file(temp_path, error))
+        }
+    }
+}
+
+#[cfg(windows)]
+fn replace_existing_y4m_output_windows(
+    temp_path: &Path,
+    final_path: &Path,
+) -> core::result::Result<(), DecodeError> {
+    if final_path.is_dir() {
+        let error = output_io(
+            DecodeOutputOperation::RenameY4mOutput,
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "requested Y4M output path is a directory",
+            ),
+        );
+        return Err(cleanup_y4m_temp_file(temp_path, error));
+    }
+
+    let backup_path = y4m_replacement_backup_path(final_path)?;
+    if let Err(source) = fs::rename(final_path, &backup_path) {
+        let error = output_io(DecodeOutputOperation::RenameY4mOutput, source);
+        return Err(cleanup_y4m_temp_file(temp_path, error));
+    }
+
+    match fs::rename(temp_path, final_path) {
+        Ok(()) => {
+            let _ = fs::remove_file(&backup_path);
+            Ok(())
+        }
+        Err(source) => {
+            let error = output_io(DecodeOutputOperation::RenameY4mOutput, source);
+            let error = restore_y4m_output_backup_windows(final_path, &backup_path, error);
+            Err(cleanup_y4m_temp_file(temp_path, error))
+        }
+    }
+}
+
+#[cfg(windows)]
+fn y4m_replacement_backup_path(final_path: &Path) -> core::result::Result<PathBuf, DecodeError> {
+    let parent = final_path.parent().unwrap_or_else(|| Path::new("."));
+    let nonce = Y4M_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    for attempt in 0..64 {
+        let backup_path = parent.join(y4m_replacement_backup_file_name(nonce, attempt));
+        if !backup_path.exists() {
+            return Ok(backup_path);
+        }
+    }
+
+    Err(output_io(
+        DecodeOutputOperation::RenameY4mOutput,
+        io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not allocate a unique Y4M replacement backup name",
+        ),
+    ))
+}
+
+#[cfg(windows)]
+fn y4m_replacement_backup_file_name(nonce: usize, attempt: usize) -> OsString {
+    let mut name = OsString::from(OsStr::new(".splot-decode-y4m-replace-"));
+    name.push(std::process::id().to_string());
+    name.push("-");
+    name.push(nonce.to_string());
+    name.push("-");
+    name.push(attempt.to_string());
+    name.push(".tmp");
+    name
+}
+
+#[cfg(windows)]
+fn restore_y4m_output_backup_windows(
+    final_path: &Path,
+    backup_path: &Path,
+    error: DecodeError,
+) -> DecodeError {
+    match fs::rename(backup_path, final_path) {
+        Ok(()) => error,
+        Err(source) => output_io(
+            DecodeOutputOperation::RenameY4mOutput,
+            io::Error::new(
+                source.kind(),
+                format!(
+                    "failed to restore previous Y4M output after replacement failure: {source}"
+                ),
+            ),
+        ),
+    }
 }
 
 fn output_parent_and_name(path: &Path) -> core::result::Result<(&Path, &OsStr), DecodeError> {
@@ -646,10 +772,11 @@ fn cleanup_y4m_temp_file(path: &Path, error: DecodeError) -> DecodeError {
     }
 }
 
-fn sync_parent_directory(parent: &Path) -> core::result::Result<(), DecodeError> {
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|source| output_io(DecodeOutputOperation::SyncY4mOutputDirectory, source))
+fn sync_parent_directory_best_effort(parent: &Path) {
+    let Ok(directory) = File::open(parent) else {
+        return;
+    };
+    let _ = directory.sync_all();
 }
 
 fn output_io(operation: DecodeOutputOperation, source: io::Error) -> DecodeError {

@@ -66,6 +66,7 @@ pub(crate) fn decode_minimal_frame_from_plan(
     ensure_minimal_plan_shape(plan)?;
     let parsed = parse_bitstream_partial(bytes);
     let (ivf, header) = require_minimal_ivf(&parsed)?;
+    ensure_nonzero_ivf_timebase(header)?;
     let frame = &ivf.frames[0];
     let [td_envelope, sequence_envelope, frame_envelope] =
         require_minimal_obu_order(frame.obus.as_slice())?;
@@ -175,6 +176,18 @@ fn require_minimal_ivf<'a>(
         ));
     }
     Ok((ivf, header))
+}
+
+fn ensure_nonzero_ivf_timebase(header: IvfHeader) -> Result<()> {
+    if header.timebase_numerator == 0 || header.timebase_denominator == 0 {
+        Err(unsupported(
+            "invalid_ivf_timebase",
+            None,
+            "minimal tier requires a nonzero IVF timebase before Y4M output policy",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn verify_flat_minimal_tile_trace(

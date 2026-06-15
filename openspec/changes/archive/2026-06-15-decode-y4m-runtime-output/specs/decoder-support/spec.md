@@ -21,7 +21,7 @@ For Feature ID `DECODE-Y4M-RUNTIME-OUTPUT`, the decoder support model SHALL prov
 - **AND** it does not create, truncate, or replace `<output.y4m>`
 
 ### Requirement: Atomic runtime Y4M publication
-The CLI SHALL publish runtime Y4M output atomically: all Y4M bytes MUST be written to a same-directory temporary file first, and the requested output path MUST be replaced only after successful decode, serialization, flush, and file sync.
+The CLI SHALL publish runtime Y4M output atomically: all Y4M bytes MUST be serialized before opening output paths, then written to a same-directory temporary file, and the requested output path MUST be replaced only after successful decode, serialization, temp-file write, flush, and file sync.
 
 #### Scenario: Existing output is replaced only after success
 - **WHEN** the requested Y4M output path already contains bytes
@@ -34,6 +34,11 @@ The CLI SHALL publish runtime Y4M output atomically: all Y4M bytes MUST be writt
 - **AND** decode, serialization, flush, sync, rename, or cleanup fails before publication
 - **THEN** the requested path remains byte-for-byte unchanged
 - **AND** no partial Y4M stream is visible at the requested path
+
+#### Scenario: Source diagnostics win before output publication
+- **WHEN** `splot decode --output-format y4m <input> -o <output.y4m>` is run for a malformed or out-of-tier source whose output parent cannot be created
+- **THEN** the command emits the source diagnostic rather than `decode/output-error`
+- **AND** it does not create the missing output parent or requested output path
 
 #### Scenario: Hash output remains no-touch
 - **WHEN** `splot decode --output-format hash <input> -o <path>` is run

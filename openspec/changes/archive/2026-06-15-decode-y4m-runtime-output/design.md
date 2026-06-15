@@ -35,11 +35,12 @@ The source-backed Y4M writer already exists in `splot-recon`, and `splot-decode`
 
 3. Use IVF container timing for the Y4M frame-rate policy.
    - For the committed minimal fixture, the Y4M header uses the IVF timebase as a repository-owned output-container policy. The minimal fixture is expected to serialize as `F30:1` when its IVF header carries 30/1.
+   - A zero IVF timebase is rejected by the minimal runtime as source-tier input before Y4M serialization.
    - This does not claim AV2 normative timing support; future output-order/timing work remains separate.
    - Alternative considered: fixed `F30:1` for all supported streams. Rejected because using the validated IVF container facts avoids inventing an unrelated constant for future minimal fixtures.
 
 4. CLI owns atomic publication.
-   - `splot-cli` creates a unique temp file in the output path's parent directory with exclusive create, asks `splot-decode` to write the complete Y4M stream into it, flushes and syncs, renames over the final path, and attempts parent-directory sync.
+   - `splot-cli` asks `splot-decode` to serialize the complete Y4M stream before opening output paths, creates a unique temp file in the output path's parent directory with exclusive create, writes the complete stream, flushes and syncs, renames over the final path, and attempts best-effort parent-directory sync where supported.
    - Any failure before rename cleans up the temp file and leaves the final path absent or unchanged. Hash mode continues to ignore `-o`.
    - Alternative considered: write directly to final output. Rejected because it violates the mission's no-partial-output rule.
 

@@ -192,7 +192,7 @@ pub enum DecodeOutputOperation {
     SyncY4mTempFile,
     /// Renaming the temporary file into the requested Y4M output path failed.
     RenameY4mOutput,
-    /// Syncing the parent directory after Y4M publication failed.
+    /// Attempting the parent directory durability sync after Y4M publication.
     SyncY4mOutputDirectory,
     /// Removing a failed temporary Y4M output file failed.
     CleanupY4mTempFile,

@@ -174,9 +174,12 @@ rule must be registered, tested, and linked to decoder support or coverage rows.
 
 Successful runtime file-output modes must register and emit
 `decode/output-error` for output path creation, temporary-file write, flush,
-sync, rename, parent-directory sync, cleanup, or serialization failures that are
-not AV2 bitstream conformance failures. These failures use diagnostic JSON on
-`--json` paths, not partial success artifacts.
+sync, rename, cleanup, or serialization failures that are not AV2 bitstream
+conformance failures. Parent-directory sync is attempted best-effort after a
+successful rename where the platform supports it; an unsupported or failed
+post-rename directory sync does not convert a complete published file into a
+failed decode. These failures use diagnostic JSON on `--json` paths, not partial
+success artifacts.
 
 `decode/resource-limit` is local `splot` resource policy over measured values.
 It is not an AV2 conformance failure by itself.
@@ -192,19 +195,18 @@ transform buffers, output bytes, and worker queue sizes.
 Runtime file output must be atomic before any successful `-o` mode is claimed:
 write a same-directory temp file, complete serialization, flush user-space
 buffers, sync the temp file's contents and metadata, rename only after those
-steps succeed, then sync the parent directory so the final name is durably
+steps succeed, then attempt best-effort parent-directory sync so the final name is
 published. If decode, reconstruction, hash serialization, raw/Y4M
 serialization, validation, temp-file write, flush, temp-file sync, rename, or
 any other pre-rename publication step fails, an absent final path remains absent
-and an existing final path remains byte-for-byte unchanged. If rename succeeds
-but the following parent-directory sync fails, the command must report
-`decode/output-error` as a durability failure; the final path may already contain
-the complete serialized output, but it must never contain a partially serialized
-payload. Any such failure is reported as a registered decoder diagnostic, not as
-a partial success artifact. Output-derived frame counts, dimensions, row byte
-counts, total output bytes, JSON frame arrays, raw payload bytes, and Y4M
-payload bytes must use checked arithmetic and `DecodeLimits` before allocation,
-indexing, or output publication.
+and an existing final path remains byte-for-byte unchanged. After a successful
+rename, the final path contains the complete serialized output and never a
+partially serialized payload; unsupported or failed parent-directory sync is not
+reported as a decode failure. Any pre-rename publication failure is reported as a
+registered decoder diagnostic, not as a partial success artifact. Output-derived
+frame counts, dimensions, row byte counts, total output bytes, JSON frame arrays,
+raw payload bytes, and Y4M payload bytes must use checked arithmetic and
+`DecodeLimits` before allocation, indexing, or output publication.
 
 ## Evidence Boundary
 

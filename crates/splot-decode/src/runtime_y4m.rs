@@ -49,7 +49,7 @@ mod tests {
     use crate::{
         DecodeContext, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError,
         DecodeLimitName, DecodeLimitThreshold, DecodeLimits, DecodeOptions, DecodeRuntimeConfig,
-        OUTPUT_ERROR_RULE_ID,
+        OUTPUT_ERROR_RULE_ID, UNSUPPORTED_FEATURE_RULE_ID,
     };
 
     const MINIMAL_FIXTURE: &[u8] =
@@ -64,6 +64,13 @@ mod tests {
     fn expected_minimal_y4m() -> Vec<u8> {
         let mut bytes = b"YUV4MPEG2 W64 H64 F30:1 Ip A0:0 C420\nFRAME\n".to_vec();
         bytes.extend(core::iter::repeat_n(128, 64 * 64 + 32 * 32 + 32 * 32));
+        bytes
+    }
+
+    fn minimal_fixture_with_timebase(numerator: u32, denominator: u32) -> Vec<u8> {
+        let mut bytes = MINIMAL_FIXTURE.to_vec();
+        bytes[16..20].copy_from_slice(&denominator.to_le_bytes());
+        bytes[20..24].copy_from_slice(&numerator.to_le_bytes());
         bytes
     }
 
@@ -115,6 +122,44 @@ mod tests {
                 unsupported
             } if unsupported.tier_id() == crate::runtime_minimal::MINIMAL_INTRA_HASH_TIER_ID
         ));
+    }
+
+    #[test]
+    fn zero_ivf_timebase_fails_as_source_diagnostic_before_y4m_serialization() {
+        for input in [
+            minimal_fixture_with_timebase(0, 30),
+            minimal_fixture_with_timebase(1, 0),
+        ] {
+            let mut bytes = Vec::new();
+
+            let error = context(ThreadCount::from(1usize))
+                .decode_y4m_bytes(&input, DecodeOptions::default(), &mut bytes)
+                .unwrap_err();
+
+            assert!(bytes.is_empty());
+            assert!(matches!(
+                error,
+                DecodeError::UnsupportedFeature {
+                    ref unsupported
+                } if unsupported.reason() == "invalid_ivf_timebase"
+            ));
+
+            let report = DecodeDiagnosticReport::from_decode_error(&error).unwrap();
+            assert_eq!(report.diagnostic.rule_id, UNSUPPORTED_FEATURE_RULE_ID);
+            assert_eq!(report.diagnostic.spec_section, Some("7.1"));
+            assert!(matches!(
+                &report.details,
+                DecodeDiagnosticDetails::UnsupportedFeature(_)
+            ));
+            let DecodeDiagnosticDetails::UnsupportedFeature(details) = report.details else {
+                return;
+            };
+            assert_eq!(details.unsupported_reason, "invalid_ivf_timebase");
+            assert_eq!(
+                details.tier_id,
+                crate::runtime_minimal::MINIMAL_INTRA_HASH_TIER_ID
+            );
+        }
     }
 
     #[test]

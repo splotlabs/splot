@@ -152,6 +152,44 @@ fn decode_out_of_tier_y4m_json_mode_emits_unsupported_feature_object() {
 }
 
 #[test]
+fn decode_y4m_source_error_wins_before_missing_output_parent() {
+    let input = temp_input("av2", PLANABLE_CLOSED_LOOP_KEY);
+    let root = temp_dir("source-error-before-output-root");
+    let missing_parent = root.join("missing");
+    let output = missing_parent.join("out.y4m");
+
+    let out = splot(&[
+        "decode",
+        "--json",
+        "--output-format",
+        "y4m",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stderr.is_empty(), "stderr was not empty");
+    assert!(
+        !missing_parent.exists(),
+        "decode created the missing parent"
+    );
+    assert!(!output.exists(), "decode created the requested output");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["rule_id"], "decode/unsupported-feature");
+    assert_eq!(json["severity"], "Error");
+    assert_eq!(json["spec_section"], "7.1");
+    assert_eq!(json["matrix_row"], "minimal-decode-tier-contract");
+    assert_eq!(json["feature_id"], "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS");
+    assert_eq!(json["detail_kind"], "unsupported_feature");
+    assert_eq!(
+        json["unsupported_reason"],
+        "unexpected_planned_stream_shape"
+    );
+    assert_eq!(json["output_format"], "y4m");
+}
+
+#[test]
 fn decode_explicit_y4m_output_format_requires_output_path() {
     let input = temp_input("av2", PLANABLE_CLOSED_LOOP_KEY);
 
