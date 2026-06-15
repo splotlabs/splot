@@ -6553,14 +6553,12 @@ id = "DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY"
 name = "Tile partition traversal frontier"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.2.1", "5.20.3.1", "5.20.3.2", "5.20.9.1", "5.20.10.4", "5.20.10.5", "6.19.2.1", "6.19.3", "8.2.5", "8.2.6", "8.3.1", "8.3.2", "9.2"]
+spec_sections = ["5.20.2.1", "5.20.3.1", "5.20.3.2", "5.20.9.1", "6.19.2.1", "6.19.3", "8.2.5", "8.2.6", "8.3.1", "8.3.2", "9.2"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-9-1",
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4",
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5",
     "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-2-1",
     "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-3",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
