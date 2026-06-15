@@ -168,6 +168,49 @@ impl TilePartitionCall {
     }
 }
 
+/// AV2 tile-local MI bounds used by § 5.20.9.1 `is_inside`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TilePartitionBounds {
+    mi_row_start: usize,
+    mi_row_end: usize,
+    mi_col_start: usize,
+    mi_col_end: usize,
+}
+
+impl TilePartitionBounds {
+    fn from_work_unit(work_unit: &DecodeTileWorkUnit<'_>) -> Self {
+        let row_range = work_unit.mi_row_range();
+        let col_range = work_unit.mi_col_range();
+        Self {
+            mi_row_start: row_range.start as usize,
+            mi_row_end: row_range.end as usize,
+            mi_col_start: col_range.start as usize,
+            mi_col_end: col_range.end as usize,
+        }
+    }
+
+    const fn is_inside(self, r: usize, c: usize) -> bool {
+        self.mi_col_start <= c
+            && c < self.mi_col_end
+            && self.mi_row_start <= r
+            && r < self.mi_row_end
+    }
+
+    fn avail_u(self, call: TilePartitionCall) -> bool {
+        match call.r.checked_sub(1) {
+            Some(candidate_r) => self.is_inside(candidate_r, call.c),
+            None => false,
+        }
+    }
+
+    fn avail_l(self, call: TilePartitionCall) -> bool {
+        match call.c.checked_sub(1) {
+            Some(candidate_c) => self.is_inside(call.r, candidate_c),
+            None => false,
+        }
+    }
+}
+
 /// One consumed partition decision on the frontier path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionFrontierStep {
@@ -334,6 +377,7 @@ pub(crate) fn plan_tile_partition_traversal_frontier(
         config,
     )?;
     let consumed_bits_before = symbols.consumed_bits().get();
+    let tile_bounds = TilePartitionBounds::from_work_unit(work_unit);
     let root = TilePartitionCall::root(
         work_unit.mi_row_range().start as usize,
         work_unit.mi_col_range().start as usize,
@@ -345,6 +389,8 @@ pub(crate) fn plan_tile_partition_traversal_frontier(
     let mut skipped_out_of_frame = Vec::new();
 
     while let Some(call) = stack.pop() {
+        // Temporary traversal-step backstop until decoder limits gain a
+        // dedicated partition-step resource name.
         limits.ensure(DecodeLimitName::MaxTileCount, (steps.len() + 1) as u64)?;
         if call.r >= frame.mi_rows || call.c >= frame.mi_cols {
             skipped_out_of_frame.push(call);
@@ -353,8 +399,14 @@ pub(crate) fn plan_tile_partition_traversal_frontier(
         ensure_supported_call(frame, call)?;
 
         let symbol_count_before = symbols.symbol_count();
-        let decision =
-            read_frontier_partition_decision(call, frame, context, &mut cdfs, &mut symbols)?;
+        let decision = read_frontier_partition_decision(
+            call,
+            frame,
+            tile_bounds,
+            context,
+            &mut cdfs,
+            &mut symbols,
+        )?;
         let symbol_count_after = symbols.symbol_count();
         let partition = decision.partition;
         steps.push(TilePartitionFrontierStep {
@@ -413,6 +465,7 @@ fn ensure_supported_call(
 fn read_frontier_partition_decision(
     call: TilePartitionCall,
     frame: TilePartitionFrameFacts,
+    tile_bounds: TilePartitionBounds,
     context: TilePartitionContextState<'_>,
     cdfs: &mut super::cdf::TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -444,8 +497,8 @@ fn read_frontier_partition_decision(
         context.left_mi_sizes,
         context.above_mi_sizes,
     )?;
-    let avail_u = call.r > 0 && call.r - 1 < frame.mi_rows && call.c < frame.mi_cols;
-    let avail_l = call.c > 0 && call.r < frame.mi_rows && call.c - 1 < frame.mi_cols;
+    let avail_u = tile_bounds.avail_u(call);
+    let avail_l = tile_bounds.avail_l(call);
     let square_context = SquareSplitContextInput::new(
         call.b_size.index(),
         0,

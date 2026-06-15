@@ -3,6 +3,8 @@
 
 #![allow(clippy::unwrap_used)]
 
+use core::ops::Range;
+
 use super::super::cdf::{
     FrameCdfSubset, TileCdfPolicyInput, TileCdfWorkUnitBoundary, tile_cdf_save_policy,
 };
@@ -10,7 +12,7 @@ use super::super::{SymbolInitBoundary, TileBruPath, TilePayloadSource};
 use super::*;
 use crate::{DecodeLayerSelection, DecodeObuSourceKind};
 use splot_core::span::{ByteOffset, ByteSpan};
-use splot_core::symbol::CdfUpdateMode;
+use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
 
 const BLOCK_4X4: usize = 0;
 const BLOCK_4X8: usize = 1;
@@ -51,14 +53,23 @@ fn make_work_unit(
     payload: &'static [u8],
     update_mode: CdfUpdateMode,
 ) -> DecodeTileWorkUnit<'static> {
+    make_work_unit_at(payload, update_mode, 0..64, 0..64)
+}
+
+fn make_work_unit_at(
+    payload: &'static [u8],
+    update_mode: CdfUpdateMode,
+    mi_row_range: Range<u32>,
+    mi_col_range: Range<u32>,
+) -> DecodeTileWorkUnit<'static> {
     DecodeTileWorkUnit {
         source: TilePayloadSource::new(DecodeObuSourceKind::AnnexB, None, 0, ByteOffset::new(0)),
         selected_layer: DecodeLayerSelection::base(),
         tile_num: 0,
         tile_row: 0,
         tile_col: 0,
-        mi_row_range: 0..64,
-        mi_col_range: 0..64,
+        mi_row_range,
+        mi_col_range,
         tile_bytes: payload,
         tile_byte_span: ByteSpan::new(ByteOffset::new(128), payload.len() as u64),
         tile_size: payload.len() as u64,
@@ -205,6 +216,72 @@ fn edge_implied_partition_consumes_no_symbol_before_first_child_frontier() {
     assert_eq!(plan.steps[0].symbol_count_after, 0);
     assert_eq!(plan.frontier.r, 0);
     assert_eq!(plan.frontier.c, 0);
+}
+
+#[test]
+fn non_origin_tile_start_availability_uses_tile_bounds() {
+    let bounds = TilePartitionBounds {
+        mi_row_start: 16,
+        mi_row_end: 80,
+        mi_col_start: 16,
+        mi_col_end: 80,
+    };
+    let start = TilePartitionCall::root(16, 16, BlockSize::new(BLOCK_32X32).unwrap(), true);
+    let top_edge = TilePartitionCall::root(16, 20, BlockSize::new(BLOCK_32X32).unwrap(), true);
+    let left_edge = TilePartitionCall::root(20, 16, BlockSize::new(BLOCK_32X32).unwrap(), true);
+    let interior = TilePartitionCall::root(20, 20, BlockSize::new(BLOCK_32X32).unwrap(), true);
+
+    assert!(!bounds.avail_u(start));
+    assert!(!bounds.avail_l(start));
+    assert!(!bounds.avail_u(top_edge));
+    assert!(bounds.avail_l(top_edge));
+    assert!(bounds.avail_u(left_edge));
+    assert!(!bounds.avail_l(left_edge));
+    assert!(bounds.avail_u(interior));
+    assert!(bounds.avail_l(interior));
+}
+
+#[test]
+fn non_origin_tile_square_split_does_not_read_neighbors_outside_tile() {
+    static EMPTY_GRID: [&[usize]; 0] = [];
+    static LONG_ROW: [usize; 256] = [BLOCK_4X4; 256];
+    let sparse_context = TilePartitionContextState::new(
+        [&EMPTY_GRID, &EMPTY_GRID],
+        [&LONG_ROW, &LONG_ROW],
+        [&LONG_ROW, &LONG_ROW],
+    );
+    let work_unit = make_work_unit_at(
+        &[0xFF, 0x00, 0x80],
+        CdfUpdateMode::Enabled,
+        16..160,
+        16..160,
+    );
+    let mut facts = frame(BLOCK_128X128);
+    facts.mi_rows = 256;
+    facts.mi_cols = 256;
+    let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
+    let config = SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled);
+    let mut symbols = SymbolDecoder::with_base_and_config(
+        work_unit.tile_bytes(),
+        work_unit.tile_byte_span().start,
+        config,
+    )
+    .unwrap();
+
+    let decision = read_frontier_partition_decision(
+        TilePartitionCall::root(16, 16, BlockSize::new(BLOCK_128X128).unwrap(), true),
+        facts,
+        TilePartitionBounds::from_work_unit(&work_unit),
+        sparse_context,
+        &mut cdfs,
+        &mut symbols,
+    )
+    .unwrap();
+
+    assert!(
+        decision.trace.do_square_split.is_some(),
+        "expected do_square_split to be read, got {decision:?}"
+    );
 }
 
 #[test]
