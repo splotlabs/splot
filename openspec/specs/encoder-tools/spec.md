@@ -9,21 +9,24 @@ code and produce only deliberately simple, writer-validated streams at first.
 Tracked by Feature IDs: `ENC-BITSTREAM-WRITER`, `ENC-INTRA-TOY-V0`,
 `ENC-RATE-CONTROL-V0`, `AV2-IVF-CONTAINER`.
 
-**Status: in progress.** The bit/byte **writer primitive** layer, the **OBU header /
-trailing-bits / Annex B framing** writers, and the **sequence-header general fields +
-decoder-model info** writer are implemented and round-trip-tested:
-`ENC-BITSTREAM-WRITER` is `partial`; the § 4.11 descriptor `write` stages (plus
-§ 5.2.4 byte alignment), `AV2-5.2.2-OBU-HEADER` / `AV2-5.2.3-TRAILING-BITS`, and
-`AV2-5.4.1-SEQUENCE-HEADER-GENERAL` / `AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO` are
-`done` in the matrix, landed by the archived `bit-writer-primitives`,
-`obu-header-and-size-writer`, and `seq-header-writer-general` changes (see the
-requirements below). Remaining: the sequence-header config writers (§ 5.4.2–5.4.10,
-incl. `tile_params`), the frame/tile/metadata payload writers, the **Annex B** muxer,
-and wiring the muxers into writer-track round-trip tests — the IVF container write
-helpers already exist (`AV2-IVF-CONTAINER`, `write` = `done`); plus the toy intra path
-(`ENC-INTRA-TOY-V0`) and rate control (`ENC-RATE-CONTROL-V0`). The bootstrap
-`add-bitstream-writer` stub was removed, superseded by these properly-scoped changes.
-The implementation matrix is the source of truth for per-row status.
+**Status: in progress.** Implemented and round-trip-tested: the bit/byte **writer
+primitive** layer, the **OBU header / trailing-bits / Annex B framing** writers, the
+**sequence-header general fields + decoder-model info** writer, and the
+**sequence-header config-cascade** writers (§ 5.4.3–5.4.8 + `seg_info`).
+`ENC-BITSTREAM-WRITER` is `partial`; `write` is `done` in the matrix for the § 4.11
+descriptors (plus § 5.2.4 byte alignment), `AV2-5.2.2-OBU-HEADER` /
+`AV2-5.2.3-TRAILING-BITS`, `AV2-5.4.1-SEQUENCE-HEADER-GENERAL` /
+`AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO`, and the § 5.4.3–5.4.9 config rows —
+landed by the archived `bit-writer-primitives`, `obu-header-and-size-writer`,
+`seq-header-writer-general`, and `seq-header-writer-configs` changes (see the
+requirements below). Remaining for the sequence header: the filter config (§ 5.4.10),
+the tile config (§ 5.4.2, incl. `tile_params`), and the composing
+`write_sequence_header`. Beyond it: the frame/tile/metadata payload writers, the
+**Annex B** muxer, and wiring the muxers into writer-track round-trip tests — the IVF
+container write helpers already exist (`AV2-IVF-CONTAINER`, `write` = `done`); plus the
+toy intra path (`ENC-INTRA-TOY-V0`) and rate control (`ENC-RATE-CONTROL-V0`). The
+bootstrap `add-bitstream-writer` stub was removed, superseded by these properly-scoped
+changes. The implementation matrix is the source of truth for per-row status.
 ## Requirements
 ### Requirement: writer symmetry
 
@@ -182,4 +185,30 @@ produced SHALL be rejected with a typed writer error before any bit is written.
 - **THEN** it SHALL emit the signaled bits in the parser's exact loop order (including the
   `multi` and row-0-replication rules)
 - **AND** the reparsed maps SHALL equal the original derived maps.
+
+### Requirement: sequence-header config-cascade writers
+
+`splot-core` SHALL provide writers that are the exact inverse of the § 5.4.3–5.4.8 sequence
+config parsers (partition, segment, intra, inter, scc, transform/quant/entropy) and the
+§ 5.4.9 `seg_info` parser. For every model the writer accepts, reparsing the written bits with
+the corresponding parser SHALL yield the original (`parse(write(x)) == x`). The writers SHALL
+be additive (no parser/model/parser-error changes) and SHALL never panic: a model the parser
+could not have produced SHALL be rejected with a typed writer error before any bit is written.
+
+#### Scenario: each config round-trips across every branch
+
+- **WHEN** a parsed config is written with the same gating inputs and the bits are reparsed
+- **THEN** the reparsed config SHALL equal the original, across every conditional branch.
+
+#### Scenario: the composite rejects a bad nested seg_info before any bit
+
+- **WHEN** the segment config carries a `seg_info` body the parser could not have produced
+- **THEN** the writer SHALL reject it before writing any bit (the leading segment flags
+  included), leaving the writer buffer unchanged.
+
+#### Scenario: a non-canonical or out-of-range field is rejected before any bit
+
+- **WHEN** any config field exceeds its bit width, lies outside its descriptor domain, or is a
+  derived/inferred value the parser would re-derive differently
+- **THEN** the writer SHALL return a typed `WriteError` and write no bit.
 
