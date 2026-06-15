@@ -321,8 +321,11 @@ pub(crate) fn read_partition_decision(
     );
     if !input.allowed.contains(partition) {
         // AV2 §5.20.3.2 returns the Rect_Part_Table result. If the caller's
-        // allowed facts reject that result, future full traversal must treat it
-        // as an invalid derived-state invariant rather than continuing decode.
+        // allowed facts reject that result, keep the boundary typed for now but
+        // verify this against `is_partition_allowed` when traversal derives the
+        // real allowed set.
+        // TODO(spec: DECODE-TILE-PARTITION-DECISION-BOUNDARY): decide whether
+        // this remains an invariant or must match the unconditional table return.
         return Err(PartitionDecisionError::FinalPartitionDisallowed { partition });
     }
 
