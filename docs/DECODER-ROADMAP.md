@@ -516,20 +516,23 @@ command summaries, digest metadata, and assertions.
 
 ## Unsupported Feature Contract
 
-Decoder unsupported-feature output carries structured data. Y4M requests and
-planable inputs outside the minimal tier still emit this diagnostic after byte
-planning succeeds:
+Decoder unsupported-feature output carries structured data. Hash/Y4M requests
+for planable inputs outside the minimal runtime tier emit this diagnostic after
+byte planning succeeds:
 
 ```json
 {
   "rule_id": "decode/unsupported-feature",
   "severity": "Error",
   "spec_section": "7.1",
-  "matrix_row": "cli-decode-entrypoint",
-  "feature_id": "CLI-DECODE",
-  "message": "Byte stream planning succeeded, but `splot decode` runtime output is not implemented yet.",
-  "remediation": "Use `splot validate` or `splot inspect` for bitstream analysis until CLI-DECODE implements output.",
-  "detail_kind": "runtime_unsupported"
+  "matrix_row": "minimal-decode-tier-contract",
+  "feature_id": "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS",
+  "message": "minimal tier requires exactly three planned OBUs, one frame candidate, and no source warnings",
+  "remediation": "Use a stream inside minimal-intra-8bit420-hash-v1 or wait for the referenced decoder support row.",
+  "detail_kind": "unsupported_feature",
+  "unsupported_reason": "unexpected_planned_stream_shape",
+  "tier_id": "minimal-intra-8bit420-hash-v1",
+  "output_format": "y4m"
 }
 ```
 
