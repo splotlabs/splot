@@ -69,7 +69,7 @@ mod proptests {
             let mut data = payload.clone();
             data.extend_from_slice(&[0u8; 16]);
 
-            let Ok(mut core) =
+            let Ok(core) =
                 parse_core_body_for_test(&data, obu_type, first_pic, &seq, None)
             else {
                 return Ok(());
@@ -82,30 +82,25 @@ mod proptests {
             // non-canonical bitstream (e.g. a non-minimal descriptor the reader accepts), so a
             // byte comparison against the original input would be unsound; the byte-exact
             // property is proved against the hand-built canonical fixtures in the tests module.
-            // Here the property is the writer being a canonicalizing inverse:
-            //   1. parse(write(core)) == core  (semantic round-trip), and
+            // Here the property is the writer being a *canonicalizing* inverse:
+            //   1. parse(write(core)) == core on every field EXCEPT `consumed_bits` (a structural
+            //      round-trip), and
             //   2. write(parse(write(core))) == write(core)  (a fixed point — re-encoding the
             //      written form reproduces it exactly).
             //
-            // `consumed_bits` is the one model field that is NOT canonical-invariant: a
-            // non-minimal descriptor the reader accepts makes the parse consume more bits than
-            // the canonical re-encoding emits. The writer's reject-completeness `consumed_bits`
-            // gate (finding 6) requires `core.consumed_bits == canonical length`, so set it to
-            // the canonical drafted length here before the round-trip — the structural fields are
-            // canonical-invariant, so this is exactly the value `parse(write(core))` produces.
-            let Ok(glue) = check_frame_header_core_encodable(&core, &seq, None) else {
-                return Ok(());
-            };
-            let mut draft = BitWriter::new();
-            write_intra_header_into(&mut draft, &core, &seq, None, &glue).unwrap();
-            core.consumed_bits = draft.bit_len();
-
+            // `consumed_bits` is the one model field that is NOT canonical-invariant and is
+            // informational (excluded from the semantic round-trip): a non-minimal descriptor the
+            // reader accepts makes the parse consume more bits than the canonical re-encoding
+            // emits, and the canonicalizing sub-writers (e.g. read_delta_q's `delta_coded == 0`
+            // short form, setup_qm's `qm_uv_same_as_y`) also shorten the drafted length. So the
+            // writer takes the parser-derived `consumed_bits` as-is and the round-trip zeroes it
+            // before comparing.
             let mut writer = BitWriter::new();
-            write_frame_header_core(&mut writer, &core, &seq, None).unwrap();
+            write_frame_header_core(&mut writer, &core, &seq, None, first_pic).unwrap();
             let written = writer.into_bytes();
 
-            // 1. Semantic round-trip (ignoring consumed_bits — the written buffer is exactly
-            //    the header, while `data` carried padding).
+            // 1. Structural round-trip (ignoring consumed_bits — the written buffer is exactly
+            //    the canonical header, while `data` carried padding and may be non-canonical).
             let reparsed =
                 parse_core_body_for_test(&written, obu_type, first_pic, &seq, None).unwrap();
             let mut a = reparsed.clone();
@@ -116,7 +111,7 @@ mod proptests {
 
             // 2. Fixed point: re-encoding the reparsed core reproduces the written bytes.
             let mut writer2 = BitWriter::new();
-            write_frame_header_core(&mut writer2, &reparsed, &seq, None).unwrap();
+            write_frame_header_core(&mut writer2, &reparsed, &seq, None, first_pic).unwrap();
             prop_assert_eq!(writer2.into_bytes(), written);
         }
 
@@ -139,8 +134,9 @@ mod proptests {
             if let Ok(core) = parse_core_body_for_test(&data, obu_type, false, &seq, None) {
                 let mut writer = BitWriter::new();
                 // Whatever the status, the call returns a Result without panicking. On a
-                // reject the buffer is untouched.
-                let result = write_frame_header_core(&mut writer, &core, &seq, None);
+                // reject the buffer is untouched. Thread the same first_pic (false) the core
+                // was parsed with so a genuine intra core is not falsely rejected on starts_cvs.
+                let result = write_frame_header_core(&mut writer, &core, &seq, None, false);
                 if result.is_err() {
                     prop_assert_eq!(writer.bit_len(), 0);
                 }

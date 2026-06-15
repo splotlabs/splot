@@ -225,9 +225,9 @@ mod tests {
         parse_core_body_for_test(data, obu_type, first_pic, seq, None).unwrap()
     }
 
-    fn write_core(core: &FrameHeaderCore, seq: &CoreSeqView) -> Vec<u8> {
+    fn write_core(core: &FrameHeaderCore, seq: &CoreSeqView, first_pic: bool) -> Vec<u8> {
         let mut writer = BitWriter::new();
-        write_frame_header_core(&mut writer, core, seq, None).unwrap();
+        write_frame_header_core(&mut writer, core, seq, None, first_pic).unwrap();
         writer.into_bytes()
     }
 
@@ -269,7 +269,7 @@ mod tests {
             FrameHeaderParseStatus::IntraHeaderComplete,
             "fixture must parse to IntraHeaderComplete"
         );
-        let written = write_core(&core, seq);
+        let written = write_core(&core, seq, first_pic);
         // Bit-exact over the consumed frame header (every descriptor is canonical here). The
         // written buffer zero-pads its final partial byte, while `data` may carry arbitrary
         // bits after the header in that same byte, so compare bit-for-bit up to consumed_bits.
@@ -578,7 +578,7 @@ mod tests {
         assert_eq!(core.frame_size, Some(FrameSize::new(1920, 1080)));
 
         let mut writer = BitWriter::new();
-        write_frame_header_core(&mut writer, &core, &seq, Some(&view)).unwrap();
+        write_frame_header_core(&mut writer, &core, &seq, Some(&view), true).unwrap();
         let written = writer.into_bytes();
         assert_bits_equal(&written, &data, core.consumed_bits, ObuType::ClosedLoopKey);
         let reparsed =
@@ -598,9 +598,17 @@ mod tests {
         (core, seq)
     }
 
-    fn assert_rejected_what(core: &FrameHeaderCore, seq: &CoreSeqView, what: &'static str) {
+    /// Asserts the writer rejects `core` with `what`, leaving the buffer untouched. `first_pic`
+    /// is the `FirstPictureInTU` the core was parsed with, threaded so the `starts_cvs`
+    /// derivation matches (a genuine parsed core is accepted apart from the mutated field).
+    fn assert_rejected_what(
+        core: &FrameHeaderCore,
+        seq: &CoreSeqView,
+        first_pic: bool,
+        what: &'static str,
+    ) {
         let mut writer = BitWriter::new();
-        let err = write_frame_header_core(&mut writer, core, seq, None).unwrap_err();
+        let err = write_frame_header_core(&mut writer, core, seq, None, first_pic).unwrap_err();
         assert_eq!(
             err,
             WriteError::NonCanonicalFrameHeader { what },
@@ -627,7 +635,7 @@ mod tests {
         ] {
             let (mut core, seq) = valid_core();
             core.status = status;
-            assert_rejected_what(&core, &seq, "status");
+            assert_rejected_what(&core, &seq, true, "status");
         }
     }
 
@@ -636,19 +644,19 @@ mod tests {
         // A None on any required intra-path Option rejects with that field's label.
         let (mut core, seq) = valid_core();
         core.tile_info = None;
-        assert_rejected_what(&core, &seq, "tile_info");
+        assert_rejected_what(&core, &seq, true, "tile_info");
 
         let (mut core, seq) = valid_core();
         core.intra_tail = None;
-        assert_rejected_what(&core, &seq, "intra_tail");
+        assert_rejected_what(&core, &seq, true, "intra_tail");
 
         let (mut core, seq) = valid_core();
         core.lr_params = None;
-        assert_rejected_what(&core, &seq, "lr_params");
+        assert_rejected_what(&core, &seq, true, "lr_params");
 
         let (mut core, seq) = valid_core();
         core.order_hint_lsb = None;
-        assert_rejected_what(&core, &seq, "order_hint_lsb");
+        assert_rejected_what(&core, &seq, true, "order_hint_lsb");
     }
 
     #[test]
@@ -687,7 +695,7 @@ mod tests {
 
         let (mut core, seq) = valid_core();
         core.lr_params_partial = Some(partial);
-        assert_rejected_what(&core, &seq, "lr_params_partial");
+        assert_rejected_what(&core, &seq, true, "lr_params_partial");
     }
 
     /// `ns(n)` encoding into a `Bits` builder, mirroring `info.rs::tests::Bits::ns`.
@@ -706,7 +714,7 @@ mod tests {
         // show_existing_frame == Some(true) is a SEF model the intra writer never emits.
         let (mut core, seq) = valid_core();
         core.show_existing_frame = Some(true);
-        assert_rejected_what(&core, &seq, "show_existing_frame");
+        assert_rejected_what(&core, &seq, true, "show_existing_frame");
     }
 
     #[test]
@@ -738,7 +746,7 @@ mod tests {
         let mut core = parse(&data, ObuType::OpenLoopKey, true, &seq);
         assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
         core.immediate_output_frame = Some(true); // OLK infers false
-        assert_rejected_what(&core, &seq, "immediate_output_frame");
+        assert_rejected_what(&core, &seq, true, "immediate_output_frame");
     }
 
     #[test]
@@ -776,7 +784,7 @@ mod tests {
         assert_eq!(core.refresh_frame_flags, Some(1 << 2));
         // Mutate to a multi-bit value the short arm cannot represent.
         core.refresh_frame_flags = Some(0b0000_0011);
-        assert_rejected_what(&core, &seq, "refresh_frame_flags");
+        assert_rejected_what(&core, &seq, true, "refresh_frame_flags");
     }
 
     #[test]
@@ -787,7 +795,7 @@ mod tests {
         // long_term_id encodability check is reached.
         let (mut core, seq) = valid_core();
         core.long_term_id = Some(i64::MAX);
-        assert_rejected_what(&core, &seq, "long_term_id");
+        assert_rejected_what(&core, &seq, true, "long_term_id");
     }
 
     #[test]
@@ -877,7 +885,7 @@ mod tests {
         // frame, so the expected derived type is KEY.
         let (mut core, seq) = valid_core();
         core.frame_type = Some(FrameType::IntraOnly);
-        assert_rejected_what(&core, &seq, "frame_type");
+        assert_rejected_what(&core, &seq, true, "frame_type");
     }
 
     #[test]
@@ -902,7 +910,7 @@ mod tests {
         };
         let view = MfhFrameView::from_record(&record, &seq);
         let mut writer = BitWriter::new();
-        let err = write_frame_header_core(&mut writer, &core, &seq, Some(&view)).unwrap_err();
+        let err = write_frame_header_core(&mut writer, &core, &seq, Some(&view), true).unwrap_err();
         assert_eq!(err, WriteError::NonCanonicalFrameHeader { what: "mfh_record" });
         assert_eq!(writer.bit_len(), 0, "mfh_record: bits written on reject");
     }
@@ -913,7 +921,7 @@ mod tests {
         // show_existing_frame = Some(false); a None reparses to Some(false), so it must reject.
         let (mut core, seq) = valid_core();
         core.show_existing_frame = None;
-        assert_rejected_what(&core, &seq, "show_existing_frame");
+        assert_rejected_what(&core, &seq, true, "show_existing_frame");
     }
 
     #[test]
@@ -923,7 +931,7 @@ mod tests {
         let (mut core, seq) = valid_core();
         let mirrored = core.intrabc.as_ref().unwrap().allow_intrabc;
         core.allow_intrabc = Some(!mirrored);
-        assert_rejected_what(&core, &seq, "allow_intrabc");
+        assert_rejected_what(&core, &seq, true, "allow_intrabc");
     }
 
     #[test]
@@ -934,7 +942,7 @@ mod tests {
         let (mut core, seq) = valid_core();
         assert!(!core.forbidden_ref_long_term_id);
         core.forbidden_ref_long_term_id = true;
-        assert_rejected_what(&core, &seq, "forbidden_ref_long_term_id");
+        assert_rejected_what(&core, &seq, true, "forbidden_ref_long_term_id");
     }
 
     #[test]
@@ -943,11 +951,11 @@ mod tests {
         // with no bits; any other pair is parser-unreachable.
         let (mut core, seq) = valid_single_picture_core();
         core.immediate_output_frame = Some(false);
-        assert_rejected_what(&core, &seq, "immediate_output_frame");
+        assert_rejected_what(&core, &seq, true, "immediate_output_frame");
 
         let (mut core, seq) = valid_single_picture_core();
         core.implicit_output_frame = Some(true);
-        assert_rejected_what(&core, &seq, "implicit_output_frame");
+        assert_rejected_what(&core, &seq, true, "implicit_output_frame");
     }
 
     #[test]
@@ -957,7 +965,7 @@ mod tests {
         let (mut core, seq) = valid_single_picture_core();
         assert_eq!(core.long_term_id, None);
         core.long_term_id = Some(0);
-        assert_rejected_what(&core, &seq, "long_term_id");
+        assert_rejected_what(&core, &seq, true, "long_term_id");
 
         // Non-single INTRA_ONLY: build via a RegularTileGroup deriving to IntraOnly.
         let mut bits = Bits::default();
@@ -990,7 +998,7 @@ mod tests {
         assert_eq!(core.frame_type, Some(FrameType::IntraOnly));
         assert_eq!(core.long_term_id, Some(-1));
         core.long_term_id = Some(0); // not the -1 sentinel
-        assert_rejected_what(&core, &seq, "long_term_id");
+        assert_rejected_what(&core, &seq, false, "long_term_id");
     }
 
     #[test]
@@ -1001,7 +1009,7 @@ mod tests {
         let (mut core, seq) = valid_core();
         assert!(!core.reached_qm_reset);
         core.reached_qm_reset = true;
-        assert_rejected_what(&core, &seq, "reached_qm_reset");
+        assert_rejected_what(&core, &seq, true, "reached_qm_reset");
     }
 
     // ---- reject-completeness tests (#4i second-round review findings) ------------------
@@ -1018,7 +1026,10 @@ mod tests {
         core.obu_type = ObuType::BridgeFrame;
         core.is_bridge = true;
         core.bridge_frame_ref_idx = Some(0);
-        assert_rejected_what(&core, &seq, "bridge_inter");
+        // A BridgeFrame is not OBU_CLOSED_LOOP_KEY, so its parser-derived starts_cvs is false;
+        // match it so the test reaches its intended `bridge_inter` reject (not `starts_cvs`).
+        core.starts_cvs = false;
+        assert_rejected_what(&core, &seq, true, "bridge_inter");
     }
 
     #[test]
@@ -1029,7 +1040,7 @@ mod tests {
         let (mut core, seq) = valid_core();
         assert!(!core.is_bridge);
         core.bridge_frame_ref_idx = Some(3);
-        assert_rejected_what(&core, &seq, "bridge_frame_ref_idx");
+        assert_rejected_what(&core, &seq, true, "bridge_frame_ref_idx");
     }
 
     #[test]
@@ -1039,7 +1050,7 @@ mod tests {
         let (mut core, seq) = valid_core();
         assert_eq!(core.frame_to_show_map_idx, None);
         core.frame_to_show_map_idx = Some(2);
-        assert_rejected_what(&core, &seq, "frame_to_show_map_idx");
+        assert_rejected_what(&core, &seq, true, "frame_to_show_map_idx");
     }
 
     #[test]
@@ -1049,7 +1060,7 @@ mod tests {
         let (mut core, seq) = valid_core();
         assert!(core.inter.is_none());
         core.inter = Some(crate::headers::frame::InterControl::default());
-        assert_rejected_what(&core, &seq, "inter");
+        assert_rejected_what(&core, &seq, true, "inter");
     }
 
     #[test]
@@ -1061,7 +1072,7 @@ mod tests {
         assert!(core.sef_film_grain.is_none());
         let grain = core.intra_tail.as_ref().unwrap().film_grain;
         core.sef_film_grain = Some(grain);
-        assert_rejected_what(&core, &seq, "sef_film_grain");
+        assert_rejected_what(&core, &seq, true, "sef_film_grain");
     }
 
     #[test]
@@ -1071,23 +1082,32 @@ mod tests {
         let (mut core, seq) = valid_core();
         assert!(core.sef_trailing_bits.is_none());
         core.sef_trailing_bits = Some(crate::headers::frame::SefTrailingBits::Valid);
-        assert_rejected_what(&core, &seq, "sef_trailing_bits");
+        assert_rejected_what(&core, &seq, true, "sef_trailing_bits");
     }
 
     #[test]
-    fn reject_stale_consumed_bits() {
-        // Round-2 finding 6 (info.rs:1040): consumed_bits is the exact bit count the parser read
-        // for this header; the writer is its exact inverse, so the drafted length must equal it.
-        // A stale value (the rest of the model is canonical, so the writer emits the canonical
-        // length) is parser-unreachable and rejected after drafting, before the caller's writer
-        // is touched.
+    fn reject_stale_starts_cvs() {
+        // Round-3 finding (info.rs:1065): starts_cvs is derived, not coded
+        // (`obu_type == OBU_CLOSED_LOOP_KEY && FirstPictureInTU`); the prefix writes no bits for
+        // it, so a mutated value would reparse to the FirstPictureInTU-derived one and silently
+        // round-trip wrong. valid_core() is a CLK parsed with first_picture_in_tu = true, so its
+        // starts_cvs is true; flipping it to false is parser-unreachable for that input.
         let (mut core, seq) = valid_core();
-        core.consumed_bits += 1;
-        assert_rejected_what(&core, &seq, "consumed_bits");
+        assert_eq!(core.obu_type, ObuType::ClosedLoopKey);
+        assert!(core.starts_cvs);
+        core.starts_cvs = false;
+        assert_rejected_what(&core, &seq, true, "starts_cvs");
 
-        let (mut core, seq) = valid_core();
-        core.consumed_bits = core.consumed_bits.saturating_sub(1);
-        assert_rejected_what(&core, &seq, "consumed_bits");
+        // Conversely, the same CLK parsed with first_picture_in_tu = false yields
+        // starts_cvs == false and round-trips when written with first_picture_in_tu = false (the
+        // derivation matches, so the write is accepted).
+        let data = clk_direct_reference_bits().into_bytes();
+        let core = parse(&data, ObuType::ClosedLoopKey, false, &seq);
+        assert!(!core.starts_cvs);
+        let written = write_core(&core, &seq, false);
+        assert_bits_equal(&written, &data, core.consumed_bits, ObuType::ClosedLoopKey);
+        let reparsed = parse(&written, ObuType::ClosedLoopKey, false, &seq);
+        assert_cores_equal(&reparsed, &core);
     }
 
     #[test]

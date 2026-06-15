@@ -225,16 +225,26 @@ struct IntraGlue {
 /// Rejects (with [`WriteError::NonCanonicalFrameHeader`], `what` naming the field): a status
 /// other than `IntraHeaderComplete`; a non-intra / show-existing / inter model; any required
 /// `Option` that is `None` on the intra path; a set `lr_params_partial`; a control-region
-/// inferred value that disagrees with its derivation; a `refresh_frame_flags` the selected
-/// arm cannot represent; or an out-of-domain coded field.
+/// inferred value that disagrees with its derivation; a `starts_cvs` that disagrees with
+/// `obu_type == OBU_CLOSED_LOOP_KEY && first_picture_in_tu`; a `refresh_frame_flags` the
+/// selected arm cannot represent; or an out-of-domain coded field.
 fn check_frame_header_core_encodable(
     core: &FrameHeaderCore,
     seq: &CoreSeqView,
     mfh: Option<&MfhFrameView>,
+    first_picture_in_tu: bool,
 ) -> WriteResult<IntraGlue> {
     // --- status / path gating -------------------------------------------------------
     if core.status != FrameHeaderParseStatus::IntraHeaderComplete {
         return reject("status");
+    }
+    // starts_cvs is derived, not coded: the parser sets it to
+    // `obu_type == OBU_CLOSED_LOOP_KEY && FirstPictureInTU` (info.rs:1065) and the prefix
+    // writes no bits for it (reconstruct_prefix lifts the stored bool into the prefix Option).
+    // A mutated value would reparse to the FirstPictureInTU-derived one and silently round-trip
+    // wrong, so re-derive it from the threaded first_picture_in_tu and reject any mismatch.
+    if core.starts_cvs != (core.obu_type == ObuType::ClosedLoopKey && first_picture_in_tu) {
+        return reject("starts_cvs");
     }
     if core.frame_is_intra != Some(true) {
         return reject("frame_is_intra");
@@ -606,16 +616,21 @@ fn check_frame_header_core_encodable(
 ///
 /// `seq` is the active sequence-derived view ([`CoreSeqView::from_sequence`]); `mfh` is the
 /// resolved multi-frame-header view ([`MfhFrameView::from_record`]) for a `cur_mfh_id > 0`
-/// frame, `None` for the `cur_mfh_id == 0` direct path. The whole header is drafted into a
-/// scratch [`BitWriter`] and appended to `writer` only on full success, so any reject — the
-/// internal pre-write check **or** a delegated sub-writer's own check — leaves `writer`
-/// untouched (reject-before-write for the entire composition).
+/// frame, `None` for the `cur_mfh_id == 0` direct path. `first_picture_in_tu` is the stateful
+/// `FirstPictureInTU` the parser derived `core.starts_cvs` from (AV2 § 5.18.2,
+/// `startCVS = obu_type == OBU_CLOSED_LOOP_KEY && FirstPictureInTU`); it is threaded here so
+/// the check can confirm the stored `starts_cvs` matches that derivation (the prefix writes no
+/// bits for it, so a mutated value would otherwise be silently dropped). The whole header is
+/// drafted into a scratch [`BitWriter`] and appended to `writer` only on full success, so any
+/// reject — the internal pre-write check **or** a delegated sub-writer's own check — leaves
+/// `writer` untouched (reject-before-write for the entire composition).
 ///
 /// # Errors
 /// - [`WriteError::NonCanonicalFrameHeader`] if `core` is not a model the § 5.18.2 parser
 ///   could have produced on the intra path (wrong status, a show-existing / inter model, a
 ///   missing required `Option`, an inferred value that disagrees with its derivation, a
-///   `refresh_frame_flags` the selected arm cannot represent, or an out-of-domain coded
+///   `starts_cvs` that disagrees with `obu_type == OBU_CLOSED_LOOP_KEY && first_picture_in_tu`,
+///   a `refresh_frame_flags` the selected arm cannot represent, or an out-of-domain coded
 ///   field), or if a delegated sub-writer rejects its sub-structure.
 /// - Any other [`WriteError`] a delegated sub-writer or descriptor raises (e.g. a width that
 ///   overflows its `f(n)` field).
@@ -624,23 +639,14 @@ pub fn write_frame_header_core(
     core: &FrameHeaderCore,
     seq: &CoreSeqView,
     mfh: Option<&MfhFrameView>,
+    first_picture_in_tu: bool,
 ) -> WriteResult<()> {
-    let glue = check_frame_header_core_encodable(core, seq, mfh)?;
+    let glue = check_frame_header_core_encodable(core, seq, mfh, first_picture_in_tu)?;
 
     // Draft the whole header into a scratch writer; commit to the caller's `writer` only on
     // full success so a sub-writer reject mid-compose never leaves a partial buffer.
     let mut scratch = BitWriter::new();
     write_intra_header_into(&mut scratch, core, seq, mfh, &glue)?;
-
-    // Finding 6 (info.rs:1040): `core.consumed_bits` is the exact number of bits the § 5.18.2
-    // parser read for this frame header (prefix + body); the writer is its exact inverse, so the
-    // drafted scratch length must equal it. A stale / inconsistent `consumed_bits` cannot have
-    // been produced by the parser for this model — reject it before committing (the caller's
-    // `writer` stays at bit_len() == 0). Both values are `u64`, so the comparison is exact and
-    // panic-free.
-    if scratch.bit_len() != core.consumed_bits {
-        return reject("consumed_bits");
-    }
     writer.append(&scratch)
 }
 
