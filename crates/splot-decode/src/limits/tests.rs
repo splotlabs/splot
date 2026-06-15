@@ -66,6 +66,11 @@ fn default_options_and_limits_are_finite_and_pinned() {
             4_096,
         ),
         (
+            DecodeLimitName::MaxTilePartitionSteps,
+            limits.max_tile_partition_steps(),
+            1_048_576,
+        ),
+        (
             DecodeLimitName::MaxTilePayloadBytes,
             limits.max_tile_payload_bytes(),
             16 * 1024 * 1024,
@@ -122,6 +127,7 @@ fn limit_names_and_units_are_stable() {
             "max_reference_slots",
             "max_reference_store_bytes",
             "max_tile_count",
+            "max_tile_partition_steps",
             "max_tile_payload_bytes",
             "max_output_bytes",
         ]
@@ -140,6 +146,7 @@ fn limit_names_and_units_are_stable() {
             DecodeLimitUnit::Bytes,
             DecodeLimitUnit::Count,
             DecodeLimitUnit::Bytes,
+            DecodeLimitUnit::Count,
             DecodeLimitUnit::Count,
             DecodeLimitUnit::Bytes,
             DecodeLimitUnit::Bytes,
@@ -170,8 +177,9 @@ fn threshold_lookup_and_field_helpers_route_to_typed_names() {
         .with_max_reference_slots(MAX(10))
         .with_max_reference_store_bytes(MAX(11))
         .with_max_tile_count(MAX(12))
-        .with_max_tile_payload_bytes(MAX(13))
-        .with_max_output_bytes(MAX(14));
+        .with_max_tile_partition_steps(MAX(13))
+        .with_max_tile_payload_bytes(MAX(14))
+        .with_max_output_bytes(MAX(15));
     let cases = [
         (DecodeLimitName::MaxInputBytes, limits.max_input_bytes(), 1),
         (DecodeLimitName::MaxObus, limits.max_obus(), 2),
@@ -218,14 +226,19 @@ fn threshold_lookup_and_field_helpers_route_to_typed_names() {
         ),
         (DecodeLimitName::MaxTileCount, limits.max_tile_count(), 12),
         (
+            DecodeLimitName::MaxTilePartitionSteps,
+            limits.max_tile_partition_steps(),
+            13,
+        ),
+        (
             DecodeLimitName::MaxTilePayloadBytes,
             limits.max_tile_payload_bytes(),
-            13,
+            14,
         ),
         (
             DecodeLimitName::MaxOutputBytes,
             limits.max_output_bytes(),
-            14,
+            15,
         ),
     ];
 

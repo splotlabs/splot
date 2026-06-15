@@ -28,6 +28,8 @@ from a supported minimal intra tile partition root to the first
   `tile-partition-symbol-read-boundary`
 - **AND** it resolves the final decision through
   `tile-partition-decision-boundary`
+- **AND** it gates §5.20.10.4 root `read_lr()` syntax with explicit typed
+  unsupported state before any partition-entry symbol is read
 
 #### Scenario: Prefix child calls are emitted in spec order
 - **WHEN** a supported frontier selects `PARTITION_HORZ`, `PARTITION_VERT`,
@@ -80,9 +82,16 @@ copyback/averaging, and reference refresh behavior remain outside this
 capability.
 
 #### Scenario: Unsupported paths stay explicit
-- **WHEN** traversal input requires SDP, BRU-active behavior, bridge behavior,
-  inter-only behavior, or block syntax beyond partition traversal
+- **WHEN** traversal input requires SDP, §5.20.10.4 root `read_lr()` syntax,
+  BRU-active behavior, bridge behavior, inter-only behavior, or block syntax
+  beyond partition traversal
 - **THEN** the boundary returns an explicit unsupported/residual frontier result
   tied to `tile-partition-traversal-boundary`
 - **AND** no public CLI success path or decoder support row is promoted by this
   capability
+
+#### Scenario: Partition-step limits are separate from tile-count limits
+- **WHEN** the frontier bounds the number of consumed partition decisions
+- **THEN** it uses a dedicated partition-step decode limit
+- **AND** it does not reuse the frame/tile-grid tile-count limit for recursive
+  partition traversal

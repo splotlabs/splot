@@ -19,6 +19,7 @@ const DEFAULT_MAX_DECODED_FRAME_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_MAX_REFERENCE_SLOTS: u64 = 16;
 const DEFAULT_MAX_REFERENCE_STORE_BYTES: u64 = 256 * 1024 * 1024;
 const DEFAULT_MAX_TILE_COUNT: u64 = 4_096;
+const DEFAULT_MAX_TILE_PARTITION_STEPS: u64 = 1_048_576;
 const DEFAULT_MAX_TILE_PAYLOAD_BYTES: u64 = 16 * 1024 * 1024;
 const DEFAULT_MAX_OUTPUT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_HOST_ALLOCATION_LEN: u64 = isize::MAX as u64;
@@ -75,6 +76,7 @@ pub struct DecodeLimits {
     max_reference_slots: DecodeLimitThreshold,
     max_reference_store_bytes: DecodeLimitThreshold,
     max_tile_count: DecodeLimitThreshold,
+    max_tile_partition_steps: DecodeLimitThreshold,
     max_tile_payload_bytes: DecodeLimitThreshold,
     max_output_bytes: DecodeLimitThreshold,
 }
@@ -94,6 +96,7 @@ impl DecodeLimits {
         max_reference_slots: DecodeLimitThreshold::Max(DEFAULT_MAX_REFERENCE_SLOTS),
         max_reference_store_bytes: DecodeLimitThreshold::Max(DEFAULT_MAX_REFERENCE_STORE_BYTES),
         max_tile_count: DecodeLimitThreshold::Max(DEFAULT_MAX_TILE_COUNT),
+        max_tile_partition_steps: DecodeLimitThreshold::Max(DEFAULT_MAX_TILE_PARTITION_STEPS),
         max_tile_payload_bytes: DecodeLimitThreshold::Max(DEFAULT_MAX_TILE_PAYLOAD_BYTES),
         max_output_bytes: DecodeLimitThreshold::Max(DEFAULT_MAX_OUTPUT_BYTES),
     };
@@ -124,6 +127,7 @@ impl DecodeLimits {
             max_reference_slots: threshold,
             max_reference_store_bytes: threshold,
             max_tile_count: threshold,
+            max_tile_partition_steps: threshold,
             max_tile_payload_bytes: threshold,
             max_output_bytes: threshold,
         }
@@ -145,6 +149,7 @@ impl DecodeLimits {
             DecodeLimitName::MaxReferenceSlots => self.max_reference_slots,
             DecodeLimitName::MaxReferenceStoreBytes => self.max_reference_store_bytes,
             DecodeLimitName::MaxTileCount => self.max_tile_count,
+            DecodeLimitName::MaxTilePartitionSteps => self.max_tile_partition_steps,
             DecodeLimitName::MaxTilePayloadBytes => self.max_tile_payload_bytes,
             DecodeLimitName::MaxOutputBytes => self.max_output_bytes,
         }
@@ -174,6 +179,9 @@ impl DecodeLimits {
                 self.max_reference_store_bytes = threshold;
             }
             DecodeLimitName::MaxTileCount => self.max_tile_count = threshold,
+            DecodeLimitName::MaxTilePartitionSteps => {
+                self.max_tile_partition_steps = threshold;
+            }
             DecodeLimitName::MaxTilePayloadBytes => self.max_tile_payload_bytes = threshold,
             DecodeLimitName::MaxOutputBytes => self.max_output_bytes = threshold,
         }
@@ -390,6 +398,18 @@ impl DecodeLimits {
         self.with_limit(DecodeLimitName::MaxTileCount, threshold)
     }
 
+    /// Returns the maximum tile partition traversal step threshold.
+    #[must_use]
+    pub const fn max_tile_partition_steps(self) -> DecodeLimitThreshold {
+        self.threshold(DecodeLimitName::MaxTilePartitionSteps)
+    }
+
+    /// Returns a copy with the maximum tile partition traversal step threshold replaced.
+    #[must_use]
+    pub const fn with_max_tile_partition_steps(self, threshold: DecodeLimitThreshold) -> Self {
+        self.with_limit(DecodeLimitName::MaxTilePartitionSteps, threshold)
+    }
+
     /// Returns the maximum tile payload byte threshold.
     #[must_use]
     pub const fn max_tile_payload_bytes(self) -> DecodeLimitThreshold {
@@ -449,6 +469,8 @@ pub enum DecodeLimitName {
     MaxReferenceStoreBytes,
     /// Maximum tile count.
     MaxTileCount,
+    /// Maximum tile partition traversal steps.
+    MaxTilePartitionSteps,
     /// Maximum tile payload bytes.
     MaxTilePayloadBytes,
     /// Maximum output bytes.
@@ -457,7 +479,7 @@ pub enum DecodeLimitName {
 
 impl DecodeLimitName {
     /// Stable list of every decode resource limit name.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::MaxInputBytes,
         Self::MaxObus,
         Self::MaxIvfFrameRecords,
@@ -470,6 +492,7 @@ impl DecodeLimitName {
         Self::MaxReferenceSlots,
         Self::MaxReferenceStoreBytes,
         Self::MaxTileCount,
+        Self::MaxTilePartitionSteps,
         Self::MaxTilePayloadBytes,
         Self::MaxOutputBytes,
     ];
@@ -490,6 +513,7 @@ impl DecodeLimitName {
             Self::MaxReferenceSlots => "max_reference_slots",
             Self::MaxReferenceStoreBytes => "max_reference_store_bytes",
             Self::MaxTileCount => "max_tile_count",
+            Self::MaxTilePartitionSteps => "max_tile_partition_steps",
             Self::MaxTilePayloadBytes => "max_tile_payload_bytes",
             Self::MaxOutputBytes => "max_output_bytes",
         }
@@ -512,7 +536,8 @@ impl DecodeLimitName {
             | Self::MaxFramesToDecode
             | Self::MaxOutputFrames
             | Self::MaxReferenceSlots
-            | Self::MaxTileCount => DecodeLimitUnit::Count,
+            | Self::MaxTileCount
+            | Self::MaxTilePartitionSteps => DecodeLimitUnit::Count,
         }
     }
 }

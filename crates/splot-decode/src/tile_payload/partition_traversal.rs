@@ -63,6 +63,15 @@ pub(crate) enum TilePartitionBruState {
     Unsupported,
 }
 
+/// Loop-restoration syntax state supported by the traversal frontier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TilePartitionLoopRestorationState {
+    /// No §5.20.10.4 `read_lr()` syntax is needed before partition reads.
+    NoSyntax,
+    /// Root `read_lr()` syntax remains outside this frontier.
+    UnsupportedReadLrSyntax,
+}
+
 /// Frame and sequence facts required by the traversal frontier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionFrameFacts {
@@ -75,6 +84,7 @@ pub(crate) struct TilePartitionFrameFacts {
     frame_is_intra: bool,
     enable_sdp: bool,
     enable_extended_sdp: bool,
+    loop_restoration: TilePartitionLoopRestorationState,
     features: PartitionFeatureFlags,
     max_pb_aspect_ratio: usize,
     has_chroma: bool,
@@ -94,6 +104,7 @@ impl TilePartitionFrameFacts {
         frame_is_intra: bool,
         enable_sdp: bool,
         enable_extended_sdp: bool,
+        loop_restoration: TilePartitionLoopRestorationState,
         features: PartitionFeatureFlags,
         max_pb_aspect_ratio: usize,
         has_chroma: bool,
@@ -109,6 +120,7 @@ impl TilePartitionFrameFacts {
             frame_is_intra,
             enable_sdp,
             enable_extended_sdp,
+            loop_restoration,
             features,
             max_pb_aspect_ratio,
             has_chroma,
@@ -339,6 +351,8 @@ pub(crate) enum TilePartitionTraversalUnsupported {
     Sdp,
     /// Extended SDP region signaling remains outside this frontier.
     ExtendedSdp,
+    /// Root `read_lr()` syntax remains outside this frontier.
+    ReadLoopRestoration,
     /// BRU/bridge/inactive behavior remains outside this frontier.
     BruOrBridge,
 }
@@ -361,6 +375,13 @@ pub(crate) fn plan_tile_partition_traversal_frontier(
     if frame.enable_extended_sdp {
         return Err(TilePartitionTraversalError::Unsupported(
             TilePartitionTraversalUnsupported::ExtendedSdp,
+        ));
+    }
+    // AV2 §5.20.3.1 invokes §5.20.10.4 `read_lr()` at the root before
+    // `read_partition`; keep that syntax explicit until this frontier models it.
+    if frame.loop_restoration == TilePartitionLoopRestorationState::UnsupportedReadLrSyntax {
+        return Err(TilePartitionTraversalError::Unsupported(
+            TilePartitionTraversalUnsupported::ReadLoopRestoration,
         ));
     }
     if frame.bru_state != TilePartitionBruState::Active {
@@ -389,9 +410,10 @@ pub(crate) fn plan_tile_partition_traversal_frontier(
     let mut skipped_out_of_frame = Vec::new();
 
     while let Some(call) = stack.pop() {
-        // Temporary traversal-step backstop until decoder limits gain a
-        // dedicated partition-step resource name.
-        limits.ensure(DecodeLimitName::MaxTileCount, (steps.len() + 1) as u64)?;
+        limits.ensure(
+            DecodeLimitName::MaxTilePartitionSteps,
+            (steps.len() + 1) as u64,
+        )?;
         if call.r >= frame.mi_rows || call.c >= frame.mi_cols {
             skipped_out_of_frame.push(call);
             continue;

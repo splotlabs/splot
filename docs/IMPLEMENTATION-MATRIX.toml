@@ -5943,7 +5943,7 @@ openspec_change = "decode-limits-runtime-api"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a source-backed, dependency-free `splot-decode` runtime API for caller-provided decode resource policy: `DecodeOptions`, `DecodeLimits`, typed limit names and units, thresholds, inclusive pure checks, local typed limit errors, checked arithmetic helpers, and allocation-size handoff checks. The API uses `max_ivf_frame_records`, `max_reference_slots`, `max_reference_store_bytes`, and `max_tile_payload_bytes` to avoid overclaiming AV2 semantics, provides finite defaults plus explicit zero/unlimited constructors, and keeps all thresholds as repository policy rather than AV2 conformance limits. This is policy infrastructure only: it does not consume bytes, allocate from bitstream-derived values, emit the planned resource-limit diagnostic, change CLI behavior, compute frame hashes, write Y4M, reconstruct pixels, store references, invoke external decoders, or change the dependency graph."
+notes = "Adds a source-backed, dependency-free `splot-decode` runtime API for caller-provided decode resource policy: `DecodeOptions`, `DecodeLimits`, typed limit names and units, thresholds, inclusive pure checks, local typed limit errors, checked arithmetic helpers, and allocation-size handoff checks. The API uses `max_ivf_frame_records`, `max_reference_slots`, `max_reference_store_bytes`, `max_tile_partition_steps`, and `max_tile_payload_bytes` to avoid overclaiming AV2 semantics, provides finite defaults plus explicit zero/unlimited constructors, and keeps all thresholds as repository policy rather than AV2 conformance limits. This is policy infrastructure only: it does not consume bytes, allocate from bitstream-derived values, emit the planned resource-limit diagnostic, change CLI behavior, compute frame hashes, write Y4M, reconstruct pixels, store references, invoke external decoders, or change the dependency graph."
 
 [feature.status]
 mapped = "done"
@@ -6553,12 +6553,15 @@ id = "DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY"
 name = "Tile partition traversal frontier"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.2.1", "5.20.3.1", "5.20.3.2", "5.20.4.1", "6.19.2.1", "6.19.3", "8.2.5", "8.2.6", "8.3.1", "8.3.2", "9.2"]
+spec_sections = ["5.20.2.1", "5.20.3.1", "5.20.3.2", "5.20.4.1", "5.20.9.1", "5.20.10.4", "5.20.10.5", "6.19.2.1", "6.19.3", "8.2.5", "8.2.6", "8.3.1", "8.3.2", "9.2"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-9-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5",
     "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-2-1",
     "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-3",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
@@ -6573,7 +6576,7 @@ openspec_change = "tile-partition-traversal-boundary"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a crate-private AV2 §5.20.3.1 partition traversal frontier for the minimal intra tile tier. `partition_traversal.rs` composes the existing partition-size, allowed-set, CDF-context, symbol-read, and partition-decision boundaries to advance from a tile work unit to the first in-frame `decode_block()` frontier. It clones tile CDF rows transactionally, initializes a fresh §8.2 symbol decoder at the work-unit tile byte span, commits CDF mutations only after success, records the decision prefix, pending sibling child calls, symbol counters, and block-frontier coordinates, and checks resource/coordinate failures with typed errors. This row does not implement full `decode_tile()` traversal, §5.20.2.1 setup side effects, SDP, BRU, bridge, inter behavior, `decode_block()` syntax, `MiSizes` or neighbor-state mutation, `exit_symbol()`, Saved CDF copyback/averaging, reconstruction, output, reference refresh, public APIs, AVM/dav2d invocation, or scheduler/dependency changes."
+notes = "Adds a crate-private AV2 §5.20.3.1 partition traversal frontier for the minimal intra tile tier. `partition_traversal.rs` composes the existing partition-size, allowed-set, CDF-context, symbol-read, and partition-decision boundaries to advance from a tile work unit to the first in-frame `decode_block()` frontier. It clones tile CDF rows transactionally, initializes a fresh §8.2 symbol decoder at the work-unit tile byte span, commits CDF mutations only after success, derives square-split availability from tile-local bounds, records the decision prefix, pending sibling child calls, symbol counters, and block-frontier coordinates, and checks resource/coordinate failures with typed errors including a dedicated `max_tile_partition_steps` budget. It gates §5.20.10.4 root `read_lr()` syntax with typed unsupported state before any partition symbol reads. This row does not implement full `decode_tile()` traversal, §5.20.2.1 setup side effects, SDP, §5.20.10.4 loop-restoration `read_lr()` syntax, BRU, bridge, inter behavior, `decode_block()` syntax, `MiSizes` or neighbor-state mutation, `exit_symbol()`, Saved CDF copyback/averaging, reconstruction, output, reference refresh, public APIs, AVM/dav2d invocation, or scheduler/dependency changes."
 
 [feature.status]
 mapped = "done"

@@ -10,7 +10,7 @@ use super::super::cdf::{
 };
 use super::super::{SymbolInitBoundary, TileBruPath, TilePayloadSource};
 use super::*;
-use crate::{DecodeLayerSelection, DecodeObuSourceKind};
+use crate::{DecodeLayerSelection, DecodeLimitError, DecodeLimitThreshold, DecodeObuSourceKind};
 use splot_core::span::{ByteOffset, ByteSpan};
 use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
 
@@ -41,6 +41,7 @@ fn frame(sb_size: usize) -> TilePartitionFrameFacts {
         true,
         false,
         false,
+        TilePartitionLoopRestorationState::NoSyntax,
         PartitionFeatureFlags::new(true, true),
         4,
         true,
@@ -343,6 +344,24 @@ fn failed_context_read_does_not_commit_cdf_mutation() {
 }
 
 #[test]
+fn read_lr_gate_precedes_partition_symbol_reads() {
+    let mut work_unit = make_work_unit(&[], CdfUpdateMode::Enabled);
+    let before = work_unit.cdf().tile_cdfs().clone();
+    let mut facts = frame(BLOCK_32X32);
+    facts.loop_restoration = TilePartitionLoopRestorationState::UnsupportedReadLrSyntax;
+
+    let err = frontier(&mut work_unit, facts, context()).unwrap_err();
+
+    assert!(matches!(
+        err,
+        TilePartitionTraversalError::Unsupported(
+            TilePartitionTraversalUnsupported::ReadLoopRestoration
+        )
+    ));
+    assert_eq!(work_unit.cdf().tile_cdfs(), &before);
+}
+
+#[test]
 fn disabled_cdf_update_preserves_rows_while_advancing_symbols() {
     let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Disabled);
     let before = work_unit.cdf().tile_cdfs().clone();
@@ -371,6 +390,17 @@ fn unsupported_gates_are_explicit() {
     assert!(matches!(
         err,
         TilePartitionTraversalError::Unsupported(TilePartitionTraversalUnsupported::ExtendedSdp)
+    ));
+
+    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let mut read_lr = frame(BLOCK_32X32);
+    read_lr.loop_restoration = TilePartitionLoopRestorationState::UnsupportedReadLrSyntax;
+    let err = frontier(&mut work_unit, read_lr, context()).unwrap_err();
+    assert!(matches!(
+        err,
+        TilePartitionTraversalError::Unsupported(
+            TilePartitionTraversalUnsupported::ReadLoopRestoration
+        )
     ));
 
     let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
@@ -426,15 +456,38 @@ fn arithmetic_and_invalid_subsize_errors_are_typed() {
 }
 
 #[test]
-fn max_tile_count_limit_bounds_frontier_steps() {
-    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
+fn max_tile_partition_steps_limit_bounds_frontier_steps() {
+    let mut work_unit = make_work_unit(&[0xFF, 0x00, 0x80], CdfUpdateMode::Enabled);
     let err = plan_tile_partition_traversal_frontier(TilePartitionTraversalInput::new(
         &mut work_unit,
         frame(BLOCK_32X32),
         context(),
-        DecodeLimits::zero(),
+        DecodeLimits::unlimited().with_max_tile_partition_steps(DecodeLimitThreshold::Max(1)),
     ))
     .unwrap_err();
 
-    assert!(matches!(err, TilePartitionTraversalError::Limit(_)));
+    assert!(matches!(
+        &err,
+        TilePartitionTraversalError::Limit(DecodeLimitError::LimitExceeded { .. })
+    ));
+    if let TilePartitionTraversalError::Limit(DecodeLimitError::LimitExceeded { check }) = err {
+        assert_eq!(check.name(), DecodeLimitName::MaxTilePartitionSteps);
+        assert_eq!(check.actual(), 2);
+    }
+}
+
+#[test]
+fn max_tile_count_limit_does_not_bound_frontier_steps() {
+    let mut work_unit = make_work_unit(&[0xFF, 0x00, 0x80], CdfUpdateMode::Enabled);
+    let plan = plan_tile_partition_traversal_frontier(TilePartitionTraversalInput::new(
+        &mut work_unit,
+        frame(BLOCK_32X32),
+        context(),
+        DecodeLimits::unlimited()
+            .with_max_tile_count(DecodeLimitThreshold::Max(1))
+            .with_max_tile_partition_steps(DecodeLimitThreshold::Max(8)),
+    ))
+    .unwrap();
+
+    assert!(plan.steps().len() > 1);
 }

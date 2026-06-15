@@ -319,6 +319,7 @@ The first contract covers:
 - `max_reference_slots`;
 - `max_reference_store_bytes`;
 - `max_tile_count`;
+- `max_tile_partition_steps`;
 - `max_tile_payload_bytes`;
 - `max_output_bytes`.
 
