@@ -407,6 +407,29 @@ impl BitWriter {
         }
     }
 
+    /// Writes AV2 `trailing_bits(nbBits)` (AV2 v1.0.0 § 5.2.3,
+    /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2-3`): a single
+    /// `trailing_one_bit == 1` followed by `nb_bits - 1` `trailing_zero_bit == 0`
+    /// bits, the inverse of [`crate::obu::parse_trailing_bits`].
+    ///
+    /// Unlike [`BitWriter::align_to_byte`] — which emits `byte_alignment()`
+    /// (§ 5.2.4, all-zero padding) — `trailing_bits()` writes the leading `1` marker
+    /// bit first; the two are not interchangeable for an OBU payload tail.
+    ///
+    /// # Errors
+    /// Returns [`WriteError::EmptyTrailingBits`] if `nb_bits == 0` (the parser
+    /// rejects an empty trailing-bits field).
+    pub fn write_trailing_bits(&mut self, nb_bits: u64) -> WriteResult<()> {
+        if nb_bits == 0 {
+            return Err(WriteError::EmptyTrailingBits);
+        }
+        self.write_bit(1)?;
+        for _ in 1..nb_bits {
+            self.write_bit(0)?;
+        }
+        Ok(())
+    }
+
     /// Consumes the writer and returns the written bytes, zero-padding any trailing
     /// partial byte (see the type-level note on alignment).
     #[must_use]
@@ -628,6 +651,27 @@ mod tests {
             assert_eq!(reader(&bytes).read_ns(5).unwrap(), value, "ns({value}, 5)");
         }
     }
+
+    #[test]
+    fn trailing_bits_round_trip_and_reject_empty() {
+        // `trailing_bits(0)` is rejected (the parser rejects an empty field).
+        assert!(matches!(
+            BitWriter::new().write_trailing_bits(0),
+            Err(WriteError::EmptyTrailingBits)
+        ));
+        // 1..=16 bits: a `1` marker then zeros; reparses without a § 5.2.3 error.
+        for nb in 1u64..=16 {
+            let mut writer = BitWriter::new();
+            writer.write_trailing_bits(nb).unwrap();
+            let bytes = writer.into_bytes();
+            let mut r = reader(&bytes);
+            crate::obu::parse_trailing_bits(&mut r, nb).unwrap();
+        }
+        // The single-bit case is exactly the marker bit (zero-padded to a byte).
+        let mut one = BitWriter::new();
+        one.write_trailing_bits(1).unwrap();
+        assert_eq!(one.into_bytes(), vec![0b1000_0000]);
+    }
 }
 
 #[cfg(test)]
@@ -741,6 +785,17 @@ mod proptests {
             writer.write_rg(value, n).unwrap();
             let bytes = writer.into_bytes();
             prop_assert_eq!(read_back(&bytes).read_rg(n).unwrap(), value);
+        }
+
+        /// `trailing_bits(nbBits)`: a `1` marker then zeros reparses cleanly for any
+        /// width, the inverse of `crate::obu::parse_trailing_bits`.
+        #[test]
+        fn roundtrip_trailing_bits(nb in 1u64..=512) {
+            let mut writer = BitWriter::new();
+            writer.write_trailing_bits(nb).unwrap();
+            let bytes = writer.into_bytes();
+            let mut r = read_back(&bytes);
+            prop_assert!(crate::obu::parse_trailing_bits(&mut r, nb).is_ok());
         }
 
         /// The writer never panics, whatever the value/width — it returns `Result`.
