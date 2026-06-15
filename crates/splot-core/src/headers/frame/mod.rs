@@ -61,9 +61,15 @@ pub use global_motion::{
     inverse_recenter, parse_global_motion_params, read_global_param,
 };
 pub use info::{
-    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
-    FrameReferenceStateView, FrameType, SefTrailingBits, parse_frame_header_core,
+    CoreSeqInterView, CoreSeqView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
+    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, MfhFrameView, SefTrailingBits,
+    parse_frame_header_core,
 };
+// Test-only: the `crate::write` frame-header-core writer round-trips against the §5.18.2 core
+// parser body. `parse_frame_header_core` needs a full `SequenceHeader`; these let the sibling
+// writer tests run the body against a directly built `CoreSeqView` / `MfhFrameView`.
+#[cfg(test)]
+pub(crate) use info::{init_core_from_prefix, parse_core_body};
 pub use inter::{InterControl, InterStop, MvPrecision, TipFrameMode};
 pub use quant::{
     CoreSeqQuantView, DeltaQParams, LosslessInfo, MAX_PIC_QM_NUM, QmSetLevels, QuantizationParams,

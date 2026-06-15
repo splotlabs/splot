@@ -29,8 +29,8 @@ const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[
     },
     SourceLineAllowance {
         path: "crates/splot-core/src/headers/frame/info.rs",
-        max_lines: 4_624,
-        reason: "large cohesive frame-header parser; split separately from this validator refactor. +16 (2026-06-15): the maintainer-approved frame-config discarded-bit model extension adds FrameHeaderCore.force_integer_mv / .intrabc so the byte-exact §5.18.3 frame-header writer can reproduce every read-and-discarded bit (frame-header-writer-size-config)",
+        max_lines: 4_640,
+        reason: "large cohesive frame-header parser; split separately from this validator refactor. +16 (2026-06-15): the maintainer-approved frame-config discarded-bit model extension adds FrameHeaderCore.force_integer_mv / .intrabc so the byte-exact §5.18.3 frame-header writer can reproduce every read-and-discarded bit (frame-header-writer-size-config). +16 (2026-06-15): expose CoreSeqView / MfhFrameView / CoreSeqInterView (pub, crate-private fields) + their from_sequence/from_record constructors and pub(crate) init_core_from_prefix/parse_core_body so the composing intra frame-header writer (write_frame_header_core, frame-header-writer-compose) can take them as inputs and round-trip in its sibling tests",
     },
     SourceLineAllowance {
         path: "crates/splot-validate/src/celu.rs",

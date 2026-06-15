@@ -20,7 +20,7 @@ descriptors (plus § 5.2.4 byte alignment), `AV2-5.2.2-OBU-HEADER` /
 `AV2-5.4-SEQUENCE-HEADER` umbrella `write` is now `done` — landed by the archived
 `bit-writer-primitives`, `obu-header-and-size-writer`, `seq-header-writer-general`,
 `seq-header-writer-configs`, and `seq-header-writer-tile` changes (see the requirements
-below). The **frame-header writer** has begun (intra path, sliced #4a–#4i): the § 5.18.2
+below). The **frame-header writer**'s intra path is now COMPLETE (sliced #4a–#4i): the § 5.18.2
 activation prefix is inverted by `write_frame_header_prefix`
 (`frame-header-writer-prefix`; `AV2-5.18.1-FRAME-HEADER-GENERAL` `write` = `partial`), and the
 § 5.18.4 `frame_size()` + § 5.18.3 `screen_content_params()` / `intrabc_params()` by the
@@ -49,14 +49,22 @@ primitive; the LR writer is additive and rejects the unmodeled frame-level Wiene
 intra surface is inverted but the inter coded arms remain), the no-bit
 intra inferences, `reduced_tx_set`, the no-bit intra arm of `global_motion_params()`
 (§ 5.18.9.1; `AV2-5.18.9-GLOBAL-MOTION` `write` = `partial`), and `film_grain_config()`
-(§ 5.18.10.1; `AV2-5.18.10-FILM-GRAIN-STRUCTURES` `write` = `done`).
+(§ 5.18.10.1; `AV2-5.18.10-FILM-GRAIN-STRUCTURES` `write` = `done`). The intra path is now
+**composed end-to-end** by `write/frame_header_core.rs::write_frame_header_core`
+(`frame-header-writer-compose`; `AV2-5.18.2-FRAME-HEADER-INFO` `write` = `partial` — the modeled
+intra path is complete, the inter paths remain), the exact inverse of `parse_frame_header_core`
+on the `IntraHeaderComplete` path: it writes the control-region glue (frame-type arm, long-term
+ids, output flags, `order_hint`, `refresh_frame_flags`, `disable_cdf_update`) directly and
+delegates every sub-structure to the #4a–#4h writers, drafting into a scratch `BitWriter` so any
+reject leaves the caller's writer untouched. A full intra frame header parses → writes → reparses
+byte-exactly.
 The size/config and tiling slices carry maintainer-approved model/parser surfacings of
 previously-discarded layout bits (`intrabc_params()` / `force_integer_mv`; the explicit-branch
 `TileParams`; the CCSO `ccso_offset_idx`); the quant, segmentation, loop-filter, and intra-tail
 slices are additive (their few read-but-not-stored points are redundant encodings or parser
 derivations, canonicalized/re-derived like the § 5.4 leb128-minimal case).
-Remaining: the composing `write_frame_header` over the intra path (the final #4i slice; the inter
-paths + the § 5.18.7.11 Wiener bank stay out of scope),
+Remaining: the inter / show-existing frame-header paths and the § 5.18.7.11 frame-level Wiener
+bank (out of the current intra scope),
 the tile-group/metadata payload writers, the
 **Annex B** muxer, and wiring the muxers into writer-track round-trip tests — the IVF
 container write helpers already exist (`AV2-IVF-CONTAINER`, `write` = `done`); plus the
@@ -549,5 +557,40 @@ never leave a partial buffer.
   on a lossless one), a `true` for any no-bit intra inference, an `apply_grain` disagreeing with
   its inferred value, a wrong `fgm_id` / `grain_seed` presence, or an `fgm_id` / `reduced_tx_set`
   outside its field
+- **THEN** the writer SHALL return a typed `WriteError` and write no bit.
+
+### Requirement: composing intra frame-header writer
+
+`splot-core` SHALL provide a composing writer `write_frame_header_core` that is the exact
+inverse of `parse_frame_header_core` on the path that reaches
+`FrameHeaderParseStatus::IntraHeaderComplete`. It SHALL emit the whole intra frame header in
+§ 5.18.2 order — the activation prefix, the control-region glue bits (the frame-type arm, the
+long-term-id reads, the output-control flags, `frame_size_override_flag`, `order_hint`,
+`refresh_frame_flags`, and `disable_cdf_update`), and every sub-structure (frame size,
+screen-content, intrabc, tile, quantization, segmentation, QM setup, delta-Q, lossless,
+deblocking, GDF, CDEF, loop-restoration, CCSO, and the tail) — by delegating each sub-structure
+to its existing writer. For every model the writer accepts, reparsing the written bits with
+`parse_frame_header_core` and the same gating inputs SHALL yield the original
+(`parse(write(x)) == x`).
+
+The writer SHALL accept ONLY a model whose `status == IntraHeaderComplete` (with
+`frame_is_intra` set, the required fields present, and no partial loop-restoration parse); any
+other model — an inter / switch / TIP / bridge / show-existing-frame header, a non-complete
+status, or a model with a missing required field — SHALL be rejected with a typed writer error
+before any bit is written. The composition SHALL never leave a partial buffer: a reject at any
+step SHALL leave `bit_len() == 0`.
+
+#### Scenario: a complete intra frame header round-trips byte-exactly
+
+- **WHEN** an intra frame header that the parser turned into an `IntraHeaderComplete`
+  `FrameHeaderCore` is written with `write_frame_header_core` and the same sequence / MFH inputs
+- **THEN** the written bytes SHALL be byte-exact and SHALL reparse to an equal `FrameHeaderCore`,
+  across the intra frame types (single-picture Key, closed-/open-loop key, intra-only), lossless
+  and non-lossless, grain present/absent, single- and multi-tile, and `cur_mfh_id` 0 and > 0.
+
+#### Scenario: a non-intra-complete model is rejected before any bit
+
+- **WHEN** a model carries a non-`IntraHeaderComplete` status, a missing required field, a
+  partial loop-restoration parse, or a show-existing-frame / inter header
 - **THEN** the writer SHALL return a typed `WriteError` and write no bit.
 

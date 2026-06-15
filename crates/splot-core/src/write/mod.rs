@@ -28,7 +28,10 @@
 //! [`frame_restoration`] writes the § 5.18.7.11 / § 5.18.7.12 loop-restoration and CCSO
 //! cluster (`lr_params()` on the `frame_filters_on == false` surface, and `ccso_params()`); and
 //! [`frame_tail`] writes the § 5.18.2 intra tail (`read_tx_mode()`, the no-bit intra inferences,
-//! `reduced_tx_set`, and `film_grain_config()`).
+//! `reduced_tx_set`, and `film_grain_config()`); and [`frame_header_core`] composes all of the
+//! above into [`frame_header_core::write_frame_header_core`], the inverse of
+//! `parse_frame_header_core` on the `IntraHeaderComplete` path (it writes the frame-type-dependent
+//! control-region glue directly and delegates every sub-structure to the writers above).
 //! More payload writers will build on this module as the writer surface grows; see
 //! `docs/spec-coverage-writer.md` (once landed) for the per-structure coverage matrix.
 
@@ -37,6 +40,7 @@ pub mod error;
 pub mod frame_config;
 pub mod frame_filters;
 pub mod frame_header;
+pub mod frame_header_core;
 pub mod frame_quant;
 pub mod frame_restoration;
 pub mod frame_segmentation;
@@ -53,6 +57,7 @@ pub use error::{WriteError, WriteResult};
 pub use frame_config::{write_frame_size, write_intrabc_params, write_screen_content_params};
 pub use frame_filters::{write_cdef_params, write_deblocking_filter_params, write_gdf_params};
 pub use frame_header::write_frame_header_prefix;
+pub use frame_header_core::write_frame_header_core;
 pub use frame_quant::{
     write_delta_q_params, write_lossless_info, write_quantization_params, write_read_delta_q,
     write_setup_qm_params,
