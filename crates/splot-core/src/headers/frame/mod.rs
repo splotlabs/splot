@@ -73,6 +73,14 @@ pub use restoration::{
 };
 pub use segmentation::{CoreSeqSegView, SegmentationParams, parse_segmentation_params};
 pub use size::FrameSize;
+// Internal re-exports so the `crate::write` frame-header writer tests (a sibling of the
+// private `config` / `size` modules) can round-trip against the §5.18.3 / §5.18.4 parsers.
+// Test-only: the writers themselves do not parse, and the in-crate parser callers reach
+// `config` / `size` directly.
+#[cfg(test)]
+pub(crate) use config::{parse_intrabc_params_full, parse_screen_content_params_full};
+#[cfg(test)]
+pub(crate) use size::parse_frame_size;
 pub use tail::{
     FilmGrainConfig, FrameHeaderTail, FrameTailInput, TxMode, parse_film_grain_config,
     parse_intra_tail, read_tx_mode,
