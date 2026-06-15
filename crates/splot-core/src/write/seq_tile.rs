@@ -277,7 +277,7 @@ fn check_filter_encodable(
 /// log2 limits, and `minLog2Tiles`. Recomputed here exactly as
 /// [`crate::tile::parse_tile_layout`] does, so the writer's increment-loop / `ns()`
 /// inversions land on the same bit boundaries.
-struct TileGrid {
+pub(crate) struct TileGrid {
     mi_cols: u32,
     mi_rows: u32,
     sb_cols: u32,
@@ -292,7 +292,7 @@ struct TileGrid {
 /// Recomputes the § 5.18.7.3 pre-bit grid/scaling bounds, or `None` for a reserved
 /// `seq_level_idx` (no defined scaling factor — the parser's `Error::Unimplemented`
 /// case, which the writer surfaces as [`WriteError::UnwritableSequenceHeader`]).
-fn compute_tile_grid(input: &TileParamsInput) -> Option<TileGrid> {
+pub(crate) fn compute_tile_grid(input: &TileParamsInput) -> Option<TileGrid> {
     let sb4x4 = num_4x4_blocks_wide(input.sb_size);
     let sb_shift = mi_width_log2(input.sb_size);
     let mi_cols = 2 * (input.frame_width.saturating_add(7) >> 3);
@@ -468,7 +468,7 @@ fn check_tile_encodable(config: &SequenceTileConfig, input: &TileParamsInput) ->
 /// Pre-validated by [`check_tile_params_encodable`]; this function re-runs the same
 /// derivation and so cannot fail on a validated model (it still propagates `ns()` errors
 /// defensively).
-fn write_tile_params(
+pub(crate) fn write_tile_params(
     writer: &mut BitWriter,
     params: &TileParams,
     sb_col_starts: &[u32],
