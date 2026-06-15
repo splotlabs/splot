@@ -78,3 +78,7 @@
   PASS. Nested conclusions: data layout PASS, thread determinism PASS,
   avoidable copies PASS. Non-blocking note accepted: selector derivation and row
   access both validate bounds to preserve the existing safe boundary.
+- PR Codex review on `8271bab3a8`: P2 findings addressed. Restored the
+  pre-existing Tile CDF OpenSpec scenarios in both the live spec and archived
+  delta, and changed the context child module to `pub(crate)` so future
+  tile-payload code can use `PartitionContextInput` / `RectPartitionType`.

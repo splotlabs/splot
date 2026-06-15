@@ -5,7 +5,7 @@
 //!
 //! Feature tracking: `DECODE-TILE-CDF-SELECTION-BOUNDARY`.
 
-mod context;
+pub(crate) mod context;
 
 use core::fmt;
 
