@@ -30,5 +30,5 @@
 
 - [x] 5.1 Archive `decode-y4m-runtime-output` with `openspec archive decode-y4m-runtime-output --yes`.
 - [x] 5.2 Rerun required gates after archive and commit the archived change.
-- [ ] 5.3 Open a ready (not draft) PR with tests, matrix rows, diagnostics, known exclusions, and review decisions.
+- [x] 5.3 Open a ready (not draft) PR with tests, matrix rows, diagnostics, known exclusions, and review decisions.
 - [ ] 5.4 Wait for CI, Claude/human feedback, and a latest Codex review verdict on the current head before merge.
