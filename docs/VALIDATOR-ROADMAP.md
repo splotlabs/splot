@@ -57,18 +57,30 @@ dependency order:
 | Frame-header continuation | the Phase 8 remaining work below |
 
 **Do not start yet** as a primary task: a full tile-group payload parser,
-entropy/range coding, a decoder, an encoder, a bitstream writer, or a *live*
-AVM differential harness. The active OpenSpec changes `add-bitstream-writer`,
-`toy-intra-encoder-v0`, and `avm-differential-harness` are recorded intent
-behind this fence, not started work — none has implementation tasks checked.
-Prepare hooks and fixtures, but keep the core work focused on the gaps above.
+entropy/range coding, a decoder, an encoder, or a *live* AVM differential
+harness. The active OpenSpec changes `toy-intra-encoder-v0` and
+`avm-differential-harness` are recorded intent behind this fence, not started
+work — none has implementation tasks checked. Prepare hooks and fixtures, but
+keep the core work focused on the gaps above.
+
+**Carve-out (started 2026-06-14, maintainer-approved):** the **bitstream writer**
+is *out* from behind this fence. The writer is the exact inverse of the existing
+parser — its correctness is defined by `read(write(x)) == x` round-trips against
+`splot-core`, so it needs no decoder. The primitive layer landed via OpenSpec
+change `bit-writer-primitives` (`ENC-BITSTREAM-WRITER`, advancing the `write`
+stage of the §4.11 descriptors and §5.2.4 byte alignment); the bootstrap
+`add-bitstream-writer` stub has been removed, superseded by it and the upcoming
+`obu-header-and-size-writer` change. The only writer surface that depends on decode
+(the `writer minimal stream -> splot decode --hash` cross-tool test) stays deferred
+until intra reconstruction lands. Still fenced: the
+entropy/range *encoder*, the decoder, and the *live* AVM differential harness.
 
 **Carve-out (started):** the **committed conformance corpus** is *out* from
 behind this fence (OpenSpec change `conformance-corpus-foundation`,
 `CONF-AVM-VALID-STREAMS`). A self-contained corpus of small AVM-generated valid
 AV2 vectors plus a manifest and a committed runner now lands and gates in CI —
 **with no AVM dependency** (AVM is a local generator only; the runner never
-invokes AVM or the network). Still fenced: the encoder/writer/decoder and the
+invokes AVM or the network). Still fenced: the encoder/decoder and the
 *live* `avm encode -> splot validate` / `splot encode -> avm decode`
 differential harness (`CONF-AVM-DIFF-HARNESS`).
 

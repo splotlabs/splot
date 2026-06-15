@@ -9,13 +9,20 @@ code and produce only deliberately simple, writer-validated streams at first.
 Tracked by Feature IDs: `ENC-BITSTREAM-WRITER`, `ENC-INTRA-TOY-V0`,
 `ENC-RATE-CONTROL-V0`, `AV2-IVF-CONTAINER`.
 
-**Status: planned.** No part of this capability is implemented yet (those rows are
-`todo`/proposed in the matrix). The requirements below are the accepted *target*
-contract; implementation is proposed in `openspec/changes/add-bitstream-writer` and
-`openspec/changes/toy-intra-encoder-v0`.
+**Status: in progress.** The bit/byte **writer primitive** layer is implemented and
+round-trip-tested: `ENC-BITSTREAM-WRITER` is `partial` and the § 4.11 descriptor
+`write` stages (plus § 5.2.4 byte alignment) are `done` in the matrix, landed by the
+archived `bit-writer-primitives` change (see the "bit-writer primitive inverses"
+requirement below). Remaining: the OBU header / payload writers, the **Annex B**
+muxer, and wiring the muxers into writer-track round-trip tests — the IVF container
+write helpers already exist (`AV2-IVF-CONTAINER`, `write` = `done`); plus the toy
+intra path (`ENC-INTRA-TOY-V0`) and rate control (`ENC-RATE-CONTROL-V0`). The
+bootstrap `add-bitstream-writer` stub has been removed, superseded by the
+properly-scoped `bit-writer-primitives` change and the upcoming
+`obu-header-and-size-writer` change. The implementation matrix is the source of truth
+for per-row status.
 
 ## Requirements
-
 ### Requirement: writer symmetry
 
 When implemented, the bitstream writer SHALL be symmetric with the parsers: anything
@@ -54,3 +61,43 @@ supported bitstream container choices. IVF output SHALL use the shared
 - **WHEN** a future decoder receives IVF input
 - **THEN** it SHALL use the shared input-format parser
 - **AND** SHALL receive the same OBU stream ordering as the validator.
+
+### Requirement: bit-writer primitive inverses
+
+`splot-core` SHALL provide a `BitWriter` that is the exact inverse of every
+`BitReader` descriptor primitive — `f(n)`, `su(n)`, `uvlc()`, `svlc()`, `le(n)`,
+`leb128()`, `ns(n)`, `rg(n)`, and zero-pad byte alignment — packing bits
+most-significant-bit first. For every value the writer accepts, parsing the written
+bits back with the corresponding reader primitive SHALL yield the original value
+(`read(write(x)) == x`).
+
+The writer SHALL be additive: it depends on the reader and model read-only and SHALL
+NOT modify parser, model, or parser-error code. It SHALL never panic on any value or
+width; values or widths the corresponding reader could never produce SHALL be
+rejected with a typed writer error.
+
+#### Scenario: every primitive round-trips
+
+- **WHEN** `BitWriter` writes a value with a primitive (`f(n)`, `su(n)`, `uvlc()`,
+  `svlc()`, `le(n)`, `leb128()`, `ns(n)`, or `rg(n)`) and the bytes are parsed back
+  with the matching `BitReader` primitive
+- **THEN** the parsed value SHALL equal the original value
+- **AND** the property SHALL hold across the full valid value space of each primitive
+  (verified by property tests).
+
+#### Scenario: unencodable values are rejected, not panicked
+
+- **WHEN** a caller asks the writer to encode a value outside a descriptor's domain
+  (a value too wide for a fixed field, a signed value outside `su(n)` range, a width
+  outside a descriptor's allowed range, or an `rg(n)` quotient that would not
+  terminate within 32 bits)
+- **THEN** the writer SHALL return a typed writer error
+- **AND** SHALL NOT panic.
+
+#### Scenario: byte alignment pads with zero bits
+
+- **WHEN** the writer aligns a partial byte to the next byte boundary
+- **THEN** it SHALL pad with zero bits
+- **AND** the result SHALL parse back through `byte_align_zero()` without an
+  alignment error.
+

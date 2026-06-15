@@ -40,7 +40,7 @@ mapped = "done"
 types = "done"
 parse = "done"
 validate = "done"
-write = "todo"
+write = "done"
 encode = "not-applicable"
 decode_check = "done"
 tests = "done"
@@ -48,8 +48,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/leb128.rs::tests", "crates/splot-validate/src/validator/tests/public_api.rs::parse_error_becomes_a_single_error_diagnostic"]
-commands = ["cargo test -p splot-core leb128"]
+tests = ["crates/splot-core/src/leb128.rs::tests", "crates/splot-validate/src/validator/tests/public_api.rs::parse_error_becomes_a_single_error_diagnostic", "crates/splot-core/src/write/bit_writer.rs::tests", "crates/splot-core/src/write/bit_writer.rs::proptests"]
+commands = ["cargo test -p splot-core leb128", "cargo test -p splot-core write"]
 fixtures = []
 diagnostics = ["bitstream/parse-error"]
 
@@ -73,7 +73,7 @@ mapped = "done"
 types = "not-applicable"
 parse = "done"
 validate = "not-applicable"
-write = "todo"
+write = "done"
 encode = "not-applicable"
 decode_check = "done"
 tests = "done"
@@ -81,8 +81,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests"]
-commands = ["cargo test -p splot-core bitio"]
+tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests", "crates/splot-core/src/write/bit_writer.rs::tests", "crates/splot-core/src/write/bit_writer.rs::proptests"]
+commands = ["cargo test -p splot-core bitio", "cargo test -p splot-core write"]
 fixtures = []
 diagnostics = []
 
@@ -152,7 +152,7 @@ mapped = "done"
 types = "not-applicable"
 parse = "done"
 validate = "not-applicable"
-write = "todo"
+write = "done"
 encode = "not-applicable"
 decode_check = "done"
 tests = "done"
@@ -160,8 +160,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests"]
-commands = ["cargo test -p splot-core bitio"]
+tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests", "crates/splot-core/src/write/bit_writer.rs::tests", "crates/splot-core/src/write/bit_writer.rs::proptests"]
+commands = ["cargo test -p splot-core bitio", "cargo test -p splot-core write"]
 fixtures = []
 diagnostics = []
 
@@ -185,7 +185,7 @@ mapped = "done"
 types = "not-applicable"
 parse = "done"
 validate = "not-applicable"
-write = "todo"
+write = "done"
 encode = "not-applicable"
 decode_check = "done"
 tests = "done"
@@ -193,8 +193,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests"]
-commands = ["cargo test -p splot-core bitio"]
+tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests", "crates/splot-core/src/write/bit_writer.rs::tests", "crates/splot-core/src/write/bit_writer.rs::proptests"]
+commands = ["cargo test -p splot-core bitio", "cargo test -p splot-core write"]
 fixtures = []
 diagnostics = []
 
@@ -218,7 +218,7 @@ mapped = "done"
 types = "not-applicable"
 parse = "done"
 validate = "not-applicable"
-write = "todo"
+write = "done"
 encode = "not-applicable"
 decode_check = "done"
 tests = "done"
@@ -226,8 +226,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests"]
-commands = ["cargo test -p splot-core bitio"]
+tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests", "crates/splot-core/src/write/bit_writer.rs::tests", "crates/splot-core/src/write/bit_writer.rs::proptests"]
+commands = ["cargo test -p splot-core bitio", "cargo test -p splot-core write"]
 fixtures = []
 diagnostics = []
 
@@ -251,7 +251,7 @@ mapped = "done"
 types = "not-applicable"
 parse = "done"
 validate = "not-applicable"
-write = "todo"
+write = "done"
 encode = "not-applicable"
 decode_check = "done"
 tests = "done"
@@ -259,8 +259,41 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests"]
-commands = ["cargo test -p splot-core bitio"]
+tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests", "crates/splot-core/src/write/bit_writer.rs::tests", "crates/splot-core/src/write/bit_writer.rs::proptests"]
+commands = ["cargo test -p splot-core bitio", "cargo test -p splot-core write"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "AV2-4.11.10-RG"
+name = "Rice-Golomb descriptor"
+category = "normative"
+kind = "bitstream-syntax"
+spec_sections = ["4.11.10"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/bitio.rs"
+openspec_change = "bit-writer-primitives"
+tracking_issue = ""
+owner = "core"
+risk = "medium"
+notes = "Implemented as BitReader::read_rg(n) from AV2 §4.11.10 (mirror docs/spec/av2/1.0.0/04-conventions.md#s-4-11-10): a unary quotient prefix, a terminating zero bit, then an n-bit remainder, with the prefix-must-terminate-within-32-bits conformance bound; used by ci_color_description_idc (§6.14). The inverse BitWriter::write_rg(value, n) (crates/splot-core/src/write/bit_writer.rs) landed with bit-writer-primitives, proven by the read(write(x)) == x property test. The parse stage predates this row; the row was added when the writer landed so the rg descriptor is tracked independently like its §4.11 siblings (the foundational f(n) read/write stays under the umbrella ENC-BITSTREAM-WRITER row)."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "done"
+validate = "not-applicable"
+write = "done"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests", "crates/splot-core/src/write/bit_writer.rs::tests", "crates/splot-core/src/write/bit_writer.rs::proptests"]
+commands = ["cargo test -p splot-core bitio", "cargo test -p splot-core write"]
 fixtures = []
 diagnostics = []
 
@@ -496,7 +529,7 @@ mapped = "done"
 types = "done"
 parse = "done"
 validate = "partial"
-write = "todo"
+write = "done"
 encode = "not-applicable"
 decode_check = "done"
 tests = "done"
@@ -504,8 +537,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests", "crates/splot-validate/src/checks/mod.rs::tests"]
-commands = ["cargo test -p splot-core bitio", "cargo test -p splot-validate syntax_error_diagnostic"]
+tests = ["crates/splot-core/src/bitio.rs::tests", "crates/splot-core/src/bitio.rs::proptests", "crates/splot-validate/src/checks/mod.rs::tests", "crates/splot-core/src/write/bit_writer.rs::tests", "crates/splot-core/src/write/bit_writer.rs::proptests"]
+commands = ["cargo test -p splot-core bitio", "cargo test -p splot-validate syntax_error_diagnostic", "cargo test -p splot-core write"]
 fixtures = []
 diagnostics = ["byte-alignment/zero-bit-not-zero"]
 
@@ -3672,28 +3705,28 @@ kind = "writer"
 spec_sections = []
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
-module = "crates/splot-core/src/bitio.rs"
-openspec_change = "add-bitstream-writer"
+module = "crates/splot-core/src/write/mod.rs"
+openspec_change = "bit-writer-primitives"
 tracking_issue = ""
 owner = "encoder"
 risk = "high"
-notes = "Writer must be symmetric with parsed syntax and validated by round-trip tests where possible. Only the RangeEncoder stub exists today. Its OpenSpec change is parked (2026-06-11, encoder track behind the VALIDATOR-ROADMAP fence); revival means re-proposing."
+notes = "BitWriter (crates/splot-core/src/write/) inverts every BitReader primitive (f(n), su, uvlc, svlc, le, leb128, ns, rg, and zero-pad byte alignment), proven by read(write(x)) == x property tests; landed by the bit-writer-primitives change. The maintainer lifted the VALIDATOR-ROADMAP writer fence (2026-06-14). Remaining writer surface: OBU-header/size writer, sequence/frame/tile/metadata/payload writers, the Annex B muxer plus writer-track muxer round-trip integration (the IVF container write helpers already exist via AV2-IVF-CONTAINER, write=done), and the differential round-trip + fuzz harness. The RangeEncoder entropy stub is still unimplemented; no public encode CLI ships."
 
 [feature.status]
 mapped = "partial"
-types = "todo"
+types = "partial"
 parse = "not-applicable"
 validate = "not-applicable"
-write = "todo"
+write = "partial"
 encode = "todo"
 decode_check = "todo"
-tests = "todo"
+tests = "partial"
 avm_diff = "pending"
 perf = "todo"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-core/src/write/bit_writer.rs::tests", "crates/splot-core/src/write/bit_writer.rs::proptests"]
+commands = ["cargo test -p splot-core write"]
 fixtures = []
 diagnostics = []
 

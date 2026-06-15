@@ -83,6 +83,7 @@ same six fields, always:
 | Header-level and container conformance validation | working |
 | `splot inspect` OBU dump (text and JSON, partial-parse tolerant) | working |
 | `splot explain` diagnostic catalog (text and JSON, `--list`) | working |
+| Bitstream **writer** foundation (`BitWriter` — inverse of every reader primitive, round-trip-proven) | library-only |
 | Conformance vectors, AVM differential testing | planned |
 | `splot decode` / `splot encode` | stubs — exit with a clear error |
 
@@ -95,8 +96,10 @@ do not change the current stub status.
 
 And to be clear about what `splot` is **not** (yet): it is not a decoder — it
 checks syntax and header-level conformance, it does not reconstruct pixels.
-It is not an encoder — `encode`/`decode` exit with a clear error. And it
-is **not AV1**: the OBU header follows AV2 v1.0.0 § 5.2.2 (no
+It is not an encoder — `encode`/`decode` exit with a clear error (the
+bitstream **writer** foundation is library-only, validated by
+`read(write(x)) == x` round-trips against the parser, with no public `encode`
+command). And it is **not AV1**: the OBU header follows AV2 v1.0.0 § 5.2.2 (no
 `obu_forbidden_bit`, no `obu_has_size_field`, no AV1 OBU type table), and AV1
 bitstreams are out of scope.
 
@@ -213,12 +216,14 @@ documented in [docs/TESTING.md](./docs/TESTING.md).
 ## Roadmap
 
 Shipped: the Annex B + IVF + OBU header validator, OBU ordering and header-level
-conformance, and sequence/frame-header parsing. In progress: validator depth
-across the remaining spec sections. Next: inspector snapshots and conformance
-vectors, AVM differential testing (with the
+conformance, sequence/frame-header parsing, and the library-only **bit-writer
+primitive** layer (`BitWriter`, the inverse of every reader primitive). In progress:
+validator depth across the remaining spec sections, and the higher-level bitstream
+writer (OBU header, payload writers, Annex B muxer) on top of the primitives. Next:
+inspector snapshots and conformance vectors, AVM differential testing (with the
 [AVM reference implementation](https://github.com/AOMediaCodec/avm) as the
-oracle), staged decoder/reconstruction support for future encoder roundtrips,
-then a bitstream writer and encoder experiments.
+oracle), staged decoder/reconstruction support for future encoder roundtrips, and
+encoder experiments.
 
 Validator details live in
 [docs/VALIDATOR-ROADMAP.md](./docs/VALIDATOR-ROADMAP.md). Decoder scope and
