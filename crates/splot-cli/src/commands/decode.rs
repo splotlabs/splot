@@ -589,6 +589,10 @@ fn replace_y4m_output_windows(
     temp_path: &Path,
     final_path: &Path,
 ) -> core::result::Result<(), DecodeError> {
+    // The default CI matrix does not compile this branch. With std-only APIs,
+    // replacing an existing Windows destination moves the old file aside first,
+    // so a crash can briefly leave the final path absent; the visible final
+    // path is still old-or-new, never a partial Y4M payload.
     if final_path.exists() {
         return replace_existing_y4m_output_windows(temp_path, final_path);
     }

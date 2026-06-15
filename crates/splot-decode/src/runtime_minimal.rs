@@ -183,7 +183,7 @@ fn ensure_nonzero_ivf_timebase(header: IvfHeader) -> Result<()> {
         Err(unsupported(
             "invalid_ivf_timebase",
             None,
-            "minimal tier requires a nonzero IVF timebase before Y4M output policy",
+            "minimal tier requires a nonzero IVF timebase",
         ))
     } else {
         Ok(())
