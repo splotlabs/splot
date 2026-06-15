@@ -624,6 +624,63 @@ mod tests {
         assert_tile_roundtrip(&c, input);
     }
 
+    /// Drift guard for the locally-duplicated `Tile_Width_Scaling_Factor` /
+    /// `Tile_Area_Scaling_Factor` tables (`seq_tile.rs`). The tables are copied from the
+    /// (private) parser copies in `crate::tile`; this test makes a single-entry typo in
+    /// either local copy a guaranteed round-trip failure, so the duplication cannot drift
+    /// silently.
+    ///
+    /// The frame is sized so BOTH tables are *load-bearing* at every `(tier, level)`: at a
+    /// 32768x32768 frame with 64x64 superblocks, `sbCols == sbRows == 512`, so
+    /// `minLog2TileCols = tile_log2(width_sf*16, 512) >= 1` (width-table-driven) and
+    /// `minLog2Tiles = tile_log2(area_sf*576, 512*512)` strictly exceeds it
+    /// (area-table-driven), making `minLog2TileRows` area-driven too. A uniform config that
+    /// sits at the minimum codes its column/row counts straight from those minimums, so a
+    /// wrong table entry shifts the re-emitted increment run and the round-trip diverges.
+    /// (Contrast the `tile_round_trips` proptest, whose <=512 frame sizes keep
+    /// `minLog2TileCols == minLog2Tiles == 0` for every level, so it never exercises the
+    /// tables — see the §5.4.2 review thread.) The `tile_cols >= 2` / `tile_rows >= 2`
+    /// asserts fail loudly if a future change shrinks the frame and makes this guard vacuous.
+    #[test]
+    fn scaling_tables_drive_layout_across_all_levels() {
+        for tier in [Tier::Main, Tier::High] {
+            for level in 0u8..=21 {
+                let input = TileParamsInput {
+                    frame_width: 32768,
+                    frame_height: 32768,
+                    uniform_sb_size: SuperblockSize::Block64x64,
+                    sb_size: SuperblockSize::Block64x64,
+                    is_bridge: false,
+                    seq_tier: tier,
+                    seq_level_idx: LevelIdx::from_bits(level),
+                };
+                let mut bits = Bits::default();
+                bits.bit(1); // seq_tile_info_present_flag
+                bits.bit(0); // allow_tile_info_change
+                bits.bit(1); // uniform_tile_spacing_flag
+                bits.bit(0); // col increment stop -> tileColsLog2 == minLog2TileCols (width table)
+                bits.bit(0); // row increment stop -> tileRowsLog2 == minLog2TileRows (area table)
+                bits.f(0, 11); // padding so the parser never peeks past EOF
+                let data = bits.into_bytes();
+
+                let c = parse_tile(&data, input);
+                let params = c.params.expect("uniform tile params");
+                assert!(params.uniform_spacing);
+                assert!(
+                    params.tile_cols >= 2,
+                    "{tier:?} L{level}: width table not load-bearing (tile_cols={})",
+                    params.tile_cols
+                );
+                assert!(
+                    params.tile_rows >= 2,
+                    "{tier:?} L{level}: area table not load-bearing (tile_rows={})",
+                    params.tile_rows
+                );
+                assert_tile_roundtrip(&c, input);
+            }
+        }
+    }
+
     // =========================================================================
     // Rejection / gated-off / domain tests — each asserts bit_len() == 0
     // =========================================================================

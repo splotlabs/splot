@@ -20,12 +20,17 @@ writers into the full OBU body.
   `Tile_Width_Scaling_Factor` / `Tile_Area_Scaling_Factor` tables are duplicated locally
   in `write/` because the parser's copies are private and the writer mission keeps the
   parser read-only (no `crate::tile` edits). The duplication is drift-protected by the
-  `tile_round_trips` property test, which drives parse → write → parse across all
-  conformant levels (0..=21) and both tiers: the parser derives `maxTileWidthSb` /
-  `maxTileAreaSb` from its private tables and the writer re-derives from the local copies,
-  so any divergent entry the writer ever uses (indices 0..=21; reserved 22..=30 are
-  unwritable and `seq_level_idx == 31` skips the lookup) surfaces as a round-trip failure
-  at that level.
+  deterministic `scaling_tables_drive_layout_across_all_levels` test, which round-trips a
+  uniform tile config at a 32768×32768 / 64×64-SB frame (`sbCols == sbRows == 512`) for
+  every `(tier, level 0..=21)`. At that size both tables are load-bearing —
+  `minLog2TileCols = tile_log2(width_sf*16, 512)` is width-table-driven and
+  `minLog2Tiles = tile_log2(area_sf*576, 512*512)` strictly exceeds it, so `minLog2TileRows`
+  is area-table-driven — so a single wrong entry in either local copy shifts the re-emitted
+  increment run and diverges the round-trip (verified by mutation: corrupting either table
+  fails the test; the `tile_cols >= 2` / `tile_rows >= 2` asserts fail loudly if a future
+  change makes the frame too small and the guard goes vacuous). The `tile_round_trips`
+  proptest does *not* cover this: its ≤512 frames keep `minLog2TileCols == minLog2Tiles == 0`
+  for every level, so the tables never feed a written bit there.
 - **Reserved levels are unwritable by construction.** A reserved `seq_level_idx` has no
   defined `MaxTileWidthSb` / `MaxTileAreaSb`, so a tile-present header at a reserved level
   cannot be re-derived. The writer rejects it before any bit with the new
