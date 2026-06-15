@@ -13,9 +13,12 @@
 //! inverse of the § 5.2.2 parser); [`seq_header`] writes the § 5.4.1 sequence-header
 //! general fields (the inverse of `parse_sequence_header_general`); [`seq_config`] writes
 //! the § 5.4.3 – § 5.4.8 child-config cascade (partition, segment, intra, inter, scc,
-//! transform/quant/entropy); and [`segment`] writes the shared `seg_info()` body
-//! (§ 5.4.9). More payload writers will build on this module as the writer surface grows;
-//! see `docs/spec-coverage-writer.md` (once landed) for the per-structure coverage matrix.
+//! transform/quant/entropy); [`segment`] writes the shared `seg_info()` body (§ 5.4.9);
+//! and [`seq_tile`] writes the § 5.4.10 filter config and the § 5.4.2 tile config
+//! (including the table-derived § 5.18.7.3 `tile_params()`), plus the composing
+//! [`seq_tile::write_sequence_header`] that emits the whole § 5.4.1 payload in read order.
+//! More payload writers will build on this module as the writer surface grows; see
+//! `docs/spec-coverage-writer.md` (once landed) for the per-structure coverage matrix.
 
 pub mod bit_writer;
 pub mod error;
@@ -23,6 +26,7 @@ pub mod obu;
 pub mod segment;
 pub mod seq_config;
 pub mod seq_header;
+pub mod seq_tile;
 
 pub use bit_writer::BitWriter;
 pub use error::{WriteError, WriteResult};
@@ -36,4 +40,7 @@ pub use seq_config::{
 pub use seq_header::{
     write_cropping_window, write_dependency_maps, write_sequence_decoder_model_info,
     write_sequence_header_general,
+};
+pub use seq_tile::{
+    write_sequence_filter_config, write_sequence_header, write_sequence_tile_config,
 };

@@ -147,6 +147,21 @@ pub enum WriteError {
         /// `"mlayer_dependency_map"`).
         what: &'static str,
     },
+
+    /// A [`SequenceHeader`](crate::headers::sequence::SequenceHeader) the AV2 v1.0.0
+    /// § 5.4.2 (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-2`) parser could not
+    /// fully parse: `seq_tile_info_present_flag == 1` while `seq_level_idx` is a reserved
+    /// (non-conformant) level with no defined `tile_params()` (§ 5.18.7.3) bit layout, so
+    /// the parser left a bounded residual (`SequenceHeader::unimplemented_at` /
+    /// `SequenceTileConfig::unimplemented_at`) and never modeled the tile bits or any
+    /// payload after them. The un-modeled tail cannot be re-emitted, so the writer rejects
+    /// the whole header before writing any bit rather than producing a truncated stream.
+    #[error("sequence header is not fully parsed (stopped at {feature})")]
+    UnwritableSequenceHeader {
+        /// The owning Feature ID at which the parser stopped (e.g.
+        /// `"AV2-5.4.2-SEQUENCE-TILE-CONFIG"`).
+        feature: &'static str,
+    },
 }
 
 /// Result alias for [`crate::write::BitWriter`] operations.

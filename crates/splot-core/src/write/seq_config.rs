@@ -151,7 +151,7 @@ fn partition_aspect_log2_minus_1(max_pb_aspect_ratio: u32) -> WriteResult<u8> {
 }
 
 /// Validates that `config` is a model the § 5.4.3 parser could have produced.
-fn check_partition_encodable(
+pub(crate) fn check_partition_encodable(
     config: &SequencePartitionConfig,
     monochrome: bool,
     single_picture: bool,
@@ -241,7 +241,7 @@ pub fn write_sequence_segment_config(
 }
 
 /// Validates that `config` is a model the § 5.4.4 parser could have produced.
-fn check_segment_encodable(config: &SequenceSegmentConfig) -> WriteResult<()> {
+pub(crate) fn check_segment_encodable(config: &SequenceSegmentConfig) -> WriteResult<()> {
     // MaxSegments is derived, never signaled.
     let expected_max = if config.enable_ext_seg { 16 } else { 8 };
     if config.max_segments != expected_max {
@@ -310,7 +310,10 @@ pub fn write_sequence_intra_config(
 }
 
 /// Validates that `config` is a model the § 5.4.5 parser could have produced.
-fn check_intra_encodable(config: &SequenceIntraConfig, monochrome: bool) -> WriteResult<()> {
+pub(crate) fn check_intra_encodable(
+    config: &SequenceIntraConfig,
+    monochrome: bool,
+) -> WriteResult<()> {
     if monochrome {
         // cfl_ds_filter_index is inferred 0 for Monochrome (no bits read).
         if config.cfl_ds_filter_index != 0 {
@@ -485,7 +488,10 @@ impl InterConfigExt for SequenceInterConfig {
 /// Validates that `config` is a model the § 5.4.6 parser could have produced. The
 /// single-picture branch infers every field except the five it signals; the full branch
 /// has field-width bounds and the `SIMPLE` motion-mode invariant.
-fn check_inter_encodable(config: &SequenceInterConfig, single_picture: bool) -> WriteResult<()> {
+pub(crate) fn check_inter_encodable(
+    config: &SequenceInterConfig,
+    single_picture: bool,
+) -> WriteResult<()> {
     // seq_enabled_motion_modes[0] (SIMPLE) is never signaled; it must stay 0.
     if config.seq_enabled_motion_modes[0] {
         return Err(WriteError::NonCanonicalSequenceValue {
@@ -670,7 +676,10 @@ pub fn write_sequence_scc_config(
 }
 
 /// Validates that `config` is a model the § 5.4.7 parser could have produced.
-fn check_scc_encodable(config: &SequenceSccConfig, single_picture: bool) -> WriteResult<()> {
+pub(crate) fn check_scc_encodable(
+    config: &SequenceSccConfig,
+    single_picture: bool,
+) -> WriteResult<()> {
     if single_picture {
         if config.seq_force_screen_content_tools != SELECT_SCREEN_CONTENT_TOOLS
             || config.seq_force_integer_mv != SELECT_INTEGER_MV
@@ -804,7 +813,7 @@ pub fn write_sequence_transform_quant_entropy_config(
 }
 
 /// Validates that `config` is a model the § 5.4.8 parser could have produced.
-fn check_tq_entropy_encodable(
+pub(crate) fn check_tq_entropy_encodable(
     config: &SequenceTqEntropyConfig,
     monochrome: bool,
     single_picture: bool,

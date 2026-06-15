@@ -588,14 +588,14 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Umbrella for sequence_header_obu(). All §5.4.1-§5.4.13 child configs parse (see the child rows); the umbrella stays partial because its own types/parse/tests stages are partial (deeper §5.4 cluster) per the do-not-close-before-children rule (docs/IMPLEMENTATION-MATRIX.schema.md § 7, not an AV2 section). The §6.4 cross-element semantic-validation residuals (repeated-header identity, §6.4.1 distinct-mlayer count, §6.4.12 cross-embedded-layer timing consistency) live on AV2-6.4-SEQUENCE-HEADER-SEMANTICS; the per-config tool-flag-vs-usage gating residuals are blocked on AV2-5.18.2-FRAME-HEADER-INFO inter-path parsing (see the child rows). WRITER (seq-header-writer-general): the §5.4.1 general fields (write_sequence_header_general + dependency maps + cropping) and §5.4.13 decoder-model info are inverted in crates/splot-core/src/write/seq_header.rs (AV2-5.4.1-SEQUENCE-HEADER-GENERAL / AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO write=done, round-trip-tested); the config children (§5.4.2-5.4.10) writers are pending, so this umbrella write stays partial."
+notes = "Umbrella for sequence_header_obu(). All §5.4.1-§5.4.13 child configs parse (see the child rows); the umbrella stays partial because its own types/parse/tests stages are partial (deeper §5.4 cluster) per the do-not-close-before-children rule (docs/IMPLEMENTATION-MATRIX.schema.md § 7, not an AV2 section). The §6.4 cross-element semantic-validation residuals (repeated-header identity, §6.4.1 distinct-mlayer count, §6.4.12 cross-embedded-layer timing consistency) live on AV2-6.4-SEQUENCE-HEADER-SEMANTICS; the per-config tool-flag-vs-usage gating residuals are blocked on AV2-5.18.2-FRAME-HEADER-INFO inter-path parsing (see the child rows). WRITER (seq-header-writer-general / seq-header-writer-configs / seq-header-writer-tile): the full sequence_header_obu() body is now inverted. The §5.4.1 general fields (write_sequence_header_general + dependency maps + cropping) and §5.4.13 decoder-model info are in crates/splot-core/src/write/seq_header.rs; the §5.4.3-5.4.8 config cascade + §5.4.9 seg_info in crates/splot-core/src/write/seq_config.rs; the §5.4.10 filter config and §5.4.2 tile config (incl. §5.18.7.3 tile_params) plus the composing pub fn write_sequence_header in crates/splot-core/src/write/seq_tile.rs. write_sequence_header recomputes the parser's derivations (monochrome / single_picture / seq_sb_size / TileParamsInput), validates the whole header up front (reject-before-write, including every gated-off non-default field), and emits general -> partition -> segment -> intra -> inter -> scc -> tq -> filter -> tile -> film_grain_params_present_flag in §5.4.1 order with no OBU header / trailing bits. All §5.4.1-§5.4.13 child write rows are write=done and round-trip + byte-exact tested, so this umbrella write is done; its types/parse/tests stages stay partial on the deeper §5.4 cluster (do-not-close-before-children rule)."
 
 [feature.status]
 mapped = "done"
 types = "partial"
 parse = "partial"
 validate = "partial"
-write = "partial"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "partial"
@@ -603,8 +603,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-validate/src/validator/tests/mod.rs", "crates/splot-cli/tests/cli.rs"]
-commands = ["cargo test -p splot-core sequence", "cargo test -p splot-cli inspect"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-core/src/write/seq_tile.rs::tests", "crates/splot-core/src/write/seq_tile.rs::proptests", "crates/splot-validate/src/validator/tests/mod.rs", "crates/splot-cli/tests/cli.rs"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-core write::seq_tile", "cargo test -p splot-cli inspect"]
 fixtures = ["tests/fixtures/conformant.av2", "tests/fixtures/seq-header-tile-params.av2"]
 diagnostics = ["hls/repeated-sequence-header-not-identical"]
 
@@ -654,14 +654,14 @@ openspec_change = "seq-tile-nonuniform-reuse-starts"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. tile_params() is now parsed via the shared AV2-5.18.7.3-TILE-PARAMS helper, so a valid sequence tile config parses fully (no bounded status); only a reserved seq_level_idx (non-conformant) leaves a documented bounded residual. Under seq-tile-nonuniform-reuse-starts the §5.4.2 parse also persists the derived SeqSbColStarts / SeqSbRowStarts arrays (mirror docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-2 :654-656) on SequenceTileConfig, which the frame §5.18.7.4 non-uniform reuse_tile_params() branch consumes. Local §6.17.7 tile constraints are checked (tile-params/* diagnostics). Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. tile_params() is now parsed via the shared AV2-5.18.7.3-TILE-PARAMS helper, so a valid sequence tile config parses fully (no bounded status); only a reserved seq_level_idx (non-conformant) leaves a documented bounded residual. Under seq-tile-nonuniform-reuse-starts the §5.4.2 parse also persists the derived SeqSbColStarts / SeqSbRowStarts arrays (mirror docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-2 :654-656) on SequenceTileConfig, which the frame §5.18.7.4 non-uniform reuse_tile_params() branch consumes. Local §6.17.7 tile constraints are checked (tile-params/* diagnostics). Do not mark the umbrella done until this child is proven. WRITER (seq-header-writer-tile): write_sequence_tile_config + write_tile_params in crates/splot-core/src/write/seq_tile.rs invert the §5.4.2 / §5.18.7.3 parser exactly — the seq_tile_info_present_flag gate, the uniform increment-run encoding (with the no-stop-bit-at-max edge), and the non-uniform width/height run loops re-derived from the persisted SeqSb*Starts grid against the level/tier Tile_Width_Scaling_Factor / Tile_Area_Scaling_Factor tables. A reserved seq_level_idx has no defined tile layout, so a tile-present header at a reserved level is rejected before any bit with WriteError::UnwritableSequenceHeader (the §5.4.2 bounded residual, unwritable by construction); write=done and round-trip + byte-exact-tested across all seven tile modes. The §A Tile_Width/Area_Scaling_Factor tables are duplicated in write/seq_tile.rs (parser copies are private; the writer mission keeps the parser read-only) and drift-protected by the deterministic scaling_tables_drive_layout_across_all_levels test (a uniform round-trip at a 32768x32768/64x64-SB frame where both tables drive the layout, swept over every tier/level; mutation-verified)."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "done"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -669,8 +669,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-core/src/headers/sequence.rs::tests::sequence_tile_config_records_non_uniform_start_arrays", "crates/splot-core/src/headers/sequence.rs::tests::sequence_tile_config_reserved_level_records_empty_start_arrays", "crates/splot-core/src/tile.rs::tests", "crates/splot-validate/src/validator/tests/mod.rs", "crates/splot-cli/tests/cli.rs"]
-commands = ["cargo test -p splot-core sequence", "cargo test -p splot-core tile", "cargo test -p splot-validate sequence_header", "cargo test -p splot-cli inspect"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-core/src/headers/sequence.rs::tests::sequence_tile_config_records_non_uniform_start_arrays", "crates/splot-core/src/headers/sequence.rs::tests::sequence_tile_config_reserved_level_records_empty_start_arrays", "crates/splot-core/src/tile.rs::tests", "crates/splot-core/src/write/seq_tile.rs::tests", "crates/splot-core/src/write/seq_tile.rs::proptests", "crates/splot-validate/src/validator/tests/mod.rs", "crates/splot-cli/tests/cli.rs"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-core tile", "cargo test -p splot-core write::seq_tile", "cargo test -p splot-validate sequence_header", "cargo test -p splot-cli inspect"]
 fixtures = ["tests/fixtures/seq-header-tile-params.av2"]
 diagnostics = ["tile-params/tile-cols-out-of-range", "tile-params/tile-rows-out-of-range", "tile-params/nonuniform-cols-do-not-cover-frame", "tile-params/nonuniform-rows-do-not-cover-frame"]
 
@@ -918,14 +918,14 @@ openspec_change = "sequence-hls-validator-coverage"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. §6.4.10 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-10, lines 1126-1198) states no requirement of bitstream conformance: it is loop-filter / CDEF / GDF / loop-restoration / CCSO enable and unit-size flags plus lr_tools_disable and df_par_bits_minus_2, all descriptive (the NOTEs make explicit that enabling a filter without using it is allowed). The validate residual is the filter-flag-vs-per-frame/per-block-use gating (df_delta_q bit width, CodedLossless auto-disable), decidable only with frame/tile parsing; blocked on AV2-5.18.2-FRAME-HEADER-INFO inter-path parsing. Do not mark the umbrella done until this child is proven."
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. §6.4.10 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-10, lines 1126-1198) states no requirement of bitstream conformance: it is loop-filter / CDEF / GDF / loop-restoration / CCSO enable and unit-size flags plus lr_tools_disable and df_par_bits_minus_2, all descriptive (the NOTEs make explicit that enabling a filter without using it is allowed). The validate residual is the filter-flag-vs-per-frame/per-block-use gating (df_delta_q bit width, CodedLossless auto-disable), decidable only with frame/tile parsing; blocked on AV2-5.18.2-FRAME-HEADER-INFO inter-path parsing. Do not mark the umbrella done until this child is proven. WRITER (seq-header-writer-tile): write_sequence_filter_config in crates/splot-core/src/write/seq_tile.rs inverts the §5.4.10 parser exactly (the seq_sb_size-gated gdf/ccso unit flags, the lr mirrored-UV subfield chain, the single-picture cdef_on_skip_txfm adaptive gate, and df_par_bits_minus_2 f(2)); every field is pre-validated and every gated-off non-default field is rejected before any bit (reject-before-write), so write=done and round-trip-tested."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "partial"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -933,8 +933,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests"]
-commands = ["cargo test -p splot-core sequence"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-core/src/write/seq_tile.rs::tests", "crates/splot-core/src/write/seq_tile.rs::proptests"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-core write::seq_tile"]
 fixtures = ["tests/fixtures/conformant.av2"]
 diagnostics = []
 
@@ -3710,7 +3710,7 @@ openspec_change = "bit-writer-primitives"
 tracking_issue = ""
 owner = "encoder"
 risk = "high"
-notes = "BitWriter (crates/splot-core/src/write/) inverts every BitReader primitive (f(n), su, uvlc, svlc, le, leb128, ns, rg, and zero-pad byte alignment), proven by read(write(x)) == x property tests; landed by the bit-writer-primitives change. The maintainer lifted the VALIDATOR-ROADMAP writer fence (2026-06-14). The OBU-header, §5.2.3 trailing-bits, and Annex B OBU framing writers landed (obu-header-and-size-writer; crates/splot-core/src/write/obu.rs + BitWriter::write_trailing_bits). Remaining writer surface: sequence/frame/tile/metadata/payload writers, the Annex B muxer plus writer-track muxer round-trip integration (the IVF container write helpers already exist via AV2-IVF-CONTAINER, write=done), and the differential round-trip + fuzz harness. The RangeEncoder entropy stub is still unimplemented; no public encode CLI ships."
+notes = "BitWriter (crates/splot-core/src/write/) inverts every BitReader primitive (f(n), su, uvlc, svlc, le, leb128, ns, rg, and zero-pad byte alignment), proven by read(write(x)) == x property tests; landed by the bit-writer-primitives change. The maintainer lifted the VALIDATOR-ROADMAP writer fence (2026-06-14). The OBU-header, §5.2.3 trailing-bits, and Annex B OBU framing writers landed (obu-header-and-size-writer; crates/splot-core/src/write/obu.rs + BitWriter::write_trailing_bits). The complete §5.4 sequence_header_obu() body is now inverted (seq-header-writer-general / seq-header-writer-configs / seq-header-writer-tile; the composing pub fn write_sequence_header in crates/splot-core/src/write/seq_tile.rs — see AV2-5.4-SEQUENCE-HEADER write=done). Remaining writer surface: frame/tile/metadata/payload writers, the Annex B muxer plus writer-track muxer round-trip integration (the IVF container write helpers already exist via AV2-IVF-CONTAINER, write=done), and the differential round-trip + fuzz harness. The RangeEncoder entropy stub is still unimplemented; no public encode CLI ships."
 
 [feature.status]
 mapped = "partial"

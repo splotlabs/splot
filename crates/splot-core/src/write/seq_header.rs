@@ -209,7 +209,7 @@ const fn seq_tier_is_signaled(general: &SequenceHeaderGeneral) -> bool {
 /// [`crate::write::obu`]: it enforces field widths, the single-picture inferred constants,
 /// the `seq_tier` gate, the `minus_1`/present-flag pairings, the cropping-window present
 /// flag, the decoder-model `Option`/flag agreement, and dependency-map canonicality.
-fn check_general_encodable(general: &SequenceHeaderGeneral) -> WriteResult<()> {
+pub(crate) fn check_general_encodable(general: &SequenceHeaderGeneral) -> WriteResult<()> {
     // f(5) fields.
     check_field_width(u64::from(general.seq_profile_idc.get()), 5)?;
     check_field_width(u64::from(general.seq_level_idx.get()), 5)?;
