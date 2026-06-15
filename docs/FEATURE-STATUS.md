@@ -168,7 +168,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `INFRA-DECODER-CRATE-SCAFFOLDING` | Decoder and reconstruction crate scaffolding | infrastructure | infrastructure | done | n/a | n/a | done | n/a | n/a | n/a | done | n/a | `crates/splot-decode/src/lib.rs` |
 | `INFRA-PARALLEL-RUNTIME-POLICY` | Parallel runtime policy (Rayon worker pool + bounded crossbeam queues) | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `crates/splot-parallel/src/lib.rs` |
 | `INFRA-RECON-FRAME-PLANE-TYPES` | Decoded frame and plane runtime types | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-recon/src/lib.rs` |
-| `INFRA-ZERO-COPY-MEDIA-POLICY` | Zero-copy media-buffer ownership policy | infrastructure | infrastructure | done | todo | n/a | todo | n/a | n/a | n/a | todo | n/a | `crates/splot-recon/src/lib.rs` |
+| `INFRA-ZERO-COPY-MEDIA-POLICY` | Zero-copy media-buffer ownership policy | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `crates/splot-recon/src/lib.rs` |
 | `RECON-REFERENCE-FRAME-STORE` | Reference frame store runtime model | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-recon/src/reference.rs` |
 | `DECODE-LIMITS-RUNTIME-API` | Decode limits runtime API | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-decode/src/limits.rs` |
 | `DECODE-STREAM-STATE-PLANNER` | Parsed decode stream planner | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/stream_plan.rs` |

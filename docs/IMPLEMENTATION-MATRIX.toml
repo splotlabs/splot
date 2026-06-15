@@ -5811,21 +5811,37 @@ notes = "Makes the media-buffer ownership model explicit, documented, and CI-enf
 
 [feature.status]
 mapped = "done"
-types = "todo"
+types = "done"
 parse = "not-applicable"
-validate = "todo"
+validate = "done"
 write = "not-applicable"
 encode = "not-applicable"
 decode_check = "not-applicable"
-tests = "todo"
+tests = "done"
 avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = [
+    "crates/splot-recon/src/views.rs::tests",
+    "crates/splot-recon/src/frame.rs::tests",
+    "crates/splot-recon/src/reference.rs::tests",
+    "xtask/src/zero_copy.rs::tests",
+]
+commands = [
+    "cargo test -p splot-recon --all-targets --locked",
+    "cargo test -p xtask --all-targets --locked",
+    "cargo xtask check-zero-copy-policy",
+    "cargo xtask check-dependency-direction",
+]
 fixtures = [
     "docs/ZERO_COPY.md",
+    "crates/splot-recon/src/views.rs",
+    "crates/splot-recon/src/frame.rs",
+    "crates/splot-recon/src/plane.rs",
+    "crates/splot-recon/src/reference.rs",
+    "crates/splot-recon/src/workspace.rs",
+    "xtask/src/zero_copy.rs",
 ]
 diagnostics = []
 

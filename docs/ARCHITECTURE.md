@@ -79,9 +79,13 @@ by `cargo xtask check-dependency-direction`):
   operational error.
 - **`splot-recon`** — scaffold for future decoded frame buffers, planes,
   deterministic decoded-frame hashes, reconstruction primitives, and
-  reference-frame storage shared by decoder and encoder roundtrip work. It
-  intentionally exposes no runtime reconstruction API yet and depends on no
-  other `splot-*` crate.
+  reference-frame storage shared by decoder and encoder roundtrip work. Its
+  ownership model is view-first: owned `Plane`/`DecodedFrame`/workspace storage
+  hands out borrowed `PlaneRef`/`PlaneMut`/`FrameRef`/`FrameMut` views without
+  copying, immutable frames are shared without copying pixels via `SharedFrame`,
+  and no media-storage type implements `Clone` (see the zero-copy ownership model
+  below and [ZERO_COPY.md](./ZERO_COPY.md)). It intentionally exposes no runtime
+  reconstruction API yet and depends on no other `splot-*` crate.
 - **`splot-decode`** — scaffold for the future AV2 decode driver. It owns the
   current structured `decode/unsupported-feature` diagnostic API,
   `DecodeRuntimeConfig` / `DecodeContext`, a plan-only stream planner over
@@ -132,6 +136,34 @@ model never carries a scheduler. Competing runtimes (tokio, async-std, futures,
 threadpool, …), the Rayon global pool, and unbounded channels are banned. The
 full policy is [CONCURRENCY.md](./CONCURRENCY.md) and it is enforced by
 `cargo xtask check-concurrency-policy` (run in `cargo xtask ci`).
+
+## Zero-copy ownership model
+
+Media buffers (frames, planes, reference-frame storage, lookahead, pixel/sample
+storage) are owned view-first and never duplicated implicitly. The default is to
+borrow: algorithms take `PlaneRef`/`PlaneMut`/`FrameRef`/`FrameMut` views over
+existing storage; immutable frames are shared without copying pixels through an
+explicit `SharedFrame` (`Arc`-backed, `.share()` only); reference stores move or
+share handles and never require `F: Clone`; and no frame/plane/workspace/sample
+type implements `Clone`. Every genuine duplication is an explicit, marked
+materialization boundary (`splot-copy-ok: <reason>`), not a generic clone.
+
+`zerocopy` is a separate, narrow tool for **private fixed-layout byte/wire view
+structs** (e.g. IVF container headers) — it is not the frame-buffer ownership
+model. **Dependency direction:** `zerocopy` may be a direct dependency only of
+`splot-core` (and `splot-recon` with a documented raw-sample view); never
+`splot-decode`/`splot-encode`/`splot-validate`/`splot-cli`/`splot-parallel`. It
+never appears in public APIs and never parses AV2 bit-level/entropy/variable-length
+syntax. It is added only when wired through a real fixed-layout use site;
+otherwise it is an approved-future dependency (see
+[docs/references/THIRD-PARTY-NOTICES.md](./references/THIRD-PARTY-NOTICES.md)) and
+is not added unused.
+
+This is non-normative codec-runtime infrastructure (no AV2 conformance coverage).
+The full policy is [ZERO_COPY.md](./ZERO_COPY.md); it is enforced by `cargo xtask
+check-zero-copy-policy` (run in `cargo xtask ci`) together with the view/share
+APIs in `splot-recon`, and it composes with the concurrency model (disjoint
+mutable views for parallel writes; see [CONCURRENCY.md](./CONCURRENCY.md)).
 
 See [CODE_REVIEW.md](./CODE_REVIEW.md) for the review checklist and
 [TESTING.md](./TESTING.md) for the test layers.
