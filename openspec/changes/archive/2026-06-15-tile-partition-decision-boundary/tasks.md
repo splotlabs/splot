@@ -30,5 +30,5 @@
 ## 6. Archive And PR
 
 - [x] 6.1 Archive the OpenSpec change, add archive agent log, and rerun required gates after archive.
-- [ ] 6.2 Commit with a Conventional Commit subject, push, and open a ready PR that is not draft.
+- [x] 6.2 Commit with a Conventional Commit subject, push, and open a ready PR that is not draft.
 - [ ] 6.3 Wait for green CI, latest-head Codex review approval or clean verdict, Claude/human comments addressed, and zero unresolved threads before merge.
