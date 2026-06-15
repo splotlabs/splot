@@ -129,6 +129,24 @@ pub enum WriteError {
         /// The header's `obu_type.raw()`.
         raw: u8,
     },
+
+    /// A derived sequence-header value is inconsistent with the flags/fields that the
+    /// AV2 v1.0.0 § 5.4.1 (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-1`)
+    /// parser would re-derive from on reparse, so the model could never have been
+    /// produced by `parse_sequence_header_general` and writing it would break
+    /// `read(write(x)) == x`. Examples: a `seq_tier == High` whose conditional gate
+    /// (`seq_level_idx > 3 && !single_picture_header_flag`) is false; a single-picture
+    /// header carrying a non-inferred constant; an `Option` field whose presence
+    /// disagrees with its gating present-flag; a dependency map that does not match the
+    /// § 5.4.1 default-fill / signaled-override re-derivation; or a cropping window that
+    /// is non-default while `seq_cropping_window_present_flag == 0`. Rejected before any
+    /// bit is written.
+    #[error("non-canonical {what}: model value cannot be reproduced by the §5.4 parser")]
+    NonCanonicalSequenceValue {
+        /// A short, stable label for the offending field (e.g. `"seq_tier"`,
+        /// `"mlayer_dependency_map"`).
+        what: &'static str,
+    },
 }
 
 /// Result alias for [`crate::write::BitWriter`] operations.
