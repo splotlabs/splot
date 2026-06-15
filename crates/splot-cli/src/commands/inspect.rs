@@ -1394,6 +1394,10 @@ struct CcsoPlaneParamsView {
     ccso_edge_clf: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ccso_max_band_log2: Option<u8>,
+    /// The per-plane `ccso_offset_idx` values (§ 5.18.7.12), omitted when CCSO is off for the
+    /// plane (no offsets are coded).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ccso_offset_idx: Vec<u8>,
 }
 
 impl CcsoPlaneParamsView {
@@ -1406,6 +1410,7 @@ impl CcsoPlaneParamsView {
             ccso_ext_filter: plane.ccso_ext_filter,
             ccso_edge_clf: plane.ccso_edge_clf,
             ccso_max_band_log2: plane.ccso_max_band_log2,
+            ccso_offset_idx: plane.ccso_offset_idx.clone(),
         }
     }
 }
