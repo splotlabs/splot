@@ -17,11 +17,14 @@
 //! and [`seq_tile`] writes the § 5.4.10 filter config and the § 5.4.2 tile config
 //! (including the table-derived § 5.18.7.3 `tile_params()`), plus the composing
 //! [`seq_tile::write_sequence_header`] that emits the whole § 5.4.1 payload in read order.
+//! [`frame_header`] begins the frame-header writer with the § 5.18.2 activation prefix (the
+//! inverse of `parse_frame_header_prefix`).
 //! More payload writers will build on this module as the writer surface grows; see
 //! `docs/spec-coverage-writer.md` (once landed) for the per-structure coverage matrix.
 
 pub mod bit_writer;
 pub mod error;
+pub mod frame_header;
 pub mod obu;
 pub mod segment;
 pub mod seq_config;
@@ -30,6 +33,7 @@ pub mod seq_tile;
 
 pub use bit_writer::BitWriter;
 pub use error::{WriteError, WriteResult};
+pub use frame_header::write_frame_header_prefix;
 pub use obu::{write_annexb_obu, write_obu_header, write_obu_header_extension};
 pub use segment::write_seg_info;
 pub use seq_config::{

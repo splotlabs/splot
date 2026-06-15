@@ -162,6 +162,21 @@ pub enum WriteError {
         /// `"AV2-5.4.2-SEQUENCE-TILE-CONFIG"`).
         feature: &'static str,
     },
+
+    /// A frame-header value is inconsistent with what the AV2 v1.0.0 § 5.18.2
+    /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`) parser would re-derive on
+    /// reparse, so the model could never have been produced by the frame-header parser and
+    /// writing it would break `read(write(x)) == x`. Examples: an `is_*` / `startCVS` flag
+    /// that disagrees with the `obu_type` derivation, a bridge frame carrying a non-zero
+    /// `cur_mfh_id` (the parser infers `0`), or a `seq_header_id_in_frame_header` /
+    /// `referenced_sequence_header_id` whose presence disagrees with the `cur_mfh_id == 0`
+    /// gate. Rejected before any bit is written.
+    #[error("non-canonical {what}: frame-header value cannot be reproduced by the §5.18 parser")]
+    NonCanonicalFrameHeader {
+        /// A short, stable label for the offending field (e.g. `"is_bridge"`,
+        /// `"cur_mfh_id"`).
+        what: &'static str,
+    },
 }
 
 /// Result alias for [`crate::write::BitWriter`] operations.
