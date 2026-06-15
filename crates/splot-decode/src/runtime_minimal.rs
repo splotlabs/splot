@@ -19,16 +19,14 @@ use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfBitstream, parse_bitstream_partial};
 use splot_core::symbol::SymbolDecoderSummary;
 use splot_core::types::ObuType;
-use splot_recon::{
-    BitDepth, DecodedFrame, DecodedFrameInfo, FramePlanes, OutputIndex, PixelFormat, Plane,
-    PlaneRect, PlaneSize,
-};
+use splot_recon::DecodedFrame;
 
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::tile_payload::{
     FrameCandidateCdfFacts, FrameCandidateTileBoundaryError, FrameCandidateTileBoundaryInput,
     FrameCandidateTileFacts, MinimalBlockSymbolTraceError, MinimalRuntimeBlockSymbolFrontierError,
-    MinimalRuntimePartitionFrontierError, TileGroupPositionFacts, TilePartitionTraversalError,
+    MinimalRuntimePartitionFrontierError, MinimalRuntimeReconstructionTrace,
+    TileGroupPositionFacts, TilePartitionTraversalError,
 };
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeOptions, DecodePlannedObu,
@@ -44,7 +42,6 @@ const SPEC_SECTION: &str = "7.1";
 const REMEDIATION: &str = "Use a stream inside minimal-intra-8bit420-hash-v1 or wait for the referenced decoder support row.";
 const MINIMAL_WIDTH: u32 = 64;
 const MINIMAL_HEIGHT: u32 = 64;
-const FLAT_SAMPLE: u8 = 128;
 const MINIMAL_TRACE_SYMBOLS: u64 = 6;
 const MINIMAL_TRACE_TRAILING_BIT_POSITION: u64 = 14;
 const MINIMAL_TRACE_PADDING_END_POSITION: u64 = 16;
@@ -60,9 +57,19 @@ pub(crate) fn decode_minimal_frame_from_plan(
     options: DecodeOptions,
     plan: &DecodeStreamPlan,
 ) -> Result<MinimalRuntimeFrame> {
+    decode_minimal_frame_from_plan_with_ivf_preflight(bytes, options, plan, |_| Ok(()))
+}
+
+pub(crate) fn decode_minimal_frame_from_plan_with_ivf_preflight(
+    bytes: &[u8],
+    options: DecodeOptions,
+    plan: &DecodeStreamPlan,
+    preflight: impl FnOnce(IvfHeader) -> Result<()>,
+) -> Result<MinimalRuntimeFrame> {
     ensure_minimal_plan_shape(plan)?;
     let parsed = parse_bitstream_partial(bytes);
     let (ivf, header) = require_minimal_ivf(&parsed)?;
+    preflight(header)?;
     let frame = &ivf.frames[0];
     let [td_envelope, sequence_envelope, frame_envelope] =
         require_minimal_obu_order(frame.obus.as_slice())?;
@@ -115,12 +122,14 @@ pub(crate) fn decode_minimal_frame_from_plan(
             ));
         }
     };
-    verify_flat_minimal_tile_trace(tile, &sequence, &core, options.limits())?;
+    let reconstruction_trace =
+        verify_flat_minimal_tile_trace(tile, &sequence, &core, options.limits())?;
     let tile_size = tile.tile_size();
 
     let limits = options.limits();
     ensure_runtime_limits(limits, MINIMAL_WIDTH, MINIMAL_HEIGHT, tile_size)?;
-    let frame = build_flat_yuv420_frame(MINIMAL_WIDTH, MINIMAL_HEIGHT)?;
+    let frame =
+        crate::runtime_minimal_recon::reconstruct_minimal_traced_frame(reconstruction_trace)?;
 
     Ok(MinimalRuntimeFrame {
         frame,
@@ -183,7 +192,7 @@ fn verify_flat_minimal_tile_trace(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     limits: crate::DecodeLimits,
-) -> Result<()> {
+) -> Result<MinimalRuntimeReconstructionTrace> {
     let tile_offset = tile.tile_byte_span().start;
     let frontier = match crate::tile_payload::plan_minimal_runtime_block_symbol_frontier(
         tile, sequence, core, limits,
@@ -196,7 +205,8 @@ fn verify_flat_minimal_tile_trace(
             ));
         }
     };
-    validate_minimal_trace_summary(frontier.summary(), tile)
+    validate_minimal_trace_summary(frontier.summary(), tile)?;
+    Ok(frontier.reconstruction_trace())
 }
 
 fn decode_minimal_block_symbol_frontier_error(
@@ -691,48 +701,6 @@ fn checked_mul(
             left,
             right,
         })
-}
-
-fn build_flat_yuv420_frame(width: u32, height: u32) -> Result<DecodedFrame<u8>> {
-    let luma_size = PlaneSize::new(width as usize, height as usize)?;
-    let luma_rect = PlaneRect::new(0, 0, width as usize, height as usize)?;
-    let chroma_size = PixelFormat::Yuv420.chroma_size(luma_size)?.ok_or_else(|| {
-        unsupported(
-            "missing_chroma_size",
-            None,
-            "YUV 4:2:0 must have chroma planes",
-        )
-    })?;
-    let chroma_rect = PlaneRect::new(0, 0, chroma_size.width(), chroma_size.height())?;
-    let y = Plane::from_vec(
-        luma_size,
-        luma_size.width(),
-        luma_rect,
-        vec![FLAT_SAMPLE; luma_size.width() * luma_size.height()],
-    )?;
-    let u = Plane::from_vec(
-        chroma_size,
-        chroma_size.width(),
-        chroma_rect,
-        vec![FLAT_SAMPLE; chroma_size.width() * chroma_size.height()],
-    )?;
-    let v = Plane::from_vec(
-        chroma_size,
-        chroma_size.width(),
-        chroma_rect,
-        vec![FLAT_SAMPLE; chroma_size.width() * chroma_size.height()],
-    )?;
-    let info = DecodedFrameInfo::new(
-        OutputIndex::new(0),
-        BitDepth::Eight,
-        PixelFormat::Yuv420,
-        luma_size,
-        luma_rect,
-    )?;
-    Ok(DecodedFrame::try_new(
-        info,
-        FramePlanes::new(y, Some(u), Some(v)),
-    )?)
 }
 
 fn unsupported(

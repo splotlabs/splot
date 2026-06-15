@@ -5432,7 +5432,7 @@ openspec_change = "recon-current-frame-workspace"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a scheduler-free `splot-recon` mutable current-frame reconstruction workspace: `CurrentFrameWorkspace<T>` allocates Y/U/V plane buffers from `DecodedFrameInfo` using checked arithmetic and fallible allocation, validates sample type and active bit-depth range before writes, exposes bounded plane/rectangle reads, fills, row-strided writes, square/rectangular block writes, in-storage left/above edge extraction, and square/rectangular DC plus rectangular PAETH and smooth prediction write helpers that call the existing `RECON-INTRA-DC-SQUARE-PREDICTION`, `RECON-INTRA-DC-RECTANGULAR-PREDICTION`, `RECON-INTRA-BASIC-PAETH-PREDICTION`, and `RECON-INTRA-SMOOTH-PREDICTION` primitives. `freeze()` reuses existing `Plane::from_vec`, `FramePlanes::new`, and `DecodedFrame::try_new`, and tests prove interop with decoded-frame hash input, Y4M writer, and reference-frame store. This row itself did not add a `splot-decode -> splot-recon` dependency, `DecodeContext` API, runtime `splot decode` success path, tile syntax traversal, dequantization, inverse transforms, residual addition, loop filtering, output scheduling, runtime hashes, runtime Y4M, reference refresh, AVM/dav2d invocation, external tooling, or scheduler use inside `splot-recon`; future parallel orchestration remains owned by `DecodeContext` and `splot_parallel::WorkerPool`. The later runtime dependency edge is tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`."
+notes = "Adds a scheduler-free `splot-recon` mutable current-frame reconstruction workspace: `CurrentFrameWorkspace<T>` allocates Y/U/V plane buffers from `DecodedFrameInfo` using checked arithmetic and fallible allocation, validates sample type and active bit-depth range before writes, exposes bounded plane/rectangle reads, fills, row-strided writes, square/rectangular block writes, in-storage left/above edge extraction, and square/rectangular DC plus rectangular PAETH and smooth prediction write helpers that call the existing `RECON-INTRA-DC-SQUARE-PREDICTION`, `RECON-INTRA-DC-RECTANGULAR-PREDICTION`, `RECON-INTRA-BASIC-PAETH-PREDICTION`, and `RECON-INTRA-SMOOTH-PREDICTION` primitives. `freeze()` reuses existing `Plane::from_vec`, `FramePlanes::new`, and `DecodedFrame::try_new`, and tests prove interop with decoded-frame hash input, Y4M writer, and reference-frame store. This row itself did not add a `splot-decode -> splot-recon` dependency, `DecodeContext` API, runtime `splot decode` success path, tile syntax traversal, dequantization, inverse transforms, residual addition, loop filtering, output scheduling, runtime hashes, runtime Y4M, reference refresh, AVM/dav2d invocation, external tooling, or scheduler use inside `splot-recon`; future parallel orchestration remains owned by `DecodeContext` and `splot_parallel::WorkerPool`. The later runtime dependency edge is tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`, `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER`, and `DECODE-Y4M-RUNTIME-OUTPUT`."
 
 [feature.status]
 mapped = "done"
@@ -5556,7 +5556,7 @@ openspec_change = "decode-minimal-tier-runtime-success"
 tracking_issue = ""
 owner = "decoder"
 risk = "high"
-notes = "Adds the first runtime hash success path for the repository-owned `minimal-intra-8bit420-hash-v1` fixture-trace tier. `DecodeContext::decode_hash_report_bytes` reuses `plan_bytes`, rejects non-minimal plan shapes before reparsing, validates one 64x64 AV02 IVF stream shape (temporal delimiter, sequence header, one closed-loop-key frame candidate), gates profile/layer/bit-depth/chroma/frame-size/frame-tool/tile facts, rejects CFL intra and MHCCP before the traced UV-mode symbol path, derives source-backed tile payload bytes through the existing §5.19/§5.20.1 boundary, consumes the root partition decision through the crate-private `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` frontier including the minimal root-SDP luma `PARTITION_NONE` redirect, then verifies the remaining five traced flat-tile symbols with `SymbolDecoder::read_symbol()` over generated §9.3 CDF defaults and `exit_symbol()`. It checks frame/output/tile/allocation limits before allocation, builds the traced all-flat `splot_recon::DecodedFrame<u8>`, and computes `splot-dfh-sha256-v1` for `raw_intermediate_output`. `splot decode --output-format hash --json` emits `splot.decode.hash_report` v1 with resolved thread-count metadata and exit code 0 for the committed minimal fixture; hash output ignores IVF timebase fields because it does not serialize frame-rate metadata. Raw Annex B remains outside this runtime success tier; out-of-tier streams fail closed with `decode/unsupported-feature`; Y4M file output for the same tier is tracked separately by `DECODE-Y4M-RUNTIME-OUTPUT`, and raw file output remains unsupported. This row does not claim full AV2 decode, Annex A conformance, recursive `decode_tile()`, broad partition traversal beyond the first frontier, broad §8.3 CDF selection, CDF lifecycle, intra/inter prediction coverage beyond the traced all-flat subset, loop filters, film grain, reference refresh, metadata MD5 verification, or AVM/dav2d integration. No AVM/dav2d evidence is claimed for the retimed minimal fixture. The `splot-decode -> splot-recon` dependency edge is now active only for this narrow runtime decode/reconstruction/hash/Y4M handoff."
+notes = "Adds the first runtime hash success path for the repository-owned `minimal-intra-8bit420-hash-v1` fixture-trace tier. `DecodeContext::decode_hash_report_bytes` reuses `plan_bytes`, rejects non-minimal plan shapes before reparsing, validates one 64x64 AV02 IVF stream shape (temporal delimiter, sequence header, one closed-loop-key frame candidate), gates profile/layer/bit-depth/chroma/frame-size/frame-tool/tile facts, rejects CFL intra and MHCCP before the traced UV-mode symbol path, derives source-backed tile payload bytes through the existing §5.19/§5.20.1 boundary, consumes the root partition decision through the crate-private `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` frontier including the minimal root-SDP luma `PARTITION_NONE` redirect, then verifies the remaining five traced flat-tile symbols with `SymbolDecoder::read_symbol()` over generated §9.3 CDF defaults and `exit_symbol()`. It checks frame/output/tile/allocation limits before allocation, hands the proven recipe to `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER`, and computes `splot-dfh-sha256-v1` for `raw_intermediate_output`. `splot decode --output-format hash --json` emits `splot.decode.hash_report` v1 with resolved thread-count metadata and exit code 0 for the committed minimal fixture; hash output ignores IVF timebase fields because it does not serialize frame-rate metadata. Raw Annex B remains outside this runtime success tier; out-of-tier streams fail closed with `decode/unsupported-feature`; Y4M file output for the same tier is tracked separately by `DECODE-Y4M-RUNTIME-OUTPUT`, and raw file output remains unsupported. This row does not claim full AV2 decode, Annex A conformance, recursive `decode_tile()`, broad partition traversal beyond the first frontier, broad §8.3 CDF selection, CDF lifecycle, intra/inter prediction coverage beyond the traced all-flat subset, loop filters, film grain, reference refresh, metadata MD5 verification, or AVM/dav2d integration. No AVM/dav2d evidence is claimed for the retimed minimal fixture. The `splot-decode -> splot-recon` dependency edge is now active only for this narrow runtime decode/reconstruction/hash/Y4M handoff."
 
 [feature.status]
 mapped = "done"
@@ -5630,7 +5630,7 @@ openspec_change = "decode-y4m-runtime-output"
 tracking_issue = ""
 owner = "decoder"
 risk = "high"
-notes = "Adds the first runtime Y4M success path for the existing `minimal-intra-8bit420-hash-v1` fixture-trace tier. `DecodeContext::decode_y4m_bytes` reuses `plan_bytes` plus the shared minimal runtime validation/frame construction, tile-payload trace verification through the root partition frontier, and all-flat 64x64 8-bit 4:2:0 frame construction. It performs Y4M-specific zero IVF timebase rejection before Y4M serialization, serializes one raw-intermediate-output frame through `splot-recon::Y4mWriter`, derives the repository-owned Y4M frame-rate policy from the IVF timebase as `F30:1` for the committed fixture, buffers the complete stream header, `FRAME` header, and payload before caller writes, and checks `DecodeLimitName::MaxOutputBytes` against that complete Y4M stream. `splot decode -o` and `--output-format y4m -o` validate and serialize the complete Y4M byte stream before creating a same-directory temporary file, then publish atomically with temp write, flush, file sync, rename, and best-effort parent-directory sync where supported; hash mode continues to ignore `-o`. Out-of-tier, malformed, and resource-limit inputs fail closed without touching the requested output path, and output serialization/publication failures emit `decode/output-error` without nondeterministic temporary filename suffixes. This row does not claim broad AV2 decode, Annex A conformance, raw output, film grain, show-existing/flush scheduling, reference refresh, metadata MD5 verification, AVM/dav2d invocation, local-reference evidence for the retimed minimal fixture, or Y4M support beyond the committed minimal IVF tier."
+notes = "Adds the first runtime Y4M success path for the existing `minimal-intra-8bit420-hash-v1` fixture-trace tier. `DecodeContext::decode_y4m_bytes` reuses `plan_bytes` plus the shared minimal runtime validation, tile-payload trace verification through the root partition frontier, and the `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` frame handoff. It performs Y4M-specific zero IVF timebase rejection and exact minimal Y4M byte-budget checking before reconstruction, serializes one raw-intermediate-output frame through `splot-recon::Y4mWriter`, derives the repository-owned Y4M frame-rate policy from the IVF timebase as `F30:1` for the committed fixture, buffers the complete stream header, `FRAME` header, and payload before caller writes, and defensively rechecks `DecodeLimitName::MaxOutputBytes` against that complete Y4M stream before publication. `splot decode -o` and `--output-format y4m -o` validate and serialize the complete Y4M byte stream before creating a same-directory temporary file, then publish atomically with temp write, flush, file sync, rename, and best-effort parent-directory sync where supported; hash mode continues to ignore `-o`. Out-of-tier, malformed, and resource-limit inputs fail closed without touching the requested output path, and output serialization/publication failures emit `decode/output-error` without nondeterministic temporary filename suffixes. This row does not claim broad AV2 decode, Annex A conformance, raw output, film grain, show-existing/flush scheduling, reference refresh, metadata MD5 verification, AVM/dav2d invocation, local-reference evidence for the retimed minimal fixture, or Y4M support beyond the committed minimal IVF tier."
 
 [feature.status]
 mapped = "done"
@@ -5690,7 +5690,7 @@ openspec_change = "decoder-crate-scaffolding"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds approved workspace scaffolds for `splot-recon` and `splot-decode`, plus dependency-direction and coverage-scope automation updates. `splot-recon` has no `splot-*` dependencies and stays scheduler-free. `splot-decode` depends on `splot-core` for source-backed stream planning, `splot-parallel` for `DecodeRuntimeConfig`/`DecodeContext` plus its single owned `WorkerPool`, and `splot-recon` for the narrow runtime decode/reconstruction/hash/Y4M handoff tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` and `DECODE-Y4M-RUNTIME-OUTPUT`. Decoded-frame model types are tracked by `INFRA-RECON-FRAME-PLANE-TYPES`; this scaffold row itself exposes no broad runtime reconstruction, broad Y4M writer use, or broad byte-consuming decoded-frame production path. The raw byte planner is tracked separately by `DECODE-BYTE-STREAM-PLANNER`. The scaffolds emit no decoder diagnostics beyond separately tracked decode diagnostics and do not invoke or require AVM/dav2d."
+notes = "Adds approved workspace scaffolds for `splot-recon` and `splot-decode`, plus dependency-direction and coverage-scope automation updates. `splot-recon` has no `splot-*` dependencies and stays scheduler-free. `splot-decode` depends on `splot-core` for source-backed stream planning, `splot-parallel` for `DecodeRuntimeConfig`/`DecodeContext` plus its single owned `WorkerPool`, and `splot-recon` for the narrow runtime decode/reconstruction/hash/Y4M handoff tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`, `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER`, and `DECODE-Y4M-RUNTIME-OUTPUT`. Decoded-frame model types are tracked by `INFRA-RECON-FRAME-PLANE-TYPES`; this scaffold row itself exposes no broad runtime reconstruction, broad Y4M writer use, or broad byte-consuming decoded-frame production path. The raw byte planner is tracked separately by `DECODE-BYTE-STREAM-PLANNER`. The scaffolds emit no decoder diagnostics beyond separately tracked decode diagnostics and do not invoke or require AVM/dav2d."
 
 [feature.status]
 mapped = "done"
@@ -6694,6 +6694,73 @@ fixtures = [
     "crates/splot-decode/src/tile_payload/cdf/block_read.rs",
     "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
     "openspec/changes/archive/2026-06-15-minimal-block-syntax-frontier",
+]
+diagnostics = ["decode/unsupported-feature", "decode/resource-limit", "decode/malformed-source", "decode/output-error"]
+
+[[feature]]
+id = "DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER"
+name = "Minimal intra reconstruction frontier"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.5.3", "5.20.5.5", "5.20.5.6", "5.20.7.24", "5.20.7.27", "7.13.2.1", "7.13.2.10", "7.21.1", "7.21.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-5",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal_recon.rs"
+openspec_change = "minimal-intra-reconstruction-frontier"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private reconstruction handoff after `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` for the committed minimal fixture: the block-symbol frontier returns `LumaDcNoResidual8Bit420_64x64` for the traced 64x64 8-bit luma DC/no-residual facts. `runtime_minimal_recon.rs` allocates a checked `splot-recon::CurrentFrameWorkspace<u8>`, writes that luma DC prediction through `predict_intra_dc_square()`, then materializes neutral 32x32 U/V planes through workspace writes as the existing minimal output-contract fallback, freezes the workspace, and preserves the existing `splot-dfh-sha256-v1` and Y4M bytes. The traced §5.20.5.6 chroma symbol is `H_PRED`, so this row does not claim chroma H/V prediction or neutral chroma as an AV2-proven result; chroma remains neutral materialization through checked storage until horizontal/vertical chroma prediction lands. The all-zero transform path is represented only by the traced no-residual block-symbol frontier; broad transform coefficient parsing, `reconstruct()`, residual addition, recursive `decode_block()`, loop filtering, film grain, reference refresh, raw output, AVM/dav2d invocation, and full decoder conformance remain unsupported."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal_recon.rs::tests::traced_luma_dc_neutral_chroma_reconstruction_predicts_visible_samples",
+    "crates/splot-decode/src/runtime_minimal_recon.rs::tests::traced_luma_dc_neutral_chroma_reconstruction_hash_matches_minimal_contract",
+    "crates/splot-decode/src/tile_payload/runtime_frontier.rs::tests::block_symbol_frontier_accepts_minimal_fixture_trace",
+    "crates/splot-decode/src/runtime_hash.rs::tests::minimal_fixture_decodes_to_hash_report",
+    "crates/splot-decode/src/runtime_hash.rs::tests::decoded_hash_is_deterministic_across_thread_policies",
+    "crates/splot-decode/src/runtime_hash.rs::tests::output_byte_limit_fails_before_hash_report",
+    "crates/splot-decode/src/runtime_y4m.rs::tests::minimal_fixture_decodes_to_exact_y4m_bytes",
+    "crates/splot-decode/src/runtime_y4m.rs::tests::y4m_output_is_deterministic_across_thread_policies",
+    "crates/splot-decode/src/runtime_y4m.rs::tests::output_byte_limit_fails_before_writer_success",
+]
+commands = [
+    "cargo test -p splot-decode runtime_minimal_recon --locked",
+    "cargo test -p splot-decode tile_payload::runtime_frontier --locked",
+    "cargo test -p splot-decode runtime_hash --locked",
+    "cargo test -p splot-decode runtime_y4m --locked",
+    "cargo test -p splot-recon workspace --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/runtime_minimal.rs",
+    "crates/splot-decode/src/runtime_minimal_recon.rs",
+    "crates/splot-decode/src/tile_payload/runtime_frontier.rs",
+    "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
+    "openspec/changes/archive/2026-06-15-minimal-intra-reconstruction-frontier",
 ]
 diagnostics = ["decode/unsupported-feature", "decode/resource-limit", "decode/malformed-source", "decode/output-error"]
 
