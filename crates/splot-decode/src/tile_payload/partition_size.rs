@@ -5,7 +5,10 @@
 //!
 //! Feature tracking: `DECODE-TILE-PARTITION-SIZE-TABLE-BOUNDARY`.
 
-use splot_core::tables::conversion::{H_PARTITION_MIDSIZE, PARTITION_SUBSIZE};
+use splot_core::tables::conversion::{
+    H_PARTITION_MIDSIZE, MI_HEIGHT_LOG2, MI_WIDTH_LOG2, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE,
+    PARTITION_SUBSIZE,
+};
 
 use super::partition::PartitionType;
 
@@ -32,6 +35,50 @@ impl BlockSize {
     /// Returns the AV2 block-size discriminant.
     pub(crate) const fn index(self) -> usize {
         self.0
+    }
+
+    /// Returns `Num_4x4_Blocks_Wide[bSize]`.
+    pub(crate) fn num_4x4_wide(self) -> Result<usize, PartitionSizeError> {
+        table_usize("Num_4x4_Blocks_Wide", &NUM_4X4_BLOCKS_WIDE, self)
+    }
+
+    /// Returns `Num_4x4_Blocks_High[bSize]`.
+    pub(crate) fn num_4x4_high(self) -> Result<usize, PartitionSizeError> {
+        table_usize("Num_4x4_Blocks_High", &NUM_4X4_BLOCKS_HIGH, self)
+    }
+
+    /// Returns AV2 § 9.2 `Block_Width[bSize]` in samples.
+    pub(crate) fn width_samples(self) -> Result<usize, PartitionSizeError> {
+        Ok(self.num_4x4_wide()? * 4)
+    }
+
+    /// Returns AV2 § 9.2 `Block_Height[bSize]` in samples.
+    pub(crate) fn height_samples(self) -> Result<usize, PartitionSizeError> {
+        Ok(self.num_4x4_high()? * 4)
+    }
+
+    /// Returns `Mi_Width_Log2[bSize]`.
+    pub(crate) fn mi_width_log2(self) -> Result<usize, PartitionSizeError> {
+        table_usize("Mi_Width_Log2", &MI_WIDTH_LOG2, self)
+    }
+
+    /// Returns `Mi_Height_Log2[bSize]`.
+    pub(crate) fn mi_height_log2(self) -> Result<usize, PartitionSizeError> {
+        table_usize("Mi_Height_Log2", &MI_HEIGHT_LOG2, self)
+    }
+
+    /// Finds a valid AV2 block size with the supplied 4x4-block dimensions.
+    pub(crate) fn from_4x4_dimensions(
+        width_4x4: usize,
+        height_4x4: usize,
+    ) -> Result<Option<Self>, PartitionSizeError> {
+        for index in 0..BLOCK_SIZES {
+            let block_size = Self(index);
+            if block_size.num_4x4_wide()? == width_4x4 && block_size.num_4x4_high()? == height_4x4 {
+                return Ok(Some(block_size));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -136,6 +183,28 @@ fn table_value(
             value,
         })?;
     Ok(PartitionSubsize::Valid(block_size))
+}
+
+fn table_usize(
+    table: &'static str,
+    values: &[i32],
+    b_size: BlockSize,
+) -> Result<usize, PartitionSizeError> {
+    let value =
+        values
+            .get(b_size.index())
+            .copied()
+            .ok_or(PartitionSizeError::BlockSizeOutOfRange {
+                table,
+                b_size: b_size.index(),
+                max_exclusive: BLOCK_SIZES,
+            })?;
+    usize::try_from(value).map_err(|_| PartitionSizeError::TableValueOutOfRange {
+        table,
+        partition: None,
+        b_size: b_size.index(),
+        value,
+    })
 }
 
 #[cfg(test)]
@@ -265,6 +334,21 @@ mod tests {
                 max_exclusive: BLOCK_SIZES,
             }
         );
+    }
+
+    #[test]
+    fn block_geometry_helpers_use_generated_tables() {
+        assert_eq!(block(BLOCK_4X4).num_4x4_wide().unwrap(), 1);
+        assert_eq!(block(BLOCK_4X4).num_4x4_high().unwrap(), 1);
+        assert_eq!(block(BLOCK_32X32).width_samples().unwrap(), 32);
+        assert_eq!(block(BLOCK_32X32).height_samples().unwrap(), 32);
+        assert_eq!(block(BLOCK_16X32).mi_width_log2().unwrap(), 2);
+        assert_eq!(block(BLOCK_16X32).mi_height_log2().unwrap(), 3);
+        assert_eq!(
+            BlockSize::from_4x4_dimensions(8, 8).unwrap(),
+            Some(block(BLOCK_32X32))
+        );
+        assert_eq!(BlockSize::from_4x4_dimensions(32, 8).unwrap(), None);
     }
 
     #[test]
