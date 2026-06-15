@@ -8,18 +8,27 @@
 use core::fmt;
 
 use splot_core::symbol::CdfUpdateMode;
-use splot_core::tables::cdf::{DEFAULT_DO_SPLIT_CDF, DEFAULT_DO_SQUARE_SPLIT_CDF};
+use splot_core::tables::cdf::{
+    DEFAULT_DO_EXT_PARTITION_CDF, DEFAULT_DO_SPLIT_CDF, DEFAULT_DO_SQUARE_SPLIT_CDF,
+    DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF,
+};
 
 const CDF_PROB_SCALE: i32 = 1 << 15;
 const DO_SPLIT_PLANE_CONTEXTS: usize = 2;
 const DO_SPLIT_CONTEXTS: usize = 64;
+const DO_EXT_PARTITION_CONTEXTS: usize = 64;
+const DO_UNEVEN_4WAY_PARTITION_CONTEXTS: usize = 64;
 const DO_SQUARE_SPLIT_VALID_PLANE_CONTEXTS: usize = 1;
 const DO_SQUARE_SPLIT_CONTEXTS: usize = 8;
 const CDF_ROW_LEN: usize = 3;
 
 type DoSplitCdfRows = [[[i32; CDF_ROW_LEN]; DO_SPLIT_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
+type DoExtPartitionCdfRows =
+    [[[i32; CDF_ROW_LEN]; DO_EXT_PARTITION_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
 type DoSquareSplitCdfRows =
     [[[i32; CDF_ROW_LEN]; DO_SQUARE_SPLIT_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
+type DoUneven4WayPartitionCdfRows =
+    [[[i32; CDF_ROW_LEN]; DO_UNEVEN_4WAY_PARTITION_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
 
 /// Inputs for AV2 § 8.2.4 tile CDF copy/average policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -239,11 +248,18 @@ impl TileCdfWorkUnitBoundary {
     }
 }
 
-/// Supported CDF selectors for the first partition-entry boundary.
+/// Supported CDF selectors for the partition-entry boundary subset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TileCdfSelector {
     /// `TileDoSplitCdf[PlaneStart][ctx]`.
     DoSplit {
+        /// `PlaneStart` partition-structure context.
+        plane_start: usize,
+        /// Partition context index.
+        ctx: usize,
+    },
+    /// `TileDoExtPartitionCdf[PlaneStart][ctx]`.
+    DoExtPartition {
         /// `PlaneStart` partition-structure context.
         plane_start: usize,
         /// Partition context index.
@@ -256,6 +272,13 @@ pub(crate) enum TileCdfSelector {
         /// Square-split context index.
         ctx: usize,
     },
+    /// `TileDoUneven4wayPartitionCdf[PlaneStart][ctx]`.
+    DoUneven4WayPartition {
+        /// `PlaneStart` partition-structure context.
+        plane_start: usize,
+        /// Partition context index.
+        ctx: usize,
+    },
 }
 
 /// Supported CDF arrays for error reporting.
@@ -263,15 +286,21 @@ pub(crate) enum TileCdfSelector {
 pub(crate) enum TileCdfArray {
     /// `TileDoSplitCdf`.
     DoSplit,
+    /// `TileDoExtPartitionCdf`.
+    DoExtPartition,
     /// `TileDoSquareSplitCdf`.
     DoSquareSplit,
+    /// `TileDoUneven4wayPartitionCdf`.
+    DoUneven4WayPartition,
 }
 
 impl TileCdfArray {
     const fn as_str(self) -> &'static str {
         match self {
             Self::DoSplit => "TileDoSplitCdf",
+            Self::DoExtPartition => "TileDoExtPartitionCdf",
             Self::DoSquareSplit => "TileDoSquareSplitCdf",
+            Self::DoUneven4WayPartition => "TileDoUneven4wayPartitionCdf",
         }
     }
 }
@@ -382,14 +411,18 @@ pub(crate) fn tile_cdf_save_policy(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileCdfRows {
     do_split: DoSplitCdfRows,
+    do_ext_partition: DoExtPartitionCdfRows,
     do_square_split: DoSquareSplitCdfRows,
+    do_uneven_4way_partition: DoUneven4WayPartitionCdfRows,
 }
 
 impl TileCdfRows {
     fn from_defaults() -> Self {
         Self {
             do_split: DEFAULT_DO_SPLIT_CDF,
+            do_ext_partition: DEFAULT_DO_EXT_PARTITION_CDF,
             do_square_split: DEFAULT_DO_SQUARE_SPLIT_CDF,
+            do_uneven_4way_partition: DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF,
         }
     }
 
@@ -408,6 +441,18 @@ impl TileCdfRows {
                         })?;
                 Ok(row)
             }
+            TileCdfSelector::DoExtPartition { plane_start, ctx } => {
+                let plane = checked_plane(TileCdfArray::DoExtPartition, plane_start)?;
+                let row = self.do_ext_partition[plane].get(ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::DoExtPartition,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: DO_EXT_PARTITION_CONTEXTS,
+                    },
+                )?;
+                Ok(row)
+            }
             TileCdfSelector::DoSquareSplit { plane_start, ctx } => {
                 let plane = checked_square_split_plane(plane_start)?;
                 let row = self.do_square_split[plane].get(ctx).ok_or(
@@ -416,6 +461,18 @@ impl TileCdfRows {
                         index_name: "ctx",
                         actual: ctx,
                         max_exclusive: DO_SQUARE_SPLIT_CONTEXTS,
+                    },
+                )?;
+                Ok(row)
+            }
+            TileCdfSelector::DoUneven4WayPartition { plane_start, ctx } => {
+                let plane = checked_plane(TileCdfArray::DoUneven4WayPartition, plane_start)?;
+                let row = self.do_uneven_4way_partition[plane].get(ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::DoUneven4WayPartition,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: DO_UNEVEN_4WAY_PARTITION_CONTEXTS,
                     },
                 )?;
                 Ok(row)
@@ -442,12 +499,38 @@ impl TileCdfRows {
                         })?;
                 Ok(row)
             }
+            TileCdfSelector::DoExtPartition { plane_start, ctx } => {
+                let plane = checked_plane(TileCdfArray::DoExtPartition, plane_start)?;
+                let max_exclusive = self.do_ext_partition[plane].len();
+                let row = self.do_ext_partition[plane].get_mut(ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::DoExtPartition,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row)
+            }
             TileCdfSelector::DoSquareSplit { plane_start, ctx } => {
                 let plane = checked_square_split_plane(plane_start)?;
                 let max_exclusive = self.do_square_split[plane].len();
                 let row = self.do_square_split[plane].get_mut(ctx).ok_or(
                     TileCdfError::SelectorOutOfRange {
                         array: TileCdfArray::DoSquareSplit,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row)
+            }
+            TileCdfSelector::DoUneven4WayPartition { plane_start, ctx } => {
+                let plane = checked_plane(TileCdfArray::DoUneven4WayPartition, plane_start)?;
+                let max_exclusive = self.do_uneven_4way_partition[plane].len();
+                let row = self.do_uneven_4way_partition[plane].get_mut(ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::DoUneven4WayPartition,
                         index_name: "ctx",
                         actual: ctx,
                         max_exclusive,
@@ -468,10 +551,26 @@ impl TileCdfRows {
                     num_log2,
                 );
             }
+            for ctx in 0..DO_EXT_PARTITION_CONTEXTS {
+                avg_cdf_row(
+                    &mut self.do_ext_partition[plane][ctx],
+                    &tile.do_ext_partition[plane][ctx],
+                    tile_num,
+                    num_log2,
+                );
+            }
             for ctx in 0..DO_SQUARE_SPLIT_CONTEXTS {
                 avg_cdf_row(
                     &mut self.do_square_split[plane][ctx],
                     &tile.do_square_split[plane][ctx],
+                    tile_num,
+                    num_log2,
+                );
+            }
+            for ctx in 0..DO_UNEVEN_4WAY_PARTITION_CONTEXTS {
+                avg_cdf_row(
+                    &mut self.do_uneven_4way_partition[plane][ctx],
+                    &tile.do_uneven_4way_partition[plane][ctx],
                     tile_num,
                     num_log2,
                 );
@@ -485,8 +584,18 @@ impl TileCdfRows {
     }
 
     #[cfg(test)]
+    pub(crate) const fn do_ext_partition(&self) -> &DoExtPartitionCdfRows {
+        &self.do_ext_partition
+    }
+
+    #[cfg(test)]
     pub(crate) const fn do_square_split(&self) -> &DoSquareSplitCdfRows {
         &self.do_square_split
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn do_uneven_4way_partition(&self) -> &DoUneven4WayPartitionCdfRows {
+        &self.do_uneven_4way_partition
     }
 }
 
@@ -546,12 +655,30 @@ mod tests {
     fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
         let frame = FrameCdfSubset::from_defaults();
         assert_eq!(frame.rows().do_split(), &DEFAULT_DO_SPLIT_CDF);
+        assert_eq!(
+            frame.rows().do_ext_partition(),
+            &DEFAULT_DO_EXT_PARTITION_CDF
+        );
         assert_eq!(frame.rows().do_square_split(), &DEFAULT_DO_SQUARE_SPLIT_CDF);
+        assert_eq!(
+            frame.rows().do_uneven_4way_partition(),
+            &DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF
+        );
 
         let mut tile = frame.tile_copy();
         tile.rows_mut().do_split[0][0][0] = 1234;
+        tile.rows_mut().do_ext_partition[0][4][0] = 5678;
+        tile.rows_mut().do_uneven_4way_partition[0][8][0] = 9012;
 
         assert_eq!(frame.rows().do_split()[0][0], DEFAULT_DO_SPLIT_CDF[0][0]);
+        assert_eq!(
+            frame.rows().do_ext_partition()[0][4],
+            DEFAULT_DO_EXT_PARTITION_CDF[0][4]
+        );
+        assert_eq!(
+            frame.rows().do_uneven_4way_partition()[0][8],
+            DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF[0][8]
+        );
         assert_ne!(
             tile.row(TileCdfSelector::DoSplit {
                 plane_start: 0,
@@ -559,6 +686,22 @@ mod tests {
             })
             .unwrap(),
             DEFAULT_DO_SPLIT_CDF[0][0].as_slice()
+        );
+        assert_ne!(
+            tile.row(TileCdfSelector::DoExtPartition {
+                plane_start: 0,
+                ctx: 4
+            })
+            .unwrap(),
+            DEFAULT_DO_EXT_PARTITION_CDF[0][4].as_slice()
+        );
+        assert_ne!(
+            tile.row(TileCdfSelector::DoUneven4WayPartition {
+                plane_start: 0,
+                ctx: 8
+            })
+            .unwrap(),
+            DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF[0][8].as_slice()
         );
     }
 
@@ -574,6 +717,22 @@ mod tests {
             .unwrap();
         assert_eq!(row, DEFAULT_DO_SPLIT_CDF[0][0].as_slice());
         assert_eq!(row.len(), CDF_ROW_LEN);
+
+        let row = tile
+            .row(TileCdfSelector::DoExtPartition {
+                plane_start: 1,
+                ctx: 63,
+            })
+            .unwrap();
+        assert_eq!(row, DEFAULT_DO_EXT_PARTITION_CDF[1][63].as_slice());
+
+        let row = tile
+            .row(TileCdfSelector::DoUneven4WayPartition {
+                plane_start: 1,
+                ctx: 63,
+            })
+            .unwrap();
+        assert_eq!(row, DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF[1][63].as_slice());
 
         let err = tile
             .with_row_mut(
@@ -609,44 +768,95 @@ mod tests {
                 max_exclusive: 64,
             }
         );
+
+        let err = tile
+            .row(TileCdfSelector::DoExtPartition {
+                plane_start: 2,
+                ctx: 0,
+            })
+            .unwrap_err();
+        assert_eq!(
+            err,
+            TileCdfError::SelectorOutOfRange {
+                array: TileCdfArray::DoExtPartition,
+                index_name: "plane_start",
+                actual: 2,
+                max_exclusive: 2,
+            }
+        );
+
+        let err = tile
+            .with_row_mut(
+                TileCdfSelector::DoUneven4WayPartition {
+                    plane_start: 0,
+                    ctx: 64,
+                },
+                |_| (),
+            )
+            .unwrap_err();
+        assert_eq!(
+            err,
+            TileCdfError::SelectorOutOfRange {
+                array: TileCdfArray::DoUneven4WayPartition,
+                index_name: "ctx",
+                actual: 64,
+                max_exclusive: 64,
+            }
+        );
     }
 
     #[test]
     fn selected_row_hands_off_to_symbol_decoder_update_modes() {
         let frame = FrameCdfSubset::from_defaults();
-        let selector = TileCdfSelector::DoSplit {
-            plane_start: 0,
-            ctx: 0,
-        };
+        let selectors = [
+            TileCdfSelector::DoSplit {
+                plane_start: 0,
+                ctx: 0,
+            },
+            TileCdfSelector::DoExtPartition {
+                plane_start: 0,
+                ctx: 4,
+            },
+            TileCdfSelector::DoSquareSplit {
+                plane_start: 0,
+                ctx: 0,
+            },
+            TileCdfSelector::DoUneven4WayPartition {
+                plane_start: 0,
+                ctx: 8,
+            },
+        ];
         let payload = [0x80, 0x00];
 
-        let mut enabled = frame.tile_copy();
-        let before = enabled.row(selector).unwrap().to_vec();
-        let mut symbol = SymbolDecoder::with_base_and_config(
-            &payload,
-            ByteOffset::new(0),
-            SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
-        )
-        .unwrap();
-        enabled
-            .with_row_mut(selector, |row| symbol.read_symbol(row))
-            .unwrap()
+        for selector in selectors {
+            let mut enabled = frame.tile_copy();
+            let before = enabled.row(selector).unwrap().to_vec();
+            let mut symbol = SymbolDecoder::with_base_and_config(
+                &payload,
+                ByteOffset::new(0),
+                SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
+            )
             .unwrap();
-        assert_ne!(enabled.row(selector).unwrap(), before.as_slice());
+            enabled
+                .with_row_mut(selector, |row| symbol.read_symbol(row))
+                .unwrap()
+                .unwrap();
+            assert_ne!(enabled.row(selector).unwrap(), before.as_slice());
 
-        let mut disabled = frame.tile_copy();
-        let before = disabled.row(selector).unwrap().to_vec();
-        let mut symbol = SymbolDecoder::with_base_and_config(
-            &payload,
-            ByteOffset::new(0),
-            SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
-        )
-        .unwrap();
-        disabled
-            .with_row_mut(selector, |row| symbol.read_symbol(row))
-            .unwrap()
+            let mut disabled = frame.tile_copy();
+            let before = disabled.row(selector).unwrap().to_vec();
+            let mut symbol = SymbolDecoder::with_base_and_config(
+                &payload,
+                ByteOffset::new(0),
+                SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+            )
             .unwrap();
-        assert_eq!(disabled.row(selector).unwrap(), before.as_slice());
+            disabled
+                .with_row_mut(selector, |row| symbol.read_symbol(row))
+                .unwrap()
+                .unwrap();
+            assert_eq!(disabled.row(selector).unwrap(), before.as_slice());
+        }
     }
 
     #[test]
@@ -686,7 +896,9 @@ mod tests {
         let frame = FrameCdfSubset::from_defaults();
         let mut tile = frame.tile_copy();
         tile.rows_mut().do_split[0][0] = [20_000, 7, 4];
+        tile.rows_mut().do_ext_partition[0][4] = [22_000, 5, 8];
         tile.rows_mut().do_square_split[0][0] = [21_000, 6, 2];
+        tile.rows_mut().do_uneven_4way_partition[0][8] = [23_000, 4, 12];
 
         let mut saved = SavedCdfSubset::from_frame(&frame);
         saved.apply_tile(
@@ -711,6 +923,11 @@ mod tests {
             },
         );
         assert_eq!(saved.rows().do_split()[0][0], [29_576, 7, 1]);
+        assert_eq!(saved.rows().do_ext_partition()[0][4], [30_076, 5, 2]);
         assert_eq!(saved.rows().do_square_split()[0][0], [29_826, 6, 0]);
+        assert_eq!(
+            saved.rows().do_uneven_4way_partition()[0][8],
+            [30_326, 4, 3]
+        );
     }
 }

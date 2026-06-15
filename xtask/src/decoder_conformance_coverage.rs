@@ -191,7 +191,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         fuzz_targets: &["decode_plan_bytes"],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature", "decode/resource-limit"],
-        notes: "Boundary and first CDF selection subsets exist. Full tile group traversal, decode_tile, partition/block syntax, residual syntax, and multi-tile handling remain unsupported.",
+        notes: "Tile payload and partition CDF boundary subsets exist. Full tile group traversal, decode_tile, partition/block syntax, residual syntax, and multi-tile handling remain unsupported.",
     },
     CoverageRow {
         id: "decode-orchestration-and-random-access",
@@ -232,7 +232,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         fuzz_targets: &[],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "The current implementation has a first CDF boundary and a generic reference store container, but no full runtime CDF lifecycle, layer context management, reference list construction, motion-field estimation, or motion-vector prediction.",
+        notes: "The current implementation has a partition CDF boundary subset and a generic reference store container, but no full runtime CDF lifecycle, layer context management, reference list construction, motion-field estimation, or motion-vector prediction.",
     },
     CoverageRow {
         id: "prediction-process",
@@ -318,7 +318,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         fuzz_targets: &[],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Generic f(n)/symbol foundations and a first CDF subset exist. Full Section 8.3 CDF lifecycle and Section 9.3 default CDF banks are incomplete.",
+        notes: "Generic f(n)/symbol foundations and a partition CDF subset exist. Full Section 8.3 CDF lifecycle and Section 9.3 default CDF banks are incomplete.",
     },
     CoverageRow {
         id: "decode-lookup-tables",
