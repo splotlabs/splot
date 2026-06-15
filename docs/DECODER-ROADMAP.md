@@ -97,29 +97,31 @@ The future full-decoder conformance claim is defined in
 decode-relevant AV2 section-family ownership map is generated in
 [`DECODER-SPEC-COVERAGE.md`](./DECODER-SPEC-COVERAGE.md). These documents expose
 current unsupported and partial runtime decoder gaps; they do not make the
-plan-only `splot decode` entry point a supported decoder.
+narrow minimal hash path a full supported decoder.
 The output-equivalence contract tracked by
 `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` defines the future runtime output
 identity target: `raw_intermediate_output` and `post_film_grain_output`
 variants, `splot-dfh-sha256-v1` raw-intermediate hash reporting, visible sample
 bytes, show-existing and flush output order, raw/Y4M output policy, metadata
 hash separation, and atomic file publication. It is a contract for later
-runtime rows, not a current hash, raw, Y4M, film-grain, or output-order support
-claim.
+runtime rows. The `minimal-intra-8bit420-hash-v1` row now supports the first
+raw-intermediate hash success artifact; raw/Y4M file output, film grain, broad
+output ordering, and full decoder conformance remain unsupported.
 Emitted `splot decode` diagnostic rule IDs are registered in
 [`DECODER-DIAGNOSTICS.md`](./DECODER-DIAGNOSTICS.md), enforced by
 `cargo xtask check-diagnostic-registry`.
 
 ## Supported Tier
 
-The first supported decode tier is planned, not implemented. The repository
-contract is:
+The first supported decode tier is implemented only for hash JSON output on the
+committed minimal fixture. The repository contract is:
 
 ```text
 contract_id = "splot.decode.minimal_tier"
 contract_version = 1
 tier_id = "minimal-intra-8bit420-hash-v1"
 feature_id = "DOC-MINIMAL-DECODE-TIER-CONTRACT"
+runtime_feature_id = "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS"
 ```
 
 This is a `splot` implementation-supported subset, not an Annex A
@@ -128,8 +130,9 @@ encoder-MVP subset below.
 
 The tier is deliberately small:
 
-- input is Annex B length-delimited OBU data, either raw or IVF/DKIF-wrapped
-  with Annex B frame payloads;
+- input is one committed IVF/DKIF-wrapped AV02 frame whose payload uses the
+  Annex B length-delimited OBU framing; raw Annex B planning remains supported
+  by the byte planner but is outside this runtime hash success tier;
 - one selected stream/layer only: non-global OBUs use `obu_xlayer_id == 0`,
   `obu_tlayer_id == 0`, and inferred `obu_mlayer_id == 0`;
 - no external HLS, multistream composition, sub-bitstream extraction, MSDO, LCR,
@@ -148,18 +151,18 @@ The tier is deliberately small:
   `immediate_output_frame == 1`, `implicit_output_frame == 0`, and no sequence
   cropping window;
 - one tile and one first-and-only tile group;
-- deterministic decoded-frame hashes are the first success artifact.
+- deterministic decoded-frame hashes are the first success artifact; current
+  runtime support is limited to the committed flat 64x64 fixture, its traced
+  six-symbol §8.2 tile stream, and its all-flat output model.
 
 Runtime `splot decode` Y4M output remains unsupported until a future
 byte-consuming decode/output row wires the `splot-recon` Y4M writer to real
 decoded frames and tests the CLI output path, including the atomic publication
-rules from the output-equivalence contract. The CLI parse contract accepts
-future hash-output selection with `--output-format hash`; future hash success
-JSON must use the separate `splot.decode.hash_report` schema rather than the
-current diagnostic JSON shape. The
+rules from the output-equivalence contract. Hash success JSON uses the separate
+`splot.decode.hash_report` schema rather than the diagnostic JSON shape. The
 compatibility form `splot decode <input> -o <output>` remains the implicit Y4M
 form, and `--output-format y4m -o <output>` is the explicit Y4M form. All valid
-forms still emit the intentional unsupported diagnostic until runtime decode
+Y4M forms still emit the intentional unsupported diagnostic until runtime Y4M
 support lands.
 
 Everything outside the tier must fail explicitly with a structured diagnostic:
@@ -173,11 +176,11 @@ other external decoder is forbidden.
 | Stage | Scope | Status |
 |---|---|---|
 | 0 | Roadmap, support matrix, generated status, drift gate | supported |
-| 1 | Decode API contract, runtime context, limits, resource diagnostics, crate scaffolding, plan-only byte entry point | crate scaffolding, `DecodeContext` worker-pool runtime policy, limits runtime API, and bounded byte-stream planning supported; resource diagnostic emission planned |
+| 1 | Decode API contract, runtime context, limits, resource diagnostics, crate scaffolding, byte entry point | crate scaffolding, `DecodeContext` worker-pool runtime policy, limits runtime API, bounded byte-stream planning, and resource diagnostic emission supported |
 | 2 | Shared decoded frame, plane, pixel format, workspace, and deterministic hash types | frame/plane model types, current-frame workspace, hash-input serialization, and `splot-dfh-sha256-v1` digest computation supported |
-| 3 | CLI `splot decode` contract backed by library diagnostics | hash output parse contract wired; runtime unsupported |
-| 4 | Container traversal, base-layer parsed/raw traversal, transactional decode planning | parsed and raw-byte stream planners supported; operating-point selection and CLI runtime planned |
-| 5 | Self-contained decode fuzz target and fixture smoke | `decode_plan_bytes` fuzz target supported for the raw byte planner; decode fixtures planned |
+| 3 | CLI `splot decode` contract backed by library diagnostics | minimal hash JSON success supported; Y4M/raw output unsupported |
+| 4 | Container traversal, base-layer parsed/raw traversal, transactional decode planning | parsed and raw-byte stream planners supported; operating-point selection and broad CLI runtime unsupported |
+| 5 | Self-contained decode fuzz target and fixture smoke | `decode_plan_bytes` fuzz target supported for the raw byte planner; minimal runtime fixture smoke supported |
 | 6 | AV2 § 8 symbol/CDF decoder foundation | § 8.2 generic primitive partial; first crate-private partition CDF subset boundary partial; broad § 8.3 and tile decode planned |
 | 7 | Constrained intra tile syntax | tile payload and tile CDF boundaries partial; `decode_tile()` syntax planned |
 | 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | current-frame workspace plus square DC, rectangular DC, basic/PAETH, and smooth prediction primitives supported; directional/DIP/subsampled DC/IBP/CfL modes, dequant/reconstruction, inverse transforms, runtime hashes planned |
@@ -482,18 +485,18 @@ raw 32-byte digest access plus lowercase hex formatting. These APIs do not
 verify AV2 metadata MD5, select output order, synthesize film grain, read
 bitstreams, write Y4M, reconstruct pixels, or invoke AVM/dav2d.
 
-The default future hash variant is `raw_intermediate_output`, corresponding to
+The default hash variant is `raw_intermediate_output`, corresponding to
 AV2 § 6.16.13 `has_grain = 0`: `OutY`/`OutU`/`OutV` from the § 7.21.2
 intermediate output preparation process before § 7.21.7 film-grain synthesis.
 A post-film-grain hash may be added later only as an explicit, separately named
 variant after film-grain synthesis is implemented and tested.
 
-Local AVM/dav2d MD5 output can be useful evidence, but committed `splot` tests
-must not require those tools. The checked local-reference evidence manifest now
-records AVM/dav2d raw MD5 agreement for two tiny committed fixtures; it is
-non-executable metadata only and does not prove runtime decode, reconstruction,
-or `splot-dfh-sha256-v1` pixel correctness for decoded bitstreams. Future
-decoder local-reference evidence also belongs in
+Local AVM/dav2d output can be useful evidence, but committed `splot` tests
+must not require those tools. The checked local-reference evidence manifest
+records AVM/dav2d raw MD5 agreement for two background fixtures and raw SHA-256
+agreement for the committed minimal runtime hash fixture; it is non-executable
+metadata only and does not add an external decoder dependency. Future decoder
+local-reference evidence also belongs in
 [`LOCAL-REFERENCE-EVIDENCE.toml`](./LOCAL-REFERENCE-EVIDENCE.toml), which is
 checked by `cargo xtask check-reference-evidence` and
 `cargo xtask check-decoder-support`. The manifest stores portable metadata only:
@@ -502,9 +505,9 @@ command summaries, digest metadata, and assertions.
 
 ## Unsupported Feature Contract
 
-Decoder unsupported-feature output carries structured data. The current
-`splot decode` entry point emits this diagnostic after byte planning succeeds
-but before any runtime decode/output support exists:
+Decoder unsupported-feature output carries structured data. Y4M output and
+planable inputs outside the minimal hash tier still emit this diagnostic after
+byte planning succeeds:
 
 ```json
 {
@@ -522,6 +525,9 @@ but before any runtime decode/output support exists:
 Planner-level unsupported structures also use `decode/unsupported-feature`, but
 with `decode-stream-state` / `DECODE-STREAM-STATE-PLANNER` metadata and details
 such as `unsupported_reason`, `obu_type`, and `byte_offset`.
+Runtime hash tier rejections use `minimal-decode-tier-contract` /
+`DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` metadata plus `unsupported_reason`,
+`tier_id`, and an optional byte offset.
 
 The CLI renders diagnostics as text by default and as JSON with
 `splot decode --json`. Library-facing decode diagnostics must preserve stable
@@ -559,7 +565,7 @@ Maintainer approval for the decoder/reconstruction dependency graph landed on
 crates/splot-core      bitstream model + parsers
 crates/splot-recon     decoded output model types; hash-input bytes, frame hashes, Y4M writer; future reconstruction primitives, references
 crates/splot-parallel  approved local worker-pool and bounded-queue runtime policy
-crates/splot-decode    unsupported diagnostic API; runtime context; parsed stream planner; future driver using splot-recon
+crates/splot-decode    diagnostic API; runtime context; stream planners; minimal hash runtime using splot-recon
 crates/splot-encode    future encoder, not yet depending on splot-recon
 crates/splot-cli       thin CLI rendering splot-decode diagnostics
 ```
@@ -569,13 +575,15 @@ runtime decoded output frame/plane model, reference-slot container,
 deterministic hash-input byte serializer, `splot-dfh-sha256-v1` digest API, and
 Y4M writer for caller-supplied decoded frames, but no reconstruction algorithm,
 runtime decode output, output scheduling, or AV2 reference refresh process.
-`splot-decode` owns the future decode scheduler boundary through
+`splot-decode` owns the decode scheduler boundary through
 `DecodeRuntimeConfig` and `DecodeContext`, whose single `WorkerPool` is sized by
 the CLI/runtime `--threads` policy. It now depends on `splot-core` for parsed
-stream-planner input and the bounded raw-byte `plan_bytes` planner, while still
-exposing no runtime tile decode, pixel reconstruction, hash digest, Y4M output,
-or reference update semantics.
+stream-planner input and the bounded raw-byte `plan_bytes` planner,
+`splot-parallel` for worker-pool execution, and `splot-recon` for the narrow
+minimal runtime decoded frame/hash handoff. Broad tile decode, pixel
+reconstruction, Y4M output, and reference update semantics remain unsupported.
 `splot-cli` reads input bytes for `splot decode`, calls the plan-only
-`splot-decode` handoff, and renders structured diagnostics without writing
-output artifacts. `splot-encode` remains unchanged until a later
+or minimal hash `splot-decode` handoff, renders structured diagnostics, and
+emits hash JSON for the supported minimal tier without writing output
+artifacts. `splot-encode` remains unchanged until a later
 encoder/reconstruction API change explicitly adds reuse of `splot-recon`.

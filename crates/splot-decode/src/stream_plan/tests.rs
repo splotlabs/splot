@@ -722,6 +722,13 @@ fn error_signature(error: DecodeError) -> String {
             unsupported.obu_type().spec_name(),
             unsupported.offset()
         ),
+        DecodeError::UnsupportedFeature { unsupported } => format!(
+            "unsupported-feature:{}:{}:{:?}",
+            unsupported.reason(),
+            unsupported.tier_id(),
+            unsupported.byte_offset()
+        ),
+        DecodeError::Reconstruction { source } => format!("reconstruction:{source}"),
     }
 }
 

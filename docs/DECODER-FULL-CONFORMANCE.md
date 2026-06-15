@@ -10,16 +10,22 @@ implementation.
 
 ## Current Status
 
-`splot decode` is not currently a full AV2 decoder. The public command is a
-plan-only runtime entry point: it reads bounded input bytes, constructs a
-`DecodeContext`, calls `DecodeContext::plan_bytes`, renders a structured
-diagnostic, and exits without reconstructing pixels.
+`splot decode` is not currently a full AV2 decoder. The public command has one
+narrow runtime success path: `--output-format hash --json` on the committed
+`minimal-intra-8bit420-hash-v1` flat 64x64 intra IVF fixture verifies the
+traced §8.2 tile-symbol stream and emits a `splot.decode.hash_report` v1
+artifact. Other inputs are still planner-only or fail closed at the runtime tier
+gate: the command reads bounded input bytes, constructs a `DecodeContext`,
+reuses `DecodeContext::plan_bytes`, and renders structured diagnostics for
+malformed sources, resource limits, unsupported planner structures, or
+out-of-tier runtime features.
 
 Current `splot decode` does not:
 
-- decode tile payload syntax to completion;
-- reconstruct output frames;
-- compute runtime decoded-frame hashes;
+- decode broad tile payload syntax to completion;
+- reconstruct output frames beyond the single traced all-flat minimal fixture;
+- compute runtime decoded-frame hashes beyond the minimal raw-intermediate hash
+  tier;
 - write runtime Y4M or raw output;
 - perform AV2 reference refresh or output scheduling;
 - synthesize film grain;
@@ -98,8 +104,9 @@ as two little-endian bytes. Stride padding, backing allocation padding,
 reference-store metadata, OBU bytes, container bytes, and decoded-frame-hash
 metadata are excluded from sample-byte hashes and raw output payloads.
 
-Future successful `splot decode --output-format hash --json` output is a success
-artifact, not the current diagnostic JSON object. Its contract is:
+Successful `splot decode --output-format hash --json` output is a success
+artifact, not a diagnostic JSON object. Current runtime support is limited to
+`minimal-intra-8bit420-hash-v1`; the full schema contract is:
 
 ```text
 contract_id = "splot.decode.hash_report"

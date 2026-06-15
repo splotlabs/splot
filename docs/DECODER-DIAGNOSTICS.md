@@ -17,7 +17,7 @@
 The current scanner roots are `crates/splot-cli/src/commands/decode.rs` and
 `crates/splot-decode/src`. Emitted decoder diagnostics are owned by
 `splot-decode` and rendered by the CLI decode command after input bytes reach
-the plan-only byte stream planner.
+the byte stream planner and, for hash mode, the minimal runtime tier gate.
 `splot-recon` is shared reconstruction infrastructure for future decoder and
 encoder roundtrip work, so it is not scanned as a decoder diagnostic root unless
 a future change adds a narrower decoder-owned reconstruction emission path.
@@ -44,7 +44,7 @@ Every emitted decoder diagnostic uses stable field names:
 |---|---|---|---|---|---|---|
 | `decode/malformed-source` | Error | optional parser section | `DECODE-BYTE-STREAM-PLANNER` | `decode-byte-stream-planner` | decode source is malformed and could not be planned. | Check the AV2 Annex B or IVF source bytes before retrying `splot decode`. |
 | `decode/resource-limit` | Error | optional policy / § 5.2.1 / § 7.1 | `DOC-DECODE-LIMITS-CONTRACT` | `decode-limits-budget` | decode planning stopped because a configured resource limit was exceeded. | Use a smaller input or raise the decode limit policy before retrying. |
-| `decode/unsupported-feature` | Error | § 7.1 or planner / tile section | `CLI-DECODE` / `DECODE-STREAM-STATE-PLANNER` / `DECODE-TILE-PAYLOAD-BOUNDARY` | `cli-decode-entrypoint` / `decode-stream-state` / `tile-payload-decode` | Byte stream planning succeeded, but `splot decode` runtime output or tile syntax traversal is not implemented yet. | Use `splot validate` or `splot inspect` for bitstream analysis until `CLI-DECODE` implements output and tile decode support. |
+| `decode/unsupported-feature` | Error | § 7.1 or planner / tile section | `CLI-DECODE` / `DECODE-STREAM-STATE-PLANNER` / `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` / `DECODE-TILE-PAYLOAD-BOUNDARY` | `cli-decode-entrypoint` / `decode-stream-state` / `minimal-decode-tier-contract` / `tile-payload-decode` | Byte stream planning succeeded, but `splot decode` runtime output, the requested runtime tier, or tile syntax traversal is not supported. | Use `splot validate` or `splot inspect` for bitstream analysis, or use a stream inside the supported minimal hash tier. |
 
 <!-- diagnostics-registry:end -->
 
@@ -67,6 +67,9 @@ Planner-level `decode/unsupported-feature` includes `detail_kind`,
 Runtime-deferral `decode/unsupported-feature` includes `detail_kind`,
 `bitstream_format`, `input_len_bytes`, `obu_count`, `frame_candidate_count`,
 `source_warning_count`, and selected base-layer ids.
+
+Runtime-tier `decode/unsupported-feature` includes `detail_kind`,
+`unsupported_reason`, `tier_id`, and optional `byte_offset`.
 
 Tile-payload-boundary `decode/unsupported-feature` metadata is crate-private
 until a later runtime decode path surfaces it through CLI diagnostics. The
