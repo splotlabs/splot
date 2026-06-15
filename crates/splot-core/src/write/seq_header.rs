@@ -274,6 +274,11 @@ fn check_general_encodable(general: &SequenceHeaderGeneral) -> WriteResult<()> {
             });
         }
 
+        // seq_initial_display_delay_minus_1 is coded f(4) when present.
+        if let Some(delay) = general.seq_initial_display_delay_minus_1 {
+            check_field_width(u64::from(delay), 4)?;
+        }
+
         // Decoder-model cascade: each Option's presence must agree with its gating flag.
         if general.decoder_model_info_present_flag {
             // num_units_in_decoding_tick is present and > 0 (the parser rejects 0).
@@ -289,6 +294,10 @@ fn check_general_encodable(general: &SequenceHeaderGeneral) -> WriteResult<()> {
                 return Err(WriteError::NonCanonicalSequenceValue {
                     what: "decoder_model_info",
                 });
+            }
+            // The §5.4.13 `uvlc` delays must be encodable before any bit is written.
+            if let Some(info) = &general.decoder_model_info {
+                check_decoder_model_info_encodable(info)?;
             }
         } else {
             // decoder_model_info_present_flag == 0 infers no inner state.
@@ -390,9 +399,31 @@ pub fn write_sequence_decoder_model_info(
     writer: &mut BitWriter,
     info: &SequenceDecoderModelInfo,
 ) -> WriteResult<()> {
+    // Validate both `uvlc` delays before writing either, so a rejected delay leaves the
+    // writer unchanged (neither value already emitted).
+    check_decoder_model_info_encodable(info)?;
     writer.write_uvlc(info.decoder_buffer_delay)?;
     writer.write_uvlc(info.encoder_buffer_delay)?;
     writer.write_bit(u8::from(info.low_delay_mode_flag))
+}
+
+/// Validates that `seq_decoder_model_info()`'s `uvlc` delays are encodable — neither
+/// equals `u32::MAX`, which the `uvlc` reader never produces (it would need 32 leading
+/// zero bits). AV2 v1.0.0 § 5.4.13.
+fn check_decoder_model_info_encodable(info: &SequenceDecoderModelInfo) -> WriteResult<()> {
+    if info.decoder_buffer_delay == u32::MAX {
+        return Err(WriteError::ValueOutOfRange {
+            descriptor: "uvlc",
+            value: i64::from(info.decoder_buffer_delay),
+        });
+    }
+    if info.encoder_buffer_delay == u32::MAX {
+        return Err(WriteError::ValueOutOfRange {
+            descriptor: "uvlc",
+            value: i64::from(info.encoder_buffer_delay),
+        });
+    }
+    Ok(())
 }
 
 /// Writes the §5.4.1 dependency-map region (AV2 v1.0.0 § 5.4.1,
@@ -1266,6 +1297,82 @@ mod tests {
         let general = parse(&single_picture_fixture());
         assert_eq!(general.chroma_format_idc, ChromaFormatIdc::Yuv420);
         assert_semantic_roundtrip(&general);
+    }
+
+    #[test]
+    fn rejects_display_delay_field_width() {
+        // seq_initial_display_delay_minus_1 is coded f(4); 16+ overflows and must be
+        // rejected before any bit (not mid-write after the prefix + present flag).
+        let mut bits = Bits::default();
+        push_general_until_deps(&mut bits, 0, 0);
+        bits.bit(0); // deps: max ids 0 -> no bits
+        let mut general = parse(&bits.into_bytes());
+        general.seq_initial_display_delay_minus_1 = Some(16);
+        let mut writer = BitWriter::new();
+        assert!(matches!(
+            write_sequence_header_general(&mut writer, &general),
+            Err(WriteError::ValueTooWide {
+                value: 16,
+                width_bits: 4
+            })
+        ));
+        assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
+    fn rejects_decoder_model_delay_uvlc_max() {
+        // A decoder-model `uvlc` delay of u32::MAX is unencodable; reject before any bit
+        // (not mid-write after decoder_buffer_delay is already emitted).
+        let mut bits = Bits::default();
+        bits.uvlc(1); // seq_header_id
+        bits.f(0, 5); // seq_profile_idc
+        bits.bit(0); // single_picture_header_flag
+        bits.f(5, 5); // seq_level_idx (> 3 -> seq_tier bit follows)
+        bits.bit(1); // seq_tier = High
+        bits.uvlc(0); // chroma_format_idc
+        bits.uvlc(0); // bit_depth_idc
+        bits.f(0, 3); // seq_lcr_id
+        bits.bit(0); // still_picture
+        bits.f(0, 2); // max_tlayer_id
+        bits.f(0, 3); // max_mlayer_id
+        bits.bit(1); // monotonic_output_order_flag
+        bits.f(3, 4); // frame_width_bits_minus_1
+        bits.f(3, 4); // frame_height_bits_minus_1
+        bits.f(15, 4); // max_frame_width_minus_1
+        bits.f(7, 4); // max_frame_height_minus_1
+        bits.bit(0); // seq_cropping_window_present_flag
+        bits.bit(0); // seq_initial_display_delay_present_flag
+        bits.bit(1); // decoder_model_info_present_flag
+        bits.f(48000, 32); // num_units_in_decoding_tick
+        bits.bit(1); // seq_decoder_model_info_present_flag
+        bits.uvlc(7); // decoder_buffer_delay
+        bits.uvlc(9); // encoder_buffer_delay
+        bits.bit(1); // low_delay_mode_flag
+        let mut general = parse(&bits.into_bytes());
+        let mut model = general.decoder_model_info.unwrap();
+        model.encoder_buffer_delay = u32::MAX;
+        general.decoder_model_info = Some(model);
+
+        let mut writer = BitWriter::new();
+        assert!(matches!(
+            write_sequence_header_general(&mut writer, &general),
+            Err(WriteError::ValueOutOfRange {
+                descriptor: "uvlc",
+                ..
+            })
+        ));
+        assert_eq!(writer.bit_len(), 0);
+
+        // The standalone helper also rejects before emitting either delay.
+        let mut w2 = BitWriter::new();
+        assert!(matches!(
+            write_sequence_decoder_model_info(&mut w2, &model),
+            Err(WriteError::ValueOutOfRange {
+                descriptor: "uvlc",
+                ..
+            })
+        ));
+        assert_eq!(w2.bit_len(), 0);
     }
 }
 
