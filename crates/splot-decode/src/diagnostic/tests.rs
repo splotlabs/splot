@@ -5,9 +5,10 @@
 
 use crate::byte_stream::plan_byte_stream;
 use crate::{
-    DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeLimitName, DecodeLimitThreshold,
-    DecodeLimits, DecodeOptions, DecodeSeverity, DecodeSourceIssueKind, DecodeUnsupportedReason,
-    MALFORMED_SOURCE_RULE_ID, RESOURCE_LIMIT_RULE_ID, UNSUPPORTED_FEATURE_RULE_ID,
+    DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError, DecodeLimitName,
+    DecodeLimitThreshold, DecodeLimits, DecodeOptions, DecodeOutputError, DecodeOutputOperation,
+    DecodeSeverity, DecodeSourceIssueKind, DecodeUnsupportedReason, MALFORMED_SOURCE_RULE_ID,
+    OUTPUT_ERROR_RULE_ID, RESOURCE_LIMIT_RULE_ID, UNSUPPORTED_FEATURE_RULE_ID,
 };
 
 #[test]
@@ -99,4 +100,28 @@ fn runtime_unsupported_report_summarizes_successful_plan() {
     assert_eq!(summary.selected_temporal_layer_id, 0);
     assert_eq!(summary.selected_embedded_layer_id, 0);
     assert_eq!(summary.selected_extended_layer_id, 0);
+}
+
+#[test]
+fn output_error_report_has_stable_operation_details() {
+    let error = DecodeError::Output {
+        source: DecodeOutputError::io(
+            DecodeOutputOperation::WriteY4mStream,
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "closed writer"),
+        ),
+    };
+
+    let report = DecodeDiagnosticReport::from_decode_error(&error).unwrap();
+
+    assert_eq!(report.diagnostic.rule_id, OUTPUT_ERROR_RULE_ID);
+    assert_eq!(report.diagnostic.severity, DecodeSeverity::Error);
+    assert_eq!(report.diagnostic.spec_section, None);
+    assert_eq!(report.diagnostic.matrix_row, "decode-y4m-runtime-output");
+    assert_eq!(report.diagnostic.feature_id, "DECODE-Y4M-RUNTIME-OUTPUT");
+    let DecodeDiagnosticDetails::OutputError(details) = report.details else {
+        panic!("expected output-error details");
+    };
+    assert_eq!(details.operation, "write_y4m_stream");
+    assert_eq!(details.source_kind, "io");
+    assert_eq!(details.source_message, "closed writer");
 }

@@ -26,7 +26,7 @@ Current `splot decode` does not:
 - reconstruct output frames beyond the single traced all-flat minimal fixture;
 - compute runtime decoded-frame hashes beyond the minimal raw-intermediate hash
   tier;
-- write runtime Y4M or raw output;
+- write runtime raw output or Y4M output beyond the committed minimal IVF tier;
 - perform AV2 reference refresh or output scheduling;
 - synthesize film grain;
 - invoke AVM, dav2d, ffmpeg, or any external decoder.
@@ -151,8 +151,10 @@ hexadecimal characters for `splot-dfh-sha256-v1`.
 Future raw output is concatenated canonical sample bytes for each output event
 in output-index order for the selected variant, with no header or metadata
 bytes. This contract does not add a current `--output-format raw` CLI mode.
-Future Y4M output represents the chosen AV2 output-frame sample set using the
+Y4M output represents the chosen AV2 output-frame sample set using the
 repository-owned Y4M container policy; Y4M container bytes are not AV2 syntax.
+Current runtime Y4M support is limited to the committed minimal IVF tier tracked
+by `DECODE-Y4M-RUNTIME-OUTPUT`.
 
 ## Diagnostics
 
@@ -162,19 +164,19 @@ registered in [`DECODER-DIAGNOSTICS.md`](./DECODER-DIAGNOSTICS.md).
 The current emitted decoder rules are:
 
 - `decode/malformed-source`
+- `decode/output-error`
 - `decode/resource-limit`
 - `decode/unsupported-feature`
 
 Future full decoder work may add more rules such as
-`decode/conformance-error`, `decode/internal-invariant`, and
-`decode/output-error`, but every emitted rule must be registered, tested, and
-linked to decoder support or coverage rows.
+`decode/conformance-error` and `decode/internal-invariant`, but every emitted
+rule must be registered, tested, and linked to decoder support or coverage rows.
 
-Any future successful runtime file-output mode must register and emit
+Successful runtime file-output modes must register and emit
 `decode/output-error` for output path creation, temporary-file write, flush,
 sync, rename, parent-directory sync, cleanup, or serialization failures that are
-not AV2 bitstream conformance failures. These failures must use diagnostic JSON
-on `--json` paths, not partial success artifacts.
+not AV2 bitstream conformance failures. These failures use diagnostic JSON on
+`--json` paths, not partial success artifacts.
 
 `decode/resource-limit` is local `splot` resource policy over measured values.
 It is not an AV2 conformance failure by itself.

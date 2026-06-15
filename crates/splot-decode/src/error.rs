@@ -3,6 +3,9 @@
 
 //! Error and result types for the splot decode driver.
 
+use core::fmt;
+use std::io;
+
 use splot_core::span::ByteOffset;
 
 use crate::limits::DecodeLimitError;
@@ -51,6 +54,13 @@ pub enum DecodeError {
         /// Underlying reconstruction model error.
         #[from]
         source: splot_recon::ReconError,
+    },
+    /// Decode output serialization or caller-writer I/O failed.
+    #[error("decode output failed: {source}")]
+    Output {
+        /// Output serialization or write failure.
+        #[from]
+        source: DecodeOutputError,
     },
 }
 
@@ -158,6 +168,121 @@ impl core::fmt::Display for DecodeUnsupportedFeature {
                 "{} in tier {}: {}",
                 self.reason, self.tier_id, self.message
             ),
+        }
+    }
+}
+
+/// Stable decode output operation that failed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum DecodeOutputOperation {
+    /// Serializing a runtime Y4M stream with the reconstruction writer failed.
+    SerializeY4m,
+    /// Writing the complete Y4M stream bytes to the caller-provided writer failed.
+    WriteY4mStream,
+    /// Resolving the requested Y4M output path failed before publication.
+    ResolveY4mOutputPath,
+    /// Creating the same-directory temporary Y4M output file failed.
+    CreateY4mTempFile,
+    /// Writing bytes into the temporary Y4M output file failed.
+    WriteY4mTempFile,
+    /// Flushing the temporary Y4M output file failed.
+    FlushY4mTempFile,
+    /// Syncing the temporary Y4M output file failed.
+    SyncY4mTempFile,
+    /// Renaming the temporary file into the requested Y4M output path failed.
+    RenameY4mOutput,
+    /// Syncing the parent directory after Y4M publication failed.
+    SyncY4mOutputDirectory,
+    /// Removing a failed temporary Y4M output file failed.
+    CleanupY4mTempFile,
+}
+
+impl DecodeOutputOperation {
+    /// Returns the stable snake_case operation identifier.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SerializeY4m => "serialize_y4m",
+            Self::WriteY4mStream => "write_y4m_stream",
+            Self::ResolveY4mOutputPath => "resolve_y4m_output_path",
+            Self::CreateY4mTempFile => "create_y4m_temp_file",
+            Self::WriteY4mTempFile => "write_y4m_temp_file",
+            Self::FlushY4mTempFile => "flush_y4m_temp_file",
+            Self::SyncY4mTempFile => "sync_y4m_temp_file",
+            Self::RenameY4mOutput => "rename_y4m_output",
+            Self::SyncY4mOutputDirectory => "sync_y4m_output_directory",
+            Self::CleanupY4mTempFile => "cleanup_y4m_temp_file",
+        }
+    }
+}
+
+impl fmt::Display for DecodeOutputOperation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Output serialization or caller-writer failure from a decode API.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum DecodeOutputError {
+    /// `splot-recon` rejected or failed Y4M serialization.
+    #[error("{operation} failed: {source}")]
+    Y4m {
+        /// Stable operation identifier.
+        operation: DecodeOutputOperation,
+        /// Underlying Y4M serialization error.
+        #[source]
+        source: splot_recon::Y4mError,
+    },
+    /// The caller-provided output writer returned an I/O error.
+    #[error("{operation} failed: {source}")]
+    Io {
+        /// Stable operation identifier.
+        operation: DecodeOutputOperation,
+        /// Underlying writer error.
+        #[source]
+        source: io::Error,
+    },
+}
+
+impl DecodeOutputError {
+    /// Creates a Y4M serialization output error.
+    #[must_use]
+    pub const fn y4m(operation: DecodeOutputOperation, source: splot_recon::Y4mError) -> Self {
+        Self::Y4m { operation, source }
+    }
+
+    /// Creates a caller-writer output error.
+    #[must_use]
+    pub const fn io(operation: DecodeOutputOperation, source: io::Error) -> Self {
+        Self::Io { operation, source }
+    }
+
+    /// Returns the stable operation identifier.
+    #[must_use]
+    pub const fn operation(&self) -> DecodeOutputOperation {
+        match self {
+            Self::Y4m { operation, .. } | Self::Io { operation, .. } => *operation,
+        }
+    }
+
+    /// Returns the stable source category.
+    #[must_use]
+    pub const fn source_kind(&self) -> &'static str {
+        match self {
+            Self::Y4m { .. } => "y4m",
+            Self::Io { .. } => "io",
+        }
+    }
+
+    /// Returns the underlying source error message.
+    #[must_use]
+    pub fn source_message(&self) -> String {
+        match self {
+            Self::Y4m { source, .. } => source.to_string(),
+            Self::Io { source, .. } => source.to_string(),
         }
     }
 }

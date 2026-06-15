@@ -4940,7 +4940,7 @@ openspec_change = "decoder-diagnostic-registry"
 tracking_issue = ""
 owner = "docs"
 risk = "low"
-notes = "Adds docs/DECODER-DIAGNOSTICS.md as the canonical registry for emitted `splot decode` diagnostic rule IDs. The registry documents stable field names (`rule_id`, `severity`, `spec_section`, `matrix_row`, `feature_id`, `message`, `remediation`), current decoder emission roots, and the `decode/*` namespace rule. It now registers emitted `decode/unsupported-feature`, `decode/malformed-source`, and `decode/resource-limit` diagnostics from the CLI byte-planner handoff."
+notes = "Adds docs/DECODER-DIAGNOSTICS.md as the canonical registry for emitted `splot decode` diagnostic rule IDs. The registry documents stable field names (`rule_id`, `severity`, `spec_section`, `matrix_row`, `feature_id`, `message`, `remediation`), current decoder emission roots, and the `decode/*` namespace rule. It now registers emitted `decode/unsupported-feature`, `decode/malformed-source`, `decode/resource-limit`, and `decode/output-error` diagnostics from the CLI byte-planner/runtime output handoff."
 
 [feature.status]
 mapped = "done"
@@ -4958,7 +4958,7 @@ perf = "not-applicable"
 tests = ["xtask/src/diagnostic_registry.rs::tests::decoder_registry_accepts_matching_source_and_doc"]
 commands = ["cargo xtask check-diagnostic-registry", "cargo test -p splot-cli --test decode_cli --locked", "cargo test -p splot-decode --locked"]
 fixtures = ["docs/DECODER-DIAGNOSTICS.md"]
-diagnostics = ["decode/unsupported-feature", "decode/malformed-source", "decode/resource-limit"]
+diagnostics = ["decode/unsupported-feature", "decode/malformed-source", "decode/resource-limit", "decode/output-error"]
 
 [[feature]]
 id = "DOC-DECODE-LIMITS-CONTRACT"
@@ -5531,7 +5531,7 @@ openspec_change = "decode-minimal-tier-runtime-success"
 tracking_issue = ""
 owner = "decoder"
 risk = "high"
-notes = "Adds the first runtime hash success path for the repository-owned `minimal-intra-8bit420-hash-v1` fixture-trace tier. `DecodeContext::decode_hash_report_bytes` reuses `plan_bytes`, rejects non-minimal plan shapes before reparsing, validates one 64x64 AV02 IVF stream shape (temporal delimiter, sequence header, one closed-loop-key frame candidate), gates profile/layer/bit-depth/chroma/frame-size/frame-tool/tile facts, rejects CFL intra and MHCCP before the traced UV-mode symbol path, derives source-backed tile payload bytes through the existing §5.19/§5.20.1 boundary, verifies the committed flat fixture's six-symbol §8.2 trace with generated §9.3 CDF defaults and `exit_symbol()`, checks frame/output/tile/allocation limits before allocation, builds the traced all-flat `splot_recon::DecodedFrame<u8>`, and computes `splot-dfh-sha256-v1` for `raw_intermediate_output`. `splot decode --output-format hash --json` emits `splot.decode.hash_report` v1 with resolved thread-count metadata and exit code 0 for the committed minimal fixture. Raw Annex B remains outside this runtime success tier; out-of-tier streams fail closed with `decode/unsupported-feature`; Y4M/raw file output, recursive `decode_tile()` / `read_partition()`, broad §8.3 CDF selection, CDF lifecycle, intra/inter prediction coverage beyond the traced all-flat subset, loop filters, film grain, reference refresh, metadata MD5 verification, Annex A conformance, and AVM/dav2d integration remain unsupported. The `splot-decode -> splot-recon` dependency edge is now active only for this runtime decode/reconstruction/hash handoff."
+notes = "Adds the first runtime hash success path for the repository-owned `minimal-intra-8bit420-hash-v1` fixture-trace tier. `DecodeContext::decode_hash_report_bytes` reuses `plan_bytes`, rejects non-minimal plan shapes before reparsing, validates one 64x64 AV02 IVF stream shape (temporal delimiter, sequence header, one closed-loop-key frame candidate), gates profile/layer/bit-depth/chroma/frame-size/frame-tool/tile facts, rejects CFL intra and MHCCP before the traced UV-mode symbol path, derives source-backed tile payload bytes through the existing §5.19/§5.20.1 boundary, verifies the committed flat fixture's six-symbol §8.2 trace with generated §9.3 CDF defaults and `exit_symbol()`, checks frame/output/tile/allocation limits before allocation, builds the traced all-flat `splot_recon::DecodedFrame<u8>`, and computes `splot-dfh-sha256-v1` for `raw_intermediate_output`. `splot decode --output-format hash --json` emits `splot.decode.hash_report` v1 with resolved thread-count metadata and exit code 0 for the committed minimal fixture. Raw Annex B remains outside this runtime success tier; out-of-tier streams fail closed with `decode/unsupported-feature`; Y4M file output for the same tier is tracked separately by `DECODE-Y4M-RUNTIME-OUTPUT`, and raw file output remains unsupported. Recursive `decode_tile()` / `read_partition()`, broad §8.3 CDF selection, CDF lifecycle, intra/inter prediction coverage beyond the traced all-flat subset, loop filters, film grain, reference refresh, metadata MD5 verification, Annex A conformance, and AVM/dav2d integration remain unsupported. The `splot-decode -> splot-recon` dependency edge is now active only for this narrow runtime decode/reconstruction/hash/Y4M handoff."
 
 [feature.status]
 mapped = "done"
@@ -5542,7 +5542,7 @@ write = "not-applicable"
 encode = "not-applicable"
 decode_check = "done"
 tests = "done"
-avm_diff = "done"
+avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
@@ -5573,9 +5573,75 @@ commands = [
 fixtures = [
     "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
     "tests/conformance/manifest.toml",
-    "docs/LOCAL-REFERENCE-EVIDENCE.toml::lref-avm-dav2d-syn-flat-intra-64x64-minimal",
 ]
 diagnostics = ["decode/unsupported-feature", "decode/resource-limit", "decode/malformed-source"]
+
+[[feature]]
+id = "DECODE-Y4M-RUNTIME-OUTPUT"
+name = "Minimal-tier runtime Y4M output"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["Annex B.2", "Annex B.3", "5.2", "5.18.2", "5.19", "5.20.1", "5.17.12", "6.2", "6.4.1", "6.16.13", "6.17.2", "6.17.4.1", "6.17.4.4", "6.17.7.2", "6.18", "6.19.1", "7.1", "7.21.1", "7.21.2", "8.2.2", "8.2.4", "8.2.6"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-2",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_y4m.rs"
+openspec_change = "decode-y4m-runtime-output"
+tracking_issue = ""
+owner = "decoder"
+risk = "high"
+notes = "Adds the first runtime Y4M success path for the existing `minimal-intra-8bit420-hash-v1` fixture-trace tier. `DecodeContext::decode_y4m_bytes` reuses `plan_bytes` plus the shared minimal runtime validation/frame construction, serializes one 64x64 8-bit 4:2:0 all-flat raw-intermediate-output frame through `splot-recon::Y4mWriter`, derives the repository-owned Y4M frame-rate policy from the IVF timebase as `F30:1` for the committed fixture, buffers the complete stream header, `FRAME` header, and payload before caller writes, and checks `DecodeLimitName::MaxOutputBytes` against that complete Y4M stream. `splot decode -o` and `--output-format y4m -o` publish the resulting bytes atomically through a same-directory temporary file, flush, file sync, rename, and parent-directory sync where supported; hash mode continues to ignore `-o`. Out-of-tier, malformed, and resource-limit inputs fail closed without touching the requested output path, and output serialization/publication failures emit `decode/output-error` without nondeterministic temporary filename suffixes. This row does not claim broad AV2 decode, Annex A conformance, raw output, film grain, show-existing/flush scheduling, recursive `decode_tile()` / `read_partition()`, broad §8.3 CDF selection, loop filtering, reference refresh, metadata MD5 verification, or AVM/dav2d integration. Existing local AVM/dav2d evidence remains raw-sample background metadata for the committed minimal fixture, not proof of Y4M container bytes."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_y4m.rs::tests::minimal_fixture_decodes_to_exact_y4m_bytes",
+    "crates/splot-decode/src/runtime_y4m.rs::tests::output_byte_limit_fails_before_writer_success",
+    "crates/splot-decode/src/runtime_y4m.rs::tests::broader_fixture_fails_closed_as_unsupported_for_y4m",
+    "crates/splot-decode/src/runtime_y4m.rs::tests::y4m_output_is_deterministic_across_thread_policies",
+    "crates/splot-decode/src/runtime_y4m.rs::tests::caller_writer_io_error_maps_to_output_diagnostic",
+    "crates/splot-cli/tests/decode_y4m_cli.rs::decode_explicit_y4m_success_for_minimal_fixture",
+    "crates/splot-cli/tests/decode_y4m_cli.rs::decode_implicit_y4m_success_matches_explicit_output",
+    "crates/splot-cli/tests/decode_y4m_cli.rs::decode_y4m_success_replaces_existing_output_and_cleans_temp_file",
+    "crates/splot-cli/tests/decode_y4m_cli.rs::decode_y4m_skips_temp_name_that_matches_requested_output",
+    "crates/splot-cli/tests/decode_y4m_cli.rs::decode_y4m_outputs_are_thread_deterministic",
+    "crates/splot-cli/tests/decode_y4m_cli.rs::decode_y4m_missing_output_parent_emits_output_error_json",
+    "crates/splot-cli/tests/decode_y4m_cli.rs::decode_y4m_directory_output_path_emits_output_error_text_and_cleans_temp_file",
+    "crates/splot-cli/tests/decode_y4m_cli.rs::decode_out_of_tier_y4m_text_mode_emits_unsupported_feature_without_touching_output",
+    "crates/splot-cli/tests/decode_y4m_cli.rs::decode_out_of_tier_y4m_json_mode_emits_unsupported_feature_object",
+]
+commands = [
+    "cargo test -p splot-decode --locked",
+    "cargo test -p splot-cli --test decode_cli --locked",
+    "cargo test -p splot-cli --test decode_y4m_cli --locked",
+    "cargo xtask check-diagnostic-registry",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
+    "tests/conformance/manifest.toml",
+]
+diagnostics = ["decode/unsupported-feature", "decode/resource-limit", "decode/malformed-source", "decode/output-error"]
 
 [[feature]]
 id = "INFRA-DECODER-CRATE-SCAFFOLDING"
@@ -5590,7 +5656,7 @@ openspec_change = "decoder-crate-scaffolding"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds approved workspace scaffolds for `splot-recon` and `splot-decode`, plus dependency-direction and coverage-scope automation updates. `splot-recon` has no `splot-*` dependencies and stays scheduler-free. `splot-decode` depends on `splot-core` for source-backed stream planning, `splot-parallel` for `DecodeRuntimeConfig`/`DecodeContext` plus its single owned `WorkerPool`, and `splot-recon` for the narrow runtime decode/reconstruction/hash handoff tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`. Decoded-frame model types are tracked by `INFRA-RECON-FRAME-PLANE-TYPES`; this scaffold row itself exposes no broad runtime reconstruction, Y4M writer, or byte-consuming decoded-frame production path. The raw byte planner is tracked separately by `DECODE-BYTE-STREAM-PLANNER`. The scaffolds emit no decoder diagnostics beyond separately tracked decode diagnostics and do not invoke or require AVM/dav2d."
+notes = "Adds approved workspace scaffolds for `splot-recon` and `splot-decode`, plus dependency-direction and coverage-scope automation updates. `splot-recon` has no `splot-*` dependencies and stays scheduler-free. `splot-decode` depends on `splot-core` for source-backed stream planning, `splot-parallel` for `DecodeRuntimeConfig`/`DecodeContext` plus its single owned `WorkerPool`, and `splot-recon` for the narrow runtime decode/reconstruction/hash/Y4M handoff tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` and `DECODE-Y4M-RUNTIME-OUTPUT`. Decoded-frame model types are tracked by `INFRA-RECON-FRAME-PLANE-TYPES`; this scaffold row itself exposes no broad runtime reconstruction, broad Y4M writer use, or broad byte-consuming decoded-frame production path. The raw byte planner is tracked separately by `DECODE-BYTE-STREAM-PLANNER`. The scaffolds emit no decoder diagnostics beyond separately tracked decode diagnostics and do not invoke or require AVM/dav2d."
 
 [feature.status]
 mapped = "done"
@@ -6414,7 +6480,7 @@ openspec_change = "decode-cli-byte-planner-handoff"
 tracking_issue = ""
 owner = "cli"
 risk = "medium"
-notes = "Tracks the `splot decode` CLI surface. The command intentionally does not decode yet, but it now bounds file reads with the default `max_input_bytes` policy before constructing a full input buffer, constructs `DecodeContext` for in-policy inputs, calls `DecodeContext::plan_bytes`, and renders `splot-decode` structured diagnostics for malformed sources, resource limits, planner unsupported structures, or runtime decode/output deferral. It does not touch output paths, reconstruct pixels, compute hashes, write Y4M, or invoke external decoders."
+notes = "Tracks the `splot decode` CLI surface. The command bounds file reads with the default `max_input_bytes` policy before constructing a full input buffer, constructs `DecodeContext` for in-policy inputs, and renders `splot-decode` structured diagnostics for malformed sources, resource limits, planner unsupported structures, runtime tier rejections, or output publication failures. Hash mode dispatches the supported minimal fixture hash path, and Y4M mode dispatches the supported minimal fixture Y4M path with atomic same-directory publication. Broad runtime decode, raw output, broad reconstruction, and external decoder invocation remain unsupported."
 
 [feature.status]
 mapped = "done"
@@ -6429,10 +6495,10 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-cli/tests/decode_cli.rs::decode_plan_success_text_mode_emits_runtime_unsupported_diagnostic", "crates/splot-cli/tests/decode_cli.rs::decode_plan_success_json_mode_emits_runtime_unsupported_object", "crates/splot-cli/tests/decode_cli.rs::decode_missing_input_is_operational_error_and_does_not_touch_files", "crates/splot-cli/tests/decode_cli.rs::decode_malformed_source_text_mode_emits_structured_diagnostic", "crates/splot-cli/tests/decode_cli.rs::decode_unsupported_structure_json_mode_uses_planner_metadata", "crates/splot-cli/tests/decode_cli.rs::decode_resource_limit_json_mode_reports_limit_values", "crates/splot-cli/tests/decode_cli.rs::decode_oversized_input_reports_resource_limit_without_touching_output", "crates/splot-cli/tests/decode_cli.rs::decode_thread_policies_emit_same_json_diagnostic"]
-commands = ["cargo test -p splot-cli --test decode_cli --locked", "cargo test -p splot-decode --locked", "cargo xtask check-concurrency-policy", "cargo xtask check-diagnostic-registry"]
+tests = ["crates/splot-cli/tests/decode_y4m_cli.rs::decode_out_of_tier_y4m_text_mode_emits_unsupported_feature_without_touching_output", "crates/splot-cli/tests/decode_y4m_cli.rs::decode_out_of_tier_y4m_json_mode_emits_unsupported_feature_object", "crates/splot-cli/tests/decode_cli.rs::decode_missing_input_is_operational_error_and_does_not_touch_files", "crates/splot-cli/tests/decode_cli.rs::decode_malformed_source_text_mode_emits_structured_diagnostic", "crates/splot-cli/tests/decode_cli.rs::decode_unsupported_structure_json_mode_uses_planner_metadata", "crates/splot-cli/tests/decode_cli.rs::decode_resource_limit_json_mode_reports_limit_values", "crates/splot-cli/tests/decode_cli.rs::decode_oversized_input_reports_resource_limit_without_touching_output", "crates/splot-cli/tests/decode_cli.rs::decode_thread_policies_emit_same_json_diagnostic", "crates/splot-cli/tests/decode_y4m_cli.rs::decode_explicit_y4m_success_for_minimal_fixture", "crates/splot-cli/tests/decode_y4m_cli.rs::decode_y4m_missing_output_parent_emits_output_error_json"]
+commands = ["cargo test -p splot-cli --test decode_cli --locked", "cargo test -p splot-cli --test decode_y4m_cli --locked", "cargo test -p splot-decode --locked", "cargo xtask check-concurrency-policy", "cargo xtask check-diagnostic-registry"]
 fixtures = []
-diagnostics = ["decode/unsupported-feature", "decode/malformed-source", "decode/resource-limit"]
+diagnostics = ["decode/unsupported-feature", "decode/malformed-source", "decode/resource-limit", "decode/output-error"]
 
 [[feature]]
 id = "CLI-DECODE-HASH-OUTPUT"
@@ -6450,7 +6516,7 @@ openspec_change = "decode-hash-output-cli-contract"
 tracking_issue = ""
 owner = "cli"
 risk = "medium"
-notes = "Adds the CLI parse contract for future hash-first decode output: `--output-format hash` is valid without a Y4M output path, `-o` alone remains implicit Y4M, and valid invocations now read input bytes and run byte planning before emitting the relevant structured diagnostic. Runtime hash computation, output writes, Y4M output, and external decoder invocation remain unsupported."
+notes = "Adds the CLI parse contract for hash-first decode output: `--output-format hash` is valid without a Y4M output path, `-o` alone remains implicit Y4M, and valid invocations read input bytes before emitting the relevant success artifact or structured diagnostic. Runtime hash computation for the committed minimal fixture is supported by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`; Y4M success is tracked separately by `DECODE-Y4M-RUNTIME-OUTPUT`. External decoder invocation remains unsupported."
 
 [feature.status]
 mapped = "done"
@@ -6472,10 +6538,10 @@ tests = [
     "crates/splot-cli/tests/decode_cli.rs::decode_invalid_output_format_is_usage_error",
     "crates/splot-cli/tests/decode_cli.rs::decode_hash_output_format_with_output_path_does_not_touch_file",
     "crates/splot-cli/tests/decode_cli.rs::decode_without_output_selection_is_usage_error",
-    "crates/splot-cli/tests/decode_cli.rs::decode_explicit_y4m_output_format_requires_output_path",
-    "crates/splot-cli/tests/decode_cli.rs::decode_explicit_y4m_output_format_matches_implicit_no_touch_behavior",
+    "crates/splot-cli/tests/decode_y4m_cli.rs::decode_explicit_y4m_output_format_requires_output_path",
+    "crates/splot-cli/tests/decode_y4m_cli.rs::decode_explicit_y4m_output_format_matches_implicit_no_touch_behavior",
 ]
-commands = ["cargo test -p splot-cli --test decode_cli --locked"]
+commands = ["cargo test -p splot-cli --test decode_cli --locked", "cargo test -p splot-cli --test decode_y4m_cli --locked"]
 fixtures = []
 diagnostics = ["decode/unsupported-feature", "decode/malformed-source", "decode/resource-limit"]
 
@@ -6508,7 +6574,7 @@ openspec_change = "decoder-output-equivalence-contract"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Defines the future decoder output identity contract before runtime output support: raw_intermediate_output and post_film_grain_output variant identity, splot-dfh-sha256-v1 raw-intermediate hash stability, future hash JSON success schema, visible sample serialization, output event order including show-existing and flush output, raw/Y4M output policy, atomic file publication, metadata-hash separation, and local-only reference evidence boundaries. This row is documentation-only and does not implement runtime decode, hash output, raw/Y4M file output, film grain synthesis, metadata verification, reference refresh, or external reference decoder integration."
+notes = "Defines the decoder output identity contract: raw_intermediate_output and post_film_grain_output variant identity, splot-dfh-sha256-v1 raw-intermediate hash stability, hash JSON success schema, visible sample serialization, output event order including show-existing and flush output, raw/Y4M output policy, atomic file publication, metadata-hash separation, and local-only reference evidence boundaries. This row is documentation-only; runtime minimal hash output is tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`, runtime minimal Y4M output is tracked by `DECODE-Y4M-RUNTIME-OUTPUT`, and raw output, film-grain synthesis, metadata verification, reference refresh, and external reference decoder integration remain unsupported."
 
 [feature.status]
 mapped = "done"
@@ -6549,7 +6615,7 @@ openspec_change = "decoder-full-conformance-contract"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Defines the public full AV2 decoder conformance contract, current non-claim, future output variants, structured diagnostics, output-file safety, local-only AVM/dav2d evidence boundary, and final completion criteria. This row is documentation-only and does not implement runtime decode, hash output, Y4M output, reconstruction, reference refresh, or external reference decoder integration."
+notes = "Defines the public full AV2 decoder conformance contract, current non-claim, output variants, structured diagnostics, output-file safety, local-only AVM/dav2d evidence boundary, and final completion criteria. This row is documentation-only; runtime minimal hash and Y4M support are tracked by dedicated code rows, while broad runtime decode, reconstruction, reference refresh, and external reference decoder integration remain unsupported."
 
 [feature.status]
 mapped = "done"
