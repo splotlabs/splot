@@ -22,6 +22,8 @@ use crate::{DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits};
 
 const BLOCK_64X64_INDEX: usize = 12;
 const BLOCK_128X128_INDEX: usize = 15;
+// AV2 §6 clear_left_context()/clear_above_context() seed partition neighbor
+// context with BLOCK_256X256; §9.2 defines this generated table index.
 const BLOCK_256X256_INDEX: usize = 18;
 
 /// Live symbol cursor positioned at the minimal runtime block frontier.
@@ -216,6 +218,8 @@ fn unexpected<T>(reason: &'static str) -> Result<T, MinimalRuntimePartitionFront
 }
 
 fn frame_sb_size_index(seq_sb_size: SuperblockSize, frame_is_intra: bool) -> usize {
+    // AV2 §5.18.2 caps intra frames signaled with BLOCK_256X256 superblocks to
+    // BLOCK_128X128 before tile partition traversal.
     match (seq_sb_size, frame_is_intra) {
         (SuperblockSize::Block256x256, true) | (SuperblockSize::Block128x128, _) => {
             BLOCK_128X128_INDEX

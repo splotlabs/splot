@@ -101,25 +101,23 @@ pub(crate) fn decode_minimal_frame_from_plan(
         &core,
         options,
     )?;
-    let tile_count = tile_plan.work_units().len();
-    let tile_offset = tile_plan
-        .work_units()
-        .first()
-        .map(|tile| tile.tile_byte_span().start);
-    if tile_count != 1 {
-        return Err(unsupported(
-            "unexpected_tile_work_units",
-            tile_offset,
-            "minimal runtime hash support requires exactly one traced tile work unit",
-        ));
-    }
-    let tile = tile_plan.work_units_mut().first_mut().ok_or_else(|| {
-        unsupported(
-            "missing_tile_work_unit",
-            None,
-            "minimal tier requires one tile work unit",
-        )
-    })?;
+    let tile = match tile_plan.work_units_mut() {
+        [tile] => tile,
+        [] => {
+            return Err(unsupported(
+                "missing_tile_work_unit",
+                None,
+                "minimal tier requires one tile work unit",
+            ));
+        }
+        work_units => {
+            return Err(unsupported(
+                "unexpected_tile_work_units",
+                work_units.first().map(|tile| tile.tile_byte_span().start),
+                "minimal runtime hash support requires exactly one traced tile work unit",
+            ));
+        }
+    };
     verify_flat_minimal_tile_trace(tile, &sequence, &core, options.limits())?;
     let tile_size = tile.tile_size();
 
