@@ -22,8 +22,13 @@ descriptors (plus § 5.2.4 byte alignment), `AV2-5.2.2-OBU-HEADER` /
 `seq-header-writer-configs`, and `seq-header-writer-tile` changes (see the requirements
 below). The **frame-header writer** has begun (intra path, sliced #4a–#4i): the § 5.18.2
 activation prefix is inverted by `write_frame_header_prefix`
-(`frame-header-writer-prefix`; `AV2-5.18.1-FRAME-HEADER-GENERAL` `write` = `partial`).
-Remaining: the rest of the frame header (config/quant/segmentation/tiling/filter/restoration/
+(`frame-header-writer-prefix`; `AV2-5.18.1-FRAME-HEADER-GENERAL` `write` = `partial`), and the
+§ 5.18.4 `frame_size()` + § 5.18.3 `screen_content_params()` / `intrabc_params()` by the
+`write/frame_config.rs` writers (`frame-header-writer-size-config`;
+`AV2-5.18.4-FRAME-SIZE` / `AV2-5.18.3-FRAME-CONFIGURATION` `write` = `partial`). That slice
+also carries a maintainer-approved model/parser surfacing of the previously-discarded
+`intrabc_params()` / `force_integer_mv` bits so the round-trip is byte-exact.
+Remaining: the rest of the frame header (quant/segmentation/tiling/filter/restoration/
 tail + the composing `write_frame_header`), the tile-group/metadata payload writers, the
 **Annex B** muxer, and wiring the muxers into writer-track round-trip tests — the IVF
 container write helpers already exist (`AV2-IVF-CONTAINER`, `write` = `done`); plus the
@@ -281,4 +286,41 @@ a typed writer error before any bit is written.
   the `cur_mfh_id == 0` gate
 - **THEN** the writer SHALL return `WriteError::NonCanonicalFrameHeader`
 - **AND** SHALL NOT write any bit (the writer buffer is left unchanged).
+
+### Requirement: frame-header size and configuration writers
+
+`splot-core` SHALL provide writers that are the exact inverse of the § 5.18.4.1
+`frame_size()` parser and the § 5.18.3.3 `screen_content_params()` / § 5.18.3.4
+`intrabc_params()` parsers, on the intra control-region path. For every model the writer
+accepts, reparsing the written bits with the corresponding parser SHALL yield the original
+(`parse(write(x)) == x`), byte-exactly. The writers SHALL never panic: a model the parser
+could not have produced SHALL be rejected with a typed writer error before any bit is written.
+
+To make the `intrabc_params()` / `screen_content_params()` round-trip byte-exact rather than
+merely semantic, the model and parser MAY surface the bits the modeled decode path otherwise
+discards (a maintainer-approved exception to the additive / read-only-parser rule); the
+surfacing SHALL NOT change the bits read (`consumed_bits` is unchanged) and SHALL preserve the
+existing parser outputs.
+
+#### Scenario: frame_size round-trips on the override and default paths
+
+- **WHEN** a parsed `frame_size()` is written with the same gating inputs and reparsed
+- **THEN** the reparsed size SHALL equal the original, for both the explicit `f(n)` override
+  path and the non-override default path (which writes no bits).
+
+#### Scenario: screen-content and intrabc params round-trip byte-exactly
+
+- **WHEN** a parsed `screen_content_params()` / `intrabc_params()` is written with the same
+  gating inputs and reparsed
+- **THEN** the reparsed structure SHALL equal the original across every conditional branch
+  (the `SELECT`-gated SCC/MV flags and the `frame_is_intra` / `allow_frame_max_bvp_drl_bits`
+  gated intrabc fields).
+
+#### Scenario: a non-encodable or inferred-mismatch field is rejected before any bit
+
+- **WHEN** an overridden dimension overflows its `f(n)` field, a non-override size disagrees
+  with the inferred default, an inferred SCC/MV flag disagrees with the sequence force value,
+  an intrabc `Option`'s presence disagrees with its gate, or `max_bvp_drl_bits_minus_1` is
+  outside the `ns(2)` domain
+- **THEN** the writer SHALL return a typed `WriteError` and write no bit.
 
