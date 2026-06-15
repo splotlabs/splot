@@ -68,7 +68,16 @@ fn check_header_encodable(header: &ObuHeader) -> WriteResult<()> {
             size_bytes: header.header_size_bytes,
         });
     }
-    if !header.has_header_extension {
+    // Byte-0 field widths: obu_type f(5), obu_tlayer_id f(2). A model value built
+    // outside the parser (e.g. `ObuType::Reserved(32)` or `TemporalLayerId::from_bits(4)`)
+    // is rejected here, before any byte is written.
+    check_field_width(header.obu_type.raw(), 5)?;
+    check_field_width(header.temporal_layer_id.get(), 2)?;
+    if header.has_header_extension {
+        // Byte-1 field widths: obu_mlayer_id f(3), obu_xlayer_id f(5).
+        check_field_width(header.embedded_layer_id.get(), 3)?;
+        check_field_width(header.extended_layer_id.get(), 5)?;
+    } else {
         // The parser re-infers the layer ids (obu.rs § 5.2.2), so a no-extension header
         // carrying ids it could never infer is unrepresentable in one byte.
         let inferred_xlayer = if header.obu_type.requires_global_xlayer() {
@@ -86,6 +95,19 @@ fn check_header_encodable(header: &ObuHeader) -> WriteResult<()> {
     Ok(())
 }
 
+/// Returns `Ok(())` if `value` fits in `width_bits`, else [`WriteError::ValueTooWide`]
+/// — the same bound `write_bits_u8` enforces, checked up front so a rejected header
+/// never leaves a partial encoding in the writer.
+fn check_field_width(value: u8, width_bits: u32) -> WriteResult<()> {
+    if u32::from(value) >= (1u32 << width_bits) {
+        return Err(WriteError::ValueTooWide {
+            value: u64::from(value),
+            width_bits,
+        });
+    }
+    Ok(())
+}
+
 /// Writes the one-byte OBU extension (`obu_mlayer_id` f(3), `obu_xlayer_id` f(5);
 /// AV2 v1.0.0 § 5.2.2, `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2`). Called
 /// by [`write_obu_header`] when the extension is present;
@@ -99,6 +121,9 @@ pub fn write_obu_header_extension(
     embedded_layer_id: EmbeddedLayerId,
     extended_layer_id: ExtendedLayerId,
 ) -> WriteResult<()> {
+    // Validate both fields up front so a rejected value leaves the writer clean.
+    check_field_width(embedded_layer_id.get(), 3)?;
+    check_field_width(extended_layer_id.get(), 5)?;
     writer.write_bits_u8(embedded_layer_id.get(), 3)?;
     writer.write_bits_u8(extended_layer_id.get(), 5)
 }
@@ -277,6 +302,39 @@ mod tests {
         let mut clean_framed = BitWriter::new();
         assert!(write_annexb_obu(&mut clean_framed, &bad, &[0xAB]).is_err());
         assert_eq!(clean_framed.bit_len(), 0);
+
+        // Field values built outside the parser that overflow their bit width
+        // (obu_tlayer_id f(2) here, obu_xlayer_id f(5) below) are rejected up front
+        // with ValueTooWide, also leaving the writer clean.
+        let wide_tlayer = ObuHeader {
+            has_header_extension: false,
+            obu_type: ObuType::SequenceHeader,
+            temporal_layer_id: TemporalLayerId::from_bits(4),
+            embedded_layer_id: EmbeddedLayerId::from_bits(0),
+            extended_layer_id: ExtendedLayerId::from_bits(0),
+            header_size_bytes: 1,
+        };
+        let mut w_tl = BitWriter::new();
+        assert!(matches!(
+            write_obu_header(&mut w_tl, &wide_tlayer),
+            Err(WriteError::ValueTooWide { .. })
+        ));
+        assert_eq!(w_tl.bit_len(), 0);
+
+        let wide_xlayer = ObuHeader {
+            has_header_extension: true,
+            obu_type: ObuType::SequenceHeader,
+            temporal_layer_id: TemporalLayerId::from_bits(0),
+            embedded_layer_id: EmbeddedLayerId::from_bits(0),
+            extended_layer_id: ExtendedLayerId::from_bits(32),
+            header_size_bytes: 2,
+        };
+        let mut w_xl = BitWriter::new();
+        assert!(matches!(
+            write_annexb_obu(&mut w_xl, &wide_xlayer, &[]),
+            Err(WriteError::ValueTooWide { .. })
+        ));
+        assert_eq!(w_xl.bit_len(), 0);
     }
 
     /// G: non-canonical caveat — a non-minimal LEB128 size re-emits canonically
