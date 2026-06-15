@@ -45,7 +45,7 @@ Every emitted decoder diagnostic uses stable field names:
 | `decode/malformed-source` | Error | optional parser section | `DECODE-BYTE-STREAM-PLANNER` | `decode-byte-stream-planner` | decode source is malformed and could not be planned. | Check the AV2 Annex B or IVF source bytes before retrying `splot decode`. |
 | `decode/output-error` | Error | none | `DECODE-Y4M-RUNTIME-OUTPUT` | `decode-y4m-runtime-output` | decode output could not be serialized or written. | Check the output destination and retry the decode operation. |
 | `decode/resource-limit` | Error | optional policy / § 5.2.1 / § 7.1 | `DOC-DECODE-LIMITS-CONTRACT` | `decode-limits-budget` | decode planning stopped because a configured resource limit was exceeded. | Use a smaller input or raise the decode limit policy before retrying. |
-| `decode/unsupported-feature` | Error | § 7.1 or planner / tile section | `CLI-DECODE` / `DECODE-STREAM-STATE-PLANNER` / `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` / `DECODE-TILE-PAYLOAD-BOUNDARY` | `cli-decode-entrypoint` / `decode-stream-state` / `minimal-decode-tier-contract` / `tile-payload-decode` | Byte stream planning succeeded, but `splot decode` runtime output, the requested runtime tier, or tile syntax traversal is not supported. | Use `splot validate` or `splot inspect` for bitstream analysis, or use a stream inside the supported minimal hash tier. |
+| `decode/unsupported-feature` | Error | § 7.1 or planner / tile section | `CLI-DECODE` / `DECODE-STREAM-STATE-PLANNER` / `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` / `DECODE-Y4M-RUNTIME-OUTPUT` / `DECODE-TILE-PAYLOAD-BOUNDARY` | `cli-decode-entrypoint` / `decode-stream-state` / `minimal-decode-tier-contract` / `decode-y4m-runtime-output` / `tile-payload-decode` | Byte stream planning succeeded, but `splot decode` runtime output, the requested runtime tier, runtime Y4M metadata, or tile syntax traversal is not supported. | Use `splot validate` or `splot inspect` for bitstream analysis, use a stream inside the supported minimal hash tier, or use nonzero IVF timebase metadata for runtime Y4M output. |
 
 <!-- diagnostics-registry:end -->
 
@@ -71,6 +71,10 @@ Runtime-deferral `decode/unsupported-feature` includes `detail_kind`,
 
 Runtime-tier `decode/unsupported-feature` includes `detail_kind`,
 `unsupported_reason`, `tier_id`, and optional `byte_offset`.
+The runtime Y4M path uses this detail shape with
+`unsupported_reason = "invalid_ivf_timebase"`, matrix row
+`decode-y4m-runtime-output`, and Feature ID `DECODE-Y4M-RUNTIME-OUTPUT` when
+IVF timebase metadata cannot produce a nonzero Y4M frame rate.
 
 `decode/output-error` includes `detail_kind`, `output_operation`,
 `output_source_kind`, and `output_source_message` in CLI JSON/text rendering.

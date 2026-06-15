@@ -15,8 +15,8 @@ splot-cli ───────┬──> splot-validate ───> splot-core
 
 splot-decode owns the current unsupported diagnostic API, the decode runtime
 context, byte/parsed stream planning over splot-core output, and the narrow
-minimal hash runtime. Its splot-recon dependency is limited to runtime
-decode/reconstruction/hash handoff code.
+minimal hash/Y4M runtime. Its splot-recon dependency is limited to runtime
+decode/reconstruction/hash/Y4M output handoff code.
 
 splot-parallel owns the approved concurrency primitives (local Rayon worker
 pool + bounded crossbeam queues) and depends on no splot-* crate.
@@ -33,7 +33,7 @@ by `cargo xtask check-dependency-direction`):
 - `splot-recon` depends on no other `splot-*` crate.
 - `splot-decode` depends only on `splot-core`, `splot-parallel`, and
   `splot-recon`; the `splot-recon` edge is limited to runtime
-  decode/reconstruction/hash handoff code.
+  decode/reconstruction/hash/Y4M output handoff code.
 - `splot-validate` depends only on `splot-core`.
 - `splot-encode` depends only on `splot-core` and `splot-parallel`.
 - `splot-cli` depends only on `splot-core`, `splot-decode`, `splot-parallel`,
@@ -86,9 +86,11 @@ by `cargo xtask check-dependency-direction`):
   current structured `decode/unsupported-feature` diagnostic API,
   `DecodeRuntimeConfig` / `DecodeContext`, a plan-only stream planner over
   already parsed `splot-core` `ParsedBitstream` values, and a bounded
-  `DecodeContext::plan_bytes` planner for raw Annex B / IVF byte slices. It
-  intentionally exposes no runtime tile decode, pixel reconstruction,
-  frame-hash digest, Y4M output, or reference update semantics yet.
+  `DecodeContext::plan_bytes` planner for raw Annex B / IVF byte slices. Its
+  current runtime output is limited to the minimal-tier decoded-frame hash and
+  Y4M handoff through `splot-recon`; it intentionally exposes no broad runtime
+  tile decode, pixel reconstruction, raw output, film-grain output, or
+  reference update semantics yet.
 - **`xtask`** — project automation: the `ci` pipeline; the repository checks
   (`check-license-headers`, `check-dependency-direction`, `check-spec-mirror`,
   `check-feature-status`, `check-diagnostic-registry`,
