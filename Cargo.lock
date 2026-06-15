@@ -749,6 +749,7 @@ dependencies = [
  "proptest",
  "serde",
  "thiserror",
+ "zerocopy",
 ]
 
 [[package]]
