@@ -16,7 +16,7 @@
 //! with parser-inferable layer ids, and a minimal-length Annex B size prefix).
 
 use crate::obu::ObuHeader;
-use crate::types::{EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID};
+use crate::types::{EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID, ObuType};
 use crate::write::bit_writer::BitWriter;
 use crate::write::error::{WriteError, WriteResult};
 
@@ -34,8 +34,14 @@ use crate::write::error::{WriteError, WriteResult};
 ///   to the § 5.2.2 inference). Such ids cannot be represented without the extension
 ///   byte, so the writer rejects them instead of silently dropping them — keeping
 ///   `read(write(x)) == x` true for every header it accepts.
-/// - [`WriteError::ValueTooWide`] from an extension field write if a layer id exceeds
-///   its bit width (unreachable for a parser-produced header).
+/// - [`WriteError::ValueTooWide`] if any field exceeds its bit width
+///   (`obu_type` f(5), `obu_tlayer_id` f(2), or with the extension `obu_mlayer_id`
+///   f(3) / `obu_xlayer_id` f(5)) — unreachable for a parser-produced header.
+/// - [`WriteError::NonCanonicalObuType`] if `obu_type` is an `ObuType::Reserved(raw)`
+///   the parser would reparse as a different variant.
+///
+/// All checks run before any byte is written, so a rejected header leaves the writer
+/// unchanged.
 pub fn write_obu_header(writer: &mut BitWriter, header: &ObuHeader) -> WriteResult<()> {
     // Validate fully up front so a rejected header leaves no bytes in the writer.
     check_header_encodable(header)?;
@@ -73,6 +79,15 @@ fn check_header_encodable(header: &ObuHeader) -> WriteResult<()> {
     // is rejected here, before any byte is written.
     check_field_width(header.obu_type.raw(), 5)?;
     check_field_width(header.temporal_layer_id.get(), 2)?;
+    // Reject a non-canonical `obu_type` whose raw value the parser would map to a
+    // different variant on reparse (e.g. `ObuType::Reserved(1)` reparses as a named
+    // type), which would break `read(write(x)) == x`. A canonical type satisfies
+    // `from_raw(raw) == type`.
+    if ObuType::from_raw(header.obu_type.raw()) != header.obu_type {
+        return Err(WriteError::NonCanonicalObuType {
+            raw: header.obu_type.raw(),
+        });
+    }
     if header.has_header_extension {
         // Byte-1 field widths: obu_mlayer_id f(3), obu_xlayer_id f(5).
         check_field_width(header.embedded_layer_id.get(), 3)?;
@@ -144,10 +159,12 @@ fn obu_total_len(header_size_bytes: u8, payload_len: usize) -> WriteResult<u32> 
 ///
 /// The size is emitted as canonical minimal-length LEB128, so byte-exact round-trip
 /// holds only for inputs whose original size prefix was minimal; semantic round-trip
-/// (`read(write(x)) == x`) always holds. The caller must hand a byte-aligned writer
-/// (Annex B OBUs are byte-granular); the header and payload writes preserve that.
+/// (`read(write(x)) == x`) always holds. The writer must be byte-aligned (Annex B OBUs
+/// are byte-granular); the header and payload writes preserve that. All checks run
+/// before any byte is written, so a rejected call leaves the writer unchanged.
 ///
 /// # Errors
+/// - [`WriteError::WriterNotByteAligned`] if the writer is not on a byte boundary.
 /// - [`WriteError::ObuTooLarge`] if `header_size_bytes + payload.len()` exceeds
 ///   `u32::MAX`.
 /// - Propagates [`write_obu_header`] errors.
@@ -156,10 +173,11 @@ pub fn write_annexb_obu(
     header: &ObuHeader,
     payload: &[u8],
 ) -> WriteResult<()> {
-    debug_assert!(
-        writer.is_byte_aligned(),
-        "write_annexb_obu requires a byte-aligned writer"
-    );
+    // Annex B OBUs are byte-granular; a mid-byte writer would mis-position the size
+    // and header. Reject before writing rather than relying on a debug-only assert.
+    if !writer.is_byte_aligned() {
+        return Err(WriteError::WriterNotByteAligned);
+    }
     // Validate the header before writing the size prefix so a rejected header leaves
     // no partial bytes (a stray LEB128 size) in the writer.
     check_header_encodable(header)?;
@@ -335,6 +353,33 @@ mod tests {
             Err(WriteError::ValueTooWide { .. })
         ));
         assert_eq!(w_xl.bit_len(), 0);
+
+        // A non-canonical `ObuType::Reserved(raw)` whose raw value reparses as a
+        // different variant is rejected (would otherwise break read(write(x)) == x).
+        let aliased = ObuHeader {
+            has_header_extension: false,
+            obu_type: ObuType::Reserved(1), // raw 1 reparses as SequenceHeader
+            temporal_layer_id: TemporalLayerId::from_bits(0),
+            embedded_layer_id: EmbeddedLayerId::from_bits(0),
+            extended_layer_id: ExtendedLayerId::from_bits(0),
+            header_size_bytes: 1,
+        };
+        let mut w_alias = BitWriter::new();
+        assert!(matches!(
+            write_obu_header(&mut w_alias, &aliased),
+            Err(WriteError::NonCanonicalObuType { raw: 1 })
+        ));
+        assert_eq!(w_alias.bit_len(), 0);
+
+        // A non-byte-aligned writer is rejected before any framing bytes are written.
+        let td = read_obu_header_from_slice(&[0x08], ByteOffset::new(0)).unwrap();
+        let mut unaligned = BitWriter::new();
+        unaligned.write_bit(1).unwrap();
+        assert!(matches!(
+            write_annexb_obu(&mut unaligned, &td, &[]),
+            Err(WriteError::WriterNotByteAligned)
+        ));
+        assert_eq!(unaligned.bit_len(), 1); // unchanged — the framer wrote nothing
     }
 
     /// G: non-canonical caveat — a non-minimal LEB128 size re-emits canonically

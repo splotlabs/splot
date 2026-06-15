@@ -113,6 +113,22 @@ pub enum WriteError {
         /// The computed total byte count that does not fit in a `u32`.
         total: u64,
     },
+
+    /// A byte-granular framer (e.g. `write_annexb_obu`) was given a writer that is
+    /// not on a byte boundary; the bytes it emits would be mis-positioned. The error
+    /// is returned before any byte is written.
+    #[error("writer is not byte-aligned")]
+    WriterNotByteAligned,
+
+    /// An [`ObuHeader`](crate::obu::ObuHeader)'s `obu_type` is a non-canonical
+    /// `ObuType::Reserved(raw)` whose raw value the § 5.2.2 parser maps to a
+    /// different variant on reparse (e.g. `Reserved(1)` reparses as a named type), so
+    /// writing it would break `read(write(x)) == x`. Rejected before any byte.
+    #[error("non-canonical obu_type with raw value {raw}")]
+    NonCanonicalObuType {
+        /// The header's `obu_type.raw()`.
+        raw: u8,
+    },
 }
 
 /// Result alias for [`crate::write::BitWriter`] operations.
