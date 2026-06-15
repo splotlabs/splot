@@ -6,6 +6,7 @@
 //! Feature tracking: `DECODE-TILE-CDF-SELECTION-BOUNDARY`.
 
 pub(crate) mod context;
+pub(crate) mod partition_read;
 
 use core::fmt;
 
