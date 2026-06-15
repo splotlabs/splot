@@ -5808,6 +5808,57 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "INFRA-ZERO-COPY-MEDIA-POLICY"
+name = "Zero-copy media-buffer ownership policy"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = []
+sources = []
+crate = "splot-recon"
+module = "crates/splot-recon/src/lib.rs"
+openspec_change = "zero-copy-media-policy"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Makes the media-buffer ownership model explicit, documented, and CI-enforced before decoder/reconstruction/encoder code exists: `docs/ZERO_COPY.md` defines borrow / mutable view / share / materialize / copy-ok marker and the default view-first model; `splot-recon` adds borrowed `PlaneRef`/`PlaneMut`/`FrameRef`/`FrameMut` views and an explicit `SharedFrame` (Arc-backed, `.share()` only, no `Clone`) and drops dangerous `Clone` from `Plane`/`FramePlanes`/`DecodedFrame`/`ReferenceFrameStore`/`CurrentFrameWorkspace`/`CurrentFramePlane`; every intentional copy carries a specific `splot-copy-ok:` marker; and `cargo xtask check-zero-copy-policy` (run in `cargo xtask ci`) flags large-media `Clone`, unmarked media copies, `make_mut`, `unsafe`/`transmute`/`from_raw_parts`, `include!` bypasses, and banned/wrong-crate `zerocopy`. `zerocopy` is approved only for private fixed-layout byte/wire view structs (e.g. IVF headers), never public APIs or AV2 bit-level/entropy/variable-length parsing. Infrastructure / codec-runtime API policy only: no AV2 conformance behavior change and no decoder/reconstruction/encoder algorithmic stage is implemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/views.rs::tests",
+    "crates/splot-recon/src/frame.rs::tests",
+    "crates/splot-recon/src/reference.rs::tests",
+    "xtask/src/zero_copy.rs::tests",
+]
+commands = [
+    "cargo test -p splot-recon --all-targets --locked",
+    "cargo test -p xtask --all-targets --locked",
+    "cargo xtask check-zero-copy-policy",
+    "cargo xtask check-dependency-direction",
+]
+fixtures = [
+    "docs/ZERO_COPY.md",
+    "crates/splot-recon/src/views.rs",
+    "crates/splot-recon/src/frame.rs",
+    "crates/splot-recon/src/plane.rs",
+    "crates/splot-recon/src/reference.rs",
+    "crates/splot-recon/src/workspace.rs",
+    "xtask/src/zero_copy.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "RECON-REFERENCE-FRAME-STORE"
 name = "Reference frame store runtime model"
 category = "infrastructure"

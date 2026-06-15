@@ -80,6 +80,28 @@ Only for encoder or encoder-facing syntax PRs.
 - [ ] Deterministic output preserved across thread counts (indexed iterators /
       ordered merge; commit in presentation/bitstream order)?
 
+## Zero-copy media ownership
+
+(Policy: [ZERO_COPY.md](./ZERO_COPY.md).)
+
+- [ ] No `Clone` derive/impl on media-storage types (frame/plane/reference/
+      workspace/sample buffers); borrow a view or share via `SharedFrame`
+      (`cargo xtask check-zero-copy-policy`)?
+- [ ] View types (`PlaneRef`/`PlaneMut`/`FrameRef`/`FrameMut`) borrow existing
+      storage and never allocate or copy on construction?
+- [ ] No `Arc::make_mut` / `Rc::make_mut` or copy-on-write on frame storage
+      (`cargo xtask check-zero-copy-policy`)?
+- [ ] Reference/lookahead stores move or share handles (no `F: Clone`
+      requirement, no payload duplication)?
+- [ ] Every intentional copy carries a nearby specific `splot-copy-ok: <reason>`
+      naming the materialization boundary — no vague markers
+      (`cargo xtask check-zero-copy-policy`)?
+- [ ] No `unsafe` / `transmute` / `from_raw_parts` to reinterpret bytes as samples
+      (`cargo xtask check-zero-copy-policy`)?
+- [ ] `zerocopy` only in `splot-core`/`splot-recon`, only for private fixed-layout
+      wire structs, never in public APIs or AV2 bit-level/entropy parsing; no
+      banned byte/transmute crate added (`cargo xtask check-zero-copy-policy`)?
+
 ## Feature tracking
 
 - [ ] Is the Feature ID present in the PR title/body?

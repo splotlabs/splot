@@ -15,9 +15,9 @@ use crate::intra::predict_intra_dc_rect_value_from_sums;
 use crate::intra_basic::predict_paeth_sample;
 use crate::intra_smooth::{SmoothSampleEdges, SmoothSamplePosition, predict_smooth_sample_values};
 use crate::{
-    DecodedFrame, DecodedFrameInfo, FramePlanes, IntraDcEdges, IntraPaethEdge, IntraRectBlockSize,
-    IntraSmoothEdge, IntraSmoothMode, IntraSquareBlockSize, PixelFormat, Plane, PlaneId, PlaneRect,
-    PlaneSize, ReconError, ReconSample, Result,
+    DecodedFrame, DecodedFrameInfo, FrameMut, FramePlanes, FrameRef, IntraDcEdges, IntraPaethEdge,
+    IntraRectBlockSize, IntraSmoothEdge, IntraSmoothMode, IntraSquareBlockSize, PixelFormat, Plane,
+    PlaneId, PlaneMut, PlaneRect, PlaneRef, PlaneSize, ReconError, ReconSample, Result,
 };
 
 /// Mutable current-frame reconstruction workspace.
@@ -26,7 +26,12 @@ use crate::{
 /// can fill incrementally before freezing into the immutable [`DecodedFrame`]
 /// model. It is intentionally scheduler-free: callers own any parallel
 /// partitioning above this type.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// Does not implement `Clone`: it owns the current-frame plane buffers. Borrow it
+/// as a [`FrameRef`]/[`FrameMut`] with [`CurrentFrameWorkspace::as_frame_ref`]/
+/// [`CurrentFrameWorkspace::as_frame_mut`] instead (see
+/// [`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)).
+#[derive(Debug, Eq, PartialEq)]
 pub struct CurrentFrameWorkspace<T: ReconSample> {
     info: DecodedFrameInfo,
     y: CurrentFramePlane<T>,
@@ -103,6 +108,29 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
                 .as_ref()
                 .ok_or(ReconError::MissingWorkspacePlane { plane }),
         }
+    }
+
+    /// Borrows the workspace as an immutable [`FrameRef`] without copying.
+    pub fn as_frame_ref(&self) -> FrameRef<'_, T> {
+        FrameRef::from_parts(
+            self.info,
+            self.y.as_plane_ref(),
+            self.u.as_ref().map(CurrentFramePlane::as_plane_ref),
+            self.v.as_ref().map(CurrentFramePlane::as_plane_ref),
+        )
+    }
+
+    /// Borrows the workspace as an exclusive [`FrameMut`] without copying.
+    ///
+    /// The Y/U/V planes are distinct fields, so the three exclusive plane views
+    /// borrow disjoint storage and may be written independently.
+    pub fn as_frame_mut(&mut self) -> FrameMut<'_, T> {
+        FrameMut::from_parts(
+            self.info,
+            self.y.as_plane_mut(),
+            self.u.as_mut().map(CurrentFramePlane::as_plane_mut),
+            self.v.as_mut().map(CurrentFramePlane::as_plane_mut),
+        )
     }
 
     /// Returns all backing samples for `plane`, including padding if present.
@@ -356,7 +384,10 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 }
 
 /// Mutable backing storage for one current-frame workspace plane.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// Does not implement `Clone`: it owns the plane sample buffer (see
+/// [`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)).
+#[derive(Debug, Eq, PartialEq)]
 pub struct CurrentFramePlane<T: ReconSample> {
     plane: PlaneId,
     storage_size: PlaneSize,
@@ -449,6 +480,16 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         &self.samples
     }
 
+    /// Borrows this plane's storage as an immutable [`PlaneRef`] without copying.
+    pub fn as_plane_ref(&self) -> PlaneRef<'_, T> {
+        PlaneRef::from_parts(&self.samples, self.stride_samples, self.visible_rect)
+    }
+
+    /// Borrows this plane's storage as an exclusive [`PlaneMut`] without copying.
+    pub fn as_plane_mut(&mut self) -> PlaneMut<'_, T> {
+        PlaneMut::from_parts(&mut self.samples, self.stride_samples, self.visible_rect)
+    }
+
     /// Iterates over a checked rectangular region in this plane.
     ///
     /// # Errors
@@ -528,6 +569,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             let target_row = rect.y() + row_index;
             let target_range = self.row_range(target_row, rect.x(), rect.width())?;
             let source_range = source_row_start..source_row_start + rect.width();
+            // splot-copy-ok: write caller samples into owned current-frame workspace plane storage
             self.samples[target_range].copy_from_slice(&samples[source_range]);
         }
         Ok(())
@@ -565,6 +607,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                     context: "above intra edge",
                 }
             })?;
+            // splot-copy-ok: materialize bounded above-edge scratch (block-width) for intra prediction
             above.extend_from_slice(&self.samples[range]);
             Some(above)
         };

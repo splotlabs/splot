@@ -13,7 +13,14 @@
 //! current-frame workspace; it does not implement byte-consuming decode, full
 //! reconstruction, runtime CLI Y4M output, or AV2 reference refresh semantics.
 //!
+//! The ownership model is view-first ([`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)):
+//! owned plane/frame/workspace storage hands out borrowed [`PlaneRef`]/[`PlaneMut`]
+//! and [`FrameRef`]/[`FrameMut`] views without copying, immutable frames are shared
+//! without copying pixels via [`SharedFrame`], and no media-storage type implements
+//! `Clone`.
+//!
 //! Feature tracking: `INFRA-RECON-FRAME-PLANE-TYPES`,
+//! `INFRA-ZERO-COPY-MEDIA-POLICY`,
 //! `RECON-REFERENCE-FRAME-STORE`, `RECON-HASH-INPUT-SERIALIZATION`,
 //! `RECON-FRAME-HASH-DIGEST`, `RECON-Y4M-OUTPUT-WRITER`,
 //! `RECON-INTRA-DC-SQUARE-PREDICTION`,
@@ -35,12 +42,13 @@ mod intra_basic;
 mod intra_smooth;
 mod plane;
 mod reference;
+mod views;
 mod workspace;
 mod y4m;
 
 pub use error::{ReconError, Result};
 pub use format::{BitDepth, PixelFormat, PlaneId, ReconSample};
-pub use frame::{DecodedFrame, DecodedFrameInfo, FramePlanes};
+pub use frame::{DecodedFrame, DecodedFrameInfo, FramePlanes, SharedFrame};
 pub use geometry::{OutputIndex, PlaneRect, PlaneSize};
 pub use hash_input::{DecodedFrameHash, DecodedFrameHashInput};
 pub use intra::{
@@ -57,6 +65,7 @@ pub use plane::{Plane, VisibleRows};
 pub use reference::{
     ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameStore, ReferenceSlot,
 };
+pub use views::{FrameMut, FrameRef, PlaneMut, PlaneMutRows, PlaneRef, PlaneRefRows};
 pub use workspace::{
     CurrentFrameIntraEdges, CurrentFramePlane, CurrentFrameWorkspace, WorkspaceRectRows,
 };

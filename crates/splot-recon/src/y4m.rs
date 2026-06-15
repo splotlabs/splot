@@ -527,6 +527,7 @@ const fn bytes_per_sample(bit_depth: BitDepth) -> usize {
 fn push_sample(bit_depth: BitDepth, sample: u16, row_bytes: &mut Vec<u8>) {
     match bit_depth {
         BitDepth::Eight => row_bytes.push(sample as u8),
+        // splot-copy-ok: serialize a decoded sample into the Y4M output byte row
         BitDepth::Ten => row_bytes.extend_from_slice(&sample.to_le_bytes()),
     }
 }
@@ -939,6 +940,7 @@ mod tests {
                 if buf == Y4mFrameHeader::new().as_bytes() {
                     return Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed"));
                 }
+                // splot-copy-ok: test fixture construction only (accumulates written bytes)
                 self.bytes.extend_from_slice(buf);
                 Ok(buf.len())
             }
