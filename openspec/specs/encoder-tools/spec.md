@@ -45,7 +45,8 @@ reusing the shared § 5.4.9 `write_seg_info`), and the loop-filter cluster
 primitive; the LR writer is additive and rejects the unmodeled frame-level Wiener bank
 (`frame_filters_on == true`), shipping the `frame_filters_on == false` surface only. Finally the
 § 5.18.2 intra **tail** is inverted by `write/frame_tail.rs` (`frame-header-writer-intra-tail`):
-`read_tx_mode()` (§ 5.18.8.1; `AV2-5.18.8-TRANSFORM-CODING-MODES` `write` = `done`), the no-bit
+`read_tx_mode()` (§ 5.18.8.1; `AV2-5.18.8-TRANSFORM-CODING-MODES` `write` stays `partial` — the
+intra surface is inverted but the inter coded arms remain), the no-bit
 intra inferences, `reduced_tx_set`, the no-bit intra arm of `global_motion_params()`
 (§ 5.18.9.1; `AV2-5.18.9-GLOBAL-MOTION` `write` = `partial`), and `film_grain_config()`
 (§ 5.18.10.1; `AV2-5.18.10-FILM-GRAIN-STRUCTURES` `write` = `done`).
