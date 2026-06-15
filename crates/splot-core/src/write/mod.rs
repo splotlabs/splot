@@ -20,7 +20,9 @@
 //! [`frame_header`] begins the frame-header writer with the § 5.18.2 activation prefix (the
 //! inverse of `parse_frame_header_prefix`); [`frame_quant`] writes the § 5.18.6 / § 5.18.7.8 /
 //! § 5.18.2 quantization cluster (`quantization_params()`, `setup_qm_params()`,
-//! `read_delta_q()`, `delta_q_params()`, and the per-segment lossless/QM tail).
+//! `read_delta_q()`, `delta_q_params()`, and the per-segment lossless/QM tail); and
+//! [`frame_segmentation`] writes the § 5.18.7.1 `segmentation_params()` intra path
+//! (reusing the shared § 5.4.9 `seg_info()` body writer).
 //! More payload writers will build on this module as the writer surface grows; see
 //! `docs/spec-coverage-writer.md` (once landed) for the per-structure coverage matrix.
 
@@ -29,6 +31,7 @@ pub mod error;
 pub mod frame_config;
 pub mod frame_header;
 pub mod frame_quant;
+pub mod frame_segmentation;
 pub mod frame_tiling;
 pub mod obu;
 pub mod segment;
@@ -44,6 +47,7 @@ pub use frame_quant::{
     write_delta_q_params, write_lossless_info, write_quantization_params, write_read_delta_q,
     write_setup_qm_params,
 };
+pub use frame_segmentation::write_segmentation_params;
 pub use frame_tiling::write_tile_info;
 pub use obu::{write_annexb_obu, write_obu_header, write_obu_header_extension};
 pub use segment::write_seg_info;

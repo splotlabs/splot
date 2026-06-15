@@ -75,7 +75,7 @@ pub use restoration::{
     FrameRestorationType, LrGeometry, LrParams, LrParseOutcome, LrPartialParams, LrPlaneParams,
     parse_ccso_params, parse_lr_params,
 };
-pub use segmentation::{CoreSeqSegView, SegmentationParams, parse_segmentation_params};
+pub use segmentation::{CoreSeqSegView, MfhSegView, SegmentationParams, parse_segmentation_params};
 pub use size::FrameSize;
 pub(crate) use size::ceil_log2;
 // Internal re-exports so the `crate::write` frame-header writer tests (a sibling of the
