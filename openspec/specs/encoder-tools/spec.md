@@ -9,19 +9,21 @@ code and produce only deliberately simple, writer-validated streams at first.
 Tracked by Feature IDs: `ENC-BITSTREAM-WRITER`, `ENC-INTRA-TOY-V0`,
 `ENC-RATE-CONTROL-V0`, `AV2-IVF-CONTAINER`.
 
-**Status: in progress.** The bit/byte **writer primitive** layer and the **OBU
-header / trailing-bits / Annex B framing** writers are implemented and
-round-trip-tested: `ENC-BITSTREAM-WRITER` is `partial`; the § 4.11 descriptor `write`
-stages (plus § 5.2.4 byte alignment) and `AV2-5.2.2-OBU-HEADER` /
-`AV2-5.2.3-TRAILING-BITS` are `done` in the matrix, landed by the archived
-`bit-writer-primitives` and `obu-header-and-size-writer` changes (see the
-requirements below). Remaining: the sequence/frame/tile/metadata payload writers, the
-**Annex B** muxer, and wiring the muxers into writer-track round-trip tests — the IVF
-container write helpers already exist (`AV2-IVF-CONTAINER`, `write` = `done`); plus
-the toy intra path (`ENC-INTRA-TOY-V0`) and rate control (`ENC-RATE-CONTROL-V0`). The
-bootstrap `add-bitstream-writer` stub was removed, superseded by these properly-scoped
-changes. The implementation matrix is the source of truth for per-row status.
-
+**Status: in progress.** The bit/byte **writer primitive** layer, the **OBU header /
+trailing-bits / Annex B framing** writers, and the **sequence-header general fields +
+decoder-model info** writer are implemented and round-trip-tested:
+`ENC-BITSTREAM-WRITER` is `partial`; the § 4.11 descriptor `write` stages (plus
+§ 5.2.4 byte alignment), `AV2-5.2.2-OBU-HEADER` / `AV2-5.2.3-TRAILING-BITS`, and
+`AV2-5.4.1-SEQUENCE-HEADER-GENERAL` / `AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO` are
+`done` in the matrix, landed by the archived `bit-writer-primitives`,
+`obu-header-and-size-writer`, and `seq-header-writer-general` changes (see the
+requirements below). Remaining: the sequence-header config writers (§ 5.4.2–5.4.10,
+incl. `tile_params`), the frame/tile/metadata payload writers, the **Annex B** muxer,
+and wiring the muxers into writer-track round-trip tests — the IVF container write
+helpers already exist (`AV2-IVF-CONTAINER`, `write` = `done`); plus the toy intra path
+(`ENC-INTRA-TOY-V0`) and rate control (`ENC-RATE-CONTROL-V0`). The bootstrap
+`add-bitstream-writer` stub was removed, superseded by these properly-scoped changes.
+The implementation matrix is the source of truth for per-row status.
 ## Requirements
 ### Requirement: writer symmetry
 
@@ -144,4 +146,40 @@ produced by the parser SHALL be rejected with a typed writer error.
   no-extension header carries layer ids the § 5.2.2 inference could never produce
 - **THEN** the writer SHALL return a typed error
 - **AND** SHALL NOT panic.
+
+### Requirement: sequence-header general-fields and decoder-model writers
+
+`splot-core` SHALL provide writers that are the exact inverse of the § 5.4.1 general
+sequence-header parser (`parse_sequence_header_general`, including the dependency maps and
+cropping window) and the § 5.4.13 `seq_decoder_model_info()` parser. For every model the
+writer accepts, reparsing the written bytes SHALL yield the original
+(`parse(write(x)) == x`). The writers SHALL be additive (no parser, model, or
+parser-error changes) and SHALL never panic: a model the § 5.4 parser could not have
+produced SHALL be rejected with a typed writer error before any bit is written.
+
+#### Scenario: general fields round-trip across every branch
+
+- **WHEN** a parsed `SequenceHeaderGeneral` is written and the bytes are reparsed with
+  `parse_sequence_header_general`
+- **THEN** the reparsed value SHALL equal the original
+- **AND** this SHALL hold across single-picture / multi-picture, monochrome / non-mono,
+  the `seq_tier` conditional, the dependency maps (multi and row-0-replicated), cropping
+  present/absent, and decoder-model present/absent.
+
+#### Scenario: a non-canonical derived value is rejected before any bit
+
+- **WHEN** a model carries a derived or inferred value the parser would re-derive
+  differently (a `seq_tier` whose gate is false, a present-flag/`Option` mismatch, a
+  dependency map not reproducible from its present-flags, or a non-default cropping window
+  while its flag is clear)
+- **THEN** the writer SHALL return a typed `WriteError` (`NonCanonicalSequenceValue` or a
+  field-domain variant)
+- **AND** SHALL NOT write any bit (the writer buffer is left unchanged).
+
+#### Scenario: dependency-map signaled bits are re-derived exactly
+
+- **WHEN** the writer emits the `mlayer`/`tlayer` dependency maps
+- **THEN** it SHALL emit the signaled bits in the parser's exact loop order (including the
+  `multi` and row-0-replication rules)
+- **AND** the reparsed maps SHALL equal the original derived maps.
 

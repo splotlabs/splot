@@ -588,14 +588,14 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Umbrella for sequence_header_obu(). All §5.4.1-§5.4.13 child configs parse (see the child rows); the umbrella stays partial because its own types/parse/tests stages are partial (deeper §5.4 cluster) per the do-not-close-before-children rule (docs/IMPLEMENTATION-MATRIX.schema.md § 7, not an AV2 section). The §6.4 cross-element semantic-validation residuals (repeated-header identity, §6.4.1 distinct-mlayer count, §6.4.12 cross-embedded-layer timing consistency) live on AV2-6.4-SEQUENCE-HEADER-SEMANTICS; the per-config tool-flag-vs-usage gating residuals are blocked on AV2-5.18.2-FRAME-HEADER-INFO inter-path parsing (see the child rows)."
+notes = "Umbrella for sequence_header_obu(). All §5.4.1-§5.4.13 child configs parse (see the child rows); the umbrella stays partial because its own types/parse/tests stages are partial (deeper §5.4 cluster) per the do-not-close-before-children rule (docs/IMPLEMENTATION-MATRIX.schema.md § 7, not an AV2 section). The §6.4 cross-element semantic-validation residuals (repeated-header identity, §6.4.1 distinct-mlayer count, §6.4.12 cross-embedded-layer timing consistency) live on AV2-6.4-SEQUENCE-HEADER-SEMANTICS; the per-config tool-flag-vs-usage gating residuals are blocked on AV2-5.18.2-FRAME-HEADER-INFO inter-path parsing (see the child rows). WRITER (seq-header-writer-general): the §5.4.1 general fields (write_sequence_header_general + dependency maps + cropping) and §5.4.13 decoder-model info are inverted in crates/splot-core/src/write/seq_header.rs (AV2-5.4.1-SEQUENCE-HEADER-GENERAL / AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO write=done, round-trip-tested); the config children (§5.4.2-5.4.10) writers are pending, so this umbrella write stays partial."
 
 [feature.status]
 mapped = "done"
 types = "partial"
 parse = "partial"
 validate = "partial"
-write = "todo"
+write = "partial"
 encode = "todo"
 decode_check = "done"
 tests = "partial"
@@ -628,7 +628,7 @@ mapped = "done"
 types = "done"
 parse = "done"
 validate = "done"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -636,8 +636,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-core/src/headers/sequence.rs::tests::dependency_maps_default_fill_when_flags_absent", "crates/splot-core/src/headers/sequence.rs::tests::mlayer_dependency_override_bit_order", "crates/splot-core/src/headers/sequence.rs::tests::mlayer_presence_map_closes_transitive_dependency", "crates/splot-core/src/headers/sequence.rs::tests::tlayer_dependency_row0_replication", "crates/splot-core/src/headers/sequence.rs::tests::tlayer_dependency_multi_rows_signaled", "crates/splot-core/src/headers/sequence.rs::tests::single_picture_header_collapses_maps", "crates/splot-core/src/headers/sequence.rs::tests::dependency_map_truncation_reports_eof", "crates/splot-validate/src/checks/mod.rs::tests", "crates/splot-validate/src/validator/tests/mod.rs"]
-commands = ["cargo test -p splot-core sequence", "cargo test -p splot-core dependency", "cargo test -p splot-validate sequence_header"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-core/src/headers/sequence.rs::tests::dependency_maps_default_fill_when_flags_absent", "crates/splot-core/src/headers/sequence.rs::tests::mlayer_dependency_override_bit_order", "crates/splot-core/src/headers/sequence.rs::tests::mlayer_presence_map_closes_transitive_dependency", "crates/splot-core/src/headers/sequence.rs::tests::tlayer_dependency_row0_replication", "crates/splot-core/src/headers/sequence.rs::tests::tlayer_dependency_multi_rows_signaled", "crates/splot-core/src/headers/sequence.rs::tests::single_picture_header_collapses_maps", "crates/splot-core/src/headers/sequence.rs::tests::dependency_map_truncation_reports_eof", "crates/splot-validate/src/checks/mod.rs::tests", "crates/splot-validate/src/validator/tests/mod.rs", "crates/splot-core/src/write/seq_header.rs::tests", "crates/splot-core/src/write/seq_header.rs::proptests"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-core dependency", "cargo test -p splot-validate sequence_header", "cargo test -p splot-core write::seq_header"]
 fixtures = ["tests/fixtures/conformant.av2"]
 diagnostics = ["sequence-header/seq-header-id-out-of-range", "sequence-header/chroma-format-out-of-range", "sequence-header/bit-depth-out-of-range", "sequence-header/seq-max-mlayer-count-out-of-range", "sequence-header/crop-left-out-of-range", "sequence-header/timing-num-units-zero"]
 
@@ -1024,7 +1024,7 @@ mapped = "done"
 types = "done"
 parse = "done"
 validate = "partial"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -1032,8 +1032,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests::sequence_decoder_model_info_parses_delays", "crates/splot-validate/src/validator/tests/sequence_state.rs::sequence_header_with_decoder_model_info_tail_can_activate"]
-commands = ["cargo test -p splot-core sequence", "cargo test -p splot-validate sequence_header"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests::sequence_decoder_model_info_parses_delays", "crates/splot-validate/src/validator/tests/sequence_state.rs::sequence_header_with_decoder_model_info_tail_can_activate", "crates/splot-core/src/write/seq_header.rs::tests", "crates/splot-core/src/write/seq_header.rs::proptests"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-validate sequence_header", "cargo test -p splot-core write::seq_header"]
 fixtures = []
 diagnostics = []
 
