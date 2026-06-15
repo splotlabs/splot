@@ -276,7 +276,7 @@ const fn clip3(low: i64, high: i64, value: i64) -> i64 {
 ///   `ignoreDeltaQ == 0`).
 ///
 /// Pure function of parsed data; no decoder state is consulted.
-fn get_qindex_ignore_delta_q(
+pub(crate) fn get_qindex_ignore_delta_q(
     quant: &CoreSeqQuantView,
     base_q_idx: u32,
     segmentation: &SegmentationParams,

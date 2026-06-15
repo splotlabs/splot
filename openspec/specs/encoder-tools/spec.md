@@ -28,11 +28,18 @@ activation prefix is inverted by `write_frame_header_prefix`
 `AV2-5.18.4-FRAME-SIZE` / `AV2-5.18.3-FRAME-CONFIGURATION` `write` = `partial`), and the
 § 5.18.7.2 `tile_info()` by `write/frame_tiling.rs::write_tile_info`
 (`frame-header-writer-tiling`; `AV2-5.18.7.3-TILE-PARAMS` `write` = `done`,
-`AV2-5.18.7-SEGMENTATION-TILING` `write` = `partial`, reusing the shared `write_tile_params`).
-Those slices also carry maintainer-approved model/parser surfacings of previously-discarded
-bits (`intrabc_params()` / `force_integer_mv`; the explicit-branch `TileParams`) so the
-round-trips are byte-exact.
-Remaining: the rest of the frame header (quant/segmentation/filter/restoration/
+`AV2-5.18.7-SEGMENTATION-TILING` `write` = `partial`, reusing the shared `write_tile_params`),
+and the § 5.18.6 quantization cluster by `write/frame_quant.rs`
+(`frame-header-writer-quantization`; `AV2-5.18.6-QUANTIZATION` `write` = `done`), and the
+§ 5.18.7.1 `segmentation_params()` by `write/frame_segmentation.rs::write_segmentation_params`
+(`frame-header-writer-segmentation`; `AV2-5.18.7-SEGMENTATION-TILING` `write` stays `partial`,
+reusing the shared § 5.4.9 `write_seg_info`).
+The size/config and tiling slices carry maintainer-approved model/parser surfacings of
+previously-discarded layout bits (`intrabc_params()` / `force_integer_mv`; the explicit-branch
+`TileParams`); the quant and segmentation slices are additive (their few read-but-not-stored
+points are redundant encodings or parser derivations, canonicalized/re-derived like the § 5.4
+leb128-minimal case).
+Remaining: the rest of the frame header (filter/restoration/
 tail + the composing `write_frame_header`), the tile-group/metadata payload writers, the
 **Annex B** muxer, and wiring the muxers into writer-track round-trip tests — the IVF
 container write helpers already exist (`AV2-IVF-CONTAINER`, `write` = `done`); plus the
@@ -354,5 +361,72 @@ the additive / read-only-parser rule); the surfacing SHALL NOT change the bits r
   `tile_params()` re-derivation, an inferred `reuse_tile_info` that disagrees with its gate, a
   reserved-level layout, a gated-off non-zero `context_update_tile_id`, or a
   `tile_size_bytes` whose presence / range disagrees with the syntax
+- **THEN** the writer SHALL return a typed `WriteError` and write no bit.
+
+### Requirement: frame-header quantization writers
+
+`splot-core` SHALL provide writers that are the exact inverse of the § 5.18.6 quantization
+parsers (`read_delta_q`, `quantization_params`, `setup_qm_params`), the § 5.18.7.8
+`delta_q_params`, and the § 5.18.2 lossless / QM-index tail. For every model the writer
+accepts, reparsing the written bits with the corresponding parser SHALL yield the original
+(`parse(write(x)) == x`). The writers SHALL be additive (no model or parser-error change; only
+`pub(crate)` visibility on parser helpers) and SHALL never panic: a model the parser could not
+have produced SHALL be rejected with a typed writer error before any bit is written.
+
+Where a value has more than one parser-reachable encoding (a zero `read_delta_q`, an
+all-equal QM `qm_uv_same_as_y`, the `equal_ac_dc_q` chroma-DC, or a `qm_index` selecting a
+repeated level), the writer MAY emit the canonical (shortest / smallest-index) encoding; the
+round-trip is then semantic universally and byte-exact on the canonical subset.
+
+#### Scenario: each quant structure round-trips across every branch
+
+- **WHEN** a parsed quantization / QM-setup / delta-q / lossless structure is written with the
+  same gating inputs and reparsed
+- **THEN** the reparsed structure SHALL equal the original, across every conditional branch
+  (the QM cascade, the `diff_uv_delta` / `equal_ac_dc_q` combinations, delta-q present/absent,
+  lossless coded/has-segment, and `using_qmatrix` on/off).
+
+#### Scenario: a non-reproducible quant model is rejected before any bit
+
+- **WHEN** a model carries a value outside its descriptor domain (`base_q_idx`, `delta_q`
+  `su(7)`, a `qm_*` `f(4)`, `pic_qm_num_minus_1` `f(2)`), an inferred field that disagrees with
+  its gate, a lossless array that disagrees with the `get_qindex` re-derivation, or a
+  `seg_qm_level` that no QM level reproduces
+- **THEN** the writer SHALL return a typed `WriteError` and write no bit.
+
+### Requirement: frame-header segmentation writer
+
+`splot-core` SHALL provide a writer that is the exact inverse of the § 5.18.7.1
+`segmentation_params()` parser on the intra frame-header path. For every model the writer
+accepts, reparsing the written bits with the same sequence-derived (`CoreSeqSegView`) and
+resolved-multi-frame-header (`MfhSegView`) inputs SHALL yield the original
+(`parse(write(x)) == x`). The writer SHALL be additive (no model or parser-error change;
+only a visibility-only re-export widen) and SHALL never panic: a model the parser could not
+have produced SHALL be rejected with a typed writer error before any bit is written.
+
+The writer SHALL emit fields in the parser's § 5.18.7.1 read order — `segmentation_enabled`
+`f(1)` always; when enabled, `reuse_seg_info` `f(1)` only when `allowChange`; on the fresh
+path the `seg_info(MaxSegments)` body via the shared § 5.4.9 segment-info writer; and no
+bits on the reuse path. Every value the parser derives rather than reads —
+`reuse_seg_info` when `allowChange == 0`, the reuse `features` copy, the intra-inferred
+`segmentation_update_map` / `segmentation_temporal_update`, and `SegIdPreSkip` /
+`LastActiveSegId` — SHALL be re-derived and validated, never coded.
+
+#### Scenario: each segmentation branch round-trips
+
+- **WHEN** a parsed `segmentation_params()` structure is written with the same `seg` / `mfh`
+  gating inputs and reparsed
+- **THEN** the reparsed structure SHALL equal the original, across every branch (disabled;
+  enabled with `reuse_seg_info` inferred or coded; the fresh `seg_info()` body; and the MFH
+  arm, the sequence arm, and the zero fallback for the reuse source).
+
+#### Scenario: a non-reproducible segmentation model is rejected before any bit
+
+- **WHEN** a model carries an inferred field that disagrees with its derivation (a
+  `reuse_seg_info` not equal to `haveSegParams` when `allowChange == 0`, a reuse `features`
+  table not equal to the reuse source, a `segmentation_update_map` / `segmentation_temporal_update`
+  not matching the intra-path inferred constants, or a `SegIdPreSkip` / `LastActiveSegId`
+  not matching the feature-table re-derivation), or a disabled model carrying any non-default
+  field
 - **THEN** the writer SHALL return a typed `WriteError` and write no bit.
 

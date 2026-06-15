@@ -66,13 +66,18 @@ pub use quant::{
     SetupQmParams, parse_delta_q_params, parse_lossless_info, parse_quantization_params,
     parse_setup_qm_params, read_delta_q,
 };
+// Internal re-exports the `crate::write` frame-quant writer needs to re-derive the §5.18.2
+// lossless state (`get_qindex_ignore_delta_q`) and the `qm_index` field width
+// (`ceil_log2`); both modules are private, so the writer cannot reach them directly.
+pub(crate) use quant::get_qindex_ignore_delta_q;
 pub use restoration::{
     CCSO_BAND_NUM, CcsoParams, CcsoPlaneParams, CoreSeqCcsoView, CoreSeqRestorationView,
     FrameRestorationType, LrGeometry, LrParams, LrParseOutcome, LrPartialParams, LrPlaneParams,
     parse_ccso_params, parse_lr_params,
 };
-pub use segmentation::{CoreSeqSegView, SegmentationParams, parse_segmentation_params};
+pub use segmentation::{CoreSeqSegView, MfhSegView, SegmentationParams, parse_segmentation_params};
 pub use size::FrameSize;
+pub(crate) use size::ceil_log2;
 // Internal re-exports so the `crate::write` frame-header writer tests (a sibling of the
 // private `config` / `size` modules) can round-trip against the §5.18.3 / §5.18.4 parsers.
 // Test-only: the writers themselves do not parse, and the in-crate parser callers reach
