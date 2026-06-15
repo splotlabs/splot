@@ -1508,21 +1508,24 @@ AVM/dav2d execution support.
 The decoder support model SHALL provide a crate-private tile CDF selection
 boundary tracked by Feature ID `DECODE-TILE-CDF-SELECTION-BOUNDARY` and decoder
 support matrix row `tile-cdf-selection-boundary`. The boundary SHALL copy a
-small owned tile CDF subset from generated § 9.3 default tables, expose typed
-row selection for § 8.3 `S` syntax-element handoff to
-`SymbolDecoder::read_symbol(cdf)`, and record the § 8.2 frame-end CDF
-copy/average policy needed by a future tile-completion row. The boundary SHALL
-NOT claim full § 8.3 CDF selection, full Tile/Saved CDF banks, recursive
-`decode_tile()` / `decode_partition()` traversal, `exit_symbol()` after real
-syntax, CDF copyback/averaging mutation after tile completion, reconstruction,
-decoded-frame hashes, runtime Y4M output, reference refresh, public API
-support, AVM/dav2d invocation, or new scheduler/dependency support.
+small owned tile CDF subset from generated § 9.3 default tables, including the
+partition-entry rows `DoSplitCdf`, `DoSquareSplitCdf`, `DoExtPartitionCdf`, and
+`DoUneven4wayPartitionCdf`; expose typed row selection for § 8.3 `S`
+syntax-element handoff to `SymbolDecoder::read_symbol(cdf)`; and record the
+§ 8.2 frame-end CDF copy/average policy needed by a future tile-completion row.
+The boundary SHALL NOT claim full § 8.3 CDF selection, `TileRectTypeCdf`, full
+Tile/Saved CDF banks, recursive `decode_tile()` / `decode_partition()`
+traversal, `exit_symbol()` after real syntax, CDF copyback/averaging mutation
+after tile completion, reconstruction, decoded-frame hashes, runtime Y4M output,
+reference refresh, public API support, AVM/dav2d invocation, or new
+scheduler/dependency support.
 
 #### Scenario: Default CDF subset is source-backed
 
 - **WHEN** the tile CDF boundary initializes its owned frame/tile CDF subset
-- **THEN** `DoSplitCdf` and `DoSquareSplitCdf` rows are copied from generated
-  `splot-core` default CDF tables derived from AV2 § 9.3
+- **THEN** `DoSplitCdf`, `DoSquareSplitCdf`, `DoExtPartitionCdf`, and
+  `DoUneven4wayPartitionCdf` rows are copied from generated `splot-core`
+  default CDF tables derived from AV2 § 9.3
 - **AND** no CDF values are hand-transcribed from the spec mirror or a reference
   implementation
 

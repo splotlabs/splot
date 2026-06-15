@@ -56,7 +56,7 @@ Current `splot-decode` modules:
 - `limits.rs`: decode resource limit API.
 - `runtime.rs`: runtime configuration.
 - `stream_plan.rs`: parsed stream planning and layer/OBU selection.
-- `tile_payload.rs`, `tile_payload/cdf.rs`, `tile_payload/input.rs`: crate-private tile payload boundary and first CDF subset.
+- `tile_payload.rs`, `tile_payload/cdf.rs`, `tile_payload/input.rs`: crate-private tile payload boundary and partition CDF subset.
 
 Current `splot-recon` modules:
 
@@ -162,13 +162,13 @@ before implementation can claim full decoder coverage.
 | Section 4 descriptors beyond the current byte-planner subset | Core descriptor parsers exist in `splot-core`; decoder support rows mainly cite `4.11.6`. | Full decode-relevant descriptor coverage in a generated decoder spec coverage matrix. |
 | Sections 5.4-5.17 and 6.4-6.16 | Parser/validator rows exist for many HLS, metadata, film-grain, QM, content-interpretation, OPS/LCR/MSDO/Atlas paths. | Runtime decoder state consumption, output-affecting metadata handling, film-grain state, external-HLS/operating-point state. |
 | Sections 5.18 and 6.17 | Core frame-header parsing is partial; decode derives minimal tile facts only. | Full frame header state, inter paths, filters, global motion, film grain config, segmentation, quant, and tool gating as runtime decode state. |
-| Sections 5.19-5.20 and 6.18-6.19 | Tile payload boundary and first CDF subset are partial. | `decode_tile()`, partition/block traversal, mode syntax, residuals, multi-tile/multi-tile-group, BRU/bridge/TIP paths, CDF bank mutation. |
+| Sections 5.19-5.20 and 6.18-6.19 | Tile payload boundary and partition CDF subset are partial. | `decode_tile()`, partition/block traversal, mode syntax, residuals, multi-tile/multi-tile-group, BRU/bridge/TIP paths, CDF bank mutation. |
 | Sections 7.1-7.4 | Planner supports some ordering/layer selection; CLI runtime remains unsupported. | General decode process, frame wrapup, output unit behavior, random access decode behavior, sub-bitstream extraction behavior. |
 | Sections 7.5-7.12 | No runtime decoder support row. | Frame-end CDF update, extended layer context management, reference list construction, motion-field estimation, TIP motion fields, MV contexts, MV prediction. |
 | Section 7.13 | DC, PAETH, smooth, and workspace subsets exist. | Directional prediction, data-driven prediction, IBP, subsampled DC, CfL/MHCCP, palette, all inter prediction and mask/blend paths. |
 | Sections 7.14-7.20 | Only broad `intra-reconstruction` cites 7.14-7.15 as partial/planned. | Dequantization, inverse transforms, residual add, deblocking, CDEF, CCSO, loop restoration, GDF. |
 | Sections 7.21-7.23 | Frame model, hash input, Y4M writer, and reference container exist. | Runtime output order, implicit/show-existing/flush behavior, film-grain output variants, motion-field storage, exact AV2 reference refresh/update semantics. |
-| Sections 8.2-8.3 | Generic symbol foundation and a first CDF subset exist. | Full section 8.3 CDF selection and lifecycle, saved CDF copy/average/update policy, tile/frame CDF state. |
+| Sections 8.2-8.3 | Generic symbol foundation and a partition CDF subset exist. | Full section 8.3 CDF selection and lifecycle, saved CDF copy/average/update policy, tile/frame CDF state. |
 | Section 9 | Section 9.2 and a first section 9.3 CDF subset are represented. | Full section 9.3 CDF banks and section 9.4-9.8 decode table consumers for quant matrices, warp filters, transforms, secondary transforms, restoration. |
 | Annex A | Minimal tier cites Annex A.2/A.5 as partial. | Profiles, levels, tiers, level limits, multi-sequence configurations, decoder conformance checks. |
 | Annex B | Byte planner supports length-delimited traversal. | Runtime decode success over Annex B streams and complete malformed-source diagnostics at later stages. |
