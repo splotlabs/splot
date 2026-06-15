@@ -10,19 +10,29 @@
 //! for every value it accepts the round-trip property `read(write(x)) == x` holds.
 //!
 //! On top of the primitives, [`obu`] writes OBU headers and Annex B framing (the
-//! inverse of the § 5.2.2 parser), and [`seq_header`] writes the § 5.4.1 sequence-header
-//! general fields (the inverse of `parse_sequence_header_general`); more payload writers
-//! will build on this module as the writer surface grows; see
-//! `docs/spec-coverage-writer.md` (once landed) for the per-structure coverage matrix.
+//! inverse of the § 5.2.2 parser); [`seq_header`] writes the § 5.4.1 sequence-header
+//! general fields (the inverse of `parse_sequence_header_general`); [`seq_config`] writes
+//! the § 5.4.3 – § 5.4.8 child-config cascade (partition, segment, intra, inter, scc,
+//! transform/quant/entropy); and [`segment`] writes the shared `seg_info()` body
+//! (§ 5.4.9). More payload writers will build on this module as the writer surface grows;
+//! see `docs/spec-coverage-writer.md` (once landed) for the per-structure coverage matrix.
 
 pub mod bit_writer;
 pub mod error;
 pub mod obu;
+pub mod segment;
+pub mod seq_config;
 pub mod seq_header;
 
 pub use bit_writer::BitWriter;
 pub use error::{WriteError, WriteResult};
 pub use obu::{write_annexb_obu, write_obu_header, write_obu_header_extension};
+pub use segment::write_seg_info;
+pub use seq_config::{
+    write_sequence_inter_config, write_sequence_intra_config, write_sequence_partition_config,
+    write_sequence_scc_config, write_sequence_segment_config,
+    write_sequence_transform_quant_entropy_config,
+};
 pub use seq_header::{
     write_cropping_window, write_dependency_maps, write_sequence_decoder_model_info,
     write_sequence_header_general,
