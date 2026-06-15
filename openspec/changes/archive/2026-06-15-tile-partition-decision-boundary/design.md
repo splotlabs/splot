@@ -44,6 +44,6 @@ The next honest increment is a single partition-decision boundary that follows t
 ## Risks / Trade-offs
 
 - **Risk:** The helper might appear to claim full `read_partition()` support. → **Mitigation:** Name and matrix row explicitly say decision boundary from caller-provided facts; docs list recursive traversal and allowed-partition derivation as non-goals.
-- **Risk:** Branches could consume symbols before validating caller facts. → **Mitigation:** Pre-validate allowed/implied facts and forced rect direction where possible; tests assert no stream advancement or CDF mutation on invalid facts and early returns.
+- **Risk:** Branches could diverge from §5.20.3.2 when caller facts are surprising. → **Mitigation:** Follow spec order for disallowed implied partitions and inactive BRU returns, while retaining typed errors for empty allowed sets and impossible final table results; tests assert no stream advancement or CDF mutation on remaining pre-consumption errors and early returns.
 - **Risk:** `L(1)` handling might accidentally use entropy decoding. → **Mitigation:** Use `SymbolDecoder::read_literal(1)` or the existing primitive that implements `L(1)` and test consumed-bit behavior separately from `S()` reads.
 - **Risk:** `tile_payload.rs` is near the source-line soft budget. → **Mitigation:** Add only `mod partition;` there and keep implementation/tests in the new module.

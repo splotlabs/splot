@@ -13,6 +13,11 @@ The decoder SHALL provide a crate-private AV2 §5.20.3.2 partition decision boun
 - **AND** no `S()` symbol read or `L(1)` literal read is performed
 - **AND** tile CDF rows remain unchanged
 
+#### Scenario: Disallowed implied partitions fall through
+- **WHEN** `partition_implied` supplies an implied partition that is not allowed by the caller-provided allowed set
+- **THEN** the boundary follows §5.20.3.2 by continuing to the later single-allowed, inactive-BRU, or syntax-read branches
+- **AND** it does not return a typed error solely because the implied partition was disallowed
+
 #### Scenario: Conditional partition symbols are consumed in branch order
 - **WHEN** caller-provided facts require the boundary to evaluate `do_split`, `do_square_split`, `rect_type`, `do_ext_partition`, or `do_uneven_4way_partition`
 - **THEN** each reached syntax element is read through the existing crate-private symbol-read boundary exactly once
@@ -32,7 +37,7 @@ The decoder SHALL provide a crate-private AV2 §5.20.3.2 partition decision boun
 - **AND** it does not consume the literal when the resulting `do_uneven_4way_partition` value is false
 
 #### Scenario: Error paths are transactional
-- **WHEN** selector derivation, symbol decoding, literal reading, allowed fact validation, or table-index validation fails
+- **WHEN** selector derivation, symbol decoding, literal reading, empty allowed-set validation, or table-result validation fails
 - **THEN** the boundary returns a crate-private typed error
 - **AND** failures detected before syntax consumption do not advance the symbol decoder or mutate CDF rows
 - **AND** failures after a reached syntax read expose the underlying symbol/literal error without panicking
@@ -41,4 +46,3 @@ The decoder SHALL provide a crate-private AV2 §5.20.3.2 partition decision boun
 - **WHEN** decoder support status is generated
 - **THEN** `tile-partition-decision-boundary` records support only for one partition decision over caller-provided facts
 - **AND** broader tile payload decode, full CDF selection, recursive partition traversal, reconstruction, output, reference refresh, and public runtime decode remain tracked by their existing rows
-

@@ -192,18 +192,6 @@ pub(crate) enum PartitionDecisionError {
         /// Raw decoded symbol.
         symbol: u8,
     },
-    /// The caller-provided implied partition was not in the allowed set.
-    #[error("partition decision implied disallowed partition {partition:?}")]
-    ImpliedPartitionDisallowed {
-        /// Implied partition from caller facts.
-        partition: PartitionType,
-    },
-    /// Inactive BRU mode would return `PARTITION_NONE`, but it is disallowed.
-    #[error("inactive BRU partition decision selected disallowed partition {partition:?}")]
-    InactiveBruPartitionDisallowed {
-        /// Partition selected by the inactive BRU branch.
-        partition: PartitionType,
-    },
     /// A final table result was inconsistent with caller-provided allowed facts.
     #[error("partition decision selected disallowed partition {partition:?}")]
     FinalPartitionDisallowed {
@@ -224,14 +212,11 @@ pub(crate) fn read_partition_decision(
 
     let trace = ReadPartitionDecisionTrace::default();
     if let Some(partition) = input.implied_partition {
-        if !input.allowed.contains(partition) {
-            // AV2 §5.20.3.2 falls through when an implied partition is not
-            // allowed. Once `partition_implied` and `init_allowed_partitions`
-            // are derived by the same caller, this state means those caller
-            // facts disagree, so this boundary rejects it before reading syntax.
-            return Err(PartitionDecisionError::ImpliedPartitionDisallowed { partition });
+        // AV2 §5.20.3.2 returns the implied partition only when it is allowed;
+        // otherwise the decision falls through to the later branches.
+        if input.allowed.contains(partition) {
+            return Ok(ReadPartitionDecision::new(partition, trace));
         }
-        return Ok(ReadPartitionDecision::new(partition, trace));
     }
 
     if let Some(partition) = input.allowed.only() {
@@ -239,14 +224,8 @@ pub(crate) fn read_partition_decision(
     }
 
     if !input.bru_active {
-        if !input.allowed.contains(PartitionType::None) {
-            // AV2 §5.20.3.2 returns PARTITION_NONE unconditionally outside
-            // BRU-active mode. A spec-derived allowed set that excludes NONE in
-            // this branch is an internal caller-fact invariant violation.
-            return Err(PartitionDecisionError::InactiveBruPartitionDisallowed {
-                partition: PartitionType::None,
-            });
-        }
+        // AV2 §5.20.3.2 returns PARTITION_NONE unconditionally after the
+        // single-allowed branch, even if allowed[PARTITION_NONE] is false.
         return Ok(ReadPartitionDecision::new(PartitionType::None, trace));
     }
 
@@ -567,59 +546,55 @@ mod tests {
     }
 
     #[test]
-    fn disallowed_implied_partition_is_rejected_before_symbol_consumption() {
-        let mut cdfs = cdfs();
-        let before = cdfs.clone();
-        let mut symbols = decoder(&[0xFF, 0xFF], CdfUpdateMode::Enabled);
-
-        let err = read_partition_decision(
+    fn disallowed_implied_partition_falls_through_to_single_allowed() {
+        let (result, cdfs_after, symbols) = decision(
             input(
                 allowed(&[PartitionType::Horz]),
                 Some(PartitionType::Vert),
                 true,
                 None,
             ),
-            &mut cdfs,
-            &mut symbols,
-        )
-        .unwrap_err();
+            &[0xFF, 0xFF],
+        );
 
-        assert!(matches!(
-            err,
-            PartitionDecisionError::ImpliedPartitionDisallowed {
-                partition: PartitionType::Vert
-            }
-        ));
+        assert_eq!(result.unwrap().partition, PartitionType::Horz);
         assert_eq!(symbols.symbol_count(), 0);
-        assert_eq!(cdfs, before);
+        assert_eq!(cdfs_after, cdfs());
     }
 
     #[test]
-    fn inactive_bru_disallowed_none_is_rejected_before_symbol_consumption() {
-        let mut cdfs = cdfs();
-        let before = cdfs.clone();
-        let mut symbols = decoder(&[0xFF, 0xFF], CdfUpdateMode::Enabled);
+    fn disallowed_implied_partition_falls_through_to_reached_syntax() {
+        let (result, _, symbols) = decision(
+            input(
+                allowed(&[PartitionType::None, PartitionType::Horz]),
+                Some(PartitionType::Vert),
+                true,
+                Some(RectPartitionType::Horz),
+            ),
+            &[0x00, 0x80],
+        );
+        let result = result.unwrap();
 
-        let err = read_partition_decision(
+        assert_eq!(result.partition, PartitionType::None);
+        assert_eq!(result.trace.do_split, Some(false));
+        assert_eq!(symbols.symbol_count(), 1);
+    }
+
+    #[test]
+    fn inactive_bru_returns_none_even_when_none_is_disallowed() {
+        let (result, cdfs_after, symbols) = decision(
             input(
                 allowed(&[PartitionType::Horz, PartitionType::Vert]),
                 None,
                 false,
                 None,
             ),
-            &mut cdfs,
-            &mut symbols,
-        )
-        .unwrap_err();
+            &[0xFF, 0xFF],
+        );
 
-        assert!(matches!(
-            err,
-            PartitionDecisionError::InactiveBruPartitionDisallowed {
-                partition: PartitionType::None
-            }
-        ));
+        assert_eq!(result.unwrap().partition, PartitionType::None);
         assert_eq!(symbols.symbol_count(), 0);
-        assert_eq!(cdfs, before);
+        assert_eq!(cdfs_after, cdfs());
     }
 
     #[test]
