@@ -6,6 +6,10 @@
 use super::*;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderConfig};
+use splot_core::tables::cdf::{
+    DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
+    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
+};
 
 #[test]
 fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
@@ -21,6 +25,14 @@ fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
         frame.rows().do_uneven_4way_partition(),
         &DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF
     );
+    assert_eq!(frame.rows().y_mode_set(), &DEFAULT_Y_MODE_SET_CDF);
+    assert_eq!(frame.rows().y_mode_index(), &DEFAULT_Y_MODE_INDEX_CDF);
+    assert_eq!(frame.rows().txb_skip(), &DEFAULT_TXB_SKIP_CDF);
+    assert_eq!(
+        frame.rows().uv_mode_cfl_not_allowed(),
+        &DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF
+    );
+    assert_eq!(frame.rows().v_txb_skip(), &DEFAULT_V_TXB_SKIP_CDF);
 
     let mut tile = frame.tile_copy();
     tile.rows_mut().do_split[0][0][0] = 1234;
@@ -313,6 +325,15 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
     tile.rows_mut().do_square_split[0][0] = [21_000, 6, 2];
     tile.rows_mut().rect_type[1][63] = [24_000, 3, 16];
     tile.rows_mut().do_uneven_4way_partition[0][8] = [23_000, 4, 12];
+    tile.rows_mut().block.y_mode_set = [20_000, 21_000, 22_000, 9, 8];
+    tile.rows_mut().block.y_mode_index[0] = [
+        20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 12,
+    ];
+    tile.rows_mut().block.txb_skip[2][0][0][0] = [25_000, 13, 20];
+    tile.rows_mut().block.uv_mode_cfl_not_allowed[0] = [
+        20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 12,
+    ];
+    tile.rows_mut().block.v_txb_skip[1][3] = [26_000, 14, 24];
 
     let mut saved = SavedCdfSubset::from_frame(&frame);
     saved.apply_tile(
@@ -344,4 +365,19 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
         saved.rows().do_uneven_4way_partition()[0][8],
         [30_326, 4, 3]
     );
+    assert_eq!(saved.rows().y_mode_set(), &[29_576, 29_826, 30_076, 9, 2]);
+    assert_eq!(
+        saved.rows().y_mode_index()[0],
+        [
+            29_576, 29_826, 30_076, 30_326, 30_576, 30_826, 31_076, 11, 3
+        ]
+    );
+    assert_eq!(saved.rows().txb_skip()[2][0][0][0], [30_826, 13, 5]);
+    assert_eq!(
+        saved.rows().uv_mode_cfl_not_allowed()[0],
+        [
+            29_576, 29_826, 30_076, 30_326, 30_576, 30_826, 31_076, 11, 3
+        ]
+    );
+    assert_eq!(saved.rows().v_txb_skip()[1][3], [31_076, 14, 6]);
 }

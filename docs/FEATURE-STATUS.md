@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 185 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 186 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -182,6 +182,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-TILE-PARTITION-SIZE-TABLE-BOUNDARY` | Tile partition size table boundary | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/partition_size.rs` |
 | `DECODE-TILE-PARTITION-ALLOWED-BOUNDARY` | Tile partition allowed set boundary | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/partition_allowed.rs` |
 | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | Tile partition traversal frontier | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/partition_traversal.rs` |
+| `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | Minimal block syntax frontier | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/block_symbol.rs` |
 | `DECODE-UNSUPPORTED-DIAGNOSTIC-API` | Decode unsupported diagnostic API | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-decode/src/lib.rs` |
 | `DOC-DECODER-SUPPORT-MATRIX` | Decoder support matrix documentation | docs | docs | done | n/a | n/a | done | n/a | n/a | n/a | done | n/a | `docs/DECODER-SUPPORT-MATRIX.toml` |
 | `XTASK-DECODER-SUPPORT-STATUS` | Decoder support status reporting and checks | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/decoder_support.rs` |

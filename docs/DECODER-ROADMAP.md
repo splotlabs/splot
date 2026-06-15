@@ -100,22 +100,27 @@ boundary that derives `partition_implied`, `partition_implied_at_boundary`,
 partition traversal frontier that composes those boundaries to advance from a
 tile work unit to the first in-frame `decode_block()` frontier, with
 transactional tile-CDF mutation, a symbol-decoder checkpoint, and pending
-sibling partition calls preserved for a future block decoder. The tile payload
-boundary then stops at structured
-`decode/unsupported-feature` metadata for the unimplemented `decode_tile()`
-block syntax. A crate-private
-source-backed derivation bridge
+sibling partition calls preserved for a future block decoder. It also has a
+crate-private minimal flat intra block-symbol trace frontier for the committed
+runtime fixture: after the partition frontier, tile-payload code consumes the
+traced `y_mode_set`, `y_mode_index`, luma/U all-zero transform skip, `uv_mode`,
+and V all-zero transform skip rows from generated § 9.3 defaults, validates
+`exit_symbol()`, and hands only the summary back to the minimal runtime. The
+generic tile payload boundary still stops at structured
+`decode/unsupported-feature` metadata for the unimplemented broad
+`decode_tile()` block syntax. A crate-private source-backed derivation bridge
 now validates a selected `DecodePlannedObu` against a borrowed `splot-core`
 `ObuEnvelope`, slices only the complete § 5.19-derived § 5.20 payload region,
 uses parser-derived tile grid, quantizer, CDF, and `disable_cdf_update` facts,
 and runs the resulting boundary inside the context-owned
 `splot_parallel::WorkerPool`, preserving the PR #101 concurrency model without
-exposing public tile-payload APIs. It is not wired to a runtime decode success
-path and does not support multiple tiles or tile groups, bridge/BRU paths,
+exposing public tile-payload APIs. The narrow minimal hash/Y4M runtime is wired
+through the partition and block-symbol trace frontiers, but it still does not
+support multiple tiles or tile groups, bridge/BRU paths,
 full `read_partition()`/`decode_tile()` traversal past the first
 `decode_block()` frontier, `MiSizes` mutation, `decode_block()` syntax,
-`exit_symbol()` after real syntax, Saved CDF mutation, reconstruction, hashes,
-runtime Y4M, reference refresh, or external decoders.
+Saved CDF mutation, broad reconstruction, broad hashes, broad runtime Y4M,
+reference refresh, or external decoders.
 
 Canonical decoder status lives in
 [`DECODER-SUPPORT-MATRIX.toml`](./DECODER-SUPPORT-MATRIX.toml), rendered to
