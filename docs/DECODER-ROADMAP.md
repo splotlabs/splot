@@ -99,8 +99,9 @@ boundary that derives `partition_implied`, `partition_implied_at_boundary`,
 `BLOCK_INVALID` residual-size results. It also has a crate-private § 5.20.3.1
 partition traversal frontier that composes those boundaries to advance from a
 tile work unit to the first in-frame `decode_block()` frontier, with
-transactional tile-CDF mutation and pending sibling partition calls preserved
-for a future block decoder. The tile payload boundary then stops at structured
+transactional tile-CDF mutation, a symbol-decoder checkpoint, and pending
+sibling partition calls preserved for a future block decoder. The tile payload
+boundary then stops at structured
 `decode/unsupported-feature` metadata for the unimplemented `decode_tile()`
 block syntax. A crate-private
 source-backed derivation bridge

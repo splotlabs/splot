@@ -141,6 +141,17 @@ fn flat_partition_reaches_root_block_frontier() {
     assert_eq!(plan.frontier().r, 0);
     assert_eq!(plan.frontier().c, 0);
     assert_eq!(plan.frontier().b_size.index(), BLOCK_32X32);
+    assert_eq!(
+        plan.frontier().symbol_checkpoint_before_block.symbol_count,
+        1
+    );
+    assert_eq!(
+        plan.frontier()
+            .symbol_checkpoint_before_block
+            .consumed_bits
+            .get(),
+        plan.consumed_bits_after
+    );
     assert!(plan.pending_children().is_empty());
     assert_eq!(plan.symbol_count_after(), 1);
 }
@@ -321,6 +332,18 @@ fn split_child_sdp_gate_rejects_nested_64x64_calls() {
 }
 
 #[test]
+fn intra_extended_sdp_sequence_flag_is_inactive_for_traversal() {
+    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let mut facts = frame(BLOCK_32X32);
+    facts.enable_extended_sdp = true;
+
+    let plan = frontier(&mut work_unit, facts, context()).unwrap();
+
+    assert_eq!(plan.frontier.b_size.index(), BLOCK_32X32);
+    assert_eq!(plan.symbol_count_after(), 1);
+}
+
+#[test]
 fn failed_context_read_does_not_commit_cdf_mutation() {
     static EMPTY: [usize; 0] = [];
     static EMPTY_GRID: [&[usize]; 0] = [];
@@ -386,6 +409,7 @@ fn unsupported_gates_are_explicit() {
     let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
     let mut extended_sdp = frame(BLOCK_32X32);
     extended_sdp.enable_extended_sdp = true;
+    extended_sdp.frame_is_intra = false;
     let err = frontier(&mut work_unit, extended_sdp, context()).unwrap_err();
     assert!(matches!(
         err,

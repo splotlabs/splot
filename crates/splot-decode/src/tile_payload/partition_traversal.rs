@@ -5,7 +5,7 @@
 //!
 //! Feature tracking: `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY`.
 
-use splot_core::symbol::{SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol::{SymbolDecoder, SymbolDecoderCheckpoint, SymbolDecoderConfig};
 
 use super::DecodeTileWorkUnit;
 use super::cdf::TileCdfError;
@@ -241,6 +241,7 @@ pub(crate) struct DecodeBlockFrontier {
     has_chroma: bool,
     chroma_offset: bool,
     symbol_count_before_block: u64,
+    symbol_checkpoint_before_block: SymbolDecoderCheckpoint,
 }
 
 /// Successful partition frontier plan.
@@ -367,14 +368,15 @@ pub(crate) fn plan_tile_partition_traversal_frontier(
         context,
         limits,
     } = input;
+    let extended_sdp_allowed = frame.enable_extended_sdp && !frame.frame_is_intra;
+    if extended_sdp_allowed {
+        return Err(TilePartitionTraversalError::Unsupported(
+            TilePartitionTraversalUnsupported::ExtendedSdp,
+        ));
+    }
     if !frame.frame_is_intra {
         return Err(TilePartitionTraversalError::Unsupported(
             TilePartitionTraversalUnsupported::NonIntra,
-        ));
-    }
-    if frame.enable_extended_sdp {
-        return Err(TilePartitionTraversalError::Unsupported(
-            TilePartitionTraversalUnsupported::ExtendedSdp,
         ));
     }
     // AV2 §5.20.3.1 invokes §5.20.10.4 `read_lr()` at the root before
@@ -454,6 +456,7 @@ pub(crate) fn plan_tile_partition_traversal_frontier(
                     has_chroma: call.has_chroma && frame.num_planes > 1,
                     chroma_offset,
                     symbol_count_before_block: symbols.symbol_count(),
+                    symbol_checkpoint_before_block: symbols.checkpoint(),
                 },
                 consumed_bits_before,
                 consumed_bits_after: symbols.consumed_bits().get(),

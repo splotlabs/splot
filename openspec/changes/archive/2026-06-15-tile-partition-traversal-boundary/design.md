@@ -12,8 +12,9 @@ reconstruction, output, CDF copyback/averaging, and reference refresh remain
 separate backlog items. The key boundary is `decode_block()`: §5.20.4.1
 consumes syntax and mutates `MiSizes`, `LeftMiSizes`, and `AboveMiSizes` before
 later sibling partition decisions can be read. This change therefore stops at
-the first block frontier and returns enough continuation metadata for a future
-block decoder to resume traversal honestly after those mutations.
+the first block frontier and preserves the pending child calls plus the §8.2
+symbol-decoder checkpoint a future block decoder needs before resuming
+traversal after those mutations.
 
 ## Goals / Non-Goals
 
@@ -40,7 +41,7 @@ block decoder to resume traversal honestly after those mutations.
   traversal boundary from tests or crate-private work-unit helpers.
 - No §5.20.4 `decode_block()` syntax parsing, `MiSizes` or neighbor-state mutation,
   mode info, transform, prediction, residual, reconstruction, filtering, output,
-  reference refresh, or CDF save/average mutation.
+  reference refresh, CDF save/average mutation, or block-decoder continuation API.
 - No multi-tile, multi-tile-group, bridge, BRU, inter, or SDP behavior beyond
   typed unsupported/residual boundaries already needed to keep the traversal
   honest.
@@ -66,7 +67,9 @@ block decoder to resume traversal honestly after those mutations.
    Alternative considered: keep traversing after a leaf by writing only the
    block-size state subset. Rejected because `decode_block()` consumes syntax
    and also owns other state that future contexts may depend on; pretending the
-   leaf completed would overclaim.
+   leaf completed would overclaim. This change preserves the arithmetic
+   checkpoint, but the actual block-decoder continuation API remains future
+   work.
 
 3. **Keep traversal inputs explicit.**
 

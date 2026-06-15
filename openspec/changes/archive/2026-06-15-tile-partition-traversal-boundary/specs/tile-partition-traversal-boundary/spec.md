@@ -32,6 +32,8 @@ from a supported minimal intra tile partition root to the first
   facts
 - **AND** sibling children that cannot be processed until after the block
   frontier are retained as pending continuation metadata
+- **AND** the block frontier carries a lossless §8.2 symbol-decoder checkpoint
+  for the arithmetic state before block syntax begins
 
 #### Scenario: Frontier stops at decode_block boundary
 - **WHEN** traversal reaches `PARTITION_NONE`
@@ -69,8 +71,8 @@ The traversal frontier boundary SHALL reject or defer unsupported paths with typ
 crate-private errors and SHALL NOT expand public decode support beyond the
 matrix row. SDP, BRU-active, bridge, inter/mixed-region, broad `decode_tile()`,
 `decode_block()` syntax, `MiSizes` mutation, reconstruction, output, CDF
-copyback/averaging, and reference refresh behavior remain outside this
-capability.
+copyback/averaging, block-decoder continuation APIs, and reference refresh
+behavior remain outside this capability.
 
 #### Scenario: Unsupported paths stay explicit
 - **WHEN** traversal input requires SDP, BRU-active behavior, bridge behavior,

@@ -18,7 +18,8 @@ Feature ID: `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY`.
   duplicating those rules.
 - Record deterministic traversal steps, pending continuation children, and the
   first `decode_block()` frontier, including coordinates, block sizes, parent
-  sizes, chroma propagation, selected partition, and symbol-consumption trace.
+  sizes, chroma propagation, selected partition, symbol-consumption trace, and
+  the symbol-decoder checkpoint before block syntax.
 - Keep `decode_tile()`, `decode_block()` syntax, reconstruction, residuals,
   `MiSizes` mutation, output, reference refresh, CDF copyback/averaging, and
   public API behavior out of scope.
