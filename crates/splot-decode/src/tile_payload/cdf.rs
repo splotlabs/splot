@@ -274,7 +274,8 @@ pub(crate) enum TileCdfSelector {
         /// Square-split context index.
         ctx: usize,
     },
-    /// `TileRectTypeCdf[PlaneStart][ctx]`.
+    /// `TileRectTypeCdf[PlaneStart][ctx]` from AV2 § 8.3.2
+    /// (`docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`).
     RectType {
         /// `PlaneStart` partition-structure context.
         plane_start: usize,
