@@ -116,6 +116,21 @@ pub struct SymbolDecoderSummary {
     pub padding_end_position: SymbolBitPosition,
 }
 
+/// Snapshot of the AV2 § 8.2 arithmetic decoder state at a syntax boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SymbolDecoderCheckpoint {
+    /// Number of bits consumed from the tile payload.
+    pub consumed_bits: SymbolBitPosition,
+    /// Number of frame symbols counted by `read_literal` and `read_symbol`.
+    pub symbol_count: u64,
+    /// Current signed `SymbolMaxBits` value.
+    pub symbol_max_bits: i64,
+    /// Current `SymbolValue` arithmetic decoder register.
+    pub symbol_value: u32,
+    /// Current `SymbolRange` arithmetic decoder register.
+    pub symbol_range: u32,
+}
+
 /// Bounded AV2 § 8.2 symbol decoder over one tile payload byte slice.
 #[derive(Debug)]
 pub struct SymbolDecoder<'a> {
@@ -194,6 +209,18 @@ impl<'a> SymbolDecoder<'a> {
     #[must_use]
     pub fn consumed_bits(&self) -> SymbolBitPosition {
         SymbolBitPosition::new(self.reader.consumed_bits())
+    }
+
+    /// Returns a lossless checkpoint of the current arithmetic decoder state.
+    #[must_use]
+    pub fn checkpoint(&self) -> SymbolDecoderCheckpoint {
+        SymbolDecoderCheckpoint {
+            consumed_bits: self.consumed_bits(),
+            symbol_count: self.frame_symbol_count,
+            symbol_max_bits: self.symbol_max_bits,
+            symbol_value: self.symbol_value,
+            symbol_range: self.symbol_range,
+        }
     }
 
     /// Decodes a pseudo-raw bit with equal probability, per AV2 § 8.2.3.
@@ -636,6 +663,28 @@ mod tests {
         let mut literal_decoder = SymbolDecoder::new(&[0b1011_0000, 0]).unwrap();
         assert_eq!(literal_decoder.read_literal(4).unwrap(), 0b1011);
         assert_eq!(literal_decoder.symbol_count(), 4);
+    }
+
+    #[test]
+    fn checkpoint_preserves_arithmetic_state() {
+        let mut decoder = SymbolDecoder::new(&[0x00, 0x80]).unwrap();
+        let initial = decoder.checkpoint();
+        assert_eq!(initial.consumed_bits, decoder.consumed_bits());
+        assert_eq!(initial.symbol_count, 0);
+        assert_eq!(initial.symbol_max_bits, decoder.symbol_max_bits());
+        assert_eq!(initial.symbol_value, decoder.symbol_value);
+        assert_eq!(initial.symbol_range, SYMBOL_RANGE_INIT);
+
+        let mut cdf = default_binary_cdf();
+        decoder.read_symbol(&mut cdf).unwrap();
+        let checkpoint = decoder.checkpoint();
+
+        assert_eq!(checkpoint.consumed_bits, decoder.consumed_bits());
+        assert_eq!(checkpoint.symbol_count, 1);
+        assert_eq!(checkpoint.symbol_max_bits, decoder.symbol_max_bits());
+        assert_eq!(checkpoint.symbol_value, decoder.symbol_value);
+        assert_eq!(checkpoint.symbol_range, decoder.symbol_range);
+        assert_ne!(checkpoint, initial);
     }
 
     #[test]

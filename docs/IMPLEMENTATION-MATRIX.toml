@@ -103,7 +103,7 @@ openspec_change = "symbol-decoder-foundation"
 tracking_issue = ""
 owner = "decoder"
 risk = "high"
-notes = "Adds the generic AV2 §8.2 symbol decoder foundation over a bounded tile payload byte slice: init_symbol(sz) arithmetic setup, read_bool(), read_literal(n), caller-supplied-CDF read_symbol(cdf), optional CDF updates using generated §9.2 Prob_Inc / Para_Adjustment_List tables, typed CDF/state errors, signed SymbolMaxBits, and exit_symbol() trailing/padding validation. The row intentionally stays partial because the same §8.2.2 and §8.2.4 sections also cover Tile/Saved CDF copies and CDF averaging that belong with future tile-CDF-bank work. This is not runtime tile decode: §8.3 syntax-element CDF selection, Tile/Saved CDF banks, default CDF initialization, decode_tile(), tile syntax traversal, reconstruction, hashes, runtime Y4M output, AVM/dav2d invocation, and decoder orchestration remain out of scope."
+notes = "Adds the generic AV2 §8.2 symbol decoder foundation over a bounded tile payload byte slice: init_symbol(sz) arithmetic setup, read_bool(), read_literal(n), caller-supplied-CDF read_symbol(cdf), optional CDF updates using generated §9.2 Prob_Inc / Para_Adjustment_List tables, typed CDF/state errors, signed SymbolMaxBits, a lossless arithmetic-state checkpoint for caller-owned syntax frontiers, and exit_symbol() trailing/padding validation. The row intentionally stays partial because the same §8.2.2 and §8.2.4 sections also cover Tile/Saved CDF copies and CDF averaging that belong with future tile-CDF-bank work. This is not runtime tile decode: §8.3 syntax-element CDF selection, Tile/Saved CDF banks, default CDF initialization, decode_tile(), tile syntax traversal, reconstruction, hashes, runtime Y4M output, AVM/dav2d invocation, and decoder orchestration remain out of scope."
 
 [feature.status]
 mapped = "done"
@@ -5943,7 +5943,7 @@ openspec_change = "decode-limits-runtime-api"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a source-backed, dependency-free `splot-decode` runtime API for caller-provided decode resource policy: `DecodeOptions`, `DecodeLimits`, typed limit names and units, thresholds, inclusive pure checks, local typed limit errors, checked arithmetic helpers, and allocation-size handoff checks. The API uses `max_ivf_frame_records`, `max_reference_slots`, `max_reference_store_bytes`, and `max_tile_payload_bytes` to avoid overclaiming AV2 semantics, provides finite defaults plus explicit zero/unlimited constructors, and keeps all thresholds as repository policy rather than AV2 conformance limits. This is policy infrastructure only: it does not consume bytes, allocate from bitstream-derived values, emit the planned resource-limit diagnostic, change CLI behavior, compute frame hashes, write Y4M, reconstruct pixels, store references, invoke external decoders, or change the dependency graph."
+notes = "Adds a source-backed, dependency-free `splot-decode` runtime API for caller-provided decode resource policy: `DecodeOptions`, `DecodeLimits`, typed limit names and units, thresholds, inclusive pure checks, local typed limit errors, checked arithmetic helpers, and allocation-size handoff checks. The API uses `max_ivf_frame_records`, `max_reference_slots`, `max_reference_store_bytes`, `max_tile_partition_steps`, and `max_tile_payload_bytes` to avoid overclaiming AV2 semantics, provides finite defaults plus explicit zero/unlimited constructors, and keeps all thresholds as repository policy rather than AV2 conformance limits. This is policy infrastructure only: it does not consume bytes, allocate from bitstream-derived values, emit the planned resource-limit diagnostic, change CLI behavior, compute frame hashes, write Y4M, reconstruct pixels, store references, invoke external decoders, or change the dependency graph."
 
 [feature.status]
 mapped = "done"
@@ -6545,6 +6545,67 @@ fixtures = [
     "crates/splot-decode/src/tile_payload/partition_allowed.rs",
     "crates/splot-decode/src/tile_payload/partition_size.rs",
     "openspec/changes/tile-partition-allowed-boundary",
+]
+diagnostics = []
+
+[[feature]]
+id = "DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY"
+name = "Tile partition traversal frontier"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.2.1", "5.20.3.1", "5.20.3.2", "5.20.9.1", "6.19.2.1", "6.19.3", "8.2.5", "8.2.6", "8.3.1", "8.3.2", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-9-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-2-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-3",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-6",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-1",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/partition_traversal.rs"
+openspec_change = "tile-partition-traversal-boundary"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private AV2 §5.20.3.1 partition traversal frontier for the minimal intra tile tier. `partition_traversal.rs` composes the existing partition-size, allowed-set, CDF-context, symbol-read, and partition-decision boundaries to advance from a tile work unit to the first in-frame `decode_block()` frontier. It clones tile CDF rows transactionally, initializes a fresh §8.2 symbol decoder at the work-unit tile byte span, commits CDF mutations only after success, derives square-split availability from tile-local bounds, records the decision prefix, pending sibling child calls, symbol counters, block-frontier coordinates, and the §8.2 arithmetic decoder checkpoint before block syntax, and checks resource/coordinate failures with typed errors including a dedicated `max_tile_partition_steps` budget. It gates §5.20.10.4 root `read_lr()` syntax with typed unsupported state before any partition symbol reads. It computes the active extended-SDP path as `enable_extended_sdp && !FrameIsIntra`, so an intra frame with only the sequence capability flag remains in tier. This row does not implement full `decode_tile()` traversal, §5.20.2.1 setup side effects, SDP, §5.20.10.4 loop-restoration `read_lr()` syntax, BRU, bridge, inter behavior, `decode_block()` syntax, `MiSizes` or neighbor-state mutation, `exit_symbol()`, Saved CDF copyback/averaging, block-decoder continuation APIs, reconstruction, output, reference refresh, public APIs, AVM/dav2d invocation, or scheduler/dependency changes."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs",
+]
+commands = [
+    "cargo test -p splot-decode partition_traversal --locked",
+    "cargo test -p splot-decode tile_payload --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload.rs",
+    "crates/splot-decode/src/tile_payload/partition.rs",
+    "crates/splot-decode/src/tile_payload/partition_allowed.rs",
+    "crates/splot-decode/src/tile_payload/partition_size.rs",
+    "crates/splot-decode/src/tile_payload/partition_traversal.rs",
+    "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs",
+    "openspec/changes/archive/2026-06-15-tile-partition-traversal-boundary",
 ]
 diagnostics = []
 

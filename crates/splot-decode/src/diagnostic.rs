@@ -321,6 +321,7 @@ const fn resource_limit_spec_section(name: DecodeLimitName) -> Option<&'static s
         | DecodeLimitName::MaxReferenceSlots
         | DecodeLimitName::MaxReferenceStoreBytes
         | DecodeLimitName::MaxTileCount
+        | DecodeLimitName::MaxTilePartitionSteps
         | DecodeLimitName::MaxTilePayloadBytes
         | DecodeLimitName::MaxOutputBytes => Some("7.1"),
     }

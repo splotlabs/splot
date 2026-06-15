@@ -20,6 +20,7 @@ mod input;
 mod partition;
 mod partition_allowed;
 mod partition_size;
+mod partition_traversal;
 
 use core::fmt;
 
