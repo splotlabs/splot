@@ -16,10 +16,13 @@
 //! - Tables whose element values are all integer literals are **generated** as
 //!   nested fixed-size `i32` arrays (the array shape is inferred from the brace
 //!   nesting; named dimension expressions are recorded as a doc comment only).
-//! - Tables whose element values use unresolved symbolic tokens (AV2 enum names
-//!   like `TX_4X4`, or the `reserved` placeholder) cannot be emitted as integer
-//!   arrays without an enum-value map, so they are listed in an **explicit
-//!   skip-allowlist** ([`SKIP_ALLOWLIST`]) and enumerated in the run report.
+//! - The two § 9.2 partition-size tables with `BLOCK_*` element values are also
+//!   generated after resolving those spec-defined block-size symbols.
+//! - Tables whose element values use other unresolved symbolic tokens (AV2 enum
+//!   names like `TX_4X4`, or the `reserved` placeholder) cannot be emitted as
+//!   integer arrays without an enum-value map, so they are listed in an
+//!   **explicit skip-allowlist** ([`SKIP_ALLOWLIST`]) and enumerated in the run
+//!   report.
 //! - Any other unmodeled construct (a declaration the parser cannot classify, or a
 //!   symbolic table that is *not* in the allowlist) **fails loudly** rather than
 //!   being silently dropped.
@@ -27,11 +30,14 @@
 //! `--check` regenerates into memory and diffs against the committed files,
 //! failing on any drift; it is wired into `cargo xtask ci`.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
+
+mod block_symbols;
 
 /// Relative path (from the workspace root) of the committed § 9 attachment.
 const ATTACHMENT_REL: &str = "docs/spec/av2/1.0.0/attachments/all_tables.h";
@@ -108,18 +114,10 @@ const SKIP_ALLOWLIST: &[(&str, &str)] = &[
         "Adjusted_Tx_Size",
         "TxSize enum element values (TX_4X4, ...)",
     ),
-    (
-        "H_Partition_Midsize",
-        "BlockSize enum element values (BLOCK_*)",
-    ),
     ("Max_Tx_Size_Rect", "TxSize enum element values (TX_*)"),
     (
         "Mode_To_Txfm",
         "TxType enum element values (DCT_DCT, ADST_ADST, ...)",
-    ),
-    (
-        "Partition_Subsize",
-        "BlockSize enum element values (BLOCK_*)",
     ),
     (
         "Size_To_Tx_Type_Group_Vert_And_Horz",
@@ -261,6 +259,12 @@ struct Outputs {
     skipped: Vec<(String, String)>,
 }
 
+/// A table body ready for rendering.
+struct GeneratedTable<'a> {
+    decl: &'a Decl,
+    body: Cow<'a, str>,
+}
+
 /// Parse the attachment, assign each table to a § 9 module, and render every
 /// generated module plus `mod.rs`. Pure over the committed inputs (no timestamps,
 /// stable ordering), so two runs are byte-identical.
@@ -276,12 +280,16 @@ fn generate(root: &Path) -> Result<Outputs> {
 
     // Group declarations by module, preserving the attachment's declaration order
     // within each module for stable output.
-    let mut by_module: BTreeMap<&'static str, Vec<&Decl>> = BTreeMap::new();
+    let mut by_module: BTreeMap<&'static str, Vec<GeneratedTable<'_>>> = BTreeMap::new();
     let mut skipped: Vec<(String, String)> = Vec::new();
     let mut generated = 0usize;
 
     for decl in &decls {
-        if !decl.numeric {
+        let body = if decl.numeric {
+            Cow::Borrowed(decl.body.as_str())
+        } else if let Some(body) = block_symbols::resolve_body(&decl.name, &decl.body)? {
+            Cow::Owned(body)
+        } else {
             match skip_reason.get(decl.name.as_str()) {
                 Some(reason) => {
                     skipped.push((decl.name.clone(), (*reason).to_string()));
@@ -293,14 +301,17 @@ fn generate(root: &Path) -> Result<Outputs> {
                     decl.name
                 ),
             }
-        }
+        };
         let module = section_of.get(decl.name.as_str()).copied().ok_or_else(|| {
             anyhow::anyhow!(
                 "gen-tables: table `{}` could not be assigned to a § 9 module",
                 decl.name
             )
         })?;
-        by_module.entry(module).or_default().push(decl);
+        by_module
+            .entry(module)
+            .or_default()
+            .push(GeneratedTable { decl, body });
         generated += 1;
     }
 
@@ -563,7 +574,7 @@ fn is_numeric_body(body: &str) -> bool {
 
 /// Render one § 9 module file: SPDX + provenance header, then one `pub static` per
 /// table.
-fn render_module(section: &Section, decls: &[&Decl]) -> Result<String> {
+fn render_module(section: &Section, decls: &[GeneratedTable<'_>]) -> Result<String> {
     // Writing to a `String` is infallible, so `write!`/`writeln!` results are
     // discarded with `let _ = ...` (the workspace denies `unwrap`).
     let mut out = String::new();
@@ -582,10 +593,11 @@ fn render_module(section: &Section, decls: &[&Decl]) -> Result<String> {
         "#![allow(clippy::all, clippy::pedantic)]\n#![allow(clippy::unreadable_literal)]\n\n",
     );
 
-    for decl in decls {
+    for table in decls {
+        let decl = table.decl;
         let rust_name = to_screaming_snake(&decl.name);
-        let value = render_value(&decl.body)?;
-        let ty = array_type(&decl.body)?;
+        let value = render_value(&table.body)?;
+        let ty = array_type(&table.body)?;
         // Collapse the declaration dims onto one line so multi-line declarations
         // (the dims spill across lines in the attachment) stay inside the `///`.
         let dims = normalize_ws(&decl.dims);
@@ -917,8 +929,8 @@ mod tests {
                 "committed {rel} drifted from gen-tables output"
             );
         }
-        // Sanity: the expected coverage (234 numeric tables, 11 allowlisted skips).
-        assert_eq!(a.generated, 234, "generated-table count changed");
+        // Sanity: 234 numeric tables plus the two resolved `BLOCK_*` tables.
+        assert_eq!(a.generated, 236, "generated-table count changed");
         assert_eq!(a.skipped.len(), SKIP_ALLOWLIST.len());
         Ok(())
     }

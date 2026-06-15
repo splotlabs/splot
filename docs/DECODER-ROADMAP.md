@@ -88,9 +88,13 @@ crate-private single-symbol boundary for the five corresponding § 5.20.3.2
 partition-entry `S()` reads. It also has a crate-private § 5.20.3.2 partition
 decision boundary that returns one typed partition outcome from caller-provided
 allowed/implied facts, BRU-active state, rect-type facts, the existing `S()`
-read helper, and the isolated `uneven_4way_partition_type L(1)` read. The tile
-payload boundary then stops at structured `decode/unsupported-feature` metadata
-for the unimplemented `decode_tile()` block syntax. A crate-private
+read helper, and the isolated `uneven_4way_partition_type L(1)` read. It also
+has a crate-private § 9.2 partition-size table boundary backed by generated
+`splot-core` `Partition_Subsize` and `H_Partition_Midsize` arrays; the wrapper
+returns valid block sizes or an explicit `BLOCK_INVALID` result for future
+partition traversal. The tile payload boundary then stops at structured
+`decode/unsupported-feature` metadata for the unimplemented `decode_tile()`
+block syntax. A crate-private
 source-backed derivation bridge
 now validates a selected `DecodePlannedObu` against a borrowed `splot-core`
 `ObuEnvelope`, slices only the complete § 5.19-derived § 5.20 payload region,
