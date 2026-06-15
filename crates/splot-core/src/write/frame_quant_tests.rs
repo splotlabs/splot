@@ -829,6 +829,7 @@ mod tests {
         let quant = CoreSeqQuantView {
             choose_tcq_per_frame: true,
             enable_parity_hiding: true,
+            separate_uv_delta_q: true,
             ..base_quant()
         };
         let mut segmentation = seg_params(true);
@@ -888,9 +889,14 @@ mod tests {
                 QmSetLevels::default(),
             ],
         };
+        // separate_uv_delta_q so the distinct qm_v in the level is a canonical QM table.
+        let quant = CoreSeqQuantView {
+            separate_uv_delta_q: true,
+            ..base_quant()
+        };
         roundtrip_lossless(
             Bits::default(),
-            &base_quant(),
+            &quant,
             &quant_params(40),
             &qm,
             &no_delta_q(),
@@ -1017,6 +1023,82 @@ mod tests {
             WriteError::ValueTooWide {
                 value: 100,
                 width_bits: 2
+            }
+        );
+        assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
+    fn lossless_qm_disabled_nonzero_level_rejected() {
+        // With using_qmatrix off the parser leaves seg_qm_levels zeroed; a stored non-zero
+        // triple could not have been produced.
+        let quant = base_quant();
+        let data = Bits::default().into_bytes();
+        let mut info = parse_lossless_info(
+            &mut reader(&data),
+            &quant,
+            &quant_params(40),
+            &qm_disabled(),
+            &no_delta_q(),
+            &seg_params(false),
+            8,
+        )
+        .unwrap();
+        info.seg_qm_levels[0] = [1, 2, 3];
+        let mut writer = BitWriter::new();
+        let err = write_lossless_info(
+            &mut writer,
+            &info,
+            &quant,
+            &quant_params(40),
+            &qm_disabled(),
+            &no_delta_q(),
+            &seg_params(false),
+            8,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            WriteError::NonCanonicalFrameHeader {
+                what: "seg_qm_level_disabled"
+            }
+        );
+        assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
+    fn lossless_tail_beyond_max_segments_rejected() {
+        // The parser only touches segments 0..MaxSegments; a stored entry beyond it (here
+        // lossless_array[8] with max_segments == 8) could not have been produced.
+        let quant = base_quant();
+        let data = Bits::default().into_bytes();
+        let mut info = parse_lossless_info(
+            &mut reader(&data),
+            &quant,
+            &quant_params(40),
+            &qm_disabled(),
+            &no_delta_q(),
+            &seg_params(false),
+            8,
+        )
+        .unwrap();
+        info.lossless_array[8] = true;
+        let mut writer = BitWriter::new();
+        let err = write_lossless_info(
+            &mut writer,
+            &info,
+            &quant,
+            &quant_params(40),
+            &qm_disabled(),
+            &no_delta_q(),
+            &seg_params(false),
+            8,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            WriteError::NonCanonicalFrameHeader {
+                what: "lossless_tail"
             }
         );
         assert_eq!(writer.bit_len(), 0);

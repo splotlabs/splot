@@ -636,19 +636,12 @@ fn check_lossless_encodable(
     segmentation: &SegmentationParams,
     max_segments: u8,
 ) -> WriteResult<DerivedLossless> {
-    // write_lossless_info derives the per-segment qm_index field width from
-    // qm.pic_qm_num_minus_1 (qm_index is f(CeilLog2(qmNum)), § 5.18.2 /
-    // `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`). The f(2)
-    // pic_qm_num_minus_1 encodes only 0..=3, so a non-canonical value (the parser could
-    // never produce one) would drive an over-wide qm_index field and emit bits. Reject it
-    // before any bit (mirroring check_setup_qm_encodable) so reject-before-write holds even
-    // when write_lossless_info is called without a prior write_setup_qm_params.
-    if qm.using_qmatrix && usize::from(qm.pic_qm_num_minus_1) >= MAX_PIC_QM_NUM {
-        return Err(WriteError::ValueTooWide {
-            value: u64::from(qm.pic_qm_num_minus_1),
-            width_bits: 2,
-        });
-    }
+    // write_lossless_info consumes `qm` (its pic_qm_num drives the qm_index field width, its
+    // levels drive the reverse-lookup), so the whole QM table must be a model the § 5.18.6.2
+    // parser could have produced — fully validate it here so reject-before-write holds even
+    // when write_lossless_info is called without a prior write_setup_qm_params (the two entry
+    // points then reject an identical set of non-canonical `qm`).
+    check_setup_qm_encodable(qm, quant, segmentation.segmentation_enabled)?;
 
     let count = usize::from(max_segments).min(MAX_SEGMENTS);
 
@@ -701,7 +694,28 @@ fn check_lossless_encodable(
                 // Canonicalization 3: recover the smallest qm_index reproducing the triple.
                 *qm_index_slot = recover_qm_index(qm, stored_levels)?;
             }
+        } else if stored_levels != [0, 0, 0] {
+            // § 5.18.2: when using_qmatrix is 0 the loop never writes SegQMLevel, so the parser
+            // leaves it zeroed; a stored non-zero triple could not have been produced.
+            return Err(WriteError::NonCanonicalFrameHeader {
+                what: "seg_qm_level_disabled",
+            });
         }
+    }
+
+    // § 5.18.2: the loop runs only for segmentId < MaxSegments, so the parser leaves every
+    // entry at or beyond `count` at its default (LosslessArray = false, SegQMLevel = 0). A
+    // stored model with non-default tail entries could not have been produced.
+    if info.lossless_array.iter().skip(count).any(|&l| l)
+        || info
+            .seg_qm_levels
+            .iter()
+            .skip(count)
+            .any(|&t| t != [0, 0, 0])
+    {
+        return Err(WriteError::NonCanonicalFrameHeader {
+            what: "lossless_tail",
+        });
     }
 
     // The stored coded_lossless / has_lossless_segment must match the re-derivation.

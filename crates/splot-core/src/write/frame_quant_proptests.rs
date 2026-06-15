@@ -158,20 +158,30 @@ mod proptests {
             // "levels beyond qmNum are zeroed" invariant, so the model is exactly what
             // `parse_setup_qm_params` would produce (the qm_index reverse-lookup over the
             // full coded f-field domain then always finds the stored triple).
+            // Keep the (qm, segmentation) pairing parser-reachable: parse_setup_qm_params
+            // reads pic_qm_num_minus_1 only when using_qmatrix && segmentation_enabled
+            // (otherwise inferred 0), and leaves every level zeroed when !using_qmatrix.
+            let pic_qm_num_minus_1 = if using_qmatrix && seg_enabled {
+                pic_qm_num_minus_1
+            } else {
+                0
+            };
             let qm_num = usize::from(pic_qm_num_minus_1) + 1;
             let mut levels = [QmSetLevels::default(); MAX_PIC_QM_NUM];
-            for (i, (slot, (y, u, v))) in levels.iter_mut().zip(qm_levels.iter()).enumerate() {
-                if i >= qm_num {
-                    break; // levels at/beyond qmNum stay the zeroed default
+            if using_qmatrix {
+                for (i, (slot, (y, u, v))) in levels.iter_mut().zip(qm_levels.iter()).enumerate() {
+                    if i >= qm_num {
+                        break; // levels at/beyond qmNum stay the zeroed default
+                    }
+                    let (qm_y, mut qm_u, mut qm_v) = (*y, *u, *v);
+                    if quant.num_planes <= 1 {
+                        qm_u = 0;
+                        qm_v = 0;
+                    } else if !quant.separate_uv_delta_q {
+                        qm_v = qm_u;
+                    }
+                    *slot = QmSetLevels { qm_y, qm_u, qm_v };
                 }
-                let (qm_y, mut qm_u, mut qm_v) = (*y, *u, *v);
-                if quant.num_planes <= 1 {
-                    qm_u = 0;
-                    qm_v = 0;
-                } else if !quant.separate_uv_delta_q {
-                    qm_v = qm_u;
-                }
-                *slot = QmSetLevels { qm_y, qm_u, qm_v };
             }
             let qm = SetupQmParams {
                 using_qmatrix,
