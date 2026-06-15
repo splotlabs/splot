@@ -64,14 +64,88 @@ depends on them.
 
 Full conformance requires named output variants:
 
-- `raw_intermediate_output`: decoded output frames before film-grain synthesis;
-- `post_film_grain_output`: output frames after normative film-grain synthesis.
+- `raw_intermediate_output`: the AV2 § 7.21.2 intermediate output sample set
+  before film-grain synthesis;
+- `post_film_grain_output`: the output sample set after the AV2 § 7.21.7
+  film-grain synthesis process when that process applies.
 
-The stable hash contract keeps `splot-dfh-sha256-v1` for raw intermediate output.
-A future output-equivalence change must define the exact post-film-grain hash
-variant, raw output bytes, Y4M behavior, visible crop handling, chroma plane
-sizes, bit-depth serialization, output order, show-existing behavior, and flush
-behavior before those modes can be claimed as runtime-supported.
+The stable hash contract keeps `splot-dfh-sha256-v1` over
+`av2-output-samples-v1` for `raw_intermediate_output`. A future
+post-film-grain hash may use the same digest algorithm and sample-byte stream,
+but it must carry `post_film_grain_output` as the variant identifier and cannot
+be claimed supported until film-grain synthesis is implemented and tested.
+Streams with no applied film grain may produce identical bytes for both
+variants; the variant identifier still remains part of artifact identity.
+
+Runtime output order is AV2 output-process order after supported operating-point
+or layer selection. Each emitted output event receives a zero-based
+`output_index`, including show-existing events that reuse stored frame samples.
+Implicit output and flush output are appended in the order required by § 7.21.4
+and § 7.21.5. Output order must not depend on decode order, OBU order,
+reference-slot index, hash completion order, file-write completion order, or
+worker completion order. For § 7.21.4 implicit-output eligibility, a
+show-existing output reached through `output_process(-1)` with
+`ShowExistingFrame == 1` does not mark the referenced frame as already output;
+only an explicit output of that reference index consumes that implicit/flush
+eligibility.
+
+Canonical output sample bytes use the visible output rectangle from the AV2
+output process. Luma is `w` by `h`; non-monochrome chroma planes are
+`((w + subX) >> subX)` by `((h + subY) >> subY)`; monochrome output omits U and
+V. Plane order is Y, then U, then V, in raster order within each present plane.
+8-bit samples serialize as one byte, and greater-than-8-bit samples serialize
+as two little-endian bytes. Stride padding, backing allocation padding,
+reference-store metadata, OBU bytes, container bytes, and decoded-frame-hash
+metadata are excluded from sample-byte hashes and raw output payloads.
+
+Future successful `splot decode --output-format hash --json` output is a success
+artifact, not the current diagnostic JSON object. Its contract is:
+
+```text
+contract_id = "splot.decode.hash_report"
+contract_version = 1
+selected_output_variants = [ ... ]
+selected_thread_policy
+frames = [
+  {
+    output_index,
+    visible_luma_left,
+    visible_luma_top,
+    visible_luma_width,
+    visible_luma_height,
+    chroma_left,
+    chroma_top,
+    chroma_width,
+    chroma_height,
+    bit_depth,
+    pixel_format,
+    hashes = [
+      {
+        variant,
+        algorithm_id,
+        byte_stream_id,
+        digest_hex
+      }
+    ]
+  }
+]
+```
+
+`selected_output_variants` records the report-level requested variants even for
+empty output. `selected_thread_policy` records the resolved CLI/runtime thread
+policy used for the decode run. `frames` are sorted by `output_index`.
+`visible_luma_left` and `visible_luma_top` record the visible crop origin used
+to derive the output sample arrays. For monochrome output, `chroma_left`,
+`chroma_top`, `chroma_width`, and `chroma_height` are omitted; otherwise
+`chroma_left = visible_luma_left >> subX` and
+`chroma_top = visible_luma_top >> subY`. `digest_hex` is exactly 64 lowercase
+hexadecimal characters for `splot-dfh-sha256-v1`.
+
+Future raw output is concatenated canonical sample bytes for each output event
+in output-index order for the selected variant, with no header or metadata
+bytes. This contract does not add a current `--output-format raw` CLI mode.
+Future Y4M output represents the chosen AV2 output-frame sample set using the
+repository-owned Y4M container policy; Y4M container bytes are not AV2 syntax.
 
 ## Diagnostics
 
@@ -89,6 +163,12 @@ Future full decoder work may add more rules such as
 `decode/output-error`, but every emitted rule must be registered, tested, and
 linked to decoder support or coverage rows.
 
+Any future successful runtime file-output mode must register and emit
+`decode/output-error` for output path creation, temporary-file write, flush,
+sync, rename, parent-directory sync, cleanup, or serialization failures that are
+not AV2 bitstream conformance failures. These failures must use diagnostic JSON
+on `--json` paths, not partial success artifacts.
+
 `decode/resource-limit` is local `splot` resource policy over measured values.
 It is not an AV2 conformance failure by itself.
 
@@ -101,8 +181,21 @@ reference-store bytes, tile counts, tile payload bytes, CDF/table sizes,
 transform buffers, output bytes, and worker queue sizes.
 
 Runtime file output must be atomic before any successful `-o` mode is claimed:
-write a temp file, complete serialization, flush according to the chosen policy,
-rename only after success, and leave no partial final-path output on failure.
+write a same-directory temp file, complete serialization, flush user-space
+buffers, sync the temp file's contents and metadata, rename only after those
+steps succeed, then sync the parent directory so the final name is durably
+published. If decode, reconstruction, hash serialization, raw/Y4M
+serialization, validation, temp-file write, flush, temp-file sync, rename, or
+any other pre-rename publication step fails, an absent final path remains absent
+and an existing final path remains byte-for-byte unchanged. If rename succeeds
+but the following parent-directory sync fails, the command must report
+`decode/output-error` as a durability failure; the final path may already contain
+the complete serialized output, but it must never contain a partially serialized
+payload. Any such failure is reported as a registered decoder diagnostic, not as
+a partial success artifact. Output-derived frame counts, dimensions, row byte
+counts, total output bytes, JSON frame arrays, raw payload bytes, and Y4M
+payload bytes must use checked arithmetic and `DecodeLimits` before allocation,
+indexing, or output publication.
 
 ## Evidence Boundary
 

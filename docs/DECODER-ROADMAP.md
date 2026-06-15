@@ -98,6 +98,14 @@ decode-relevant AV2 section-family ownership map is generated in
 [`DECODER-SPEC-COVERAGE.md`](./DECODER-SPEC-COVERAGE.md). These documents expose
 current unsupported and partial runtime decoder gaps; they do not make the
 plan-only `splot decode` entry point a supported decoder.
+The output-equivalence contract tracked by
+`DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` defines the future runtime output
+identity target: `raw_intermediate_output` and `post_film_grain_output`
+variants, `splot-dfh-sha256-v1` raw-intermediate hash reporting, visible sample
+bytes, show-existing and flush output order, raw/Y4M output policy, metadata
+hash separation, and atomic file publication. It is a contract for later
+runtime rows, not a current hash, raw, Y4M, film-grain, or output-order support
+claim.
 Emitted `splot decode` diagnostic rule IDs are registered in
 [`DECODER-DIAGNOSTICS.md`](./DECODER-DIAGNOSTICS.md), enforced by
 `cargo xtask check-diagnostic-registry`.
@@ -144,8 +152,11 @@ The tier is deliberately small:
 
 Runtime `splot decode` Y4M output remains unsupported until a future
 byte-consuming decode/output row wires the `splot-recon` Y4M writer to real
-decoded frames and tests the CLI output path. The CLI parse contract accepts
-future hash-output selection with `--output-format hash`; the
+decoded frames and tests the CLI output path, including the atomic publication
+rules from the output-equivalence contract. The CLI parse contract accepts
+future hash-output selection with `--output-format hash`; future hash success
+JSON must use the separate `splot.decode.hash_report` schema rather than the
+current diagnostic JSON shape. The
 compatibility form `splot decode <input> -o <output>` remains the implicit Y4M
 form, and `--output-format y4m -o <output>` is the explicit Y4M form. All valid
 forms still emit the intentional unsupported diagnostic until runtime decode
