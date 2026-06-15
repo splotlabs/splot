@@ -69,6 +69,66 @@ pub enum WriteError {
         /// descriptors share one variant.
         value: i64,
     },
+
+    /// `trailing_bits(0)` was requested. The parser rejects an empty trailing-bits
+    /// field (AV2 v1.0.0 § 5.2.3,
+    /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2-3`, always writes at least
+    /// the `trailing_one_bit`), so the writer never produces one.
+    #[error("trailing_bits requires at least one bit")]
+    EmptyTrailingBits,
+
+    /// An [`ObuHeader`](crate::obu::ObuHeader)'s `has_header_extension` flag
+    /// disagrees with its `header_size_bytes` (the flag is `true` iff the header is
+    /// two bytes). Such a header could never have been produced by the parser.
+    #[error(
+        "OBU header extension flag ({flag}) is inconsistent with header_size_bytes ({size_bytes})"
+    )]
+    InconsistentHeader {
+        /// The header's `has_header_extension` flag.
+        flag: bool,
+        /// The header's `header_size_bytes`.
+        size_bytes: u8,
+    },
+
+    /// A no-extension [`ObuHeader`](crate::obu::ObuHeader) carries layer ids that the
+    /// AV2 v1.0.0 § 5.2.2 (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2`)
+    /// parser could never infer (it derives `obu_mlayer_id = 0` and `obu_xlayer_id`
+    /// to `GLOBAL_XLAYER_ID` for the global-scope types or `0` otherwise). Such ids are unrepresentable without the extension byte, so the
+    /// writer rejects them rather than silently dropping them.
+    #[error(
+        "no-extension OBU header has non-inferable layer ids (mlayer {embedded}, xlayer {extended})"
+    )]
+    NonInferableLayerIds {
+        /// The header's `embedded_layer_id` (`obu_mlayer_id`).
+        embedded: u8,
+        /// The header's `extended_layer_id` (`obu_xlayer_id`).
+        extended: u8,
+    },
+
+    /// An Annex B OBU's total byte count (`header_size_bytes + payload.len()`)
+    /// exceeds the LEB128 `u32` size domain (AV2 v1.0.0 § 4.11.6,
+    /// `docs/spec/av2/1.0.0/04-conventions.md#s-4-11-6`).
+    #[error("OBU size {total} exceeds the u32 leb128 domain")]
+    ObuTooLarge {
+        /// The computed total byte count that does not fit in a `u32`.
+        total: u64,
+    },
+
+    /// A byte-granular framer (e.g. `write_annexb_obu`) was given a writer that is
+    /// not on a byte boundary; the bytes it emits would be mis-positioned. The error
+    /// is returned before any byte is written.
+    #[error("writer is not byte-aligned")]
+    WriterNotByteAligned,
+
+    /// An [`ObuHeader`](crate::obu::ObuHeader)'s `obu_type` is a non-canonical
+    /// `ObuType::Reserved(raw)` whose raw value the § 5.2.2 parser maps to a
+    /// different variant on reparse (e.g. `Reserved(1)` reparses as a named type), so
+    /// writing it would break `read(write(x)) == x`. Rejected before any byte.
+    #[error("non-canonical obu_type with raw value {raw}")]
+    NonCanonicalObuType {
+        /// The header's `obu_type.raw()`.
+        raw: u8,
+    },
 }
 
 /// Result alias for [`crate::write::BitWriter`] operations.

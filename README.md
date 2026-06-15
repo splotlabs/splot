@@ -83,7 +83,7 @@ same six fields, always:
 | Header-level and container conformance validation | working |
 | `splot inspect` OBU dump (text and JSON, partial-parse tolerant) | working |
 | `splot explain` diagnostic catalog (text and JSON, `--list`) | working |
-| Bitstream **writer** foundation (`BitWriter` — inverse of every reader primitive, round-trip-proven) | library-only |
+| Bitstream **writer** (`BitWriter` primitives + OBU header / trailing-bits / Annex B framing, all inverse-of-parser, round-trip-proven) | library-only |
 | Conformance vectors, AVM differential testing | planned |
 | `splot decode` / `splot encode` | stubs — exit with a clear error |
 
