@@ -17,6 +17,7 @@
 
 mod cdf;
 mod input;
+mod partition;
 
 use core::fmt;
 

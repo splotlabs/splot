@@ -47,6 +47,30 @@ Every syntax-element implementation carries a doc comment (or a
 `// TODO(spec: <FEATURE-ID>): …` marker) naming the AV2 section it derives from.
 Never invent syntax, constants, or semantics.
 
+## Decoder tile partition surface
+
+Decoder partition work uses these local mirror citations:
+
+- AV2 § 5.20.3.2 read partition syntax:
+  [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2).
+- AV2 § 6.19.3 partition structure semantics:
+  [`docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-3`](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-3).
+- AV2 § 8.2.5 / § 8.2.6 literal and symbol parsing:
+  [`docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5`](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-5) and
+  [`docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-6`](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6).
+- AV2 § 8.3.1 / § 8.3.2 syntax-element CDF selection:
+  [`docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-1`](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-1) and
+  [`docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2).
+- AV2 § 9.2 / § 9.3 generated conversion and default-CDF tables:
+  [`docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2`](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) and
+  [`docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3`](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3).
+
+Per-feature support status stays in
+[`IMPLEMENTATION-MATRIX.toml`](./IMPLEMENTATION-MATRIX.toml) and
+[`DECODER-SUPPORT-MATRIX.toml`](./DECODER-SUPPORT-MATRIX.toml); this section is
+only the citation surface for tile partition syntax, semantics, and parsing
+helpers.
+
 ## Non-normative containers
 
 IVF support (`AV2-IVF-CONTAINER`) is tracked in the implementation matrix because
