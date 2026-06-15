@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 176 feature(s); 127 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-14. 177 feature(s); 128 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -109,6 +109,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.17.10](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-10) | Metadata scan type syntax | `AV2-5.17.10-METADATA-SCAN-TYPE` | ✅ | ✅ | ✅ | ✅ | 5 |
 | [§ 5.17.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-11) | Metadata temporal point info syntax | `AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 5.17.12](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-12) | Metadata decoded frame hash syntax | `AV2-5.17.12-METADATA-DECODED-FRAME-HASH` | ✅ | ✅ | 🟡 | ✅ | 1 |
+| [§ 5.17.12](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-12) | Metadata decoded frame hash syntax | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
 | [§ 5.17.13](./spec/av2/1.0.0/05-syntax-structures.md#s-5-17-13) | Metadata user data unregistered syntax | `AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 5.18](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18) | Frame header syntax | `AV2-5.18-FRAME-HEADER` | ✅ | 🟡 | 🟡 | ✅ | 4 |
 | [§ 5.18.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-1) | General frame header syntax | `AV2-5.18.1-FRAME-HEADER-GENERAL` | ✅ | 🟡 | 🟡 | ✅ | 2 |
@@ -168,6 +169,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4) | Sequence header OBU semantics | `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` | ✅ | ✅ | 🟡 | ✅ | 10 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `AV2-5.4.1-SEQUENCE-HEADER-GENERAL` | ✅ | ✅ | ✅ | ✅ | 6 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
+| [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `RECON-Y4M-OUTPUT-WRITER` | ✅ | — | ✅ | ✅ | — |
@@ -232,6 +234,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.16.11](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-11) | Metadata temporal point info semantics | `AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 6.16.12](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-12) | Metadata user data unregistered semantics | `AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 6.16.13](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13) | Metadata decoded frame hash semantics | `AV2-5.17.12-METADATA-DECODED-FRAME-HASH` | ✅ | ✅ | 🟡 | ✅ | 1 |
+| [§ 6.16.13](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13) | Metadata decoded frame hash semantics | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
 | [§ 6.16.13](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13) | Metadata decoded frame hash semantics | `RECON-FRAME-HASH-DIGEST` | ✅ | — | — | ✅ | — |
 | [§ 6.16.13](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13) | Metadata decoded frame hash semantics | `RECON-HASH-INPUT-SERIALIZATION` | ✅ | — | — | ✅ | — |
 | [§ 6.16.13](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13) | Metadata decoded frame hash semantics | `RECON-Y4M-OUTPUT-WRITER` | ✅ | — | ✅ | ✅ | — |
@@ -247,9 +250,11 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `AV2-5.18.4-FRAME-SIZE` | ✅ | 🟡 | 🟡 | ✅ | 2 |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS` | ✅ | — | 🟡 | ✅ | 18 |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
+| [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
 | [§ 6.17.4.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4) | Compute image size function semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
+| [§ 6.17.4.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4) | Compute image size function semantics | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
 | [§ 6.17.4.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4) | Compute image size function semantics | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
 | [§ 6.17.4.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4) | Compute image size function semantics | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
 | [§ 6.17.4.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4) | Compute image size function semantics | `RECON-Y4M-OUTPUT-WRITER` | ✅ | — | ✅ | ✅ | — |
@@ -317,14 +322,24 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.3.22](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-22) | Resolve divisor process | `RECON-INTRA-DC-SQUARE-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 3 |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
+| [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
+| [§ 7.21.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-1) | Output process | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
 | [§ 7.21.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-1) | Output process | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
 | [§ 7.21.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-1) | Output process | `RECON-Y4M-OUTPUT-WRITER` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `RECON-FRAME-HASH-DIGEST` | ✅ | — | — | ✅ | — |
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `RECON-HASH-INPUT-SERIALIZATION` | ✅ | — | — | ✅ | — |
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `RECON-Y4M-OUTPUT-WRITER` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.21.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-3) | Output successive frames process | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
+| [§ 7.21.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-4) | Output implicit output frame process | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
+| [§ 7.21.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-5) | Flush implicit output frames process | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
+| [§ 7.21.6](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-6) | Output frame buffers process | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
+| [§ 7.21.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-7) | Film grain synthesis process | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
+| [§ 7.22](./spec/av2/1.0.0/07-decoding-process.md#s-7-22) | Motion field motion vector storage process | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `AV2-7.23-REFERENCE-FRAME-UPDATE` | ✅ | — | 🟡 | ✅ | 1 |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
+| [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `RECON-REFERENCE-FRAME-STORE` | ✅ | — | — | ✅ | — |
 

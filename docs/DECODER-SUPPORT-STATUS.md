@@ -2,7 +2,7 @@
 
 Generated from `docs/DECODER-SUPPORT-MATRIX.toml` by `cargo xtask decoder-support --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 34 row(s).
+Matrix version 1. Last reviewed 2026-06-14. 35 row(s).
 
 ## Status Counts
 
@@ -10,7 +10,7 @@ Matrix version 1. Last reviewed 2026-06-14. 34 row(s).
 |---|---:|
 | `todo` | 0 |
 | `partial` | 9 |
-| `supported` | 24 |
+| `supported` | 25 |
 | `unsupported-intentional` | 1 |
 | `blocked` | 0 |
 
@@ -19,7 +19,7 @@ Matrix version 1. Last reviewed 2026-06-14. 34 row(s).
 | Tier | Rows |
 |---|---:|
 | `encoder-reuse` | 1 |
-| `foundation` | 19 |
+| `foundation` | 20 |
 | `tier0-plan` | 2 |
 | `tier1-intra` | 12 |
 
@@ -30,6 +30,7 @@ Matrix version 1. Last reviewed 2026-06-14. 34 row(s).
 | `decoder-roadmap` | Decoder roadmap | `DOC-DECODER-ROADMAP` | `foundation` | `supported` | none | cargo xtask check-decoder-support | none | none | `docs/DECODER-ROADMAP.md` |
 | `decoder-support-matrix` | Decoder support matrix and generated status | `DOC-DECODER-SUPPORT-MATRIX` | `foundation` | `supported` | none | cargo xtask check-decoder-support<br>cargo xtask ci | none | none | `docs/DECODER-SUPPORT-MATRIX.toml` |
 | `decoder-full-conformance-contract` | Full decoder conformance contract | `DOC-DECODER-FULL-CONFORMANCE-CONTRACT` | `foundation` | `supported` | none | openspec validate decoder-full-conformance-contract --strict<br>cargo xtask check-decoder-support<br>cargo xtask check-decoder-conformance-coverage | none | none | `docs/DECODER-FULL-CONFORMANCE.md` |
+| `decoder-output-equivalence-contract` | Decoder output equivalence contract | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | `foundation` | `supported` | 5.17.12<br>6.16.13<br>6.4.1<br>6.17.4.1<br>6.17.4.4<br>7.21<br>7.21.1<br>7.21.2<br>7.21.3<br>7.21.4<br>7.21.5<br>7.21.6<br>7.21.7<br>7.22<br>7.23 | openspec validate decoder-output-equivalence-contract --strict<br>cargo xtask check-decoder-support<br>cargo xtask check-decoder-conformance-coverage | none | none | `docs/DECODER-FULL-CONFORMANCE.md; docs/DECODER-ROADMAP.md` |
 | `decoder-conformance-coverage-gate` | Decoder conformance coverage gate | `XTASK-DECODER-CONFORMANCE-COVERAGE` | `foundation` | `supported` | none | xtask/src/decoder_conformance_coverage.rs::tests<br>cargo test -p xtask decoder_conformance_coverage --locked<br>cargo xtask decoder-conformance-coverage --format markdown --output docs/DECODER-SPEC-COVERAGE.md<br>cargo xtask check-decoder-conformance-coverage<br>cargo xtask ci | none | none | `xtask/src/decoder_conformance_coverage.rs; docs/DECODER-SPEC-COVERAGE.md` |
 | `decoder-status-drift-gate` | Decoder support drift gate | `XTASK-DECODER-SUPPORT-STATUS` | `foundation` | `supported` | none | decoder_support::tests::check_decoder_support_detects_drift<br>cargo xtask check-decoder-support | none | none | `xtask/src/decoder_support.rs` |
 | `local-reference-evidence-manifest` | Portable local-reference evidence manifest | `XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST` | `foundation` | `supported` | none | xtask/src/reference_evidence/tests.rs::tests<br>cargo test -p xtask reference_evidence --locked<br>cargo xtask check-reference-evidence<br>cargo xtask check-decoder-support | none | docs/LOCAL-REFERENCE-EVIDENCE.toml records two checked AVM/dav2d raw MD5 agreement entries as non-executable metadata. | `xtask/src/reference_evidence.rs` |

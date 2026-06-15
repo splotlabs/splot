@@ -6412,6 +6412,63 @@ fixtures = []
 diagnostics = ["decode/unsupported-feature", "decode/malformed-source", "decode/resource-limit"]
 
 [[feature]]
+id = "DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT"
+name = "Decoder output equivalence contract"
+category = "docs"
+kind = "docs"
+spec_sections = ["5.17.12", "6.16.13", "6.4.1", "6.17.4.1", "6.17.4.4", "7.21", "7.21.1", "7.21.2", "7.21.3", "7.21.4", "7.21.5", "7.21.6", "7.21.7", "7.22", "7.23"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-17-12",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-3",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-4",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-5",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-6",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-7",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-22",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-23",
+]
+crate = "docs"
+module = "docs/DECODER-FULL-CONFORMANCE.md"
+openspec_change = "decoder-output-equivalence-contract"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Defines the future decoder output identity contract before runtime output support: raw_intermediate_output and post_film_grain_output variant identity, splot-dfh-sha256-v1 raw-intermediate hash stability, future hash JSON success schema, visible sample serialization, output event order including show-existing and flush output, raw/Y4M output policy, atomic file publication, metadata-hash separation, and local-only reference evidence boundaries. This row is documentation-only and does not implement runtime decode, hash output, raw/Y4M file output, film grain synthesis, metadata verification, reference refresh, or external reference decoder integration."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = [
+    "openspec validate decoder-output-equivalence-contract --strict",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+]
+fixtures = [
+    "docs/DECODER-FULL-CONFORMANCE.md",
+    "docs/DECODER-ROADMAP.md",
+    "docs/DECODER-SUPPORT-MATRIX.toml",
+]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODER-FULL-CONFORMANCE-CONTRACT"
 name = "Full decoder conformance contract"
 category = "docs"

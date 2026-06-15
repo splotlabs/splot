@@ -44,6 +44,20 @@ local_reference_evidence = []
 notes = "Public full-decoder conformance contract and current non-claim. It defines final completion criteria, output variants, diagnostics, output-file safety, resource-limit boundaries, and the local-only AVM/dav2d evidence boundary without implementing runtime decode, reconstruction, hash output, Y4M output, reference refresh, or external reference decoder integration."
 
 [[row]]
+id = "decoder-output-equivalence-contract"
+name = "Decoder output equivalence contract"
+feature_id = "DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT"
+spec_sections = ["5.17.12", "6.16.13", "6.4.1", "6.17.4.1", "6.17.4.4", "7.21", "7.21.1", "7.21.2", "7.21.3", "7.21.4", "7.21.5", "7.21.6", "7.21.7", "7.22", "7.23"]
+parser_source = "n/a"
+decode_module = "docs/DECODER-FULL-CONFORMANCE.md; docs/DECODER-ROADMAP.md"
+tier = "foundation"
+status = "supported"
+self_contained_tests = ["openspec validate decoder-output-equivalence-contract --strict", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Docs-only output identity contract for future runtime decoder success. It pins raw_intermediate_output and post_film_grain_output variant identity, keeps splot-dfh-sha256-v1 tied to raw intermediate output, defines future hash JSON success schema, visible sample bytes, output event order, show-existing/flush handling, raw/Y4M output policy, atomic file publication, and metadata-hash/reference-evidence separation. Runtime decode, hash output, raw/Y4M file emission, film-grain synthesis, metadata verification, and AVM/dav2d integration remain unsupported."
+
+[[row]]
 id = "decoder-conformance-coverage-gate"
 name = "Decoder conformance coverage gate"
 feature_id = "XTASK-DECODER-CONFORMANCE-COVERAGE"
