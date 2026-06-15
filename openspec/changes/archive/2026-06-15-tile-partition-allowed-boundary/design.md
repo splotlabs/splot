@@ -58,13 +58,15 @@ flags. The spec logic lives in § 5.20.3.2 and references § 5.20.7.26
    chroma `BLOCK_64X64` branch. This mirrors the spec variables while keeping
    traversal-owned arrays out of scope.
 
-3. **Local § 5.20.7.26 residual-size table.**
+3. **Generated-geometry § 5.20.7.26 residual-size derivation.**
 
    `Subsampled_Size` is not part of the generated § 9 table attachment. The
-   module will model only the small table needed by `get_plane_residual_size`
-   and convert entries through `BlockSize` / `PartitionSubsize`-style invalid
-   handling. This avoids inventing residual behavior while keeping the
-   dependency local and spec-cited.
+   module derives the residual block dimensions from generated block-size
+   geometry and converts the result through `BlockSize` /
+   `PartitionSubsize`-style invalid handling. A crate-private exhaustive test
+   locks the derivation against the literal AV2 § 5.20.7.26 table. This avoids
+   production hand-transcription drift while keeping the dependency local and
+   spec-cited.
 
 4. **Typed internal errors for invalid caller facts.**
 
@@ -79,9 +81,10 @@ flags. The spec logic lives in § 5.20.3.2 and references § 5.20.7.26
   `ChromaPartitionKnown` and `LumaPartitions`.
   → Mitigation: take a single optional caller-provided luma partition fact and
   document that array ownership remains future traversal work.
-- [Risk] Duplicating § 5.20.7.26 `Subsampled_Size` by hand can drift.
-  → Mitigation: add spot/exhaustive tests for invalid sentinel cases and cite
-  the exact mirror section; keep the table private to this boundary.
+- [Risk] Deriving § 5.20.7.26 `Subsampled_Size` geometrically can drift.
+  → Mitigation: add an exhaustive table-lock test for every block-size,
+  `SubsamplingX`, and `SubsamplingY` combination, and cite the exact mirror
+  section.
 - [Risk] Geometry arithmetic can overflow with hostile caller-provided values.
   → Mitigation: use checked arithmetic for all `r/c + offset` and scaled
   4-way offsets, and test `usize::MAX` inputs.

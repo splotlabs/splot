@@ -619,6 +619,9 @@ const fn is_vertical_family(partition: PartitionType) -> bool {
 }
 
 #[cfg(test)]
+mod spec_table_tests;
+
+#[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

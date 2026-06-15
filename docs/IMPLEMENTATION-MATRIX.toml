@@ -6511,7 +6511,7 @@ openspec_change = "tile-partition-allowed-boundary"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a crate-private AV2 §5.20.3.2 partition implied and allowed-set derivation boundary for future tile traversal. `partition_allowed.rs` derives `partition_implied_at_boundary`, `partition_implied`, `rect_type_implied_by_bsize`, `is_partition_allowed`, `init_allowed_partitions`, and decision facts from explicit MI geometry, tree type, chroma, subsampling, feature-flag, region, and known luma-partition inputs. It uses generated §9.2 block geometry helpers, derives §5.20.7.26 residual sizes without treating `BLOCK_INVALID` as a valid block size, preserves typed crate-private errors for caller overflow and impossible table facts, and reuses the existing partition-size, CDF-context, and partition-decision boundaries without public API exposure. This row does not implement recursive `read_partition()` / `decode_partition()` / `decode_tile()` traversal, `MiSizes`, `ChromaPartitionKnown`, or `LumaPartitions` array mutation, symbol reads, CDF mutation, `exit_symbol()` after real syntax, reconstruction, output, reference refresh, AVM/dav2d invocation, or scheduler/dependency changes."
+notes = "Adds a crate-private AV2 §5.20.3.2 partition implied and allowed-set derivation boundary for future tile traversal. `partition_allowed.rs` derives `partition_implied_at_boundary`, `partition_implied`, `rect_type_implied_by_bsize`, `is_partition_allowed`, `init_allowed_partitions`, and decision facts from explicit MI geometry, tree type, chroma, subsampling, feature-flag, region, and known luma-partition inputs. It uses generated §9.2 block geometry helpers, derives §5.20.7.26 residual sizes without treating `BLOCK_INVALID` as a valid block size, locks that derivation against the literal `Subsampled_Size` table, preserves typed crate-private errors for caller overflow and impossible table facts, and reuses the existing partition-size, CDF-context, and partition-decision boundaries without public API exposure. This row does not implement recursive `read_partition()` / `decode_partition()` / `decode_tile()` traversal, `MiSizes`, `ChromaPartitionKnown`, or `LumaPartitions` array mutation, symbol reads, CDF mutation, `exit_symbol()` after real syntax, reconstruction, output, reference refresh, AVM/dav2d invocation, or scheduler/dependency changes."
 
 [feature.status]
 mapped = "done"
@@ -6528,6 +6528,7 @@ perf = "not-applicable"
 [feature.proof]
 tests = [
     "crates/splot-decode/src/tile_payload/partition_allowed.rs",
+    "crates/splot-decode/src/tile_payload/partition_allowed/spec_table_tests.rs::get_plane_residual_size_matches_subsampled_size_table",
     "crates/splot-decode/src/tile_payload/partition_size.rs::tests::block_geometry_helpers_use_generated_tables",
 ]
 commands = [
@@ -6540,6 +6541,7 @@ commands = [
 fixtures = [
     "crates/splot-decode/src/tile_payload.rs",
     "crates/splot-decode/src/tile_payload/partition.rs",
+    "crates/splot-decode/src/tile_payload/partition_allowed/spec_table_tests.rs",
     "crates/splot-decode/src/tile_payload/partition_allowed.rs",
     "crates/splot-decode/src/tile_payload/partition_size.rs",
     "openspec/changes/tile-partition-allowed-boundary",
