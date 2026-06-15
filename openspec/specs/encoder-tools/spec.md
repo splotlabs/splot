@@ -30,12 +30,16 @@ activation prefix is inverted by `write_frame_header_prefix`
 (`frame-header-writer-tiling`; `AV2-5.18.7.3-TILE-PARAMS` `write` = `done`,
 `AV2-5.18.7-SEGMENTATION-TILING` `write` = `partial`, reusing the shared `write_tile_params`),
 and the § 5.18.6 quantization cluster by `write/frame_quant.rs`
-(`frame-header-writer-quantization`; `AV2-5.18.6-QUANTIZATION` `write` = `done`).
+(`frame-header-writer-quantization`; `AV2-5.18.6-QUANTIZATION` `write` = `done`), and the
+§ 5.18.7.1 `segmentation_params()` by `write/frame_segmentation.rs::write_segmentation_params`
+(`frame-header-writer-segmentation`; `AV2-5.18.7-SEGMENTATION-TILING` `write` stays `partial`,
+reusing the shared § 5.4.9 `write_seg_info`).
 The size/config and tiling slices carry maintainer-approved model/parser surfacings of
 previously-discarded layout bits (`intrabc_params()` / `force_integer_mv`; the explicit-branch
-`TileParams`); the quant slice is additive (its few redundant encodings are canonicalized like
-the § 5.4 leb128-minimal case).
-Remaining: the rest of the frame header (segmentation/filter/restoration/
+`TileParams`); the quant and segmentation slices are additive (their few read-but-not-stored
+points are redundant encodings or parser derivations, canonicalized/re-derived like the § 5.4
+leb128-minimal case).
+Remaining: the rest of the frame header (filter/restoration/
 tail + the composing `write_frame_header`), the tile-group/metadata payload writers, the
 **Annex B** muxer, and wiring the muxers into writer-track round-trip tests — the IVF
 container write helpers already exist (`AV2-IVF-CONTAINER`, `write` = `done`); plus the
