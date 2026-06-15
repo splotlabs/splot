@@ -169,17 +169,25 @@ flagged. Banned alternative byte/transmute crates (`bytes`, `bytemuck`,
 `splot-core` src:**
 
 - `Clone` derives/impls on large-media type names (`Plane`, `Frame`,
-  `FramePlanes`, `DecodedFrame`, `CurrentFrame*`, `ReferenceFrame*`, `FrameStore`,
-  `LookaheadFrame`, `FrameBuffer`, `SampleBuffer`, `PixelBuffer`, `Workspace`,
-  `Reconstruction`), but **not** small-metadata names (`PlaneSize`, `PlaneRect`,
-  `PlaneId`, `DecodedFrameInfo`, `BitDepth`, `PixelFormat`, `ReferenceSlot`,
-  `OutputIndex`).
+  `FramePlanes`, `DecodedFrame`, `CurrentFrame*`, `ReferenceFrame*`, `SharedFrame`,
+  `FrameStore`, `LookaheadFrame`, `FrameBuffer`, `SampleBuffer`, `PixelBuffer`,
+  `Workspace`, `Reconstruction`), but **not** small-metadata names (`PlaneSize`,
+  `PlaneRect`, `PlaneId`, `DecodedFrameInfo`, `BitDepth`, `PixelFormat`,
+  `ReferenceSlot`, `OutputIndex`). The derive scan is block-aware, so a
+  rustfmt-wrapped multi-line `#[derive(Clone, …)]` is still caught.
 - `.clone()` on a suspiciously-named binding (`frame`, `ref_frame`, `reference`,
   `plane`, `samples`, `pixels`, `buffer`, `workspace`, `lookahead`, `current`,
   `decoded`, `recon`), matched on the identifier immediately before `.clone()`.
 - `Arc::make_mut` / `Rc::make_mut`, always.
 - `unsafe` / `transmute` / `from_raw_parts(_mut)`, always.
 - `*::read_from_bytes(` unless marked a tiny intentional wire-header copy.
+- In `splot-core`/`splot-recon`, a **fully public** type that derives `zerocopy`
+  layout traits (`FromBytes`/`TryFromBytes`/`IntoBytes`/`KnownLayout`/`Immutable`/
+  `Unaligned`) — wire-view structs must stay private (never a public API).
+
+Copy needles tolerate whitespace before `(` (so `samples.to_vec ()` cannot evade
+the gate by formatting), and a `splot-copy-ok:` marker is honored only inside a
+line comment (a string literal containing the token is not a marker).
 
 **Source checks across `splot-recon` / `splot-decode` / `splot-encode` src:**
 

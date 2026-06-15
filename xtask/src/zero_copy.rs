@@ -179,10 +179,20 @@ fn is_clone_scan_src(path: &str) -> bool {
     is_media_crate_src(path) || is_src_of(path, "splot-core")
 }
 
-/// Classifies the `splot-copy-ok` marker (if any) in `text`.
+/// Crates where `zerocopy` may be used (`splot-core`/`splot-recon`), so wire-view
+/// types declared there are checked for the public-API ban.
+fn is_zerocopy_approved_src(path: &str) -> bool {
+    is_src_of(path, "splot-core") || is_src_of(path, "splot-recon")
+}
+
+/// Classifies the `splot-copy-ok` marker (if any) in `text`. The marker is only
+/// honored inside a line comment, so a string literal or test-data line containing
+/// the token is not mistaken for a review-visible marker.
 fn marker_in_text(text: &str) -> Option<MarkerStatus> {
-    let pos = text.find(MARKER_TOKEN)?;
-    let after = &text[pos + MARKER_TOKEN.len()..];
+    let comment = text.find("//")?;
+    let comment_text = &text[comment..];
+    let pos = comment_text.find(MARKER_TOKEN)?;
+    let after = &comment_text[pos + MARKER_TOKEN.len()..];
     match after.strip_prefix(':') {
         None => Some(MarkerStatus::Vague), // `splot-copy-ok` with no reason
         Some(reason) => {
@@ -240,6 +250,81 @@ fn check_marked_copy(sources: &[ZcSourceLine], i: usize, what: &str, violations:
             "{where_at}: {what}; add a specific `{MARKER_TOKEN}: <reason>` marker only if this is an intentional materialization boundary"
         )),
     }
+}
+
+/// Removes whitespace immediately before each `(` so a call written with
+/// Rust-permitted spacing (`samples.to_vec ()`, `Vec::from (&x)`, `include! (…)`)
+/// still matches the call needles. rustfmt would remove these spaces, but the gate
+/// must not be evadable by formatting alone.
+fn collapse_space_before_parens(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c == '(' {
+            while matches!(out.chars().last(), Some(' ' | '\t')) {
+                out.pop();
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// `zerocopy` layout derives whose presence marks a type as a fixed-layout wire
+/// view. Such a type must stay private (never a public API).
+const ZEROCOPY_LAYOUT_DERIVES: &[&str] = &[
+    "FromBytes",
+    "TryFromBytes",
+    "IntoBytes",
+    "KnownLayout",
+    "Immutable",
+    "Unaligned",
+];
+
+/// Returns whether `block` (joined attribute text) contains a `derive(...)` listing
+/// any `zerocopy` layout trait.
+fn derive_has_zerocopy_layout(block: &str) -> bool {
+    let mut rest = block;
+    while let Some(pos) = rest.find("derive(") {
+        let after = &rest[pos + "derive(".len()..];
+        let mut depth = 1i32;
+        let mut end = after.len();
+        for (k, c) in after.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = k;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let inner = &after[..end];
+        let found = inner
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .any(|token| {
+                let token = token.rsplit("::").next().unwrap_or(token);
+                ZEROCOPY_LAYOUT_DERIVES.contains(&token)
+            });
+        if found {
+            return true;
+        }
+        rest = after.get(end..).unwrap_or("");
+    }
+    false
+}
+
+/// Returns whether `text` declares a fully public type (`pub struct`/`enum`/`union`,
+/// not `pub(crate)`/`pub(super)`/private).
+fn is_fully_public_type_decl(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    let Some(rest) = trimmed.strip_prefix("pub ") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    rest.starts_with("struct ") || rest.starts_with("enum ") || rest.starts_with("union ")
 }
 
 /// If `text` declares a type, returns its identifier.
@@ -307,10 +392,11 @@ pub(crate) fn evaluate_zero_copy_policy(
                     ZEROCOPY_APPROVED_CRATES.join(" or ")
                 ));
             } else if dep.name == "zerocopy" && !dep.workspace_inherited {
-                // An approved crate that pins zerocopy locally (a bare version or a
-                // divergent feature set) escapes the centralized workspace shape.
+                // An approved crate that pins zerocopy locally (a bare version) or
+                // adds local `features`/`default-features` escapes the centrally
+                // pinned, narrow workspace surface.
                 violations.push(format!(
-                    "{}: `zerocopy` must be inherited via the workspace dependency (`zerocopy.workspace = true`), not pinned locally",
+                    "{}: `zerocopy` must be inherited via the workspace dependency (`zerocopy.workspace = true`) with no local `features`/`default-features` override",
                     krate.name
                 ));
             }
@@ -333,6 +419,9 @@ pub(crate) fn evaluate_zero_copy_policy(
             continue;
         }
         let where_at = format!("{}:{}", line.path, line.line_no);
+        // Whitespace before `(` is collapsed so a call cannot evade the needles
+        // with formatting alone (e.g. `samples.to_vec ()`).
+        let scan = collapse_space_before_parens(text);
 
         if is_clone_scan_src(&line.path) {
             // Rule: `Clone` derive on a media-storage type.
@@ -344,6 +433,16 @@ pub(crate) fn evaluate_zero_copy_policy(
                     "{where_at}: `Clone` derive on media-storage type `{name}`; remove it (borrow a view or share via `SharedFrame` instead)"
                 ));
             }
+            // Rule: zerocopy wire-view types must stay private (never a public API).
+            if is_zerocopy_approved_src(&line.path)
+                && let Some(name) = declared_type_name(text)
+                && is_fully_public_type_decl(text)
+                && derive_has_zerocopy_layout(&attribute_block_above(sources, i))
+            {
+                violations.push(format!(
+                    "{where_at}: public type `{name}` derives zerocopy layout traits; wire-view structs must be private (never a public API)"
+                ));
+            }
             // Rule: `impl Clone for` a media-storage type.
             if let Some(name) = clone_impl_target(text)
                 && MEDIA_TYPE_NAMES.contains(&name)
@@ -353,8 +452,8 @@ pub(crate) fn evaluate_zero_copy_policy(
                 ));
             }
             // Rule: suspicious `.clone()` on a media-named binding.
-            for (pos, _) in text.match_indices(".clone(") {
-                let receiver = clone_receiver(text, pos);
+            for (pos, _) in scan.match_indices(".clone(") {
+                let receiver = clone_receiver(&scan, pos);
                 if SUSPICIOUS_CLONE_BINDINGS.contains(&receiver) {
                     check_marked_copy(
                         sources,
@@ -400,7 +499,7 @@ pub(crate) fn evaluate_zero_copy_policy(
         // Rule: bulk sample copies (splot-recon/src only).
         if is_recon_src(&line.path) {
             for (needle, shown) in SAMPLE_COPY_NEEDLES {
-                if text.contains(needle) {
+                if scan.contains(needle) {
                     check_marked_copy(
                         sources,
                         i,
@@ -412,7 +511,7 @@ pub(crate) fn evaluate_zero_copy_policy(
         }
 
         // Rule: `include!` bypass in the media crates (could hide a copy).
-        if is_media_crate_src(&line.path) && text.contains("include!(") {
+        if is_media_crate_src(&line.path) && scan.contains("include!(") {
             violations.push(format!(
                 "{where_at}: `include!` is banned in media crates (it can hide a copy from this scan)"
             ));
@@ -614,13 +713,19 @@ fn collect_dep_entries(
     }
 }
 
-/// Returns whether a dependency entry is `name.workspace = true`.
+/// Returns whether a dependency entry is a *pure* workspace inheritance:
+/// `name.workspace = true` with no local surface override. Because Cargo features
+/// are additive, `{ workspace = true, features = [...] }` or a local
+/// `default-features` override would widen a centrally-pinned dependency, so those
+/// are not treated as pure inheritance.
 fn is_workspace_inherited(value: &toml::Value) -> bool {
-    value
-        .as_table()
-        .and_then(|table| table.get("workspace"))
-        .and_then(toml::Value::as_bool)
-        == Some(true)
+    let Some(table) = value.as_table() else {
+        return false;
+    };
+    if table.get("workspace").and_then(toml::Value::as_bool) != Some(true) {
+        return false;
+    }
+    !table.contains_key("features") && !table.contains_key("default-features")
 }
 
 /// Walks the scanned crate `src` trees and returns every line, sorted by
@@ -1069,6 +1174,95 @@ mod tests {
         assert!(
             run_src(&src).is_empty(),
             "comment prose must not be flagged"
+        );
+    }
+
+    /// Parses a single dependency-entry TOML value (`{ … }` or `"x"`).
+    fn dep_value(spec: &str) -> toml::Value {
+        let table: toml::Table = toml::from_str(&format!("d = {spec}")).unwrap();
+        table.get("d").unwrap().clone()
+    }
+
+    #[test]
+    fn pure_workspace_inheritance_excludes_local_overrides() {
+        assert!(is_workspace_inherited(&dep_value("{ workspace = true }")));
+        // Cargo features are additive: a local feature add widens the surface.
+        assert!(!is_workspace_inherited(&dep_value(
+            "{ workspace = true, features = [\"alloc\"] }"
+        )));
+        assert!(!is_workspace_inherited(&dep_value(
+            "{ workspace = true, default-features = true }"
+        )));
+        assert!(!is_workspace_inherited(&dep_value("\"0.8\"")));
+    }
+
+    #[test]
+    fn marker_in_string_literal_does_not_suppress() {
+        // A string/test-data line containing the token (no comment) must NOT mark.
+        let src = file(
+            RECON,
+            &[
+                "    let label = \"splot-copy-ok: not a real marker\";",
+                "    let v = samples.to_vec();",
+            ],
+        );
+        assert!(
+            !run_src(&src).is_empty(),
+            "a string-literal token must not suppress a copy"
+        );
+        // A genuine comment marker still suppresses.
+        let ok = file(
+            RECON,
+            &[
+                "    // splot-copy-ok: serialize decoded output bytes",
+                "    let v = samples.to_vec();",
+            ],
+        );
+        assert!(
+            run_src(&ok).is_empty(),
+            "a real comment marker must suppress"
+        );
+    }
+
+    #[test]
+    fn whitespace_before_paren_does_not_evade_needles() {
+        for code in [
+            "    let v = samples.to_vec ();",
+            "    let v = samples.to_owned ();",
+            "    let v = Vec::from (&samples[..]);",
+        ] {
+            assert!(
+                !run_src(&file(RECON, &[code])).is_empty(),
+                "`{code}` must be flagged despite the space before `(`"
+            );
+        }
+    }
+
+    #[test]
+    fn public_zerocopy_wire_type_is_a_violation_but_private_is_ok() {
+        let public = file(
+            CORE,
+            &[
+                "#[derive(FromBytes, KnownLayout, Immutable, Unaligned)]",
+                "pub struct IvfFileHeaderWire {",
+            ],
+        );
+        let v = run_src(&public);
+        assert!(
+            v.iter().any(|m| m.contains("wire-view")),
+            "a public zerocopy wire type must be flagged, got {v:?}"
+        );
+        // The real IVF pattern is a private wire struct — allowed.
+        let private = file(
+            CORE,
+            &[
+                "#[derive(FromBytes, KnownLayout, Immutable, Unaligned)]",
+                "struct IvfFileHeaderWire {",
+            ],
+        );
+        assert!(
+            run_src(&private).is_empty(),
+            "a private wire struct must be allowed"
         );
     }
 
