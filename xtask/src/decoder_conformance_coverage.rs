@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Full decoder conformance coverage automation.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -795,10 +793,9 @@ mod tests {
 
     #[test]
     fn renderer_has_warning_and_status_counts() {
-        let checked = vec![CheckedCoverageRow {
+        let rendered = render_markdown(&[CheckedCoverageRow {
             row: &COVERAGE_ROWS[0],
-        }];
-        let rendered = render_markdown(&checked);
+        }]);
         assert!(rendered.contains("not a full decoder conformance certificate"));
         assert!(rendered.contains("| `partial` | 1 |"));
         assert!(rendered.contains("symbols-and-conventions"));
@@ -806,24 +803,28 @@ mod tests {
 
     #[test]
     fn unsupported_rows_remain_visible() {
-        let checked = vec![CheckedCoverageRow {
+        let rendered = render_markdown(&[CheckedCoverageRow {
             row: &COVERAGE_ROWS[5],
-        }];
-        let rendered = render_markdown(&checked);
+        }]);
         assert!(rendered.contains("| `unsupported` | 1 |"));
         assert!(rendered.contains("decode-orchestration-and-random-access"));
     }
 
     #[test]
-    fn validation_rejects_invalid_status_without_repo_files() {
-        static BAD_ROWS: &[CoverageRow] = &[CoverageRow {
-            status: "done",
-            ..COVERAGE_ROWS[0]
-        }];
+    fn validation_rejects_invalid_status_and_mixed_nonnormative_notes() {
+        #[rustfmt::skip]
+        static BAD_ROWS: &[CoverageRow] = &[
+            CoverageRow { status: "done", ..COVERAGE_ROWS[0] },
+            CoverageRow { id: "bad-mixed-notes", normative_status: "mixed", notes: "covers the non-normative portion", ..COVERAGE_ROWS[0] },
+        ];
         let root = temp_root("decoder-conformance-invalid-status").unwrap();
         write_minimal_repo_files(&root);
         let err = validate_rows(&root, BAD_ROWS).expect_err("invalid status should fail");
         assert!(err.to_string().contains("status `done` is invalid"));
+        assert!(
+            err.to_string()
+                .contains("requires notes explaining the normative portion")
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
