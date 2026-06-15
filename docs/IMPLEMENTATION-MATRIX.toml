@@ -694,7 +694,7 @@ mapped = "done"
 types = "done"
 parse = "done"
 validate = "partial"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -702,8 +702,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests"]
-commands = ["cargo test -p splot-core sequence"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-core/src/write/seq_config.rs::tests", "crates/splot-core/src/write/seq_config.rs::proptests"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-core write::seq_config"]
 fixtures = ["tests/fixtures/conformant.av2"]
 diagnostics = []
 
@@ -727,7 +727,7 @@ mapped = "done"
 types = "done"
 parse = "done"
 validate = "partial"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -735,8 +735,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-core/src/segment.rs::tests"]
-commands = ["cargo test -p splot-core sequence", "cargo test -p splot-core segment"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-core/src/segment.rs::tests", "crates/splot-core/src/write/seq_config.rs::tests", "crates/splot-core/src/write/seq_config.rs::proptests"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-core segment", "cargo test -p splot-core write::seq_config"]
 fixtures = []
 diagnostics = []
 
@@ -760,7 +760,7 @@ mapped = "done"
 types = "done"
 parse = "done"
 validate = "partial"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -768,8 +768,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests"]
-commands = ["cargo test -p splot-core sequence"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-core/src/write/seq_config.rs::tests", "crates/splot-core/src/write/seq_config.rs::proptests"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-core write::seq_config"]
 fixtures = ["tests/fixtures/conformant.av2"]
 diagnostics = []
 
@@ -793,7 +793,7 @@ mapped = "done"
 types = "done"
 parse = "done"
 validate = "done"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -801,8 +801,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-validate/src/validator/tests/frame_header_core.rs::validator_flags_ras_requires_long_term_frame_id_bits"]
-commands = ["cargo test -p splot-core sequence", "cargo test -p splot-validate ras_requires"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-validate/src/validator/tests/frame_header_core.rs::validator_flags_ras_requires_long_term_frame_id_bits", "crates/splot-core/src/write/seq_config.rs::tests", "crates/splot-core/src/write/seq_config.rs::proptests"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-validate ras_requires", "cargo test -p splot-core write::seq_config"]
 fixtures = ["tests/fixtures/conformant.av2"]
 diagnostics = ["frame-header/ras-requires-long-term-frame-id-bits"]
 
@@ -826,7 +826,7 @@ mapped = "done"
 types = "done"
 parse = "done"
 validate = "partial"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -834,8 +834,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests"]
-commands = ["cargo test -p splot-core sequence"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-core/src/write/seq_config.rs::tests", "crates/splot-core/src/write/seq_config.rs::proptests"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-core write::seq_config"]
 fixtures = ["tests/fixtures/conformant.av2"]
 diagnostics = []
 
@@ -859,7 +859,7 @@ mapped = "done"
 types = "done"
 parse = "done"
 validate = "partial"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -867,8 +867,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests"]
-commands = ["cargo test -p splot-core sequence"]
+tests = ["crates/splot-core/src/headers/sequence.rs::tests", "crates/splot-core/src/write/seq_config.rs::tests", "crates/splot-core/src/write/seq_config.rs::proptests"]
+commands = ["cargo test -p splot-core sequence", "cargo test -p splot-core write::seq_config"]
 fixtures = ["tests/fixtures/conformant.av2"]
 diagnostics = []
 
@@ -892,7 +892,7 @@ mapped = "done"
 types = "done"
 parse = "done"
 validate = "not-applicable"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -900,8 +900,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/segment.rs::tests", "crates/splot-core/src/segment.rs::proptests"]
-commands = ["cargo test -p splot-core segment"]
+tests = ["crates/splot-core/src/segment.rs::tests", "crates/splot-core/src/segment.rs::proptests", "crates/splot-core/src/write/segment.rs::tests", "crates/splot-core/src/write/segment.rs::proptests"]
+commands = ["cargo test -p splot-core segment", "cargo test -p splot-core write::segment"]
 fixtures = []
 diagnostics = []
 
