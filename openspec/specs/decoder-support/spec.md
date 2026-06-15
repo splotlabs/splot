@@ -2262,6 +2262,8 @@ reference-refresh completeness, or AVM/dav2d integration.
 - **AND** each hash entry names `raw_intermediate_output`,
   `splot-dfh-sha256-v1`, `av2-output-samples-v1`, and a 64-character lowercase
   hexadecimal digest
+- **AND** hash output does not require nonzero IVF timebase fields because it
+  does not serialize frame-rate metadata
 - **AND** stderr is empty
 
 #### Scenario: Hash mode does not touch output paths
@@ -2342,6 +2344,11 @@ For Feature ID `DECODE-Y4M-RUNTIME-OUTPUT`, the decoder support model SHALL prov
 - **AND** stdout and stderr are empty
 - **AND** `<output.y4m>` contains a complete Y4M stream for one 64x64 8-bit 4:2:0 raw-intermediate-output frame
 - **AND** the frame payload contains the same flat sample values used by the minimal hash runtime
+
+#### Scenario: Zero IVF timebase fails before Y4M serialization
+- **WHEN** `splot decode --output-format y4m <minimal-ivf-fixture> -o <output.y4m>` is run for the committed minimal fixture shape with a zero IVF timebase numerator or denominator
+- **THEN** the command emits a structured `decode/unsupported-feature` diagnostic for `invalid_ivf_timebase`
+- **AND** it does not create, truncate, or replace `<output.y4m>`
 
 #### Scenario: Implicit Y4M output remains the compatibility form
 - **WHEN** `splot decode <minimal-ivf-fixture> -o <output.y4m>` is run without `--output-format`

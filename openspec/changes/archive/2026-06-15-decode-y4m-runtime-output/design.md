@@ -35,7 +35,7 @@ The source-backed Y4M writer already exists in `splot-recon`, and `splot-decode`
 
 3. Use IVF container timing for the Y4M frame-rate policy.
    - For the committed minimal fixture, the Y4M header uses the IVF timebase as a repository-owned output-container policy. The minimal fixture is expected to serialize as `F30:1` when its IVF header carries 30/1.
-   - A zero IVF timebase is rejected by the minimal runtime as source-tier input before Y4M serialization.
+   - A zero IVF timebase is rejected by the Y4M adapter before Y4M serialization; hash output does not require frame-rate metadata.
    - This does not claim AV2 normative timing support; future output-order/timing work remains separate.
    - Alternative considered: fixed `F30:1` for all supported streams. Rejected because using the validated IVF container facts avoids inventing an unrelated constant for future minimal fixtures.
 

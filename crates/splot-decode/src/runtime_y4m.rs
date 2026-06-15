@@ -7,8 +7,15 @@
 
 use splot_recon::{Y4mFrameRate, Y4mWriter};
 
-use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
+use crate::error::{
+    DecodeError, DecodeOutputError, DecodeOutputOperation, DecodeUnsupportedFeature, Result,
+};
 use crate::{DecodeLimitName, DecodeOptions, DecodeStreamPlan};
+
+const MATRIX_ROW: &str = "decode-y4m-runtime-output";
+const FEATURE_ID: &str = "DECODE-Y4M-RUNTIME-OUTPUT";
+const SPEC_SECTION: &str = "7.1";
+const REMEDIATION: &str = "Use an IVF input with a nonzero timebase for runtime Y4M output.";
 
 pub(crate) fn encode_y4m_stream_from_plan(
     bytes: &[u8],
@@ -16,6 +23,7 @@ pub(crate) fn encode_y4m_stream_from_plan(
     plan: &DecodeStreamPlan,
 ) -> Result<Vec<u8>> {
     let output = crate::runtime_minimal::decode_minimal_frame_from_plan(bytes, options, plan)?;
+    ensure_y4m_timebase(output.frame_rate_numerator, output.frame_rate_denominator)?;
     let frame_rate = Y4mFrameRate::new(output.frame_rate_numerator, output.frame_rate_denominator)
         .map_err(|source| DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source))?;
 
@@ -37,6 +45,25 @@ pub(crate) fn encode_y4m_stream_from_plan(
         .limits()
         .ensure(DecodeLimitName::MaxOutputBytes, y4m.len() as u64)?;
     Ok(y4m)
+}
+
+fn ensure_y4m_timebase(numerator: u32, denominator: u32) -> Result<()> {
+    if numerator == 0 || denominator == 0 {
+        Err(DecodeError::UnsupportedFeature {
+            unsupported: Box::new(DecodeUnsupportedFeature::new(
+                "invalid_ivf_timebase",
+                crate::runtime_minimal::MINIMAL_INTRA_HASH_TIER_ID,
+                MATRIX_ROW,
+                FEATURE_ID,
+                SPEC_SECTION,
+                "runtime Y4M output requires a nonzero IVF timebase",
+                REMEDIATION,
+                None,
+            )),
+        })
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

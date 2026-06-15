@@ -76,6 +76,13 @@ mod tests {
         DecodeContext::new(DecodeRuntimeConfig::new(threads)).unwrap()
     }
 
+    fn minimal_fixture_with_timebase(numerator: u32, denominator: u32) -> Vec<u8> {
+        let mut bytes = MINIMAL_FIXTURE.to_vec();
+        bytes[16..20].copy_from_slice(&denominator.to_le_bytes());
+        bytes[20..24].copy_from_slice(&numerator.to_le_bytes());
+        bytes
+    }
+
     #[test]
     fn minimal_fixture_decodes_to_hash_report() {
         let report = context(ThreadCount::from(1usize))
@@ -96,6 +103,20 @@ mod tests {
         assert_eq!(frame.pixel_format, DecodeHashPixelFormat::Yuv420);
         assert_eq!(frame.hashes.len(), 1);
         assert_eq!(frame.hashes[0].digest_hex, EXPECTED_DIGEST);
+    }
+
+    #[test]
+    fn zero_ivf_timebase_does_not_block_hash_output() {
+        for input in [
+            minimal_fixture_with_timebase(0, 30),
+            minimal_fixture_with_timebase(1, 0),
+        ] {
+            let report = context(ThreadCount::from(1usize))
+                .decode_hash_report_bytes(&input, DecodeOptions::default())
+                .unwrap();
+
+            assert_eq!(report.frames[0].hashes[0].digest_hex, EXPECTED_DIGEST);
+        }
     }
 
     #[test]

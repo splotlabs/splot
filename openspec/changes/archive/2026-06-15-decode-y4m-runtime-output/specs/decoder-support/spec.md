@@ -10,6 +10,11 @@ For Feature ID `DECODE-Y4M-RUNTIME-OUTPUT`, the decoder support model SHALL prov
 - **AND** `<output.y4m>` contains a complete Y4M stream for one 64x64 8-bit 4:2:0 raw-intermediate-output frame
 - **AND** the frame payload contains the same flat sample values used by the minimal hash runtime
 
+#### Scenario: Zero IVF timebase fails before Y4M serialization
+- **WHEN** `splot decode --output-format y4m <minimal-ivf-fixture> -o <output.y4m>` is run for the committed minimal fixture shape with a zero IVF timebase numerator or denominator
+- **THEN** the command emits a structured `decode/unsupported-feature` diagnostic for `invalid_ivf_timebase`
+- **AND** it does not create, truncate, or replace `<output.y4m>`
+
 #### Scenario: Implicit Y4M output remains the compatibility form
 - **WHEN** `splot decode <minimal-ivf-fixture> -o <output.y4m>` is run without `--output-format`
 - **THEN** the command selects Y4M output
