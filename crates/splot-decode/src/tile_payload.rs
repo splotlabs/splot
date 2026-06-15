@@ -18,6 +18,7 @@
 mod cdf;
 mod input;
 mod partition;
+mod partition_allowed;
 mod partition_size;
 
 use core::fmt;
