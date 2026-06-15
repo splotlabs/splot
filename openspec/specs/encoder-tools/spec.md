@@ -25,10 +25,14 @@ activation prefix is inverted by `write_frame_header_prefix`
 (`frame-header-writer-prefix`; `AV2-5.18.1-FRAME-HEADER-GENERAL` `write` = `partial`), and the
 § 5.18.4 `frame_size()` + § 5.18.3 `screen_content_params()` / `intrabc_params()` by the
 `write/frame_config.rs` writers (`frame-header-writer-size-config`;
-`AV2-5.18.4-FRAME-SIZE` / `AV2-5.18.3-FRAME-CONFIGURATION` `write` = `partial`). That slice
-also carries a maintainer-approved model/parser surfacing of the previously-discarded
-`intrabc_params()` / `force_integer_mv` bits so the round-trip is byte-exact.
-Remaining: the rest of the frame header (quant/segmentation/tiling/filter/restoration/
+`AV2-5.18.4-FRAME-SIZE` / `AV2-5.18.3-FRAME-CONFIGURATION` `write` = `partial`), and the
+§ 5.18.7.2 `tile_info()` by `write/frame_tiling.rs::write_tile_info`
+(`frame-header-writer-tiling`; `AV2-5.18.7.3-TILE-PARAMS` `write` = `done`,
+`AV2-5.18.7-SEGMENTATION-TILING` `write` = `partial`, reusing the shared `write_tile_params`).
+Those slices also carry maintainer-approved model/parser surfacings of previously-discarded
+bits (`intrabc_params()` / `force_integer_mv`; the explicit-branch `TileParams`) so the
+round-trips are byte-exact.
+Remaining: the rest of the frame header (quant/segmentation/filter/restoration/
 tail + the composing `write_frame_header`), the tile-group/metadata payload writers, the
 **Annex B** muxer, and wiring the muxers into writer-track round-trip tests — the IVF
 container write helpers already exist (`AV2-IVF-CONTAINER`, `write` = `done`); plus the
@@ -322,5 +326,33 @@ existing parser outputs.
   with the inferred default, an inferred SCC/MV flag disagrees with the sequence force value,
   an intrabc `Option`'s presence disagrees with its gate, or `max_bvp_drl_bits_minus_1` is
   outside the `ns(2)` domain
+- **THEN** the writer SHALL return a typed `WriteError` and write no bit.
+
+### Requirement: frame-header tile_info writer
+
+`splot-core` SHALL provide a writer that is the exact inverse of the § 5.18.7.2 `tile_info()`
+parser, reusing the shared § 5.18.7.3 `tile_params()` writer. For every `TileInfo` the parser
+can produce, reparsing the written bits SHALL yield the original (`parse(write(x)) == x`),
+byte-exactly. The writer SHALL never panic: a `TileInfo` the parser could not have produced
+SHALL be rejected with a typed writer error before any bit is written.
+
+To make the explicit-branch round-trip byte-exact, the model and parser MAY surface the
+derived `TileParams` the modeled path otherwise discards (a maintainer-approved exception to
+the additive / read-only-parser rule); the surfacing SHALL NOT change the bits read
+(`consumed_bits` is unchanged).
+
+#### Scenario: tile_info round-trips across the reuse, explicit, and bridge paths
+
+- **WHEN** a parsed `tile_info()` is written with the same gating inputs and reparsed
+- **THEN** the reparsed `TileInfo` SHALL equal the original, across the reuse-eligible /
+  inferred-reuse / explicit (uniform and non-uniform) / bridge layouts and the multi-tile
+  `context_update_tile_id` / `tile_size_bytes` tail (with and without the avg-CDF gate).
+
+#### Scenario: a non-reproducible tile_info is rejected before any bit
+
+- **WHEN** a `TileInfo` carries a layout that does not match the `reuse_tile_params()` /
+  `tile_params()` re-derivation, an inferred `reuse_tile_info` that disagrees with its gate, a
+  reserved-level layout, a gated-off non-zero `context_update_tile_id`, or a
+  `tile_size_bytes` whose presence / range disagrees with the syntax
 - **THEN** the writer SHALL return a typed `WriteError` and write no bit.
 
