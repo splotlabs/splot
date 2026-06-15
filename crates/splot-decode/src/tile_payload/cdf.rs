@@ -5,6 +5,8 @@
 //!
 //! Feature tracking: `DECODE-TILE-CDF-SELECTION-BOUNDARY`.
 
+mod context;
+
 use core::fmt;
 
 use splot_core::symbol::CdfUpdateMode;
@@ -364,6 +366,66 @@ pub(crate) enum TileCdfError {
         context_update_tile_id: u32,
         /// Tile count.
         tile_count: u32,
+    },
+    /// `bSize` exceeded the generated block-size table dimensions.
+    #[error("{table} bSize={b_size} is outside 0..{max_exclusive}")]
+    BlockSizeOutOfRange {
+        /// Table or context being indexed by `bSize`.
+        table: &'static str,
+        /// Actual supplied `bSize`.
+        b_size: usize,
+        /// Exclusive upper bound.
+        max_exclusive: usize,
+    },
+    /// A left or above neighbor slot was not available.
+    #[error("{array}[{plane_start}][{index}] is unavailable; length {len}")]
+    PartitionNeighborOutOfRange {
+        /// Neighbor array being indexed.
+        array: &'static str,
+        /// `PlaneStart` partition-structure context.
+        plane_start: usize,
+        /// Requested neighbor index.
+        index: usize,
+        /// Available neighbor-array length.
+        len: usize,
+    },
+    /// A left or above neighbor slot contained an invalid block-size index.
+    #[error(
+        "{array}[{plane_start}][{index}] block size {block_size} is outside 0..{max_exclusive}"
+    )]
+    PartitionNeighborBlockSizeOutOfRange {
+        /// Neighbor array being indexed.
+        array: &'static str,
+        /// `PlaneStart` partition-structure context.
+        plane_start: usize,
+        /// Requested neighbor index.
+        index: usize,
+        /// Invalid neighbor block-size index.
+        block_size: usize,
+        /// Exclusive upper bound.
+        max_exclusive: usize,
+    },
+    /// Extended-partition second-neighbor index arithmetic overflowed.
+    #[error("{array}[{plane_start}] index overflow deriving {base}+{offset}")]
+    PartitionNeighborIndexOverflow {
+        /// Neighbor array being indexed.
+        array: &'static str,
+        /// `PlaneStart` partition-structure context.
+        plane_start: usize,
+        /// Base neighbor index.
+        base: usize,
+        /// Derived second-half offset.
+        offset: usize,
+    },
+    /// A generated conversion table entry was negative where a context index is required.
+    #[error("{table}[{b_size}] value {value} cannot be represented as a context index")]
+    ConversionTableValueOutOfRange {
+        /// Generated conversion table being converted.
+        table: &'static str,
+        /// Block-size index.
+        b_size: usize,
+        /// Generated table value.
+        value: i32,
     },
 }
 
