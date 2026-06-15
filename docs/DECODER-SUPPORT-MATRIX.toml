@@ -30,6 +30,34 @@ local_reference_evidence = []
 notes = "Canonical decoder/reconstruction support status source, rendered to docs/DECODER-SUPPORT-STATUS.md."
 
 [[row]]
+id = "decoder-full-conformance-contract"
+name = "Full decoder conformance contract"
+feature_id = "DOC-DECODER-FULL-CONFORMANCE-CONTRACT"
+spec_sections = []
+parser_source = "n/a"
+decode_module = "docs/DECODER-FULL-CONFORMANCE.md"
+tier = "foundation"
+status = "supported"
+self_contained_tests = ["openspec validate decoder-full-conformance-contract --strict", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Public full-decoder conformance contract and current non-claim. It defines final completion criteria, output variants, diagnostics, output-file safety, resource-limit boundaries, and the local-only AVM/dav2d evidence boundary without implementing runtime decode, reconstruction, hash output, Y4M output, reference refresh, or external reference decoder integration."
+
+[[row]]
+id = "decoder-conformance-coverage-gate"
+name = "Decoder conformance coverage gate"
+feature_id = "XTASK-DECODER-CONFORMANCE-COVERAGE"
+spec_sections = []
+parser_source = "n/a"
+decode_module = "xtask/src/decoder_conformance_coverage.rs; docs/DECODER-SPEC-COVERAGE.md"
+tier = "foundation"
+status = "supported"
+self_contained_tests = ["xtask/src/decoder_conformance_coverage.rs::tests", "cargo test -p xtask decoder_conformance_coverage --locked", "cargo xtask decoder-conformance-coverage --format markdown --output docs/DECODER-SPEC-COVERAGE.md", "cargo xtask check-decoder-conformance-coverage", "cargo xtask ci"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Generated decoder-specific AV2 section-family coverage document and self-contained drift/honesty gate. The gate validates committed coverage rows, support-row links, Feature IDs, diagnostic IDs, and local-reference evidence pointers while allowing honest `unsupported` and `partial` runtime coverage rows. It does not run AVM, dav2d, ffmpeg, network commands, or `splot decode`, and it does not make any runtime decoder feature supported."
+
+[[row]]
 id = "decoder-status-drift-gate"
 name = "Decoder support drift gate"
 feature_id = "XTASK-DECODER-SUPPORT-STATUS"

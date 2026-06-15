@@ -92,6 +92,12 @@ Canonical decoder status lives in
 [`DECODER-SUPPORT-MATRIX.toml`](./DECODER-SUPPORT-MATRIX.toml), rendered to
 [`DECODER-SUPPORT-STATUS.md`](./DECODER-SUPPORT-STATUS.md). The global feature
 ledger remains [`IMPLEMENTATION-MATRIX.toml`](./IMPLEMENTATION-MATRIX.toml).
+The future full-decoder conformance claim is defined in
+[`DECODER-FULL-CONFORMANCE.md`](./DECODER-FULL-CONFORMANCE.md), and the
+decode-relevant AV2 section-family ownership map is generated in
+[`DECODER-SPEC-COVERAGE.md`](./DECODER-SPEC-COVERAGE.md). These documents expose
+current unsupported and partial runtime decoder gaps; they do not make the
+plan-only `splot decode` entry point a supported decoder.
 Emitted `splot decode` diagnostic rule IDs are registered in
 [`DECODER-DIAGNOSTICS.md`](./DECODER-DIAGNOSTICS.md), enforced by
 `cargo xtask check-diagnostic-registry`.

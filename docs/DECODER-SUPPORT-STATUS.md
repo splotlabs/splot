@@ -2,7 +2,7 @@
 
 Generated from `docs/DECODER-SUPPORT-MATRIX.toml` by `cargo xtask decoder-support --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 32 row(s).
+Matrix version 1. Last reviewed 2026-06-14. 34 row(s).
 
 ## Status Counts
 
@@ -10,7 +10,7 @@ Matrix version 1. Last reviewed 2026-06-14. 32 row(s).
 |---|---:|
 | `todo` | 0 |
 | `partial` | 9 |
-| `supported` | 22 |
+| `supported` | 24 |
 | `unsupported-intentional` | 1 |
 | `blocked` | 0 |
 
@@ -19,7 +19,7 @@ Matrix version 1. Last reviewed 2026-06-14. 32 row(s).
 | Tier | Rows |
 |---|---:|
 | `encoder-reuse` | 1 |
-| `foundation` | 17 |
+| `foundation` | 19 |
 | `tier0-plan` | 2 |
 | `tier1-intra` | 12 |
 
@@ -29,6 +29,8 @@ Matrix version 1. Last reviewed 2026-06-14. 32 row(s).
 |---|---|---|---|---|---|---|---|---|---|
 | `decoder-roadmap` | Decoder roadmap | `DOC-DECODER-ROADMAP` | `foundation` | `supported` | none | cargo xtask check-decoder-support | none | none | `docs/DECODER-ROADMAP.md` |
 | `decoder-support-matrix` | Decoder support matrix and generated status | `DOC-DECODER-SUPPORT-MATRIX` | `foundation` | `supported` | none | cargo xtask check-decoder-support<br>cargo xtask ci | none | none | `docs/DECODER-SUPPORT-MATRIX.toml` |
+| `decoder-full-conformance-contract` | Full decoder conformance contract | `DOC-DECODER-FULL-CONFORMANCE-CONTRACT` | `foundation` | `supported` | none | openspec validate decoder-full-conformance-contract --strict<br>cargo xtask check-decoder-support<br>cargo xtask check-decoder-conformance-coverage | none | none | `docs/DECODER-FULL-CONFORMANCE.md` |
+| `decoder-conformance-coverage-gate` | Decoder conformance coverage gate | `XTASK-DECODER-CONFORMANCE-COVERAGE` | `foundation` | `supported` | none | xtask/src/decoder_conformance_coverage.rs::tests<br>cargo test -p xtask decoder_conformance_coverage --locked<br>cargo xtask decoder-conformance-coverage --format markdown --output docs/DECODER-SPEC-COVERAGE.md<br>cargo xtask check-decoder-conformance-coverage<br>cargo xtask ci | none | none | `xtask/src/decoder_conformance_coverage.rs; docs/DECODER-SPEC-COVERAGE.md` |
 | `decoder-status-drift-gate` | Decoder support drift gate | `XTASK-DECODER-SUPPORT-STATUS` | `foundation` | `supported` | none | decoder_support::tests::check_decoder_support_detects_drift<br>cargo xtask check-decoder-support | none | none | `xtask/src/decoder_support.rs` |
 | `local-reference-evidence-manifest` | Portable local-reference evidence manifest | `XTASK-LOCAL-REFERENCE-EVIDENCE-MANIFEST` | `foundation` | `supported` | none | xtask/src/reference_evidence/tests.rs::tests<br>cargo test -p xtask reference_evidence --locked<br>cargo xtask check-reference-evidence<br>cargo xtask check-decoder-support | none | docs/LOCAL-REFERENCE-EVIDENCE.toml records two checked AVM/dav2d raw MD5 agreement entries as non-executable metadata. | `xtask/src/reference_evidence.rs` |
 | `decoder-crate-scaffolding` | Decoder and reconstruction crate scaffolding | `INFRA-DECODER-CRATE-SCAFFOLDING` | `foundation` | `supported` | none | cargo check -p splot-recon --locked<br>cargo check -p splot-decode --locked<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/lib.rs; crates/splot-decode/src/lib.rs` |
