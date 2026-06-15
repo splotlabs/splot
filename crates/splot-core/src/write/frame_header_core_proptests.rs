@@ -69,7 +69,7 @@ mod proptests {
             let mut data = payload.clone();
             data.extend_from_slice(&[0u8; 16]);
 
-            let Ok(core) =
+            let Ok(mut core) =
                 parse_core_body_for_test(&data, obu_type, first_pic, &seq, None)
             else {
                 return Ok(());
@@ -86,6 +86,20 @@ mod proptests {
             //   1. parse(write(core)) == core  (semantic round-trip), and
             //   2. write(parse(write(core))) == write(core)  (a fixed point — re-encoding the
             //      written form reproduces it exactly).
+            //
+            // `consumed_bits` is the one model field that is NOT canonical-invariant: a
+            // non-minimal descriptor the reader accepts makes the parse consume more bits than
+            // the canonical re-encoding emits. The writer's reject-completeness `consumed_bits`
+            // gate (finding 6) requires `core.consumed_bits == canonical length`, so set it to
+            // the canonical drafted length here before the round-trip — the structural fields are
+            // canonical-invariant, so this is exactly the value `parse(write(core))` produces.
+            let Ok(glue) = check_frame_header_core_encodable(&core, &seq, None) else {
+                return Ok(());
+            };
+            let mut draft = BitWriter::new();
+            write_intra_header_into(&mut draft, &core, &seq, None, &glue).unwrap();
+            core.consumed_bits = draft.bit_len();
+
             let mut writer = BitWriter::new();
             write_frame_header_core(&mut writer, &core, &seq, None).unwrap();
             let written = writer.into_bytes();

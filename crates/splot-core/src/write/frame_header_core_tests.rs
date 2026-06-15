@@ -1004,6 +1004,130 @@ mod tests {
         assert_rejected_what(&core, &seq, "reached_qm_reset");
     }
 
+    // ---- reject-completeness tests (#4i second-round review findings) ------------------
+
+    #[test]
+    fn reject_non_single_bridge_intra_model() {
+        // Round-2 finding 1 (info.rs:1157-1163): a NON-single bridge frame reads
+        // bridge_frame_ref_idx, then takes the inter arm (frame_type = Inter) — it never reaches
+        // IntraHeaderComplete. The generic frame_type derivation would map a non-single
+        // BridgeFrame to the IntraOnly expectation, so a hand-built non-single bridge intra core
+        // must be rejected. Start from a valid (non-single) CLK core, retype it to a bridge.
+        let (mut core, seq) = valid_core();
+        assert!(!seq.single_picture_header_flag);
+        core.obu_type = ObuType::BridgeFrame;
+        core.is_bridge = true;
+        core.bridge_frame_ref_idx = Some(0);
+        assert_rejected_what(&core, &seq, "bridge_inter");
+    }
+
+    #[test]
+    fn reject_stale_bridge_frame_ref_idx_on_non_bridge() {
+        // Round-2 finding 3 (info.rs:1131-1133): the parser leaves bridge_frame_ref_idx = None
+        // for every non-bridge header; the writer emits it only on the is_bridge arm, so a stale
+        // value on a non-bridge core would be silently dropped. valid_core() is a non-bridge CLK.
+        let (mut core, seq) = valid_core();
+        assert!(!core.is_bridge);
+        core.bridge_frame_ref_idx = Some(3);
+        assert_rejected_what(&core, &seq, "bridge_frame_ref_idx");
+    }
+
+    #[test]
+    fn reject_stale_frame_to_show_map_idx() {
+        // Round-2 finding 4 (info.rs:1478): frame_to_show_map_idx is read only on the
+        // show-existing-frame path; the intra path leaves it None.
+        let (mut core, seq) = valid_core();
+        assert_eq!(core.frame_to_show_map_idx, None);
+        core.frame_to_show_map_idx = Some(2);
+        assert_rejected_what(&core, &seq, "frame_to_show_map_idx");
+    }
+
+    #[test]
+    fn reject_stale_inter_control() {
+        // Round-2 finding 5 (info.rs:1368): `inter` is the non-intra control region, None on
+        // every intra-complete path. `InterControl` derives Default, so build a default one.
+        let (mut core, seq) = valid_core();
+        assert!(core.inter.is_none());
+        core.inter = Some(crate::headers::frame::InterControl::default());
+        assert_rejected_what(&core, &seq, "inter");
+    }
+
+    #[test]
+    fn reject_stale_sef_film_grain() {
+        // Round-2 finding 7 (info.rs:1518): sef_film_grain is the show-existing-frame
+        // film_grain_config, None on the intra path. `FilmGrainConfig` is #[non_exhaustive], so
+        // clone a real one from the intra tail's parsed film_grain rather than constructing it.
+        let (mut core, seq) = valid_core();
+        assert!(core.sef_film_grain.is_none());
+        let grain = core.intra_tail.as_ref().unwrap().film_grain;
+        core.sef_film_grain = Some(grain);
+        assert_rejected_what(&core, &seq, "sef_film_grain");
+    }
+
+    #[test]
+    fn reject_stale_sef_trailing_bits() {
+        // Round-2 finding 8 (info.rs:1526): sef_trailing_bits is the SEF-only trailing-bits
+        // boundary, None on the intra path.
+        let (mut core, seq) = valid_core();
+        assert!(core.sef_trailing_bits.is_none());
+        core.sef_trailing_bits = Some(crate::headers::frame::SefTrailingBits::Valid);
+        assert_rejected_what(&core, &seq, "sef_trailing_bits");
+    }
+
+    #[test]
+    fn reject_stale_consumed_bits() {
+        // Round-2 finding 6 (info.rs:1040): consumed_bits is the exact bit count the parser read
+        // for this header; the writer is its exact inverse, so the drafted length must equal it.
+        // A stale value (the rest of the model is canonical, so the writer emits the canonical
+        // length) is parser-unreachable and rejected after drafting, before the caller's writer
+        // is touched.
+        let (mut core, seq) = valid_core();
+        core.consumed_bits += 1;
+        assert_rejected_what(&core, &seq, "consumed_bits");
+
+        let (mut core, seq) = valid_core();
+        core.consumed_bits = core.consumed_bits.saturating_sub(1);
+        assert_rejected_what(&core, &seq, "consumed_bits");
+    }
+
+    #[test]
+    fn single_picture_sef_round_trips() {
+        // Round-2 finding 2 (info.rs:1135-1150): the single-picture branch forces a KEY intra
+        // frame and returns BEFORE the is_sef() check (:1166) for ANY obu_type, so a
+        // single-picture SEF OBU parses to IntraHeaderComplete (a key frame). The writer must NOT
+        // reject it (the is_sef/is_tip rejection is gated on !single_picture). End-to-end
+        // byte-exact round-trip on the SEF obu_type with a single-picture sequence.
+        let seq = single_picture_seq();
+        // A single-picture SEF reads no bridge_frame_ref_idx (not a bridge) and skips the
+        // frame-type / output block, so its body is the single-picture CLK body. RegularSef takes
+        // the direct refresh_frame_flags arm (not CLK closed-loop), so include those 8 bits.
+        let mut bits = Bits::default();
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(0); // seq_header_id
+        bits.f(9, 4); // order_hint
+        bits.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8) direct (RegularSef not CLK)
+        bits.bit(0); // allow_intrabc
+        bits.bit(0); // disable_cdf_update
+        bits.bit(1); // uniform_tile_spacing_flag
+        bits.bit(0); // increment_tile_cols_log2
+        bits.bit(0); // increment_tile_rows_log2
+        bits.f(120, 8); // base_q_idx
+        bits.bit(0); // segmentation_enabled
+        bits.bit(0); // using_qmatrix
+        bits.bit(0); // delta_q_present
+        bits.bit(0); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1]
+        bits.bit(0); // tx_mode_select
+        bits.f(0, 2); // reduced_tx_set
+        let data = bits.into_bytes();
+        let core = assert_roundtrip(&data, ObuType::RegularSef, true, &seq);
+        assert_eq!(core.frame_type, Some(FrameType::Key));
+        assert_eq!(core.show_existing_frame, Some(false));
+        assert_eq!(core.immediate_output_frame, Some(true));
+        assert_eq!(core.sef_film_grain, None);
+        assert_eq!(core.frame_to_show_map_idx, None);
+    }
+
     #[test]
     fn single_picture_bridge_round_trips() {
         // Finding 10 (info.rs:1127-1142, parser-tested by

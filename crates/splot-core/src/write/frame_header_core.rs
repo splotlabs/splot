@@ -261,15 +261,28 @@ fn check_frame_header_core_encodable(
         return reject("frame_type");
     }
     let obu_type = core.obu_type;
-    // TIP frames are inter; a SEF obu_type never reaches the intra tail. The intra path is a
-    // CLK/OLK key frame, a switch/RAS/regular frame derived to IntraOnly, or a single-picture
-    // (any non-SEF, non-TIP) frame. Reject obu_types that the intra path can never carry.
-    if obu_type.is_sef() || obu_type.is_tip_frame() {
-        return reject("frame_type");
-    }
 
     // --- single-picture inference ---------------------------------------------------
     let single_picture = seq.single_picture_header_flag;
+
+    // The single-picture branch (info.rs:1135-1150) forces a KEY intra frame and returns
+    // BEFORE the `is_sef()` check (:1166) and the bridge-inter arm (:1157), for ANY obu_type.
+    // So a single-picture SEF / TIP / bridge OBU IS a parser-produced IntraHeaderComplete key
+    // frame; only a NON-single SEF / TIP obu_type never reaches the intra tail (a non-single
+    // SEF takes the show-existing path at :1166-1169; a non-single TIP derives to Inter at
+    // :1181-1182). Reject those non-single obu_types; keep the single-picture ones.
+    if !single_picture && (obu_type.is_sef() || obu_type.is_tip_frame()) {
+        return reject("frame_type");
+    }
+    // Finding 1 (info.rs:1157-1163): a NON-single bridge frame reads bridge_frame_ref_idx, then
+    // takes the inter arm (frame_type = Inter, frame_is_intra = Some(false)) — it NEVER reaches
+    // IntraHeaderComplete. (Only a single-picture bridge becomes an intra KEY frame, handled
+    // above by the single-picture branch.) The generic frame_type derivation below would map a
+    // non-single BridgeFrame to the IntraOnly expectation, so a hand-built non-single bridge
+    // intra core would be wrongly accepted; reject it here.
+    if !single_picture && obu_type == ObuType::BridgeFrame {
+        return reject("bridge_inter");
+    }
 
     // frame_type is DERIVED, not coded, on every no-bit intra arm: the single-picture branch
     // forces KEY (info.rs:1146); a CLK/OLK obu_type forces KEY (info.rs:1183); the remaining
@@ -364,6 +377,32 @@ fn check_frame_header_core_encodable(
     // was known (the parser stops honestly otherwise), so a None view here is non-canonical.
     if seq.film_grain_params_present.is_none() {
         return reject("film_grain_params_present");
+    }
+
+    // --- stale non-intra fields -----------------------------------------------------
+    // These fields are set ONLY on a non-intra path (show-existing / SEF / inter); the parser
+    // leaves each at its `None` init default (info.rs:1080-1104) on every IntraHeaderComplete
+    // arm (parse_intra_tail never touches them). The writer ignores them, so a stale value would
+    // be silently dropped and mis-round-trip; reject each one.
+    //
+    // Finding 4: frame_to_show_map_idx is read only on the show-existing-frame path
+    // (parse_show_existing_frame, info.rs:1478); the intra path leaves it None.
+    if core.frame_to_show_map_idx.is_some() {
+        return reject("frame_to_show_map_idx");
+    }
+    // Finding 5: `inter` is the non-intra control region (info.rs:1368), None on every intra arm.
+    if core.inter.is_some() {
+        return reject("inter");
+    }
+    // Finding 7: sef_film_grain is the show-existing-frame film_grain_config (info.rs:1518),
+    // None on the intra path.
+    if core.sef_film_grain.is_some() {
+        return reject("sef_film_grain");
+    }
+    // Finding 8: sef_trailing_bits is the SEF-only trailing-bits boundary (info.rs:1526), None
+    // on the intra path.
+    if core.sef_trailing_bits.is_some() {
+        return reject("sef_trailing_bits");
     }
 
     // --- control-region inferred values vs derivation -------------------------------
@@ -518,6 +557,12 @@ fn check_frame_header_core_encodable(
         if !fits_in_f(idx, ceil_log2(seq.num_ref_frames)) {
             return reject("bridge_frame_ref_idx");
         }
+    } else if core.bridge_frame_ref_idx.is_some() {
+        // Finding 3 (info.rs:1131-1133): the parser leaves bridge_frame_ref_idx = None for every
+        // non-bridge header (the read is gated on core.is_bridge). The writer emits it only on
+        // the is_bridge arm, so a stale value on a non-bridge core would be silently dropped and
+        // mis-round-trip; reject it.
+        return reject("bridge_frame_ref_idx");
     }
 
     // --- refresh_frame_flags arm ----------------------------------------------------
@@ -586,6 +631,16 @@ pub fn write_frame_header_core(
     // full success so a sub-writer reject mid-compose never leaves a partial buffer.
     let mut scratch = BitWriter::new();
     write_intra_header_into(&mut scratch, core, seq, mfh, &glue)?;
+
+    // Finding 6 (info.rs:1040): `core.consumed_bits` is the exact number of bits the § 5.18.2
+    // parser read for this frame header (prefix + body); the writer is its exact inverse, so the
+    // drafted scratch length must equal it. A stale / inconsistent `consumed_bits` cannot have
+    // been produced by the parser for this model — reject it before committing (the caller's
+    // `writer` stays at bit_len() == 0). Both values are `u64`, so the comparison is exact and
+    // panic-free.
+    if scratch.bit_len() != core.consumed_bits {
+        return reject("consumed_bits");
+    }
     writer.append(&scratch)
 }
 
