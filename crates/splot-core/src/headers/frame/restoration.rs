@@ -479,7 +479,9 @@ const fn default_restoration_size(geometry: LrGeometry) -> [u32; 3] {
 }
 
 /// One plane's parsed `ccso_params()` state (AV2 § 5.18.7.12).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Not `Copy`: [`Self::ccso_offset_idx`] owns the per-plane `ccso_offset_idx` array.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CcsoPlaneParams {
     /// `ccso_planes[plane]`: whether CCSO is enabled for the plane.
     pub ccso_planes: bool,
@@ -496,6 +498,14 @@ pub struct CcsoPlaneParams {
     /// `ccso_max_band_log2[plane]` (`f(2 + ccso_bo_only)`). § 6.17.7.8 bounds
     /// `1 << ccso_max_band_log2 <= CCSO_BAND_NUM`.
     pub ccso_max_band_log2: Option<u8>,
+    /// The per-plane `ccso_offset_idx` values (§ 5.18.7.12,
+    /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-12`), each a `tu(7)` value in
+    /// `0..=7`, read in `(d0, d1, band)` iteration order over
+    /// `0 <= d0, d1 < maxEdgeInterval` and `0 <= band < maxBand` (so the length is
+    /// `maxEdgeInterval * maxEdgeInterval * maxBand`). Empty when `ccso_planes[plane] == 0`
+    /// (no offsets are coded). These were previously read and discarded; they are surfaced so
+    /// the § 5.18.7.12 writer can reproduce them byte-exactly.
+    pub ccso_offset_idx: Vec<u8>,
 }
 
 /// Parsed `ccso_params()` (AV2 v1.0.0 § 5.18.7.12) on the intra path.
@@ -567,6 +577,7 @@ pub fn parse_ccso_params(
             ccso_ext_filter: None,
             ccso_edge_clf: None,
             ccso_max_band_log2: None,
+            ccso_offset_idx: Vec::new(),
         };
 
         // AV2 § 5.18.7.12: the reuse arm (reuse_ccso / sb_reuse_ccso / ccso_ref_idx /
@@ -617,12 +628,16 @@ pub fn parse_ccso_params(
             let max_band = 1u32 << u32::from(ccso_max_band_log2);
 
             // for d0 in 0..maxEdgeInterval, d1 in 0..maxEdgeInterval, band in 0..maxBand:
-            // ccso_offset_idx tu(7).
+            // ccso_offset_idx tu(7). Surface the values (in (d0, d1, band) order) so the
+            // §5.18.7.12 writer can reproduce them byte-exactly; the count
+            // maxEdgeInterval * maxEdgeInterval * maxBand fits a usize (<= 3 * 3 * 128).
+            let offset_count = (max_edge_interval * max_edge_interval * max_band) as usize;
+            let mut ccso_offset_idx = Vec::with_capacity(offset_count);
             for _d0 in 0..max_edge_interval {
                 for _d1 in 0..max_edge_interval {
                     for _band in 0..max_band {
                         // ccso_offset_idx tu(7): truncated unary in 0..=7 (§ 4.11.9).
-                        read_tu(reader, 7)?;
+                        ccso_offset_idx.push(read_tu(reader, 7)? as u8);
                     }
                 }
             }
@@ -633,6 +648,7 @@ pub fn parse_ccso_params(
             plane_params.ccso_ext_filter = Some(ccso_ext_filter);
             plane_params.ccso_edge_clf = Some(ccso_edge_clf);
             plane_params.ccso_max_band_log2 = Some(ccso_max_band_log2);
+            plane_params.ccso_offset_idx = ccso_offset_idx;
         }
 
         planes.push(plane_params);
@@ -1022,7 +1038,11 @@ mod tests {
         assert_eq!(params.planes[0].ccso_ext_filter, Some(0));
         assert_eq!(params.planes[0].ccso_edge_clf, Some(false));
         assert_eq!(params.planes[0].ccso_max_band_log2, Some(0));
+        // One ccso_offset_idx (maxEdgeInterval 1 * 1 * maxBand 1), surfaced.
+        assert_eq!(params.planes[0].ccso_offset_idx, vec![0]);
         assert!(!params.planes[1].ccso_planes);
+        // A disabled plane codes no offsets.
+        assert!(params.planes[1].ccso_offset_idx.is_empty());
     }
 
     #[test]
@@ -1052,6 +1072,8 @@ mod tests {
         assert_eq!(params.planes[0].ccso_scale_idx, Some(1));
         assert_eq!(params.planes[0].ccso_ext_filter, Some(5));
         assert_eq!(params.planes[0].ccso_edge_clf, Some(true));
+        // 4 ccso_offset_idx (maxEdgeInterval 2 * 2 * maxBand 1), each tu == 1, surfaced.
+        assert_eq!(params.planes[0].ccso_offset_idx, vec![1, 1, 1, 1]);
     }
 
     #[test]
@@ -1076,6 +1098,31 @@ mod tests {
         let mut r = reader(&data);
         let params = parse_ccso_params(&mut r, false, 3, &ccso_enabled()).unwrap();
         assert_eq!(params.planes[0].ccso_edge_clf, Some(false));
+        // 9 ccso_offset_idx (maxEdgeInterval 3 * 3 * maxBand 1), all tu == 0, surfaced.
+        assert_eq!(params.planes[0].ccso_offset_idx, vec![0u8; 9]);
+    }
+
+    #[test]
+    fn ccso_offset_idx_values_surface_in_iteration_order() {
+        // bo_only == 1 -> maxEdgeInterval 1; ccso_max_band_log2 == 2 -> maxBand 4. So 1*1*4 = 4
+        // ccso_offset_idx values, read in (d0, d1, band) order. Use distinct tu(7) values to
+        // pin the ordering: the surfaced Vec must be exactly [0, 1, 2, 7].
+        let mut bits = Bits::default();
+        bits.bit(1); // ccso_frame_flag
+        bits.bit(1); // ccso_planes[0]
+        bits.bit(1); // ccso_bo_only[0]
+        bits.f(0, 2); // ccso_scale_idx[0]
+        bits.f(2, 3); // ccso_max_band_log2[0] == 2 (n = 3) -> maxBand 4
+        bits.tu(0, 7); // band 0
+        bits.tu(1, 7); // band 1
+        bits.tu(2, 7); // band 2
+        bits.tu(7, 7); // band 3 (the tu(7) all-ones terminal value)
+        bits.bit(0); // ccso_planes[1]
+        bits.bit(0); // ccso_planes[2]
+        let data = bits.into_bytes();
+        let mut r = reader(&data);
+        let params = parse_ccso_params(&mut r, false, 3, &ccso_enabled()).unwrap();
+        assert_eq!(params.planes[0].ccso_offset_idx, vec![0, 1, 2, 7]);
     }
 
     #[test]
