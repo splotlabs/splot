@@ -51,8 +51,16 @@ Never invent syntax, constants, or semantics.
 
 Decoder partition work uses these local mirror citations:
 
+- AV2 § 5.20.2.1 decode tile syntax:
+  [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1).
+- AV2 § 5.20.3.1 decode partition syntax:
+  [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1).
 - AV2 § 5.20.3.2 read partition syntax:
   [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2).
+- AV2 § 5.20.4.1 decode block syntax:
+  [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1).
+- AV2 § 6.19.2.1 tile-level semantics:
+  [`docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-2-1`](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-2-1).
 - AV2 § 6.19.3 partition structure semantics:
   [`docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-3`](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-3).
 - AV2 § 8.2.5 / § 8.2.6 literal and symbol parsing:

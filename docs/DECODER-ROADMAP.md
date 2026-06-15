@@ -96,7 +96,11 @@ partition traversal. It also has a crate-private § 5.20.3.2 allowed-partition
 boundary that derives `partition_implied`, `partition_implied_at_boundary`,
 `rect_type_implied_by_bsize`, `is_partition_allowed`, and
 `init_allowed_partitions` from explicit bounded tile facts while preserving
-`BLOCK_INVALID` residual-size results. The tile payload boundary then stops at structured
+`BLOCK_INVALID` residual-size results. It also has a crate-private § 5.20.3.1
+partition traversal frontier that composes those boundaries to advance from a
+tile work unit to the first in-frame `decode_block()` frontier, with
+transactional tile-CDF mutation and pending sibling partition calls preserved
+for a future block decoder. The tile payload boundary then stops at structured
 `decode/unsupported-feature` metadata for the unimplemented `decode_tile()`
 block syntax. A crate-private
 source-backed derivation bridge
@@ -107,7 +111,8 @@ and runs the resulting boundary inside the context-owned
 `splot_parallel::WorkerPool`, preserving the PR #101 concurrency model without
 exposing public tile-payload APIs. It is not wired to a runtime decode success
 path and does not support multiple tiles or tile groups, bridge/BRU paths,
-recursive `read_partition()`/`decode_tile()` traversal, `MiSizes` mutation,
+full `read_partition()`/`decode_tile()` traversal past the first
+`decode_block()` frontier, `MiSizes` mutation, `decode_block()` syntax,
 `exit_symbol()` after real syntax, Saved CDF mutation, reconstruction, hashes,
 runtime Y4M, reference refresh, or external decoders.
 
@@ -210,7 +215,7 @@ other external decoder is forbidden.
 | 4 | Container traversal, base-layer parsed/raw traversal, transactional decode planning | parsed and raw-byte stream planners supported; operating-point selection and broad CLI runtime unsupported |
 | 5 | Self-contained decode fuzz target and fixture smoke | `decode_plan_bytes` fuzz target supported for the raw byte planner; minimal runtime fixture smoke supported |
 | 6 | AV2 § 8 symbol/CDF decoder foundation | § 8.2 generic primitive partial; crate-private partition CDF subset boundary partial; broad § 8.3 and tile decode planned |
-| 7 | Constrained intra tile syntax | tile payload and tile CDF boundaries partial; individual partition-entry symbol reads and one caller-fact partition decision supported; recursive `read_partition()` / `decode_tile()` syntax planned |
+| 7 | Constrained intra tile syntax | tile payload and tile CDF boundaries partial; individual partition-entry symbol reads, one caller-fact partition decision, allowed partition derivation, and first `decode_block()` frontier planning supported; full recursive `read_partition()` / `decode_tile()` syntax planned |
 | 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | current-frame workspace plus square DC, rectangular DC, basic/PAETH, and smooth prediction primitives supported; directional/DIP/subsampled DC/IBP/CfL modes, dequant/reconstruction, inverse transforms, runtime hashes planned |
 | 9 | Y4M output and reconstructed reference-frame store | reference-slot runtime store, source-backed Y4M writer, and minimal runtime Y4M output supported; broad runtime Y4M output and AV2 refresh semantics planned |
 | 10 | Portable local-reference evidence manifests | metadata contract and offline checker wired; two AVM/dav2d raw MD5 agreement entries recorded as non-executable metadata |
