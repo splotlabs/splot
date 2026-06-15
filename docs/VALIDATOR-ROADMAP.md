@@ -77,10 +77,11 @@ entropy/range *encoder*, the decoder, and the *live* AVM differential harness.
 
 **Carve-out (started):** the **committed conformance corpus** is *out* from
 behind this fence (OpenSpec change `conformance-corpus-foundation`,
-`CONF-AVM-VALID-STREAMS`). A self-contained corpus of small AVM-generated valid
-AV2 vectors plus a manifest and a committed runner now lands and gates in CI —
-**with no AVM dependency** (AVM is a local generator only; the runner never
-invokes AVM or the network). Still fenced: the encoder/decoder and the
+`CONF-AVM-VALID-STREAMS`). A self-contained corpus of small valid AV2 vectors
+plus a manifest and a committed runner now lands and gates in CI — **with no AVM
+dependency** (AVM is a local generator/source seed only; retimed vectors are
+identified in the manifest, and the runner never invokes AVM or the network).
+Still fenced: the encoder/decoder and the
 *live* `avm encode -> splot validate` / `splot encode -> avm decode`
 differential harness (`CONF-AVM-DIFF-HARNESS`).
 
@@ -641,10 +642,11 @@ Acceptance:
 
 **Status:** partial — the **committed corpus foundation** has landed
 (`conformance-corpus-foundation`, `CONF-AVM-VALID-STREAMS`): a self-contained
-`tests/conformance/` corpus of small AVM-generated valid AV2 vectors plus a
-`manifest.toml` and a committed runner (`cargo xtask conformance` and the CI
-gate `crates/splot-cli/tests/conformance.rs`) that validate the committed bytes
-with **no AVM dependency** and no network. A *live* AVM differential harness
+`tests/conformance/` corpus of small valid AV2 vectors (AVM-generated or
+explicitly provenance-noted local retimings) plus a `manifest.toml` and a
+committed runner (`cargo xtask conformance` and the CI gate
+`crates/splot-cli/tests/conformance.rs`) that validate the committed bytes with
+**no AVM dependency** and no network. A *live* AVM differential harness
 (`CONF-AVM-DIFF-HARNESS`) and the public-vector corpus remain mapping-only;
 `cargo xtask fetch-vectors` is still an explicit stub.
 
@@ -659,8 +661,9 @@ Feature IDs:
 
 Done so far:
 
-- committed `tests/conformance/` corpus: AVM-generated valid IVF vectors and a
-  bootstrap negative (a truncated copy emitting `ivf/truncated-frame-payload`);
+- committed `tests/conformance/` corpus: valid IVF vectors with per-vector
+  provenance plus a bootstrap negative (a truncated copy emitting
+  `ivf/truncated-frame-payload`);
 - `manifest.toml` mapping each vector to `clean` or an expected `{ diagnostics }`
   rule-id set;
 - a committed runner with **no AVM dependency**: a CI-gating integration test

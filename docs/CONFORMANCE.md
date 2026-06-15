@@ -9,8 +9,9 @@ and tracked by the `CONF-*` rows.
 What each `CONF-*` row proves:
 
 - `CONF-AVM-VALID-STREAMS` — the committed, self-contained conformance corpus
-  under `tests/conformance/`: small valid AV2 streams (AVM-generated, and a
-  bootstrap negative) validated against a manifest by a committed runner, with
+  under `tests/conformance/`: small valid AV2 streams (AVM-generated or
+  explicitly provenance-noted local retimings, plus a bootstrap negative)
+  validated against a manifest by a committed runner, with
   **no AVM dependency** (see [The committed corpus](#the-committed-corpus)).
 - `CONF-AVM-DIFF-HARNESS` — AVM as a **local oracle/generator only**: AVM
   locally produces AV2 streams; it is never vendored and never a build/CI
@@ -37,9 +38,11 @@ status.
 `CONF-AVM-VALID-STREAMS` is a **committed, self-contained** conformance corpus:
 every vector is committed under `tests/conformance/` and validated by a
 committed runner that has **no AVM dependency** — it never invokes AVM,
-requires an AVM checkout, or touches the network. AVM's only role is the
-[local oracle](#avm-is-a-local-oracle-not-a-dependency) that *generated* the
-committed vectors.
+requires an AVM checkout, or touches the network. AVM's role is the
+[local oracle](#avm-is-a-local-oracle-not-a-dependency) that generated or seeded
+the committed vectors; any repository-retimed vector must say so in
+`tests/conformance/manifest.toml` and must not claim local reference evidence
+unless that evidence is refreshed.
 
 ### Layout
 
@@ -47,8 +50,9 @@ committed vectors.
 tests/conformance/
   manifest.toml                 expected-outcome manifest (one [[vector]] per file)
   vectors/
-    valid/                      valid AV2 streams (IVF, AVM-generated): diverse
-                                resolutions, 8-bit + 10-bit, intra + inter, OPS
+    valid/                      valid AV2 streams (IVF, mostly AVM-generated;
+                                retimed vectors are noted in manifest.toml):
+                                diverse resolutions, 8-bit + 10-bit, intra + inter, OPS
     needs-external-hls/         valid AVM streams referencing external-HLS-provided
                                 resources (global LCR / QM level); validated
                                 standalone they emit the §7.3.8.3 / §7.3.8.9 diagnostic

@@ -21,6 +21,7 @@ mod partition;
 mod partition_allowed;
 mod partition_size;
 mod partition_traversal;
+mod runtime_frontier;
 
 use core::fmt;
 
@@ -41,6 +42,10 @@ pub(crate) use input::{
     FrameCandidateCdfFacts, FrameCandidateTileBoundaryError, FrameCandidateTileBoundaryInput,
     FrameCandidateTileFacts, FrameCandidateTileMalformed, TileGroupPositionFacts,
     plan_derived_tile_payload_boundary,
+};
+pub(crate) use partition_traversal::TilePartitionTraversalError;
+pub(crate) use runtime_frontier::{
+    MinimalRuntimePartitionFrontierError, plan_minimal_runtime_partition_frontier,
 };
 
 pub(crate) const TILE_PAYLOAD_DECODE_MATRIX_ROW: &str = "tile-payload-decode";

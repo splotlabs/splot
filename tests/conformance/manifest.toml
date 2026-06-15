@@ -5,9 +5,9 @@
 #
 # A self-contained, committed corpus: every vector is committed under
 # `tests/conformance/` and validated by the committed runner with NO AVM
-# dependency (see docs/CONFORMANCE.md). AVM is only the LOCAL generator of the
-# committed vectors; it is never invoked, vendored, or depended on by the
-# runner, build, or CI.
+# dependency (see docs/CONFORMANCE.md). AVM is only the LOCAL generator or
+# source seed described by each vector's provenance; it is never invoked,
+# vendored, or depended on by the runner, build, or CI.
 #
 # Schema
 # ------
@@ -36,7 +36,7 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-flat-intra-64x64-minimal.ivf"
-description = "Single flat 8-bit 4:2:0 intra key frame (IVF, 64x64) generated from project-owned synthetic input with broad decode tools disabled; validates clean."
+description = "Single flat 8-bit 4:2:0 intra key frame (IVF, 64x64) from project-owned synthetic input with broad decode tools disabled; the two-byte tile payload is repository-retimed for the minimal runtime root partition-frontier trace; validates clean."
 expect = "clean"
 
 [[vector]]

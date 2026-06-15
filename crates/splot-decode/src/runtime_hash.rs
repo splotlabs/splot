@@ -224,6 +224,24 @@ mod tests {
     }
 
     #[test]
+    fn partition_symbol_mutation_fails_through_frontier() {
+        let mut bytes = MINIMAL_FIXTURE.to_vec();
+        let tile_start = bytes.len() - 2;
+        bytes[tile_start] = 0xFF;
+
+        let error = context(ThreadCount::from(1usize))
+            .decode_hash_report_bytes(&bytes, DecodeOptions::default())
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecodeError::UnsupportedFeature {
+                unsupported
+            } if unsupported.reason() == "minimal_tile_partition_frontier"
+        ));
+    }
+
+    #[test]
     fn tile_payload_byte_mutations_return_typed_results() {
         let context = context(ThreadCount::from(1usize));
         let tile_payload_offsets = (MINIMAL_FIXTURE.len() - 2)..MINIMAL_FIXTURE.len();
@@ -258,6 +276,23 @@ mod tests {
             DecodeError::Limit {
                 source
             } if source.name() == DecodeLimitName::MaxOutputBytes
+        ));
+    }
+
+    #[test]
+    fn partition_frontier_limit_preserves_resource_limit() {
+        let options = DecodeOptions::new(
+            DecodeLimits::default().with_max_tile_partition_steps(DecodeLimitThreshold::Max(0)),
+        );
+        let error = context(ThreadCount::from(1usize))
+            .decode_hash_report_bytes(MINIMAL_FIXTURE, options)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecodeError::Limit {
+                source
+            } if source.name() == DecodeLimitName::MaxTilePartitionSteps
         ));
     }
 
