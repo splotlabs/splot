@@ -664,6 +664,46 @@ mod tests {
         assert_eq!(w.bit_len(), 0);
     }
 
+    #[test]
+    fn inter_rejects_gated_off_non_default() {
+        // A field the parser infers behind a DISABLED gate (and does not read) must be
+        // rejected before any bit — a stored non-default would shift the rest of the
+        // stream and break read(write(x)) == x. (Codex review on PR #142.)
+        fn rejects(mutate: impl FnOnce(&mut SequenceInterConfig), what: &'static str) {
+            let mut config = inter_full_default();
+            mutate(&mut config);
+            let mut w = BitWriter::new();
+            let err = write_sequence_inter_config(&mut w, &config, false);
+            assert!(
+                matches!(err, Err(WriteError::NonCanonicalSequenceValue { what: got }) if got == what),
+                "expected NonCanonicalSequenceValue({what})"
+            );
+            assert_eq!(w.bit_len(), 0);
+        }
+        rejects(
+            |c| c.seq_frame_motion_modes_present_flag = true,
+            "seq_frame_motion_modes_present_flag",
+        );
+        rejects(
+            |c| c.enable_six_param_warp_delta = true,
+            "enable_six_param_warp_delta",
+        );
+        rejects(
+            |c| c.reduced_ref_frame_mvs_mode = true,
+            "reduced_ref_frame_mvs_mode",
+        );
+        // Codex's exact example: enable_tip = false but the tip subfields are set.
+        rejects(
+            |c| {
+                c.enable_tip_output = true;
+                c.enable_df_sub_pu = true;
+                c.enable_tip_explicit_qp = true;
+            },
+            "enable_tip_subfields",
+        );
+        rejects(|c| c.enable_tip_refinemv = true, "enable_tip_refinemv");
+    }
+
     fn inter_single_fixture() -> Vec<u8> {
         let mut bits = Bits::default();
         bits.bit(0); // enable_refmvbank

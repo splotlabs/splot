@@ -578,6 +578,42 @@ fn check_inter_encodable(config: &SequenceInterConfig, single_picture: bool) -> 
             value: i64::from(config.seq_max_bvp_drl_bits_minus_1),
         });
     }
+
+    // Reject non-canonical values behind DISABLED gates: when a gate is false the parser
+    // infers these fields to their defaults and does not read them, so a stored non-default
+    // would shift the rest of the stream and break read(write(x)) == x.
+    if !any_motion_mode_enabled(config) && config.seq_frame_motion_modes_present_flag {
+        return Err(WriteError::NonCanonicalSequenceValue {
+            what: "seq_frame_motion_modes_present_flag",
+        });
+    }
+    if !config.seq_enabled_motion_modes[DELTAWARP] && config.enable_six_param_warp_delta {
+        return Err(WriteError::NonCanonicalSequenceValue {
+            what: "enable_six_param_warp_delta",
+        });
+    }
+    if !config.enable_ref_frame_mvs && config.reduced_ref_frame_mvs_mode {
+        return Err(WriteError::NonCanonicalSequenceValue {
+            what: "reduced_ref_frame_mvs_mode",
+        });
+    }
+    if !config.enable_tip && (config.enable_tip_output || config.enable_tip_hole_fill) {
+        return Err(WriteError::NonCanonicalSequenceValue {
+            what: "enable_tip_subfields",
+        });
+    }
+    if !(config.enable_tip_output && config.enable_df_sub_pu) && config.enable_tip_explicit_qp {
+        return Err(WriteError::NonCanonicalSequenceValue {
+            what: "enable_tip_explicit_qp",
+        });
+    }
+    if !(config.enable_tip && (config.enable_opfl_refine != 0 || config.enable_refinemv))
+        && config.enable_tip_refinemv
+    {
+        return Err(WriteError::NonCanonicalSequenceValue {
+            what: "enable_tip_refinemv",
+        });
+    }
     Ok(())
 }
 
