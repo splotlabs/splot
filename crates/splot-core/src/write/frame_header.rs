@@ -97,7 +97,22 @@ pub(crate) fn check_frame_header_prefix_encodable(prefix: &FrameHeaderPrefix) ->
     }
 
     // `seq_header_id_in_frame_header` is present iff `cur_mfh_id == 0`, and
-    // `referenced_sequence_header_id` is its in-range resolution.
+    // `referenced_sequence_header_id` is its in-range resolution. Accumulate the exact bit
+    // count the written fields will occupy so the derived `consumed_bits` can be validated
+    // against it. A `uvlc` value of `u32::MAX` is unencodable (`read_uvlc` maxes at
+    // `u32::MAX - 1`), so reject it up front rather than let the second `write_uvlc` fail
+    // mid-write and leave a partial buffer.
+    let mut expected_bits: u64 = 0;
+    if !prefix.is_bridge {
+        let cur = prefix.cur_mfh_id.get();
+        if cur == u32::MAX {
+            return Err(WriteError::ValueOutOfRange {
+                descriptor: "uvlc",
+                value: i64::from(cur),
+            });
+        }
+        expected_bits += uvlc_bit_len(cur);
+    }
     if prefix.cur_mfh_id.is_zero() {
         let Some(raw) = prefix.seq_header_id_in_frame_header else {
             return reject("seq_header_id_in_frame_header");
@@ -105,6 +120,13 @@ pub(crate) fn check_frame_header_prefix_encodable(prefix: &FrameHeaderPrefix) ->
         if prefix.referenced_sequence_header_id != SequenceHeaderId::try_new(raw) {
             return reject("referenced_sequence_header_id");
         }
+        if raw == u32::MAX {
+            return Err(WriteError::ValueOutOfRange {
+                descriptor: "uvlc",
+                value: i64::from(raw),
+            });
+        }
+        expected_bits += uvlc_bit_len(raw);
     } else {
         if prefix.seq_header_id_in_frame_header.is_some() {
             return reject("seq_header_id_in_frame_header");
@@ -114,7 +136,24 @@ pub(crate) fn check_frame_header_prefix_encodable(prefix: &FrameHeaderPrefix) ->
         }
     }
 
+    // `consumed_bits` is the derived bit count of the activation fields; a model whose stored
+    // value disagrees with the syntax it carries is not parser-reachable and would reparse to
+    // a different prefix, so reject it before any bit.
+    if prefix.consumed_bits != expected_bits {
+        return reject("consumed_bits");
+    }
+
     Ok(())
+}
+
+/// Returns the bit length of `value` encoded as `uvlc()` (AV2 v1.0.0 § 4.11.4,
+/// `docs/spec/av2/1.0.0/04-conventions.md#s-4-11-4`): `2 * leadingZeros + 1` where
+/// `leadingZeros = floor(log2(value + 1))`. `value` must be `< u32::MAX` (the encodable
+/// domain), which the caller validates before calling.
+fn uvlc_bit_len(value: u32) -> u64 {
+    let m = u64::from(value) + 1;
+    let leading_zeros = 63 - m.leading_zeros() as u64;
+    2 * leading_zeros + 1
 }
 
 /// Writes the § 5.18.2 (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`)
@@ -126,10 +165,12 @@ pub(crate) fn check_frame_header_prefix_encodable(prefix: &FrameHeaderPrefix) ->
 /// derived `is_*` / `startCVS` fields carry no bits. The model is fully validated before any
 /// bit is written.
 ///
+/// Both errors are returned before any bit is written (the writer buffer is left unchanged).
+///
 /// # Errors
 /// - [`WriteError::NonCanonicalFrameHeader`] if the prefix is not a model the § 5.18.2 parser
-///   could have produced (a derived flag, `startCVS`, the bridge `cur_mfh_id` inference, or an
-///   `Option` presence disagrees with the derivation).
+///   could have produced (a derived flag, `startCVS`, the bridge `cur_mfh_id` inference, an
+///   `Option` presence, or `consumed_bits` disagrees with the derivation).
 /// - [`WriteError::ValueOutOfRange`] if `cur_mfh_id` or `seq_header_id_in_frame_header` is
 ///   `u32::MAX` (outside the `uvlc()` domain).
 pub fn write_frame_header_prefix(
@@ -395,6 +436,55 @@ mod tests {
         let mut prefix = base_prefix();
         prefix.status = FrameHeaderPrefixStatus::CompleteForSpecialCase;
         assert_rejected(&prefix, "status");
+    }
+
+    #[test]
+    fn reject_consumed_bits_mismatch() {
+        // consumed_bits must equal the bit length of the activation fields; a stored value
+        // that disagrees with the syntax would reparse to a different prefix.
+        let mut prefix = base_prefix();
+        prefix.consumed_bits += 1;
+        assert_rejected(&prefix, "consumed_bits");
+    }
+
+    #[test]
+    fn reject_cur_mfh_id_u32_max_before_any_bit() {
+        // u32::MAX is unencodable by uvlc; reject before any bit (not mid-write).
+        let mut prefix = parse_prefix(
+            &prefix_bytes(false, 4, None),
+            ObuType::RegularSef,
+            Some(false),
+        );
+        prefix.cur_mfh_id = crate::hls::MfhId::from_raw(u32::MAX);
+        let mut writer = BitWriter::new();
+        let err = write_frame_header_prefix(&mut writer, &prefix).unwrap_err();
+        assert_eq!(
+            err,
+            WriteError::ValueOutOfRange {
+                descriptor: "uvlc",
+                value: i64::from(u32::MAX)
+            }
+        );
+        assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
+    fn reject_seq_header_id_u32_max_before_any_bit() {
+        // The second uvlc would otherwise fail only after cur_mfh_id was written, leaving a
+        // partial buffer; the up-front check rejects it before any bit.
+        let mut prefix = base_prefix();
+        prefix.seq_header_id_in_frame_header = Some(u32::MAX);
+        prefix.referenced_sequence_header_id = SequenceHeaderId::try_new(u32::MAX); // None
+        let mut writer = BitWriter::new();
+        let err = write_frame_header_prefix(&mut writer, &prefix).unwrap_err();
+        assert_eq!(
+            err,
+            WriteError::ValueOutOfRange {
+                descriptor: "uvlc",
+                value: i64::from(u32::MAX)
+            }
+        );
+        assert_eq!(writer.bit_len(), 0);
     }
 }
 
