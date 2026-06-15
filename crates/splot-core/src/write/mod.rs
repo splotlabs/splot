@@ -26,7 +26,9 @@
 //! § 5.18.5.2 / § 5.18.7.9 / § 5.18.7.10 loop-filter cluster
 //! (`deblocking_filter_params()`, `gdf_params()`, and `cdef_params()`); and
 //! [`frame_restoration`] writes the § 5.18.7.11 / § 5.18.7.12 loop-restoration and CCSO
-//! cluster (`lr_params()` on the `frame_filters_on == false` surface, and `ccso_params()`).
+//! cluster (`lr_params()` on the `frame_filters_on == false` surface, and `ccso_params()`); and
+//! [`frame_tail`] writes the § 5.18.2 intra tail (`read_tx_mode()`, the no-bit intra inferences,
+//! `reduced_tx_set`, and `film_grain_config()`).
 //! More payload writers will build on this module as the writer surface grows; see
 //! `docs/spec-coverage-writer.md` (once landed) for the per-structure coverage matrix.
 
@@ -38,6 +40,7 @@ pub mod frame_header;
 pub mod frame_quant;
 pub mod frame_restoration;
 pub mod frame_segmentation;
+pub mod frame_tail;
 pub mod frame_tiling;
 pub mod obu;
 pub mod segment;
@@ -56,6 +59,7 @@ pub use frame_quant::{
 };
 pub use frame_restoration::{write_ccso_params, write_lr_params};
 pub use frame_segmentation::write_segmentation_params;
+pub use frame_tail::{write_film_grain_config, write_intra_tail, write_tx_mode};
 pub use frame_tiling::write_tile_info;
 pub use obu::{write_annexb_obu, write_obu_header, write_obu_header_extension};
 pub use segment::write_seg_info;
