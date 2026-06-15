@@ -13,7 +13,8 @@ use clap::{Args, ValueEnum};
 use serde::Serialize;
 use splot_decode::{
     DecodeContext, DecodeDiagnostic, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError,
-    DecodeLimitError, DecodeLimitName, DecodeOptions, DecodeRuntimeConfig,
+    DecodeHashEntry, DecodeHashFrame, DecodeHashReport, DecodeLimitError, DecodeLimitName,
+    DecodeOptions, DecodeRuntimeConfig,
 };
 use splot_parallel::ThreadCount;
 
@@ -130,6 +131,12 @@ fn render_text_diagnostic(report: &DecodeDiagnosticReport, output_format: Decode
             eprintln!("obu_type: {}", details.obu_type);
             eprintln!("byte_offset: {}", details.byte_offset);
         }
+        DecodeDiagnosticDetails::UnsupportedFeature(details) => {
+            eprintln!("detail_kind: unsupported_feature");
+            eprintln!("unsupported_reason: {}", details.unsupported_reason);
+            eprintln!("tier_id: {}", details.tier_id);
+            eprintln!("byte_offset: {}", option_u64_text(details.byte_offset));
+        }
         DecodeDiagnosticDetails::RuntimeUnsupported(summary) => {
             eprintln!("detail_kind: runtime_unsupported");
             eprintln!("bitstream_format: {}", summary.bitstream_format);
@@ -206,6 +213,8 @@ struct DecodeDiagnosticJson<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     unsupported_reason: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    tier_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     obu_type: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     bitstream_format: Option<&'a str>,
@@ -252,6 +261,7 @@ impl<'a> DecodeDiagnosticJson<'a> {
             actual: None,
             unit: None,
             unsupported_reason: None,
+            tier_id: None,
             obu_type: None,
             bitstream_format: None,
             input_len_bytes: None,
@@ -290,6 +300,12 @@ impl<'a> DecodeDiagnosticJson<'a> {
                 json.obu_type = Some(details.obu_type);
                 json.byte_offset = Some(details.byte_offset);
             }
+            DecodeDiagnosticDetails::UnsupportedFeature(details) => {
+                json.detail_kind = "unsupported_feature";
+                json.unsupported_reason = Some(details.unsupported_reason);
+                json.tier_id = Some(details.tier_id);
+                json.byte_offset = details.byte_offset;
+            }
             DecodeDiagnosticDetails::RuntimeUnsupported(summary) => {
                 json.detail_kind = "runtime_unsupported";
                 json.bitstream_format = Some(summary.bitstream_format);
@@ -310,13 +326,134 @@ impl<'a> DecodeDiagnosticJson<'a> {
     }
 }
 
-/// Runs `splot decode` through plan-only byte-stream handoff. Reference-style
-/// decode / round-trip testing remains a future milestone, so this exits
-/// non-zero after rendering a structured diagnostic.
+#[derive(Serialize)]
+struct DecodeHashReportJson<'a> {
+    contract_id: &'a str,
+    contract_version: u32,
+    selected_output_variants: Vec<&'static str>,
+    selected_thread_policy: &'a str,
+    frames: Vec<DecodeHashFrameJson<'a>>,
+}
+
+impl<'a> DecodeHashReportJson<'a> {
+    fn new(report: &'a DecodeHashReport) -> Self {
+        Self {
+            contract_id: report.contract_id,
+            contract_version: report.contract_version,
+            selected_output_variants: report
+                .selected_output_variants
+                .iter()
+                .map(|variant| variant.as_str())
+                .collect(),
+            selected_thread_policy: &report.selected_thread_policy,
+            frames: report.frames.iter().map(DecodeHashFrameJson::new).collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct DecodeHashFrameJson<'a> {
+    output_index: u64,
+    visible_luma_left: u32,
+    visible_luma_top: u32,
+    visible_luma_width: u32,
+    visible_luma_height: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chroma_left: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chroma_top: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chroma_width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chroma_height: Option<u32>,
+    bit_depth: u8,
+    pixel_format: &'static str,
+    hashes: Vec<DecodeHashEntryJson<'a>>,
+}
+
+impl<'a> DecodeHashFrameJson<'a> {
+    fn new(frame: &'a DecodeHashFrame) -> Self {
+        Self {
+            output_index: frame.output_index,
+            visible_luma_left: frame.visible_luma_left,
+            visible_luma_top: frame.visible_luma_top,
+            visible_luma_width: frame.visible_luma_width,
+            visible_luma_height: frame.visible_luma_height,
+            chroma_left: frame.chroma_left,
+            chroma_top: frame.chroma_top,
+            chroma_width: frame.chroma_width,
+            chroma_height: frame.chroma_height,
+            bit_depth: frame.bit_depth,
+            pixel_format: frame.pixel_format.as_str(),
+            hashes: frame.hashes.iter().map(DecodeHashEntryJson::new).collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct DecodeHashEntryJson<'a> {
+    variant: &'static str,
+    algorithm_id: &'static str,
+    byte_stream_id: &'static str,
+    digest_hex: &'a str,
+}
+
+impl<'a> DecodeHashEntryJson<'a> {
+    fn new(entry: &'a DecodeHashEntry) -> Self {
+        Self {
+            variant: entry.variant.as_str(),
+            algorithm_id: entry.algorithm_id,
+            byte_stream_id: entry.byte_stream_id,
+            digest_hex: &entry.digest_hex,
+        }
+    }
+}
+
+fn render_hash_report(report: &DecodeHashReport, json: bool) -> Result<()> {
+    if json {
+        let json = serde_json::to_string_pretty(&DecodeHashReportJson::new(report))
+            .context("failed to serialize decode hash report")?;
+        println!("{json}");
+        return Ok(());
+    }
+
+    println!("contract_id: {}", report.contract_id);
+    println!("contract_version: {}", report.contract_version);
+    println!("selected_thread_policy: {}", report.selected_thread_policy);
+    for variant in &report.selected_output_variants {
+        println!("selected_output_variant: {}", variant.as_str());
+    }
+    for frame in &report.frames {
+        println!("frame.output_index: {}", frame.output_index);
+        println!(
+            "frame.visible_luma: {},{},{}x{}",
+            frame.visible_luma_left,
+            frame.visible_luma_top,
+            frame.visible_luma_width,
+            frame.visible_luma_height
+        );
+        println!("frame.pixel_format: {}", frame.pixel_format.as_str());
+        println!("frame.bit_depth: {}", frame.bit_depth);
+        for hash in &frame.hashes {
+            println!(
+                "frame.hash: {} {} {} {}",
+                hash.variant.as_str(),
+                hash.algorithm_id,
+                hash.byte_stream_id,
+                hash.digest_hex
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Runs `splot decode` through the byte-stream decode handoff. Hash mode has a
+/// narrow minimal-tier runtime success path; other runtime outputs remain
+/// diagnostic-only until later decoder milestones.
 ///
 /// # Errors
 /// Returns an error if input cannot be read, the decode context cannot be
-/// constructed, the worker pool fails, or JSON diagnostic serialization fails.
+/// constructed, the worker pool fails, or JSON serialization fails.
 pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
     let target = args
         .output_target()
@@ -329,9 +466,19 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
     let report = match read_decode_input(&args.input, options)? {
         DecodeInputRead::Bytes(bytes) => {
             let context = DecodeContext::new(DecodeRuntimeConfig::new(args.threads))?;
-            match context.plan_bytes(&bytes, options) {
-                Ok(plan) => DecodeDiagnosticReport::runtime_unsupported(&plan),
-                Err(error) => decode_report_from_error(&error)?,
+            match output_format {
+                DecodeOutputFormat::Hash => match context.decode_hash_report_bytes(&bytes, options)
+                {
+                    Ok(report) => {
+                        render_hash_report(&report, args.json)?;
+                        return Ok(ExitCode::SUCCESS);
+                    }
+                    Err(error) => decode_report_from_error(&error)?,
+                },
+                DecodeOutputFormat::Y4m => match context.plan_bytes(&bytes, options) {
+                    Ok(plan) => DecodeDiagnosticReport::runtime_unsupported(&plan),
+                    Err(error) => decode_report_from_error(&error)?,
+                },
             }
         }
         DecodeInputRead::Limit(source) => {

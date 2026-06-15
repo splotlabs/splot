@@ -33,10 +33,9 @@ use crate::{
     DecodeLimits, DecodeObuSourceKind, UNSUPPORTED_FEATURE_RULE_ID,
 };
 
-#[cfg(test)]
-pub(crate) use input::{FrameCandidateCdfFacts, FrameCandidateTileFacts, TileGroupPositionFacts};
 pub(crate) use input::{
-    FrameCandidateTileBoundaryError, FrameCandidateTileBoundaryInput,
+    FrameCandidateCdfFacts, FrameCandidateTileBoundaryError, FrameCandidateTileBoundaryInput,
+    FrameCandidateTileFacts, FrameCandidateTileMalformed, TileGroupPositionFacts,
     plan_derived_tile_payload_boundary,
 };
 

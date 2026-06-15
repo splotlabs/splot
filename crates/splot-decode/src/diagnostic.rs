@@ -10,8 +10,8 @@ use splot_core::stream::BitstreamFormat;
 
 use crate::{
     DecodeDiagnostic, DecodeError, DecodeLimitError, DecodeLimitName, DecodeSeverity,
-    DecodeSourceIssue, DecodeSourceIssueKind, DecodeStreamPlan, DecodeUnsupportedStructure,
-    UNSUPPORTED_FEATURE_RULE_ID,
+    DecodeSourceIssue, DecodeSourceIssueKind, DecodeStreamPlan, DecodeUnsupportedFeature,
+    DecodeUnsupportedStructure, UNSUPPORTED_FEATURE_RULE_ID,
 };
 
 /// Stable rule id for malformed decode-source diagnostics.
@@ -48,6 +48,10 @@ impl DecodeDiagnosticReport {
             DecodeError::UnsupportedStructure { unsupported } => {
                 Some(Self::unsupported_structure(unsupported))
             }
+            DecodeError::UnsupportedFeature { unsupported } => {
+                Some(Self::unsupported_feature(unsupported.as_ref()))
+            }
+            DecodeError::Reconstruction { .. } => None,
         }
     }
 
@@ -128,6 +132,25 @@ impl DecodeDiagnosticReport {
             ),
         }
     }
+
+    fn unsupported_feature(unsupported: &DecodeUnsupportedFeature) -> Self {
+        Self {
+            diagnostic: DecodeDiagnostic {
+                rule_id: UNSUPPORTED_FEATURE_RULE_ID,
+                severity: DecodeSeverity::Error,
+                spec_section: Some(unsupported.spec_section()),
+                matrix_row: unsupported.matrix_row(),
+                feature_id: unsupported.feature_id(),
+                message: unsupported.message(),
+                remediation: unsupported.remediation(),
+            },
+            details: DecodeDiagnosticDetails::UnsupportedFeature(DecodeUnsupportedFeatureDetails {
+                unsupported_reason: unsupported.reason(),
+                tier_id: unsupported.tier_id(),
+                byte_offset: unsupported.byte_offset().map(|offset| offset.get()),
+            }),
+        }
+    }
 }
 
 /// Case-specific structured diagnostic fields.
@@ -140,6 +163,8 @@ pub enum DecodeDiagnosticDetails {
     ResourceLimit(DecodeResourceLimitDetails),
     /// Unsupported parsed structure details.
     UnsupportedStructure(DecodeUnsupportedStructureDetails),
+    /// Unsupported runtime feature details.
+    UnsupportedFeature(DecodeUnsupportedFeatureDetails),
     /// Byte-plan summary for runtime decode/output deferral.
     RuntimeUnsupported(DecodePlanSummary),
 }
@@ -185,6 +210,17 @@ pub struct DecodeUnsupportedStructureDetails {
     pub obu_type: &'static str,
     /// OBU byte offset that triggered the unsupported result.
     pub byte_offset: u64,
+}
+
+/// Details for runtime-tier `decode/unsupported-feature`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DecodeUnsupportedFeatureDetails {
+    /// Stable unsupported reason.
+    pub unsupported_reason: &'static str,
+    /// Runtime tier id that rejected the input.
+    pub tier_id: &'static str,
+    /// Byte offset associated with the unsupported feature, when known.
+    pub byte_offset: Option<u64>,
 }
 
 /// Byte-plan summary attached to runtime unsupported diagnostics.

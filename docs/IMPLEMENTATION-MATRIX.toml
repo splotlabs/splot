@@ -14,7 +14,7 @@
 # Do NOT use percentages.
 
 matrix_version = 1
-last_reviewed = "2026-06-14"
+last_reviewed = "2026-06-15"
 
 # ---------------------------------------------------------------------------
 # Normative AV2 bitstream syntax and semantics
@@ -5411,7 +5411,7 @@ openspec_change = "recon-current-frame-workspace"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a scheduler-free `splot-recon` mutable current-frame reconstruction workspace: `CurrentFrameWorkspace<T>` allocates Y/U/V plane buffers from `DecodedFrameInfo` using checked arithmetic and fallible allocation, validates sample type and active bit-depth range before writes, exposes bounded plane/rectangle reads, fills, row-strided writes, square/rectangular block writes, in-storage left/above edge extraction, and square/rectangular DC plus rectangular PAETH and smooth prediction write helpers that call the existing `RECON-INTRA-DC-SQUARE-PREDICTION`, `RECON-INTRA-DC-RECTANGULAR-PREDICTION`, `RECON-INTRA-BASIC-PAETH-PREDICTION`, and `RECON-INTRA-SMOOTH-PREDICTION` primitives. `freeze()` reuses existing `Plane::from_vec`, `FramePlanes::new`, and `DecodedFrame::try_new`, and tests prove interop with decoded-frame hash input, Y4M writer, and reference-frame store. This row does not add a `splot-decode -> splot-recon` dependency, `DecodeContext` API, runtime `splot decode` success path, tile syntax traversal, dequantization, inverse transforms, residual addition, loop filtering, output scheduling, runtime hashes, runtime Y4M, reference refresh, AVM/dav2d invocation, external tooling, or scheduler use inside `splot-recon`; future parallel orchestration remains owned by `DecodeContext` and `splot_parallel::WorkerPool`."
+notes = "Adds a scheduler-free `splot-recon` mutable current-frame reconstruction workspace: `CurrentFrameWorkspace<T>` allocates Y/U/V plane buffers from `DecodedFrameInfo` using checked arithmetic and fallible allocation, validates sample type and active bit-depth range before writes, exposes bounded plane/rectangle reads, fills, row-strided writes, square/rectangular block writes, in-storage left/above edge extraction, and square/rectangular DC plus rectangular PAETH and smooth prediction write helpers that call the existing `RECON-INTRA-DC-SQUARE-PREDICTION`, `RECON-INTRA-DC-RECTANGULAR-PREDICTION`, `RECON-INTRA-BASIC-PAETH-PREDICTION`, and `RECON-INTRA-SMOOTH-PREDICTION` primitives. `freeze()` reuses existing `Plane::from_vec`, `FramePlanes::new`, and `DecodedFrame::try_new`, and tests prove interop with decoded-frame hash input, Y4M writer, and reference-frame store. This row itself did not add a `splot-decode -> splot-recon` dependency, `DecodeContext` API, runtime `splot decode` success path, tile syntax traversal, dequantization, inverse transforms, residual addition, loop filtering, output scheduling, runtime hashes, runtime Y4M, reference refresh, AVM/dav2d invocation, external tooling, or scheduler use inside `splot-recon`; future parallel orchestration remains owned by `DecodeContext` and `splot_parallel::WorkerPool`. The later runtime dependency edge is tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`."
 
 [feature.status]
 mapped = "done"
@@ -5489,7 +5489,7 @@ openspec_change = "minimal-decode-tier-contract"
 tracking_issue = ""
 owner = "docs"
 risk = "medium"
-notes = "Documents the repository-owned `splot.decode.minimal_tier` v1 and `minimal-intra-8bit420-hash-v1` contract before runtime decode support exists. The contract is a splot implementation subset, not an Annex A decoder conformance claim, and covers Annex B input, single-layer selection, `seq_profile_idc == 0` Main 8-bit 4:2:0, `obu_type == OBU_CLOSED_LOOP_KEY` output, no crop, one tile, hash-first success, and explicit unsupported-feature or resource-limit rejection outside the tier. Generic byte-planner diagnostics now exist, but no runtime decode, reconstruction, hash, Y4M, tier-specific unsupported diagnostic, or local reference evidence is claimed."
+notes = "Documents the repository-owned `splot.decode.minimal_tier` v1 and `minimal-intra-8bit420-hash-v1` contract. The contract is a splot implementation subset, not an Annex A decoder conformance claim, and covers a committed IVF/DKIF-wrapped AV02 frame with Annex B length-delimited OBU payloads, single-layer selection, `seq_profile_idc == 0` Main 8-bit 4:2:0, `obu_type == OBU_CLOSED_LOOP_KEY` output, no crop, one tile, hash-first success, and explicit unsupported-feature or resource-limit rejection outside the tier. Raw Annex B planning remains supported by the byte planner but is outside this runtime hash success tier. The first runtime implementation is tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`; broad tile/CDF/intra/reconstruction/Y4M/reference-refresh support remains partial or unsupported."
 
 [feature.status]
 mapped = "done"
@@ -5510,6 +5510,74 @@ fixtures = ["docs/DECODER-ROADMAP.md", "docs/DECODER-SUPPORT-MATRIX.toml"]
 diagnostics = []
 
 [[feature]]
+id = "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS"
+name = "Minimal-tier runtime hash success"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["Annex B.2", "Annex B.3", "5.2", "5.18.2", "5.19", "5.20.1", "5.17.12", "6.2", "6.4.1", "6.16.13", "6.17.2", "6.17.4.1", "6.17.7.2", "6.18", "6.19.1", "7.1", "7.21.1", "7.21.2", "8.2.2", "8.2.4", "8.2.6"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-2",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_hash.rs"
+openspec_change = "decode-minimal-tier-runtime-success"
+tracking_issue = ""
+owner = "decoder"
+risk = "high"
+notes = "Adds the first runtime hash success path for the repository-owned `minimal-intra-8bit420-hash-v1` fixture-trace tier. `DecodeContext::decode_hash_report_bytes` reuses `plan_bytes`, rejects non-minimal plan shapes before reparsing, validates one 64x64 AV02 IVF stream shape (temporal delimiter, sequence header, one closed-loop-key frame candidate), gates profile/layer/bit-depth/chroma/frame-size/frame-tool/tile facts, rejects CFL intra and MHCCP before the traced UV-mode symbol path, derives source-backed tile payload bytes through the existing §5.19/§5.20.1 boundary, verifies the committed flat fixture's six-symbol §8.2 trace with generated §9.3 CDF defaults and `exit_symbol()`, checks frame/output/tile/allocation limits before allocation, builds the traced all-flat `splot_recon::DecodedFrame<u8>`, and computes `splot-dfh-sha256-v1` for `raw_intermediate_output`. `splot decode --output-format hash --json` emits `splot.decode.hash_report` v1 with resolved thread-count metadata and exit code 0 for the committed minimal fixture. Raw Annex B remains outside this runtime success tier; out-of-tier streams fail closed with `decode/unsupported-feature`; Y4M/raw file output, recursive `decode_tile()` / `read_partition()`, broad §8.3 CDF selection, CDF lifecycle, intra/inter prediction coverage beyond the traced all-flat subset, loop filters, film grain, reference refresh, metadata MD5 verification, Annex A conformance, and AVM/dav2d integration remain unsupported. The `splot-decode -> splot-recon` dependency edge is now active only for this runtime decode/reconstruction/hash handoff."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_hash.rs::tests::minimal_fixture_decodes_to_hash_report",
+    "crates/splot-decode/src/runtime_hash.rs::tests::hash_report_records_resolved_thread_count",
+    "crates/splot-decode/src/runtime_hash.rs::tests::broader_fixture_fails_closed_as_unsupported",
+    "crates/splot-decode/src/runtime_hash.rs::tests::malformed_input_fails_before_hash_report",
+    "crates/splot-decode/src/runtime_hash.rs::tests::raw_annex_b_payload_fails_closed_as_unsupported",
+    "crates/splot-decode/src/runtime_hash.rs::tests::sequence_chroma_tools_fail_closed_before_hash",
+    "crates/splot-decode/src/runtime_hash.rs::tests::tile_trace_mismatch_fails_closed_as_unsupported",
+    "crates/splot-decode/src/runtime_hash.rs::tests::tile_payload_byte_mutations_return_typed_results",
+    "crates/splot-decode/src/runtime_hash.rs::tests::output_byte_limit_fails_before_hash_report",
+    "crates/splot-decode/src/runtime_hash.rs::tests::decoded_hash_is_deterministic_across_thread_policies",
+    "crates/splot-cli/tests/decode_cli.rs::decode_hash_json_success_for_minimal_fixture",
+    "crates/splot-cli/tests/decode_cli.rs::decode_hash_json_success_creates_no_implicit_output_file",
+    "crates/splot-cli/tests/decode_cli.rs::decode_hash_json_success_leaves_existing_output_path_untouched",
+    "crates/splot-cli/tests/decode_cli.rs::decode_hash_json_success_hashes_are_thread_deterministic",
+]
+commands = [
+    "cargo test -p splot-decode --locked",
+    "cargo test -p splot-cli --test decode_cli --locked",
+    "cargo xtask conformance",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-reference-evidence",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
+    "tests/conformance/manifest.toml",
+    "docs/LOCAL-REFERENCE-EVIDENCE.toml::lref-avm-dav2d-syn-flat-intra-64x64-minimal",
+]
+diagnostics = ["decode/unsupported-feature", "decode/resource-limit", "decode/malformed-source"]
+
+[[feature]]
 id = "INFRA-DECODER-CRATE-SCAFFOLDING"
 name = "Decoder and reconstruction crate scaffolding"
 category = "infrastructure"
@@ -5522,7 +5590,7 @@ openspec_change = "decoder-crate-scaffolding"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds approved workspace scaffolds for `splot-recon` and `splot-decode`, plus dependency-direction and coverage-scope automation updates. `splot-recon` has no `splot-*` dependencies and stays scheduler-free. `splot-decode` depends on `splot-core` for source-backed stream planning and `splot-parallel` for `DecodeRuntimeConfig`/`DecodeContext` plus its single owned `WorkerPool`; a future runtime decode/reconstruction change may add `splot-recon` when needed. Decoded-frame model types are tracked by `INFRA-RECON-FRAME-PLANE-TYPES`; this scaffold row itself exposes no runtime reconstruction, hash digest, Y4M writer, or byte-consuming decoded-frame production path. The plan-only raw byte planner is tracked separately by `DECODE-BYTE-STREAM-PLANNER`. The scaffolds emit no decoder diagnostics beyond the separately tracked unsupported diagnostic descriptor and do not invoke or require AVM/dav2d."
+notes = "Adds approved workspace scaffolds for `splot-recon` and `splot-decode`, plus dependency-direction and coverage-scope automation updates. `splot-recon` has no `splot-*` dependencies and stays scheduler-free. `splot-decode` depends on `splot-core` for source-backed stream planning, `splot-parallel` for `DecodeRuntimeConfig`/`DecodeContext` plus its single owned `WorkerPool`, and `splot-recon` for the narrow runtime decode/reconstruction/hash handoff tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`. Decoded-frame model types are tracked by `INFRA-RECON-FRAME-PLANE-TYPES`; this scaffold row itself exposes no broad runtime reconstruction, Y4M writer, or byte-consuming decoded-frame production path. The raw byte planner is tracked separately by `DECODE-BYTE-STREAM-PLANNER`. The scaffolds emit no decoder diagnostics beyond separately tracked decode diagnostics and do not invoke or require AVM/dav2d."
 
 [feature.status]
 mapped = "done"
@@ -5954,7 +6022,7 @@ openspec_change = "decode-context-tile-payload-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "low"
-notes = "Adds a crate-private `DecodeContext` handoff for the existing tile-payload boundary: `DecodeContext::plan_tile_payload_boundary` runs the crate-private `plan_tile_payload_boundary` inside the context-owned `splot_parallel::WorkerPool`, preserving deterministic tile work-unit metadata and internal tile-boundary errors across `auto`, `1`, and fixed positive thread policies. The tile payload facts remain caller-provided and crate-private, with conditional non-test dead-code allowances documenting that runtime decode fact derivation is still future work. This row does not expose public tile-payload API support, derive tile facts from raw byte streams, implement `decode_tile()`, reconstruct pixels, compute hashes, write Y4M, refresh references, add a `splot-decode -> splot-recon` dependency, invoke AVM/dav2d, or use direct Rayon/crossbeam/global pools/ad-hoc threads."
+notes = "Adds a crate-private `DecodeContext` handoff for the existing tile-payload boundary: `DecodeContext::plan_tile_payload_boundary` runs the crate-private `plan_tile_payload_boundary` inside the context-owned `splot_parallel::WorkerPool`, preserving deterministic tile work-unit metadata and internal tile-boundary errors across `auto`, `1`, and fixed positive thread policies. The tile payload facts remain caller-provided and crate-private, with conditional non-test dead-code allowances documenting that runtime decode fact derivation was future work for this row. This row itself does not expose public tile-payload API support, derive tile facts from raw byte streams, implement `decode_tile()`, reconstruct pixels, compute hashes, write Y4M, refresh references, add a `splot-decode -> splot-recon` dependency, invoke AVM/dav2d, or use direct Rayon/crossbeam/global pools/ad-hoc threads. The later runtime hash handoff is tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`."
 
 [feature.status]
 mapped = "done"

@@ -23,7 +23,9 @@ mod byte_stream;
 pub mod context;
 pub mod diagnostic;
 pub mod error;
+pub mod hash_report;
 pub mod runtime;
+mod runtime_hash;
 pub mod stream_plan;
 pub(crate) mod tile_payload;
 
@@ -33,7 +35,14 @@ pub use diagnostic::{
     DecodePlanSummary, DecodeResourceLimitDetails, DecodeUnsupportedStructureDetails,
     MALFORMED_SOURCE_RULE_ID, RESOURCE_LIMIT_RULE_ID,
 };
+pub use error::DecodeUnsupportedFeature;
 pub use error::{DecodeError, Result};
+pub use hash_report::{
+    DECODE_HASH_REPORT_BYTE_STREAM_ID, DECODE_HASH_REPORT_CONTRACT_ID,
+    DECODE_HASH_REPORT_CONTRACT_VERSION, DECODE_HASH_REPORT_HASH_ALGORITHM_ID,
+    DECODE_HASH_REPORT_RAW_INTERMEDIATE_OUTPUT_VARIANT, DECODE_HASH_REPORT_SHA256_DIGEST_HEX_LEN,
+    DecodeHashEntry, DecodeHashFrame, DecodeHashPixelFormat, DecodeHashReport, DecodeOutputVariant,
+};
 pub use runtime::DecodeRuntimeConfig;
 pub use stream_plan::{
     DecodeIvfFrameContext, DecodeLayerSelection, DecodeObuSourceKind, DecodePlannedObu,

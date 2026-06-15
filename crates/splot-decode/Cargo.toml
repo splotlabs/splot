@@ -18,4 +18,5 @@ workspace = true
 [dependencies]
 splot-core.workspace = true
 splot-parallel.workspace = true
+splot-recon.workspace = true
 thiserror.workspace = true

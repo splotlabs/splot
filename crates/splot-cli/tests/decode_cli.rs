@@ -50,6 +50,12 @@ fn temp_input(extension: &str, data: &[u8]) -> PathBuf {
     path
 }
 
+fn conformance_vector(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/vectors/valid")
+        .join(name)
+}
+
 fn repeated_sequence_header_obus(count: usize) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(count * 2);
     for _ in 0..count {
@@ -81,6 +87,40 @@ fn read_dir_paths(path: &Path) -> Vec<PathBuf> {
         .expect("read temporary directory")
         .map(|entry| entry.expect("read temporary directory entry").path())
         .collect()
+}
+
+fn read_dir_names(path: &Path) -> Vec<String> {
+    let mut entries = std::fs::read_dir(path)
+        .expect("read temporary directory")
+        .map(|entry| {
+            entry
+                .expect("read temporary directory entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries
+}
+
+fn decode_hash_json(path: &Path, threads: &str) -> serde_json::Value {
+    let out = splot(&[
+        "decode",
+        "--output-format",
+        "hash",
+        "--json",
+        "--threads",
+        threads,
+        path.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(0), "threads={threads}");
+    assert!(
+        out.stderr.is_empty(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap()
 }
 
 #[test]
@@ -216,19 +256,15 @@ fn decode_hash_output_format_emits_unsupported_text_without_output_path() {
     assert_eq!(out.status.code(), Some(1));
     assert!(out.stdout.is_empty(), "stdout was not empty");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let diagnostic = unsupported_feature_diagnostic();
     for expected in [
-        format!("rule_id: {}", diagnostic.rule_id),
-        format!("severity: {}", diagnostic.severity),
-        format!(
-            "spec_section: {}",
-            diagnostic
-                .spec_section
-                .expect("diagnostic cites a spec section")
-        ),
-        format!("matrix_row: {}", diagnostic.matrix_row),
-        format!("feature_id: {}", diagnostic.feature_id),
-        "detail_kind: runtime_unsupported".to_string(),
+        "rule_id: decode/unsupported-feature".to_string(),
+        "severity: Error".to_string(),
+        "spec_section: 7.1".to_string(),
+        "matrix_row: minimal-decode-tier-contract".to_string(),
+        "feature_id: DECODE-MINIMAL-TIER-RUNTIME-SUCCESS".to_string(),
+        "detail_kind: unsupported_feature".to_string(),
+        "unsupported_reason: unexpected_planned_stream_shape".to_string(),
+        "tier_id: minimal-intra-8bit420-hash-v1".to_string(),
         "output_format: hash".to_string(),
     ] {
         assert!(
@@ -286,20 +322,138 @@ fn decode_hash_output_format_json_emits_same_diagnostic() {
 
     assert_eq!(out.status.code(), Some(1));
     assert!(out.stderr.is_empty(), "stderr was not empty");
-    let diagnostic = unsupported_feature_diagnostic();
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(json["rule_id"], diagnostic.rule_id);
-    assert_eq!(json["severity"], diagnostic.severity.as_str());
+    assert_eq!(json["rule_id"], "decode/unsupported-feature");
+    assert_eq!(json["severity"], "Error");
+    assert_eq!(json["spec_section"], "7.1");
+    assert_eq!(json["matrix_row"], "minimal-decode-tier-contract");
+    assert_eq!(json["feature_id"], "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS");
+    assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
-        json["spec_section"],
-        diagnostic
-            .spec_section
-            .expect("diagnostic cites a spec section")
+        json["unsupported_reason"],
+        "unexpected_planned_stream_shape"
     );
-    assert_eq!(json["matrix_row"], diagnostic.matrix_row);
-    assert_eq!(json["feature_id"], diagnostic.feature_id);
-    assert_eq!(json["detail_kind"], "runtime_unsupported");
+    assert_eq!(json["tier_id"], "minimal-intra-8bit420-hash-v1");
     assert_eq!(json["output_format"], "hash");
+}
+
+#[test]
+fn decode_hash_json_success_for_minimal_fixture() {
+    let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
+
+    let out = splot(&[
+        "decode",
+        "--json",
+        "--output-format",
+        "hash",
+        input.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stderr.is_empty(), "stderr was not empty");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["contract_id"], "splot.decode.hash_report");
+    assert_eq!(json["contract_version"], 1);
+    assert_eq!(
+        json["selected_output_variants"][0],
+        "raw_intermediate_output"
+    );
+    assert_eq!(json["frames"].as_array().unwrap().len(), 1);
+    let frame = &json["frames"][0];
+    assert_eq!(frame["output_index"], 0);
+    assert_eq!(frame["visible_luma_width"], 64);
+    assert_eq!(frame["visible_luma_height"], 64);
+    assert_eq!(frame["chroma_width"], 32);
+    assert_eq!(frame["chroma_height"], 32);
+    assert_eq!(frame["bit_depth"], 8);
+    assert_eq!(frame["pixel_format"], "yuv420");
+    assert_eq!(frame["hashes"][0]["variant"], "raw_intermediate_output");
+    assert_eq!(frame["hashes"][0]["algorithm_id"], "splot-dfh-sha256-v1");
+    assert_eq!(
+        frame["hashes"][0]["byte_stream_id"],
+        "av2-output-samples-v1"
+    );
+    assert_eq!(
+        frame["hashes"][0]["digest_hex"],
+        "cb11e05cb5da949c0e0f5b5a7cb310df35a96a22c45d1ada70d950859fe697d1"
+    );
+}
+
+#[test]
+fn decode_hash_json_success_creates_no_implicit_output_file() {
+    let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
+    let cwd = temp_dir("minimal-hash-cwd");
+
+    let out = splot_in(
+        &[
+            "decode",
+            "--json",
+            "--output-format",
+            "hash",
+            input.to_str().unwrap(),
+        ],
+        &cwd,
+    );
+
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(read_dir_paths(&cwd), Vec::<PathBuf>::new());
+}
+
+#[test]
+fn decode_hash_json_success_leaves_existing_output_path_untouched() {
+    let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
+    let dir = temp_dir("minimal-hash-output");
+    let output = dir.join("hash.json");
+    let original_output = b"existing hash output sentinel";
+    std::fs::write(&output, original_output).expect("write temporary output sentinel");
+    let before_entries = read_dir_names(&dir);
+
+    let out = splot(&[
+        "decode",
+        "--json",
+        "--output-format",
+        "hash",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        std::fs::read(&output).expect("read temporary output sentinel"),
+        original_output
+    );
+    assert_eq!(read_dir_names(&dir), before_entries);
+}
+
+#[test]
+fn decode_hash_json_success_hashes_are_thread_deterministic() {
+    let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
+    let one = decode_hash_json(&input, "1");
+    let auto = decode_hash_json(&input, "auto");
+    let fixed = decode_hash_json(&input, "2");
+
+    assert_eq!(one["frames"], auto["frames"]);
+    assert_eq!(one["frames"], fixed["frames"]);
+    assert_eq!(
+        one["selected_output_variants"],
+        auto["selected_output_variants"]
+    );
+    assert_eq!(
+        one["selected_output_variants"],
+        fixed["selected_output_variants"]
+    );
+    assert_eq!(one["selected_thread_policy"], "1");
+    assert_eq!(fixed["selected_thread_policy"], "2");
+    assert!(
+        auto["selected_thread_policy"]
+            .as_str()
+            .unwrap()
+            .parse::<usize>()
+            .unwrap()
+            >= 1
+    );
+    assert_ne!(auto["selected_thread_policy"], "auto");
 }
 
 #[test]

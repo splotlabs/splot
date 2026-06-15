@@ -757,6 +757,7 @@ version = "0.0.0"
 dependencies = [
  "splot-core",
  "splot-parallel",
+ "splot-recon",
  "thiserror",
 ]
 
