@@ -37,13 +37,8 @@ use crate::write::error::{WriteError, WriteResult};
 /// - [`WriteError::ValueTooWide`] from an extension field write if a layer id exceeds
 ///   its bit width (unreachable for a parser-produced header).
 pub fn write_obu_header(writer: &mut BitWriter, header: &ObuHeader) -> WriteResult<()> {
-    let expected_size = if header.has_header_extension { 2 } else { 1 };
-    if header.header_size_bytes != expected_size {
-        return Err(WriteError::InconsistentHeader {
-            flag: header.has_header_extension,
-            size_bytes: header.header_size_bytes,
-        });
-    }
+    // Validate fully up front so a rejected header leaves no bytes in the writer.
+    check_header_encodable(header)?;
 
     // Byte 0: obu_header_extension_flag f(1), obu_type f(5), obu_tlayer_id f(2).
     writer.write_bit(u8::from(header.has_header_extension))?;
@@ -51,25 +46,42 @@ pub fn write_obu_header(writer: &mut BitWriter, header: &ObuHeader) -> WriteResu
     writer.write_bits_u8(header.temporal_layer_id.get(), 2)?;
 
     if header.has_header_extension {
-        return write_obu_header_extension(
-            writer,
-            header.embedded_layer_id,
-            header.extended_layer_id,
-        );
-    }
-
-    // No extension byte: the parser re-infers the layer ids (obu.rs § 5.2.2), so a
-    // header carrying ids it could never infer is unrepresentable here.
-    let inferred_xlayer = if header.obu_type.requires_global_xlayer() {
-        GLOBAL_XLAYER_ID
+        // Byte 1: obu_mlayer_id f(3), obu_xlayer_id f(5).
+        write_obu_header_extension(writer, header.embedded_layer_id, header.extended_layer_id)
     } else {
-        ExtendedLayerId::from_bits(0)
-    };
-    if header.embedded_layer_id.get() != 0 || header.extended_layer_id != inferred_xlayer {
-        return Err(WriteError::NonInferableLayerIds {
-            embedded: header.embedded_layer_id.get(),
-            extended: header.extended_layer_id.get(),
+        Ok(())
+    }
+}
+
+/// Returns `Ok(())` if `header` is one the § 5.2.2 parser could have produced — its
+/// `has_header_extension` flag agrees with `header_size_bytes`, and (without the
+/// extension) its layer ids equal the parser's inference. Checked before any bytes are
+/// written so an unrepresentable header never leaves a partial encoding in the writer.
+///
+/// # Errors
+/// [`WriteError::InconsistentHeader`] or [`WriteError::NonInferableLayerIds`].
+fn check_header_encodable(header: &ObuHeader) -> WriteResult<()> {
+    let expected_size = if header.has_header_extension { 2 } else { 1 };
+    if header.header_size_bytes != expected_size {
+        return Err(WriteError::InconsistentHeader {
+            flag: header.has_header_extension,
+            size_bytes: header.header_size_bytes,
         });
+    }
+    if !header.has_header_extension {
+        // The parser re-infers the layer ids (obu.rs § 5.2.2), so a no-extension header
+        // carrying ids it could never infer is unrepresentable in one byte.
+        let inferred_xlayer = if header.obu_type.requires_global_xlayer() {
+            GLOBAL_XLAYER_ID
+        } else {
+            ExtendedLayerId::from_bits(0)
+        };
+        if header.embedded_layer_id.get() != 0 || header.extended_layer_id != inferred_xlayer {
+            return Err(WriteError::NonInferableLayerIds {
+                embedded: header.embedded_layer_id.get(),
+                extended: header.extended_layer_id.get(),
+            });
+        }
     }
     Ok(())
 }
@@ -119,6 +131,13 @@ pub fn write_annexb_obu(
     header: &ObuHeader,
     payload: &[u8],
 ) -> WriteResult<()> {
+    debug_assert!(
+        writer.is_byte_aligned(),
+        "write_annexb_obu requires a byte-aligned writer"
+    );
+    // Validate the header before writing the size prefix so a rejected header leaves
+    // no partial bytes (a stray LEB128 size) in the writer.
+    check_header_encodable(header)?;
     let total = obu_total_len(header.header_size_bytes, payload.len())?;
     writer.write_leb128(total)?;
     write_obu_header(writer, header)?;
@@ -249,6 +268,15 @@ mod tests {
             obu_total_len(1, u32::MAX as usize),
             Err(WriteError::ObuTooLarge { .. })
         ));
+
+        // The error path validates before writing, so the writer is left clean
+        // (no partial OBU-header byte or stray LEB128 size prefix).
+        let mut clean = BitWriter::new();
+        assert!(write_obu_header(&mut clean, &bad_ids).is_err());
+        assert_eq!(clean.bit_len(), 0);
+        let mut clean_framed = BitWriter::new();
+        assert!(write_annexb_obu(&mut clean_framed, &bad, &[0xAB]).is_err());
+        assert_eq!(clean_framed.bit_len(), 0);
     }
 
     /// G: non-canonical caveat — a non-minimal LEB128 size re-emits canonically
