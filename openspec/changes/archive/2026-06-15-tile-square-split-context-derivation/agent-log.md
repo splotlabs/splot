@@ -70,3 +70,7 @@
   local `BLOCK_256X256_INDEX` is acceptable for this crate-private slice, and
   `context.rs` is near the 1000-line soft budget, so the next context expansion
   should split the module/tests before growing it further.
+- PR #156 Claude review: PASS with one non-blocking nit. Addressed the
+  duplicate test-local `BLOCK_256X256 = 18` raw value by deriving the test alias
+  from `BLOCK_256X256_INDEX`; the focused CDF test command passed after the
+  fix.

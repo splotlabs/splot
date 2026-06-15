@@ -486,7 +486,7 @@ mod tests {
     const BLOCK_4X4: usize = 0;
     const BLOCK_16X16: usize = 6;
     const BLOCK_32X32: usize = 9;
-    const BLOCK_256X256: usize = 18;
+    const BLOCK_256X256: usize = BLOCK_256X256_INDEX;
 
     #[test]
     fn derives_square_split_contexts_from_availability_gated_grid_neighbors() {
