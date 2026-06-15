@@ -280,6 +280,23 @@ mod tests {
     }
 
     #[test]
+    fn partition_frontier_limit_preserves_resource_limit() {
+        let options = DecodeOptions::new(
+            DecodeLimits::default().with_max_tile_partition_steps(DecodeLimitThreshold::Max(0)),
+        );
+        let error = context(ThreadCount::from(1usize))
+            .decode_hash_report_bytes(MINIMAL_FIXTURE, options)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecodeError::Limit {
+                source
+            } if source.name() == DecodeLimitName::MaxTilePartitionSteps
+        ));
+    }
+
+    #[test]
     fn decoded_hash_is_deterministic_across_thread_policies() {
         let digest = |threads| {
             context(threads)

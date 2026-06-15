@@ -31,7 +31,8 @@ use splot_recon::{
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::tile_payload::{
     FrameCandidateCdfFacts, FrameCandidateTileBoundaryError, FrameCandidateTileBoundaryInput,
-    FrameCandidateTileFacts, TileGroupPositionFacts,
+    FrameCandidateTileFacts, MinimalRuntimePartitionFrontierError, TileGroupPositionFacts,
+    TilePartitionTraversalError,
 };
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeOptions, DecodePlannedObu,
@@ -192,13 +193,7 @@ fn verify_flat_minimal_tile_trace(
         tile, sequence, core, limits,
     ) {
         Ok(frontier) => frontier.into_symbol_decoder(),
-        Err(_) => {
-            return Err(unsupported_at(
-                "minimal_tile_partition_frontier",
-                tile_offset,
-                "minimal runtime hash support requires the traced root AV2 5.20.3.1 partition frontier before block syntax",
-            ));
-        }
+        Err(error) => return Err(decode_minimal_partition_frontier_error(error, tile_offset)),
     };
     read_expected_symbol(
         &mut symbol,
@@ -244,6 +239,25 @@ fn verify_flat_minimal_tile_trace(
         )
     })?;
     validate_minimal_trace_summary(summary, tile)
+}
+
+fn decode_minimal_partition_frontier_error(
+    error: MinimalRuntimePartitionFrontierError,
+    offset: ByteOffset,
+) -> DecodeError {
+    match error {
+        MinimalRuntimePartitionFrontierError::Limit(source)
+        | MinimalRuntimePartitionFrontierError::Traversal(TilePartitionTraversalError::Limit(
+            source,
+        )) => DecodeError::Limit { source },
+        MinimalRuntimePartitionFrontierError::MissingFact { .. }
+        | MinimalRuntimePartitionFrontierError::Traversal(_)
+        | MinimalRuntimePartitionFrontierError::UnexpectedFrontier { .. } => unsupported_at(
+            "minimal_tile_partition_frontier",
+            offset,
+            "minimal runtime hash support requires the traced root AV2 5.20.3.1 partition frontier before block syntax",
+        ),
+    }
 }
 
 fn read_expected_symbol<const N: usize>(

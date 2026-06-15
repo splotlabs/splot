@@ -470,6 +470,7 @@ pub(crate) fn plan_tile_partition_traversal_cursor<'payload>(
         let chroma_offset = updated_chroma_offset(call, partition, sub_size, frame)?;
         if partition == PartitionType::None {
             stack.reverse();
+            let tree_type = partition_tree_type(frame, call);
             let plan = TilePartitionTraversalPlan {
                 tile_num: work_unit.tile_num(),
                 steps,
@@ -479,7 +480,10 @@ pub(crate) fn plan_tile_partition_traversal_cursor<'payload>(
                     r: call.r,
                     c: call.c,
                     b_size: sub_size,
-                    has_chroma: call.has_chroma && frame.num_planes > 1,
+                    // AV2 §5.20.3.1 decode_block() excludes LUMA_PART from HasChroma.
+                    has_chroma: call.has_chroma
+                        && frame.num_planes > 1
+                        && tree_type != PartitionTreeType::LumaPart,
                     chroma_offset,
                     symbol_count_before_block: symbols.symbol_count(),
                     symbol_checkpoint_before_block: symbols.checkpoint(),

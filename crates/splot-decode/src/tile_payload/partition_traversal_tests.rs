@@ -366,6 +366,7 @@ fn root_sdp_luma_partition_none_reaches_frontier() {
     assert_eq!(plan.steps()[0].decision.partition, PartitionType::None);
     assert_eq!(plan.steps()[0].decision.trace.do_split, Some(false));
     assert_eq!(plan.frontier.b_size.index(), BLOCK_64X64);
+    assert!(!plan.frontier.has_chroma);
     assert_eq!(plan.symbol_count_after(), 1);
 }
 
