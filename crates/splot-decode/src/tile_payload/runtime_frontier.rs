@@ -4,13 +4,15 @@
 //! Minimal runtime bridge into the partition traversal frontier.
 //!
 //! Feature tracking: `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`,
-//! `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY`.
+//! `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY`,
+//! `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER`.
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader, SuperblockSize};
-use splot_core::symbol::SymbolDecoder;
+use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 
 use super::DecodeTileWorkUnit;
+use super::block_symbol::{MinimalBlockSymbolTraceError, consume_minimal_block_symbol_trace};
 use super::partition::PartitionType;
 use super::partition_allowed::PartitionFeatureFlags;
 use super::partition_traversal::{
@@ -39,6 +41,20 @@ impl<'payload> MinimalRuntimePartitionFrontier<'payload> {
     }
 }
 
+/// Result of the minimal runtime block-symbol frontier.
+#[derive(Debug)]
+pub(crate) struct MinimalRuntimeBlockSymbolFrontier {
+    summary: SymbolDecoderSummary,
+}
+
+impl MinimalRuntimeBlockSymbolFrontier {
+    /// Successful AV2 § 8.2.4 `exit_symbol()` summary after the traced block symbols.
+    #[must_use]
+    pub(crate) const fn summary(&self) -> SymbolDecoderSummary {
+        self.summary
+    }
+}
+
 /// Error returned while deriving the minimal runtime partition frontier.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum MinimalRuntimePartitionFrontierError {
@@ -60,6 +76,32 @@ pub(crate) enum MinimalRuntimePartitionFrontierError {
         /// Stable mismatch reason.
         reason: &'static str,
     },
+}
+
+/// Error returned while deriving the minimal runtime block-symbol frontier.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum MinimalRuntimeBlockSymbolFrontierError {
+    /// The prerequisite partition frontier failed.
+    #[error("minimal runtime partition frontier failed: {0}")]
+    Partition(#[from] MinimalRuntimePartitionFrontierError),
+    /// The traced block-symbol frontier failed.
+    #[error("minimal runtime block-symbol frontier failed: {0}")]
+    Block(#[from] MinimalBlockSymbolTraceError),
+}
+
+/// Plans the minimal runtime partition and traced block-symbol frontier.
+pub(crate) fn plan_minimal_runtime_block_symbol_frontier<'payload>(
+    work_unit: &mut DecodeTileWorkUnit<'payload>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    limits: DecodeLimits,
+) -> Result<MinimalRuntimeBlockSymbolFrontier, MinimalRuntimeBlockSymbolFrontierError> {
+    let symbols = plan_minimal_runtime_partition_frontier(work_unit, sequence, core, limits)?
+        .into_symbol_decoder();
+    let trace = consume_minimal_block_symbol_trace(work_unit, symbols)?;
+    Ok(MinimalRuntimeBlockSymbolFrontier {
+        summary: trace.summary(),
+    })
 }
 
 /// Plans the minimal runtime root partition frontier and returns its live cursor.
@@ -261,7 +303,31 @@ fn checked_mul_u64(name: DecodeLimitName, left: u64, right: u64) -> Result<u64, 
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use splot_core::bitio::BitReader;
+    use splot_core::headers::frame::{
+        FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameReferenceStateView,
+        parse_frame_header_core,
+    };
+    use splot_core::headers::sequence::{SequenceHeader, parse_sequence_header};
+    use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
+    use splot_parallel::ThreadCount;
+
+    use super::super::cdf::TileCdfSelector;
+    use super::super::{
+        DecodeTileWorkUnit, FrameCandidateCdfFacts, FrameCandidateTileBoundaryInput,
+        FrameCandidateTileFacts, TileGroupPositionFacts, plan_derived_tile_payload_boundary,
+    };
     use super::*;
+    use crate::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
+
+    const MINIMAL_FIXTURE: &[u8] = include_bytes!(
+        "../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf"
+    );
+    const MINIMAL_TRACE_SYMBOLS: u64 = 6;
+    const MINIMAL_TRACE_TRAILING_BIT_POSITION: u64 = 14;
+    const MINIMAL_TRACE_PADDING_END_POSITION: u64 = 16;
 
     #[test]
     fn initial_context_lines_use_block_256x256() {
@@ -270,5 +336,147 @@ mod tests {
             initial_context_grid(2, 3),
             vec![vec![BLOCK_256X256_INDEX; 3]; 2]
         );
+    }
+
+    #[test]
+    fn block_symbol_frontier_accepts_minimal_fixture_trace() {
+        with_minimal_work_unit(MINIMAL_FIXTURE, |work_unit, sequence, core| {
+            let selected = block_trace_selectors()
+                .map(|selector| work_unit.cdf().tile_cdfs().row(selector).unwrap().to_vec());
+            let untouched = TileCdfSelector::DoExtPartition {
+                plane_start: 0,
+                ctx: 4,
+            };
+            let untouched_before = work_unit.cdf().tile_cdfs().row(untouched).unwrap().to_vec();
+
+            let frontier = plan_minimal_runtime_block_symbol_frontier(
+                work_unit,
+                sequence,
+                core,
+                DecodeLimits::DEFAULT,
+            )
+            .unwrap();
+            let summary = frontier.summary();
+
+            assert_eq!(summary.symbol_count, MINIMAL_TRACE_SYMBOLS);
+            assert_eq!(
+                summary.trailing_bit_position.get(),
+                MINIMAL_TRACE_TRAILING_BIT_POSITION
+            );
+            assert_eq!(
+                summary.padding_end_position.get(),
+                MINIMAL_TRACE_PADDING_END_POSITION
+            );
+            for (selector, before) in block_trace_selectors().into_iter().zip(selected) {
+                assert_ne!(
+                    work_unit.cdf().tile_cdfs().row(selector).unwrap(),
+                    before.as_slice()
+                );
+            }
+            assert_eq!(
+                work_unit.cdf().tile_cdfs().row(untouched).unwrap(),
+                untouched_before.as_slice()
+            );
+        });
+    }
+
+    #[test]
+    fn block_symbol_frontier_rejects_exit_symbol_padding_failure() {
+        let mut bytes = MINIMAL_FIXTURE.to_vec();
+        *bytes.last_mut().unwrap() ^= 0x01;
+
+        with_minimal_work_unit(&bytes, |work_unit, sequence, core| {
+            let symbols = plan_minimal_runtime_partition_frontier(
+                work_unit,
+                sequence,
+                core,
+                DecodeLimits::DEFAULT,
+            )
+            .unwrap()
+            .into_symbol_decoder();
+            let before = work_unit.cdf().tile_cdfs().clone();
+            let err = consume_minimal_block_symbol_trace(work_unit, symbols).unwrap_err();
+
+            assert!(matches!(
+                err,
+                MinimalBlockSymbolTraceError::ExitSymbol { .. }
+            ));
+            assert_eq!(work_unit.cdf().tile_cdfs(), &before);
+        });
+    }
+
+    fn block_trace_selectors() -> [TileCdfSelector; 5] {
+        [
+            TileCdfSelector::YModeSet,
+            TileCdfSelector::YModeIndex { ctx: 0 },
+            TileCdfSelector::TxbSkip {
+                coeff_cdf_q_ctx: 2,
+                plane_type: 0,
+                tx_size: 0,
+                ctx: 0,
+            },
+            TileCdfSelector::UvModeCflNotAllowed { ctx: 0 },
+            TileCdfSelector::VTxbSkip {
+                coeff_cdf_q_ctx: 1,
+                ctx: 3,
+            },
+        ]
+    }
+
+    fn with_minimal_work_unit<R>(
+        bytes: &[u8],
+        f: impl FnOnce(&mut DecodeTileWorkUnit<'_>, &SequenceHeader, &FrameHeaderCore) -> R,
+    ) -> R {
+        let context =
+            DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).unwrap();
+        let plan = context.plan_bytes(bytes, DecodeOptions::default()).unwrap();
+        let candidate = plan.frame_candidates().next().unwrap();
+
+        let ParsedBitstream::Ivf(ivf) = parse_bitstream_partial(bytes) else {
+            panic!("minimal fixture must parse as IVF");
+        };
+        let frame = ivf.frames.first().unwrap();
+        let [_, sequence_envelope, frame_envelope] = frame.obus.as_slice() else {
+            panic!("minimal fixture must contain temporal delimiter, sequence, and frame OBUs");
+        };
+
+        let mut sequence_reader = BitReader::new(
+            sequence_envelope.payload,
+            sequence_envelope.payload_offset(),
+        );
+        let sequence = parse_sequence_header(&mut sequence_reader).unwrap();
+
+        let mut frame_reader =
+            BitReader::new(frame_envelope.payload, frame_envelope.payload_offset());
+        assert_ne!(frame_reader.read_bit().unwrap(), 0);
+        let frame_input = FrameHeaderParseInput {
+            obu_type: frame_envelope.header.obu_type,
+            first_picture_in_tu: true,
+            active_sequence: Some(&sequence),
+            mfh_record: None,
+            reference_state: FrameReferenceStateView::unknown(),
+            mode: FrameHeaderParseMode::Core,
+        };
+        let core = parse_frame_header_core(&mut frame_reader, &frame_input).unwrap();
+
+        let facts = FrameCandidateTileFacts::from_frame_core(&core).unwrap();
+        let tq = sequence.transform_quant_entropy.as_ref().unwrap();
+        let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
+        let input = FrameCandidateTileBoundaryInput::new(
+            &plan,
+            candidate,
+            bytes,
+            *frame_envelope,
+            TileGroupPositionFacts::new(true, true),
+            facts,
+            cdf,
+            DecodeLimits::DEFAULT,
+        );
+        let mut tile_plan = plan_derived_tile_payload_boundary(input).unwrap();
+        let [work_unit] = tile_plan.work_units_mut() else {
+            panic!("minimal fixture must derive one tile work unit");
+        };
+
+        f(work_unit, &sequence, &core)
     }
 }

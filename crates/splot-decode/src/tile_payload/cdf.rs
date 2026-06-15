@@ -5,6 +5,8 @@
 //!
 //! Feature tracking: `DECODE-TILE-CDF-SELECTION-BOUNDARY`.
 
+pub(crate) mod block_read;
+mod block_rows;
 pub(crate) mod context;
 pub(crate) mod partition_read;
 
@@ -15,6 +17,8 @@ use splot_core::tables::cdf::{
     DEFAULT_DO_EXT_PARTITION_CDF, DEFAULT_DO_SPLIT_CDF, DEFAULT_DO_SQUARE_SPLIT_CDF,
     DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF, DEFAULT_RECT_TYPE_CDF,
 };
+
+use self::block_rows::{BlockCdfRows, BlockCdfSelector};
 
 const CDF_PROB_SCALE: i32 = 1 << 15;
 const DO_SPLIT_PLANE_CONTEXTS: usize = 2;
@@ -145,7 +149,7 @@ pub(crate) struct TileCdfSubset {
 impl TileCdfSubset {
     /// Returns an immutable row for tests and metadata checks.
     pub(crate) fn row(&self, selector: TileCdfSelector) -> Result<&[i32], TileCdfError> {
-        Ok(self.rows.row(selector)?.as_slice())
+        self.rows.row(selector)
     }
 
     /// Provides closure-scoped mutable row access for `read_symbol(cdf)`.
@@ -154,7 +158,7 @@ impl TileCdfSubset {
         selector: TileCdfSelector,
         f: impl FnOnce(&mut [i32]) -> R,
     ) -> Result<R, TileCdfError> {
-        Ok(f(self.rows.row_mut(selector)?.as_mut_slice()))
+        Ok(f(self.rows.row_mut(selector)?))
     }
 
     #[cfg(test)]
@@ -292,6 +296,40 @@ pub(crate) enum TileCdfSelector {
         /// Partition context index.
         ctx: usize,
     },
+    /// `TileYModeSetCdf` from AV2 § 8.3.2 for the minimal intra trace.
+    YModeSet,
+    /// `TileYModeIndexCdf[ctx]` from AV2 § 8.3.2 for the minimal intra trace.
+    YModeIndex {
+        /// Intra mode context index.
+        ctx: usize,
+    },
+    /// `TileTxbSkipCdf[coeff_cdf_q_ctx][plane_type][tx_size][ctx]`.
+    ///
+    /// This selector exposes only the generated-default row shape needed by
+    /// the current minimal block-symbol trace; it is not a broad § 8.3
+    /// transform-syntax context derivation API.
+    TxbSkip {
+        /// Coefficient-CDF quantization context.
+        coeff_cdf_q_ctx: usize,
+        /// Plane type context.
+        plane_type: usize,
+        /// Transform-size context.
+        tx_size: usize,
+        /// Transform-skip context index.
+        ctx: usize,
+    },
+    /// `TileUvModeCflNotAllowedCdf[ctx]` from AV2 § 8.3.2.
+    UvModeCflNotAllowed {
+        /// Chroma mode context index.
+        ctx: usize,
+    },
+    /// `TileVTxbSkipCdf[coeff_cdf_q_ctx][ctx]`.
+    VTxbSkip {
+        /// Coefficient-CDF quantization context.
+        coeff_cdf_q_ctx: usize,
+        /// V-plane transform-skip context index.
+        ctx: usize,
+    },
 }
 
 /// Supported CDF arrays for error reporting.
@@ -307,6 +345,14 @@ pub(crate) enum TileCdfArray {
     RectType,
     /// `TileDoUneven4wayPartitionCdf`.
     DoUneven4WayPartition,
+    /// `TileYModeIndexCdf`.
+    YModeIndex,
+    /// `TileTxbSkipCdf`.
+    TxbSkip,
+    /// `TileUvModeCflNotAllowedCdf`.
+    UvModeCflNotAllowed,
+    /// `TileVTxbSkipCdf`.
+    VTxbSkip,
 }
 
 impl TileCdfArray {
@@ -317,6 +363,10 @@ impl TileCdfArray {
             Self::DoSquareSplit => "TileDoSquareSplitCdf",
             Self::RectType => "TileRectTypeCdf",
             Self::DoUneven4WayPartition => "TileDoUneven4wayPartitionCdf",
+            Self::YModeIndex => "TileYModeIndexCdf",
+            Self::TxbSkip => "TileTxbSkipCdf",
+            Self::UvModeCflNotAllowed => "TileUvModeCflNotAllowedCdf",
+            Self::VTxbSkip => "TileVTxbSkipCdf",
         }
     }
 }
@@ -551,6 +601,7 @@ pub(crate) struct TileCdfRows {
     do_square_split: DoSquareSplitCdfRows,
     rect_type: RectTypeCdfRows,
     do_uneven_4way_partition: DoUneven4WayPartitionCdfRows,
+    block: BlockCdfRows,
 }
 
 impl TileCdfRows {
@@ -561,10 +612,11 @@ impl TileCdfRows {
             do_square_split: DEFAULT_DO_SQUARE_SPLIT_CDF,
             rect_type: DEFAULT_RECT_TYPE_CDF,
             do_uneven_4way_partition: DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF,
+            block: BlockCdfRows::from_defaults(),
         }
     }
 
-    fn row(&self, selector: TileCdfSelector) -> Result<&[i32; CDF_ROW_LEN], TileCdfError> {
+    fn row(&self, selector: TileCdfSelector) -> Result<&[i32], TileCdfError> {
         match selector {
             TileCdfSelector::DoSplit { plane_start, ctx } => {
                 let plane = checked_plane(TileCdfArray::DoSplit, plane_start)?;
@@ -577,7 +629,7 @@ impl TileCdfRows {
                             actual: ctx,
                             max_exclusive: DO_SPLIT_CONTEXTS,
                         })?;
-                Ok(row)
+                Ok(row.as_slice())
             }
             TileCdfSelector::DoExtPartition { plane_start, ctx } => {
                 let plane = checked_plane(TileCdfArray::DoExtPartition, plane_start)?;
@@ -589,7 +641,7 @@ impl TileCdfRows {
                         max_exclusive: DO_EXT_PARTITION_CONTEXTS,
                     },
                 )?;
-                Ok(row)
+                Ok(row.as_slice())
             }
             TileCdfSelector::DoSquareSplit { plane_start, ctx } => {
                 let plane = checked_square_split_plane(plane_start)?;
@@ -601,7 +653,7 @@ impl TileCdfRows {
                         max_exclusive: DO_SQUARE_SPLIT_CONTEXTS,
                     },
                 )?;
-                Ok(row)
+                Ok(row.as_slice())
             }
             TileCdfSelector::RectType { plane_start, ctx } => {
                 let plane = checked_plane(TileCdfArray::RectType, plane_start)?;
@@ -614,7 +666,7 @@ impl TileCdfRows {
                             actual: ctx,
                             max_exclusive: RECT_TYPE_CONTEXTS,
                         })?;
-                Ok(row)
+                Ok(row.as_slice())
             }
             TileCdfSelector::DoUneven4WayPartition { plane_start, ctx } => {
                 let plane = checked_plane(TileCdfArray::DoUneven4WayPartition, plane_start)?;
@@ -626,15 +678,37 @@ impl TileCdfRows {
                         max_exclusive: DO_UNEVEN_4WAY_PARTITION_CONTEXTS,
                     },
                 )?;
-                Ok(row)
+                Ok(row.as_slice())
             }
+            TileCdfSelector::YModeSet => self.block.row(BlockCdfSelector::YModeSet),
+            TileCdfSelector::YModeIndex { ctx } => {
+                self.block.row(BlockCdfSelector::YModeIndex { ctx })
+            }
+            TileCdfSelector::TxbSkip {
+                coeff_cdf_q_ctx,
+                plane_type,
+                tx_size,
+                ctx,
+            } => self.block.row(BlockCdfSelector::TxbSkip {
+                coeff_cdf_q_ctx,
+                plane_type,
+                tx_size,
+                ctx,
+            }),
+            TileCdfSelector::UvModeCflNotAllowed { ctx } => self
+                .block
+                .row(BlockCdfSelector::UvModeCflNotAllowed { ctx }),
+            TileCdfSelector::VTxbSkip {
+                coeff_cdf_q_ctx,
+                ctx,
+            } => self.block.row(BlockCdfSelector::VTxbSkip {
+                coeff_cdf_q_ctx,
+                ctx,
+            }),
         }
     }
 
-    fn row_mut(
-        &mut self,
-        selector: TileCdfSelector,
-    ) -> Result<&mut [i32; CDF_ROW_LEN], TileCdfError> {
+    fn row_mut(&mut self, selector: TileCdfSelector) -> Result<&mut [i32], TileCdfError> {
         match selector {
             TileCdfSelector::DoSplit { plane_start, ctx } => {
                 let plane = checked_plane(TileCdfArray::DoSplit, plane_start)?;
@@ -648,7 +722,7 @@ impl TileCdfRows {
                             actual: ctx,
                             max_exclusive,
                         })?;
-                Ok(row)
+                Ok(row.as_mut_slice())
             }
             TileCdfSelector::DoExtPartition { plane_start, ctx } => {
                 let plane = checked_plane(TileCdfArray::DoExtPartition, plane_start)?;
@@ -661,7 +735,7 @@ impl TileCdfRows {
                         max_exclusive,
                     },
                 )?;
-                Ok(row)
+                Ok(row.as_mut_slice())
             }
             TileCdfSelector::DoSquareSplit { plane_start, ctx } => {
                 let plane = checked_square_split_plane(plane_start)?;
@@ -674,7 +748,7 @@ impl TileCdfRows {
                         max_exclusive,
                     },
                 )?;
-                Ok(row)
+                Ok(row.as_mut_slice())
             }
             TileCdfSelector::RectType { plane_start, ctx } => {
                 let plane = checked_plane(TileCdfArray::RectType, plane_start)?;
@@ -688,7 +762,7 @@ impl TileCdfRows {
                             actual: ctx,
                             max_exclusive,
                         })?;
-                Ok(row)
+                Ok(row.as_mut_slice())
             }
             TileCdfSelector::DoUneven4WayPartition { plane_start, ctx } => {
                 let plane = checked_plane(TileCdfArray::DoUneven4WayPartition, plane_start)?;
@@ -701,8 +775,33 @@ impl TileCdfRows {
                         max_exclusive,
                     },
                 )?;
-                Ok(row)
+                Ok(row.as_mut_slice())
             }
+            TileCdfSelector::YModeSet => self.block.row_mut(BlockCdfSelector::YModeSet),
+            TileCdfSelector::YModeIndex { ctx } => {
+                self.block.row_mut(BlockCdfSelector::YModeIndex { ctx })
+            }
+            TileCdfSelector::TxbSkip {
+                coeff_cdf_q_ctx,
+                plane_type,
+                tx_size,
+                ctx,
+            } => self.block.row_mut(BlockCdfSelector::TxbSkip {
+                coeff_cdf_q_ctx,
+                plane_type,
+                tx_size,
+                ctx,
+            }),
+            TileCdfSelector::UvModeCflNotAllowed { ctx } => self
+                .block
+                .row_mut(BlockCdfSelector::UvModeCflNotAllowed { ctx }),
+            TileCdfSelector::VTxbSkip {
+                coeff_cdf_q_ctx,
+                ctx,
+            } => self.block.row_mut(BlockCdfSelector::VTxbSkip {
+                coeff_cdf_q_ctx,
+                ctx,
+            }),
         }
     }
 
@@ -749,6 +848,7 @@ impl TileCdfRows {
                 );
             }
         }
+        self.block.avg_from_tile(tile_num, &tile.block, num_log2);
     }
 
     #[cfg(test)]
@@ -774,6 +874,31 @@ impl TileCdfRows {
     #[cfg(test)]
     pub(crate) const fn do_uneven_4way_partition(&self) -> &DoUneven4WayPartitionCdfRows {
         &self.do_uneven_4way_partition
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn y_mode_set(&self) -> &block_rows::YModeSetCdfRow {
+        self.block.y_mode_set()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn y_mode_index(&self) -> &block_rows::YModeIndexCdfRows {
+        self.block.y_mode_index()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn txb_skip(&self) -> &block_rows::TxbSkipCdfRows {
+        self.block.txb_skip()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn uv_mode_cfl_not_allowed(&self) -> &block_rows::UvModeCflNotAllowedCdfRows {
+        self.block.uv_mode_cfl_not_allowed()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn v_txb_skip(&self) -> &block_rows::VTxbSkipCdfRows {
+        self.block.v_txb_skip()
     }
 }
 
@@ -801,20 +926,24 @@ fn checked_square_split_plane(plane_start: usize) -> Result<usize, TileCdfError>
     Ok(plane_start)
 }
 
-fn avg_cdf_row(
-    cdf: &mut [i32; CDF_ROW_LEN],
-    tile_cdf: &[i32; CDF_ROW_LEN],
+fn avg_cdf_row<const N: usize>(
+    cdf: &mut [i32; N],
+    tile_cdf: &[i32; N],
     tile_num: u32,
     num_log2: u8,
 ) {
     if tile_num == 0 {
-        cdf[0] = CDF_PROB_SCALE;
-        cdf[1] = tile_cdf[1];
-        cdf[2] = 0;
+        for value in &mut cdf[..N - 2] {
+            *value = CDF_PROB_SCALE;
+        }
+        cdf[N - 2] = tile_cdf[N - 2];
+        cdf[N - 1] = 0;
     }
     let shift = u32::from(num_log2);
-    cdf[0] -= (CDF_PROB_SCALE - tile_cdf[0]) >> shift;
-    cdf[2] += tile_cdf[2] >> shift;
+    for i in 0..N - 2 {
+        cdf[i] -= (CDF_PROB_SCALE - tile_cdf[i]) >> shift;
+    }
+    cdf[N - 1] += tile_cdf[N - 1] >> shift;
 }
 
 const fn floor_log2(value: u32) -> u32 {

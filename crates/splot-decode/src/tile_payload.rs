@@ -15,6 +15,7 @@
     )
 )]
 
+mod block_symbol;
 mod cdf;
 mod input;
 mod partition;
@@ -38,6 +39,7 @@ use crate::{
     DecodeLimits, DecodeObuSourceKind, UNSUPPORTED_FEATURE_RULE_ID,
 };
 
+pub(crate) use block_symbol::MinimalBlockSymbolTraceError;
 pub(crate) use input::{
     FrameCandidateCdfFacts, FrameCandidateTileBoundaryError, FrameCandidateTileBoundaryInput,
     FrameCandidateTileFacts, FrameCandidateTileMalformed, TileGroupPositionFacts,
@@ -45,7 +47,8 @@ pub(crate) use input::{
 };
 pub(crate) use partition_traversal::TilePartitionTraversalError;
 pub(crate) use runtime_frontier::{
-    MinimalRuntimePartitionFrontierError, plan_minimal_runtime_partition_frontier,
+    MinimalRuntimeBlockSymbolFrontierError, MinimalRuntimePartitionFrontierError,
+    plan_minimal_runtime_block_symbol_frontier,
 };
 
 pub(crate) const TILE_PAYLOAD_DECODE_MATRIX_ROW: &str = "tile-payload-decode";

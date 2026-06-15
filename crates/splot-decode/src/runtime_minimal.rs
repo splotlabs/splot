@@ -17,11 +17,7 @@ use splot_core::headers::sequence::{
 use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfBitstream, parse_bitstream_partial};
-use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
-use splot_core::tables::cdf::{
-    DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
-    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
-};
+use splot_core::symbol::SymbolDecoderSummary;
 use splot_core::types::ObuType;
 use splot_recon::{
     BitDepth, DecodedFrame, DecodedFrameInfo, FramePlanes, OutputIndex, PixelFormat, Plane,
@@ -31,8 +27,8 @@ use splot_recon::{
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::tile_payload::{
     FrameCandidateCdfFacts, FrameCandidateTileBoundaryError, FrameCandidateTileBoundaryInput,
-    FrameCandidateTileFacts, MinimalRuntimePartitionFrontierError, TileGroupPositionFacts,
-    TilePartitionTraversalError,
+    FrameCandidateTileFacts, MinimalBlockSymbolTraceError, MinimalRuntimeBlockSymbolFrontierError,
+    MinimalRuntimePartitionFrontierError, TileGroupPositionFacts, TilePartitionTraversalError,
 };
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeOptions, DecodePlannedObu,
@@ -189,56 +185,55 @@ fn verify_flat_minimal_tile_trace(
     limits: crate::DecodeLimits,
 ) -> Result<()> {
     let tile_offset = tile.tile_byte_span().start;
-    let mut symbol = match crate::tile_payload::plan_minimal_runtime_partition_frontier(
+    let frontier = match crate::tile_payload::plan_minimal_runtime_block_symbol_frontier(
         tile, sequence, core, limits,
     ) {
-        Ok(frontier) => frontier.into_symbol_decoder(),
-        Err(error) => return Err(decode_minimal_partition_frontier_error(error, tile_offset)),
+        Ok(frontier) => frontier,
+        Err(error) => {
+            return Err(decode_minimal_block_symbol_frontier_error(
+                error,
+                tile_offset,
+            ));
+        }
     };
-    read_expected_symbol(
-        &mut symbol,
-        DEFAULT_Y_MODE_SET_CDF,
-        0,
-        tile,
-        "intra_y_mode_set",
-    )?;
-    read_expected_symbol(
-        &mut symbol,
-        DEFAULT_Y_MODE_INDEX_CDF[0],
-        0,
-        tile,
-        "intra_y_mode_index",
-    )?;
-    read_expected_symbol(
-        &mut symbol,
-        DEFAULT_TXB_SKIP_CDF[2][0][0][0],
-        0,
-        tile,
-        "luma_or_u_all_zero_transform",
-    )?;
-    read_expected_symbol(
-        &mut symbol,
-        DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF[0],
-        6,
-        tile,
-        "uv_mode_index",
-    )?;
-    read_expected_symbol(
-        &mut symbol,
-        DEFAULT_V_TXB_SKIP_CDF[1][3],
-        0,
-        tile,
-        "v_all_zero_transform",
-    )?;
+    validate_minimal_trace_summary(frontier.summary(), tile)
+}
 
-    let summary = symbol.exit_symbol().map_err(|_| {
-        unsupported_at(
+fn decode_minimal_block_symbol_frontier_error(
+    error: MinimalRuntimeBlockSymbolFrontierError,
+    offset: ByteOffset,
+) -> DecodeError {
+    match error {
+        MinimalRuntimeBlockSymbolFrontierError::Partition(error) => {
+            decode_minimal_partition_frontier_error(error, offset)
+        }
+        MinimalRuntimeBlockSymbolFrontierError::Block(error) => {
+            decode_minimal_block_symbol_error(error, offset)
+        }
+    }
+}
+
+fn decode_minimal_block_symbol_error(
+    error: MinimalBlockSymbolTraceError,
+    offset: ByteOffset,
+) -> DecodeError {
+    match error {
+        MinimalBlockSymbolTraceError::SymbolRead { .. } => unsupported_at(
+            "minimal_tile_symbol_parse",
+            offset,
+            "minimal runtime hash support requires the traced flat tile symbol stream",
+        ),
+        MinimalBlockSymbolTraceError::UnexpectedSymbol { reason, .. } => unsupported_at(
+            reason,
+            offset,
+            "minimal runtime hash support only accepts the traced flat tile symbol values",
+        ),
+        MinimalBlockSymbolTraceError::ExitSymbol { .. } => unsupported_at(
             "minimal_tile_exit_symbol",
-            tile.tile_byte_span().start,
+            offset,
             "minimal runtime hash support requires the traced flat tile payload to satisfy §8.2.4 exit_symbol()",
-        )
-    })?;
-    validate_minimal_trace_summary(summary, tile)
+        ),
+    }
 }
 
 fn decode_minimal_partition_frontier_error(
@@ -257,34 +252,6 @@ fn decode_minimal_partition_frontier_error(
             offset,
             "minimal runtime hash support requires the traced root AV2 5.20.3.1 partition frontier before block syntax",
         ),
-    }
-}
-
-fn read_expected_symbol<const N: usize>(
-    symbol: &mut SymbolDecoder<'_>,
-    mut row: [i32; N],
-    expected: u8,
-    tile: &crate::tile_payload::DecodeTileWorkUnit<'_>,
-    reason: &'static str,
-) -> Result<()> {
-    let decoded = symbol
-        .read_symbol(&mut row)
-        .map_err(|_| {
-            unsupported_at(
-                "minimal_tile_symbol_parse",
-                tile.tile_byte_span().start,
-                "minimal runtime hash support requires the traced flat tile symbol stream",
-            )
-        })?
-        .get();
-    if decoded == expected {
-        Ok(())
-    } else {
-        Err(unsupported_at(
-            reason,
-            tile.tile_byte_span().start,
-            "minimal runtime hash support only accepts the traced flat tile symbol values",
-        ))
     }
 }
 
