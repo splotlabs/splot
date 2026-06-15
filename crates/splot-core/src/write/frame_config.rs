@@ -96,6 +96,21 @@ fn check_frame_size_encodable(
         return Err(WriteError::NonCanonicalFrameHeader { what: "frame_size" });
     }
     if frame_size_override_flag {
+        // The f(n) descriptor accepts n <= 32; reject an over-wide field BEFORE either
+        // dimension is emitted (a valid width followed by an over-wide height would
+        // otherwise leave a partial buffer when write_bits rejects the height).
+        if frame_width_bits > u32::BITS {
+            return Err(WriteError::BitWidthTooLarge {
+                requested: frame_width_bits,
+                max: u32::BITS,
+            });
+        }
+        if frame_height_bits > u32::BITS {
+            return Err(WriteError::BitWidthTooLarge {
+                requested: frame_height_bits,
+                max: u32::BITS,
+            });
+        }
         if !fits_in_bits(size.width - 1, frame_width_bits) {
             return Err(WriteError::ValueTooWide {
                 value: u64::from(size.width - 1),
@@ -378,6 +393,22 @@ mod tests {
             WriteError::ValueTooWide {
                 value: 4096,
                 width_bits: 12
+            }
+        );
+        assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
+    fn frame_size_overwide_height_bits_rejected_before_any_bit() {
+        // width field is fine (12 bits) but height_bits > 32: reject before emitting width.
+        let mut writer = BitWriter::new();
+        let err =
+            write_frame_size(&mut writer, &FrameSize::new(2, 2), true, 12, 33, None).unwrap_err();
+        assert_eq!(
+            err,
+            WriteError::BitWidthTooLarge {
+                requested: 33,
+                max: 32
             }
         );
         assert_eq!(writer.bit_len(), 0);
