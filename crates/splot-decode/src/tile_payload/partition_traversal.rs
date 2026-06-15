@@ -159,12 +159,12 @@ impl<'work, 'payload, 'ctx> TilePartitionTraversalInput<'work, 'payload, 'ctx> {
 /// One `decode_partition()` call on the frontier path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionCall {
-    r: usize,
-    c: usize,
-    b_size: BlockSize,
-    parent_size: Option<BlockSize>,
-    chroma_offset: bool,
-    has_chroma: bool,
+    pub(crate) r: usize,
+    pub(crate) c: usize,
+    pub(crate) b_size: BlockSize,
+    pub(crate) parent_size: Option<BlockSize>,
+    pub(crate) chroma_offset: bool,
+    pub(crate) has_chroma: bool,
 }
 
 impl TilePartitionCall {
@@ -226,34 +226,34 @@ impl TilePartitionBounds {
 /// One consumed partition decision on the frontier path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionFrontierStep {
-    call: TilePartitionCall,
-    decision: ReadPartitionDecision,
-    symbol_count_before: u64,
-    symbol_count_after: u64,
+    pub(crate) call: TilePartitionCall,
+    pub(crate) decision: ReadPartitionDecision,
+    pub(crate) symbol_count_before: u64,
+    pub(crate) symbol_count_after: u64,
 }
 
 /// The first § 5.20.4.1 `decode_block()` boundary reached by traversal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DecodeBlockFrontier {
-    r: usize,
-    c: usize,
-    b_size: BlockSize,
-    has_chroma: bool,
-    chroma_offset: bool,
-    symbol_count_before_block: u64,
-    symbol_checkpoint_before_block: SymbolDecoderCheckpoint,
+    pub(crate) r: usize,
+    pub(crate) c: usize,
+    pub(crate) b_size: BlockSize,
+    pub(crate) has_chroma: bool,
+    pub(crate) chroma_offset: bool,
+    pub(crate) symbol_count_before_block: u64,
+    pub(crate) symbol_checkpoint_before_block: SymbolDecoderCheckpoint,
 }
 
 /// Successful partition frontier plan.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionTraversalPlan {
-    tile_num: u32,
+    pub(crate) tile_num: u32,
     steps: Vec<TilePartitionFrontierStep>,
     skipped_out_of_frame: Vec<TilePartitionCall>,
     pending_children: Vec<TilePartitionCall>,
     frontier: DecodeBlockFrontier,
-    consumed_bits_before: u64,
-    consumed_bits_after: u64,
+    pub(crate) consumed_bits_before: u64,
+    pub(crate) consumed_bits_after: u64,
     symbol_count_after: u64,
 }
 
@@ -280,6 +280,20 @@ impl TilePartitionTraversalPlan {
     #[must_use]
     pub(crate) const fn symbol_count_after(&self) -> u64 {
         self.symbol_count_after
+    }
+}
+
+/// Planned frontier plus the live symbol cursor positioned before block syntax.
+pub(crate) struct TilePartitionTraversalCursor<'payload> {
+    plan: TilePartitionTraversalPlan,
+    symbols: SymbolDecoder<'payload>,
+}
+
+impl<'payload> TilePartitionTraversalCursor<'payload> {
+    /// Splits the cursor into the deterministic plan and live symbol decoder.
+    #[must_use]
+    pub(crate) fn into_parts(self) -> (TilePartitionTraversalPlan, SymbolDecoder<'payload>) {
+        (self.plan, self.symbols)
     }
 }
 
@@ -362,6 +376,13 @@ pub(crate) enum TilePartitionTraversalUnsupported {
 pub(crate) fn plan_tile_partition_traversal_frontier(
     input: TilePartitionTraversalInput<'_, '_, '_>,
 ) -> Result<TilePartitionTraversalPlan, TilePartitionTraversalError> {
+    Ok(plan_tile_partition_traversal_cursor(input)?.plan)
+}
+
+/// Plans the partition frontier and returns the live symbol cursor at it.
+pub(crate) fn plan_tile_partition_traversal_cursor<'payload>(
+    input: TilePartitionTraversalInput<'_, 'payload, '_>,
+) -> Result<TilePartitionTraversalCursor<'payload>, TilePartitionTraversalError> {
     let TilePartitionTraversalInput {
         work_unit,
         frame,
@@ -433,6 +454,11 @@ pub(crate) fn plan_tile_partition_traversal_frontier(
         )?;
         let symbol_count_after = symbols.symbol_count();
         let partition = decision.partition;
+        if is_minimal_sdp_root(frame, call) && partition != PartitionType::None {
+            return Err(TilePartitionTraversalError::Unsupported(
+                TilePartitionTraversalUnsupported::Sdp,
+            ));
+        }
         steps.push(TilePartitionFrontierStep {
             call,
             decision,
@@ -463,7 +489,7 @@ pub(crate) fn plan_tile_partition_traversal_frontier(
                 symbol_count_after: symbols.symbol_count(),
             };
             *work_unit.cdf_mut().tile_cdfs_mut() = cdfs;
-            return Ok(plan);
+            return Ok(TilePartitionTraversalCursor { plan, symbols });
         }
 
         let children = child_calls(call, partition, sub_size, frame, chroma_offset)?;
@@ -479,7 +505,7 @@ fn ensure_supported_call(
     frame: TilePartitionFrameFacts,
     call: TilePartitionCall,
 ) -> Result<(), TilePartitionTraversalError> {
-    if frame.enable_sdp && call.b_size.index() == BLOCK_64X64 {
+    if frame.enable_sdp && call.b_size.index() == BLOCK_64X64 && !is_minimal_sdp_root(frame, call) {
         return Err(TilePartitionTraversalError::Unsupported(
             TilePartitionTraversalUnsupported::Sdp,
         ));
@@ -501,7 +527,7 @@ fn read_frontier_partition_decision(
         frame.mi_rows,
         frame.mi_cols,
         call.b_size.index(),
-        PartitionTreeType::Shared,
+        partition_tree_type(frame, call),
         frame.subsampling_x,
         frame.subsampling_y,
         frame.features,
@@ -540,6 +566,24 @@ fn read_frontier_partition_decision(
         cdfs,
         symbols,
     )?)
+}
+
+fn partition_tree_type(
+    frame: TilePartitionFrameFacts,
+    call: TilePartitionCall,
+) -> PartitionTreeType {
+    if is_minimal_sdp_root(frame, call) {
+        PartitionTreeType::LumaPart
+    } else {
+        PartitionTreeType::Shared
+    }
+}
+
+fn is_minimal_sdp_root(frame: TilePartitionFrameFacts, call: TilePartitionCall) -> bool {
+    frame.enable_sdp
+        && frame.frame_is_intra
+        && call.parent_size.is_none()
+        && call.b_size.index() == BLOCK_64X64
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
