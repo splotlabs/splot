@@ -6292,7 +6292,7 @@ openspec_change = "tile-square-split-context-derivation"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a crate-private `splot-decode` tile CDF selection boundary for the minimal single-tile closed-loop-key tier: a small partition-entry CDF subset (`TileDoSplitCdf`, `TileDoSquareSplitCdf`, `TileRectTypeCdf`, `TileDoExtPartitionCdf`, and `TileDoUneven4wayPartitionCdf`) is copied from generated §9.3 defaults, typed selector validation and closure-scoped mutable row access prove §8.3 handoff into `SymbolDecoder::read_symbol(cdf)`, the tile work unit records CDF update mode from `disable_cdf_update`, the §8.2 copy/average decision is computed from `enable_avg_cdf`, `avg_cdf_type`, `context_update_tile_id`, `TileNum`, and `TileCols * TileRows`, and bounded §8.3.2 contexts are derived for `do_split`, `do_square_split`, `rect_type`, `do_ext_partition`, and `do_uneven_4way_partition` using generated §9.2 conversion tables, availability-gated `MiSizes` lookups, and the local §8.3.2 adjustment arrays. The individual partition-entry `S()` read boundary is tracked separately by `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY`. This is a boundary only: it does not implement partition decisions, full §8.3 CDF selection, full Tile/Saved CDF banks, recursive `decode_tile()`/`read_partition()` traversal, `exit_symbol()` after real syntax, Saved CDF copy/average mutation after tile completion, `frame_end_update_cdf()`, reconstruction, hashes, runtime Y4M output, reference refresh, public API support, AVM/dav2d invocation, or scheduler use outside the `splot_parallel::WorkerPool` policy."
+notes = "Adds a crate-private `splot-decode` tile CDF selection boundary for the minimal single-tile closed-loop-key tier: a small partition-entry CDF subset (`TileDoSplitCdf`, `TileDoSquareSplitCdf`, `TileRectTypeCdf`, `TileDoExtPartitionCdf`, and `TileDoUneven4wayPartitionCdf`) is copied from generated §9.3 defaults, typed selector validation and closure-scoped mutable row access prove §8.3 handoff into `SymbolDecoder::read_symbol(cdf)`, the tile work unit records CDF update mode from `disable_cdf_update`, the §8.2 copy/average decision is computed from `enable_avg_cdf`, `avg_cdf_type`, `context_update_tile_id`, `TileNum`, and `TileCols * TileRows`, and bounded §8.3.2 contexts are derived for `do_split`, `do_square_split`, `rect_type`, `do_ext_partition`, and `do_uneven_4way_partition` using generated §9.2 conversion tables, availability-gated `MiSizes` lookups, and the local §8.3.2 adjustment arrays. The individual partition-entry `S()` read boundary is tracked separately by `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY`; the final one-decision consumer over caller-provided facts is tracked separately by `DECODE-TILE-PARTITION-DECISION-BOUNDARY`. This is a boundary only: it does not itself implement partition decisions, full §8.3 CDF selection, full Tile/Saved CDF banks, recursive `decode_tile()`/`read_partition()` traversal, `exit_symbol()` after real syntax, Saved CDF copy/average mutation after tile completion, `frame_end_update_cdf()`, reconstruction, hashes, runtime Y4M output, reference refresh, public API support, AVM/dav2d invocation, or scheduler use outside the `splot_parallel::WorkerPool` policy."
 
 [feature.status]
 mapped = "done"
@@ -6345,7 +6345,7 @@ openspec_change = "tile-partition-symbol-read-boundary"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a crate-private `splot-decode` boundary for individual AV2 §5.20.3.2 partition-entry `S()` reads over the existing `DECODE-TILE-CDF-SELECTION-BOUNDARY` selectors. `TileCdfSubset::read_partition_entry_symbol` validates a `TileCdfSelector`, passes the selected mutable CDF row to a caller-owned `SymbolDecoder::read_symbol(cdf)`, returns the raw `Symbol`, preserves selector errors separately from `splot-core` symbol/CDF errors, and keeps sequential symbol state owned by the caller. This row does not implement partition decisions, `partition_implied`, allowed partition derivation, `Rect_Part_Table`, `uneven_4way_partition_type L(1)`, recursive `read_partition()`/`decode_tile()` traversal, `exit_symbol()` after real syntax, full §8.3 CDF selection, full Tile/Saved CDF banks, reconstruction, hashes, Y4M output, reference refresh, public API support, AVM/dav2d invocation, or scheduler/dependency changes."
+notes = "Adds a crate-private `splot-decode` boundary for individual AV2 §5.20.3.2 partition-entry `S()` reads over the existing `DECODE-TILE-CDF-SELECTION-BOUNDARY` selectors. `TileCdfSubset::read_partition_entry_symbol` validates a `TileCdfSelector`, passes the selected mutable CDF row to a caller-owned `SymbolDecoder::read_symbol(cdf)`, returns the raw `Symbol`, preserves selector errors separately from `splot-core` symbol/CDF errors, and keeps sequential symbol state owned by the caller. The `Rect_Part_Table`, final outcome, and `uneven_4way_partition_type L(1)` consumer is tracked separately by `DECODE-TILE-PARTITION-DECISION-BOUNDARY`. This row does not implement `partition_implied`, allowed partition derivation, recursive `read_partition()`/`decode_tile()` traversal, `exit_symbol()` after real syntax, full §8.3 CDF selection, full Tile/Saved CDF banks, reconstruction, hashes, Y4M output, reference refresh, public API support, AVM/dav2d invocation, or scheduler/dependency changes."
 
 [feature.status]
 mapped = "done"
@@ -6376,6 +6376,61 @@ fixtures = [
     "crates/splot-decode/src/tile_payload/cdf/partition_read.rs",
     "crates/splot-decode/src/tile_payload/cdf/tests.rs",
     "crates/splot-decode/src/tile_payload/tests.rs",
+]
+diagnostics = []
+
+[[feature]]
+id = "DECODE-TILE-PARTITION-DECISION-BOUNDARY"
+name = "Tile partition decision boundary"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.3.2", "6.19.3", "8.2.5", "8.2.6", "8.3.1", "8.3.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-3",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-6",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-1",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/partition.rs"
+openspec_change = "tile-partition-decision-boundary"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private `splot-decode` AV2 §5.20.3.2 partition decision boundary over caller-provided facts. `read_partition_decision` accepts a typed allowed partition set, optional implied partition, BRU-active state, optional rect-type implication, and already-bounded CDF context inputs; returns a typed `PartitionType` plus a branch-local syntax trace; follows the spec fall-through when an implied partition is not allowed; returns `PARTITION_NONE` on the inactive-BRU branch after the single-allowed branch even when `allowed[PARTITION_NONE]` is false; uses the existing `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY` for reached `do_split`, `do_square_split`, `rect_type`, `do_ext_partition`, and `do_uneven_4way_partition` `S()` reads; consumes `uneven_4way_partition_type L(1)` only when the branch order reaches it; and validates empty allowed sets or impossible final table results with typed crate-private errors. This row does not implement `partition_implied`, `init_allowed_partitions`, full allowed-partition derivation, `Partition_Subsize`, `H_Partition_Midsize`, recursive `read_partition()`/`decode_tile()` traversal, `exit_symbol()` after real syntax, Saved CDF mutation, reconstruction, hashes, Y4M output, reference refresh, public API support, AVM/dav2d invocation, or scheduler/dependency changes."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/partition.rs",
+]
+commands = [
+    "cargo test -p splot-core symbol --locked",
+    "cargo test -p splot-core --test tables_spot --locked",
+    "cargo test -p splot-decode tile_payload --locked",
+    "cargo clippy -p splot-core --all-targets --all-features --locked -- -D warnings",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo test -p splot-decode --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+    "cargo xtask ci",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload.rs",
+    "crates/splot-decode/src/tile_payload/partition.rs",
 ]
 diagnostics = []
 

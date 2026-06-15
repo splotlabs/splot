@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 181 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 182 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -178,6 +178,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | Tile payload input derivation | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/input.rs` |
 | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | Tile CDF selection boundary | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf.rs` |
 | `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY` | Tile partition symbol read boundary | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/cdf/partition_read.rs` |
+| `DECODE-TILE-PARTITION-DECISION-BOUNDARY` | Tile partition decision boundary | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/partition.rs` |
 | `DECODE-UNSUPPORTED-DIAGNOSTIC-API` | Decode unsupported diagnostic API | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-decode/src/lib.rs` |
 | `DOC-DECODER-SUPPORT-MATRIX` | Decoder support matrix documentation | docs | docs | done | n/a | n/a | done | n/a | n/a | n/a | done | n/a | `docs/DECODER-SUPPORT-MATRIX.toml` |
 | `XTASK-DECODER-SUPPORT-STATUS` | Decoder support status reporting and checks | automation | automation | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/decoder_support.rs` |

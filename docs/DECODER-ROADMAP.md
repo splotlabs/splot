@@ -85,9 +85,13 @@ crate-private partition CDF subset (`TileDoSplitCdf`, `TileDoSquareSplitCdf`,
 `do_square_split`, `rect_type`, `do_ext_partition`, and
 `do_uneven_4way_partition`, § 8.2 copy/average policy metadata, and a
 crate-private single-symbol boundary for the five corresponding § 5.20.3.2
-partition-entry `S()` reads, and then stops at structured
-`decode/unsupported-feature` metadata for the unimplemented `decode_tile()`
-block syntax. A crate-private source-backed derivation bridge
+partition-entry `S()` reads. It also has a crate-private § 5.20.3.2 partition
+decision boundary that returns one typed partition outcome from caller-provided
+allowed/implied facts, BRU-active state, rect-type facts, the existing `S()`
+read helper, and the isolated `uneven_4way_partition_type L(1)` read. The tile
+payload boundary then stops at structured `decode/unsupported-feature` metadata
+for the unimplemented `decode_tile()` block syntax. A crate-private
+source-backed derivation bridge
 now validates a selected `DecodePlannedObu` against a borrowed `splot-core`
 `ObuEnvelope`, slices only the complete § 5.19-derived § 5.20 payload region,
 uses parser-derived tile grid, quantizer, CDF, and `disable_cdf_update` facts,
@@ -95,8 +99,8 @@ and runs the resulting boundary inside the context-owned
 `splot_parallel::WorkerPool`, preserving the PR #101 concurrency model without
 exposing public tile-payload APIs. It is not wired to a runtime decode success
 path and does not support multiple tiles or tile groups, bridge/BRU paths,
-partition decisions, recursive
-`read_partition()`/`decode_tile()` traversal,
+`partition_implied`, `init_allowed_partitions`, full allowed-partition
+derivation, recursive `read_partition()`/`decode_tile()` traversal,
 `exit_symbol()` after real syntax, Saved CDF mutation, reconstruction, hashes,
 runtime Y4M, reference refresh, or external decoders.
 
@@ -199,7 +203,7 @@ other external decoder is forbidden.
 | 4 | Container traversal, base-layer parsed/raw traversal, transactional decode planning | parsed and raw-byte stream planners supported; operating-point selection and broad CLI runtime unsupported |
 | 5 | Self-contained decode fuzz target and fixture smoke | `decode_plan_bytes` fuzz target supported for the raw byte planner; minimal runtime fixture smoke supported |
 | 6 | AV2 § 8 symbol/CDF decoder foundation | § 8.2 generic primitive partial; crate-private partition CDF subset boundary partial; broad § 8.3 and tile decode planned |
-| 7 | Constrained intra tile syntax | tile payload and tile CDF boundaries partial; individual partition-entry symbol reads supported; `decode_tile()` syntax planned |
+| 7 | Constrained intra tile syntax | tile payload and tile CDF boundaries partial; individual partition-entry symbol reads and one caller-fact partition decision supported; recursive `read_partition()` / `decode_tile()` syntax planned |
 | 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | current-frame workspace plus square DC, rectangular DC, basic/PAETH, and smooth prediction primitives supported; directional/DIP/subsampled DC/IBP/CfL modes, dequant/reconstruction, inverse transforms, runtime hashes planned |
 | 9 | Y4M output and reconstructed reference-frame store | reference-slot runtime store, source-backed Y4M writer, and minimal runtime Y4M output supported; broad runtime Y4M output and AV2 refresh semantics planned |
 | 10 | Portable local-reference evidence manifests | metadata contract and offline checker wired; two AVM/dav2d raw MD5 agreement entries recorded as non-executable metadata |
