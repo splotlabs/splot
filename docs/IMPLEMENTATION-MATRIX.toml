@@ -5795,6 +5795,41 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "INFRA-ZERO-COPY-MEDIA-POLICY"
+name = "Zero-copy media-buffer ownership policy"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = []
+sources = []
+crate = "splot-recon"
+module = "crates/splot-recon/src/lib.rs"
+openspec_change = "zero-copy-media-policy"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Makes the media-buffer ownership model explicit, documented, and CI-enforced before decoder/reconstruction/encoder code exists: `docs/ZERO_COPY.md` defines borrow / mutable view / share / materialize / copy-ok marker and the default view-first model; `splot-recon` adds borrowed `PlaneRef`/`PlaneMut`/`FrameRef`/`FrameMut` views and an explicit `SharedFrame` (Arc-backed, `.share()` only, no `Clone`) and drops dangerous `Clone` from `Plane`/`FramePlanes`/`DecodedFrame`/`ReferenceFrameStore`/`CurrentFrameWorkspace`/`CurrentFramePlane`; every intentional copy carries a specific `splot-copy-ok:` marker; and `cargo xtask check-zero-copy-policy` (run in `cargo xtask ci`) flags large-media `Clone`, unmarked media copies, `make_mut`, `unsafe`/`transmute`/`from_raw_parts`, `include!` bypasses, and banned/wrong-crate `zerocopy`. `zerocopy` is approved only for private fixed-layout byte/wire view structs (e.g. IVF headers), never public APIs or AV2 bit-level/entropy/variable-length parsing. Infrastructure / codec-runtime API policy only: no AV2 conformance behavior change and no decoder/reconstruction/encoder algorithmic stage is implemented."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "not-applicable"
+validate = "todo"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "todo"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = [
+    "docs/ZERO_COPY.md",
+]
+diagnostics = []
+
+[[feature]]
 id = "RECON-REFERENCE-FRAME-STORE"
 name = "Reference frame store runtime model"
 category = "infrastructure"
