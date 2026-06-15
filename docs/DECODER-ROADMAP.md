@@ -92,7 +92,11 @@ read helper, and the isolated `uneven_4way_partition_type L(1)` read. It also
 has a crate-private § 9.2 partition-size table boundary backed by generated
 `splot-core` `Partition_Subsize` and `H_Partition_Midsize` arrays; the wrapper
 returns valid block sizes or an explicit `BLOCK_INVALID` result for future
-partition traversal. The tile payload boundary then stops at structured
+partition traversal. It also has a crate-private § 5.20.3.2 allowed-partition
+boundary that derives `partition_implied`, `partition_implied_at_boundary`,
+`rect_type_implied_by_bsize`, `is_partition_allowed`, and
+`init_allowed_partitions` from explicit bounded tile facts while preserving
+`BLOCK_INVALID` residual-size results. The tile payload boundary then stops at structured
 `decode/unsupported-feature` metadata for the unimplemented `decode_tile()`
 block syntax. A crate-private
 source-backed derivation bridge
@@ -103,8 +107,7 @@ and runs the resulting boundary inside the context-owned
 `splot_parallel::WorkerPool`, preserving the PR #101 concurrency model without
 exposing public tile-payload APIs. It is not wired to a runtime decode success
 path and does not support multiple tiles or tile groups, bridge/BRU paths,
-`partition_implied`, `init_allowed_partitions`, full allowed-partition
-derivation, recursive `read_partition()`/`decode_tile()` traversal,
+recursive `read_partition()`/`decode_tile()` traversal, `MiSizes` mutation,
 `exit_symbol()` after real syntax, Saved CDF mutation, reconstruction, hashes,
 runtime Y4M, reference refresh, or external decoders.
 

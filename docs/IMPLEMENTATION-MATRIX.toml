@@ -6349,7 +6349,7 @@ openspec_change = "tile-partition-symbol-read-boundary"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a crate-private `splot-decode` boundary for individual AV2 §5.20.3.2 partition-entry `S()` reads over the existing `DECODE-TILE-CDF-SELECTION-BOUNDARY` selectors. `TileCdfSubset::read_partition_entry_symbol` validates a `TileCdfSelector`, passes the selected mutable CDF row to a caller-owned `SymbolDecoder::read_symbol(cdf)`, returns the raw `Symbol`, preserves selector errors separately from `splot-core` symbol/CDF errors, and keeps sequential symbol state owned by the caller. The `Rect_Part_Table`, final outcome, and `uneven_4way_partition_type L(1)` consumer is tracked separately by `DECODE-TILE-PARTITION-DECISION-BOUNDARY`. This row does not implement `partition_implied`, allowed partition derivation, recursive `read_partition()`/`decode_tile()` traversal, `exit_symbol()` after real syntax, full §8.3 CDF selection, full Tile/Saved CDF banks, reconstruction, hashes, Y4M output, reference refresh, public API support, AVM/dav2d invocation, or scheduler/dependency changes."
+notes = "Adds a crate-private `splot-decode` boundary for individual AV2 §5.20.3.2 partition-entry `S()` reads over the existing `DECODE-TILE-CDF-SELECTION-BOUNDARY` selectors. `TileCdfSubset::read_partition_entry_symbol` validates a `TileCdfSelector`, passes the selected mutable CDF row to a caller-owned `SymbolDecoder::read_symbol(cdf)`, returns the raw `Symbol`, preserves selector errors separately from `splot-core` symbol/CDF errors, and keeps sequential symbol state owned by the caller. The `Rect_Part_Table`, final outcome, and `uneven_4way_partition_type L(1)` consumer is tracked separately by `DECODE-TILE-PARTITION-DECISION-BOUNDARY`; implied and allowed-partition derivation is tracked separately by `DECODE-TILE-PARTITION-ALLOWED-BOUNDARY`. This row does not implement recursive `read_partition()`/`decode_tile()` traversal, `exit_symbol()` after real syntax, full §8.3 CDF selection, full Tile/Saved CDF banks, reconstruction, hashes, Y4M output, reference refresh, public API support, AVM/dav2d invocation, or scheduler/dependency changes."
 
 [feature.status]
 mapped = "done"
@@ -6403,7 +6403,7 @@ openspec_change = "tile-partition-decision-boundary"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a crate-private `splot-decode` AV2 §5.20.3.2 partition decision boundary over caller-provided facts. `read_partition_decision` accepts a typed allowed partition set, optional implied partition, BRU-active state, optional rect-type implication, and already-bounded CDF context inputs; returns a typed `PartitionType` plus a branch-local syntax trace; follows the spec fall-through when an implied partition is not allowed; returns `PARTITION_NONE` on the inactive-BRU branch after the single-allowed branch even when `allowed[PARTITION_NONE]` is false; uses the existing `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY` for reached `do_split`, `do_square_split`, `rect_type`, `do_ext_partition`, and `do_uneven_4way_partition` `S()` reads; consumes `uneven_4way_partition_type L(1)` only when the branch order reaches it; and validates empty allowed sets or impossible final table results with typed crate-private errors. This row does not implement `partition_implied`, `init_allowed_partitions`, full allowed-partition derivation, recursive `read_partition()`/`decode_tile()` traversal, `exit_symbol()` after real syntax, Saved CDF mutation, reconstruction, hashes, Y4M output, reference refresh, public API support, AVM/dav2d invocation, or scheduler/dependency changes. The generated §9.2 `Partition_Subsize` / `H_Partition_Midsize` lookup wrapper is tracked separately by `DECODE-TILE-PARTITION-SIZE-TABLE-BOUNDARY`."
+notes = "Adds a crate-private `splot-decode` AV2 §5.20.3.2 partition decision boundary over caller-provided facts. `read_partition_decision` accepts a typed allowed partition set, optional implied partition, BRU-active state, optional rect-type implication, and already-bounded CDF context inputs; returns a typed `PartitionType` plus a branch-local syntax trace; follows the spec fall-through when an implied partition is not allowed; returns `PARTITION_NONE` on the inactive-BRU branch after the single-allowed branch even when `allowed[PARTITION_NONE]` is false; uses the existing `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY` for reached `do_split`, `do_square_split`, `rect_type`, `do_ext_partition`, and `do_uneven_4way_partition` `S()` reads; consumes `uneven_4way_partition_type L(1)` only when the branch order reaches it; and validates empty allowed sets or impossible final table results with typed crate-private errors. Implied and allowed-partition derivation is tracked separately by `DECODE-TILE-PARTITION-ALLOWED-BOUNDARY`. This row does not implement recursive `read_partition()`/`decode_tile()` traversal, `exit_symbol()` after real syntax, Saved CDF mutation, reconstruction, hashes, Y4M output, reference refresh, public API support, AVM/dav2d invocation, or scheduler/dependency changes. The generated §9.2 `Partition_Subsize` / `H_Partition_Midsize` lookup wrapper is tracked separately by `DECODE-TILE-PARTITION-SIZE-TABLE-BOUNDARY`."
 
 [feature.status]
 mapped = "done"
@@ -6457,7 +6457,7 @@ openspec_change = "tile-partition-size-tables"
 tracking_issue = ""
 owner = "decoder"
 risk = "low"
-notes = "Adds a crate-private AV2 §9.2 partition-size table boundary for future §5.20.3.1 traversal and §5.20.3.2 allowed-partition derivation. `cargo xtask gen-tables` now resolves the two `BLOCK_*` symbolic tables `Partition_Subsize[EXT_PARTITION_TYPES][BLOCK_SIZES]` and `H_Partition_Midsize[BLOCK_SIZES]` from the committed all_tables.h attachment, while leaving unrelated symbolic/reserved tables skip-allowlisted. `splot-decode` wraps the generated arrays with a checked `BlockSize` newtype, `PartitionSubsize::Valid` / `PartitionSubsize::Invalid` results so `BLOCK_INVALID` is never a valid block-size index, and typed `PartitionSizeError` paths for invalid caller inputs or impossible generated values. This row does not implement `partition_implied`, `init_allowed_partitions`, full `is_partition_allowed`, chroma-offset derivation, recursive `read_partition()` / `decode_partition()` / `decode_tile()` traversal, `MiSizes` mutation, `exit_symbol()` after real syntax, CDF mutation, reconstruction, output, reference refresh, public API behavior, AVM/dav2d invocation, or scheduler/dependency changes."
+notes = "Adds a crate-private AV2 §9.2 partition-size table boundary for future §5.20.3.1 traversal and §5.20.3.2 allowed-partition derivation. `cargo xtask gen-tables` now resolves the two `BLOCK_*` symbolic tables `Partition_Subsize[EXT_PARTITION_TYPES][BLOCK_SIZES]` and `H_Partition_Midsize[BLOCK_SIZES]` from the committed all_tables.h attachment, while leaving unrelated symbolic/reserved tables skip-allowlisted. `splot-decode` wraps the generated arrays with a checked `BlockSize` newtype, `PartitionSubsize::Valid` / `PartitionSubsize::Invalid` results so `BLOCK_INVALID` is never a valid block-size index, table-backed 4x4 geometry helpers, and typed `PartitionSizeError` paths for invalid caller inputs or impossible generated values. The allowed-partition derivation over these helpers is tracked separately by `DECODE-TILE-PARTITION-ALLOWED-BOUNDARY`. This row does not implement recursive `read_partition()` / `decode_partition()` / `decode_tile()` traversal, `MiSizes` mutation, `exit_symbol()` after real syntax, CDF mutation, reconstruction, output, reference refresh, public API behavior, AVM/dav2d invocation, or scheduler/dependency changes."
 
 [feature.status]
 mapped = "done"
@@ -6490,6 +6490,61 @@ fixtures = [
     "crates/splot-decode/src/tile_payload/partition_size.rs",
     "xtask/src/gen_tables.rs",
     "xtask/src/gen_tables/block_symbols.rs",
+]
+diagnostics = []
+
+[[feature]]
+id = "DECODE-TILE-PARTITION-ALLOWED-BOUNDARY"
+name = "Tile partition allowed set boundary"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.3.2", "5.20.7.26", "6.19.3", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-26",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-3",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/partition_allowed.rs"
+openspec_change = "tile-partition-allowed-boundary"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private AV2 §5.20.3.2 partition implied and allowed-set derivation boundary for future tile traversal. `partition_allowed.rs` derives `partition_implied_at_boundary`, `partition_implied`, `rect_type_implied_by_bsize`, `is_partition_allowed`, `init_allowed_partitions`, and decision facts from explicit MI geometry, tree type, chroma, subsampling, feature-flag, region, and known luma-partition inputs. It uses generated §9.2 block geometry helpers, derives §5.20.7.26 residual sizes without treating `BLOCK_INVALID` as a valid block size, locks that derivation against the literal `Subsampled_Size` table, preserves typed crate-private errors for caller overflow and impossible table facts, and reuses the existing partition-size, CDF-context, and partition-decision boundaries without public API exposure. This row does not implement recursive `read_partition()` / `decode_partition()` / `decode_tile()` traversal, `MiSizes`, `ChromaPartitionKnown`, or `LumaPartitions` array mutation, symbol reads, CDF mutation, `exit_symbol()` after real syntax, reconstruction, output, reference refresh, AVM/dav2d invocation, or scheduler/dependency changes."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/partition_allowed.rs",
+    "crates/splot-decode/src/tile_payload/partition_allowed/spec_table_tests.rs::get_plane_residual_size_matches_subsampled_size_table",
+    "crates/splot-decode/src/tile_payload/partition_size.rs::tests::block_geometry_helpers_use_generated_tables",
+]
+commands = [
+    "cargo test -p splot-decode tile_payload --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo test -p splot-decode --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload.rs",
+    "crates/splot-decode/src/tile_payload/partition.rs",
+    "crates/splot-decode/src/tile_payload/partition_allowed/spec_table_tests.rs",
+    "crates/splot-decode/src/tile_payload/partition_allowed.rs",
+    "crates/splot-decode/src/tile_payload/partition_size.rs",
+    "openspec/changes/tile-partition-allowed-boundary",
 ]
 diagnostics = []
 

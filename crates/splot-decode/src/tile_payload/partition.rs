@@ -75,11 +75,11 @@ impl AllowedPartitions {
         Self { flags }
     }
 
-    fn contains(self, partition: PartitionType) -> bool {
+    pub(crate) fn contains(self, partition: PartitionType) -> bool {
         self.flags[partition.index()]
     }
 
-    fn count(self) -> usize {
+    pub(crate) fn count(self) -> usize {
         self.flags.iter().filter(|allowed| **allowed).count()
     }
 
