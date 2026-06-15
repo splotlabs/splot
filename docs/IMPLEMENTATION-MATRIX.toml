@@ -6412,6 +6412,83 @@ fixtures = []
 diagnostics = ["decode/unsupported-feature", "decode/malformed-source", "decode/resource-limit"]
 
 [[feature]]
+id = "DOC-DECODER-FULL-CONFORMANCE-CONTRACT"
+name = "Full decoder conformance contract"
+category = "docs"
+kind = "docs"
+spec_sections = []
+sources = []
+crate = "docs"
+module = "docs/DECODER-FULL-CONFORMANCE.md"
+openspec_change = "decoder-full-conformance-contract"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Defines the public full AV2 decoder conformance contract, current non-claim, future output variants, structured diagnostics, output-file safety, local-only AVM/dav2d evidence boundary, and final completion criteria. This row is documentation-only and does not implement runtime decode, hash output, Y4M output, reconstruction, reference refresh, or external reference decoder integration."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = [
+    "openspec validate decoder-full-conformance-contract --strict",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+]
+fixtures = ["docs/DECODER-FULL-CONFORMANCE.md"]
+diagnostics = []
+
+[[feature]]
+id = "XTASK-DECODER-CONFORMANCE-COVERAGE"
+name = "Decoder conformance coverage gate"
+category = "automation"
+kind = "automation"
+spec_sections = []
+sources = []
+crate = "xtask"
+module = "xtask/src/decoder_conformance_coverage.rs"
+openspec_change = "decoder-full-conformance-contract"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a generated decoder-specific AV2 section-family coverage document and a self-contained drift/honesty gate. The gate validates committed coverage rows, support-row links, Feature IDs, diagnostic IDs, and local-reference evidence pointers without invoking AVM, dav2d, ffmpeg, network access, or `splot decode`. It intentionally exposes unsupported and partial runtime decoder rows instead of treating this tooling as codec implementation proof."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "xtask/src/decoder_conformance_coverage.rs::tests",
+]
+commands = [
+    "cargo test -p xtask decoder_conformance_coverage --locked",
+    "cargo xtask decoder-conformance-coverage --format markdown --output docs/DECODER-SPEC-COVERAGE.md",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask ci",
+]
+fixtures = ["docs/DECODER-SPEC-COVERAGE.md"]
+diagnostics = []
+
+[[feature]]
 id = "VALIDATOR-CONTEXT-SPLIT"
 name = "Validator context module split"
 category = "infrastructure"

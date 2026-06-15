@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-14. 174 feature(s); 127 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-14. 176 feature(s); 127 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -373,7 +373,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 
 ## Features without a spec section
 
-47 feature(s) track conformance, encoder, CLI, automation, or documentation work with no single spec section; see [FEATURE-STATUS.md](./FEATURE-STATUS.md):
+49 feature(s) track conformance, encoder, CLI, automation, or documentation work with no single spec section; see [FEATURE-STATUS.md](./FEATURE-STATUS.md):
 
 - `AV2-IVF-CONTAINER` — IVF container support
 - `CLI-INSPECT` — splot inspect command
@@ -394,6 +394,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 - `DOC-DECODE-LIMITS-CONTRACT` — Decode limits contract documentation
 - `DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT` — Decoded frame and plane model contract documentation
 - `DOC-DECODER-DIAGNOSTICS` — Decoder diagnostics registry documentation
+- `DOC-DECODER-FULL-CONFORMANCE-CONTRACT` — Full decoder conformance contract
 - `DOC-DECODER-ROADMAP` — Decoder roadmap documentation
 - `DOC-DECODER-SUPPORT-MATRIX` — Decoder support matrix documentation
 - `DOC-DETERMINISTIC-FRAME-HASH-CONTRACT` — Deterministic decoded-frame hash contract documentation
@@ -414,6 +415,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 - `XTASK-CHECK-FIXTURES` — Test-fixture manifest gate
 - `XTASK-CI-QUALITY-GATES` — CI quality gates (docs build + coverage threshold)
 - `XTASK-CONVENTIONAL-COMMITS` — Conventional commit enforcement
+- `XTASK-DECODER-CONFORMANCE-COVERAGE` — Decoder conformance coverage gate
 - `XTASK-DECODER-DIAGNOSTIC-REGISTRY` — Decoder diagnostic registry enforcement
 - `XTASK-DECODER-SUPPORT-STATUS` — Decoder support status reporting and checks
 - `XTASK-DIAGNOSTIC-REGISTRY` — Validator diagnostic registry enforcement

@@ -15,6 +15,7 @@ use clap::{Parser, Subcommand};
 mod audit_scope;
 mod concurrency_policy;
 mod conformance;
+mod decoder_conformance_coverage;
 mod decoder_support;
 mod diagnostic_registry;
 mod explain_registry;
@@ -26,6 +27,7 @@ mod reference_evidence;
 mod source_lines;
 
 use audit_scope::{AuditScopeFormat, AuditScopeOptions};
+use decoder_conformance_coverage::DecoderConformanceCoverageFormat;
 use decoder_support::DecoderSupportFormat;
 use feature_status::{CoverageFormat, StatusFormat};
 use git_util::{run_git, sha256_hex};
@@ -151,6 +153,17 @@ enum Task {
     },
     /// Verify docs/DECODER-SUPPORT-STATUS.md is up to date.
     CheckDecoderSupport,
+    /// Render the full decoder conformance coverage matrix.
+    DecoderConformanceCoverage {
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = DecoderConformanceCoverageFormat::Markdown)]
+        format: DecoderConformanceCoverageFormat,
+        /// Write the rendered output to a file instead of stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Verify docs/DECODER-SPEC-COVERAGE.md is up to date.
+    CheckDecoderConformanceCoverage,
     /// Verify docs/LOCAL-REFERENCE-EVIDENCE.toml is portable metadata.
     CheckReferenceEvidence,
     /// Generate the AV2 § 9 additional tables into `crates/splot-core/src/tables/`.
@@ -239,6 +252,16 @@ fn main() -> Result<()> {
             decoder_support::run_decoder_support(&workspace_root()?, format, output)
         }
         Task::CheckDecoderSupport => decoder_support::run_check_decoder_support(&workspace_root()?),
+        Task::DecoderConformanceCoverage { format, output } => {
+            decoder_conformance_coverage::run_decoder_conformance_coverage(
+                &workspace_root()?,
+                format,
+                output,
+            )
+        }
+        Task::CheckDecoderConformanceCoverage => {
+            decoder_conformance_coverage::run_check_decoder_conformance_coverage(&workspace_root()?)
+        }
         Task::CheckReferenceEvidence => {
             reference_evidence::run_check_reference_evidence(&workspace_root()?)
         }
@@ -315,6 +338,7 @@ fn run_ci() -> Result<()> {
     explain_registry::run_gen_explain(&root, true)?;
     feature_status::run_check_feature_status(&root)?;
     decoder_support::run_check_decoder_support(&root)?;
+    decoder_conformance_coverage::run_check_decoder_conformance_coverage(&root)?;
     diagnostic_registry::check_diagnostic_registry(&root)?;
     fixtures::check_fixtures(&root)?;
 
