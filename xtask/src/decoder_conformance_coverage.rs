@@ -2,10 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Full decoder conformance coverage automation.
-//!
-//! Renders and checks `docs/DECODER-SPEC-COVERAGE.md` from committed metadata.
-//! It never locates, builds, spawns, or requires AVM, dav2d, ffmpeg, or any
-//! other decoder.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -470,7 +466,10 @@ fn validate_rows(
             ));
         }
         if matches!(row.normative_status, "mixed")
-            && !row.notes.to_ascii_lowercase().contains("normative")
+            && !row.notes.split_whitespace().any(|word| {
+                word.trim_matches(|ch: char| !ch.is_ascii_alphanumeric())
+                    .eq_ignore_ascii_case("normative")
+            })
         {
             problems.push(format!(
                 "{label}: mixed normative_status requires notes explaining the normative portion"
