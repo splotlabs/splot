@@ -6222,11 +6222,11 @@ sources = [
 ]
 crate = "splot-decode"
 module = "crates/splot-decode/src/tile_payload/cdf.rs"
-openspec_change = "tile-partition-cdf-selectors"
+openspec_change = "tile-rect-type-cdf-selector"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a crate-private `splot-decode` tile CDF selection boundary for the minimal single-tile closed-loop-key tier: a small partition-entry CDF subset (`TileDoSplitCdf`, `TileDoSquareSplitCdf`, `TileDoExtPartitionCdf`, and `TileDoUneven4wayPartitionCdf`) is copied from generated §9.3 defaults, typed selector validation and closure-scoped mutable row access prove §8.3 handoff into `SymbolDecoder::read_symbol(cdf)`, the tile work unit records CDF update mode from `disable_cdf_update`, and the §8.2 copy/average decision is computed from `enable_avg_cdf`, `avg_cdf_type`, `context_update_tile_id`, `TileNum`, and `TileCols * TileRows`. This is a boundary only: it does not implement `TileRectTypeCdf`, full §8.3 CDF selection, full Tile/Saved CDF banks, recursive `decode_tile()`/`read_partition()` traversal, partition context derivation, `exit_symbol()` after real syntax, Saved CDF copy/average mutation after tile completion, `frame_end_update_cdf()`, reconstruction, hashes, runtime Y4M output, reference refresh, public API support, AVM/dav2d invocation, or scheduler use outside the `splot_parallel::WorkerPool` policy."
+notes = "Adds a crate-private `splot-decode` tile CDF selection boundary for the minimal single-tile closed-loop-key tier: a small partition-entry CDF subset (`TileDoSplitCdf`, `TileDoSquareSplitCdf`, `TileRectTypeCdf`, `TileDoExtPartitionCdf`, and `TileDoUneven4wayPartitionCdf`) is copied from generated §9.3 defaults, typed selector validation and closure-scoped mutable row access prove §8.3 handoff into `SymbolDecoder::read_symbol(cdf)`, the tile work unit records CDF update mode from `disable_cdf_update`, and the §8.2 copy/average decision is computed from `enable_avg_cdf`, `avg_cdf_type`, `context_update_tile_id`, `TileNum`, and `TileCols * TileRows`. This is a boundary only: it does not implement `rect_type` or other partition context derivation for syntax reads, full §8.3 CDF selection, full Tile/Saved CDF banks, recursive `decode_tile()`/`read_partition()` traversal, `exit_symbol()` after real syntax, Saved CDF copy/average mutation after tile completion, `frame_end_update_cdf()`, reconstruction, hashes, runtime Y4M output, reference refresh, public API support, AVM/dav2d invocation, or scheduler use outside the `splot_parallel::WorkerPool` policy."
 
 [feature.status]
 mapped = "done"
@@ -6242,7 +6242,7 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = [
-    "crates/splot-decode/src/tile_payload/cdf.rs::tests",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs",
     "crates/splot-decode/src/tile_payload/tests.rs",
 ]
 commands = [
@@ -6254,6 +6254,7 @@ commands = [
 fixtures = [
     "crates/splot-decode/src/tile_payload.rs",
     "crates/splot-decode/src/tile_payload/cdf.rs",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs",
     "crates/splot-decode/src/tile_payload/tests.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
