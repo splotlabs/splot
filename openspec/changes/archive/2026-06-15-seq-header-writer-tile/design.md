@@ -18,8 +18,14 @@ writers into the full OBU body.
   non-uniform (per-column width runs, per-row height runs) — and checks the recomputed
   grid equals the model's stored starts before emitting. The level/tier
   `Tile_Width_Scaling_Factor` / `Tile_Area_Scaling_Factor` tables are duplicated locally
-  in `write/` (the parser's copies are private); a test asserts they match the parser
-  entry-for-entry.
+  in `write/` because the parser's copies are private and the writer mission keeps the
+  parser read-only (no `crate::tile` edits). The duplication is drift-protected by the
+  `tile_round_trips` property test, which drives parse → write → parse across all
+  conformant levels (0..=21) and both tiers: the parser derives `maxTileWidthSb` /
+  `maxTileAreaSb` from its private tables and the writer re-derives from the local copies,
+  so any divergent entry the writer ever uses (indices 0..=21; reserved 22..=30 are
+  unwritable and `seq_level_idx == 31` skips the lookup) surfaces as a round-trip failure
+  at that level.
 - **Reserved levels are unwritable by construction.** A reserved `seq_level_idx` has no
   defined `MaxTileWidthSb` / `MaxTileAreaSb`, so a tile-present header at a reserved level
   cannot be re-derived. The writer rejects it before any bit with the new

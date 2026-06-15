@@ -16,8 +16,11 @@
 - [x] One rejection test per `WriteError` path (asserting `bit_len()==0`), incl. the
       gated-off filter fields, the reserved-level tile header, grid-mismatch, corrupt
       start array, and the unaligned-writer guard.
-- [x] Never-panics property tests; a test asserting the local scaling tables match the
-      parser's copies entry-for-entry.
+- [x] Never-panics property tests. The `tile_round_trips` property test drives
+      parse -> write -> parse across all conformant levels (0..=21) and both tiers, so any
+      drift between the writer's duplicated §A scaling tables and the parser's private
+      copies surfaces as a round-trip failure (the parser keeps its tables private and the
+      writer mission keeps the parser read-only, so there is no direct table-equality test).
 
 ## Matrix and docs
 - [x] Advance `write` `todo -> done` on `AV2-5.4.10-SEQUENCE-FILTER-CONFIG` and
