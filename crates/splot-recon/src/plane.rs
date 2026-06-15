@@ -5,10 +5,14 @@
 
 use core::mem;
 
-use crate::{PlaneRect, PlaneSize, ReconError, ReconSample, Result};
+use crate::{PlaneRect, PlaneRef, PlaneSize, ReconError, ReconSample, Result};
 
 /// Immutable owned decoded plane with explicit storage and visible geometry.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// Does not implement `Clone`: cloning would duplicate the backing sample
+/// buffer. Borrow it as a [`PlaneRef`] with [`Plane::as_plane_ref`] instead (see
+/// [`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)).
+#[derive(Debug, Eq, PartialEq)]
 pub struct Plane<T: ReconSample> {
     storage_size: PlaneSize,
     stride_samples: usize,
@@ -119,6 +123,11 @@ impl<T: ReconSample> Plane<T> {
             plane: self,
             next_row: 0,
         }
+    }
+
+    /// Borrows this plane's storage as an immutable [`PlaneRef`] without copying.
+    pub fn as_plane_ref(&self) -> PlaneRef<'_, T> {
+        PlaneRef::from_parts(&self.samples, self.stride_samples, self.visible_rect)
     }
 }
 

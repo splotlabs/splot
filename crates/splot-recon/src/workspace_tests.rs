@@ -627,9 +627,12 @@ fn workspace_freezes_into_hash_y4m_and_reference_store_inputs() {
 
     let mut store = ReferenceFrameStore::with_capacity(1).unwrap();
     let slot = ReferenceSlot::new(0).unwrap();
-    assert!(store.put(slot, frame.clone()).unwrap().is_none());
+    let expected_index = frame.output_index();
+    // Move the owned frame into the store (no clone): a reference store moves or
+    // shares handles and never duplicates frame storage.
+    assert!(store.put(slot, frame).unwrap().is_none());
     assert_eq!(
         store.get(slot).unwrap().unwrap().output_index(),
-        frame.output_index()
+        expected_index
     );
 }

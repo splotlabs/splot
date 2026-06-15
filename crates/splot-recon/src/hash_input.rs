@@ -224,6 +224,7 @@ fn write_visible_plane<T: ReconSample, W: Write + ?Sized>(
 fn push_sample(bit_depth: BitDepth, sample: u16, row_bytes: &mut Vec<u8>) {
     match bit_depth {
         BitDepth::Eight => row_bytes.push(sample as u8),
+        // splot-copy-ok: serialize a decoded sample into the frame-hash input byte stream
         BitDepth::Ten => row_bytes.extend_from_slice(&sample.to_le_bytes()),
     }
 }
@@ -661,6 +662,7 @@ mod tests {
         impl Write for CountingWriter {
             fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
                 self.writes += 1;
+                // splot-copy-ok: test fixture construction only (accumulates written bytes)
                 self.bytes.extend_from_slice(buf);
                 Ok(buf.len())
             }
