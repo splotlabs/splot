@@ -41,7 +41,7 @@ pub(crate) enum PartitionType {
 }
 
 impl PartitionType {
-    const ALL: [Self; EXT_PARTITION_TYPES] = [
+    pub(crate) const ALL: [Self; EXT_PARTITION_TYPES] = [
         Self::None,
         Self::Horz,
         Self::Vert,
@@ -57,7 +57,7 @@ impl PartitionType {
     const HORZ_FAMILY: [Self; 4] = [Self::Horz, Self::Horz3, Self::Horz4A, Self::Horz4B];
     const VERT_FAMILY: [Self; 4] = [Self::Vert, Self::Vert3, Self::Vert4A, Self::Vert4B];
 
-    const fn index(self) -> usize {
+    pub(crate) const fn index(self) -> usize {
         self as usize
     }
 }

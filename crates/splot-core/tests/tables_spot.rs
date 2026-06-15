@@ -24,6 +24,45 @@ fn conversion_mi_width_log2_matches_mirror() {
 }
 
 #[test]
+fn conversion_partition_size_tables_match_mirror() {
+    // docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md
+    // lines 95-224 (Partition_Subsize[EXT_PARTITION_TYPES][BLOCK_SIZES]).
+    // Numeric values are AV2 §6.19.3 block-size discriminants; 29 is
+    // BLOCK_INVALID from AV2 §3 Table 3.1.
+    let subsize = &tables::conversion::PARTITION_SUBSIZE;
+    assert_eq!(subsize.len(), 10);
+    assert_eq!(subsize[0].len(), 29);
+    // PARTITION_NONE row, lines 98-104, is the identity over all valid sizes.
+    assert_eq!(
+        subsize[0],
+        [
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+            24, 25, 26, 27, 28,
+        ]
+    );
+    // PARTITION_HORZ row, lines 106-114.
+    assert_eq!(subsize[1][0], 29); // BLOCK_4X4 -> BLOCK_INVALID.
+    assert_eq!(subsize[1][1], 0); // BLOCK_4X8 -> BLOCK_4X4.
+    assert_eq!(subsize[1][5], 20); // BLOCK_16X8 -> BLOCK_16X4.
+    // PARTITION_VERT row, lines 116-124.
+    assert_eq!(subsize[2][2], 0); // BLOCK_8X4 -> BLOCK_4X4.
+    assert_eq!(subsize[2][13], 29); // BLOCK_64X128 -> BLOCK_INVALID.
+    // PARTITION_SPLIT row, lines 209-222.
+    assert_eq!(subsize[9][15], 12); // BLOCK_128X128 -> BLOCK_64X64.
+    assert_eq!(subsize[9][18], 15); // BLOCK_256X256 -> BLOCK_128X128.
+
+    // docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md
+    // lines 227-257 (H_Partition_Midsize[BLOCK_SIZES]).
+    let midsize = &tables::conversion::H_PARTITION_MIDSIZE;
+    assert_eq!(midsize.len(), 29);
+    assert_eq!(midsize[0], 29); // BLOCK_4X4 -> BLOCK_INVALID.
+    assert_eq!(midsize[4], 1); // BLOCK_8X16 -> BLOCK_4X8.
+    assert_eq!(midsize[12], 9); // BLOCK_64X64 -> BLOCK_32X32.
+    assert_eq!(midsize[23], 21); // BLOCK_16X64 -> BLOCK_8X32.
+    assert_eq!(midsize[28], 29); // BLOCK_64X8 -> BLOCK_INVALID.
+}
+
+#[test]
 fn conversion_palette_color_hash_multipliers_matches_mirror() {
     // 09-02-conversion-tables.md line 290:
     // "Palette_Color_Hash_Multipliers[ PALETTE_NUM_NEIGHBORS ] = { 1, 2, 2 }".
