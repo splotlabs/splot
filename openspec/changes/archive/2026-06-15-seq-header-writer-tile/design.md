@@ -36,6 +36,12 @@ writers into the full OBU body.
   cannot be re-derived. The writer rejects it before any bit with the new
   `WriteError::UnwritableSequenceHeader { feature }` (the § 5.4.2 bounded residual). A
   tile-absent header at a reserved level still writes (no `tile_params` body).
+- **`is_bridge` is rejected (sequence-only writer).** A bridge layout is a § 5.18.7.4
+  frame concept; the § 5.4.2 sequence config always calls `tile_params(..., is_bridge = 0)`.
+  With `is_bridge = true` the parser infers `uniform = 1` and reads zero layout bits, which
+  this writer does not model, so `check_tile_encodable` rejects an `is_bridge = true` input
+  before any bit (`NonCanonicalSequenceValue { what: "is_bridge" }`) rather than emit a flag
+  the matching parse would skip.
 - **`write_sequence_header` validates the whole header up front, then emits in order.**
   It recomputes the parser's derivations (`monochrome` / `single_picture` / `seq_sb_size`
   / `TileParamsInput`) rather than trusting model-stored copies, validates every config

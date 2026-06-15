@@ -336,7 +336,8 @@ fn compute_tile_grid(input: &TileParamsInput) -> Option<TileGrid> {
 ///
 /// `input` is the `tile_params(maxFrameWidth, maxFrameHeight, seqSbSize, seqSbSize, 0)`
 /// argument the parser builds from the general header and partition config (the sequence
-/// call site always passes `is_bridge = false`).
+/// call site always passes `is_bridge = false`; an `is_bridge = true` input is rejected up
+/// front — see Errors).
 ///
 /// Field writes (in § 5.4.2 read order): `seq_tile_info_present_flag` `f(1)`; when set,
 /// `allow_tile_info_change` `f(1)` then the `tile_params()` bits (see
@@ -345,6 +346,8 @@ fn compute_tile_grid(input: &TileParamsInput) -> Option<TileGrid> {
 /// The model is fully validated before any bit is written.
 ///
 /// # Errors
+/// - [`WriteError::NonCanonicalSequenceValue`] (`what = "is_bridge"`) if `input.is_bridge`
+///   is set — a bridge layout is a § 5.18.7.4 frame concept, never a § 5.4.2 sequence config.
 /// - [`WriteError::UnwritableSequenceHeader`] if `seq_tile_info_present_flag` is set but
 ///   `params` is `None` (a reserved-level residual the parser could not model — its tile
 ///   bits were never parsed, so they cannot be re-emitted).
@@ -390,6 +393,16 @@ pub fn write_sequence_tile_config(
 /// Validates that `config` is a model the § 5.4.2 parser could have produced, including
 /// the reserved-level residual and the full `tile_params()` derivation.
 fn check_tile_encodable(config: &SequenceTileConfig, input: &TileParamsInput) -> WriteResult<()> {
+    // The § 5.4.2 sequence tile config always calls `tile_params(..., is_bridge = 0)`; a
+    // bridge layout is a § 5.18.7.4 frame-level concept. With `is_bridge = true` the parser
+    // (`parse_tile_layout`) infers `uniform_tile_spacing_flag = 1` and skips the flag and
+    // both increment loops (zero layout bits), which this sequence writer does not model, so
+    // such an input is not parser-reachable here. Reject it before any bit rather than emit
+    // bits the matching parse would never read.
+    if input.is_bridge {
+        return Err(WriteError::NonCanonicalSequenceValue { what: "is_bridge" });
+    }
+
     if !config.seq_tile_info_present_flag {
         // No tile info: every payload field is inferred absent / empty.
         if config.allow_tile_info_change.is_some()
@@ -467,7 +480,8 @@ fn write_tile_params(
         what: "tile_params_level",
     })?;
 
-    // uniform_tile_spacing_flag: f(1) (is_bridge is always false at the sequence call site).
+    // uniform_tile_spacing_flag: f(1). The sequence call site is never a bridge, and an
+    // is_bridge=true input is already rejected by check_tile_encodable before any bit.
     writer.write_bit(u8::from(params.uniform_spacing))?;
 
     if params.uniform_spacing {

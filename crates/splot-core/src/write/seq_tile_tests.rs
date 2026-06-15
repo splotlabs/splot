@@ -782,6 +782,29 @@ mod tests {
     }
 
     #[test]
+    fn tile_reject_is_bridge_input() {
+        // is_bridge is a §5.18.7.4 frame concept; the §5.4.2 sequence config never sets it.
+        // With is_bridge the parser reads zero layout bits (uniform inferred), so this
+        // sequence writer rejects it before any bit rather than emit a flag the parse skips.
+        let mut bits = Bits::default();
+        bits.bit(1); // seq_tile_info_present_flag
+        bits.bit(0); // allow_tile_info_change
+        bits.bit(1); // uniform_tile_spacing_flag
+        let c = parse_tile(&bits.into_bytes(), tile_input(16, 8));
+        let bridge_input = TileParamsInput {
+            is_bridge: true,
+            ..tile_input(16, 8)
+        };
+        let mut writer = BitWriter::new();
+        let err = write_sequence_tile_config(&mut writer, &c, bridge_input).unwrap_err();
+        assert_eq!(
+            err,
+            WriteError::NonCanonicalSequenceValue { what: "is_bridge" }
+        );
+        assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
     fn tile_reject_reserved_level_params_none() {
         // present flag set, params None -> UnwritableSequenceHeader at the tile-config level.
         let input = tile_input(16, 8);
