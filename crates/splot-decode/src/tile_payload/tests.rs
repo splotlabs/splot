@@ -111,8 +111,7 @@ fn single_tile_payload_yields_deterministic_work_unit_and_unsupported_boundary()
     plan.work_units_mut()[0]
         .cdf_mut()
         .tile_cdfs_mut()
-        .with_row_mut(selector, |row| symbol.read_symbol(row))
-        .unwrap()
+        .read_partition_entry_symbol(selector, &mut symbol)
         .unwrap();
     assert_ne!(
         plan.work_units()[0]
