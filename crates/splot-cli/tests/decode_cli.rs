@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use splot_decode::{DecodeOptions, unsupported_feature_diagnostic};
+use splot_decode::DecodeOptions;
 
 static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -121,101 +121,6 @@ fn decode_hash_json(path: &Path, threads: &str) -> serde_json::Value {
         String::from_utf8_lossy(&out.stderr)
     );
     serde_json::from_slice(&out.stdout).unwrap()
-}
-
-#[test]
-fn decode_plan_success_text_mode_emits_runtime_unsupported_diagnostic() {
-    let input = temp_input("av2", PLANABLE_CLOSED_LOOP_KEY);
-    let output = temp_output("y4m");
-    let original_output = b"existing output must remain untouched";
-    std::fs::write(&output, original_output).expect("write temporary output sentinel");
-
-    let out = splot(&[
-        "decode",
-        input.to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-    ]);
-
-    let diagnostic = unsupported_feature_diagnostic();
-    assert_eq!(out.status.code(), Some(1));
-    assert!(out.stdout.is_empty(), "stdout was not empty");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    for expected in [
-        format!("rule_id: {}", diagnostic.rule_id),
-        format!("severity: {}", diagnostic.severity),
-        format!(
-            "spec_section: {}",
-            diagnostic
-                .spec_section
-                .expect("diagnostic cites a spec section")
-        ),
-        format!("matrix_row: {}", diagnostic.matrix_row),
-        format!("feature_id: {}", diagnostic.feature_id),
-        "detail_kind: runtime_unsupported".to_string(),
-        "bitstream_format: annex_b".to_string(),
-        "input_len_bytes: 2".to_string(),
-        "obu_count: 1".to_string(),
-        "frame_candidate_count: 1".to_string(),
-        "output_format: y4m".to_string(),
-        "remediation:".to_string(),
-    ] {
-        assert!(
-            stderr.contains(&expected),
-            "stderr did not contain {expected:?}: {stderr}"
-        );
-    }
-    assert_eq!(
-        std::fs::read(&output).expect("read temporary output sentinel"),
-        original_output
-    );
-}
-
-#[test]
-fn decode_plan_success_json_mode_emits_runtime_unsupported_object() {
-    let input = temp_input("av2", PLANABLE_CLOSED_LOOP_KEY);
-    let output = temp_output("y4m");
-    let original_output = b"json mode output sentinel";
-    std::fs::write(&output, original_output).expect("write temporary output sentinel");
-
-    let out = splot(&[
-        "decode",
-        "--json",
-        input.to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-    ]);
-
-    assert_eq!(out.status.code(), Some(1));
-    assert!(out.stderr.is_empty(), "stderr was not empty");
-    let diagnostic = unsupported_feature_diagnostic();
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(json["rule_id"], diagnostic.rule_id);
-    assert_eq!(json["severity"], diagnostic.severity.as_str());
-    assert_eq!(
-        json["spec_section"],
-        diagnostic
-            .spec_section
-            .expect("diagnostic cites a spec section")
-    );
-    assert_eq!(json["matrix_row"], diagnostic.matrix_row);
-    assert_eq!(json["feature_id"], diagnostic.feature_id);
-    assert_eq!(json["message"], diagnostic.message);
-    assert_eq!(json["remediation"], diagnostic.remediation);
-    assert_eq!(json["detail_kind"], "runtime_unsupported");
-    assert_eq!(json["output_format"], "y4m");
-    assert_eq!(json["bitstream_format"], "annex_b");
-    assert_eq!(json["input_len_bytes"], 2);
-    assert_eq!(json["obu_count"], 1);
-    assert_eq!(json["frame_candidate_count"], 1);
-    assert_eq!(json["source_warning_count"], 0);
-    assert_eq!(json["selected_temporal_layer_id"], 0);
-    assert_eq!(json["selected_embedded_layer_id"], 0);
-    assert_eq!(json["selected_extended_layer_id"], 0);
-    assert_eq!(
-        std::fs::read(&output).expect("read temporary output sentinel"),
-        original_output
-    );
 }
 
 #[test]
@@ -704,49 +609,6 @@ fn decode_without_output_selection_is_usage_error() {
     assert!(
         !stderr.contains("decode/unsupported-feature"),
         "stderr was: {stderr}"
-    );
-}
-
-#[test]
-fn decode_explicit_y4m_output_format_requires_output_path() {
-    let input = temp_input("av2", PLANABLE_CLOSED_LOOP_KEY);
-
-    let out = splot(&["decode", "--output-format", "y4m", input.to_str().unwrap()]);
-
-    assert_eq!(out.status.code(), Some(2));
-    assert!(out.stdout.is_empty(), "stdout was not empty");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        !stderr.contains("decode/unsupported-feature"),
-        "stderr was: {stderr}"
-    );
-}
-
-#[test]
-fn decode_explicit_y4m_output_format_matches_implicit_no_touch_behavior() {
-    let input = temp_input("av2", PLANABLE_CLOSED_LOOP_KEY);
-    let output = temp_output("y4m");
-    let original_output = b"explicit y4m output sentinel";
-    std::fs::write(&output, original_output).expect("write temporary output sentinel");
-
-    let out = splot(&[
-        "decode",
-        "--output-format",
-        "y4m",
-        input.to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-    ]);
-
-    assert_eq!(out.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("decode/unsupported-feature"),
-        "stderr was: {stderr}"
-    );
-    assert_eq!(
-        std::fs::read(&output).expect("read temporary output sentinel"),
-        original_output
     );
 }
 

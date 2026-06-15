@@ -104,18 +104,18 @@ source-backed changes provide implementation and tests.
 - **THEN** it writes to a temporary file in the final path's directory,
   completes serialization, flushes user-space buffers, syncs the temporary
   file's contents and metadata, renames the temporary file as the final publish
-  step, and syncs the parent directory after rename
+  step, and attempts best-effort parent-directory sync after rename where the
+  platform supports it
 - **AND** if decode, reconstruction, hash serialization, raw/Y4M serialization,
   validation, temporary-file write, flush, temporary-file sync, rename, or any
   other pre-rename publication step fails, an absent final path remains absent
   and an existing final path remains byte-for-byte unchanged
-- **AND** if rename succeeds but parent-directory sync fails, the command emits
-  a durability failure diagnostic and the final path may already contain the
-  complete serialized output, but it MUST NOT contain a partially serialized
-  payload
+- **AND** if rename succeeds, unsupported or failed parent-directory sync does
+  not convert the completed publication into a failed decode, and the final path
+  MUST NOT contain a partially serialized payload
 - **AND** output path creation, temporary-file write, flush, sync, rename,
-  parent-directory sync, cleanup, or serialization failures are emitted as a
-  registered `decode/output-error` diagnostic rather than as partial success
+  cleanup, or serialization failures before the completed rename are emitted as
+  a registered `decode/output-error` diagnostic rather than as partial success
   artifacts
 - **AND** output-derived counts and byte sizes are computed with checked
   arithmetic and checked against `DecodeLimits` before allocation, indexing, or

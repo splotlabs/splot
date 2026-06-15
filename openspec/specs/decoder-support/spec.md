@@ -1508,21 +1508,24 @@ AVM/dav2d execution support.
 The decoder support model SHALL provide a crate-private tile CDF selection
 boundary tracked by Feature ID `DECODE-TILE-CDF-SELECTION-BOUNDARY` and decoder
 support matrix row `tile-cdf-selection-boundary`. The boundary SHALL copy a
-small owned tile CDF subset from generated § 9.3 default tables, expose typed
-row selection for § 8.3 `S` syntax-element handoff to
-`SymbolDecoder::read_symbol(cdf)`, and record the § 8.2 frame-end CDF
-copy/average policy needed by a future tile-completion row. The boundary SHALL
-NOT claim full § 8.3 CDF selection, full Tile/Saved CDF banks, recursive
-`decode_tile()` / `decode_partition()` traversal, `exit_symbol()` after real
-syntax, CDF copyback/averaging mutation after tile completion, reconstruction,
-decoded-frame hashes, runtime Y4M output, reference refresh, public API
-support, AVM/dav2d invocation, or new scheduler/dependency support.
+small owned tile CDF subset from generated § 9.3 default tables, including the
+partition-entry rows `DoSplitCdf`, `DoSquareSplitCdf`, `DoExtPartitionCdf`, and
+`DoUneven4wayPartitionCdf`; expose typed row selection for § 8.3 `S`
+syntax-element handoff to `SymbolDecoder::read_symbol(cdf)`; and record the
+§ 8.2 frame-end CDF copy/average policy needed by a future tile-completion row.
+The boundary SHALL NOT claim full § 8.3 CDF selection, `TileRectTypeCdf`, full
+Tile/Saved CDF banks, recursive `decode_tile()` / `decode_partition()`
+traversal, `exit_symbol()` after real syntax, CDF copyback/averaging mutation
+after tile completion, reconstruction, decoded-frame hashes, runtime Y4M output,
+reference refresh, public API support, AVM/dav2d invocation, or new
+scheduler/dependency support.
 
 #### Scenario: Default CDF subset is source-backed
 
 - **WHEN** the tile CDF boundary initializes its owned frame/tile CDF subset
-- **THEN** `DoSplitCdf` and `DoSquareSplitCdf` rows are copied from generated
-  `splot-core` default CDF tables derived from AV2 § 9.3
+- **THEN** `DoSplitCdf`, `DoSquareSplitCdf`, `DoExtPartitionCdf`, and
+  `DoUneven4wayPartitionCdf` rows are copied from generated `splot-core`
+  default CDF tables derived from AV2 § 9.3
 - **AND** no CDF values are hand-transcribed from the spec mirror or a reference
   implementation
 
@@ -2196,18 +2199,18 @@ source-backed changes provide implementation and tests.
 - **THEN** it writes to a temporary file in the final path's directory,
   completes serialization, flushes user-space buffers, syncs the temporary
   file's contents and metadata, renames the temporary file as the final publish
-  step, and syncs the parent directory after rename
+  step, and attempts best-effort parent-directory sync after rename where the
+  platform supports it
 - **AND** if decode, reconstruction, hash serialization, raw/Y4M serialization,
   validation, temporary-file write, flush, temporary-file sync, rename, or any
   other pre-rename publication step fails, an absent final path remains absent
   and an existing final path remains byte-for-byte unchanged
-- **AND** if rename succeeds but parent-directory sync fails, the command emits
-  a durability failure diagnostic and the final path may already contain the
-  complete serialized output, but it MUST NOT contain a partially serialized
-  payload
+- **AND** if rename succeeds, unsupported or failed parent-directory sync does
+  not convert the completed publication into a failed decode, and the final path
+  MUST NOT contain a partially serialized payload
 - **AND** output path creation, temporary-file write, flush, sync, rename,
-  parent-directory sync, cleanup, or serialization failures are emitted as a
-  registered `decode/output-error` diagnostic rather than as partial success
+  cleanup, or serialization failures before the completed rename are emitted as
+  a registered `decode/output-error` diagnostic rather than as partial success
   artifacts
 - **AND** output-derived counts and byte sizes are computed with checked
   arithmetic and checked against `DecodeLimits` before allocation, indexing, or
@@ -2262,6 +2265,8 @@ reference-refresh completeness, or AVM/dav2d integration.
 - **AND** each hash entry names `raw_intermediate_output`,
   `splot-dfh-sha256-v1`, `av2-output-samples-v1`, and a 64-character lowercase
   hexadecimal digest
+- **AND** hash output does not require nonzero IVF timebase fields because it
+  does not serialize frame-rate metadata
 - **AND** stderr is empty
 
 #### Scenario: Hash mode does not touch output paths
@@ -2333,3 +2338,73 @@ reference-refresh completeness, or AVM/dav2d integration.
   layers, and decoder-model constraints remain partial or unsupported until
   their own source-backed implementation and tests land
 
+### Requirement: Minimal-tier runtime Y4M output
+For Feature ID `DECODE-Y4M-RUNTIME-OUTPUT`, the decoder support model SHALL provide a narrow `splot decode` Y4M success path for the existing `minimal-intra-8bit420-hash-v1` tier, using the same byte-consuming validation, tile trace, output sample values, visible geometry, bit depth, and pixel format already required for `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`.
+
+#### Scenario: Explicit Y4M output succeeds for the minimal fixture
+- **WHEN** `splot decode --output-format y4m <minimal-ivf-fixture> -o <output.y4m>` is run for the committed minimal 64x64 IVF fixture
+- **THEN** the command exits successfully
+- **AND** stdout and stderr are empty
+- **AND** `<output.y4m>` contains a complete Y4M stream for one 64x64 8-bit 4:2:0 raw-intermediate-output frame
+- **AND** the frame payload contains the same flat sample values used by the minimal hash runtime
+
+#### Scenario: Zero IVF timebase fails before Y4M serialization
+- **WHEN** `splot decode --output-format y4m <minimal-ivf-fixture> -o <output.y4m>` is run for the committed minimal fixture shape with a zero IVF timebase numerator or denominator
+- **THEN** the command emits a structured `decode/unsupported-feature` diagnostic for `invalid_ivf_timebase`
+- **AND** it does not create, truncate, or replace `<output.y4m>`
+
+#### Scenario: Implicit Y4M output remains the compatibility form
+- **WHEN** `splot decode <minimal-ivf-fixture> -o <output.y4m>` is run without `--output-format`
+- **THEN** the command selects Y4M output
+- **AND** it writes the same bytes as explicit `--output-format y4m`
+
+#### Scenario: Out-of-tier Y4M inputs fail closed
+- **WHEN** `splot decode --output-format y4m <input> -o <output.y4m>` is run for a malformed, resource-limited, or out-of-tier source
+- **THEN** the command emits the existing structured `decode/malformed-source`, `decode/resource-limit`, or `decode/unsupported-feature` diagnostic as appropriate
+- **AND** it does not create, truncate, or replace `<output.y4m>`
+
+### Requirement: Atomic runtime Y4M publication
+The CLI SHALL publish runtime Y4M output atomically: all Y4M bytes MUST be written to a same-directory temporary file first, and the requested output path MUST be replaced only after successful decode, serialization, flush, and file sync.
+
+#### Scenario: Existing output is replaced only after success
+- **WHEN** the requested Y4M output path already contains bytes
+- **AND** the minimal runtime Y4M decode succeeds
+- **THEN** the requested path is replaced by the complete Y4M stream
+- **AND** no temporary output file remains in the output directory
+
+#### Scenario: Failure preserves existing output
+- **WHEN** the requested Y4M output path already contains bytes
+- **AND** decode, serialization, flush, sync, rename, or cleanup fails before publication
+- **THEN** the requested path remains byte-for-byte unchanged
+- **AND** no partial Y4M stream is visible at the requested path
+
+#### Scenario: Hash output remains no-touch
+- **WHEN** `splot decode --output-format hash <input> -o <path>` is run
+- **THEN** hash mode does not create, truncate, or replace `<path>`
+- **AND** this remains true for both hash success and hash diagnostic paths
+
+### Requirement: Decode output error diagnostics
+The decoder support model SHALL expose `decode/output-error` for Y4M serialization and CLI publication failures that are not malformed-source, resource-limit, or unsupported-feature conditions.
+
+#### Scenario: Output path cannot be published
+- **WHEN** runtime Y4M decode reaches output publication but the output path cannot be created, written, flushed, synced, renamed, or cleaned up
+- **THEN** `splot decode` emits a structured `decode/output-error` diagnostic
+- **AND** the diagnostic includes a stable operation identifier
+- **AND** it does not include nondeterministic temporary filename suffixes
+
+#### Scenario: Output error is separate from AV2 conformance
+- **WHEN** the failure is a filesystem or writer publication failure
+- **THEN** the diagnostic is not reported as AV2 malformed source or unsupported feature
+- **AND** any spec section field is omitted unless the failure is tied to AV2 output-sample semantics rather than filesystem publication
+
+### Requirement: Runtime Y4M byte accounting
+The runtime Y4M output path SHALL check `DecodeLimitName::MaxOutputBytes` against the complete Y4M stream length, including the Y4M stream header, per-frame header, and visible sample payload bytes, before publishing the file.
+
+#### Scenario: Output byte limit rejects before publication
+- **WHEN** the configured `max_output_bytes` is smaller than the complete minimal Y4M stream length
+- **THEN** runtime Y4M output fails with `decode/resource-limit`
+- **AND** the requested output path is not created, truncated, or replaced
+
+#### Scenario: Output is deterministic across thread policies
+- **WHEN** the same minimal fixture is decoded to Y4M with `--threads 1`, `--threads auto`, and a fixed positive thread count
+- **THEN** each successful command writes byte-identical Y4M output

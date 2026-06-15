@@ -9,9 +9,9 @@
 use splot_core::stream::BitstreamFormat;
 
 use crate::{
-    DecodeDiagnostic, DecodeError, DecodeLimitError, DecodeLimitName, DecodeSeverity,
-    DecodeSourceIssue, DecodeSourceIssueKind, DecodeStreamPlan, DecodeUnsupportedFeature,
-    DecodeUnsupportedStructure, UNSUPPORTED_FEATURE_RULE_ID,
+    DecodeDiagnostic, DecodeError, DecodeLimitError, DecodeLimitName, DecodeOutputError,
+    DecodeSeverity, DecodeSourceIssue, DecodeSourceIssueKind, DecodeStreamPlan,
+    DecodeUnsupportedFeature, DecodeUnsupportedStructure, UNSUPPORTED_FEATURE_RULE_ID,
 };
 
 /// Stable rule id for malformed decode-source diagnostics.
@@ -20,10 +20,15 @@ pub const MALFORMED_SOURCE_RULE_ID: &str = "decode/malformed-source";
 /// Stable rule id for decode resource-limit diagnostics.
 pub const RESOURCE_LIMIT_RULE_ID: &str = "decode/resource-limit";
 
+/// Stable rule id for decode output serialization/publication diagnostics.
+pub const OUTPUT_ERROR_RULE_ID: &str = "decode/output-error";
+
 const DECODE_BYTE_STREAM_PLANNER_MATRIX_ROW: &str = "decode-byte-stream-planner";
 const DECODE_BYTE_STREAM_PLANNER_FEATURE_ID: &str = "DECODE-BYTE-STREAM-PLANNER";
 const DECODE_LIMITS_BUDGET_MATRIX_ROW: &str = "decode-limits-budget";
 const DOC_DECODE_LIMITS_CONTRACT_FEATURE_ID: &str = "DOC-DECODE-LIMITS-CONTRACT";
+const DECODE_Y4M_RUNTIME_OUTPUT_MATRIX_ROW: &str = "decode-y4m-runtime-output";
+const DECODE_Y4M_RUNTIME_OUTPUT_FEATURE_ID: &str = "DECODE-Y4M-RUNTIME-OUTPUT";
 
 /// Diagnostic plus typed details for one `splot decode` result.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -52,6 +57,7 @@ impl DecodeDiagnosticReport {
                 Some(Self::unsupported_feature(unsupported.as_ref()))
             }
             DecodeError::Reconstruction { .. } => None,
+            DecodeError::Output { source } => Some(Self::output_error(source)),
         }
     }
 
@@ -151,6 +157,25 @@ impl DecodeDiagnosticReport {
             }),
         }
     }
+
+    fn output_error(source: &DecodeOutputError) -> Self {
+        Self {
+            diagnostic: DecodeDiagnostic {
+                rule_id: OUTPUT_ERROR_RULE_ID,
+                severity: DecodeSeverity::Error,
+                spec_section: None,
+                matrix_row: DECODE_Y4M_RUNTIME_OUTPUT_MATRIX_ROW,
+                feature_id: DECODE_Y4M_RUNTIME_OUTPUT_FEATURE_ID,
+                message: "decode output could not be serialized or written.",
+                remediation: "Check the output destination and retry the decode operation.",
+            },
+            details: DecodeDiagnosticDetails::OutputError(DecodeOutputErrorDetails {
+                operation: source.operation().as_str(),
+                source_kind: source.source_kind(),
+                source_message: source.source_message(),
+            }),
+        }
+    }
 }
 
 /// Case-specific structured diagnostic fields.
@@ -165,6 +190,8 @@ pub enum DecodeDiagnosticDetails {
     UnsupportedStructure(DecodeUnsupportedStructureDetails),
     /// Unsupported runtime feature details.
     UnsupportedFeature(DecodeUnsupportedFeatureDetails),
+    /// Decode output serialization or caller-writer failure details.
+    OutputError(DecodeOutputErrorDetails),
     /// Byte-plan summary for runtime decode/output deferral.
     RuntimeUnsupported(DecodePlanSummary),
 }
@@ -221,6 +248,17 @@ pub struct DecodeUnsupportedFeatureDetails {
     pub tier_id: &'static str,
     /// Byte offset associated with the unsupported feature, when known.
     pub byte_offset: Option<u64>,
+}
+
+/// Details for `decode/output-error`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecodeOutputErrorDetails {
+    /// Stable output operation identifier.
+    pub operation: &'static str,
+    /// Stable source category for the underlying output error.
+    pub source_kind: &'static str,
+    /// Human-readable underlying output error message.
+    pub source_message: String,
 }
 
 /// Byte-plan summary attached to runtime unsupported diagnostics.

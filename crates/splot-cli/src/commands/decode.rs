@@ -3,10 +3,12 @@
 
 //! `splot decode` — future reference-style decode / round-trip entry point.
 
-use std::fs::File;
-use std::io::Read as _;
+use std::ffi::{OsStr, OsString};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context as _, Result};
 use clap::{Args, ValueEnum};
@@ -14,17 +16,19 @@ use serde::Serialize;
 use splot_decode::{
     DecodeContext, DecodeDiagnostic, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError,
     DecodeHashEntry, DecodeHashFrame, DecodeHashReport, DecodeLimitError, DecodeLimitName,
-    DecodeOptions, DecodeRuntimeConfig,
+    DecodeOptions, DecodeOutputError, DecodeOutputOperation, DecodeRuntimeConfig,
 };
 use splot_parallel::ThreadCount;
+
+static Y4M_TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Output artifact selected for future `splot decode` success.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 #[value(rename_all = "kebab-case")]
 pub enum DecodeOutputFormat {
-    /// Future Y4M decoded-video output.
+    /// Runtime Y4M decoded-video output for the documented minimal tier.
     Y4m,
-    /// Future deterministic decoded-frame hash output.
+    /// Deterministic decoded-frame hash output for the documented minimal tier.
     Hash,
 }
 
@@ -63,13 +67,6 @@ enum DecodeOutputTarget<'a> {
 }
 
 impl<'a> DecodeOutputTarget<'a> {
-    fn path(&self) -> Option<&'a Path> {
-        match self {
-            Self::Y4m { path } => Some(path),
-            Self::Hash { path } => *path,
-        }
-    }
-
     fn format(&self) -> DecodeOutputFormat {
         match self {
             Self::Y4m { .. } => DecodeOutputFormat::Y4m,
@@ -136,6 +133,12 @@ fn render_text_diagnostic(report: &DecodeDiagnosticReport, output_format: Decode
             eprintln!("unsupported_reason: {}", details.unsupported_reason);
             eprintln!("tier_id: {}", details.tier_id);
             eprintln!("byte_offset: {}", option_u64_text(details.byte_offset));
+        }
+        DecodeDiagnosticDetails::OutputError(details) => {
+            eprintln!("detail_kind: output_error");
+            eprintln!("output_operation: {}", details.operation);
+            eprintln!("output_source_kind: {}", details.source_kind);
+            eprintln!("output_source_message: {}", details.source_message);
         }
         DecodeDiagnosticDetails::RuntimeUnsupported(summary) => {
             eprintln!("detail_kind: runtime_unsupported");
@@ -215,6 +218,12 @@ struct DecodeDiagnosticJson<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     tier_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    output_operation: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_source_kind: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_source_message: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     obu_type: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     bitstream_format: Option<&'a str>,
@@ -262,6 +271,9 @@ impl<'a> DecodeDiagnosticJson<'a> {
             unit: None,
             unsupported_reason: None,
             tier_id: None,
+            output_operation: None,
+            output_source_kind: None,
+            output_source_message: None,
             obu_type: None,
             bitstream_format: None,
             input_len_bytes: None,
@@ -305,6 +317,12 @@ impl<'a> DecodeDiagnosticJson<'a> {
                 json.unsupported_reason = Some(details.unsupported_reason);
                 json.tier_id = Some(details.tier_id);
                 json.byte_offset = details.byte_offset;
+            }
+            DecodeDiagnosticDetails::OutputError(details) => {
+                json.detail_kind = "output_error";
+                json.output_operation = Some(details.operation);
+                json.output_source_kind = Some(details.source_kind);
+                json.output_source_message = Some(&details.source_message);
             }
             DecodeDiagnosticDetails::RuntimeUnsupported(summary) => {
                 json.detail_kind = "runtime_unsupported";
@@ -458,27 +476,29 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
     let target = args
         .output_target()
         .context("decode output target was not resolved")?;
-    // Resolve, but intentionally do not write, the future output artifact path.
-    let _target_path = target.path();
     let output_format = target.format();
 
     let options = DecodeOptions::default();
     let report = match read_decode_input(&args.input, options)? {
         DecodeInputRead::Bytes(bytes) => {
             let context = DecodeContext::new(DecodeRuntimeConfig::new(args.threads))?;
-            match output_format {
-                DecodeOutputFormat::Hash => match context.decode_hash_report_bytes(&bytes, options)
-                {
-                    Ok(report) => {
-                        render_hash_report(&report, args.json)?;
-                        return Ok(ExitCode::SUCCESS);
+            match target {
+                DecodeOutputTarget::Hash { path } => {
+                    let _ignored_hash_output_path = path;
+                    match context.decode_hash_report_bytes(&bytes, options) {
+                        Ok(report) => {
+                            render_hash_report(&report, args.json)?;
+                            return Ok(ExitCode::SUCCESS);
+                        }
+                        Err(error) => decode_report_from_error(&error)?,
                     }
-                    Err(error) => decode_report_from_error(&error)?,
-                },
-                DecodeOutputFormat::Y4m => match context.plan_bytes(&bytes, options) {
-                    Ok(plan) => DecodeDiagnosticReport::runtime_unsupported(&plan),
-                    Err(error) => decode_report_from_error(&error)?,
-                },
+                }
+                DecodeOutputTarget::Y4m { path } => {
+                    match decode_y4m_to_file(&context, &bytes, options, path) {
+                        Ok(()) => return Ok(ExitCode::SUCCESS),
+                        Err(error) => decode_report_from_error(&error)?,
+                    }
+                }
             }
         }
         DecodeInputRead::Limit(source) => {
@@ -496,6 +516,153 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
     }
 
     Ok(ExitCode::from(1))
+}
+
+fn decode_y4m_to_file(
+    context: &DecodeContext,
+    bytes: &[u8],
+    options: DecodeOptions,
+    path: &Path,
+) -> core::result::Result<(), DecodeError> {
+    let mut y4m = Vec::new();
+    context.decode_y4m_bytes(bytes, options, &mut y4m)?;
+    publish_y4m_output(path, &y4m)
+}
+
+fn publish_y4m_output(path: &Path, y4m: &[u8]) -> core::result::Result<(), DecodeError> {
+    let (parent, final_name) = output_parent_and_name(path)?;
+    let (mut temp_file, temp_path) = create_y4m_temp_file(parent, final_name)?;
+
+    if let Err(source) = temp_file.write_all(y4m) {
+        let error = output_io(DecodeOutputOperation::WriteY4mTempFile, source);
+        return Err(close_and_cleanup_y4m_temp_file(
+            temp_file, &temp_path, error,
+        ));
+    }
+    if let Err(source) = temp_file.flush() {
+        let error = output_io(DecodeOutputOperation::FlushY4mTempFile, source);
+        return Err(close_and_cleanup_y4m_temp_file(
+            temp_file, &temp_path, error,
+        ));
+    }
+    if let Err(source) = temp_file.sync_all() {
+        let error = output_io(DecodeOutputOperation::SyncY4mTempFile, source);
+        return Err(close_and_cleanup_y4m_temp_file(
+            temp_file, &temp_path, error,
+        ));
+    }
+    drop(temp_file);
+
+    let final_path = parent.join(final_name);
+    replace_y4m_output(&temp_path, &final_path)?;
+    sync_parent_directory_best_effort(parent);
+
+    Ok(())
+}
+
+fn replace_y4m_output(
+    temp_path: &Path,
+    final_path: &Path,
+) -> core::result::Result<(), DecodeError> {
+    // Rust documents `std::fs::rename` as replacing an existing destination
+    // when `from` and `to` are files, including on Windows, so this stays the
+    // single publication step after temp write, flush, and sync succeed.
+    fs::rename(temp_path, final_path)
+        .map_err(|source| output_io(DecodeOutputOperation::RenameY4mOutput, source))
+        .map_err(|error| cleanup_y4m_temp_file(temp_path, error))
+}
+
+fn output_parent_and_name(path: &Path) -> core::result::Result<(&Path, &OsStr), DecodeError> {
+    let file_name = path
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            output_io(
+                DecodeOutputOperation::ResolveY4mOutputPath,
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Y4M output path must include a file name",
+                ),
+            )
+        })?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    Ok((parent, file_name))
+}
+
+fn create_y4m_temp_file(
+    parent: &Path,
+    final_name: &OsStr,
+) -> core::result::Result<(File, PathBuf), DecodeError> {
+    let nonce = Y4M_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut last_collision = None;
+    for attempt in 0..64 {
+        let temp_name = y4m_temp_file_name(nonce, attempt);
+        if temp_name == final_name {
+            continue;
+        }
+        let temp_path = parent.join(temp_name);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => return Ok((file, temp_path)),
+            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
+                last_collision = Some(source);
+            }
+            Err(source) => {
+                return Err(output_io(DecodeOutputOperation::CreateY4mTempFile, source));
+            }
+        }
+    }
+
+    Err(output_io(
+        DecodeOutputOperation::CreateY4mTempFile,
+        last_collision.unwrap_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "could not allocate a unique Y4M temporary output name",
+            )
+        }),
+    ))
+}
+
+fn y4m_temp_file_name(nonce: usize, attempt: usize) -> OsString {
+    let mut name = OsString::from(OsStr::new(".splot-decode-y4m-"));
+    name.push(std::process::id().to_string());
+    name.push("-");
+    name.push(nonce.to_string());
+    name.push("-");
+    name.push(attempt.to_string());
+    name.push(".tmp");
+    name
+}
+
+fn close_and_cleanup_y4m_temp_file(file: File, path: &Path, error: DecodeError) -> DecodeError {
+    drop(file);
+    cleanup_y4m_temp_file(path, error)
+}
+
+fn cleanup_y4m_temp_file(path: &Path, error: DecodeError) -> DecodeError {
+    match fs::remove_file(path) {
+        Ok(()) => error,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => error,
+        Err(source) => output_io(DecodeOutputOperation::CleanupY4mTempFile, source),
+    }
+}
+
+fn sync_parent_directory_best_effort(parent: &Path) {
+    let Ok(directory) = File::open(parent) else {
+        return;
+    };
+    let _ = directory.sync_all();
+}
+
+fn output_io(operation: DecodeOutputOperation, source: io::Error) -> DecodeError {
+    DecodeOutputError::io(operation, source).into()
 }
 
 fn read_decode_input(path: &Path, options: DecodeOptions) -> Result<DecodeInputRead> {
