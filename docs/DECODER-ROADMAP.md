@@ -158,6 +158,7 @@ contract_version = 1
 tier_id = "minimal-intra-8bit420-hash-v1"
 feature_id = "DOC-MINIMAL-DECODE-TIER-CONTRACT"
 runtime_feature_id = "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS"
+reconstruction_feature_id = "DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER"
 y4m_runtime_feature_id = "DECODE-Y4M-RUNTIME-OUTPUT"
 ```
 
@@ -190,8 +191,13 @@ The tier is deliberately small:
 - one tile and one first-and-only tile group;
 - deterministic decoded-frame hashes and Y4M files are the first success
   artifacts; current runtime support is limited to the committed flat 64x64
-  fixture, its traced six-symbol §8.2 tile stream, and its all-flat output
-  model.
+  fixture, its traced six-symbol §8.2 tile stream, and its
+  `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` handoff: the traced block
+  symbols prove a luma-DC/no-residual recipe, the runtime builds a
+  `splot-recon` current-frame workspace, predicts the 64x64 luma DC block,
+  materializes neutral chroma through checked workspace writes, and freezes the
+  workspace into the output frame. The traced chroma symbol maps to H_PRED, so
+  chroma H/V prediction and broad reconstruction remain unsupported.
 
 Runtime `splot decode` Y4M output is supported only for the committed minimal
 IVF tier through `DECODE-Y4M-RUNTIME-OUTPUT`. The compatibility form
@@ -222,7 +228,7 @@ other external decoder is forbidden.
 | 5 | Self-contained decode fuzz target and fixture smoke | `decode_plan_bytes` fuzz target supported for the raw byte planner; minimal runtime fixture smoke supported |
 | 6 | AV2 § 8 symbol/CDF decoder foundation | § 8.2 generic primitive partial; crate-private partition CDF subset boundary partial; broad § 8.3 and tile decode planned |
 | 7 | Constrained intra tile syntax | tile payload and tile CDF boundaries partial; individual partition-entry symbol reads, one caller-fact partition decision, allowed partition derivation, and first `decode_block()` frontier planning supported; full recursive `read_partition()` / `decode_tile()` syntax planned |
-| 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | current-frame workspace plus square DC, rectangular DC, basic/PAETH, and smooth prediction primitives supported; directional/DIP/subsampled DC/IBP/CfL modes, dequant/reconstruction, inverse transforms, runtime hashes planned |
+| 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | current-frame workspace plus square DC, rectangular DC, basic/PAETH, smooth prediction primitives, and the minimal luma-DC runtime handoff supported; directional/DIP/subsampled DC/IBP/CfL modes, chroma H/V prediction, dequant/reconstruction, inverse transforms, broad runtime hashes planned |
 | 9 | Y4M output and reconstructed reference-frame store | reference-slot runtime store, source-backed Y4M writer, and minimal runtime Y4M output supported; broad runtime Y4M output and AV2 refresh semantics planned |
 | 10 | Portable local-reference evidence manifests | metadata contract and offline checker wired; two AVM/dav2d raw MD5 agreement entries recorded as non-executable metadata |
 | 11 | Encoder reconstruction API contract | planned |

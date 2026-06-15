@@ -16,7 +16,9 @@
 //! Feature tracking: `INFRA-DECODER-CRATE-SCAFFOLDING`,
 //! `DECODE-UNSUPPORTED-DIAGNOSTIC-API`, `DECODE-LIMITS-RUNTIME-API`,
 //! `DECODE-STREAM-STATE-PLANNER`, `DECODE-BYTE-STREAM-PLANNER`,
-//! `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`, `DECODE-Y4M-RUNTIME-OUTPUT`.
+//! `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`,
+//! `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER`,
+//! `DECODE-Y4M-RUNTIME-OUTPUT`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
@@ -29,6 +31,7 @@ pub mod hash_report;
 pub mod runtime;
 mod runtime_hash;
 mod runtime_minimal;
+mod runtime_minimal_recon;
 mod runtime_y4m;
 pub mod stream_plan;
 pub(crate) mod tile_payload;

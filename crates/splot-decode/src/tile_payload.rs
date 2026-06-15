@@ -48,7 +48,7 @@ pub(crate) use input::{
 pub(crate) use partition_traversal::TilePartitionTraversalError;
 pub(crate) use runtime_frontier::{
     MinimalRuntimeBlockSymbolFrontierError, MinimalRuntimePartitionFrontierError,
-    plan_minimal_runtime_block_symbol_frontier,
+    MinimalRuntimeReconstructionTrace, plan_minimal_runtime_block_symbol_frontier,
 };
 
 pub(crate) const TILE_PAYLOAD_DECODE_MATRIX_ROW: &str = "tile-payload-decode";

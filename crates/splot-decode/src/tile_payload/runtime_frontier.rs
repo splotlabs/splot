@@ -45,6 +45,7 @@ impl<'payload> MinimalRuntimePartitionFrontier<'payload> {
 #[derive(Debug)]
 pub(crate) struct MinimalRuntimeBlockSymbolFrontier {
     summary: SymbolDecoderSummary,
+    reconstruction_trace: MinimalRuntimeReconstructionTrace,
 }
 
 impl MinimalRuntimeBlockSymbolFrontier {
@@ -53,6 +54,22 @@ impl MinimalRuntimeBlockSymbolFrontier {
     pub(crate) const fn summary(&self) -> SymbolDecoderSummary {
         self.summary
     }
+
+    /// Narrow reconstruction trace facts returned after block-symbol validation.
+    #[must_use]
+    pub(crate) const fn reconstruction_trace(&self) -> MinimalRuntimeReconstructionTrace {
+        self.reconstruction_trace
+    }
+}
+
+/// AV2 trace facts supported by the current minimal runtime frontier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MinimalRuntimeReconstructionTrace {
+    /// 64x64 8-bit 4:2:0 luma DC prediction with no residual path.
+    ///
+    /// The traced chroma symbol is not a neutral-chroma proof; current minimal
+    /// output materializes chroma separately as an output-contract fallback.
+    LumaDcNoResidual8Bit420_64x64,
 }
 
 /// Error returned while deriving the minimal runtime partition frontier.
@@ -101,6 +118,7 @@ pub(crate) fn plan_minimal_runtime_block_symbol_frontier<'payload>(
     let trace = consume_minimal_block_symbol_trace(work_unit, symbols)?;
     Ok(MinimalRuntimeBlockSymbolFrontier {
         summary: trace.summary(),
+        reconstruction_trace: MinimalRuntimeReconstructionTrace::LumaDcNoResidual8Bit420_64x64,
     })
 }
 
@@ -359,6 +377,10 @@ mod tests {
             let summary = frontier.summary();
 
             assert_eq!(summary.symbol_count, MINIMAL_TRACE_SYMBOLS);
+            assert_eq!(
+                frontier.reconstruction_trace(),
+                MinimalRuntimeReconstructionTrace::LumaDcNoResidual8Bit420_64x64
+            );
             assert_eq!(
                 summary.trailing_bit_position.get(),
                 MINIMAL_TRACE_TRAILING_BIT_POSITION
