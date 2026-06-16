@@ -61,5 +61,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "decode_runtime_hash_bytes"
+path = "fuzz_targets/decode_runtime_hash_bytes.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1

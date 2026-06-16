@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 188 feature(s); 138 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 189 feature(s); 139 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -37,6 +37,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 
 | Section | Spec item | Feature | Mapped | Parse | Validate | Tests | Diagnostics |
 |---|---|---|:-:|:-:|:-:|:-:|:-:|
+| [§ 5.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2) | OBU syntax | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
 | [§ 5.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2) | OBU syntax | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [§ 5.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2) | OBU syntax | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 5.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-1) | General OBU syntax | `AV2-5.2.1-OBU-DISPATCH` | ✅ | 🟡 | — | ✅ | — |
@@ -142,12 +143,14 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.18.10](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-10) | Film grain structures | `AV2-5.18.10-FILM-GRAIN-STRUCTURES` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 5.18.10.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-10-2) | Film grain model syntax | `AV2-5.14-FILM-GRAIN` | ✅ | ✅ | 🟡 | ✅ | 6 |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `AV2-5.19-TILE-GROUP` | ✅ | 🟡 | 🟡 | ✅ | 7 |
+| [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `AV2-5.19-TILE-GROUP` | ✅ | 🟡 | 🟡 | ✅ | 7 |
 | [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `AV2-5.20-TILE-GROUP-PAYLOAD` | ✅ | 🟡 | 🟡 | ✅ | 3 |
+| [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF` | ✅ | — | — | ✅ | 2 |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
@@ -347,6 +350,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 |---|---|---|:-:|:-:|:-:|:-:|:-:|
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `CLI-DECODE` | ✅ | — | — | ✅ | 4 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 3 |
+| [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 3 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF` | ✅ | — | — | ✅ | 2 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
@@ -390,6 +394,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.3.22](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-22) | Resolve divisor process | `RECON-INTRA-DC-RECTANGULAR-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.3.22](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-22) | Resolve divisor process | `RECON-INTRA-DC-SQUARE-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 3 |
+| [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
 | [§ 7.21.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-1) | Output process | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
@@ -491,10 +496,12 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [Annex A](./spec/av2/1.0.0/annex-a-profiles-levels-and-tiers.md#s-annex-a) | Profiles, levels, and tiers | `AV2-A-LEVELS-TIERS` | ✅ | — | 🟡 | ✅ | 5 |
 | [Annex A](./spec/av2/1.0.0/annex-a-profiles-levels-and-tiers.md#s-annex-a) | Profiles, levels, and tiers | `AV2-A-PROFILES` | ✅ | — | 🟡 | ✅ | 7 |
 | [Annex B](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b) | Length delimited bitstream format | `AV2-B-ANNEXB-OBU-ENVELOPE` | ✅ | ✅ | ✅ | ✅ | 1 |
+| [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
 | [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 3 |
 | [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
+| [Annex B.3](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3) | Length delimited bitstream semantics | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
 | [Annex B.3](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3) | Length delimited bitstream semantics | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 3 |
 | [Annex B.3](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3) | Length delimited bitstream semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [Annex B.3](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3) | Length delimited bitstream semantics | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
