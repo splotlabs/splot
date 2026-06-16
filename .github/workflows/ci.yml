@@ -136,7 +136,7 @@ jobs:
   # target is enumerated and run for a per-target slice across the tracked fuzzed
   # surfaces: parse_obu (read_leb128 / read_obu_header / parse_annex_b_obus),
   # parse_ivf (IVF container), parse_bitstream (container auto-detect + envelope
-  # parsing), validate_bytes (full validator + payload parsers, the
+  # parsing), symbol_decoder_bytes (AV2 §8.2 symbol decoder), validate_bytes (full validator + payload parsers, the
   # highest-coverage target), decode_plan_bytes (raw byte planner),
   # decode_runtime_hash_bytes (minimal runtime hash byte API),
   # decode_runtime_y4m_bytes (minimal runtime Y4M byte API), and
@@ -168,7 +168,7 @@ jobs:
 
       # Capture the target list first and require it non-empty: inside
       # `for x in $(cmd)`, bash -e treats a failing `cmd` as an empty list and the
-      # step would pass having fuzzed nothing.
+          # step would pass having fuzzed nothing.
       - name: Seed every target's corpus from curated fixtures
         run: |
           targets=$(cargo +nightly fuzz list)
@@ -177,6 +177,10 @@ jobs:
             mkdir -p "fuzz/corpus/$target"
             cp tests/fixtures/*.av2 "fuzz/corpus/$target/" 2>/dev/null || true
           done
+          # symbol_decoder_bytes consumes a leading config byte, payload length,
+          # payload bytes, operation count, then operations. Seed a minimal
+          # valid finish path over a two-byte symbol payload.
+          printf '\002\002\200\000\001\005' > "fuzz/corpus/symbol_decoder_bytes/finish-valid-two-byte-payload"
           # validate_bytes consumes a leading config prefix before the bitstream,
           # so raw fixtures land shifted; also seed flag-prefixed copies (strict,
           # and strict+external-HLS with a key byte).

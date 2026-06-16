@@ -660,6 +660,20 @@ local_reference_evidence = []
 notes = "Self-contained cargo-fuzz target `decode_plan_bytes` feeds arbitrary bytes through `DecodeContext::plan_bytes` with finite safe limits and asserts only typed return/no panic. It does not require AVM, dav2d, network access, generated external fixtures, checked-in local reference paths, decoded output files, hashes, or Y4M output. Full local runs require nightly/cargo-fuzz; stable proof for this change is the fuzz crate build plus unit tests, while CI fuzz-smoke runs every target when cargo-fuzz is available."
 
 [[row]]
+id = "symbol-decoder-fuzz"
+name = "Symbol decoder fuzz entry point"
+feature_id = "CONF-SYMBOL-DECODER-FUZZ"
+spec_sections = ["4.11.11", "4.11.12", "8.2.2", "8.2.3", "8.2.4", "8.2.5", "8.2.6", "9.2"]
+parser_source = "fuzz/fuzz_targets/symbol_decoder_bytes.rs"
+decode_module = "crates/splot-core/src/symbol.rs"
+tier = "foundation"
+status = "supported"
+self_contained_tests = ["cargo check --manifest-path fuzz/Cargo.toml --bins --locked", "cargo xtask check-fuzz-targets", "cargo test -p splot-core symbol --locked", "cargo test -p splot-core --test tables_spot --locked", "cargo +nightly fuzz run symbol_decoder_bytes (local/nightly; CI fuzz smoke runs every target)"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Self-contained cargo-fuzz target `symbol_decoder_bytes` exercises only existing public `splot_core::symbol::SymbolDecoder` APIs over bounded in-memory tile-payload bytes and bounded valid or invalid caller-supplied CDF rows. It drives `read_bool`, `read_literal`, `read_symbol`, `checkpoint`, and `exit_symbol` or `finish`, asserts only public invariants on successful calls, and accepts typed `splot_core::Error` returns. It does not implement or claim §8.3 CDF selection, Tile or Saved CDF banks, default CDF initialization beyond synthetic caller rows, tile payload framing, `decode_tile()`, runtime `splot decode`, reconstruction, hash output, Y4M output, AVM agreement, dav2d agreement, ffmpeg agreement, filesystem I/O, network I/O, subprocesses, new dependencies, scheduler changes, or new AV2 semantics."
+
+[[row]]
 id = "decode-runtime-hash-fuzz"
 name = "Decode runtime hash fuzz entry point"
 feature_id = "CONF-DECODE-RUNTIME-HASH-FUZZ"
