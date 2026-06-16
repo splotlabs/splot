@@ -57,8 +57,8 @@
 //! [`dispatch::write_obu_payload`] emits a [`crate::obu::ParsedObu`]'s typed body plus the § 5.2.1 /
 //! § 6.2.1 OBU tail (`obu_extension_flag = 0` + `trailing_bits()` for an extensible non-empty body;
 //! nothing for the temporal delimiter; padding owns its own tail), and
-//! [`dispatch::write_complete_obu`] prepends the § 5.2.2 header. The seven OBU types with a body
-//! writer are emitted; the other seven return [`error::WriteError::Unimplemented`].
+//! [`dispatch::write_complete_obu`] prepends the § 5.2.2 header. The eight OBU types with a body
+//! writer are emitted; the other six return [`error::WriteError::Unimplemented`].
 //! [`roundtrip::roundtrip_obu`] then closes the loop: it `parse → write → reparse`-checks the
 //! dispatch (recovering the opaque `passthrough` for padding and the metadata blobs) so the writer
 //! is verified as the parser's inverse, in-tree and under the `roundtrip_obu_bytes` fuzz target.
@@ -81,6 +81,7 @@ pub mod frame_tiling;
 pub mod metadata;
 pub mod msdo;
 pub mod obu;
+pub mod operating_point_set;
 pub mod roundtrip;
 pub mod segment;
 pub mod seq_config;
@@ -110,6 +111,7 @@ pub use metadata::{
 };
 pub use msdo::write_msdo;
 pub use obu::{write_annexb_obu, write_obu_header, write_obu_header_extension};
+pub use operating_point_set::write_operating_point_set;
 pub use roundtrip::{RoundtripOutcome, recover_roundtrip_passthrough, roundtrip_obu};
 pub use segment::write_seg_info;
 pub use seq_config::{

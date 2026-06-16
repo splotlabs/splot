@@ -374,6 +374,102 @@ mod tests {
     }
 
     #[test]
+    fn operating_point_set_payload_round_trips() {
+        // §5.10/§5.11 OPS is extensible; the dispatch routes it to write_operating_point_set + the
+        // extensible tail (obu_extension_flag = 0 + trailing_bits()). The OBU's obu_xlayer_id (global
+        // vs local) selects the OPS syntax branch, so a global OPS must go through write_complete_obu
+        // (which threads header.extended_layer_id == GLOBAL_XLAYER_ID), not write_obu_payload.
+        //
+        // Build a global reset OPS fixture by parsing a minimal OPS payload via dispatch (reset-only
+        // OPS + the extensible tail), then write it back through write_complete_obu and reparse.
+        let header = read_obu_header_from_slice(&[0xC8, 0x1F], ByteOffset::new(0)).unwrap();
+        assert_eq!(header.obu_type, ObuType::OperatingPointSet);
+        assert_eq!(header.extended_layer_id, GLOBAL_XLAYER_ID);
+        assert!(header.obu_type.is_extensible_obu());
+        let payload = reparse_payload(&header, &[0x00, 0x40]);
+        match &payload {
+            ParsedObu::OperatingPointSet(ops) => {
+                assert_eq!(ops.ops_cnt, 0, "fixture is a reset OPS");
+                assert!(ops.is_global());
+            }
+            other => panic!("expected an operating point set, got {other:?}"),
+        }
+
+        let mut complete = BitWriter::new();
+        write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
+        let bytes = complete.into_bytes();
+        // bytes = header (2) ++ payload; reparse the payload region.
+        let reparsed = reparse_payload(&header, &bytes[2..]);
+        assert_eq!(reparsed, payload);
+    }
+
+    #[test]
+    fn operating_point_set_local_payload_round_trips() {
+        // A local-xlayer OPS round-trips through write_obu_payload (header xlayer defaults to 0,
+        // the local branch). Build a local active OPS (ops_cnt = 1, one explicit empty-map layer)
+        // by parsing a hand-built payload, then write it back and reparse.
+        let header = header_for(ObuType::OperatingPointSet);
+        assert!(!header.extended_layer_id.is_global());
+        // Local OPS body: reset=0 id=0 cnt=1 | priority(4)=0 intent(7)=0 | intent/ptl/color=0 |
+        // reserved(2)=0 | ops_data_size leb128 | payload: dm=0 idd=0 mlayer_map(8)=0 | align | tail.
+        let mut bits = Bits::default();
+        bits.bit(0); // ops_reset_flag
+        bits.f(0, 4); // ops_id
+        bits.f(1, 3); // ops_cnt = 1
+        bits.f(0, 4); // ops_priority
+        bits.f(0, 7); // ops_intent
+        bits.bit(0); // ops_intent_present_flag
+        bits.bit(0); // ops_ptl_present_flag
+        bits.bit(0); // ops_color_info_present_flag
+        bits.f(0, 2); // ops_reserved_2bits (local)
+        // payload body: dm=0, idd=0, ops_mlayer_map(8)=0 -> 1 byte + 2 bits aligns to 2 bytes.
+        let mut body = Bits::default();
+        body.bit(0); // decoder_model_present
+        body.bit(0); // initial_display_delay_present
+        body.f(0, 8); // ops_mlayer_map = 0
+        // align body to a byte for opsBytes.
+        while body.bits.len() % 8 != 0 {
+            body.bit(0);
+        }
+        let ops_bytes = (body.bits.len() / 8) as u32;
+        bits.f(ops_bytes, 8); // ops_data_size (single-byte leb128)
+        bits.bits.extend_from_slice(&body.bits);
+        // extensible OBU tail: obu_extension_flag = 0, then trailing_bits().
+        bits.bit(0);
+        bits.bit(1); // trailing_one_bit
+        while bits.bits.len() % 8 != 0 {
+            bits.bit(0);
+        }
+        let payload_bytes = bits.into_bytes();
+        let payload = reparse_payload(&header, &payload_bytes);
+        match &payload {
+            ParsedObu::OperatingPointSet(ops) => {
+                assert_eq!(ops.ops_cnt, 1);
+                assert!(!ops.is_global());
+            }
+            other => panic!("expected an operating point set, got {other:?}"),
+        }
+
+        let mut writer = BitWriter::new();
+        write_obu_payload(&mut writer, &payload, true, &[]).unwrap();
+        let bytes = writer.into_bytes();
+        assert_eq!(reparse_payload(&header, &bytes), payload);
+    }
+
+    #[test]
+    fn operating_point_set_rejects_non_empty_passthrough() {
+        let header = read_obu_header_from_slice(&[0xC8, 0x1F], ByteOffset::new(0)).unwrap();
+        let payload = reparse_payload(&header, &[0x00, 0x40]);
+        let mut writer = BitWriter::new();
+        let err = write_complete_obu(&mut writer, &header, &payload, &[0x00]).unwrap_err();
+        assert!(
+            matches!(err, WriteError::NonCanonicalOperatingPointSet { what } if what == "passthrough"),
+            "expected passthrough reject, got {err:?}"
+        );
+        assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
     fn buffer_removal_timing_rejects_non_empty_passthrough() {
         let payload =
             ParsedObu::BufferRemovalTiming(BufferRemovalTiming::ExtendedLayer { br_time: 1 });
@@ -471,17 +567,17 @@ mod tests {
         // Build the unwritten payloads by parsing minimal OBU payloads via dispatch, then assert
         // write_obu_payload returns Unimplemented with the matrix Feature ID and writes nothing.
 
-        // OBU_OPERATING_POINT_SET (extensible): reset-only OPS + extensible tail.
-        let ops_header = read_obu_header_from_slice(&[0xC8, 0x1F], ByteOffset::new(0)).unwrap();
-        let ops = reparse_payload(&ops_header, &[0x00, 0x40]);
-        assert_eq!(ops.feature_id(), "AV2-5.10-OPERATING-POINT-SET");
+        // OBU_QUANTIZATION_MATRIX (non-extensible): qm_bit_map(15) + chroma flag(1) + trailing.
+        let qm_header = read_obu_header_from_slice(&[0x58], ByteOffset::new(0)).unwrap();
+        let qm = reparse_payload(&qm_header, &[0x00, 0x00, 0x80]);
+        assert_eq!(qm.feature_id(), "AV2-5.13-QUANTIZATION-MATRIX");
 
         // OBU_FILM_GRAIN (non-extensible).
         let fg_header = read_obu_header_from_slice(&[0x5C], ByteOffset::new(0)).unwrap();
         let fg = reparse_payload(&fg_header, &[0x00, 0xC0]);
         assert_eq!(fg.feature_id(), "AV2-5.14-FILM-GRAIN");
 
-        for (payload, header) in [(&ops, &ops_header), (&fg, &fg_header)] {
+        for (payload, header) in [(&qm, &qm_header), (&fg, &fg_header)] {
             let mut writer = BitWriter::new();
             let err = write_obu_payload(
                 &mut writer,
