@@ -141,6 +141,7 @@ jobs:
   # (full validator + payload parsers, the highest-coverage target),
   # decode_plan_bytes (raw byte planner),
   # decode_runtime_hash_bytes (minimal runtime hash byte API),
+  # decode_runtime_raw_bytes (minimal runtime raw byte API),
   # decode_runtime_y4m_bytes (minimal runtime Y4M byte API), and
   # recon_frame_hash_bytes (decoded-frame hash serialization),
   # recon_frame_plane_types_bytes (decoded-frame/plane type model),
@@ -200,15 +201,17 @@ jobs:
             # decode_plan_bytes also consumes a leading limit-policy byte. Keep
             # the fixture bytes intact as the bitstream payload after that flag.
             printf '\377' | cat - "$f" > "fuzz/corpus/decode_plan_bytes/fixture-$name"
-            # decode_runtime_hash_bytes and decode_runtime_y4m_bytes consume a
-            # leading mode/limit byte. Prefix raw mode so fixture bytes stay
-            # intact after the flag.
+            # decode_runtime_hash_bytes, decode_runtime_raw_bytes, and
+            # decode_runtime_y4m_bytes consume a leading mode/limit byte.
+            # Prefix raw mode so fixture bytes stay intact after the flag.
             printf '\000' | cat - "$f" > "fuzz/corpus/decode_runtime_hash_bytes/raw-$name"
+            printf '\000' | cat - "$f" > "fuzz/corpus/decode_runtime_raw_bytes/raw-$name"
             printf '\000' | cat - "$f" > "fuzz/corpus/decode_runtime_y4m_bytes/raw-$name"
           done
           # Prefix fixture mode with zero mutations so the embedded minimal
           # runtime fixture reaches the success-path runtime APIs.
           printf '\200\000' > "fuzz/corpus/decode_runtime_hash_bytes/minimal-fixture-unmutated"
+          printf '\200\000' > "fuzz/corpus/decode_runtime_raw_bytes/minimal-fixture-unmutated"
           printf '\200\000' > "fuzz/corpus/decode_runtime_y4m_bytes/minimal-fixture-unmutated"
           # recon_frame_hash_bytes consumes structured decoded-frame shape bytes
           # before sample data. Seed a tiny 8-bit monochrome visible-frame case.
@@ -252,6 +255,7 @@ jobs:
             printf '\003\377' | cat - "$f" > "fuzz/corpus/validate_bytes/conf-hls-$name"
             printf '\377' | cat - "$f" > "fuzz/corpus/decode_plan_bytes/conf-$name"
             printf '\000' | cat - "$f" > "fuzz/corpus/decode_runtime_hash_bytes/conf-raw-$name"
+            printf '\000' | cat - "$f" > "fuzz/corpus/decode_runtime_raw_bytes/conf-raw-$name"
             printf '\000' | cat - "$f" > "fuzz/corpus/decode_runtime_y4m_bytes/conf-raw-$name"
           done
           python3 -c '

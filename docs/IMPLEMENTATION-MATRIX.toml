@@ -217,7 +217,7 @@ openspec_change = "tile-payload-decode-fuzz"
 tracking_issue = ""
 owner = "conformance"
 risk = "medium"
-notes = "Self-contained cargo-fuzz target for the current minimal `splot-decode` tile-payload runtime byte frontier: it calls a `fuzzing`-feature harness over the existing crate-private tile-payload boundary and minimal block-symbol frontier, feeds bounded arbitrary in-memory tile-payload bytes plus bounded mutations of the known-good two-byte minimal frontier payload, enforces finite `DecodeLimits`, asserts only stable boundary/frontier success invariants, and accepts typed decoder errors for malformed or unsupported mutations. The row provides robustness evidence only; it does not implement or claim full AV2 §5.20 `decode_tile()`, recursive partition/block syntax, broad §8.3 CDF selection, all Tile/Saved CDF banks, reconstruction expansion, hash/Y4M output behavior changes, reference refresh, public production APIs, AVM/dav2d/ffmpeg agreement, filesystem I/O, network I/O, subprocesses, new dependencies, scheduler changes, or new AV2 semantics."
+notes = "Self-contained cargo-fuzz target for the current minimal `splot-decode` tile-payload runtime byte frontier: it calls a `fuzzing`-feature harness over the existing crate-private tile-payload boundary and minimal block-symbol frontier, feeds bounded arbitrary in-memory tile-payload bytes plus bounded mutations of the known-good two-byte minimal frontier payload, enforces finite `DecodeLimits`, asserts only stable boundary/frontier success invariants, and accepts typed decoder errors for malformed or unsupported mutations. The row provides robustness evidence only; it does not implement or claim full AV2 §5.20 `decode_tile()`, recursive partition/block syntax, broad §8.3 CDF selection, all Tile/Saved CDF banks, reconstruction expansion, hash/raw/Y4M output behavior changes, reference refresh, public production APIs, AVM/dav2d/ffmpeg agreement, filesystem I/O, network I/O, subprocesses, new dependencies, scheduler changes, or new AV2 semantics."
 
 [feature.status]
 mapped = "done"
@@ -4452,6 +4452,62 @@ fixtures = [
 diagnostics = ["decode/malformed-source", "decode/resource-limit", "decode/unsupported-feature", "decode/output-error"]
 
 [[feature]]
+id = "CONF-DECODE-RUNTIME-RAW-FUZZ"
+name = "Decode runtime raw no-panic fuzzing"
+category = "conformance"
+kind = "conformance"
+spec_sections = ["Annex B.2", "Annex B.3", "5.2", "5.19", "5.20.1", "6.4.1", "6.16.13", "6.17.4.4", "7.1", "7.21.1", "7.21.2"]
+sources = [
+    "docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2",
+    "docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-2",
+]
+crate = "fuzz"
+module = "fuzz/fuzz_targets/decode_runtime_raw_bytes.rs"
+openspec_change = "decode-minimal-tier-raw-output"
+tracking_issue = ""
+owner = "conformance"
+risk = "medium"
+notes = "Self-contained cargo-fuzz target for `DecodeContext::decode_raw_bytes`: it reuses a single-thread `DecodeContext`, applies finite `DecodeLimits`, feeds both arbitrary raw bytes and bounded mutations of the committed minimal IVF fixture, writes only to bounded in-memory writers, asserts only the stable minimal raw sample byte stream shape on `Ok`, and accepts typed `DecodeError` returns on unsupported, malformed, resource-limit, or output failures. This is conformance/robustness proof for the existing minimal runtime raw byte API only. It does not claim broad runtime decode, new AV2 syntax or semantics, CLI filesystem publication, temp-file atomicity fuzzing, hash-report output, Y4M output, post-film-grain output, show-existing/flush scheduling, film-grain synthesis, reference refresh, motion-field storage, metadata MD5 verification, AVM/dav2d agreement, filesystem I/O, network I/O, subprocesses, new dependencies, or raw support beyond the committed minimal IVF tier."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "fuzz/fuzz_targets/decode_runtime_raw_bytes.rs",
+    "crates/splot-decode/src/runtime_raw.rs::tests",
+]
+commands = [
+    "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
+    "cargo xtask check-fuzz-targets",
+    "cargo test -p splot-decode runtime_raw --locked",
+    "cargo +nightly fuzz run decode_runtime_raw_bytes (local/nightly; CI fuzz smoke runs every target)",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
+    "fuzz/fuzz_targets/decode_runtime_raw_bytes.rs",
+]
+diagnostics = ["decode/malformed-source", "decode/resource-limit", "decode/unsupported-feature", "decode/output-error"]
+
+[[feature]]
 id = "CONF-RECON-Y4M-OUTPUT-FUZZ"
 name = "Y4M output serialization no-panic fuzzing"
 category = "conformance"
@@ -4568,7 +4624,7 @@ openspec_change = "recon-frame-plane-fuzz"
 tracking_issue = ""
 owner = "conformance"
 risk = "medium"
-notes = "Self-contained cargo-fuzz target for the `splot-recon` decoded-frame and plane runtime type model: it normalizes arbitrary bytes into bounded valid and intentionally invalid `BitDepth`, `PixelFormat`, `PlaneSize`, `PlaneRect`, `Plane<T>`, `FramePlanes<T>`, `DecodedFrameInfo`, `DecodedFrame<T>`, borrowed view, and `SharedFrame` cases, then checks constructor/accessor invariants and typed `ReconError` returns with no panic. This is conformance/robustness proof for caller-supplied frame/plane model infrastructure only. It does not claim AV2 bitstream decode, `DecodeContext` fuzzing, reconstruction algorithms, frame hash/Y4M serialization behavior, output scheduling, film grain, metadata MD5 verification, reference refresh, §7.23 frame-store update semantics, resource diagnostics, AVM/dav2d agreement, filesystem I/O, network I/O, subprocesses, or new AV2 semantics beyond the existing source-backed runtime type constructors."
+notes = "Self-contained cargo-fuzz target for the `splot-recon` decoded-frame and plane runtime type model: it normalizes arbitrary bytes into bounded valid and intentionally invalid `BitDepth`, `PixelFormat`, `PlaneSize`, `PlaneRect`, `Plane<T>`, `FramePlanes<T>`, `DecodedFrameInfo`, `DecodedFrame<T>`, borrowed view, and `SharedFrame` cases, then checks constructor/accessor invariants and typed `ReconError` returns with no panic. This is conformance/robustness proof for caller-supplied frame/plane model infrastructure only. It does not claim AV2 bitstream decode, `DecodeContext` fuzzing, reconstruction algorithms, frame hash/raw/Y4M serialization behavior, output scheduling, film grain, metadata MD5 verification, reference refresh, §7.23 frame-store update semantics, resource diagnostics, AVM/dav2d agreement, filesystem I/O, network I/O, subprocesses, or new AV2 semantics beyond the existing source-backed runtime type constructors."
 
 [feature.status]
 mapped = "done"
@@ -6002,7 +6058,7 @@ openspec_change = "recon-intra-cardinal-directional-prediction"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds scheduler-free `splot-recon` AV2 §7.13.2.8 cardinal directional intra prediction for the two non-interpolating `Mode_To_Angle` cases from §9.2: `V_PRED` (pAngle 90) copies prepared `AboveRow[0..w]` into every output row, and `H_PRED` (pAngle 180) copies prepared `LeftCol[0..h]` into every output column. Callers provide an active bit depth, typed 4x4 through 64x64 per-dimension `IntraRectBlockSize`, the required prepared edge slice, explicit `Vertical` or `Horizontal` mode selection, and caller-owned strided output. The primitive validates sample type, required edge presence, edge length by width or height, bit-depth range, output stride and length, and target geometry. Workspace helpers can write in-storage H/V prediction only when the required above or left neighbor edge exists. This row does not implement §7.13.2.1 fallback edge preparation, pAngle values other than 90 and 180, IDIF, MRL, angle deltas, wide-angle mapping, IBP, full `predict_intra()` dispatch, data-driven prediction, CfL/CCTX/MHCCP, palette, tile syntax traversal, dequantization, inverse transforms, residual addition, broad runtime decoded-frame hashes, broad runtime Y4M output, reference refresh, AVM/dav2d invocation, repo dependency, wrapper, script, CI or runtime external-decoder path, or scheduler state in `splot-recon`."
+notes = "Adds scheduler-free `splot-recon` AV2 §7.13.2.8 cardinal directional intra prediction for the two non-interpolating `Mode_To_Angle` cases from §9.2: `V_PRED` (pAngle 90) copies prepared `AboveRow[0..w]` into every output row, and `H_PRED` (pAngle 180) copies prepared `LeftCol[0..h]` into every output column. Callers provide an active bit depth, typed 4x4 through 64x64 per-dimension `IntraRectBlockSize`, the required prepared edge slice, explicit `Vertical` or `Horizontal` mode selection, and caller-owned strided output. The primitive validates sample type, required edge presence, edge length by width or height, bit-depth range, output stride and length, and target geometry. Workspace helpers can write in-storage H/V prediction only when the required above or left neighbor edge exists. This row does not implement §7.13.2.1 fallback edge preparation, pAngle values other than 90 and 180, IDIF, MRL, angle deltas, wide-angle mapping, IBP, full `predict_intra()` dispatch, data-driven prediction, CfL/CCTX/MHCCP, palette, tile syntax traversal, dequantization, inverse transforms, residual addition, broad runtime decoded-frame hashes, broad runtime raw/Y4M output, reference refresh, AVM/dav2d invocation, repo dependency, wrapper, script, CI or runtime external-decoder path, or scheduler state in `splot-recon`."
 
 [feature.status]
 mapped = "done"
@@ -6426,7 +6482,7 @@ openspec_change = "minimal-decode-tier-contract"
 tracking_issue = ""
 owner = "docs"
 risk = "medium"
-notes = "Documents the repository-owned `splot.decode.minimal_tier` v1 and `minimal-intra-8bit420-hash-v1` contract. The contract is a splot implementation subset, not an Annex A decoder conformance claim, and covers a committed IVF/DKIF-wrapped AV02 frame with Annex B length-delimited OBU payloads, single-layer selection, `seq_profile_idc == 0` Main 8-bit 4:2:0, `obu_type == OBU_CLOSED_LOOP_KEY` output, no crop, one tile, hash-first success, and explicit unsupported-feature or resource-limit rejection outside the tier. Raw Annex B planning remains supported by the byte planner but is outside this runtime hash success tier. The first runtime implementation is tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`; broad tile/CDF/intra/reconstruction/Y4M/reference-refresh support remains partial or unsupported."
+notes = "Documents the repository-owned `splot.decode.minimal_tier` v1 and `minimal-intra-8bit420-hash-v1` contract. The contract is a splot implementation subset, not an Annex A decoder conformance claim, and covers a committed IVF/DKIF-wrapped AV02 frame with Annex B length-delimited OBU payloads, single-layer selection, `seq_profile_idc == 0` Main 8-bit 4:2:0, `obu_type == OBU_CLOSED_LOOP_KEY` output, no crop, one tile, hash/raw/Y4M success, and explicit unsupported-feature or resource-limit rejection outside the tier. Raw Annex B planning remains supported by the byte planner but is outside this runtime success tier. The first hash runtime implementation is tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`, raw output by `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT`, and Y4M output by `DECODE-Y4M-RUNTIME-OUTPUT`; broad tile/CDF/intra/reconstruction/reference-refresh support remains partial or unsupported."
 
 [feature.status]
 mapped = "done"
@@ -6472,7 +6528,7 @@ openspec_change = "decode-minimal-tier-runtime-success"
 tracking_issue = ""
 owner = "decoder"
 risk = "high"
-notes = "Adds the first runtime hash success path for the repository-owned `minimal-intra-8bit420-hash-v1` fixture-trace tier. `DecodeContext::decode_hash_report_bytes` reuses `plan_bytes`, rejects non-minimal plan shapes before reparsing, validates one 64x64 AV02 IVF stream shape (temporal delimiter, sequence header, one closed-loop-key frame candidate), gates profile/layer/bit-depth/chroma/frame-size/frame-tool/tile facts, rejects CFL intra and MHCCP before the traced UV-mode symbol path, derives source-backed tile payload bytes through the existing §5.19/§5.20.1 boundary, consumes the root partition decision through the crate-private `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` frontier including the minimal root-SDP luma `PARTITION_NONE` redirect, then verifies the remaining five traced flat-tile symbols with `SymbolDecoder::read_symbol()` over generated §9.3 CDF defaults and `exit_symbol()`. It checks frame/output/tile/allocation limits before allocation, hands the proven recipe to `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER`, and computes `splot-dfh-sha256-v1` for `raw_intermediate_output`. `splot decode --output-format hash --json` emits `splot.decode.hash_report` v1 with resolved thread-count metadata and exit code 0 for the committed minimal fixture; hash output ignores IVF timebase fields because it does not serialize frame-rate metadata. Raw Annex B remains outside this runtime success tier; out-of-tier streams fail closed with `decode/unsupported-feature`; Y4M file output for the same tier is tracked separately by `DECODE-Y4M-RUNTIME-OUTPUT`, and raw file output remains unsupported. This row does not claim full AV2 decode, Annex A conformance, recursive `decode_tile()`, broad partition traversal beyond the first frontier, broad §8.3 CDF selection, CDF lifecycle, intra/inter prediction coverage beyond the traced all-flat subset, loop filters, film grain, reference refresh, metadata MD5 verification, or AVM/dav2d integration. No AVM/dav2d evidence is claimed for the retimed minimal fixture. The `splot-decode -> splot-recon` dependency edge is now active only for this narrow runtime decode/reconstruction/hash/Y4M handoff."
+notes = "Adds the first runtime hash success path for the repository-owned `minimal-intra-8bit420-hash-v1` fixture-trace tier. `DecodeContext::decode_hash_report_bytes` reuses `plan_bytes`, rejects non-minimal plan shapes before reparsing, validates one 64x64 AV02 IVF stream shape (temporal delimiter, sequence header, one closed-loop-key frame candidate), gates profile/layer/bit-depth/chroma/frame-size/frame-tool/tile facts, rejects CFL intra and MHCCP before the traced UV-mode symbol path, derives source-backed tile payload bytes through the existing §5.19/§5.20.1 boundary, consumes the root partition decision through the crate-private `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` frontier including the minimal root-SDP luma `PARTITION_NONE` redirect, then verifies the remaining five traced flat-tile symbols with `SymbolDecoder::read_symbol()` over generated §9.3 CDF defaults and `exit_symbol()`. It checks frame/output/tile/allocation limits before allocation, hands the proven recipe to `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER`, and computes `splot-dfh-sha256-v1` for `raw_intermediate_output`. `splot decode --output-format hash --json` emits `splot.decode.hash_report` v1 with resolved thread-count metadata and exit code 0 for the committed minimal fixture; hash output ignores IVF timebase fields because it does not serialize frame-rate metadata. Raw Annex B remains outside this runtime success tier; out-of-tier streams fail closed with `decode/unsupported-feature`; raw and Y4M file output for the same tier are tracked separately by `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` and `DECODE-Y4M-RUNTIME-OUTPUT`. This row does not claim full AV2 decode, Annex A conformance, recursive `decode_tile()`, broad partition traversal beyond the first frontier, broad §8.3 CDF selection, CDF lifecycle, intra/inter prediction coverage beyond the traced all-flat subset, loop filters, film grain, reference refresh, metadata MD5 verification, or AVM/dav2d integration. No AVM/dav2d evidence is claimed for the retimed minimal fixture. The `splot-decode -> splot-recon` dependency edge is now active only for this narrow runtime decode/reconstruction/hash/raw/Y4M handoff."
 
 [feature.status]
 mapped = "done"
@@ -6594,6 +6650,77 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature", "decode/resource-limit", "decode/malformed-source", "decode/output-error"]
 
 [[feature]]
+id = "DECODE-MINIMAL-RAW-RUNTIME-OUTPUT"
+name = "Minimal-tier runtime raw output"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["Annex B.2", "Annex B.3", "5.2", "5.18.2", "5.19", "5.20.1", "5.20.3.1", "5.20.3.2", "5.17.12", "6.2", "6.4.1", "6.16.13", "6.17.2", "6.17.4.1", "6.17.4.4", "6.17.7.2", "6.18", "6.19.1", "7.1", "7.21.1", "7.21.2", "8.2.2", "8.2.4", "8.2.6", "8.3.2", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-2",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_raw.rs"
+openspec_change = "decode-minimal-tier-raw-output"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds the first runtime raw sample-byte output path for the existing `minimal-intra-8bit420-hash-v1` fixture-trace tier. `DecodeContext::decode_raw_bytes` reuses `plan_bytes` plus the shared minimal runtime validation, tile-payload trace verification through the root partition frontier, and the `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` frame handoff. It serializes exactly one raw-intermediate-output frame as the existing `av2-output-samples-v1` byte stream through `splot-recon::DecodedFrameHashInput::write_to`: visible Y samples, then visible U samples, then visible V samples, with no header, metadata, OBU bytes, or container bytes. Raw output shares the hash path's zero-IVF-timebase tolerance because it does not serialize frame-rate metadata. `splot decode --output-format raw -o` validates and serializes the complete raw byte stream before creating a same-directory temporary file, then publishes atomically with temp write, flush, file sync, rename, and best-effort parent-directory sync where supported. Out-of-tier, malformed, and resource-limit inputs fail closed without touching the requested output path, and output serialization/publication failures emit `decode/output-error` with raw-specific operation identifiers and without nondeterministic temporary filename suffixes. This row does not claim broad AV2 decode, Annex A conformance, raw Annex B runtime success, post-film-grain output, film grain, show-existing/flush scheduling, reference refresh, metadata MD5 verification, AVM/dav2d invocation, local-reference evidence for the retimed minimal fixture, or raw output beyond the committed minimal IVF tier."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_raw.rs::tests::minimal_fixture_decodes_to_exact_raw_bytes",
+    "crates/splot-decode/src/runtime_raw.rs::tests::zero_ivf_timebase_does_not_block_raw_output",
+    "crates/splot-decode/src/runtime_raw.rs::tests::output_byte_limit_fails_before_writer_success",
+    "crates/splot-decode/src/runtime_raw.rs::tests::broader_fixture_fails_closed_as_unsupported_for_raw",
+    "crates/splot-decode/src/runtime_raw.rs::tests::raw_output_is_deterministic_across_thread_policies",
+    "crates/splot-decode/src/runtime_raw.rs::tests::caller_writer_io_error_maps_to_raw_output_diagnostic",
+    "crates/splot-cli/tests/decode_raw_cli.rs::decode_explicit_raw_output_format_requires_output_path",
+    "crates/splot-cli/tests/decode_raw_cli.rs::decode_explicit_raw_success_for_minimal_fixture",
+    "crates/splot-cli/tests/decode_raw_cli.rs::decode_raw_success_replaces_existing_output_and_cleans_temp_file",
+    "crates/splot-cli/tests/decode_raw_cli.rs::decode_out_of_tier_raw_text_mode_emits_unsupported_feature_without_touching_output",
+    "crates/splot-cli/tests/decode_raw_cli.rs::decode_raw_source_error_wins_before_missing_output_parent",
+    "crates/splot-cli/tests/decode_raw_cli.rs::decode_raw_outputs_are_thread_deterministic",
+    "crates/splot-cli/tests/decode_raw_cli.rs::decode_raw_missing_output_parent_emits_output_error_json",
+    "crates/splot-cli/tests/decode_raw_cli.rs::decode_raw_directory_output_path_emits_output_error_text_and_cleans_temp_file",
+]
+commands = [
+    "cargo test -p splot-decode runtime_raw --locked",
+    "cargo test -p splot-cli --test decode_raw_cli --locked",
+    "cargo xtask check-diagnostic-registry",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
+    "tests/conformance/manifest.toml",
+]
+diagnostics = ["decode/unsupported-feature", "decode/resource-limit", "decode/malformed-source", "decode/output-error"]
+
+[[feature]]
 id = "INFRA-DECODER-CRATE-SCAFFOLDING"
 name = "Decoder and reconstruction crate scaffolding"
 category = "infrastructure"
@@ -6606,7 +6733,7 @@ openspec_change = "decoder-crate-scaffolding"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds approved workspace scaffolds for `splot-recon` and `splot-decode`, plus dependency-direction and coverage-scope automation updates. `splot-recon` has no `splot-*` dependencies and stays scheduler-free. `splot-decode` depends on `splot-core` for source-backed stream planning, `splot-parallel` for `DecodeRuntimeConfig`/`DecodeContext` plus its single owned `WorkerPool`, and `splot-recon` for the narrow runtime decode/reconstruction/hash/Y4M handoff tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`, `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER`, and `DECODE-Y4M-RUNTIME-OUTPUT`. Decoded-frame model types are tracked by `INFRA-RECON-FRAME-PLANE-TYPES`; this scaffold row itself exposes no broad runtime reconstruction, broad Y4M writer use, or broad byte-consuming decoded-frame production path. The raw byte planner is tracked separately by `DECODE-BYTE-STREAM-PLANNER`. The scaffolds emit no decoder diagnostics beyond separately tracked decode diagnostics and do not invoke or require AVM/dav2d."
+notes = "Adds approved workspace scaffolds for `splot-recon` and `splot-decode`, plus dependency-direction and coverage-scope automation updates. `splot-recon` has no `splot-*` dependencies and stays scheduler-free. `splot-decode` depends on `splot-core` for source-backed stream planning, `splot-parallel` for `DecodeRuntimeConfig`/`DecodeContext` plus its single owned `WorkerPool`, and `splot-recon` for the narrow runtime decode/reconstruction/hash/raw/Y4M handoff tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`, `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER`, `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT`, and `DECODE-Y4M-RUNTIME-OUTPUT`. Decoded-frame model types are tracked by `INFRA-RECON-FRAME-PLANE-TYPES`; this scaffold row itself exposes no broad runtime reconstruction, broad raw/Y4M writer use, or broad byte-consuming decoded-frame production path. The raw byte planner is tracked separately by `DECODE-BYTE-STREAM-PLANNER`. The scaffolds emit no decoder diagnostics beyond separately tracked decode diagnostics and do not invoke or require AVM/dav2d."
 
 [feature.status]
 mapped = "done"
@@ -7289,7 +7416,7 @@ openspec_change = "tile-cdf-save-lifecycle-boundary"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Supported crate-private AV2 tile CDF lifecycle boundary for the currently supported CDF subset only: partition-entry rows (`TileDoSplitCdf`, `TileDoSquareSplitCdf`, `TileRectTypeCdf`, `TileDoExtPartitionCdf`, `TileDoUneven4wayPartitionCdf`) plus the minimal flat-intra block-symbol rows (`TileYModeSetCdf`, `TileYModeIndexCdf`, `TileTxbSkipCdf`, `TileUvModeCflNotAllowedCdf`, and `TileVTxbSkipCdf`). `TileCdfWorkUnitBoundary` carries Frame, Saved, and Tile CDF subset state; successful minimal runtime tile completion applies final tile-local rows to Saved CDF rows only after the traced block frontier and `exit_symbol()` pass, honors copy versus average policy, then applies the supported-subset `frame_end_update_cdf()` path by copying Saved rows into Frame rows while scaling row counts per AV2 §7.5. Symbol mismatch, CDF/symbol parse failure, resource-limit failure, and exit-padding failure leave Saved and Frame rows unchanged, and minimal hash/Y4M output bytes remain stable. This row is not full CDF lifecycle support: broad §8.3 selector coverage, all §9.3 banks, multi-tile or multi-tile-group averaging, reference-frame CDF persistence, `load_cdfs`, `save_cdfs`, `blend_cdfs`, broad `decode_tile()`, reconstruction, output, reference refresh, public APIs, and external decoder integration remain out of scope."
+notes = "Supported crate-private AV2 tile CDF lifecycle boundary for the currently supported CDF subset only: partition-entry rows (`TileDoSplitCdf`, `TileDoSquareSplitCdf`, `TileRectTypeCdf`, `TileDoExtPartitionCdf`, `TileDoUneven4wayPartitionCdf`) plus the minimal flat-intra block-symbol rows (`TileYModeSetCdf`, `TileYModeIndexCdf`, `TileTxbSkipCdf`, `TileUvModeCflNotAllowedCdf`, and `TileVTxbSkipCdf`). `TileCdfWorkUnitBoundary` carries Frame, Saved, and Tile CDF subset state; successful minimal runtime tile completion applies final tile-local rows to Saved CDF rows only after the traced block frontier and `exit_symbol()` pass, honors copy versus average policy, then applies the supported-subset `frame_end_update_cdf()` path by copying Saved rows into Frame rows while scaling row counts per AV2 §7.5. Symbol mismatch, CDF/symbol parse failure, resource-limit failure, and exit-padding failure leave Saved and Frame rows unchanged, and minimal hash/raw/Y4M output bytes remain stable. This row is not full CDF lifecycle support: broad §8.3 selector coverage, all §9.3 banks, multi-tile or multi-tile-group averaging, reference-frame CDF persistence, `load_cdfs`, `save_cdfs`, `blend_cdfs`, broad `decode_tile()`, reconstruction, output, reference refresh, public APIs, and external decoder integration remain out of scope."
 
 [feature.status]
 mapped = "done"
@@ -7641,7 +7768,7 @@ openspec_change = "minimal-block-syntax-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a crate-private minimal-tier block-symbol trace frontier after `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY`: `tile_payload/cdf/block_rows.rs` carries generated §9.3 default rows for `TileYModeSetCdf`, `TileYModeIndexCdf`, `TileTxbSkipCdf`, `TileUvModeCflNotAllowedCdf`, and `TileVTxbSkipCdf`; `cdf/block_read.rs` provides the narrow `read_block_symbol_trace` row handoff; `block_symbol.rs` consumes the committed flat intra trace (`y_mode_set`, `y_mode_index`, luma/U all-zero transform skip, `uv_mode`, and V all-zero transform skip), validates §8.2.4 `exit_symbol()`, and rolls back tile CDF mutation on mismatch or parse failure; `runtime_frontier.rs` composes the block-symbol frontier after the partition frontier; and `runtime_minimal.rs` maps partition, symbol mismatch, symbol parse, and exit failures through the existing minimal runtime diagnostics. Minimal hash/Y4M output identity is preserved. This row is only the traced minimal flat intra block-symbol frontier and does not claim broad `decode_block()`, recursive `decode_tile()`, full mode-info/transform/coefficient syntax, full §8.3 CDF selection or lifecycle, reconstruction, reference refresh, public APIs, AVM/dav2d invocation, or external-decoder integration."
+notes = "Adds a crate-private minimal-tier block-symbol trace frontier after `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY`: `tile_payload/cdf/block_rows.rs` carries generated §9.3 default rows for `TileYModeSetCdf`, `TileYModeIndexCdf`, `TileTxbSkipCdf`, `TileUvModeCflNotAllowedCdf`, and `TileVTxbSkipCdf`; `cdf/block_read.rs` provides the narrow `read_block_symbol_trace` row handoff; `block_symbol.rs` consumes the committed flat intra trace (`y_mode_set`, `y_mode_index`, luma/U all-zero transform skip, `uv_mode`, and V all-zero transform skip), validates §8.2.4 `exit_symbol()`, and rolls back tile CDF mutation on mismatch or parse failure; `runtime_frontier.rs` composes the block-symbol frontier after the partition frontier; and `runtime_minimal.rs` maps partition, symbol mismatch, symbol parse, and exit failures through the existing minimal runtime diagnostics. Minimal hash/raw/Y4M output identity is preserved. This row is only the traced minimal flat intra block-symbol frontier and does not claim broad `decode_block()`, recursive `decode_tile()`, full mode-info/transform/coefficient syntax, full §8.3 CDF selection or lifecycle, reconstruction, reference refresh, public APIs, AVM/dav2d invocation, or external-decoder integration."
 
 [feature.status]
 mapped = "done"
@@ -7714,7 +7841,7 @@ openspec_change = "recon-intra-cardinal-directional-prediction"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a crate-private reconstruction handoff after `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` for the committed minimal fixture: the block-symbol frontier returns `LumaDcNoResidual8Bit420_64x64` for the traced 64x64 8-bit luma DC/no-residual facts and a traced top-left chroma `H_PRED` path. `runtime_minimal_recon.rs` allocates a checked `splot-recon::CurrentFrameWorkspace<u8>`, writes the luma DC prediction through `predict_intra_dc_square()`, explicitly materializes the AV2 §7.13.2.1 no-neighbor left-edge fallback value `(1 << (BitDepth - 1)) + 1` for the top-left chroma H_PRED path, calls the cardinal horizontal primitive from `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION` for both 32x32 U/V planes, writes the predicted chroma rectangles, freezes the workspace, and updates the deterministic `splot-dfh-sha256-v1` and Y4M bytes to the spec-correct chroma samples. This row does not claim full §7.13.2.1 edge preparation, chroma H/V beyond the top-left fallback trace, pAngle values other than 90/180, broad directional prediction, or neutral chroma as an untraced fallback. The all-zero transform path is represented only by the traced no-residual block-symbol frontier; broad transform coefficient parsing, `reconstruct()`, residual addition, recursive `decode_block()`, loop filtering, film grain, reference refresh, raw output, AVM/dav2d invocation, and full decoder conformance remain unsupported."
+notes = "Adds a crate-private reconstruction handoff after `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` for the committed minimal fixture: the block-symbol frontier returns `LumaDcNoResidual8Bit420_64x64` for the traced 64x64 8-bit luma DC/no-residual facts and a traced top-left chroma `H_PRED` path. `runtime_minimal_recon.rs` allocates a checked `splot-recon::CurrentFrameWorkspace<u8>`, writes the luma DC prediction through `predict_intra_dc_square()`, explicitly materializes the AV2 §7.13.2.1 no-neighbor left-edge fallback value `(1 << (BitDepth - 1)) + 1` for the top-left chroma H_PRED path, calls the cardinal horizontal primitive from `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION` for both 32x32 U/V planes, writes the predicted chroma rectangles, freezes the workspace, and updates the deterministic `splot-dfh-sha256-v1`, raw, and Y4M bytes to the spec-correct chroma samples. This row does not claim full §7.13.2.1 edge preparation, chroma H/V beyond the top-left fallback trace, pAngle values other than 90/180, broad directional prediction, or neutral chroma as an untraced fallback. The all-zero transform path is represented only by the traced no-residual block-symbol frontier; broad transform coefficient parsing, `reconstruct()`, residual addition, recursive `decode_block()`, loop filtering, film grain, reference refresh, broad raw output, AVM/dav2d invocation, and full decoder conformance remain unsupported."
 
 [feature.status]
 mapped = "done"
@@ -7988,7 +8115,7 @@ openspec_change = "decode-cli-byte-planner-handoff"
 tracking_issue = ""
 owner = "cli"
 risk = "medium"
-notes = "Tracks the `splot decode` CLI surface. The command bounds file reads with the default `max_input_bytes` policy before constructing a full input buffer, constructs `DecodeContext` for in-policy inputs, and renders `splot-decode` structured diagnostics for malformed sources, resource limits, planner unsupported structures, runtime tier rejections, or output publication failures. Hash mode dispatches the supported minimal fixture hash path, and Y4M mode dispatches the supported minimal fixture Y4M path with atomic same-directory publication. Broad runtime decode, raw output, broad reconstruction, and external decoder invocation remain unsupported."
+notes = "Tracks the `splot decode` CLI surface. The command bounds file reads with the default `max_input_bytes` policy before constructing a full input buffer, constructs `DecodeContext` for in-policy inputs, and renders `splot-decode` structured diagnostics for malformed sources, resource limits, planner unsupported structures, runtime tier rejections, or output publication failures. Hash mode dispatches the supported minimal fixture hash path, raw mode dispatches the supported minimal fixture raw path with atomic same-directory publication, and Y4M mode dispatches the supported minimal fixture Y4M path with atomic same-directory publication. Broad runtime decode, broad raw/Y4M output, broad reconstruction, and external decoder invocation remain unsupported."
 
 [feature.status]
 mapped = "done"
@@ -8003,8 +8130,8 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-cli/tests/decode_y4m_cli.rs::decode_out_of_tier_y4m_text_mode_emits_unsupported_feature_without_touching_output", "crates/splot-cli/tests/decode_y4m_cli.rs::decode_out_of_tier_y4m_json_mode_emits_unsupported_feature_object", "crates/splot-cli/tests/decode_y4m_cli.rs::decode_y4m_source_error_wins_before_missing_output_parent", "crates/splot-cli/tests/decode_cli.rs::decode_missing_input_is_operational_error_and_does_not_touch_files", "crates/splot-cli/tests/decode_cli.rs::decode_malformed_source_text_mode_emits_structured_diagnostic", "crates/splot-cli/tests/decode_cli.rs::decode_unsupported_structure_json_mode_uses_planner_metadata", "crates/splot-cli/tests/decode_cli.rs::decode_resource_limit_json_mode_reports_limit_values", "crates/splot-cli/tests/decode_cli.rs::decode_oversized_input_reports_resource_limit_without_touching_output", "crates/splot-cli/tests/decode_cli.rs::decode_thread_policies_emit_same_json_diagnostic", "crates/splot-cli/tests/decode_y4m_cli.rs::decode_explicit_y4m_success_for_minimal_fixture", "crates/splot-cli/tests/decode_y4m_cli.rs::decode_y4m_missing_output_parent_emits_output_error_json"]
-commands = ["cargo test -p splot-cli --test decode_cli --locked", "cargo test -p splot-cli --test decode_y4m_cli --locked", "cargo test -p splot-decode --locked", "cargo xtask check-concurrency-policy", "cargo xtask check-diagnostic-registry"]
+tests = ["crates/splot-cli/tests/decode_y4m_cli.rs::decode_out_of_tier_y4m_text_mode_emits_unsupported_feature_without_touching_output", "crates/splot-cli/tests/decode_y4m_cli.rs::decode_out_of_tier_y4m_json_mode_emits_unsupported_feature_object", "crates/splot-cli/tests/decode_y4m_cli.rs::decode_y4m_source_error_wins_before_missing_output_parent", "crates/splot-cli/tests/decode_raw_cli.rs::decode_out_of_tier_raw_text_mode_emits_unsupported_feature_without_touching_output", "crates/splot-cli/tests/decode_raw_cli.rs::decode_raw_source_error_wins_before_missing_output_parent", "crates/splot-cli/tests/decode_cli.rs::decode_missing_input_is_operational_error_and_does_not_touch_files", "crates/splot-cli/tests/decode_cli.rs::decode_malformed_source_text_mode_emits_structured_diagnostic", "crates/splot-cli/tests/decode_cli.rs::decode_unsupported_structure_json_mode_uses_planner_metadata", "crates/splot-cli/tests/decode_cli.rs::decode_resource_limit_json_mode_reports_limit_values", "crates/splot-cli/tests/decode_cli.rs::decode_oversized_input_reports_resource_limit_without_touching_output", "crates/splot-cli/tests/decode_cli.rs::decode_thread_policies_emit_same_json_diagnostic", "crates/splot-cli/tests/decode_y4m_cli.rs::decode_explicit_y4m_success_for_minimal_fixture", "crates/splot-cli/tests/decode_y4m_cli.rs::decode_y4m_missing_output_parent_emits_output_error_json", "crates/splot-cli/tests/decode_raw_cli.rs::decode_explicit_raw_success_for_minimal_fixture", "crates/splot-cli/tests/decode_raw_cli.rs::decode_raw_missing_output_parent_emits_output_error_json"]
+commands = ["cargo test -p splot-cli --test decode_cli --locked", "cargo test -p splot-cli --test decode_y4m_cli --locked", "cargo test -p splot-cli --test decode_raw_cli --locked", "cargo test -p splot-decode --locked", "cargo xtask check-concurrency-policy", "cargo xtask check-diagnostic-registry"]
 fixtures = []
 diagnostics = ["decode/unsupported-feature", "decode/malformed-source", "decode/resource-limit", "decode/output-error"]
 
@@ -8082,7 +8209,7 @@ openspec_change = "decoder-output-equivalence-contract"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Defines the decoder output identity contract: raw_intermediate_output and post_film_grain_output variant identity, splot-dfh-sha256-v1 raw-intermediate hash stability, hash JSON success schema, visible sample serialization, output event order including show-existing and flush output, raw/Y4M output policy, atomic file publication, metadata-hash separation, and local-only reference evidence boundaries. This row is documentation-only; runtime minimal hash output is tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`, runtime minimal Y4M output is tracked by `DECODE-Y4M-RUNTIME-OUTPUT`, and raw output, film-grain synthesis, metadata verification, reference refresh, and external reference decoder integration remain unsupported."
+notes = "Defines the decoder output identity contract: raw_intermediate_output and post_film_grain_output variant identity, splot-dfh-sha256-v1 raw-intermediate hash stability, hash JSON success schema, visible sample serialization, output event order including show-existing and flush output, raw/Y4M output policy, atomic file publication, metadata-hash separation, and local-only reference evidence boundaries. This row is documentation-only; runtime minimal hash output is tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`, runtime minimal raw output is tracked by `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT`, runtime minimal Y4M output is tracked by `DECODE-Y4M-RUNTIME-OUTPUT`, and broad raw/Y4M output, film-grain synthesis, metadata verification, reference refresh, and external reference decoder integration remain unsupported."
 
 [feature.status]
 mapped = "done"
@@ -8123,7 +8250,7 @@ openspec_change = "decoder-full-conformance-contract"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Defines the public full AV2 decoder conformance contract, current non-claim, output variants, structured diagnostics, output-file safety, local-only AVM/dav2d evidence boundary, and final completion criteria. This row is documentation-only; runtime minimal hash and Y4M support are tracked by dedicated code rows, while broad runtime decode, reconstruction, reference refresh, and external reference decoder integration remain unsupported."
+notes = "Defines the public full AV2 decoder conformance contract, current non-claim, output variants, structured diagnostics, output-file safety, local-only AVM/dav2d evidence boundary, and final completion criteria. This row is documentation-only; runtime minimal hash, raw, and Y4M support are tracked by dedicated code rows, while broad runtime decode, broad output, reconstruction, reference refresh, and external reference decoder integration remain unsupported."
 
 [feature.status]
 mapped = "done"

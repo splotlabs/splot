@@ -24,14 +24,16 @@ Current state: `splot decode` has a narrow byte-consuming runtime success path
 for the committed `minimal-intra-8bit420-hash-v1` IVF tier. It reads input
 bytes, constructs `DecodeContext`, calls `DecodeContext::plan_bytes`, emits
 `splot.decode.hash_report` JSON for `--output-format hash`, and atomically
-publishes Y4M for `-o` / `--output-format y4m -o` on that minimal fixture.
+publishes raw sample bytes for `--output-format raw -o` or Y4M for `-o` /
+`--output-format y4m -o` on that minimal fixture.
 Diagnostics remain structured data owned by `splot-decode`:
 `decode/malformed-source` for malformed source/container bytes,
 `decode/resource-limit` for byte-planner or runtime limit failures,
 `decode/unsupported-feature` for planner unsupported structures or out-of-tier
-runtime requests, and `decode/output-error` for Y4M serialization/publication
+runtime requests, and `decode/output-error` for raw/Y4M serialization/publication
 failures. It does not perform broad tile decode, broad pixel reconstruction,
-raw output, film grain, reference refresh, or external decoder invocation.
+broad raw/Y4M output, film grain, reference refresh, or external decoder
+invocation.
 Decode resource limits now have a source-backed `splot-decode` policy API for
 configured thresholds and pure checks, and the byte-stream planner applies the
 input-byte, OBU-count, IVF frame-record, and selected-frame-candidate limits
@@ -134,12 +136,12 @@ now validates a selected `DecodePlannedObu` against a borrowed `splot-core`
 uses parser-derived tile grid, quantizer, CDF, and `disable_cdf_update` facts,
 and runs the resulting boundary inside the context-owned
 `splot_parallel::WorkerPool`, preserving the PR #101 concurrency model without
-exposing public tile-payload APIs. The narrow minimal hash/Y4M runtime is wired
+exposing public tile-payload APIs. The narrow minimal hash/raw/Y4M runtime is wired
 through the partition and block-symbol trace frontiers, but it still does not
 support multiple tiles or tile groups, bridge/BRU paths,
 full `read_partition()`/`decode_tile()` traversal past the first
 `decode_block()` frontier, `MiSizes` mutation, `decode_block()` syntax,
-Saved CDF mutation, broad reconstruction, broad hashes, broad runtime Y4M,
+Saved CDF mutation, broad reconstruction, broad hashes, broad runtime raw/Y4M,
 reference refresh, or external decoders.
 
 Canonical decoder status lives in
@@ -151,7 +153,7 @@ The future full-decoder conformance claim is defined in
 decode-relevant AV2 section-family ownership map is generated in
 [`DECODER-SPEC-COVERAGE.md`](./DECODER-SPEC-COVERAGE.md). These documents expose
 current unsupported and partial runtime decoder gaps; they do not make the
-narrow minimal hash/Y4M paths a full supported decoder.
+narrow minimal hash/raw/Y4M paths a full supported decoder.
 The output-equivalence contract tracked by
 `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` defines the future runtime output
 identity target: `raw_intermediate_output` and `post_film_grain_output`
@@ -159,17 +161,19 @@ variants, `splot-dfh-sha256-v1` raw-intermediate hash reporting, visible sample
 bytes, show-existing and flush output order, raw/Y4M output policy, metadata
 hash separation, and atomic file publication. The
 `minimal-intra-8bit420-hash-v1` rows now support the first raw-intermediate hash
-success artifact and the first atomically published Y4M file for the committed
-minimal IVF fixture; raw output, film grain, broad output ordering, and full
-decoder conformance remain unsupported.
+success artifact, first atomically published raw sample file, and first
+atomically published Y4M file for the committed minimal IVF fixture; film grain,
+broad output ordering, broad raw/Y4M output, and full decoder conformance remain
+unsupported.
 Emitted `splot decode` diagnostic rule IDs are registered in
 [`DECODER-DIAGNOSTICS.md`](./DECODER-DIAGNOSTICS.md), enforced by
 `cargo xtask check-diagnostic-registry`.
 
 ## Supported Tier
 
-The first supported decode tier is implemented for hash JSON output and
-atomically published Y4M file output on the committed minimal fixture. The
+The first supported decode tier is implemented for hash JSON output,
+atomically published raw sample output, and atomically published Y4M file output
+on the committed minimal fixture. The
 repository contract is:
 
 ```text
@@ -179,6 +183,7 @@ tier_id = "minimal-intra-8bit420-hash-v1"
 feature_id = "DOC-MINIMAL-DECODE-TIER-CONTRACT"
 runtime_feature_id = "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS"
 reconstruction_feature_id = "DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER"
+raw_runtime_feature_id = "DECODE-MINIMAL-RAW-RUNTIME-OUTPUT"
 y4m_runtime_feature_id = "DECODE-Y4M-RUNTIME-OUTPUT"
 ```
 
@@ -209,7 +214,7 @@ The tier is deliberately small:
   `immediate_output_frame == 1`, `implicit_output_frame == 0`, and no sequence
   cropping window;
 - one tile and one first-and-only tile group;
-- deterministic decoded-frame hashes and Y4M files are the first success
+- deterministic decoded-frame hashes, raw sample files, and Y4M files are the first success
   artifacts; current runtime support is limited to the committed flat 64x64
   fixture, its traced six-symbol §8.2 tile stream, and its
   `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` handoff: the traced block
@@ -220,6 +225,15 @@ The tier is deliberately small:
   prediction for the traced U/V blocks, and freezes the workspace into the
   output frame. Broad edge preparation, chroma H/V beyond that traced fallback
   path, and broad reconstruction remain unsupported.
+
+Runtime `splot decode` raw output is supported only for the committed minimal
+IVF tier through `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT`. The explicit form is
+`--output-format raw -o <output>`. The CLI publishes the complete
+`av2-output-samples-v1` sample byte stream atomically through a same-directory
+temporary file and reports `decode/output-error` for publication failures. All
+raw requests outside the minimal tier still emit a structured
+unsupported/resource/malformed diagnostic without touching the requested output
+path.
 
 Runtime `splot decode` Y4M output is supported only for the committed minimal
 IVF tier through `DECODE-Y4M-RUNTIME-OUTPUT`. The compatibility form
@@ -245,13 +259,13 @@ other external decoder is forbidden.
 | 0 | Roadmap, support matrix, generated status, drift gate | supported |
 | 1 | Decode API contract, runtime context, limits, resource diagnostics, crate scaffolding, byte entry point | crate scaffolding, `DecodeContext` worker-pool runtime policy, limits runtime API, bounded byte-stream planning, and resource diagnostic emission supported |
 | 2 | Shared decoded frame, plane, pixel format, workspace, and deterministic hash types | frame/plane model types, current-frame workspace, hash-input serialization, and `splot-dfh-sha256-v1` digest computation supported |
-| 3 | CLI `splot decode` contract backed by library diagnostics | minimal hash JSON and minimal Y4M output supported; raw output unsupported |
+| 3 | CLI `splot decode` contract backed by library diagnostics | minimal hash JSON, minimal raw output, and minimal Y4M output supported; broad runtime output unsupported |
 | 4 | Container traversal, base-layer parsed/raw traversal, transactional decode planning | parsed and raw-byte stream planners supported; operating-point selection and broad CLI runtime unsupported |
-| 5 | Self-contained decode fuzz target and fixture smoke | `decode_plan_bytes` fuzz target supported for the raw byte planner; `decode_runtime_hash_bytes` supported for the minimal runtime hash byte API; minimal runtime fixture smoke supported |
+| 5 | Self-contained decode fuzz target and fixture smoke | `decode_plan_bytes` fuzz target supported for the raw byte planner; `decode_runtime_hash_bytes`, `decode_runtime_raw_bytes`, and `decode_runtime_y4m_bytes` supported for the minimal runtime byte APIs; minimal runtime fixture smoke supported |
 | 6 | AV2 § 8 symbol/CDF decoder foundation | § 8.2 generic primitive partial; crate-private partition CDF subset boundary partial; supported-subset Tile-to-Saved/Saved-to-Frame lifecycle supported; broad § 8.3 and tile decode planned |
 | 7 | Constrained intra tile syntax | tile payload and tile CDF boundaries partial; individual partition-entry symbol reads, one caller-fact partition decision, allowed partition derivation, first `decode_block()` frontier planning, and minimal block-symbol trace supported; supported-subset CDF lifecycle supported; full recursive `read_partition()` / `decode_tile()` syntax planned |
 | 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | current-frame workspace plus square DC, rectangular DC, subsampled DC, IBP DC, basic/PAETH, smooth, H/V cardinal directional, one-sided directional-angle, middle directional-angle primitives, workspace directional-angle handoff, and the minimal luma-DC plus traced top-left chroma H_PRED runtime handoff supported; luma/MRL/IDIF/full-dispatch directional angles, DIP/general directional-angle IBP/full CfL modes, broad chroma prediction, dequant/reconstruction, inverse transforms, broad runtime hashes planned |
-| 9 | Y4M output and reconstructed reference-frame store | reference-slot runtime store, source-backed Y4M writer, and minimal runtime Y4M output supported; broad runtime Y4M output and AV2 refresh semantics planned |
+| 9 | Raw/Y4M output and reconstructed reference-frame store | reference-slot runtime store, source-backed Y4M writer, minimal runtime raw output, and minimal runtime Y4M output supported; broad runtime raw/Y4M output and AV2 refresh semantics planned |
 | 10 | Portable local-reference evidence manifests | metadata contract and offline checker wired; two AVM/dav2d raw MD5 agreement entries recorded as non-executable metadata |
 | 11 | Encoder reconstruction API contract | planned |
 
@@ -581,9 +595,9 @@ command summaries, digest metadata, and assertions.
 
 ## Unsupported Feature Contract
 
-Decoder unsupported-feature output carries structured data. Hash/Y4M requests
-for planable inputs outside the minimal runtime tier emit this diagnostic after
-byte planning succeeds:
+Decoder unsupported-feature output carries structured data. Hash/raw/Y4M
+requests for planable inputs outside the minimal runtime tier emit this
+diagnostic after byte planning succeeds:
 
 ```json
 {
@@ -659,11 +673,11 @@ output scheduling, or AV2 reference refresh process.
 the CLI/runtime `--threads` policy. It now depends on `splot-core` for parsed
 stream-planner input and the bounded raw-byte `plan_bytes` planner,
 `splot-parallel` for worker-pool execution, and `splot-recon` for the narrow
-minimal runtime decoded frame/hash/Y4M handoff. Broad tile decode, pixel
-reconstruction, broad Y4M output, and reference update semantics remain
+minimal runtime decoded frame/hash/raw/Y4M handoff. Broad tile decode, pixel
+reconstruction, broad raw/Y4M output, and reference update semantics remain
 unsupported.
 `splot-cli` reads input bytes for `splot decode`, calls the plan-only
 or minimal runtime `splot-decode` handoff, renders structured diagnostics,
-emits hash JSON for the supported minimal tier, and atomically publishes Y4M for
-the same minimal tier. `splot-encode` remains unchanged until a later
+emits hash JSON for the supported minimal tier, and atomically publishes raw or
+Y4M output for the same minimal tier. `splot-encode` remains unchanged until a later
 encoder/reconstruction API change explicitly adds reuse of `splot-recon`.

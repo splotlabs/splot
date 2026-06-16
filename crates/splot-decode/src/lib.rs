@@ -11,13 +11,14 @@
 //! worker-pool scaffold that owns a [`splot_parallel::WorkerPool`]. The stream
 //! planners consume either bounded raw bytes or already parsed `splot-core`
 //! stream facts, while the runtime adapters expose only the documented minimal
-//! hash and Y4M byte-output tier.
+//! hash, raw, and Y4M byte-output tier.
 //!
 //! Feature tracking: `INFRA-DECODER-CRATE-SCAFFOLDING`,
 //! `DECODE-UNSUPPORTED-DIAGNOSTIC-API`, `DECODE-LIMITS-RUNTIME-API`,
 //! `DECODE-STREAM-STATE-PLANNER`, `DECODE-BYTE-STREAM-PLANNER`,
 //! `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`,
 //! `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER`,
+//! `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT`,
 //! `DECODE-Y4M-RUNTIME-OUTPUT`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
@@ -35,6 +36,7 @@ pub mod runtime;
 mod runtime_hash;
 mod runtime_minimal;
 mod runtime_minimal_recon;
+mod runtime_raw;
 mod runtime_y4m;
 pub mod stream_plan;
 pub(crate) mod tile_payload;

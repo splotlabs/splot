@@ -180,26 +180,50 @@ pub enum DecodeOutputOperation {
     SerializeY4m,
     /// Writing the complete Y4M stream bytes to the caller-provided writer failed.
     WriteY4mStream,
+    /// Serializing a runtime raw sample byte stream failed.
+    SerializeRaw,
+    /// Writing the complete raw sample bytes to the caller-provided writer failed.
+    WriteRawStream,
     /// Resolving the requested Y4M output path failed before publication.
     ResolveY4mOutputPath,
+    /// Resolving the requested raw output path failed before publication.
+    ResolveRawOutputPath,
     /// Creating the same-directory temporary Y4M output file failed.
     CreateY4mTempFile,
+    /// Creating the same-directory temporary raw output file failed.
+    CreateRawTempFile,
     /// Writing bytes into the temporary Y4M output file failed.
     WriteY4mTempFile,
+    /// Writing bytes into the temporary raw output file failed.
+    WriteRawTempFile,
     /// Flushing the temporary Y4M output file failed.
     FlushY4mTempFile,
+    /// Flushing the temporary raw output file failed.
+    FlushRawTempFile,
     /// Syncing the temporary Y4M output file failed.
     SyncY4mTempFile,
+    /// Syncing the temporary raw output file failed.
+    SyncRawTempFile,
     /// Renaming the temporary file into the requested Y4M output path failed.
     RenameY4mOutput,
+    /// Renaming the temporary file into the requested raw output path failed.
+    RenameRawOutput,
     /// Reserved identifier for parent-directory durability sync reporting.
     ///
     /// The current CLI attempts that post-rename sync as best-effort, so this
     /// operation is retained for diagnostic identifier stability but is not
     /// emitted by current publication code.
     SyncY4mOutputDirectory,
+    /// Reserved identifier for parent-directory durability sync reporting for raw output.
+    ///
+    /// The current CLI attempts that post-rename sync as best-effort, so this
+    /// operation is retained for diagnostic identifier stability but is not
+    /// emitted by current publication code.
+    SyncRawOutputDirectory,
     /// Removing a failed temporary Y4M output file failed.
     CleanupY4mTempFile,
+    /// Removing a failed temporary raw output file failed.
+    CleanupRawTempFile,
 }
 
 impl DecodeOutputOperation {
@@ -209,15 +233,43 @@ impl DecodeOutputOperation {
         match self {
             Self::SerializeY4m => "serialize_y4m",
             Self::WriteY4mStream => "write_y4m_stream",
+            Self::SerializeRaw => "serialize_raw",
+            Self::WriteRawStream => "write_raw_stream",
             Self::ResolveY4mOutputPath => "resolve_y4m_output_path",
+            Self::ResolveRawOutputPath => "resolve_raw_output_path",
             Self::CreateY4mTempFile => "create_y4m_temp_file",
+            Self::CreateRawTempFile => "create_raw_temp_file",
             Self::WriteY4mTempFile => "write_y4m_temp_file",
+            Self::WriteRawTempFile => "write_raw_temp_file",
             Self::FlushY4mTempFile => "flush_y4m_temp_file",
+            Self::FlushRawTempFile => "flush_raw_temp_file",
             Self::SyncY4mTempFile => "sync_y4m_temp_file",
+            Self::SyncRawTempFile => "sync_raw_temp_file",
             Self::RenameY4mOutput => "rename_y4m_output",
+            Self::RenameRawOutput => "rename_raw_output",
             Self::SyncY4mOutputDirectory => "sync_y4m_output_directory",
+            Self::SyncRawOutputDirectory => "sync_raw_output_directory",
             Self::CleanupY4mTempFile => "cleanup_y4m_temp_file",
+            Self::CleanupRawTempFile => "cleanup_raw_temp_file",
         }
+    }
+
+    /// Returns true when this operation belongs to the minimal raw output path.
+    #[must_use]
+    pub const fn is_raw(self) -> bool {
+        matches!(
+            self,
+            Self::SerializeRaw
+                | Self::WriteRawStream
+                | Self::ResolveRawOutputPath
+                | Self::CreateRawTempFile
+                | Self::WriteRawTempFile
+                | Self::FlushRawTempFile
+                | Self::SyncRawTempFile
+                | Self::RenameRawOutput
+                | Self::SyncRawOutputDirectory
+                | Self::CleanupRawTempFile
+        )
     }
 }
 

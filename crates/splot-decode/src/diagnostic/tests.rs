@@ -125,3 +125,33 @@ fn output_error_report_has_stable_operation_details() {
     assert_eq!(details.source_kind, "io");
     assert_eq!(details.source_message, "closed writer");
 }
+
+#[test]
+fn raw_output_error_report_uses_raw_support_row() {
+    let error = DecodeError::Output {
+        source: DecodeOutputError::io(
+            DecodeOutputOperation::WriteRawStream,
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "closed writer"),
+        ),
+    };
+
+    let report = DecodeDiagnosticReport::from_decode_error(&error).unwrap();
+
+    assert_eq!(report.diagnostic.rule_id, OUTPUT_ERROR_RULE_ID);
+    assert_eq!(report.diagnostic.severity, DecodeSeverity::Error);
+    assert_eq!(report.diagnostic.spec_section, None);
+    assert_eq!(
+        report.diagnostic.matrix_row,
+        "decode-minimal-raw-runtime-output"
+    );
+    assert_eq!(
+        report.diagnostic.feature_id,
+        "DECODE-MINIMAL-RAW-RUNTIME-OUTPUT"
+    );
+    let DecodeDiagnosticDetails::OutputError(details) = report.details else {
+        panic!("expected output-error details");
+    };
+    assert_eq!(details.operation, "write_raw_stream");
+    assert_eq!(details.source_kind, "io");
+    assert_eq!(details.source_message, "closed writer");
+}

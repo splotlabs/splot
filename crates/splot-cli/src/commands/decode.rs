@@ -20,7 +20,7 @@ use splot_decode::{
 };
 use splot_parallel::ThreadCount;
 
-static Y4M_TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static OUTPUT_TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Output artifact selected for future `splot decode` success.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -28,6 +28,8 @@ static Y4M_TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 pub enum DecodeOutputFormat {
     /// Runtime Y4M decoded-video output for the documented minimal tier.
     Y4m,
+    /// Headerless raw decoded sample output for the documented minimal tier.
+    Raw,
     /// Deterministic decoded-frame hash output for the documented minimal tier.
     Hash,
 }
@@ -36,6 +38,7 @@ impl DecodeOutputFormat {
     fn as_str(self) -> &'static str {
         match self {
             Self::Y4m => "y4m",
+            Self::Raw => "raw",
             Self::Hash => "hash",
         }
     }
@@ -48,7 +51,12 @@ pub struct DecodeArgs {
     #[arg(long)]
     pub json: bool,
     /// Select the future decode output artifact.
-    #[arg(long = "output-format", value_enum, requires_if("y4m", "output"))]
+    #[arg(
+        long = "output-format",
+        value_enum,
+        requires_if("y4m", "output"),
+        requires_if("raw", "output")
+    )]
     pub output_format: Option<DecodeOutputFormat>,
     /// Input AV2 bitstream.
     pub input: PathBuf,
@@ -63,6 +71,7 @@ pub struct DecodeArgs {
 #[derive(Debug)]
 enum DecodeOutputTarget<'a> {
     Y4m { path: &'a Path },
+    Raw { path: &'a Path },
     Hash { path: Option<&'a Path> },
 }
 
@@ -70,6 +79,7 @@ impl<'a> DecodeOutputTarget<'a> {
     fn format(&self) -> DecodeOutputFormat {
         match self {
             Self::Y4m { .. } => DecodeOutputFormat::Y4m,
+            Self::Raw { .. } => DecodeOutputFormat::Raw,
             Self::Hash { .. } => DecodeOutputFormat::Hash,
         }
     }
@@ -83,6 +93,8 @@ impl DecodeArgs {
         ) {
             (DecodeOutputFormat::Y4m, Some(path)) => Some(DecodeOutputTarget::Y4m { path }),
             (DecodeOutputFormat::Y4m, None) => None,
+            (DecodeOutputFormat::Raw, Some(path)) => Some(DecodeOutputTarget::Raw { path }),
+            (DecodeOutputFormat::Raw, None) => None,
             (DecodeOutputFormat::Hash, path) => Some(DecodeOutputTarget::Hash { path }),
         }
     }
@@ -465,9 +477,11 @@ fn render_hash_report(report: &DecodeHashReport, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Runs `splot decode` through the byte-stream decode handoff. Hash mode has a
-/// narrow minimal-tier runtime success path; other runtime outputs remain
-/// diagnostic-only until later decoder milestones.
+/// Runs `splot decode` through the byte-stream decode handoff.
+///
+/// Hash, raw, and Y4M modes have narrow minimal-tier runtime success paths;
+/// broader runtime outputs remain diagnostic-only until later decoder
+/// milestones.
 ///
 /// # Errors
 /// Returns an error if input cannot be read, the decode context cannot be
@@ -495,6 +509,12 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
                 }
                 DecodeOutputTarget::Y4m { path } => {
                     match decode_y4m_to_file(&context, &bytes, options, path) {
+                        Ok(()) => return Ok(ExitCode::SUCCESS),
+                        Err(error) => decode_report_from_error(&error)?,
+                    }
+                }
+                DecodeOutputTarget::Raw { path } => {
+                    match decode_raw_to_file(&context, &bytes, options, path) {
                         Ok(()) => return Ok(ExitCode::SUCCESS),
                         Err(error) => decode_report_from_error(&error)?,
                     }
@@ -530,58 +550,159 @@ fn decode_y4m_to_file(
 }
 
 fn publish_y4m_output(path: &Path, y4m: &[u8]) -> core::result::Result<(), DecodeError> {
-    let (parent, final_name) = output_parent_and_name(path)?;
-    let (mut temp_file, temp_path) = create_y4m_temp_file(parent, final_name)?;
+    publish_output(path, y4m, OutputArtifact::Y4m)
+}
 
-    if let Err(source) = temp_file.write_all(y4m) {
-        let error = output_io(DecodeOutputOperation::WriteY4mTempFile, source);
-        return Err(close_and_cleanup_y4m_temp_file(
-            temp_file, &temp_path, error,
+fn decode_raw_to_file(
+    context: &DecodeContext,
+    bytes: &[u8],
+    options: DecodeOptions,
+    path: &Path,
+) -> core::result::Result<(), DecodeError> {
+    let mut raw = Vec::new();
+    context.decode_raw_bytes(bytes, options, &mut raw)?;
+    publish_raw_output(path, &raw)
+}
+
+fn publish_raw_output(path: &Path, raw: &[u8]) -> core::result::Result<(), DecodeError> {
+    publish_output(path, raw, OutputArtifact::Raw)
+}
+
+#[derive(Clone, Copy, Debug)]
+enum OutputArtifact {
+    Y4m,
+    Raw,
+}
+
+impl OutputArtifact {
+    const fn resolve_operation(self) -> DecodeOutputOperation {
+        match self {
+            Self::Y4m => DecodeOutputOperation::ResolveY4mOutputPath,
+            Self::Raw => DecodeOutputOperation::ResolveRawOutputPath,
+        }
+    }
+
+    const fn create_temp_operation(self) -> DecodeOutputOperation {
+        match self {
+            Self::Y4m => DecodeOutputOperation::CreateY4mTempFile,
+            Self::Raw => DecodeOutputOperation::CreateRawTempFile,
+        }
+    }
+
+    const fn write_temp_operation(self) -> DecodeOutputOperation {
+        match self {
+            Self::Y4m => DecodeOutputOperation::WriteY4mTempFile,
+            Self::Raw => DecodeOutputOperation::WriteRawTempFile,
+        }
+    }
+
+    const fn flush_temp_operation(self) -> DecodeOutputOperation {
+        match self {
+            Self::Y4m => DecodeOutputOperation::FlushY4mTempFile,
+            Self::Raw => DecodeOutputOperation::FlushRawTempFile,
+        }
+    }
+
+    const fn sync_temp_operation(self) -> DecodeOutputOperation {
+        match self {
+            Self::Y4m => DecodeOutputOperation::SyncY4mTempFile,
+            Self::Raw => DecodeOutputOperation::SyncRawTempFile,
+        }
+    }
+
+    const fn rename_operation(self) -> DecodeOutputOperation {
+        match self {
+            Self::Y4m => DecodeOutputOperation::RenameY4mOutput,
+            Self::Raw => DecodeOutputOperation::RenameRawOutput,
+        }
+    }
+
+    const fn cleanup_temp_operation(self) -> DecodeOutputOperation {
+        match self {
+            Self::Y4m => DecodeOutputOperation::CleanupY4mTempFile,
+            Self::Raw => DecodeOutputOperation::CleanupRawTempFile,
+        }
+    }
+
+    const fn temp_label(self) -> &'static str {
+        match self {
+            Self::Y4m => "y4m",
+            Self::Raw => "raw",
+        }
+    }
+
+    const fn path_name(self) -> &'static str {
+        match self {
+            Self::Y4m => "Y4M",
+            Self::Raw => "raw",
+        }
+    }
+}
+
+fn publish_output(
+    path: &Path,
+    bytes: &[u8],
+    artifact: OutputArtifact,
+) -> core::result::Result<(), DecodeError> {
+    let (parent, final_name) = output_parent_and_name(path, artifact)?;
+    let (mut temp_file, temp_path) = create_temp_file(parent, final_name, artifact)?;
+
+    if let Err(source) = temp_file.write_all(bytes) {
+        let error = output_io(artifact.write_temp_operation(), source);
+        return Err(close_and_cleanup_temp_file(
+            temp_file, &temp_path, artifact, error,
         ));
     }
     if let Err(source) = temp_file.flush() {
-        let error = output_io(DecodeOutputOperation::FlushY4mTempFile, source);
-        return Err(close_and_cleanup_y4m_temp_file(
-            temp_file, &temp_path, error,
+        let error = output_io(artifact.flush_temp_operation(), source);
+        return Err(close_and_cleanup_temp_file(
+            temp_file, &temp_path, artifact, error,
         ));
     }
     if let Err(source) = temp_file.sync_all() {
-        let error = output_io(DecodeOutputOperation::SyncY4mTempFile, source);
-        return Err(close_and_cleanup_y4m_temp_file(
-            temp_file, &temp_path, error,
+        let error = output_io(artifact.sync_temp_operation(), source);
+        return Err(close_and_cleanup_temp_file(
+            temp_file, &temp_path, artifact, error,
         ));
     }
     drop(temp_file);
 
     let final_path = parent.join(final_name);
-    replace_y4m_output(&temp_path, &final_path)?;
+    replace_output(&temp_path, &final_path, artifact)?;
     sync_parent_directory_best_effort(parent);
 
     Ok(())
 }
 
-fn replace_y4m_output(
+fn replace_output(
     temp_path: &Path,
     final_path: &Path,
+    artifact: OutputArtifact,
 ) -> core::result::Result<(), DecodeError> {
     // Rust documents `std::fs::rename` as replacing an existing destination
     // when `from` and `to` are files, including on Windows, so this stays the
     // single publication step after temp write, flush, and sync succeed.
     fs::rename(temp_path, final_path)
-        .map_err(|source| output_io(DecodeOutputOperation::RenameY4mOutput, source))
-        .map_err(|error| cleanup_y4m_temp_file(temp_path, error))
+        .map_err(|source| output_io(artifact.rename_operation(), source))
+        .map_err(|error| cleanup_temp_file(temp_path, artifact, error))
 }
 
-fn output_parent_and_name(path: &Path) -> core::result::Result<(&Path, &OsStr), DecodeError> {
+fn output_parent_and_name(
+    path: &Path,
+    artifact: OutputArtifact,
+) -> core::result::Result<(&Path, &OsStr), DecodeError> {
     let file_name = path
         .file_name()
         .filter(|name| !name.is_empty())
         .ok_or_else(|| {
             output_io(
-                DecodeOutputOperation::ResolveY4mOutputPath,
+                artifact.resolve_operation(),
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "Y4M output path must include a file name",
+                    format!(
+                        "{} output path must include a file name",
+                        artifact.path_name()
+                    ),
                 ),
             )
         })?;
@@ -592,14 +713,15 @@ fn output_parent_and_name(path: &Path) -> core::result::Result<(&Path, &OsStr), 
     Ok((parent, file_name))
 }
 
-fn create_y4m_temp_file(
+fn create_temp_file(
     parent: &Path,
     final_name: &OsStr,
+    artifact: OutputArtifact,
 ) -> core::result::Result<(File, PathBuf), DecodeError> {
-    let nonce = Y4M_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nonce = OUTPUT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut last_collision = None;
     for attempt in 0..64 {
-        let temp_name = y4m_temp_file_name(nonce, attempt);
+        let temp_name = temp_file_name(artifact, nonce, attempt);
         if temp_name == final_name {
             continue;
         }
@@ -614,24 +736,29 @@ fn create_y4m_temp_file(
                 last_collision = Some(source);
             }
             Err(source) => {
-                return Err(output_io(DecodeOutputOperation::CreateY4mTempFile, source));
+                return Err(output_io(artifact.create_temp_operation(), source));
             }
         }
     }
 
     Err(output_io(
-        DecodeOutputOperation::CreateY4mTempFile,
+        artifact.create_temp_operation(),
         last_collision.unwrap_or_else(|| {
             io::Error::new(
                 io::ErrorKind::AlreadyExists,
-                "could not allocate a unique Y4M temporary output name",
+                format!(
+                    "could not allocate a unique {} temporary output name",
+                    artifact.path_name()
+                ),
             )
         }),
     ))
 }
 
-fn y4m_temp_file_name(nonce: usize, attempt: usize) -> OsString {
-    let mut name = OsString::from(OsStr::new(".splot-decode-y4m-"));
+fn temp_file_name(artifact: OutputArtifact, nonce: usize, attempt: usize) -> OsString {
+    let mut name = OsString::from(OsStr::new(".splot-decode-"));
+    name.push(artifact.temp_label());
+    name.push("-");
     name.push(std::process::id().to_string());
     name.push("-");
     name.push(nonce.to_string());
@@ -641,16 +768,21 @@ fn y4m_temp_file_name(nonce: usize, attempt: usize) -> OsString {
     name
 }
 
-fn close_and_cleanup_y4m_temp_file(file: File, path: &Path, error: DecodeError) -> DecodeError {
+fn close_and_cleanup_temp_file(
+    file: File,
+    path: &Path,
+    artifact: OutputArtifact,
+    error: DecodeError,
+) -> DecodeError {
     drop(file);
-    cleanup_y4m_temp_file(path, error)
+    cleanup_temp_file(path, artifact, error)
 }
 
-fn cleanup_y4m_temp_file(path: &Path, error: DecodeError) -> DecodeError {
+fn cleanup_temp_file(path: &Path, artifact: OutputArtifact, error: DecodeError) -> DecodeError {
     match fs::remove_file(path) {
         Ok(()) => error,
         Err(source) if source.kind() == io::ErrorKind::NotFound => error,
-        Err(source) => output_io(DecodeOutputOperation::CleanupY4mTempFile, source),
+        Err(source) => output_io(artifact.cleanup_temp_operation(), source),
     }
 }
 

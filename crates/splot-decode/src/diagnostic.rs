@@ -29,6 +29,8 @@ const DECODE_LIMITS_BUDGET_MATRIX_ROW: &str = "decode-limits-budget";
 const DOC_DECODE_LIMITS_CONTRACT_FEATURE_ID: &str = "DOC-DECODE-LIMITS-CONTRACT";
 const DECODE_Y4M_RUNTIME_OUTPUT_MATRIX_ROW: &str = "decode-y4m-runtime-output";
 const DECODE_Y4M_RUNTIME_OUTPUT_FEATURE_ID: &str = "DECODE-Y4M-RUNTIME-OUTPUT";
+const DECODE_MINIMAL_RAW_RUNTIME_OUTPUT_MATRIX_ROW: &str = "decode-minimal-raw-runtime-output";
+const DECODE_MINIMAL_RAW_RUNTIME_OUTPUT_FEATURE_ID: &str = "DECODE-MINIMAL-RAW-RUNTIME-OUTPUT";
 
 /// Diagnostic plus typed details for one `splot decode` result.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -159,13 +161,24 @@ impl DecodeDiagnosticReport {
     }
 
     fn output_error(source: &DecodeOutputError) -> Self {
+        let (matrix_row, feature_id) = if source.operation().is_raw() {
+            (
+                DECODE_MINIMAL_RAW_RUNTIME_OUTPUT_MATRIX_ROW,
+                DECODE_MINIMAL_RAW_RUNTIME_OUTPUT_FEATURE_ID,
+            )
+        } else {
+            (
+                DECODE_Y4M_RUNTIME_OUTPUT_MATRIX_ROW,
+                DECODE_Y4M_RUNTIME_OUTPUT_FEATURE_ID,
+            )
+        };
         Self {
             diagnostic: DecodeDiagnostic {
                 rule_id: OUTPUT_ERROR_RULE_ID,
                 severity: DecodeSeverity::Error,
                 spec_section: None,
-                matrix_row: DECODE_Y4M_RUNTIME_OUTPUT_MATRIX_ROW,
-                feature_id: DECODE_Y4M_RUNTIME_OUTPUT_FEATURE_ID,
+                matrix_row,
+                feature_id,
                 message: "decode output could not be serialized or written.",
                 remediation: "Check the output destination and retry the decode operation.",
             },
