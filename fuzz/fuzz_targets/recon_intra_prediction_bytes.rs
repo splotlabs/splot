@@ -14,12 +14,13 @@
 use libfuzzer_sys::fuzz_target;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, IntraCardinalDirection,
-    IntraCardinalEdges, IntraDcEdges, IntraPaethEdges, IntraRectBlockSize, IntraSmoothEdges,
-    IntraSmoothMode, IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect,
-    PlaneSize, ReconSample, predict_intra_cardinal_directional_rect_into,
-    apply_intra_ibp_dc_rect, predict_intra_dc_rect_into, predict_intra_dc_rect_value,
-    predict_intra_dc_square, predict_intra_dc_square_into, predict_intra_dc_square_value,
-    predict_intra_dc_subsampled_rect_into, predict_intra_dc_subsampled_rect_value,
+    IntraCardinalEdges, IntraDcEdges, IntraDirectionalAngleEdges, IntraPaethEdges,
+    IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode, IntraSquareBlockSize, OutputIndex,
+    PixelFormat, PlaneId, PlaneRect, PlaneSize, ReconSample, apply_intra_ibp_dc_rect,
+    predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_into,
+    predict_intra_dc_rect_value, predict_intra_dc_square, predict_intra_dc_square_into,
+    predict_intra_dc_square_value, predict_intra_dc_subsampled_rect_into,
+    predict_intra_dc_subsampled_rect_value, predict_intra_directional_angle_rect_from_p_angle_into,
     predict_intra_paeth_rect_into, predict_intra_smooth_rect_into,
 };
 
@@ -48,13 +49,14 @@ fuzz_target!(|data: &[u8]| {
 fn run_case<T: ReconSample>(input: &mut FuzzInput<'_>, bit_depth: BitDepth) {
     let operations = 1 + usize::from(input.byte()) % MAX_OPERATIONS;
     for _ in 0..operations {
-        match input.byte() % 7 {
+        match input.byte() % 8 {
             0 => run_direct_dc_case::<T>(input, bit_depth),
             1 => run_direct_paeth_case::<T>(input, bit_depth),
             2 => run_direct_smooth_case::<T>(input, bit_depth),
             3 => run_direct_cardinal_case::<T>(input, bit_depth),
             4 => run_direct_ibp_dc_case::<T>(input, bit_depth),
-            5 => run_interior_workspace_case::<T>(input, bit_depth),
+            5 => run_direct_directional_angle_case::<T>(input, bit_depth),
+            6 => run_interior_workspace_case::<T>(input, bit_depth),
             _ => run_random_workspace_case::<T>(input, bit_depth),
         }
     }
@@ -229,6 +231,50 @@ fn run_direct_ibp_dc_case<T: ReconSample>(input: &mut FuzzInput<'_>, bit_depth: 
     let _ = apply_intra_ibp_dc_rect(bit_depth, size, edges, &mut output, stride);
 }
 
+fn run_direct_directional_angle_case<T: ReconSample>(
+    input: &mut FuzzInput<'_>,
+    bit_depth: BitDepth,
+) {
+    let Some(size) = rect_size_from_input(input) else {
+        return;
+    };
+    let selector = input.byte();
+    let edge_len = size.width() + size.height();
+    let Some(mut left) = samples_from_input::<T>(input, edge_len, bit_depth) else {
+        return;
+    };
+    let Some(mut above) = samples_from_input::<T>(input, edge_len, bit_depth) else {
+        return;
+    };
+    let Some(mut output) = output_buffer::<T>(input, size, bit_depth) else {
+        return;
+    };
+
+    if selector & 0b0100_0000 != 0 {
+        if let Some(invalid) = invalid_sample::<T>(bit_depth) {
+            if selector & 0b0000_0001 == 0 {
+                left[edge_len - 1] = invalid;
+            } else {
+                above[edge_len - 1] = invalid;
+            }
+        }
+    }
+
+    let left_len = maybe_short_len(edge_len, selector & 0b0000_0010 != 0);
+    let above_len = maybe_short_len(edge_len, selector & 0b0000_0100 != 0);
+    let edges = directional_angle_edges(selector, &left[..left_len], &above[..above_len]);
+    let stride = output_stride(input, size.width());
+    let p_angle = directional_angle_pangle(selector);
+    let _ = predict_intra_directional_angle_rect_from_p_angle_into(
+        bit_depth,
+        size,
+        p_angle,
+        edges,
+        &mut output,
+        stride,
+    );
+}
+
 fn run_interior_workspace_case<T: ReconSample>(input: &mut FuzzInput<'_>, bit_depth: BitDepth) {
     let Some(size) = rect_size_from_input(input) else {
         return;
@@ -369,6 +415,19 @@ fn cardinal_edges<'a, T: ReconSample>(
     }
 }
 
+fn directional_angle_edges<'a, T: ReconSample>(
+    selector: u8,
+    left: &'a [T],
+    above: &'a [T],
+) -> IntraDirectionalAngleEdges<'a, T> {
+    match (selector >> 3) & 0b0000_0011 {
+        0 => IntraDirectionalAngleEdges::new(None, None),
+        1 => IntraDirectionalAngleEdges::left(left),
+        2 => IntraDirectionalAngleEdges::above(above),
+        _ => IntraDirectionalAngleEdges::both(left, above),
+    }
+}
+
 fn output_buffer<T: ReconSample>(
     input: &mut FuzzInput<'_>,
     size: IntraRectBlockSize,
@@ -421,6 +480,13 @@ fn sample_from_input<T: ReconSample>(input: &mut FuzzInput<'_>, bit_depth: BitDe
     T::try_from_u16(value).ok()
 }
 
+fn invalid_sample<T: ReconSample>(bit_depth: BitDepth) -> Option<T> {
+    bit_depth
+        .max_sample()
+        .checked_add(1)
+        .and_then(|value| T::try_from_u16(value).ok())
+}
+
 fn maybe_short_len(expected: usize, shorten: bool) -> usize {
     if shorten {
         expected.saturating_sub(1)
@@ -442,6 +508,21 @@ const fn cardinal_direction(selector: u8) -> IntraCardinalDirection {
         IntraCardinalDirection::Vertical
     } else {
         IntraCardinalDirection::Horizontal
+    }
+}
+
+const fn directional_angle_pangle(selector: u8) -> u16 {
+    match selector % 10 {
+        0 => 45,
+        1 => 67,
+        2 => 203,
+        3 => 0,
+        4 => 90,
+        5 => 113,
+        6 => 135,
+        7 => 157,
+        8 => 180,
+        _ => 270,
     }
 }
 
