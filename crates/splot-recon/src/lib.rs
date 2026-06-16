@@ -32,6 +32,7 @@
 //! `RECON-INTRA-SMOOTH-PREDICTION`,
 //! `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION`,
 //! `RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION`,
+//! `RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION`,
 //! `RECON-CURRENT-FRAME-WORKSPACE`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
@@ -77,8 +78,11 @@ pub use intra_directional::{
 };
 pub use intra_directional_angle::{
     IntraDirectionalAngle, IntraDirectionalAngleEdge, IntraDirectionalAngleEdges,
+    IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
     predict_intra_directional_angle_rect_from_p_angle_into,
     predict_intra_directional_angle_rect_into,
+    predict_intra_middle_directional_angle_rect_from_p_angle_into,
+    predict_intra_middle_directional_angle_rect_into,
 };
 pub use intra_ibp_dc::apply_intra_ibp_dc_rect;
 pub use intra_smooth::{
