@@ -70,6 +70,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "decode_runtime_y4m_bytes"
+path = "fuzz_targets/decode_runtime_y4m_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "recon_y4m_output_bytes"
 path = "fuzz_targets/recon_y4m_output_bytes.rs"
 test = false

@@ -138,7 +138,8 @@ jobs:
   # parse_ivf (IVF container), parse_bitstream (container auto-detect + envelope
   # parsing), validate_bytes (full validator + payload parsers, the
   # highest-coverage target), decode_plan_bytes (raw byte planner),
-  # decode_runtime_hash_bytes (minimal runtime hash byte API), and
+  # decode_runtime_hash_bytes (minimal runtime hash byte API),
+  # decode_runtime_y4m_bytes (minimal runtime Y4M byte API), and
   # recon_y4m_output_bytes (Y4M output serialization), and
   # recon_intra_prediction_bytes (intra prediction/workspace primitives).
   # cargo-fuzz needs a nightly toolchain (ASan + coverage are nightly-only).
@@ -186,13 +187,16 @@ jobs:
             # decode_plan_bytes also consumes a leading limit-policy byte. Keep
             # the fixture bytes intact as the bitstream payload after that flag.
             printf '\377' | cat - "$f" > "fuzz/corpus/decode_plan_bytes/fixture-$name"
-            # decode_runtime_hash_bytes consumes a leading mode/limit byte.
-            # Prefix raw mode so fixture bytes stay intact after the flag.
+            # decode_runtime_hash_bytes and decode_runtime_y4m_bytes consume a
+            # leading mode/limit byte. Prefix raw mode so fixture bytes stay
+            # intact after the flag.
             printf '\000' | cat - "$f" > "fuzz/corpus/decode_runtime_hash_bytes/raw-$name"
+            printf '\000' | cat - "$f" > "fuzz/corpus/decode_runtime_y4m_bytes/raw-$name"
           done
           # Prefix fixture mode with zero mutations so the embedded minimal
-          # runtime fixture reaches the success-path hash report.
+          # runtime fixture reaches the success-path runtime APIs.
           printf '\200\000' > "fuzz/corpus/decode_runtime_hash_bytes/minimal-fixture-unmutated"
+          printf '\200\000' > "fuzz/corpus/decode_runtime_y4m_bytes/minimal-fixture-unmutated"
           # parse_ivf rejects non-DKIF input at the signature, so raw Annex-B
           # fixtures only exercise the error path; wrap each one in a minimal
           # 32-byte IVF header plus one 12-byte frame header for valid-path seeds.
@@ -224,6 +228,7 @@ jobs:
             printf '\003\377' | cat - "$f" > "fuzz/corpus/validate_bytes/conf-hls-$name"
             printf '\377' | cat - "$f" > "fuzz/corpus/decode_plan_bytes/conf-$name"
             printf '\000' | cat - "$f" > "fuzz/corpus/decode_runtime_hash_bytes/conf-raw-$name"
+            printf '\000' | cat - "$f" > "fuzz/corpus/decode_runtime_y4m_bytes/conf-raw-$name"
           done
           python3 -c '
           import glob, os, struct
