@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! AV2 tile-group **structure / payload writers** (`ENC-BITSTREAM-WRITER`) — the exact inverses of
-//! the § 5.19 `tile_group_obu()` structure parser and the § 5.20.1 `tile_group_payload()` framing
-//! parser in [`crate::headers::tile_group`]:
+//! AV2 tile-group **structure / payload / OBU writers** (`ENC-BITSTREAM-WRITER`) — the exact
+//! inverses of the § 5.19 `tile_group_obu()` structure parser and the § 5.20.1
+//! `tile_group_payload()` framing parser in [`crate::headers::tile_group`], plus the composing
+//! `tile_group_obu()` writer that sequences them:
 //!
 //! - [`write_tile_group_structure`] — `tile_group_obu()` structure (AV2 v1.0.0 § 5.19,
 //!   `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19`): the optional
@@ -17,6 +18,14 @@
 //!   coded-tile bytes only (no size field — its `tileSize` is the region remainder). The coded-tile
 //!   bytes are not modeled by the parser, so they are supplied as a per-tile passthrough
 //!   (`tile_data: &[&[u8]]`) and emitted verbatim.
+//! - [`write_tile_group_obu`] — the composing **first-tile-group** `tile_group_obu()` writer (AV2
+//!   v1.0.0 § 5.19, `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19`): the inverse of
+//!   `parse_tile_group_prefix` + `frame_header()` + `parse_tile_group_structure` +
+//!   `parse_tile_group_framing` for `is_first_tile_group == 1`. It emits, in § 5.19 read order, the
+//!   `is_first_tile_group = 1` flag, the embedded `frame_header()` (via
+//!   [`crate::write::frame_header_core::write_frame_header_core`]), the § 5.19 structure, and the
+//!   § 5.20.1 payload framing — drafting the whole OBU payload into a scratch [`BitWriter`] and
+//!   committing only on full success. It owns no OBU header / size / trailing bits.
 //!
 //! Like the other writers this module is additive: it depends on the model/parser read-only and
 //! serializes a parsed structure back to bits via [`BitWriter`]. It threads the same
@@ -32,11 +41,13 @@
 //! fields (`tile_start_and_end_present_flag`, `tg_start`, `tg_end`) and **byte-exact** for the
 //! emitted structure region.
 
+use crate::headers::frame::{CoreSeqView, FrameHeaderCore, MfhFrameView};
 use crate::headers::tile_group::{
     TileGroupFraming, TileGroupLayout, TileGroupStructure, TileGroupStructureOutcome,
 };
 use crate::write::bit_writer::BitWriter;
 use crate::write::error::{WriteError, WriteResult};
+use crate::write::frame_header_core::write_frame_header_core;
 
 /// Writes the § 5.19 `tile_group_obu()` structure (AV2 v1.0.0 § 5.19,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19`), the exact inverse of
@@ -329,6 +340,92 @@ fn check_tile_group_payload_encodable(
     Ok(())
 }
 
+/// Writes a whole **first-tile-group** `tile_group_obu()` payload (AV2 v1.0.0 § 5.19,
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19`), the inverse of the sequence
+/// [`parse_tile_group_prefix`](crate::headers::tile_group::parse_tile_group_prefix), `frame_header()`,
+/// [`parse_tile_group_structure`](crate::headers::tile_group::parse_tile_group_structure), and
+/// [`parse_tile_group_framing`](crate::headers::tile_group::parse_tile_group_framing) for
+/// `is_first_tile_group == 1`.
+///
+/// In § 5.19 read order it emits, into a scratch [`BitWriter`]:
+/// 1. `is_first_tile_group` `f(1)` = `1` (the first-group form; `frame_header_present_flag` is the
+///    inferred `1`, so no bit — mirror :8431-8435).
+/// 2. the embedded `frame_header()` via [`write_frame_header_core`] (the intra path; it takes the
+///    already-built `core` + `seq` + optional `mfh` + `first_picture_in_tu`).
+/// 3. the § 5.19 structure via [`write_tile_group_structure`] — which emits the tile-range bits then
+///    the closing `byte_alignment()`, so the scratch is byte-aligned after it.
+/// 4. the § 5.20.1 payload framing via [`write_tile_group_payload`] — which then runs byte-aligned
+///    (its own guard holds because the structure ended with `byte_alignment()`).
+///
+/// The whole composition is drafted into the scratch writer and committed to the caller's `writer`
+/// only on full success (`writer.append(&scratch)`), so any sub-writer reject — the frame-header,
+/// structure, or payload check — leaves `writer` untouched (`bit_len()` unchanged): reject-before-write
+/// for the whole OBU payload. The composer does **not** insert any alignment itself (the structure
+/// writer's `byte_alignment()` handles it) and owns no OBU header / size / trailing bits (the OBU
+/// writer's job).
+///
+/// `is_first_tile_group` is the § 5.19 first-group selector. This composer is the first-group form
+/// (`is_first_tile_group == 1`); the non-first `frame_header_copy()` continuation
+/// (`is_first_tile_group == 0`) is out of scope and rejected before any bit.
+///
+/// # Errors
+/// - [`WriteError::NonCanonicalTileGroup`] with `what == "continuation_unsupported"` if
+///   `is_first_tile_group == false` (the non-first `frame_header_copy()` continuation is a follow-up
+///   slice), rejected before any bit.
+/// - Any [`WriteError`] a delegated sub-writer raises: the frame-header check
+///   ([`WriteError::NonCanonicalFrameHeader`] for a non-intra / non-reproducible `core`), the
+///   structure check ([`WriteError::NonCanonicalTileGroup`] for a non-`Complete` / degenerate /
+///   out-of-range structure), or the payload check ([`WriteError::NonCanonicalTileGroup`] for a
+///   defective / mismatched framing). Every sub-writer's own reject-before-write composes through the
+///   scratch buffer, so the caller's `writer` is untouched on any failure. The payload writer's
+///   [`WriteError::WriterNotByteAligned`] guard cannot trip here: step 3's `byte_alignment()` leaves
+///   the scratch byte-aligned before the payload step.
+#[allow(clippy::too_many_arguments)]
+pub fn write_tile_group_obu(
+    writer: &mut BitWriter,
+    core: &FrameHeaderCore,
+    seq: &CoreSeqView,
+    mfh: Option<&MfhFrameView>,
+    first_picture_in_tu: bool,
+    structure: &TileGroupStructure,
+    layout: TileGroupLayout,
+    framing: &TileGroupFraming,
+    tile_data: &[&[u8]],
+    tile_size_bytes: u32,
+    is_first_tile_group: bool,
+) -> WriteResult<()> {
+    // § 5.19 (mirror :8431-8435): this composer is the first-group form. A requested non-first form
+    // (the frame_header_copy() continuation) is out of scope; reject before any bit so the caller's
+    // writer is untouched.
+    if !is_first_tile_group {
+        return Err(WriteError::NonCanonicalTileGroup {
+            what: "continuation_unsupported",
+        });
+    }
+
+    // Draft the whole OBU payload into a scratch writer; commit to the caller's `writer` only on
+    // full success so any sub-writer reject mid-compose never leaves a partial buffer (the caller's
+    // `writer.bit_len()` is unchanged). Each sub-writer also validates before its own first bit, so
+    // the whole composition is reject-before-write.
+    let mut scratch = BitWriter::new();
+
+    // 1. is_first_tile_group f(1) = 1 (frame_header_present_flag is the inferred 1, no bit).
+    scratch.write_bit(1)?;
+
+    // 2. frame_header() — the whole intra frame_header_info() (§ 5.18.2 activation prefix + core).
+    write_frame_header_core(&mut scratch, core, seq, mfh, first_picture_in_tu)?;
+
+    // 3. § 5.19 structure: the tg-range bits then the closing byte_alignment() (leaves the scratch
+    //    byte-aligned).
+    write_tile_group_structure(&mut scratch, structure, layout)?;
+
+    // 4. § 5.20.1 payload framing — runs byte-aligned (the structure's byte_alignment() holds the
+    //    payload writer's own guard). is_bridge is false (the intra path has IsBridge == 0).
+    write_tile_group_payload(&mut scratch, framing, tile_data, tile_size_bytes, false)?;
+
+    writer.append(&scratch)
+}
+
 // The unit/rejection tests and the property tests live in sibling files (kept under the advisory
 // source-line limit); `include!` pastes them into this module so their `super::*` resolves to the
 // writers and private helpers above.
@@ -336,3 +433,5 @@ fn check_tile_group_payload_encodable(
 include!("tile_group_tests.rs");
 #[cfg(test)]
 include!("tile_group_proptests.rs");
+#[cfg(test)]
+include!("tile_group_obu_tests.rs");
