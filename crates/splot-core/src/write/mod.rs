@@ -37,6 +37,11 @@
 //! OBU forms, [`metadata::write_metadata_unit`] writes a bounded `metadata_unit()` with its § 6.16.1
 //! padding, and [`metadata::write_metadata_payload`] dispatches the 11 typed child payloads
 //! (length-summarized blob bytes are supplied as a separate `passthrough` slice).
+//! [`tile_group`] writes the § 5.19 `tile_group_obu()` structure
+//! ([`tile_group::write_tile_group_structure`], the inverse of `parse_tile_group_structure`): the
+//! optional `tile_start_and_end_present_flag` / `tg_start` / `tg_end` tile-range fields and the
+//! closing `byte_alignment()` (the parse-context `outcome` / `header_bytes` / `payload_size`
+//! artifacts belong to the composing OBU writer, not this slice).
 //! More payload writers will build on this module as the writer surface grows; see
 //! `docs/spec-coverage-writer.md` (once landed) for the per-structure coverage matrix.
 
@@ -57,6 +62,7 @@ pub mod segment;
 pub mod seq_config;
 pub mod seq_header;
 pub mod seq_tile;
+pub mod tile_group;
 
 pub use bit_writer::BitWriter;
 pub use error::{WriteError, WriteResult};
@@ -89,3 +95,4 @@ pub use seq_header::{
 pub use seq_tile::{
     write_sequence_filter_config, write_sequence_header, write_sequence_tile_config,
 };
+pub use tile_group::write_tile_group_structure;

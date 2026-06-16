@@ -178,6 +178,23 @@ pub enum WriteError {
         what: &'static str,
     },
 
+    /// A § 5.19 `tile_group_obu()` structure value either could not have been produced by
+    /// `parse_tile_group_structure` (AV2 v1.0.0 § 5.19,
+    /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19`) — so writing it would break
+    /// `read(write(x)) == x` — or is a § 6.18 conformance violation the writer refuses to emit.
+    /// Non-reproducible examples: a non-`Complete` (truncated) structure, a degenerate
+    /// `NumTiles == 0` layout, a `tg_start` / `tg_end` outside `f(tileBits)`, or a tile-range/flag
+    /// combination the parser's inference could not produce. Conformance refusals (the § 5.19 parser
+    /// tolerates these — it reads the `f(tileBits)` values without enforcing § 6.18 — but the writer
+    /// will not emit a stream `splot validate` would reject): an inverted `tg_end < tg_start` range,
+    /// or a `tg_end >= NumTiles` out-of-range index (a non-power-of-two grid has spare `f(tileBits)`
+    /// codes above the last tile). Rejected before any bit is written.
+    #[error("non-canonical {what}: tile-group value cannot be reproduced by the §5.19 parser")]
+    NonCanonicalTileGroup {
+        /// A short, stable label for the offending field (e.g. `"incomplete_structure"`, `"tg_range"`).
+        what: &'static str,
+    },
+
     /// A metadata-OBU value is inconsistent with what the AV2 v1.0.0 § 5.17
     /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-17`) / § 6.16 parsers would
     /// re-derive on reparse, so the model could never have been produced by the metadata
