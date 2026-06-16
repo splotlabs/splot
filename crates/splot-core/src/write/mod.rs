@@ -52,10 +52,18 @@
 //! `frame_header()` (via `write_frame_header_core`), the § 5.19 structure, and the § 5.20.1 payload
 //! framing into one OBU payload, drafting into a scratch writer and committing only on full success
 //! (it owns no OBU header / size / trailing bits).
+//! [`dispatch`] composes these per-structure writers into the unified complete-OBU writer (the
+//! inverse of `dispatch_obu_payload` + `finish_obu_payload`):
+//! [`dispatch::write_obu_payload`] emits a [`crate::obu::ParsedObu`]'s typed body plus the § 5.2.1 /
+//! § 6.2.1 OBU tail (`obu_extension_flag = 0` + `trailing_bits()` for an extensible non-empty body;
+//! nothing for the temporal delimiter; padding owns its own tail), and
+//! [`dispatch::write_complete_obu`] prepends the § 5.2.2 header. The five OBU types with a body
+//! writer are emitted; the other nine return [`error::WriteError::Unimplemented`].
 //! More payload writers will build on this module as the writer surface grows; see
 //! `docs/spec-coverage-writer.md` (once landed) for the per-structure coverage matrix.
 
 pub mod bit_writer;
+pub mod dispatch;
 pub mod error;
 pub mod frame_config;
 pub mod frame_filters;
@@ -75,6 +83,7 @@ pub mod seq_tile;
 pub mod tile_group;
 
 pub use bit_writer::BitWriter;
+pub use dispatch::{write_complete_obu, write_obu_payload};
 pub use error::{WriteError, WriteResult};
 pub use frame_config::{write_frame_size, write_intrabc_params, write_screen_content_params};
 pub use frame_filters::{write_cdef_params, write_deblocking_filter_params, write_gdf_params};
@@ -89,7 +98,8 @@ pub use frame_segmentation::write_segmentation_params;
 pub use frame_tail::{write_film_grain_config, write_intra_tail, write_tx_mode};
 pub use frame_tiling::write_tile_info;
 pub use metadata::{
-    write_metadata_group_obu, write_metadata_payload, write_metadata_short_obu, write_metadata_unit,
+    write_metadata_group_obu, write_metadata_group_obu_flat, write_metadata_payload,
+    write_metadata_short_obu, write_metadata_unit,
 };
 pub use obu::{write_annexb_obu, write_obu_header, write_obu_header_extension};
 pub use segment::write_seg_info;
