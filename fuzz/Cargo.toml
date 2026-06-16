@@ -22,7 +22,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 splot-core = { path = "../crates/splot-core" }
-splot-decode = { path = "../crates/splot-decode" }
+splot-decode = { path = "../crates/splot-decode", features = ["fuzzing"] }
 splot-parallel = { path = "../crates/splot-parallel" }
 splot-recon = { path = "../crates/splot-recon" }
 splot-validate = { path = "../crates/splot-validate" }
@@ -58,6 +58,13 @@ bench = false
 [[bin]]
 name = "symbol_decoder_bytes"
 path = "fuzz_targets/symbol_decoder_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tile_payload_decode_bytes"
+path = "fuzz_targets/tile_payload_decode_bytes.rs"
 test = false
 doc = false
 bench = false

@@ -189,6 +189,71 @@ fixtures = ["fuzz/fuzz_targets/symbol_decoder_bytes.rs"]
 diagnostics = []
 
 [[feature]]
+id = "CONF-TILE-PAYLOAD-DECODE-FUZZ"
+name = "Tile payload decode no-panic fuzzing"
+category = "conformance"
+kind = "conformance"
+spec_sections = ["5.19", "5.20.1", "5.20.2.1", "5.20.3.1", "5.20.3.2", "6.19.1", "6.19.2.1", "6.19.3", "8.2.2", "8.2.4", "8.2.6", "8.3.1", "8.3.2", "9.2", "9.3"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-2-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-3",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-2",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-4",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-6",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-1",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
+]
+crate = "fuzz"
+module = "fuzz/fuzz_targets/tile_payload_decode_bytes.rs"
+openspec_change = "tile-payload-decode-fuzz"
+tracking_issue = ""
+owner = "conformance"
+risk = "medium"
+notes = "Self-contained cargo-fuzz target for the current minimal `splot-decode` tile-payload runtime byte frontier: it calls a `fuzzing`-feature harness over the existing crate-private tile-payload boundary and minimal block-symbol frontier, feeds bounded arbitrary in-memory tile-payload bytes plus bounded mutations of the known-good two-byte minimal frontier payload, enforces finite `DecodeLimits`, asserts only stable boundary/frontier success invariants, and accepts typed decoder errors for malformed or unsupported mutations. The row provides robustness evidence only; it does not implement or claim full AV2 §5.20 `decode_tile()`, recursive partition/block syntax, broad §8.3 CDF selection, all Tile/Saved CDF banks, reconstruction expansion, hash/Y4M output behavior changes, reference refresh, public production APIs, AVM/dav2d/ffmpeg agreement, filesystem I/O, network I/O, subprocesses, new dependencies, scheduler changes, or new AV2 semantics."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "fuzz/fuzz_targets/tile_payload_decode_bytes.rs",
+    "crates/splot-decode/src/fuzzing.rs",
+    "crates/splot-decode/src/tile_payload/tests.rs",
+    "crates/splot-decode/src/tile_payload/runtime_frontier.rs::tests",
+    "crates/splot-decode/src/runtime_hash.rs::tests::tile_payload_byte_mutations_return_typed_results",
+]
+commands = [
+    "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
+    "cargo xtask check-fuzz-targets",
+    "cargo test -p splot-decode tile_payload --locked",
+    "cargo test -p splot-decode runtime_hash --locked",
+    "cargo +nightly fuzz run tile_payload_decode_bytes (local/nightly; CI fuzz smoke runs every target)",
+]
+fixtures = [
+    "fuzz/fuzz_targets/tile_payload_decode_bytes.rs",
+    "crates/splot-decode/src/fuzzing.rs",
+    "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
+]
+diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
+
+[[feature]]
 id = "AV2-4.11.4-SVLC"
 name = "Signed variable-length code descriptor"
 category = "normative"
@@ -6407,8 +6472,11 @@ perf = "not-applicable"
 [feature.proof]
 tests = [
     "crates/splot-decode/src/tile_payload/tests.rs",
+    "fuzz/fuzz_targets/tile_payload_decode_bytes.rs",
 ]
 commands = [
+    "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
+    "cargo xtask check-fuzz-targets",
     "cargo test -p splot-decode tile_payload --locked",
     "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
     "cargo test -p splot-decode --locked",
@@ -6420,6 +6488,8 @@ fixtures = [
     "crates/splot-decode/src/lib.rs",
     "crates/splot-decode/src/tile_payload.rs",
     "crates/splot-decode/src/tile_payload/tests.rs",
+    "crates/splot-decode/src/fuzzing.rs",
+    "fuzz/fuzz_targets/tile_payload_decode_bytes.rs",
 ]
 diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
 
