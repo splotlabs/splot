@@ -2,7 +2,7 @@
 
 Generated from `docs/DECODER-SUPPORT-MATRIX.toml` by `cargo xtask decoder-support --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 46 row(s).
+Matrix version 1. Last reviewed 2026-06-15. 47 row(s).
 
 ## Status Counts
 
@@ -10,7 +10,7 @@ Matrix version 1. Last reviewed 2026-06-15. 46 row(s).
 |---|---:|
 | `todo` | 0 |
 | `partial` | 9 |
-| `supported` | 37 |
+| `supported` | 38 |
 | `unsupported-intentional` | 0 |
 | `blocked` | 0 |
 
@@ -21,7 +21,7 @@ Matrix version 1. Last reviewed 2026-06-15. 46 row(s).
 | `encoder-reuse` | 1 |
 | `foundation` | 20 |
 | `tier0-plan` | 2 |
-| `tier1-intra` | 23 |
+| `tier1-intra` | 24 |
 
 ## Rows
 
@@ -70,6 +70,7 @@ Matrix version 1. Last reviewed 2026-06-15. 46 row(s).
 | `current-frame-workspace` | Current-frame reconstruction workspace | `RECON-CURRENT-FRAME-WORKSPACE` | `tier1-intra` | `supported` | 6.4.1<br>6.17.4.1<br>6.17.4.4<br>7.13.2.1<br>7.13.2.2<br>7.13.2.10<br>7.13.2.13 | crates/splot-recon/src/workspace_tests.rs<br>crates/splot-recon/src/workspace_tests.rs::workspace_extracts_edges_and_predicts_rectangular_dc<br>crates/splot-recon/src/workspace_tests.rs::workspace_predicts_rectangular_paeth_from_in_storage_edges<br>crates/splot-recon/src/workspace_tests.rs::workspace_paeth_rejects_missing_prepared_edges<br>crates/splot-recon/src/workspace_tests.rs::workspace_predicts_rectangular_smooth_from_in_storage_edges<br>crates/splot-recon/src/workspace_tests.rs::workspace_smooth_rejects_missing_prepared_edges<br>cargo test -p splot-recon --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-source-lines<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/workspace.rs; crates/splot-recon/src/workspace_tests.rs; crates/splot-recon/src/lib.rs` |
 | `intra-reconstruction` | Scalar intra reconstruction | none | `tier1-intra` | `partial` | 7.13<br>7.14<br>7.15 | none | decode/unsupported-feature (planned) | none | `planned` |
 | `output-y4m` | Y4M output writer | `RECON-Y4M-OUTPUT-WRITER` | `tier1-intra` | `partial` | 6.4.1<br>6.16.13<br>6.17.4.4<br>7.21.1<br>7.21.2 | crates/splot-recon/src/y4m.rs::tests<br>crates/splot-decode/src/runtime_y4m.rs::tests::minimal_fixture_decodes_to_exact_y4m_bytes<br>crates/splot-cli/tests/decode_y4m_cli.rs::decode_explicit_y4m_success_for_minimal_fixture<br>cargo test -p splot-recon --locked<br>cargo test -p splot-decode --locked<br>cargo test -p splot-cli --test decode_y4m_cli --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/y4m.rs; crates/splot-recon/src/lib.rs` |
+| `recon-y4m-output-fuzz` | Y4M output serialization fuzz entry point | `CONF-RECON-Y4M-OUTPUT-FUZZ` | `tier1-intra` | `supported` | 6.4.1<br>6.16.13<br>6.17.4.4<br>7.21.1<br>7.21.2 | cargo check --manifest-path fuzz/Cargo.toml --bins --locked<br>cargo xtask check-fuzz-targets<br>cargo test -p splot-recon y4m --locked<br>cargo +nightly fuzz run recon_y4m_output_bytes (local/nightly; CI fuzz smoke runs every target) | none | none | `crates/splot-recon/src/y4m.rs` |
 | `reference-frame-store` | Reconstructed reference-frame store | `RECON-REFERENCE-FRAME-STORE` | `encoder-reuse` | `supported` | 3<br>5.4.6<br>6.4.6<br>7.23 | crates/splot-recon/src/reference.rs::tests<br>cargo test -p splot-recon --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/reference.rs` |
 | `decode-fuzz-entrypoint` | Decode fuzz entry point | `DECODE-BYTE-STREAM-PLANNER` | `foundation` | `supported` | 4.11.6<br>Annex B.2<br>5.2.1<br>7.1 | cargo check --manifest-path fuzz/Cargo.toml --bins<br>cargo +nightly fuzz run decode_plan_bytes (local/nightly; CI fuzz smoke runs every target) | none | none | `crates/splot-decode/src/context.rs::DecodeContext::plan_bytes` |
 | `decode-runtime-hash-fuzz` | Decode runtime hash fuzz entry point | `CONF-DECODE-RUNTIME-HASH-FUZZ` | `tier1-intra` | `supported` | Annex B.2<br>Annex B.3<br>5.2<br>5.19<br>5.20.1<br>7.1<br>7.21 | cargo check --manifest-path fuzz/Cargo.toml --bins --locked<br>cargo xtask check-fuzz-targets<br>cargo test -p splot-decode runtime_hash --locked<br>cargo +nightly fuzz run decode_runtime_hash_bytes (local/nightly; CI fuzz smoke runs every target) | decode/malformed-source<br>decode/resource-limit<br>decode/unsupported-feature | none | `crates/splot-decode/src/context.rs::DecodeContext::decode_hash_report_bytes` |

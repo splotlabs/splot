@@ -604,6 +604,20 @@ local_reference_evidence = []
 notes = "Source-backed library Y4M writer for caller-supplied `DecodedFrame<T>` values exists in `splot-recon`. It writes stream headers, `FRAME` headers, and cropped visible Y/U/V samples using repository-owned Y4M chroma tags, caller-supplied frame rate, progressive output, and the same visible-row byte policy as decoded-frame hashes. The narrow runtime `splot decode -o` use is supported only by `decode-y4m-runtime-output` for the committed minimal IVF tier. This row remains partial because broad byte-consuming decode, reconstruction algorithms, output scheduling, film-grain synthesis, AV2 reference refresh, AVM/dav2d invocation, local-reference evidence for Y4M container bytes, and CI reference-tool requirements are still unsupported."
 
 [[row]]
+id = "recon-y4m-output-fuzz"
+name = "Y4M output serialization fuzz entry point"
+feature_id = "CONF-RECON-Y4M-OUTPUT-FUZZ"
+spec_sections = ["6.4.1", "6.16.13", "6.17.4.4", "7.21.1", "7.21.2"]
+parser_source = "fuzz/fuzz_targets/recon_y4m_output_bytes.rs"
+decode_module = "crates/splot-recon/src/y4m.rs"
+tier = "tier1-intra"
+status = "supported"
+self_contained_tests = ["cargo check --manifest-path fuzz/Cargo.toml --bins --locked", "cargo xtask check-fuzz-targets", "cargo test -p splot-recon y4m --locked", "cargo +nightly fuzz run recon_y4m_output_bytes (local/nightly; CI fuzz smoke runs every target)"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Self-contained cargo-fuzz target `recon_y4m_output_bytes` normalizes arbitrary bytes into bounded valid `splot-recon` decoded frames, then exercises `Y4mWriter` stream-header, frame-header, visible-payload, matching multi-frame, stream/frame mismatch, and failing-writer paths with typed returns/no panic. It requires no AVM, dav2d, ffmpeg, filesystem I/O, network access, subprocesses, generated external fixtures, checked-in local reference paths, runtime `splot decode`, raw output, or hash report output. This row does not claim broad runtime decode, byte-consuming runtime Y4M decode, output publication, or support beyond source-backed Y4M serialization over caller-supplied frames."
+
+[[row]]
 id = "reference-frame-store"
 name = "Reconstructed reference-frame store"
 feature_id = "RECON-REFERENCE-FRAME-STORE"

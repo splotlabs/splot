@@ -137,9 +137,10 @@ jobs:
   # surfaces: parse_obu (read_leb128 / read_obu_header / parse_annex_b_obus),
   # parse_ivf (IVF container), parse_bitstream (container auto-detect + envelope
   # parsing), validate_bytes (full validator + payload parsers, the
-  # highest-coverage target), decode_plan_bytes (raw byte planner), and
-  # decode_runtime_hash_bytes (minimal runtime hash byte API). cargo-fuzz needs a
-  # nightly toolchain (ASan + coverage are nightly-only).
+  # highest-coverage target), decode_plan_bytes (raw byte planner),
+  # decode_runtime_hash_bytes (minimal runtime hash byte API), and
+  # recon_y4m_output_bytes (Y4M output serialization). cargo-fuzz needs a nightly
+  # toolchain (ASan + coverage are nightly-only).
   fuzz-smoke:
     runs-on: ubuntu-latest
     steps:

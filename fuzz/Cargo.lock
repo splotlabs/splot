@@ -281,6 +281,7 @@ dependencies = [
  "splot-core",
  "splot-decode",
  "splot-parallel",
+ "splot-recon",
  "splot-validate",
 ]
 
