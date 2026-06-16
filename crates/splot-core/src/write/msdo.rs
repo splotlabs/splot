@@ -23,8 +23,7 @@ const NUM_STREAMS_MINUS_2_BITS: u32 = 3;
 /// `multistream_profile_idc` / `multistream_level_idx` / the per-substream profile, level, and
 /// xlayer ids are `f(5)`.
 const F5: u32 = 5;
-/// `multistream_tier` / `sub_stream_max_tier` / `multistream_large_picture_idc`-less flags are 1 or
-/// 3 bits; `multistream_large_picture_idc` is `f(3)`.
+/// `multistream_large_picture_idc` is `f(3)`.
 const LARGE_PICTURE_IDC_BITS: u32 = 3;
 /// `multistream_tier` and `sub_stream_max_tier` are `f(1)`.
 const TIER_BITS: u32 = 1;
