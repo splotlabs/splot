@@ -32,4 +32,4 @@
 
 - [x] 6.1 Archive the OpenSpec change with `openspec archive tile-cdf-save-lifecycle-boundary --yes` and commit the archive in this branch.
 - [x] 6.2 Re-run relevant gates after archive.
-- [ ] 6.3 Open a ready, non-draft PR with spec sections, matrix rows, tests, reviewer decisions, and known exclusions.
+- [x] 6.3 Open a ready, non-draft PR with spec sections, matrix rows, tests, reviewer decisions, and known exclusions.
