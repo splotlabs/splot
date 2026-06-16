@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Cross-tool agreement (`ENC-BITSTREAM-WRITER`): a bitstream the `splot-core` WRITER produces must
-//! pass the `splot-validate` VALIDATOR with zero error diagnostics. This is the complement of the
-//! `parse → write → reparse` round-trip harness (`splot-core` `write::roundtrip_obu`): there the
-//! writer is checked against the parser, here against the validator.
+//! Cross-tool agreement (`ENC-BITSTREAM-WRITER`): when the `splot-core` WRITER re-emits an
+//! already-conformant bitstream, the re-emission must still pass the `splot-validate` VALIDATOR with
+//! zero error diagnostics. (This is *not* a claim that every writer output is conformant — the writer
+//! serializes any encodable model, including a non-conformant one; it reproduces its input rather than
+//! validating it.) This is the complement of the `parse → write → reparse` round-trip harness
+//! (`splot-core` `write::roundtrip_obu`): there the writer is checked against the parser, here the
+//! re-emission of a conformant stream is checked against the validator.
 //!
 //! `splot-validate` already depends on `splot-core`, so this integration test can drive both the
 //! writer (`splot_core::write::*`) and the validator (`splot_validate::Validator`) in one process,
