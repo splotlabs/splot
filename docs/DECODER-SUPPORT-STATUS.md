@@ -2,7 +2,7 @@
 
 Generated from `docs/DECODER-SUPPORT-MATRIX.toml` by `cargo xtask decoder-support --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 53 row(s).
+Matrix version 1. Last reviewed 2026-06-15. 54 row(s).
 
 ## Status Counts
 
@@ -10,7 +10,7 @@ Matrix version 1. Last reviewed 2026-06-15. 53 row(s).
 |---|---:|
 | `todo` | 0 |
 | `partial` | 9 |
-| `supported` | 44 |
+| `supported` | 45 |
 | `unsupported-intentional` | 0 |
 | `blocked` | 0 |
 
@@ -19,7 +19,7 @@ Matrix version 1. Last reviewed 2026-06-15. 53 row(s).
 | Tier | Rows |
 |---|---:|
 | `encoder-reuse` | 2 |
-| `foundation` | 21 |
+| `foundation` | 22 |
 | `tier0-plan` | 2 |
 | `tier1-intra` | 28 |
 
@@ -37,6 +37,7 @@ Matrix version 1. Last reviewed 2026-06-15. 53 row(s).
 | `decoder-crate-scaffolding` | Decoder and reconstruction crate scaffolding | `INFRA-DECODER-CRATE-SCAFFOLDING` | `foundation` | `supported` | none | cargo check -p splot-recon --locked<br>cargo check -p splot-decode --locked<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/lib.rs; crates/splot-decode/src/lib.rs` |
 | `decode-runtime-context` | Decode runtime context and concurrency contract | `INFRA-PARALLEL-RUNTIME-POLICY` | `foundation` | `supported` | none | crates/splot-decode/src/context.rs::tests<br>crates/splot-cli/tests/decode_cli.rs::decode_threads_fixed_is_accepted_emits_unsupported<br>crates/splot-cli/tests/decode_cli.rs::decode_threads_auto_is_accepted<br>crates/splot-cli/tests/decode_cli.rs::decode_threads_invalid_is_usage_error<br>cargo test -p splot-decode --locked<br>cargo test -p splot-cli decode_threads --locked<br>cargo xtask check-concurrency-policy<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support | none | none | `crates/splot-decode/src/context.rs; crates/splot-decode/src/runtime.rs; docs/DECODER-ROADMAP.md; docs/CONCURRENCY.md` |
 | `decoded-frame-plane-runtime-types` | Decoded frame and plane runtime types | `INFRA-RECON-FRAME-PLANE-TYPES` | `foundation` | `supported` | 6.4.1<br>6.17.4.1<br>6.17.4.4<br>7.1<br>7.21.1<br>7.21.2<br>7.23 | crates/splot-recon/src/format.rs::tests<br>crates/splot-recon/src/geometry.rs::tests<br>crates/splot-recon/src/plane.rs::tests<br>crates/splot-recon/src/frame.rs::tests<br>cargo test -p splot-recon --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/format.rs; crates/splot-recon/src/geometry.rs; crates/splot-recon/src/plane.rs; crates/splot-recon/src/frame.rs` |
+| `recon-frame-plane-types-fuzz` | Decoded frame and plane runtime type fuzz entry point | `CONF-RECON-FRAME-PLANE-TYPES-FUZZ` | `foundation` | `supported` | 6.4.1<br>6.17.4.1<br>6.17.4.4<br>7.1<br>7.21.1<br>7.21.2<br>7.23 | cargo check --manifest-path fuzz/Cargo.toml --bins --locked<br>cargo xtask check-fuzz-targets<br>cargo test -p splot-recon frame --locked<br>cargo test -p splot-recon plane --locked<br>cargo test -p splot-recon views --locked<br>cargo +nightly fuzz run recon_frame_plane_types_bytes (local/nightly; CI fuzz smoke runs every target) | none | none | `crates/splot-recon/src/format.rs; crates/splot-recon/src/geometry.rs; crates/splot-recon/src/plane.rs; crates/splot-recon/src/frame.rs; crates/splot-recon/src/views.rs` |
 | `decode-unsupported-diagnostic-api` | Decode unsupported diagnostic API | `DECODE-UNSUPPORTED-DIAGNOSTIC-API` | `foundation` | `supported` | 7.1 | crates/splot-decode/src/lib.rs::tests::unsupported_feature_diagnostic_has_stable_fields<br>crates/splot-decode/src/lib.rs::tests::unsupported_feature_diagnostic_function_returns_public_descriptor<br>crates/splot-decode/src/lib.rs::tests::decode_severity_displays_stable_spelling<br>crates/splot-decode/src/diagnostic.rs::tests<br>cargo test -p splot-decode --locked<br>cargo xtask check-diagnostic-registry<br>cargo xtask check-decoder-support | decode/unsupported-feature<br>decode/output-error | none | `crates/splot-decode/src/lib.rs; crates/splot-decode/src/diagnostic.rs` |
 | `decoder-diagnostic-registry` | Decoder diagnostic registry | `DOC-DECODER-DIAGNOSTICS` | `foundation` | `supported` | none | xtask/src/diagnostic_registry.rs::tests::decoder_registry_accepts_matching_source_and_doc<br>cargo xtask check-diagnostic-registry | none | none | `docs/DECODER-DIAGNOSTICS.md` |
 | `cli-decode-entrypoint` | splot decode CLI entry point | `CLI-DECODE` | `foundation` | `partial` | 7.1 | crates/splot-cli/tests/decode_y4m_cli.rs::decode_out_of_tier_y4m_text_mode_emits_unsupported_feature_without_touching_output<br>crates/splot-cli/tests/decode_y4m_cli.rs::decode_out_of_tier_y4m_json_mode_emits_unsupported_feature_object<br>crates/splot-cli/tests/decode_y4m_cli.rs::decode_y4m_source_error_wins_before_missing_output_parent<br>crates/splot-cli/tests/decode_cli.rs::decode_missing_input_is_operational_error_and_does_not_touch_files<br>crates/splot-cli/tests/decode_cli.rs::decode_malformed_source_text_mode_emits_structured_diagnostic<br>crates/splot-cli/tests/decode_cli.rs::decode_unsupported_structure_json_mode_uses_planner_metadata<br>crates/splot-cli/tests/decode_cli.rs::decode_resource_limit_json_mode_reports_limit_values<br>crates/splot-cli/tests/decode_cli.rs::decode_oversized_input_reports_resource_limit_without_touching_output<br>crates/splot-cli/tests/decode_y4m_cli.rs::decode_explicit_y4m_success_for_minimal_fixture<br>crates/splot-cli/tests/decode_y4m_cli.rs::decode_y4m_missing_output_parent_emits_output_error_json | decode/unsupported-feature<br>decode/malformed-source<br>decode/resource-limit<br>decode/output-error | none | `crates/splot-cli/src/commands/decode.rs; crates/splot-decode/src/lib.rs` |

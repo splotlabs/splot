@@ -4548,6 +4548,63 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "CONF-RECON-FRAME-PLANE-TYPES-FUZZ"
+name = "Decoded-frame and plane runtime type no-panic fuzzing"
+category = "conformance"
+kind = "conformance"
+spec_sections = ["6.4.1", "6.17.4.1", "6.17.4.4", "7.1", "7.21.1", "7.21.2", "7.23"]
+sources = [
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-23",
+]
+crate = "fuzz"
+module = "fuzz/fuzz_targets/recon_frame_plane_types_bytes.rs"
+openspec_change = "recon-frame-plane-fuzz"
+tracking_issue = ""
+owner = "conformance"
+risk = "medium"
+notes = "Self-contained cargo-fuzz target for the `splot-recon` decoded-frame and plane runtime type model: it normalizes arbitrary bytes into bounded valid and intentionally invalid `BitDepth`, `PixelFormat`, `PlaneSize`, `PlaneRect`, `Plane<T>`, `FramePlanes<T>`, `DecodedFrameInfo`, `DecodedFrame<T>`, borrowed view, and `SharedFrame` cases, then checks constructor/accessor invariants and typed `ReconError` returns with no panic. This is conformance/robustness proof for caller-supplied frame/plane model infrastructure only. It does not claim AV2 bitstream decode, `DecodeContext` fuzzing, reconstruction algorithms, frame hash/Y4M serialization behavior, output scheduling, film grain, metadata MD5 verification, reference refresh, §7.23 frame-store update semantics, resource diagnostics, AVM/dav2d agreement, filesystem I/O, network I/O, subprocesses, or new AV2 semantics beyond the existing source-backed runtime type constructors."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "fuzz/fuzz_targets/recon_frame_plane_types_bytes.rs",
+    "crates/splot-recon/src/format.rs::tests",
+    "crates/splot-recon/src/geometry.rs::tests",
+    "crates/splot-recon/src/plane.rs::tests",
+    "crates/splot-recon/src/frame.rs::tests",
+    "crates/splot-recon/src/views.rs::tests",
+]
+commands = [
+    "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
+    "cargo xtask check-fuzz-targets",
+    "cargo test -p splot-recon frame --locked",
+    "cargo test -p splot-recon plane --locked",
+    "cargo test -p splot-recon views --locked",
+    "cargo +nightly fuzz run recon_frame_plane_types_bytes (local/nightly; CI fuzz smoke runs every target)",
+]
+fixtures = [
+    "fuzz/fuzz_targets/recon_frame_plane_types_bytes.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "CONF-RECON-REFERENCE-FRAME-STORE-FUZZ"
 name = "Reference-frame store no-panic fuzzing"
 category = "conformance"

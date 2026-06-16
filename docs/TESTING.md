@@ -8,12 +8,13 @@
 2. **Property / fuzz tests** — the parsers and the validator must never panic on
    arbitrary input. Implemented as `*_never_panic(s)` tests across the
    `splot-core` parser modules and `crates/splot-validate/tests/validator_never_panics.rs`
-   (mostly proptests, plus a few exhaustive-truncation unit tests). Thirteen
+   (mostly proptests, plus a few exhaustive-truncation unit tests). Fourteen
    `cargo fuzz` targets cover the parser, validator, symbol decoder,
    tile-payload frontier, byte-planner, and minimal runtime
    hash/Y4M byte surfaces, plus frame-hash serialization, reference-frame-store
-   operations, Y4M output serialization from structured decoded frames, and
-   intra prediction/workspace primitives from structured inputs, and need a
+   operations, decoded-frame/plane runtime type validation, Y4M output
+   serialization from structured decoded frames, and intra prediction/workspace
+   primitives from structured inputs, and need a
    nightly toolchain; they run as a blocking per-target smoke (~45s each) in PR
    CI:
    - `parse_obu` — `read_leb128`, `read_obu_header`, `parse_annex_b_obus`.
@@ -43,6 +44,10 @@
    - `recon_frame_hash_bytes` — `splot-recon` `DecodedFrameHashInput`
      serialization and digest computation from bounded structured
      `DecodedFrame` inputs.
+   - `recon_frame_plane_types_bytes` — `splot-recon` decoded-frame and plane
+     runtime type validators, visible-row accessors, borrowed views, and
+     `SharedFrame` sharing from bounded structured inputs and targeted invalid
+     mutations.
    - `recon_reference_frame_store_bytes` — `splot-recon` `ReferenceSlot` and
      `ReferenceFrameStore` storage operations from bounded state-machine
      inputs.
@@ -82,7 +87,7 @@ cargo xtask check-decoder-support # generated decoder support docs drift gate
 # never-panic invariant with bounded random inputs.
 cargo xtask fuzz [--time <secs>]    # local fuzz smoke over every target (nightly + cargo-fuzz, run-if-present), default 30s each
 cargo install cargo-fuzz --locked
-cargo +nightly fuzz list            # parse_obu, parse_ivf, parse_bitstream, symbol_decoder_bytes, tile_payload_decode_bytes, validate_bytes, decode_plan_bytes, decode_runtime_hash_bytes, decode_runtime_y4m_bytes, recon_frame_hash_bytes, recon_reference_frame_store_bytes, recon_y4m_output_bytes, recon_intra_prediction_bytes
+cargo +nightly fuzz list            # parse_obu, parse_ivf, parse_bitstream, symbol_decoder_bytes, tile_payload_decode_bytes, validate_bytes, decode_plan_bytes, decode_runtime_hash_bytes, decode_runtime_y4m_bytes, recon_frame_hash_bytes, recon_frame_plane_types_bytes, recon_reference_frame_store_bytes, recon_y4m_output_bytes, recon_intra_prediction_bytes
 cargo +nightly fuzz run parse_obu   # run a single target (swap the name for any target above)
 
 cargo xtask conformance         # run the committed conformance corpus (no AVM)
