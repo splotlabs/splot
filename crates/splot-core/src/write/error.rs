@@ -271,6 +271,30 @@ pub enum WriteError {
         what: &'static str,
     },
 
+    /// A content-interpretation value is inconsistent with what the AV2 v1.0.0 § 5.15
+    /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-15`) parser would re-derive on reparse, so
+    /// the model could never have been produced by `parse_content_interpretation` and writing it
+    /// would break `read(write(x)) == x`. Examples: a `ColorDescription::primaries` presence that
+    /// disagrees with `ci_color_description_idc == 0`; a progressive (`ci_scan_type_idc == 1`) chroma
+    /// position whose `bottom` differs from its `top` (the parser infers them equal and codes no
+    /// bottom); an `AspectRatioInfo::extended_sar` presence that disagrees with
+    /// `ci_aspect_ratio_idc == 255`; or a `num_ticks_per_picture_minus_1` presence that disagrees
+    /// with `equal_picture_interval`. Rejected before any bit is written.
+    ///
+    /// A reserved-but-tolerated value the parser preserves verbatim — a reserved
+    /// `ci_color_description_idc` (`6..=127`), a reserved `ci_aspect_ratio_idc` (`17..=254`), a
+    /// reserved `ci_scan_type_idc`, or a non-zero `ci_reserved_2bit` — is **not** rejected; the writer
+    /// reproduces it exactly.
+    #[error(
+        "non-canonical {what}: content-interpretation value cannot be reproduced by the §5.15 parser"
+    )]
+    NonCanonicalContentInterpretation {
+        /// A short, stable label for the offending field (e.g. `"color_primaries_idc"`,
+        /// `"chroma_bottom_progressive"`, `"extended_sar_idc"`, `"timing_num_ticks_gate"`,
+        /// `"passthrough"`).
+        what: &'static str,
+    },
+
     /// A writer for this OBU payload type does not exist yet — an honest stub returned by the
     /// complete-OBU dispatch for the `ParsedObu` variants whose body writer has not landed. Distinct
     /// from a non-canonical reject: the model is fine, the writer is simply not implemented.

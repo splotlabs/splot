@@ -16,6 +16,9 @@ mod tests {
     use super::*;
     use crate::bitio::BitReader;
     use crate::headers::buffer_removal_timing::{BufferRemovalOpTiming, BufferRemovalTiming};
+    use crate::headers::content_interpretation::{
+        AspectRatioInfo, ColorDescription, ContentInterpretation, ScanTypeIdc,
+    };
     use crate::headers::sequence::ProfileIdc;
     use crate::hls::{MultistreamDecoderOperation, SubStreamConfig};
     use crate::headers::metadata::{
@@ -454,6 +457,61 @@ mod tests {
         write_obu_payload(&mut writer, &payload, true, &[]).unwrap();
         let bytes = writer.into_bytes();
         assert_eq!(reparse_payload(&header, &bytes), payload);
+    }
+
+    #[test]
+    fn content_interpretation_payload_round_trips() {
+        // §5.15 content interpretation is extensible; the dispatch routes it to
+        // write_content_interpretation + the extensible tail (obu_extension_flag = 0 +
+        // trailing_bits()). It carries no passthrough. Build a model with two optional structures
+        // present (a preset color description and an indexed aspect ratio) to exercise the body.
+        let header = header_for(ObuType::ContentInterpretation);
+        assert!(header.obu_type.is_extensible_obu());
+        let payload = ParsedObu::ContentInterpretation(ContentInterpretation {
+            scan_type_idc: ScanTypeIdc::from_bits(1),
+            color_description: Some(ColorDescription {
+                color_description_idc: 1,
+                primaries: None,
+                full_range_flag: true,
+            }),
+            chroma_sample_position: None,
+            aspect_ratio: Some(AspectRatioInfo {
+                aspect_ratio_idc: 1,
+                extended_sar: None,
+            }),
+            timing_info: None,
+            reserved_2bit: 0,
+        });
+        let mut writer = BitWriter::new();
+        write_obu_payload(&mut writer, &payload, true, &[]).unwrap();
+        let bytes = writer.into_bytes();
+        assert_eq!(reparse_payload(&header, &bytes), payload);
+
+        // And it round-trips through write_complete_obu (header + payload + tail).
+        let mut complete = BitWriter::new();
+        write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
+        let complete_bytes = complete.into_bytes();
+        assert_eq!(reparse_payload(&header, &complete_bytes[1..]), payload);
+    }
+
+    #[test]
+    fn content_interpretation_rejects_non_empty_passthrough() {
+        let header = header_for(ObuType::ContentInterpretation);
+        let payload = ParsedObu::ContentInterpretation(ContentInterpretation {
+            scan_type_idc: ScanTypeIdc::from_bits(0),
+            color_description: None,
+            chroma_sample_position: None,
+            aspect_ratio: None,
+            timing_info: None,
+            reserved_2bit: 0,
+        });
+        let mut writer = BitWriter::new();
+        let err = write_complete_obu(&mut writer, &header, &payload, &[0x00]).unwrap_err();
+        assert!(
+            matches!(err, WriteError::NonCanonicalContentInterpretation { what } if what == "passthrough"),
+            "expected passthrough reject, got {err:?}"
+        );
+        assert_eq!(writer.bit_len(), 0);
     }
 
     #[test]
