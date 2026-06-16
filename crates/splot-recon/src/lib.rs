@@ -27,6 +27,7 @@
 //! `RECON-INTRA-DC-SQUARE-PREDICTION`,
 //! `RECON-INTRA-DC-RECTANGULAR-PREDICTION`,
 //! `RECON-INTRA-DC-SUBSAMPLED-PREDICTION`,
+//! `RECON-INTRA-IBP-DC-PREDICTION`,
 //! `RECON-INTRA-BASIC-PAETH-PREDICTION`,
 //! `RECON-INTRA-SMOOTH-PREDICTION`,
 //! `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION`,
@@ -45,6 +46,7 @@ mod intra_basic;
 mod intra_dc_math;
 mod intra_dc_subsampled;
 mod intra_directional;
+mod intra_ibp_dc;
 mod intra_smooth;
 mod plane;
 mod reference;
@@ -71,6 +73,7 @@ pub use intra_directional::{
     IntraCardinalDirection, IntraCardinalEdge, IntraCardinalEdges,
     predict_intra_cardinal_directional_rect_into,
 };
+pub use intra_ibp_dc::apply_intra_ibp_dc_rect;
 pub use intra_smooth::{
     IntraSmoothEdge, IntraSmoothEdges, IntraSmoothMode, predict_intra_smooth_rect_into,
 };
