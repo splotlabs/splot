@@ -1027,9 +1027,10 @@ mod tests {
         core.is_bridge = true;
         core.bridge_frame_ref_idx = Some(0);
         // A BridgeFrame is not OBU_CLOSED_LOOP_KEY, so its parser-derived starts_cvs is false;
-        // match it so the test reaches its intended `bridge_inter` reject (not `starts_cvs`).
+        // match it so the test reaches its intended bridge reject (not `starts_cvs`).
         core.starts_cvs = false;
-        assert_rejected_what(&core, &seq, true, "bridge_inter");
+        // The composer supports no bridge path (a non-single bridge is inter).
+        assert_rejected_what(&core, &seq, true, "bridge_unsupported");
     }
 
     #[test]
@@ -1149,21 +1150,23 @@ mod tests {
     }
 
     #[test]
-    fn single_picture_bridge_round_trips() {
-        // Finding 10 (info.rs:1127-1142, parser-tested by
-        // frame_header_core_single_picture_bridge_takes_intra_key_path): a single-picture
-        // OBU_BRIDGE_FRAME reads bridge_frame_ref_idx FIRST, then takes the single-picture intra
-        // KEY path. An end-to-end parse -> write -> parse byte-exact round-trip for that arm.
+    fn reject_single_picture_bridge() {
+        // Round-3 finding (spec §5.18.2 mirror :4971-5065): a single-picture OBU_BRIDGE_FRAME is
+        // forced to a KEY intra frame, but the `IsBridge` early-return arm reads ONLY the bridge
+        // tile_info() (:4987) and film_grain_config() (:5011), infers base_q_idx from the
+        // reference (:4997), and SKIPS disable_cdf_update (:5041 else) + the whole
+        // quant/seg/deblock/cdef/ccso/restoration cluster (:5045-5065). The frame-header *parser*
+        // currently routes it through the full intra path (a known parser bug, tracked
+        // separately), so its core reaches IntraHeaderComplete — but emitting the full intra tail
+        // would be a non-spec header, so the composer rejects all bridges.
         let mut seq = base_seq();
         seq.single_picture_header_flag = true;
         seq.filter.single_picture_header_flag = true;
         let mut bits = Bits::default();
-        // Bridge prefix: cur_mfh_id inferred 0 (no bits), seq_header_id_in_frame_header.
         bits.uvlc(0); // seq_header_id_in_frame_header
         bits.f(5, 3); // bridge_frame_ref_idx = 5 f(CeilLog2(8) == 3) — read before single-pic
-        // Single-picture intra tail (no frame_size_override_flag / no type / no output bits):
         bits.f(9, 4); // order_hint
-        bits.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8) (BridgeFrame not CLK)
+        bits.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8)
         bits.bit(0); // allow_intrabc
         bits.bit(0); // disable_cdf_update
         bits.bit(1); // uniform_tile_spacing_flag
@@ -1178,10 +1181,18 @@ mod tests {
         bits.bit(0); // tx_mode_select
         bits.f(1, 2); // reduced_tx_set = 1
         let data = bits.into_bytes();
-        let core = assert_roundtrip(&data, ObuType::BridgeFrame, true, &seq);
+        let core =
+            parse_core_body_for_test(&data, ObuType::BridgeFrame, true, &seq, None).unwrap();
+        assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
         assert!(core.is_bridge);
-        assert_eq!(core.bridge_frame_ref_idx, Some(5));
-        assert_eq!(core.frame_type, Some(FrameType::Key));
-        assert_eq!(core.immediate_output_frame, Some(true));
+        let mut writer = BitWriter::new();
+        let err = write_frame_header_core(&mut writer, &core, &seq, None, true).unwrap_err();
+        assert_eq!(
+            err,
+            WriteError::NonCanonicalFrameHeader {
+                what: "bridge_unsupported"
+            }
+        );
+        assert_eq!(writer.bit_len(), 0);
     }
 }

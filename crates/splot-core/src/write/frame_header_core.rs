@@ -284,14 +284,20 @@ fn check_frame_header_core_encodable(
     if !single_picture && (obu_type.is_sef() || obu_type.is_tip_frame()) {
         return reject("frame_type");
     }
-    // Finding 1 (info.rs:1157-1163): a NON-single bridge frame reads bridge_frame_ref_idx, then
-    // takes the inter arm (frame_type = Inter, frame_is_intra = Some(false)) — it NEVER reaches
-    // IntraHeaderComplete. (Only a single-picture bridge becomes an intra KEY frame, handled
-    // above by the single-picture branch.) The generic frame_type derivation below would map a
-    // non-single BridgeFrame to the IntraOnly expectation, so a hand-built non-single bridge
-    // intra core would be wrongly accepted; reject it here.
-    if !single_picture && obu_type == ObuType::BridgeFrame {
-        return reject("bridge_inter");
+    // A BRIDGE frame is never writable by this composer, on either path:
+    //  - A NON-single bridge reads bridge_frame_ref_idx then takes the inter arm (frame_type =
+    //    Inter, frame_is_intra = Some(false), info.rs:1157-1163) — never IntraHeaderComplete.
+    //  - A SINGLE-PICTURE bridge IS forced to a KEY intra frame, but § 5.18.2 then takes the
+    //    `IsBridge` early-return arm (mirror docs/spec/av2/1.0.0/05-syntax-structures.md :4971-5065):
+    //    it reads ONLY the bridge tile_info() (:4987) and film_grain_config() (:5011), infers
+    //    base_q_idx from the referenced frame (RefBaseQIdx, :4997), and SKIPS disable_cdf_update
+    //    (:5041 else-arm) and the whole quant/segmentation/deblocking/cdef/ccso/restoration cluster
+    //    (:5045-5065). This composer instead emits the full intra tail, which would be a non-spec
+    //    header for that context. (The frame-header *parser* currently routes a single-picture
+    //    bridge through the full intra path — a known parser bug, tracked separately — so its
+    //    IntraHeaderComplete core is unwritable here.) Reject all bridges up front.
+    if obu_type == ObuType::BridgeFrame {
+        return reject("bridge_unsupported");
     }
 
     // frame_type is DERIVED, not coded, on every no-bit intra arm: the single-picture branch
