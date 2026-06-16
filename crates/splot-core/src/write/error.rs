@@ -177,6 +177,22 @@ pub enum WriteError {
         /// `"cur_mfh_id"`).
         what: &'static str,
     },
+
+    /// A metadata-OBU value is inconsistent with what the AV2 v1.0.0 § 5.17
+    /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-17`) / § 6.16 parsers would
+    /// re-derive on reparse, so the model could never have been produced by the metadata
+    /// parsers and writing it would break `read(write(x)) == x`. Examples: a `metadata_type`
+    /// that disagrees with its payload variant, a passthrough byte count that disagrees with
+    /// the modeled `payload_len`, a `muh_*` field whose presence disagrees with
+    /// `muh_cancel_flag`, a `muh_header_size` that cannot account for the bytes it must cover,
+    /// or a stored `metadata_type_leb128_bytes` that cannot encode the value. Rejected before
+    /// any bit is written.
+    #[error("non-canonical {what}: metadata value cannot be reproduced by the §5.17 parser")]
+    NonCanonicalMetadata {
+        /// A short, stable label for the offending field (e.g. `"type_payload_mismatch"`,
+        /// `"passthrough_len"`, `"muh_header_size"`).
+        what: &'static str,
+    },
 }
 
 /// Result alias for [`crate::write::BitWriter`] operations.
