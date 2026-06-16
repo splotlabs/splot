@@ -293,9 +293,12 @@ fn check_frame_header_core_encodable(
     //    base_q_idx from the referenced frame (RefBaseQIdx, :4997), and SKIPS disable_cdf_update
     //    (:5041 else-arm) and the whole quant/segmentation/deblocking/cdef/ccso/restoration cluster
     //    (:5045-5065). This composer instead emits the full intra tail, which would be a non-spec
-    //    header for that context. (The frame-header *parser* currently routes a single-picture
-    //    bridge through the full intra path — a known parser bug, tracked separately — so its
-    //    IntraHeaderComplete core is unwritable here.) Reject all bridges up front.
+    //    header for that context. Both parser paths reach UnsupportedUntilFeature (the inter arm
+    //    for a non-single bridge; parse_single_picture_bridge_tail for a single-picture one — the
+    //    single-picture-bridge parser bug is fixed, frame-header-single-picture-bridge-fix), caught
+    //    by the status gate above, so the parser never produces an IntraHeaderComplete bridge core.
+    //    This gate now defends a hand-constructed one (direct-API misuse; see the writer test
+    //    reject_non_single_bridge_intra_model). Reject all bridges up front.
     if obu_type == ObuType::BridgeFrame {
         return reject("bridge_unsupported");
     }
