@@ -26,4 +26,5 @@ same id in the matrix, the OpenSpec folder, and the GitHub issue/PR.
 | Change | Feature IDs | State |
 |---|---|---|
 | `avm-differential-harness` | `CONF-AVM-DIFF-HARNESS` | proposed |
+| `recon-reference-frame-store-refresh-flags` | `RECON-REFERENCE-FRAME-STORE`, `CONF-RECON-REFERENCE-FRAME-STORE-FUZZ` | implementation PR |
 | `toy-intra-encoder-v0` | `ENC-INTRA-TOY-V0` (deps: `ENC-BITSTREAM-WRITER`, `AV2-5.4-SEQUENCE-HEADER`, `AV2-5.18-FRAME-HEADER`, `AV2-5.19-TILE-GROUP`, `CONF-AVM-DIFF-HARNESS`) | parked (encoder track, behind the [VALIDATOR-ROADMAP](../../docs/VALIDATOR-ROADMAP.md) fence) |

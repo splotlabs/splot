@@ -484,21 +484,28 @@ future callers that have already derived AV2 reference update decisions:
 
 - `ReferenceSlot::MAX_SLOTS == 16`, matching AV2 § 3 `NUM_REF_FRAMES`;
 - `ReferenceSlot::new` validates indices in `0..16`;
+- `ReferenceRefreshMask::new` validates caller-derived refresh masks within the
+  16-slot ceiling and iterates selected slots in ascending order;
 - `ReferenceFrameStore<F>::with_capacity` validates a fixed capacity in
   `1..=16`;
-- `put`, `get`, `take`, `clear`, `occupied`, and `entries` manage immutable
-  caller-owned frame payloads without exposing mutable frame access;
+- `put`, `get`, `take`, `refresh_slots_with`, `clear`, `occupied`, and
+  `entries` manage immutable caller-owned frame payloads without exposing
+  mutable frame access;
+- `refresh_slots_with` validates every selected mask bit against the fixed
+  store capacity before calling the payload producer, treats a zero mask as a
+  no-op, returns replaced payloads, and does not require `F: Clone`;
 - entries iterate occupied slots in ascending `ReferenceSlot` order.
 
 The payload type is intentionally generic so future reference/reconstruction
 payloads do not need to fabricate output-emission metadata just to live in the
 store. This runtime store does not model active `NumRefFrames` or
 `ActiveNumRefFrames` from § 5.4.6 / § 6.4.6, AV2 `RefValid`,
-`refresh_frame_flags`, output scheduling, show-existing deduplication, motion
-vectors, CDFs, grain params, segment IDs, global motion state, CCSO params, or
-any other § 7.23 metadata. Future byte-consuming decode code must translate
-parsed AV2 state into store operations and charge allocations against
-`DecodeLimits` before storing frames.
+`refresh_frame_flags` parsing/inference, output scheduling, show-existing
+deduplication, counters, order hints, dimensions, crop metadata, motion vectors,
+CDFs, grain params, segment IDs, global motion state, CCSO params, or any other
+§ 7.23 metadata. Future byte-consuming decode code must translate parsed AV2
+state into store operations and charge allocations against `DecodeLimits` before
+storing frames.
 
 Emitted output frames must remain immutable and valid after emission. Reference
 slots may own or share reconstructed buffers, but overwriting a reference slot

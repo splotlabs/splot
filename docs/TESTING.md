@@ -48,9 +48,9 @@
      runtime type validators, visible-row accessors, borrowed views, and
      `SharedFrame` sharing from bounded structured inputs and targeted invalid
      mutations.
-   - `recon_reference_frame_store_bytes` — `splot-recon` `ReferenceSlot` and
-     `ReferenceFrameStore` storage operations from bounded state-machine
-     inputs.
+   - `recon_reference_frame_store_bytes` — `splot-recon` `ReferenceSlot`,
+     `ReferenceRefreshMask`, and `ReferenceFrameStore` storage operations from
+     bounded state-machine inputs.
    - `recon_y4m_output_bytes` — `splot-recon` `Y4mWriter` serialization from
      bounded structured `DecodedFrame` inputs across supported Y4M formats.
    - `recon_intra_prediction_bytes` — `splot-recon` intra prediction and
