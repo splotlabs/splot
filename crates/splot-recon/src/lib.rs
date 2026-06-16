@@ -31,6 +31,7 @@
 //! `RECON-INTRA-BASIC-PAETH-PREDICTION`,
 //! `RECON-INTRA-SMOOTH-PREDICTION`,
 //! `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION`,
+//! `RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION`,
 //! `RECON-CURRENT-FRAME-WORKSPACE`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
@@ -46,6 +47,7 @@ mod intra_basic;
 mod intra_dc_math;
 mod intra_dc_subsampled;
 mod intra_directional;
+mod intra_directional_angle;
 mod intra_ibp_dc;
 mod intra_smooth;
 mod plane;
@@ -72,6 +74,11 @@ pub use intra_dc_subsampled::{
 pub use intra_directional::{
     IntraCardinalDirection, IntraCardinalEdge, IntraCardinalEdges,
     predict_intra_cardinal_directional_rect_into,
+};
+pub use intra_directional_angle::{
+    IntraDirectionalAngle, IntraDirectionalAngleEdge, IntraDirectionalAngleEdges,
+    predict_intra_directional_angle_rect_from_p_angle_into,
+    predict_intra_directional_angle_rect_into,
 };
 pub use intra_ibp_dc::apply_intra_ibp_dc_rect;
 pub use intra_smooth::{

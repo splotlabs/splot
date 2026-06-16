@@ -4675,7 +4675,7 @@ openspec_change = "recon-intra-prediction-fuzz"
 tracking_issue = ""
 owner = "conformance"
 risk = "medium"
-notes = "Self-contained cargo-fuzz target for existing `splot-recon` intra prediction and current-frame workspace primitives: it normalizes arbitrary bytes into bounded structured DC, subsampled DC, IBP DC, PAETH, smooth, H/V cardinal directional, and workspace prediction cases over public APIs, exercises caller-owned output buffers, in-storage edge extraction, successful interior workspace writes, and typed edge/output-shape/workspace-boundary errors. This is conformance/robustness proof for source-backed reconstruction primitives only. It does not claim AV2 bitstream decode, `DecodeContext` fuzzing, full §7.13 intra reconstruction, general directional angles, data driven intra prediction, general directional-angle IBP, filter intra, CfL/CCTX, palette, residual, transform, quantization, loop filtering, runtime output scheduling, AVM/dav2d agreement, filesystem I/O, network I/O, subprocesses, or new AV2 semantics."
+notes = "Self-contained cargo-fuzz target for existing `splot-recon` intra prediction and current-frame workspace primitives: it normalizes arbitrary bytes into bounded structured DC, subsampled DC, IBP DC, PAETH, smooth, H/V cardinal directional, one-sided directional-angle, and workspace prediction cases over public APIs, exercises caller-owned output buffers, in-storage edge extraction, successful interior workspace writes, and typed edge/output-shape/workspace-boundary errors. This is conformance/robustness proof for source-backed reconstruction primitives only. It does not claim AV2 bitstream decode, `DecodeContext` fuzzing, full §7.13 intra reconstruction, middle/luma/MRL/IDIF/full-dispatch directional angles, data driven intra prediction, general directional-angle IBP, filter intra, CfL/CCTX, palette, residual, transform, quantization, loop filtering, runtime output scheduling, AVM/dav2d agreement, filesystem I/O, network I/O, subprocesses, or new AV2 semantics."
 
 [feature.status]
 mapped = "done"
@@ -4696,6 +4696,7 @@ tests = [
     "crates/splot-recon/src/intra_basic.rs::tests",
     "crates/splot-recon/src/intra_dc_subsampled.rs::tests",
     "crates/splot-recon/src/intra_directional.rs::tests",
+    "crates/splot-recon/src/intra_directional_angle.rs::tests",
     "crates/splot-recon/src/intra_ibp_dc.rs::tests",
     "crates/splot-recon/src/intra_smooth.rs::tests",
     "crates/splot-recon/src/workspace_tests.rs",
@@ -4706,12 +4707,14 @@ commands = [
     "cargo test -p splot-recon ibp --locked",
     "cargo test -p splot-recon intra_dc_subsampled --locked",
     "cargo test -p splot-recon intra_directional --locked",
+    "cargo test -p splot-recon intra_directional_angle --locked",
     "cargo test -p splot-recon intra --locked",
     "cargo test -p splot-recon workspace --locked",
     "cargo +nightly fuzz run recon_intra_prediction_bytes (local/nightly; CI fuzz smoke runs every target)",
 ]
 fixtures = [
     "fuzz/fuzz_targets/recon_intra_prediction_bytes.rs",
+    "crates/splot-recon/src/intra_directional_angle.rs",
     "crates/splot-recon/src/intra_ibp_dc.rs",
     "crates/splot-recon/src/workspace_intra_dc.rs",
 ]
@@ -6034,6 +6037,70 @@ fixtures = [
     "crates/splot-recon/src/intra_directional.rs",
     "crates/splot-recon/src/workspace.rs",
     "crates/splot-recon/src/workspace_tests.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+    "fuzz/fuzz_targets/recon_intra_prediction_bytes.rs",
+]
+diagnostics = []
+
+[[feature]]
+id = "RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION"
+name = "One-sided directional-angle intra prediction"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["4.8", "7.13.2.1", "7.13.2.7", "7.13.2.8", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/04-conventions.md#s-4-8",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/intra_directional_angle.rs"
+openspec_change = "recon-intra-directional-angle-prediction"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds scheduler-free `splot-recon` AV2 §7.13.2.8 one-sided directional-angle intra prediction for the non-IDIF chroma pAngles `45`, `67`, and `203` from §9.2. Callers provide an active bit depth, typed 4x4 through 64x64 per-dimension `IntraRectBlockSize`, explicit supported pAngle, the required prepared `AboveRow[0..w+h)` or `LeftCol[0..w+h)` edge, and caller-owned strided output. The primitive validates sample type, pAngle support, required edge presence, edge length, edge sample range, output stride and length, and checked arithmetic before writing. It uses the §9.2 `Dr_Intra_Derivative[45] = 64` and `Dr_Intra_Derivative[67] = 24` entries with §4.8 `Round2` for §7.13.2.8 non-IDIF bilinear interpolation, including edge-end fallback when the computed base reaches `w + h - 1`. This row does not implement §7.13.2.1 edge availability/fallback preparation, pAngles 90/180 (tracked by `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION`), middle angles 113/135/157, luma IDIF, MRL, angle deltas, wide-angle mapping, directional IBP, workspace edge synthesis, full `predict_intra()` dispatch, data-driven prediction, CfL/CCTX/MHCCP, palette, tile syntax traversal, dequantization, inverse transforms, residual addition, broad runtime decoded-frame hashes/Y4M, reference refresh, AVM/dav2d invocation, repo dependency, wrapper, script, CI or runtime external-decoder path, or scheduler state in `splot-recon`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/intra_directional_angle.rs::tests::d45_prediction_uses_above_edge_and_edge_end_fallback",
+    "crates/splot-recon/src/intra_directional_angle.rs::tests::d67_prediction_matches_non_idif_bilinear_formula",
+    "crates/splot-recon/src/intra_directional_angle.rs::tests::d203_prediction_matches_non_idif_bilinear_formula",
+    "crates/splot-recon/src/intra_directional_angle.rs::tests::directional_angle_prediction_accepts_10_bit_u16_samples",
+    "crates/splot-recon/src/intra_directional_angle.rs::tests::directional_angle_prediction_rejects_unsupported_pangles_without_mutation",
+    "crates/splot-recon/src/intra_directional_angle.rs::tests::directional_angle_prediction_rejects_all_excluded_pangles",
+    "crates/splot-recon/src/intra_directional_angle.rs::tests::directional_angle_prediction_validates_required_edge_presence",
+    "crates/splot-recon/src/intra_directional_angle.rs::tests::directional_angle_prediction_validates_edge_lengths",
+    "crates/splot-recon/src/intra_directional_angle.rs::tests::directional_angle_prediction_validates_edge_sample_ranges",
+    "crates/splot-recon/src/intra_directional_angle.rs::tests::directional_angle_prediction_validates_sample_type_against_bit_depth",
+    "crates/splot-recon/src/intra_directional_angle.rs::tests::directional_angle_prediction_validates_output_shape",
+]
+commands = [
+    "cargo test -p splot-recon intra_directional_angle --locked",
+    "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
+    "cargo xtask check-fuzz-targets",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "cargo xtask check-source-lines",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/intra_directional_angle.rs",
     "crates/splot-recon/src/error.rs",
     "crates/splot-recon/src/lib.rs",
     "fuzz/fuzz_targets/recon_intra_prediction_bytes.rs",
