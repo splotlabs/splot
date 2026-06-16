@@ -102,13 +102,13 @@ mod tests {
     fn round_trips_explicit_range_at_tile_bits_cap() {
         // tile_bits() caps at 32 when TileColsLog2 + TileRowsLog2 >= 32; the writer special-cases
         // this boundary (the u64 `1 << tile_bits` fit bound and the f(32) `write_bits`). num_tiles
-        // == 2 keeps the range signaled. Cover the full 32-bit field incl. the maximum index
-        // u32::MAX, so the cap is exercised by a deterministic round-trip (not only incidentally by
-        // the never-panics proptest).
-        let layout = TileGroupLayout::new(2, 1, 200, 200);
-        assert_eq!(layout.num_tiles, 2);
+        // == u32::MAX keeps the signaled range valid while letting tg_end span the full 32-bit field
+        // just under NumTiles (§6.18 in-range), so the cap is exercised by a deterministic
+        // round-trip (not only incidentally by the never-panics proptest).
+        let layout = TileGroupLayout::new(u32::MAX, 1, 200, 200);
+        assert_eq!(layout.num_tiles, u32::MAX);
         assert_eq!(layout.tile_bits(), 32);
-        assert_round_trips(&structure(true, 0x1234_5678, u32::MAX), layout);
+        assert_round_trips(&structure(true, 0x1234_5678, u32::MAX - 1), layout);
     }
 
     #[test]
@@ -198,6 +198,26 @@ mod tests {
         let err = write_tile_group_structure(&mut writer, &structure(true, 4, 5), layout)
             .unwrap_err();
         assert_eq!(err, WriteError::NonCanonicalTileGroup { what: "tg_range" });
+        assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
+    fn rejects_tg_out_of_range() {
+        // A non-power-of-two grid (3 tiles) has tileBits == 2, so tg_end == 3 FITS f(2) but exceeds
+        // the last tile index NumTiles-1 == 2 — the §6.18 out-of-range conformance refusal, distinct
+        // from the f(tileBits) fit reject (which fires for tg_range above).
+        let layout = TileGroupLayout::new(3, 1, 1, 1);
+        assert_eq!(layout.num_tiles, 3);
+        assert_eq!(layout.tile_bits(), 2);
+        let mut writer = BitWriter::new();
+        let err =
+            write_tile_group_structure(&mut writer, &structure(true, 0, 3), layout).unwrap_err();
+        assert_eq!(
+            err,
+            WriteError::NonCanonicalTileGroup {
+                what: "tg_out_of_range"
+            }
+        );
         assert_eq!(writer.bit_len(), 0);
     }
 }

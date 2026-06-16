@@ -56,8 +56,10 @@ use crate::write::error::{WriteError, WriteResult};
 ///   `tg_start == 0 && tg_end == num_tiles - 1`.
 /// - `"tg_range"` — the range is signaled (`num_tiles > 1 && flag`) but `tg_start` / `tg_end` does
 ///   not fit `f(tileBits)` (non-reproducible), or `tg_end < tg_start` (a § 6.18 conformance refusal:
-///   the § 5.19 parser reads both values unordered, so this is the one reject deliberately stricter
-///   than the reader rather than a non-reproducibility).
+///   the § 5.19 parser reads both values unordered).
+/// - `"tg_out_of_range"` — the signaled `tg_end` is `>= num_tiles` (it fits `f(tileBits)` — a
+///   non-power-of-two grid has spare codes above `NumTiles - 1` — but § 6.18 requires
+///   `tg_end < NumTiles`; another conformance refusal the § 5.19 parser does not enforce).
 pub fn write_tile_group_structure(
     writer: &mut BitWriter,
     structure: &TileGroupStructure,
@@ -139,11 +141,25 @@ fn check_tile_group_structure_encodable(
         if structure.tg_end < structure.tg_start {
             return Err(WriteError::NonCanonicalTileGroup { what: "tg_range" });
         }
-        // tile_bits is in 0..=32 (TileGroupLayout::tile_bits caps at 32); a u64 bound handles the
-        // tile_bits == 32 case where every u32 fits without overflowing the 1 << tile_bits shift.
+        // Writability first: tile_bits is in 0..=32 (TileGroupLayout::tile_bits caps at 32); a u64
+        // bound handles the tile_bits == 32 case where every u32 fits without overflowing the
+        // 1 << tile_bits shift. A value outside f(tileBits) is non-reproducible.
         let bound = 1u64 << tile_bits;
         if u64::from(structure.tg_start) >= bound || u64::from(structure.tg_end) >= bound {
             return Err(WriteError::NonCanonicalTileGroup { what: "tg_range" });
+        }
+        // Then the §6.18 in-range conformance: tg_end < NumTiles (mirror
+        // docs/spec/av2/1.0.0/06-syntax-structures-semantics.md:6218-6223) the §5.19 parser does NOT
+        // enforce — a non-power-of-two grid has spare f(tileBits) codes above the last tile index
+        // (e.g. 3 tiles -> tileBits == 2, so tg_end == 3 fits the field but exceeds NumTiles-1 == 2).
+        // Checked after the fit so a value that does not even fit the field reports tg_range; only a
+        // field-valid index that exceeds NumTiles is the out-of-range conformance refusal. tg_start
+        // <= tg_end is already checked, so this bounds both ends. Another deliberate
+        // stricter-than-the-reader conformance refusal (tile-group/tg-end-out-of-range).
+        if structure.tg_end >= layout.num_tiles {
+            return Err(WriteError::NonCanonicalTileGroup {
+                what: "tg_out_of_range",
+            });
         }
     }
 

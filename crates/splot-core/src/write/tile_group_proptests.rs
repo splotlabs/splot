@@ -41,14 +41,14 @@ mod proptests {
             // Build a layout whose num_tiles is the chosen value; tile_cols/tile_rows only feed
             // the saturating product, so set cols = num_tiles, rows = 1.
             let layout = TileGroupLayout::new(num_tiles, 1, cols_log2, rows_log2);
-            let tile_bits = layout.tile_bits();
-            let bound = 1u64 << tile_bits;
 
             let range_written = num_tiles > 1 && flag;
             let structure = if range_written {
-                // Pick tg_start <= tg_end, both < bound (f(tileBits) fits).
-                let a = (u64::from(frac_start) % bound) as u32;
-                let b = (u64::from(frac_end) % bound) as u32;
+                // Pick tg_start <= tg_end, both in 0 .. num_tiles (the §6.18 in-range requirement;
+                // num_tiles >= 2 here, and num_tiles <= 2^(cols_log2+rows_log2) == 2^tileBits, so the
+                // values also fit f(tileBits)).
+                let a = (u64::from(frac_start) % u64::from(num_tiles)) as u32;
+                let b = (u64::from(frac_end) % u64::from(num_tiles)) as u32;
                 let (tg_start, tg_end) = if a <= b { (a, b) } else { (b, a) };
                 TileGroupStructure {
                     tile_start_and_end_present_flag: true,

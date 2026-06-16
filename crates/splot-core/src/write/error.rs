@@ -184,10 +184,11 @@ pub enum WriteError {
     /// `read(write(x)) == x` — or is a § 6.18 conformance violation the writer refuses to emit.
     /// Non-reproducible examples: a non-`Complete` (truncated) structure, a degenerate
     /// `NumTiles == 0` layout, a `tg_start` / `tg_end` outside `f(tileBits)`, or a tile-range/flag
-    /// combination the parser's inference could not produce. Conformance refusal: an inverted
-    /// `tg_end < tg_start` range (the § 5.19 parser reads both `f(tileBits)` values unordered, but
-    /// § 6.18 requires `tg_end >= tg_start`, so the writer will not emit a stream `splot validate`
-    /// would reject). Rejected before any bit is written.
+    /// combination the parser's inference could not produce. Conformance refusals (the § 5.19 parser
+    /// tolerates these — it reads the `f(tileBits)` values without enforcing § 6.18 — but the writer
+    /// will not emit a stream `splot validate` would reject): an inverted `tg_end < tg_start` range,
+    /// or a `tg_end >= NumTiles` out-of-range index (a non-power-of-two grid has spare `f(tileBits)`
+    /// codes above the last tile). Rejected before any bit is written.
     #[error("non-canonical {what}: tile-group value cannot be reproduced by the §5.19 parser")]
     NonCanonicalTileGroup {
         /// A short, stable label for the offending field (e.g. `"incomplete_structure"`, `"tg_range"`).
