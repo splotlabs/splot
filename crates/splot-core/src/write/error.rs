@@ -235,6 +235,21 @@ pub enum WriteError {
         what: &'static str,
     },
 
+    /// A multistream-decoder-operation value is inconsistent with what the AV2 v1.0.0 § 5.6
+    /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-6`) parser would re-derive on reparse, so
+    /// the model could never have been produced by `parse_msdo` and writing it would break
+    /// `read(write(x)) == x`. Examples: a `multistream_large_picture_idc` presence that disagrees
+    /// with `multistream_even_allocation_flag`, a `sub_stream_count` that disagrees with
+    /// `num_streams_minus_2 + 2`, or a non-zero unused `sub_streams` slot. Rejected before any bit.
+    #[error(
+        "non-canonical {what}: multistream-decoder-operation value cannot be reproduced by the §5.6 parser"
+    )]
+    NonCanonicalMsdo {
+        /// A short, stable label for the offending field (e.g. `"large_picture_idc_flag"`,
+        /// `"sub_stream_count"`, `"unused_sub_stream"`, `"passthrough"`).
+        what: &'static str,
+    },
+
     /// A writer for this OBU payload type does not exist yet — an honest stub returned by the
     /// complete-OBU dispatch for the `ParsedObu` variants whose body writer has not landed. Distinct
     /// from a non-canonical reject: the model is fine, the writer is simply not implemented.
