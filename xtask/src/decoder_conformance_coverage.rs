@@ -296,11 +296,11 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "RECON-REFERENCE-FRAME-STORE",
         ],
         status: "unsupported",
-        tests: &[],
+        tests: &["cargo test -p splot-recon reference --locked"],
         fuzz_targets: &[],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "The current implementation has a partition CDF boundary subset and a generic reference store container, but no full runtime CDF lifecycle, layer context management, reference list construction, motion-field estimation, or motion-vector prediction.",
+        notes: "The current implementation has a partition CDF boundary subset and a generic reference store container, but no full runtime CDF lifecycle, layer context management, reference list construction, reference refresh semantics, motion-field estimation, or motion-vector prediction.",
     },
     CoverageRow {
         id: "prediction-process",

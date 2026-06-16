@@ -4548,6 +4548,49 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "CONF-RECON-REFERENCE-FRAME-STORE-FUZZ"
+name = "Reference-frame store no-panic fuzzing"
+category = "conformance"
+kind = "conformance"
+spec_sections = ["3"]
+sources = ["docs/spec/av2/1.0.0/03-symbols.md#s-3"]
+crate = "fuzz"
+module = "fuzz/fuzz_targets/recon_reference_frame_store_bytes.rs"
+openspec_change = "recon-reference-frame-store-fuzz"
+tracking_issue = ""
+owner = "conformance"
+risk = "medium"
+notes = "Self-contained cargo-fuzz target for the `splot-recon` reference-frame store storage API: it normalizes arbitrary bytes into bounded public `ReferenceSlot` and `ReferenceFrameStore<F>` operation sequences over a tiny non-Clone payload, then checks capacity validation, slot construction, valid-but-out-of-capacity errors, `contains_slot`, `get`, `put`, replacement return values, `take`, `clear`, occupancy, `is_empty`, and ascending `entries` iteration against a simple oracle model. This is conformance/robustness proof for caller-supplied reference-frame storage only. It does not claim AV2 bitstream decode, `DecodeContext` fuzzing, AV2 `NumRefFrames` derivation, `ActiveNumRefFrames`, `RefValid`, `frame_to_refresh`, `refresh_frame_flags`, output scheduling, show-existing behavior, motion-field storage, §7.23 frame-store update semantics, resource diagnostics, AVM/dav2d agreement, filesystem I/O, network I/O, subprocesses, or new AV2 semantics."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "fuzz/fuzz_targets/recon_reference_frame_store_bytes.rs",
+    "crates/splot-recon/src/reference.rs::tests",
+]
+commands = [
+    "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
+    "cargo xtask check-fuzz-targets",
+    "cargo test -p splot-recon reference --locked",
+    "cargo +nightly fuzz run recon_reference_frame_store_bytes (local/nightly; CI fuzz smoke runs every target)",
+]
+fixtures = [
+    "fuzz/fuzz_targets/recon_reference_frame_store_bytes.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "CONF-RECON-INTRA-PREDICTION-FUZZ"
 name = "Reconstruction intra prediction no-panic fuzzing"
 category = "conformance"

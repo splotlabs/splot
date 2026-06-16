@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 195 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 196 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -136,6 +136,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `CONF-DECODE-RUNTIME-Y4M-FUZZ` | Decode runtime Y4M no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/decode_runtime_y4m_bytes.rs` |
 | `CONF-RECON-Y4M-OUTPUT-FUZZ` | Y4M output serialization no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/recon_y4m_output_bytes.rs` |
 | `CONF-RECON-FRAME-HASH-FUZZ` | Decoded-frame hash serialization no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/recon_frame_hash_bytes.rs` |
+| `CONF-RECON-REFERENCE-FRAME-STORE-FUZZ` | Reference-frame store no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/recon_reference_frame_store_bytes.rs` |
 | `CONF-RECON-INTRA-PREDICTION-FUZZ` | Reconstruction intra prediction no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/recon_intra_prediction_bytes.rs` |
 | `CLI-VALIDATE` | splot validate command | cli | cli | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-cli/src/commands/validate.rs` |
 | `CLI-VALIDATE-OUTPUT-CONTROLS` | splot validate output controls (--max-diagnostics / --summary-only) | cli | cli | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-cli/src/commands/validate.rs` |
