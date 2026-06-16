@@ -674,6 +674,20 @@ local_reference_evidence = []
 notes = "Source-backed `splot-recon` runtime reference-slot container for immutable caller-owned frame payloads: `ReferenceSlot::MAX_SLOTS == 16` (AV2 §3 NUM_REF_FRAMES), generic `ReferenceFrameStore<F>` payload ownership, slot construction and store capacity validation, bounds-checked `put`, `get`, and `take`, `clear`, occupancy tracking, and ascending slot-order immutable `entries` iteration. The payload is generic so future reconstructed-reference payloads do not need output-emission metadata. This is a safe storage model only: it does not model active NumRefFrames or ActiveNumRefFrames, RefValid, refresh_frame_flags, output scheduling, show-existing deduplication, motion vectors, CDFs, grain params, segment IDs, global motion state, CCSO params, byte-consuming decode, `decode/resource-limit` emission, or AVM/dav2d invocation."
 
 [[row]]
+id = "recon-reference-frame-store-fuzz"
+name = "Reference-frame store fuzz entry point"
+feature_id = "CONF-RECON-REFERENCE-FRAME-STORE-FUZZ"
+spec_sections = ["3", "5.4.6", "6.4.6", "6.17.2", "7.23"]
+parser_source = "fuzz/fuzz_targets/recon_reference_frame_store_bytes.rs"
+decode_module = "crates/splot-recon/src/reference.rs"
+tier = "encoder-reuse"
+status = "supported"
+self_contained_tests = ["cargo check --manifest-path fuzz/Cargo.toml --bins --locked", "cargo xtask check-fuzz-targets", "cargo test -p splot-recon reference --locked", "cargo +nightly fuzz run recon_reference_frame_store_bytes (local/nightly; CI fuzz smoke runs every target)"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Self-contained cargo-fuzz target `recon_reference_frame_store_bytes` normalizes arbitrary bytes into bounded public `ReferenceSlot` and `ReferenceFrameStore<F>` operation sequences over a tiny non-Clone payload, then checks capacity validation, slot construction, valid-but-out-of-capacity errors, `contains_slot`, `get`, `put`, replacement return values, `take`, `clear`, occupancy, `is_empty`, and ascending `entries` iteration against a simple oracle model with typed returns/no panic. It requires no AVM, dav2d, ffmpeg, filesystem I/O, network access, subprocesses, generated external fixtures, checked-in local reference paths, runtime `splot decode`, decoded-frame payload allocation, or `decode/resource-limit` emission. This row does not claim AV2 `NumRefFrames` derivation, `ActiveNumRefFrames`, `RefValid`, `frame_to_refresh`, `refresh_frame_flags`, output scheduling, show-existing behavior, motion-field storage, or §7.23 frame-store update semantics."
+
+[[row]]
 id = "decode-fuzz-entrypoint"
 name = "Decode fuzz entry point"
 feature_id = "DECODE-BYTE-STREAM-PLANNER"

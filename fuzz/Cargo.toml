@@ -98,6 +98,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "recon_reference_frame_store_bytes"
+path = "fuzz_targets/recon_reference_frame_store_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "recon_y4m_output_bytes"
 path = "fuzz_targets/recon_y4m_output_bytes.rs"
 test = false
