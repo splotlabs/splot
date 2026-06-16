@@ -45,7 +45,13 @@
 //! `tile_group_payload()` per-tile framing ([`tile_group::write_tile_group_payload`], the inverse of
 //! `parse_tile_group_framing` on the intra path): each non-last tile's `tile_size_minus_1`
 //! `le(TileSizeBytes)` size field plus the coded-tile bytes (a per-tile passthrough), with the last
-//! tile's size field elided.
+//! tile's size field elided; and the composing first-tile-group `tile_group_obu()` writer
+//! ([`tile_group::write_tile_group_obu`], the inverse of the `parse_tile_group_prefix`,
+//! `frame_header()`, `parse_tile_group_structure`, `parse_tile_group_framing` sequence for
+//! `is_first_tile_group == 1`): it sequences the `is_first_tile_group = 1` flag, the embedded
+//! `frame_header()` (via `write_frame_header_core`), the § 5.19 structure, and the § 5.20.1 payload
+//! framing into one OBU payload, drafting into a scratch writer and committing only on full success
+//! (it owns no OBU header / size / trailing bits).
 //! More payload writers will build on this module as the writer surface grows; see
 //! `docs/spec-coverage-writer.md` (once landed) for the per-structure coverage matrix.
 
@@ -99,4 +105,4 @@ pub use seq_header::{
 pub use seq_tile::{
     write_sequence_filter_config, write_sequence_header, write_sequence_tile_config,
 };
-pub use tile_group::{write_tile_group_payload, write_tile_group_structure};
+pub use tile_group::{write_tile_group_obu, write_tile_group_payload, write_tile_group_structure};
