@@ -1654,4 +1654,73 @@ mod tests {
         let reparsed = reparse_group(&bytes, xlayer).unwrap();
         assert_eq!(&reparsed, &obu);
     }
+
+    // ===== review-driven reject guards =====
+
+    #[test]
+    fn short_unaligned_writer_is_rejected() {
+        // The metadata OBU payload must start byte-aligned; a mid-byte writer is rejected and the
+        // writer is left untouched (still holding only the pre-existing partial bit).
+        let obu = short_obu(MetadataType::Timecode, 1, None, true);
+        let mut writer = BitWriter::new();
+        writer.write_bit(1).unwrap();
+        assert!(matches!(
+            write_metadata_short_obu(&mut writer, &obu, &[]),
+            Err(WriteError::WriterNotByteAligned)
+        ));
+        assert_eq!(writer.bit_len(), 1);
+    }
+
+    #[test]
+    fn group_unaligned_writer_is_rejected() {
+        let obu = MetadataGroupObu {
+            metadata_is_suffix: false,
+            metadata_necessity_idc: 0,
+            metadata_application_id: 0,
+            units: vec![cancel_group_unit(MetadataType::Timecode, 0)],
+        };
+        let mut writer = BitWriter::new();
+        writer.write_bit(1).unwrap();
+        assert!(matches!(
+            write_metadata_group_obu(&mut writer, &obu, ExtendedLayerId::from_bits(0), &[&[]]),
+            Err(WriteError::WriterNotByteAligned)
+        ));
+        assert_eq!(writer.bit_len(), 1);
+    }
+
+    #[test]
+    fn group_cancel_with_passthrough_is_rejected() {
+        // A cancelled group unit carries no metadata_unit, so supplied opaque bytes are rejected
+        // rather than silently dropped (matching the short OBU's cancel arm).
+        let obu = MetadataGroupObu {
+            metadata_is_suffix: false,
+            metadata_necessity_idc: 0,
+            metadata_application_id: 0,
+            units: vec![cancel_group_unit(MetadataType::Timecode, 0)],
+        };
+        let mut writer = BitWriter::new();
+        assert!(matches!(
+            write_metadata_group_obu(&mut writer, &obu, ExtendedLayerId::from_bits(0), &[&[0x00]]),
+            Err(WriteError::NonCanonicalMetadata {
+                what: "passthrough_len"
+            })
+        ));
+        assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
+    fn unit_reserved_named_type_is_rejected() {
+        // A direct write_metadata_unit caller must also be guarded: Reserved(5) re-maps to a named
+        // type on reparse, so it could never have been parsed.
+        let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
+        let u = unit(MetadataType::Reserved(5), 0, payload);
+        let mut writer = BitWriter::new();
+        assert!(matches!(
+            write_metadata_unit(&mut writer, &u, &[]),
+            Err(WriteError::NonCanonicalMetadata {
+                what: "metadata_type_canonical"
+            })
+        ));
+        assert_eq!(writer.bit_len(), 0);
+    }
 }

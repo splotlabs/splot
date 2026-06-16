@@ -359,7 +359,10 @@ mod proptests {
         fn group_writer_never_panics(
             header_size in any::<u8>(),
             cancel in any::<bool>(),
-            payload_size in proptest::option::of(any::<u32>()),
+            // Bounded: the test allocates `vec![0u8; payload_size]` below, so an unbounded u32
+            // could OOM the runner. The u32-ceiling reject is covered directly by
+            // `unit_oversized_declared_payload_size_is_rejected`.
+            payload_size in proptest::option::of(0u32..256),
             layer_idc in proptest::option::of(any::<u8>()),
             global in any::<bool>(),
             ext_len in 0usize..8,

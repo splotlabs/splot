@@ -128,16 +128,23 @@ fn check_canonical_metadata_type(metadata_type: MetadataType) -> WriteResult<()>
 /// payloads.
 ///
 /// # Errors
+/// [`WriteError::WriterNotByteAligned`] if `writer` is not on a byte boundary;
 /// [`WriteError::NonCanonicalMetadata`]: a `muh_layer_idc` / `muh_persistence_idc` outside its
-/// `f(3)` field (`muh_field_domain`); a `unit` whose presence disagrees with `muh_cancel_flag`
-/// (`short_cancel_unit`); a non-empty `passthrough` on a cancelled OBU (`passthrough_len`); a
-/// `metadata_type_leb128_bytes` that cannot encode the value (`metadata_type_leb_len`); or any
-/// [`write_metadata_unit`] reject. Never writes a bit on error.
+/// `f(3)` field (`muh_field_domain`); a non-canonical `metadata_type` (`metadata_type_canonical`);
+/// a `unit` whose presence disagrees with `muh_cancel_flag` (`short_cancel_unit`); a non-empty
+/// `passthrough` on a cancelled OBU (`passthrough_len`); a `metadata_type_leb128_bytes` that cannot
+/// encode the value (`metadata_type_leb_len`); or any [`write_metadata_unit`] reject. Never writes a
+/// bit on error.
 pub fn write_metadata_short_obu(
     writer: &mut BitWriter,
     obu: &MetadataShortObu,
     passthrough: &[u8],
 ) -> WriteResult<()> {
+    // The metadata OBU payload begins at a byte boundary (the § 5.17 parser reads it byte-aligned);
+    // a mid-byte writer would mis-position every following byte. Matches the §5.4 OBU writers.
+    if !writer.is_byte_aligned() {
+        return Err(WriteError::WriterNotByteAligned);
+    }
     if obu.muh_layer_idc >= F3_MAX_PLUS_1 || obu.muh_persistence_idc >= F3_MAX_PLUS_1 {
         return Err(WriteError::NonCanonicalMetadata {
             what: "muh_field_domain",
@@ -199,6 +206,7 @@ pub fn write_metadata_short_obu(
 /// scratch [`BitWriter`] and appended only on full success.
 ///
 /// # Errors
+/// [`WriteError::WriterNotByteAligned`] if `writer` is not on a byte boundary;
 /// [`WriteError::NonCanonicalMetadata`]: a `passthrough` length that disagrees with the unit count
 /// (`group_passthrough_count`); an empty or over-large unit count (`group_unit_count`); a
 /// `metadata_necessity_idc` / `metadata_application_id` outside its field (`group_header_domain`);
@@ -209,6 +217,11 @@ pub fn write_metadata_group_obu(
     obu_xlayer_id: ExtendedLayerId,
     passthrough: &[&[u8]],
 ) -> WriteResult<()> {
+    // The metadata OBU payload begins at a byte boundary (the § 5.17 parser reads it byte-aligned);
+    // a mid-byte writer would mis-position every following byte. Matches the §5.4 OBU writers.
+    if !writer.is_byte_aligned() {
+        return Err(WriteError::WriterNotByteAligned);
+    }
     if passthrough.len() != obu.units.len() {
         return Err(WriteError::NonCanonicalMetadata {
             what: "group_passthrough_count",
@@ -270,6 +283,13 @@ fn write_metadata_group_unit(
     scratch.write_bit(u8::from(unit.muh_cancel_flag))?;
 
     if unit.muh_cancel_flag {
+        // § 5.17.3: a cancelled unit carries no metadata_unit, so there is nothing to summarize;
+        // reject supplied opaque bytes rather than silently dropping them (as the short OBU does).
+        if !passthrough.is_empty() {
+            return Err(WriteError::NonCanonicalMetadata {
+                what: "passthrough_len",
+            });
+        }
         write_group_unit_cancel(&mut scratch, unit)?;
     } else {
         write_group_unit_body(&mut scratch, unit, obu_xlayer_id, passthrough)?;
@@ -525,6 +545,10 @@ pub fn write_metadata_unit(
 /// `payload_size` is consistent with the payload (AV2 v1.0.0 § 5.17.1 / § 6.16.1,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-17-1`).
 fn check_unit_type_and_size(unit: &MetadataUnit) -> WriteResult<()> {
+    // § 6.16 Table 6.17: a Reserved value the parser would re-map to a named type is unwritable.
+    // The OBU writers also guard this, but a direct write_metadata_unit caller must be caught here
+    // (a Reserved(1..=10) + UnknownRaw unit would otherwise reparse under the named type).
+    check_canonical_metadata_type(unit.metadata_type)?;
     if !type_matches_payload(unit.metadata_type, &unit.payload) {
         return Err(WriteError::NonCanonicalMetadata {
             what: "type_payload_mismatch",
