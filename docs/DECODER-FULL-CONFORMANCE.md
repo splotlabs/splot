@@ -11,14 +11,15 @@ implementation.
 ## Current Status
 
 `splot decode` is not currently a full AV2 decoder. The public command has one
-narrow runtime success path: `--output-format hash --json` on the committed
-`minimal-intra-8bit420-hash-v1` flat 64x64 intra IVF fixture verifies the
-traced §8.2 tile-symbol stream and emits a `splot.decode.hash_report` v1
-artifact. Other inputs are still planner-only or fail closed at the runtime tier
-gate: the command reads bounded input bytes, constructs a `DecodeContext`,
-reuses `DecodeContext::plan_bytes`, and renders structured diagnostics for
-malformed sources, resource limits, unsupported planner structures, or
-out-of-tier runtime features.
+narrow runtime tier on the committed `minimal-intra-8bit420-hash-v1` flat 64x64
+intra IVF fixture: `--output-format hash --json` verifies the traced §8.2
+tile-symbol stream and emits a `splot.decode.hash_report` v1 artifact, while
+`--output-format raw -o` and `--output-format y4m -o` publish the same decoded
+frame bytes atomically. Other inputs are still planner-only or fail closed at
+the runtime tier gate: the command reads bounded input bytes, constructs a
+`DecodeContext`, reuses `DecodeContext::plan_bytes`, and renders structured
+diagnostics for malformed sources, resource limits, unsupported planner
+structures, or out-of-tier runtime features.
 
 Current `splot decode` does not:
 
@@ -148,9 +149,10 @@ to derive the output sample arrays. For monochrome output, `chroma_left`,
 `chroma_top = visible_luma_top >> subY`. `digest_hex` is exactly 64 lowercase
 hexadecimal characters for `splot-dfh-sha256-v1`.
 
-Future raw output is concatenated canonical sample bytes for each output event
-in output-index order for the selected variant, with no header or metadata
-bytes. This contract does not add a current `--output-format raw` CLI mode.
+Raw output is concatenated canonical sample bytes for each output event in
+output-index order for the selected variant, with no header or metadata bytes.
+Current runtime raw support is limited to the committed minimal IVF tier tracked
+by `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT`.
 Y4M output represents the chosen AV2 output-frame sample set using the
 repository-owned Y4M container policy; Y4M container bytes are not AV2 syntax.
 Current runtime Y4M support is limited to the committed minimal IVF tier tracked

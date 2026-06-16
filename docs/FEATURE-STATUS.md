@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 203 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 205 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -134,6 +134,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `CONF-FUZZ-NO-PANIC` | Parser no-panic fuzzing | conformance | conformance | done | n/a | done | done | n/a | n/a | partial | done | n/a | `fuzz/fuzz_targets/parse_obu.rs` |
 | `CONF-DECODE-RUNTIME-HASH-FUZZ` | Decode runtime hash no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/decode_runtime_hash_bytes.rs` |
 | `CONF-DECODE-RUNTIME-Y4M-FUZZ` | Decode runtime Y4M no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/decode_runtime_y4m_bytes.rs` |
+| `CONF-DECODE-RUNTIME-RAW-FUZZ` | Decode runtime raw no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/decode_runtime_raw_bytes.rs` |
 | `CONF-RECON-Y4M-OUTPUT-FUZZ` | Y4M output serialization no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/recon_y4m_output_bytes.rs` |
 | `CONF-RECON-FRAME-HASH-FUZZ` | Decoded-frame hash serialization no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/recon_frame_hash_bytes.rs` |
 | `CONF-RECON-FRAME-PLANE-TYPES-FUZZ` | Decoded-frame and plane runtime type no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/recon_frame_plane_types_bytes.rs` |
@@ -180,6 +181,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DOC-MINIMAL-DECODE-TIER-CONTRACT` | Minimal decode tier contract documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `docs/DECODER-ROADMAP.md` |
 | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | Minimal-tier runtime hash success | infrastructure | infrastructure | done | done | partial | done | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_hash.rs` |
 | `DECODE-Y4M-RUNTIME-OUTPUT` | Minimal-tier runtime Y4M output | infrastructure | infrastructure | done | done | partial | done | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_y4m.rs` |
+| `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | Minimal-tier runtime raw output | infrastructure | infrastructure | done | done | partial | done | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_raw.rs` |
 | `INFRA-DECODER-CRATE-SCAFFOLDING` | Decoder and reconstruction crate scaffolding | infrastructure | infrastructure | done | n/a | n/a | done | n/a | n/a | n/a | done | n/a | `crates/splot-decode/src/lib.rs` |
 | `INFRA-PARALLEL-RUNTIME-POLICY` | Parallel runtime policy (Rayon worker pool + bounded crossbeam queues) | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `crates/splot-parallel/src/lib.rs` |
 | `INFRA-RECON-FRAME-PLANE-TYPES` | Decoded frame and plane runtime types | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-recon/src/lib.rs` |

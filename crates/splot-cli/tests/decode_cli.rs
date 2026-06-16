@@ -558,7 +558,12 @@ fn decode_oversized_input_reports_resource_limit_without_touching_output() {
 fn decode_invalid_output_format_is_usage_error() {
     let input = temp_input("av2", PLANABLE_CLOSED_LOOP_KEY);
 
-    let out = splot(&["decode", "--output-format", "raw", input.to_str().unwrap()]);
+    let out = splot(&[
+        "decode",
+        "--output-format",
+        "frames",
+        input.to_str().unwrap(),
+    ]);
 
     assert_eq!(out.status.code(), Some(2));
     assert!(out.stdout.is_empty(), "stdout was not empty");

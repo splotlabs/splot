@@ -25,7 +25,7 @@ use crate::tile_payload::{
 /// It owns exactly one [`WorkerPool`] and exposes the resolved worker count,
 /// builds bounded stream metadata from raw Annex B/IVF byte slices or already
 /// parsed stream structures, and exposes the narrow documented
-/// `minimal-intra-8bit420-hash-v1` runtime hash and Y4M byte paths. It
+/// `minimal-intra-8bit420-hash-v1` runtime hash, raw, and Y4M byte paths. It
 /// intentionally does NOT inspect input/output paths, perform filesystem
 /// publication, invoke any external decoder, or claim broad AV2 runtime decode
 /// support.
@@ -104,6 +104,37 @@ impl DecodeContext {
         self.pool.install(|| {
             crate::runtime_hash::decode_hash_report_from_plan(bytes, options, &plan, self.threads())
         })
+    }
+
+    /// Decodes the documented minimal tier and writes complete raw sample bytes.
+    ///
+    /// This method first runs [`Self::plan_bytes`] so malformed sources,
+    /// resource-limit failures, layer selection, and planner-level unsupported
+    /// structures stay transactional. Runtime raw support is intentionally
+    /// limited to the same `minimal-intra-8bit420-hash-v1` IVF tier as the hash
+    /// path. The complete raw sample byte stream is buffered and checked against
+    /// [`crate::DecodeLimitName::MaxOutputBytes`] before any bytes are written
+    /// to `writer`.
+    ///
+    /// # Errors
+    /// Returns [`crate::DecodeError`] for malformed sources, unsupported
+    /// structures, runtime-tier rejections, resource-limit failures, worker-pool
+    /// failures, reconstruction model errors, raw serialization errors, or
+    /// caller-writer I/O errors.
+    pub fn decode_raw_bytes<W: std::io::Write>(
+        &self,
+        bytes: &[u8],
+        options: DecodeOptions,
+        mut writer: W,
+    ) -> Result<()> {
+        let plan = self.plan_bytes(bytes, options)?;
+        let raw = self
+            .pool
+            .install(|| crate::runtime_raw::encode_raw_stream_from_plan(bytes, options, &plan))?;
+        std::io::Write::write_all(&mut writer, &raw).map_err(|source| {
+            DecodeOutputError::io(DecodeOutputOperation::WriteRawStream, source)
+        })?;
+        Ok(())
     }
 
     /// Decodes the documented minimal tier and writes a complete Y4M stream.

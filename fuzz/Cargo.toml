@@ -91,6 +91,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "decode_runtime_raw_bytes"
+path = "fuzz_targets/decode_runtime_raw_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "recon_frame_hash_bytes"
 path = "fuzz_targets/recon_frame_hash_bytes.rs"
 test = false
