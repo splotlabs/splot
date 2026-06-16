@@ -271,6 +271,30 @@ pub enum WriteError {
         what: &'static str,
     },
 
+    /// A multi-frame-header value is inconsistent with what the AV2 v1.0.0 § 5.7
+    /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-7`) parser would re-derive on reparse, so
+    /// the model could never have been produced by `parse_multi_frame_header` and writing it would
+    /// break `read(write(x)) == x`. Examples: a `mfh_apply_deblocking_filter[i]` that is `true`
+    /// while `mfh_deblocking_filter_update` is `false` (the parser leaves the array all-`false`
+    /// without an update); a stored `width_bits` / `height_bits` outside `1..=16` (it is
+    /// `mfh_frame_*_bits_minus_1 + 1` with the `minus_1` an `f(4)` value); or a
+    /// `mfh_seg_info_present_flag` that disagrees with the presence of the three segment-info
+    /// `Option`s (`mfh_ext_seg_flag` / `mfh_allow_seg_info_change` / `segment_info`). Rejected
+    /// before any bit is written.
+    ///
+    /// A `mfh_seq_header_id` / `mfh_id_minus_1` out of its § 6.x conformance range — which the
+    /// validator flags but the parser preserves verbatim — is **not** rejected; the writer
+    /// reproduces it exactly.
+    #[error(
+        "non-canonical {what}: multi-frame-header value cannot be reproduced by the §5.7 parser"
+    )]
+    NonCanonicalMultiFrameHeader {
+        /// A short, stable label for the offending field (e.g. `"deblocking_apply_forced_false"`,
+        /// `"frame_width_bits"`, `"frame_height_bits"`, `"seg_info_present_flag"`,
+        /// `"passthrough"`).
+        what: &'static str,
+    },
+
     /// A content-interpretation value is inconsistent with what the AV2 v1.0.0 § 5.15
     /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-15`) parser would re-derive on reparse, so
     /// the model could never have been produced by `parse_content_interpretation` and writing it
