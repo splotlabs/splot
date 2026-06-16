@@ -672,3 +672,17 @@ self_contained_tests = ["cargo check --manifest-path fuzz/Cargo.toml --bins --lo
 diagnostics = ["decode/malformed-source", "decode/resource-limit", "decode/unsupported-feature"]
 local_reference_evidence = []
 notes = "Self-contained cargo-fuzz target `decode_runtime_hash_bytes` feeds arbitrary raw bytes and bounded mutations of the committed minimal IVF fixture through `DecodeContext::decode_hash_report_bytes` with finite decode limits. On success it asserts only the stable minimal hash-report shape; on failure typed `DecodeError` returns are accepted. It requires no AVM, dav2d, ffmpeg, filesystem I/O, network access, subprocesses, generated external fixtures, checked-in local reference paths, decoded output files, Y4M/raw output fuzzing, or metadata hash verification. This row does not claim broad runtime decode, full tile syntax, full reconstruction, AVM/dav2d agreement, or support beyond the existing minimal hash byte API."
+
+[[row]]
+id = "decode-runtime-y4m-fuzz"
+name = "Decode runtime Y4M fuzz entry point"
+feature_id = "CONF-DECODE-RUNTIME-Y4M-FUZZ"
+spec_sections = ["Annex B.2", "Annex B.3", "5.2", "5.19", "5.20.1", "6.4.1", "6.16.13", "6.17.4.4", "7.1", "7.21.1", "7.21.2"]
+parser_source = "fuzz/fuzz_targets/decode_runtime_y4m_bytes.rs"
+decode_module = "crates/splot-decode/src/context.rs::DecodeContext::decode_y4m_bytes"
+tier = "tier1-intra"
+status = "supported"
+self_contained_tests = ["cargo check --manifest-path fuzz/Cargo.toml --bins --locked", "cargo xtask check-fuzz-targets", "cargo test -p splot-decode runtime_y4m --locked", "cargo +nightly fuzz run decode_runtime_y4m_bytes (local/nightly; CI fuzz smoke runs every target)"]
+diagnostics = ["decode/malformed-source", "decode/resource-limit", "decode/unsupported-feature", "decode/output-error"]
+local_reference_evidence = []
+notes = "Self-contained cargo-fuzz target `decode_runtime_y4m_bytes` feeds arbitrary raw bytes and bounded mutations of the committed minimal IVF fixture through `DecodeContext::decode_y4m_bytes` with finite decode limits and bounded in-memory writers. On success it asserts only the stable minimal Y4M stream shape; on unsupported, malformed, resource-limit, or caller-writer failures, typed `DecodeError` returns are accepted. It requires no AVM, dav2d, ffmpeg, filesystem I/O, network access, subprocesses, generated external fixtures, checked-in local reference paths, CLI output publication, temp-file atomicity fuzzing, raw output, hash-report output, post-film-grain output, show-existing/flush scheduling, reference refresh, motion-field storage, metadata MD5 verification, or new dependencies. This row does not claim broad AV2 decode or Y4M support beyond the existing committed minimal IVF tier."

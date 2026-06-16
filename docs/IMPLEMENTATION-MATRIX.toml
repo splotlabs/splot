@@ -4275,6 +4275,62 @@ fixtures = [
 diagnostics = ["decode/malformed-source", "decode/resource-limit", "decode/unsupported-feature"]
 
 [[feature]]
+id = "CONF-DECODE-RUNTIME-Y4M-FUZZ"
+name = "Decode runtime Y4M no-panic fuzzing"
+category = "conformance"
+kind = "conformance"
+spec_sections = ["Annex B.2", "Annex B.3", "5.2", "5.19", "5.20.1", "6.4.1", "6.16.13", "6.17.4.4", "7.1", "7.21.1", "7.21.2"]
+sources = [
+    "docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2",
+    "docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-2",
+]
+crate = "fuzz"
+module = "fuzz/fuzz_targets/decode_runtime_y4m_bytes.rs"
+openspec_change = "decode-runtime-y4m-fuzz"
+tracking_issue = ""
+owner = "conformance"
+risk = "medium"
+notes = "Self-contained cargo-fuzz target for `DecodeContext::decode_y4m_bytes`: it reuses a single-thread `DecodeContext`, applies finite `DecodeLimits`, feeds both arbitrary raw bytes and bounded mutations of the committed minimal IVF fixture, writes only to bounded in-memory writers, asserts only the stable minimal Y4M stream shape on `Ok`, and accepts typed `DecodeError` returns on unsupported, malformed, resource-limit, or output failures. This is conformance/robustness proof for the existing minimal runtime Y4M byte API only. It does not claim broad runtime decode, new AV2 syntax or semantics, CLI filesystem publication, temp-file atomicity fuzzing, raw output, hash-report output, post-film-grain output, show-existing/flush scheduling, film-grain synthesis, reference refresh, motion-field storage, metadata MD5 verification, AVM/dav2d agreement, filesystem I/O, network I/O, subprocesses, new dependencies, or Y4M support beyond the committed minimal IVF tier."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "fuzz/fuzz_targets/decode_runtime_y4m_bytes.rs",
+    "crates/splot-decode/src/runtime_y4m.rs::tests",
+]
+commands = [
+    "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
+    "cargo xtask check-fuzz-targets",
+    "cargo test -p splot-decode runtime_y4m --locked",
+    "cargo +nightly fuzz run decode_runtime_y4m_bytes (local/nightly; CI fuzz smoke runs every target)",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
+    "fuzz/fuzz_targets/decode_runtime_y4m_bytes.rs",
+]
+diagnostics = ["decode/malformed-source", "decode/resource-limit", "decode/unsupported-feature", "decode/output-error"]
+
+[[feature]]
 id = "CONF-RECON-Y4M-OUTPUT-FUZZ"
 name = "Y4M output serialization no-panic fuzzing"
 category = "conformance"
