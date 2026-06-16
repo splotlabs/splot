@@ -115,7 +115,10 @@ pub(crate) fn plan_minimal_runtime_block_symbol_frontier<'payload>(
 ) -> Result<MinimalRuntimeBlockSymbolFrontier, MinimalRuntimeBlockSymbolFrontierError> {
     let symbols = plan_minimal_runtime_partition_frontier(work_unit, sequence, core, limits)?
         .into_symbol_decoder();
+    let tile_num = work_unit.tile_num();
     let trace = consume_minimal_block_symbol_trace(work_unit, symbols)?;
+    work_unit.cdf_mut().apply_completed_tile_to_saved(tile_num);
+    work_unit.cdf_mut().frame_end_update_cdf_subset();
     Ok(MinimalRuntimeBlockSymbolFrontier {
         summary: trace.summary(),
         reconstruction_trace: MinimalRuntimeReconstructionTrace::LumaDcNoResidual8Bit420_64x64,
@@ -366,6 +369,8 @@ mod tests {
                 ctx: 4,
             };
             let untouched_before = work_unit.cdf().tile_cdfs().row(untouched).unwrap().to_vec();
+            let saved_before = work_unit.cdf().saved_cdfs().clone();
+            let frame_before = work_unit.cdf().frame_cdfs().clone();
 
             let frontier = plan_minimal_runtime_block_symbol_frontier(
                 work_unit,
@@ -399,6 +404,22 @@ mod tests {
                 work_unit.cdf().tile_cdfs().row(untouched).unwrap(),
                 untouched_before.as_slice()
             );
+            assert_ne!(work_unit.cdf().saved_cdfs(), &saved_before);
+            assert_ne!(work_unit.cdf().frame_cdfs(), &frame_before);
+            assert_eq!(
+                work_unit.cdf().saved_cdfs().rows().y_mode_set(),
+                work_unit.cdf().tile_cdfs().rows().y_mode_set()
+            );
+            let saved_y_mode_set = work_unit.cdf().saved_cdfs().rows().y_mode_set();
+            let frame_y_mode_set = work_unit.cdf().frame_cdfs().rows().y_mode_set();
+            assert_eq!(
+                &frame_y_mode_set[..frame_y_mode_set.len() - 1],
+                &saved_y_mode_set[..saved_y_mode_set.len() - 1]
+            );
+            assert_eq!(
+                frame_y_mode_set[frame_y_mode_set.len() - 1],
+                (3 * saved_y_mode_set[saved_y_mode_set.len() - 1]) >> 2
+            );
         });
     }
 
@@ -417,6 +438,8 @@ mod tests {
             .unwrap()
             .into_symbol_decoder();
             let before = work_unit.cdf().tile_cdfs().clone();
+            let saved_before = work_unit.cdf().saved_cdfs().clone();
+            let frame_before = work_unit.cdf().frame_cdfs().clone();
             let err = consume_minimal_block_symbol_trace(work_unit, symbols).unwrap_err();
 
             assert!(matches!(
@@ -424,6 +447,8 @@ mod tests {
                 MinimalBlockSymbolTraceError::ExitSymbol { .. }
             ));
             assert_eq!(work_unit.cdf().tile_cdfs(), &before);
+            assert_eq!(work_unit.cdf().saved_cdfs(), &saved_before);
+            assert_eq!(work_unit.cdf().frame_cdfs(), &frame_before);
         });
     }
 

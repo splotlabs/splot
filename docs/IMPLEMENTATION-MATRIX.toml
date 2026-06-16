@@ -6306,7 +6306,7 @@ openspec_change = "tile-square-split-context-derivation"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a crate-private `splot-decode` tile CDF selection boundary for the minimal single-tile closed-loop-key tier: a small partition-entry CDF subset (`TileDoSplitCdf`, `TileDoSquareSplitCdf`, `TileRectTypeCdf`, `TileDoExtPartitionCdf`, and `TileDoUneven4wayPartitionCdf`) is copied from generated §9.3 defaults, typed selector validation and closure-scoped mutable row access prove §8.3 handoff into `SymbolDecoder::read_symbol(cdf)`, the tile work unit records CDF update mode from `disable_cdf_update`, the §8.2 copy/average decision is computed from `enable_avg_cdf`, `avg_cdf_type`, `context_update_tile_id`, `TileNum`, and `TileCols * TileRows`, and bounded §8.3.2 contexts are derived for `do_split`, `do_square_split`, `rect_type`, `do_ext_partition`, and `do_uneven_4way_partition` using generated §9.2 conversion tables, availability-gated `MiSizes` lookups, and the local §8.3.2 adjustment arrays. The individual partition-entry `S()` read boundary is tracked separately by `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY`; the final one-decision consumer over caller-provided facts is tracked separately by `DECODE-TILE-PARTITION-DECISION-BOUNDARY`. This is a boundary only: it does not itself implement partition decisions, full §8.3 CDF selection, full Tile/Saved CDF banks, recursive `decode_tile()`/`read_partition()` traversal, `exit_symbol()` after real syntax, Saved CDF copy/average mutation after tile completion, `frame_end_update_cdf()`, reconstruction, hashes, runtime Y4M output, reference refresh, public API support, AVM/dav2d invocation, or scheduler use outside the `splot_parallel::WorkerPool` policy."
+notes = "Adds a crate-private `splot-decode` tile CDF selection boundary for the minimal single-tile closed-loop-key tier: a small partition-entry CDF subset (`TileDoSplitCdf`, `TileDoSquareSplitCdf`, `TileRectTypeCdf`, `TileDoExtPartitionCdf`, and `TileDoUneven4wayPartitionCdf`) is copied from generated §9.3 defaults, typed selector validation and closure-scoped mutable row access prove §8.3 handoff into `SymbolDecoder::read_symbol(cdf)`, the tile work unit records CDF update mode from `disable_cdf_update`, the §8.2 copy/average decision is computed from `enable_avg_cdf`, `avg_cdf_type`, `context_update_tile_id`, `TileNum`, and `TileCols * TileRows`, and bounded §8.3.2 contexts are derived for `do_split`, `do_square_split`, `rect_type`, `do_ext_partition`, and `do_uneven_4way_partition` using generated §9.2 conversion tables, availability-gated `MiSizes` lookups, and the local §8.3.2 adjustment arrays. The individual partition-entry `S()` read boundary is tracked separately by `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY`; the final one-decision consumer over caller-provided facts is tracked separately by `DECODE-TILE-PARTITION-DECISION-BOUNDARY`; supported-subset Tile-to-Saved and Saved-to-Frame lifecycle behavior is tracked separately by `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY`. This is a boundary only: it does not itself implement partition decisions, full §8.3 CDF selection, full Tile/Saved CDF banks, recursive `decode_tile()`/`read_partition()` traversal, broad `exit_symbol()` after real syntax, broad CDF lifecycle outside the supported subset, reconstruction, hashes, runtime Y4M output, reference refresh, public API support, AVM/dav2d invocation, or scheduler use outside the `splot_parallel::WorkerPool` policy."
 
 [feature.status]
 mapped = "done"
@@ -6340,6 +6340,74 @@ fixtures = [
     "crates/splot-decode/src/tile_payload/tests.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"
+name = "Tile CDF save lifecycle boundary"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.1", "5.20.2.1", "6.19.1", "7.5", "8.2.2", "8.2.4", "8.2.6", "8.3.1", "8.3.2", "9.3"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-5",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-2",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-4",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-6",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-1",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/cdf/lifecycle.rs"
+openspec_change = "tile-cdf-save-lifecycle-boundary"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Supported crate-private AV2 tile CDF lifecycle boundary for the currently supported CDF subset only: partition-entry rows (`TileDoSplitCdf`, `TileDoSquareSplitCdf`, `TileRectTypeCdf`, `TileDoExtPartitionCdf`, `TileDoUneven4wayPartitionCdf`) plus the minimal flat-intra block-symbol rows (`TileYModeSetCdf`, `TileYModeIndexCdf`, `TileTxbSkipCdf`, `TileUvModeCflNotAllowedCdf`, and `TileVTxbSkipCdf`). `TileCdfWorkUnitBoundary` carries Frame, Saved, and Tile CDF subset state; successful minimal runtime tile completion applies final tile-local rows to Saved CDF rows only after the traced block frontier and `exit_symbol()` pass, honors copy versus average policy, then applies the supported-subset `frame_end_update_cdf()` path by copying Saved rows into Frame rows while scaling row counts per AV2 §7.5. Symbol mismatch, CDF/symbol parse failure, resource-limit failure, and exit-padding failure leave Saved and Frame rows unchanged, and minimal hash/Y4M output bytes remain stable. This row is not full CDF lifecycle support: broad §8.3 selector coverage, all §9.3 banks, multi-tile or multi-tile-group averaging, reference-frame CDF persistence, `load_cdfs`, `save_cdfs`, `blend_cdfs`, broad `decode_tile()`, reconstruction, output, reference refresh, public APIs, and external decoder integration remain out of scope."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::saved_copy_and_average_are_exact_for_supported_subset",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::disabled_cdf_update_keeps_saved_subset_at_initial_rows",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::frame_end_update_copies_saved_rows_and_scales_counts",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::work_unit_boundary_applies_saved_and_frame_updates_transactionally",
+    "crates/splot-decode/src/tile_payload/block_symbol.rs::tests::traced_symbol_mismatch_fails_closed_and_rolls_back_cdfs",
+    "crates/splot-decode/src/tile_payload/block_symbol.rs::tests::invalid_cdf_row_reports_parse_failure_and_preserves_rows",
+    "crates/splot-decode/src/tile_payload/runtime_frontier.rs::tests::block_symbol_frontier_accepts_minimal_fixture_trace",
+    "crates/splot-decode/src/tile_payload/runtime_frontier.rs::tests::block_symbol_frontier_rejects_exit_symbol_padding_failure",
+]
+commands = [
+    "cargo test -p splot-decode tile_payload::cdf --locked",
+    "cargo test -p splot-decode tile_payload::block_symbol --locked",
+    "cargo test -p splot-decode tile_payload::runtime_frontier --locked",
+    "cargo test -p splot-decode runtime_hash --locked",
+    "cargo test -p splot-decode runtime_y4m --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/cdf.rs",
+    "crates/splot-decode/src/tile_payload/cdf/lifecycle.rs",
+    "crates/splot-decode/src/tile_payload/cdf/block_rows.rs",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs",
+    "crates/splot-decode/src/tile_payload/block_symbol.rs",
+    "crates/splot-decode/src/tile_payload/runtime_frontier.rs",
+]
+diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
 
 [[feature]]
 id = "DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY"

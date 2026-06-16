@@ -106,6 +106,15 @@ runtime fixture: after the partition frontier, tile-payload code consumes the
 traced `y_mode_set`, `y_mode_index`, luma/U all-zero transform skip, `uv_mode`,
 and V all-zero transform skip rows from generated § 9.3 defaults, validates
 `exit_symbol()`, and hands only the summary back to the minimal runtime. The
+`DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` is limited to that
+currently supported CDF subset: the partition-entry rows plus those minimal
+flat-intra block-symbol rows. It makes Tile-to-Saved mutation occur only
+after successful tile completion and `exit_symbol()`, preserve Saved and Frame
+CDF state on symbol mismatch, CDF/symbol parse failure, resource-limit failure,
+or exit-padding failure, and adds supported-subset `frame_end_update_cdf()`
+count scaling. That work does not claim full § 8.3 selector coverage, all § 9.3
+CDF banks, multi-tile or multi-tile-group CDF averaging, reference-frame CDF
+persistence, `load_cdfs`, `save_cdfs`, or `blend_cdfs`. The
 generic tile payload boundary still stops at structured
 `decode/unsupported-feature` metadata for the unimplemented broad
 `decode_tile()` block syntax. A crate-private source-backed derivation bridge
@@ -226,8 +235,8 @@ other external decoder is forbidden.
 | 3 | CLI `splot decode` contract backed by library diagnostics | minimal hash JSON and minimal Y4M output supported; raw output unsupported |
 | 4 | Container traversal, base-layer parsed/raw traversal, transactional decode planning | parsed and raw-byte stream planners supported; operating-point selection and broad CLI runtime unsupported |
 | 5 | Self-contained decode fuzz target and fixture smoke | `decode_plan_bytes` fuzz target supported for the raw byte planner; minimal runtime fixture smoke supported |
-| 6 | AV2 § 8 symbol/CDF decoder foundation | § 8.2 generic primitive partial; crate-private partition CDF subset boundary partial; broad § 8.3 and tile decode planned |
-| 7 | Constrained intra tile syntax | tile payload and tile CDF boundaries partial; individual partition-entry symbol reads, one caller-fact partition decision, allowed partition derivation, and first `decode_block()` frontier planning supported; full recursive `read_partition()` / `decode_tile()` syntax planned |
+| 6 | AV2 § 8 symbol/CDF decoder foundation | § 8.2 generic primitive partial; crate-private partition CDF subset boundary partial; supported-subset Tile-to-Saved/Saved-to-Frame lifecycle supported; broad § 8.3 and tile decode planned |
+| 7 | Constrained intra tile syntax | tile payload and tile CDF boundaries partial; individual partition-entry symbol reads, one caller-fact partition decision, allowed partition derivation, first `decode_block()` frontier planning, and minimal block-symbol trace supported; supported-subset CDF lifecycle supported; full recursive `read_partition()` / `decode_tile()` syntax planned |
 | 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | current-frame workspace plus square DC, rectangular DC, basic/PAETH, smooth prediction primitives, and the minimal luma-DC runtime handoff supported; directional/DIP/subsampled DC/IBP/CfL modes, chroma H/V prediction, dequant/reconstruction, inverse transforms, broad runtime hashes planned |
 | 9 | Y4M output and reconstructed reference-frame store | reference-slot runtime store, source-backed Y4M writer, and minimal runtime Y4M output supported; broad runtime Y4M output and AV2 refresh semantics planned |
 | 10 | Portable local-reference evidence manifests | metadata contract and offline checker wired; two AVM/dav2d raw MD5 agreement entries recorded as non-executable metadata |

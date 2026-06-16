@@ -10,7 +10,7 @@ use splot_core::tables::cdf::{
     DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
-use super::{CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_row};
+use super::{CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_row, scale_cdf_count};
 
 const Y_MODE_SET_CDF_ROW_LEN: usize = 5;
 const Y_MODE_INDEX_CONTEXTS: usize = 3;
@@ -261,6 +261,30 @@ impl BlockCdfRows {
                 tile_num,
                 num_log2,
             );
+        }
+    }
+
+    pub(crate) fn scale_counts_for_frame_end_update(&mut self) {
+        scale_cdf_count(&mut self.y_mode_set);
+        for ctx in 0..Y_MODE_INDEX_CONTEXTS {
+            scale_cdf_count(&mut self.y_mode_index[ctx]);
+        }
+        for coeff_cdf_q_ctx in 0..COEFF_CDF_Q_CONTEXTS {
+            for plane_type in 0..PLANE_TYPES {
+                for tx_size in 0..TX_SIZE_CONTEXTS {
+                    for ctx in 0..TXB_SKIP_CONTEXTS {
+                        scale_cdf_count(
+                            &mut self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size][ctx],
+                        );
+                    }
+                }
+            }
+            for ctx in 0..V_TXB_SKIP_CONTEXTS {
+                scale_cdf_count(&mut self.v_txb_skip[coeff_cdf_q_ctx][ctx]);
+            }
+        }
+        for ctx in 0..UV_MODE_CONTEXTS {
+            scale_cdf_count(&mut self.uv_mode_cfl_not_allowed[ctx]);
         }
     }
 
