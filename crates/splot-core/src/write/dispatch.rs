@@ -273,14 +273,30 @@ fn bits_to_byte_boundary(bit_len: u64) -> u64 {
 /// caller does NOT add the generic extensible tail.
 ///
 /// # Errors
-/// [`WriteError::NonCanonicalMetadata`] with `what == "padding_passthrough_len"` if
-/// `passthrough.len() != padding.padding_len`. (Padding shares the metadata error variant
-/// for a passthrough-length mismatch; the `what` label disambiguates.)
+/// - [`WriteError::NonCanonicalMetadata`] with `what == "padding_trailing_len"` if
+///   `padding.trailing_len == 0` while `padding.padding_len != 0` — a split the § 5.16
+///   parser never produces (see below), so the writer rejects it instead of emitting a
+///   stream that would not reparse.
+/// - [`WriteError::NonCanonicalMetadata`] with `what == "padding_passthrough_len"` if
+///   `passthrough.len() != padding.padding_len`. (Padding shares the metadata error variant
+///   for a passthrough-length mismatch; the `what` label disambiguates.)
 fn write_padding_payload(
     scratch: &mut BitWriter,
     padding: &PaddingObu,
     passthrough: &[u8],
 ) -> WriteResult<()> {
+    // § 5.16 / § 6.15: the parser splits the payload at the last non-zero byte, so a
+    // non-empty payload always has at least one trailing_bits() byte — `trailing_len == 0`
+    // occurs only for the empty payload (`padding_len == 0`). Any other split
+    // (`trailing_len == 0` with `padding_len > 0`) is a hand-built model the parser could
+    // not have produced; emitting it would write `padding_len` bytes with no trailing byte,
+    // whose last non-zero byte is not a valid trailing_bits() pattern (the reparse fails).
+    // Reject it before any bit, like the sibling metadata/sequence writers.
+    if padding.trailing_len == 0 && padding.padding_len != 0 {
+        return Err(WriteError::NonCanonicalMetadata {
+            what: "padding_trailing_len",
+        });
+    }
     if passthrough.len() != padding.padding_len {
         return Err(WriteError::NonCanonicalMetadata {
             what: "padding_passthrough_len",

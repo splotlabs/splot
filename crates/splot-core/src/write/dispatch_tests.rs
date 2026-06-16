@@ -467,6 +467,25 @@ mod tests {
     }
 
     #[test]
+    fn padding_trailing_len_zero_with_padding_bytes_rejects_without_writing() {
+        // §5.16: the parser splits at the last non-zero byte, so a non-empty payload always
+        // has trailing_len >= 1. `trailing_len == 0` with `padding_len > 0` is a hand-built
+        // model the parser never emits (its bytes would reparse as InvalidPadding), so the
+        // writer must reject it before any bit rather than emit a non-round-tripping stream.
+        let payload = ParsedObu::Padding(PaddingObu {
+            padding_len: 3,
+            trailing_len: 0,
+        });
+        let mut writer = BitWriter::new();
+        let err = write_obu_payload(&mut writer, &payload, false, &[0xDE, 0xAD, 0xBE]).unwrap_err();
+        assert!(
+            matches!(err, WriteError::NonCanonicalMetadata { what } if what == "padding_trailing_len"),
+            "expected padding_trailing_len, got {err:?}"
+        );
+        assert_eq!(writer.bit_len(), 0, "padding reject left bits in the writer");
+    }
+
+    #[test]
     fn temporal_delimiter_rejects_non_empty_passthrough() {
         let payload = ParsedObu::TemporalDelimiter;
         let mut writer = BitWriter::new();
