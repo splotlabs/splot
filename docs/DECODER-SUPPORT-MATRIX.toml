@@ -576,6 +576,20 @@ local_reference_evidence = []
 notes = "Source-backed scheduler-free `splot-recon` mutable current-frame workspace for future reconstruction callers. It allocates Y/U/V plane buffers from `DecodedFrameInfo` with checked arithmetic and fallible allocation, validates sample type and active bit-depth ranges, provides bounded plane/rectangle reads, fills, row-strided writes, square/rectangular block writes, in-storage left/above edge extraction, and square/rectangular DC plus rectangular PAETH and smooth prediction write helpers that call the existing `intra-dc-square-prediction`, `intra-dc-rectangular-prediction`, `intra-basic-paeth-prediction`, and `intra-smooth-prediction` primitives. Freezing reuses the existing immutable `Plane`, `FramePlanes`, and `DecodedFrame` validators, and tests prove interop with decoded-frame hash input, Y4M writer, and reference-frame store. This row itself does not add `DecodeContext` API, broad runtime `splot decode` success, tile syntax traversal, dequantization, inverse transforms, residual addition, loop filtering, output scheduling, broad runtime hashes/Y4M, reference refresh, AVM/dav2d invocation, external tooling, or scheduler state in `splot-recon`; the narrow runtime workspace consumer is tracked separately by `minimal-intra-reconstruction-frontier`, and future parallel orchestration remains owned by `DecodeContext` and `splot_parallel::WorkerPool`."
 
 [[row]]
+id = "recon-intra-prediction-fuzz"
+name = "Intra prediction and workspace fuzz entry point"
+feature_id = "CONF-RECON-INTRA-PREDICTION-FUZZ"
+spec_sections = ["3", "4.8", "6.4.1", "6.17.4.1", "6.17.4.4", "7.13.2.1", "7.13.2.2", "7.13.2.10", "7.13.2.13", "7.13.3.22"]
+parser_source = "fuzz/fuzz_targets/recon_intra_prediction_bytes.rs"
+decode_module = "crates/splot-recon/src/intra.rs; crates/splot-recon/src/intra_basic.rs; crates/splot-recon/src/intra_smooth.rs; crates/splot-recon/src/workspace.rs"
+tier = "tier1-intra"
+status = "supported"
+self_contained_tests = ["cargo check --manifest-path fuzz/Cargo.toml --bins --locked", "cargo xtask check-fuzz-targets", "cargo test -p splot-recon intra --locked", "cargo test -p splot-recon workspace --locked", "cargo +nightly fuzz run recon_intra_prediction_bytes (local/nightly; CI fuzz smoke runs every target)"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Self-contained cargo-fuzz target `recon_intra_prediction_bytes` normalizes arbitrary bytes into bounded structured direct prediction and current-frame workspace cases, then exercises existing `splot-recon` DC, PAETH, smooth, edge extraction, block write, interior workspace success, missing-plane, boundary, stride, edge-length, and output-shape typed return paths with no panic. It requires no AVM, dav2d, ffmpeg, filesystem I/O, network access, subprocesses, generated external fixtures, checked-in local reference paths, runtime `splot decode`, hash report output, or Y4M/raw output publication. This row does not claim full §7.13 intra reconstruction, directional prediction, data driven intra prediction, IBP, filter intra, CfL/CCTX, palette, residual, transform, quantization, loop-filter, reference refresh, runtime output scheduling, or support beyond source-backed intra prediction/workspace primitives."
+
+[[row]]
 id = "intra-reconstruction"
 name = "Scalar intra reconstruction"
 feature_id = ""

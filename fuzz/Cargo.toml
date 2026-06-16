@@ -76,5 +76,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "recon_intra_prediction_bytes"
+path = "fuzz_targets/recon_intra_prediction_bytes.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1

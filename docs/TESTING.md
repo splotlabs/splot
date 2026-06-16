@@ -8,11 +8,12 @@
 2. **Property / fuzz tests** — the parsers and the validator must never panic on
    arbitrary input. Implemented as `*_never_panic(s)` tests across the
    `splot-core` parser modules and `crates/splot-validate/tests/validator_never_panics.rs`
-   (mostly proptests, plus a few exhaustive-truncation unit tests). Seven `cargo
+   (mostly proptests, plus a few exhaustive-truncation unit tests). Eight `cargo
    fuzz` targets cover the parser, validator, byte-planner, and minimal runtime
    hash byte surfaces, plus Y4M output serialization from structured decoded
-   frames, and need a nightly toolchain; they run as a blocking per-target smoke
-   (~45s each) in PR CI:
+   frames and intra prediction/workspace primitives from structured inputs, and
+   need a nightly toolchain; they run as a blocking per-target smoke (~45s each)
+   in PR CI:
    - `parse_obu` — `read_leb128`, `read_obu_header`, `parse_annex_b_obus`.
    - `parse_ivf` — `is_ivf`, `parse_ivf_header`, `parse_ivf_partial`.
    - `parse_bitstream` — `parse_bitstream_partial` (container auto-detect +
@@ -29,6 +30,8 @@
      `DecodeContext::decode_y4m_bytes` is not fuzzed by this target.
    - `recon_y4m_output_bytes` — `splot-recon` `Y4mWriter` serialization from
      bounded structured `DecodedFrame` inputs across supported Y4M formats.
+   - `recon_intra_prediction_bytes` — `splot-recon` intra prediction and
+     current-frame workspace primitives from bounded structured inputs.
 3. **Decode planner unit tests** — `splot-decode` plan-only APIs over already
    parsed `splot-core` stream output must preserve OBU order/source metadata,
    reject malformed sources transactionally, enforce the limits they can derive
@@ -60,7 +63,7 @@ cargo xtask check-decoder-support # generated decoder support docs drift gate
 # never-panic invariant with bounded random inputs.
 cargo xtask fuzz [--time <secs>]    # local fuzz smoke over every target (nightly + cargo-fuzz, run-if-present), default 30s each
 cargo install cargo-fuzz --locked
-cargo +nightly fuzz list            # parse_obu, parse_ivf, parse_bitstream, validate_bytes, decode_plan_bytes, decode_runtime_hash_bytes, recon_y4m_output_bytes
+cargo +nightly fuzz list            # parse_obu, parse_ivf, parse_bitstream, validate_bytes, decode_plan_bytes, decode_runtime_hash_bytes, recon_y4m_output_bytes, recon_intra_prediction_bytes
 cargo +nightly fuzz run parse_obu   # run a single target (swap the name for any target above)
 
 cargo xtask conformance         # run the committed conformance corpus (no AVM)

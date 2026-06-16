@@ -4323,6 +4323,64 @@ fixtures = [
 ]
 diagnostics = []
 
+[[feature]]
+id = "CONF-RECON-INTRA-PREDICTION-FUZZ"
+name = "Reconstruction intra prediction no-panic fuzzing"
+category = "conformance"
+kind = "conformance"
+spec_sections = ["3", "4.8", "6.4.1", "6.17.4.1", "6.17.4.4", "7.13.2.1", "7.13.2.2", "7.13.2.10", "7.13.2.13", "7.13.3.22"]
+sources = [
+    "docs/spec/av2/1.0.0/03-symbols.md#s-3",
+    "docs/spec/av2/1.0.0/04-conventions.md#s-4-8",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-22",
+]
+crate = "fuzz"
+module = "fuzz/fuzz_targets/recon_intra_prediction_bytes.rs"
+openspec_change = "recon-intra-prediction-fuzz"
+tracking_issue = ""
+owner = "conformance"
+risk = "medium"
+notes = "Self-contained cargo-fuzz target for existing `splot-recon` intra prediction and current-frame workspace primitives: it normalizes arbitrary bytes into bounded structured DC, PAETH, smooth, and workspace prediction cases over public APIs, exercises caller-owned output buffers, in-storage edge extraction, successful interior workspace writes, and typed edge/output-shape/workspace-boundary errors. This is conformance/robustness proof for source-backed reconstruction primitives only. It does not claim AV2 bitstream decode, `DecodeContext` fuzzing, full §7.13 intra reconstruction, directional prediction, data driven intra prediction, IBP, filter intra, CfL/CCTX, palette, residual, transform, quantization, loop filtering, runtime output scheduling, AVM/dav2d agreement, filesystem I/O, network I/O, subprocesses, or new AV2 semantics."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "fuzz/fuzz_targets/recon_intra_prediction_bytes.rs",
+    "crates/splot-recon/src/intra.rs::tests",
+    "crates/splot-recon/src/intra_basic.rs::tests",
+    "crates/splot-recon/src/intra_smooth.rs::tests",
+    "crates/splot-recon/src/workspace_tests.rs",
+]
+commands = [
+    "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
+    "cargo xtask check-fuzz-targets",
+    "cargo test -p splot-recon intra --locked",
+    "cargo test -p splot-recon workspace --locked",
+    "cargo +nightly fuzz run recon_intra_prediction_bytes (local/nightly; CI fuzz smoke runs every target)",
+]
+fixtures = [
+    "fuzz/fuzz_targets/recon_intra_prediction_bytes.rs",
+]
+diagnostics = []
+
 # ---------------------------------------------------------------------------
 # CLI behaviors (thin UI over the libraries)
 # ---------------------------------------------------------------------------
