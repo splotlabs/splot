@@ -132,13 +132,14 @@ jobs:
           command: check advisories
           arguments: --all-features
 
-  # Blocking smoke fuzz: catch a newly-introduced parser panic at PR time. Every
-  # fuzz target is enumerated and run for a per-target slice so the whole
-  # untrusted-input surface is covered: parse_obu (read_leb128 / read_obu_header /
-  # parse_annex_b_obus), parse_ivf (IVF container), parse_bitstream (container
-  # auto-detect + envelope parsing), validate_bytes (full validator + payload
-  # parsers, the highest-coverage target). cargo-fuzz needs a nightly toolchain
-  # (ASan + coverage are nightly-only).
+  # Blocking smoke fuzz: catch newly-introduced panics at PR time. Every fuzz
+  # target is enumerated and run for a per-target slice across the tracked fuzzed
+  # surfaces: parse_obu (read_leb128 / read_obu_header / parse_annex_b_obus),
+  # parse_ivf (IVF container), parse_bitstream (container auto-detect + envelope
+  # parsing), validate_bytes (full validator + payload parsers, the
+  # highest-coverage target), decode_plan_bytes (raw byte planner), and
+  # decode_runtime_hash_bytes (minimal runtime hash byte API). cargo-fuzz needs a
+  # nightly toolchain (ASan + coverage are nightly-only).
   fuzz-smoke:
     runs-on: ubuntu-latest
     steps:
@@ -183,7 +184,13 @@ jobs:
             # decode_plan_bytes also consumes a leading limit-policy byte. Keep
             # the fixture bytes intact as the bitstream payload after that flag.
             printf '\377' | cat - "$f" > "fuzz/corpus/decode_plan_bytes/fixture-$name"
+            # decode_runtime_hash_bytes consumes a leading mode/limit byte.
+            # Prefix raw mode so fixture bytes stay intact after the flag.
+            printf '\000' | cat - "$f" > "fuzz/corpus/decode_runtime_hash_bytes/raw-$name"
           done
+          # Prefix fixture mode with zero mutations so the embedded minimal
+          # runtime fixture reaches the success-path hash report.
+          printf '\200\000' > "fuzz/corpus/decode_runtime_hash_bytes/minimal-fixture-unmutated"
           # parse_ivf rejects non-DKIF input at the signature, so raw Annex-B
           # fixtures only exercise the error path; wrap each one in a minimal
           # 32-byte IVF header plus one 12-byte frame header for valid-path seeds.
@@ -214,6 +221,7 @@ jobs:
             printf '\001' | cat - "$f" > "fuzz/corpus/validate_bytes/conf-strict-$name"
             printf '\003\377' | cat - "$f" > "fuzz/corpus/validate_bytes/conf-hls-$name"
             printf '\377' | cat - "$f" > "fuzz/corpus/decode_plan_bytes/conf-$name"
+            printf '\000' | cat - "$f" > "fuzz/corpus/decode_runtime_hash_bytes/conf-raw-$name"
           done
           python3 -c '
           import glob, os, struct

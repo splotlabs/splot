@@ -4202,7 +4202,7 @@ openspec_change = "fuzz-validator-targets"
 tracking_issue = ""
 owner = "conformance"
 risk = "high"
-notes = "Malformed data must return errors/reports, never panic. Four fuzz targets cover every public byte-consuming entry point: parse_obu (read_leb128 / read_obu_header / parse_annex_b_obus), parse_ivf (is_ivf / parse_ivf_header / parse_ivf_partial), parse_bitstream (parse_bitstream_partial container auto-detect + Annex-B/IVF envelope parsing; OBU payload parsers are reached via validate_bytes, not this target), and validate_bytes (Validator::validate_bytes_with_options, which transitively reaches every OBU payload parser, both container formats, and every validator check). Stable-toolchain proptests cover the same invariant in CI (splot-core parser modules plus crates/splot-validate/tests/validator_never_panics.rs); CI also runs a blocking per-target fuzz smoke (~45s each) on every PR (.github/workflows/ci.yml fuzz-smoke), and cargo-fuzz still needs nightly to run locally. The cargo-fuzz corpus (fuzz/corpus) is gitignored and not committed, so it is not listed as proof. parse and validate are done: every parser surface and the validator are now fuzz-reachable and proptest-covered on stable. decode_check stays partial: the no-panic work hardens robustness but does not expand what the inspector/validator can check for conformance, which is what this stage tracks."
+notes = "Malformed parser/validator input must return errors/reports, never panic. Four parser and validator fuzz targets cover the original public byte-consuming validation surfaces: parse_obu (read_leb128 / read_obu_header / parse_annex_b_obus), parse_ivf (is_ivf / parse_ivf_header / parse_ivf_partial), parse_bitstream (parse_bitstream_partial container auto-detect + Annex-B/IVF envelope parsing; OBU payload parsers are reached via validate_bytes, not this target), and validate_bytes (Validator::validate_bytes_with_options, which transitively reaches every OBU payload parser, both container formats, and every validator check). Decode planner fuzzing is tracked by `DECODE-BYTE-STREAM-PLANNER`; minimal runtime hash fuzzing is tracked by `CONF-DECODE-RUNTIME-HASH-FUZZ`. Stable-toolchain proptests cover the parser/validator invariant in CI (splot-core parser modules plus crates/splot-validate/tests/validator_never_panics.rs); CI also runs a blocking per-target fuzz smoke (~45s each) on every cargo-fuzz target in every PR (.github/workflows/ci.yml fuzz-smoke), and cargo-fuzz still needs nightly to run locally. The cargo-fuzz corpus (fuzz/corpus) is gitignored and not committed, so it is not listed as proof. parse and validate are done: every parser surface and the validator are now fuzz-reachable and proptest-covered on stable. decode_check stays partial: the no-panic work hardens robustness but does not expand what the inspector/validator can check for conformance, which is what this stage tracks."
 
 [feature.status]
 mapped = "done"
@@ -4221,6 +4221,58 @@ tests = ["crates/splot-core/src/annexb.rs::proptests", "crates/splot-core/src/iv
 commands = ["cargo test -p splot-core", "cargo test -p splot-validate", "cargo +nightly fuzz run parse_obu", "cargo +nightly fuzz run parse_ivf", "cargo +nightly fuzz run parse_bitstream", "cargo +nightly fuzz run validate_bytes"]
 fixtures = []
 diagnostics = []
+
+[[feature]]
+id = "CONF-DECODE-RUNTIME-HASH-FUZZ"
+name = "Decode runtime hash no-panic fuzzing"
+category = "conformance"
+kind = "conformance"
+spec_sections = ["Annex B.2", "Annex B.3", "5.2", "5.19", "5.20.1", "7.1", "7.21"]
+sources = [
+    "docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2",
+    "docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21",
+]
+crate = "fuzz"
+module = "fuzz/fuzz_targets/decode_runtime_hash_bytes.rs"
+openspec_change = "decode-runtime-hash-fuzz"
+tracking_issue = ""
+owner = "conformance"
+risk = "medium"
+notes = "Self-contained cargo-fuzz target for `DecodeContext::decode_hash_report_bytes`: it reuses a single-thread `DecodeContext`, applies finite `DecodeLimits`, feeds both arbitrary raw bytes and bounded mutations of the committed minimal IVF fixture, asserts only the stable minimal hash-report shape on `Ok`, and accepts typed `DecodeError` returns on unsupported or malformed inputs. This is conformance/robustness proof for the existing minimal runtime hash byte API only. It does not claim broad runtime decode, full tile syntax, full reconstruction, Y4M/raw output fuzzing, metadata hash verification, AVM/dav2d agreement, filesystem I/O, network I/O, subprocesses, or new AV2 semantics."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "fuzz/fuzz_targets/decode_runtime_hash_bytes.rs",
+    "crates/splot-decode/src/runtime_hash.rs::tests",
+]
+commands = [
+    "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
+    "cargo xtask check-fuzz-targets",
+    "cargo test -p splot-decode runtime_hash --locked",
+    "cargo +nightly fuzz run decode_runtime_hash_bytes (local/nightly; CI fuzz smoke runs every target)",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
+    "fuzz/fuzz_targets/decode_runtime_hash_bytes.rs",
+]
+diagnostics = ["decode/malformed-source", "decode/resource-limit", "decode/unsupported-feature"]
 
 # ---------------------------------------------------------------------------
 # CLI behaviors (thin UI over the libraries)
