@@ -381,12 +381,14 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         implementation_owner: "splot-core symbol primitives and future splot-decode CDF lifecycle",
         decoder_support_rows: &[
             "symbol-decoder",
+            "symbol-decoder-fuzz",
             "tile-cdf-selection-boundary",
             "tile-cdf-save-lifecycle-boundary",
             "decode-runtime-hash-fuzz",
         ],
         feature_ids: &[
             "AV2-8.2-SYMBOL-DECODER",
+            "CONF-SYMBOL-DECODER-FUZZ",
             "DECODE-TILE-CDF-SELECTION-BOUNDARY",
             "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY",
             "CONF-DECODE-RUNTIME-HASH-FUZZ",
@@ -396,10 +398,10 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "cargo test -p splot-core symbol --locked",
             "cargo test -p splot-decode tile_payload::cdf --locked",
         ],
-        fuzz_targets: &["decode_runtime_hash_bytes"],
+        fuzz_targets: &["symbol_decoder_bytes", "decode_runtime_hash_bytes"],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Generic f(n)/symbol foundations, a partition/block CDF subset, and supported-subset Tile/Saved/Frame lifecycle behavior exist. Full Section 8.3 CDF selection/lifecycle and Section 9.3 default CDF banks are incomplete.",
+        notes: "Generic f(n)/symbol foundations, a public §8.2 symbol-decoder fuzz target, a partition/block CDF subset, and supported-subset Tile/Saved/Frame lifecycle behavior exist. Full Section 8.3 CDF selection/lifecycle and Section 9.3 default CDF banks are incomplete.",
     },
     CoverageRow {
         id: "decode-lookup-tables",

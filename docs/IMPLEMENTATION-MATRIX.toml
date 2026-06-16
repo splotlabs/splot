@@ -121,6 +121,7 @@ perf = "todo"
 tests = [
     "crates/splot-core/src/symbol.rs::tests",
     "crates/splot-core/src/symbol.rs::proptests",
+    "fuzz/fuzz_targets/symbol_decoder_bytes.rs",
     "crates/splot-core/tests/tables_spot.rs::conversion_para_adjustment_list_matches_mirror",
     "crates/splot-core/tests/tables_spot.rs::conversion_prob_inc_matches_mirror",
 ]
@@ -128,8 +129,63 @@ commands = [
     "cargo test -p splot-core symbol --locked",
     "cargo test -p splot-core --test tables_spot --locked",
     "cargo clippy -p splot-core --all-targets --all-features --locked -- -D warnings",
+    "cargo +nightly fuzz run symbol_decoder_bytes (local/nightly; CI fuzz smoke runs every target)",
 ]
 fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "CONF-SYMBOL-DECODER-FUZZ"
+name = "Symbol decoder no-panic fuzzing"
+category = "conformance"
+kind = "conformance"
+spec_sections = ["4.11.11", "4.11.12", "8.2.2", "8.2.3", "8.2.4", "8.2.5", "8.2.6", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/04-conventions.md#s-4-11-11",
+    "docs/spec/av2/1.0.0/04-conventions.md#s-4-11-12",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-2",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-3",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-4",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-6",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2",
+]
+crate = "fuzz"
+module = "fuzz/fuzz_targets/symbol_decoder_bytes.rs"
+openspec_change = "symbol-decoder-fuzz"
+tracking_issue = ""
+owner = "conformance"
+risk = "medium"
+notes = "Self-contained cargo-fuzz target for the existing public `splot_core::symbol::SymbolDecoder` API: it feeds bounded arbitrary in-memory tile-payload bytes, drives bounded operation streams over `read_bool`, `read_literal`, `read_symbol`, `checkpoint`, and `exit_symbol` or `finish`, generates bounded valid and intentionally malformed caller-supplied CDF rows, asserts only public invariants after successful calls, and accepts typed `splot_core::Error` returns for malformed CDF rows, invalid literal widths, EOF, or invalid symbol decoder state. This row does not implement or claim §8.3 syntax-element CDF selection, Tile or Saved CDF banks, default CDF initialization beyond synthetic caller rows, tile payload framing, `decode_tile()`, runtime `splot decode`, reconstruction, hash output, Y4M output, AVM agreement, dav2d agreement, ffmpeg agreement, filesystem I/O, network I/O, subprocesses, new dependencies, scheduler changes, or new AV2 semantics."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "fuzz/fuzz_targets/symbol_decoder_bytes.rs",
+    "crates/splot-core/src/symbol.rs::tests",
+    "crates/splot-core/src/symbol.rs::proptests",
+    "crates/splot-core/tests/tables_spot.rs::conversion_para_adjustment_list_matches_mirror",
+    "crates/splot-core/tests/tables_spot.rs::conversion_prob_inc_matches_mirror",
+]
+commands = [
+    "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
+    "cargo xtask check-fuzz-targets",
+    "cargo test -p splot-core symbol --locked",
+    "cargo test -p splot-core --test tables_spot --locked",
+    "cargo +nightly fuzz run symbol_decoder_bytes (local/nightly; CI fuzz smoke runs every target)",
+]
+fixtures = ["fuzz/fuzz_targets/symbol_decoder_bytes.rs"]
 diagnostics = []
 
 [[feature]]

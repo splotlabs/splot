@@ -2,7 +2,7 @@
 
 Generated from `docs/DECODER-SUPPORT-MATRIX.toml` by `cargo xtask decoder-support --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 49 row(s).
+Matrix version 1. Last reviewed 2026-06-15. 50 row(s).
 
 ## Status Counts
 
@@ -10,7 +10,7 @@ Matrix version 1. Last reviewed 2026-06-15. 49 row(s).
 |---|---:|
 | `todo` | 0 |
 | `partial` | 9 |
-| `supported` | 40 |
+| `supported` | 41 |
 | `unsupported-intentional` | 0 |
 | `blocked` | 0 |
 
@@ -19,7 +19,7 @@ Matrix version 1. Last reviewed 2026-06-15. 49 row(s).
 | Tier | Rows |
 |---|---:|
 | `encoder-reuse` | 1 |
-| `foundation` | 20 |
+| `foundation` | 21 |
 | `tier0-plan` | 2 |
 | `tier1-intra` | 26 |
 
@@ -74,5 +74,6 @@ Matrix version 1. Last reviewed 2026-06-15. 49 row(s).
 | `recon-y4m-output-fuzz` | Y4M output serialization fuzz entry point | `CONF-RECON-Y4M-OUTPUT-FUZZ` | `tier1-intra` | `supported` | 6.4.1<br>6.16.13<br>6.17.4.4<br>7.21.1<br>7.21.2 | cargo check --manifest-path fuzz/Cargo.toml --bins --locked<br>cargo xtask check-fuzz-targets<br>cargo test -p splot-recon y4m --locked<br>cargo +nightly fuzz run recon_y4m_output_bytes (local/nightly; CI fuzz smoke runs every target) | none | none | `crates/splot-recon/src/y4m.rs` |
 | `reference-frame-store` | Reconstructed reference-frame store | `RECON-REFERENCE-FRAME-STORE` | `encoder-reuse` | `supported` | 3<br>5.4.6<br>6.4.6<br>7.23 | crates/splot-recon/src/reference.rs::tests<br>cargo test -p splot-recon --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/reference.rs` |
 | `decode-fuzz-entrypoint` | Decode fuzz entry point | `DECODE-BYTE-STREAM-PLANNER` | `foundation` | `supported` | 4.11.6<br>Annex B.2<br>5.2.1<br>7.1 | cargo check --manifest-path fuzz/Cargo.toml --bins<br>cargo +nightly fuzz run decode_plan_bytes (local/nightly; CI fuzz smoke runs every target) | none | none | `crates/splot-decode/src/context.rs::DecodeContext::plan_bytes` |
+| `symbol-decoder-fuzz` | Symbol decoder fuzz entry point | `CONF-SYMBOL-DECODER-FUZZ` | `foundation` | `supported` | 4.11.11<br>4.11.12<br>8.2.2<br>8.2.3<br>8.2.4<br>8.2.5<br>8.2.6<br>9.2 | cargo check --manifest-path fuzz/Cargo.toml --bins --locked<br>cargo xtask check-fuzz-targets<br>cargo test -p splot-core symbol --locked<br>cargo test -p splot-core --test tables_spot --locked<br>cargo +nightly fuzz run symbol_decoder_bytes (local/nightly; CI fuzz smoke runs every target) | none | none | `crates/splot-core/src/symbol.rs` |
 | `decode-runtime-hash-fuzz` | Decode runtime hash fuzz entry point | `CONF-DECODE-RUNTIME-HASH-FUZZ` | `tier1-intra` | `supported` | Annex B.2<br>Annex B.3<br>5.2<br>5.19<br>5.20.1<br>7.1<br>7.21 | cargo check --manifest-path fuzz/Cargo.toml --bins --locked<br>cargo xtask check-fuzz-targets<br>cargo test -p splot-decode runtime_hash --locked<br>cargo +nightly fuzz run decode_runtime_hash_bytes (local/nightly; CI fuzz smoke runs every target) | decode/malformed-source<br>decode/resource-limit<br>decode/unsupported-feature | none | `crates/splot-decode/src/context.rs::DecodeContext::decode_hash_report_bytes` |
 | `decode-runtime-y4m-fuzz` | Decode runtime Y4M fuzz entry point | `CONF-DECODE-RUNTIME-Y4M-FUZZ` | `tier1-intra` | `supported` | Annex B.2<br>Annex B.3<br>5.2<br>5.19<br>5.20.1<br>6.4.1<br>6.16.13<br>6.17.4.4<br>7.1<br>7.21.1<br>7.21.2 | cargo check --manifest-path fuzz/Cargo.toml --bins --locked<br>cargo xtask check-fuzz-targets<br>cargo test -p splot-decode runtime_y4m --locked<br>cargo +nightly fuzz run decode_runtime_y4m_bytes (local/nightly; CI fuzz smoke runs every target) | decode/malformed-source<br>decode/resource-limit<br>decode/unsupported-feature<br>decode/output-error | none | `crates/splot-decode/src/context.rs::DecodeContext::decode_y4m_bytes` |
