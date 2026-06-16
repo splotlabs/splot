@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 193 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 194 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -12,6 +12,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-4.11.3-UVLC` | Unsigned variable-length code descriptor | normative | bitstream-syntax | done | n/a | done | n/a | done | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
 | `AV2-8.2-SYMBOL-DECODER` | AV2 symbol decoder foundation | normative | bitstream-semantics | done | done | partial | partial | n/a | n/a | partial | partial | n/a | `crates/splot-core/src/symbol.rs` |
 | `CONF-SYMBOL-DECODER-FUZZ` | Symbol decoder no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/symbol_decoder_bytes.rs` |
+| `CONF-TILE-PAYLOAD-DECODE-FUZZ` | Tile payload decode no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/tile_payload_decode_bytes.rs` |
 | `AV2-4.11.4-SVLC` | Signed variable-length code descriptor | normative | bitstream-syntax | done | n/a | done | n/a | done | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
 | `AV2-4.11.5-LE` | Little-endian fixed-width descriptor | normative | bitstream-syntax | done | n/a | done | n/a | done | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |
 | `AV2-4.11.8-NS` | Non-symmetric integer descriptor | normative | bitstream-syntax | done | n/a | done | n/a | done | n/a | done | done | pending | `crates/splot-core/src/bitio.rs` |

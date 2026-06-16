@@ -27,6 +27,9 @@ mod byte_stream;
 pub mod context;
 pub mod diagnostic;
 pub mod error;
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod hash_report;
 pub mod runtime;
 mod runtime_hash;

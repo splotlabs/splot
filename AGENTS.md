@@ -96,7 +96,7 @@ cargo xtask check-concurrency-policy        # enforce the concurrency-runtime po
 cargo xtask check-fixtures                  # verify tests/fixtures hashes + metadata vs MANIFEST.toml (also part of `cargo xtask ci`; see docs/FIXTURES.md)
 cargo xtask check-conventional-commits      # validates the current HEAD commit subject
 cargo +nightly fuzz run parse_obu   # full local fuzz run of one target (nightly-only; `cargo install cargo-fuzz --locked`).
-                                    # Targets: parse_obu, validate_bytes, parse_ivf, parse_bitstream, symbol_decoder_bytes, decode_plan_bytes, decode_runtime_hash_bytes, decode_runtime_y4m_bytes, recon_y4m_output_bytes, recon_intra_prediction_bytes (`cargo +nightly fuzz list`).
+                                    # Targets: parse_obu, validate_bytes, parse_ivf, parse_bitstream, symbol_decoder_bytes, tile_payload_decode_bytes, decode_plan_bytes, decode_runtime_hash_bytes, decode_runtime_y4m_bytes, recon_y4m_output_bytes, recon_intra_prediction_bytes (`cargo +nightly fuzz list`).
                                     # CI also runs a blocking per-target smoke (~45s each) over every target on every PR.
 ```
 
