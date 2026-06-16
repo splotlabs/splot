@@ -32,6 +32,11 @@
 //! above into [`frame_header_core::write_frame_header_core`], the inverse of
 //! `parse_frame_header_core` on the `IntraHeaderComplete` path (it writes the frame-type-dependent
 //! control-region glue directly and delegates every sub-structure to the writers above).
+//! [`metadata`] writes the § 5.17 metadata OBUs (the inverses of the § 5.17.1 – § 5.17.13 parsers):
+//! [`metadata::write_metadata_short_obu`] / [`metadata::write_metadata_group_obu`] compose the two
+//! OBU forms, [`metadata::write_metadata_unit`] writes a bounded `metadata_unit()` with its § 6.16.1
+//! padding, and [`metadata::write_metadata_payload`] dispatches the 11 typed child payloads
+//! (length-summarized blob bytes are supplied as a separate `passthrough` slice).
 //! More payload writers will build on this module as the writer surface grows; see
 //! `docs/spec-coverage-writer.md` (once landed) for the per-structure coverage matrix.
 
@@ -46,6 +51,7 @@ pub mod frame_restoration;
 pub mod frame_segmentation;
 pub mod frame_tail;
 pub mod frame_tiling;
+pub mod metadata;
 pub mod obu;
 pub mod segment;
 pub mod seq_config;
@@ -66,6 +72,9 @@ pub use frame_restoration::{write_ccso_params, write_lr_params};
 pub use frame_segmentation::write_segmentation_params;
 pub use frame_tail::{write_film_grain_config, write_intra_tail, write_tx_mode};
 pub use frame_tiling::write_tile_info;
+pub use metadata::{
+    write_metadata_group_obu, write_metadata_payload, write_metadata_short_obu, write_metadata_unit,
+};
 pub use obu::{write_annexb_obu, write_obu_header, write_obu_header_extension};
 pub use segment::write_seg_info;
 pub use seq_config::{
