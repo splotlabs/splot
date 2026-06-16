@@ -39,4 +39,4 @@ The decoder SHALL provide a crate-private tile partition symbol read boundary tr
 
 - **WHEN** decoder support status is rendered after this boundary is implemented
 - **THEN** `tile-partition-symbol-read-boundary` records support only for the five individual partition-entry `S()` symbol reads
-- **AND** `tile-payload-decode`, `tile-cdf-selection-boundary`, and `symbol-decoder` remain partial for broader tile syntax traversal, full CDF-bank coverage, `read_partition()`, `decode_tile()`, and `exit_symbol()` after real syntax
+- **AND** `tile-payload-decode` and `tile-cdf-selection-boundary` remain partial for broader tile syntax traversal, full CDF-bank coverage, `read_partition()`, `decode_tile()`, and broad `exit_symbol()` after real syntax (the generic AV2 § 8.2 `symbol-decoder` primitive itself is complete and supported)

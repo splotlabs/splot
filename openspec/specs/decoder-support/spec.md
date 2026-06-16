@@ -2533,7 +2533,7 @@ The runtime Y4M output path SHALL check `DecodeLimitName::MaxOutputBytes` agains
 
 ### Requirement: Decoder support tracks tile partition decision boundary
 
-The decoder support model SHALL track `DECODE-TILE-PARTITION-DECISION-BOUNDARY` as a distinct crate-private row named `tile-partition-decision-boundary`. The row SHALL mark only the AV2 §5.20.3.2 partition decision boundary over caller-provided facts as supported, SHALL link it to the existing `tile-partition-symbol-read-boundary` and `tile-cdf-selection-boundary` rows, and SHALL keep broader `tile-payload-decode`, `tile-cdf-selection-boundary`, `symbol-decoder`, and traversal/output rows honest when they remain partial.
+The decoder support model SHALL track `DECODE-TILE-PARTITION-DECISION-BOUNDARY` as a distinct crate-private row named `tile-partition-decision-boundary`. The row SHALL mark only the AV2 §5.20.3.2 partition decision boundary over caller-provided facts as supported, SHALL link it to the existing `tile-partition-symbol-read-boundary` and `tile-cdf-selection-boundary` rows, and SHALL keep broader `tile-payload-decode`, `tile-cdf-selection-boundary`, and traversal/output rows honest when they remain partial.
 
 #### Scenario: Support matrix records narrow partition decision support
 - **WHEN** `cargo xtask check-decoder-support` renders decoder support status
@@ -2676,9 +2676,9 @@ raw input and minimal-fixture mutation inputs.
 The decoder support matrix SHALL include a supported row named
 `symbol-decoder-fuzz`, tracked by Feature ID `CONF-SYMBOL-DECODER-FUZZ`, for
 scoped no-panic fuzz coverage of the existing public
-`splot_core::symbol::SymbolDecoder` API, without changing the existing
-`symbol-decoder` row's partial status for unimplemented §8.3 and runtime
-tile-decode behavior.
+`splot_core::symbol::SymbolDecoder` API. This robustness row is independent of
+the `symbol-decoder` row's own support status; it does not by itself promote or
+demote §8.3 syntax-element CDF selection or runtime tile-decode behavior.
 
 #### Scenario: symbol decoder fuzz evidence is scoped and test-backed
 - **GIVEN** the generated decoder support status
