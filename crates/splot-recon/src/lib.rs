@@ -12,7 +12,7 @@
 //! rectangular DC, subsampled DC, basic/PAETH, smooth, and H/V cardinal
 //! directional intra prediction primitives and a mutable current-frame
 //! workspace; it does not implement byte-consuming decode, full reconstruction,
-//! runtime CLI Y4M output, or AV2 reference refresh semantics.
+//! runtime CLI Y4M output, or full AV2 reference refresh semantics.
 //!
 //! The ownership model is view-first ([`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)):
 //! owned plane/frame/workspace storage hands out borrowed [`PlaneRef`]/[`PlaneMut`]
@@ -91,7 +91,8 @@ pub use intra_smooth::{
 };
 pub use plane::{Plane, VisibleRows};
 pub use reference::{
-    ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameStore, ReferenceSlot,
+    ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameReplacement, ReferenceFrameStore,
+    ReferenceRefreshMask, ReferenceRefreshOutcome, ReferenceRefreshSlots, ReferenceSlot,
 };
 pub use views::{FrameMut, FrameRef, PlaneMut, PlaneMutRows, PlaneRef, PlaneRefRows};
 pub use workspace::{

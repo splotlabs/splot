@@ -428,10 +428,24 @@ pub enum ReconError {
         /// Maximum supported slot count.
         max_slots: usize,
     },
+    /// A caller-derived reference refresh mask selected unsupported bits.
+    InvalidReferenceRefreshMask {
+        /// Requested refresh mask bits.
+        mask: u32,
+        /// Maximum supported slot count.
+        max_slots: usize,
+    },
     /// A valid reference slot was outside a particular store's capacity.
     ReferenceSlotOutOfBounds {
         /// Requested reference slot.
         slot: ReferenceSlot,
+        /// Store capacity used for the bounds check.
+        capacity: usize,
+    },
+    /// A valid refresh mask selected a slot outside a store's capacity.
+    ReferenceRefreshMaskOutOfBounds {
+        /// Requested refresh mask bits.
+        mask: u32,
         /// Store capacity used for the bounds check.
         capacity: usize,
     },
@@ -838,10 +852,18 @@ impl fmt::Display for ReconError {
             Self::InvalidReferenceSlotIndex { index, max_slots } => {
                 write!(f, "reference slot index {index} is outside 0..{max_slots}")
             }
+            Self::InvalidReferenceRefreshMask { mask, max_slots } => write!(
+                f,
+                "reference refresh mask 0x{mask:08x} contains bits outside 0..{max_slots}"
+            ),
             Self::ReferenceSlotOutOfBounds { slot, capacity } => write!(
                 f,
                 "reference slot {} is outside store capacity {capacity}",
                 slot.index()
+            ),
+            Self::ReferenceRefreshMaskOutOfBounds { mask, capacity } => write!(
+                f,
+                "reference refresh mask 0x{mask:08x} selects a slot outside store capacity {capacity}"
             ),
         }
     }
