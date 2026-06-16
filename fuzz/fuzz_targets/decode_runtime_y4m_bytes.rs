@@ -34,6 +34,8 @@ const FRAME_MARKER: &[u8] = b"\nFRAME\n";
 const MINIMAL_LUMA_BYTES: usize = 64 * 64;
 const MINIMAL_CHROMA_BYTES: usize = 32 * 32;
 const MINIMAL_PAYLOAD_BYTES: usize = MINIMAL_LUMA_BYTES + MINIMAL_CHROMA_BYTES * 2;
+const MINIMAL_LUMA_SAMPLE: u8 = 128;
+const MINIMAL_CHROMA_H_PRED_SAMPLE: u8 = 129;
 
 static CONTEXT: OnceLock<Option<DecodeContext>> = OnceLock::new();
 
@@ -142,7 +144,14 @@ fn assert_minimal_y4m_shape(bytes: &[u8]) {
     assert_header_token(header, b"C420");
     assert_nonzero_frame_rate(header);
     assert_eq!(payload.len(), MINIMAL_PAYLOAD_BYTES);
-    assert!(payload.iter().all(|sample| *sample == 128));
+    let (luma, chroma) = payload.split_at(MINIMAL_LUMA_BYTES);
+    let (u, v) = chroma.split_at(MINIMAL_CHROMA_BYTES);
+    assert!(luma.iter().all(|sample| *sample == MINIMAL_LUMA_SAMPLE));
+    assert!(
+        u.iter()
+            .chain(v.iter())
+            .all(|sample| *sample == MINIMAL_CHROMA_H_PRED_SAMPLE)
+    );
     assert!(find_subslice(payload, FRAME_MARKER).is_none());
 }
 

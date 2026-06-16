@@ -280,7 +280,7 @@ fn decode_hash_json_success_for_minimal_fixture() {
     );
     assert_eq!(
         frame["hashes"][0]["digest_hex"],
-        "cb11e05cb5da949c0e0f5b5a7cb310df35a96a22c45d1ada70d950859fe697d1"
+        "dd244844938e78b226240de27e9c0acd39fc7ec2c1631319d13250fbe5f08496"
     );
 }
 

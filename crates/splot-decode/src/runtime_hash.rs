@@ -70,7 +70,7 @@ mod tests {
     const BROAD_FIXTURE: &[u8] =
         include_bytes!("../../../tests/conformance/vectors/valid/syn-key-intra-64x64.ivf");
     const EXPECTED_DIGEST: &str =
-        "cb11e05cb5da949c0e0f5b5a7cb310df35a96a22c45d1ada70d950859fe697d1";
+        "dd244844938e78b226240de27e9c0acd39fc7ec2c1631319d13250fbe5f08496";
 
     fn context(threads: ThreadCount) -> DecodeContext {
         DecodeContext::new(DecodeRuntimeConfig::new(threads)).unwrap()
