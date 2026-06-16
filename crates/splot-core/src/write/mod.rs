@@ -59,6 +59,9 @@
 //! nothing for the temporal delimiter; padding owns its own tail), and
 //! [`dispatch::write_complete_obu`] prepends the § 5.2.2 header. The five OBU types with a body
 //! writer are emitted; the other nine return [`error::WriteError::Unimplemented`].
+//! [`roundtrip::roundtrip_obu`] then closes the loop: it `parse → write → reparse`-checks the
+//! dispatch (recovering the opaque `passthrough` for padding and the metadata blobs) so the writer
+//! is verified as the parser's inverse, in-tree and under the `roundtrip_obu_bytes` fuzz target.
 //! More payload writers will build on this module as the writer surface grows; see
 //! `docs/spec-coverage-writer.md` (once landed) for the per-structure coverage matrix.
 
@@ -76,6 +79,7 @@ pub mod frame_tail;
 pub mod frame_tiling;
 pub mod metadata;
 pub mod obu;
+pub mod roundtrip;
 pub mod segment;
 pub mod seq_config;
 pub mod seq_header;
@@ -102,6 +106,7 @@ pub use metadata::{
     write_metadata_short_obu, write_metadata_unit,
 };
 pub use obu::{write_annexb_obu, write_obu_header, write_obu_header_extension};
+pub use roundtrip::{RoundtripOutcome, recover_roundtrip_passthrough, roundtrip_obu};
 pub use segment::write_seg_info;
 pub use seq_config::{
     write_sequence_inter_config, write_sequence_intra_config, write_sequence_partition_config,

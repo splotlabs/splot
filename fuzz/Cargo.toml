@@ -125,5 +125,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "roundtrip_obu_bytes"
+path = "fuzz_targets/roundtrip_obu_bytes.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1

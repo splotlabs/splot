@@ -258,24 +258,35 @@ pub fn write_metadata_group_obu(
     writer.append(&scratch)
 }
 
+/// The opaque `passthrough` byte length a standalone [`MetadataUnit`] consumes when written by
+/// [`write_metadata_unit`] (AV2 v1.0.0 § 5.17.9 – § 5.17.13,
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-17-9`): the length-summarized blob length for
+/// the four blob payloads (ITU-T T.35, ICC, user-data, unknown-raw), else `0` (a fully-modeled
+/// payload carries no passthrough). Mirrors the per-payload `require_passthrough_len` checks in
+/// [`write_metadata_payload`]; the round-trip harness uses it to size the metadata passthrough.
+pub(crate) fn metadata_unit_passthrough_len(unit: &MetadataUnit) -> usize {
+    match &unit.payload {
+        MetadataPayload::ItutT35(p) => p.payload_len,
+        MetadataPayload::IccProfile(p) => p.payload_len,
+        MetadataPayload::UserDataUnregistered(p) => p.payload_len,
+        MetadataPayload::UnknownRaw(p) => p.raw_len,
+        _ => 0,
+    }
+}
+
 /// The opaque `passthrough` byte length the metadata-group unit `unit` consumes when written by
-/// [`write_metadata_group_obu`] (AV2 v1.0.0 § 5.17.3 / § 5.17.9 – § 5.17.13,
+/// [`write_metadata_group_obu`] (AV2 v1.0.0 § 5.17.3,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-17-3`): `0` for a cancelled unit (it carries no
-/// `metadata_unit`) or a fully-modeled payload, else the length-summarized blob length (ITU-T T.35,
-/// ICC, user-data, or unknown-raw). It mirrors the per-payload `require_passthrough_len` checks in
-/// [`write_metadata_payload`], letting a caller holding one flat passthrough split it per unit;
-/// [`write_metadata_group_obu_flat`] is that caller.
-fn metadata_group_unit_passthrough_len(unit: &MetadataGroupUnit) -> usize {
+/// `metadata_unit`), else its inner unit's [`metadata_unit_passthrough_len`]. Lets a caller holding
+/// one flat passthrough split it per unit; [`write_metadata_group_obu_flat`] is that caller.
+pub(crate) fn metadata_group_unit_passthrough_len(unit: &MetadataGroupUnit) -> usize {
     if unit.muh_cancel_flag {
         return 0;
     }
-    match unit.unit.as_ref().map(|inner| &inner.payload) {
-        Some(MetadataPayload::ItutT35(p)) => p.payload_len,
-        Some(MetadataPayload::IccProfile(p)) => p.payload_len,
-        Some(MetadataPayload::UserDataUnregistered(p)) => p.payload_len,
-        Some(MetadataPayload::UnknownRaw(p)) => p.raw_len,
-        _ => 0,
-    }
+    unit.unit
+        .as_ref()
+        .map(metadata_unit_passthrough_len)
+        .unwrap_or(0)
 }
 
 /// Writes a `metadata_group_obu()` (AV2 v1.0.0 § 5.17.3,
