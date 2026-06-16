@@ -6,8 +6,9 @@
 //! Feature tracking: `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER`.
 
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, IntraSquareBlockSize,
-    OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize,
+    BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, IntraCardinalDirection,
+    IntraCardinalEdges, IntraRectBlockSize, IntraSquareBlockSize, OutputIndex, PixelFormat,
+    PlaneId, PlaneRect, PlaneSize, predict_intra_cardinal_directional_rect_into,
 };
 
 use crate::Result;
@@ -18,7 +19,8 @@ const MINIMAL_LUMA_HEIGHT: usize = 64;
 const MINIMAL_CHROMA_WIDTH: usize = 32;
 const MINIMAL_CHROMA_HEIGHT: usize = 32;
 const MINIMAL_LUMA_LOG2_SIZE: u8 = 6;
-const NEUTRAL_CHROMA_SAMPLE: u8 = 128;
+const MINIMAL_CHROMA_LOG2_SIZE: u8 = 5;
+const TOP_LEFT_CHROMA_H_PRED_LEFT_FALLBACK_SAMPLE: u8 = 129;
 
 /// Reconstructs the current traced minimal runtime frame.
 pub(crate) fn reconstruct_minimal_traced_frame(
@@ -26,12 +28,12 @@ pub(crate) fn reconstruct_minimal_traced_frame(
 ) -> Result<DecodedFrame<u8>> {
     match trace {
         MinimalRuntimeReconstructionTrace::LumaDcNoResidual8Bit420_64x64 => {
-            reconstruct_luma_dc_neutral_chroma_8bit420_64x64()
+            reconstruct_luma_dc_chroma_h_pred_8bit420_64x64()
         }
     }
 }
 
-fn reconstruct_luma_dc_neutral_chroma_8bit420_64x64() -> Result<DecodedFrame<u8>> {
+fn reconstruct_luma_dc_chroma_h_pred_8bit420_64x64() -> Result<DecodedFrame<u8>> {
     let luma_size = PlaneSize::new(MINIMAL_LUMA_WIDTH, MINIMAL_LUMA_HEIGHT)?;
     let luma_rect = PlaneRect::new(0, 0, MINIMAL_LUMA_WIDTH, MINIMAL_LUMA_HEIGHT)?;
     let info = DecodedFrameInfo::new(
@@ -46,14 +48,24 @@ fn reconstruct_luma_dc_neutral_chroma_8bit420_64x64() -> Result<DecodedFrame<u8>
     let luma_block = IntraSquareBlockSize::new(MINIMAL_LUMA_LOG2_SIZE)?;
     workspace.predict_intra_dc_square(PlaneId::Y, 0, 0, luma_block)?;
 
-    // The current traced fixture decodes chroma symbol 6 (H_PRED), but the repo
-    // does not yet expose a horizontal-prediction primitive. Keep the existing
-    // minimal output contract honest by materializing neutral chroma through the
-    // checked workspace only; the matrix row keeps broad/chroma reconstruction
-    // partial until H/V prediction lands.
-    let chroma_rect = PlaneRect::new(0, 0, MINIMAL_CHROMA_WIDTH, MINIMAL_CHROMA_HEIGHT)?;
-    workspace.fill_rect(PlaneId::U, chroma_rect, NEUTRAL_CHROMA_SAMPLE)?;
-    workspace.fill_rect(PlaneId::V, chroma_rect, NEUTRAL_CHROMA_SAMPLE)?;
+    // AV2 §7.13.2.1 uses (1 << (BitDepth - 1)) + 1 for LeftCol when no
+    // neighbor is available. The traced top-left chroma blocks use H_PRED
+    // (pAngle 180 via §7.13.2.8 and §9.2), so prepare that left edge
+    // explicitly for this narrow minimal tier instead of claiming broad edge
+    // preparation.
+    let chroma_block = IntraRectBlockSize::new(MINIMAL_CHROMA_LOG2_SIZE, MINIMAL_CHROMA_LOG2_SIZE)?;
+    let chroma_left = [TOP_LEFT_CHROMA_H_PRED_LEFT_FALLBACK_SAMPLE; MINIMAL_CHROMA_HEIGHT];
+    let mut chroma_prediction = [0u8; MINIMAL_CHROMA_WIDTH * MINIMAL_CHROMA_HEIGHT];
+    predict_intra_cardinal_directional_rect_into(
+        BitDepth::Eight,
+        chroma_block,
+        IntraCardinalDirection::Horizontal,
+        IntraCardinalEdges::left(&chroma_left),
+        &mut chroma_prediction,
+        MINIMAL_CHROMA_WIDTH,
+    )?;
+    workspace.write_rect_block(PlaneId::U, 0, 0, chroma_block, &chroma_prediction)?;
+    workspace.write_rect_block(PlaneId::V, 0, 0, chroma_block, &chroma_prediction)?;
 
     Ok(workspace.freeze()?)
 }
@@ -67,7 +79,7 @@ mod tests {
     use super::*;
 
     const EXPECTED_DIGEST: &str =
-        "cb11e05cb5da949c0e0f5b5a7cb310df35a96a22c45d1ada70d950859fe697d1";
+        "dd244844938e78b226240de27e9c0acd39fc7ec2c1631319d13250fbe5f08496";
 
     fn reconstruct() -> DecodedFrame<u8> {
         reconstruct_minimal_traced_frame(
@@ -77,7 +89,7 @@ mod tests {
     }
 
     #[test]
-    fn traced_luma_dc_neutral_chroma_reconstruction_predicts_visible_samples() {
+    fn traced_luma_dc_chroma_h_pred_reconstruction_predicts_visible_samples() {
         let frame = reconstruct();
 
         assert_eq!(frame.bit_depth(), BitDepth::Eight);
@@ -98,7 +110,7 @@ mod tests {
                 .unwrap()
                 .samples()
                 .iter()
-                .all(|sample| *sample == 128)
+                .all(|sample| *sample == TOP_LEFT_CHROMA_H_PRED_LEFT_FALLBACK_SAMPLE)
         );
         assert!(
             frame
@@ -106,7 +118,7 @@ mod tests {
                 .unwrap()
                 .samples()
                 .iter()
-                .all(|sample| *sample == 128)
+                .all(|sample| *sample == TOP_LEFT_CHROMA_H_PRED_LEFT_FALLBACK_SAMPLE)
         );
         assert!(!frame.y().samples().contains(&0));
         assert!(!frame.u().unwrap().samples().contains(&0));
@@ -114,7 +126,7 @@ mod tests {
     }
 
     #[test]
-    fn traced_luma_dc_neutral_chroma_reconstruction_hash_matches_minimal_contract() {
+    fn traced_luma_dc_chroma_h_pred_reconstruction_hash_matches_minimal_contract() {
         let frame = reconstruct();
         let hash = DecodedFrameHashInput::new(&frame).compute_hash();
 

@@ -4652,7 +4652,7 @@ id = "CONF-RECON-INTRA-PREDICTION-FUZZ"
 name = "Reconstruction intra prediction no-panic fuzzing"
 category = "conformance"
 kind = "conformance"
-spec_sections = ["3", "4.8", "6.4.1", "6.17.4.1", "6.17.4.4", "7.13.2.1", "7.13.2.2", "7.13.2.10", "7.13.2.13", "7.13.3.22"]
+spec_sections = ["3", "4.8", "6.4.1", "6.17.4.1", "6.17.4.4", "7.13.2.1", "7.13.2.2", "7.13.2.8", "7.13.2.10", "7.13.2.13", "7.13.3.22", "9.2"]
 sources = [
     "docs/spec/av2/1.0.0/03-symbols.md#s-3",
     "docs/spec/av2/1.0.0/04-conventions.md#s-4-8",
@@ -4661,9 +4661,11 @@ sources = [
     "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-22",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2",
 ]
 crate = "fuzz"
 module = "fuzz/fuzz_targets/recon_intra_prediction_bytes.rs"
@@ -4671,7 +4673,7 @@ openspec_change = "recon-intra-prediction-fuzz"
 tracking_issue = ""
 owner = "conformance"
 risk = "medium"
-notes = "Self-contained cargo-fuzz target for existing `splot-recon` intra prediction and current-frame workspace primitives: it normalizes arbitrary bytes into bounded structured DC, PAETH, smooth, and workspace prediction cases over public APIs, exercises caller-owned output buffers, in-storage edge extraction, successful interior workspace writes, and typed edge/output-shape/workspace-boundary errors. This is conformance/robustness proof for source-backed reconstruction primitives only. It does not claim AV2 bitstream decode, `DecodeContext` fuzzing, full §7.13 intra reconstruction, directional prediction, data driven intra prediction, IBP, filter intra, CfL/CCTX, palette, residual, transform, quantization, loop filtering, runtime output scheduling, AVM/dav2d agreement, filesystem I/O, network I/O, subprocesses, or new AV2 semantics."
+notes = "Self-contained cargo-fuzz target for existing `splot-recon` intra prediction and current-frame workspace primitives: it normalizes arbitrary bytes into bounded structured DC, PAETH, smooth, H/V cardinal directional, and workspace prediction cases over public APIs, exercises caller-owned output buffers, in-storage edge extraction, successful interior workspace writes, and typed edge/output-shape/workspace-boundary errors. This is conformance/robustness proof for source-backed reconstruction primitives only. It does not claim AV2 bitstream decode, `DecodeContext` fuzzing, full §7.13 intra reconstruction, general directional angles, data driven intra prediction, IBP, filter intra, CfL/CCTX, palette, residual, transform, quantization, loop filtering, runtime output scheduling, AVM/dav2d agreement, filesystem I/O, network I/O, subprocesses, or new AV2 semantics."
 
 [feature.status]
 mapped = "done"
@@ -4690,12 +4692,14 @@ tests = [
     "fuzz/fuzz_targets/recon_intra_prediction_bytes.rs",
     "crates/splot-recon/src/intra.rs::tests",
     "crates/splot-recon/src/intra_basic.rs::tests",
+    "crates/splot-recon/src/intra_directional.rs::tests",
     "crates/splot-recon/src/intra_smooth.rs::tests",
     "crates/splot-recon/src/workspace_tests.rs",
 ]
 commands = [
     "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
     "cargo xtask check-fuzz-targets",
+    "cargo test -p splot-recon intra_directional --locked",
     "cargo test -p splot-recon intra --locked",
     "cargo test -p splot-recon workspace --locked",
     "cargo +nightly fuzz run recon_intra_prediction_bytes (local/nightly; CI fuzz smoke runs every target)",
@@ -5895,17 +5899,82 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION"
+name = "Cardinal directional intra prediction"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.13.2.1", "7.13.2.7", "7.13.2.8", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/intra_directional.rs"
+openspec_change = "recon-intra-cardinal-directional-prediction"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds scheduler-free `splot-recon` AV2 §7.13.2.8 cardinal directional intra prediction for the two non-interpolating `Mode_To_Angle` cases from §9.2: `V_PRED` (pAngle 90) copies prepared `AboveRow[0..w]` into every output row, and `H_PRED` (pAngle 180) copies prepared `LeftCol[0..h]` into every output column. Callers provide an active bit depth, typed 4x4 through 64x64 per-dimension `IntraRectBlockSize`, the required prepared edge slice, explicit `Vertical` or `Horizontal` mode selection, and caller-owned strided output. The primitive validates sample type, required edge presence, edge length by width or height, bit-depth range, output stride and length, and target geometry. Workspace helpers can write in-storage H/V prediction only when the required above or left neighbor edge exists. This row does not implement §7.13.2.1 fallback edge preparation, pAngle values other than 90 and 180, IDIF, MRL, angle deltas, wide-angle mapping, IBP, full `predict_intra()` dispatch, data-driven prediction, CfL/CCTX/MHCCP, palette, tile syntax traversal, dequantization, inverse transforms, residual addition, broad runtime decoded-frame hashes, broad runtime Y4M output, reference refresh, AVM/dav2d invocation, repo dependency, wrapper, script, CI or runtime external-decoder path, or scheduler state in `splot-recon`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/intra_directional.rs::tests::vertical_cardinal_prediction_copies_above_edge",
+    "crates/splot-recon/src/intra_directional.rs::tests::horizontal_cardinal_prediction_copies_left_edge",
+    "crates/splot-recon/src/intra_directional.rs::tests::cardinal_prediction_fills_rectangle_with_stride",
+    "crates/splot-recon/src/intra_directional.rs::tests::cardinal_prediction_validates_required_edge_presence",
+    "crates/splot-recon/src/intra_directional.rs::tests::cardinal_prediction_validates_edge_lengths_by_direction",
+    "crates/splot-recon/src/intra_directional.rs::tests::cardinal_prediction_validates_edge_samples_against_bit_depth",
+    "crates/splot-recon/src/intra_directional.rs::tests::cardinal_prediction_validates_sample_type_against_bit_depth",
+    "crates/splot-recon/src/intra_directional.rs::tests::cardinal_prediction_validates_output_stride_and_length",
+    "crates/splot-recon/src/intra_directional.rs::tests::cardinal_prediction_rejects_overflowing_output_shape",
+    "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_cardinal_directional_from_in_storage_edges",
+    "crates/splot-recon/src/workspace_tests.rs::workspace_cardinal_directional_rejects_missing_prepared_edges",
+]
+commands = [
+    "cargo test -p splot-recon intra_directional --locked",
+    "cargo test -p splot-recon workspace --locked",
+    "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
+    "cargo xtask check-fuzz-targets",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/intra_directional.rs",
+    "crates/splot-recon/src/workspace.rs",
+    "crates/splot-recon/src/workspace_tests.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+    "fuzz/fuzz_targets/recon_intra_prediction_bytes.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "RECON-CURRENT-FRAME-WORKSPACE"
 name = "Current-frame reconstruction workspace"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["6.4.1", "6.17.4.1", "6.17.4.4", "7.13.2.1", "7.13.2.2", "7.13.2.10", "7.13.2.13"]
+spec_sections = ["6.4.1", "6.17.4.1", "6.17.4.4", "7.13.2.1", "7.13.2.2", "7.13.2.8", "7.13.2.10", "7.13.2.13"]
 sources = [
     "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1",
     "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1",
     "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13",
 ]
@@ -5915,7 +5984,7 @@ openspec_change = "recon-current-frame-workspace"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a scheduler-free `splot-recon` mutable current-frame reconstruction workspace: `CurrentFrameWorkspace<T>` allocates Y/U/V plane buffers from `DecodedFrameInfo` using checked arithmetic and fallible allocation, validates sample type and active bit-depth range before writes, exposes bounded plane/rectangle reads, fills, row-strided writes, square/rectangular block writes, in-storage left/above edge extraction, and square/rectangular DC plus rectangular PAETH and smooth prediction write helpers that call the existing `RECON-INTRA-DC-SQUARE-PREDICTION`, `RECON-INTRA-DC-RECTANGULAR-PREDICTION`, `RECON-INTRA-BASIC-PAETH-PREDICTION`, and `RECON-INTRA-SMOOTH-PREDICTION` primitives. `freeze()` reuses existing `Plane::from_vec`, `FramePlanes::new`, and `DecodedFrame::try_new`, and tests prove interop with decoded-frame hash input, Y4M writer, and reference-frame store. This row itself did not add a `splot-decode -> splot-recon` dependency, `DecodeContext` API, runtime `splot decode` success path, tile syntax traversal, dequantization, inverse transforms, residual addition, loop filtering, output scheduling, runtime hashes, runtime Y4M, reference refresh, AVM/dav2d invocation, external tooling, or scheduler use inside `splot-recon`; future parallel orchestration remains owned by `DecodeContext` and `splot_parallel::WorkerPool`. The later runtime dependency edge is tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`, `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER`, and `DECODE-Y4M-RUNTIME-OUTPUT`."
+notes = "Adds a scheduler-free `splot-recon` mutable current-frame reconstruction workspace: `CurrentFrameWorkspace<T>` allocates Y/U/V plane buffers from `DecodedFrameInfo` using checked arithmetic and fallible allocation, validates sample type and active bit-depth range before writes, exposes bounded plane/rectangle reads, fills, row-strided writes, square/rectangular block writes, in-storage left/above edge extraction, and square/rectangular DC plus rectangular PAETH, smooth, and cardinal H/V directional prediction write helpers that call the existing `RECON-INTRA-DC-SQUARE-PREDICTION`, `RECON-INTRA-DC-RECTANGULAR-PREDICTION`, `RECON-INTRA-BASIC-PAETH-PREDICTION`, `RECON-INTRA-SMOOTH-PREDICTION`, and `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION` primitives. `freeze()` reuses existing `Plane::from_vec`, `FramePlanes::new`, and `DecodedFrame::try_new`, and tests prove interop with decoded-frame hash input, Y4M writer, reference-frame store, and missing-edge errors. This row itself did not add a `splot-decode -> splot-recon` dependency, `DecodeContext` API, runtime `splot decode` success path, tile syntax traversal, dequantization, inverse transforms, residual addition, loop filtering, output scheduling, runtime hashes, runtime Y4M, reference refresh, AVM/dav2d invocation, external tooling, full §7.13.2.1 fallback edge preparation, or scheduler use inside `splot-recon`; future parallel orchestration remains owned by `DecodeContext` and `splot_parallel::WorkerPool`. The later runtime dependency edge is tracked by `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`, `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER`, and `DECODE-Y4M-RUNTIME-OUTPUT`."
 
 [feature.status]
 mapped = "done"
@@ -7258,7 +7327,7 @@ id = "DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER"
 name = "Minimal intra reconstruction frontier"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.5.3", "5.20.5.5", "5.20.5.6", "5.20.7.24", "5.20.7.27", "7.13.2.1", "7.13.2.10", "7.21.1", "7.21.2"]
+spec_sections = ["5.20.5.3", "5.20.5.5", "5.20.5.6", "5.20.7.24", "5.20.7.27", "7.13.2.1", "7.13.2.8", "7.13.2.10", "7.21.1", "7.21.2", "9.2"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-5",
@@ -7266,17 +7335,19 @@ sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-1",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2",
 ]
 crate = "splot-decode"
 module = "crates/splot-decode/src/runtime_minimal_recon.rs"
-openspec_change = "minimal-intra-reconstruction-frontier"
+openspec_change = "recon-intra-cardinal-directional-prediction"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a crate-private reconstruction handoff after `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` for the committed minimal fixture: the block-symbol frontier returns `LumaDcNoResidual8Bit420_64x64` for the traced 64x64 8-bit luma DC/no-residual facts. `runtime_minimal_recon.rs` allocates a checked `splot-recon::CurrentFrameWorkspace<u8>`, writes that luma DC prediction through `predict_intra_dc_square()`, then materializes neutral 32x32 U/V planes through workspace writes as the existing minimal output-contract fallback, freezes the workspace, and preserves the existing `splot-dfh-sha256-v1` and Y4M bytes. The traced §5.20.5.6 chroma symbol is `H_PRED`, so this row does not claim chroma H/V prediction or neutral chroma as an AV2-proven result; chroma remains neutral materialization through checked storage until horizontal/vertical chroma prediction lands. The all-zero transform path is represented only by the traced no-residual block-symbol frontier; broad transform coefficient parsing, `reconstruct()`, residual addition, recursive `decode_block()`, loop filtering, film grain, reference refresh, raw output, AVM/dav2d invocation, and full decoder conformance remain unsupported."
+notes = "Adds a crate-private reconstruction handoff after `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` for the committed minimal fixture: the block-symbol frontier returns `LumaDcNoResidual8Bit420_64x64` for the traced 64x64 8-bit luma DC/no-residual facts and a traced top-left chroma `H_PRED` path. `runtime_minimal_recon.rs` allocates a checked `splot-recon::CurrentFrameWorkspace<u8>`, writes the luma DC prediction through `predict_intra_dc_square()`, explicitly materializes the AV2 §7.13.2.1 no-neighbor left-edge fallback value `(1 << (BitDepth - 1)) + 1` for the top-left chroma H_PRED path, calls the cardinal horizontal primitive from `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION` for both 32x32 U/V planes, writes the predicted chroma rectangles, freezes the workspace, and updates the deterministic `splot-dfh-sha256-v1` and Y4M bytes to the spec-correct chroma samples. This row does not claim full §7.13.2.1 edge preparation, chroma H/V beyond the top-left fallback trace, pAngle values other than 90/180, broad directional prediction, or neutral chroma as an untraced fallback. The all-zero transform path is represented only by the traced no-residual block-symbol frontier; broad transform coefficient parsing, `reconstruct()`, residual addition, recursive `decode_block()`, loop filtering, film grain, reference refresh, raw output, AVM/dav2d invocation, and full decoder conformance remain unsupported."
 
 [feature.status]
 mapped = "done"
@@ -7292,8 +7363,8 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = [
-    "crates/splot-decode/src/runtime_minimal_recon.rs::tests::traced_luma_dc_neutral_chroma_reconstruction_predicts_visible_samples",
-    "crates/splot-decode/src/runtime_minimal_recon.rs::tests::traced_luma_dc_neutral_chroma_reconstruction_hash_matches_minimal_contract",
+    "crates/splot-decode/src/runtime_minimal_recon.rs::tests::traced_luma_dc_chroma_h_pred_reconstruction_predicts_visible_samples",
+    "crates/splot-decode/src/runtime_minimal_recon.rs::tests::traced_luma_dc_chroma_h_pred_reconstruction_hash_matches_minimal_contract",
     "crates/splot-decode/src/tile_payload/runtime_frontier.rs::tests::block_symbol_frontier_accepts_minimal_fixture_trace",
     "crates/splot-decode/src/runtime_hash.rs::tests::minimal_fixture_decodes_to_hash_report",
     "crates/splot-decode/src/runtime_hash.rs::tests::decoded_hash_is_deterministic_across_thread_policies",
@@ -7315,8 +7386,10 @@ fixtures = [
     "crates/splot-decode/src/runtime_minimal.rs",
     "crates/splot-decode/src/runtime_minimal_recon.rs",
     "crates/splot-decode/src/tile_payload/runtime_frontier.rs",
+    "crates/splot-recon/src/intra_directional.rs",
     "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
     "openspec/changes/archive/2026-06-15-minimal-intra-reconstruction-frontier",
+    "openspec/changes/recon-intra-cardinal-directional-prediction",
 ]
 diagnostics = ["decode/unsupported-feature", "decode/resource-limit", "decode/malformed-source", "decode/output-error"]
 

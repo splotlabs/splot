@@ -6,19 +6,27 @@
 //! Feature tracking: `RECON-CURRENT-FRAME-WORKSPACE`,
 //! `RECON-INTRA-DC-RECTANGULAR-PREDICTION`,
 //! `RECON-INTRA-BASIC-PAETH-PREDICTION`,
-//! `RECON-INTRA-SMOOTH-PREDICTION`.
+//! `RECON-INTRA-SMOOTH-PREDICTION`,
+//! `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION`.
 
 use core::mem;
 use core::ops::Range;
 
 use crate::intra::predict_intra_dc_rect_value_from_sums;
 use crate::intra_basic::predict_paeth_sample;
+use crate::intra_directional::{IntraCardinalEdges, predict_intra_cardinal_directional_rect_into};
 use crate::intra_smooth::{SmoothSampleEdges, SmoothSamplePosition, predict_smooth_sample_values};
 use crate::{
-    DecodedFrame, DecodedFrameInfo, FrameMut, FramePlanes, FrameRef, IntraDcEdges, IntraPaethEdge,
-    IntraRectBlockSize, IntraSmoothEdge, IntraSmoothMode, IntraSquareBlockSize, PixelFormat, Plane,
-    PlaneId, PlaneMut, PlaneRect, PlaneRef, PlaneSize, ReconError, ReconSample, Result,
+    DecodedFrame, DecodedFrameInfo, FrameMut, FramePlanes, FrameRef, IntraCardinalDirection,
+    IntraCardinalEdge, IntraPaethEdge, IntraRectBlockSize, IntraSmoothEdge, IntraSmoothMode,
+    IntraSquareBlockSize, PixelFormat, Plane, PlaneId, PlaneMut, PlaneRect, PlaneRef, PlaneSize,
+    ReconError, ReconSample, Result,
 };
+
+#[path = "workspace_edges.rs"]
+mod workspace_edges;
+
+pub use workspace_edges::{CurrentFrameIntraEdges, WorkspaceRectRows};
 
 /// Mutable current-frame reconstruction workspace.
 ///
@@ -356,6 +364,30 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             .predict_intra_smooth_rect(rect, size, mode, bit_depth)
     }
 
+    /// Predicts rectangular cardinal directional intra samples into the workspace.
+    ///
+    /// This helper uses the in-storage above edge for [`IntraCardinalDirection::Vertical`]
+    /// and the in-storage left edge for [`IntraCardinalDirection::Horizontal`].
+    /// It does not synthesize AV2 §7.13.2.1 fallback samples or decide AV2 edge
+    /// availability, MRL, tile-boundary, or superblock semantics.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for invalid target geometry, absent planes, or
+    /// missing in-storage prepared edges.
+    pub fn predict_intra_cardinal_directional_rect(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        direction: IntraCardinalDirection,
+    ) -> Result<()> {
+        let rect = block_rect(x, y, size)?;
+        let bit_depth = self.info.bit_depth();
+        self.plane_mut(plane)?
+            .predict_intra_cardinal_directional_rect(rect, size, direction, bit_depth)
+    }
+
     /// Freezes the workspace into an immutable decoded frame.
     ///
     /// # Errors
@@ -497,11 +529,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     /// outside the plane storage.
     pub fn rect_rows(&self, rect: PlaneRect) -> Result<WorkspaceRectRows<'_, T>> {
         self.ensure_rect(rect)?;
-        Ok(WorkspaceRectRows {
-            plane: self,
-            rect,
-            next_row: 0,
-        })
+        Ok(WorkspaceRectRows::new(self, rect))
     }
 
     fn fill_rect(&mut self, rect: PlaneRect, sample: T) -> Result<()> {
@@ -612,7 +640,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             Some(above)
         };
 
-        Ok(CurrentFrameIntraEdges { left, above })
+        Ok(CurrentFrameIntraEdges::new(left, above))
     }
 
     fn intra_dc_edge_sums_for_rect(&self, rect: PlaneRect) -> Result<(Option<u64>, Option<u64>)> {
@@ -759,6 +787,78 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         Ok(())
     }
 
+    fn predict_intra_cardinal_directional_rect(
+        &mut self,
+        rect: PlaneRect,
+        size: IntraRectBlockSize,
+        direction: IntraCardinalDirection,
+        bit_depth: crate::BitDepth,
+    ) -> Result<()> {
+        self.ensure_rect(rect)?;
+
+        let output_start = self.sample_index(rect.x(), rect.y())?;
+        match direction {
+            IntraCardinalDirection::Vertical => {
+                if rect.y() == 0 {
+                    return Err(
+                        ReconError::WorkspaceCardinalIntraPredictionEdgeUnavailable {
+                            plane: self.plane,
+                            edge: IntraCardinalEdge::Above,
+                            rect,
+                        },
+                    );
+                }
+                let above_range = self.row_range(rect.y() - 1, rect.x(), rect.width())?;
+                let mut above = Vec::new();
+                above.try_reserve_exact(rect.width()).map_err(|_| {
+                    ReconError::WorkspaceAllocationFailed {
+                        plane: self.plane,
+                        context: "cardinal directional above edge",
+                    }
+                })?;
+                // splot-copy-ok: materialize bounded above-edge scratch for cardinal prediction
+                above.extend_from_slice(&self.samples[above_range]);
+                predict_intra_cardinal_directional_rect_into(
+                    bit_depth,
+                    size,
+                    direction,
+                    IntraCardinalEdges::above(&above),
+                    &mut self.samples[output_start..],
+                    self.stride_samples,
+                )
+            }
+            IntraCardinalDirection::Horizontal => {
+                if rect.x() == 0 {
+                    return Err(
+                        ReconError::WorkspaceCardinalIntraPredictionEdgeUnavailable {
+                            plane: self.plane,
+                            edge: IntraCardinalEdge::Left,
+                            rect,
+                        },
+                    );
+                }
+                let mut left = Vec::new();
+                left.try_reserve_exact(rect.height()).map_err(|_| {
+                    ReconError::WorkspaceAllocationFailed {
+                        plane: self.plane,
+                        context: "cardinal directional left edge",
+                    }
+                })?;
+                for row in rect.y()..rect.y() + rect.height() {
+                    left.push(self.samples[self.sample_index(rect.x() - 1, row)?]);
+                }
+                predict_intra_cardinal_directional_rect_into(
+                    bit_depth,
+                    size,
+                    direction,
+                    IntraCardinalEdges::left(&left),
+                    &mut self.samples[output_start..],
+                    self.stride_samples,
+                )
+            }
+        }
+    }
+
     fn freeze(self) -> Result<Plane<T>> {
         Plane::from_vec(
             self.storage_size,
@@ -818,61 +918,6 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                 rect: PlaneRect::new(x, row, width, 1)?,
             })
         }
-    }
-}
-
-/// Iterator over checked workspace rectangle rows.
-#[derive(Clone, Debug)]
-pub struct WorkspaceRectRows<'a, T: ReconSample> {
-    plane: &'a CurrentFramePlane<T>,
-    rect: PlaneRect,
-    next_row: usize,
-}
-
-impl<'a, T: ReconSample> Iterator for WorkspaceRectRows<'a, T> {
-    type Item = &'a [T];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.next_row >= self.rect.height() {
-            return None;
-        }
-
-        let row = self.rect.y() + self.next_row;
-        let start = row * self.plane.stride_samples + self.rect.x();
-        let end = start + self.rect.width();
-        self.next_row += 1;
-        Some(&self.plane.samples[start..end])
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.rect.height() - self.next_row;
-        (remaining, Some(remaining))
-    }
-}
-
-impl<T: ReconSample> ExactSizeIterator for WorkspaceRectRows<'_, T> {}
-
-/// Owned edge samples read from a current-frame workspace.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CurrentFrameIntraEdges<T: ReconSample> {
-    left: Option<Vec<T>>,
-    above: Option<Vec<T>>,
-}
-
-impl<T: ReconSample> CurrentFrameIntraEdges<T> {
-    /// Returns left edge samples when they were inside workspace storage.
-    pub fn left_samples(&self) -> Option<&[T]> {
-        self.left.as_deref()
-    }
-
-    /// Returns above edge samples when they were inside workspace storage.
-    pub fn above_samples(&self) -> Option<&[T]> {
-        self.above.as_deref()
-    }
-
-    /// Borrows the owned edges as DC prediction inputs.
-    pub fn as_dc_edges(&self) -> IntraDcEdges<'_, T> {
-        IntraDcEdges::new(self.left_samples(), self.above_samples())
     }
 }
 

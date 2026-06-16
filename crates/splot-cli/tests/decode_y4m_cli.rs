@@ -71,7 +71,8 @@ fn read_dir_names(path: &Path) -> Vec<String> {
 
 fn expected_minimal_y4m() -> Vec<u8> {
     let mut bytes = b"YUV4MPEG2 W64 H64 F30:1 Ip A0:0 C420\nFRAME\n".to_vec();
-    bytes.extend(core::iter::repeat_n(128, 64 * 64 + 32 * 32 + 32 * 32));
+    bytes.extend(core::iter::repeat_n(128, 64 * 64));
+    bytes.extend(core::iter::repeat_n(129, 32 * 32 + 32 * 32));
     bytes
 }
 

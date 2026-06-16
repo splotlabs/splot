@@ -9,8 +9,8 @@
 //! plane storage invariants, a safe reference-slot container, and deterministic
 //! frame-hash input serialization and digest computation, plus source-backed
 //! Y4M writing for caller-supplied decoded frames, plus square DC,
-//! rectangular DC, basic/PAETH, and smooth intra prediction primitives and a mutable
-//! current-frame workspace; it does not implement byte-consuming decode, full
+//! rectangular DC, basic/PAETH, smooth, and H/V cardinal directional intra prediction
+//! primitives and a mutable current-frame workspace; it does not implement byte-consuming decode, full
 //! reconstruction, runtime CLI Y4M output, or AV2 reference refresh semantics.
 //!
 //! The ownership model is view-first ([`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)):
@@ -27,6 +27,7 @@
 //! `RECON-INTRA-DC-RECTANGULAR-PREDICTION`,
 //! `RECON-INTRA-BASIC-PAETH-PREDICTION`,
 //! `RECON-INTRA-SMOOTH-PREDICTION`,
+//! `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION`,
 //! `RECON-CURRENT-FRAME-WORKSPACE`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
@@ -39,6 +40,7 @@ mod geometry;
 mod hash_input;
 mod intra;
 mod intra_basic;
+mod intra_directional;
 mod intra_smooth;
 mod plane;
 mod reference;
@@ -58,6 +60,10 @@ pub use intra::{
     predict_intra_dc_square_value,
 };
 pub use intra_basic::{IntraPaethEdge, IntraPaethEdges, predict_intra_paeth_rect_into};
+pub use intra_directional::{
+    IntraCardinalDirection, IntraCardinalEdge, IntraCardinalEdges,
+    predict_intra_cardinal_directional_rect_into,
+};
 pub use intra_smooth::{
     IntraSmoothEdge, IntraSmoothEdges, IntraSmoothMode, predict_intra_smooth_rect_into,
 };

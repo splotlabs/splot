@@ -6,8 +6,8 @@
 use core::fmt;
 
 use crate::{
-    BitDepth, IntraDcEdge, IntraPaethEdge, IntraSmoothEdge, PlaneId, PlaneRect, PlaneSize,
-    ReferenceSlot,
+    BitDepth, IntraCardinalDirection, IntraCardinalEdge, IntraDcEdge, IntraPaethEdge,
+    IntraSmoothEdge, PlaneId, PlaneRect, PlaneSize, ReferenceSlot,
 };
 
 /// Result alias used by `splot-recon` constructors and helpers.
@@ -214,6 +214,33 @@ pub enum ReconError {
         /// Maximum sample value allowed by the active bit depth.
         max: u16,
     },
+    /// A required cardinal directional intra prediction edge was absent.
+    IntraCardinalEdgeUnavailable {
+        /// Cardinal prediction direction being computed.
+        direction: IntraCardinalDirection,
+        /// Required edge that was absent.
+        edge: IntraCardinalEdge,
+    },
+    /// A supplied cardinal directional intra prediction edge did not match the block size.
+    IntraCardinalEdgeLengthMismatch {
+        /// Edge whose sample count was checked.
+        edge: IntraCardinalEdge,
+        /// Expected edge sample count.
+        expected: usize,
+        /// Actual edge sample count.
+        actual: usize,
+    },
+    /// A cardinal directional intra prediction edge sample exceeded the active bit depth.
+    IntraCardinalSampleOutOfRange {
+        /// Edge containing the out-of-range sample.
+        edge: IntraCardinalEdge,
+        /// Zero-based index within the edge samples.
+        sample_index: usize,
+        /// Observed sample value.
+        value: u16,
+        /// Maximum sample value allowed by the active bit depth.
+        max: u16,
+    },
     /// A supplied smooth intra prediction edge did not match the block size.
     IntraSmoothEdgeLengthMismatch {
         /// Edge whose sample count was checked.
@@ -281,6 +308,15 @@ pub enum ReconError {
         plane: PlaneId,
         /// Required edge that was outside workspace storage.
         edge: IntraSmoothEdge,
+        /// Prediction rectangle needing the edge.
+        rect: PlaneRect,
+    },
+    /// A workspace cardinal directional intra helper could not read a required edge.
+    WorkspaceCardinalIntraPredictionEdgeUnavailable {
+        /// Plane whose workspace storage was checked.
+        plane: PlaneId,
+        /// Required edge that was outside workspace storage.
+        edge: IntraCardinalEdge,
         /// Prediction rectangle needing the edge.
         rect: PlaneRect,
     },
@@ -504,6 +540,31 @@ impl fmt::Display for ReconError {
                 "PAETH intra prediction {} edge sample {sample_index} value {value} exceeds maximum {max}",
                 edge.name()
             ),
+            Self::IntraCardinalEdgeUnavailable { direction, edge } => write!(
+                f,
+                "cardinal directional intra prediction {} mode requires {} edge",
+                direction.name(),
+                edge.name()
+            ),
+            Self::IntraCardinalEdgeLengthMismatch {
+                edge,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "cardinal directional intra prediction {} edge length mismatch: expected {expected} samples, got {actual}",
+                edge.name()
+            ),
+            Self::IntraCardinalSampleOutOfRange {
+                edge,
+                sample_index,
+                value,
+                max,
+            } => write!(
+                f,
+                "cardinal directional intra prediction {} edge sample {sample_index} value {value} exceeds maximum {max}",
+                edge.name()
+            ),
             Self::IntraSmoothEdgeLengthMismatch {
                 edge,
                 expected,
@@ -560,6 +621,16 @@ impl fmt::Display for ReconError {
             Self::WorkspaceSmoothIntraPredictionEdgeUnavailable { plane, edge, rect } => write!(
                 f,
                 "current-frame workspace {} smooth intra prediction requires {} edge for rectangle x={} y={} width={} height={}",
+                plane.name(),
+                edge.name(),
+                rect.x(),
+                rect.y(),
+                rect.width(),
+                rect.height()
+            ),
+            Self::WorkspaceCardinalIntraPredictionEdgeUnavailable { plane, edge, rect } => write!(
+                f,
+                "current-frame workspace {} cardinal directional intra prediction requires {} edge for rectangle x={} y={} width={} height={}",
                 plane.name(),
                 edge.name(),
                 rect.x(),

@@ -1,11 +1,5 @@
-# minimal-intra-reconstruction-frontier Specification
+## MODIFIED Requirements
 
-## Purpose
-Document the narrow minimal-tier runtime reconstruction handoff that converts the
-already-validated fixture trace into a `splot-recon` current-frame workspace and
-freezes it into the existing hash/Y4M output contract without claiming broad
-AV2 reconstruction support.
-## Requirements
 ### Requirement: Minimal Flat Intra Reconstruction Handoff
 The decoder SHALL reconstruct the already-supported
 `minimal-intra-8bit420-hash-v1` 64x64 8-bit YUV420 fixture through

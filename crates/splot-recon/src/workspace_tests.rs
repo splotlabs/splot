@@ -424,6 +424,111 @@ fn workspace_paeth_rejects_missing_prepared_edges() {
 }
 
 #[test]
+fn workspace_predicts_cardinal_directional_from_in_storage_edges() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(6, 6),
+            rect(0, 0, 6, 6),
+        ),
+        0,
+    )
+    .unwrap();
+    let block = rect_block(2, 2);
+
+    workspace
+        .write_rect(PlaneId::Y, rect(1, 0, 4, 1), &[10, 20, 30, 40], 4)
+        .unwrap();
+    workspace
+        .predict_intra_cardinal_directional_rect(
+            PlaneId::Y,
+            1,
+            1,
+            block,
+            IntraCardinalDirection::Vertical,
+        )
+        .unwrap();
+
+    let vertical_rows: Vec<&[u8]> = workspace
+        .rect_rows(PlaneId::Y, rect(1, 1, 4, 4))
+        .unwrap()
+        .collect();
+    assert_eq!(vertical_rows, vec![&[10, 20, 30, 40][..]; 4]);
+
+    workspace
+        .write_rect(PlaneId::Y, rect(0, 1, 1, 4), &[3, 5, 7, 9], 1)
+        .unwrap();
+    workspace
+        .predict_intra_cardinal_directional_rect(
+            PlaneId::Y,
+            1,
+            1,
+            block,
+            IntraCardinalDirection::Horizontal,
+        )
+        .unwrap();
+
+    let horizontal_rows: Vec<&[u8]> = workspace
+        .rect_rows(PlaneId::Y, rect(1, 1, 4, 4))
+        .unwrap()
+        .collect();
+    assert_eq!(
+        horizontal_rows,
+        vec![
+            &[3, 3, 3, 3][..],
+            &[5, 5, 5, 5][..],
+            &[7, 7, 7, 7][..],
+            &[9, 9, 9, 9][..],
+        ]
+    );
+}
+
+#[test]
+fn workspace_cardinal_directional_rejects_missing_prepared_edges() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(8, 8),
+            rect(0, 0, 8, 8),
+        ),
+        0,
+    )
+    .unwrap();
+    let block = rect_block(2, 2);
+
+    assert!(matches!(
+        workspace.predict_intra_cardinal_directional_rect(
+            PlaneId::Y,
+            1,
+            0,
+            block,
+            IntraCardinalDirection::Vertical
+        ),
+        Err(ReconError::WorkspaceCardinalIntraPredictionEdgeUnavailable {
+            plane: PlaneId::Y,
+            edge: IntraCardinalEdge::Above,
+            rect
+        }) if rect == PlaneRect::new(1, 0, 4, 4).unwrap()
+    ));
+    assert!(matches!(
+        workspace.predict_intra_cardinal_directional_rect(
+            PlaneId::Y,
+            0,
+            1,
+            block,
+            IntraCardinalDirection::Horizontal
+        ),
+        Err(ReconError::WorkspaceCardinalIntraPredictionEdgeUnavailable {
+            plane: PlaneId::Y,
+            edge: IntraCardinalEdge::Left,
+            rect
+        }) if rect == PlaneRect::new(0, 1, 4, 4).unwrap()
+    ));
+}
+
+#[test]
 fn workspace_predicts_rectangular_smooth_from_in_storage_edges() {
     let mut workspace = CurrentFrameWorkspace::<u8>::new(
         info(

@@ -313,6 +313,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "intra-dc-rectangular-prediction",
             "intra-basic-paeth-prediction",
             "intra-smooth-prediction",
+            "intra-cardinal-directional-prediction",
             "recon-intra-prediction-fuzz",
         ],
         feature_ids: &[
@@ -320,6 +321,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "RECON-INTRA-DC-RECTANGULAR-PREDICTION",
             "RECON-INTRA-BASIC-PAETH-PREDICTION",
             "RECON-INTRA-SMOOTH-PREDICTION",
+            "RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION",
             "CONF-RECON-INTRA-PREDICTION-FUZZ",
         ],
         status: "partial",
@@ -330,7 +332,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         fuzz_targets: &["recon_intra_prediction_bytes"],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Some scalar intra prediction and workspace primitives exist, with no-panic fuzz coverage over bounded structured direct prediction and current-frame workspace cases. Directional, data-driven, IBP, CfL/MHCCP, palette, all inter prediction, and runtime integration remain unsupported.",
+        notes: "Some scalar intra prediction and workspace primitives exist, including H/V cardinal directional prediction and no-panic fuzz coverage over bounded structured direct prediction and current-frame workspace cases. General directional angles, full edge preparation, data-driven, IBP, CfL/MHCCP, palette, all inter prediction, and broad runtime integration remain unsupported.",
     },
     CoverageRow {
         id: "reconstruction-transform-and-filters",
