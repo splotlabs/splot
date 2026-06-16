@@ -140,9 +140,10 @@ exposing public tile-payload APIs. The narrow minimal hash/raw/Y4M runtime is wi
 through the partition and block-symbol trace frontiers, but it still does not
 support multiple tiles or tile groups, bridge/BRU paths,
 full `read_partition()`/`decode_tile()` traversal past the first
-`decode_block()` frontier, `MiSizes` mutation, `decode_block()` syntax,
-Saved CDF mutation, broad reconstruction, broad hashes, broad runtime raw/Y4M,
-reference refresh, or external decoders.
+`decode_block()` frontier, broad MI-size mutation beyond the crate-private
+`DECODE-TILE-MI-SIZE-STATE-BOUNDARY`, `decode_block()` syntax,
+broad Saved CDF mutation outside the supported subset, broad reconstruction,
+broad hashes, broad runtime raw/Y4M, reference refresh, or external decoders.
 
 Canonical decoder status lives in
 [`DECODER-SUPPORT-MATRIX.toml`](./DECODER-SUPPORT-MATRIX.toml), rendered to

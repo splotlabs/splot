@@ -7,16 +7,19 @@
 //! `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY`,
 //! `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER`.
 
+use core::mem::size_of;
+
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 
 use super::DecodeTileWorkUnit;
 use super::block_symbol::{MinimalBlockSymbolTraceError, consume_minimal_block_symbol_trace};
+use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::PartitionType;
 use super::partition_allowed::PartitionFeatureFlags;
 use super::partition_traversal::{
-    TilePartitionBruState, TilePartitionContextState, TilePartitionFrameFacts,
+    DecodeBlockFrontier, TilePartitionBruState, TilePartitionFrameFacts,
     TilePartitionLoopRestorationState, TilePartitionTraversalError, TilePartitionTraversalInput,
     TilePartitionTraversalPlan, plan_tile_partition_traversal_cursor,
 };
@@ -24,13 +27,13 @@ use crate::{DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits};
 
 const BLOCK_64X64_INDEX: usize = 12;
 const BLOCK_128X128_INDEX: usize = 15;
-// AV2 §6 clear_left_context()/clear_above_context() seed partition neighbor
-// context with BLOCK_256X256; §9.2 defines this generated table index.
 const BLOCK_256X256_INDEX: usize = 18;
 
 /// Live symbol cursor positioned at the minimal runtime block frontier.
 pub(crate) struct MinimalRuntimePartitionFrontier<'payload> {
     symbols: SymbolDecoder<'payload>,
+    mi_size_state: TileMiSizeState,
+    frontier: DecodeBlockFrontier,
 }
 
 impl<'payload> MinimalRuntimePartitionFrontier<'payload> {
@@ -38,6 +41,18 @@ impl<'payload> MinimalRuntimePartitionFrontier<'payload> {
     #[must_use]
     pub(crate) fn into_symbol_decoder(self) -> SymbolDecoder<'payload> {
         self.symbols
+    }
+
+    /// Splits the frontier into the live symbol decoder and MI-size state.
+    #[must_use]
+    fn into_parts(
+        self,
+    ) -> (
+        SymbolDecoder<'payload>,
+        TileMiSizeState,
+        DecodeBlockFrontier,
+    ) {
+        (self.symbols, self.mi_size_state, self.frontier)
     }
 }
 
@@ -87,6 +102,9 @@ pub(crate) enum MinimalRuntimePartitionFrontierError {
     /// The underlying traversal frontier failed.
     #[error("minimal runtime partition traversal failed: {0}")]
     Traversal(#[from] TilePartitionTraversalError),
+    /// The MI-size state boundary failed.
+    #[error("minimal runtime MI-size state failed: {0}")]
+    MiSizeState(#[from] TileMiSizeStateError),
     /// Traversal reached a shape outside the minimal tier.
     #[error("minimal runtime partition frontier mismatch: {reason}")]
     UnexpectedFrontier {
@@ -113,10 +131,13 @@ pub(crate) fn plan_minimal_runtime_block_symbol_frontier<'payload>(
     core: &FrameHeaderCore,
     limits: DecodeLimits,
 ) -> Result<MinimalRuntimeBlockSymbolFrontier, MinimalRuntimeBlockSymbolFrontierError> {
-    let symbols = plan_minimal_runtime_partition_frontier(work_unit, sequence, core, limits)?
-        .into_symbol_decoder();
+    let (symbols, mut mi_size_state, block_frontier) =
+        plan_minimal_runtime_partition_frontier(work_unit, sequence, core, limits)?.into_parts();
     let tile_num = work_unit.tile_num();
     let trace = consume_minimal_block_symbol_trace(work_unit, symbols)?;
+    mi_size_state
+        .update_luma_block(block_frontier.r, block_frontier.c, block_frontier.b_size)
+        .map_err(MinimalRuntimePartitionFrontierError::from)?;
     work_unit.cdf_mut().apply_completed_tile_to_saved(tile_num);
     work_unit.cdf_mut().frame_end_update_cdf_subset();
     Ok(MinimalRuntimeBlockSymbolFrontier {
@@ -134,34 +155,33 @@ pub(crate) fn plan_minimal_runtime_partition_frontier<'payload>(
 ) -> Result<MinimalRuntimePartitionFrontier<'payload>, MinimalRuntimePartitionFrontierError> {
     let frame = minimal_partition_frame_facts(sequence, core)?;
     let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
-    let cell_count = checked_mul_u64(
+    let allocation = TileMiSizeState::allocation(mi_rows, mi_cols, frame.sb_size())?;
+    limits.ensure_allocation_len(
         DecodeLimitName::MaxLumaSamplesPerFrame,
-        mi_rows as u64,
-        mi_cols as u64,
+        allocation.padded_grid_cells() as u64,
     )?;
-    limits.ensure_allocation_len(DecodeLimitName::MaxLumaSamplesPerFrame, cell_count)?;
+    let allocation_bytes = checked_mul_u64(
+        DecodeLimitName::MaxDecodedFrameBytes,
+        allocation.entry_count() as u64,
+        size_of::<usize>() as u64,
+    )?;
+    limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, allocation_bytes)?;
 
-    let mi0 = initial_context_grid(mi_rows, mi_cols);
-    let mi1 = initial_context_grid(mi_rows, mi_cols);
-    let left0 = initial_context_line(mi_rows);
-    let left1 = initial_context_line(mi_rows);
-    let above0 = initial_context_line(mi_cols);
-    let above1 = initial_context_line(mi_cols);
-    let mi0_rows: Vec<&[usize]> = mi0.iter().map(Vec::as_slice).collect();
-    let mi1_rows: Vec<&[usize]> = mi1.iter().map(Vec::as_slice).collect();
-    let context = TilePartitionContextState::new(
-        [&mi0_rows, &mi1_rows],
-        [&left0, &left1],
-        [&above0, &above1],
-    );
-
-    let (plan, symbols) = plan_tile_partition_traversal_cursor(TilePartitionTraversalInput::new(
-        work_unit, frame, context, limits,
-    ))?
-    .into_parts();
+    let mi_size_state = TileMiSizeState::new(mi_rows, mi_cols, frame.sb_size())?;
+    let cursor = mi_size_state.with_context_state(|context| {
+        plan_tile_partition_traversal_cursor(TilePartitionTraversalInput::new(
+            work_unit, frame, context, limits,
+        ))
+    })??;
+    let (plan, symbols) = cursor.into_parts();
     ensure_minimal_root_frontier(&plan, &symbols)?;
+    let frontier = plan.frontier();
 
-    Ok(MinimalRuntimePartitionFrontier { symbols })
+    Ok(MinimalRuntimePartitionFrontier {
+        symbols,
+        mi_size_state,
+        frontier,
+    })
 }
 
 fn minimal_partition_frame_facts(
@@ -304,14 +324,6 @@ fn chroma_subsampling(chroma: ChromaFormatIdc) -> (bool, bool) {
     }
 }
 
-fn initial_context_grid(rows: usize, cols: usize) -> Vec<Vec<usize>> {
-    vec![initial_context_line(cols); rows]
-}
-
-fn initial_context_line(len: usize) -> Vec<usize> {
-    vec![BLOCK_256X256_INDEX; len]
-}
-
 fn checked_mul_u64(name: DecodeLimitName, left: u64, right: u64) -> Result<u64, DecodeLimitError> {
     left.checked_mul(right)
         .ok_or(DecodeLimitError::ArithmeticOverflow {
@@ -341,7 +353,9 @@ mod tests {
         FrameCandidateTileFacts, TileGroupPositionFacts, plan_derived_tile_payload_boundary,
     };
     use super::*;
-    use crate::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
+    use crate::{
+        DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeOptions, DecodeRuntimeConfig,
+    };
 
     const MINIMAL_FIXTURE: &[u8] = include_bytes!(
         "../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf"
@@ -349,15 +363,6 @@ mod tests {
     const MINIMAL_TRACE_SYMBOLS: u64 = 6;
     const MINIMAL_TRACE_TRAILING_BIT_POSITION: u64 = 14;
     const MINIMAL_TRACE_PADDING_END_POSITION: u64 = 16;
-
-    #[test]
-    fn initial_context_lines_use_block_256x256() {
-        assert_eq!(initial_context_line(4), vec![BLOCK_256X256_INDEX; 4]);
-        assert_eq!(
-            initial_context_grid(2, 3),
-            vec![vec![BLOCK_256X256_INDEX; 3]; 2]
-        );
-    }
 
     #[test]
     fn block_symbol_frontier_accepts_minimal_fixture_trace() {
@@ -449,6 +454,53 @@ mod tests {
             assert_eq!(work_unit.cdf().tile_cdfs(), &before);
             assert_eq!(work_unit.cdf().saved_cdfs(), &saved_before);
             assert_eq!(work_unit.cdf().frame_cdfs(), &frame_before);
+        });
+    }
+
+    #[test]
+    fn partition_frontier_checks_padded_mi_state_cells_before_allocation() {
+        with_minimal_work_unit(MINIMAL_FIXTURE, |work_unit, sequence, core| {
+            let mut padded_core = core.clone();
+            let tile_info = padded_core.tile_info.as_mut().unwrap();
+            *tile_info.mi_row_starts.last_mut().unwrap() = 17;
+            *tile_info.mi_col_starts.last_mut().unwrap() = 16;
+            let limits = DecodeLimits::unlimited()
+                .with_max_luma_samples_per_frame(DecodeLimitThreshold::Max(300));
+
+            let Err(err) =
+                plan_minimal_runtime_partition_frontier(work_unit, sequence, &padded_core, limits)
+            else {
+                panic!("expected padded MI-state limit");
+            };
+
+            let MinimalRuntimePartitionFrontierError::Limit(limit) = err else {
+                panic!("expected padded MI-state limit, got {err:?}");
+            };
+            assert_eq!(limit.name(), DecodeLimitName::MaxLumaSamplesPerFrame);
+            assert_eq!(limit.actual(), Some(512));
+        });
+    }
+
+    #[test]
+    fn partition_frontier_checks_mi_state_byte_budget_before_allocation() {
+        with_minimal_work_unit(MINIMAL_FIXTURE, |work_unit, sequence, core| {
+            let limits = DecodeLimits::unlimited()
+                .with_max_decoded_frame_bytes(DecodeLimitThreshold::Max(1024));
+
+            let Err(err) =
+                plan_minimal_runtime_partition_frontier(work_unit, sequence, core, limits)
+            else {
+                panic!("expected MI-state byte limit");
+            };
+
+            let MinimalRuntimePartitionFrontierError::Limit(limit) = err else {
+                panic!("expected MI-state byte limit, got {err:?}");
+            };
+            assert_eq!(limit.name(), DecodeLimitName::MaxDecodedFrameBytes);
+            assert_eq!(
+                limit.actual(),
+                Some((2 * (256 + 16 + 16) * size_of::<usize>()) as u64)
+            );
         });
     }
 

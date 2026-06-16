@@ -256,6 +256,7 @@ fn decode_minimal_partition_frontier_error(
             source,
         )) => DecodeError::Limit { source },
         MinimalRuntimePartitionFrontierError::MissingFact { .. }
+        | MinimalRuntimePartitionFrontierError::MiSizeState(_)
         | MinimalRuntimePartitionFrontierError::Traversal(_)
         | MinimalRuntimePartitionFrontierError::UnexpectedFrontier { .. } => unsupported_at(
             "minimal_tile_partition_frontier",
