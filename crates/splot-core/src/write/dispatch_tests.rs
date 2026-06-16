@@ -16,6 +16,8 @@ mod tests {
     use super::*;
     use crate::bitio::BitReader;
     use crate::headers::buffer_removal_timing::{BufferRemovalOpTiming, BufferRemovalTiming};
+    use crate::headers::sequence::ProfileIdc;
+    use crate::hls::{MultistreamDecoderOperation, SubStreamConfig};
     use crate::headers::metadata::{
         MetadataHdrCll, MetadataPayload, MetadataShortObu, MetadataType, MetadataUnit,
         parse_metadata_short,
@@ -324,6 +326,46 @@ mod tests {
                     br_time_op: None,
                 },
             ],
+        });
+        let mut writer = BitWriter::new();
+        write_obu_payload(&mut writer, &payload, false, &[]).unwrap();
+        let bytes = writer.into_bytes();
+        assert_eq!(reparse_payload(&header, &bytes), payload);
+    }
+
+    #[test]
+    fn msdo_payload_round_trips() {
+        // §5.6 MSDO routes to write_msdo + the non-extensible tail (no longer Unimplemented). Even
+        // allocation -> no large_picture_idc; two sub-streams (num_streams_minus_2 = 0).
+        let header = header_for(ObuType::Msdo);
+        let mut sub_streams = [SubStreamConfig {
+            sub_xlayer_id: 0,
+            sub_stream_max_profile: 0,
+            sub_stream_max_level: 0,
+            sub_stream_max_tier: 0,
+        }; 9];
+        sub_streams[0] = SubStreamConfig {
+            sub_xlayer_id: 1,
+            sub_stream_max_profile: 4,
+            sub_stream_max_level: 3,
+            sub_stream_max_tier: 0,
+        };
+        sub_streams[1] = SubStreamConfig {
+            sub_xlayer_id: 2,
+            sub_stream_max_profile: 3,
+            sub_stream_max_level: 4,
+            sub_stream_max_tier: 1,
+        };
+        let payload = ParsedObu::Msdo(MultistreamDecoderOperation {
+            num_streams_minus_2: 0,
+            multistream_profile_idc: ProfileIdc::from_bits(5),
+            multistream_level_idx: 10,
+            multistream_tier: 1,
+            multistream_even_allocation_flag: true,
+            multistream_large_picture_idc: None,
+            sub_stream_count: 2,
+            sub_streams,
+            multistream_doh_constraint_flag: false,
         });
         let mut writer = BitWriter::new();
         write_obu_payload(&mut writer, &payload, false, &[]).unwrap();
