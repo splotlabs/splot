@@ -21,6 +21,7 @@ mod tests {
     };
     use crate::headers::sequence::ProfileIdc;
     use crate::hls::{MultistreamDecoderOperation, SubStreamConfig};
+    use crate::hls::MultiFrameHeader;
     use crate::headers::metadata::{
         MetadataHdrCll, MetadataPayload, MetadataShortObu, MetadataType, MetadataUnit,
         parse_metadata_short,
@@ -609,6 +610,88 @@ mod tests {
         let complete_bytes = complete.into_bytes();
         // header is two bytes (extension byte present for xlayer 3).
         assert_eq!(reparse_payload(&header, &complete_bytes[2..]), payload);
+    }
+
+    #[test]
+    fn multi_frame_header_payload_round_trips() {
+        // §5.7 multi-frame header is extensible; the dispatch routes it to write_multi_frame_header
+        // + the extensible tail (obu_extension_flag = 0 + trailing_bits()). It carries no
+        // passthrough. Build a payload with frame size + deblocking update + seg_info(16) present by
+        // hand, parse it via dispatch, then write it back and reparse.
+        let header = header_for(ObuType::MultiFrameHeader);
+        assert!(header.obu_type.is_extensible_obu());
+        let mut bits = Bits::default();
+        bits.uvlc(2); // mfh_seq_header_id
+        bits.uvlc(1); // mfh_id_minus_1 -> mfhId = 2
+        bits.bit(1); // mfh_frame_size_present_flag
+        bits.f(3, 4); // mfh_frame_width_bits_minus_1 -> width_bits = 4
+        bits.f(3, 4); // mfh_frame_height_bits_minus_1 -> height_bits = 4
+        bits.f(15, 4); // mfh_frame_width_minus_1
+        bits.f(7, 4); // mfh_frame_height_minus_1
+        bits.bit(1); // mfh_deblocking_filter_update
+        bits.bit(1); // mfh_apply_deblocking_filter[0]
+        bits.bit(0); // [1]
+        bits.bit(1); // [2]
+        bits.bit(0); // [3]
+        bits.bit(1); // mfh_seg_info_present_flag
+        bits.bit(1); // mfh_ext_seg_flag -> seg_info(16)
+        bits.bit(1); // mfh_allow_seg_info_change
+        for _ in 0..(16 * 3) {
+            bits.bit(0); // seg_info(16): all features disabled
+        }
+        // extensible OBU tail: obu_extension_flag = 0, then trailing_bits().
+        bits.bit(0);
+        bits.bit(1); // trailing_one_bit
+        while bits.bits.len() % 8 != 0 {
+            bits.bit(0);
+        }
+        let payload_bytes = bits.into_bytes();
+        let payload = reparse_payload(&header, &payload_bytes);
+        match &payload {
+            ParsedObu::MultiFrameHeader(mfh) => {
+                let mfh: &MultiFrameHeader = mfh;
+                assert!(mfh.mfh_frame_size.is_some());
+                assert_eq!(mfh.mfh_apply_deblocking_filter, [true, false, true, false]);
+                assert_eq!(mfh.segment_info.as_ref().unwrap().num_segments, 16);
+            }
+            other => panic!("expected a multi-frame header OBU, got {other:?}"),
+        }
+
+        let mut writer = BitWriter::new();
+        write_obu_payload(&mut writer, &payload, true, &[]).unwrap();
+        let bytes = writer.into_bytes();
+        assert_eq!(reparse_payload(&header, &bytes), payload);
+
+        // And it round-trips through write_complete_obu (header + payload + tail).
+        let mut complete = BitWriter::new();
+        write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
+        let complete_bytes = complete.into_bytes();
+        assert_eq!(reparse_payload(&header, &complete_bytes[1..]), payload);
+    }
+
+    #[test]
+    fn multi_frame_header_rejects_non_empty_passthrough() {
+        let header = header_for(ObuType::MultiFrameHeader);
+        // Minimal MFH body (no frame size / deblocking / seg info) then the OBU tail.
+        let mut bits = Bits::default();
+        bits.uvlc(0);
+        bits.uvlc(0);
+        bits.bit(0);
+        bits.bit(0);
+        bits.bit(0);
+        bits.bit(0); // obu_extension_flag
+        bits.bit(1); // trailing_one_bit
+        while bits.bits.len() % 8 != 0 {
+            bits.bit(0);
+        }
+        let payload = reparse_payload(&header, &bits.into_bytes());
+        let mut writer = BitWriter::new();
+        let err = write_obu_payload(&mut writer, &payload, true, &[0x00]).unwrap_err();
+        assert!(
+            matches!(err, WriteError::NonCanonicalMultiFrameHeader { what } if what == "passthrough"),
+            "expected multi-frame-header passthrough reject, got {err:?}"
+        );
+        assert_eq!(writer.bit_len(), 0);
     }
 
     #[test]

@@ -57,8 +57,8 @@
 //! [`dispatch::write_obu_payload`] emits a [`crate::obu::ParsedObu`]'s typed body plus the § 5.2.1 /
 //! § 6.2.1 OBU tail (`obu_extension_flag = 0` + `trailing_bits()` for an extensible non-empty body;
 //! nothing for the temporal delimiter; padding owns its own tail), and
-//! [`dispatch::write_complete_obu`] prepends the § 5.2.2 header. The eleven OBU types with a body
-//! writer are emitted; the other three return [`error::WriteError::Unimplemented`].
+//! [`dispatch::write_complete_obu`] prepends the § 5.2.2 header. The twelve OBU types with a body
+//! writer are emitted; the other two return [`error::WriteError::Unimplemented`].
 //! [`film_grain`] writes the § 5.14 / § 5.18.10.2 `film_grain_obu()`
 //! ([`film_grain::write_film_grain`], the inverse of
 //! [`crate::headers::film_grain::parse_film_grain`]): because the model is lossy versus the wire
@@ -89,6 +89,7 @@ pub mod frame_tail;
 pub mod frame_tiling;
 pub mod metadata;
 pub mod msdo;
+pub mod multi_frame_header;
 pub mod obu;
 pub mod operating_point_set;
 pub mod roundtrip;
@@ -122,6 +123,7 @@ pub use metadata::{
     write_metadata_short_obu, write_metadata_unit,
 };
 pub use msdo::write_msdo;
+pub use multi_frame_header::write_multi_frame_header;
 pub use obu::{write_annexb_obu, write_obu_header, write_obu_header_extension};
 pub use operating_point_set::write_operating_point_set;
 pub use roundtrip::{RoundtripOutcome, recover_roundtrip_passthrough, roundtrip_obu};
