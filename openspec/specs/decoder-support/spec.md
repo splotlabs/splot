@@ -1445,9 +1445,12 @@ surface.
 #### Scenario: CDF rows are validated before symbol decoding
 
 - **WHEN** a caller passes a mutable CDF row to `read_symbol(cdf)`
-- **THEN** the row is checked for a supported AV2 § 8.2.6 length, monotonic
+- **THEN** the row is checked for a supported AV2 § 8.2.6 length, non-decreasing
   cumulative values, valid probability range, valid adaptation-rate index, and
   valid capped use count before any generated-table indexing occurs
+- **AND** adjacent cumulative entries MAY be equal because AV2 § 8.2.6 adaptation
+  can drive them equal, so only a strict decrease is rejected (the threshold loop
+  still separates the affected symbols through `Prob_Inc`)
 - **AND** invalid rows return typed CDF errors without changing decoder state or
   mutating the row
 
@@ -3035,3 +3038,4 @@ superblock-padded context extents.
   `read_partition()`, broad `decode_tile()`, transform/residual parsing,
   reconstruction expansion, reference refresh, AVM/dav2d invocation, or
   external decoder integration
+

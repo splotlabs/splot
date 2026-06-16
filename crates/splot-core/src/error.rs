@@ -206,8 +206,10 @@ pub enum SymbolCdfErrorKind {
         /// Offending value.
         value: i32,
     },
-    /// Cumulative probability entries are not strictly increasing.
-    NonIncreasingCumulative {
+    /// A cumulative probability entry is smaller than its predecessor. AV2
+    /// § 8.2.6 adaptation can drive adjacent entries equal, so equal adjacent
+    /// entries are accepted and only a strict decrease is rejected.
+    DecreasingCumulative {
         /// Previous cumulative CDF index.
         previous_index: usize,
         /// Offending CDF index.
@@ -239,12 +241,12 @@ impl fmt::Display for SymbolCdfErrorKind {
                 f,
                 "CDF cumulative entry {index} has value {value}, expected 1..=32767"
             ),
-            Self::NonIncreasingCumulative {
+            Self::DecreasingCumulative {
                 previous_index,
                 index,
             } => write!(
                 f,
-                "CDF cumulative entry {index} must be greater than entry {previous_index}"
+                "CDF cumulative entry {index} must not be less than entry {previous_index}"
             ),
             Self::AdaptationRateOutOfRange { index, value } => write!(
                 f,

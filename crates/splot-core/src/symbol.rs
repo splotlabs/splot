@@ -430,8 +430,13 @@ impl<'a> SymbolDecoder<'a> {
                     self.cdf_error(SymbolCdfErrorKind::ProbabilityOutOfRange { index, value })
                 );
             }
-            if index > 0 && value <= cdf[index - 1] {
-                return Err(self.cdf_error(SymbolCdfErrorKind::NonIncreasingCumulative {
+            // AV2 § 8.2.6 (docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2) does
+            // not require strictly increasing cumulative entries: the adaptation
+            // step can drive adjacent entries equal, and `read_symbol` still
+            // separates the affected symbols through `Prob_Inc`. Only a strict
+            // decrease is rejected.
+            if index > 0 && value < cdf[index - 1] {
+                return Err(self.cdf_error(SymbolCdfErrorKind::DecreasingCumulative {
                     previous_index: index - 1,
                     index,
                 }));
@@ -580,6 +585,31 @@ mod tests {
 
     fn default_binary_cdf() -> [i32; 3] {
         [16_384, 0, 0]
+    }
+
+    /// Adapts a real generated AV2 § 9.3 default CDF row through the § 8.2.6
+    /// update step (always decoding symbol 0, so every cumulative entry is
+    /// incremented toward `1 << 15`) until two adjacent cumulative entries become
+    /// equal, re-deriving the CDF shape each step exactly as `read_symbol` does.
+    /// Returns the adapted row and its arity; the caller asserts that the
+    /// equal-adjacent state was actually reached.
+    fn adapt_default_row_to_equal_adjacent() -> ([i32; 8], usize) {
+        let mut cdf = crate::tables::cdf::DEFAULT_CCTX_TYPE_CDF;
+        let n = cdf.len() - 1;
+        let mut steps = 0;
+        while steps < 512 {
+            let shape = CdfShape {
+                n,
+                rate_index: cdf[n - 1] as usize,
+                count: cdf[n],
+            };
+            update_cdf(&mut cdf, shape, 0);
+            steps += 1;
+            if (1..n - 1).any(|i| cdf[i] == cdf[i - 1]) {
+                break;
+            }
+        }
+        (cdf, n)
     }
 
     #[test]
@@ -810,8 +840,8 @@ mod tests {
                 },
             ),
             (
-                &[100, 100, 0, 0],
-                SymbolCdfErrorKind::NonIncreasingCumulative {
+                &[100, 99, 0, 0],
+                SymbolCdfErrorKind::DecreasingCumulative {
                     previous_index: 0,
                     index: 1,
                 },
@@ -843,6 +873,72 @@ mod tests {
             assert_eq!(cdf, before);
             assert_eq!(decoder.symbol_count(), 0);
         }
+    }
+
+    #[test]
+    fn adaptation_can_equalize_adjacent_cumulative_entries() {
+        // AV2 § 8.2.6 (docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2) adaptation
+        // does not preserve strict monotonicity: smaller cumulative entries gain
+        // more per increment, so adjacent entries converge and can land on the
+        // same value. Confirm this is reachable from a shipped § 9.3 default row
+        // (not a synthetic-only concern), which is why `validate_cdf` must accept
+        // equal adjacent entries.
+        let (cdf, n) = adapt_default_row_to_equal_adjacent();
+        assert!(
+            (1..n - 1).any(|i| cdf[i] == cdf[i - 1]),
+            "adaptation from a default § 9.3 row should equalize adjacent cumulative entries: {cdf:?}"
+        );
+        // The equalized entries remain inside the valid [1, 32767] coding range,
+        // so only the strict-monotonicity precondition is relaxed.
+        assert!(
+            cdf[..n - 1]
+                .iter()
+                .all(|&v| (1..=CDF_PROB_MAX).contains(&v))
+        );
+    }
+
+    #[test]
+    fn read_symbol_accepts_and_decodes_equal_adjacent_cumulative_entries() {
+        // A 4-ary row whose first two cumulative entries are EQUAL (16384 ==
+        // 16384). AV2 § 8.2.6 permits this, and the threshold loop still
+        // separates symbols 0 and 1 through `Prob_Inc` (12 vs 8): symbol 1 owns
+        // the narrow-but-nonzero range [16448, 16480). Each payload deterministically
+        // decodes to the expected symbol.
+        let config = SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled);
+        let row = [16_384, 16_384, 24_576, 0, 0];
+        let cases = [
+            ([0x00u8, 0x00], 0u8),
+            ([0x7F, 0x40], 1),
+            ([0x7F, 0x80], 2),
+            ([0xBF, 0xC0], 3),
+        ];
+
+        for (data, expected) in cases {
+            let mut decoder = SymbolDecoder::with_config(&data, config).unwrap();
+            let mut cdf = row;
+            let symbol = decoder.read_symbol(&mut cdf).unwrap();
+            assert_eq!(symbol.get(), expected, "payload {data:02X?}");
+            assert_eq!(cdf, row, "disabled update must not mutate the row");
+            assert_eq!(decoder.symbol_count(), 1);
+        }
+    }
+
+    #[test]
+    fn adapted_row_with_equal_adjacent_entries_is_accepted_and_decodes() {
+        // Regression for the Phase 3/4 tile-payload case where a persistent CDF
+        // bank row is read many times: the exact adapted row with equal adjacent
+        // entries must be accepted by `read_symbol` and decode a valid symbol.
+        let (mut cdf, n) = adapt_default_row_to_equal_adjacent();
+        assert!(
+            (1..n - 1).any(|i| cdf[i] == cdf[i - 1]),
+            "expected an equalized adapted row: {cdf:?}"
+        );
+
+        let config = SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled);
+        let mut decoder = SymbolDecoder::with_config(&[0xFF, 0xFF], config).unwrap();
+        let symbol = decoder.read_symbol(&mut cdf).unwrap();
+        assert!(usize::from(symbol.get()) < n);
+        assert_eq!(decoder.symbol_count(), 1);
     }
 }
 
