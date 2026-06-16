@@ -506,6 +506,67 @@
     }
 
     #[test]
+    fn layer_config_record_payload_round_trips() {
+        // §5.8 layer config record is extensible; the dispatch routes it to
+        // write_layer_config_record + the extensible tail. The global/local branch is selected by the
+        // header's obu_xlayer_id (here global xlayer 31 -> a global record). It carries no passthrough.
+        let header = read_obu_header_from_slice(&[0xC0, 0x1F], ByteOffset::new(0)).unwrap();
+        assert!(header.extended_layer_id.is_global());
+        assert!(header.obu_type.is_extensible_obu());
+        let mut bits = Bits::default();
+        // Minimal lcr_global_info(): id=1, map=0b1, all five flags 0, reserved fields 0.
+        bits.f(1, 3); // lcr_global_config_record_id
+        bits.f(1, 31); // lcr_xlayer_map
+        bits.f(0, 5); // aggregate / ptl / payload / dependent / atlas-present flags
+        bits.f(0, 7); // lcr_global_purpose_id
+        bits.f(0, 2); // lcr_doh_constraint_flag / lcr_enforce_tile_alignment_flag
+        bits.f(0, 3); // lcr_global_reserved_zero_3bits
+        bits.f(0, 5); // lcr_global_reserved_zero_5bits
+        // extensible OBU tail: obu_extension_flag = 0, then trailing_bits().
+        bits.bit(0);
+        bits.bit(1); // trailing_one_bit
+        while bits.bits.len() % 8 != 0 {
+            bits.bit(0);
+        }
+        let payload_bytes = bits.into_bytes();
+        let payload = reparse_payload(&header, &payload_bytes);
+        match &payload {
+            ParsedObu::LayerConfigurationRecord(record) => {
+                assert!(matches!(
+                    record.as_ref(),
+                    crate::headers::layer_config_record::LayerConfigurationRecord::Global(_)
+                ));
+            }
+            other => panic!("expected a layer configuration record OBU, got {other:?}"),
+        }
+
+        let mut writer = BitWriter::new();
+        write_obu_payload(&mut writer, &payload, true, &[]).unwrap();
+        let bytes = writer.into_bytes();
+        assert_eq!(reparse_payload(&header, &bytes), payload);
+
+        // And it round-trips through write_complete_obu (header + payload + tail). The global xlayer
+        // is carried by the two-byte header (obu_extension_flag set), so skip both header bytes.
+        let mut complete = BitWriter::new();
+        write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
+        let complete_bytes = complete.into_bytes();
+        assert_eq!(reparse_payload(&header, &complete_bytes[2..]), payload);
+    }
+
+    #[test]
+    fn layer_config_record_rejects_non_empty_passthrough() {
+        let header = read_obu_header_from_slice(&[0xC0, 0x1F], ByteOffset::new(0)).unwrap();
+        let payload = reparse_payload(&header, &[0x20, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x40]);
+        let mut writer = BitWriter::new();
+        let err = write_obu_payload(&mut writer, &payload, true, &[0x00]).unwrap_err();
+        assert!(
+            matches!(err, WriteError::NonCanonicalLayerConfigRecord { what } if what == "passthrough"),
+            "expected layer-config-record passthrough reject, got {err:?}"
+        );
+        assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
     fn multi_frame_header_rejects_non_empty_passthrough() {
         let header = header_for(ObuType::MultiFrameHeader);
         // Minimal MFH body (no frame size / deblocking / seg info) then the OBU tail.

@@ -57,8 +57,14 @@
 //! [`dispatch::write_obu_payload`] emits a [`crate::obu::ParsedObu`]'s typed body plus the § 5.2.1 /
 //! § 6.2.1 OBU tail (`obu_extension_flag = 0` + `trailing_bits()` for an extensible non-empty body;
 //! nothing for the temporal delimiter; padding owns its own tail), and
-//! [`dispatch::write_complete_obu`] prepends the § 5.2.2 header. The twelve OBU types with a body
-//! writer are emitted; the other two return [`error::WriteError::Unimplemented`].
+//! [`dispatch::write_complete_obu`] prepends the § 5.2.2 header. The thirteen OBU types with a body
+//! writer are emitted; the other one returns [`error::WriteError::Unimplemented`].
+//! [`layer_config_record`] writes the § 5.8 `layer_config_record_obu()`
+//! ([`layer_config_record::write_layer_config_record`], the inverse of
+//! [`crate::headers::layer_config_record::parse_layer_config_record`]): it branches on the
+//! `Global` / `Local` variant, inverts the § 5.8.1 – § 5.8.9 nest (with its `byte_alignment()`
+//! sites and the length-bounded `lcr_global_payload()` filler), and ignores the header-derived
+//! parse-context ids that have no bit representation in the body.
 //! [`film_grain`] writes the § 5.14 / § 5.18.10.2 `film_grain_obu()`
 //! ([`film_grain::write_film_grain`], the inverse of
 //! [`crate::headers::film_grain::parse_film_grain`]): because the model is lossy versus the wire
@@ -87,6 +93,7 @@ pub mod frame_restoration;
 pub mod frame_segmentation;
 pub mod frame_tail;
 pub mod frame_tiling;
+pub mod layer_config_record;
 pub mod metadata;
 pub mod msdo;
 pub mod multi_frame_header;
@@ -118,6 +125,7 @@ pub use frame_restoration::{write_ccso_params, write_lr_params};
 pub use frame_segmentation::write_segmentation_params;
 pub use frame_tail::{write_film_grain_config, write_intra_tail, write_tx_mode};
 pub use frame_tiling::write_tile_info;
+pub use layer_config_record::write_layer_config_record;
 pub use metadata::{
     write_metadata_group_obu, write_metadata_group_obu_flat, write_metadata_payload,
     write_metadata_short_obu, write_metadata_unit,

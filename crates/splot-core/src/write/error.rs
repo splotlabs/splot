@@ -349,6 +349,49 @@ pub enum WriteError {
         what: &'static str,
     },
 
+    /// A layer-configuration-record value is inconsistent with what the AV2 v1.0.0 § 5.8
+    /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-8`, and the § 5.8.1 – § 5.8.9 child
+    /// structures) parser would re-derive on reparse, so the model could never have been produced by
+    /// `parse_layer_config_record` and writing it would break `read(write(x)) == x`. Examples: a
+    /// `lcr_global_atlas_id_present_flag` (or `lcr_local_atlas_id_present_flag`) that disagrees with the
+    /// presence of `global_atlas_id` / `local_atlas_id`, or a non-zero `reserved_zero_3bits` retained
+    /// alongside a present atlas id (the parser codes one or the other, forcing the reserved field to
+    /// `0` when an atlas id is read); a `seq_ptl_infos` or `payloads` list whose length or per-element
+    /// `xlayer_id` disagrees with the `lcr_xlayer_map` set-bit ids the loops iterate; an
+    /// `lcr_aggregate_info_present_flag` / `lcr_seq_profile_tier_level_info_present_flag` /
+    /// `lcr_global_payload_present_flag` that disagrees with its section's presence; an
+    /// `lcr_global_payload` whose written content bits plus `remaining_payload_bits` do not equal
+    /// `lcr_data_size * 8`, or a `num_dependent_xlayer_map` presence that disagrees with
+    /// `lcr_dependent_xlayers_flag && n > 0`; both an embedded-layer info and the else-branch atlas
+    /// reference set at once, or the else-branch atlas reference present without `isGlobal &&
+    /// lcr_global_atlas_id_present_flag`; an `lcr_embedded_layer_info.layers` set whose length or
+    /// per-element `mlayer_index` disagrees with the `lcr_mlayer_map` set bits; a per-embedded-layer
+    /// atlas / `lcr_auxiliary_type` / `lcr_view_id` / `lcr_dependent_layer_map` / max-expected-resolution
+    /// `Option` whose presence disagrees with its gate; or an `lcr_xlayer_color_info` primaries presence
+    /// that disagrees with `layer_color_description_idc == 0`. Rejected before any bit is written.
+    ///
+    /// The four `lcr_xlayer_info` present flags and the `lcr_format_info` / `lcr_cropping_window`
+    /// present flags are not stored in the model — the writer derives each from its `Option`'s
+    /// presence — so no flag-vs-`Option` disagreement is representable there.
+    ///
+    /// A § 6.8 reserved-zero field the parser preserves verbatim — any `lcr_*_reserved_zero_3bits` /
+    /// `lcr_*_reserved_zero_5bits` / `lsptli_reserved_2bits`, or an out-of-conformance-range
+    /// `lcr_global_config_record_id` / `lcr_local_id` — is **not** rejected; the writer reproduces it
+    /// exactly within the field's descriptor domain.
+    #[error(
+        "non-canonical {what}: layer-config-record value cannot be reproduced by the §5.8 parser"
+    )]
+    NonCanonicalLayerConfigRecord {
+        /// A short, stable label for the offending field (e.g. `"global_atlas_id_gate"`,
+        /// `"atlas_reserved_3bits"`, `"aggregate_info_gate"`, `"seq_ptl_info_count"`,
+        /// `"seq_ptl_xlayer_id"`, `"payload_count"`, `"payload_xlayer_id"`, `"payload_size"`,
+        /// `"num_dependent_gate"`, `"local_ptl_gate"`, `"embedded_atlas_exclusive"`,
+        /// `"xlayer_atlas_gate"`, `"mlayer_layer_count"`, `"mlayer_index"`, `"embedded_atlas_gate"`,
+        /// `"aux_type_gate"`, `"view_id_gate"`, `"dependent_layer_map_gate"`, `"max_expected_gate"`,
+        /// `"color_primaries_gate"`, `"passthrough"`).
+        what: &'static str,
+    },
+
     /// A film-grain value is inconsistent with what the AV2 v1.0.0 § 5.14
     /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-14`) / § 5.18.10.2
     /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-10-2`) parsers would re-derive on reparse, so

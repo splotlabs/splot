@@ -39,9 +39,9 @@
 //! [`ParsedObu::SequenceHeader`], [`ParsedObu::Padding`], [`ParsedObu::MetadataShort`],
 //! [`ParsedObu::MetadataGroup`], [`ParsedObu::BufferRemovalTiming`], [`ParsedObu::Msdo`],
 //! [`ParsedObu::OperatingPointSet`], [`ParsedObu::ContentInterpretation`],
-//! [`ParsedObu::FilmGrain`], [`ParsedObu::AtlasSegment`], [`ParsedObu::MultiFrameHeader`]) are
-//! emitted; the remaining two variants have no body writer yet and return
-//! [`WriteError::Unimplemented`] with the matrix Feature ID of their OBU type
+//! [`ParsedObu::FilmGrain`], [`ParsedObu::AtlasSegment`], [`ParsedObu::MultiFrameHeader`],
+//! [`ParsedObu::LayerConfigurationRecord`]) are emitted; the remaining one variant has no body
+//! writer yet and returns [`WriteError::Unimplemented`] with the matrix Feature ID of its OBU type
 //! ([`ParsedObu::feature_id`]).
 
 use crate::headers::padding::PaddingObu;
@@ -53,6 +53,7 @@ use crate::write::buffer_removal_timing::write_buffer_removal_timing;
 use crate::write::content_interpretation::write_content_interpretation;
 use crate::write::error::{WriteError, WriteResult};
 use crate::write::film_grain::write_film_grain;
+use crate::write::layer_config_record::write_layer_config_record;
 use crate::write::metadata::{write_metadata_group_obu_flat, write_metadata_short_obu};
 use crate::write::msdo::write_msdo;
 use crate::write::multi_frame_header::write_multi_frame_header;
@@ -308,10 +309,22 @@ fn write_obu_payload_inner(
             write_multi_frame_header(&mut scratch, mfh)?;
             write_generic_tail(&mut scratch, is_extensible)?;
         }
-        // The two OBU types without a body writer yet: an honest typed stub naming the
-        // matrix Feature ID of the OBU type (ParsedObu::feature_id stays in sync with the
-        // model). bit_len() is unchanged because nothing was appended.
-        ParsedObu::LayerConfigurationRecord(_) | ParsedObu::QuantizationMatrix(_) => {
+        // OBU_LAYER_CONFIGURATION_RECORD (§ 5.8) is an extensible OBU type, so the tail is
+        // obu_extension_flag = 0 + trailing_bits(). The writer branches on the Global/Local
+        // model variant (it carries no passthrough); see write_layer_config_record.
+        ParsedObu::LayerConfigurationRecord(record) => {
+            if !passthrough.is_empty() {
+                return Err(WriteError::NonCanonicalLayerConfigRecord {
+                    what: "passthrough",
+                });
+            }
+            write_layer_config_record(&mut scratch, record)?;
+            write_generic_tail(&mut scratch, is_extensible)?;
+        }
+        // The one OBU type without a body writer yet: an honest typed stub naming the matrix
+        // Feature ID of the OBU type (ParsedObu::feature_id stays in sync with the model).
+        // bit_len() is unchanged because nothing was appended.
+        ParsedObu::QuantizationMatrix(_) => {
             return Err(WriteError::Unimplemented {
                 feature: payload.feature_id(),
             });
