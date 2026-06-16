@@ -91,6 +91,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "recon_frame_hash_bytes"
+path = "fuzz_targets/recon_frame_hash_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "recon_y4m_output_bytes"
 path = "fuzz_targets/recon_y4m_output_bytes.rs"
 test = false

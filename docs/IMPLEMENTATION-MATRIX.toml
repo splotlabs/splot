@@ -4501,6 +4501,53 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "CONF-RECON-FRAME-HASH-FUZZ"
+name = "Decoded-frame hash serialization no-panic fuzzing"
+category = "conformance"
+kind = "conformance"
+spec_sections = ["6.4.1", "6.16.13", "7.21.2"]
+sources = [
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-2",
+]
+crate = "fuzz"
+module = "fuzz/fuzz_targets/recon_frame_hash_bytes.rs"
+openspec_change = "recon-frame-hash-fuzz"
+tracking_issue = ""
+owner = "conformance"
+risk = "medium"
+notes = "Self-contained cargo-fuzz target for `splot-recon` decoded-frame hash input serialization and digest computation: it normalizes arbitrary bytes into small valid `DecodedFrame<u8>` or `DecodedFrame<u16>` values across supported bit depths, sample storage choices, pixel formats, aligned crop origins, storage padding, and stride padding; exercises `DecodedFrameHashInput::byte_len`, `write_to`, and `compute_hash`; checks stable hash identifiers/hex/raw-byte helpers; and verifies non-visible padding and output index metadata do not affect emitted bytes or digests. This is conformance/robustness proof for caller-supplied decoded-frame hash input only. It does not claim AV2 bitstream decode, `DecodeContext` fuzzing, CLI output publication, raw/Y4M output, AV2 decoded-frame-hash metadata MD5 verification, AVM/dav2d agreement, filesystem I/O, network I/O, subprocesses, or new AV2 semantics."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "fuzz/fuzz_targets/recon_frame_hash_bytes.rs",
+    "crates/splot-recon/src/hash_input.rs::tests",
+]
+commands = [
+    "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
+    "cargo xtask check-fuzz-targets",
+    "cargo test -p splot-recon hash --locked",
+    "cargo +nightly fuzz run recon_frame_hash_bytes (local/nightly; CI fuzz smoke runs every target)",
+]
+fixtures = [
+    "fuzz/fuzz_targets/recon_frame_hash_bytes.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "CONF-RECON-INTRA-PREDICTION-FUZZ"
 name = "Reconstruction intra prediction no-panic fuzzing"
 category = "conformance"

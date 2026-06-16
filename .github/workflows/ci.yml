@@ -142,6 +142,7 @@ jobs:
   # decode_plan_bytes (raw byte planner),
   # decode_runtime_hash_bytes (minimal runtime hash byte API),
   # decode_runtime_y4m_bytes (minimal runtime Y4M byte API), and
+  # recon_frame_hash_bytes (decoded-frame hash serialization),
   # recon_y4m_output_bytes (Y4M output serialization), and
   # recon_intra_prediction_bytes (intra prediction/workspace primitives).
   # cargo-fuzz needs a nightly toolchain (ASan + coverage are nightly-only).
@@ -207,6 +208,9 @@ jobs:
           # runtime fixture reaches the success-path runtime APIs.
           printf '\200\000' > "fuzz/corpus/decode_runtime_hash_bytes/minimal-fixture-unmutated"
           printf '\200\000' > "fuzz/corpus/decode_runtime_y4m_bytes/minimal-fixture-unmutated"
+          # recon_frame_hash_bytes consumes structured decoded-frame shape bytes
+          # before sample data. Seed a tiny 8-bit monochrome visible-frame case.
+          printf '\000\002\002\000\000\000\000\000\001\002\003\004' > "fuzz/corpus/recon_frame_hash_bytes/mono-8bit-visible"
           # parse_ivf rejects non-DKIF input at the signature, so raw Annex-B
           # fixtures only exercise the error path; wrap each one in a minimal
           # 32-byte IVF header plus one 12-byte frame header for valid-path seeds.
