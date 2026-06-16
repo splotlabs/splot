@@ -4613,11 +4613,11 @@ spec_sections = ["3"]
 sources = ["docs/spec/av2/1.0.0/03-symbols.md#s-3"]
 crate = "fuzz"
 module = "fuzz/fuzz_targets/recon_reference_frame_store_bytes.rs"
-openspec_change = "recon-reference-frame-store-fuzz"
+openspec_change = "recon-reference-frame-store-refresh-flags"
 tracking_issue = ""
 owner = "conformance"
 risk = "medium"
-notes = "Self-contained cargo-fuzz target for the `splot-recon` reference-frame store storage API: it normalizes arbitrary bytes into bounded public `ReferenceSlot` and `ReferenceFrameStore<F>` operation sequences over a tiny non-Clone payload, then checks capacity validation, slot construction, valid-but-out-of-capacity errors, `contains_slot`, `get`, `put`, replacement return values, `take`, `clear`, occupancy, `is_empty`, and ascending `entries` iteration against a simple oracle model. This is conformance/robustness proof for caller-supplied reference-frame storage only. It does not claim AV2 bitstream decode, `DecodeContext` fuzzing, AV2 `NumRefFrames` derivation, `ActiveNumRefFrames`, `RefValid`, `frame_to_refresh`, `refresh_frame_flags`, output scheduling, show-existing behavior, motion-field storage, §7.23 frame-store update semantics, resource diagnostics, AVM/dav2d agreement, filesystem I/O, network I/O, subprocesses, or new AV2 semantics."
+notes = "Self-contained cargo-fuzz target for the `splot-recon` reference-frame store storage API: it normalizes arbitrary bytes into bounded public `ReferenceSlot`, `ReferenceRefreshMask`, and `ReferenceFrameStore<F>` operation sequences over a tiny non-Clone payload, then checks capacity validation, slot construction, refresh-mask construction, valid-but-out-of-capacity errors, mask containment and selected-slot iteration, `contains_slot`, `get`, `put`, replacement return values, `refresh_slots_with`, `take`, `clear`, occupancy, `is_empty`, and ascending `entries` iteration against a simple oracle model. Refresh fuzzing verifies zero-mask no-ops, selected-slot replacement returns, non-selected slot preservation, ascending producer calls, and no producer/store mutation for out-of-capacity masks. This is conformance/robustness proof for caller-supplied reference-frame storage only. It does not claim AV2 bitstream decode, `DecodeContext` fuzzing, AV2 `NumRefFrames` derivation, `ActiveNumRefFrames`, `RefValid`, `frame_to_refresh`, `refresh_frame_flags` parsing or inference, output scheduling, show-existing behavior, motion-field storage, full §7.23 frame-store update semantics, resource diagnostics, AVM/dav2d agreement, filesystem I/O, network I/O, subprocesses, or new AV2 semantics."
 
 [feature.status]
 mapped = "done"
