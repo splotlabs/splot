@@ -57,8 +57,8 @@
 //! [`dispatch::write_obu_payload`] emits a [`crate::obu::ParsedObu`]'s typed body plus the § 5.2.1 /
 //! § 6.2.1 OBU tail (`obu_extension_flag = 0` + `trailing_bits()` for an extensible non-empty body;
 //! nothing for the temporal delimiter; padding owns its own tail), and
-//! [`dispatch::write_complete_obu`] prepends the § 5.2.2 header. The ten OBU types with a body
-//! writer are emitted; the other four return [`error::WriteError::Unimplemented`].
+//! [`dispatch::write_complete_obu`] prepends the § 5.2.2 header. The eleven OBU types with a body
+//! writer are emitted; the other three return [`error::WriteError::Unimplemented`].
 //! [`film_grain`] writes the § 5.14 / § 5.18.10.2 `film_grain_obu()`
 //! ([`film_grain::write_film_grain`], the inverse of
 //! [`crate::headers::film_grain::parse_film_grain`]): because the model is lossy versus the wire
@@ -71,6 +71,7 @@
 //! More payload writers will build on this module as the writer surface grows; see
 //! `docs/spec-coverage-writer.md` (once landed) for the per-structure coverage matrix.
 
+pub mod atlas_segment;
 pub mod bit_writer;
 pub mod buffer_removal_timing;
 pub mod content_interpretation;
@@ -97,6 +98,7 @@ pub mod seq_header;
 pub mod seq_tile;
 pub mod tile_group;
 
+pub use atlas_segment::write_atlas_segment;
 pub use bit_writer::BitWriter;
 pub use buffer_removal_timing::write_buffer_removal_timing;
 pub use content_interpretation::write_content_interpretation;

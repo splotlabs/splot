@@ -557,6 +557,75 @@ mod tests {
     }
 
     #[test]
+    fn atlas_segment_payload_round_trips() {
+        // §5.9 atlas segment is extensible; the dispatch routes it to write_atlas_segment + the
+        // extensible tail (obu_extension_flag = 0 + trailing_bits()). It carries no passthrough.
+        // Build a BASIC_ATLAS payload with signaled ids (two segments, a stream id) by hand, parse
+        // it via dispatch, then write it back and reparse.
+        let header = read_obu_header_from_slice(&[0xC4, 0x03], ByteOffset::new(0)).unwrap();
+        assert_eq!(header.obu_type, ObuType::AtlasSegment);
+        assert!(header.obu_type.is_extensible_obu());
+        let mut bits = Bits::default();
+        bits.f(3, 3); // atlas_segment_id
+        bits.uvlc(1); // mode_idc = BASIC_ATLAS
+        bits.bit(1); // ats_stream_id_present
+        bits.uvlc(640); // ats_width
+        bits.uvlc(480); // ats_height
+        bits.uvlc(1); // ats_num_atlas_segments_minus_1 = 1 -> 2 segments
+        for _ in 0..2 {
+            bits.f(7, 5); // ats_input_stream_id
+            bits.uvlc(0); // top_left_pos_x
+            bits.uvlc(0); // top_left_pos_y
+            bits.uvlc(100); // width
+            bits.uvlc(100); // height
+        }
+        bits.bit(1); // ats_signaled_atlas_segment_ids_flag
+        bits.f(10, 8); // ats_atlas_segment_id[0]
+        bits.f(20, 8); // ats_atlas_segment_id[1]
+        // extensible OBU tail: obu_extension_flag = 0, then trailing_bits().
+        bits.bit(0);
+        bits.bit(1); // trailing_one_bit
+        while bits.bits.len() % 8 != 0 {
+            bits.bit(0);
+        }
+        let payload_bytes = bits.into_bytes();
+        let payload = reparse_payload(&header, &payload_bytes);
+        match &payload {
+            ParsedObu::AtlasSegment(atlas) => {
+                assert_eq!(atlas.num_segments, 2);
+                assert!(atlas.label.signaled_atlas_segment_ids);
+            }
+            other => panic!("expected an atlas segment OBU, got {other:?}"),
+        }
+
+        let mut writer = BitWriter::new();
+        write_obu_payload(&mut writer, &payload, true, &[]).unwrap();
+        let bytes = writer.into_bytes();
+        assert_eq!(reparse_payload(&header, &bytes), payload);
+
+        // And it round-trips through write_complete_obu (header + payload + tail).
+        let mut complete = BitWriter::new();
+        write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
+        let complete_bytes = complete.into_bytes();
+        // header is two bytes (extension byte present for xlayer 3).
+        assert_eq!(reparse_payload(&header, &complete_bytes[2..]), payload);
+    }
+
+    #[test]
+    fn atlas_segment_rejects_non_empty_passthrough() {
+        let header = read_obu_header_from_slice(&[0xC4, 0x03], ByteOffset::new(0)).unwrap();
+        // SINGLE_ATLAS, nominal dims, no signaled ids, then the OBU tail.
+        let payload = reparse_payload(&header, &[0x0F, 0x20]);
+        let mut writer = BitWriter::new();
+        let err = write_obu_payload(&mut writer, &payload, true, &[0x00]).unwrap_err();
+        assert!(
+            matches!(err, WriteError::NonCanonicalAtlasSegment { what } if what == "passthrough"),
+            "expected atlas-segment passthrough reject, got {err:?}"
+        );
+        assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
     fn film_grain_rejects_non_empty_passthrough() {
         let header = header_for(ObuType::FilmGrain);
         let payload = reparse_payload(&header, &[0x00, 0xC0]);
@@ -705,12 +774,13 @@ mod tests {
         let qm = reparse_payload(&qm_header, &[0x00, 0x00, 0x80]);
         assert_eq!(qm.feature_id(), "AV2-5.13-QUANTIZATION-MATRIX");
 
-        // OBU_ATLAS_SEGMENT (extensible): SINGLE_ATLAS, nominal dims, then the OBU tail.
-        let atlas_header = read_obu_header_from_slice(&[0xC4, 0x03], ByteOffset::new(0)).unwrap();
-        let atlas = reparse_payload(&atlas_header, &[0x0F, 0x20]);
-        assert_eq!(atlas.feature_id(), "AV2-5.9-ATLAS-SEGMENT");
+        // OBU_LAYER_CONFIGURATION_RECORD (extensible, global xlayer 31): minimal global LCR
+        // (lcr_global_config_record_id=1, lcr_xlayer_map=1, all flags 0) then the OBU tail.
+        let lcr_header = read_obu_header_from_slice(&[0xC0, 0x1F], ByteOffset::new(0)).unwrap();
+        let lcr = reparse_payload(&lcr_header, &[0x20, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x40]);
+        assert_eq!(lcr.feature_id(), "AV2-5.8-LAYER-CONFIG-RECORD");
 
-        for (payload, header) in [(&qm, &qm_header), (&atlas, &atlas_header)] {
+        for (payload, header) in [(&qm, &qm_header), (&lcr, &lcr_header)] {
             let mut writer = BitWriter::new();
             let err = write_obu_payload(
                 &mut writer,
