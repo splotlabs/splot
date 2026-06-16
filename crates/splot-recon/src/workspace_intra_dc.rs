@@ -4,10 +4,12 @@
 //! Current-frame workspace DC intra prediction helpers.
 
 use super::{CurrentFrameIntraEdges, CurrentFramePlane, CurrentFrameWorkspace, block_rect};
+use crate::intra::predict_intra_dc_rect_into;
 use crate::intra_dc_math::{DcEdgeSum, predict_intra_dc_rect_value_from_sums};
 use crate::intra_dc_subsampled::{
     predict_intra_dc_subsampled_rect_value_from_sums, subsampled_step,
 };
+use crate::intra_ibp_dc::apply_intra_ibp_dc_rect;
 use crate::{
     IntraRectBlockSize, IntraSquareBlockSize, PlaneId, PlaneRect, ReconError, ReconSample, Result,
 };
@@ -123,6 +125,31 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         let sample = predict_intra_dc_subsampled_rect_value_from_sums(bit_depth, left, above)?;
 
         self.plane_mut(plane)?.fill_rect(rect, sample)
+    }
+
+    /// Predicts rectangular IBP DC intra samples into the workspace.
+    ///
+    /// This helper first writes AV2 §7.13.2.10 rectangular DC prediction and
+    /// then applies the AV2 §7.13.2.12 IBP DC modifier using only in-storage
+    /// left and/or above neighbors that already exist. It does not synthesize
+    /// §7.13.2.1 fallback samples or decide AV2 `enable_ibp`, `useDip`, mode,
+    /// tile-boundary, transform, residual, runtime output, or reference-refresh
+    /// semantics.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for invalid target geometry, absent planes,
+    /// invalid prediction inputs, or edge scratch allocation failure.
+    pub fn predict_intra_ibp_dc_rect(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+    ) -> Result<()> {
+        let rect = block_rect(x, y, size)?;
+        let bit_depth = self.info.bit_depth();
+        self.plane_mut(plane)?
+            .predict_intra_ibp_dc_rect(rect, size, bit_depth)
     }
 }
 
@@ -244,5 +271,30 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         };
 
         Ok((left, above))
+    }
+
+    fn predict_intra_ibp_dc_rect(
+        &mut self,
+        rect: PlaneRect,
+        size: IntraRectBlockSize,
+        bit_depth: crate::BitDepth,
+    ) -> Result<()> {
+        self.ensure_rect(rect)?;
+        let edges = self.intra_dc_edges_for_rect(rect)?;
+        let output_start = self.sample_index(rect.x(), rect.y())?;
+        predict_intra_dc_rect_into(
+            bit_depth,
+            size,
+            edges.as_dc_edges(),
+            &mut self.samples[output_start..],
+            self.stride_samples,
+        )?;
+        apply_intra_ibp_dc_rect(
+            bit_depth,
+            size,
+            edges.as_dc_edges(),
+            &mut self.samples[output_start..],
+            self.stride_samples,
+        )
     }
 }

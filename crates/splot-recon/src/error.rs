@@ -194,6 +194,15 @@ pub enum ReconError {
         /// Maximum sample value allowed by the active bit depth.
         max: u16,
     },
+    /// A caller-owned intra prediction output sample exceeded the active bit depth.
+    IntraPredictionOutputSampleOutOfRange {
+        /// Zero-based sample index within the caller-owned strided output buffer.
+        sample_index: usize,
+        /// Observed sample value.
+        value: u16,
+        /// Maximum sample value allowed by the active bit depth.
+        max: u16,
+    },
     /// A supplied PAETH intra prediction edge did not match the block size.
     IntraPaethEdgeLengthMismatch {
         /// Edge whose sample count was checked.
@@ -520,6 +529,14 @@ impl fmt::Display for ReconError {
                 f,
                 "intra prediction {} edge sample {sample_index} value {value} exceeds maximum {max}",
                 edge.name()
+            ),
+            Self::IntraPredictionOutputSampleOutOfRange {
+                sample_index,
+                value,
+                max,
+            } => write!(
+                f,
+                "intra prediction output sample {sample_index} value {value} exceeds maximum {max}"
             ),
             Self::IntraPaethEdgeLengthMismatch {
                 edge,

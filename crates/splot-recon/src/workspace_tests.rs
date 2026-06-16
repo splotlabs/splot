@@ -5,8 +5,9 @@
 
 use super::*;
 use crate::{
-    BitDepth, DecodedFrameHash, DecodedFrameHashInput, OutputIndex, PixelFormat,
-    ReferenceFrameStore, ReferenceSlot, Y4mFrameRate, Y4mWriter,
+    BitDepth, DecodedFrameHash, DecodedFrameHashInput, IntraDcEdge, IntraDcEdges, OutputIndex,
+    PixelFormat, ReferenceFrameStore, ReferenceSlot, Y4mFrameRate, Y4mWriter,
+    apply_intra_ibp_dc_rect, predict_intra_dc_rect_into,
 };
 
 fn size(width: usize, height: usize) -> PlaneSize {
@@ -467,6 +468,139 @@ fn workspace_subsampled_dc_rejects_missing_plane_and_out_of_bounds_target() {
             ..
         })
     ));
+}
+
+#[test]
+fn workspace_predicts_ibp_dc_from_in_storage_edges() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(10, 10),
+            rect(0, 0, 10, 10),
+        ),
+        0,
+    )
+    .unwrap();
+    let block = rect_block(3, 3);
+    let left = [20u8, 24, 28, 32, 36, 40, 44, 48];
+    let above = [160u8, 156, 152, 148, 144, 140, 136, 132];
+
+    workspace
+        .write_rect(PlaneId::Y, rect(0, 1, 1, 8), &left, 1)
+        .unwrap();
+    workspace
+        .write_rect(PlaneId::Y, rect(1, 0, 8, 1), &above, 8)
+        .unwrap();
+    workspace
+        .predict_intra_ibp_dc_rect(PlaneId::Y, 1, 1, block)
+        .unwrap();
+
+    let mut expected = [0u8; 64];
+    predict_intra_dc_rect_into(
+        BitDepth::Eight,
+        block,
+        IntraDcEdges::both(&left, &above),
+        &mut expected,
+        8,
+    )
+    .unwrap();
+    apply_intra_ibp_dc_rect(
+        BitDepth::Eight,
+        block,
+        IntraDcEdges::both(&left, &above),
+        &mut expected,
+        8,
+    )
+    .unwrap();
+
+    let rows: Vec<&[u8]> = workspace
+        .rect_rows(PlaneId::Y, rect(1, 1, 8, 8))
+        .unwrap()
+        .collect();
+    for (row, expected_row) in rows.iter().zip(expected.chunks_exact(8)) {
+        assert_eq!(*row, expected_row);
+    }
+}
+
+#[test]
+fn workspace_ibp_dc_top_left_uses_dc_midpoint_without_edges() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(4, 4),
+            rect(0, 0, 4, 4),
+        ),
+        0,
+    )
+    .unwrap();
+
+    workspace
+        .predict_intra_ibp_dc_rect(PlaneId::Y, 0, 0, rect_block(2, 2))
+        .unwrap();
+
+    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), &[128; 16]);
+}
+
+#[test]
+fn workspace_ibp_dc_rejects_missing_plane_and_out_of_bounds_target() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(8, 8),
+            rect(0, 0, 8, 8),
+        ),
+        0,
+    )
+    .unwrap();
+
+    assert!(matches!(
+        workspace.predict_intra_ibp_dc_rect(PlaneId::U, 0, 0, rect_block(2, 2)),
+        Err(ReconError::MissingWorkspacePlane { plane: PlaneId::U })
+    ));
+    assert!(matches!(
+        workspace.predict_intra_ibp_dc_rect(PlaneId::Y, 5, 1, rect_block(2, 3)),
+        Err(ReconError::WorkspaceRectOutOfBounds {
+            plane: PlaneId::Y,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn workspace_ibp_dc_invalid_edge_sample_does_not_mutate_target() {
+    let mut workspace = CurrentFrameWorkspace::<u16>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(6, 6),
+            rect(0, 0, 6, 6),
+        ),
+        7,
+    )
+    .unwrap();
+    {
+        let mut frame = workspace.as_frame_mut();
+        let mut rows = frame.y_mut().visible_rows_mut();
+        rows.next().unwrap()[1] = 300;
+    }
+
+    assert!(matches!(
+        workspace.predict_intra_ibp_dc_rect(PlaneId::Y, 1, 1, rect_block(2, 2)),
+        Err(ReconError::IntraPredictionSampleOutOfRange {
+            edge: IntraDcEdge::Above,
+            sample_index: 0,
+            value: 300,
+            max: 255
+        })
+    ));
+    let rows: Vec<&[u16]> = workspace
+        .rect_rows(PlaneId::Y, rect(1, 1, 4, 4))
+        .unwrap()
+        .collect();
+    assert_eq!(rows, vec![&[7, 7, 7, 7][..]; 4]);
 }
 
 #[test]
