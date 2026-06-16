@@ -196,9 +196,9 @@ panic.
   tests (mostly proptests, plus exhaustive-truncation unit tests) that run in
   plain `cargo test`, so the invariant gates every CI run.
 - On **nightly**, cargo-fuzz targets cover the parser, validator, byte planner,
-  minimal runtime hash byte, and Y4M output serialization surfaces. CI runs a
-  blocking per-target smoke on every PR (`.github/workflows/ci.yml`,
-  `fuzz-smoke` job).
+  minimal runtime hash/Y4M byte surfaces, decoded-frame/plane runtime types,
+  and Y4M output serialization surfaces. CI runs a blocking per-target smoke on
+  every PR (`.github/workflows/ci.yml`, `fuzz-smoke` job).
 - The `fuzz-smoke` job **seeds** each target's corpus from the curated
   `tests/fixtures/*.av2` AND the committed conformance corpus
   (`tests/conformance/vectors/**.ivf`): the diverse AVM-generated streams are

@@ -736,18 +736,22 @@ const MOTION_MODES: usize = 5;
 
 /// The § 5.4.6 `sequence_inter_config()` flags the § 5.18.2 non-intra control region
 /// consumes (AV2 v1.0.0 § 5.4.6), gathered alongside the rest of [`CoreSeqView`].
+///
+/// Public so a [`CoreSeqView`] (a writer input) is constructible outside `info`; the intra
+/// frame-header writer does not consume these inter flags but they are part of the view.
 #[derive(Debug, Clone, Copy)]
-struct CoreSeqInterView {
-    enable_ref_frame_mvs: bool,
-    explicit_ref_frame_map: bool,
-    enable_bru: bool,
-    enable_tip: bool,
-    seq_max_drl_bits_minus_1: u32,
-    allow_frame_max_drl_bits: bool,
-    enable_flex_mvres: bool,
-    seq_frame_motion_modes_present_flag: bool,
-    seq_enabled_motion_modes: [bool; MOTION_MODES],
-    enable_opfl_refine: u8,
+#[non_exhaustive]
+pub struct CoreSeqInterView {
+    pub(crate) enable_ref_frame_mvs: bool,
+    pub(crate) explicit_ref_frame_map: bool,
+    pub(crate) enable_bru: bool,
+    pub(crate) enable_tip: bool,
+    pub(crate) seq_max_drl_bits_minus_1: u32,
+    pub(crate) allow_frame_max_drl_bits: bool,
+    pub(crate) enable_flex_mvres: bool,
+    pub(crate) seq_frame_motion_modes_present_flag: bool,
+    pub(crate) seq_enabled_motion_modes: [bool; MOTION_MODES],
+    pub(crate) enable_opfl_refine: u8,
 }
 
 /// Sequence-derived scalars the core parser needs, gathered from a fully parsed
@@ -758,40 +762,45 @@ struct CoreSeqInterView {
 /// The § 5.18.6 / § 5.18.7 inputs are grouped into per-structure sub-views
 /// ([`CoreSeqQuantView`], [`CoreSeqSegView`], [`CoreSeqTileView`]) so each child
 /// parser names exactly the state it consumes.
+///
+/// Public (crate-private fields) so the [`crate::write`] frame-header writer can take a
+/// `&CoreSeqView` and read the sequence state it needs to invert `parse_frame_header_core`;
+/// external callers build one via [`CoreSeqView::from_sequence`] and treat it as opaque.
 #[derive(Debug)]
-struct CoreSeqView {
-    num_ref_frames: u32,
-    order_hint_bits: u32,
-    long_term_frame_id_bits: u32,
-    enable_short_refresh_frame_flags: bool,
-    monotonic_output_order_flag: bool,
-    single_picture_header_flag: bool,
-    max_mlayer_id: u8,
-    frame_width_bits: u32,
-    frame_height_bits: u32,
-    max_frame_width: u32,
-    max_frame_height: u32,
-    seq_force_screen_content_tools: u8,
-    seq_force_integer_mv: u8,
-    allow_frame_max_bvp_drl_bits: bool,
+#[non_exhaustive]
+pub struct CoreSeqView {
+    pub(crate) num_ref_frames: u32,
+    pub(crate) order_hint_bits: u32,
+    pub(crate) long_term_frame_id_bits: u32,
+    pub(crate) enable_short_refresh_frame_flags: bool,
+    pub(crate) monotonic_output_order_flag: bool,
+    pub(crate) single_picture_header_flag: bool,
+    pub(crate) max_mlayer_id: u8,
+    pub(crate) frame_width_bits: u32,
+    pub(crate) frame_height_bits: u32,
+    pub(crate) max_frame_width: u32,
+    pub(crate) max_frame_height: u32,
+    pub(crate) seq_force_screen_content_tools: u8,
+    pub(crate) seq_force_integer_mv: u8,
+    pub(crate) allow_frame_max_bvp_drl_bits: bool,
     /// § 5.4.6 inter-config inputs consumed by the § 5.18.2 non-intra control region
     /// ([`crate::headers::frame::inter`]).
-    inter: CoreSeqInterView,
+    pub(crate) inter: CoreSeqInterView,
     /// § 5.18.6 / § 5.18.7.8 / § 5.18.2-lossless-tail inputs (AV2 § 5.4.8).
-    quant: CoreSeqQuantView,
+    pub(crate) quant: CoreSeqQuantView,
     /// § 5.18.7.1 segmentation inputs (AV2 § 5.4.4).
-    seg: CoreSeqSegView,
+    pub(crate) seg: CoreSeqSegView,
     /// § 5.18.7.2 tile-info inputs (AV2 § 5.4.2 / § 5.4.3 / § 5.4.8).
-    tile: CoreSeqTileView,
+    pub(crate) tile: CoreSeqTileView,
     /// § 5.18.5.2 / § 5.18.7.9 / § 5.18.7.10 loop-filter inputs (AV2 § 5.4.10).
-    filter: CoreSeqFilterView,
+    pub(crate) filter: CoreSeqFilterView,
     /// § 5.18.7.11 loop-restoration tool flags (AV2 § 5.4.10).
-    restoration: CoreSeqRestorationView,
+    pub(crate) restoration: CoreSeqRestorationView,
     /// § 5.18.7.12 CCSO inputs (AV2 § 5.4.10 / § 5.4.1).
-    ccso: CoreSeqCcsoView,
+    pub(crate) ccso: CoreSeqCcsoView,
     /// `chroma_format_idc` (AV2 § 5.4.1): the § 6.4.1 SubsamplingX/Y for `lr_params()`'s
     /// chroma `LoopRestorationSize` derivation.
-    chroma_format_idc: ChromaFormatIdc,
+    pub(crate) chroma_format_idc: ChromaFormatIdc,
     /// `film_grain_params_present` (AV2 § 5.4.1): gates the § 5.18.10.1
     /// `film_grain_config()` `apply_grain` derivation. `Some(false)` when the sequence
     /// header did not signal grain, `Some(true)` when it did. `None` when the active
@@ -801,11 +810,16 @@ struct CoreSeqView {
     /// The control region (frame size, output flags, order hint, tile/quant/segmentation)
     /// does not consume this flag, so the parser still reaches and reports those facts; it
     /// stops honestly only when `film_grain_config()` itself needs the unknown flag.
-    film_grain_params_present: Option<bool>,
+    pub(crate) film_grain_params_present: Option<bool>,
 }
 
 impl CoreSeqView {
-    fn from_sequence(seq: &SequenceHeader) -> Option<Self> {
+    /// Gathers the sequence-derived state the frame-header core parse — and the inverse
+    /// [`crate::write`] frame-header writer — need from a fully parsed [`SequenceHeader`]
+    /// (AV2 v1.0.0 § 5.4.1). Returns `None` when any required child config is absent (the
+    /// header was not fully parsed), so neither side operates on a partial sequence header.
+    #[must_use]
+    pub fn from_sequence(seq: &SequenceHeader) -> Option<Self> {
         let partition = seq.partition.as_ref()?;
         let segment = seq.segment.as_ref()?;
         let inter = seq.inter.as_ref()?;
@@ -892,27 +906,33 @@ impl CoreSeqView {
 /// [`MultiFrameHeaderRecord`] against the active sequence header's maxima.
 ///
 /// Built only on the `cur_mfh_id > 0` path (with a resolved in-band record); on the
-/// `cur_mfh_id == 0` direct path the parser keeps `None` and uses sequence state.
+/// `cur_mfh_id == 0` direct path the parser keeps `None` and uses sequence state. Public
+/// (crate-private fields) so the [`crate::write`] frame-header writer can take an
+/// `Option<&MfhFrameView>` and invert the `cur_mfh_id > 0` arms; build via
+/// [`MfhFrameView::from_record`].
 #[derive(Debug)]
-struct MfhFrameView {
+#[non_exhaustive]
+pub struct MfhFrameView {
     /// `(FrameWidth, FrameHeight)` default dimensions for the § 5.18.4.1 non-override
     /// path: `mfh_frame_width/height_minus_1[ cur_mfh_id ] + 1`, with the § 5.18.2
     /// omitted-size inference (:4101) already applied — when the MFH carried no
     /// frame-size payload, these equal the sequence `max_frame_width/height`.
-    default_dims: (u32, u32),
+    pub(crate) default_dims: (u32, u32),
     /// The § 5.18.7.1 MFH-gated segmentation inputs, `Some` only when
     /// `mfh_seg_info_present_flag` is set (the gate selecting the MFH branch).
-    seg: Option<MfhSegView>,
+    pub(crate) seg: Option<MfhSegView>,
     /// The § 5.18.5.2 MFH deblocking-update inputs: `mfh_deblocking_filter_update`
     /// and `mfh_apply_deblocking_filter[0..4]` (AV2 § 5.7), consulted by the
     /// `cur_mfh_id > 0` deblocking arm (mirror :5949).
-    deblocking: MfhDeblockingView,
+    pub(crate) deblocking: MfhDeblockingView,
 }
 
 impl MfhFrameView {
     /// Resolves a [`MultiFrameHeaderRecord`]'s § 5.7 state against the active
-    /// sequence header's maxima for the `cur_mfh_id > 0` core path (AV2 § 5.18.2).
-    fn from_record(record: &MultiFrameHeaderRecord, seq: &CoreSeqView) -> Self {
+    /// sequence header's maxima for the `cur_mfh_id > 0` core path (AV2 § 5.18.2),
+    /// shared by the parser and the inverse [`crate::write`] frame-header writer.
+    #[must_use]
+    pub fn from_record(record: &MultiFrameHeaderRecord, seq: &CoreSeqView) -> Self {
         // AV2 § 5.18.2 (:4101): `if ( cur_mfh_id == 0 || !mfh_frame_size_present_flag )`
         // infers `mfh_frame_width/height_minus_1[ cur_mfh_id ]` to `max_frame_*_minus_1`.
         // On this path `cur_mfh_id > 0`, so the inference applies exactly when the MFH
@@ -1037,7 +1057,7 @@ pub fn parse_frame_header_core(
 /// (`startCVS = obu_type == OBU_CLOSED_LOOP_KEY && FirstPictureInTU`), so the core
 /// always carries a concrete `bool` and never unwraps the prefix's `Option` (the
 /// prefix may be `None` only on the stateless front door, which does not reach here).
-fn init_core_from_prefix(
+pub(crate) fn init_core_from_prefix(
     prefix: &FrameHeaderPrefix,
     obu_type: ObuType,
     first_picture_in_tu: bool,
@@ -1097,7 +1117,7 @@ fn init_core_from_prefix(
 /// Parses `frame_header_info()` beyond the activation prefix (AV2 § 5.18.2), setting
 /// `core`'s fields and stop [`FrameHeaderParseStatus`]. The reader starts positioned
 /// just after the activation/reference fields.
-fn parse_core_body(
+pub(crate) fn parse_core_body(
     reader: &mut BitReader<'_>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,

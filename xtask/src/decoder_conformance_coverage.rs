@@ -355,6 +355,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         implementation_owner: "splot-recon output containers and future splot-decode frame lifecycle",
         decoder_support_rows: &[
             "decoded-frame-plane-runtime-types",
+            "recon-frame-plane-types-fuzz",
             "deterministic-frame-hash",
             "decode-runtime-hash-fuzz",
             "decode-runtime-y4m-fuzz",
@@ -365,6 +366,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         ],
         feature_ids: &[
             "INFRA-RECON-FRAME-PLANE-TYPES",
+            "CONF-RECON-FRAME-PLANE-TYPES-FUZZ",
             "RECON-FRAME-HASH-DIGEST",
             "CONF-DECODE-RUNTIME-HASH-FUZZ",
             "CONF-DECODE-RUNTIME-Y4M-FUZZ",
@@ -378,12 +380,13 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         fuzz_targets: &[
             "decode_runtime_hash_bytes",
             "decode_runtime_y4m_bytes",
+            "recon_frame_plane_types_bytes",
             "recon_y4m_output_bytes",
             "recon_frame_hash_bytes",
         ],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Frame/hash/Y4M/reference primitives exist for caller-supplied frames, with hash input and Y4M serialization fuzzed from bounded structured frames, and the documented minimal runtime tier emits hash/Y4M output for one supported fixture shape. The runtime hash/Y4M byte APIs are fuzzed with bounded raw bytes, minimal fixture mutations, and in-memory writers. Broad runtime output ordering, post-film-grain output, show-existing/flush behavior, motion-field storage, and AV2 reference refresh semantics remain unsupported. Current raw AVM/dav2d MD5 metadata is background evidence, not runtime coverage proof.",
+        notes: "Frame/hash/Y4M/reference primitives exist for caller-supplied frames, with decoded-frame/plane type validators, hash input, and Y4M serialization fuzzed from bounded structured frames, and the documented minimal runtime tier emits hash/Y4M output for one supported fixture shape. The runtime hash/Y4M byte APIs are fuzzed with bounded raw bytes, minimal fixture mutations, and in-memory writers. Broad runtime output ordering, post-film-grain output, show-existing/flush behavior, motion-field storage, and AV2 reference refresh semantics remain unsupported. Current raw AVM/dav2d MD5 metadata is background evidence, not runtime coverage proof.",
     },
     CoverageRow {
         id: "symbol-and-cdf-process",

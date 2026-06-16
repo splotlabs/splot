@@ -456,6 +456,31 @@ impl BitWriter {
         Ok(())
     }
 
+    /// Appends every bit `other` holds — its completed bytes and any in-progress partial
+    /// byte — onto this writer, MSB-first, preserving the exact bit sequence regardless of
+    /// either writer's current alignment.
+    ///
+    /// This is the "commit" step of the scratch-writer pattern: a composing writer drafts a
+    /// whole structure into a local [`BitWriter`], and on full success appends that draft to
+    /// the caller's writer. When a draft step fails the caller's writer is never touched, so
+    /// the composition is reject-before-write as a whole even though its sub-writers each
+    /// validate independently.
+    ///
+    /// # Errors
+    /// Propagates [`WriteError`] from the underlying [`BitWriter::write_bit`] (never fails
+    /// for a `0`/`1` bit, so this returns `Ok` for any well-formed `other`).
+    pub fn append(&mut self, other: &BitWriter) -> WriteResult<()> {
+        for &byte in &other.bytes {
+            self.write_bits_u8(byte, 8)?;
+        }
+        // The in-progress partial byte holds `nbits` bits packed toward the LSB, MSB first;
+        // replay them in the same order so the appended sequence is bit-exact.
+        for i in (0..other.nbits).rev() {
+            self.write_bit((other.current >> i) & 1)?;
+        }
+        Ok(())
+    }
+
     /// Consumes the writer and returns the written bytes, zero-padding any trailing
     /// partial byte (see the type-level note on alignment).
     #[must_use]
@@ -718,6 +743,37 @@ mod tests {
     }
 
     #[test]
+    fn append_preserves_bits_across_alignment() {
+        // A scratch writer holding a non-byte-aligned bit sequence appends bit-exactly onto a
+        // destination that is itself mid-byte: the result must read back as the concatenation.
+        let mut scratch = BitWriter::new();
+        scratch.write_bit(1).unwrap();
+        scratch.write_bits(0b010, 3).unwrap();
+        scratch.write_bits(0b1, 1).unwrap(); // 5 bits total, partial byte
+
+        let mut dest = BitWriter::new();
+        dest.write_bits(0b11, 2).unwrap(); // dest starts mid-byte (2 bits)
+        dest.append(&scratch).unwrap();
+
+        let bytes = dest.into_bytes();
+        let mut r = reader(&bytes);
+        // Read back: the 2 dest bits, then the 5 scratch bits, in order.
+        assert_eq!(r.read_bits(2).unwrap(), 0b11);
+        assert_eq!(r.read_bit().unwrap(), 1);
+        assert_eq!(r.read_bits(3).unwrap(), 0b010);
+        assert_eq!(r.read_bit().unwrap(), 1);
+    }
+
+    #[test]
+    fn append_empty_scratch_is_a_noop() {
+        let mut dest = BitWriter::new();
+        dest.write_bits(0b101, 3).unwrap();
+        let before = dest.bit_len();
+        dest.append(&BitWriter::new()).unwrap();
+        assert_eq!(dest.bit_len(), before);
+    }
+
+    #[test]
     fn trailing_bits_round_trip_and_reject_empty() {
         // `trailing_bits(0)` is rejected (the parser rejects an empty field).
         assert!(matches!(
@@ -883,6 +939,29 @@ mod proptests {
             let bytes = writer.into_bytes();
             let mut r = read_back(&bytes);
             prop_assert!(crate::obu::parse_trailing_bits(&mut r, nb).is_ok());
+        }
+
+        /// `append`: concatenating two writers reads back as the two bit sequences in order,
+        /// regardless of either writer's alignment.
+        #[test]
+        fn roundtrip_append(
+            a_bits in proptest::collection::vec(0u8..=1, 0..40),
+            b_bits in proptest::collection::vec(0u8..=1, 0..40),
+        ) {
+            let mut dest = BitWriter::new();
+            for &b in &a_bits {
+                dest.write_bit(b).unwrap();
+            }
+            let mut scratch = BitWriter::new();
+            for &b in &b_bits {
+                scratch.write_bit(b).unwrap();
+            }
+            dest.append(&scratch).unwrap();
+            let bytes = dest.into_bytes();
+            let mut r = read_back(&bytes);
+            for &expected in a_bits.iter().chain(b_bits.iter()) {
+                prop_assert_eq!(r.read_bit().unwrap(), expected);
+            }
         }
 
         /// The writer never panics, whatever the value/width — it returns `Result`.

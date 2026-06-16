@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 196 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 197 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -90,7 +90,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED` | User data unregistered metadata syntax | normative | bitstream-syntax | done | done | done | done | todo | todo | done | done | pending | `crates/splot-core/src/headers/metadata.rs` |
 | `AV2-5.18-FRAME-HEADER` | Frame header syntax | normative | bitstream-syntax | done | partial | partial | partial | todo | todo | partial | done | pending | `crates/splot-core/src/headers/frame/mod.rs` |
 | `AV2-5.18.1-FRAME-HEADER-GENERAL` | Frame header general syntax | normative | bitstream-syntax | done | partial | partial | partial | partial | todo | partial | done | pending | `crates/splot-core/src/headers/frame/mod.rs` |
-| `AV2-5.18.2-FRAME-HEADER-INFO` | Frame header info syntax | normative | bitstream-syntax | done | partial | partial | partial | todo | todo | partial | done | pending | `crates/splot-core/src/headers/frame/info.rs` |
+| `AV2-5.18.2-FRAME-HEADER-INFO` | Frame header info syntax | normative | bitstream-syntax | done | partial | partial | partial | partial | todo | partial | done | pending | `crates/splot-core/src/headers/frame/info.rs` |
 | `AV2-5.18.3-FRAME-CONFIGURATION` | Frame configuration syntax | normative | bitstream-syntax | done | partial | partial | n/a | partial | todo | partial | done | pending | `crates/splot-core/src/headers/frame/config.rs` |
 | `AV2-5.18.4-FRAME-SIZE` | Frame size syntax | normative | bitstream-syntax | done | partial | partial | partial | partial | todo | partial | done | pending | `crates/splot-core/src/headers/frame/size.rs` |
 | `AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS` | Frame header info semantics | normative | validator-check | done | n/a | n/a | partial | n/a | n/a | partial | done | pending | `crates/splot-validate/src/context` |
@@ -136,6 +136,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `CONF-DECODE-RUNTIME-Y4M-FUZZ` | Decode runtime Y4M no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/decode_runtime_y4m_bytes.rs` |
 | `CONF-RECON-Y4M-OUTPUT-FUZZ` | Y4M output serialization no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/recon_y4m_output_bytes.rs` |
 | `CONF-RECON-FRAME-HASH-FUZZ` | Decoded-frame hash serialization no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/recon_frame_hash_bytes.rs` |
+| `CONF-RECON-FRAME-PLANE-TYPES-FUZZ` | Decoded-frame and plane runtime type no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/recon_frame_plane_types_bytes.rs` |
 | `CONF-RECON-REFERENCE-FRAME-STORE-FUZZ` | Reference-frame store no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/recon_reference_frame_store_bytes.rs` |
 | `CONF-RECON-INTRA-PREDICTION-FUZZ` | Reconstruction intra prediction no-panic fuzzing | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `fuzz/fuzz_targets/recon_intra_prediction_bytes.rs` |
 | `CLI-VALIDATE` | splot validate command | cli | cli | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-cli/src/commands/validate.rs` |
