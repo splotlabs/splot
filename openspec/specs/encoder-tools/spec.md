@@ -935,3 +935,52 @@ gated-`Option` mismatches, the forced-false flag relationships, and the derived
   a count / gated-`Option` / derived-field inconsistency, or a value that fits no in-range width)
 - **THEN** it SHALL return a typed `WriteError` and write no bit, never panicking.
 
+### Requirement: atlas segment OBU writer
+
+`splot-core` SHALL provide a writer that serializes a parsed `atlas_segment_info_obu()` (§ 5.9) and
+its § 5.9.1–5.9.5 sub-structures back to bytes — the inverse of `parse_atlas_segment` — so the
+complete-OBU dispatch round-trips this OBU type instead of returning `Unimplemented`. The writer SHALL
+reproduce the § 6.9.2 descriptive segment-id assignment values verbatim (they carry no
+bitstream-conformance requirement), so a parsed model always round-trips. It SHALL be
+reject-before-write and SHALL never panic on a constructed model, rejecting the decidable
+inconsistencies (a `mode_info` variant that disagrees with the `mode`, a `num_segments` that disagrees
+with the value re-derived from the mode, gated-`Option` and count-vs-length mismatches, and
+out-of-range field values).
+
+#### Scenario: a parsed atlas segment OBU round-trips
+
+- **WHEN** a parsed `atlas_segment_info_obu()` of any mode (single / enhanced / basic / multistream /
+  multistream-with-alpha) is written by the dispatch and the bytes are reparsed
+- **THEN** the reparsed `AtlasSegment` SHALL equal the original, byte-exact on the canonical subset.
+
+#### Scenario: a non-canonical constructed model is rejected, not panicked
+
+- **WHEN** the writer is given an `AtlasSegment` the parser could never produce (a mode / mode_info,
+  derived-num_segments, gated-`Option`, count, or out-of-range inconsistency)
+- **THEN** it SHALL return a typed `WriteError` and write no bit, never panicking.
+
+### Requirement: multi frame header OBU writer
+
+`splot-core` SHALL provide a writer that serializes a parsed `multi_frame_header_obu()` (§ 5.7) back
+to bytes — the inverse of `parse_multi_frame_header`, reusing `write_seg_info` for the embedded
+`seg_info()` (§ 5.4.9) — so the complete-OBU dispatch round-trips this OBU type instead of returning
+`Unimplemented`. The writer SHALL reproduce the parser-tolerated `mfh_seq_header_id` / `mfh_id_minus_1`
+values verbatim so a parsed model always round-trips. It SHALL be reject-before-write and SHALL never
+panic on a constructed model, rejecting the decidable inconsistencies (a `mfh_apply_deblocking_filter`
+array that is non-`false` when `mfh_deblocking_filter_update` is clear, the segment-info `Option`s that
+disagree with `mfh_seg_info_present_flag`, an out-of-range frame-size bit width, and out-of-range field
+values).
+
+#### Scenario: a parsed multi frame header OBU round-trips
+
+- **WHEN** a parsed `multi_frame_header_obu()` (with or without the frame-size, deblocking-update, and
+  segment-info branches) is written by the dispatch and the bytes are reparsed
+- **THEN** the reparsed `MultiFrameHeader` SHALL equal the original, byte-exact on the canonical
+  subset.
+
+#### Scenario: a non-canonical constructed model is rejected, not panicked
+
+- **WHEN** the writer is given a `MultiFrameHeader` the parser could never produce (a forced-false
+  deblocking-flag, segment-info-`Option`-vs-flag, bit-width, or out-of-range inconsistency)
+- **THEN** it SHALL return a typed `WriteError` and write no bit, never panicking.
+

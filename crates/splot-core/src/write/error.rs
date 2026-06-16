@@ -271,6 +271,30 @@ pub enum WriteError {
         what: &'static str,
     },
 
+    /// A multi-frame-header value is inconsistent with what the AV2 v1.0.0 § 5.7
+    /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-7`) parser would re-derive on reparse, so
+    /// the model could never have been produced by `parse_multi_frame_header` and writing it would
+    /// break `read(write(x)) == x`. Examples: a `mfh_apply_deblocking_filter[i]` that is `true`
+    /// while `mfh_deblocking_filter_update` is `false` (the parser leaves the array all-`false`
+    /// without an update); a stored `width_bits` / `height_bits` outside `1..=16` (it is
+    /// `mfh_frame_*_bits_minus_1 + 1` with the `minus_1` an `f(4)` value); or a
+    /// `mfh_seg_info_present_flag` that disagrees with the presence of the three segment-info
+    /// `Option`s (`mfh_ext_seg_flag` / `mfh_allow_seg_info_change` / `segment_info`). Rejected
+    /// before any bit is written.
+    ///
+    /// A `mfh_seq_header_id` / `mfh_id_minus_1` out of its § 6.x conformance range — which the
+    /// validator flags but the parser preserves verbatim — is **not** rejected; the writer
+    /// reproduces it exactly.
+    #[error(
+        "non-canonical {what}: multi-frame-header value cannot be reproduced by the §5.7 parser"
+    )]
+    NonCanonicalMultiFrameHeader {
+        /// A short, stable label for the offending field (e.g. `"deblocking_apply_forced_false"`,
+        /// `"frame_width_bits"`, `"frame_height_bits"`, `"seg_info_present_flag"`,
+        /// `"passthrough"`).
+        what: &'static str,
+    },
+
     /// A content-interpretation value is inconsistent with what the AV2 v1.0.0 § 5.15
     /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-15`) parser would re-derive on reparse, so
     /// the model could never have been produced by `parse_content_interpretation` and writing it
@@ -292,6 +316,36 @@ pub enum WriteError {
         /// A short, stable label for the offending field (e.g. `"color_primaries_idc"`,
         /// `"chroma_bottom_progressive"`, `"extended_sar_idc"`, `"timing_num_ticks_gate"`,
         /// `"passthrough"`).
+        what: &'static str,
+    },
+
+    /// An atlas-segment value is inconsistent with what the AV2 v1.0.0 § 5.9
+    /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-9`, and the § 5.9.1 – § 5.9.5 child
+    /// structures) parser would re-derive on reparse, so the model could never have been produced by
+    /// `parse_atlas_segment` and writing it would break `read(write(x)) == x`. Examples: an
+    /// [`AtlasModeInfo`](crate::headers::atlas_segment::AtlasModeInfo) variant that disagrees with
+    /// `mode`; a stored `num_segments` that disagrees with the value re-derived from the mode body (or
+    /// that exceeds the § 6.9.6 bound); a region column/row count outside the § 6.9.3.1 bound; a
+    /// uniform-vs-explicit region-dimension shape that disagrees with `ats_uniform_spacing_flag` and
+    /// the region counts; a `NumRegionsInAtlas` that disagrees with the count product; a
+    /// single-region-per-segment mapping carrying an explicit segment list; a per-mode
+    /// `num_atlas_segments_minus_1` outside the bound or a count-vs-`Vec`-length mismatch; an
+    /// `ats_input_stream_id` presence that disagrees with `ats_stream_id_present`; an
+    /// `alpha_segments_present` or per-segment `alpha_segment_flag` that disagrees with the
+    /// alpha-vs-non-alpha mode and the § 6.9.5 last-segment inference; a `segment_ids` length that
+    /// disagrees with `numSegments`; or an unsignaled label that is not the inferred identity ids.
+    /// Rejected before any bit is written.
+    ///
+    /// A § 6.9.2 descriptive id-assignment element the parser preserves verbatim — any
+    /// `ats_atlas_segment_id`, any `ats_signaled_atlas_segment_ids_flag`, or any signaled
+    /// `segment_ids` value — is **not** rejected; the writer reproduces it exactly.
+    #[error("non-canonical {what}: atlas-segment value cannot be reproduced by the §5.9 parser")]
+    NonCanonicalAtlasSegment {
+        /// A short, stable label for the offending field (e.g. `"mode_info_variant"`,
+        /// `"num_segments"`, `"region_dimension"`, `"region_uniform_dims"`,
+        /// `"num_regions_in_atlas"`, `"single_region_segments"`, `"segment_count"`,
+        /// `"stream_id_gate"`, `"alpha_segments_gate"`, `"label_segment_count"`,
+        /// `"label_unsignaled_ids"`, `"passthrough"`).
         what: &'static str,
     },
 
