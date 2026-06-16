@@ -29,8 +29,8 @@ const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[
     },
     SourceLineAllowance {
         path: "crates/splot-core/src/headers/frame/info.rs",
-        max_lines: 4_624,
-        reason: "large cohesive frame-header parser; split separately from this validator refactor. +16 (2026-06-15): the maintainer-approved frame-config discarded-bit model extension adds FrameHeaderCore.force_integer_mv / .intrabc so the byte-exact §5.18.3 frame-header writer can reproduce every read-and-discarded bit (frame-header-writer-size-config)",
+        max_lines: 4_932,
+        reason: "large cohesive frame-header parser; split separately from this validator refactor. +16 (2026-06-15): the maintainer-approved frame-config discarded-bit model extension adds FrameHeaderCore.force_integer_mv / .intrabc so the byte-exact §5.18.3 frame-header writer can reproduce every read-and-discarded bit (frame-header-writer-size-config). +308 (2026-06-16): the single-picture IsBridge parse fix adds parse_single_picture_bridge_tail (the spec-mirror prefix + BruInactiveOrBridgeReturn stop) and its four positive/data-dependent/EOF tests, replacing the buggy intra-key-path test (frame-header-single-picture-bridge-fix)",
     },
     SourceLineAllowance {
         path: "crates/splot-validate/src/celu.rs",
