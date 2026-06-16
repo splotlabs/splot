@@ -9,9 +9,10 @@
 //! plane storage invariants, a safe reference-slot container, and deterministic
 //! frame-hash input serialization and digest computation, plus source-backed
 //! Y4M writing for caller-supplied decoded frames, plus square DC,
-//! rectangular DC, basic/PAETH, smooth, and H/V cardinal directional intra prediction
-//! primitives and a mutable current-frame workspace; it does not implement byte-consuming decode, full
-//! reconstruction, runtime CLI Y4M output, or AV2 reference refresh semantics.
+//! rectangular DC, subsampled DC, basic/PAETH, smooth, and H/V cardinal
+//! directional intra prediction primitives and a mutable current-frame
+//! workspace; it does not implement byte-consuming decode, full reconstruction,
+//! runtime CLI Y4M output, or AV2 reference refresh semantics.
 //!
 //! The ownership model is view-first ([`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)):
 //! owned plane/frame/workspace storage hands out borrowed [`PlaneRef`]/[`PlaneMut`]
@@ -25,6 +26,7 @@
 //! `RECON-FRAME-HASH-DIGEST`, `RECON-Y4M-OUTPUT-WRITER`,
 //! `RECON-INTRA-DC-SQUARE-PREDICTION`,
 //! `RECON-INTRA-DC-RECTANGULAR-PREDICTION`,
+//! `RECON-INTRA-DC-SUBSAMPLED-PREDICTION`,
 //! `RECON-INTRA-BASIC-PAETH-PREDICTION`,
 //! `RECON-INTRA-SMOOTH-PREDICTION`,
 //! `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION`,
@@ -40,6 +42,8 @@ mod geometry;
 mod hash_input;
 mod intra;
 mod intra_basic;
+mod intra_dc_math;
+mod intra_dc_subsampled;
 mod intra_directional;
 mod intra_smooth;
 mod plane;
@@ -60,6 +64,9 @@ pub use intra::{
     predict_intra_dc_square_value,
 };
 pub use intra_basic::{IntraPaethEdge, IntraPaethEdges, predict_intra_paeth_rect_into};
+pub use intra_dc_subsampled::{
+    predict_intra_dc_subsampled_rect_into, predict_intra_dc_subsampled_rect_value,
+};
 pub use intra_directional::{
     IntraCardinalDirection, IntraCardinalEdge, IntraCardinalEdges,
     predict_intra_cardinal_directional_rect_into,

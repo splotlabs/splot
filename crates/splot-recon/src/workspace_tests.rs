@@ -357,6 +357,119 @@ fn workspace_rectangular_dc_rejects_out_of_bounds_target() {
 }
 
 #[test]
+fn workspace_predicts_subsampled_dc_from_in_storage_edges() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(66, 66),
+            rect(0, 0, 66, 66),
+        ),
+        0,
+    )
+    .unwrap();
+    let block = rect_block(6, 6);
+    let mut left = [200u8; 64];
+    let mut above = [200u8; 64];
+    for index in (0..64).step_by(2) {
+        left[index] = 10;
+        above[index] = 30;
+    }
+
+    workspace
+        .write_rect(PlaneId::Y, rect(0, 1, 1, 64), &left, 1)
+        .unwrap();
+    workspace
+        .write_rect(PlaneId::Y, rect(1, 0, 64, 1), &above, 64)
+        .unwrap();
+    workspace
+        .predict_intra_dc_subsampled_rect(PlaneId::Y, 1, 1, block)
+        .unwrap();
+
+    let rows: Vec<&[u8]> = workspace
+        .rect_rows(PlaneId::Y, rect(1, 1, 64, 64))
+        .unwrap()
+        .collect();
+    assert!(
+        rows.iter()
+            .all(|row| row.iter().all(|sample| *sample == 20))
+    );
+}
+
+#[test]
+fn workspace_subsampled_dc_top_left_uses_midpoint_without_edges() {
+    let mut workspace = CurrentFrameWorkspace::<u16>::new(
+        info(
+            BitDepth::Ten,
+            PixelFormat::Monochrome,
+            size(4, 4),
+            rect(0, 0, 4, 4),
+        ),
+        0,
+    )
+    .unwrap();
+
+    workspace
+        .predict_intra_dc_subsampled_rect(PlaneId::Y, 0, 0, rect_block(2, 2))
+        .unwrap();
+
+    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), &[512; 16]);
+}
+
+#[test]
+fn workspace_subsampled_dc_uses_available_edge_without_synthesizing_missing_edge() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(4, 5),
+            rect(0, 0, 4, 5),
+        ),
+        0,
+    )
+    .unwrap();
+
+    workspace
+        .write_rect(PlaneId::Y, rect(0, 0, 4, 1), &[40, 40, 40, 40], 4)
+        .unwrap();
+    workspace
+        .predict_intra_dc_subsampled_rect(PlaneId::Y, 0, 1, rect_block(2, 2))
+        .unwrap();
+
+    let rows: Vec<&[u8]> = workspace
+        .rect_rows(PlaneId::Y, rect(0, 1, 4, 4))
+        .unwrap()
+        .collect();
+    assert_eq!(rows, vec![&[40, 40, 40, 40][..]; 4]);
+}
+
+#[test]
+fn workspace_subsampled_dc_rejects_missing_plane_and_out_of_bounds_target() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(8, 8),
+            rect(0, 0, 8, 8),
+        ),
+        0,
+    )
+    .unwrap();
+
+    assert!(matches!(
+        workspace.predict_intra_dc_subsampled_rect(PlaneId::U, 0, 0, rect_block(2, 2)),
+        Err(ReconError::MissingWorkspacePlane { plane: PlaneId::U })
+    ));
+    assert!(matches!(
+        workspace.predict_intra_dc_subsampled_rect(PlaneId::Y, 5, 1, rect_block(2, 3)),
+        Err(ReconError::WorkspaceRectOutOfBounds {
+            plane: PlaneId::Y,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn workspace_predicts_rectangular_paeth_from_in_storage_edges() {
     let mut workspace = CurrentFrameWorkspace::<u8>::new(
         info(
