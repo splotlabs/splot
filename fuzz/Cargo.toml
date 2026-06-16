@@ -98,6 +98,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "recon_frame_plane_types_bytes"
+path = "fuzz_targets/recon_frame_plane_types_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "recon_reference_frame_store_bytes"
 path = "fuzz_targets/recon_reference_frame_store_bytes.rs"
 test = false

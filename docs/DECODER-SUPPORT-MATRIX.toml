@@ -142,6 +142,20 @@ local_reference_evidence = []
 notes = "Source-backed immutable decoded output model in `splot-recon`: `BitDepth`, `PixelFormat`, `PlaneId`, `OutputIndex`, `PlaneSize`, `PlaneRect`, `Plane<T>`, `FramePlanes<T>`, `DecodedFrameInfo`, `DecodedFrame<T>`, `ReconSample`, and `ReconError`. Constructors enforce AV2-derived bit-depth/chroma mappings, positive dimensions, crop bounds/alignment, stride, checked sample/byte accounting, exact backing length, plane presence/shape, sample type, and sample range. No byte-consuming decode, reconstruction algorithm, frame hash, Y4M output, reference-frame-store behavior, AVM/dav2d invocation, or dependency graph change is included."
 
 [[row]]
+id = "recon-frame-plane-types-fuzz"
+name = "Decoded frame and plane runtime type fuzz entry point"
+feature_id = "CONF-RECON-FRAME-PLANE-TYPES-FUZZ"
+spec_sections = ["6.4.1", "6.17.4.1", "6.17.4.4", "7.1", "7.21.1", "7.21.2", "7.23"]
+parser_source = "fuzz/fuzz_targets/recon_frame_plane_types_bytes.rs"
+decode_module = "crates/splot-recon/src/format.rs; crates/splot-recon/src/geometry.rs; crates/splot-recon/src/plane.rs; crates/splot-recon/src/frame.rs; crates/splot-recon/src/views.rs"
+tier = "foundation"
+status = "supported"
+self_contained_tests = ["cargo check --manifest-path fuzz/Cargo.toml --bins --locked", "cargo xtask check-fuzz-targets", "cargo test -p splot-recon frame --locked", "cargo test -p splot-recon plane --locked", "cargo test -p splot-recon views --locked", "cargo +nightly fuzz run recon_frame_plane_types_bytes (local/nightly; CI fuzz smoke runs every target)"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Self-contained cargo-fuzz target `recon_frame_plane_types_bytes` normalizes arbitrary bytes into bounded valid and intentionally invalid `splot-recon` decoded-frame and plane runtime type cases, then exercises AV2-derived idc mapping, positive geometry, crop bounds/alignment, stride/backing-length validation, visible-row slicing, plane presence and visible-size checks, sample storage/range checks, borrowed view access, and explicit `SharedFrame` sharing with typed returns/no panic. It requires no AVM, dav2d, ffmpeg, filesystem I/O, network access, subprocesses, generated external fixtures, checked-in local reference paths, runtime `splot decode`, decoded hash/Y4M serialization assertions, or `decode/resource-limit` emission. This row does not claim byte-consuming decode, reconstruction algorithms, output scheduling, film grain, metadata MD5 verification, reference refresh, or §7.23 frame-store update semantics."
+
+[[row]]
 id = "decode-unsupported-diagnostic-api"
 name = "Decode unsupported diagnostic API"
 feature_id = "DECODE-UNSUPPORTED-DIAGNOSTIC-API"
