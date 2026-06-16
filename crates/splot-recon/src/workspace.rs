@@ -7,7 +7,8 @@
 //! `RECON-INTRA-DC-RECTANGULAR-PREDICTION`,
 //! `RECON-INTRA-BASIC-PAETH-PREDICTION`,
 //! `RECON-INTRA-SMOOTH-PREDICTION`,
-//! `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION`.
+//! `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION`,
+//! `RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION`.
 
 use core::mem;
 use core::ops::Range;
@@ -26,6 +27,8 @@ use crate::{
 mod workspace_edges;
 #[path = "workspace_intra_dc.rs"]
 mod workspace_intra_dc;
+#[path = "workspace_intra_directional_angle.rs"]
+mod workspace_intra_directional_angle;
 
 pub use workspace_edges::{CurrentFrameIntraEdges, WorkspaceRectRows};
 

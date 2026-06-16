@@ -394,6 +394,26 @@ pub enum ReconError {
         /// Prediction rectangle needing the edge.
         rect: PlaneRect,
     },
+    /// A workspace directional-angle helper could not read a required edge.
+    WorkspaceDirectionalAngleIntraPredictionEdgeUnavailable {
+        /// Plane whose workspace storage was checked.
+        plane: PlaneId,
+        /// Directional pAngle being computed.
+        p_angle: u16,
+        /// Required edge that was outside workspace storage.
+        edge: IntraDirectionalAngleEdge,
+        /// Prediction rectangle needing the edge.
+        rect: PlaneRect,
+    },
+    /// A workspace directional-angle helper would need luma IDIF.
+    WorkspaceDirectionalAngleIntraPredictionLumaIdifUnsupported {
+        /// Luma plane whose workspace storage was rejected.
+        plane: PlaneId,
+        /// Directional pAngle being computed.
+        p_angle: u16,
+        /// Prediction rectangle needing luma IDIF.
+        rect: PlaneRect,
+    },
     /// A reference frame store capacity was outside the supported slot range.
     InvalidReferenceStoreCapacity {
         /// Requested store capacity.
@@ -773,6 +793,36 @@ impl fmt::Display for ReconError {
                 "current-frame workspace {} cardinal directional intra prediction requires {} edge for rectangle x={} y={} width={} height={}",
                 plane.name(),
                 edge.name(),
+                rect.x(),
+                rect.y(),
+                rect.width(),
+                rect.height()
+            ),
+            Self::WorkspaceDirectionalAngleIntraPredictionEdgeUnavailable {
+                plane,
+                p_angle,
+                edge,
+                rect,
+            } => write!(
+                f,
+                "current-frame workspace {} directional angle intra prediction pAngle {} requires {} edge for rectangle x={} y={} width={} height={}",
+                plane.name(),
+                p_angle,
+                edge.name(),
+                rect.x(),
+                rect.y(),
+                rect.width(),
+                rect.height()
+            ),
+            Self::WorkspaceDirectionalAngleIntraPredictionLumaIdifUnsupported {
+                plane,
+                p_angle,
+                rect,
+            } => write!(
+                f,
+                "current-frame workspace {} directional angle intra prediction pAngle {} requires luma IDIF for rectangle x={} y={} width={} height={}",
+                plane.name(),
+                p_angle,
                 rect.x(),
                 rect.y(),
                 rect.width(),
