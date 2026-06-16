@@ -963,5 +963,27 @@ mod proptests {
             let _ = decoder.read_symbol(&mut cdf);
             let _ = decoder.finish();
         }
+
+        /// `read_symbol` must never panic on an arbitrary caller CDF row. The
+        /// relaxed `validate_cdf` now admits equal-adjacent (and thus possibly
+        /// zero-width) buckets, so the "parsers never panic" property must
+        /// exercise arbitrary rows — equal, strictly decreasing, out-of-range
+        /// entries, and unsupported lengths — and only ever return `Ok` or a
+        /// typed `Err`.
+        #[test]
+        fn read_symbol_never_panics_on_arbitrary_cdf_rows(
+            data in proptest::collection::vec(any::<u8>(), 0..64),
+            row in proptest::collection::vec(any::<i32>(), 0..12),
+        ) {
+            let mut decoder = SymbolDecoder::new(&data).unwrap();
+            let mut cdf = row;
+            match decoder.read_symbol(&mut cdf) {
+                Ok(symbol) => prop_assert!(usize::from(symbol.get()) < cdf.len().saturating_sub(1)),
+                Err(Error::InvalidSymbolCdf { .. })
+                | Err(Error::InvalidSymbolDecoderState { .. })
+                | Err(Error::UnexpectedEof { .. }) => {}
+                Err(other) => prop_assert!(false, "unexpected error kind: {other:?}"),
+            }
+        }
     }
 }
