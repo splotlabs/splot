@@ -35,12 +35,12 @@
 //! [`ParsedObu::Padding`] (§ 5.16) owns its own tail (the `obu_padding_byte` run plus the
 //! `trailing_bits()` that begin at the last non-zero byte), so it is **not** followed by
 //! the generic extensible tail above — exactly as `dispatch_obu_payload` special-cases it.
-//! The seven OBU types with a body writer ([`ParsedObu::TemporalDelimiter`],
+//! The eight OBU types with a body writer ([`ParsedObu::TemporalDelimiter`],
 //! [`ParsedObu::SequenceHeader`], [`ParsedObu::Padding`], [`ParsedObu::MetadataShort`],
-//! [`ParsedObu::MetadataGroup`], [`ParsedObu::BufferRemovalTiming`], [`ParsedObu::Msdo`]) are
-//! emitted; the remaining seven variants have no body writer yet and return
-//! [`WriteError::Unimplemented`] with the matrix Feature ID of their OBU type
-//! ([`ParsedObu::feature_id`]).
+//! [`ParsedObu::MetadataGroup`], [`ParsedObu::BufferRemovalTiming`], [`ParsedObu::Msdo`],
+//! [`ParsedObu::OperatingPointSet`]) are emitted; the remaining six variants have no body
+//! writer yet and return [`WriteError::Unimplemented`] with the matrix Feature ID of their OBU
+//! type ([`ParsedObu::feature_id`]).
 
 use crate::headers::padding::PaddingObu;
 use crate::obu::{ObuHeader, ParsedObu};
@@ -51,6 +51,7 @@ use crate::write::error::{WriteError, WriteResult};
 use crate::write::metadata::{write_metadata_group_obu_flat, write_metadata_short_obu};
 use crate::write::msdo::write_msdo;
 use crate::write::obu::write_obu_header;
+use crate::write::operating_point_set::write_operating_point_set;
 use crate::write::seq_tile::write_sequence_header;
 
 /// Writes one complete OBU — the § 5.2.2 header then the payload + tail — the inverse of a
@@ -240,13 +241,25 @@ fn write_obu_payload_inner(
             write_msdo(&mut scratch, msdo)?;
             write_generic_tail(&mut scratch, is_extensible)?;
         }
-        // The seven OBU types without a body writer yet: an honest typed stub naming the
+        // § 5.10 / § 5.11: the operating-point-set body, then the generic tail. OPS is an
+        // extensible OBU type, so the tail is obu_extension_flag = 0 + trailing_bits(). The OBU's
+        // obu_xlayer_id (global vs local) selects the OPS syntax branch, so the dispatch threads it
+        // through. It carries no passthrough.
+        ParsedObu::OperatingPointSet(ops) => {
+            if !passthrough.is_empty() {
+                return Err(WriteError::NonCanonicalOperatingPointSet {
+                    what: "passthrough",
+                });
+            }
+            write_operating_point_set(&mut scratch, ops, obu_xlayer_id)?;
+            write_generic_tail(&mut scratch, is_extensible)?;
+        }
+        // The six OBU types without a body writer yet: an honest typed stub naming the
         // matrix Feature ID of the OBU type (ParsedObu::feature_id stays in sync with the
         // model). bit_len() is unchanged because nothing was appended.
         ParsedObu::MultiFrameHeader(_)
         | ParsedObu::LayerConfigurationRecord(_)
         | ParsedObu::AtlasSegment(_)
-        | ParsedObu::OperatingPointSet(_)
         | ParsedObu::QuantizationMatrix(_)
         | ParsedObu::FilmGrain(_)
         | ParsedObu::ContentInterpretation(_) => {

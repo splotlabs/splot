@@ -250,6 +250,27 @@ pub enum WriteError {
         what: &'static str,
     },
 
+    /// An operating-point-set value is inconsistent with what the AV2 v1.0.0 § 5.10 / § 5.11
+    /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-10`, and the § 5.11.1-§ 5.11.5 child
+    /// structures) parser would re-derive on reparse, so the model could never have been produced by
+    /// `parse_operating_point_set` and writing it would break `read(write(x)) == x`. Examples: an
+    /// `obu_xlayer_id` that disagrees with the stored `xlayer_id`; a header `Option`/present-flag whose
+    /// presence disagrees with the `ops_cnt > 0` (and global-vs-local) gate; a `payloads` length or a
+    /// per-payload `index` that disagrees with `ops_cnt`; a gated payload `Option`
+    /// (`op_intent`/`aggregate_info`/`color_info`/per-entry `ptl_info`/the color triple) whose presence
+    /// disagrees with its flag; an `xlayer_entries` set/order that does not match the `ops_xlayer_map`
+    /// bits; an mlayer source that disagrees with `ops_mlayer_info_idc`; an `ops_mlayer_info()`
+    /// `tlayer_maps` set that does not match `ops_mlayer_map`; or a declared `ops_data_size` that
+    /// disagrees with the re-derived `opsBytes`. Rejected before any bit is written.
+    #[error(
+        "non-canonical {what}: operating-point-set value cannot be reproduced by the §5.10/§5.11 parser"
+    )]
+    NonCanonicalOperatingPointSet {
+        /// A short, stable label for the offending field (e.g. `"xlayer_id"`, `"payload_count"`,
+        /// `"xlayer_entries"`, `"global_mlayer_source"`, `"ops_data_size"`, `"passthrough"`).
+        what: &'static str,
+    },
+
     /// A writer for this OBU payload type does not exist yet — an honest stub returned by the
     /// complete-OBU dispatch for the `ParsedObu` variants whose body writer has not landed. Distinct
     /// from a non-canonical reject: the model is fine, the writer is simply not implemented.
