@@ -27,4 +27,4 @@
 
 - [x] 5.1 Archive the OpenSpec change with `openspec archive recon-y4m-output-fuzz --yes` and commit the archive in this branch.
 - [x] 5.2 Re-run relevant gates after archive.
-- [ ] 5.3 Open a ready, non-draft PR with Feature ID, scoped fuzz behavior, tests, reviewer decisions, and known exclusions.
+- [x] 5.3 Open a ready, non-draft PR with Feature ID, scoped fuzz behavior, tests, reviewer decisions, and known exclusions.
