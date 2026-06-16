@@ -4552,14 +4552,8 @@ id = "CONF-RECON-REFERENCE-FRAME-STORE-FUZZ"
 name = "Reference-frame store no-panic fuzzing"
 category = "conformance"
 kind = "conformance"
-spec_sections = ["3", "5.4.6", "6.4.6", "6.17.2", "7.23"]
-sources = [
-    "docs/spec/av2/1.0.0/03-symbols.md#s-3",
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-6",
-    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-6",
-    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2",
-    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-23",
-]
+spec_sections = ["3"]
+sources = ["docs/spec/av2/1.0.0/03-symbols.md#s-3"]
 crate = "fuzz"
 module = "fuzz/fuzz_targets/recon_reference_frame_store_bytes.rs"
 openspec_change = "recon-reference-frame-store-fuzz"
