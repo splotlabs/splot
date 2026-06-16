@@ -127,6 +127,12 @@ impl TilePartitionFrameFacts {
             bru_state,
         })
     }
+
+    /// Superblock size used by this frame's tile partition traversal.
+    #[must_use]
+    pub(crate) const fn sb_size(&self) -> BlockSize {
+        self.sb_size
+    }
 }
 
 /// Input to the crate-private traversal frontier.

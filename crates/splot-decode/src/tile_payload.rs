@@ -18,6 +18,7 @@
 mod block_symbol;
 mod cdf;
 mod input;
+mod mi_size_state;
 mod partition;
 mod partition_allowed;
 mod partition_size;
