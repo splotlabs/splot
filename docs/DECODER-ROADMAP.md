@@ -79,13 +79,15 @@ scheduling, and AV2 reference refresh semantics remain unimplemented.
 `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
 `splot-decode`, then call deterministic reconstruction primitives.
-`splot-core` now also exposes a bounded AV2 § 8.2 `SymbolDecoder` foundation
-for caller-provided tile payload slices: initialization, pseudo-raw bool/literal
-reads, caller-supplied-CDF symbol reads with optional CDF updates, and
-`exit_symbol()` padding validation. This does not make runtime tile decode
-supported; broad § 8.3 CDF selection, full tile CDF banks, `decode_tile()`,
-broad reconstruction, broad hash output, and broad Y4M output remain future
-rows beyond the committed minimal fixture tier.
+`splot-core` exposes a complete, spec-exact bounded AV2 § 8.2 `SymbolDecoder`
+primitive for caller-provided tile payload slices: initialization, pseudo-raw
+bool/literal reads, caller-supplied-CDF symbol reads with optional CDF updates,
+and `exit_symbol()` trailing/padding conformance validation, proven across every
+arity, the adaptation-rate extremes, deep-negative `SymbolMaxBits` padding, a
+random-CDF property test, and the `symbol_decoder_bytes` fuzz target. This does
+not make runtime tile decode supported; broad § 8.3 CDF selection, full tile CDF
+banks, `decode_tile()`, broad reconstruction, broad hash output, and broad Y4M
+output remain future rows beyond the committed minimal fixture tier.
 `splot-decode` now also has crate-private tile-payload planning for the minimal
 one-tile closed-loop-key tier. The boundary consumes § 5.20.1
 `TileGroupFraming`, checks tile payload/count limits, derives one deterministic
@@ -263,7 +265,7 @@ other external decoder is forbidden.
 | 3 | CLI `splot decode` contract backed by library diagnostics | minimal hash JSON, minimal raw output, and minimal Y4M output supported; broad runtime output unsupported |
 | 4 | Container traversal, base-layer parsed/raw traversal, transactional decode planning | parsed and raw-byte stream planners supported; operating-point selection and broad CLI runtime unsupported |
 | 5 | Self-contained decode fuzz target and fixture smoke | `decode_plan_bytes` fuzz target supported for the raw byte planner; `decode_runtime_hash_bytes`, `decode_runtime_raw_bytes`, and `decode_runtime_y4m_bytes` supported for the minimal runtime byte APIs; minimal runtime fixture smoke supported |
-| 6 | AV2 § 8 symbol/CDF decoder foundation | § 8.2 generic primitive partial; crate-private partition CDF subset boundary partial; supported-subset Tile-to-Saved/Saved-to-Frame lifecycle supported; broad § 8.3 and tile decode planned |
+| 6 | AV2 § 8 symbol/CDF decoder foundation | § 8.2 generic primitive supported (spec-exact, all arities, fuzzed, runtime-reachable); crate-private partition CDF subset boundary partial; supported-subset Tile-to-Saved/Saved-to-Frame lifecycle supported; broad § 8.3 and tile decode planned |
 | 7 | Constrained intra tile syntax | tile payload and tile CDF boundaries partial; individual partition-entry symbol reads, one caller-fact partition decision, allowed partition derivation, first `decode_block()` frontier planning, and minimal block-symbol trace supported; supported-subset CDF lifecycle supported; full recursive `read_partition()` / `decode_tile()` syntax planned |
 | 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | current-frame workspace plus square DC, rectangular DC, subsampled DC, IBP DC, basic/PAETH, smooth, H/V cardinal directional, one-sided directional-angle, middle directional-angle primitives, workspace directional-angle handoff, and the minimal luma-DC plus traced top-left chroma H_PRED runtime handoff supported; luma/MRL/IDIF/full-dispatch directional angles, DIP/general directional-angle IBP/full CfL modes, broad chroma prediction, dequant/reconstruction, inverse transforms, broad runtime hashes planned |
 | 9 | Raw/Y4M output and reconstructed reference-frame store | reference-slot runtime store, source-backed Y4M writer, minimal runtime raw output, and minimal runtime Y4M output supported; broad runtime raw/Y4M output and AV2 refresh semantics planned |
