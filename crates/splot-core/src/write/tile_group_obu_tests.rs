@@ -303,10 +303,8 @@ mod obu_tests {
             None,
             true,
             &structure,
-            layout,
             &framing,
             tile_data,
-            1,
             true,
         )
         .unwrap();
@@ -382,7 +380,6 @@ mod obu_tests {
         // is_first_tile_group == false is the non-first frame_header_copy() continuation, out of
         // scope: rejected before any bit, leaving the caller's writer untouched.
         let (core, seq) = valid_core();
-        let layout = TileGroupLayout::new(1, 1, 0, 0);
         let structure = single_tile_structure();
         let tile_bytes = vec![0u8; 4];
         let framing = parse_tile_group_framing(&tile_bytes, 0, 0, 1, false);
@@ -396,10 +393,8 @@ mod obu_tests {
             None,
             true,
             &structure,
-            layout,
             &framing,
             tile_data,
-            1,
             false, // is_first_tile_group == false
         )
         .unwrap_err();
@@ -413,14 +408,41 @@ mod obu_tests {
     }
 
     #[test]
-    fn frame_header_sub_writer_reject_propagates() {
-        // A non-canonical frame-header core (mutated to a non-IntraHeaderComplete status) is
-        // rejected by write_frame_header_core; that reject must propagate through the scratch buffer
-        // and leave the caller's writer untouched (bit_len() == 0), even though the is_first bit was
-        // already drafted into the scratch.
+    fn reject_unaligned_writer() {
+        // An OBU payload begins byte-aligned; a mid-byte writer would shift the is_first bit and
+        // every following byte. The composer rejects before any draft, leaving the caller's stray
+        // bit untouched (bit_len() unchanged, nothing appended).
+        let (core, seq) = valid_core();
+        let structure = single_tile_structure();
+        let tile_bytes = vec![0u8; 4];
+        let framing = parse_tile_group_framing(&tile_bytes, 0, 0, 1, false);
+        let tile_data: &[&[u8]] = &[&tile_bytes];
+
+        let mut writer = BitWriter::new();
+        writer.write_bit(1).unwrap(); // one stray bit -> not byte-aligned
+        let err = write_tile_group_obu(
+            &mut writer,
+            &core,
+            &seq,
+            None,
+            true,
+            &structure,
+            &framing,
+            tile_data,
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(err, WriteError::WriterNotByteAligned);
+        assert_eq!(writer.bit_len(), 1, "stray bit unchanged; composer wrote nothing");
+    }
+
+    #[test]
+    fn reject_not_tile_group_obu() {
+        // Only a tile-group-carrying OBU type frames a tile_group_obu(). A SEF single-picture header
+        // is not a tile-group carrier, so the composer rejects it before any bit (write_frame_header_core
+        // would otherwise accept it as a frame-header OBU).
         let (mut core, seq) = valid_core();
-        core.status = FrameHeaderParseStatus::ActivationFieldsOnly;
-        let layout = TileGroupLayout::new(1, 1, 0, 0);
+        core.obu_type = ObuType::RegularSef; // is_tile_group() == false
         let structure = single_tile_structure();
         let tile_bytes = vec![0u8; 4];
         let framing = parse_tile_group_framing(&tile_bytes, 0, 0, 1, false);
@@ -434,10 +456,118 @@ mod obu_tests {
             None,
             true,
             &structure,
-            layout,
             &framing,
             tile_data,
-            1,
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            WriteError::NonCanonicalTileGroup {
+                what: "not_tile_group_obu"
+            }
+        );
+        assert_eq!(writer.bit_len(), 0, "no bit written on not-tile-group reject");
+    }
+
+    #[test]
+    fn reject_first_tg_start_not_zero() {
+        // § 6.18: the first tile group's tg_start must be 0. A non-zero first-group tg_start is a
+        // conformance violation the composer refuses before any bit.
+        let (core, seq) = valid_core();
+        let mut structure = single_tile_structure();
+        structure.tg_start = 1;
+        structure.tg_end = 1;
+        let tile_bytes = vec![0u8; 4];
+        let framing = parse_tile_group_framing(&tile_bytes, 0, 0, 1, false);
+        let tile_data: &[&[u8]] = &[&tile_bytes];
+
+        let mut writer = BitWriter::new();
+        let err = write_tile_group_obu(
+            &mut writer,
+            &core,
+            &seq,
+            None,
+            true,
+            &structure,
+            &framing,
+            tile_data,
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            WriteError::NonCanonicalTileGroup {
+                what: "first_tg_start_not_zero"
+            }
+        );
+        assert_eq!(
+            writer.bit_len(),
+            0,
+            "no bit written on first-tg-start reject"
+        );
+    }
+
+    #[test]
+    fn reject_missing_tile_info() {
+        // The § 5.19 layout and § 5.20.1 TileSizeBytes are derived from core.tile_info; with it
+        // absent the composer cannot derive them and rejects before any bit.
+        let (mut core, seq) = valid_core();
+        core.tile_info = None;
+        let structure = single_tile_structure();
+        let tile_bytes = vec![0u8; 4];
+        let framing = parse_tile_group_framing(&tile_bytes, 0, 0, 1, false);
+        let tile_data: &[&[u8]] = &[&tile_bytes];
+
+        let mut writer = BitWriter::new();
+        let err = write_tile_group_obu(
+            &mut writer,
+            &core,
+            &seq,
+            None,
+            true,
+            &structure,
+            &framing,
+            tile_data,
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            WriteError::NonCanonicalTileGroup {
+                what: "missing_tile_info"
+            }
+        );
+        assert_eq!(
+            writer.bit_len(),
+            0,
+            "no bit written on missing-tile-info reject"
+        );
+    }
+
+    #[test]
+    fn frame_header_sub_writer_reject_propagates() {
+        // A non-canonical frame-header core (mutated to a non-IntraHeaderComplete status) is
+        // rejected by write_frame_header_core; that reject must propagate through the scratch buffer
+        // and leave the caller's writer untouched (bit_len() == 0), even though the is_first bit was
+        // already drafted into the scratch.
+        let (mut core, seq) = valid_core();
+        core.status = FrameHeaderParseStatus::ActivationFieldsOnly;
+        let structure = single_tile_structure();
+        let tile_bytes = vec![0u8; 4];
+        let framing = parse_tile_group_framing(&tile_bytes, 0, 0, 1, false);
+        let tile_data: &[&[u8]] = &[&tile_bytes];
+
+        let mut writer = BitWriter::new();
+        let err = write_tile_group_obu(
+            &mut writer,
+            &core,
+            &seq,
+            None,
+            true,
+            &structure,
+            &framing,
+            tile_data,
             true,
         )
         .unwrap_err();
@@ -454,7 +584,6 @@ mod obu_tests {
         // through the scratch (which already holds the is_first bit + the whole frame_header()) and
         // the caller's writer stays untouched.
         let (core, seq) = valid_core();
-        let layout = TileGroupLayout::new(1, 1, 0, 0);
         let mut structure = single_tile_structure();
         structure.outcome = TileGroupStructureOutcome::Truncated;
         let tile_bytes = vec![0u8; 4];
@@ -469,10 +598,8 @@ mod obu_tests {
             None,
             true,
             &structure,
-            layout,
             &framing,
             tile_data,
-            1,
             true,
         )
         .unwrap_err();
@@ -491,7 +618,6 @@ mod obu_tests {
         // (zero_size_tile); the reject propagates through the scratch (holding the is_first bit, the
         // frame_header(), and the structure) and the caller's writer stays untouched.
         let (core, seq) = valid_core();
-        let layout = TileGroupLayout::new(1, 1, 0, 0);
         let structure = single_tile_structure();
         let framing = TileGroupFraming {
             tiles: vec![TileFraming {
@@ -513,10 +639,8 @@ mod obu_tests {
             None,
             true,
             &structure,
-            layout,
             &framing,
             tile_data,
-            1,
             true,
         )
         .unwrap_err();

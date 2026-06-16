@@ -357,6 +357,11 @@ fn check_tile_group_payload_encodable(
 /// 4. the § 5.20.1 payload framing via [`write_tile_group_payload`] — which then runs byte-aligned
 ///    (its own guard holds because the structure ended with `byte_alignment()`).
 ///
+/// The § 5.19 `TileGroupLayout` and the § 5.20.1 `TileSizeBytes` are **derived from** `core.tile_info`
+/// (§ 5.18.7.2), not taken as independent inputs, so the payload framing stays consistent with the
+/// bits `write_frame_header_core` emitted (an independently-supplied layout / `TileSizeBytes` could
+/// make a reparse split the tile bytes differently and fail the round-trip).
+///
 /// The whole composition is drafted into the scratch writer and committed to the caller's `writer`
 /// only on full success (`writer.append(&scratch)`), so any sub-writer reject — the frame-header,
 /// structure, or payload check — leaves `writer` untouched (`bit_len()` unchanged): reject-before-write
@@ -369,9 +374,15 @@ fn check_tile_group_payload_encodable(
 /// (`is_first_tile_group == 0`) is out of scope and rejected before any bit.
 ///
 /// # Errors
+/// All validated before any bit (the caller's `writer` is untouched on failure):
+/// - [`WriteError::WriterNotByteAligned`] if `writer` is not on a byte boundary (an OBU payload
+///   begins byte-aligned).
 /// - [`WriteError::NonCanonicalTileGroup`] with `what == "continuation_unsupported"` if
 ///   `is_first_tile_group == false` (the non-first `frame_header_copy()` continuation is a follow-up
-///   slice), rejected before any bit.
+///   slice); `"not_tile_group_obu"` if `core.obu_type` is not a tile-group carrier (a SEF / TIP
+///   header); `"first_tg_start_not_zero"` if `structure.tg_start != 0` (the § 6.18 first-group rule);
+///   or `"missing_tile_info"` if `core.tile_info` is absent (the layout / `TileSizeBytes` cannot be
+///   derived).
 /// - Any [`WriteError`] a delegated sub-writer raises: the frame-header check
 ///   ([`WriteError::NonCanonicalFrameHeader`] for a non-intra / non-reproducible `core`), the
 ///   structure check ([`WriteError::NonCanonicalTileGroup`] for a non-`Complete` / degenerate /
@@ -388,12 +399,16 @@ pub fn write_tile_group_obu(
     mfh: Option<&MfhFrameView>,
     first_picture_in_tu: bool,
     structure: &TileGroupStructure,
-    layout: TileGroupLayout,
     framing: &TileGroupFraming,
     tile_data: &[&[u8]],
-    tile_size_bytes: u32,
     is_first_tile_group: bool,
 ) -> WriteResult<()> {
+    // The tile_group_obu() payload begins at a byte boundary (an OBU payload starts byte-aligned);
+    // a mid-byte writer would shift the is_first_tile_group bit and every following byte. Checked
+    // before any draft, matching the §5.4 / §5.17 OBU-payload writers.
+    if !writer.is_byte_aligned() {
+        return Err(WriteError::WriterNotByteAligned);
+    }
     // § 5.19 (mirror :8431-8435): this composer is the first-group form. A requested non-first form
     // (the frame_header_copy() continuation) is out of scope; reject before any bit so the caller's
     // writer is untouched.
@@ -402,6 +417,42 @@ pub fn write_tile_group_obu(
             what: "continuation_unsupported",
         });
     }
+    // § 5.2.1: only a tile-group-carrying OBU type frames a tile_group_obu(). write_frame_header_core
+    // also accepts SEF / TIP single-picture headers, which are NOT tile-group carriers; reject them
+    // so the composed bytes are a valid tile_group_obu() payload (not a frame-header OBU re-derived
+    // under a different type).
+    if !core.obu_type.is_tile_group() {
+        return Err(WriteError::NonCanonicalTileGroup {
+            what: "not_tile_group_obu",
+        });
+    }
+    // § 6.18: the first tile group's tg_start must be 0 (tile-group/first-tg-start-not-zero). The
+    // generic structure writer cannot know it is emitting the first group, so the composer enforces
+    // it (a non-zero first-group tg_start is a conformance violation `splot validate` rejects).
+    if structure.tg_start != 0 {
+        return Err(WriteError::NonCanonicalTileGroup {
+            what: "first_tg_start_not_zero",
+        });
+    }
+    // The § 5.19 layout and § 5.20.1 TileSizeBytes are determined by the frame header's tile_info()
+    // (§ 5.18.7.2) — they are NOT independent inputs. Deriving them from `core` keeps the payload
+    // framing consistent with the bits write_frame_header_core emits, so a reparse splits the tiles
+    // the same way (an independently-supplied layout / TileSizeBytes could desync the round-trip).
+    let tile_info = core
+        .tile_info
+        .as_ref()
+        .ok_or(WriteError::NonCanonicalTileGroup {
+            what: "missing_tile_info",
+        })?;
+    let layout = TileGroupLayout::new(
+        tile_info.tile_cols,
+        tile_info.tile_rows,
+        tile_info.tile_cols_log2,
+        tile_info.tile_rows_log2,
+    );
+    // TileSizeBytes is present only for a multi-tile frame (§ 5.18.7.2); a single-tile frame's lone
+    // (last) tile reads no size field, so the value is unused — default to the minimum 1 when absent.
+    let tile_size_bytes = tile_info.tile_size_bytes.unwrap_or(1);
 
     // Draft the whole OBU payload into a scratch writer; commit to the caller's `writer` only on
     // full success so any sub-writer reject mid-compose never leaves a partial buffer (the caller's
