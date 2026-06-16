@@ -54,8 +54,10 @@ use crate::write::error::{WriteError, WriteResult};
 /// - `"inferred_range_mismatch"` — the range is not signaled (`num_tiles == 1`, or
 ///   `num_tiles > 1 && !flag`) but the model does not hold the inferred default
 ///   `tg_start == 0 && tg_end == num_tiles - 1`.
-/// - `"tg_range"` — the range is signaled (`num_tiles > 1 && flag`) but `tg_end < tg_start`, or
-///   `tg_start` / `tg_end` does not fit `f(tileBits)`.
+/// - `"tg_range"` — the range is signaled (`num_tiles > 1 && flag`) but `tg_start` / `tg_end` does
+///   not fit `f(tileBits)` (non-reproducible), or `tg_end < tg_start` (a § 6.18 conformance refusal:
+///   the § 5.19 parser reads both values unordered, so this is the one reject deliberately stricter
+///   than the reader rather than a non-reproducibility).
 pub fn write_tile_group_structure(
     writer: &mut BitWriter,
     structure: &TileGroupStructure,
@@ -126,10 +128,14 @@ fn check_tile_group_structure_encodable(
             });
         }
     } else {
-        // § 5.19 (mirror :8483-8491): tg_start / tg_end are f(tileBits). The range must satisfy
-        // tg_end >= tg_start and both values must fit the tileBits field; otherwise it is
-        // non-reproducible (an inverted or under-width range).
+        // tg_start / tg_end are f(tileBits) (§ 5.19, mirror :8483-8491): a value that does not fit
+        // the tileBits field is non-reproducible (the parser only ever reads tileBits-wide values).
         let tile_bits = layout.tile_bits();
+        // tg_end >= tg_start is a §6.18 conformance requirement (mirror
+        // docs/spec/av2/1.0.0/06-syntax-structures-semantics.md:6220) the §5.19 parser does NOT
+        // enforce (it reads both values unordered). The writer is deliberately stricter here: it
+        // refuses to emit an inverted, non-conformant range rather than produce a stream
+        // `splot validate` would reject — the one place it is stricter than the reader.
         if structure.tg_end < structure.tg_start {
             return Err(WriteError::NonCanonicalTileGroup { what: "tg_range" });
         }

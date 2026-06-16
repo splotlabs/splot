@@ -36,8 +36,10 @@ mod tests {
         let mut writer = BitWriter::new();
         write_tile_group_structure(&mut writer, s, layout).unwrap();
         let bytes = writer.into_bytes();
-        // byte_alignment() always emits at least one whole byte once any bit was written; a
-        // zero-bit single-tile structure still pads to a byte. Give the reparse the exact bytes.
+        // A zero-bit single-tile structure emits no bytes (align_to_byte() is a no-op at nbits==0,
+        // so into_bytes() is empty and the reparse runs with sz == 0); once any bit is written,
+        // byte_alignment() rounds up to a whole byte. `bytes.len()` gives the reparse the exact size
+        // either way.
         let sz = bytes.len() as u64;
         let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
         let parsed = parse_tile_group_structure(&mut reader, layout, sz).unwrap();
