@@ -360,6 +360,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "decode-runtime-y4m-fuzz",
             "output-y4m",
             "recon-y4m-output-fuzz",
+            "recon-frame-hash-fuzz",
             "reference-frame-store",
         ],
         feature_ids: &[
@@ -369,6 +370,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "CONF-DECODE-RUNTIME-Y4M-FUZZ",
             "RECON-Y4M-OUTPUT-WRITER",
             "CONF-RECON-Y4M-OUTPUT-FUZZ",
+            "CONF-RECON-FRAME-HASH-FUZZ",
             "RECON-REFERENCE-FRAME-STORE",
         ],
         status: "partial",
@@ -377,10 +379,11 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "decode_runtime_hash_bytes",
             "decode_runtime_y4m_bytes",
             "recon_y4m_output_bytes",
+            "recon_frame_hash_bytes",
         ],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Frame/hash/Y4M/reference primitives exist for caller-supplied frames, with Y4M serialization fuzzed from bounded structured frames, and the documented minimal runtime tier emits hash/Y4M output for one supported fixture shape. The runtime Y4M byte API is fuzzed with bounded raw bytes, minimal fixture mutations, and in-memory writers. Broad runtime output ordering, post-film-grain output, show-existing/flush behavior, motion-field storage, and AV2 reference refresh semantics remain unsupported. Current raw AVM/dav2d MD5 metadata is background evidence, not runtime coverage proof.",
+        notes: "Frame/hash/Y4M/reference primitives exist for caller-supplied frames, with hash input and Y4M serialization fuzzed from bounded structured frames, and the documented minimal runtime tier emits hash/Y4M output for one supported fixture shape. The runtime hash/Y4M byte APIs are fuzzed with bounded raw bytes, minimal fixture mutations, and in-memory writers. Broad runtime output ordering, post-film-grain output, show-existing/flush behavior, motion-field storage, and AV2 reference refresh semantics remain unsupported. Current raw AVM/dav2d MD5 metadata is background evidence, not runtime coverage proof.",
     },
     CoverageRow {
         id: "symbol-and-cdf-process",
