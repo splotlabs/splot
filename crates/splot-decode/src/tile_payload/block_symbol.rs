@@ -207,7 +207,7 @@ mod tests {
             cdf: TileCdfWorkUnitBoundary::new(
                 update_mode,
                 tile_cdf_save_policy(TileCdfPolicyInput::single_tile_default(), 0).unwrap(),
-                FrameCdfSubset::from_defaults().tile_copy(),
+                FrameCdfSubset::from_defaults(),
             ),
         }
     }
@@ -267,11 +267,15 @@ mod tests {
                 continue;
             };
             let before = work_unit.cdf().tile_cdfs().clone();
+            let saved_before = work_unit.cdf().saved_cdfs().clone();
+            let frame_before = work_unit.cdf().frame_cdfs().clone();
 
             let err = consume_minimal_block_symbol_trace(&mut work_unit, symbols).unwrap_err();
 
             if matches!(err, MinimalBlockSymbolTraceError::UnexpectedSymbol { .. }) {
                 assert_eq!(work_unit.cdf().tile_cdfs(), &before);
+                assert_eq!(work_unit.cdf().saved_cdfs(), &saved_before);
+                assert_eq!(work_unit.cdf().frame_cdfs(), &frame_before);
                 saw_mismatch = true;
                 break;
             }
@@ -289,6 +293,8 @@ mod tests {
             .with_row_mut(TileCdfSelector::YModeSet, |row| row[0] = 0)
             .unwrap();
         let before = work_unit.cdf().tile_cdfs().clone();
+        let saved_before = work_unit.cdf().saved_cdfs().clone();
+        let frame_before = work_unit.cdf().frame_cdfs().clone();
 
         let err = consume_minimal_block_symbol_trace(&mut work_unit, symbols).unwrap_err();
 
@@ -300,5 +306,7 @@ mod tests {
             }
         ));
         assert_eq!(work_unit.cdf().tile_cdfs(), &before);
+        assert_eq!(work_unit.cdf().saved_cdfs(), &saved_before);
+        assert_eq!(work_unit.cdf().frame_cdfs(), &frame_before);
     }
 }

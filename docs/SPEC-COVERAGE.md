@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 187 feature(s); 137 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 188 feature(s); 138 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -151,11 +151,13 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF` | ✅ | — | — | ✅ | 2 |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
+| [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | ✅ | ✅ | — | ✅ | 2 |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-TILE-PAYLOAD-BOUNDARY` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF` | ✅ | — | — | ✅ | 2 |
+| [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | ✅ | ✅ | — | ✅ | 2 |
 | [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `DECODE-TILE-PAYLOAD-BOUNDARY` | ✅ | 🟡 | — | ✅ | 2 |
@@ -328,6 +330,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.19.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1) | General tile group payload semantics | `DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF` | ✅ | — | — | ✅ | 2 |
 | [§ 6.19.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1) | General tile group payload semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 6.19.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1) | General tile group payload semantics | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
+| [§ 6.19.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1) | General tile group payload semantics | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | ✅ | ✅ | — | ✅ | 2 |
 | [§ 6.19.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1) | General tile group payload semantics | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 6.19.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1) | General tile group payload semantics | `DECODE-TILE-PAYLOAD-BOUNDARY` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 6.19.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1) | General tile group payload semantics | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
@@ -373,6 +376,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.4.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-5) | Random Access Switch | `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | ✅ | — | 🟡 | 🟡 | 1 |
 | [§ 7.4.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-5) | Random Access Switch | `AV2-7.4-RANDOM-ACCESS` | ✅ | — | 🟡 | 🟡 | 2 |
 | [§ 7.4.6](./spec/av2/1.0.0/07-decoding-process.md#s-7-4-6) | Multistream Random Access | `AV2-7.3.7-TEMPORAL-UNIT-ORDER` | ✅ | ✅ | 🟡 | ✅ | 7 |
+| [§ 7.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-5) | Frame end update CDF process | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | ✅ | ✅ | — | ✅ | 2 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.2.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-2) | Basic intra prediction process | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
@@ -421,6 +425,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `AV2-8.2-SYMBOL-DECODER` | ✅ | 🟡 | 🟡 | 🟡 | — |
 | [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF` | ✅ | — | — | ✅ | 2 |
 | [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
+| [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | ✅ | ✅ | — | ✅ | 2 |
 | [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `DECODE-TILE-PAYLOAD-BOUNDARY` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
@@ -429,6 +434,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `AV2-8.2-SYMBOL-DECODER` | ✅ | 🟡 | 🟡 | 🟡 | — |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
+| [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | ✅ | ✅ | — | ✅ | 2 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
@@ -438,6 +444,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `AV2-8.2-SYMBOL-DECODER` | ✅ | 🟡 | 🟡 | 🟡 | — |
 | [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
+| [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | ✅ | ✅ | — | ✅ | 2 |
 | [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `DECODE-TILE-PARTITION-DECISION-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
@@ -447,12 +454,14 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.3](./spec/av2/1.0.0/08-parsing-process.md#s-8-3) | Parsing process for CDF encoded syntax elements | `DECODE-TILE-PAYLOAD-BOUNDARY` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 8.3](./spec/av2/1.0.0/08-parsing-process.md#s-8-3) | Parsing process for CDF encoded syntax elements | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 8.3.1](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-1) | General | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
+| [§ 8.3.1](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-1) | General | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | ✅ | ✅ | — | ✅ | 2 |
 | [§ 8.3.1](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-1) | General | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.1](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-1) | General | `DECODE-TILE-PARTITION-DECISION-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 8.3.1](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-1) | General | `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 8.3.1](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-1) | General | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | ✅ | ✅ | — | ✅ | 2 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-TILE-PARTITION-DECISION-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
@@ -472,6 +481,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | ✅ | ✅ | — | ✅ | 2 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 
 ## Annexes

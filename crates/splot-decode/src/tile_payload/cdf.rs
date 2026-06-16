@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Crate-private AV2 tile CDF selection boundary.
+//! Crate-private AV2 tile CDF selection and lifecycle boundaries.
 //!
-//! Feature tracking: `DECODE-TILE-CDF-SELECTION-BOUNDARY`.
+//! Feature tracking: `DECODE-TILE-CDF-SELECTION-BOUNDARY` and
+//! `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY`.
 
 pub(crate) mod block_read;
 mod block_rows;
 pub(crate) mod context;
+mod lifecycle;
 pub(crate) mod partition_read;
 
 use core::fmt;
@@ -172,7 +174,7 @@ impl TileCdfSubset {
     }
 }
 
-/// Saved CDF subset used only to prove copy/average policy calculation.
+/// Saved CDF subset used for supported Tile-to-Saved lifecycle state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SavedCdfSubset {
     rows: TileCdfRows,
@@ -187,23 +189,6 @@ impl SavedCdfSubset {
         }
     }
 
-    /// Applies the recorded copy/average decision for the supported subset.
-    pub(crate) fn apply_tile(
-        &mut self,
-        tile_num: u32,
-        tile: &TileCdfSubset,
-        policy: TileCdfSavePolicy,
-    ) {
-        if policy.copy_cdf {
-            self.rows = tile.rows.clone();
-            return;
-        }
-        if policy.avg_cdf {
-            self.rows
-                .avg_from_tile(tile_num, &tile.rows, policy.num_log2);
-        }
-    }
-
     #[cfg(test)]
     pub(crate) const fn rows(&self) -> &TileCdfRows {
         &self.rows
@@ -215,20 +200,26 @@ impl SavedCdfSubset {
 pub(crate) struct TileCdfWorkUnitBoundary {
     update_mode: CdfUpdateMode,
     save_policy: TileCdfSavePolicy,
+    frame_cdfs: FrameCdfSubset,
+    saved_cdfs: SavedCdfSubset,
     tile_cdfs: TileCdfSubset,
 }
 
 impl TileCdfWorkUnitBoundary {
-    /// Creates tile-local CDF boundary metadata.
+    /// Creates work-unit CDF boundary state from tile-local rows.
     #[must_use]
-    pub(crate) const fn new(
+    pub(crate) fn new(
         update_mode: CdfUpdateMode,
         save_policy: TileCdfSavePolicy,
-        tile_cdfs: TileCdfSubset,
+        frame_cdfs: FrameCdfSubset,
     ) -> Self {
+        let saved_cdfs = SavedCdfSubset::from_frame(&frame_cdfs);
+        let tile_cdfs = frame_cdfs.tile_copy();
         Self {
             update_mode,
             save_policy,
+            frame_cdfs,
+            saved_cdfs,
             tile_cdfs,
         }
     }
@@ -254,6 +245,16 @@ impl TileCdfWorkUnitBoundary {
     /// Mutable tile-local CDF subset for future `decode_tile()` symbol reads.
     pub(crate) fn tile_cdfs_mut(&mut self) -> &mut TileCdfSubset {
         &mut self.tile_cdfs
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn frame_cdfs(&self) -> &FrameCdfSubset {
+        &self.frame_cdfs
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn saved_cdfs(&self) -> &SavedCdfSubset {
+        &self.saved_cdfs
     }
 }
 
@@ -944,6 +945,10 @@ fn avg_cdf_row<const N: usize>(
         cdf[i] -= (CDF_PROB_SCALE - tile_cdf[i]) >> shift;
     }
     cdf[N - 1] += tile_cdf[N - 1] >> shift;
+}
+
+fn scale_cdf_count<const N: usize>(cdf: &mut [i32; N]) {
+    cdf[N - 1] = cdf[N - 1].saturating_mul(3) >> 2;
 }
 
 const fn floor_log2(value: u32) -> u32 {

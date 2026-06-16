@@ -2,7 +2,7 @@
 
 Generated from `docs/DECODER-SUPPORT-MATRIX.toml` by `cargo xtask decoder-support --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 44 row(s).
+Matrix version 1. Last reviewed 2026-06-15. 45 row(s).
 
 ## Status Counts
 
@@ -10,7 +10,7 @@ Matrix version 1. Last reviewed 2026-06-15. 44 row(s).
 |---|---:|
 | `todo` | 0 |
 | `partial` | 9 |
-| `supported` | 35 |
+| `supported` | 36 |
 | `unsupported-intentional` | 0 |
 | `blocked` | 0 |
 
@@ -21,7 +21,7 @@ Matrix version 1. Last reviewed 2026-06-15. 44 row(s).
 | `encoder-reuse` | 1 |
 | `foundation` | 20 |
 | `tier0-plan` | 2 |
-| `tier1-intra` | 21 |
+| `tier1-intra` | 22 |
 
 ## Rows
 
@@ -53,6 +53,7 @@ Matrix version 1. Last reviewed 2026-06-15. 44 row(s).
 | `symbol-decoder` | Symbol and CDF decoder foundation | `AV2-8.2-SYMBOL-DECODER` | `tier1-intra` | `partial` | 8.2.2<br>8.2.3<br>8.2.4<br>8.2.5<br>8.2.6<br>9.2 | crates/splot-core/src/symbol.rs::tests<br>crates/splot-core/src/symbol.rs::proptests<br>cargo test -p splot-core symbol --locked<br>cargo test -p splot-core --test tables_spot --locked<br>cargo clippy -p splot-core --all-targets --all-features --locked -- -D warnings<br>cargo xtask check-decoder-support | decode/unsupported-feature | none | `crates/splot-core/src/symbol.rs` |
 | `tile-payload-decode` | Tile payload decode boundary | `DECODE-TILE-PAYLOAD-BOUNDARY` | `tier1-intra` | `partial` | 5.20.1<br>5.20.2.1<br>6.19.1<br>7.1<br>8.2.2<br>8.3 | crates/splot-decode/src/tile_payload/tests.rs<br>cargo test -p splot-decode tile_payload --locked<br>cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings<br>cargo test -p splot-decode --locked<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | decode/unsupported-feature<br>decode/resource-limit | none | `crates/splot-decode/src/tile_payload.rs` |
 | `tile-cdf-selection-boundary` | Tile CDF selection boundary | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | `tier1-intra` | `partial` | 5.20.1<br>5.20.2.1<br>5.20.3.2<br>6.19.1<br>8.2.2<br>8.2.4<br>8.2.6<br>8.3.1<br>8.3.2<br>9.2<br>9.3 | crates/splot-decode/src/tile_payload/cdf/context.rs<br>crates/splot-decode/src/tile_payload/cdf/tests.rs<br>crates/splot-decode/src/tile_payload/tests.rs<br>cargo test -p splot-decode tile_payload --locked<br>cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings<br>cargo test -p splot-decode --locked<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | decode/unsupported-feature | none | `crates/splot-decode/src/tile_payload.rs; crates/splot-decode/src/tile_payload/cdf.rs; crates/splot-decode/src/tile_payload/cdf/context.rs` |
+| `tile-cdf-save-lifecycle-boundary` | Tile CDF save lifecycle boundary | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | `tier1-intra` | `supported` | 5.20.1<br>5.20.2.1<br>6.19.1<br>7.5<br>8.2.2<br>8.2.4<br>8.2.6<br>8.3.1<br>8.3.2<br>9.3 | crates/splot-decode/src/tile_payload/cdf/tests.rs::saved_copy_and_average_are_exact_for_supported_subset<br>crates/splot-decode/src/tile_payload/cdf/tests.rs::disabled_cdf_update_keeps_saved_subset_at_initial_rows<br>crates/splot-decode/src/tile_payload/cdf/tests.rs::frame_end_update_copies_saved_rows_and_scales_counts<br>crates/splot-decode/src/tile_payload/cdf/tests.rs::work_unit_boundary_applies_saved_and_frame_updates_transactionally<br>crates/splot-decode/src/tile_payload/block_symbol.rs::tests::traced_symbol_mismatch_fails_closed_and_rolls_back_cdfs<br>crates/splot-decode/src/tile_payload/block_symbol.rs::tests::invalid_cdf_row_reports_parse_failure_and_preserves_rows<br>crates/splot-decode/src/tile_payload/runtime_frontier.rs::tests::block_symbol_frontier_rejects_exit_symbol_padding_failure<br>crates/splot-decode/src/tile_payload/runtime_frontier.rs::tests::block_symbol_frontier_accepts_minimal_fixture_trace<br>cargo test -p splot-decode tile_payload::cdf --locked<br>cargo test -p splot-decode tile_payload::block_symbol --locked<br>cargo test -p splot-decode tile_payload::runtime_frontier --locked<br>cargo test -p splot-decode runtime_hash --locked<br>cargo test -p splot-decode runtime_y4m --locked<br>cargo xtask check-decoder-support<br>cargo xtask check-feature-status | decode/unsupported-feature<br>decode/resource-limit | none | `crates/splot-decode/src/tile_payload/cdf.rs; crates/splot-decode/src/tile_payload/cdf/lifecycle.rs; crates/splot-decode/src/tile_payload/cdf/block_rows.rs; crates/splot-decode/src/tile_payload/runtime_frontier.rs` |
 | `tile-partition-symbol-read-boundary` | Tile partition symbol read boundary | `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY` | `tier1-intra` | `supported` | 5.20.3.2<br>8.2.6<br>8.3.1<br>8.3.2 | crates/splot-decode/src/tile_payload/cdf/partition_read.rs<br>crates/splot-decode/src/tile_payload/cdf/tests.rs::selected_row_hands_off_to_symbol_decoder_update_modes<br>crates/splot-decode/src/tile_payload/tests.rs::single_tile_payload_yields_deterministic_work_unit_and_unsupported_boundary<br>cargo test -p splot-decode tile_payload --locked<br>cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings<br>cargo test -p splot-decode --locked<br>cargo xtask check-decoder-support | none | none | `crates/splot-decode/src/tile_payload/cdf/partition_read.rs` |
 | `tile-partition-decision-boundary` | Tile partition decision boundary | `DECODE-TILE-PARTITION-DECISION-BOUNDARY` | `tier1-intra` | `supported` | 5.20.3.2<br>6.19.3<br>8.2.5<br>8.2.6<br>8.3.1<br>8.3.2 | crates/splot-decode/src/tile_payload/partition.rs<br>cargo test -p splot-decode tile_payload --locked<br>cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings<br>cargo test -p splot-decode --locked<br>cargo xtask check-decoder-support | none | none | `crates/splot-decode/src/tile_payload/partition.rs` |
 | `tile-partition-size-tables` | Tile partition size table boundary | `DECODE-TILE-PARTITION-SIZE-TABLE-BOUNDARY` | `tier1-intra` | `supported` | 5.20.3.1<br>5.20.3.2<br>6.19.3<br>9.2 | crates/splot-core/tests/tables_spot.rs::conversion_partition_size_tables_match_mirror<br>crates/splot-decode/src/tile_payload/partition_size.rs<br>xtask/src/gen_tables.rs::tests<br>xtask/src/gen_tables/block_symbols.rs::tests<br>cargo xtask gen-tables --check<br>cargo test -p splot-core --test tables_spot --locked<br>cargo test -p splot-decode tile_payload --locked<br>cargo xtask check-decoder-support | none | none | `crates/splot-decode/src/tile_payload/partition_size.rs` |

@@ -799,7 +799,7 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         .cdf_policy
         .with_tile_grid(input.grid.tile_cols, input.grid.tile_rows);
     let save_policy = tile_cdf_save_policy(cdf_policy, tile.tile_num)?;
-    let cdf = TileCdfWorkUnitBoundary::new(cdf_update_mode, save_policy, frame_cdfs.tile_copy());
+    let cdf = TileCdfWorkUnitBoundary::new(cdf_update_mode, save_policy, frame_cdfs);
     let work_unit = DecodeTileWorkUnit {
         source: input.source,
         selected_layer: input.selected_layer,

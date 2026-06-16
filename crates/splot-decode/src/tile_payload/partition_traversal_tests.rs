@@ -85,7 +85,7 @@ fn make_work_unit_at(
         cdf: TileCdfWorkUnitBoundary::new(
             update_mode,
             tile_cdf_save_policy(TileCdfPolicyInput::single_tile_default(), 0).unwrap(),
-            FrameCdfSubset::from_defaults().tile_copy(),
+            FrameCdfSubset::from_defaults(),
         ),
     }
 }
