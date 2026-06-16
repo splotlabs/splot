@@ -14,12 +14,13 @@
 use libfuzzer_sys::fuzz_target;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, IntraCardinalDirection,
-    IntraCardinalEdges, IntraDcEdges, IntraDirectionalAngleEdges, IntraPaethEdges,
-    IntraMiddleDirectionalAngleEdges, IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode,
-    IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize, ReconSample,
-    apply_intra_ibp_dc_rect, predict_intra_cardinal_directional_rect_into,
-    predict_intra_dc_rect_into, predict_intra_dc_rect_value, predict_intra_dc_square,
-    predict_intra_dc_square_into, predict_intra_dc_square_value,
+    IntraCardinalEdges, IntraDcEdges, IntraDirectionalAngle, IntraDirectionalAngleEdges,
+    IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges, IntraPaethEdges,
+    IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode, IntraSquareBlockSize, OutputIndex,
+    PixelFormat, PlaneId, PlaneRect, PlaneSize, ReconSample, apply_intra_ibp_dc_rect,
+    predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_into,
+    predict_intra_dc_rect_value, predict_intra_dc_square, predict_intra_dc_square_into,
+    predict_intra_dc_square_value,
     predict_intra_dc_subsampled_rect_into, predict_intra_dc_subsampled_rect_value,
     predict_intra_directional_angle_rect_from_p_angle_into,
     predict_intra_middle_directional_angle_rect_from_p_angle_into, predict_intra_paeth_rect_into,
@@ -328,8 +329,9 @@ fn run_interior_workspace_case<T: ReconSample>(input: &mut FuzzInput<'_>, bit_de
     let Some(size) = rect_size_from_input(input) else {
         return;
     };
-    let width = size.width() + 2;
-    let height = size.height() + 2;
+    let edge_len = size.width() + size.height();
+    let width = edge_len + 2;
+    let height = edge_len + 2;
     let Some(mut workspace) =
         workspace_from_dimensions::<T>(input, bit_depth, PixelFormat::Yuv444, width, height)
     else {
@@ -357,6 +359,20 @@ fn run_interior_workspace_case<T: ReconSample>(input: &mut FuzzInput<'_>, bit_de
         1,
         size,
         cardinal_direction(input.byte()),
+    );
+    let _ = workspace.predict_intra_directional_angle_rect(
+        PlaneId::U,
+        1,
+        1,
+        size,
+        directional_angle(input.byte()),
+    );
+    let _ = workspace.predict_intra_middle_directional_angle_rect(
+        PlaneId::U,
+        1,
+        1,
+        size,
+        middle_directional_angle(input.byte()),
     );
     let _ = workspace.freeze();
 }
@@ -399,6 +415,20 @@ fn run_random_workspace_case<T: ReconSample>(input: &mut FuzzInput<'_>, bit_dept
     let _ = workspace.predict_intra_smooth_rect(plane, x, y, size, smooth_mode(input.byte()));
     let _ =
         workspace.predict_intra_cardinal_directional_rect(plane, x, y, size, cardinal_direction(input.byte()));
+    let _ = workspace.predict_intra_directional_angle_rect(
+        plane,
+        x,
+        y,
+        size,
+        directional_angle(input.byte()),
+    );
+    let _ = workspace.predict_intra_middle_directional_angle_rect(
+        plane,
+        x,
+        y,
+        size,
+        middle_directional_angle(input.byte()),
+    );
     let _ = workspace.rect_rows(plane, rect).map(|rows| {
         let _: usize = rows.map(<[T]>::len).sum();
     });
@@ -570,6 +600,22 @@ const fn cardinal_direction(selector: u8) -> IntraCardinalDirection {
         IntraCardinalDirection::Vertical
     } else {
         IntraCardinalDirection::Horizontal
+    }
+}
+
+const fn directional_angle(selector: u8) -> IntraDirectionalAngle {
+    match selector % 3 {
+        0 => IntraDirectionalAngle::D45,
+        1 => IntraDirectionalAngle::D67,
+        _ => IntraDirectionalAngle::D203,
+    }
+}
+
+const fn middle_directional_angle(selector: u8) -> IntraMiddleDirectionalAngle {
+    match selector % 3 {
+        0 => IntraMiddleDirectionalAngle::D113,
+        1 => IntraMiddleDirectionalAngle::D135,
+        _ => IntraMiddleDirectionalAngle::D157,
     }
 }
 
