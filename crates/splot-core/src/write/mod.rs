@@ -98,7 +98,8 @@ pub use frame_segmentation::write_segmentation_params;
 pub use frame_tail::{write_film_grain_config, write_intra_tail, write_tx_mode};
 pub use frame_tiling::write_tile_info;
 pub use metadata::{
-    write_metadata_group_obu, write_metadata_payload, write_metadata_short_obu, write_metadata_unit,
+    write_metadata_group_obu, write_metadata_group_obu_flat, write_metadata_payload,
+    write_metadata_short_obu, write_metadata_unit,
 };
 pub use obu::{write_annexb_obu, write_obu_header, write_obu_header_extension};
 pub use segment::write_seg_info;

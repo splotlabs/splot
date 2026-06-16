@@ -46,7 +46,7 @@ use crate::obu::{ObuHeader, ParsedObu};
 use crate::types::{ExtendedLayerId, ObuType};
 use crate::write::bit_writer::BitWriter;
 use crate::write::error::{WriteError, WriteResult};
-use crate::write::metadata::{write_metadata_group_obu, write_metadata_short_obu};
+use crate::write::metadata::{write_metadata_group_obu_flat, write_metadata_short_obu};
 use crate::write::obu::write_obu_header;
 use crate::write::seq_tile::write_sequence_header;
 
@@ -56,11 +56,12 @@ use crate::write::seq_tile::write_sequence_header;
 /// size prefix is [`crate::write::write_annexb_obu`]'s job, not this writer's.
 ///
 /// `passthrough` carries the opaque bytes the typed model does not hold (the
-/// `obu_padding_byte` run for [`ParsedObu::Padding`], or the length-summarized metadata
-/// blob bytes); it must be empty for every other type. For [`ParsedObu::MetadataGroup`] the
-/// group's `obu_xlayer_id` (which selects the § 6.16.3 global-vs-local layer-map branch) is
-/// taken from `header.extended_layer_id`, so a single-unit group with the global branch
-/// round-trips. See [`write_obu_payload`] for the metadata-group passthrough limitation.
+/// `obu_padding_byte` run for [`ParsedObu::Padding`], or every metadata unit's length-summarized
+/// blob bytes concatenated in unit order); it must be empty for every other type. For
+/// [`ParsedObu::MetadataGroup`] the group's `obu_xlayer_id` (which selects the § 6.16.3
+/// global-vs-local layer-map branch) is taken from `header.extended_layer_id`, and the flat
+/// `passthrough` is split per unit by each unit's modeled blob length, so a multi-unit group on
+/// either layer-map branch round-trips.
 ///
 /// # Errors
 /// - [`WriteError::WriterNotByteAligned`] if `writer` is not on a byte boundary (an OBU
@@ -114,17 +115,16 @@ pub fn write_complete_obu(
 /// `is_extensible` is `header.obu_type.is_extensible_obu()` (§ 5.2.1): a non-empty body of an
 /// extensible type emits the `obu_extension_flag = 0` (`f(1)`) before `trailing_bits()`.
 /// `passthrough` carries the opaque bytes the typed model does not hold — the
-/// `obu_padding_byte` run for [`ParsedObu::Padding`] (its length must equal `padding_len`),
-/// or the single metadata blob's bytes; it must be empty for every other type and for the
-/// temporal delimiter.
+/// `obu_padding_byte` run for [`ParsedObu::Padding`] (its length must equal `padding_len`), or
+/// every metadata unit's blob bytes concatenated in unit order; it must be empty for every other
+/// type and for the temporal delimiter.
 ///
-/// **Metadata-group limitation.** This function has no OBU header, so it writes a
-/// [`ParsedObu::MetadataGroup`] as a **single-unit, non-global-xlayer** group: the lone
-/// `passthrough` slice is that unit's blob bytes and the § 6.16.3 layer-map branch is the
-/// local one (`obu_xlayer_id` = `0`). A multi-unit group, or a group that used the global
-/// (`obu_xlayer_id == 31`) layer-map branch, must go through [`write_complete_obu`] (which
-/// supplies the real `header.extended_layer_id`); a multi-unit group here is rejected by the
-/// metadata writer's `group_passthrough_count` guard (`passthrough` count `1` != unit count).
+/// **Metadata-group layer-map scope.** This function has no OBU header, so a
+/// [`ParsedObu::MetadataGroup`] is written with the § 6.16.3 **local** layer-map branch
+/// (`obu_xlayer_id` = `0`). The flat `passthrough` is split per unit by each unit's modeled blob
+/// length, so a multi-unit group round-trips here; only a group that used the **global**
+/// (`obu_xlayer_id == 31`) layer-map branch must go through [`write_complete_obu`], which supplies
+/// the real `header.extended_layer_id`.
 ///
 /// # Errors
 /// - [`WriteError::WriterNotByteAligned`] if `writer` is not on a byte boundary.
@@ -134,8 +134,9 @@ pub fn write_complete_obu(
 ///   or a `padding_len` that disagrees with `passthrough.len()`
 ///   (`padding_passthrough_len`).
 /// - Any delegated body-writer reject ([`write_sequence_header`],
-///   [`write_metadata_short_obu`], [`write_metadata_group_obu`]) or
-///   [`WriteError::EmptyTrailingBits`] (unreachable: a non-empty body always leaves room).
+///   [`write_metadata_short_obu`], [`write_metadata_group_obu_flat`], including its
+///   `group_passthrough_len` split mismatch) or [`WriteError::EmptyTrailingBits`] (unreachable: a
+///   non-empty body always leaves room).
 ///
 /// All checks run before any bit reaches `writer` (the body + tail are drafted into a
 /// scratch and appended only on full success), so a rejected payload leaves `writer`
@@ -207,10 +208,11 @@ fn write_obu_payload_inner(
             write_metadata_short_obu(&mut scratch, obu, passthrough)?;
             write_generic_tail(&mut scratch, is_extensible)?;
         }
-        // § 5.17.3: the group-metadata body (single-unit, see write_obu_payload's note),
-        // then the generic tail.
+        // § 5.17.3: the group-metadata body, then the generic tail. The flat-passthrough writer
+        // splits `passthrough` per unit by each unit's modeled blob length, so a multi-unit group
+        // (cancelled / fully-modeled / length-summarized units in any mix) round-trips.
         ParsedObu::MetadataGroup(obu) => {
-            write_metadata_group_obu(&mut scratch, obu, obu_xlayer_id, &[passthrough])?;
+            write_metadata_group_obu_flat(&mut scratch, obu, obu_xlayer_id, passthrough)?;
             write_generic_tail(&mut scratch, is_extensible)?;
         }
         // The nine OBU types without a body writer yet: an honest typed stub naming the

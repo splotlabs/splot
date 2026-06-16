@@ -281,6 +281,28 @@ mod tests {
         assert_eq!(reparsed, payload);
     }
 
+    #[test]
+    fn metadata_group_multi_unit_payload_round_trips() {
+        // A two-unit group (both cancelled, so each needs an empty passthrough). The dispatch
+        // splits the flat (empty) passthrough into one empty slice per unit, so a valid multi-unit
+        // group round-trips through write_obu_payload rather than being rejected on unit count.
+        let header = header_for(ObuType::MetadataGroup);
+        // group header 0x00, cnt_minus_1 0x01 (2 units), unit [type 0x04, cancel 0x01] x2, tail 0x80.
+        let fixture = [0x00u8, 0x01, 0x04, 0x01, 0x04, 0x01, 0x80];
+        let payload = reparse_payload(&header, &fixture);
+        // Sanity: the fixture really is a two-unit group (else the test would not exercise the fix).
+        match &payload {
+            ParsedObu::MetadataGroup(obu) => assert_eq!(obu.units.len(), 2),
+            other => panic!("expected a metadata group, got {other:?}"),
+        }
+
+        let mut writer = BitWriter::new();
+        write_obu_payload(&mut writer, &payload, false, &[]).unwrap();
+        let bytes = writer.into_bytes();
+        let reparsed = reparse_payload(&header, &bytes);
+        assert_eq!(reparsed, payload);
+    }
+
     // ===================================================================================
     // write_complete_obu round-trips (framed through write_annexb_obu)
     // ===================================================================================

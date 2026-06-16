@@ -880,6 +880,78 @@ mod tests {
         group_round_trip(&obu, ExtendedLayerId::from_bits(0), &[&[], &[]]);
     }
 
+    /// A non-cancel `UnknownRaw` group unit declaring a `raw_len`-byte opaque blob. `muh_header_size`
+    /// = payload_size leb (1, for raw_len < 128) + fixed 2, no layer maps, no header extension.
+    fn unknown_raw_group_unit(raw_len: usize) -> MetadataGroupUnit {
+        let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len });
+        MetadataGroupUnit {
+            metadata_type: MetadataType::Reserved(0),
+            muh_header_size: 3,
+            muh_cancel_flag: false,
+            muh_payload_size: Some(raw_len as u32),
+            muh_layer_idc: Some(0),
+            muh_persistence_idc: Some(0),
+            muh_priority: Some(0),
+            muh_reserved_zero_2bits: Some(0),
+            muh_xlayer_map: None,
+            muh_mlayer_maps: vec![],
+            header_extension_len: 0,
+            unit: Some(unit(MetadataType::Reserved(0), raw_len, payload)),
+        }
+    }
+
+    #[test]
+    fn group_flat_passthrough_splits_per_unit_blob_len() {
+        // Two units: a length-summarized UnknownRaw unit (3-byte blob) then a cancelled unit (no
+        // blob). write_metadata_group_obu_flat must split the single flat passthrough into
+        // [blob, empty] by each unit's modeled length and produce exactly the same bytes as the
+        // pre-split write_metadata_group_obu — and the result round-trips.
+        let obu = MetadataGroupObu {
+            metadata_is_suffix: false,
+            metadata_necessity_idc: 0,
+            metadata_application_id: 0,
+            units: vec![
+                unknown_raw_group_unit(3),
+                cancel_group_unit(MetadataType::Timecode, 0),
+            ],
+        };
+        let xlayer = ExtendedLayerId::from_bits(0);
+        let blob = [0xDEu8, 0xAD, 0xBE];
+
+        let mut flat = BitWriter::new();
+        write_metadata_group_obu_flat(&mut flat, &obu, xlayer, &blob).unwrap();
+        let flat_bytes = flat.into_bytes();
+
+        let mut split = BitWriter::new();
+        write_metadata_group_obu(&mut split, &obu, xlayer, &[&blob[..], &[]]).unwrap();
+        assert_eq!(flat_bytes, split.into_bytes(), "flat split != pre-split output");
+
+        // The blob bytes are opaque (captured only as raw_len), so the reparsed model equals obu.
+        let reparsed = reparse_group(&flat_bytes, xlayer).unwrap();
+        assert_eq!(&reparsed, &obu);
+    }
+
+    #[test]
+    fn group_flat_passthrough_total_mismatch_is_rejected() {
+        // One unit declares a 3-byte blob but only 2 flat bytes are supplied: the per-unit lengths
+        // do not sum to passthrough.len(), so the split rejects before any bit is written.
+        let obu = MetadataGroupObu {
+            metadata_is_suffix: false,
+            metadata_necessity_idc: 0,
+            metadata_application_id: 0,
+            units: vec![unknown_raw_group_unit(3)],
+        };
+        let mut writer = BitWriter::new();
+        let err =
+            write_metadata_group_obu_flat(&mut writer, &obu, ExtendedLayerId::from_bits(0), &[0xDE, 0xAD])
+                .unwrap_err();
+        assert!(
+            matches!(err, WriteError::NonCanonicalMetadata { what } if what == "group_passthrough_len"),
+            "expected group_passthrough_len, got {err:?}"
+        );
+        assert_eq!(writer.bit_len(), 0);
+    }
+
     // ===== group OBU reject paths =====
 
     #[test]

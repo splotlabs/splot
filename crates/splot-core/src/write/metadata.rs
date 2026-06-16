@@ -258,6 +258,71 @@ pub fn write_metadata_group_obu(
     writer.append(&scratch)
 }
 
+/// The opaque `passthrough` byte length the metadata-group unit `unit` consumes when written by
+/// [`write_metadata_group_obu`] (AV2 v1.0.0 § 5.17.3 / § 5.17.9 – § 5.17.13,
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-17-3`): `0` for a cancelled unit (it carries no
+/// `metadata_unit`) or a fully-modeled payload, else the length-summarized blob length (ITU-T T.35,
+/// ICC, user-data, or unknown-raw). It mirrors the per-payload `require_passthrough_len` checks in
+/// [`write_metadata_payload`], letting a caller holding one flat passthrough split it per unit;
+/// [`write_metadata_group_obu_flat`] is that caller.
+fn metadata_group_unit_passthrough_len(unit: &MetadataGroupUnit) -> usize {
+    if unit.muh_cancel_flag {
+        return 0;
+    }
+    match unit.unit.as_ref().map(|inner| &inner.payload) {
+        Some(MetadataPayload::ItutT35(p)) => p.payload_len,
+        Some(MetadataPayload::IccProfile(p)) => p.payload_len,
+        Some(MetadataPayload::UserDataUnregistered(p)) => p.payload_len,
+        Some(MetadataPayload::UnknownRaw(p)) => p.raw_len,
+        _ => 0,
+    }
+}
+
+/// Writes a `metadata_group_obu()` (AV2 v1.0.0 § 5.17.3,
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-17-3`) from a single flat `passthrough` holding
+/// every unit's length-summarized blob bytes concatenated in unit order — the form the unified OBU
+/// dispatch ([`crate::write::write_complete_obu`]) holds, where the per-unit split is not available.
+/// Splits `passthrough` per unit by each unit's modeled blob length (the private
+/// `metadata_group_unit_passthrough_len`) and delegates to [`write_metadata_group_obu`], so a
+/// multi-unit group (cancelled, fully-modeled, and length-summarized units in any mix) round-trips
+/// without the caller pre-splitting.
+///
+/// # Errors
+/// Every [`write_metadata_group_obu`] error, plus [`WriteError::NonCanonicalMetadata`] with
+/// `what == "group_passthrough_len"` when the per-unit blob lengths do not sum to exactly
+/// `passthrough.len()` (the flat blob does not match the modeled units). The split uses
+/// `checked_add` + slicing bounds, so a constructed over-large blob length rejects rather than
+/// panicking. Never writes a bit on error.
+pub fn write_metadata_group_obu_flat(
+    writer: &mut BitWriter,
+    obu: &MetadataGroupObu,
+    obu_xlayer_id: ExtendedLayerId,
+    passthrough: &[u8],
+) -> WriteResult<()> {
+    // Split the flat passthrough into one slice per unit by each unit's modeled blob length, in
+    // unit order. checked_add + the `end <= len` bound keep a constructed (over-large) length from
+    // panicking; an exact-sum mismatch is rejected below.
+    let mut slices: Vec<&[u8]> = Vec::with_capacity(obu.units.len());
+    let mut offset = 0usize;
+    for unit in &obu.units {
+        let len = metadata_group_unit_passthrough_len(unit);
+        let end = offset
+            .checked_add(len)
+            .filter(|&end| end <= passthrough.len())
+            .ok_or(WriteError::NonCanonicalMetadata {
+                what: "group_passthrough_len",
+            })?;
+        slices.push(&passthrough[offset..end]);
+        offset = end;
+    }
+    if offset != passthrough.len() {
+        return Err(WriteError::NonCanonicalMetadata {
+            what: "group_passthrough_len",
+        });
+    }
+    write_metadata_group_obu(writer, obu, obu_xlayer_id, &slices)
+}
+
 /// Writes one `metadata_group_obu()` per-unit header plus its `metadata_unit()` (AV2 v1.0.0
 /// § 5.17.3), the inverse of `parse_metadata_group_unit`. The whole unit is validated and drafted
 /// into a scratch [`BitWriter`] up front, so a reject leaves the outer (group) scratch untouched.
