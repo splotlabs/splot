@@ -54,8 +54,8 @@
 - [x] 4.1 Update the `AV2-5.18.2-FRAME-HEADER-INFO` notes (single-picture-bridge fix
   + the spec-vs-AVM/dav2d divergence) and add the three new tests to `feature.proof`.
   Bumped the `info.rs` source-line allowance (4624 -> 4889) with a dated rationale.
-- [ ] 4.2 Re-record the audit ledger (`cargo xtask audit-scope --all --write-ledger`)
-  as a POST-MERGE step — the changed files should read as legitimate drift until merged.
+- [x] 4.2 Re-record the audit ledger (`cargo xtask audit-scope --all --write-ledger`)
+  as a POST-MERGE step — done in the openspec sync/archive follow-up.
 
 ## 5. Checks
 
