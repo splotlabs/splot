@@ -2271,21 +2271,26 @@ source-backed changes provide implementation and tests.
 
 #### Scenario: Raw and Y4M output contracts are distinct
 
-- **WHEN** future runtime raw output is implemented
+- **WHEN** runtime raw output is implemented for any tier
 - **THEN** raw output is defined as concatenated canonical sample bytes for each
   output event in output-index order for the selected variant, with no header or
   metadata bytes
-- **AND** this contract does not add a current `--output-format raw` CLI mode
-- **WHEN** future runtime Y4M output is implemented
+- **AND** the current `--output-format raw` CLI mode is limited to the
+  `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` minimal tier until broader runtime raw
+  output is separately implemented and evidenced
+- **WHEN** runtime Y4M output is implemented for any tier
 - **THEN** Y4M output represents the AV2 output-frame sample set for the chosen
   variant, using repository-owned Y4M container policy
 - **AND** Y4M container bytes remain repository output policy rather than AV2
   syntax
+- **AND** the current Y4M CLI output path is limited to the
+  `DECODE-Y4M-RUNTIME-OUTPUT` minimal tier until broader runtime Y4M output is
+  separately implemented and evidenced
 
 #### Scenario: Output-file publication is atomic
 
-- **WHEN** a future successful `splot decode -o <path>` mode writes hash, raw,
-  or Y4M output
+- **WHEN** a current or future successful `splot decode -o <path>` mode writes
+  raw, Y4M, or another output artifact
 - **THEN** it writes to a temporary file in the final path's directory,
   completes serialization, flushes user-space buffers, syncs the temporary
   file's contents and metadata, renames the temporary file as the final publish
@@ -2474,10 +2479,13 @@ The CLI SHALL publish runtime Y4M output atomically: all Y4M bytes MUST be writt
 - **AND** this remains true for both hash success and hash diagnostic paths
 
 ### Requirement: Decode output error diagnostics
-The decoder support model SHALL expose `decode/output-error` for Y4M serialization and CLI publication failures that are not malformed-source, resource-limit, or unsupported-feature conditions.
+The decoder support model SHALL expose `decode/output-error` for raw or Y4M
+serialization and CLI publication failures that are not malformed-source,
+resource-limit, or unsupported-feature conditions.
 
 #### Scenario: Output path cannot be published
-- **WHEN** runtime Y4M decode reaches output publication but the output path cannot be created, written, flushed, synced, renamed, or cleaned up
+- **WHEN** runtime raw or Y4M decode reaches output publication but the output
+  path cannot be created, written, flushed, synced, renamed, or cleaned up
 - **THEN** `splot decode` emits a structured `decode/output-error` diagnostic
 - **AND** the diagnostic includes a stable operation identifier
 - **AND** it does not include nondeterministic temporary filename suffixes
@@ -2951,4 +2959,3 @@ byte API without filesystem I/O or external decoder invocation.
 - **WHEN** `decode_runtime_raw_bytes` runs on arbitrary input
 - **THEN** successful cases satisfy only the stable minimal raw output shape
 - **AND** malformed, unsupported, resource-limit, and writer-failure paths return typed `DecodeError` values rather than panicking
-

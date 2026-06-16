@@ -43,7 +43,7 @@ Every emitted decoder diagnostic uses stable field names:
 | Rule ID | Severity | Section | Feature | Matrix Row | Message | Remediation |
 |---|---|---|---|---|---|---|
 | `decode/malformed-source` | Error | optional parser section | `DECODE-BYTE-STREAM-PLANNER` | `decode-byte-stream-planner` | decode source is malformed and could not be planned. | Check the AV2 Annex B or IVF source bytes before retrying `splot decode`. |
-| `decode/output-error` | Error | none | `DECODE-Y4M-RUNTIME-OUTPUT` | `decode-y4m-runtime-output` | decode output could not be serialized or written. | Check the output destination and retry the decode operation. |
+| `decode/output-error` | Error | none | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` / `DECODE-Y4M-RUNTIME-OUTPUT` | `decode-minimal-raw-runtime-output` / `decode-y4m-runtime-output` | decode output could not be serialized or written. | Check the output destination and retry the decode operation. |
 | `decode/resource-limit` | Error | optional policy / § 5.2.1 / § 7.1 | `DOC-DECODE-LIMITS-CONTRACT` | `decode-limits-budget` | decode planning stopped because a configured resource limit was exceeded. | Use a smaller input or raise the decode limit policy before retrying. |
 | `decode/unsupported-feature` | Error | § 7.1 or planner / tile section | `CLI-DECODE` / `DECODE-STREAM-STATE-PLANNER` / `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` / `DECODE-Y4M-RUNTIME-OUTPUT` / `DECODE-TILE-PAYLOAD-BOUNDARY` | `cli-decode-entrypoint` / `decode-stream-state` / `minimal-decode-tier-contract` / `decode-y4m-runtime-output` / `tile-payload-decode` | Byte stream planning succeeded, but `splot decode` runtime output, the requested runtime tier, runtime Y4M metadata, or tile syntax traversal is not supported. | Use `splot validate` or `splot inspect` for bitstream analysis, use a stream inside the supported minimal hash tier, or use nonzero IVF timebase metadata for runtime Y4M output. |
 
@@ -78,8 +78,12 @@ IVF timebase metadata cannot produce a nonzero Y4M frame rate.
 
 `decode/output-error` includes `detail_kind`, `output_operation`,
 `output_source_kind`, and `output_source_message` in CLI JSON/text rendering.
-The operation is stable; filesystem publication code must not include
-nondeterministic temporary filename suffixes in diagnostic details.
+Raw output operations use matrix row `decode-minimal-raw-runtime-output` and
+Feature ID `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT`; Y4M output operations use
+matrix row `decode-y4m-runtime-output` and Feature ID
+`DECODE-Y4M-RUNTIME-OUTPUT`. The operation is stable; filesystem publication
+code must not include nondeterministic temporary filename suffixes in
+diagnostic details.
 
 Tile-payload-boundary `decode/unsupported-feature` metadata is crate-private
 until a later runtime decode path surfaces it through CLI diagnostics. The
