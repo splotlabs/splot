@@ -4274,6 +4274,55 @@ fixtures = [
 ]
 diagnostics = ["decode/malformed-source", "decode/resource-limit", "decode/unsupported-feature"]
 
+[[feature]]
+id = "CONF-RECON-Y4M-OUTPUT-FUZZ"
+name = "Y4M output serialization no-panic fuzzing"
+category = "conformance"
+kind = "conformance"
+spec_sections = ["6.4.1", "6.16.13", "6.17.4.4", "7.21.1", "7.21.2"]
+sources = [
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-2",
+]
+crate = "fuzz"
+module = "fuzz/fuzz_targets/recon_y4m_output_bytes.rs"
+openspec_change = "recon-y4m-output-fuzz"
+tracking_issue = ""
+owner = "conformance"
+risk = "medium"
+notes = "Self-contained cargo-fuzz target for `splot-recon` Y4M output serialization: it normalizes arbitrary bytes into small valid `DecodedFrame<u8>` or `DecodedFrame<u16>` values across supported bit depths and pixel formats, serializes stream headers, frame headers, and visible sample payloads through `Y4mWriter`, and exercises typed stream/frame mismatch and failing-writer paths. This is conformance/robustness proof for caller-supplied decoded-frame output serialization only. It does not claim AV2 bitstream decode, `DecodeContext::decode_y4m_bytes` fuzzing, CLI output publication, raw output, hash report output, AVM/dav2d agreement, filesystem I/O, network I/O, subprocesses, or new AV2 semantics."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "fuzz/fuzz_targets/recon_y4m_output_bytes.rs",
+    "crates/splot-recon/src/y4m.rs::tests",
+]
+commands = [
+    "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
+    "cargo xtask check-fuzz-targets",
+    "cargo test -p splot-recon y4m --locked",
+    "cargo +nightly fuzz run recon_y4m_output_bytes (local/nightly; CI fuzz smoke runs every target)",
+]
+fixtures = [
+    "fuzz/fuzz_targets/recon_y4m_output_bytes.rs",
+]
+diagnostics = []
+
 # ---------------------------------------------------------------------------
 # CLI behaviors (thin UI over the libraries)
 # ---------------------------------------------------------------------------

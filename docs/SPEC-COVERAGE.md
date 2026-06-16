@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 189 feature(s); 139 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 190 feature(s); 140 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -214,6 +214,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4) | Sequence header OBU semantics | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` | ✅ | ✅ | ✅ | ✅ | 3 |
 | [§ 6.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4) | Sequence header OBU semantics | `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` | ✅ | ✅ | 🟡 | ✅ | 10 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `AV2-5.4.1-SEQUENCE-HEADER-GENERAL` | ✅ | ✅ | ✅ | ✅ | 6 |
+| [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `CONF-RECON-Y4M-OUTPUT-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
@@ -282,6 +283,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.16.11](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-11) | Metadata temporal point info semantics | `AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 6.16.12](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-12) | Metadata user data unregistered semantics | `AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 6.16.13](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13) | Metadata decoded frame hash semantics | `AV2-5.17.12-METADATA-DECODED-FRAME-HASH` | ✅ | ✅ | 🟡 | ✅ | 1 |
+| [§ 6.16.13](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13) | Metadata decoded frame hash semantics | `CONF-RECON-Y4M-OUTPUT-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 6.16.13](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13) | Metadata decoded frame hash semantics | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [§ 6.16.13](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13) | Metadata decoded frame hash semantics | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 6.16.13](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13) | Metadata decoded frame hash semantics | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
@@ -307,6 +309,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
+| [§ 6.17.4.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4) | Compute image size function semantics | `CONF-RECON-Y4M-OUTPUT-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 6.17.4.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4) | Compute image size function semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 6.17.4.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4) | Compute image size function semantics | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 6.17.4.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-4) | Compute image size function semantics | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
@@ -397,12 +400,14 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
+| [§ 7.21.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-1) | Output process | `CONF-RECON-Y4M-OUTPUT-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 7.21.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-1) | Output process | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 7.21.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-1) | Output process | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [§ 7.21.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-1) | Output process | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 7.21.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-1) | Output process | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
 | [§ 7.21.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-1) | Output process | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
 | [§ 7.21.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-1) | Output process | `RECON-Y4M-OUTPUT-WRITER` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `CONF-RECON-Y4M-OUTPUT-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |

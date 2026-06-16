@@ -24,6 +24,7 @@ libfuzzer-sys = "0.4"
 splot-core = { path = "../crates/splot-core" }
 splot-decode = { path = "../crates/splot-decode" }
 splot-parallel = { path = "../crates/splot-parallel" }
+splot-recon = { path = "../crates/splot-recon" }
 splot-validate = { path = "../crates/splot-validate" }
 
 [[bin]]
@@ -64,6 +65,13 @@ bench = false
 [[bin]]
 name = "decode_runtime_hash_bytes"
 path = "fuzz_targets/decode_runtime_hash_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "recon_y4m_output_bytes"
+path = "fuzz_targets/recon_y4m_output_bytes.rs"
 test = false
 doc = false
 bench = false
