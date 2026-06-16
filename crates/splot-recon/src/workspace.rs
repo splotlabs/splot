@@ -12,7 +12,6 @@
 use core::mem;
 use core::ops::Range;
 
-use crate::intra::predict_intra_dc_rect_value_from_sums;
 use crate::intra_basic::predict_paeth_sample;
 use crate::intra_directional::{IntraCardinalEdges, predict_intra_cardinal_directional_rect_into};
 use crate::intra_smooth::{SmoothSampleEdges, SmoothSamplePosition, predict_smooth_sample_values};
@@ -25,6 +24,8 @@ use crate::{
 
 #[path = "workspace_edges.rs"]
 mod workspace_edges;
+#[path = "workspace_intra_dc.rs"]
+mod workspace_intra_dc;
 
 pub use workspace_edges::{CurrentFrameIntraEdges, WorkspaceRectRows};
 
@@ -234,89 +235,6 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 
         let rect = block_rect(x, y, size)?;
         self.write_rect(plane, rect, samples, size.width())
-    }
-
-    /// Extracts left and above in-storage edges for a square block.
-    ///
-    /// The helper only reads edges adjacent to the requested plane-local square
-    /// when they are inside workspace storage. It does not decide AV2 block,
-    /// tile, superblock, or palette/CfL availability semantics.
-    ///
-    /// # Errors
-    /// Returns [`ReconError`] when the plane is absent, the target square is out
-    /// of bounds, or edge scratch allocation fails.
-    pub fn intra_dc_edges_for_square(
-        &self,
-        plane: PlaneId,
-        x: usize,
-        y: usize,
-        size: IntraSquareBlockSize,
-    ) -> Result<CurrentFrameIntraEdges<T>> {
-        self.intra_dc_edges_for_rect(plane, x, y, size.into())
-    }
-
-    /// Extracts left and above in-storage edges for a rectangular block.
-    ///
-    /// The helper only reads edges adjacent to the requested plane-local
-    /// rectangle when they are inside workspace storage. It does not decide AV2
-    /// block, tile, superblock, subsampled-DC, palette, or CfL availability
-    /// semantics.
-    ///
-    /// # Errors
-    /// Returns [`ReconError`] when the plane is absent, the target rectangle is
-    /// out of bounds, or edge scratch allocation fails.
-    pub fn intra_dc_edges_for_rect(
-        &self,
-        plane: PlaneId,
-        x: usize,
-        y: usize,
-        size: IntraRectBlockSize,
-    ) -> Result<CurrentFrameIntraEdges<T>> {
-        let rect = block_rect(x, y, size)?;
-        self.plane(plane)?.intra_dc_edges_for_rect(rect)
-    }
-
-    /// Predicts square DC intra samples into the workspace.
-    ///
-    /// This is a convenience wrapper over [`Self::predict_intra_dc_rect`]. Edge
-    /// extraction is limited to in-storage left/above neighbors and does not
-    /// model AV2 availability.
-    ///
-    /// # Errors
-    /// Returns [`ReconError`] for invalid target geometry, absent planes,
-    /// or invalid prediction inputs.
-    pub fn predict_intra_dc_square(
-        &mut self,
-        plane: PlaneId,
-        x: usize,
-        y: usize,
-        size: IntraSquareBlockSize,
-    ) -> Result<()> {
-        self.predict_intra_dc_rect(plane, x, y, size.into())
-    }
-
-    /// Predicts rectangular DC intra samples into the workspace.
-    ///
-    /// This computes the constant DC sample from in-storage left/above neighbor
-    /// sums and fills the target rectangle. Edge extraction is limited to
-    /// in-storage neighbors and does not model AV2 availability.
-    ///
-    /// # Errors
-    /// Returns [`ReconError`] for invalid target geometry, absent planes,
-    /// or invalid prediction inputs.
-    pub fn predict_intra_dc_rect(
-        &mut self,
-        plane: PlaneId,
-        x: usize,
-        y: usize,
-        size: IntraRectBlockSize,
-    ) -> Result<()> {
-        let rect = block_rect(x, y, size)?;
-        let bit_depth = self.info.bit_depth();
-        let (left_sum, above_sum) = self.plane(plane)?.intra_dc_edge_sums_for_rect(rect)?;
-        let sample = predict_intra_dc_rect_value_from_sums(bit_depth, size, left_sum, above_sum)?;
-
-        self.plane_mut(plane)?.fill_rect(rect, sample)
     }
 
     /// Predicts rectangular basic/PAETH intra samples into the workspace.
@@ -601,76 +519,6 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             self.samples[target_range].copy_from_slice(&samples[source_range]);
         }
         Ok(())
-    }
-
-    fn intra_dc_edges_for_rect(&self, rect: PlaneRect) -> Result<CurrentFrameIntraEdges<T>> {
-        self.ensure_rect(rect)?;
-
-        let left = if rect.x() == 0 {
-            None
-        } else {
-            let mut left = Vec::new();
-            left.try_reserve_exact(rect.height()).map_err(|_| {
-                ReconError::WorkspaceAllocationFailed {
-                    plane: self.plane,
-                    context: "left intra edge",
-                }
-            })?;
-            for row in rect.y()..rect.y() + rect.height() {
-                let index = self.sample_index(rect.x() - 1, row)?;
-                left.push(self.samples[index]);
-            }
-            Some(left)
-        };
-
-        let above = if rect.y() == 0 {
-            None
-        } else {
-            let row = rect.y() - 1;
-            let range = self.row_range(row, rect.x(), rect.width())?;
-            let mut above = Vec::new();
-            above.try_reserve_exact(rect.width()).map_err(|_| {
-                ReconError::WorkspaceAllocationFailed {
-                    plane: self.plane,
-                    context: "above intra edge",
-                }
-            })?;
-            // splot-copy-ok: materialize bounded above-edge scratch (block-width) for intra prediction
-            above.extend_from_slice(&self.samples[range]);
-            Some(above)
-        };
-
-        Ok(CurrentFrameIntraEdges::new(left, above))
-    }
-
-    fn intra_dc_edge_sums_for_rect(&self, rect: PlaneRect) -> Result<(Option<u64>, Option<u64>)> {
-        self.ensure_rect(rect)?;
-
-        let left = if rect.x() == 0 {
-            None
-        } else {
-            let mut sum = 0u64;
-            for row in rect.y()..rect.y() + rect.height() {
-                let index = self.sample_index(rect.x() - 1, row)?;
-                sum += u64::from(self.samples[index].to_u16());
-            }
-            Some(sum)
-        };
-
-        let above = if rect.y() == 0 {
-            None
-        } else {
-            let row = rect.y() - 1;
-            let range = self.row_range(row, rect.x(), rect.width())?;
-            Some(
-                self.samples[range]
-                    .iter()
-                    .map(|sample| u64::from(sample.to_u16()))
-                    .sum(),
-            )
-        };
-
-        Ok((left, above))
     }
 
     fn predict_intra_paeth_rect(&mut self, rect: PlaneRect) -> Result<()> {

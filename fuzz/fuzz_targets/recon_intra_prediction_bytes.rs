@@ -18,8 +18,9 @@ use splot_recon::{
     IntraSmoothMode, IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect,
     PlaneSize, ReconSample, predict_intra_cardinal_directional_rect_into,
     predict_intra_dc_rect_into, predict_intra_dc_rect_value, predict_intra_dc_square,
-    predict_intra_dc_square_into, predict_intra_dc_square_value, predict_intra_paeth_rect_into,
-    predict_intra_smooth_rect_into,
+    predict_intra_dc_square_into, predict_intra_dc_square_value,
+    predict_intra_dc_subsampled_rect_into, predict_intra_dc_subsampled_rect_value,
+    predict_intra_paeth_rect_into, predict_intra_smooth_rect_into,
 };
 
 const MIN_BLOCK_LOG2: u8 = 2;
@@ -84,6 +85,21 @@ fn run_direct_dc_case<T: ReconSample>(input: &mut FuzzInput<'_>, bit_depth: BitD
     let rect_stride = output_stride(input, rect_size.width());
     let edges = dc_edges(edge_selector, &left[..left_len], &above[..above_len]);
     let _ = predict_intra_dc_rect_into(bit_depth, rect_size, edges, &mut rect_output, rect_stride);
+
+    let edges = dc_edges(edge_selector, &left[..left_len], &above[..above_len]);
+    let _ = predict_intra_dc_subsampled_rect_value(bit_depth, rect_size, edges);
+    let Some(mut subsampled_output) = output_buffer::<T>(input, rect_size, bit_depth) else {
+        return;
+    };
+    let subsampled_stride = output_stride(input, rect_size.width());
+    let edges = dc_edges(edge_selector, &left[..left_len], &above[..above_len]);
+    let _ = predict_intra_dc_subsampled_rect_into(
+        bit_depth,
+        rect_size,
+        edges,
+        &mut subsampled_output,
+        subsampled_stride,
+    );
 
     let Some(square_left) = samples_from_input::<T>(input, square_size.side_len(), bit_depth)
     else {
@@ -213,6 +229,7 @@ fn run_interior_workspace_case<T: ReconSample>(input: &mut FuzzInput<'_>, bit_de
         let _ = predict_intra_dc_rect_value(bit_depth, size, edges.as_dc_edges());
     }
     let _ = workspace.predict_intra_dc_rect(PlaneId::Y, 1, 1, size);
+    let _ = workspace.predict_intra_dc_subsampled_rect(PlaneId::Y, 1, 1, size);
     let _ = workspace.predict_intra_paeth_rect(PlaneId::Y, 1, 1, size);
     let _ = workspace.predict_intra_smooth_rect(PlaneId::Y, 1, 1, size, smooth_mode(input.byte()));
     let _ = workspace.predict_intra_cardinal_directional_rect(
@@ -257,6 +274,7 @@ fn run_random_workspace_case<T: ReconSample>(input: &mut FuzzInput<'_>, bit_dept
 
     let _ = workspace.intra_dc_edges_for_rect(plane, x, y, size);
     let _ = workspace.predict_intra_dc_rect(plane, x, y, size);
+    let _ = workspace.predict_intra_dc_subsampled_rect(plane, x, y, size);
     let _ = workspace.predict_intra_paeth_rect(plane, x, y, size);
     let _ = workspace.predict_intra_smooth_rect(plane, x, y, size, smooth_mode(input.byte()));
     let _ =
