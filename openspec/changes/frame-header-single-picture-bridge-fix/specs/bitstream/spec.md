@@ -11,10 +11,15 @@ The frame-header core parser SHALL parse a single-picture `OBU_BRIDGE_FRAME`
 (active `single_picture_header_flag == 1`) on the § 5.18.2 `FrameIsIntra` reads
 that still terminate on the shared `IsBridge` early-return arm, NOT on the full
 intra structure cluster. Concretely it SHALL, after `bridge_frame_ref_idx`, read
-`bridge_frame_overwrite_flag` (mirror :4423), the `FrameType == KEY_FRAME`
-`refresh_frame_flags` (mirror :4429-4445, read unconditionally), the non-override
-`frame_size()` (mirror :4567, no bits for a `cur_mfh_id == 0` bridge),
-`screen_content_params()` (mirror :4569), and `intrabc_params()` (mirror :4571).
+`bridge_frame_overwrite_flag` (mirror :4423), then the OVERWRITE-GATED
+`refresh_frame_flags` (per § 6.17.2 + AVM, NOT the § 5.18.2 KEY-arm literal — see the
+contradiction note): when `bridge_frame_overwrite_flag == 0` it SHALL be inferred
+`1 << bridge_frame_ref_idx` with no bits read; when `== 1` it SHALL be read (the AVM
+bridge arm — `has_refresh_frame_flags` + `frame_to_refresh` on the
+`enable_short_refresh_frame_flags` path, else `f(NumRefFrames)`). It SHALL then read
+the non-override `frame_size()` (mirror :4567, no bits for a `cur_mfh_id == 0`
+bridge), `screen_content_params()` (mirror :4569), and `intrabc_params()` (mirror
+:4571).
 It SHALL also consume the decidable `film_grain_config()` tail of the `IsBridge`
 early-return arm (mirror :5011 / § 5.18.10.1): `apply_grain` is inferred from
 `single_picture_header_flag` + `immediate_output_frame == 1` (mirror :8169-8171),
@@ -32,22 +37,31 @@ the `IsBridge` arm). An EOF inside the modeled prefix OR the film-grain tail SHA
 be reported as the facts-preserving
 `FrameHeaderParseStatus::StoppedInsideInterControl`.
 
-This follows the normative committed spec mirror
-(`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`). The single-picture bridge
-is a corner where AVM and dav2d diverge from the mirror (AVM gates the
-`refresh_frame_flags` read on `bridge_frame_overwrite_flag` and reads
-`bridge_frame_max_width`/`_height` frame-size fields; dav2d does not model the
-path), so any byte-exact / round-trip claim SHALL be gated on AVM differential
-confirmation.
+CONTRADICTION: § 5.18.2 syntax would read `refresh_frame_flags` unconditionally on
+the `if ( FrameType == KEY_FRAME )` arm (:4429-4445), but § 6.17.2 semantics
+(`06-syntax-structures-semantics.md` :4522-4524) states the `overwrite == 0`
+inference, and AVM (`decodeframe.c:8394-8422`) implements the overwrite-gated
+reading. Per the maintainer decision the parser follows § 6.17.2 + AVM so it matches
+the reference decoder. AVM additionally reads two `bridge_frame_max_width`/`_height`
+frame-size fields the § 5.18.2 `FrameIsIntra` `frame_size()` does not (splot follows
+§ 5.18.2 there); dav2d does not model the path. Any byte-exact / round-trip claim
+SHALL be gated on AVM differential confirmation.
 
 #### Scenario: single-picture bridge reads its prefix then stops at the bridge return
 
 - **WHEN** an `OBU_BRIDGE_FRAME` is parsed whose active sequence header has
   `single_picture_header_flag == 1`
-- **THEN** the parser reads `bridge_frame_overwrite_flag`, the `KEY_FRAME`
+- **THEN** the parser reads `bridge_frame_overwrite_flag`, the overwrite-gated
   `refresh_frame_flags`, the non-override `frame_size()`, `screen_content_params()`,
   and `intrabc_params()`, records `InterStop::BruInactiveOrBridgeReturn` on
   `core.inter`, and reports `FrameHeaderParseStatus::UnsupportedUntilFeature`
+
+#### Scenario: overwrite == 0 infers refresh_frame_flags without reading bits
+
+- **WHEN** a single-picture bridge has `bridge_frame_overwrite_flag == 0`
+- **THEN** `refresh_frame_flags` is inferred `1 << bridge_frame_ref_idx` with no
+  bits read (per § 6.17.2 + AVM), and the next field parsed is the non-override
+  `frame_size()`
 
 #### Scenario: single-picture bridge does not read the intra structure cluster
 

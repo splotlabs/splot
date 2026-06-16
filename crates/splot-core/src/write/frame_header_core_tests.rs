@@ -1168,8 +1168,8 @@ mod tests {
         bits.uvlc(0); // seq_header_id_in_frame_header
         bits.f(5, 3); // bridge_frame_ref_idx = 5 f(CeilLog2(8) == 3) — read before single-pic
         bits.bit(0); // bridge_frame_overwrite_flag = 0 (mirror :4423)
-        bits.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8) (KEY arm, mirror :4445)
-        // frame_size(): non-override default dims, no bits. screen_content_params(): no bits.
+        // refresh_frame_flags: overwrite == 0 -> inferred 1 << bridge_frame_ref_idx, no bits
+        // (§ 6.17.2 + AVM). frame_size(): non-override default dims, no bits. screen_content: no bits.
         bits.bit(0); // allow_intrabc = 0 (intrabc_params(), mirror :4571) -> STOP at bridge return
         let data = bits.into_bytes();
         let core =

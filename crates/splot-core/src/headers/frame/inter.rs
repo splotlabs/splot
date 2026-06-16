@@ -181,10 +181,14 @@ pub enum InterStop {
     /// / `IsBridge` were not set (so the early-return arm at mirror :4971/:5045 is not
     /// taken). The caller continues into the shared tail.
     ReachedSharedTail,
-    /// `bru_inactive` or `IsBridge` was set, so the control region took the early-return
-    /// arm (mirror :4971/:5045) and the frame header is complete after its `film_grain_config()`
-    /// / `tile_info()` reads — which themselves need reference-frame dims this phase does
-    /// not yet thread, so the parse stops at the start of that arm with the facts preserved.
+    /// `bru_inactive` or `IsBridge` was set, so the control region took the early-return arm
+    /// (mirror :4971/:5045). On this non-intra path the arm's `base_q_idx = RefBaseQIdx[refIdx]` /
+    /// `DeltaQ` are reference-derived (no-bit) values this phase does not thread, so the parse
+    /// stops at the start of that arm with the facts preserved. (`tile_info()` reads zero bits for
+    /// a bridge, and `film_grain_config()` reads zero bits here because `immediate_output_frame ==
+    /// 0` on this path forces `apply_grain == 0`; they do NOT need reference-frame dims. The
+    /// single-picture-bridge `FrameIsIntra` path, where `immediate_output_frame == 1` makes the
+    /// grain tail non-trivial, is handled separately by `parse_single_picture_bridge_tail`.)
     BruInactiveOrBridgeReturn,
     /// `TipFrameMode == TIP_FRAME_AS_OUTPUT`, so the control region takes the TIP-output
     /// arm (mirror :4945) and `return`s (mirror :5177) after its quant / deblocking /
@@ -759,9 +763,12 @@ fn parse_inter_reference_region(
     // mirror :4855-4943: the (TipFrameMode != AS_OUTPUT && !bru_inactive && !IsBridge)
     // block. With TIP disabled here, the gate reduces to !bru_inactive && !IsBridge.
     if bru_inactive || ctx.is_bridge {
-        // mirror :4971/:5045: the bru_inactive / IsBridge early-return arm reads
-        // film_grain_config() and (for IsBridge) tile_info(), both of which need
-        // reference-frame dims / MiRows-MiCols this phase does not thread on this arm.
+        // mirror :4971/:5045: the bru_inactive / IsBridge early-return arm infers
+        // base_q_idx = RefBaseQIdx[refIdx] / DeltaQ — reference-derived (no-bit) values this
+        // phase does not thread. The arm's bit reads here are inert: tile_info() reads zero
+        // bits for a bridge, and film_grain_config() reads zero bits because immediate_output_frame
+        // == 0 on this non-intra path forces apply_grain == 0 (the single-picture bridge, where
+        // apply_grain == 1, is handled by parse_single_picture_bridge_tail). Stop with facts preserved.
         control.stop = Some(InterStop::BruInactiveOrBridgeReturn);
         return Ok(());
     }

@@ -41,41 +41,52 @@ fixed to reject all bridges. This is the parser-side fix.
 
 1. `parse_core_body` routes a single-picture frame that is also `IsBridge` to a
    new `parse_single_picture_bridge_tail` instead of `parse_intra_tail`.
-2. The new path reads exactly the spec-mirror prefix on the `FrameIsIntra` arm —
-   `bridge_frame_overwrite_flag` f(1) (:4423), the `KEY_FRAME` arm
-   `refresh_frame_flags` (:4429-4445, `f(NumRefFrames)`, read unconditionally),
-   the non-override `frame_size()` (:4567, default dims, no bits),
+2. The new path reads the § 5.18.2 `FrameIsIntra` prefix —
+   `bridge_frame_overwrite_flag` f(1) (:4423), then the **overwrite-gated**
+   `refresh_frame_flags` (per § 6.17.2 + AVM, see the Differential note: `overwrite
+   == 0` → inferred `1 << bridge_frame_ref_idx`, no bits; `overwrite == 1` → read it,
+   the AVM bridge `has_refresh_frame_flags`/`frame_to_refresh` short arm or
+   `f(NumRefFrames)`), the non-override `frame_size()` (:4567, default dims, no bits),
    `screen_content_params()` (:4569) and `intrabc_params()` (:4571), and the
-   decidable §5.18.10.1 `film_grain_config()` tail of the `IsBridge` early-return
+   decidable § 5.18.10.1 `film_grain_config()` tail of the `IsBridge` early-return
    arm (:5011) — `apply_grain` is inferred from `single_picture_header_flag` +
    `immediate_output_frame == 1` (mirror :8169-8171), reading `fgm_id` f(3) +
    `grain_seed` f(16) when `film_grain_params_present` — then stops at the
    reference-derived `base_q_idx` with `InterStop::BruInactiveOrBridgeReturn`,
    reporting `FrameHeaderParseStatus::UnsupportedUntilFeature` and preserving the
-   parsed prefix on `core.inter`. It reuses `read_refresh_frame_flags`,
-   `parse_frame_size`, `parse_screen_content_params_full`,
-   `parse_intrabc_params_full`, `parse_film_grain_config`, and
-   `finish_inter_control` (the same EOF→`StoppedInsideInterControl` machinery the
-   non-single bridge uses). The film-grain tail is consumed (not exposed — the
-   bridge stays unsupported coverage) so `consumed_bits` covers the mandatory
-   frame-header syntax and a truncation there is reported as a truncation rather
-   than a silent coverage stop (codex PR review); when `film_grain_params_present`
-   is unknown the parse stops before the grain read, like the intra / SEF tails.
+   parsed prefix on `core.inter`. It reuses `parse_frame_size`,
+   `parse_screen_content_params_full`, `parse_intrabc_params_full`,
+   `parse_film_grain_config`, and `finish_inter_control` (the same
+   EOF→`StoppedInsideInterControl` machinery the non-single bridge uses). The
+   film-grain tail is consumed (not exposed — the bridge stays unsupported coverage)
+   so `consumed_bits` covers the mandatory frame-header syntax and a truncation there
+   (or in the refresh) is reported as a truncation rather than a silent coverage stop
+   (codex PR review); when `film_grain_params_present` is unknown the parse stops
+   before the grain read, like the intra / SEF tails.
 3. The buggy test `frame_header_core_single_picture_bridge_takes_intra_key_path`
    (whose premise was the bug) is replaced; positive, data-dependent, EOF, and
    film-grain (read + truncation) tests are added.
 
-## Differential note (spec mirror vs references)
+## Differential note (a spec-internal contradiction)
 
-splot follows the NORMATIVE committed spec mirror. The single-picture bridge is a
-degenerate corner where the references disagree on bit layout:
+The single-picture bridge is a degenerate corner where the **normative spec is
+internally inconsistent**:
 
-- **AVM** (`av2/decoder/decodeframe.c`) keys the refresh ladder on OBU type, not
-  `FrameType`, so it gates the `f(NumRefFrames)` refresh on
-  `bridge_frame_overwrite_flag` (overwrite == 0 → `refresh = 1 << bridge_ref_idx`,
-  no `f(NumRefFrames)`), and its `setup_frame_size` reads two
-  `bridge_frame_max_width`/`_height` fields the spec `frame_size()` does not. So an
-  AVM-encoded single-picture bridge can differ in total header length.
+- **refresh_frame_flags**: § 5.18.2 *syntax* would read it unconditionally on the
+  `if ( FrameType == KEY_FRAME )` arm (:4429-4445; a single-picture bridge has
+  `FrameType == KEY_FRAME`, so the `else if ( IsBridge && !bridge_frame_overwrite_flag )`
+  inferred arm at :4489 is unreachable). But § 6.17.2 *semantics*
+  (`06-syntax-structures-semantics.md` :4522-4524) states — unconditionally — that
+  `bridge_frame_overwrite_flag == 0` means `refresh_frame_flags` is **not present**
+  and is inferred `1 << bridge_frame_ref_idx`; **AVM** (`decodeframe.c:8394-8422`)
+  implements exactly that overwrite-gated reading. Per the maintainer decision
+  (codex PR review) splot follows **§ 6.17.2 + AVM** (overwrite-gated): a validator
+  must match the reference decoder so it does not misparse a real AVM-encoded
+  `overwrite == 0` stream (which would otherwise eat `NumRefFrames` phantom bits and
+  desync the rest of the header).
+- **frame size**: AVM's `setup_frame_size` reads two `bridge_frame_max_width`/`_height`
+  fields the § 5.18.2 `FrameIsIntra` `frame_size()` does not; splot follows § 5.18.2
+  (no frame-size bits) here — a remaining documented divergence.
 - **dav2d** does not implement the single-picture bridge at all (the
   `single_picture` / `bridge` tokens appear only in its AVM-instrumentation
   patches), so it is not an oracle for this feature.
@@ -99,10 +110,12 @@ divergence.
 
 ## Acceptance criteria
 
-- [ ] A single-picture bridge reads `bridge_frame_overwrite_flag` + the `KEY`
-      `refresh_frame_flags` + non-override `frame_size()` + `screen_content_params()`
-      + `intrabc_params()` + the decidable `film_grain_config()` tail, then stops
-      with `InterStop::BruInactiveOrBridgeReturn` and
+- [ ] A single-picture bridge reads `bridge_frame_overwrite_flag` + the
+      overwrite-gated `refresh_frame_flags` (inferred `1 << bridge_frame_ref_idx`
+      when `overwrite == 0`; read when `== 1`) + non-override `frame_size()` +
+      `screen_content_params()` + `intrabc_params()` + the decidable
+      `film_grain_config()` tail, then stops with
+      `InterStop::BruInactiveOrBridgeReturn` and
       `FrameHeaderParseStatus::UnsupportedUntilFeature`; `consumed_bits` covers the
       mandatory frame-header syntax (incl. `fgm_id` / `grain_seed` when grain present).
 - [ ] It never reads `disable_cdf_update` and never enters the quant/segmentation/

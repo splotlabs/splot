@@ -21,16 +21,20 @@
 //!   `NumTotalRefs = 1`, `ref_frame_idx[0] = bridge_frame_ref_idx`, and
 //!   `frame_size_with_bridge()` § 5.18.4.2). It then reaches the `IsBridge` early-return
 //!   arm (§ 5.18.2 mirror :4971/:5045) and stops with
-//!   [`super::inter::InterStop::BruInactiveOrBridgeReturn`] — the bridge tail
-//!   (`film_grain_config()` / `tile_info()`) needs reference-frame dims this phase does not
-//!   thread — recording the parsed bridge facts on `core.inter` and reporting
+//!   [`super::inter::InterStop::BruInactiveOrBridgeReturn`] — the arm's `base_q_idx =
+//!   RefBaseQIdx[refIdx]` / `DeltaQ` are reference-derived (no-bit) values this phase does not
+//!   thread (`tile_info()` reads zero bits for a bridge, and a non-single bridge's
+//!   `film_grain_config()` reads zero bits since `apply_grain == 0` when `immediate_output_frame
+//!   == 0`) — recording the parsed bridge facts on `core.inter` and reporting
 //!   [`FrameHeaderParseStatus::UnsupportedUntilFeature`].
 //! - **Single-picture bridge** (`single_picture_header_flag == 1` + `IsBridge`) → a hybrid:
 //!   the single-picture branch forces `KEY_FRAME` / `FrameIsIntra = 1` *before* the
 //!   `IsBridge` `INTER_FRAME` assignment, so it travels the intra (`FrameIsIntra`) reads
-//!   (`bridge_frame_overwrite_flag`, the `KEY_FRAME` `refresh_frame_flags`, the non-override
-//!   `frame_size()`, `screen_content_params()`, `intrabc_params()`) but still ends on the same
-//!   `IsBridge` early-return arm with `BruInactiveOrBridgeReturn` — *not* the full intra
+//!   (`bridge_frame_overwrite_flag`, the overwrite-gated `refresh_frame_flags` per § 6.17.2 +
+//!   AVM, the non-override `frame_size()`, `screen_content_params()`, `intrabc_params()`) plus
+//!   the arm's decidable `film_grain_config()` (`apply_grain` inferred 1 here because
+//!   `immediate_output_frame == 1`, reading `fgm_id` + `grain_seed`), then stops at the
+//!   reference-derived `base_q_idx` with `BruInactiveOrBridgeReturn` — *not* the full intra
 //!   structure cluster. See [`parse_single_picture_bridge_tail`].
 //! - **Show-existing-frame (SEF)** → reads `frame_to_show_map_idx`,
 //!   `derive_sef_order_hint`, `sef_order_hint`, and the terminal `film_grain_config()`
@@ -1158,8 +1162,8 @@ pub(crate) fn parse_core_body(
         // full intra structure cluster. Route it to the dedicated bridge tail, which reads exactly
         // the modeled prefix and stops at that arm. parse_intra_tail's invariant (TipFrameMode ==
         // TIP_FRAME_DISABLED and !IsBridge) does NOT hold here, so it must not be used.
-        if core.is_bridge {
-            return parse_single_picture_bridge_tail(reader, core, seq);
+        if let Some(bridge_frame_ref_idx) = bridge_frame_ref_idx {
+            return parse_single_picture_bridge_tail(reader, core, seq, bridge_frame_ref_idx);
         }
         return parse_intra_tail(reader, core, seq, mfh, FrameType::Key, true);
     }
@@ -1494,11 +1498,11 @@ fn parse_bridge_inter_path(
 /// The reader is positioned just after `bridge_frame_ref_idx` (mirror :4121). This reads, in
 /// § 5.18.2 order:
 /// - `bridge_frame_overwrite_flag` f(1) (:4423, guarded only by `if ( IsBridge )`).
-/// - `refresh_frame_flags` via the `FrameType == KEY_FRAME` arm (:4429-4445): for an
-///   `OBU_BRIDGE_FRAME` (not `OBU_CLOSED_LOOP_KEY`) with `enable_short_refresh_frame_flags == 0`
-///   this is `f(NumRefFrames)`. Per the spec mirror the read is UNCONDITIONAL — the value of
-///   `bridge_frame_overwrite_flag` does not gate it, because the KEY arm matches before the
-///   `else if ( IsBridge && !bridge_frame_overwrite_flag )` arm at :4489.
+/// - `refresh_frame_flags` — OVERWRITE-GATED per § 6.17.2 + AVM (see the FIDELITY note): when
+///   `bridge_frame_overwrite_flag == 0` it is NOT present and is inferred `1 <<
+///   bridge_frame_ref_idx` (no bits); when `== 1` it is read (the bridge arm — AVM
+///   `has_refresh_frame_flags` f(1) + `frame_to_refresh` on the `enable_short_refresh_frame_flags`
+///   path, else `f(NumRefFrames)`).
 /// - `frame_size()` on the `FrameIsIntra` arm (:4565-4567). `frame_size_override_flag` is never
 ///   assigned on the `IsBridge` arm (:4343 runs instead of the :4357 else), so it keeps its
 ///   default `0` → the § 5.18.4.1 non-override default dimensions (no bits).
@@ -1525,15 +1529,20 @@ fn parse_bridge_inter_path(
 /// is undecidable, so the parse stops before the grain read (the same honest behavior as the
 /// intra / SEF tails).
 ///
-/// SPEC-MIRROR FIDELITY: this follows the normative committed mirror. AVM
-/// (`av2/decoder/decodeframe.c`) diverges for this corner — it gates the `f(NumRefFrames)`
-/// refresh on `bridge_frame_overwrite_flag` and reads two `bridge_frame_max_width`/`_height`
-/// frame-size fields the spec `frame_size()` does not — and dav2d does not model the
+/// SPEC FIDELITY: the single-picture bridge is a degenerate corner where the normative spec is
+/// internally inconsistent. (1) refresh_frame_flags: § 5.18.2 syntax would read it unconditionally
+/// on the KEY arm (:4429-4445), but § 6.17.2 semantics (:4522-4524) says it is inferred from
+/// `bridge_frame_ref_idx` when `bridge_frame_overwrite_flag == 0`; AVM follows § 6.17.2. Per the
+/// maintainer decision this parser follows § 6.17.2 + AVM (overwrite-gated) so a validator matches
+/// the reference decoder. (2) AVM's `setup_frame_size` also reads two `bridge_frame_max_width`/
+/// `_height` fields the § 5.18.2 `FrameIsIntra` `frame_size()` does not — splot follows § 5.18.2
+/// (no frame-size bits) here, a remaining documented divergence. dav2d does not model the
 /// single-picture bridge at all. See `openspec/changes/frame-header-single-picture-bridge-fix`.
 fn parse_single_picture_bridge_tail(
     reader: &mut BitReader<'_>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
+    bridge_frame_ref_idx: u32,
 ) -> Result<()> {
     use crate::headers::frame::inter::{InterControl, InterStop, TipFrameMode};
 
@@ -1547,18 +1556,35 @@ fn parse_single_picture_bridge_tail(
     let mut control = InterControl::default();
     let result = (|| -> Result<()> {
         // mirror :4423-4427: bridge_frame_overwrite_flag f(1) — read on any IsBridge frame.
-        control.bridge_frame_overwrite_flag = Some(reader.read_bit()? != 0);
+        let bridge_frame_overwrite_flag = reader.read_bit()? != 0;
+        control.bridge_frame_overwrite_flag = Some(bridge_frame_overwrite_flag);
 
-        // mirror :4429-4445: FrameType == KEY_FRAME, so the KEY refresh arm runs. For an
-        // OBU_BRIDGE_FRAME (not OBU_CLOSED_LOOP_KEY) with enable_short_refresh_frame_flags == 0
-        // this lands on read_f(NumRefFrames). Read UNCONDITIONALLY per the spec mirror (the
-        // bridge-overwrite refresh arm at :4489 is dead behind the KEY-arm match).
-        control.refresh_frame_flags = Some(read_refresh_frame_flags(
-            reader,
-            seq,
-            core.obu_type,
-            FrameType::Key,
-        )?);
+        // refresh_frame_flags: SPEC CONTRADICTION at this corner. § 5.18.2 syntax (:4429-4445)
+        // would read it UNCONDITIONALLY via the `if ( FrameType == KEY_FRAME )` arm (a
+        // single-picture bridge has FrameType == KEY_FRAME, so the `else if ( IsBridge &&
+        // !bridge_frame_overwrite_flag )` arm at :4489 is unreachable). But § 6.17.2 SEMANTICS
+        // (06-syntax-structures-semantics.md :4522-4524) states unconditionally that
+        // `bridge_frame_overwrite_flag == 0` means refresh_frame_flags is NOT present and is
+        // inferred `1 << bridge_frame_ref_idx`, and AVM (decodeframe.c:8394-8422) implements
+        // exactly that overwrite-gated reading. Per the maintainer decision (codex PR review),
+        // splot follows § 6.17.2 + AVM — a validator must match the reference decoder so it does
+        // not misparse a real (AVM-encoded) overwrite == 0 single-picture bridge by reading
+        // NumRefFrames phantom bits. So:
+        //   overwrite == 0 -> refresh_frame_flags = 1 << bridge_frame_ref_idx (no bits).
+        //   overwrite == 1 -> read it (the bridge arm, mirror AVM: has_refresh_frame_flags f(1) +
+        //                     frame_to_refresh on the short-flag path, else f(NumRefFrames)).
+        let refresh_frame_flags = if !bridge_frame_overwrite_flag {
+            1u32.wrapping_shl(bridge_frame_ref_idx)
+        } else if seq.enable_short_refresh_frame_flags {
+            if reader.read_bit()? != 0 {
+                1u32.wrapping_shl(read_f(reader, ceil_log2(seq.num_ref_frames))?)
+            } else {
+                0
+            }
+        } else {
+            read_f(reader, seq.num_ref_frames)?
+        };
+        control.refresh_frame_flags = Some(refresh_frame_flags);
 
         // mirror :4565-4567 / § 5.18.4.1: frame_size() on the FrameIsIntra arm.
         // frame_size_override_flag defaults to 0 (the IsBridge arm at :4343 never assigns it), so
@@ -3839,15 +3865,14 @@ mod tests {
         // the single-picture branch at :4131), then the single-picture branch forces FrameType =
         // KEY_FRAME / FrameIsIntra = 1 / immediate_output_frame = 1 (:4135-4139). It is a HYBRID,
         // NOT the full intra key path: because IsBridge == 1 it reads bridge_frame_overwrite_flag
-        // f(1) (:4423, guarded only by `if ( IsBridge )`), then — FrameType == KEY_FRAME — the
-        // KEY-arm refresh_frame_flags f(NumRefFrames) (:4429-4445), then — FrameIsIntra == 1 —
-        // frame_size() (override 0, never assigned on the IsBridge arm at :4343 -> default dims,
-        // no bits, :4567), screen_content_params() (:4569) and intrabc_params() (:4571). It then
-        // reaches the `if ( ... || IsBridge )` early-return arm (:4971) where tile_info() is
-        // zero-bit (uniform forced + the increment loops gated behind !IsBridge), base_q_idx =
-        // RefBaseQIdx[bridge_frame_ref_idx] is reference-state derived (:4997), and disable_cdf_update
-        // (the :5039 else-arm) plus the whole quant/segmentation/deblocking/cdef/ccso cluster
-        // (:5045-5083) are SKIPPED. So the parse stops honestly there with
+        // f(1) (:4423), then the OVERWRITE-GATED refresh_frame_flags (§ 6.17.2 + AVM: overwrite == 0
+        // -> inferred 1 << bridge_frame_ref_idx, NO bits), then — FrameIsIntra == 1 — frame_size()
+        // (override 0 -> default dims, no bits, :4567), screen_content_params() (:4569) and
+        // intrabc_params() (:4571), and the decidable film_grain_config() tail (here grain absent ->
+        // 0 bits). It then reaches the `if ( ... || IsBridge )` early-return arm (:4971) where
+        // base_q_idx = RefBaseQIdx[bridge_frame_ref_idx] is reference-derived (:4997) and
+        // disable_cdf_update (the :5039 else-arm) + the whole quant/segmentation/deblocking/cdef/
+        // ccso cluster (:5045-5083) are SKIPPED. So the parse stops honestly with
         // InterStop::BruInactiveOrBridgeReturn — NOT IntraHeaderComplete.
         //
         // This replaces the pre-fix test whose premise was the bug: the parser used to route a
@@ -3855,11 +3880,10 @@ mod tests {
         // disable_cdf_update and the entire structure cluster and reaching a bogus
         // IntraHeaderComplete, and never reading bridge_frame_overwrite_flag.
         //
-        // Spec-mirror vs AVM/dav2d (documented in openspec/changes/frame-header-single-picture-
-        // bridge-fix): splot follows the NORMATIVE spec mirror. The mirror reads refresh_frame_flags
-        // f(NumRefFrames) UNCONDITIONALLY on the KEY arm; AVM instead gates that f(NumRefFrames) on
-        // bridge_frame_overwrite_flag and reads two bridge_frame_max_width/height frame-size fields
-        // the spec frame_size() does not. dav2d does not model the single-picture bridge at all.
+        // Refresh reading (documented in openspec/changes/frame-header-single-picture-bridge-fix):
+        // § 5.18.2 syntax and § 6.17.2 semantics CONTRADICT for this corner; splot follows
+        // § 6.17.2 + AVM (overwrite-gated), so for overwrite == 0 refresh_frame_flags is INFERRED
+        // 1 << bridge_frame_ref_idx with no bits.
         let mut seq = base_seq();
         seq.single_picture_header_flag = true;
         seq.filter.single_picture_header_flag = true;
@@ -3868,12 +3892,12 @@ mod tests {
         bits.uvlc(0); // seq_header_id_in_frame_header
         bits.f(5, 3); // bridge_frame_ref_idx = 5 f(CeilLog2(8) == 3) — read before single-pic
         // IsBridge prefix (mirror :4423-4571), reached on the FrameIsIntra arm:
-        bits.bit(0); // bridge_frame_overwrite_flag = 0 f(1) (mirror :4423, IsBridge-guarded)
-        bits.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8) (KEY arm, mirror :4445)
-        // frame_size(): override 0 (the IsBridge arm at :4343 never assigns it), cur_mfh_id == 0
-        // -> default max dims (4096x2304), no bits (mirror :4567 -> § 5.18.4.1 else branch).
-        // screen_content_params(): seq_force off -> no bits (mirror :4569).
+        bits.bit(0); // bridge_frame_overwrite_flag = 0 f(1) (mirror :4423)
+        // refresh_frame_flags: overwrite == 0 -> inferred 1 << 5 = 32, NO bits (§ 6.17.2 + AVM).
+        // frame_size(): override 0, cur_mfh_id == 0 -> default max dims (4096x2304), no bits.
+        // screen_content_params(): seq_force off -> no bits.
         bits.bit(0); // allow_intrabc = 0 f(1) (intrabc_params(), mirror :4571)
+        // film_grain_config(): film_grain_params_present == false (base_seq) -> apply_grain 0, no bits.
         // STOP: IsBridge early-return arm (mirror :4971). No disable_cdf_update, no cluster.
         let data = bits.into_bytes();
         let (core, _) = parse_body(&data, ObuType::BridgeFrame, true, &seq).unwrap();
@@ -3904,7 +3928,11 @@ mod tests {
             Some(false),
             "bridge_frame_overwrite_flag f(1) IS read (mirror :4423) — the pre-fix intra path did not"
         );
-        assert_eq!(inter.refresh_frame_flags, Some(0));
+        assert_eq!(
+            inter.refresh_frame_flags,
+            Some(1 << 5),
+            "overwrite == 0 -> refresh inferred 1 << bridge_frame_ref_idx (§ 6.17.2 + AVM, no bits)"
+        );
         assert_eq!(
             inter.num_total_refs,
             Some(0),
@@ -3915,7 +3943,7 @@ mod tests {
             Some(7),
             "PRIMARY_REF_NONE (mirror :4345)"
         );
-        assert_eq!(core.refresh_frame_flags, Some(0));
+        assert_eq!(core.refresh_frame_flags, Some(1 << 5));
         assert_eq!(core.frame_size, Some(FrameSize::new(4096, 2304)));
         assert_eq!(core.allow_screen_content_tools, Some(false));
         assert_eq!(core.allow_intrabc, Some(false));
@@ -3946,22 +3974,22 @@ mod tests {
 
     #[test]
     fn frame_header_core_single_picture_bridge_reads_scc_and_intrabc_conditionals() {
-        // A single-picture bridge with screen-content + intrabc signaling exercises the
-        // data-dependent prefix reads on the FrameIsIntra arm (mirror :4569-4571). It also pins
-        // the spec-mirror behavior that distinguishes splot from AVM: bridge_frame_overwrite_flag
-        // == 1 does NOT change the refresh read — refresh_frame_flags f(NumRefFrames) is read on
-        // the KEY arm regardless (mirror :4445), whereas AVM would also read it here but gate it
-        // on the overwrite flag.
+        // overwrite == 1: refresh_frame_flags IS read (§ 6.17.2 + AVM gate it on overwrite). With
+        // enable_short_refresh_frame_flags this is the AVM bridge short path — has_refresh_frame_flags
+        // f(1) + frame_to_refresh f(CeilLog2(NumRefFrames)). This also exercises the data-dependent
+        // screen_content / intrabc reads on the FrameIsIntra arm (mirror :4569-4571).
         let mut seq = base_seq();
         seq.single_picture_header_flag = true;
         seq.filter.single_picture_header_flag = true;
+        seq.enable_short_refresh_frame_flags = true; // overwrite==1 -> has_refresh + frame_to_refresh
         seq.seq_force_screen_content_tools = 2; // SELECT_SCREEN_CONTENT_TOOLS -> read the bit
         seq.seq_force_integer_mv = 2; // SELECT_INTEGER_MV -> read force_integer_mv when SCC on
         let mut bits = Bits::default();
         bits.uvlc(0); // seq_header_id_in_frame_header
         bits.f(5, 3); // bridge_frame_ref_idx = 5
-        bits.bit(1); // bridge_frame_overwrite_flag = 1 (mirror :4423)
-        bits.f(0xA5, 8); // refresh_frame_flags f(8) — read UNCONDITIONALLY on the KEY arm (:4445)
+        bits.bit(1); // bridge_frame_overwrite_flag = 1 (mirror :4423) -> refresh IS read
+        bits.bit(1); // has_refresh_frame_flags = 1 (overwrite==1 short path)
+        bits.f(5, 3); // frame_to_refresh = 5 f(CeilLog2(8) == 3) -> refresh = 1 << 5
         // frame_size(): override 0 -> default dims, no bits.
         bits.bit(1); // allow_screen_content_tools = 1 (mirror :4569 / §5.18.3.3)
         bits.bit(1); // force_integer_mv = 1 (allow_sct && seq_force_integer_mv == SELECT)
@@ -3976,8 +4004,8 @@ mod tests {
         assert_eq!(inter.bridge_frame_overwrite_flag, Some(true));
         assert_eq!(
             inter.refresh_frame_flags,
-            Some(0xA5),
-            "refresh_frame_flags f(8) is read on the KEY arm even when overwrite == 1 (spec mirror)"
+            Some(1 << 5),
+            "overwrite == 1 + enable_short -> has_refresh_frame_flags + frame_to_refresh (1 << 5)"
         );
         assert_eq!(core.allow_screen_content_tools, Some(true));
         assert_eq!(core.force_integer_mv, Some(true));
@@ -3996,16 +4024,17 @@ mod tests {
     fn frame_header_core_single_picture_bridge_eof_in_prefix_is_truncation() {
         // A payload that ends inside the modeled single-picture-bridge prefix is a decidable
         // truncation, not a hard parse error: finish_inter_control preserves the fields parsed
-        // before the EOF and reports StoppedInsideInterControl (codex F2). Here the payload ends
-        // after bridge_frame_overwrite_flag, so refresh_frame_flags f(8) runs out of bits.
+        // before the EOF and reports StoppedInsideInterControl (codex F2). With overwrite == 1 the
+        // refresh_frame_flags read IS reached (the long arm, enable_short off -> f(NumRefFrames)),
+        // and the payload ends inside it.
         let mut seq = base_seq();
         seq.single_picture_header_flag = true;
         seq.filter.single_picture_header_flag = true;
         let mut bits = Bits::default();
         bits.uvlc(0); // seq_header_id_in_frame_header (1 bit)
         bits.f(5, 3); // bridge_frame_ref_idx = 5 (3 bits)
-        bits.bit(0); // bridge_frame_overwrite_flag = 0 (1 bit) -> 5 bits, padded to 1 byte
-        // refresh_frame_flags f(8) starts at bit 5 with only 3 padding bits left -> EOF.
+        bits.bit(1); // bridge_frame_overwrite_flag = 1 (1 bit) -> 5 bits, padded to 1 byte
+        // refresh_frame_flags f(NumRefFrames == 8) starts at bit 5 with only 3 padding bits -> EOF.
         let data = bits.into_bytes();
         let (core, _) = parse_body(&data, ObuType::BridgeFrame, true, &seq).unwrap();
 
@@ -4020,7 +4049,7 @@ mod tests {
             .expect("the pre-EOF facts are preserved on core.inter");
         assert_eq!(
             inter.bridge_frame_overwrite_flag,
-            Some(false),
+            Some(true),
             "bridge_frame_overwrite_flag parsed before the EOF is preserved"
         );
         assert_eq!(
@@ -4029,53 +4058,6 @@ mod tests {
         );
         assert_eq!(inter.stop, None, "the bridge-return stop was never reached");
         assert_eq!(core.frame_size, None);
-    }
-
-    #[test]
-    fn frame_header_core_single_picture_bridge_eof_after_refresh_preserves_earlier_facts() {
-        // A truncation LATER in the prefix (inside screen_content_params, after the overwrite +
-        // refresh + zero-bit frame_size reads succeeded) must still lift the earlier-parsed facts
-        // onto core, leaving only the unreached field None. This also exercises the
-        // enable_short_refresh_frame_flags arm of the KEY refresh (frame_to_refresh f(CeilLog2)).
-        let mut seq = base_seq();
-        seq.single_picture_header_flag = true;
-        seq.filter.single_picture_header_flag = true;
-        seq.enable_short_refresh_frame_flags = true; // KEY arm reads frame_to_refresh f(3)
-        seq.seq_force_screen_content_tools = 2; // SELECT -> allow_screen_content_tools reads a bit
-        let mut bits = Bits::default();
-        bits.uvlc(0); // seq_header_id_in_frame_header (1 bit)
-        bits.f(5, 3); // bridge_frame_ref_idx = 5 (3 bits) -> 4 bits
-        bits.bit(0); // bridge_frame_overwrite_flag = 0 (1 bit) -> 5 bits
-        bits.f(5, 3); // frame_to_refresh = 5 (3 bits) -> 8 bits = exactly 1 byte; refresh = 1 << 5
-        // frame_size(): 0 bits (override 0, default dims). allow_screen_content_tools f(1) then
-        // reads bit 8, past the 1-byte buffer -> EOF inside screen_content_params().
-        let data = bits.into_bytes();
-        let (core, _) = parse_body(&data, ObuType::BridgeFrame, true, &seq).unwrap();
-
-        assert_eq!(
-            core.status,
-            FrameHeaderParseStatus::StoppedInsideInterControl
-        );
-        let inter = core
-            .inter
-            .as_ref()
-            .expect("pre-EOF facts preserved on core.inter");
-        assert_eq!(inter.bridge_frame_overwrite_flag, Some(false));
-        assert_eq!(
-            inter.refresh_frame_flags,
-            Some(1 << 5),
-            "the enable_short frame_to_refresh refresh parsed before the EOF is preserved"
-        );
-        assert_eq!(
-            core.frame_size,
-            Some(FrameSize::new(4096, 2304)),
-            "the zero-bit frame_size() that succeeded before the EOF is preserved"
-        );
-        assert_eq!(
-            inter.allow_screen_content_tools, None,
-            "screen_content_params() hit the EOF"
-        );
-        assert_eq!(inter.stop, None, "the bridge-return stop was never reached");
     }
 
     #[test]
@@ -4094,8 +4076,7 @@ mod tests {
         let mut bits = Bits::default();
         bits.uvlc(0); // seq_header_id_in_frame_header (1 bit)
         bits.f(5, 3); // bridge_frame_ref_idx = 5 (3 bits)
-        bits.bit(0); // bridge_frame_overwrite_flag = 0 (1 bit)
-        bits.f(0, 8); // refresh_frame_flags f(8)
+        bits.bit(0); // bridge_frame_overwrite_flag = 0 (1 bit) -> refresh inferred 1 << 5, no bits
         // frame_size(): 0 bits. screen_content_params(): seq_force off -> 0 bits.
         bits.bit(0); // allow_intrabc = 0 (1 bit)
         // IsBridge early-return arm: tile_info() 0 bits; base_q_idx inferred (no bits);
@@ -4107,14 +4088,19 @@ mod tests {
 
         assert!(core.is_bridge);
         let inter = core.inter.as_ref().expect("bridge facts recorded");
+        assert_eq!(
+            inter.refresh_frame_flags,
+            Some(1 << 5),
+            "overwrite == 0 -> refresh inferred (no bits)"
+        );
         assert_eq!(inter.stop, Some(InterStop::BruInactiveOrBridgeReturn));
         assert!(matches!(
             core.status,
             FrameHeaderParseStatus::UnsupportedUntilFeature { .. }
         ));
-        // 1 (seq id) + 3 (bridge ref) + 1 (overwrite) + 8 (refresh) + 1 (allow_intrabc)
-        // + 3 (fgm_id) + 16 (grain_seed) = 33 bits: the mandatory grain tail is accounted for.
-        assert_eq!(consumed, 33, "consumed_bits covers the film-grain tail");
+        // 1 (seq id) + 3 (bridge ref) + 1 (overwrite) + 0 (refresh inferred) + 1 (allow_intrabc)
+        // + 3 (fgm_id) + 16 (grain_seed) = 25 bits: the mandatory grain tail is accounted for.
+        assert_eq!(consumed, 25, "consumed_bits covers the film-grain tail");
     }
 
     #[test]
@@ -4129,10 +4115,9 @@ mod tests {
         let mut bits = Bits::default();
         bits.uvlc(0); // seq_header_id (1 bit)
         bits.f(5, 3); // bridge_frame_ref_idx (3 bits) -> 4
-        bits.bit(0); // bridge_frame_overwrite_flag (1 bit) -> 5
-        bits.f(0, 8); // refresh_frame_flags f(8) -> 13
-        bits.bit(0); // allow_intrabc (1 bit) -> 14
-        bits.f(5, 3); // fgm_id f(3) -> 17; grain_seed f(16) then runs out of bits -> EOF.
+        bits.bit(0); // bridge_frame_overwrite_flag = 0 (1 bit) -> 5; refresh inferred (no bits)
+        bits.bit(0); // allow_intrabc (1 bit) -> 6
+        bits.f(5, 3); // fgm_id f(3) -> 9; grain_seed f(16) then runs out of bits -> EOF.
         let data = bits.into_bytes();
         let (core, _) = parse_body(&data, ObuType::BridgeFrame, true, &seq).unwrap();
 
@@ -4142,7 +4127,11 @@ mod tests {
         );
         let inter = core.inter.as_ref().expect("pre-EOF facts preserved");
         assert_eq!(inter.bridge_frame_overwrite_flag, Some(false));
-        assert_eq!(inter.refresh_frame_flags, Some(0));
+        assert_eq!(
+            inter.refresh_frame_flags,
+            Some(1 << 5),
+            "the inferred refresh (overwrite == 0) parsed before the grain-tail EOF is preserved"
+        );
         assert_eq!(
             core.frame_size,
             Some(FrameSize::new(4096, 2304)),

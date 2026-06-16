@@ -14,12 +14,15 @@
 ## 2. Parsing
 
 - [x] 2.1 Route a single-picture `IsBridge` frame in `parse_core_body` to a new
-  `parse_single_picture_bridge_tail` (not `parse_intra_tail`), keyed on
-  `core.is_bridge`.
-- [x] 2.2 Read the spec-mirror prefix: `bridge_frame_overwrite_flag` f(1) (:4423);
-  `read_refresh_frame_flags(..., FrameType::Key)` (:4445); non-override
-  `parse_frame_size` (:4567, default dims, no bits); `parse_screen_content_params_full`
-  (:4569); `parse_intrabc_params_full(frame_is_intra = true)` (:4571).
+  `parse_single_picture_bridge_tail` (not `parse_intra_tail`), passing
+  `bridge_frame_ref_idx` (needed for the inferred refresh).
+- [x] 2.2 Read the prefix: `bridge_frame_overwrite_flag` f(1) (:4423); the
+  OVERWRITE-GATED `refresh_frame_flags` (codex PR review / maintainer decision —
+  § 6.17.2 + AVM, NOT the § 5.18.2 KEY-arm literal: `overwrite == 0` → inferred
+  `1 << bridge_frame_ref_idx` no bits; `overwrite == 1` → read it, AVM bridge short/
+  long arm); non-override `parse_frame_size` (:4567, default dims, no bits);
+  `parse_screen_content_params_full` (:4569); `parse_intrabc_params_full(frame_is_intra
+  = true)` (:4571).
 - [x] 2.3 Record `num_total_refs = 0` (:4573), `tip_frame_mode = TIP_FRAME_DISABLED`
   (:4575), and `primary_ref_frame = PRIMARY_REF_NONE` (:4345) on `core.inter`, then
   stop with `InterStop::BruInactiveOrBridgeReturn` (:4971) via `finish_inter_control`
