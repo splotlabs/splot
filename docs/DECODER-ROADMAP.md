@@ -65,9 +65,11 @@ prediction use the § 7.13.3.22 approximate divisor path. The H/V cardinal
 § 7.13.2.8 directional subset is supported for caller-prepared edges (`V_PRED`
 pAngle 90 and `H_PRED` pAngle 180), and the one-sided non-IDIF chroma
 directional-angle subset is supported for caller-prepared pAngles 45, 67, and
-203. Middle/luma/MRL/IDIF/full-dispatch directional angles, full edge
-preparation, data-driven prediction, general directional-angle IBP, full CfL,
-full `predict_intra()` dispatch, dequantization, inverse transforms, residual
+203. The middle non-IDIF directional-angle subset is supported for
+caller-prepared pAngles 113, 135, and 157 over explicit logical above/left edge
+ranges. Luma/MRL/IDIF/full-dispatch directional angles, full edge preparation,
+data-driven prediction, general directional-angle IBP, full CfL, full
+`predict_intra()` dispatch, dequantization, inverse transforms, residual
 addition, runtime decode output, output
 scheduling, and AV2 reference refresh semantics remain unimplemented.
 `splot-recon` remains scheduler-free:
@@ -246,7 +248,7 @@ other external decoder is forbidden.
 | 5 | Self-contained decode fuzz target and fixture smoke | `decode_plan_bytes` fuzz target supported for the raw byte planner; `decode_runtime_hash_bytes` supported for the minimal runtime hash byte API; minimal runtime fixture smoke supported |
 | 6 | AV2 § 8 symbol/CDF decoder foundation | § 8.2 generic primitive partial; crate-private partition CDF subset boundary partial; supported-subset Tile-to-Saved/Saved-to-Frame lifecycle supported; broad § 8.3 and tile decode planned |
 | 7 | Constrained intra tile syntax | tile payload and tile CDF boundaries partial; individual partition-entry symbol reads, one caller-fact partition decision, allowed partition derivation, first `decode_block()` frontier planning, and minimal block-symbol trace supported; supported-subset CDF lifecycle supported; full recursive `read_partition()` / `decode_tile()` syntax planned |
-| 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | current-frame workspace plus square DC, rectangular DC, subsampled DC, IBP DC, basic/PAETH, smooth, H/V cardinal directional, one-sided directional-angle primitives, and the minimal luma-DC plus traced top-left chroma H_PRED runtime handoff supported; middle/luma/MRL/IDIF/full-dispatch directional angles, DIP/general directional-angle IBP/full CfL modes, broad chroma prediction, dequant/reconstruction, inverse transforms, broad runtime hashes planned |
+| 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | current-frame workspace plus square DC, rectangular DC, subsampled DC, IBP DC, basic/PAETH, smooth, H/V cardinal directional, one-sided directional-angle, middle directional-angle primitives, and the minimal luma-DC plus traced top-left chroma H_PRED runtime handoff supported; luma/MRL/IDIF/full-dispatch directional angles, DIP/general directional-angle IBP/full CfL modes, broad chroma prediction, dequant/reconstruction, inverse transforms, broad runtime hashes planned |
 | 9 | Y4M output and reconstructed reference-frame store | reference-slot runtime store, source-backed Y4M writer, and minimal runtime Y4M output supported; broad runtime Y4M output and AV2 refresh semantics planned |
 | 10 | Portable local-reference evidence manifests | metadata contract and offline checker wired; two AVM/dav2d raw MD5 agreement entries recorded as non-executable metadata |
 | 11 | Encoder reconstruction API contract | planned |

@@ -317,6 +317,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "intra-smooth-prediction",
             "intra-cardinal-directional-prediction",
             "intra-one-sided-directional-angle-prediction",
+            "intra-middle-directional-angle-prediction",
             "recon-intra-prediction-fuzz",
         ],
         feature_ids: &[
@@ -328,6 +329,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "RECON-INTRA-SMOOTH-PREDICTION",
             "RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION",
             "RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION",
+            "RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION",
             "CONF-RECON-INTRA-PREDICTION-FUZZ",
         ],
         status: "partial",
@@ -340,7 +342,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         fuzz_targets: &["recon_intra_prediction_bytes"],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Some scalar intra prediction and workspace primitives exist, including subsampled DC, IBP DC, H/V cardinal directional prediction, one-sided directional-angle prediction, and no-panic fuzz coverage over bounded structured direct prediction and current-frame workspace cases. Middle/luma/MRL/IDIF/full-dispatch directional angles, full edge preparation, data-driven, general directional-angle IBP, full CfL/MHCCP, palette, all inter prediction, and broad runtime integration remain unsupported.",
+        notes: "Some scalar intra prediction and workspace primitives exist, including subsampled DC, IBP DC, H/V cardinal directional prediction, one-sided directional-angle prediction, middle directional-angle prediction, and no-panic fuzz coverage over bounded structured direct prediction and current-frame workspace cases. Luma/MRL/IDIF/full-dispatch directional angles, full edge preparation, data-driven, general directional-angle IBP, full CfL/MHCCP, palette, all inter prediction, and broad runtime integration remain unsupported.",
     },
     CoverageRow {
         id: "reconstruction-transform-and-filters",

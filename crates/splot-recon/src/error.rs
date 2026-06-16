@@ -7,8 +7,8 @@ use core::fmt;
 
 use crate::{
     BitDepth, IntraCardinalDirection, IntraCardinalEdge, IntraDcEdge, IntraDirectionalAngle,
-    IntraDirectionalAngleEdge, IntraPaethEdge, IntraSmoothEdge, PlaneId, PlaneRect, PlaneSize,
-    ReferenceSlot,
+    IntraDirectionalAngleEdge, IntraMiddleDirectionalAngle, IntraPaethEdge, IntraSmoothEdge,
+    PlaneId, PlaneRect, PlaneSize, ReferenceSlot,
 };
 
 /// Result alias used by `splot-recon` constructors and helpers.
@@ -274,6 +274,38 @@ pub enum ReconError {
     },
     /// A one-sided directional-angle edge sample exceeded the active bit depth.
     IntraDirectionalAngleSampleOutOfRange {
+        /// Edge containing the out-of-range sample.
+        edge: IntraDirectionalAngleEdge,
+        /// Zero-based index within the edge samples.
+        sample_index: usize,
+        /// Observed sample value.
+        value: u16,
+        /// Maximum sample value allowed by the active bit depth.
+        max: u16,
+    },
+    /// A middle directional-angle pAngle is outside the currently source-backed subset.
+    UnsupportedIntraMiddleDirectionalAngle {
+        /// Rejected AV2 pAngle value.
+        p_angle: u16,
+    },
+    /// A required middle directional-angle prediction edge was absent.
+    IntraMiddleDirectionalAngleEdgeUnavailable {
+        /// Directional pAngle being computed.
+        angle: IntraMiddleDirectionalAngle,
+        /// Required edge that was absent.
+        edge: IntraDirectionalAngleEdge,
+    },
+    /// A supplied middle directional-angle edge did not match the block size.
+    IntraMiddleDirectionalAngleEdgeLengthMismatch {
+        /// Edge whose sample count was checked.
+        edge: IntraDirectionalAngleEdge,
+        /// Expected edge sample count.
+        expected: usize,
+        /// Actual edge sample count.
+        actual: usize,
+    },
+    /// A middle directional-angle edge sample exceeded the active bit depth.
+    IntraMiddleDirectionalAngleSampleOutOfRange {
         /// Edge containing the out-of-range sample.
         edge: IntraDirectionalAngleEdge,
         /// Zero-based index within the edge samples.
@@ -642,6 +674,35 @@ impl fmt::Display for ReconError {
             } => write!(
                 f,
                 "directional angle intra prediction {} edge sample {sample_index} value {value} exceeds maximum {max}",
+                edge.name()
+            ),
+            Self::UnsupportedIntraMiddleDirectionalAngle { p_angle } => write!(
+                f,
+                "unsupported middle directional intra prediction pAngle {p_angle}; expected 113, 135, or 157"
+            ),
+            Self::IntraMiddleDirectionalAngleEdgeUnavailable { angle, edge } => write!(
+                f,
+                "middle directional angle intra prediction pAngle {} requires {} edge",
+                angle.p_angle(),
+                edge.name()
+            ),
+            Self::IntraMiddleDirectionalAngleEdgeLengthMismatch {
+                edge,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "middle directional angle intra prediction {} edge length mismatch: expected {expected} samples, got {actual}",
+                edge.name()
+            ),
+            Self::IntraMiddleDirectionalAngleSampleOutOfRange {
+                edge,
+                sample_index,
+                value,
+                max,
+            } => write!(
+                f,
+                "middle directional angle intra prediction {} edge sample {sample_index} value {value} exceeds maximum {max}",
                 edge.name()
             ),
             Self::IntraSmoothEdgeLengthMismatch {
