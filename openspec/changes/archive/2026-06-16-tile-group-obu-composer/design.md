@@ -27,14 +27,19 @@ also already exist. This slice only **sequences** them for the first-tile-group 
   and `append`s to the caller only on full success, so any sub-writer reject (frame-header,
   structure, or payload) leaves the caller's `writer` untouched — reject-before-write for the whole
   composition, exactly as `write_frame_header_core` composes its sub-structures.
-- **Inputs.** To keep the signature readable, group the per-tile-group inputs (the `FrameHeaderCore` +
-  views + `first_picture_in_tu`, the `TileGroupStructure` + `TileGroupLayout`, and the
-  `TileGroupFraming` + `tile_data` + `tile_size_bytes`) — either as several parameters or a small
-  `TileGroupObuParts<'_>` borrow struct (implementer's choice; prefer the struct if the parameter
-  count is unwieldy). The composer does not own the OBU header / size / trailing bits.
-- **Reject set.** `"continuation_unsupported"` for a requested non-first form; otherwise the composer
-  is a thin sequencer and every other reject is raised (and surfaced) by the delegated sub-writers,
-  whose own reject-before-write guarantees compose through the scratch buffer.
+- **Inputs — layout / `TileSizeBytes` are DERIVED, not caller-supplied (post-review).** The composer
+  takes the `FrameHeaderCore` + views + `first_picture_in_tu`, the `TileGroupStructure`, and the
+  `TileGroupFraming` + `tile_data`. It does **not** take `TileGroupLayout` or `tile_size_bytes` as
+  inputs: both are derived from `core.tile_info` (§ 5.18.7.2) so the § 5.20.1 framing always stays
+  consistent with the bits `write_frame_header_core` emits — an independently-supplied layout /
+  `TileSizeBytes` could desync the round-trip (a reparse frames the payload from the header-derived
+  values). The composer does not own the OBU header / size / trailing bits.
+- **Reject set.** Before any bit: `WriterNotByteAligned` (an OBU payload starts byte-aligned);
+  `"continuation_unsupported"` (a requested non-first form); `"not_tile_group_obu"` (a non-tile-group
+  `core.obu_type`, e.g. a SEF / TIP header); `"first_tg_start_not_zero"` (the § 6.18 first-group rule);
+  `"framing_range_mismatch"` (`framing.tiles.len()` vs the structure's `tg_end - tg_start + 1` tile
+  count); `"missing_tile_info"` (no `core.tile_info` to derive from); plus every reject the delegated
+  frame-header / structure / payload sub-writers raise, which compose through the scratch buffer.
 
 ## Testing
 

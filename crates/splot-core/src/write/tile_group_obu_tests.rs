@@ -546,6 +546,47 @@ mod obu_tests {
     }
 
     #[test]
+    fn reject_framing_range_mismatch() {
+        // The structure's tg range (single tile: tg_end == 0 -> 1 tile) must match
+        // framing.tiles.len(); a two-record framing is rejected before any bit, because a reparse
+        // frames the payload from the emitted single-tile range and would treat the first tile's
+        // size field as tile data.
+        let (core, seq) = valid_core();
+        let structure = single_tile_structure(); // tg_start == tg_end == 0 -> expects 1 tile
+        // A conformant 2-tile region: tile0 has a 1-byte size field (tile_size 3), tile1 the
+        // remainder (tile_size 4).
+        let region: Vec<u8> = vec![0x02, 10, 11, 12, 20, 21, 22, 23];
+        let framing = parse_tile_group_framing(&region, 0, 1, 1, false);
+        assert_eq!(framing.tiles.len(), 2);
+        let tile_data: &[&[u8]] = &[&region[1..4], &region[4..8]];
+
+        let mut writer = BitWriter::new();
+        let err = write_tile_group_obu(
+            &mut writer,
+            &core,
+            &seq,
+            None,
+            true,
+            &structure,
+            &framing,
+            tile_data,
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            WriteError::NonCanonicalTileGroup {
+                what: "framing_range_mismatch"
+            }
+        );
+        assert_eq!(
+            writer.bit_len(),
+            0,
+            "no bit written on framing-range-mismatch reject"
+        );
+    }
+
+    #[test]
     fn frame_header_sub_writer_reject_propagates() {
         // A non-canonical frame-header core (mutated to a non-IntraHeaderComplete status) is
         // rejected by write_frame_header_core; that reject must propagate through the scratch buffer

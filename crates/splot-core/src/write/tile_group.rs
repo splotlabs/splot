@@ -381,8 +381,9 @@ fn check_tile_group_payload_encodable(
 ///   `is_first_tile_group == false` (the non-first `frame_header_copy()` continuation is a follow-up
 ///   slice); `"not_tile_group_obu"` if `core.obu_type` is not a tile-group carrier (a SEF / TIP
 ///   header); `"first_tg_start_not_zero"` if `structure.tg_start != 0` (the § 6.18 first-group rule);
-///   or `"missing_tile_info"` if `core.tile_info` is absent (the layout / `TileSizeBytes` cannot be
-///   derived).
+///   `"framing_range_mismatch"` if `framing.tiles.len()` disagrees with the structure's
+///   `tg_end - tg_start + 1` tile count; or `"missing_tile_info"` if `core.tile_info` is absent (the
+///   layout / `TileSizeBytes` cannot be derived).
 /// - Any [`WriteError`] a delegated sub-writer raises: the frame-header check
 ///   ([`WriteError::NonCanonicalFrameHeader`] for a non-intra / non-reproducible `core`), the
 ///   structure check ([`WriteError::NonCanonicalTileGroup`] for a non-`Complete` / degenerate /
@@ -432,6 +433,17 @@ pub fn write_tile_group_obu(
     if structure.tg_start != 0 {
         return Err(WriteError::NonCanonicalTileGroup {
             what: "first_tg_start_not_zero",
+        });
+    }
+    // The § 5.19 structure's `tg_start ..= tg_end` defines the tile count; the § 5.20.1 framing must
+    // carry exactly that many tile records, or a reparse — which frames the payload using the
+    // emitted range, not `framing.tiles.len()` — would split the region differently (e.g. a
+    // single-tile range over a two-record framing treats the first tile's size field as tile data).
+    // `tg_start == 0` here (checked above); the structure writer rejects an inverted `tg_end`.
+    let expected_tiles = u64::from(structure.tg_end).saturating_add(1);
+    if framing.tiles.len() as u64 != expected_tiles {
+        return Err(WriteError::NonCanonicalTileGroup {
+            what: "framing_range_mismatch",
         });
     }
     // The § 5.19 layout and § 5.20.1 TileSizeBytes are determined by the frame header's tile_info()
