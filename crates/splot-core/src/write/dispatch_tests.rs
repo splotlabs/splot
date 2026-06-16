@@ -15,6 +15,7 @@
 mod tests {
     use super::*;
     use crate::bitio::BitReader;
+    use crate::headers::buffer_removal_timing::{BufferRemovalOpTiming, BufferRemovalTiming};
     use crate::headers::metadata::{
         MetadataHdrCll, MetadataPayload, MetadataShortObu, MetadataType, MetadataUnit,
         parse_metadata_short,
@@ -301,6 +302,46 @@ mod tests {
         let bytes = writer.into_bytes();
         let reparsed = reparse_payload(&header, &bytes);
         assert_eq!(reparsed, payload);
+    }
+
+    #[test]
+    fn buffer_removal_timing_payload_round_trips() {
+        // §5.12 is not extensible; the dispatch routes it to write_buffer_removal_timing + the
+        // trailing-bits tail (no longer Unimplemented). OPS-dependent form, one present + one absent.
+        let header = header_for(ObuType::BufferRemovalTiming);
+        let payload = ParsedObu::BufferRemovalTiming(BufferRemovalTiming::OperatingPointSet {
+            br_ops_id: 3,
+            br_ops_cnt: 2,
+            op_times: vec![
+                BufferRemovalOpTiming {
+                    index: 0,
+                    decoder_model_present: true,
+                    br_time_op: Some(7),
+                },
+                BufferRemovalOpTiming {
+                    index: 1,
+                    decoder_model_present: false,
+                    br_time_op: None,
+                },
+            ],
+        });
+        let mut writer = BitWriter::new();
+        write_obu_payload(&mut writer, &payload, false, &[]).unwrap();
+        let bytes = writer.into_bytes();
+        assert_eq!(reparse_payload(&header, &bytes), payload);
+    }
+
+    #[test]
+    fn buffer_removal_timing_rejects_non_empty_passthrough() {
+        let payload =
+            ParsedObu::BufferRemovalTiming(BufferRemovalTiming::ExtendedLayer { br_time: 1 });
+        let mut writer = BitWriter::new();
+        let err = write_obu_payload(&mut writer, &payload, false, &[0x00]).unwrap_err();
+        assert!(
+            matches!(err, WriteError::NonCanonicalBufferRemovalTiming { what } if what == "passthrough"),
+            "expected passthrough reject, got {err:?}"
+        );
+        assert_eq!(writer.bit_len(), 0);
     }
 
     // ===================================================================================

@@ -220,6 +220,21 @@ pub enum WriteError {
         what: &'static str,
     },
 
+    /// A buffer-removal-timing value is inconsistent with what the AV2 v1.0.0 § 5.12
+    /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-12`) parser would re-derive on reparse, so
+    /// the model could never have been produced by `parse_buffer_removal_timing` and writing it would
+    /// break `read(write(x)) == x`. Examples: an `op_times` length that disagrees with `br_ops_cnt`,
+    /// a per-operating-point `index` that disagrees with its position, or a `br_time_op` presence that
+    /// disagrees with `br_decoder_model_present_op_flag`. Rejected before any bit is written.
+    #[error(
+        "non-canonical {what}: buffer-removal-timing value cannot be reproduced by the §5.12 parser"
+    )]
+    NonCanonicalBufferRemovalTiming {
+        /// A short, stable label for the offending field (e.g. `"op_count"`, `"op_index"`,
+        /// `"op_decoder_model_flag"`, `"passthrough"`).
+        what: &'static str,
+    },
+
     /// A writer for this OBU payload type does not exist yet — an honest stub returned by the
     /// complete-OBU dispatch for the `ParsedObu` variants whose body writer has not landed. Distinct
     /// from a non-canonical reject: the model is fine, the writer is simply not implemented.
