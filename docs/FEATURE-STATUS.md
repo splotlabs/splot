@@ -72,7 +72,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-5.12-BUFFER-REMOVAL-TIMING` | Buffer removal timing OBU syntax | normative | bitstream-syntax | done | done | done | partial | done | todo | done | done | pending | `crates/splot-core/src/headers/buffer_removal_timing.rs` |
 | `AV2-5.13-QUANTIZATION-MATRIX` | Quantization matrix OBU syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/quantizer_matrix.rs` |
 | `AV2-5.14-FILM-GRAIN` | Film grain OBU syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/film_grain.rs` |
-| `AV2-5.15-CONTENT-INTERPRETATION` | Content interpretation OBU syntax | normative | bitstream-syntax | done | done | done | done | todo | todo | done | done | pending | `crates/splot-core/src/headers/content_interpretation.rs` |
+| `AV2-5.15-CONTENT-INTERPRETATION` | Content interpretation OBU syntax | normative | bitstream-syntax | done | done | done | done | done | todo | done | done | pending | `crates/splot-core/src/headers/content_interpretation.rs` |
 | `AV2-5.16-PADDING` | Padding OBU syntax | normative | bitstream-syntax | done | done | done | done | todo | todo | done | done | pending | `crates/splot-core/src/headers/padding.rs` |
 | `AV2-5.17-METADATA` | Metadata OBU syntax | normative | bitstream-syntax | done | done | done | partial | done | todo | done | done | pending | `crates/splot-core/src/headers/metadata.rs` |
 | `AV2-5.17.1-METADATA-UNIT` | Metadata unit syntax | normative | bitstream-syntax | done | done | done | partial | done | todo | done | done | pending | `crates/splot-core/src/headers/metadata.rs` |

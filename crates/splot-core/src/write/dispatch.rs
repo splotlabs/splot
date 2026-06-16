@@ -35,18 +35,19 @@
 //! [`ParsedObu::Padding`] (§ 5.16) owns its own tail (the `obu_padding_byte` run plus the
 //! `trailing_bits()` that begin at the last non-zero byte), so it is **not** followed by
 //! the generic extensible tail above — exactly as `dispatch_obu_payload` special-cases it.
-//! The eight OBU types with a body writer ([`ParsedObu::TemporalDelimiter`],
+//! The nine OBU types with a body writer ([`ParsedObu::TemporalDelimiter`],
 //! [`ParsedObu::SequenceHeader`], [`ParsedObu::Padding`], [`ParsedObu::MetadataShort`],
 //! [`ParsedObu::MetadataGroup`], [`ParsedObu::BufferRemovalTiming`], [`ParsedObu::Msdo`],
-//! [`ParsedObu::OperatingPointSet`]) are emitted; the remaining six variants have no body
-//! writer yet and return [`WriteError::Unimplemented`] with the matrix Feature ID of their OBU
-//! type ([`ParsedObu::feature_id`]).
+//! [`ParsedObu::OperatingPointSet`], [`ParsedObu::ContentInterpretation`]) are emitted; the
+//! remaining five variants have no body writer yet and return [`WriteError::Unimplemented`] with the
+//! matrix Feature ID of their OBU type ([`ParsedObu::feature_id`]).
 
 use crate::headers::padding::PaddingObu;
 use crate::obu::{ObuHeader, ParsedObu};
 use crate::types::{ExtendedLayerId, ObuType};
 use crate::write::bit_writer::BitWriter;
 use crate::write::buffer_removal_timing::write_buffer_removal_timing;
+use crate::write::content_interpretation::write_content_interpretation;
 use crate::write::error::{WriteError, WriteResult};
 use crate::write::metadata::{write_metadata_group_obu_flat, write_metadata_short_obu};
 use crate::write::msdo::write_msdo;
@@ -132,7 +133,7 @@ pub fn write_complete_obu(
 ///
 /// # Errors
 /// - [`WriteError::WriterNotByteAligned`] if `writer` is not on a byte boundary.
-/// - [`WriteError::Unimplemented`] for the seven `ParsedObu` variants without a body writer
+/// - [`WriteError::Unimplemented`] for the five `ParsedObu` variants without a body writer
 ///   (the Feature ID is [`ParsedObu::feature_id`]).
 /// - A non-empty `passthrough` for the temporal delimiter (`temporal_delimiter_passthrough`),
 ///   or a `padding_len` that disagrees with `passthrough.len()`
@@ -254,15 +255,26 @@ fn write_obu_payload_inner(
             write_operating_point_set(&mut scratch, ops, obu_xlayer_id)?;
             write_generic_tail(&mut scratch, is_extensible)?;
         }
-        // The six OBU types without a body writer yet: an honest typed stub naming the
+        // § 5.15: the content-interpretation body, then the generic tail. The OBU type is
+        // extensible, so the tail is obu_extension_flag = 0 + trailing_bits(). It carries no
+        // obu_xlayer_id-dependent branch and no passthrough.
+        ParsedObu::ContentInterpretation(ci) => {
+            if !passthrough.is_empty() {
+                return Err(WriteError::NonCanonicalContentInterpretation {
+                    what: "passthrough",
+                });
+            }
+            write_content_interpretation(&mut scratch, ci)?;
+            write_generic_tail(&mut scratch, is_extensible)?;
+        }
+        // The five OBU types without a body writer yet: an honest typed stub naming the
         // matrix Feature ID of the OBU type (ParsedObu::feature_id stays in sync with the
         // model). bit_len() is unchanged because nothing was appended.
         ParsedObu::MultiFrameHeader(_)
         | ParsedObu::LayerConfigurationRecord(_)
         | ParsedObu::AtlasSegment(_)
         | ParsedObu::QuantizationMatrix(_)
-        | ParsedObu::FilmGrain(_)
-        | ParsedObu::ContentInterpretation(_) => {
+        | ParsedObu::FilmGrain(_) => {
             return Err(WriteError::Unimplemented {
                 feature: payload.feature_id(),
             });
