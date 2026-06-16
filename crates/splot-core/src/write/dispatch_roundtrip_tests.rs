@@ -506,10 +506,13 @@
     }
 
     #[test]
-    fn layer_config_record_payload_round_trips() {
+    fn layer_config_record_global_payload_round_trips() {
         // §5.8 layer config record is extensible; the dispatch routes it to
         // write_layer_config_record + the extensible tail. The global/local branch is selected by the
-        // header's obu_xlayer_id (here global xlayer 31 -> a global record). It carries no passthrough.
+        // header's obu_xlayer_id (here global xlayer 31 -> a global record), so a GLOBAL record only
+        // round-trips through write_complete_obu (which threads the header); the header-less
+        // write_obu_payload defaults obu_xlayer_id to the non-global 0 and so rejects a global record
+        // (like the §5.10 OPS global path). It carries no passthrough.
         let header = read_obu_header_from_slice(&[0xC0, 0x1F], ByteOffset::new(0)).unwrap();
         assert!(header.extended_layer_id.is_global());
         assert!(header.obu_type.is_extensible_obu());
@@ -540,17 +543,62 @@
             other => panic!("expected a layer configuration record OBU, got {other:?}"),
         }
 
+        // Round-trips through write_complete_obu (header + payload + tail). The global xlayer is
+        // carried by the two-byte header (obu_extension_flag set), so skip both header bytes.
+        let mut complete = BitWriter::new();
+        write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
+        let complete_bytes = complete.into_bytes();
+        assert_eq!(reparse_payload(&header, &complete_bytes[2..]), payload);
+    }
+
+    #[test]
+    fn layer_config_record_local_payload_round_trips() {
+        // A LOCAL record (header obu_xlayer_id = 0, non-global) round-trips through both the
+        // header-less write_obu_payload (whose default xlayer 0 agrees with the local scope) and
+        // write_complete_obu.
+        let header = header_for(ObuType::LayerConfigurationRecord);
+        assert!(!header.extended_layer_id.is_global());
+        assert!(header.obu_type.is_extensible_obu());
+        let mut bits = Bits::default();
+        // Minimal lcr_local_info(xId=0): global_id=0, local_id=1, no ptl, no atlas, reserved 0.
+        bits.f(0, 3); // lcr_global_id
+        bits.f(1, 3); // lcr_local_id
+        bits.bit(0); // lcr_profile_tier_level_info_present_flag
+        bits.bit(0); // lcr_local_atlas_id_present_flag
+        bits.f(0, 3); // lcr_local_reserved_zero_3bits
+        bits.f(0, 5); // lcr_local_reserved_zero_5bits
+        // lcr_xlayer_info(0, 0): four present flags clear, then byte_alignment().
+        bits.f(0, 4);
+        while bits.bits.len() % 8 != 0 {
+            bits.bit(0);
+        }
+        // extensible OBU tail.
+        bits.bit(0);
+        bits.bit(1);
+        while bits.bits.len() % 8 != 0 {
+            bits.bit(0);
+        }
+        let payload_bytes = bits.into_bytes();
+        let payload = reparse_payload(&header, &payload_bytes);
+        match &payload {
+            ParsedObu::LayerConfigurationRecord(record) => {
+                assert!(matches!(
+                    record.as_ref(),
+                    crate::headers::layer_config_record::LayerConfigurationRecord::Local(_)
+                ));
+            }
+            other => panic!("expected a layer configuration record OBU, got {other:?}"),
+        }
+
         let mut writer = BitWriter::new();
         write_obu_payload(&mut writer, &payload, true, &[]).unwrap();
         let bytes = writer.into_bytes();
         assert_eq!(reparse_payload(&header, &bytes), payload);
 
-        // And it round-trips through write_complete_obu (header + payload + tail). The global xlayer
-        // is carried by the two-byte header (obu_extension_flag set), so skip both header bytes.
         let mut complete = BitWriter::new();
         write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
         let complete_bytes = complete.into_bytes();
-        assert_eq!(reparse_payload(&header, &complete_bytes[2..]), payload);
+        assert_eq!(reparse_payload(&header, &complete_bytes[1..]), payload);
     }
 
     #[test]

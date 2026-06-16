@@ -310,15 +310,17 @@ fn write_obu_payload_inner(
             write_generic_tail(&mut scratch, is_extensible)?;
         }
         // OBU_LAYER_CONFIGURATION_RECORD (§ 5.8) is an extensible OBU type, so the tail is
-        // obu_extension_flag = 0 + trailing_bits(). The writer branches on the Global/Local
-        // model variant (it carries no passthrough); see write_layer_config_record.
+        // obu_extension_flag = 0 + trailing_bits(). The parser selects the global vs local body
+        // from obu_xlayer_id, so the dispatch threads it through (like the §5.10 OPS writer): the
+        // writer rejects a Global/Local model variant — or a local xlayer_id — that disagrees with
+        // the header. It carries no passthrough.
         ParsedObu::LayerConfigurationRecord(record) => {
             if !passthrough.is_empty() {
                 return Err(WriteError::NonCanonicalLayerConfigRecord {
                     what: "passthrough",
                 });
             }
-            write_layer_config_record(&mut scratch, record)?;
+            write_layer_config_record(&mut scratch, record, obu_xlayer_id)?;
             write_generic_tail(&mut scratch, is_extensible)?;
         }
         // The one OBU type without a body writer yet: an honest typed stub naming the matrix

@@ -144,12 +144,12 @@ mod tests {
         parse_layer_config_record(&mut reader, xlayer).unwrap()
     }
 
-    /// Parses a hand-built body, writes the model back, asserts byte-exact + semantic round-trip, and
-    /// returns the parsed model.
+    /// Parses a hand-built body, writes the model back (under the same header `xlayer`), asserts
+    /// byte-exact + semantic round-trip, and returns the parsed model.
     fn round_trip(body: &[u8], xlayer: ExtendedLayerId) -> LayerConfigurationRecord {
         let model = parse(body, xlayer);
         let mut writer = BitWriter::new();
-        write_layer_config_record(&mut writer, &model).unwrap();
+        write_layer_config_record(&mut writer, &model, xlayer).unwrap();
         let bytes = writer.into_bytes();
         assert_eq!(bytes, body, "byte-exact round-trip");
         let reparsed = parse(&bytes, xlayer);
@@ -157,11 +157,27 @@ mod tests {
         model
     }
 
-    /// Writes a (deliberately non-canonical) model and returns the reject, asserting no bit reached the
-    /// destination writer.
+    /// The header `obu_xlayer_id` that *agrees* with a model's scope — `GLOBAL_XLAYER_ID` for a
+    /// global record, the stored `xlayer_id` for a local one — so a reject test exercises the
+    /// intended invariant rather than the scope guard.
+    fn matching_xlayer(model: &LayerConfigurationRecord) -> ExtendedLayerId {
+        match model {
+            LayerConfigurationRecord::Global(_) => GLOBAL_XLAYER_ID,
+            LayerConfigurationRecord::Local(info) => ExtendedLayerId::from_bits(info.xlayer_id),
+        }
+    }
+
+    /// Writes a (deliberately non-canonical) model under the scope-matching header and returns the
+    /// reject, asserting no bit reached the destination writer.
     fn write_err(model: &LayerConfigurationRecord) -> WriteError {
+        write_err_xlayer(model, matching_xlayer(model))
+    }
+
+    /// Like [`write_err`] but with an explicit header `obu_xlayer_id` (for the scope / local-id
+    /// disagreement tests).
+    fn write_err_xlayer(model: &LayerConfigurationRecord, xlayer: ExtendedLayerId) -> WriteError {
         let mut writer = BitWriter::new();
-        let err = write_layer_config_record(&mut writer, model).unwrap_err();
+        let err = write_layer_config_record(&mut writer, model, xlayer).unwrap_err();
         assert_eq!(writer.bit_len(), 0, "a rejected model writes no bit");
         err
     }
@@ -534,6 +550,52 @@ mod tests {
             rendering_method: 1,
         });
         assert_eq!(what(&write_err(&record)), "embedded_atlas_exclusive");
+    }
+
+    #[test]
+    fn rejects_global_record_under_local_header() {
+        // A global record written under a non-global header would reparse as a local record.
+        let record = parse(
+            &global_prefix(1, 0b1, false, false, false, false, false).into_bytes(),
+            GLOBAL_XLAYER_ID,
+        );
+        let err = write_err_xlayer(&record, ExtendedLayerId::from_bits(0));
+        assert_eq!(what(&err), "xlayer_scope");
+    }
+
+    #[test]
+    fn rejects_local_record_under_global_header() {
+        // A local record written under the global header would reparse as a global record.
+        let record = parse(&minimal_local_body(), ExtendedLayerId::from_bits(2));
+        let err = write_err_xlayer(&record, GLOBAL_XLAYER_ID);
+        assert_eq!(what(&err), "xlayer_scope");
+    }
+
+    #[test]
+    fn rejects_local_xlayer_id_disagreeing_with_header() {
+        // The stored xlayer_id (2) is parse-context = the header's obu_xlayer_id; a different
+        // (still non-global) header would re-derive a different id on reparse.
+        let record = parse(&minimal_local_body(), ExtendedLayerId::from_bits(2));
+        let err = write_err_xlayer(&record, ExtendedLayerId::from_bits(5));
+        assert_eq!(what(&err), "local_xlayer_id");
+    }
+
+    #[test]
+    fn rejects_local_ptl_xlayer_id() {
+        // A local record with a PTL; the parser sets the PTL's xlayer_id to the record's, so a
+        // different PTL xlayer_id is parser-unproducible.
+        let mut bits = Bits::default();
+        bits.f(0, 3); // lcr_global_id
+        bits.f(2, 3); // lcr_local_id
+        bits.bit(1); // ptl present
+        bits.bit(0); // local atlas present
+        bits.ptl(0, 0, 0, 0, 0); // lcr_seq_profile_tier_level_info(xId)
+        bits.f(0, 3); // reserved_zero_3bits
+        bits.f(0, 5); // reserved_zero_5bits
+        bits.extend(minimal_xlayer_info(false));
+        let mut record = parse(&bits.into_bytes(), ExtendedLayerId::from_bits(3));
+        local(&mut record).seq_ptl_info.as_mut().unwrap().xlayer_id = 9; // != the record's xlayer_id 3
+        assert_eq!(what(&write_err(&record)), "local_ptl_xlayer_id");
     }
 
     #[test]

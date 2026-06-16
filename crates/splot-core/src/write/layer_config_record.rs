@@ -21,14 +21,17 @@
 //! ([`BitWriter::align_to_byte`]), and then either `lcr_embedded_layer_info()` (§ 5.8.8) or
 //! the else-branch atlas reference (`isGlobal && lcr_global_atlas_id_present_flag`).
 //!
-//! **Parse-context that is not written.** A record carries `obu_xlayer_id`-derived ids
-//! that have no bit representation in the § 5.8 body: [`LcrLocalInfo::xlayer_id`] and the
-//! `xlayer_id` of each [`LcrSeqProfileTierLevelInfo`] (the `i` / `xId` argument). For a
-//! *global* record they are the `lcr_xlayer_map` set-bit ids and are checked against the
-//! map (a length / id disagreement is rejected, since the map is a written field). For a
-//! *local* record they are the OBU header's `obu_xlayer_id`, which the body writer never
-//! receives; like the tile-group framing's byte offsets they are ignored on write and
-//! re-derived on reparse from the threaded header, so a *parsed* local record round-trips.
+//! **Header-derived ids.** A record carries `obu_xlayer_id`-derived ids that have no bit
+//! representation in the § 5.8 body: [`LcrLocalInfo::xlayer_id`] and the `xlayer_id` of each
+//! [`LcrSeqProfileTierLevelInfo`] (the `i` / `xId` argument). For a *global* record the PTL /
+//! payload ids are the `lcr_xlayer_map` set-bit ids and are checked against the map (a length /
+//! id disagreement is rejected, since the map is a written field). For a *local* record both
+//! are the OBU header's `obu_xlayer_id`, which the dispatch threads in: the writer rejects a
+//! record whose scope (`Global` / `Local`) or stored `xlayer_id` disagrees with the header, and
+//! a PTL whose `xlayer_id` disagrees with the record's — a `(header, record)` mismatch is
+//! parser-unproducible (the parser picks the variant and fills both ids from the one
+//! `obu_xlayer_id`) and would reparse as a different model. None of these ids are emitted; they
+//! are re-derived on reparse from the threaded header, so a *parsed* record round-trips.
 //!
 //! **`lcr_global_payload()` filler (§ 5.8.5).** The payload is exactly `lcr_data_size * 8`
 //! bits: after `lcr_num_dependent_xlayer_map` and `lcr_xlayer_info(1, n)`, the remaining
@@ -48,6 +51,7 @@ use crate::headers::layer_config_record::{
     LcrGlobalPayload, LcrLocalInfo, LcrRepInfo, LcrSeqProfileTierLevelInfo, LcrXlayerColorInfo,
     LcrXlayerInfo,
 };
+use crate::types::ExtendedLayerId;
 use crate::write::bit_writer::BitWriter;
 use crate::write::error::{WriteError, WriteResult};
 
@@ -110,13 +114,19 @@ impl XlayerCtx {
 /// the extensible OBU tail are the dispatch's job ([`crate::write::write_complete_obu`]);
 /// this writes the typed body only.
 ///
+/// `obu_xlayer_id` is the OBU header's `obu_xlayer_id` (the dispatch threads the real value;
+/// [`crate::write::write_obu_payload`] defaults it to the non-global `0`). The § 5.8 parser
+/// selects the `Global` / `Local` body from it, so the writer rejects a record whose variant or
+/// stored local `xlayer_id` disagrees with it.
+///
 /// # Errors
 /// - [`WriteError::WriterNotByteAligned`] if `writer` is not byte-aligned (an OBU payload
 ///   begins on a byte boundary).
 /// - [`WriteError::NonCanonicalLayerConfigRecord`] for a constructed model the § 5.8 parser
-///   could never produce (a gated `Option` vs its flag, a set-bit-derived list length / id,
-///   the embedded-vs-atlas exclusivity, or the `lcr_global_payload` filler invariant); the
-///   `what` label names the offending field.
+///   could never produce (a `Global` / `Local` variant or local `xlayer_id` that disagrees with
+///   `obu_xlayer_id`, a local PTL `xlayer_id` that disagrees with the record's, a gated `Option`
+///   vs its flag, a set-bit-derived list length / id, the embedded-vs-atlas exclusivity, or the
+///   `lcr_global_payload` filler invariant); the `what` label names the offending field.
 /// - [`WriteError::ValueTooWide`] / [`WriteError::ValueOutOfRange`] from the primitive
 ///   writers for a field outside its descriptor domain (e.g. a `lcr_global_config_record_id`
 ///   that does not fit `f(3)`, or a `lcr_max_pic_width` of `u32::MAX`, which the `uvlc`
@@ -128,15 +138,31 @@ impl XlayerCtx {
 pub fn write_layer_config_record(
     writer: &mut BitWriter,
     record: &LayerConfigurationRecord,
+    obu_xlayer_id: ExtendedLayerId,
 ) -> WriteResult<()> {
     if !writer.is_byte_aligned() {
         return Err(WriteError::WriterNotByteAligned);
     }
 
     let mut scratch = BitWriter::new();
+    // § 5.8: the parser selects the Global vs Local branch SOLELY from obu_xlayer_id, so the
+    // model variant must agree with the header the dispatch threads in — a (header, record) pair
+    // whose scope disagrees is parser-unproducible and would reparse as the other variant (like
+    // the sibling §5.10 OPS writer, which the dispatch passes obu_xlayer_id and which rejects an
+    // ops.xlayer_id mismatch).
     match record {
-        LayerConfigurationRecord::Global(info) => write_lcr_global_info(&mut scratch, info)?,
-        LayerConfigurationRecord::Local(info) => write_lcr_local_info(&mut scratch, info)?,
+        LayerConfigurationRecord::Global(info) => {
+            if !obu_xlayer_id.is_global() {
+                return Err(non_canonical("xlayer_scope"));
+            }
+            write_lcr_global_info(&mut scratch, info)?;
+        }
+        LayerConfigurationRecord::Local(info) => {
+            if obu_xlayer_id.is_global() {
+                return Err(non_canonical("xlayer_scope"));
+            }
+            write_lcr_local_info(&mut scratch, info, obu_xlayer_id)?;
+        }
     }
     writer.append(&scratch)
 }
@@ -212,18 +238,36 @@ fn write_lcr_global_info(scratch: &mut BitWriter, info: &LcrGlobalInfo) -> Write
     Ok(())
 }
 
-/// Writes `lcr_local_info(xId)` (AV2 v1.0.0 § 5.8.2). The record's `xlayer_id` and any
-/// nested PTL `xlayer_id` are the OBU header's `obu_xlayer_id` (parse-context, not written);
-/// see the module docs.
-fn write_lcr_local_info(scratch: &mut BitWriter, info: &LcrLocalInfo) -> WriteResult<()> {
+/// Writes `lcr_local_info(xId)` (AV2 v1.0.0 § 5.8.2). The record's `xlayer_id` and any nested
+/// PTL `xlayer_id` are the OBU header's `obu_xlayer_id` — parse-context with no bit
+/// representation, but decidable once the dispatch threads the header in, so a constructed model
+/// whose stored `xlayer_id` disagrees with the header (or whose PTL `xlayer_id` disagrees with
+/// the record's) is rejected: the parser passes the one `obu_xlayer_id` into both, so a
+/// disagreement is parser-unproducible and would not round-trip.
+fn write_lcr_local_info(
+    scratch: &mut BitWriter,
+    info: &LcrLocalInfo,
+    obu_xlayer_id: ExtendedLayerId,
+) -> WriteResult<()> {
+    if info.xlayer_id != obu_xlayer_id.get() {
+        return Err(non_canonical("local_xlayer_id"));
+    }
+
     scratch.write_bits_u8(info.global_id, F3)?;
     scratch.write_bits_u8(info.local_id, F3)?;
     scratch.write_bit(u8::from(info.profile_tier_level_info_present))?;
     scratch.write_bit(u8::from(info.local_atlas_id_present))?;
 
     // § 5.8.2: lcr_seq_profile_tier_level_info(xId) iff lcr_profile_tier_level_info_present_flag.
+    // The parser passes this record's xId in, so a PTL targeting a different xlayer is
+    // parser-unproducible (its xlayer_id is parse-context, dropped on write, so it must match).
     match (info.profile_tier_level_info_present, &info.seq_ptl_info) {
-        (true, Some(ptl)) => write_lcr_seq_profile_tier_level_info(scratch, ptl)?,
+        (true, Some(ptl)) => {
+            if ptl.xlayer_id != info.xlayer_id {
+                return Err(non_canonical("local_ptl_xlayer_id"));
+            }
+            write_lcr_seq_profile_tier_level_info(scratch, ptl)?;
+        }
         (false, None) => {}
         _ => return Err(non_canonical("local_ptl_gate")),
     }

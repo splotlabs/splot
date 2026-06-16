@@ -353,6 +353,11 @@ pub enum WriteError {
     /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-8`, and the § 5.8.1 – § 5.8.9 child
     /// structures) parser would re-derive on reparse, so the model could never have been produced by
     /// `parse_layer_config_record` and writing it would break `read(write(x)) == x`. Examples: a
+    /// `Global` / `Local` record variant — or a local record's `xlayer_id` — that disagrees with the
+    /// OBU header's `obu_xlayer_id` (the parser selects the variant and fills the local ids from it,
+    /// so the dispatch threads it in and a disagreement is parser-unproducible); a local
+    /// `lcr_seq_profile_tier_level_info` whose `xlayer_id` disagrees with the record's `xlayer_id`
+    /// (the parser passes the one `xId` into both); a
     /// `lcr_global_atlas_id_present_flag` (or `lcr_local_atlas_id_present_flag`) that disagrees with the
     /// presence of `global_atlas_id` / `local_atlas_id`, or a non-zero `reserved_zero_3bits` retained
     /// alongside a present atlas id (the parser codes one or the other, forcing the reserved field to
@@ -382,7 +387,8 @@ pub enum WriteError {
         "non-canonical {what}: layer-config-record value cannot be reproduced by the §5.8 parser"
     )]
     NonCanonicalLayerConfigRecord {
-        /// A short, stable label for the offending field (e.g. `"global_atlas_id_gate"`,
+        /// A short, stable label for the offending field (e.g. `"xlayer_scope"`,
+        /// `"local_xlayer_id"`, `"local_ptl_xlayer_id"`, `"global_atlas_id_gate"`,
         /// `"atlas_reserved_3bits"`, `"aggregate_info_gate"`, `"seq_ptl_info_count"`,
         /// `"seq_ptl_xlayer_id"`, `"payload_count"`, `"payload_xlayer_id"`, `"payload_size"`,
         /// `"num_dependent_gate"`, `"local_ptl_gate"`, `"embedded_atlas_exclusive"`,
