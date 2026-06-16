@@ -1,14 +1,22 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! AV2 tile-group **structure writer** (`ENC-BITSTREAM-WRITER`) — the exact inverse of the
-//! § 5.19 `tile_group_obu()` structure parser in [`crate::headers::tile_group`]:
+//! AV2 tile-group **structure / payload writers** (`ENC-BITSTREAM-WRITER`) — the exact inverses of
+//! the § 5.19 `tile_group_obu()` structure parser and the § 5.20.1 `tile_group_payload()` framing
+//! parser in [`crate::headers::tile_group`]:
 //!
 //! - [`write_tile_group_structure`] — `tile_group_obu()` structure (AV2 v1.0.0 § 5.19,
 //!   `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19`): the optional
 //!   `tile_start_and_end_present_flag` `f(1)` (only `NumTiles > 1`), the `tg_start` / `tg_end`
 //!   `f(tileBits)` range (only `NumTiles > 1 && flag`), and the closing `byte_alignment()`
 //!   (§ 6.2.4, `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-4`, the zero pad).
+//! - [`write_tile_group_payload`] — `tile_group_payload()` per-tile framing (AV2 v1.0.0 § 5.20.1,
+//!   `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1`) on the intra (non-bridge) path: for
+//!   each tile in `framing.tiles` order, a non-last tile writes `tile_size_minus_1 = tile_size - 1`
+//!   as `le(TileSizeBytes)` (§ 4.11.5) then its coded-tile bytes; the last tile writes its
+//!   coded-tile bytes only (no size field — its `tileSize` is the region remainder). The coded-tile
+//!   bytes are not modeled by the parser, so they are supplied as a per-tile passthrough
+//!   (`tile_data: &[&[u8]]`) and emitted verbatim.
 //!
 //! Like the other writers this module is additive: it depends on the model/parser read-only and
 //! serializes a parsed structure back to bits via [`BitWriter`]. It threads the same
@@ -24,7 +32,9 @@
 //! fields (`tile_start_and_end_present_flag`, `tg_start`, `tg_end`) and **byte-exact** for the
 //! emitted structure region.
 
-use crate::headers::tile_group::{TileGroupLayout, TileGroupStructure, TileGroupStructureOutcome};
+use crate::headers::tile_group::{
+    TileGroupFraming, TileGroupLayout, TileGroupStructure, TileGroupStructureOutcome,
+};
 use crate::write::bit_writer::BitWriter;
 use crate::write::error::{WriteError, WriteResult};
 
@@ -166,9 +176,162 @@ fn check_tile_group_structure_encodable(
     Ok(())
 }
 
+/// Writes the § 5.20.1 `tile_group_payload()` per-tile framing (AV2 v1.0.0 § 5.20.1,
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1`), the exact inverse of
+/// [`crate::headers::tile_group::parse_tile_group_framing`] on the intra (non-bridge) path.
+///
+/// For each `(i, tile)` in `framing.tiles` order, with `last = (i == framing.tiles.len() - 1)`:
+/// - a non-last tile emits `tile_size_minus_1 = tile.tile_size - 1` as `le(tile_size_bytes)`
+///   (§ 4.11.5, via [`BitWriter::write_le_u64`]) then its coded-tile bytes `tile_data[i]` (the
+///   `tile.tile_size` payload bytes).
+/// - the last tile emits its coded-tile bytes `tile_data[i]` only — no size field, because its
+///   `tileSize` is the region remainder the parser recomputes (mirror :8555-8557).
+///
+/// The coded-tile bytes are not modeled by the parser, so they are supplied as a per-tile
+/// passthrough (`tile_data`, one slice per tile) and emitted verbatim — byte-exact, no model change.
+/// The per-tile parse-context fields `tile_num` / `size_field_offset` / `tile_data_offset` are *not*
+/// emitted: the writer lays tiles sequentially from the region start and the parser recomputes
+/// `tile_num = tg_start ..= tg_end` and the offsets from its cursor, so `read(write(x))` is
+/// **semantic** on `tile_size` (and byte-exact on the coded-tile passthrough) — not on
+/// `tile_num` / offsets, which depend on the reparse's `tg_start` and region. This is the § 5.20.1
+/// analogue of [`write_tile_group_structure`] ignoring `header_bytes` / `payload_size`. The § 5.19
+/// `tile_group_obu()` structure (a separate writer) and any OBU trailing bits are not written here.
+///
+/// `is_bridge` mirrors the parser's frame-level `IsBridge`; the intra path has `IsBridge == 0`, so
+/// `is_bridge == true` is rejected (a bridge tile reads no size field and records `tile_size == 0`,
+/// which is unreconstructable from the model).
+///
+/// # Errors
+/// [`WriteError::WriterNotByteAligned`] if `writer` is not on a byte boundary (the § 5.20 framing is
+/// byte-granular, written after the § 5.19 `byte_alignment()`), and [`WriteError::NonCanonicalTileGroup`]
+/// for any framing the § 5.20.1 parser could not have produced (both validated up front, before any
+/// byte is written — a reject leaves `writer.bit_len()` unchanged):
+/// - `"framing_defect"` — `framing.defect.is_some()` (a defective framing has no faithful byte form).
+/// - `"bridge_unframeable"` — `is_bridge` (a bridge frame's tiles record `tile_size == 0`,
+///   unreconstructable; the intra path has `IsBridge == 0`).
+/// - `"empty_framing"` — `framing.tiles` is empty (no tile to lay out).
+/// - `"tile_data_count"` — `tile_data.len()` disagrees with the tile count.
+/// - `"tile_size_bytes_domain"` — `tile_size_bytes` is outside `1..=4` (§ 6.17.7.3).
+/// - `"zero_size_tile"` — a tile records `tile_size == 0` (the § 8.2.4 exit floor; a non-last
+///   `tile_size - 1` would also underflow).
+/// - `"tile_data_len"` — a `tile_data[i].len()` disagrees with the recorded `tile.tile_size`.
+/// - `"tile_size_field_overflow"` — a non-last `tile_size - 1` does not fit `le(tile_size_bytes)`
+///   (it would not reparse to the same value).
+pub fn write_tile_group_payload(
+    writer: &mut BitWriter,
+    framing: &TileGroupFraming,
+    tile_data: &[&[u8]],
+    tile_size_bytes: u32,
+    is_bridge: bool,
+) -> WriteResult<()> {
+    // § 5.20 framing is byte-granular (it follows the § 5.19 byte_alignment()): a mid-byte writer
+    // would mis-position every byte. Checked before the encodable check so a reject is total.
+    if !writer.is_byte_aligned() {
+        return Err(WriteError::WriterNotByteAligned);
+    }
+    check_tile_group_payload_encodable(framing, tile_data, tile_size_bytes, is_bridge)?;
+
+    let last_index = framing.tiles.len() - 1; // non-empty: guaranteed by the encodable check.
+    for (i, tile) in framing.tiles.iter().enumerate() {
+        if i != last_index {
+            // § 5.20.1 (mirror :8565): tile_size_minus_1 le(TileSizeBytes), then the tileSize
+            // coded bytes. tile_size >= 1 (the zero_size_tile reject) so the subtraction is safe,
+            // and (tile_size - 1) fits le(tile_size_bytes) (the tile_size_field_overflow reject).
+            writer.write_le_u64(tile.tile_size - 1, tile_size_bytes)?;
+        }
+        // § 5.20.1: the coded-tile bytes (a non-last tile's tileSize bytes, or the last tile's
+        // region remainder). Length is validated to equal tile.tile_size by the encodable check.
+        writer.write_le(tile_data[i])?;
+    }
+    Ok(())
+}
+
+/// Validates a [`TileGroupFraming`] / `tile_data` / `tile_size_bytes` / `is_bridge` tuple is a
+/// framing the § 5.20.1 (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1`) parser could have
+/// produced, before any byte is written. See [`write_tile_group_payload`] for the per-label reject
+/// set. (The writer's own byte-alignment guard is checked separately, in the public function.)
+fn check_tile_group_payload_encodable(
+    framing: &TileGroupFraming,
+    tile_data: &[&[u8]],
+    tile_size_bytes: u32,
+    is_bridge: bool,
+) -> WriteResult<()> {
+    // A defective framing records a provable §5.20.1 violation (the parser stops at it); its tile
+    // bytes do not exist as a faithful byte form, so it cannot round-trip.
+    if framing.defect.is_some() {
+        return Err(WriteError::NonCanonicalTileGroup {
+            what: "framing_defect",
+        });
+    }
+
+    // §5.20.1 (mirror :8559): a bridge frame's tiles read no size field and record tile_size == 0,
+    // so the framing carries no length to re-emit. The intra-complete path has IsBridge == 0.
+    if is_bridge {
+        return Err(WriteError::NonCanonicalTileGroup {
+            what: "bridge_unframeable",
+        });
+    }
+
+    // A conformant framing has at least one tile (tg_start ..= tg_end is non-empty); an empty
+    // tiles list has nothing to lay out.
+    if framing.tiles.is_empty() {
+        return Err(WriteError::NonCanonicalTileGroup {
+            what: "empty_framing",
+        });
+    }
+
+    // One coded-tile slice per framed tile: a mismatch cannot describe this framing.
+    if tile_data.len() != framing.tiles.len() {
+        return Err(WriteError::NonCanonicalTileGroup {
+            what: "tile_data_count",
+        });
+    }
+
+    // §6.17.7.3: TileSizeBytes = tile_size_bytes_minus_1 + 1 over an f(2) read, so the value space
+    // is 1..=4. A value outside it could not have been a real TileSizeBytes (and bounds the le()
+    // shift below: 8 * 4 == 32 < 64).
+    if !(1..=4).contains(&tile_size_bytes) {
+        return Err(WriteError::NonCanonicalTileGroup {
+            what: "tile_size_bytes_domain",
+        });
+    }
+
+    let last_index = framing.tiles.len() - 1; // non-empty (checked above).
+    for (i, tile) in framing.tiles.iter().enumerate() {
+        // §8.2.4 floor: a zero-size non-bridge tile can never satisfy the SymbolMaxBits >= -14 exit
+        // requirement (the parser reports it as a defect for the last tile and never produces a
+        // non-last zero size). It also makes the non-last `tile_size - 1` underflow, so reject it
+        // before the subtraction.
+        if tile.tile_size == 0 {
+            return Err(WriteError::NonCanonicalTileGroup {
+                what: "zero_size_tile",
+            });
+        }
+
+        // The passthrough must carry exactly the tileSize coded bytes the framing records.
+        if tile_data[i].len() as u64 != tile.tile_size {
+            return Err(WriteError::NonCanonicalTileGroup {
+                what: "tile_data_len",
+            });
+        }
+
+        // §5.20.1 (mirror :8565): a non-last tile's tile_size_minus_1 is written as
+        // le(TileSizeBytes); the value must fit that field or it would not reparse to the same
+        // tile_size. (write_le_u64 would also reject it, but check up front for reject-before-write.)
+        // tile_size_bytes is in 1..=4 here, so 8 * tile_size_bytes <= 32 and the u64 shift is safe.
+        if i != last_index && (tile.tile_size - 1) >= (1u64 << (8 * tile_size_bytes)) {
+            return Err(WriteError::NonCanonicalTileGroup {
+                what: "tile_size_field_overflow",
+            });
+        }
+    }
+
+    Ok(())
+}
+
 // The unit/rejection tests and the property tests live in sibling files (kept under the advisory
 // source-line limit); `include!` pastes them into this module so their `super::*` resolves to the
-// writer and private helper above.
+// writers and private helpers above.
 #[cfg(test)]
 include!("tile_group_tests.rs");
 #[cfg(test)]

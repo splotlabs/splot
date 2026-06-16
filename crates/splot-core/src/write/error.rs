@@ -189,9 +189,18 @@ pub enum WriteError {
     /// will not emit a stream `splot validate` would reject): an inverted `tg_end < tg_start` range,
     /// or a `tg_end >= NumTiles` out-of-range index (a non-power-of-two grid has spare `f(tileBits)`
     /// codes above the last tile). Rejected before any bit is written.
-    #[error("non-canonical {what}: tile-group value cannot be reproduced by the §5.19 parser")]
+    ///
+    /// The same variant also covers § 5.20.1 `tile_group_payload()` framing
+    /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1`) the parser could not have produced: a
+    /// defective framing, a bridge (unframeable `tile_size == 0`) framing, a tile-data count/length
+    /// mismatch, a `TileSizeBytes` outside `1..=4`, a zero-size tile, or a `tile_size - 1` outside
+    /// `le(TileSizeBytes)`.
+    #[error(
+        "non-canonical {what}: tile-group value cannot be reproduced by the §5.19/§5.20.1 parser"
+    )]
     NonCanonicalTileGroup {
-        /// A short, stable label for the offending field (e.g. `"incomplete_structure"`, `"tg_range"`).
+        /// A short, stable label for the offending field (e.g. `"incomplete_structure"`,
+        /// `"tg_range"`, `"tile_data_len"`).
         what: &'static str,
     },
 

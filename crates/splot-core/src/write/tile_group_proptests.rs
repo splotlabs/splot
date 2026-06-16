@@ -147,3 +147,152 @@ mod proptests {
         }
     }
 }
+
+// Property tests for the §5.20.1 tile-group payload framing writer: a parser-driven round-trip over
+// an arbitrary conformant region (build bytes -> parse -> write -> assert byte-exact + reparse-equal)
+// and a "never panics" property over arbitrary constructed framings/tile_data/TileSizeBytes/is_bridge
+// (incl. out-of-domain TileSizeBytes, zero sizes, count/length mismatches, defects) asserting no
+// panic and `bit_len() == 0` on Err.
+
+// `include!`d into `crate::write::tile_group` so `super::*` resolves to its writers and helpers.
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod payload_proptests {
+    use super::*;
+    use crate::headers::tile_group::{TileFraming, parse_tile_group_framing};
+    use proptest::prelude::*;
+
+    /// Builds a conformant `tile_group_payload()` region for `tile_sizes` (last is the remainder
+    /// tile) using `tile_size_bytes`, with deterministic per-tile data bytes.
+    fn build_region(tile_sizes: &[u64], tile_size_bytes: u32) -> Vec<u8> {
+        let mut region = Vec::new();
+        let last = tile_sizes.len() - 1;
+        for (i, &size) in tile_sizes.iter().enumerate() {
+            if i != last {
+                for j in 0..tile_size_bytes {
+                    region.push((((size - 1) >> (j * 8)) & 0xFF) as u8);
+                }
+            }
+            for b in 0..size {
+                region.push(((i as u64 * 37 + b) & 0xFF) as u8);
+            }
+        }
+        region
+    }
+
+    proptest! {
+        /// Every conformant framing round-trips: build a region from arbitrary in-range tile sizes,
+        /// parse it, write the framing back, and assert the bytes are byte-exact and a reparse is
+        /// value-equal to the original framing.
+        #[test]
+        fn payload_round_trips(
+            tile_size_bytes in 1u32..=4,
+            // Up to 5 tiles; each non-last tile_size must fit le(tile_size_bytes), so cap sizes at a
+            // value that fits the narrowest width exercised (le(1) -> 256). Keep regions small.
+            raw_sizes in proptest::collection::vec(1u64..=256, 1..=5),
+        ) {
+            // For non-last tiles the size field must hold tile_size - 1 in le(tile_size_bytes); the
+            // 1..=256 range fits le(1) (and any wider width), so every build is conformant.
+            let tile_sizes = raw_sizes;
+            let region = build_region(&tile_sizes, tile_size_bytes);
+            let tg_end = (tile_sizes.len() - 1) as u32;
+            let framing = parse_tile_group_framing(&region, 0, tg_end, tile_size_bytes, false);
+            prop_assert_eq!(framing.defect, None);
+            prop_assert_eq!(framing.tiles.len(), tile_sizes.len());
+
+            let tile_data: Vec<&[u8]> = framing
+                .tiles
+                .iter()
+                .map(|t| {
+                    let start = t.tile_data_offset as usize;
+                    let end = start + t.tile_size as usize;
+                    &region[start..end]
+                })
+                .collect();
+
+            let mut writer = BitWriter::new();
+            write_tile_group_payload(&mut writer, &framing, &tile_data, tile_size_bytes, false)
+                .unwrap();
+            let bytes = writer.into_bytes();
+            prop_assert_eq!(&bytes, &region);
+
+            let reparsed = parse_tile_group_framing(&bytes, 0, tg_end, tile_size_bytes, false);
+            prop_assert_eq!(reparsed, framing);
+        }
+
+        /// The writer never panics on an arbitrary constructed framing — incl. out-of-domain
+        /// TileSizeBytes, zero-size tiles, count/length mismatches, is_bridge, and a defect — and a
+        /// rejected write leaves `bit_len() == 0` (reject-before-write). On success the emitted bytes
+        /// reparse to the same framing (the writer only accepts reproducible models).
+        #[test]
+        fn writer_never_panics(
+            sizes in proptest::collection::vec(0u64..=400, 0..=6),
+            tile_size_bytes in 0u32..=6,
+            is_bridge in any::<bool>(),
+            has_defect in any::<bool>(),
+            extra_data in any::<bool>(),
+        ) {
+            // Build a framing whose tiles carry the arbitrary sizes; offsets are sequential so a
+            // valid case reparses, but the writer must not panic even when they are inconsistent.
+            let mut tiles = Vec::new();
+            let mut offset = 0u64;
+            let last = sizes.len().saturating_sub(1);
+            for (i, &size) in sizes.iter().enumerate() {
+                let sf = if i == last {
+                    None
+                } else {
+                    let o = offset;
+                    offset += u64::from(tile_size_bytes.min(8));
+                    Some(o)
+                };
+                tiles.push(TileFraming {
+                    tile_num: i as u32,
+                    size_field_offset: sf,
+                    tile_data_offset: offset,
+                    tile_size: size,
+                });
+                offset += size;
+            }
+            let defect = if has_defect {
+                Some(crate::headers::tile_group::TileFramingDefect::ZeroSizeTile {
+                    tile_num: 0,
+                    tile_data_offset: 0,
+                })
+            } else {
+                None
+            };
+            let framing = TileGroupFraming { tiles, defect };
+
+            // One data slice per tile, each exactly tile_size bytes (so a valid framing round-trips);
+            // `extra_data` perturbs the count to exercise the tile_data_count reject.
+            let mut owned: Vec<Vec<u8>> = sizes.iter().map(|&s| vec![0u8; s as usize]).collect();
+            if extra_data {
+                owned.push(vec![0u8]);
+            }
+            let tile_data: Vec<&[u8]> = owned.iter().map(Vec::as_slice).collect();
+
+            let mut writer = BitWriter::new();
+            match write_tile_group_payload(
+                &mut writer,
+                &framing,
+                &tile_data,
+                tile_size_bytes,
+                is_bridge,
+            ) {
+                Ok(()) => {
+                    // A successful write reparses to the same framing.
+                    let bytes = writer.into_bytes();
+                    let tg_end = (framing.tiles.len() - 1) as u32;
+                    let reparsed =
+                        parse_tile_group_framing(&bytes, 0, tg_end, tile_size_bytes, false);
+                    prop_assert_eq!(reparsed, framing);
+                }
+                Err(_) => {
+                    // Reject-before-write: no bit was emitted.
+                    prop_assert_eq!(writer.bit_len(), 0);
+                }
+            }
+        }
+    }
+}

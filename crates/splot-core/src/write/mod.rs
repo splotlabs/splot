@@ -41,7 +41,11 @@
 //! ([`tile_group::write_tile_group_structure`], the inverse of `parse_tile_group_structure`): the
 //! optional `tile_start_and_end_present_flag` / `tg_start` / `tg_end` tile-range fields and the
 //! closing `byte_alignment()` (the parse-context `outcome` / `header_bytes` / `payload_size`
-//! artifacts belong to the composing OBU writer, not this slice).
+//! artifacts belong to the composing OBU writer, not this slice); and the § 5.20.1
+//! `tile_group_payload()` per-tile framing ([`tile_group::write_tile_group_payload`], the inverse of
+//! `parse_tile_group_framing` on the intra path): each non-last tile's `tile_size_minus_1`
+//! `le(TileSizeBytes)` size field plus the coded-tile bytes (a per-tile passthrough), with the last
+//! tile's size field elided.
 //! More payload writers will build on this module as the writer surface grows; see
 //! `docs/spec-coverage-writer.md` (once landed) for the per-structure coverage matrix.
 
@@ -95,4 +99,4 @@ pub use seq_header::{
 pub use seq_tile::{
     write_sequence_filter_config, write_sequence_header, write_sequence_tile_config,
 };
-pub use tile_group::write_tile_group_structure;
+pub use tile_group::{write_tile_group_payload, write_tile_group_structure};
