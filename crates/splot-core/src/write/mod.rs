@@ -57,8 +57,8 @@
 //! [`dispatch::write_obu_payload`] emits a [`crate::obu::ParsedObu`]'s typed body plus the § 5.2.1 /
 //! § 6.2.1 OBU tail (`obu_extension_flag = 0` + `trailing_bits()` for an extensible non-empty body;
 //! nothing for the temporal delimiter; padding owns its own tail), and
-//! [`dispatch::write_complete_obu`] prepends the § 5.2.2 header. The five OBU types with a body
-//! writer are emitted; the other nine return [`error::WriteError::Unimplemented`].
+//! [`dispatch::write_complete_obu`] prepends the § 5.2.2 header. The six OBU types with a body
+//! writer are emitted; the other eight return [`error::WriteError::Unimplemented`].
 //! [`roundtrip::roundtrip_obu`] then closes the loop: it `parse → write → reparse`-checks the
 //! dispatch (recovering the opaque `passthrough` for padding and the metadata blobs) so the writer
 //! is verified as the parser's inverse, in-tree and under the `roundtrip_obu_bytes` fuzz target.
@@ -66,6 +66,7 @@
 //! `docs/spec-coverage-writer.md` (once landed) for the per-structure coverage matrix.
 
 pub mod bit_writer;
+pub mod buffer_removal_timing;
 pub mod dispatch;
 pub mod error;
 pub mod frame_config;
@@ -87,6 +88,7 @@ pub mod seq_tile;
 pub mod tile_group;
 
 pub use bit_writer::BitWriter;
+pub use buffer_removal_timing::write_buffer_removal_timing;
 pub use dispatch::{write_complete_obu, write_obu_payload};
 pub use error::{WriteError, WriteResult};
 pub use frame_config::{write_frame_size, write_intrabc_params, write_screen_content_params};
