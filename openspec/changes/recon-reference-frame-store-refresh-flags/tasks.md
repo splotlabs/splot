@@ -24,5 +24,5 @@
 ## 5. Review And PR
 
 - [x] 5.1 Run independent review agents for API scope, spec honesty, fuzz/oracle behavior, and docs/status coverage.
-- [ ] 5.2 Commit, push, and open a ready non-draft PR with the Feature ID, proof commands, and explicit non-goals.
+- [x] 5.2 Commit, push, and open a ready non-draft PR with the Feature ID, proof commands, and explicit non-goals.
 - [ ] 5.3 Wait for current-head green CI, fresh approval, and zero unresolved live review threads before merge.
