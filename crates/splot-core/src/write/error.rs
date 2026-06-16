@@ -295,6 +295,32 @@ pub enum WriteError {
         what: &'static str,
     },
 
+    /// A film-grain value is inconsistent with what the AV2 v1.0.0 § 5.14
+    /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-14`) / § 5.18.10.2
+    /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-10-2`) parsers would re-derive on reparse, so
+    /// the model could never have been produced by `parse_film_grain` / `parse_film_grain_model` and
+    /// writing it would break `read(write(x)) == x`. The model is lossy versus the wire format — it
+    /// stores only the cumulative scaling-point `value` / `scaling` and the de-biased AR `coeffs`, not
+    /// the wire bit-widths (`point_value_increment_bits_minus_1`, `point_scaling_bits_minus_5`,
+    /// `bits_per_ar_coeff_*_minus_5`) — so the writer re-derives a minimal in-range width per array (a
+    /// canonicalization, like leb128-minimal); byte-exactness is not guaranteed, but semantic
+    /// round-trip is (the widths are not in the model's `PartialEq`). Examples: a `sub_x` / `sub_y` /
+    /// `monochrome` that disagrees with re-deriving them from `chroma_idc`; a `models` set whose slots
+    /// do not match the `update_flags` set bits in ascending order; a count-vs-`Vec`-length mismatch
+    /// (`num_y_points` / `num_cb_points` / `num_cr_points` / the AR-coeff lengths); a gated-`Option`
+    /// presence-vs-gate mismatch (`cb_mult` / `cb_offset` vs `num_cb_points > 0`, etc.); a
+    /// `chroma_scaling_from_luma` / `mc_identity` forced false by the parser but stored `true`;
+    /// non-monotonic scaling points; or a scaling increment / scaling value / AR coeff that fits no
+    /// in-range bit width. Rejected before any bit is written.
+    #[error("non-canonical {what}: film-grain value cannot be reproduced by the §5.14 parser")]
+    NonCanonicalFilmGrain {
+        /// A short, stable label for the offending field (e.g. `"chroma_subsampling"`,
+        /// `"slot_update_flags"`, `"num_y_points_len"`, `"cb_mult_gate"`,
+        /// `"monochrome_chroma_scaling"`, `"non_monotonic_points"`, `"point_increment_width"`,
+        /// `"passthrough"`).
+        what: &'static str,
+    },
+
     /// A writer for this OBU payload type does not exist yet — an honest stub returned by the
     /// complete-OBU dispatch for the `ParsedObu` variants whose body writer has not landed. Distinct
     /// from a non-canonical reject: the model is fine, the writer is simply not implemented.

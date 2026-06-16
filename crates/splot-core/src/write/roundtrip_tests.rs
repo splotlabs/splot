@@ -80,15 +80,28 @@ mod tests {
     }
 
     #[test]
+    fn film_grain_round_trips() {
+        // leb128(3) + film-grain header (obu_type 23 -> 0x5C) + minimal 2-byte payload
+        // (fgm_update_flags 0, fgm_chroma_idc uvlc 0, no models) + trailing. §5.14 / §5.18.10.2 now
+        // has a body writer, so the harness round-trips it (the model is lossy versus the wire, but
+        // the semantic round-trip holds).
+        assert_eq!(
+            roundtrip_first(&[0x03, 0x5C, 0x00, 0xC0]),
+            RoundtripOutcome::RoundTripped
+        );
+    }
+
+    #[test]
     fn unwritten_obu_type_is_unwritable() {
-        // leb128(3) + film-grain header (obu_type 23 -> 0x5C) + a minimal parsable payload.
-        let outcome = roundtrip_first(&[0x03, 0x5C, 0x00, 0xC0]);
+        // leb128(4) + quantization-matrix header (obu_type 22 -> 0x58) + a minimal parsable payload
+        // (qm_bit_map(15) + chroma flag(1) + trailing). Quantization matrix has no body writer yet.
+        let outcome = roundtrip_first(&[0x04, 0x58, 0x00, 0x00, 0x80]);
         assert_eq!(
             outcome,
             RoundtripOutcome::Unwritable {
-                feature: "AV2-5.14-FILM-GRAIN"
+                feature: "AV2-5.13-QUANTIZATION-MATRIX"
             },
-            "expected Unwritable for film grain, got {outcome:?}"
+            "expected Unwritable for quantization matrix, got {outcome:?}"
         );
     }
 

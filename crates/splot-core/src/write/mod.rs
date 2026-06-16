@@ -57,8 +57,14 @@
 //! [`dispatch::write_obu_payload`] emits a [`crate::obu::ParsedObu`]'s typed body plus the § 5.2.1 /
 //! § 6.2.1 OBU tail (`obu_extension_flag = 0` + `trailing_bits()` for an extensible non-empty body;
 //! nothing for the temporal delimiter; padding owns its own tail), and
-//! [`dispatch::write_complete_obu`] prepends the § 5.2.2 header. The nine OBU types with a body
-//! writer are emitted; the other five return [`error::WriteError::Unimplemented`].
+//! [`dispatch::write_complete_obu`] prepends the § 5.2.2 header. The ten OBU types with a body
+//! writer are emitted; the other four return [`error::WriteError::Unimplemented`].
+//! [`film_grain`] writes the § 5.14 / § 5.18.10.2 `film_grain_obu()`
+//! ([`film_grain::write_film_grain`], the inverse of
+//! [`crate::headers::film_grain::parse_film_grain`]): because the model is lossy versus the wire
+//! (it stores cumulative scaling-point values and de-biased AR coefficients, not the wire
+//! bit-widths), the writer re-derives a minimal in-range width per array (like leb128-minimal), so
+//! the semantic round-trip holds while byte-exactness is not guaranteed.
 //! [`roundtrip::roundtrip_obu`] then closes the loop: it `parse → write → reparse`-checks the
 //! dispatch (recovering the opaque `passthrough` for padding and the metadata blobs) so the writer
 //! is verified as the parser's inverse, in-tree and under the `roundtrip_obu_bytes` fuzz target.
@@ -70,6 +76,7 @@ pub mod buffer_removal_timing;
 pub mod content_interpretation;
 pub mod dispatch;
 pub mod error;
+pub mod film_grain;
 pub mod frame_config;
 pub mod frame_filters;
 pub mod frame_header;
@@ -95,6 +102,7 @@ pub use buffer_removal_timing::write_buffer_removal_timing;
 pub use content_interpretation::write_content_interpretation;
 pub use dispatch::{write_complete_obu, write_obu_payload};
 pub use error::{WriteError, WriteResult};
+pub use film_grain::write_film_grain;
 pub use frame_config::{write_frame_size, write_intrabc_params, write_screen_content_params};
 pub use frame_filters::{write_cdef_params, write_deblocking_filter_params, write_gdf_params};
 pub use frame_header::write_frame_header_prefix;

@@ -495,6 +495,81 @@ mod tests {
     }
 
     #[test]
+    fn film_grain_payload_round_trips() {
+        // §5.14 / §5.18.10.2 film grain is non-extensible; the dispatch routes it to
+        // write_film_grain + the trailing-bits tail (no longer Unimplemented). Build a one-slot
+        // model with luma scaling points and AR coeffs by hand, parse it via dispatch, then write it
+        // back and reparse. The model is lossy versus the wire (bit-widths re-derived), so model
+        // equality — not byte-exactness — is asserted.
+        let header = header_for(ObuType::FilmGrain);
+        assert!(!header.obu_type.is_extensible_obu());
+        let mut bits = Bits::default();
+        bits.f(0b0000_0001, 8); // fgm_update_flags: slot 0
+        bits.uvlc(0); // fgm_chroma_idc = CHROMA_FORMAT_420
+        bits.bit(0); // chroma_scaling_from_luma = 0
+        bits.f(2, 4); // num_y_points = 2
+        bits.f(0, 3); // bitsIncr = 1
+        bits.f(0, 2); // bitsScal = 5
+        bits.f(1, 1); // point_y_value[0] = 1
+        bits.f(3, 5); // point_y_scaling[0] = 3
+        bits.f(1, 1); // increment -> value 2
+        bits.f(4, 5); // scaling 4
+        bits.f(0, 4); // num_cb_points = 0
+        bits.f(0, 4); // num_cr_points = 0
+        bits.f(0, 2); // grain_scaling_minus_8
+        bits.f(1, 2); // ar_coeff_lag = 1 -> numPosLuma = 4
+        bits.f(0, 2); // bitsCoef = 5, midpoint 16
+        bits.f(16, 5); // 0
+        bits.f(17, 5); // 1
+        bits.f(15, 5); // -1
+        bits.f(16, 5); // 0
+        // num_cb/cr = 0 and chroma_scaling_from_luma = 0 -> no chroma AR coeffs.
+        bits.f(0, 2); // ar_coeff_shift_minus_6
+        bits.f(0, 2); // grain_scale_shift
+        bits.bit(1); // overlap_flag
+        bits.bit(0); // clip_to_restricted_range
+        bits.bit(0); // film_grain_block_size
+        // trailing_bits(): a 1 marker then zero-pad to a byte boundary.
+        bits.bit(1);
+        while bits.bits.len() % 8 != 0 {
+            bits.bit(0);
+        }
+        let payload_bytes = bits.into_bytes();
+        let payload = reparse_payload(&header, &payload_bytes);
+        match &payload {
+            ParsedObu::FilmGrain(fg) => {
+                assert_eq!(fg.models.len(), 1);
+                assert_eq!(fg.models[0].model.num_y_points, 2);
+            }
+            other => panic!("expected a film grain OBU, got {other:?}"),
+        }
+
+        let mut writer = BitWriter::new();
+        write_obu_payload(&mut writer, &payload, false, &[]).unwrap();
+        let bytes = writer.into_bytes();
+        assert_eq!(reparse_payload(&header, &bytes), payload);
+
+        // And it round-trips through write_complete_obu (header + payload + tail).
+        let mut complete = BitWriter::new();
+        write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
+        let complete_bytes = complete.into_bytes();
+        assert_eq!(reparse_payload(&header, &complete_bytes[1..]), payload);
+    }
+
+    #[test]
+    fn film_grain_rejects_non_empty_passthrough() {
+        let header = header_for(ObuType::FilmGrain);
+        let payload = reparse_payload(&header, &[0x00, 0xC0]);
+        let mut writer = BitWriter::new();
+        let err = write_obu_payload(&mut writer, &payload, false, &[0x00]).unwrap_err();
+        assert!(
+            matches!(err, WriteError::NonCanonicalFilmGrain { what } if what == "passthrough"),
+            "expected film-grain passthrough reject, got {err:?}"
+        );
+        assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
     fn content_interpretation_rejects_non_empty_passthrough() {
         let header = header_for(ObuType::ContentInterpretation);
         let payload = ParsedObu::ContentInterpretation(ContentInterpretation {
@@ -630,12 +705,12 @@ mod tests {
         let qm = reparse_payload(&qm_header, &[0x00, 0x00, 0x80]);
         assert_eq!(qm.feature_id(), "AV2-5.13-QUANTIZATION-MATRIX");
 
-        // OBU_FILM_GRAIN (non-extensible).
-        let fg_header = read_obu_header_from_slice(&[0x5C], ByteOffset::new(0)).unwrap();
-        let fg = reparse_payload(&fg_header, &[0x00, 0xC0]);
-        assert_eq!(fg.feature_id(), "AV2-5.14-FILM-GRAIN");
+        // OBU_ATLAS_SEGMENT (extensible): SINGLE_ATLAS, nominal dims, then the OBU tail.
+        let atlas_header = read_obu_header_from_slice(&[0xC4, 0x03], ByteOffset::new(0)).unwrap();
+        let atlas = reparse_payload(&atlas_header, &[0x0F, 0x20]);
+        assert_eq!(atlas.feature_id(), "AV2-5.9-ATLAS-SEGMENT");
 
-        for (payload, header) in [(&qm, &qm_header), (&fg, &fg_header)] {
+        for (payload, header) in [(&qm, &qm_header), (&atlas, &atlas_header)] {
             let mut writer = BitWriter::new();
             let err = write_obu_payload(
                 &mut writer,
