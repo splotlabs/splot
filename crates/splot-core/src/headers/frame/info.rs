@@ -1509,14 +1509,21 @@ fn parse_bridge_inter_path(
 /// forced `1` and the `increment_tile_*_log2` loops gated behind `!IsBridge`), INFERS
 /// `base_q_idx = RefBaseQIdx[bridge_frame_ref_idx]` from the referenced frame (:4997), SKIPS
 /// `disable_cdf_update` (the :5039 else-arm), and forces the whole quant/segmentation/deblocking/
-/// cdef/ccso/restoration cluster off with no bits (:5045-5083). Those need reference-frame state
-/// this phase does not thread, so — like the non-single bridge ([`parse_bridge_inter_path`]) —
-/// the parse stops at the start of that arm with
+/// cdef/ccso/restoration cluster off with no bits (:5045-5083) — all reference-derived or no-bit,
+/// so the `base_q_idx`/quant values stay unmodeled. Unlike the non-single bridge
+/// ([`parse_bridge_inter_path`], whose `immediate_output_frame == 0` makes `apply_grain == 0`),
+/// the arm's `film_grain_config()` (:5011 / § 5.18.10.1) is the LAST modeled read and IS decidable
+/// without reference state: `apply_grain` is inferred (single-picture + `immediate_output_frame ==
+/// 1`) and reads `fgm_id` f(3) + `grain_seed` f(16) when grain is present. This consumes that tail
+/// (for `consumed_bits` accuracy + truncation detection) and then stops with
 /// [`InterStop::BruInactiveOrBridgeReturn`](crate::headers::frame::inter::InterStop::BruInactiveOrBridgeReturn),
 /// the parsed prefix preserved on `core.inter`, reporting
-/// [`FrameHeaderParseStatus::UnsupportedUntilFeature`]. An EOF inside the modeled prefix is
-/// converted to the facts-preserving [`FrameHeaderParseStatus::StoppedInsideInterControl`] by
-/// [`finish_inter_control`] (codex F2).
+/// [`FrameHeaderParseStatus::UnsupportedUntilFeature`] (the reference-derived quant is unmodeled).
+/// An EOF inside the modeled prefix or the grain tail is converted to the facts-preserving
+/// [`FrameHeaderParseStatus::StoppedInsideInterControl`] by [`finish_inter_control`] (codex F2).
+/// When `film_grain_params_present` is unknown (a bounded sequence-header stop), `apply_grain`
+/// is undecidable, so the parse stops before the grain read (the same honest behavior as the
+/// intra / SEF tails).
 ///
 /// SPEC-MIRROR FIDELITY: this follows the normative committed mirror. AVM
 /// (`av2/decoder/decodeframe.c`) diverges for this corner — it gates the `f(NumRefFrames)`
@@ -1591,11 +1598,36 @@ fn parse_single_picture_bridge_tail(
         control.tip_frame_mode = Some(TipFrameMode::Disabled);
         control.primary_ref_frame = Some(PRIMARY_REF_NONE);
 
-        // mirror :4971/:5045: the IsBridge early-return arm reads a zero-bit tile_info() and
-        // film_grain_config() and INFERS base_q_idx = RefBaseQIdx[bridge_frame_ref_idx] from the
-        // referenced frame — reference-frame state this phase does not thread (the same boundary
-        // parse_bridge_inter_path stops at). disable_cdf_update (the :5039 else-arm) and the entire
-        // quant/segmentation/loop-filter cluster are SKIPPED. Stop here, prefix preserved.
+        // mirror :4971-5011: the IsBridge early-return arm. tile_info() reads ZERO bits for a
+        // bridge (uniform_tile_spacing_flag forced 1, the increment loops gated behind !IsBridge,
+        // :6599/:6615/:6645), and base_q_idx = RefBaseQIdx[bridge_frame_ref_idx] / DeltaQ are
+        // reference-state derived (no bits, :4997) — those quant values stay unmodeled, so this
+        // remains a BruInactiveOrBridgeReturn coverage stop. disable_cdf_update (the :5039 else-arm)
+        // and the entire quant/segmentation/deblocking/cdef/ccso/restoration cluster (:5045-5083)
+        // are SKIPPED (no bits).
+        //
+        // film_grain_config() (:5011 / § 5.18.10.1) is the LAST modeled frame-header read, and it
+        // IS decidable without reference state: with single_picture_header_flag == 1 and
+        // immediate_output_frame == 1, apply_grain is inferred (mirror :8165-8171 — 1 when
+        // film_grain_params_present, else 0) and reads fgm_id f(3) + grain_seed f(16). Consume it so
+        // consumed_bits covers the mandatory frame-header syntax and a truncation there surfaces as
+        // StoppedInsideInterControl, not a silent coverage stop (codex review). The bridge frame is
+        // unsupported coverage (base_q_idx unmodeled), so the parsed grain config is not exposed —
+        // the read is for bit-accuracy + truncation detection only. If the active sequence header
+        // was a bounded stop that never read film_grain_params_present, apply_grain is undecidable,
+        // so stop before the grain read (the honest behavior the intra / SEF tails also use).
+        if let Some(film_grain_params_present) = seq.film_grain_params_present {
+            let input = FrameTailInput {
+                // base_q_idx is reference-derived; film_grain_config() does not consult
+                // coded_lossless, so the value supplied here is inert.
+                coded_lossless: false,
+                film_grain_params_present,
+                single_picture_header_flag: true,
+                immediate_output_frame: true,
+                implicit_output_frame: false,
+            };
+            let _ = parse_film_grain_config(reader, &input)?;
+        }
         control.stop = Some(InterStop::BruInactiveOrBridgeReturn);
         Ok(())
     })();
@@ -4044,6 +4076,82 @@ mod tests {
             "screen_content_params() hit the EOF"
         );
         assert_eq!(inter.stop, None, "the bridge-return stop was never reached");
+    }
+
+    #[test]
+    fn frame_header_core_single_picture_bridge_reads_film_grain_tail() {
+        // When film_grain_params_present is set, the IsBridge early-return arm's film_grain_config()
+        // (mirror :5011 / §5.18.10.1) infers apply_grain = 1 (single_picture + immediate_output == 1,
+        // mirror :8169-8171) and reads fgm_id f(3) + grain_seed f(16) with NO reference state — the
+        // LAST modeled frame-header bits. The parser consumes that mandatory tail (so consumed_bits
+        // is complete) before the BruInactiveOrBridgeReturn stop. (A non-single bridge has
+        // immediate_output == 0 -> apply_grain == 0 -> no grain bits, which is why only the
+        // single-picture bridge reads them.)
+        let mut seq = base_seq();
+        seq.single_picture_header_flag = true;
+        seq.filter.single_picture_header_flag = true;
+        seq.film_grain_params_present = Some(true);
+        let mut bits = Bits::default();
+        bits.uvlc(0); // seq_header_id_in_frame_header (1 bit)
+        bits.f(5, 3); // bridge_frame_ref_idx = 5 (3 bits)
+        bits.bit(0); // bridge_frame_overwrite_flag = 0 (1 bit)
+        bits.f(0, 8); // refresh_frame_flags f(8)
+        // frame_size(): 0 bits. screen_content_params(): seq_force off -> 0 bits.
+        bits.bit(0); // allow_intrabc = 0 (1 bit)
+        // IsBridge early-return arm: tile_info() 0 bits; base_q_idx inferred (no bits);
+        // film_grain_config(): apply_grain inferred 1 -> fgm_id f(3) + grain_seed f(16).
+        bits.f(5, 3); // fgm_id = 5
+        bits.f(0xBEEF, 16); // grain_seed
+        let data = bits.into_bytes();
+        let (core, consumed) = parse_body(&data, ObuType::BridgeFrame, true, &seq).unwrap();
+
+        assert!(core.is_bridge);
+        let inter = core.inter.as_ref().expect("bridge facts recorded");
+        assert_eq!(inter.stop, Some(InterStop::BruInactiveOrBridgeReturn));
+        assert!(matches!(
+            core.status,
+            FrameHeaderParseStatus::UnsupportedUntilFeature { .. }
+        ));
+        // 1 (seq id) + 3 (bridge ref) + 1 (overwrite) + 8 (refresh) + 1 (allow_intrabc)
+        // + 3 (fgm_id) + 16 (grain_seed) = 33 bits: the mandatory grain tail is accounted for.
+        assert_eq!(consumed, 33, "consumed_bits covers the film-grain tail");
+    }
+
+    #[test]
+    fn frame_header_core_single_picture_bridge_eof_in_film_grain_is_truncation() {
+        // A truncation inside the mandatory film-grain tail of a grain-enabled single-picture bridge
+        // is a decidable defect (no reference state is needed to know those bits must be present), so
+        // it is reported as StoppedInsideInterControl, not a silent coverage stop (codex review).
+        let mut seq = base_seq();
+        seq.single_picture_header_flag = true;
+        seq.filter.single_picture_header_flag = true;
+        seq.film_grain_params_present = Some(true);
+        let mut bits = Bits::default();
+        bits.uvlc(0); // seq_header_id (1 bit)
+        bits.f(5, 3); // bridge_frame_ref_idx (3 bits) -> 4
+        bits.bit(0); // bridge_frame_overwrite_flag (1 bit) -> 5
+        bits.f(0, 8); // refresh_frame_flags f(8) -> 13
+        bits.bit(0); // allow_intrabc (1 bit) -> 14
+        bits.f(5, 3); // fgm_id f(3) -> 17; grain_seed f(16) then runs out of bits -> EOF.
+        let data = bits.into_bytes();
+        let (core, _) = parse_body(&data, ObuType::BridgeFrame, true, &seq).unwrap();
+
+        assert_eq!(
+            core.status,
+            FrameHeaderParseStatus::StoppedInsideInterControl
+        );
+        let inter = core.inter.as_ref().expect("pre-EOF facts preserved");
+        assert_eq!(inter.bridge_frame_overwrite_flag, Some(false));
+        assert_eq!(inter.refresh_frame_flags, Some(0));
+        assert_eq!(
+            core.frame_size,
+            Some(FrameSize::new(4096, 2304)),
+            "facts parsed before the grain-tail EOF are preserved"
+        );
+        assert_eq!(
+            inter.stop, None,
+            "the bridge-return stop was never reached (EOF inside the grain tail)"
+        );
     }
 
     #[test]

@@ -45,17 +45,25 @@ fixed to reject all bridges. This is the parser-side fix.
    `bridge_frame_overwrite_flag` f(1) (:4423), the `KEY_FRAME` arm
    `refresh_frame_flags` (:4429-4445, `f(NumRefFrames)`, read unconditionally),
    the non-override `frame_size()` (:4567, default dims, no bits),
-   `screen_content_params()` (:4569) and `intrabc_params()` (:4571) — then stops
-   at the `IsBridge` early-return arm (:4971) with
-   `InterStop::BruInactiveOrBridgeReturn`, reporting
-   `FrameHeaderParseStatus::UnsupportedUntilFeature` and preserving the parsed
-   prefix on `core.inter`. It reuses `read_refresh_frame_flags`, `parse_frame_size`,
-   `parse_screen_content_params_full`, `parse_intrabc_params_full`, and
+   `screen_content_params()` (:4569) and `intrabc_params()` (:4571), and the
+   decidable §5.18.10.1 `film_grain_config()` tail of the `IsBridge` early-return
+   arm (:5011) — `apply_grain` is inferred from `single_picture_header_flag` +
+   `immediate_output_frame == 1` (mirror :8169-8171), reading `fgm_id` f(3) +
+   `grain_seed` f(16) when `film_grain_params_present` — then stops at the
+   reference-derived `base_q_idx` with `InterStop::BruInactiveOrBridgeReturn`,
+   reporting `FrameHeaderParseStatus::UnsupportedUntilFeature` and preserving the
+   parsed prefix on `core.inter`. It reuses `read_refresh_frame_flags`,
+   `parse_frame_size`, `parse_screen_content_params_full`,
+   `parse_intrabc_params_full`, `parse_film_grain_config`, and
    `finish_inter_control` (the same EOF→`StoppedInsideInterControl` machinery the
-   non-single bridge uses).
+   non-single bridge uses). The film-grain tail is consumed (not exposed — the
+   bridge stays unsupported coverage) so `consumed_bits` covers the mandatory
+   frame-header syntax and a truncation there is reported as a truncation rather
+   than a silent coverage stop (codex PR review); when `film_grain_params_present`
+   is unknown the parse stops before the grain read, like the intra / SEF tails.
 3. The buggy test `frame_header_core_single_picture_bridge_takes_intra_key_path`
-   (whose premise was the bug) is replaced; positive, data-dependent, and EOF
-   tests are added.
+   (whose premise was the bug) is replaced; positive, data-dependent, EOF, and
+   film-grain (read + truncation) tests are added.
 
 ## Differential note (spec mirror vs references)
 
@@ -78,23 +86,28 @@ divergence.
 
 ## Non-goals
 
-- No reference-frame-state modeling of the bridge tail (`base_q_idx =
-  RefBaseQIdx[refIdx]`, `tile_info()`, `film_grain_config()`); the parse stops at
-  the early-return arm exactly like the non-single bridge.
-- No writer change (the #4i writer already rejects bridges; revisiting that is a
+- No reference-frame-state modeling: `base_q_idx = RefBaseQIdx[refIdx]` / `DeltaQ`
+  stay unmodeled (reference-derived, no bits), so the frame stays an
+  `UnsupportedUntilFeature` coverage stop. The decidable `film_grain_config()` tail
+  IS consumed for bit-accuracy, but its parsed value is not exposed (no new field /
+  inspector view) — that exposure, if wanted, is a follow-up.
+- No writer change beyond updating the now-stale `reject_single_picture_bridge`
+  test/comment (the writer still rejects all bridges; revisiting its gate is a
   separate follow-up).
-- No new diagnostic; the stop stays on the silent coverage side
+- No new diagnostic; the (non-truncated) stop stays on the silent coverage side
   (`UnsupportedUntilFeature`), consistent with the non-single bridge.
 
 ## Acceptance criteria
 
 - [ ] A single-picture bridge reads `bridge_frame_overwrite_flag` + the `KEY`
       `refresh_frame_flags` + non-override `frame_size()` + `screen_content_params()`
-      + `intrabc_params()`, then stops with `InterStop::BruInactiveOrBridgeReturn`
-      and `FrameHeaderParseStatus::UnsupportedUntilFeature`.
+      + `intrabc_params()` + the decidable `film_grain_config()` tail, then stops
+      with `InterStop::BruInactiveOrBridgeReturn` and
+      `FrameHeaderParseStatus::UnsupportedUntilFeature`; `consumed_bits` covers the
+      mandatory frame-header syntax (incl. `fgm_id` / `grain_seed` when grain present).
 - [ ] It never reads `disable_cdf_update` and never enters the quant/segmentation/
       loop-filter cluster; `core.intra_tail` / `core.tile_info` /
       `core.quantization_params` stay `None`.
-- [ ] An EOF inside the modeled prefix preserves the parsed facts and reports
-      `StoppedInsideInterControl`.
+- [ ] An EOF inside the modeled prefix OR the grain tail preserves the parsed facts
+      and reports `StoppedInsideInterControl`.
 - [ ] `cargo xtask ci` is green; the matrix proof records the new tests.

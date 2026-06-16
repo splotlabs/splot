@@ -25,6 +25,13 @@
   stop with `InterStop::BruInactiveOrBridgeReturn` (:4971) via `finish_inter_control`
   (status `UnsupportedUntilFeature`; EOF → `StoppedInsideInterControl`). Do NOT read
   `disable_cdf_update` or the structure cluster.
+- [x] 2.4 (codex PR review) Consume the decidable `film_grain_config()` tail (:5011 /
+  § 5.18.10.1) before the stop: `apply_grain` inferred from single-picture +
+  `immediate_output_frame == 1`, reading `fgm_id` f(3) + `grain_seed` f(16) when
+  `film_grain_params_present`, so `consumed_bits` covers the mandatory syntax and a
+  grain-tail truncation reports `StoppedInsideInterControl`. Stop before the read when
+  `film_grain_params_present` is unknown (intra/SEF pattern). Value not exposed (the
+  bridge stays unsupported coverage).
 
 ## 3. Tests and proof
 
