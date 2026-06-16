@@ -81,12 +81,13 @@ vectors cannot be machine-generated. The evidence instead combines:
   target, so the "no `supported` on unit tests alone" rule is satisfied by
   pre-existing runtime + fuzz evidence; this change strengthens unit/property
   coverage on top of that.
-- **Latent over-strict CDF validation for broad decode.** `validate_cdf`
-  rejects non-strictly-increasing rows, but the § 8.2.6 update can produce
-  equal adjacent entries after many adaptations of one row. This does not
-  affect the supported subset (each minimal-tier CDF row is read at most once)
-  and is out of scope here; it is recorded as a follow-up for the
-  tile-payload-decode broadening work.
+- **CDF validation strictness (resolved).** Earlier `validate_cdf` rejected
+  non-strictly-increasing rows, which the § 8.2.6 update can legitimately
+  produce (equal adjacent entries) — a latent conformance gap on re-read of an
+  adapted row. This is now fixed (the prerequisite landed): `validate_cdf`
+  rejects only a strict decrease (`value < cdf[index - 1]`), so equal adjacent
+  entries are accepted and decode correctly, proven by the equal-adjacent
+  acceptance/decode tests. No follow-up remains.
 
 ## Migration
 

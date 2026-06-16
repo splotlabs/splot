@@ -384,6 +384,21 @@ fn read_symbol_accepts_and_decodes_equal_adjacent_cumulative_entries() {
 
 #[test]
 fn update_cdf_rate_extremes_are_exact() {
+    // Absolute minimum rate (2), reachable only at N=2: timeInterval 0 (count 0),
+    // Min(FloorLog2(2),2)=1, Para_Adjustment_List[50][0] = -2  =>  rate = 3 + 0 + 1 - 2 = 2.
+    // Symbol 1 decrements the single cumulative entry by `>> 2`: 16384 - 4096 = 12288.
+    let mut min_rate = [16_384, 50, 0];
+    update_cdf(
+        &mut min_rate,
+        CdfShape {
+            n: 2,
+            rate_index: 50,
+            count: 0,
+        },
+        1,
+    );
+    assert_eq!(min_rate, [12_288, 50, 1]);
+
     // Low rate (3) for N=4: timeInterval 0 (count 0), Min(FloorLog2(4),2)=2,
     // Para_Adjustment_List[50][0] = -2  =>  rate = 3 + 0 + 2 - 2 = 3.
     let mut low = [8192, 16_384, 24_576, 50, 0];
@@ -398,7 +413,7 @@ fn update_cdf_rate_extremes_are_exact() {
     );
     assert_eq!(low, [7168, 18_432, 25_600, 50, 1]);
 
-    // High rate (8) for N=4: timeInterval 2 (count 32), Min(FloorLog2(4),2)=2,
+    // Absolute maximum rate (8) for N=4: timeInterval 2 (count 32), Min(FloorLog2(4),2)=2,
     // Para_Adjustment_List[3][2] = 1  =>  rate = 3 + 2 + 2 + 1 = 8.
     let mut high = [8192, 16_384, 24_576, 3, 32];
     update_cdf(

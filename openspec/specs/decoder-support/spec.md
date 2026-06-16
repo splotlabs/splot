@@ -1501,10 +1501,10 @@ surface SHALL remain tracked in their own rows.
   primitive is complete and proven
 - **AND** § 8.3 CDF selection (`tile-cdf-selection-boundary`), the § 8.2.4 CDF
   copy/averaging and Tile/Saved CDF banks (`tile-cdf-save-lifecycle-boundary`),
-  default § 9.3 banks, `decode_tile()`/traversal (`tile-payload-decode`),
-  reconstruction, runtime hashes, runtime Y4M output, AVM/dav2d invocation, and
-  CLI decode success remain tracked as `partial` or `unsupported` in their own
-  rows
+  default § 9.3 banks, `decode_tile()`/traversal (`tile-payload-decode`), and
+  broad reconstruction, decode hashing, Y4M/raw output, and CLI decode beyond
+  the already-`supported` minimal tier (plus AVM/dav2d invocation) remain
+  tracked in their own rows
 
 ### Requirement: Tile payload decode boundary
 
