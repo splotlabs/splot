@@ -844,6 +844,103 @@ mod tests {
             assert_eq!(decoder.symbol_count(), 0);
         }
     }
+
+    #[test]
+    fn read_symbol_extreme_values_select_first_and_last_symbol_for_all_arities() {
+        // Cover every supported arity N = 2..8. `init_symbol` sets SymbolValue to
+        // 0x7FFF for an all-zero payload and 0x0000 for an all-ones 15-bit payload;
+        // a maximal SymbolValue breaks the §8.2.6 threshold loop at symbol 0, and a
+        // zero SymbolValue walks to the last symbol N-1 (whose cur is 0 because
+        // Prob_Inc[N-2][N-1] == 0). This exercises every Prob_Inc row end-to-end.
+        let config = SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled);
+        for n in MIN_SYMBOLS..=MAX_SYMBOLS {
+            let step = CDF_PROB_SCALE as i32 / n as i32;
+            let mut row = vec![0i32; n + 1];
+            for (i, entry) in row.iter_mut().take(n - 1).enumerate() {
+                *entry = step * (i as i32 + 1);
+            }
+            // row[n - 1] = 0 adaptation-rate index, row[n] = 0 capped count.
+
+            let mut first = SymbolDecoder::with_config(&[0x00, 0x00], config).unwrap();
+            let mut first_row = row.clone();
+            assert_eq!(
+                first.read_symbol(&mut first_row).unwrap().get(),
+                0,
+                "maximal SymbolValue must select symbol 0 (N={n})"
+            );
+            assert_eq!(
+                first_row, row,
+                "disabled update must not mutate the row (N={n})"
+            );
+
+            let mut last = SymbolDecoder::with_config(&[0xFF, 0xFF], config).unwrap();
+            let mut last_row = row.clone();
+            assert_eq!(
+                last.read_symbol(&mut last_row).unwrap().get() as usize,
+                n - 1,
+                "zero SymbolValue must select the last symbol (N={n})"
+            );
+            assert_eq!(last_row, row);
+        }
+    }
+
+    #[test]
+    fn update_cdf_rate_extremes_are_exact() {
+        // Low rate (3) for N=4: timeInterval 0 (count 0), Min(FloorLog2(4),2)=2,
+        // Para_Adjustment_List[50][0] = -2  =>  rate = 3 + 0 + 2 - 2 = 3.
+        let mut low = [8192, 16_384, 24_576, 50, 0];
+        update_cdf(
+            &mut low,
+            CdfShape {
+                n: 4,
+                rate_index: 50,
+                count: 0,
+            },
+            1,
+        );
+        assert_eq!(low, [7168, 18_432, 25_600, 50, 1]);
+
+        // High rate (8) for N=4: timeInterval 2 (count 32), Min(FloorLog2(4),2)=2,
+        // Para_Adjustment_List[3][2] = 1  =>  rate = 3 + 2 + 2 + 1 = 8.
+        let mut high = [8192, 16_384, 24_576, 3, 32];
+        update_cdf(
+            &mut high,
+            CdfShape {
+                n: 4,
+                rate_index: 3,
+                count: 32,
+            },
+            1,
+        );
+        assert_eq!(high, [8160, 16_448, 24_608, 3, 32]);
+    }
+
+    #[test]
+    fn deep_negative_symbol_max_bits_pads_deterministically() {
+        // A 2-byte payload leaves SymbolMaxBits = 1 after init; repeatedly reading
+        // symbols drives it far below zero, exercising the implicit zero-padding
+        // path (num_bits_to_read returns 0). Decoding must stay in range, never
+        // panic, and be deterministic across fresh decoders.
+        let decode_run = || {
+            let mut decoder = SymbolDecoder::new(&[0x5A, 0xC3]).unwrap();
+            let mut row = [10_922, 21_844, 0, 0]; // N=3, rate index 0, count 0
+            let mut symbols = Vec::with_capacity(20);
+            for _ in 0..20 {
+                let symbol = decoder.read_symbol(&mut row).unwrap();
+                assert!((symbol.get() as usize) < 3);
+                symbols.push(symbol.get());
+            }
+            (symbols, decoder.symbol_max_bits())
+        };
+        let (first, smb_first) = decode_run();
+        let (second, smb_second) = decode_run();
+        assert_eq!(first, second, "padded decoding must be deterministic");
+        assert_eq!(smb_first, smb_second);
+        assert!(
+            smb_first < 0,
+            "20 symbol reads must drive SymbolMaxBits negative, got {smb_first}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -866,6 +963,58 @@ mod proptests {
             let mut cdf = [8192, 16_384, 24_576, 0, count];
             let _ = decoder.read_symbol(&mut cdf);
             let _ = decoder.finish();
+        }
+
+        /// Symbol decoding over random valid CDF rows of every arity must keep the
+        /// decoded symbol in range, preserve the valid probability range and capped
+        /// count on update, be deterministic across fresh decoders, and leave the
+        /// row unchanged when CDF update is disabled. It deliberately does not assert
+        /// strict monotonicity after update, because §8.2.6 adaptation can drive two
+        /// adjacent cumulative entries to equality.
+        #[test]
+        fn read_symbol_random_valid_cdf_preserves_invariants(
+            n in MIN_SYMBOLS..=MAX_SYMBOLS,
+            gaps in proptest::collection::vec(1i32..=4000, MAX_SYMBOLS - 1),
+            rate_index in 0usize..PARA_ADJUSTMENT_LIST.len(),
+            count in 0i32..=MAX_CDF_COUNT,
+            data in proptest::collection::vec(any::<u8>(), 2..16),
+            update_enabled in any::<bool>(),
+        ) {
+            let mut row = vec![0i32; n + 1];
+            let mut acc = 0i32;
+            for (entry, gap) in row.iter_mut().take(n - 1).zip(gaps.iter()) {
+                acc += *gap; // gap >= 1 keeps the cumulative values strictly increasing
+                *entry = acc; // bounded by (MAX_SYMBOLS - 1) * 4000 < CDF_PROB_MAX
+            }
+            row[n - 1] = rate_index as i32;
+            row[n] = count;
+
+            let config = SymbolDecoderConfig::new().with_cdf_update_mode(if update_enabled {
+                CdfUpdateMode::Enabled
+            } else {
+                CdfUpdateMode::Disabled
+            });
+            let before = row.clone();
+
+            let mut first = SymbolDecoder::with_config(&data, config).unwrap();
+            let mut first_row = row.clone();
+            let first_symbol = first.read_symbol(&mut first_row).unwrap();
+            prop_assert!((first_symbol.get() as usize) < n);
+
+            let mut second = SymbolDecoder::with_config(&data, config).unwrap();
+            let mut second_row = row.clone();
+            let second_symbol = second.read_symbol(&mut second_row).unwrap();
+            prop_assert_eq!(first_symbol, second_symbol);
+            prop_assert_eq!(&first_row, &second_row);
+
+            if update_enabled {
+                for value in first_row.iter().take(n - 1) {
+                    prop_assert!(*value >= 1 && *value <= CDF_PROB_MAX);
+                }
+                prop_assert!(first_row[n] <= MAX_CDF_COUNT);
+            } else {
+                prop_assert_eq!(&first_row, &before);
+            }
         }
     }
 }

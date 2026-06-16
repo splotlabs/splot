@@ -1408,18 +1408,21 @@ runtime behavior.
 ### Requirement: AV2 symbol decoder foundation
 
 The decoder support model SHALL provide a bounded `splot-core` AV2 § 8.2 symbol
-decoder foundation tracked by Feature ID `AV2-8.2-SYMBOL-DECODER`. The
-foundation SHALL implement only generic symbol-decoder primitives over a
-caller-provided tile payload byte slice: `init_symbol(sz)`, `read_bool()`,
-`read_literal(n)`, `read_symbol(cdf)`, CDF update, and `exit_symbol()`
-validation. It SHALL use generated repository-owned § 9 conversion tables, SHALL
-validate caller-supplied CDF rows before indexing or updating them, and SHALL
-return typed `splot-core` errors rather than panicking. It SHALL NOT implement
-§ 8.3 syntax-element CDF selection, Tile/Saved CDF banks, default CDF
-initialization, CDF copy/averaging, `decode_tile()`, tile syntax traversal,
-runtime `splot decode` success, reconstruction, hash output, Y4M output,
-reference refresh, AVM/dav2d invocation, or any new dependency/scheduler
-surface.
+decoder primitive tracked by Feature ID `AV2-8.2-SYMBOL-DECODER`, and SHALL mark
+its `symbol-decoder` support row `supported`. The primitive SHALL implement the
+generic symbol-decoder operations over a caller-provided tile payload byte
+slice: `init_symbol(sz)` (§ 8.2.2), `read_bool()` (§ 8.2.3), `read_literal(n)`
+(§ 8.2.5), `read_symbol(cdf)` arithmetic decoding and CDF adaptation (§ 8.2.6),
+and the `exit_symbol()` trailing-bit/zero-padding conformance check (§ 8.2.4).
+It SHALL use generated repository-owned § 9.2 conversion tables, SHALL validate
+caller-supplied CDF rows before indexing or updating them, and SHALL return
+typed `splot-core` errors rather than panicking on any input. The promoted row
+SHALL claim only this primitive; the § 8.2.4 CDF copy/averaging and the § 8.2.2
+"Tile" CDF-array copy SHALL remain owned by `tile-cdf-save-lifecycle-boundary`,
+and § 8.3 syntax-element CDF selection, default § 9.3 CDF banks,
+`decode_tile()`, tile syntax traversal, reconstruction, hash output, Y4M output,
+reference refresh, AVM/dav2d invocation, and any new dependency/scheduler
+surface SHALL remain tracked in their own rows.
 
 #### Scenario: Initialization is tile-slice bounded
 
@@ -1472,15 +1475,33 @@ surface.
 - **AND** malformed exit state, missing trailing one bit, and nonzero padding
   return typed errors without panicking
 
-#### Scenario: Runtime decode remains unsupported
+#### Scenario: Symbol decoding is proven across all arities and update rates
 
-- **WHEN** a reader checks decoder support after the symbol decoder foundation is
-  implemented
-- **THEN** the `symbol-decoder` row states that only generic AV2 § 8.2
-  primitives are available
-- **AND** `tile-payload-decode`, § 8.3 CDF selection, `decode_tile()`,
+- **WHEN** the symbol decoder primitive is exercised by its test suite
+- **THEN** every arity `N = 2..8` is decoded, with a maximal `SymbolValue`
+  selecting symbol 0 and a zero `SymbolValue` selecting symbol `N-1`
+- **AND** `read_symbol(cdf)` over random valid CDF rows of every arity always
+  returns a symbol in `[0, N)`, keeps post-update entries in the valid
+  probability range with a count capped at 32, and is deterministic across
+  fresh decoders
+- **AND** the minimum and maximum § 8.2.6 adaptation rates produce the exact
+  hand-verified post-update rows
+- **AND** decoding many symbols past the end of a tiny payload drives
+  `SymbolMaxBits` deeply negative without panicking and with deterministic
+  implicit zero padding
+
+#### Scenario: Broader symbol and CDF work stays in its own rows
+
+- **WHEN** a reader checks decoder support after the symbol decoder primitive is
+  marked supported
+- **THEN** the `symbol-decoder` row states that the generic AV2 § 8.2
+  primitive is complete and proven
+- **AND** § 8.3 CDF selection (`tile-cdf-selection-boundary`), the § 8.2.4 CDF
+  copy/averaging and Tile/Saved CDF banks (`tile-cdf-save-lifecycle-boundary`),
+  default § 9.3 banks, `decode_tile()`/traversal (`tile-payload-decode`),
   reconstruction, runtime hashes, runtime Y4M output, AVM/dav2d invocation, and
-  CLI decode success remain unsupported or planned in their own rows
+  CLI decode success remain tracked as `partial` or `unsupported` in their own
+  rows
 
 ### Requirement: Tile payload decode boundary
 
@@ -3035,3 +3056,4 @@ superblock-padded context extents.
   `read_partition()`, broad `decode_tile()`, transform/residual parsing,
   reconstruction expansion, reference refresh, AVM/dav2d invocation, or
   external decoder integration
+
