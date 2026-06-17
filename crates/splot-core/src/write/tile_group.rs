@@ -504,9 +504,9 @@ pub fn write_tile_group_obu(
 /// 3. when `frame_header_present_flag` is set, `frame_header_copy()` — the recorded first header's
 ///    `NumFrameHeaderBits` `header_bit` `f(1)` values verbatim (§ 5.18.1, a bit-copy, *not* a
 ///    re-serialized [`FrameHeaderCore`]; the bits come from `recorded`).
-/// 4. the § 5.19 structure via [`write_tile_group_structure`] — which, unlike the first-group
-///    composer, places **no** `tg_start == 0` restriction (a continuation's `tg_start` is the running
-///    tile offset); it emits the tile-range bits then the closing `byte_alignment()`.
+/// 4. the § 5.19 structure via [`write_tile_group_structure`] — a continuation's `tg_start` is the
+///    running tile offset (`>= 1`, not pinned to `0` like the first group, but never `0` either); it
+///    emits the tile-range bits then the closing `byte_alignment()`.
 /// 5. the § 5.20.1 payload framing via [`write_tile_group_payload`] (runs byte-aligned).
 ///
 /// `layout` and `tile_size_bytes` are the coded frame's shared values, taken from the **first** tile
@@ -523,10 +523,15 @@ pub fn write_tile_group_obu(
 /// All validated before any bit (the caller's `writer` is untouched on failure):
 /// - [`WriteError::WriterNotByteAligned`] if `writer` is not on a byte boundary (an OBU payload
 ///   begins byte-aligned).
-/// - [`WriteError::NonCanonicalTileGroup`] with `what == "frame_header_copy_gate"` if
-///   `frame_header_present_flag` disagrees with whether `recorded` copy bits are supplied (the flag is
-///   set iff a `frame_header_copy()` follows); or `"framing_range_mismatch"` if `framing.tiles.len()`
-///   disagrees with the structure's `tg_end - tg_start + 1` tile count.
+/// - [`WriteError::NonCanonicalTileGroup`] for a constructed model the parser could never produce —
+///   `what` names the field: `"frame_header_copy_gate"` if `frame_header_present_flag` disagrees with
+///   whether `recorded` copy bits are supplied (the flag is set iff a `frame_header_copy()` follows);
+///   `"empty_frame_header_copy"` if the flag is set but `recorded` has `NumFrameHeaderBits == 0` (a
+///   real first header is never empty); `"continuation_tg_start_zero"` if `structure.tg_start == 0` (a
+///   continuation's running tile offset is `>= 1` per § 6.18, so it never restarts at tile 0);
+///   `"framing_range_mismatch"` if `framing.tiles.len()` disagrees with the structure's
+///   `tg_end - tg_start + 1` tile count; or `"framing_tile_number"` if a `framing.tiles[k].tile_num`
+///   disagrees with the derived `tg_start + k`.
 /// - Any [`WriteError`] a delegated sub-writer raises: the structure check
 ///   ([`WriteError::NonCanonicalTileGroup`] for a non-`Complete` / degenerate / out-of-range
 ///   structure) or the payload check (defective / mismatched framing). The payload writer's
@@ -559,11 +564,34 @@ pub fn write_tile_group_continuation_obu(
             });
         }
     };
-    // § 5.19 / § 5.20.1: the structure's `tg_start ..= tg_end` defines the tile count; the framing
-    // must carry exactly that many records, or a reparse — which frames the payload using the emitted
-    // range, not `framing.tiles.len()` — would split the region differently. (Unlike the first-group
-    // composer, `tg_start` may be > 0 here.) The structure writer rejects an inverted `tg_end`, so the
-    // saturating arithmetic only under-counts a degenerate range that the structure step then rejects.
+    // § 5.18.1: a real first tile-group `frame_header()` for these OBU types always consumes at least
+    // its leading field, so `NumFrameHeaderBits == 0` is a present-but-empty `frame_header_copy()` the
+    // parser could never have recorded.
+    if let Some(recorded) = recorded
+        && recorded.num_frame_header_bits() == 0
+    {
+        return Err(WriteError::NonCanonicalTileGroup {
+            what: "empty_frame_header_copy",
+        });
+    }
+    // § 6.18 (mirror :6215-6216): `tg_start == TileNum`, the running tile offset. The first tile group
+    // covers tile 0 with a non-empty payload, so every continuation's running offset is at least 1 —
+    // a continuation (incl. the inferred full range when the flag is clear) whose `tg_start == 0`
+    // restarts the payload at tile 0 and is non-conformant. Locally decidable from `is_first == 0`
+    // alone (no prior-group state needed), so refuse it rather than emit a stream `splot validate`
+    // would reject.
+    if structure.tg_start == 0 {
+        return Err(WriteError::NonCanonicalTileGroup {
+            what: "continuation_tg_start_zero",
+        });
+    }
+    // § 5.19 / § 5.20.1: the structure's `tg_start ..= tg_end` defines the tile count AND the per-tile
+    // `TileNum`s; the framing must carry exactly those records, or a reparse — which frames the payload
+    // using the emitted range, deriving each `tile_num` as `tg_start + k`, not from `framing` — would
+    // split the region differently. (Unlike the first-group composer, `tg_start` may be > 0 here, and
+    // unlike the payload writer this composer HAS the structure, so it can cross-check the derived
+    // `tile_num`s the payload writer treats as parse-context.) The structure writer rejects an inverted
+    // `tg_end`, so the saturating arithmetic only under-counts a degenerate range it then rejects.
     let expected_tiles = u64::from(structure.tg_end)
         .saturating_sub(u64::from(structure.tg_start))
         .saturating_add(1);
@@ -571,6 +599,16 @@ pub fn write_tile_group_continuation_obu(
         return Err(WriteError::NonCanonicalTileGroup {
             what: "framing_range_mismatch",
         });
+    }
+    for (k, tile) in framing.tiles.iter().enumerate() {
+        let expected_tile_num = structure
+            .tg_start
+            .saturating_add(u32::try_from(k).unwrap_or(u32::MAX));
+        if tile.tile_num != expected_tile_num {
+            return Err(WriteError::NonCanonicalTileGroup {
+                what: "framing_tile_number",
+            });
+        }
     }
 
     let mut scratch = BitWriter::new();
@@ -593,7 +631,7 @@ pub fn write_tile_group_continuation_obu(
     }
 
     // 4. § 5.19 structure: the tg-range bits then the closing byte_alignment() (leaves the scratch
-    //    byte-aligned). No tg_start == 0 rule — a continuation's tg_start is the running tile offset.
+    //    byte-aligned). A continuation's tg_start is the running tile offset (>= 1, checked above).
     write_tile_group_structure(&mut scratch, structure, layout)?;
 
     // 5. § 5.20.1 payload framing — runs byte-aligned (the structure's byte_alignment() holds the

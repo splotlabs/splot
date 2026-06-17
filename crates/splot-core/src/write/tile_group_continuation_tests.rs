@@ -247,6 +247,77 @@ mod continuation_tests {
     }
 
     #[test]
+    fn rejects_empty_frame_header_copy() {
+        // frame_header_present_flag set but the recorded header has 0 bits (a real first header is
+        // never empty).
+        let empty = recorded_header(0, 0);
+        assert_eq!(empty.num_frame_header_bits(), 0);
+        let mut writer = BitWriter::new();
+        let err = write_tile_group_continuation_obu(
+            &mut writer,
+            Some(&empty),
+            true,
+            two_tile_layout(),
+            1,
+            &structure(true, 1, 1),
+            &last_tile_framing(1, 1),
+            &[&[0x00][..]],
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, WriteError::NonCanonicalTileGroup { what } if what == "empty_frame_header_copy")
+        );
+        assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
+    fn rejects_continuation_starting_at_tile_zero() {
+        // A continuation (is_first == 0) whose tg_start == 0 restarts the payload at tile 0 (§ 6.18).
+        let recorded = recorded_header(0b1, 1);
+        let mut writer = BitWriter::new();
+        let err = write_tile_group_continuation_obu(
+            &mut writer,
+            Some(&recorded),
+            true,
+            two_tile_layout(),
+            1,
+            &structure(true, 0, 0),
+            &last_tile_framing(0, 1),
+            &[&[0x00][..]],
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, WriteError::NonCanonicalTileGroup { what } if what == "continuation_tg_start_zero")
+        );
+        assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
+    fn rejects_framing_tile_number_mismatch() {
+        // The structure says tile 1 (tg_start == tg_end == 1) but the framing's tile_num is 0.
+        let recorded = recorded_header(0b1, 1);
+        let mut writer = BitWriter::new();
+        let err = write_tile_group_continuation_obu(
+            &mut writer,
+            Some(&recorded),
+            true,
+            two_tile_layout(),
+            1,
+            &structure(true, 1, 1),
+            &last_tile_framing(0, 1), // tile_num 0 != derived tg_start + 0 == 1
+            &[&[0x00][..]],
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, WriteError::NonCanonicalTileGroup { what } if what == "framing_tile_number")
+        );
+        assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
     fn rejects_framing_range_mismatch() {
         // The structure says one tile (tg_start == tg_end == 1) but the framing carries two records.
         let recorded = recorded_header(0b1, 1);
