@@ -11,8 +11,10 @@
 //! Y4M writing for caller-supplied decoded frames, plus square DC,
 //! rectangular DC, subsampled DC, basic/PAETH, smooth, and H/V cardinal
 //! directional intra prediction primitives and a mutable current-frame
-//! workspace; it does not implement byte-consuming decode, full reconstruction,
-//! runtime CLI Y4M output, or full AV2 reference refresh semantics.
+//! workspace, plus the AV2 § 7.14.2 dequantization quantizer-value lookup; it
+//! does not implement byte-consuming decode, full reconstruction, inverse
+//! transforms, residual addition, runtime CLI Y4M output, or full AV2 reference
+//! refresh semantics.
 //!
 //! The ownership model is view-first ([`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)):
 //! owned plane/frame/workspace storage hands out borrowed [`PlaneRef`]/[`PlaneMut`]
@@ -34,11 +36,13 @@
 //! `RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION`,
 //! `RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION`,
 //! `RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION`,
-//! `RECON-CURRENT-FRAME-WORKSPACE`.
+//! `RECON-CURRENT-FRAME-WORKSPACE`,
+//! `RECON-DEQUANT-QUANTIZER-LOOKUP`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
 
+mod dequant;
 mod error;
 mod format;
 mod frame;
@@ -58,6 +62,7 @@ mod views;
 mod workspace;
 mod y4m;
 
+pub use dequant::{max_quantizer_index, quantizer_value};
 pub use error::{ReconError, Result};
 pub use format::{BitDepth, PixelFormat, PlaneId, ReconSample};
 pub use frame::{DecodedFrame, DecodedFrameInfo, FramePlanes, SharedFrame};

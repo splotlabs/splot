@@ -6437,6 +6437,63 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-DEQUANT-QUANTIZER-LOOKUP"
+name = "Dequantization quantizer-value lookup"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["3", "6.4.1", "7.14.2"]
+sources = [
+    "docs/spec/av2/1.0.0/03-symbols.md#s-3",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-14-2",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/dequant.rs"
+openspec_change = "recon-dequant-quantizer-lookup"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds a scheduler-free `splot-recon` AV2 §7.14.2 dequantization quantizer-value lookup core: the 25-entry `Ac_Qlookup` base table, the `qlookup` shift-extension function, `max_quantizer_index` deriving §6.4.1 Table 6.3 `MaxQ` (8-bit -> MAXQ_8_BITS 255, 10-bit -> MAXQ_10_BITS 303; `bit_depth_idc` greater than 1 is reserved, so AV2 v1.0.0 defines no other decoded bit depth and `MAXQ_BITS` is only the segmentation-feature ceiling, not this clamp), and `quantizer_value` implementing §7.14.2 `get_q( qindex, delta )` (the `Ac_Qlookup[0]` result when qindex is 0 and delta is non-positive, otherwise `qlookup` of `qindex + delta` clamped to `1..=MaxQ`). The functions take caller-resolved inputs, use `i64` clamp intermediates so every input is total and panic-free, and read no frame, segment, or tile state. Completeness is proven by spec-exact unit vectors for `Ac_Qlookup`, the shift extension at the 8-bit and 10-bit `MaxQ` extremes, the qindex-0 special case, delta addition, both clamp directions, and input-extreme panic-freedom. This row does not implement §7.14.2 `get_qindex` segment and `delta_q` index resolution, the per-plane `get_dc_quant` and `get_ac_quant` composition, the §7.14.4 dequantization process, quantizer-matrix weighting, the §7.14.3 reconstruct process, inverse transforms, residual addition, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler use inside `splot-recon`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/dequant.rs::tests::max_quantizer_index_matches_table_6_3",
+    "crates/splot-recon/src/dequant.rs::tests::qlookup_returns_table_for_small_q",
+    "crates/splot-recon/src/dequant.rs::tests::qlookup_applies_shift_extension_for_large_q",
+    "crates/splot-recon/src/dequant.rs::tests::quantizer_value_uses_zero_index_special_case",
+    "crates/splot-recon/src/dequant.rs::tests::quantizer_value_adds_delta_then_looks_up",
+    "crates/splot-recon/src/dequant.rs::tests::quantizer_value_clamps_into_one_through_max_q",
+    "crates/splot-recon/src/dequant.rs::tests::quantizer_value_is_panic_free_at_input_extremes",
+]
+commands = [
+    "cargo test -p splot-recon dequant --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "RUSTDOCFLAGS=\"-D warnings\" cargo doc -p splot-recon --no-deps --locked",
+    "cargo xtask check-source-lines",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-concurrency-policy",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/dequant.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
 name = "Decoded frame and plane model contract documentation"
 category = "docs"
