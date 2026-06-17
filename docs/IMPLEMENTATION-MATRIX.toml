@@ -6838,6 +6838,68 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-INVERSE-TRANSFORM-2D-OUTER"
+name = "2D inverse transform outer process (shortcut, DPCM, sample duplication)"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["4.8", "7.15.4"]
+sources = [
+    "docs/spec/av2/1.0.0/04-conventions.md#s-4-8",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-4",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/inverse_transform_2d_outer.rs"
+openspec_change = "recon-inverse-transform-2d-outer"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Wraps the §7.15.4.1 2D matrix transform core (RECON-INVERSE-TRANSFORM-2D) with the surrounding §7.15.4 outer process `inverse_transform_2d_outer(params, dequant, residual)`. `InverseTransform2dOuter` carries the *original* (unadjusted) `txSz` log2 dims (`log2W`/`log2H`, each 2..=6), the lossless flag, a `plane_tx_type_is_idtx` flag, the caller-resolved §7.15.4.1 row/col type + shift selections, the bit depth, and an optional `DpcmDirection` (Vertical for V_PRED, else Horizontal). It derives the adjusted operating size `1 << Min(log2,5)` and the original size `1 << log2` from the log2 dims (so no `Adjusted_Tx_Size`/`Tx_Width`/`Tx_Height` conversion tables are needed and there is no splot-core dependency). The process: (1) if `lossless && plane_tx_type_is_idtx`, the §7.15.4 shortcut `Residual = Dequant >> (3 - shift)` with `shift = (pels>256)+(pels>1024)` (pels = adjusted w*h), else invoke §7.15.4.1 into an adjusted-size scratch; (2) DPCM cumulative sum over the adjusted block (Vertical sums down columns, Horizontal across rows) via `wrapping_add` so it is total; (3) sample duplication expanding the adjusted block into the original-size residual (nearest-neighbour 2x along any 64-sample dimension). `dequant` is the adjusted `adjW*adjH` block, `residual` the original `w*h`; both lengths and the log2 shape are validated with typed `ReconError` (new `InverseTransform2dOuterBufferMismatch`), and it is panic-free for valid shapes via the fixed 32x32 scratch and the total core. Completeness is proven by a no-adjustment-equals-core case, the lossless-IDTX shortcut vector, vertical and horizontal DPCM running-sum vectors, 64-wide and 64x64 sample-duplication cases (vs the adjusted core), a DPCM totality extreme, and the shape/buffer rejections. This row does not implement the §7.15.4 `Transform_Shift` or `get_transform_1d_type` derivations (rowType/colType/shifts stay caller-resolved), the §7.15.3 secondary transform, the §7.14.4 dequantization process, residual addition, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler use inside `splot-recon`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs::tests::non_adjusted_block_matches_core_transform",
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs::tests::lossless_idtx_shortcut_is_dequant_shifted",
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs::tests::vertical_dpcm_accumulates_down_columns",
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs::tests::horizontal_dpcm_accumulates_across_rows",
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs::tests::sample_duplication_expands_64_wide_block",
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs::tests::sample_duplication_expands_64_tall_block",
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs::tests::sample_duplication_expands_both_dimensions_for_64x64",
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs::tests::dpcm_applies_to_adjusted_block_before_duplication",
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs::tests::dpcm_applies_after_lossless_idtx_shortcut",
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs::tests::dpcm_is_total_for_extreme_values",
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs::tests::rejects_unsupported_shape",
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs::tests::rejects_non_4x4_lossless",
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs::tests::rejects_buffer_length_mismatch",
+]
+commands = [
+    "cargo test -p splot-recon inverse_transform_2d_outer --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "RUSTDOCFLAGS=\"-D warnings\" cargo doc -p splot-recon --no-deps --locked",
+    "cargo xtask check-source-lines",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
 name = "Decoded frame and plane model contract documentation"
 category = "docs"

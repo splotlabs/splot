@@ -366,6 +366,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "inverse-transform-1d",
             "inverse-transform-matrix-free",
             "inverse-transform-2d",
+            "inverse-transform-2d-outer",
             "residual-addition",
         ],
         feature_ids: &[
@@ -375,6 +376,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "RECON-INVERSE-TRANSFORM-1D",
             "RECON-INVERSE-TRANSFORM-MATRIX-FREE",
             "RECON-INVERSE-TRANSFORM-2D",
+            "RECON-INVERSE-TRANSFORM-2D-OUTER",
             "RECON-RESIDUAL-ADDITION",
         ],
         status: "partial",
@@ -382,7 +384,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         fuzz_targets: &[],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Scheduler-free splot-recon primitives exist for the workspace allocation, the §7.14.2 dequantization quantizer functions, all three §7.15.2 1D inverse transforms (kernel, Walsh-Hadamard, identity), the §7.15.4.1 2D matrix transform core (row-then-column passes), and the §7.14.3 residual-addition step. The §7.14.4 dequantization process, the §7.15.3 secondary transform, the §7.15.4 outer 2D inverse transform orchestration (Adjusted_Tx_Size lookup, Transform_Shift and get_transform_1d_type derivation, the Lossless IDTX shortcut, DPCM, and sample duplication), deblocking, CDEF, CCSO, loop restoration, and GDF are not implemented, and none of the primitives are wired as runtime decode stages.",
+        notes: "Scheduler-free splot-recon primitives exist for the workspace allocation, the §7.14.2 dequantization quantizer functions, all three §7.15.2 1D inverse transforms (kernel, Walsh-Hadamard, identity), the §7.15.4.1 2D matrix transform core (row-then-column passes), the §7.15.4 outer 2D inverse transform orchestration (the Lossless IDTX shortcut, the DPCM cumulative sum, and adjusted-size sample duplication over caller-resolved transform selections), and the §7.14.3 residual-addition step. The §7.14.4 dequantization process, the §7.15.3 secondary transform, the §7.15.4 Transform_Shift and get_transform_1d_type derivations, deblocking, CDEF, CCSO, loop restoration, and GDF are not implemented, and none of the primitives are wired as runtime decode stages.",
     },
     CoverageRow {
         id: "output-film-grain-and-reference-update",

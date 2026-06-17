@@ -15,12 +15,13 @@
 //! (quantizer-value lookup, quantizer-index resolution, and per-plane DC/AC
 //! composition), the § 7.15.2 1D inverse transforms (§ 7.15.2.1 kernel,
 //! § 7.15.2.2 Walsh-Hadamard, and § 7.15.2.3 identity), the § 7.14.3
-//! residual-addition step, and the § 7.15.4.1 2D matrix transform core; it does
-//! not implement byte-consuming decode, full reconstruction, the § 7.14.4
-//! dequantization process, the § 7.15.3 secondary transform, the § 7.15.4 outer
-//! orchestration (`Transform_Shift`, `get_transform_1d_type`, the lossless IDTX
-//! shortcut, DPCM, and sample duplication), runtime CLI Y4M output, or full AV2
-//! reference refresh semantics.
+//! residual-addition step, the § 7.15.4.1 2D matrix transform core, and the
+//! § 7.15.4 outer orchestration (the lossless IDTX shortcut, the DPCM cumulative
+//! sum, and adjusted-size sample duplication over caller-resolved transform
+//! selections); it does not implement byte-consuming decode, full
+//! reconstruction, the § 7.14.4 dequantization process, the § 7.15.3 secondary
+//! transform, the § 7.15.4 `Transform_Shift` / `get_transform_1d_type`
+//! derivations, runtime CLI Y4M output, or full AV2 reference refresh semantics.
 //!
 //! The ownership model is view-first ([`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)):
 //! owned plane/frame/workspace storage hands out borrowed [`PlaneRef`]/[`PlaneMut`]
@@ -48,7 +49,8 @@
 //! `RECON-INVERSE-TRANSFORM-1D`,
 //! `RECON-INVERSE-TRANSFORM-MATRIX-FREE`,
 //! `RECON-RESIDUAL-ADDITION`,
-//! `RECON-INVERSE-TRANSFORM-2D`.
+//! `RECON-INVERSE-TRANSFORM-2D`,
+//! `RECON-INVERSE-TRANSFORM-2D-OUTER`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
@@ -69,6 +71,7 @@ mod intra_ibp_dc;
 mod intra_smooth;
 mod inverse_transform;
 mod inverse_transform_2d;
+mod inverse_transform_2d_outer;
 mod plane;
 mod reconstruct;
 mod reference;
@@ -116,6 +119,9 @@ pub use inverse_transform::{
     inverse_walsh_hadamard,
 };
 pub use inverse_transform_2d::{InverseTransform2d, InverseTransform2dDim, inverse_transform_2d};
+pub use inverse_transform_2d_outer::{
+    DpcmDirection, InverseTransform2dOuter, inverse_transform_2d_outer,
+};
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::reconstruct_add_residual;
 pub use reference::{
