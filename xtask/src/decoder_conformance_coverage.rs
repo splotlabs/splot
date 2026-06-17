@@ -369,6 +369,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "inverse-transform-2d-outer",
             "dequant-process",
             "dequant-qm-weight",
+            "transform-shift-lookup",
             "residual-addition",
         ],
         feature_ids: &[
@@ -381,6 +382,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "RECON-INVERSE-TRANSFORM-2D-OUTER",
             "RECON-DEQUANT-PROCESS",
             "RECON-DEQUANT-QM-WEIGHT",
+            "RECON-TRANSFORM-SHIFT-LOOKUP",
             "RECON-RESIDUAL-ADDITION",
         ],
         status: "partial",
@@ -388,7 +390,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         fuzz_targets: &[],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Scheduler-free splot-recon primitives exist for the workspace allocation, the §7.14.2 dequantization quantizer functions, all three §7.15.2 1D inverse transforms (kernel, Walsh-Hadamard, identity), the §7.15.4.1 2D matrix transform core (row-then-column passes), the §7.15.4 outer 2D inverse transform orchestration (the Lossless IDTX shortcut, the DPCM cumulative sum, and adjusted-size sample duplication over caller-resolved transform selections), the §7.14.4 dequantization process (per-coefficient dequant arithmetic, the non-quantization-matrix transform-block helper, and the built-in Quantizer_Matrix step-2 weighting over caller-resolved quantizers), and the §7.14.3 residual-addition step. The §7.14.4 useQm/UserQm gating and shift derivation, the §7.15.3 secondary transform, the §7.15.4 Transform_Shift and get_transform_1d_type derivations, the coefficient entropy decode that produces Quant, deblocking, CDEF, CCSO, loop restoration, and GDF are not implemented, and none of the primitives are wired as runtime decode stages.",
+        notes: "Scheduler-free splot-recon primitives exist for the workspace allocation, the §7.14.2 dequantization quantizer functions, all three §7.15.2 1D inverse transforms (kernel, Walsh-Hadamard, identity), the §7.15.4.1 2D matrix transform core (row-then-column passes), the §7.15.4 outer 2D inverse transform orchestration (the Lossless IDTX shortcut, the DPCM cumulative sum, and adjusted-size sample duplication over caller-resolved transform selections), the §7.14.4 dequantization process (per-coefficient dequant arithmetic, the non-quantization-matrix transform-block helper, and the built-in Quantizer_Matrix step-2 weighting over caller-resolved quantizers), the §7.15.4 Transform_Shift row and column down-shift lookup keyed on the original log2 shape, and the §7.14.3 residual-addition step. The §7.14.4 useQm/UserQm gating and shift derivation, the §7.15.3 secondary transform, the §7.15.4 get_transform_1d_type derivation, the coefficient entropy decode that produces Quant, deblocking, CDEF, CCSO, loop restoration, and GDF are not implemented, and none of the primitives are wired as runtime decode stages.",
     },
     CoverageRow {
         id: "output-film-grain-and-reference-update",

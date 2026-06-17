@@ -74,7 +74,7 @@ one-sided and middle directional-angle prepared edges to those primitives.
 Luma/MRL/IDIF/full-dispatch directional angles, full edge preparation,
 data-driven prediction, general directional-angle IBP, full CfL, full
 `predict_intra()` dispatch, the full dequantization process, the § 7.15.4
-`Transform_Shift` / `get_transform_1d_type` derivations, runtime decode output,
+`get_transform_1d_type` derivation, runtime decode output,
 output scheduling, and AV2 reference refresh semantics remain unimplemented. The
 full AV2 § 7.14.2 dequantization quantizer functions are available as
 scheduler-free `splot-recon` primitives: the quantizer-value lookup core
@@ -105,11 +105,14 @@ non-quantization-matrix transform-block helper, over caller-resolved quantizers.
 The § 7.14.4 step-2 quantization-matrix weighting
 (`quantization_matrix_weight` / `qm_weighted_quantizer`; `RECON-DEQUANT-QM-WEIGHT`)
 is also available, consuming the built-in § 9.4 `Quantizer_Matrix` (relocated to
-the dependency-free `splot-tables` crate). The § 7.14.4 `useQm` / `UserQm` gating
+the dependency-free `splot-tables` crate). The § 7.15.4 `Transform_Shift` row and
+column down-shift lookup (`transform_shift`; `RECON-TRANSFORM-SHIFT-LOOKUP`), the
+first of the caller-resolved inverse-transform parameter derivations, is available
+too: it returns `(rowShift, colShift)` keyed on the original `(log2W, log2H)` shape
+from the verbatim § 7.15.4 constant table. The § 7.14.4 `useQm` / `UserQm` gating
 and `shift` derivation, the rest of the § 7.14.3 reconstruct process, the § 7.15.3
-secondary transform, the § 7.15.4 `Transform_Shift` / `get_transform_1d_type`
-derivations, and the coefficient entropy decode that produces `Quant` remain
-unimplemented.
+secondary transform, the § 7.15.4 `get_transform_1d_type` derivation, and the
+coefficient entropy decode that produces `Quant` remain unimplemented.
 `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
 `splot-decode`, then call deterministic reconstruction primitives.
