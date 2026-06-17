@@ -6601,6 +6601,69 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-INVERSE-TRANSFORM-1D"
+name = "Kernel-based 1D inverse transform"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["3", "4.8", "7.15.2.1", "7.15.4.1", "9.6"]
+sources = [
+    "docs/spec/av2/1.0.0/03-symbols.md#s-3",
+    "docs/spec/av2/1.0.0/04-conventions.md#s-4-8",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-4-1",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/inverse_transform.rs"
+openspec_change = "recon-inverse-transform-1d"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds the scheduler-free `splot-recon` AV2 §7.15.2.1 kernel-based 1D inverse transform `inverse_transform_1d`, the first residual-path transform brick and the first consumer of the shared `splot-tables` crate (INFRA-SHARED-SPEC-TABLES, so this row adds the `splot-recon -> splot-tables` dependency edge). It matrix-multiplies the input coefficients by the size-and-type §9.6 kernel (`splot_tables::tables::transform_1d`), then applies §4.8 `Round2` and the §7.15.2.1 `colTx`-dependent `Clip3(-(1<<(BitDepth+(colTx?0:7))), ...-1, .)`. The `InverseTransform1dType` enum models the §7.15.4.1 Table 7.1 kernel types Dct(0)/Adst(2)/Fdst(3)/Ddtx(4)/Fddt(5); IDT(1) is the separate §7.15.2.3 identity transform and is not represented. The spec dispatch is reproduced exactly: length 4 routes Fdst/Ddtx/Fddt to the FDST kernel (the spec `else`), length 32 uses the DCT kernel for every type (AV2 defines no other length-32 1D kernel), and Fddt indexes the DDTX kernel column in reverse. Accumulation uses `i64` intermediates (no overflow for in-range dequantized inputs) and the `Clip3` bound keeps outputs in `i32`. Typed `ReconError::{InvalidInverseTransformSize, InverseTransformLengthMismatch}` reject lengths other than 4/8/16/32 and output/source length mismatches. Completeness is proven by a DC-only flat-field vector, a single-coefficient kernel-row vector, the §4.8 arithmetic-downshift, both `colTx` clamp ranges, the Fddt-is-reversed-Ddtx property, the length-4 FDST fallback, the length-32 DCT-for-every-type property, and the two typed-error cases. This row does not implement the §7.15.2.2 Walsh-Hadamard transform, the §7.15.2.3 identity transform, the §7.15.3 secondary transform, the §7.15.4 2D inverse transform orchestration (`Transform_Shift`, `get_transform_1d_type`, row/column passes, DPCM, sample duplication), dequantization, residual addition, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler use inside `splot-recon`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/inverse_transform.rs::tests::dc_only_dct4_is_flat",
+    "crates/splot-recon/src/inverse_transform.rs::tests::dct4_single_coefficient_matches_kernel_row",
+    "crates/splot-recon/src/inverse_transform.rs::tests::round2_applies_arithmetic_downshift",
+    "crates/splot-recon/src/inverse_transform.rs::tests::col_tx_flag_selects_clamp_range",
+    "crates/splot-recon/src/inverse_transform.rs::tests::fddt_is_the_column_reverse_of_ddtx",
+    "crates/splot-recon/src/inverse_transform.rs::tests::length_4_maps_fdst_ddtx_and_fddt_to_the_fdst_kernel",
+    "crates/splot-recon/src/inverse_transform.rs::tests::length_32_uses_dct_kernel_for_every_type",
+    "crates/splot-recon/src/inverse_transform.rs::tests::rejects_unsupported_size",
+    "crates/splot-recon/src/inverse_transform.rs::tests::rejects_output_length_mismatch",
+    "crates/splot-recon/src/inverse_transform.rs::tests::round2_matches_spec_and_is_total_for_large_shift",
+]
+commands = [
+    "cargo test -p splot-recon inverse_transform --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "RUSTDOCFLAGS=\"-D warnings\" cargo doc -p splot-recon --no-deps --locked",
+    "cargo xtask check-source-lines",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-concurrency-policy",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/inverse_transform.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+    "crates/splot-recon/Cargo.toml",
+]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
 name = "Decoded frame and plane model contract documentation"
 category = "docs"

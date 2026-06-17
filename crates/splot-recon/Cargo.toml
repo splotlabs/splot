@@ -17,3 +17,4 @@ workspace = true
 
 [dependencies]
 sha2.workspace = true
+splot-tables.workspace = true

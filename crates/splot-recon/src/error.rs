@@ -449,6 +449,18 @@ pub enum ReconError {
         /// Store capacity used for the bounds check.
         capacity: usize,
     },
+    /// An inverse transform was given an unsupported 1D length.
+    InvalidInverseTransformSize {
+        /// Supplied source length.
+        size: usize,
+    },
+    /// An inverse transform output length did not match the source length.
+    InverseTransformLengthMismatch {
+        /// Source coefficient count.
+        src_len: usize,
+        /// Output buffer length.
+        out_len: usize,
+    },
 }
 
 impl fmt::Display for ReconError {
@@ -864,6 +876,14 @@ impl fmt::Display for ReconError {
             Self::ReferenceRefreshMaskOutOfBounds { mask, capacity } => write!(
                 f,
                 "reference refresh mask 0x{mask:08x} selects a slot outside store capacity {capacity}"
+            ),
+            Self::InvalidInverseTransformSize { size } => write!(
+                f,
+                "unsupported inverse transform length {size}; expected 4, 8, 16, or 32"
+            ),
+            Self::InverseTransformLengthMismatch { src_len, out_len } => write!(
+                f,
+                "inverse transform output length {out_len} does not match source length {src_len}"
             ),
         }
     }

@@ -299,7 +299,12 @@ name = "splot-recon"
 version = "0.0.0"
 dependencies = [
  "sha2",
+ "splot-tables",
 ]
+
+[[package]]
+name = "splot-tables"
+version = "0.0.0"
 
 [[package]]
 name = "splot-validate"
