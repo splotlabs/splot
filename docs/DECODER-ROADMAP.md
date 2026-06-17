@@ -115,10 +115,15 @@ row and column transform-type derivation (`get_transform_1d_type`;
 `RECON-GET-TRANSFORM-1D-TYPE`) is also available: it returns the
 `Transform_1d_Type[PlaneTxType][dir]` selection (as the `InverseTransform2dDim`
 the 2D transform consumes), with the `useDdt` `DDTX`/`FDDT` substitution. The
-§ 7.14.4 `useQm` / `UserQm` gating and `shift` derivation, the rest of the
-§ 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the § 7.15.4
-DPCM-direction selection and combined transform-parameter resolve helper, and the
-coefficient entropy decode that produces `Quant` remain unimplemented.
+§ 5.20.7.30 `get_scan` coefficient scan order (`coefficient_scan_order`;
+`RECON-COEFFICIENT-SCAN-ORDER`) is available too: it writes the coefficient scan
+order for a `w * h` block (the anti-diagonal 2D scan and the row/column raster
+scans), a prerequisite for the coefficient decode loop and § 7.14.4 coefficient
+placement. The § 7.14.4 `useQm` / `UserQm` gating and `shift` derivation, the rest
+of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the
+§ 7.15.4 DPCM-direction selection and combined transform-parameter resolve helper,
+`get_tx_class`, and the coefficient entropy decode that produces `Quant` remain
+unimplemented.
 `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
 `splot-decode`, then call deterministic reconstruction primitives.

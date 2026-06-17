@@ -7117,6 +7117,57 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-COEFFICIENT-SCAN-ORDER"
+name = "Coefficient scan order get_scan"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.30"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/coefficient_scan.rs"
+openspec_change = "recon-coefficient-scan-order"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds `coefficient_scan_order(w, h, class, out)` to a new `splot-recon` `coefficient_scan` module, implementing the AV2 §5.20.7.30 `get_scan(txSz, txClass)` function. It writes the coefficient scan order (each `out[c]` is the flattened `y*w + x` position of the c-th scanned coefficient) for the three transform classes: `TX_CLASS_VERT` -> row-major raster (identity), `TX_CLASS_HORIZ` -> column-major (transpose), and `TX_CLASS_2D` -> the anti-diagonal scan (each anti-diagonal `x+y` traversed from high-y/low-x to low-y/high-x), translated verbatim from the spec algorithm (the 2D branch uses signed `i32` x/y to mirror the spec `y -= 1` / `y < 0` logic that underflows in `usize`). The block shape is caller-resolved (`w = Min(Tx_Width[txSz], 32)` / `h = Min(Tx_Height[txSz], 32)`, each 4/8/16/32), consistent with the §7.15 transforms, since `splot-recon` cannot reach `splot-core`'s §9.2 tables; positions never exceed `w*h-1 <= 1023` so `out` is `&mut [u16]`. A new `TransformClass` enum names the spec `txClass`; typed `ReconError::InvalidScanShape` / `ReconError::ScanLengthMismatch` reject bad shapes/lengths (total, no panic). This is a self-contained pure prerequisite for the §5.20.7 coefficient decode loop and the §7.14.4 coefficient placement; it is not yet wired into a decode path (no caller exists), so it is no-output-change. It does not implement `get_tx_class` (PlaneTxType -> txClass), the coefficient decode loop, the §7.15.3 secondary-transform `Stx_Scan`, or any runtime decode output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/coefficient_scan.rs::tests::two_d_4x4_matches_the_spec_anti_diagonal_scan",
+    "crates/splot-recon/src/coefficient_scan.rs::tests::vertical_scan_is_row_major_identity",
+    "crates/splot-recon/src/coefficient_scan.rs::tests::horizontal_scan_is_column_major_transpose",
+    "crates/splot-recon/src/coefficient_scan.rs::tests::every_shape_and_class_is_a_valid_permutation",
+    "crates/splot-recon/src/coefficient_scan.rs::tests::rejects_invalid_shape_and_length",
+]
+commands = [
+    "cargo test -p splot-recon coefficient_scan --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/coefficient_scan.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
 name = "Decoded frame and plane model contract documentation"
 category = "docs"
