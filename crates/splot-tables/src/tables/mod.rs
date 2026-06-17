@@ -11,13 +11,7 @@
 //! One submodule per § 9 subsection; see each module's docs for the
 //! generating attachment and spec citation.
 
-/// AV2 § 9.3 — Default CDF tables.
-pub mod cdf;
-/// AV2 § 9.2 — Conversion tables.
-pub mod conversion;
-/// AV2 § 9.8 — Loop restoration tables.
-pub mod loop_restoration;
-/// AV2 § 9.4 — Quantizer matrix tables.
-pub mod quantizer;
-/// AV2 § 9.5 — Warp filter tables.
-pub mod warp_filter;
+/// AV2 § 9.7 — Secondary transform tables.
+pub mod secondary_transform;
+/// AV2 § 9.6 — 1D transform tables.
+pub mod transform_1d;
