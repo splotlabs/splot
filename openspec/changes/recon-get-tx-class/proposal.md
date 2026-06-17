@@ -25,8 +25,9 @@ type — and is verifiable now against the spec definition.
 
 Non-goals:
 
-- No §8.3.1 transform-type parsing that produces `PlaneTxType`, no coefficient
-  decode loop, no wiring into a decode path, and no runtime decode output.
+- No §5.20.7.29 `compute_tx_type` transform-type computation that produces
+  `PlaneTxType`, no coefficient decode loop, no wiring into a decode path, and no
+  runtime decode output.
 - No new fixture and no output change — no caller exists yet.
 - No reconstruction expansion, hashes, Y4M, reference refresh, public API beyond
   the new function, AVM/dav2d invocation, or scheduler change.

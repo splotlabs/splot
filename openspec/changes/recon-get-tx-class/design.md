@@ -24,8 +24,8 @@ remaining selector that connects a transform type to its scan.
   `H_ADST` (13), `H_FLIPADST` (15) (`03-symbols.md` `TX_TYPE` values). All other
   values — `DCT_DCT`..`IDTX` (0..9) and any out-of-range input — take the spec
   `else` branch to `TX_CLASS_2D`. The literals are written inline with the spec
-  symbol names in comments rather than introducing a `TX_TYPE` enum, which is a
-  §8.3.1 parsing concern not yet modeled.
+  symbol names in comments rather than introducing a `TX_TYPE` enum, which belongs
+  with the §5.20.7.29 `compute_tx_type` producer not yet modeled.
 
 - **Self-contained, no-output-change.** No decode path calls it yet, so this is
   additive with no behavioral change. Correctness is proven by a unit test that

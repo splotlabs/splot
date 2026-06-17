@@ -106,8 +106,10 @@ pub fn coefficient_scan_order(
     Ok(())
 }
 
-/// Returns the AV2 `get_tx_class(txType)` transform class for a `PlaneTxType`
-/// (`08-parsing-process.md#s-8-3-2`): the vertical-only transforms map to
+/// Returns the AV2 § 8.3.2 `get_tx_class(txType)` transform class for a
+/// `PlaneTxType`
+/// ([`08-parsing-process.md`](../../../docs/spec/av2/1.0.0/08-parsing-process.md)
+/// `#s-8-3-2`): the vertical-only transforms map to
 /// [`TransformClass::Vertical`], the horizontal-only transforms to
 /// [`TransformClass::Horizontal`], and every other transform (including all 2D
 /// and identity transforms) to [`TransformClass::TwoD`].

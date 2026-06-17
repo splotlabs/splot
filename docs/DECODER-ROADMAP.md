@@ -126,7 +126,8 @@ transforms to `Vertical`/`Horizontal`, everything else to `TwoD`). The § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the
 § 7.15.4 DPCM-direction selection and combined transform-parameter resolve helper,
-the § 8.3.1 transform-type parsing that produces `PlaneTxType`, and the coefficient
+the § 5.20.7.29 `compute_tx_type` transform-type computation that produces
+`PlaneTxType`, and the coefficient
 entropy decode that produces `Quant` remain unimplemented.
 `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
