@@ -63,8 +63,8 @@ const QUANT_DELTA_MAX: i32 = 127;
 ///   that disagrees with the `qm_bit_map` set bits, an `is_default` vs `matrices` disagreement, a
 ///   transform / plane count / dimension / value-count mismatch, or a `0` coefficient); the `what`
 ///   label names the offending field.
-/// - [`WriteError::ValueOutOfRange`] from [`BitWriter::write_bits`] for a `qm_bit_map` that does not
-///   fit `f(15)` (a value the 15-bit reader could never have produced).
+/// - [`WriteError::ValueTooWide`] from [`BitWriter::write_bits`] for a `qm_bit_map` that does not fit
+///   `f(15)` (a value the 15-bit reader could never have produced).
 ///
 /// All checks run before any bit reaches `writer` (the body is drafted into a scratch and appended
 /// only on full success), so a rejected model leaves `writer` unchanged and the writer never panics.
