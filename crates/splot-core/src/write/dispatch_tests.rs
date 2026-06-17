@@ -248,48 +248,41 @@ mod tests {
     }
 
     // ===================================================================================
-    // Unimplemented stubs (>= 2 unwritten types)
+    // Unimplemented stub (1 unwritten type)
     // ===================================================================================
 
     #[test]
-    fn unimplemented_types_return_typed_stub_without_writing() {
-        // Build the unwritten payloads by parsing minimal OBU payloads via dispatch, then assert
-        // write_obu_payload returns Unimplemented with the matrix Feature ID and writes nothing.
+    fn unimplemented_quantization_matrix_returns_typed_stub_without_writing() {
+        // OBU_QUANTIZATION_MATRIX is the one remaining type without a body writer. Build it by
+        // parsing a minimal OBU payload via dispatch, then assert write_obu_payload returns
+        // Unimplemented with the matrix Feature ID and writes nothing.
 
         // OBU_QUANTIZATION_MATRIX (non-extensible): qm_bit_map(15) + chroma flag(1) + trailing.
         let qm_header = read_obu_header_from_slice(&[0x58], ByteOffset::new(0)).unwrap();
         let qm = reparse_payload(&qm_header, &[0x00, 0x00, 0x80]);
         assert_eq!(qm.feature_id(), "AV2-5.13-QUANTIZATION-MATRIX");
 
-        // OBU_LAYER_CONFIGURATION_RECORD (extensible, global xlayer 31): minimal global LCR
-        // (lcr_global_config_record_id=1, lcr_xlayer_map=1, all flags 0) then the OBU tail.
-        let lcr_header = read_obu_header_from_slice(&[0xC0, 0x1F], ByteOffset::new(0)).unwrap();
-        let lcr = reparse_payload(&lcr_header, &[0x20, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x40]);
-        assert_eq!(lcr.feature_id(), "AV2-5.8-LAYER-CONFIG-RECORD");
+        let mut writer = BitWriter::new();
+        let err = write_obu_payload(
+            &mut writer,
+            &qm,
+            qm_header.obu_type.is_extensible_obu(),
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, WriteError::Unimplemented { feature } if feature == qm.feature_id()),
+            "expected Unimplemented {{ {} }}, got {err:?}",
+            qm.feature_id()
+        );
+        assert_eq!(writer.bit_len(), 0, "no bits written for an unimplemented type");
 
-        for (payload, header) in [(&qm, &qm_header), (&lcr, &lcr_header)] {
-            let mut writer = BitWriter::new();
-            let err = write_obu_payload(
-                &mut writer,
-                payload,
-                header.obu_type.is_extensible_obu(),
-                &[],
-            )
-            .unwrap_err();
-            assert!(
-                matches!(err, WriteError::Unimplemented { feature } if feature == payload.feature_id()),
-                "expected Unimplemented {{ {} }}, got {err:?}",
-                payload.feature_id()
-            );
-            assert_eq!(writer.bit_len(), 0, "no bits written for an unimplemented type");
-
-            // write_complete_obu propagates the same stub and leaves the writer clean (no
-            // stray OBU-header byte).
-            let mut complete = BitWriter::new();
-            let cerr = write_complete_obu(&mut complete, header, payload, &[]).unwrap_err();
-            assert!(matches!(cerr, WriteError::Unimplemented { .. }));
-            assert_eq!(complete.bit_len(), 0, "no header byte written on reject");
-        }
+        // write_complete_obu propagates the same stub and leaves the writer clean (no stray
+        // OBU-header byte).
+        let mut complete = BitWriter::new();
+        let cerr = write_complete_obu(&mut complete, &qm_header, &qm, &[]).unwrap_err();
+        assert!(matches!(cerr, WriteError::Unimplemented { .. }));
+        assert_eq!(complete.bit_len(), 0, "no header byte written on reject");
     }
 
     // ===================================================================================

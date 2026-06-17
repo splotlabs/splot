@@ -45,7 +45,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-5.5-TEMPORAL-DELIMITER` | Temporal delimiter OBU syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/obu.rs` |
 | `AV2-5.6-MSDO` | Multistream decoder operation OBU syntax | normative | bitstream-syntax | done | done | done | partial | done | todo | done | done | pending | `crates/splot-core/src/hls.rs` |
 | `AV2-5.7-MULTI-FRAME-HEADER` | Multi-frame header OBU syntax | normative | bitstream-syntax | done | done | done | partial | done | todo | done | done | pending | `crates/splot-core/src/hls.rs` |
-| `AV2-5.8-LAYER-CONFIG-RECORD` | Layer configuration record OBU syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/layer_config_record.rs` |
+| `AV2-5.8-LAYER-CONFIG-RECORD` | Layer configuration record OBU syntax | normative | bitstream-syntax | done | done | done | partial | done | todo | done | done | pending | `crates/splot-core/src/headers/layer_config_record.rs` |
 | `AV2-5.8.1-LCR-GLOBAL-INFO` | LCR global info syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/headers/layer_config_record.rs` |
 | `AV2-5.8.2-LCR-LOCAL-INFO` | LCR local info syntax | normative | bitstream-syntax | done | done | done | done | todo | todo | done | done | pending | `crates/splot-core/src/headers/layer_config_record.rs` |
 | `AV2-5.8.3-LCR-AGGREGATE-INFO` | LCR aggregate info syntax | normative | bitstream-syntax | done | done | done | done | todo | todo | done | done | pending | `crates/splot-core/src/headers/layer_config_record.rs` |
