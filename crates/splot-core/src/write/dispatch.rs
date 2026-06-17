@@ -35,14 +35,14 @@
 //! [`ParsedObu::Padding`] (§ 5.16) owns its own tail (the `obu_padding_byte` run plus the
 //! `trailing_bits()` that begin at the last non-zero byte), so it is **not** followed by
 //! the generic extensible tail above — exactly as `dispatch_obu_payload` special-cases it.
-//! The twelve OBU types with a body writer ([`ParsedObu::TemporalDelimiter`],
+//! All fourteen OBU payload types now have a body writer ([`ParsedObu::TemporalDelimiter`],
 //! [`ParsedObu::SequenceHeader`], [`ParsedObu::Padding`], [`ParsedObu::MetadataShort`],
 //! [`ParsedObu::MetadataGroup`], [`ParsedObu::BufferRemovalTiming`], [`ParsedObu::Msdo`],
 //! [`ParsedObu::OperatingPointSet`], [`ParsedObu::ContentInterpretation`],
 //! [`ParsedObu::FilmGrain`], [`ParsedObu::AtlasSegment`], [`ParsedObu::MultiFrameHeader`],
-//! [`ParsedObu::LayerConfigurationRecord`]) are emitted; the remaining one variant has no body
-//! writer yet and returns [`WriteError::Unimplemented`] with the matrix Feature ID of its OBU type
-//! ([`ParsedObu::feature_id`]).
+//! [`ParsedObu::LayerConfigurationRecord`], [`ParsedObu::QuantizationMatrix`]) — the dispatch no
+//! longer returns [`WriteError::Unimplemented`] for any variant (the typed stub remains a valid
+//! [`WriteError`] for any future unmodeled type, but is unreachable from this dispatch).
 
 use crate::headers::padding::PaddingObu;
 use crate::obu::{ObuHeader, ParsedObu};
@@ -59,6 +59,7 @@ use crate::write::msdo::write_msdo;
 use crate::write::multi_frame_header::write_multi_frame_header;
 use crate::write::obu::write_obu_header;
 use crate::write::operating_point_set::write_operating_point_set;
+use crate::write::quantizer_matrix::write_quantizer_matrix;
 use crate::write::seq_tile::write_sequence_header;
 
 /// Writes one complete OBU — the § 5.2.2 header then the payload + tail — the inverse of a
@@ -323,13 +324,18 @@ fn write_obu_payload_inner(
             write_layer_config_record(&mut scratch, record, obu_xlayer_id)?;
             write_generic_tail(&mut scratch, is_extensible)?;
         }
-        // The one OBU type without a body writer yet: an honest typed stub naming the matrix
-        // Feature ID of the OBU type (ParsedObu::feature_id stays in sync with the model).
-        // bit_len() is unchanged because nothing was appended.
-        ParsedObu::QuantizationMatrix(_) => {
-            return Err(WriteError::Unimplemented {
-                feature: payload.feature_id(),
-            });
+        // § 5.13 / § 5.4.11: the quantizer-matrix body, then the generic tail (the OBU type is not
+        // extensible, so the tail is trailing_bits() only). The writer canonicalizes the lossy model
+        // to the long form (see write_quantizer_matrix). It carries no passthrough. This is the last
+        // OBU-type body writer, so the dispatch no longer returns Unimplemented for any variant.
+        ParsedObu::QuantizationMatrix(qm) => {
+            if !passthrough.is_empty() {
+                return Err(WriteError::NonCanonicalQuantizationMatrix {
+                    what: "passthrough",
+                });
+            }
+            write_quantizer_matrix(&mut scratch, qm)?;
+            write_generic_tail(&mut scratch, is_extensible)?;
         }
     }
     writer.append(&scratch)
