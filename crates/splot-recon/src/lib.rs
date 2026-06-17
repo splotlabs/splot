@@ -43,7 +43,8 @@
 //! `RECON-CURRENT-FRAME-WORKSPACE`,
 //! `RECON-DEQUANT-QUANTIZER-LOOKUP`,
 //! `RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION`,
-//! `RECON-INVERSE-TRANSFORM-1D`.
+//! `RECON-INVERSE-TRANSFORM-1D`,
+//! `RECON-INVERSE-TRANSFORM-MATRIX-FREE`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
@@ -104,7 +105,10 @@ pub use intra_ibp_dc::apply_intra_ibp_dc_rect;
 pub use intra_smooth::{
     IntraSmoothEdge, IntraSmoothEdges, IntraSmoothMode, predict_intra_smooth_rect_into,
 };
-pub use inverse_transform::{InverseTransform1dType, inverse_transform_1d};
+pub use inverse_transform::{
+    InverseTransform1dType, inverse_identity_transform, inverse_transform_1d,
+    inverse_walsh_hadamard,
+};
 pub use plane::{Plane, VisibleRows};
 pub use reference::{
     ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameReplacement, ReferenceFrameStore,

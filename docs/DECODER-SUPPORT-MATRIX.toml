@@ -758,6 +758,20 @@ local_reference_evidence = []
 notes = "Source-backed scheduler-free `splot-recon` AV2 §7.15.2.1 kernel-based 1D inverse transform, the first residual-path transform and first consumer of the shared `splot-tables` crate (adds the `splot-recon -> splot-tables` edge). Matrix-multiplies coefficients by the size-and-type §9.6 kernel (`splot_tables::tables::transform_1d`), then applies §4.8 `Round2` and the §7.15.2.1 `colTx`-dependent `Clip3`. `InverseTransform1dType` models the §7.15.4.1 Table 7.1 kernel types Dct/Adst/Fdst/Ddtx/Fddt (IDT is the separate identity transform). The spec dispatch is exact: length 4 routes Fdst/Ddtx/Fddt to the FDST kernel, length 32 uses DCT for every type, and Fddt reverses the DDTX kernel column. `i64` accumulation avoids overflow; typed `ReconError` rejects non-4/8/16/32 lengths and length mismatches. This row does not implement the §7.15.2.2 Walsh-Hadamard transform, §7.15.2.3 identity transform, §7.15.3 secondary transform, §7.15.4 2D inverse transform orchestration, dequantization, residual addition, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler state in `splot-recon`."
 
 [[row]]
+id = "inverse-transform-matrix-free"
+name = "Matrix-free 1D inverse transforms (Walsh-Hadamard, identity)"
+feature_id = "RECON-INVERSE-TRANSFORM-MATRIX-FREE"
+spec_sections = ["3", "4.8", "7.15.2.2", "7.15.2.3"]
+parser_source = "n/a"
+decode_module = "crates/splot-recon/src/inverse_transform.rs; crates/splot-recon/src/lib.rs"
+tier = "tier1-intra"
+status = "supported"
+self_contained_tests = ["crates/splot-recon/src/inverse_transform.rs::tests::walsh_hadamard_matches_spec_butterfly", "crates/splot-recon/src/inverse_transform.rs::tests::walsh_hadamard_applies_pre_shift", "crates/splot-recon/src/inverse_transform.rs::tests::identity_scales_rounds_and_clamps", "crates/splot-recon/src/inverse_transform.rs::tests::identity_clamp_uses_col_tx_range", "crates/splot-recon/src/inverse_transform.rs::tests::identity_rejects_output_length_mismatch", "cargo test -p splot-recon inverse_transform --locked", "cargo clippy -p splot-recon --all-targets --locked -- -D warnings", "cargo xtask check-source-lines", "cargo xtask check-dependency-direction", "cargo xtask check-decoder-support", "cargo xtask check-feature-status"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Source-backed scheduler-free `splot-recon` matrix-free §7.15.2 1D inverse transforms, extending the kernel transform module. `inverse_walsh_hadamard` implements §7.15.2.2 exactly (the 4-element lossless butterfly with a pre-scaling shift, no kernel and no Clip3, total via `i64`). `inverse_identity_transform` implements §7.15.2.3 (per-sample `Clip3(colTx bound, Round2(src*scale, shift))`, sharing the clamp-bound helper with §7.15.2.1; `scale` is the caller-supplied §7.15.4.1 get_identity_scale value), returning typed `ReconError` on a length mismatch. Both read no frame/segment/tile state and are panic-free. This row does not implement the §7.15.4.1 get_identity_scale derivation, the §7.15.3 secondary transform, the §7.15.4 2D inverse transform orchestration, dequantization, residual addition, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler state in `splot-recon`."
+
+[[row]]
 id = "recon-intra-prediction-fuzz"
 name = "Intra prediction and workspace fuzz entry point"
 feature_id = "CONF-RECON-INTRA-PREDICTION-FUZZ"
