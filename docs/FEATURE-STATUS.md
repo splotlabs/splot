@@ -42,7 +42,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO` | Sequence decoder model info syntax | normative | bitstream-syntax | done | done | done | partial | done | todo | done | done | pending | `crates/splot-core/src/headers/sequence.rs` |
 | `AV2-6.4-SEQUENCE-HEADER-SEMANTICS` | Sequence header OBU semantics | normative | validator-check | done | done | done | partial | todo | todo | partial | done | pending | `crates/splot-validate/src/checks/mod.rs` |
 | `AV2-6.2.2-OBU-HEADER-ACTIVATED-SEQUENCE-LIMITS` | OBU header layer ids constrained by activated sequence header | normative | validator-check | done | done | done | done | todo | todo | partial | done | pending | `crates/splot-validate/src/context` |
-| `AV2-5.5-TEMPORAL-DELIMITER` | Temporal delimiter OBU syntax | normative | bitstream-syntax | done | done | done | partial | todo | todo | done | done | pending | `crates/splot-core/src/obu.rs` |
+| `AV2-5.5-TEMPORAL-DELIMITER` | Temporal delimiter OBU syntax | normative | bitstream-syntax | done | done | done | partial | done | todo | done | done | pending | `crates/splot-core/src/obu.rs` |
 | `AV2-5.6-MSDO` | Multistream decoder operation OBU syntax | normative | bitstream-syntax | done | done | done | partial | done | todo | done | done | pending | `crates/splot-core/src/hls.rs` |
 | `AV2-5.7-MULTI-FRAME-HEADER` | Multi-frame header OBU syntax | normative | bitstream-syntax | done | done | done | partial | done | todo | done | done | pending | `crates/splot-core/src/hls.rs` |
 | `AV2-5.8-LAYER-CONFIG-RECORD` | Layer configuration record OBU syntax | normative | bitstream-syntax | done | done | done | partial | done | todo | done | done | pending | `crates/splot-core/src/headers/layer_config_record.rs` |
@@ -73,7 +73,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-5.13-QUANTIZATION-MATRIX` | Quantization matrix OBU syntax | normative | bitstream-syntax | done | done | done | partial | done | todo | done | done | pending | `crates/splot-core/src/headers/quantizer_matrix.rs` |
 | `AV2-5.14-FILM-GRAIN` | Film grain OBU syntax | normative | bitstream-syntax | done | done | done | partial | done | todo | done | done | pending | `crates/splot-core/src/headers/film_grain.rs` |
 | `AV2-5.15-CONTENT-INTERPRETATION` | Content interpretation OBU syntax | normative | bitstream-syntax | done | done | done | done | done | todo | done | done | pending | `crates/splot-core/src/headers/content_interpretation.rs` |
-| `AV2-5.16-PADDING` | Padding OBU syntax | normative | bitstream-syntax | done | done | done | done | todo | todo | done | done | pending | `crates/splot-core/src/headers/padding.rs` |
+| `AV2-5.16-PADDING` | Padding OBU syntax | normative | bitstream-syntax | done | done | done | done | done | todo | done | done | pending | `crates/splot-core/src/headers/padding.rs` |
 | `AV2-5.17-METADATA` | Metadata OBU syntax | normative | bitstream-syntax | done | done | done | partial | done | todo | done | done | pending | `crates/splot-core/src/headers/metadata.rs` |
 | `AV2-5.17.1-METADATA-UNIT` | Metadata unit syntax | normative | bitstream-syntax | done | done | done | partial | done | todo | done | done | pending | `crates/splot-core/src/headers/metadata.rs` |
 | `AV2-5.17.2-METADATA-SHORT` | Short metadata OBU syntax | normative | bitstream-syntax | done | done | done | partial | done | todo | done | done | pending | `crates/splot-core/src/headers/metadata.rs` |

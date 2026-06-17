@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask writer-coverage --format markdown --output docs/spec-coverage-writer.md`. Do not edit by hand.
 
-The AV2 bitstream **writer** (`splot-core::write`) surface: one row per writable syntax feature, plus every feature with a landed writer, with its `write` maturity. The writer is the inverse of the parser — `parse(write(parse(x))) == parse(x)` — byte-exact on the canonical subset and semantic (round-trip on the parsed model) for the canonicalizing writers (e.g. film grain and quantizer matrix, whose model is lossy versus the wire). The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); each row's per-writer round-trip details live in its matrix notes, and the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
+The AV2 bitstream **writer** (`splot-core::write`) surface: one row per writable `splot-core` syntax feature, plus every other `splot-core` feature with a landed writer, with its `write` maturity (writers in other crates, e.g. the `splot-recon` Y4M output, are out of scope). The writer is the inverse of the parser — `parse(write(parse(x))) == parse(x)` — byte-exact on the canonical subset and semantic (round-trip on the parsed model) for the canonicalizing writers (e.g. film grain and quantizer matrix, whose model is lossy versus the wire). The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); each row's per-writer round-trip details live in its matrix notes, and the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
 Matrix version 1. Last reviewed 2026-06-15. 88 writable feature(s).
 
@@ -10,9 +10,9 @@ Matrix version 1. Last reviewed 2026-06-15. 88 writable feature(s).
 
 | Write status | Features |
 |---|---:|
-| `done` | 58 |
+| `done` | 60 |
 | `partial` | 11 |
-| `todo` | 19 |
+| `todo` | 17 |
 
 | Section | Feature | Name | Write | Module |
 |---|---|---|:-:|---|
@@ -41,7 +41,7 @@ Matrix version 1. Last reviewed 2026-06-15. 88 writable feature(s).
 | 5.4.11, 6.4.11 | `AV2-5.4.11-USER-QM` | Sequence user quantization matrix syntax | todo | `crates/splot-core/src/headers/quantizer_matrix.rs` |
 | 5.4.12, 6.4.12 | `AV2-5.4.12-TIMING-INFO` | Sequence timing info syntax | todo | `crates/splot-core/src/headers/sequence.rs` |
 | 5.4.13, 6.4.13 | `AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO` | Sequence decoder model info syntax | done | `crates/splot-core/src/headers/sequence.rs` |
-| 5.5, 6.5 | `AV2-5.5-TEMPORAL-DELIMITER` | Temporal delimiter OBU syntax | todo | `crates/splot-core/src/obu.rs` |
+| 5.5, 6.5 | `AV2-5.5-TEMPORAL-DELIMITER` | Temporal delimiter OBU syntax | done | `crates/splot-core/src/obu.rs` |
 | 5.6, 6.6 | `AV2-5.6-MSDO` | Multistream decoder operation OBU syntax | done | `crates/splot-core/src/hls.rs` |
 | 5.7, 6.7 | `AV2-5.7-MULTI-FRAME-HEADER` | Multi-frame header OBU syntax | done | `crates/splot-core/src/hls.rs` |
 | 5.8, 6.8 | `AV2-5.8-LAYER-CONFIG-RECORD` | Layer configuration record OBU syntax | done | `crates/splot-core/src/headers/layer_config_record.rs` |
@@ -72,7 +72,7 @@ Matrix version 1. Last reviewed 2026-06-15. 88 writable feature(s).
 | 5.13, 6.12 | `AV2-5.13-QUANTIZATION-MATRIX` | Quantization matrix OBU syntax | done | `crates/splot-core/src/headers/quantizer_matrix.rs` |
 | 5.14, 5.18.10.2, 6.13, 6.17.10.2 | `AV2-5.14-FILM-GRAIN` | Film grain OBU syntax | done | `crates/splot-core/src/headers/film_grain.rs` |
 | 5.15, 6.14 | `AV2-5.15-CONTENT-INTERPRETATION` | Content interpretation OBU syntax | done | `crates/splot-core/src/headers/content_interpretation.rs` |
-| 5.16, 6.15 | `AV2-5.16-PADDING` | Padding OBU syntax | todo | `crates/splot-core/src/headers/padding.rs` |
+| 5.16, 6.15 | `AV2-5.16-PADDING` | Padding OBU syntax | done | `crates/splot-core/src/headers/padding.rs` |
 | 5.17, 6.16 | `AV2-5.17-METADATA` | Metadata OBU syntax | done | `crates/splot-core/src/headers/metadata.rs` |
 | 5.17.1, 6.16.1 | `AV2-5.17.1-METADATA-UNIT` | Metadata unit syntax | done | `crates/splot-core/src/headers/metadata.rs` |
 | 5.17.2, 6.16.2 | `AV2-5.17.2-METADATA-SHORT` | Short metadata OBU syntax | done | `crates/splot-core/src/headers/metadata.rs` |

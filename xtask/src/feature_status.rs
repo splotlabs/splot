@@ -664,8 +664,10 @@ fn writer_coverage_markdown(matrix: &Matrix) -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "The AV2 bitstream **writer** (`splot-core::write`) surface: one row per writable syntax \
-         feature, plus every feature with a landed writer, with its `write` maturity. The writer is \
+        "The AV2 bitstream **writer** (`splot-core::write`) surface: one row per writable `splot-core` \
+         syntax feature, plus every other `splot-core` feature with a landed writer, with its `write` \
+         maturity (writers in other crates, e.g. the `splot-recon` Y4M output, are out of scope). The \
+         writer is \
          the inverse of the parser — `parse(write(parse(x))) == parse(x)` — byte-exact on the canonical \
          subset and semantic (round-trip on the parsed model) for the canonicalizing writers (e.g. film \
          grain and quantizer matrix, whose model is lossy versus the wire). The canonical status source \
@@ -1339,6 +1341,10 @@ impl Checker {
     fn check_generated_doc(&mut self, rel_path: &str, expected: &str, regen: &str) -> Result<()> {
         let path = self.root.join(rel_path);
         if !path.exists() {
+            // These are committed, referenced artifacts: a missing one is drift too (a deleted doc
+            // must not slip the guard), so flag it rather than silently passing.
+            self.problems
+                .push(format!("{rel_path} is missing; regenerate with `{regen}`"));
             return Ok(());
         }
         let actual = std::fs::read_to_string(&path)

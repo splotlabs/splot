@@ -1237,14 +1237,14 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Payload syntax and validator state effect for temporal-unit boundaries. The locally-decidable temporal-delimiter rules have landed: §6.2.2 obu_xlayer_id == GLOBAL_XLAYER_ID and base-layer obu_tlayer_id/obu_mlayer_id == 0 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2, lines 201-214; obu-header/global-xlayer-required and obu-header/base-layer-only-types) and the §6.2.3 empty payload trailing_bits() tail. §6.5 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-5, lines 1318-1320) defines only the SeenFrameHeader frame-unit state variable. Residual: the temporal-delimiter's SeenFrameHeader reset and temporal-unit boundary effect (global TD, prefix-OBU ordering, ascending-xlayer coded-extended-layer-unit ordering) are modeled by the temporal-unit state machine and owned by AV2-7.3.7-TEMPORAL-UNIT-ORDER. Groundwork note: the §6.5 SeenFrameHeader frame-unit state has a structural analogue now that frame-unit-segmentation segments coded frame units per layer (crates/splot-validate/src/frame_unit.rs FrameUnitSegmenter) — the segmenter knows when a coded frame's first OBU begins a frame unit (the SeenFrameHeader set point), which the SeenFrameHeader-reset half of this row needs; the precise §6.5 reset semantics stay blocked on the §5.19 tile_group_obu() parser (AV2-5.19-TILE-GROUP), which sets/clears SeenFrameHeader at the frame-header / frame-header-copy level."
+notes = "Payload syntax and validator state effect for temporal-unit boundaries. The locally-decidable temporal-delimiter rules have landed: §6.2.2 obu_xlayer_id == GLOBAL_XLAYER_ID and base-layer obu_tlayer_id/obu_mlayer_id == 0 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2, lines 201-214; obu-header/global-xlayer-required and obu-header/base-layer-only-types) and the §6.2.3 empty payload trailing_bits() tail. §6.5 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-5, lines 1318-1320) defines only the SeenFrameHeader frame-unit state variable. Residual: the temporal-delimiter's SeenFrameHeader reset and temporal-unit boundary effect (global TD, prefix-OBU ordering, ascending-xlayer coded-extended-layer-unit ordering) are modeled by the temporal-unit state machine and owned by AV2-7.3.7-TEMPORAL-UNIT-ORDER. Groundwork note: the §6.5 SeenFrameHeader frame-unit state has a structural analogue now that frame-unit-segmentation segments coded frame units per layer (crates/splot-validate/src/frame_unit.rs FrameUnitSegmenter) — the segmenter knows when a coded frame's first OBU begins a frame unit (the SeenFrameHeader set point), which the SeenFrameHeader-reset half of this row needs; the precise §6.5 reset semantics stay blocked on the §5.19 tile_group_obu() parser (AV2-5.19-TILE-GROUP), which sets/clears SeenFrameHeader at the frame-header / frame-header-copy level. WRITER landed (obu-writer-dispatch): the complete-OBU dispatch's ParsedObu::TemporalDelimiter arm (crates/splot-core/src/write/dispatch.rs) emits the §5.5 empty payload — no body and no tail (finish_obu_payload returns early for an empty payload) — so an OBU_TEMPORAL_DELIMITER round-trips through write_complete_obu; there is nothing else to serialize, so the writer is complete."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "partial"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -1252,8 +1252,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/obu.rs::tests", "crates/splot-validate/src/validator/tests/hls_syntax.rs::hls_duplicate_temporal_delimiter_is_flagged"]
-commands = ["cargo test -p splot-core obu", "cargo test -p splot-validate hls"]
+tests = ["crates/splot-core/src/obu.rs::tests", "crates/splot-core/src/write/dispatch_roundtrip_tests.rs::tests::temporal_delimiter_payload_round_trips", "crates/splot-validate/src/validator/tests/hls_syntax.rs::hls_duplicate_temporal_delimiter_is_flagged"]
+commands = ["cargo test -p splot-core obu", "cargo test -p splot-core write::dispatch", "cargo test -p splot-validate hls"]
 fixtures = ["tests/fixtures/conformant.av2"]
 diagnostics = ["obu-order/duplicate-temporal-delimiter", "obu-order/temporal-unit-missing-delimiter"]
 
@@ -2267,14 +2267,14 @@ openspec_change = "metadata-padding-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "medium"
-notes = "Needed for padding payload validation and ordering exceptions."
+notes = "Needed for padding payload validation and ordering exceptions. WRITER landed (obu-writer-dispatch): write_padding_payload (crates/splot-core/src/write/dispatch.rs) emits the §5.16 obu_padding_byte run (the opaque passthrough) then the trailing_bits() tail beginning at the last non-zero byte; the complete-OBU dispatch routes ParsedObu::Padding to it (padding owns its own tail), so an OBU_PADDING round-trips through write_complete_obu byte-exactly. Reject-before-write rejects a parser-unreachable trailing_len==0 with padding_len>0 (the §5.16 parser splits at the last non-zero byte)."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "done"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -2282,8 +2282,8 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/padding.rs::tests", "crates/splot-validate/src/validator/tests/qm_film_grain.rs::padding_all_zero_payload_is_flagged", "crates/splot-validate/src/validator/tests/qm_film_grain.rs::padding_invalid_trailing_bits_is_flagged"]
-commands = ["cargo test -p splot-core padding", "cargo test -p splot-validate padding"]
+tests = ["crates/splot-core/src/headers/padding.rs::tests", "crates/splot-core/src/write/dispatch_roundtrip_tests.rs::tests::padding_payload_round_trips", "crates/splot-validate/src/validator/tests/qm_film_grain.rs::padding_all_zero_payload_is_flagged", "crates/splot-validate/src/validator/tests/qm_film_grain.rs::padding_invalid_trailing_bits_is_flagged"]
+commands = ["cargo test -p splot-core padding", "cargo test -p splot-core write::dispatch", "cargo test -p splot-validate padding"]
 fixtures = ["tests/fixtures/padding.av2"]
 diagnostics = ["padding/all-zero-payload", "padding/invalid-trailing-bits"]
 
