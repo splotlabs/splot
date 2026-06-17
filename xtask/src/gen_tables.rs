@@ -2,8 +2,11 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! `cargo xtask gen-tables`: generate the AV2 § 9 additional tables
-//! (feature `AV2-9-ADDITIONAL-TABLES`) into `crates/splot-core/src/tables/` from
-//! the committed spec attachment `all_tables.h`.
+//! (feature `AV2-9-ADDITIONAL-TABLES`) from the committed spec attachment
+//! `all_tables.h`. Most modules are written into `crates/splot-core/src/tables/`;
+//! the § 9.6/§ 9.7 transform-kernel modules instead live in the dependency-free
+//! `crates/splot-tables/src/tables/` crate so `splot-recon` can use them without
+//! depending on `splot-core` (see [`output_dir_for`]).
 //!
 //! The attachment (`docs/spec/av2/1.0.0/attachments/all_tables.h`) is a verbatim,
 //! sha256-pinned copy of the spec's § 9 "additional tables" C header (see
@@ -46,8 +49,33 @@ const ATTACHMENT_REL: &str = "docs/spec/av2/1.0.0/attachments/all_tables.h";
 /// used to derive each table's owning module from the spec's own grouping.
 const MIRROR_SECTION_DIR: &str = "docs/spec/av2/1.0.0/09-additional-tables";
 
-/// Output directory (from the workspace root) for the generated table modules.
-const OUTPUT_DIR: &str = "crates/splot-core/src/tables";
+/// Output directory (from the workspace root) for the in-`splot-core` generated
+/// table modules.
+const CORE_TABLES_DIR: &str = "crates/splot-core/src/tables";
+
+/// Output directory for the shared transform-kernel table modules, in the
+/// dependency-free `splot-tables` crate.
+const SHARED_TABLES_DIR: &str = "crates/splot-tables/src/tables";
+
+/// Returns the output directory for a § 9 module. The § 9.6 1D transform and
+/// § 9.7 secondary transform kernel tables live in the shared `splot-tables`
+/// crate (so `splot-recon` can consume them without depending on `splot-core`);
+/// every other module stays in `splot-core`.
+fn output_dir_for(module: &str) -> &'static str {
+    match module {
+        "transform_1d" | "secondary_transform" => SHARED_TABLES_DIR,
+        _ => CORE_TABLES_DIR,
+    }
+}
+
+/// Every distinct generated-table output directory, in a deterministic order.
+const OUTPUT_DIRS: &[&str] = &[CORE_TABLES_DIR, SHARED_TABLES_DIR];
+
+/// Counts emitted module files (i.e. every generated file except the per-directory
+/// `mod.rs`).
+fn module_file_count(files: &BTreeMap<String, String>) -> usize {
+    files.keys().filter(|rel| !rel.ends_with("/mod.rs")).count()
+}
 
 /// The § 9 subsection modules, in spec order: `(module_file_stem, mirror_md, § N.M,
 /// human title)`. The `mirror_md` file is parsed to learn which tables belong to
@@ -168,21 +196,24 @@ pub fn run_gen_tables(root: &Path, check: bool) -> Result<()> {
                 Err(_) => drift.push(format!("missing: {rel}")),
             }
         }
-        // Also flag stray generated files that the generator would no longer emit.
-        let dir = root.join(OUTPUT_DIR);
-        if dir.is_dir() {
-            for entry in std::fs::read_dir(&dir)
-                .with_context(|| format!("failed to read {}", dir.display()))?
-            {
-                let entry = entry?;
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                        bail!("non-UTF-8 filename under {OUTPUT_DIR}: {}", path.display());
-                    };
-                    let rel = format!("{OUTPUT_DIR}/{name}");
-                    if !outputs.files.contains_key(&rel) {
-                        drift.push(format!("unexpected (would be removed): {rel}"));
+        // Also flag stray generated files that the generator would no longer
+        // emit, across every output directory.
+        for dir_rel in OUTPUT_DIRS {
+            let dir = root.join(dir_rel);
+            if dir.is_dir() {
+                for entry in std::fs::read_dir(&dir)
+                    .with_context(|| format!("failed to read {}", dir.display()))?
+                {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                            bail!("non-UTF-8 filename under {dir_rel}: {}", path.display());
+                        };
+                        let rel = format!("{dir_rel}/{name}");
+                        if !outputs.files.contains_key(&rel) {
+                            drift.push(format!("unexpected (would be removed): {rel}"));
+                        }
                     }
                 }
             }
@@ -198,32 +229,34 @@ pub fn run_gen_tables(root: &Path, check: bool) -> Result<()> {
         }
         eprintln!(
             "gen-tables --check: ok ({} module(s), {} table(s) generated, {} skipped)",
-            outputs.files.len() - 1, // minus mod.rs
+            module_file_count(&outputs.files),
             outputs.generated,
             outputs.skipped.len()
         );
         return Ok(());
     }
 
-    std::fs::create_dir_all(root.join(OUTPUT_DIR))
-        .with_context(|| format!("failed to create {OUTPUT_DIR}"))?;
-    // Remove stale generated modules first (a renamed/no-longer-emitted table group
-    // would otherwise survive every regeneration and keep --check failing until
-    // deleted by hand — codex review, PR #66).
-    for entry in std::fs::read_dir(root.join(OUTPUT_DIR))
-        .with_context(|| format!("failed to read {OUTPUT_DIR}"))?
-    {
-        let entry = entry.with_context(|| format!("failed to read an entry in {OUTPUT_DIR}"))?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                bail!("non-UTF-8 filename under {OUTPUT_DIR}: {}", path.display());
-            };
-            let rel = format!("{OUTPUT_DIR}/{name}");
-            if !outputs.files.contains_key(&rel) {
-                std::fs::remove_file(&path)
-                    .with_context(|| format!("failed to remove stale {rel}"))?;
-                eprintln!("gen-tables: removed stale {rel}");
+    for dir_rel in OUTPUT_DIRS {
+        std::fs::create_dir_all(root.join(dir_rel))
+            .with_context(|| format!("failed to create {dir_rel}"))?;
+        // Remove stale generated modules first (a renamed/no-longer-emitted table
+        // group would otherwise survive every regeneration and keep --check failing
+        // until deleted by hand — codex review, PR #66).
+        for entry in std::fs::read_dir(root.join(dir_rel))
+            .with_context(|| format!("failed to read {dir_rel}"))?
+        {
+            let entry = entry.with_context(|| format!("failed to read an entry in {dir_rel}"))?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                    bail!("non-UTF-8 filename under {dir_rel}: {}", path.display());
+                };
+                let rel = format!("{dir_rel}/{name}");
+                if !outputs.files.contains_key(&rel) {
+                    std::fs::remove_file(&path)
+                        .with_context(|| format!("failed to remove stale {rel}"))?;
+                    eprintln!("gen-tables: removed stale {rel}");
+                }
             }
         }
     }
@@ -233,7 +266,7 @@ pub fn run_gen_tables(root: &Path, check: bool) -> Result<()> {
     }
     eprintln!(
         "gen-tables: wrote {} module(s), {} table(s) generated.",
-        outputs.files.len() - 1,
+        module_file_count(&outputs.files),
         outputs.generated
     );
     if !outputs.skipped.is_empty() {
@@ -316,20 +349,21 @@ fn generate(root: &Path) -> Result<Outputs> {
     }
 
     let mut files: BTreeMap<String, String> = BTreeMap::new();
-    let mut emitted_modules: Vec<&Section> = Vec::new();
+    let mut emitted_by_dir: BTreeMap<&'static str, Vec<&Section>> = BTreeMap::new();
     for section in SECTIONS {
         let Some(decls) = by_module.get(section.module) else {
             continue;
         };
         let content = render_module(section, decls)?;
-        files.insert(format!("{OUTPUT_DIR}/{}.rs", section.module), content);
-        emitted_modules.push(section);
+        let dir = output_dir_for(section.module);
+        files.insert(format!("{dir}/{}.rs", section.module), content);
+        emitted_by_dir.entry(dir).or_default().push(section);
     }
 
-    files.insert(
-        format!("{OUTPUT_DIR}/mod.rs"),
-        render_mod_rs(&emitted_modules),
-    );
+    // One `mod.rs` per output directory, listing only that directory's modules.
+    for (dir, sections) in &emitted_by_dir {
+        files.insert(format!("{dir}/mod.rs"), render_mod_rs(sections));
+    }
 
     Ok(Outputs {
         files,

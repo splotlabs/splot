@@ -1116,6 +1116,7 @@ fn check_dependency_direction(root: &Path) -> Result<()> {
 const INTERNAL_DEP_RULES: &[(&str, &[&str])] = &[
     ("splot-core", &[]),
     ("splot-parallel", &[]),
+    ("splot-tables", &[]),
     ("splot-recon", &[]),
     (
         "splot-decode",
