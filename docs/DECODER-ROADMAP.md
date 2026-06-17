@@ -86,12 +86,14 @@ composition (`RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION`). All three § 7.15.2
 § 7.15.2.1 kernel-based transform (DCT/ADST/FDST/DDTX/FDDT over the shared
 `splot-tables` § 9.6 kernels; `RECON-INVERSE-TRANSFORM-1D`), and the § 7.15.2.2
 Walsh-Hadamard and § 7.15.2.3 identity transforms
-(`RECON-INVERSE-TRANSFORM-MATRIX-FREE`). The § 7.14.4 dequantization process
-with quantizer-matrix weighting, the § 7.14.3 reconstruct process, the § 7.15.3
-secondary transform, and the § 7.15.4 2D inverse transform orchestration (the
-`Transform_Shift`, `get_transform_1d_type`, and `get_identity_scale`
-derivations, row/column passes, DPCM, and sample duplication) remain
-unimplemented.
+(`RECON-INVERSE-TRANSFORM-MATRIX-FREE`). The § 7.14.3 residual-addition step
+(`Clip1(prediction + residual)`; `RECON-RESIDUAL-ADDITION`) is also available as
+a scheduler-free primitive. The § 7.14.4 dequantization process with
+quantizer-matrix weighting, the rest of the § 7.14.3 reconstruct process (the
+2D-transform invocation), the § 7.15.3 secondary transform, and the § 7.15.4 2D
+inverse transform orchestration (the `Transform_Shift`, `get_transform_1d_type`,
+and `get_identity_scale` derivations, row/column passes, DPCM, and sample
+duplication) remain unimplemented.
 `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
 `splot-decode`, then call deterministic reconstruction primitives.

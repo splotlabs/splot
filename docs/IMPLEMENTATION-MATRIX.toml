@@ -6721,6 +6721,61 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-RESIDUAL-ADDITION"
+name = "Reconstruct residual-addition step"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["4.7", "7.14.3"]
+sources = [
+    "docs/spec/av2/1.0.0/04-conventions.md#s-4-7",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-14-3",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/reconstruct.rs"
+openspec_change = "recon-residual-addition"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds the scheduler-free `splot-recon` AV2 §7.14.3 reconstruct residual-addition step `reconstruct_add_residual<T: ReconSample>(prediction, residual, bit_depth, out)`: each output is the §4.7 `Clip1(prediction[i] + residual[i])` = clamp to `0..=max_sample` for the active bit depth, matching `CurrFrame[plane][y+i][x+j] = Clip1(CurrFrame + Residual[i][j])`. It is independent of how the residual is produced (the §7.15.4 2D inverse transform that fills `Residual` is a separate row), validates the sample type against the bit depth and equal prediction/residual/output lengths (typed `ReconError`), and sums with `i64` intermediates so it is total and panic-free even for `i32` residual extremes; the `Clip1` bound keeps every written sample inside the validated storage type. Completeness is proven by a plain add vector, below-zero and above-max `Clip1` clamps, the 10-bit u16 path clamping to 1023, the `i32::MAX`/`i32::MIN` residual extremes, the narrow-sample-type rejection, and the length-mismatch rejection. This row does not implement the §7.15.4 2D inverse transform, the §7.14.4 dequantization process, the §7.15.3 secondary transform, the §7.14.3 DPCM adjustment, the lossless-conformance requirement, intra/inter prediction sample production, workspace integration, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler use inside `splot-recon`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/reconstruct.rs::tests::adds_residual_to_prediction",
+    "crates/splot-recon/src/reconstruct.rs::tests::clip1_clamps_below_zero_and_above_max",
+    "crates/splot-recon/src/reconstruct.rs::tests::ten_bit_uses_u16_and_clamps_to_1023",
+    "crates/splot-recon/src/reconstruct.rs::tests::is_total_for_extreme_residual",
+    "crates/splot-recon/src/reconstruct.rs::tests::rejects_sample_type_too_narrow_for_bit_depth",
+    "crates/splot-recon/src/reconstruct.rs::tests::rejects_length_mismatch",
+]
+commands = [
+    "cargo test -p splot-recon reconstruct --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "RUSTDOCFLAGS=\"-D warnings\" cargo doc -p splot-recon --no-deps --locked",
+    "cargo xtask check-source-lines",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/reconstruct.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
 name = "Decoded frame and plane model contract documentation"
 category = "docs"

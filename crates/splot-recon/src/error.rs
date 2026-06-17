@@ -461,6 +461,15 @@ pub enum ReconError {
         /// Output buffer length.
         out_len: usize,
     },
+    /// A reconstruct residual-addition call had mismatched buffer lengths.
+    ReconstructLengthMismatch {
+        /// Prediction sample count.
+        prediction_len: usize,
+        /// Residual sample count.
+        residual_len: usize,
+        /// Output buffer length.
+        out_len: usize,
+    },
 }
 
 impl fmt::Display for ReconError {
@@ -884,6 +893,14 @@ impl fmt::Display for ReconError {
             Self::InverseTransformLengthMismatch { src_len, out_len } => write!(
                 f,
                 "inverse transform output length {out_len} does not match source length {src_len}"
+            ),
+            Self::ReconstructLengthMismatch {
+                prediction_len,
+                residual_len,
+                out_len,
+            } => write!(
+                f,
+                "reconstruct length mismatch: prediction {prediction_len}, residual {residual_len}, output {out_len}"
             ),
         }
     }

@@ -772,6 +772,20 @@ local_reference_evidence = []
 notes = "Source-backed scheduler-free `splot-recon` matrix-free §7.15.2 1D inverse transforms, extending the kernel transform module. `inverse_walsh_hadamard` implements §7.15.2.2 exactly (the 4-element lossless butterfly with a pre-scaling shift, no kernel and no Clip3, total via `i64`). `inverse_identity_transform` implements §7.15.2.3 (per-sample `Clip3(colTx bound, Round2(src*scale, shift))`, sharing the clamp-bound helper with §7.15.2.1; `scale` is the caller-supplied §7.15.4.1 get_identity_scale value), returning typed `ReconError` on a length mismatch. Both read no frame/segment/tile state and are panic-free. This row does not implement the §7.15.4.1 get_identity_scale derivation, the §7.15.3 secondary transform, the §7.15.4 2D inverse transform orchestration, dequantization, residual addition, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler state in `splot-recon`."
 
 [[row]]
+id = "residual-addition"
+name = "Reconstruct residual-addition step"
+feature_id = "RECON-RESIDUAL-ADDITION"
+spec_sections = ["4.7", "7.14.3"]
+parser_source = "n/a"
+decode_module = "crates/splot-recon/src/reconstruct.rs; crates/splot-recon/src/lib.rs"
+tier = "tier1-intra"
+status = "supported"
+self_contained_tests = ["crates/splot-recon/src/reconstruct.rs::tests::adds_residual_to_prediction", "crates/splot-recon/src/reconstruct.rs::tests::clip1_clamps_below_zero_and_above_max", "crates/splot-recon/src/reconstruct.rs::tests::ten_bit_uses_u16_and_clamps_to_1023", "crates/splot-recon/src/reconstruct.rs::tests::is_total_for_extreme_residual", "crates/splot-recon/src/reconstruct.rs::tests::rejects_sample_type_too_narrow_for_bit_depth", "crates/splot-recon/src/reconstruct.rs::tests::rejects_length_mismatch", "cargo test -p splot-recon reconstruct --locked", "cargo clippy -p splot-recon --all-targets --locked -- -D warnings", "cargo xtask check-source-lines", "cargo xtask check-dependency-direction", "cargo xtask check-decoder-support", "cargo xtask check-feature-status"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Source-backed scheduler-free `splot-recon` AV2 §7.14.3 reconstruct residual-addition step `reconstruct_add_residual`: each output is §4.7 `Clip1(prediction[i] + residual[i])` (clamp to 0..=max_sample for the active bit depth), independent of how the residual is produced. Validates sample type against bit depth and equal prediction/residual/output lengths (typed `ReconError`), sums with `i64` intermediates so it is total and panic-free for `i32` residual extremes, and the `Clip1` bound keeps outputs inside the storage type. This row does not implement the §7.15.4 2D inverse transform, the §7.14.4 dequantization process, the §7.15.3 secondary transform, the DPCM adjustment, prediction sample production, workspace integration, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler state in `splot-recon`."
+
+[[row]]
 id = "recon-intra-prediction-fuzz"
 name = "Intra prediction and workspace fuzz entry point"
 feature_id = "CONF-RECON-INTRA-PREDICTION-FUZZ"
