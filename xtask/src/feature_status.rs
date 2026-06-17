@@ -7,6 +7,7 @@
 //! - `cargo xtask feature-status`       renders the matrix (table/json/markdown).
 //! - `cargo xtask check-feature-status` fails the build on drift.
 //! - `cargo xtask spec-coverage`        summarizes coverage.
+//! - `cargo xtask writer-coverage`      renders the writer coverage matrix.
 //!
 //! The schema and rules are documented in `docs/IMPLEMENTATION-MATRIX.schema.md`.
 
@@ -23,6 +24,8 @@ const MATRIX_PATH: &str = "docs/IMPLEMENTATION-MATRIX.toml";
 const STATUS_DOC_PATH: &str = "docs/FEATURE-STATUS.md";
 /// Repo-relative path of the generated per-spec-section coverage document.
 const COVERAGE_DOC_PATH: &str = "docs/SPEC-COVERAGE.md";
+/// Repo-relative path of the generated writer coverage document.
+const WRITER_COVERAGE_DOC_PATH: &str = "docs/spec-coverage-writer.md";
 /// Repo-relative path of the spec-mirror section index used to resolve links.
 const MIRROR_INDEX_PATH: &str = "docs/spec/av2/1.0.0/index.md";
 /// The only `matrix_version` this tool understands.
@@ -566,6 +569,154 @@ pub(crate) fn run_spec_coverage(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// `writer-coverage`
+// ---------------------------------------------------------------------------
+
+/// Implements `cargo xtask writer-coverage`.
+pub(crate) fn run_writer_coverage(
+    root: &Path,
+    format: CoverageFormat,
+    output: Option<PathBuf>,
+) -> Result<()> {
+    let matrix = load_matrix(root)?;
+    let report = match format {
+        CoverageFormat::Text => writer_coverage_text(&matrix),
+        CoverageFormat::Markdown => writer_coverage_markdown(&matrix),
+    };
+    if let Some(path) = output {
+        std::fs::write(&path, &report)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        eprintln!("writer-coverage: wrote {}", path.display());
+    } else {
+        print!("{report}");
+        if !report.ends_with('\n') {
+            println!();
+        }
+    }
+    Ok(())
+}
+
+/// The writable features: every `bitstream-syntax` feature whose `write` stage is in scope, plus every
+/// feature with a landed writer (`write` `done` / `partial`). Sorted by spec section then id so the
+/// rendered document is deterministic.
+fn writer_rows(matrix: &Matrix) -> Vec<&Feature> {
+    let mut rows: Vec<&Feature> = matrix
+        .feature
+        .iter()
+        .filter(|f| {
+            (f.kind == "bitstream-syntax" && f.status.write != "not-applicable")
+                || matches!(f.status.write.as_str(), "done" | "partial")
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        writer_section_sort_key(a)
+            .cmp(&writer_section_sort_key(b))
+            .then(a.id.cmp(&b.id))
+    });
+    rows
+}
+
+/// A numeric-aware sort key for a feature's first spec section (`"5.13"` -> `[5, 13]`); a
+/// non-numeric component (a lettered annex such as `"B"`) and a missing section both sort last.
+fn writer_section_sort_key(f: &Feature) -> (Vec<u32>, String) {
+    match f.spec_sections.first() {
+        Some(s) if !s.is_empty() => (
+            s.split('.')
+                .map(|p| p.parse().unwrap_or(u32::MAX))
+                .collect(),
+            s.clone(),
+        ),
+        _ => (vec![u32::MAX], String::new()),
+    }
+}
+
+/// A one-line-per-status text summary of the writer surface.
+fn writer_coverage_text(matrix: &Matrix) -> String {
+    let rows = writer_rows(matrix);
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for f in &rows {
+        *counts.entry(f.status.write.as_str()).or_insert(0) += 1;
+    }
+    let mut out = format!("writer coverage: {} writable feature(s)\n", rows.len());
+    for (status, n) in &counts {
+        let _ = writeln!(out, "  {status}: {n}");
+    }
+    out
+}
+
+/// Renders the deterministic markdown table used for `docs/spec-coverage-writer.md`.
+fn writer_coverage_markdown(matrix: &Matrix) -> String {
+    let rows = writer_rows(matrix);
+    let reviewed = matrix.last_reviewed.as_deref().unwrap_or("unknown");
+    let mut out = String::new();
+    let _ = writeln!(out, "# Writer coverage");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask writer-coverage \
+         --format markdown --output {WRITER_COVERAGE_DOC_PATH}`. Do not edit by hand."
+    );
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "The AV2 bitstream **writer** (`splot-core::write`) surface: one row per writable syntax \
+         feature, plus every feature with a landed writer, with its `write` maturity. The writer is \
+         the inverse of the parser — `parse(write(parse(x))) == parse(x)` — byte-exact on the canonical \
+         subset and semantic (round-trip on the parsed model) for the canonicalizing writers (e.g. film \
+         grain and quantizer matrix, whose model is lossy versus the wire). The canonical status source \
+         is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); each row's per-writer round-trip \
+         details live in its matrix notes, and the full per-feature ledger is \
+         [FEATURE-STATUS.md](./FEATURE-STATUS.md)."
+    );
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "Matrix version {}. Last reviewed {}. {} writable feature(s).",
+        matrix.matrix_version,
+        reviewed,
+        rows.len()
+    );
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "`write` legend: `done` written and round-trip-proven, `partial` in progress, `todo` not \
+         written yet, `pending` waiting on external proof, `blocked` blocked, `exp` experimental."
+    );
+    let _ = writeln!(out);
+
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for f in &rows {
+        *counts.entry(f.status.write.as_str()).or_insert(0) += 1;
+    }
+    let _ = writeln!(out, "| Write status | Features |");
+    let _ = writeln!(out, "|---|---:|");
+    for (status, n) in &counts {
+        let _ = writeln!(out, "| `{}` | {} |", abbrev(status), n);
+    }
+    let _ = writeln!(out);
+
+    let _ = writeln!(out, "| Section | Feature | Name | Write | Module |");
+    let _ = writeln!(out, "|---|---|---|:-:|---|");
+    for f in &rows {
+        let section = if f.spec_sections.is_empty() {
+            "—".to_string()
+        } else {
+            f.spec_sections.join(", ")
+        };
+        let _ = writeln!(
+            out,
+            "| {} | `{}` | {} | {} | `{}` |",
+            section,
+            f.id,
+            md_escape(&f.name),
+            abbrev(&f.status.write),
+            f.module
+        );
+    }
+    out
+}
+
 /// Counts features by a key projection, sorted by key.
 fn count_by<'a>(
     matrix: &'a Matrix,
@@ -949,6 +1100,7 @@ pub(crate) fn run_check_feature_status(root: &Path) -> Result<()> {
     checker.scan_diagnostics()?;
     checker.check_status_doc(&matrix)?;
     checker.check_coverage_doc(&matrix)?;
+    checker.check_writer_coverage_doc(&matrix)?;
 
     if checker.problems.is_empty() {
         eprintln!(
@@ -1211,6 +1363,17 @@ impl Checker {
             COVERAGE_DOC_PATH,
             &expected,
             &format!("cargo xtask spec-coverage --format markdown --output {COVERAGE_DOC_PATH}"),
+        )
+    }
+
+    fn check_writer_coverage_doc(&mut self, matrix: &Matrix) -> Result<()> {
+        let expected = writer_coverage_markdown(matrix);
+        self.check_generated_doc(
+            WRITER_COVERAGE_DOC_PATH,
+            &expected,
+            &format!(
+                "cargo xtask writer-coverage --format markdown --output {WRITER_COVERAGE_DOC_PATH}"
+            ),
         )
     }
 }
@@ -1738,5 +1901,29 @@ diagnostics = []
             rendered.contains("| § 5.2.2 | OBU header syntax |"),
             "unresolved section should render as plain text with the feature name:\n{rendered}"
         );
+    }
+
+    #[test]
+    fn writer_coverage_markdown_renders_writable_rows_deterministically() {
+        // SAMPLE's lone feature is a bitstream-syntax row with write = todo, so it is a writable row.
+        let matrix = parse_matrix(SAMPLE).unwrap();
+        let rendered = writer_coverage_markdown(&matrix);
+        assert!(
+            rendered.contains("# Writer coverage") && rendered.contains("Do not edit by hand"),
+            "writer-coverage header missing:\n{rendered}"
+        );
+        assert!(
+            rendered.contains(
+                "| 5.2.2 | `AV2-5.2.2-OBU-HEADER` | OBU header syntax | todo | \
+                 `crates/splot-core/src/obu.rs` |"
+            ),
+            "writer-coverage row changed:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("| Write status | Features |") && rendered.contains("| `todo` | 1 |"),
+            "writer-coverage status summary missing:\n{rendered}"
+        );
+        // Deterministic: regenerating yields byte-identical output (the drift guard relies on this).
+        assert_eq!(rendered, writer_coverage_markdown(&matrix));
     }
 }
