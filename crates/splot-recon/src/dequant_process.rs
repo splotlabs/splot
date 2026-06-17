@@ -143,22 +143,42 @@ pub struct QmWeightIndex {
     pub plane_is_chroma: bool,
     /// `txSz` transform-size index (`0..TX_SIZES_ALL`) for the `Qm_Offset` lookup.
     pub tx_size: usize,
-    /// Coefficient row `i`.
+    /// Coefficient row `i` (must be `< tx_height`).
     pub row: usize,
-    /// Coefficient column `j`.
+    /// Coefficient column `j` (must be `< tx_width`).
     pub col: usize,
     /// Dequantized block width `tw = Min(32, Tx_Width[txSz])`.
     pub tx_width: usize,
+    /// Dequantized block height `th = Min(32, Tx_Height[txSz])`.
+    pub tx_height: usize,
 }
 
 /// AV2 § 7.14.4 built-in quantization-matrix weight `m`
 /// (`Quantizer_Matrix[segLvl][plane > 0][Qm_Offset[txSz] + i * tw + j]`), the
 /// non-`UserQm` path.
 ///
+/// The coefficient `(row, col)` must lie inside the selected transform's
+/// `tx_width * tx_height` sub-block, so a coordinate outside the transform is
+/// rejected rather than silently reading a neighbouring transform's weight.
+///
 /// # Errors
-/// Returns [`ReconError::InvalidQuantizerMatrixIndex`] if `seg_level`, `tx_size`,
-/// or the derived position is out of range for the generated `Quantizer_Matrix`.
+/// Returns [`ReconError::InvalidQuantizerMatrixIndex`] if `row` / `col` are
+/// outside the `tx_width * tx_height` sub-block, or if `seg_level`, `tx_size`, or
+/// the derived position is out of range for the generated `Quantizer_Matrix`.
 pub fn quantization_matrix_weight(index: &QmWeightIndex) -> Result<i32> {
+    // The coefficient must lie inside the selected transform's sub-block; a
+    // larger row/col would otherwise index a later transform's region of the
+    // flattened matrix row.
+    if index.row >= index.tx_height || index.col >= index.tx_width {
+        return Err(ReconError::InvalidQuantizerMatrixIndex {
+            seg_level: index.seg_level,
+            tx_size: index.tx_size,
+            position: index
+                .row
+                .saturating_mul(index.tx_width)
+                .saturating_add(index.col),
+        });
+    }
     let level =
         QUANTIZER_MATRIX
             .get(index.seg_level)
@@ -344,6 +364,7 @@ mod tests {
             row: 0,
             col: 0,
             tx_width: 4,
+            tx_height: 4,
         };
         let m = quantization_matrix_weight(&index).unwrap();
         assert_eq!(m, QUANTIZER_MATRIX[0][0][0]);
@@ -362,6 +383,7 @@ mod tests {
             row: 1,
             col: 2,
             tx_width: 8,
+            tx_height: 8,
             ..index
         };
         let off = QM_OFFSET[1] as usize;
@@ -373,7 +395,7 @@ mod tests {
 
     #[test]
     fn quantization_matrix_weight_rejects_out_of_range_indices() {
-        // seg_level beyond the matrix.
+        // seg_level beyond the matrix (row/col inside the sub-block).
         let bad_level = QmWeightIndex {
             seg_level: 99,
             plane_is_chroma: false,
@@ -381,23 +403,43 @@ mod tests {
             row: 0,
             col: 0,
             tx_width: 4,
+            tx_height: 4,
         };
         assert!(matches!(
             quantization_matrix_weight(&bad_level),
             Err(ReconError::InvalidQuantizerMatrixIndex { seg_level: 99, .. })
         ));
-        // A position past the 3600-entry matrix row.
-        let bad_pos = QmWeightIndex {
+    }
+
+    #[test]
+    fn quantization_matrix_weight_rejects_coords_outside_the_transform_sub_block() {
+        // A coordinate outside the selected transform's sub-block must be
+        // rejected, not silently read from a neighbouring transform's region.
+        // tx_size 0 is 4x4: row == 4 is outside, even though Qm_Offset[0] + 4*4
+        // = 16 still lands inside the 3600-entry matrix row (the start of the
+        // 8x8 region).
+        let outside_row = QmWeightIndex {
             seg_level: 0,
             plane_is_chroma: false,
             tx_size: 0,
-            row: 1000,
+            row: 4,
             col: 0,
-            tx_width: 32,
+            tx_width: 4,
+            tx_height: 4,
         };
         assert!(matches!(
-            quantization_matrix_weight(&bad_pos),
-            Err(ReconError::InvalidQuantizerMatrixIndex { .. })
+            quantization_matrix_weight(&outside_row),
+            Err(ReconError::InvalidQuantizerMatrixIndex { tx_size: 0, .. })
+        ));
+        // A column outside the width is rejected too.
+        let outside_col = QmWeightIndex {
+            col: 4,
+            row: 0,
+            ..outside_row
+        };
+        assert!(matches!(
+            quantization_matrix_weight(&outside_col),
+            Err(ReconError::InvalidQuantizerMatrixIndex { tx_size: 0, .. })
         ));
     }
 }

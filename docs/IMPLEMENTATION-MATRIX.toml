@@ -6995,6 +6995,7 @@ tests = [
     "crates/splot-recon/src/dequant_process.rs::tests::qm_weighted_quantizer_is_total_for_extreme_inputs",
     "crates/splot-recon/src/dequant_process.rs::tests::quantization_matrix_weight_matches_the_generated_table",
     "crates/splot-recon/src/dequant_process.rs::tests::quantization_matrix_weight_rejects_out_of_range_indices",
+    "crates/splot-recon/src/dequant_process.rs::tests::quantization_matrix_weight_rejects_coords_outside_the_transform_sub_block",
 ]
 commands = [
     "cargo test -p splot-recon dequant_process --locked",
