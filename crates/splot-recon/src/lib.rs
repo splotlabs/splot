@@ -13,12 +13,12 @@
 //! directional intra prediction primitives and a mutable current-frame
 //! workspace, plus the AV2 § 7.14.2 dequantization quantizer functions
 //! (quantizer-value lookup, quantizer-index resolution, and per-plane DC/AC
-//! composition) and the § 7.15.2 1D inverse transforms (§ 7.15.2.1 kernel,
-//! § 7.15.2.2 Walsh-Hadamard, and § 7.15.2.3 identity); it does not implement
-//! byte-consuming decode, full reconstruction, the § 7.14.4 dequantization
-//! process, the § 7.15.3 secondary transform, the § 7.15.4 2D inverse transform
-//! orchestration, residual addition, runtime CLI Y4M output, or full AV2
-//! reference refresh semantics.
+//! composition), the § 7.15.2 1D inverse transforms (§ 7.15.2.1 kernel,
+//! § 7.15.2.2 Walsh-Hadamard, and § 7.15.2.3 identity), and the § 7.14.3
+//! residual-addition step; it does not implement byte-consuming decode, full
+//! reconstruction, the § 7.14.4 dequantization process, the § 7.15.3 secondary
+//! transform, the § 7.15.4 2D inverse transform orchestration, runtime CLI Y4M
+//! output, or full AV2 reference refresh semantics.
 //!
 //! The ownership model is view-first ([`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)):
 //! owned plane/frame/workspace storage hands out borrowed [`PlaneRef`]/[`PlaneMut`]
@@ -44,7 +44,8 @@
 //! `RECON-DEQUANT-QUANTIZER-LOOKUP`,
 //! `RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION`,
 //! `RECON-INVERSE-TRANSFORM-1D`,
-//! `RECON-INVERSE-TRANSFORM-MATRIX-FREE`.
+//! `RECON-INVERSE-TRANSFORM-MATRIX-FREE`,
+//! `RECON-RESIDUAL-ADDITION`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
@@ -65,6 +66,7 @@ mod intra_ibp_dc;
 mod intra_smooth;
 mod inverse_transform;
 mod plane;
+mod reconstruct;
 mod reference;
 mod views;
 mod workspace;
@@ -110,6 +112,7 @@ pub use inverse_transform::{
     inverse_walsh_hadamard,
 };
 pub use plane::{Plane, VisibleRows};
+pub use reconstruct::reconstruct_add_residual;
 pub use reference::{
     ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameReplacement, ReferenceFrameStore,
     ReferenceRefreshMask, ReferenceRefreshOutcome, ReferenceRefreshSlots, ReferenceSlot,
