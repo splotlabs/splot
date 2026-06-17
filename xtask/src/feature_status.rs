@@ -58,6 +58,7 @@ const RISKS: &[&str] = &["low", "medium", "high", "unknown"];
 const CRATES: &[&str] = &[
     "splot-core",
     "splot-parallel",
+    "splot-tables",
     "splot-recon",
     "splot-decode",
     "splot-validate",

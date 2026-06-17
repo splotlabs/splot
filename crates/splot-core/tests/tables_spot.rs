@@ -96,21 +96,6 @@ fn conversion_prob_inc_matches_mirror() {
 }
 
 #[test]
-fn transform_1d_adst_kernel4_matches_mirror() {
-    // docs/spec/av2/1.0.0/09-additional-tables/09-06-1d-transform-tables.md
-    // lines 195-202 (Adst_Kernel4[4][4]).
-    assert_eq!(
-        tables::transform_1d::ADST_KERNEL4,
-        [
-            [18, 50, 75, 89],   // line 197
-            [50, 89, 18, -75],  // line 198
-            [75, 18, -89, 50],  // line 199
-            [89, -75, 50, -18], // line 200
-        ]
-    );
-}
-
-#[test]
 fn quantizer_qm_offset_matches_mirror() {
     // docs/spec/av2/1.0.0/09-additional-tables/09-04-quantizer-matrix-tables.md
     // lines 90-97 (Qm_Offset[ TX_SIZES_ALL ]).
