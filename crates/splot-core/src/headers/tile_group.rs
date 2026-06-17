@@ -710,9 +710,10 @@ impl RecordedFrameHeaderBits {
     }
 
     /// The recorded bit at offset `index` (MSB-first), or `None` when `index` is at or
-    /// beyond [`Self::num_frame_header_bits`].
+    /// beyond [`Self::num_frame_header_bits`]. Used by the § 6.17.1 copy check and by the
+    /// non-first tile-group writer to re-emit `frame_header_copy()` verbatim.
     #[must_use]
-    fn bit(&self, index: u64) -> Option<bool> {
+    pub fn bit(&self, index: u64) -> Option<bool> {
         if index >= self.num_frame_header_bits {
             return None;
         }

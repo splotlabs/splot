@@ -43,7 +43,8 @@
 
 use crate::headers::frame::{CoreSeqView, FrameHeaderCore, MfhFrameView};
 use crate::headers::tile_group::{
-    TileGroupFraming, TileGroupLayout, TileGroupStructure, TileGroupStructureOutcome,
+    RecordedFrameHeaderBits, TileGroupFraming, TileGroupLayout, TileGroupStructure,
+    TileGroupStructureOutcome,
 };
 use crate::write::bit_writer::BitWriter;
 use crate::write::error::{WriteError, WriteResult};
@@ -489,6 +490,157 @@ pub fn write_tile_group_obu(
     writer.append(&scratch)
 }
 
+/// Writes a whole **non-first-tile-group** (continuation) `tile_group_obu()` payload (AV2 v1.0.0
+/// § 5.19, `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19`), the inverse of
+/// [`parse_tile_group_prefix`](crate::headers::tile_group::parse_tile_group_prefix) on the
+/// `is_first_tile_group == 0` path, the `frame_header_copy()` region (§ 5.18.1,
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-1`),
+/// [`parse_tile_group_structure`](crate::headers::tile_group::parse_tile_group_structure), and
+/// [`parse_tile_group_framing`](crate::headers::tile_group::parse_tile_group_framing).
+///
+/// In § 5.19 read order it emits, into a scratch [`BitWriter`]:
+/// 1. `is_first_tile_group` `f(1)` = `0` (the continuation form).
+/// 2. `frame_header_present_flag` `f(1)` (read explicitly for a non-first group — mirror :8431-8435).
+/// 3. when `frame_header_present_flag` is set, `frame_header_copy()` — the recorded first header's
+///    `NumFrameHeaderBits` `header_bit` `f(1)` values verbatim (§ 5.18.1, a bit-copy, *not* a
+///    re-serialized [`FrameHeaderCore`]; the bits come from `recorded`).
+/// 4. the § 5.19 structure via [`write_tile_group_structure`] — a continuation's `tg_start` is the
+///    running tile offset (`>= 1`, not pinned to `0` like the first group, but never `0` either); it
+///    emits the tile-range bits then the closing `byte_alignment()`.
+/// 5. the § 5.20.1 payload framing via [`write_tile_group_payload`] (runs byte-aligned).
+///
+/// `layout` and `tile_size_bytes` are the coded frame's shared values, taken from the **first** tile
+/// group's `tile_info()` (§ 5.18.7.2) — every tile group of one coded frame shares them because
+/// `frame_header(isFirst==0)` is a bit-copy of the first header. They are inputs here (the continuation
+/// has no parseable header of its own to derive them from). `is_bridge` forwards the § 5.20.1
+/// `IsBridge` selector to the payload writer.
+///
+/// The whole composition is drafted into the scratch and committed to the caller's `writer` only on
+/// full success (`writer.append(&scratch)`); any sub-writer reject leaves `writer` untouched
+/// (reject-before-write). The composer owns no OBU header / size / trailing bits.
+///
+/// # Errors
+/// All validated before any bit (the caller's `writer` is untouched on failure):
+/// - [`WriteError::WriterNotByteAligned`] if `writer` is not on a byte boundary (an OBU payload
+///   begins byte-aligned).
+/// - [`WriteError::NonCanonicalTileGroup`] for a constructed model the parser could never produce —
+///   `what` names the field: `"frame_header_copy_gate"` if `frame_header_present_flag` disagrees with
+///   whether `recorded` copy bits are supplied (the flag is set iff a `frame_header_copy()` follows);
+///   `"empty_frame_header_copy"` if the flag is set but `recorded` has `NumFrameHeaderBits == 0` (a
+///   real first header is never empty); `"continuation_tg_start_zero"` if `structure.tg_start == 0` (a
+///   continuation's running tile offset is `>= 1` per § 6.18, so it never restarts at tile 0);
+///   `"framing_range_mismatch"` if `framing.tiles.len()` disagrees with the structure's
+///   `tg_end - tg_start + 1` tile count; or `"framing_tile_number"` if a `framing.tiles[k].tile_num`
+///   disagrees with the derived `tg_start + k`.
+/// - Any [`WriteError`] a delegated sub-writer raises: the structure check
+///   ([`WriteError::NonCanonicalTileGroup`] for a non-`Complete` / degenerate / out-of-range
+///   structure) or the payload check (defective / mismatched framing). The payload writer's
+///   [`WriteError::WriterNotByteAligned`] guard cannot trip here: step 4's `byte_alignment()` leaves
+///   the scratch byte-aligned before the payload step.
+#[allow(clippy::too_many_arguments)]
+pub fn write_tile_group_continuation_obu(
+    writer: &mut BitWriter,
+    recorded: Option<&RecordedFrameHeaderBits>,
+    frame_header_present_flag: bool,
+    layout: TileGroupLayout,
+    tile_size_bytes: u32,
+    structure: &TileGroupStructure,
+    framing: &TileGroupFraming,
+    tile_data: &[&[u8]],
+    is_bridge: bool,
+) -> WriteResult<()> {
+    if !writer.is_byte_aligned() {
+        return Err(WriteError::WriterNotByteAligned);
+    }
+    // § 5.19 (mirror :8431-8435): a non-first group reads frame_header_present_flag, and the
+    // frame_header_copy() region follows iff it is set. The recorded copy bits must be supplied iff
+    // the flag is set, or the round-trip would emit a copy the flag says is absent (or vice versa).
+    let recorded = match (frame_header_present_flag, recorded) {
+        (true, Some(recorded)) => Some(recorded),
+        (false, None) => None,
+        _ => {
+            return Err(WriteError::NonCanonicalTileGroup {
+                what: "frame_header_copy_gate",
+            });
+        }
+    };
+    // § 5.18.1: a real first tile-group `frame_header()` for these OBU types always consumes at least
+    // its leading field, so `NumFrameHeaderBits == 0` is a present-but-empty `frame_header_copy()` the
+    // parser could never have recorded.
+    if let Some(recorded) = recorded
+        && recorded.num_frame_header_bits() == 0
+    {
+        return Err(WriteError::NonCanonicalTileGroup {
+            what: "empty_frame_header_copy",
+        });
+    }
+    // § 6.18 (mirror :6215-6216): `tg_start == TileNum`, the running tile offset. The first tile group
+    // covers tile 0 with a non-empty payload, so every continuation's running offset is at least 1 —
+    // a continuation (incl. the inferred full range when the flag is clear) whose `tg_start == 0`
+    // restarts the payload at tile 0 and is non-conformant. Locally decidable from `is_first == 0`
+    // alone (no prior-group state needed), so refuse it rather than emit a stream `splot validate`
+    // would reject.
+    if structure.tg_start == 0 {
+        return Err(WriteError::NonCanonicalTileGroup {
+            what: "continuation_tg_start_zero",
+        });
+    }
+    // § 5.19 / § 5.20.1: the structure's `tg_start ..= tg_end` defines the tile count AND the per-tile
+    // `TileNum`s; the framing must carry exactly those records, or a reparse — which frames the payload
+    // using the emitted range, deriving each `tile_num` as `tg_start + k`, not from `framing` — would
+    // split the region differently. (Unlike the first-group composer, `tg_start` may be > 0 here, and
+    // unlike the payload writer this composer HAS the structure, so it can cross-check the derived
+    // `tile_num`s the payload writer treats as parse-context.) The structure writer rejects an inverted
+    // `tg_end`, so the saturating arithmetic only under-counts a degenerate range it then rejects.
+    let expected_tiles = u64::from(structure.tg_end)
+        .saturating_sub(u64::from(structure.tg_start))
+        .saturating_add(1);
+    if framing.tiles.len() as u64 != expected_tiles {
+        return Err(WriteError::NonCanonicalTileGroup {
+            what: "framing_range_mismatch",
+        });
+    }
+    for (k, tile) in framing.tiles.iter().enumerate() {
+        let expected_tile_num = structure
+            .tg_start
+            .saturating_add(u32::try_from(k).unwrap_or(u32::MAX));
+        if tile.tile_num != expected_tile_num {
+            return Err(WriteError::NonCanonicalTileGroup {
+                what: "framing_tile_number",
+            });
+        }
+    }
+
+    let mut scratch = BitWriter::new();
+
+    // 1. is_first_tile_group f(1) = 0 (the continuation form).
+    scratch.write_bit(0)?;
+    // 2. frame_header_present_flag f(1) (explicit for a non-first group).
+    scratch.write_bit(u8::from(frame_header_present_flag))?;
+
+    // 3. frame_header_copy(): the recorded first header's NumFrameHeaderBits bits verbatim (§ 5.18.1).
+    //    The bit count is bounded by the recorded header (already bounded by its source payload), and
+    //    `recorded.bit(i)` returns Some for every i < num_frame_header_bits, so the loop never panics.
+    if let Some(recorded) = recorded {
+        for i in 0..recorded.num_frame_header_bits() {
+            let bit = recorded.bit(i).ok_or(WriteError::NonCanonicalTileGroup {
+                what: "frame_header_copy_gate",
+            })?;
+            scratch.write_bit(u8::from(bit))?;
+        }
+    }
+
+    // 4. § 5.19 structure: the tg-range bits then the closing byte_alignment() (leaves the scratch
+    //    byte-aligned). A continuation's tg_start is the running tile offset (>= 1, checked above).
+    write_tile_group_structure(&mut scratch, structure, layout)?;
+
+    // 5. § 5.20.1 payload framing — runs byte-aligned (the structure's byte_alignment() holds the
+    //    payload writer's own guard).
+    write_tile_group_payload(&mut scratch, framing, tile_data, tile_size_bytes, is_bridge)?;
+
+    writer.append(&scratch)
+}
+
 // The unit/rejection tests and the property tests live in sibling files (kept under the advisory
 // source-line limit); `include!` pastes them into this module so their `super::*` resolves to the
 // writers and private helpers above.
@@ -498,3 +650,5 @@ include!("tile_group_tests.rs");
 include!("tile_group_proptests.rs");
 #[cfg(test)]
 include!("tile_group_obu_tests.rs");
+#[cfg(test)]
+include!("tile_group_continuation_tests.rs");
