@@ -145,6 +145,15 @@ enum Task {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    /// Render the writer coverage matrix (docs/spec-coverage-writer.md).
+    WriterCoverage {
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = CoverageFormat::Text)]
+        format: CoverageFormat,
+        /// Write the rendered output to a file instead of stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     /// Render the decoder support matrix (docs/DECODER-SUPPORT-MATRIX.toml).
     DecoderSupport {
         /// Output format.
@@ -251,6 +260,9 @@ fn main() -> Result<()> {
         Task::CheckFeatureStatus => feature_status::run_check_feature_status(&workspace_root()?),
         Task::SpecCoverage { format, output } => {
             feature_status::run_spec_coverage(&workspace_root()?, format, output)
+        }
+        Task::WriterCoverage { format, output } => {
+            feature_status::run_writer_coverage(&workspace_root()?, format, output)
         }
         Task::DecoderSupport { format, output } => {
             decoder_support::run_decoder_support(&workspace_root()?, format, output)
