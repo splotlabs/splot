@@ -73,8 +73,8 @@ ranges. The current-frame workspace can hand off fully available in-storage
 one-sided and middle directional-angle prepared edges to those primitives.
 Luma/MRL/IDIF/full-dispatch directional angles, full edge preparation,
 data-driven prediction, general directional-angle IBP, full CfL, full
-`predict_intra()` dispatch, the full dequantization process, inverse
-transforms, residual addition, runtime decode output, output
+`predict_intra()` dispatch, the full dequantization process, the § 7.15.4 2D
+inverse transform, runtime decode output, output
 scheduling, and AV2 reference refresh semantics remain unimplemented. The
 full AV2 § 7.14.2 dequantization quantizer functions are available as
 scheduler-free `splot-recon` primitives: the quantizer-value lookup core

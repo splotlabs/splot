@@ -29,7 +29,6 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 
 | Section | Spec item | Feature | Mapped | Parse | Validate | Tests | Diagnostics |
 |---|---|---|:-:|:-:|:-:|:-:|:-:|
-| [§ 4.7](./spec/av2/1.0.0/04-conventions.md#s-4-7) | Assignment | `RECON-RESIDUAL-ADDITION` | ✅ | — | ✅ | ✅ | — |
 | [§ 4.8](./spec/av2/1.0.0/04-conventions.md#s-4-8) | Mathematical functions | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 4.8](./spec/av2/1.0.0/04-conventions.md#s-4-8) | Mathematical functions | `RECON-INTRA-DC-RECTANGULAR-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 4.8](./spec/av2/1.0.0/04-conventions.md#s-4-8) | Mathematical functions | `RECON-INTRA-DC-SUBSAMPLED-PREDICTION` | ✅ | — | ✅ | ✅ | — |
@@ -39,6 +38,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 4.8](./spec/av2/1.0.0/04-conventions.md#s-4-8) | Mathematical functions | `RECON-INTRA-SMOOTH-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 4.8](./spec/av2/1.0.0/04-conventions.md#s-4-8) | Mathematical functions | `RECON-INVERSE-TRANSFORM-1D` | ✅ | — | ✅ | ✅ | — |
 | [§ 4.8](./spec/av2/1.0.0/04-conventions.md#s-4-8) | Mathematical functions | `RECON-INVERSE-TRANSFORM-MATRIX-FREE` | ✅ | — | ✅ | ✅ | — |
+| [§ 4.8](./spec/av2/1.0.0/04-conventions.md#s-4-8) | Mathematical functions | `RECON-RESIDUAL-ADDITION` | ✅ | — | ✅ | ✅ | — |
 | [§ 4.8](./spec/av2/1.0.0/04-conventions.md#s-4-8) | Mathematical functions | `RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 4.11.3](./spec/av2/1.0.0/04-conventions.md#s-4-11-3) | uvlc() | `AV2-4.11.3-UVLC` | ✅ | ✅ | — | ✅ | — |
 | [§ 4.11.4](./spec/av2/1.0.0/04-conventions.md#s-4-11-4) | svlc() | `AV2-4.11.4-SVLC` | ✅ | ✅ | — | ✅ | — |

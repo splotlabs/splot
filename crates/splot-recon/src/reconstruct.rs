@@ -7,7 +7,7 @@
 //! reconstruct process
 //! ([`07-decoding-process.md`](../../../docs/spec/av2/1.0.0/07-decoding-process.md)
 //! `#s-7-14-3`): adding the inverse-transform residual to the predicted samples
-//! and clamping with § 4.7 `Clip1`,
+//! and clamping with § 4.8 `Clip1`,
 //! `CurrFrame[plane][y + i][x + j] = Clip1(CurrFrame[plane][y + i][x + j] + Residual[i][j])`.
 //!
 //! Feature tracking: `RECON-RESIDUAL-ADDITION`.
@@ -25,7 +25,7 @@ use crate::{BitDepth, ReconError, ReconSample, Result};
 /// Applies the AV2 § 7.14.3 residual-addition step to a block of predicted
 /// samples, writing `out`.
 ///
-/// Each output is `Clip1(prediction[i] + residual[i])`, where § 4.7
+/// Each output is `Clip1(prediction[i] + residual[i])`, where § 4.8
 /// `Clip1(x) = Clip3(0, (1 << BitDepth) - 1, x)` clamps to the active decoded bit
 /// depth. `prediction` holds the intra/inter predicted samples (the values
 /// § 7.14.3 reads from `CurrFrame` before adding the residual) and `residual`

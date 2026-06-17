@@ -4,7 +4,7 @@
 
 The repository SHALL provide a scheduler-free `splot-recon` primitive for the AV2
 § 7.14.3 reconstruct residual-addition step, tracked by `RECON-RESIDUAL-ADDITION`.
-The `reconstruct_add_residual` function SHALL compute, for each sample, the § 4.7
+The `reconstruct_add_residual` function SHALL compute, for each sample, the § 4.8
 `Clip1(prediction[i] + residual[i])` (clamp to `0..=(2^BitDepth - 1)`), matching
 `CurrFrame[plane][y + i][x + j] = Clip1(CurrFrame[plane][y + i][x + j] +
 Residual[i][j])`, over a caller-supplied prediction block and signed residual.

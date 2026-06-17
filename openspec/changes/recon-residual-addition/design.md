@@ -26,7 +26,7 @@ Non-Goals:
   prediction from `CurrFrame` in place; a future current-frame workspace helper
   can call this primitive over a plane rectangle. Keeping it standalone makes it
   independent of the transform and trivially testable.
-- **`Clip1` via the bit depth.** § 4.7 `Clip1(x) = Clip3(0, (1 << BitDepth) - 1, x)`
+- **`Clip1` via the bit depth.** § 4.8 `Clip1(x) = Clip3(0, (1 << BitDepth) - 1, x)`
   clamps to `0..=max_sample`. The sample type is validated to represent the bit
   depth (reusing the crate's `validate_sample_type`), so the clamped result
   always fits the storage type.

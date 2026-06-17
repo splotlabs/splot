@@ -3,7 +3,7 @@
 With the dequant quantizer functions and all three § 7.15.2 1D inverse
 transforms in place, the next residual-path step is the § 7.14.3 reconstruct
 addition: adding the inverse-transform residual to the predicted samples and
-clamping with § 4.7 `Clip1`. It is small, pure, and independent of how the
+clamping with § 4.8 `Clip1`. It is small, pure, and independent of how the
 residual is produced, so it is a clean self-contained brick — the "residual
 addition" item on the decoder roadmap.
 
