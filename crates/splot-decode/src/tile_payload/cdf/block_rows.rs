@@ -6,7 +6,9 @@
 //! Feature tracking: `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER`.
 
 use splot_core::tables::cdf::{
-    DEFAULT_EOB_EXTRA_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
+    DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF,
+    DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
+    DEFAULT_EOB_PT_1024_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
     DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
@@ -16,6 +18,7 @@ const Y_MODE_SET_CDF_ROW_LEN: usize = 5;
 const Y_MODE_INDEX_CONTEXTS: usize = 3;
 const INTRA_MODE_CDF_ROW_LEN: usize = 9;
 const COEFF_CDF_Q_CONTEXTS: usize = 4;
+const EOB_PLANE_CTXS: usize = 3;
 const PLANE_TYPES: usize = 2;
 const TX_SIZE_CONTEXTS: usize = 5;
 const TXB_SKIP_CONTEXTS: usize = 10;
@@ -33,6 +36,37 @@ pub(crate) type VTxbSkipCdfRows = [[[i32; CDF_ROW_LEN]; V_TXB_SKIP_CONTEXTS]; CO
 // must keep an inner width of 3; if `CDF_ROW_LEN` ever changes, give `eob_extra`
 // its own width constant rather than over-allocating from the generic one.
 pub(crate) type EobExtraCdfRows = [[i32; CDF_ROW_LEN]; COEFF_CDF_Q_CONTEXTS];
+
+// The §9.3 `eob_pt` CDF family: one bank per transform-size class, each
+// `[coeff_cdf_q_ctx][eobCtx][N]` with a class-specific symbol width N. §8.3.2
+// selects `TileEobPt<size>Cdf[eobCtx]` for the active q-context.
+pub(crate) type EobPt16CdfRows = [[[i32; 6]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type EobPt32CdfRows = [[[i32; 7]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type EobPt64CdfRows = [[[i32; 8]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type EobPt128CdfRows = [[[i32; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type EobPt256CdfRows = [[[i32; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type EobPt512CdfRows = [[[i32; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type EobPt1024CdfRows = [[[i32; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
+
+/// The AV2 `eob_pt` transform-size class, selecting which `TileEobPt<size>Cdf`
+/// family bank the §8.3.2 `eob_pt` symbol reads.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EobPtSize {
+    /// `TileEobPt16Cdf`.
+    Pt16,
+    /// `TileEobPt32Cdf`.
+    Pt32,
+    /// `TileEobPt64Cdf`.
+    Pt64,
+    /// `TileEobPt128Cdf`.
+    Pt128,
+    /// `TileEobPt256Cdf`.
+    Pt256,
+    /// `TileEobPt512Cdf`.
+    Pt512,
+    /// `TileEobPt1024Cdf`.
+    Pt1024,
+}
 
 /// Block-symbol CDF selectors handled by this focused row bundle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,6 +107,16 @@ pub(crate) enum BlockCdfSelector {
         /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
     },
+    /// `TileEobPt<size>Cdf[coeff_cdf_q_ctx][eobCtx]` (AV2 § 8.3.2): the
+    /// transform-size class selects the bank and `eobCtx` selects the row.
+    EobPt {
+        /// Transform-size class selecting the `eob_pt` family bank.
+        size: EobPtSize,
+        /// Coefficient-CDF quantization context.
+        coeff_cdf_q_ctx: usize,
+        /// `eobCtx = (plane > 0) ? 2 : is_inter` (`0..EOB_PLANE_CTXS`).
+        eob_ctx: usize,
+    },
 }
 
 /// Supported block-symbol CDF arrays for the minimal flat-intra trace.
@@ -84,6 +128,13 @@ pub(crate) struct BlockCdfRows {
     pub(super) uv_mode_cfl_not_allowed: UvModeCflNotAllowedCdfRows,
     pub(super) v_txb_skip: VTxbSkipCdfRows,
     pub(super) eob_extra: EobExtraCdfRows,
+    pub(super) eob_pt_16: EobPt16CdfRows,
+    pub(super) eob_pt_32: EobPt32CdfRows,
+    pub(super) eob_pt_64: EobPt64CdfRows,
+    pub(super) eob_pt_128: EobPt128CdfRows,
+    pub(super) eob_pt_256: EobPt256CdfRows,
+    pub(super) eob_pt_512: EobPt512CdfRows,
+    pub(super) eob_pt_1024: EobPt1024CdfRows,
 }
 
 impl BlockCdfRows {
@@ -95,6 +146,13 @@ impl BlockCdfRows {
             uv_mode_cfl_not_allowed: DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
             v_txb_skip: DEFAULT_V_TXB_SKIP_CDF,
             eob_extra: DEFAULT_EOB_EXTRA_CDF,
+            eob_pt_16: DEFAULT_EOB_PT_16_CDF,
+            eob_pt_32: DEFAULT_EOB_PT_32_CDF,
+            eob_pt_64: DEFAULT_EOB_PT_64_CDF,
+            eob_pt_128: DEFAULT_EOB_PT_128_CDF,
+            eob_pt_256: DEFAULT_EOB_PT_256_CDF,
+            eob_pt_512: DEFAULT_EOB_PT_512_CDF,
+            eob_pt_1024: DEFAULT_EOB_PT_1024_CDF,
         }
     }
 
@@ -164,6 +222,23 @@ impl BlockCdfRows {
                 let coeff_cdf_q_ctx =
                     checked_coeff_cdf_q_context(TileCdfArray::EobExtra, coeff_cdf_q_ctx)?;
                 Ok(self.eob_extra[coeff_cdf_q_ctx].as_slice())
+            }
+            BlockCdfSelector::EobPt {
+                size,
+                coeff_cdf_q_ctx,
+                eob_ctx,
+            } => {
+                let q = checked_coeff_cdf_q_context(TileCdfArray::EobPt, coeff_cdf_q_ctx)?;
+                let c = checked_eob_plane_ctx(eob_ctx)?;
+                Ok(match size {
+                    EobPtSize::Pt16 => self.eob_pt_16[q][c].as_slice(),
+                    EobPtSize::Pt32 => self.eob_pt_32[q][c].as_slice(),
+                    EobPtSize::Pt64 => self.eob_pt_64[q][c].as_slice(),
+                    EobPtSize::Pt128 => self.eob_pt_128[q][c].as_slice(),
+                    EobPtSize::Pt256 => self.eob_pt_256[q][c].as_slice(),
+                    EobPtSize::Pt512 => self.eob_pt_512[q][c].as_slice(),
+                    EobPtSize::Pt1024 => self.eob_pt_1024[q][c].as_slice(),
+                })
             }
         }
     }
@@ -242,6 +317,23 @@ impl BlockCdfRows {
                     checked_coeff_cdf_q_context(TileCdfArray::EobExtra, coeff_cdf_q_ctx)?;
                 Ok(self.eob_extra[coeff_cdf_q_ctx].as_mut_slice())
             }
+            BlockCdfSelector::EobPt {
+                size,
+                coeff_cdf_q_ctx,
+                eob_ctx,
+            } => {
+                let q = checked_coeff_cdf_q_context(TileCdfArray::EobPt, coeff_cdf_q_ctx)?;
+                let c = checked_eob_plane_ctx(eob_ctx)?;
+                Ok(match size {
+                    EobPtSize::Pt16 => self.eob_pt_16[q][c].as_mut_slice(),
+                    EobPtSize::Pt32 => self.eob_pt_32[q][c].as_mut_slice(),
+                    EobPtSize::Pt64 => self.eob_pt_64[q][c].as_mut_slice(),
+                    EobPtSize::Pt128 => self.eob_pt_128[q][c].as_mut_slice(),
+                    EobPtSize::Pt256 => self.eob_pt_256[q][c].as_mut_slice(),
+                    EobPtSize::Pt512 => self.eob_pt_512[q][c].as_mut_slice(),
+                    EobPtSize::Pt1024 => self.eob_pt_1024[q][c].as_mut_slice(),
+                })
+            }
         }
     }
 
@@ -291,6 +383,13 @@ impl BlockCdfRows {
                 num_log2,
             );
         }
+        avg_eob_pt_bank(&mut self.eob_pt_16, &tile.eob_pt_16, tile_num, num_log2);
+        avg_eob_pt_bank(&mut self.eob_pt_32, &tile.eob_pt_32, tile_num, num_log2);
+        avg_eob_pt_bank(&mut self.eob_pt_64, &tile.eob_pt_64, tile_num, num_log2);
+        avg_eob_pt_bank(&mut self.eob_pt_128, &tile.eob_pt_128, tile_num, num_log2);
+        avg_eob_pt_bank(&mut self.eob_pt_256, &tile.eob_pt_256, tile_num, num_log2);
+        avg_eob_pt_bank(&mut self.eob_pt_512, &tile.eob_pt_512, tile_num, num_log2);
+        avg_eob_pt_bank(&mut self.eob_pt_1024, &tile.eob_pt_1024, tile_num, num_log2);
     }
 
     pub(crate) fn scale_counts_for_frame_end_update(&mut self) {
@@ -316,6 +415,13 @@ impl BlockCdfRows {
         for ctx in 0..UV_MODE_CONTEXTS {
             scale_cdf_count(&mut self.uv_mode_cfl_not_allowed[ctx]);
         }
+        scale_eob_pt_bank(&mut self.eob_pt_16);
+        scale_eob_pt_bank(&mut self.eob_pt_32);
+        scale_eob_pt_bank(&mut self.eob_pt_64);
+        scale_eob_pt_bank(&mut self.eob_pt_128);
+        scale_eob_pt_bank(&mut self.eob_pt_256);
+        scale_eob_pt_bank(&mut self.eob_pt_512);
+        scale_eob_pt_bank(&mut self.eob_pt_1024);
     }
 
     #[cfg(test)]
@@ -347,6 +453,45 @@ impl BlockCdfRows {
     pub(crate) const fn eob_extra(&self) -> &EobExtraCdfRows {
         &self.eob_extra
     }
+}
+
+/// Averages one `eob_pt` family bank (`[coeff_cdf_q_ctx][eobCtx][N]`) against the
+/// completed tile's matching bank, for any class width `N`.
+fn avg_eob_pt_bank<const N: usize>(
+    frame: &mut [[[i32; N]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS],
+    tile: &[[[i32; N]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS],
+    tile_num: u32,
+    num_log2: u8,
+) {
+    for (frame_q, tile_q) in frame.iter_mut().zip(tile.iter()) {
+        for (frame_row, tile_row) in frame_q.iter_mut().zip(tile_q.iter()) {
+            avg_cdf_row(frame_row, tile_row, tile_num, num_log2);
+        }
+    }
+}
+
+/// Scales the frame-end adaptation count of every row in one `eob_pt` family
+/// bank, for any class width `N`.
+fn scale_eob_pt_bank<const N: usize>(
+    bank: &mut [[[i32; N]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS],
+) {
+    for q_rows in bank.iter_mut() {
+        for row in q_rows.iter_mut() {
+            scale_cdf_count(row);
+        }
+    }
+}
+
+fn checked_eob_plane_ctx(eob_ctx: usize) -> Result<usize, TileCdfError> {
+    if eob_ctx >= EOB_PLANE_CTXS {
+        return Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::EobPt,
+            index_name: "eob_ctx",
+            actual: eob_ctx,
+            max_exclusive: EOB_PLANE_CTXS,
+        });
+    }
+    Ok(eob_ctx)
 }
 
 fn checked_coeff_cdf_q_context(

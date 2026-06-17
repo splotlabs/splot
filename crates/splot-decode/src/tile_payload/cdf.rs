@@ -21,7 +21,7 @@ use splot_core::tables::cdf::{
     DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF, DEFAULT_RECT_TYPE_CDF,
 };
 
-use self::block_rows::{BlockCdfRows, BlockCdfSelector};
+use self::block_rows::{BlockCdfRows, BlockCdfSelector, EobPtSize};
 
 const CDF_PROB_SCALE: i32 = 1 << 15;
 const DO_SPLIT_PLANE_CONTEXTS: usize = 2;
@@ -337,6 +337,15 @@ pub(crate) enum TileCdfSelector {
         /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
     },
+    /// `TileEobPt<size>Cdf[coeff_cdf_q_ctx][eobCtx]` (AV2 § 8.3.2).
+    EobPt {
+        /// Transform-size class selecting the `eob_pt` family bank.
+        size: EobPtSize,
+        /// Coefficient-CDF quantization context.
+        coeff_cdf_q_ctx: usize,
+        /// `eobCtx = (plane > 0) ? 2 : is_inter`.
+        eob_ctx: usize,
+    },
 }
 
 /// Supported CDF arrays for error reporting.
@@ -362,6 +371,8 @@ pub(crate) enum TileCdfArray {
     VTxbSkip,
     /// `TileEobExtraCdf`.
     EobExtra,
+    /// `TileEobPt<size>Cdf` family.
+    EobPt,
 }
 
 impl TileCdfArray {
@@ -377,6 +388,7 @@ impl TileCdfArray {
             Self::UvModeCflNotAllowed => "TileUvModeCflNotAllowedCdf",
             Self::VTxbSkip => "TileVTxbSkipCdf",
             Self::EobExtra => "TileEobExtraCdf",
+            Self::EobPt => "TileEobPtCdf",
         }
     }
 }
@@ -718,6 +730,15 @@ impl TileCdfRows {
             TileCdfSelector::EobExtra { coeff_cdf_q_ctx } => self
                 .block
                 .row(BlockCdfSelector::EobExtra { coeff_cdf_q_ctx }),
+            TileCdfSelector::EobPt {
+                size,
+                coeff_cdf_q_ctx,
+                eob_ctx,
+            } => self.block.row(BlockCdfSelector::EobPt {
+                size,
+                coeff_cdf_q_ctx,
+                eob_ctx,
+            }),
         }
     }
 
@@ -818,6 +839,15 @@ impl TileCdfRows {
             TileCdfSelector::EobExtra { coeff_cdf_q_ctx } => self
                 .block
                 .row_mut(BlockCdfSelector::EobExtra { coeff_cdf_q_ctx }),
+            TileCdfSelector::EobPt {
+                size,
+                coeff_cdf_q_ctx,
+                eob_ctx,
+            } => self.block.row_mut(BlockCdfSelector::EobPt {
+                size,
+                coeff_cdf_q_ctx,
+                eob_ctx,
+            }),
         }
     }
 

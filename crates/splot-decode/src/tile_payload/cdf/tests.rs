@@ -7,7 +7,9 @@ use super::*;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderConfig};
 use splot_core::tables::cdf::{
-    DEFAULT_EOB_EXTRA_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
+    DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF,
+    DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
+    DEFAULT_EOB_PT_1024_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
     DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
@@ -546,4 +548,81 @@ fn eob_extra_tile_copy_does_not_alias_the_frame() {
     // The tile copy is mutated; the frame's default row is untouched.
     assert_eq!(tile.rows().eob_extra()[2], [12_345, 0, 7]);
     assert_eq!(frame.rows().eob_extra()[2], DEFAULT_EOB_EXTRA_CDF[2]);
+}
+
+fn assert_eob_pt_bank<const N: usize>(
+    tile: &TileCdfSubset,
+    size: EobPtSize,
+    expected: &[[[i32; N]; 3]; 4],
+) {
+    // AV2 §8.3.2 selects TileEobPt<size>Cdf[eobCtx] for the active q-context.
+    for (q, expected_q) in expected.iter().enumerate() {
+        for (c, expected_qc) in expected_q.iter().enumerate() {
+            let row = tile
+                .row(TileCdfSelector::EobPt {
+                    size,
+                    coeff_cdf_q_ctx: q,
+                    eob_ctx: c,
+                })
+                .unwrap();
+            assert_eq!(row, expected_qc.as_slice(), "eob_pt {size:?} q {q} ctx {c}");
+        }
+    }
+}
+
+#[test]
+fn eob_pt_family_loads_defaults_and_selects_by_size_and_context() {
+    let frame = FrameCdfSubset::from_defaults();
+    let tile = frame.tile_copy();
+    assert_eob_pt_bank(&tile, EobPtSize::Pt16, &DEFAULT_EOB_PT_16_CDF);
+    assert_eob_pt_bank(&tile, EobPtSize::Pt32, &DEFAULT_EOB_PT_32_CDF);
+    assert_eob_pt_bank(&tile, EobPtSize::Pt64, &DEFAULT_EOB_PT_64_CDF);
+    assert_eob_pt_bank(&tile, EobPtSize::Pt128, &DEFAULT_EOB_PT_128_CDF);
+    assert_eob_pt_bank(&tile, EobPtSize::Pt256, &DEFAULT_EOB_PT_256_CDF);
+    assert_eob_pt_bank(&tile, EobPtSize::Pt512, &DEFAULT_EOB_PT_512_CDF);
+    assert_eob_pt_bank(&tile, EobPtSize::Pt1024, &DEFAULT_EOB_PT_1024_CDF);
+}
+
+#[test]
+fn eob_pt_selector_rejects_out_of_range_contexts() {
+    let frame = FrameCdfSubset::from_defaults();
+    let tile = frame.tile_copy();
+    assert!(matches!(
+        tile.row(TileCdfSelector::EobPt {
+            size: EobPtSize::Pt16,
+            coeff_cdf_q_ctx: 4,
+            eob_ctx: 0
+        }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::EobPt,
+            index_name: "coeff_cdf_q_ctx",
+            actual: 4,
+            max_exclusive: 4,
+        })
+    ));
+    assert!(matches!(
+        tile.row(TileCdfSelector::EobPt {
+            size: EobPtSize::Pt1024,
+            coeff_cdf_q_ctx: 0,
+            eob_ctx: 3
+        }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::EobPt,
+            index_name: "eob_ctx",
+            actual: 3,
+            max_exclusive: 3,
+        })
+    ));
+}
+
+#[test]
+fn eob_pt_tile_copy_does_not_alias_the_frame() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    tile.rows_mut().block.eob_pt_16[1][2] = [10, 20, 30, 40, 50, 7];
+    assert_eq!(tile.rows().block.eob_pt_16[1][2], [10, 20, 30, 40, 50, 7]);
+    assert_eq!(
+        frame.rows().block.eob_pt_16[1][2],
+        DEFAULT_EOB_PT_16_CDF[1][2]
+    );
 }
