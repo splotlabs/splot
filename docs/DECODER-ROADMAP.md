@@ -74,8 +74,9 @@ one-sided and middle directional-angle prepared edges to those primitives.
 Luma/MRL/IDIF/full-dispatch directional angles, full edge preparation,
 data-driven prediction, general directional-angle IBP, full CfL, full
 `predict_intra()` dispatch, the full dequantization process, the § 7.15.4
-`get_transform_1d_type` derivation, runtime decode output,
-output scheduling, and AV2 reference refresh semantics remain unimplemented. The
+DPCM-direction selection and combined transform-parameter resolve helper, runtime
+decode output, output scheduling, and AV2 reference refresh semantics remain
+unimplemented. The
 full AV2 § 7.14.2 dequantization quantizer functions are available as
 scheduler-free `splot-recon` primitives: the quantizer-value lookup core
 (`Ac_Qlookup`, `qlookup`, `MaxQ`, and `get_q`;
@@ -109,9 +110,14 @@ the dependency-free `splot-tables` crate). The § 7.15.4 `Transform_Shift` row a
 column down-shift lookup (`transform_shift`; `RECON-TRANSFORM-SHIFT-LOOKUP`), the
 first of the caller-resolved inverse-transform parameter derivations, is available
 too: it returns `(rowShift, colShift)` keyed on the original `(log2W, log2H)` shape
-from the verbatim § 7.15.4 constant table. The § 7.14.4 `useQm` / `UserQm` gating
-and `shift` derivation, the rest of the § 7.14.3 reconstruct process, the § 7.15.3
-secondary transform, the § 7.15.4 `get_transform_1d_type` derivation, and the
+from the verbatim § 7.15.4 constant table. The § 7.15.4 `get_transform_1d_type`
+row and column transform-type derivation (`get_transform_1d_type`;
+`RECON-GET-TRANSFORM-1D-TYPE`) is also available: it returns the
+`Transform_1d_Type[PlaneTxType][dir]` selection (as the `InverseTransform2dDim`
+the 2D transform consumes), with the `useDdt` `DDTX`/`FDDT` substitution. The
+§ 7.14.4 `useQm` / `UserQm` gating and `shift` derivation, the rest of the
+§ 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the § 7.15.4
+DPCM-direction selection and combined transform-parameter resolve helper, and the
 coefficient entropy decode that produces `Quant` remain unimplemented.
 `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from

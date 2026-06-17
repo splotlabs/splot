@@ -7068,6 +7068,55 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-GET-TRANSFORM-1D-TYPE"
+name = "Inverse transform get_transform_1d_type derivation"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.15.4"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-4",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/transform_params.rs"
+openspec_change = "recon-get-transform-1d-type"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds `get_transform_1d_type(plane_tx_type, pass, size, use_ddt) -> Result<InverseTransform2dDim>` to the `splot-recon` `transform_params` module, the second of the §7.15.4 inverse-transform parameter derivations the RECON-INVERSE-TRANSFORM-2D-OUTER row left caller-resolved. It returns `Transform_1d_Type[PlaneTxType][dir]` with the spec `useDdt` substitution: when `use_ddt` (the caller-resolved `enable_inter_ddt && !use_intrabc && is_inter`) is set, the base type is `ADST` or `FDST`, and `size != 4`, the type becomes `DDTX` or `FDDT` respectively. The verbatim 16-row §7.15.4 `Transform_1d_Type[TX_TYPES][2]` constant is hand-written and spec-cited because, like `Transform_Shift`, it is a §7.15.4 process-body constant absent from the generated `all_tables.h` §9 attachment (deliberately not a gen-tables output); `IDT` maps to `InverseTransform2dDim::Identity` and the kernel types to `InverseTransform2dDim::Kernel`, the exact `row_type`/`col_type` field type of the existing `InverseTransform2dOuter`. The `TransformPass` enum selects the spec `dir` (Row=0, Col=1). Strictly additive and provably no-output-change: a `const fn` plus a `TransformPass` enum and one typed error variant (`ReconError::InvalidPlaneTxType`), with no rewiring of any decode path. This row does not implement the DPCM-direction selection, the combined transform-parameter resolve helper, any wiring into the runtime decode path, the §7.15.3 secondary transform, or the coefficient entropy decode that produces `Quant`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/transform_params.rs::tests::get_transform_1d_type_matches_the_spec_table_without_ddt",
+    "crates/splot-recon/src/transform_params.rs::tests::get_transform_1d_type_applies_ddt_substitution_only_when_eligible",
+    "crates/splot-recon/src/transform_params.rs::tests::get_transform_1d_type_rejects_out_of_range_plane_tx_type",
+]
+commands = [
+    "cargo test -p splot-recon transform_params --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/transform_params.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
 name = "Decoded frame and plane model contract documentation"
 category = "docs"
