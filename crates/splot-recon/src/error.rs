@@ -470,6 +470,15 @@ pub enum ReconError {
         /// Output buffer length.
         out_len: usize,
     },
+    /// A reconstruct prediction sample exceeded the active decoded bit depth.
+    ReconstructPredictionOutOfRange {
+        /// Zero-based index of the out-of-range prediction sample.
+        sample_index: usize,
+        /// Observed prediction sample value.
+        value: u16,
+        /// Maximum sample value allowed by the active bit depth.
+        max: u16,
+    },
 }
 
 impl fmt::Display for ReconError {
@@ -901,6 +910,14 @@ impl fmt::Display for ReconError {
             } => write!(
                 f,
                 "reconstruct length mismatch: prediction {prediction_len}, residual {residual_len}, output {out_len}"
+            ),
+            Self::ReconstructPredictionOutOfRange {
+                sample_index,
+                value,
+                max,
+            } => write!(
+                f,
+                "reconstruct prediction sample {sample_index} value {value} exceeds maximum {max}"
             ),
         }
     }

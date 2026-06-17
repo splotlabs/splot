@@ -36,10 +36,18 @@ use crate::{BitDepth, ReconError, ReconSample, Result};
 /// the sample type is validated to represent that depth), every written value
 /// fits the storage type.
 ///
+/// Prediction samples are validated up front against the active bit depth — like
+/// the other `splot-recon` caller-buffer primitives — and a wider storage type
+/// holding an out-of-range value (e.g. a `u16` above 255 at 8-bit) is rejected
+/// rather than silently folded by `Clip1`. § 7.14.3 reads in-range prediction
+/// samples from `CurrFrame`, so a conformant caller never trips this check.
+///
 /// # Errors
 /// Returns [`ReconError::SampleTypeUnsupportedBitDepth`] if `T` cannot represent
-/// `bit_depth`, and [`ReconError::ReconstructLengthMismatch`] if `prediction`,
-/// `residual`, and `out` do not all have the same length.
+/// `bit_depth`, [`ReconError::ReconstructLengthMismatch`] if `prediction`,
+/// `residual`, and `out` do not all have the same length, and
+/// [`ReconError::ReconstructPredictionOutOfRange`] if a prediction sample exceeds
+/// the active bit depth. All inputs are validated before any output is written.
 pub fn reconstruct_add_residual<T: ReconSample>(
     prediction: &[T],
     residual: &[i32],
@@ -55,7 +63,21 @@ pub fn reconstruct_add_residual<T: ReconSample>(
         });
     }
 
-    let max = i64::from(bit_depth.max_sample());
+    let max_sample = bit_depth.max_sample();
+    // Validate every prediction sample before writing any output (no partial
+    // mutation on a rejected input).
+    for (sample_index, &pred) in prediction.iter().enumerate() {
+        let value = pred.to_u16();
+        if value > max_sample {
+            return Err(ReconError::ReconstructPredictionOutOfRange {
+                sample_index,
+                value,
+                max: max_sample,
+            });
+        }
+    }
+
+    let max = i64::from(max_sample);
     for ((slot, &pred), &res) in out.iter_mut().zip(prediction).zip(residual) {
         let reconstructed = (i64::from(pred.to_u16()) + i64::from(res)).clamp(0, max);
         // `reconstructed` is within `0..=max_sample`, which the validated sample
@@ -137,5 +159,22 @@ mod tests {
                 out_len: 3
             })
         ));
+    }
+
+    #[test]
+    fn rejects_prediction_sample_above_bit_depth() {
+        // A u16 prediction of 300 is out of range at 8-bit (max 255); reject it
+        // rather than letting Clip1 silently fold it.
+        let mut out = [0u16; 2];
+        assert!(matches!(
+            reconstruct_add_residual(&[10u16, 300], &[0, -100], BitDepth::Eight, &mut out),
+            Err(ReconError::ReconstructPredictionOutOfRange {
+                sample_index: 1,
+                value: 300,
+                max: 255
+            })
+        ));
+        // The output buffer is untouched on a rejected input.
+        assert_eq!(out, [0, 0]);
     }
 }
