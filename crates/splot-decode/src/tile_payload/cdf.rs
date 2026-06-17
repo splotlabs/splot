@@ -21,7 +21,11 @@ use splot_core::tables::cdf::{
     DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF, DEFAULT_RECT_TYPE_CDF,
 };
 
-use self::block_rows::{BlockCdfRows, BlockCdfSelector, EobPtSize};
+use self::block_rows::{BlockCdfRows, BlockCdfSelector};
+// Re-exported at crate visibility so sibling decode code (e.g. the future
+// `coeffs()` consumer in `block_symbol.rs`) can name the `eob_pt` size class to
+// construct the `pub(crate)` `TileCdfSelector::EobPt` variant.
+pub(crate) use self::block_rows::EobPtSize;
 
 const CDF_PROB_SCALE: i32 = 1 << 15;
 const DO_SPLIT_PLANE_CONTEXTS: usize = 2;
