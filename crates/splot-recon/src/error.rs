@@ -479,6 +479,24 @@ pub enum ReconError {
         /// Maximum sample value allowed by the active bit depth.
         max: u16,
     },
+    /// A 2D inverse transform was given an unsupported original log2 shape.
+    InvalidInverseTransform2dShape {
+        /// Supplied original (unadjusted) transform width base-2 logarithm.
+        log2_w: u32,
+        /// Supplied original (unadjusted) transform height base-2 logarithm.
+        log2_h: u32,
+        /// Whether the lossless flag was set (which requires a 4x4 block).
+        lossless: bool,
+    },
+    /// A 2D inverse transform input/output buffer length did not match `w * h`.
+    InverseTransform2dBufferMismatch {
+        /// Expected length (`w * h`).
+        expected: usize,
+        /// Supplied dequantized-coefficient buffer length.
+        dequant_len: usize,
+        /// Supplied residual buffer length.
+        residual_len: usize,
+    },
 }
 
 impl fmt::Display for ReconError {
@@ -918,6 +936,22 @@ impl fmt::Display for ReconError {
             } => write!(
                 f,
                 "reconstruct prediction sample {sample_index} value {value} exceeds maximum {max}"
+            ),
+            Self::InvalidInverseTransform2dShape {
+                log2_w,
+                log2_h,
+                lossless,
+            } => write!(
+                f,
+                "unsupported 2D inverse transform log2 shape {log2_w}x{log2_h} (lossless={lossless}); expected each log2 in 2..=6, and 2x2 (4x4) when lossless"
+            ),
+            Self::InverseTransform2dBufferMismatch {
+                expected,
+                dequant_len,
+                residual_len,
+            } => write!(
+                f,
+                "2D inverse transform buffer mismatch: expected {expected}, dequant {dequant_len}, residual {residual_len}"
             ),
         }
     }

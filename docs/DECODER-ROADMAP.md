@@ -73,8 +73,8 @@ ranges. The current-frame workspace can hand off fully available in-storage
 one-sided and middle directional-angle prepared edges to those primitives.
 Luma/MRL/IDIF/full-dispatch directional angles, full edge preparation,
 data-driven prediction, general directional-angle IBP, full CfL, full
-`predict_intra()` dispatch, the full dequantization process, the § 7.15.4 2D
-inverse transform, runtime decode output, output
+`predict_intra()` dispatch, the full dequantization process, the § 7.15.4 outer
+2D inverse transform orchestration, runtime decode output, output
 scheduling, and AV2 reference refresh semantics remain unimplemented. The
 full AV2 § 7.14.2 dequantization quantizer functions are available as
 scheduler-free `splot-recon` primitives: the quantizer-value lookup core
@@ -88,12 +88,17 @@ composition (`RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION`). All three § 7.15.2
 Walsh-Hadamard and § 7.15.2.3 identity transforms
 (`RECON-INVERSE-TRANSFORM-MATRIX-FREE`). The § 7.14.3 residual-addition step
 (`Clip1(prediction + residual)`; `RECON-RESIDUAL-ADDITION`) is also available as
-a scheduler-free primitive. The § 7.14.4 dequantization process with
-quantizer-matrix weighting, the rest of the § 7.14.3 reconstruct process (the
-2D-transform invocation), the § 7.15.3 secondary transform, and the § 7.15.4 2D
-inverse transform orchestration (the `Transform_Shift`, `get_transform_1d_type`,
-and `get_identity_scale` derivations, row/column passes, DPCM, and sample
-duplication) remain unimplemented.
+a scheduler-free primitive. The § 7.15.4.1 2D matrix transform core
+(`inverse_transform_2d`; `RECON-INVERSE-TRANSFORM-2D`) is available too: the
+row-then-column matrix passes over a caller-supplied dequantized block, with the
+√2 rescale and per-pass `get_identity_scale` derived from the original
+(unadjusted) `txSz` log2 dimensions and the adjusted operating size capped at
+32x32. The § 7.14.4 dequantization process with
+quantizer-matrix weighting, the rest of the § 7.14.3 reconstruct process, the
+§ 7.15.3 secondary transform, and the § 7.15.4 outer 2D inverse transform
+orchestration (the `Adjusted_Tx_Size`, `Transform_Shift`, and
+`get_transform_1d_type` derivations, the `Lossless && IDTX` shortcut, the DPCM
+cumulative sum, and adjusted-size sample duplication) remain unimplemented.
 `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
 `splot-decode`, then call deterministic reconstruction primitives.
