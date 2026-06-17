@@ -247,43 +247,9 @@ mod tests {
         assert_eq!(reparsed, payload);
     }
 
-    // ===================================================================================
-    // Unimplemented stub (1 unwritten type)
-    // ===================================================================================
-
-    #[test]
-    fn unimplemented_quantization_matrix_returns_typed_stub_without_writing() {
-        // OBU_QUANTIZATION_MATRIX is the one remaining type without a body writer. Build it by
-        // parsing a minimal OBU payload via dispatch, then assert write_obu_payload returns
-        // Unimplemented with the matrix Feature ID and writes nothing.
-
-        // OBU_QUANTIZATION_MATRIX (non-extensible): qm_bit_map(15) + chroma flag(1) + trailing.
-        let qm_header = read_obu_header_from_slice(&[0x58], ByteOffset::new(0)).unwrap();
-        let qm = reparse_payload(&qm_header, &[0x00, 0x00, 0x80]);
-        assert_eq!(qm.feature_id(), "AV2-5.13-QUANTIZATION-MATRIX");
-
-        let mut writer = BitWriter::new();
-        let err = write_obu_payload(
-            &mut writer,
-            &qm,
-            qm_header.obu_type.is_extensible_obu(),
-            &[],
-        )
-        .unwrap_err();
-        assert!(
-            matches!(err, WriteError::Unimplemented { feature } if feature == qm.feature_id()),
-            "expected Unimplemented {{ {} }}, got {err:?}",
-            qm.feature_id()
-        );
-        assert_eq!(writer.bit_len(), 0, "no bits written for an unimplemented type");
-
-        // write_complete_obu propagates the same stub and leaves the writer clean (no stray
-        // OBU-header byte).
-        let mut complete = BitWriter::new();
-        let cerr = write_complete_obu(&mut complete, &qm_header, &qm, &[]).unwrap_err();
-        assert!(matches!(cerr, WriteError::Unimplemented { .. }));
-        assert_eq!(complete.bit_len(), 0, "no header byte written on reject");
-    }
+    // Every ParsedObu variant now has a body writer (the §5.13 quantizer-matrix writer was the
+    // last), so the dispatch no longer returns WriteError::Unimplemented for any payload; the
+    // per-type round-trips (including quantizer matrix) live in dispatch_roundtrip_tests.rs.
 
     // ===================================================================================
     // Sub-writer reject propagation (bit_len() == 0)

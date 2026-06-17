@@ -615,6 +615,59 @@
     }
 
     #[test]
+    fn quantization_matrix_payload_round_trips() {
+        // §5.13 quantizer matrix is NOT extensible; the dispatch routes it to write_quantizer_matrix
+        // + the generic (trailing_bits) tail. It carries no passthrough and no scope branch. Build a
+        // default level-0 QM by hand, parse it via dispatch, then write it back and reparse.
+        let header = read_obu_header_from_slice(&[0x58], ByteOffset::new(0)).unwrap();
+        assert_eq!(header.obu_type, ObuType::QuantizationMatrix);
+        assert!(!header.obu_type.is_extensible_obu());
+        let mut bits = Bits::default();
+        bits.f(1, 15); // qm_bit_map: level 0
+        bits.bit(0); // qm_chroma_info_present_flag = 0 (1 plane)
+        bits.bit(1); // qm_is_default_flag = 1
+        // non-extensible OBU tail: trailing_bits().
+        bits.bit(1); // trailing_one_bit
+        while bits.bits.len() % 8 != 0 {
+            bits.bit(0);
+        }
+        let payload_bytes = bits.into_bytes();
+        let payload = reparse_payload(&header, &payload_bytes);
+        match &payload {
+            ParsedObu::QuantizationMatrix(qm) => {
+                assert!(!qm.is_reset());
+                assert!(qm.levels[0].is_default);
+            }
+            other => panic!("expected a quantizer matrix OBU, got {other:?}"),
+        }
+
+        let mut writer = BitWriter::new();
+        write_obu_payload(&mut writer, &payload, false, &[]).unwrap();
+        let bytes = writer.into_bytes();
+        assert_eq!(reparse_payload(&header, &bytes), payload);
+
+        // And it round-trips through write_complete_obu (one-byte header + payload + tail).
+        let mut complete = BitWriter::new();
+        write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
+        let complete_bytes = complete.into_bytes();
+        assert_eq!(reparse_payload(&header, &complete_bytes[1..]), payload);
+    }
+
+    #[test]
+    fn quantization_matrix_rejects_non_empty_passthrough() {
+        let header = read_obu_header_from_slice(&[0x58], ByteOffset::new(0)).unwrap();
+        // Reset QM (qm_bit_map = 0, chroma = 0) then the trailing-bits byte.
+        let payload = reparse_payload(&header, &[0x00, 0x00, 0x80]);
+        let mut writer = BitWriter::new();
+        let err = write_obu_payload(&mut writer, &payload, false, &[0x00]).unwrap_err();
+        assert!(
+            matches!(err, WriteError::NonCanonicalQuantizationMatrix { what } if what == "passthrough"),
+            "expected quantizer-matrix passthrough reject, got {err:?}"
+        );
+        assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
     fn multi_frame_header_rejects_non_empty_passthrough() {
         let header = header_for(ObuType::MultiFrameHeader);
         // Minimal MFH body (no frame size / deblocking / seg info) then the OBU tail.

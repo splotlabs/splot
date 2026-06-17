@@ -92,16 +92,13 @@ mod tests {
     }
 
     #[test]
-    fn unwritten_obu_type_is_unwritable() {
+    fn quantization_matrix_round_trips() {
         // leb128(4) + quantization-matrix header (obu_type 22 -> 0x58) + a minimal parsable payload
-        // (qm_bit_map(15) + chroma flag(1) + trailing). Quantization matrix has no body writer yet.
-        let outcome = roundtrip_first(&[0x04, 0x58, 0x00, 0x00, 0x80]);
+        // (qm_bit_map(15) == 0 reset + chroma flag(1) + trailing). §5.13 now has a body writer (the
+        // last OBU type), so the harness round-trips it; no OBU type is Unwritable anymore.
         assert_eq!(
-            outcome,
-            RoundtripOutcome::Unwritable {
-                feature: "AV2-5.13-QUANTIZATION-MATRIX"
-            },
-            "expected Unwritable for quantization matrix, got {outcome:?}"
+            roundtrip_first(&[0x04, 0x58, 0x00, 0x00, 0x80]),
+            RoundtripOutcome::RoundTripped
         );
     }
 

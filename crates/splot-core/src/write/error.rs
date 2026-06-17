@@ -424,6 +424,33 @@ pub enum WriteError {
         what: &'static str,
     },
 
+    /// A quantizer-matrix value is inconsistent with what the AV2 v1.0.0 § 5.13 / § 5.4.11
+    /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-13`,
+    /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-11`) parser would re-derive on reparse, so the
+    /// model could never have been produced by `parse_quantizer_matrix` and writing it would break
+    /// `read(write(x)) == x`. The model is lossy versus the wire format — it stores only the *decoded*
+    /// `UserDefinedQmPlane::values` (each coefficient `1..=255`), not the wire `quant_delta`s or the
+    /// optional `qm_8x8_is_symmetric` / `qm_4x8_is_transpose_of_8x4` / `qm_copy_from_previous_plane` /
+    /// coefficient-repeat compressions — so the writer canonicalizes to the long form (every skip flag
+    /// `0`, one `svlc()` delta per cell in 2D diagonal scan order, recomputing the minimal in-range
+    /// `quant_delta`); byte-exactness is not guaranteed, but semantic round-trip is. Examples: a
+    /// `num_planes` that disagrees with `qm_chroma_info_present_flag`; a `levels` set whose length or
+    /// per-element `level` does not match the `qm_bit_map` set bits in ascending order; an `is_default`
+    /// flag that disagrees with the `matrices` `Option`; a `matrices` set whose length or order does not
+    /// match `Fundamental_Tx_Size`; a plane count, width / height, or value-count mismatch; or a
+    /// coefficient of `0` (the parser never decodes a `0` — `quant2 == 0` is the repeat sentinel, not a
+    /// stored coefficient — so it is unrepresentable). Rejected before any bit is written.
+    #[error(
+        "non-canonical {what}: quantizer-matrix value cannot be reproduced by the §5.13 parser"
+    )]
+    NonCanonicalQuantizationMatrix {
+        /// A short, stable label for the offending field (e.g. `"num_planes"`, `"level_count"`,
+        /// `"level_index"`, `"is_default_gate"`, `"transform_count"`, `"transform_order"`,
+        /// `"plane_count"`, `"plane_dimensions"`, `"plane_value_count"`, `"coefficient_zero"`,
+        /// `"passthrough"`).
+        what: &'static str,
+    },
+
     /// A writer for this OBU payload type does not exist yet — an honest stub returned by the
     /// complete-OBU dispatch for the `ParsedObu` variants whose body writer has not landed. Distinct
     /// from a non-canonical reject: the model is fine, the writer is simply not implemented.
