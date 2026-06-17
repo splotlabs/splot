@@ -6703,6 +6703,7 @@ tests = [
     "crates/splot-recon/src/inverse_transform.rs::tests::identity_scales_rounds_and_clamps",
     "crates/splot-recon/src/inverse_transform.rs::tests::identity_clamp_uses_col_tx_range",
     "crates/splot-recon/src/inverse_transform.rs::tests::identity_rejects_output_length_mismatch",
+    "crates/splot-recon/src/inverse_transform.rs::tests::identity_is_total_for_extreme_inputs",
 ]
 commands = [
     "cargo test -p splot-recon inverse_transform --locked",

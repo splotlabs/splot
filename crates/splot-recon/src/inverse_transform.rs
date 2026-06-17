@@ -219,12 +219,14 @@ fn kernel_sum(src: &[i32], tx_type: InverseTransform1dType, sz: usize, i: usize)
 }
 
 /// AV2 § 4.8 `Round2(x, n)`: `n == 0` returns `x`, else `(x + (1 << (n - 1))) >> n`
-/// with arithmetic (sign-extending) shift over `i64`.
+/// with arithmetic (sign-extending) shift.
 ///
-/// Total and panic-free for every `shift`: a `shift` at or above the `i64` width
-/// can only come from an out-of-contract caller (the spec's `Transform_Shift`
-/// values are small), so it saturates to the arithmetic-shift limit instead of
-/// overflowing.
+/// Total and panic-free for every `value` and `shift`: the rounding add is done
+/// in `i128` so even an extreme `value` near `2^62` (the identity transform's
+/// `i32::MIN * i32::MIN`) plus the rounding bias cannot overflow, and a `shift`
+/// at or above the `i64` width saturates to the arithmetic-shift limit instead of
+/// shifting out of range. The result always fits `i64` (it is no larger in
+/// magnitude than `value`).
 fn round2(value: i64, shift: u8) -> i64 {
     if shift == 0 {
         return value;
@@ -233,7 +235,7 @@ fn round2(value: i64, shift: u8) -> i64 {
     if shift >= i64::BITS {
         return value >> (i64::BITS - 1);
     }
-    (value + (1i64 << (shift - 1))) >> shift
+    ((i128::from(value) + (1i128 << (shift - 1))) >> shift) as i64
 }
 
 #[cfg(test)]
@@ -482,5 +484,16 @@ mod tests {
                 out_len: 2
             })
         ));
+    }
+
+    #[test]
+    fn identity_is_total_for_extreme_inputs() {
+        // coeff * scale = i32::MIN * i32::MIN = 2^62; Round2(2^62, 63) is done in
+        // i128 (= 1), then clamped — no overflow panic on this out-of-contract
+        // extreme.
+        assert_eq!(
+            identity(&[i32::MIN], i32::MIN, 63, false, BitDepth::Ten),
+            [1]
+        );
     }
 }
