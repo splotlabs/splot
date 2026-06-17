@@ -6664,6 +6664,63 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-INVERSE-TRANSFORM-MATRIX-FREE"
+name = "Matrix-free 1D inverse transforms (Walsh-Hadamard, identity)"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["3", "4.8", "7.15.2.2", "7.15.2.3"]
+sources = [
+    "docs/spec/av2/1.0.0/03-symbols.md#s-3",
+    "docs/spec/av2/1.0.0/04-conventions.md#s-4-8",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-2-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-2-3",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/inverse_transform.rs"
+openspec_change = "recon-transform-matrix-free"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Extends the §7.15.2 1D inverse transform module (RECON-INVERSE-TRANSFORM-1D) with the two matrix-free transforms. `inverse_walsh_hadamard` implements §7.15.2.2 exactly: the 4-element lossless butterfly over `src` with a pre-scaling `shift` (a=src0>>shift, c=src1>>shift, d=src2>>shift, b=src3>>shift; a+=c; d-=b; e=(a-d)>>1; b=e-b; c=e-c; a-=b; d+=c), no kernel and no Clip3, total via `i64` intermediates. `inverse_identity_transform` implements §7.15.2.3: per-sample `Clip3(-(1<<(BitDepth+(colTx?0:7))), ...-1, Round2(src[i]*scale, shift))`, sharing the `transform_clip_bounds` helper with the §7.15.2.1 kernel transform; `scale` is the caller-supplied §7.15.4.1 `get_identity_scale` value. Both read no frame/segment/tile state and are panic-free; the identity transform returns typed `ReconError::InverseTransformLengthMismatch` on a source/output length mismatch. Completeness is proven by spec-exact WHT butterfly vectors (DC-only and last-coefficient inputs), the WHT pre-shift, the identity scale/round/clamp vector, both `colTx` identity clamp ranges, and the identity length-mismatch error. This row does not implement the §7.15.4.1 `get_identity_scale` derivation, the §7.15.3 secondary transform, the §7.15.4 2D inverse transform orchestration (Transform_Shift, get_transform_1d_type, row/column passes, DPCM, sample duplication), dequantization, residual addition, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler use inside `splot-recon`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/inverse_transform.rs::tests::walsh_hadamard_matches_spec_butterfly",
+    "crates/splot-recon/src/inverse_transform.rs::tests::walsh_hadamard_applies_pre_shift",
+    "crates/splot-recon/src/inverse_transform.rs::tests::walsh_hadamard_is_total_for_large_shift",
+    "crates/splot-recon/src/inverse_transform.rs::tests::identity_scales_rounds_and_clamps",
+    "crates/splot-recon/src/inverse_transform.rs::tests::identity_clamp_uses_col_tx_range",
+    "crates/splot-recon/src/inverse_transform.rs::tests::identity_rejects_output_length_mismatch",
+    "crates/splot-recon/src/inverse_transform.rs::tests::identity_is_total_for_extreme_inputs",
+]
+commands = [
+    "cargo test -p splot-recon inverse_transform --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "RUSTDOCFLAGS=\"-D warnings\" cargo doc -p splot-recon --no-deps --locked",
+    "cargo xtask check-source-lines",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/inverse_transform.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
 name = "Decoded frame and plane model contract documentation"
 category = "docs"

@@ -1,25 +1,30 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! AV2 § 7.15.2.1 1D inverse transform process.
+//! AV2 § 7.15.2 1D inverse transform processes.
 //!
-//! This module implements the scheduler-free AV2 § 7.15.2.1 kernel-based 1D
-//! inverse transform
-//! ([`07-decoding-process.md`](../../../docs/spec/av2/1.0.0/07-decoding-process.md)
-//! `#s-7-15-2-1`): a matrix multiplication of the input coefficients by the
-//! size-and-type transform kernel, followed by § 4.8 `Round2` and the § 7.15.2.1
-//! `colTx`-dependent `Clip3`. The kernels come from the dependency-free
-//! `splot-tables` crate (§ 9.6, generated verbatim from the spec attachment).
+//! This module implements the scheduler-free AV2 § 7.15.2 1D inverse transforms
+//! ([`07-decoding-process.md`](../../../docs/spec/av2/1.0.0/07-decoding-process.md)):
 //!
-//! Feature tracking: `RECON-INVERSE-TRANSFORM-1D`.
+//! - § 7.15.2.1 ([`inverse_transform_1d`]): the kernel-based transform — a matrix
+//!   multiplication of the input coefficients by the size-and-type § 9.6 kernel
+//!   (from the dependency-free `splot-tables` crate), followed by § 4.8 `Round2`
+//!   and the `colTx`-dependent `Clip3`.
+//! - § 7.15.2.2 ([`inverse_walsh_hadamard`]): the 4-element inverse
+//!   Walsh-Hadamard butterfly used by lossless blocks (no kernel, no `Clip3`).
+//! - § 7.15.2.3 ([`inverse_identity_transform`]): the inverse identity transform
+//!   (the Table 7.1 `IDT` type) — a per-sample `Round2(src * scale, shift)`
+//!   followed by the same `colTx`-dependent `Clip3`.
 //!
-//! Scope: this is the § 7.15.2.1 kernel transform only. The § 7.15.2.2 inverse
-//! Walsh-Hadamard transform, the § 7.15.2.3 inverse identity transform (the
-//! Table 7.1 `IDT` type), the § 7.15.3 secondary transform, and the § 7.15.4 2D
-//! inverse transform that orchestrates row/column passes (including the
-//! `Transform_Shift` / `get_transform_1d_type` derivations) are out of scope and
-//! tracked by their own future rows. The caller supplies the already-derived
-//! 1D transform type, shift, and `colTx` flag.
+//! Feature tracking: `RECON-INVERSE-TRANSFORM-1D`,
+//! `RECON-INVERSE-TRANSFORM-MATRIX-FREE`.
+//!
+//! Scope: the § 7.15.3 secondary transform and the § 7.15.4 2D inverse transform
+//! that orchestrates row/column passes (including the `Transform_Shift`,
+//! `get_transform_1d_type`, and `get_identity_scale` derivations, the DPCM
+//! cumulative sum, and adjusted-size sample duplication) are out of scope and
+//! tracked by their own future rows. The caller supplies the already-derived 1D
+//! transform type, scale, shift, and `colTx` flag.
 
 use splot_tables::tables::transform_1d::{
     ADST_KERNEL4, ADST_KERNEL8, ADST_KERNEL16, DCT_KERNEL4, DCT_KERNEL8, DCT_KERNEL16,
@@ -86,14 +91,79 @@ pub fn inverse_transform_1d(
         });
     }
 
-    let bound: i64 = 1 << (u32::from(bit_depth.bits()) + if col_tx { 0 } else { 7 });
-    let (lo, hi) = (-bound, bound - 1);
+    let (lo, hi) = transform_clip_bounds(col_tx, bit_depth);
 
     for (i, slot) in out.iter_mut().enumerate() {
         let s = kernel_sum(src, tx_type, sz, i);
         *slot = round2(s, shift).clamp(lo, hi) as i32;
     }
     Ok(())
+}
+
+/// AV2 § 7.15.2.2 inverse Walsh-Hadamard transform: the 4-element lossless
+/// butterfly over `src` with a pre-scaling `shift`.
+///
+/// This is the lossless-block 1D transform. It applies no `Clip3` (the spec
+/// produces the butterfly result directly) and is total: the arithmetic uses
+/// `i64` intermediates and the pre-scale `shift` is clamped below the `i64`
+/// width, so an out-of-contract `shift` saturates to the arithmetic-shift limit
+/// instead of panicking (spec-conformant callers use shift 0 or 3). The result
+/// is returned as `i32` (lossless residuals are bounded well within `i32`).
+#[must_use]
+pub fn inverse_walsh_hadamard(src: [i32; 4], shift: u8) -> [i32; 4] {
+    let shift = u32::from(shift).min(i64::BITS - 1);
+    let mut a = i64::from(src[0]) >> shift;
+    let mut c = i64::from(src[1]) >> shift;
+    let mut d = i64::from(src[2]) >> shift;
+    let mut b = i64::from(src[3]) >> shift;
+    a += c;
+    d -= b;
+    let e = (a - d) >> 1;
+    b = e - b;
+    c = e - c;
+    a -= b;
+    d += c;
+    [a as i32, b as i32, c as i32, d as i32]
+}
+
+/// Applies the AV2 § 7.15.2.3 inverse identity transform to `src`, writing `out`.
+///
+/// Each output is `Clip3(bound, Round2(src[i] * scale, shift))` with the same
+/// `colTx`-dependent bound as [`inverse_transform_1d`]. `scale` is the
+/// caller-supplied § 7.15.4.1 `get_identity_scale` value, `shift` the down-shift,
+/// `col_tx` the column-pass flag, and `bit_depth` the active decoded bit depth.
+/// The computation uses `i64` intermediates, so it is total and never panics.
+///
+/// # Errors
+/// Returns [`ReconError::InverseTransformLengthMismatch`] if `out.len()` does not
+/// equal `src.len()`.
+pub fn inverse_identity_transform(
+    src: &[i32],
+    scale: i32,
+    shift: u8,
+    col_tx: bool,
+    bit_depth: BitDepth,
+    out: &mut [i32],
+) -> Result<()> {
+    if out.len() != src.len() {
+        return Err(ReconError::InverseTransformLengthMismatch {
+            src_len: src.len(),
+            out_len: out.len(),
+        });
+    }
+    let (lo, hi) = transform_clip_bounds(col_tx, bit_depth);
+    for (slot, &coeff) in out.iter_mut().zip(src) {
+        let scaled = i64::from(coeff) * i64::from(scale);
+        *slot = round2(scaled, shift).clamp(lo, hi) as i32;
+    }
+    Ok(())
+}
+
+/// The AV2 § 7.15.2.1 / § 7.15.2.3 `Clip3` bounds
+/// `[-(1 << (BitDepth + (colTx ? 0 : 7))), (1 << (BitDepth + (colTx ? 0 : 7))) - 1]`.
+fn transform_clip_bounds(col_tx: bool, bit_depth: BitDepth) -> (i64, i64) {
+    let bound: i64 = 1 << (u32::from(bit_depth.bits()) + if col_tx { 0 } else { 7 });
+    (-bound, bound - 1)
 }
 
 /// Computes `sum over j of kernel[j][i] * src[j]` for the § 7.15.2.1 dispatch.
@@ -149,12 +219,14 @@ fn kernel_sum(src: &[i32], tx_type: InverseTransform1dType, sz: usize, i: usize)
 }
 
 /// AV2 § 4.8 `Round2(x, n)`: `n == 0` returns `x`, else `(x + (1 << (n - 1))) >> n`
-/// with arithmetic (sign-extending) shift over `i64`.
+/// with arithmetic (sign-extending) shift.
 ///
-/// Total and panic-free for every `shift`: a `shift` at or above the `i64` width
-/// can only come from an out-of-contract caller (the spec's `Transform_Shift`
-/// values are small), so it saturates to the arithmetic-shift limit instead of
-/// overflowing.
+/// Total and panic-free for every `value` and `shift`: the rounding add is done
+/// in `i128` so even an extreme `value` near `2^62` (the identity transform's
+/// `i32::MIN * i32::MIN`) plus the rounding bias cannot overflow, and a `shift`
+/// at or above the `i64` width saturates to the arithmetic-shift limit instead of
+/// shifting out of range. The result always fits `i64` (it is no larger in
+/// magnitude than `value`).
 fn round2(value: i64, shift: u8) -> i64 {
     if shift == 0 {
         return value;
@@ -163,7 +235,7 @@ fn round2(value: i64, shift: u8) -> i64 {
     if shift >= i64::BITS {
         return value >> (i64::BITS - 1);
     }
-    (value + (1i64 << (shift - 1))) >> shift
+    ((i128::from(value) + (1i128 << (shift - 1))) >> shift) as i64
 }
 
 #[cfg(test)]
@@ -354,5 +426,74 @@ mod tests {
         // Out-of-contract huge shift saturates to the arithmetic limit, no panic.
         assert_eq!(round2(1_000, 64), 0);
         assert_eq!(round2(-1_000, 200), -1);
+    }
+
+    #[test]
+    fn walsh_hadamard_matches_spec_butterfly() {
+        // src = [4,0,0,0], shift 0: a=4,c=d=b=0 -> a=4, d=0, e=2, b=2, c=2,
+        // a=2, d=2 => [2, 2, 2, 2].
+        assert_eq!(inverse_walsh_hadamard([4, 0, 0, 0], 0), [2, 2, 2, 2]);
+        // src = [0,0,0,4], shift 0: a=0,c=0,d=0,b=4 -> d=-4, e=2, b=-2, c=2,
+        // a=2, d=-2 => [2, -2, 2, -2].
+        assert_eq!(inverse_walsh_hadamard([0, 0, 0, 4], 0), [2, -2, 2, -2]);
+    }
+
+    #[test]
+    fn walsh_hadamard_applies_pre_shift() {
+        // src = [8,0,0,0], shift 1 pre-scales src[0] to 4, then the [4,0,0,0]
+        // butterfly gives [2, 2, 2, 2].
+        assert_eq!(inverse_walsh_hadamard([8, 0, 0, 0], 1), [2, 2, 2, 2]);
+    }
+
+    #[test]
+    fn walsh_hadamard_is_total_for_large_shift() {
+        // Out-of-contract shift is clamped below the i64 width: non-negative
+        // inputs shift out to 0, so the butterfly is all-zero, with no panic.
+        assert_eq!(inverse_walsh_hadamard([4, 0, 0, 0], 64), [0, 0, 0, 0]);
+        assert_eq!(inverse_walsh_hadamard([7, 3, 1, 5], 200), [0, 0, 0, 0]);
+    }
+
+    fn identity(src: &[i32], scale: i32, shift: u8, col_tx: bool, bit_depth: BitDepth) -> Vec<i32> {
+        let mut out = vec![0; src.len()];
+        inverse_identity_transform(src, scale, shift, col_tx, bit_depth, &mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn identity_scales_rounds_and_clamps() {
+        // Round2(10*181, 8) = (1810 + 128) >> 8 = 7; Round2(-4*181, 8) =
+        // (-724 + 128) >> 8 = -596 >> 8 = -3; both within the col_tx=false range.
+        assert_eq!(identity(&[10, -4], 181, 8, false, BitDepth::Eight), [7, -3]);
+    }
+
+    #[test]
+    fn identity_clamp_uses_col_tx_range() {
+        // 1000 * 256 = 256000. col_tx=true (8-bit) clamps to 255; col_tx=false
+        // clamps to the wider 32767.
+        assert_eq!(identity(&[1000], 256, 0, true, BitDepth::Eight), [255]);
+        assert_eq!(identity(&[1000], 256, 0, false, BitDepth::Eight), [32767]);
+    }
+
+    #[test]
+    fn identity_rejects_output_length_mismatch() {
+        let mut out = vec![0; 2];
+        assert!(matches!(
+            inverse_identity_transform(&[0; 4], 64, 0, true, BitDepth::Eight, &mut out),
+            Err(ReconError::InverseTransformLengthMismatch {
+                src_len: 4,
+                out_len: 2
+            })
+        ));
+    }
+
+    #[test]
+    fn identity_is_total_for_extreme_inputs() {
+        // coeff * scale = i32::MIN * i32::MIN = 2^62; Round2(2^62, 63) is done in
+        // i128 (= 1), then clamped — no overflow panic on this out-of-contract
+        // extreme.
+        assert_eq!(
+            identity(&[i32::MIN], i32::MIN, 63, false, BitDepth::Ten),
+            [1]
+        );
     }
 }
