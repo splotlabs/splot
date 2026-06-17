@@ -2,7 +2,7 @@
 
 Generated from `docs/DECODER-SUPPORT-MATRIX.toml` by `cargo xtask decoder-support --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 75 row(s).
+Matrix version 1. Last reviewed 2026-06-15. 76 row(s).
 
 ## Status Counts
 
@@ -10,7 +10,7 @@ Matrix version 1. Last reviewed 2026-06-15. 75 row(s).
 |---|---:|
 | `todo` | 0 |
 | `partial` | 8 |
-| `supported` | 67 |
+| `supported` | 68 |
 | `unsupported-intentional` | 0 |
 | `blocked` | 0 |
 
@@ -21,7 +21,7 @@ Matrix version 1. Last reviewed 2026-06-15. 75 row(s).
 | `encoder-reuse` | 2 |
 | `foundation` | 22 |
 | `tier0-plan` | 2 |
-| `tier1-intra` | 49 |
+| `tier1-intra` | 50 |
 
 ## Rows
 
@@ -90,6 +90,7 @@ Matrix version 1. Last reviewed 2026-06-15. 75 row(s).
 | `transform-shift-lookup` | Inverse transform Transform_Shift lookup | `RECON-TRANSFORM-SHIFT-LOOKUP` | `tier1-intra` | `supported` | 7.15.4<br>9.2 | crates/splot-recon/src/transform_params.rs::tests::transform_shift_returns_the_parallel_table_entry_for_every_shape<br>crates/splot-recon/src/transform_params.rs::tests::tx_size_log2_dims_keys_are_distinct<br>crates/splot-recon/src/transform_params.rs::tests::transform_shift_matches_independently_transcribed_spec_values<br>crates/splot-recon/src/transform_params.rs::tests::transform_shift_is_symmetric_under_transpose<br>crates/splot-recon/src/transform_params.rs::tests::transform_shift_rejects_non_av2_shapes<br>cargo test -p splot-recon transform_params --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support<br>cargo xtask check-feature-status | none | none | `crates/splot-recon/src/transform_params.rs; crates/splot-recon/src/error.rs; crates/splot-recon/src/lib.rs` |
 | `get-transform-1d-type` | Inverse transform get_transform_1d_type derivation | `RECON-GET-TRANSFORM-1D-TYPE` | `tier1-intra` | `supported` | 7.15.4 | crates/splot-recon/src/transform_params.rs::tests::get_transform_1d_type_matches_the_spec_table_without_ddt<br>crates/splot-recon/src/transform_params.rs::tests::get_transform_1d_type_applies_ddt_substitution_only_when_eligible<br>crates/splot-recon/src/transform_params.rs::tests::get_transform_1d_type_rejects_out_of_range_plane_tx_type<br>cargo test -p splot-recon transform_params --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support<br>cargo xtask check-feature-status | none | none | `crates/splot-recon/src/transform_params.rs; crates/splot-recon/src/error.rs; crates/splot-recon/src/lib.rs` |
 | `coefficient-scan-order` | Coefficient scan order get_scan | `RECON-COEFFICIENT-SCAN-ORDER` | `tier1-intra` | `supported` | 5.20.7.30 | crates/splot-recon/src/coefficient_scan.rs::tests::two_d_4x4_matches_the_spec_anti_diagonal_scan<br>crates/splot-recon/src/coefficient_scan.rs::tests::vertical_scan_is_row_major_identity<br>crates/splot-recon/src/coefficient_scan.rs::tests::horizontal_scan_is_column_major_transpose<br>crates/splot-recon/src/coefficient_scan.rs::tests::every_shape_and_class_is_a_valid_permutation<br>crates/splot-recon/src/coefficient_scan.rs::tests::rejects_invalid_shape_and_length<br>cargo test -p splot-recon coefficient_scan --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support<br>cargo xtask check-feature-status | none | none | `crates/splot-recon/src/coefficient_scan.rs; crates/splot-recon/src/error.rs; crates/splot-recon/src/lib.rs` |
+| `get-tx-class` | Coefficient scan class get_tx_class | `RECON-GET-TX-CLASS` | `tier1-intra` | `supported` | 8.3.2 | crates/splot-recon/src/coefficient_scan.rs::tests::tx_class_maps_every_plane_tx_type<br>cargo test -p splot-recon coefficient_scan --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-decoder-support<br>cargo xtask check-feature-status | none | none | `crates/splot-recon/src/coefficient_scan.rs; crates/splot-recon/src/lib.rs` |
 | `recon-intra-prediction-fuzz` | Intra prediction and workspace fuzz entry point | `CONF-RECON-INTRA-PREDICTION-FUZZ` | `tier1-intra` | `supported` | 3<br>4.8<br>6.4.1<br>6.17.4.1<br>6.17.4.4<br>7.13.2.1<br>7.13.2.2<br>7.13.2.8<br>7.13.2.10<br>7.13.2.11<br>7.13.2.12<br>7.13.2.13<br>7.13.3.22<br>9.2 | cargo check --manifest-path fuzz/Cargo.toml --bins --locked<br>cargo xtask check-fuzz-targets<br>cargo test -p splot-recon ibp --locked<br>cargo test -p splot-recon intra_dc_subsampled --locked<br>cargo test -p splot-recon intra_directional --locked<br>cargo test -p splot-recon intra_directional_angle --locked<br>cargo test -p splot-recon intra --locked<br>cargo test -p splot-recon workspace_intra_directional_angle --locked<br>cargo test -p splot-recon workspace --locked<br>cargo +nightly fuzz run recon_intra_prediction_bytes (local/nightly; CI fuzz smoke runs every target) | none | none | `crates/splot-recon/src/intra.rs; crates/splot-recon/src/intra_basic.rs; crates/splot-recon/src/intra_dc_subsampled.rs; crates/splot-recon/src/intra_directional.rs; crates/splot-recon/src/intra_directional_angle.rs; crates/splot-recon/src/intra_directional_angle_tests.rs; crates/splot-recon/src/intra_ibp_dc.rs; crates/splot-recon/src/intra_smooth.rs; crates/splot-recon/src/workspace.rs; crates/splot-recon/src/workspace_intra_directional_angle.rs; crates/splot-recon/src/workspace_intra_directional_angle_tests.rs` |
 | `intra-reconstruction` | Scalar intra reconstruction | none | `tier1-intra` | `partial` | 7.13<br>7.14<br>7.15 | none | decode/unsupported-feature (planned) | none | `planned` |
 | `output-y4m` | Y4M output writer | `RECON-Y4M-OUTPUT-WRITER` | `tier1-intra` | `partial` | 6.4.1<br>6.16.13<br>6.17.4.4<br>7.21.1<br>7.21.2 | crates/splot-recon/src/y4m.rs::tests<br>crates/splot-decode/src/runtime_y4m.rs::tests::minimal_fixture_decodes_to_exact_y4m_bytes<br>crates/splot-cli/tests/decode_y4m_cli.rs::decode_explicit_y4m_success_for_minimal_fixture<br>cargo test -p splot-recon --locked<br>cargo test -p splot-decode --locked<br>cargo test -p splot-cli --test decode_y4m_cli --locked<br>cargo clippy -p splot-recon --all-targets --locked -- -D warnings<br>cargo xtask check-dependency-direction<br>cargo xtask check-concurrency-policy<br>cargo xtask check-decoder-support | none | none | `crates/splot-recon/src/y4m.rs; crates/splot-recon/src/lib.rs` |

@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 219 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 220 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -190,6 +190,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `RECON-TRANSFORM-SHIFT-LOOKUP` | Inverse transform Transform_Shift lookup | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/transform_params.rs` |
 | `RECON-GET-TRANSFORM-1D-TYPE` | Inverse transform get_transform_1d_type derivation | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/transform_params.rs` |
 | `RECON-COEFFICIENT-SCAN-ORDER` | Coefficient scan order get_scan | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/coefficient_scan.rs` |
+| `RECON-GET-TX-CLASS` | Transform class get_tx_class | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/coefficient_scan.rs` |
 | `DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT` | Decoded frame and plane model contract documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `docs/DECODER-ROADMAP.md` |
 | `DOC-MINIMAL-DECODE-TIER-CONTRACT` | Minimal decode tier contract documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `docs/DECODER-ROADMAP.md` |
 | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | Minimal-tier runtime hash success | infrastructure | infrastructure | done | done | partial | done | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_hash.rs` |

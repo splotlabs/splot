@@ -7168,6 +7168,52 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-GET-TX-CLASS"
+name = "Transform class get_tx_class"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["8.3.2"]
+sources = [
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/coefficient_scan.rs"
+openspec_change = "recon-get-tx-class"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds `tx_class(plane_tx_type) -> TransformClass` to the `splot-recon` `coefficient_scan` module, implementing the AV2 `get_tx_class(txType)` mapping (defined in §8.3.2, `08-parsing-process.md` lines 1549-1560): the vertical-only transforms `V_DCT`/`V_ADST`/`V_FLIPADST` (TX_TYPE 10/12/14) map to `TransformClass::Vertical`, the horizontal-only transforms `H_DCT`/`H_ADST`/`H_FLIPADST` (11/13/15) to `TransformClass::Horizontal`, and every other transform (`DCT_DCT`..`IDTX`, 0..9) to `TransformClass::TwoD` via the spec `else` branch. The TX_TYPE values are taken from `03-symbols.md`. It is a total `const fn` (the spec `else` maps any non-directional value, including out-of-range, to `TX_CLASS_2D`, so no error path is needed), and its result selects the scan in `coefficient_scan_order` (the §5.20.7.30 `get_scan`) and the coefficient base/br contexts. Self-contained pure prerequisite for the coefficient decode loop; not yet wired into a decode path (no caller), so no-output-change. It does not implement the coefficient decode loop, the `coeff_base`/`coeff_br` context derivations that consume the class, or any runtime decode output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/coefficient_scan.rs::tests::tx_class_maps_every_plane_tx_type",
+]
+commands = [
+    "cargo test -p splot-recon coefficient_scan --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/coefficient_scan.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
 name = "Decoded frame and plane model contract documentation"
 category = "docs"

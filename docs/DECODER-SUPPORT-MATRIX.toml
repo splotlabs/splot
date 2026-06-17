@@ -884,6 +884,20 @@ local_reference_evidence = []
 notes = "Source-backed scheduler-free `splot-recon` AV2 §5.20.7.30 `get_scan` coefficient scan order. `coefficient_scan_order(w, h, class, out)` writes the order in which transform coefficients are scanned (each `out[c]` is the flattened `y*w + x` position) for the three transform classes: `TX_CLASS_VERT` (row-major raster, identity), `TX_CLASS_HORIZ` (column-major transpose), and `TX_CLASS_2D` (the anti-diagonal scan, each anti-diagonal traversed from high-y and low-x to low-y and high-x), translated verbatim from the spec algorithm (the 2D branch uses signed i32 x and y to mirror the spec decrement-and-check logic). The block shape is caller-resolved (`w = Min(Tx_Width[txSz], 32)` and `h = Min(Tx_Height[txSz], 32)`, each 4/8/16/32), consistent with the §7.15 transforms; scan positions never exceed `w*h-1` which is at most 1023, so `out` is a `u16` slice. A new `TransformClass` enum names the spec `txClass`; typed `ReconError::InvalidScanShape` and `ReconError::ScanLengthMismatch` reject bad shapes and lengths (total, no panic). This is a pure prerequisite for the §5.20.7 coefficient decode loop and the §7.14.4 coefficient placement; it is not yet wired into a decode path, so it is no-output-change. It does not implement `get_tx_class`, the coefficient decode loop, the §7.15.3 secondary-transform scan, or runtime decode output."
 
 [[row]]
+id = "get-tx-class"
+name = "Coefficient scan class get_tx_class"
+feature_id = "RECON-GET-TX-CLASS"
+spec_sections = ["8.3.2"]
+parser_source = "n/a"
+decode_module = "crates/splot-recon/src/coefficient_scan.rs; crates/splot-recon/src/lib.rs"
+tier = "tier1-intra"
+status = "supported"
+self_contained_tests = ["crates/splot-recon/src/coefficient_scan.rs::tests::tx_class_maps_every_plane_tx_type", "cargo test -p splot-recon coefficient_scan --locked", "cargo clippy -p splot-recon --all-targets --locked -- -D warnings", "cargo xtask check-dependency-direction", "cargo xtask check-decoder-support", "cargo xtask check-feature-status"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Source-backed scheduler-free `splot-recon` AV2 §8.3.2 `get_tx_class` transform-class derivation, the companion that selects which `coefficient_scan_order` pattern (`RECON-COEFFICIENT-SCAN-ORDER`) a `PlaneTxType` uses. `tx_class(plane_tx_type)` is a `const fn` returning the spec class: the vertical-only transforms `V_DCT` (10), `V_ADST` (12), and `V_FLIPADST` (14) map to `TransformClass::Vertical`; the horizontal-only transforms `H_DCT` (11), `H_ADST` (13), and `H_FLIPADST` (15) map to `TransformClass::Horizontal`; and the spec `else` branch maps every other value (all 2D and identity transforms, `DCT_DCT`..`IDTX` 0..9, and any out-of-range input) to `TransformClass::TwoD` (`TX_TYPE` values from `03-symbols.md`). It is total over all `usize` inputs (no panic) and strictly additive: a `const fn` reusing the existing `TransformClass` enum with no new error variant and no rewiring, so the minimal flat-intra fixture snapshots stay byte-identical. This row does not implement the §8.3.1 transform-type parsing that produces `PlaneTxType`, the coefficient decode loop, or runtime decode output."
+
+[[row]]
 id = "recon-intra-prediction-fuzz"
 name = "Intra prediction and workspace fuzz entry point"
 feature_id = "CONF-RECON-INTRA-PREDICTION-FUZZ"
