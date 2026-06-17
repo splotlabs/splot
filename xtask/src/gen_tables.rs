@@ -57,13 +57,13 @@ const CORE_TABLES_DIR: &str = "crates/splot-core/src/tables";
 /// dependency-free `splot-tables` crate.
 const SHARED_TABLES_DIR: &str = "crates/splot-tables/src/tables";
 
-/// Returns the output directory for a § 9 module. The § 9.6 1D transform and
-/// § 9.7 secondary transform kernel tables live in the shared `splot-tables`
-/// crate (so `splot-recon` can consume them without depending on `splot-core`);
-/// every other module stays in `splot-core`.
+/// Returns the output directory for a § 9 module. The § 9.6 1D transform, § 9.7
+/// secondary transform kernel, and § 9.4 quantizer-matrix tables live in the
+/// shared `splot-tables` crate (so `splot-recon` can consume them without
+/// depending on `splot-core`); every other module stays in `splot-core`.
 fn output_dir_for(module: &str) -> &'static str {
     match module {
-        "transform_1d" | "secondary_transform" => SHARED_TABLES_DIR,
+        "transform_1d" | "secondary_transform" | "quantizer" => SHARED_TABLES_DIR,
         _ => CORE_TABLES_DIR,
     }
 }

@@ -11,6 +11,8 @@
 //! One submodule per § 9 subsection; see each module's docs for the
 //! generating attachment and spec citation.
 
+/// AV2 § 9.4 — Quantizer matrix tables.
+pub mod quantizer;
 /// AV2 § 9.7 — Secondary transform tables.
 pub mod secondary_transform;
 /// AV2 § 9.6 — 1D transform tables.

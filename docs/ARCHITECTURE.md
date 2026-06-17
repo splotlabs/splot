@@ -20,9 +20,9 @@ decode/reconstruction/hash/Y4M output handoff code.
 
 splot-parallel owns the approved concurrency primitives (local Rayon worker
 pool + bounded crossbeam queues) and depends on no splot-* crate.
-splot-recon depends only on splot-tables (the shared § 9 transform kernels).
-splot-tables holds the shared generated AV2 § 9 transform-kernel tables and
-depends on no splot-* crate and no external crate.
+splot-recon depends only on splot-tables (the shared § 9 transform kernels and
+quantizer matrix). splot-tables holds the shared generated AV2 § 9 transform-kernel
+and quantizer-matrix tables and depends on no splot-* crate and no external crate.
 xtask is standalone automation.
 fuzz lives outside the workspace and depends on splot-core only.
 ```
@@ -65,9 +65,10 @@ by `cargo xtask check-dependency-direction`):
   `splot-validate` stay concurrency-runtime-free. See
   [CONCURRENCY.md](./CONCURRENCY.md).
 - **`splot-tables`** — a dependency-free crate holding the shared generated AV2
-  § 9 transform-kernel tables (§ 9.6 `transform_1d`, § 9.7 `secondary_transform`)
-  so `splot-recon` can consume them for the § 7.15 inverse transform without
-  depending on `splot-core`. The tables are generated verbatim by
+  § 9 tables that `splot-recon` consumes without depending on `splot-core`: the
+  § 9.6 `transform_1d` and § 9.7 `secondary_transform` transform kernels (for the
+  § 7.15 inverse transform) and the § 9.4 `quantizer` matrix (for the § 7.14.4
+  dequantization). The tables are generated verbatim by
   `cargo xtask gen-tables` (drift-checked); the crate is never hand-edited and
   depends on no other `splot-*` crate and no external crate. Every other § 9
   table stays in `splot-core::tables`.

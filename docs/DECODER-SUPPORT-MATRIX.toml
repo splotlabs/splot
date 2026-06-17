@@ -828,6 +828,20 @@ local_reference_evidence = []
 notes = "Source-backed scheduler-free `splot-recon` AV2 §7.14.4 dequantization process turning coded `Quant` coefficients into the `Dequant` array the §7.15.4 inverse transform consumes. `dequant_coefficient(quant_coeff, q2, dq_denom, bit_depth)` implements steps 3-8 exactly: sign, `dqHigh = Abs(qc)*q2`, `dq = Round2(dqHigh & 0xFFFFFF, QUANT_TABLE_BITS=3)`, `dq2 = sign*(dq/dq_denom)`, `Clip3(-(1<<(7+BitDepth)), (1<<(7+BitDepth))-1, dq2)`. `dequantize_block(params, quant, out)` applies it over a `tx_width*tx_height` (each 4/8/16/32) row-major block, using `dc_quant` for the (0,0) DC coefficient and `ac_quant` otherwise (the non-quantization-matrix path). `q2` (the §7.14.2 DC/AC quantizer, optionally QM-weighted `Round2(q*m,5)`) and `dq_denom = 1<<shift` are caller-resolved. Total and panic-free (i64 product/rounding, `unsigned_abs`, zero `dq_denom` treated as 1, Clip3 bound); typed `ReconError` rejects non-4/8/16/32 shapes and length mismatches. This row does not implement the §7.14.4 quantization-matrix weighting (the `Quantizer_Matrix` and `UserQm` lookups), the `shift`, `useFsc`, and `allow_tcq` derivation, the coefficient entropy decode that produces `Quant`, the §7.15.4 inverse transform, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler state in `splot-recon`."
 
 [[row]]
+id = "dequant-qm-weight"
+name = "Dequantization quantization-matrix weighting"
+feature_id = "RECON-DEQUANT-QM-WEIGHT"
+spec_sections = ["4.8", "7.14.4", "9.4"]
+parser_source = "n/a"
+decode_module = "crates/splot-recon/src/dequant_process.rs; crates/splot-tables/src/tables/quantizer.rs; crates/splot-recon/src/lib.rs"
+tier = "tier1-intra"
+status = "supported"
+self_contained_tests = ["crates/splot-recon/src/dequant_process.rs::tests::qm_weighted_quantizer_applies_round2_shift5", "crates/splot-recon/src/dequant_process.rs::tests::qm_weighted_quantizer_is_total_for_extreme_inputs", "crates/splot-recon/src/dequant_process.rs::tests::quantization_matrix_weight_matches_the_generated_table", "crates/splot-recon/src/dequant_process.rs::tests::quantization_matrix_weight_rejects_out_of_range_indices", "cargo test -p splot-recon dequant_process --locked", "cargo test -p splot-tables --locked", "cargo clippy -p splot-recon --all-targets --locked -- -D warnings", "cargo xtask gen-tables --check", "cargo xtask check-dependency-direction", "cargo xtask check-decoder-support", "cargo xtask check-feature-status"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Source-backed scheduler-free `splot-recon` AV2 §7.14.4 step-2 quantization-matrix weighting consuming the generated §9.4 `Quantizer_Matrix` and `Qm_Offset` tables. To reach those tables from `splot-recon` (which cannot depend on `splot-core`), the §9.4 `quantizer` gen-tables module is relocated to the dependency-free `splot-tables` crate via `output_dir_for` (the INFRA-SHARED-SPEC-TABLES mechanism; zero `splot-core` consumers, byte-identical move, 236-table determinism count unchanged). `quantization_matrix_weight(QmWeightIndex)` returns `m = Quantizer_Matrix[segLvl][plane>0][Qm_Offset[txSz] + i*tw + j]` with bounds-checked indices (typed `ReconError::InvalidQuantizerMatrixIndex`); `qm_weighted_quantizer(q, m) = Round2(q*m, 5)` computed in i64 and clamped into u32 (total). The caller feeds the weighted `q2` to `dequant_coefficient`. This row does not implement the `useQm`, `useUserQm`, and `segLvl` gating, the user-defined `UserQm` matrices, the `shift` and `useFsc` derivation, the coefficient entropy decode that produces `Quant`, the §7.15.4 inverse transform, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler state in `splot-recon`."
+
+[[row]]
 id = "recon-intra-prediction-fuzz"
 name = "Intra prediction and workspace fuzz entry point"
 feature_id = "CONF-RECON-INTRA-PREDICTION-FUZZ"
