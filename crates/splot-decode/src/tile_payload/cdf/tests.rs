@@ -7,8 +7,8 @@ use super::*;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderConfig};
 use splot_core::tables::cdf::{
-    DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
-    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_EOB_EXTRA_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
+    DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
 #[test]
@@ -33,6 +33,7 @@ fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
         &DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF
     );
     assert_eq!(frame.rows().v_txb_skip(), &DEFAULT_V_TXB_SKIP_CDF);
+    assert_eq!(frame.rows().eob_extra(), &DEFAULT_EOB_EXTRA_CDF);
 
     let mut tile = frame.tile_copy();
     tile.rows_mut().do_split[0][0][0] = 1234;
@@ -511,4 +512,38 @@ fn work_unit_boundary_applies_saved_and_frame_updates_transactionally() {
         boundary.frame_cdfs().rows().y_mode_set(),
         &[20_000, 21_000, 22_000, 9, 15]
     );
+}
+
+#[test]
+fn eob_extra_selector_returns_rows_and_bounds_error() {
+    // AV2 § 8.3.2: TileEobExtraCdf is selected directly by coeff_cdf_q_ctx with
+    // no per-symbol context. Each q-context returns its Default_Eob_Extra_Cdf row.
+    let frame = FrameCdfSubset::from_defaults();
+    let tile = frame.tile_copy();
+    for (q, expected) in DEFAULT_EOB_EXTRA_CDF.iter().enumerate() {
+        let row = tile
+            .row(TileCdfSelector::EobExtra { coeff_cdf_q_ctx: q })
+            .unwrap();
+        assert_eq!(row, expected.as_slice(), "eob_extra q-ctx {q}");
+    }
+    // A coeff_cdf_q_ctx at the bound is a typed SelectorOutOfRange naming the array.
+    assert!(matches!(
+        tile.row(TileCdfSelector::EobExtra { coeff_cdf_q_ctx: 4 }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::EobExtra,
+            index_name: "coeff_cdf_q_ctx",
+            actual: 4,
+            max_exclusive: 4,
+        })
+    ));
+}
+
+#[test]
+fn eob_extra_tile_copy_does_not_alias_the_frame() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    tile.rows_mut().block.eob_extra[2] = [12_345, 0, 7];
+    // The tile copy is mutated; the frame's default row is untouched.
+    assert_eq!(tile.rows().eob_extra()[2], [12_345, 0, 7]);
+    assert_eq!(frame.rows().eob_extra()[2], DEFAULT_EOB_EXTRA_CDF[2]);
 }

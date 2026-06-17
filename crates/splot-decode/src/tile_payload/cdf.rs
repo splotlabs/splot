@@ -332,6 +332,11 @@ pub(crate) enum TileCdfSelector {
         /// V-plane transform-skip context index.
         ctx: usize,
     },
+    /// `TileEobExtraCdf[coeff_cdf_q_ctx]` (AV2 § 8.3.2: context-free selection).
+    EobExtra {
+        /// Coefficient-CDF quantization context.
+        coeff_cdf_q_ctx: usize,
+    },
 }
 
 /// Supported CDF arrays for error reporting.
@@ -355,6 +360,8 @@ pub(crate) enum TileCdfArray {
     UvModeCflNotAllowed,
     /// `TileVTxbSkipCdf`.
     VTxbSkip,
+    /// `TileEobExtraCdf`.
+    EobExtra,
 }
 
 impl TileCdfArray {
@@ -369,6 +376,7 @@ impl TileCdfArray {
             Self::TxbSkip => "TileTxbSkipCdf",
             Self::UvModeCflNotAllowed => "TileUvModeCflNotAllowedCdf",
             Self::VTxbSkip => "TileVTxbSkipCdf",
+            Self::EobExtra => "TileEobExtraCdf",
         }
     }
 }
@@ -707,6 +715,9 @@ impl TileCdfRows {
                 coeff_cdf_q_ctx,
                 ctx,
             }),
+            TileCdfSelector::EobExtra { coeff_cdf_q_ctx } => self
+                .block
+                .row(BlockCdfSelector::EobExtra { coeff_cdf_q_ctx }),
         }
     }
 
@@ -804,6 +815,9 @@ impl TileCdfRows {
                 coeff_cdf_q_ctx,
                 ctx,
             }),
+            TileCdfSelector::EobExtra { coeff_cdf_q_ctx } => self
+                .block
+                .row_mut(BlockCdfSelector::EobExtra { coeff_cdf_q_ctx }),
         }
     }
 
@@ -901,6 +915,11 @@ impl TileCdfRows {
     #[cfg(test)]
     pub(crate) const fn v_txb_skip(&self) -> &block_rows::VTxbSkipCdfRows {
         self.block.v_txb_skip()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn eob_extra(&self) -> &block_rows::EobExtraCdfRows {
+        self.block.eob_extra()
     }
 }
 

@@ -6,8 +6,8 @@
 //! Feature tracking: `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER`.
 
 use splot_core::tables::cdf::{
-    DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
-    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_EOB_EXTRA_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
+    DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
 use super::{CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_row, scale_cdf_count};
@@ -28,6 +28,11 @@ pub(crate) type TxbSkipCdfRows = [[[[[i32; CDF_ROW_LEN]; TXB_SKIP_CONTEXTS]; TX_
     PLANE_TYPES]; COEFF_CDF_Q_CONTEXTS];
 pub(crate) type UvModeCflNotAllowedCdfRows = [[i32; INTRA_MODE_CDF_ROW_LEN]; UV_MODE_CONTEXTS];
 pub(crate) type VTxbSkipCdfRows = [[[i32; CDF_ROW_LEN]; V_TXB_SKIP_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
+// `eob_extra` is a binary symbol, so its rows are width 3 — the same as the
+// generic `CDF_ROW_LEN`. `DEFAULT_EOB_EXTRA_CDF` is `[[i32; 3]; 4]`, so this alias
+// must keep an inner width of 3; if `CDF_ROW_LEN` ever changes, give `eob_extra`
+// its own width constant rather than over-allocating from the generic one.
+pub(crate) type EobExtraCdfRows = [[i32; CDF_ROW_LEN]; COEFF_CDF_Q_CONTEXTS];
 
 /// Block-symbol CDF selectors handled by this focused row bundle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,6 +67,12 @@ pub(crate) enum BlockCdfSelector {
         /// V-plane transform-skip context index.
         ctx: usize,
     },
+    /// `TileEobExtraCdf[coeff_cdf_q_ctx]` (AV2 § 8.3.2: the cdf is given by
+    /// `TileEobExtraCdf` directly, with no per-symbol context).
+    EobExtra {
+        /// Coefficient-CDF quantization context.
+        coeff_cdf_q_ctx: usize,
+    },
 }
 
 /// Supported block-symbol CDF arrays for the minimal flat-intra trace.
@@ -72,6 +83,7 @@ pub(crate) struct BlockCdfRows {
     pub(super) txb_skip: TxbSkipCdfRows,
     pub(super) uv_mode_cfl_not_allowed: UvModeCflNotAllowedCdfRows,
     pub(super) v_txb_skip: VTxbSkipCdfRows,
+    pub(super) eob_extra: EobExtraCdfRows,
 }
 
 impl BlockCdfRows {
@@ -82,6 +94,7 @@ impl BlockCdfRows {
             txb_skip: DEFAULT_TXB_SKIP_CDF,
             uv_mode_cfl_not_allowed: DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
             v_txb_skip: DEFAULT_V_TXB_SKIP_CDF,
+            eob_extra: DEFAULT_EOB_EXTRA_CDF,
         }
     }
 
@@ -146,6 +159,11 @@ impl BlockCdfRows {
                     },
                 )?;
                 Ok(row.as_slice())
+            }
+            BlockCdfSelector::EobExtra { coeff_cdf_q_ctx } => {
+                let coeff_cdf_q_ctx =
+                    checked_coeff_cdf_q_context(TileCdfArray::EobExtra, coeff_cdf_q_ctx)?;
+                Ok(self.eob_extra[coeff_cdf_q_ctx].as_slice())
             }
         }
     }
@@ -219,6 +237,11 @@ impl BlockCdfRows {
                 )?;
                 Ok(row.as_mut_slice())
             }
+            BlockCdfSelector::EobExtra { coeff_cdf_q_ctx } => {
+                let coeff_cdf_q_ctx =
+                    checked_coeff_cdf_q_context(TileCdfArray::EobExtra, coeff_cdf_q_ctx)?;
+                Ok(self.eob_extra[coeff_cdf_q_ctx].as_mut_slice())
+            }
         }
     }
 
@@ -253,6 +276,12 @@ impl BlockCdfRows {
                     num_log2,
                 );
             }
+            avg_cdf_row(
+                &mut self.eob_extra[coeff_cdf_q_ctx],
+                &tile.eob_extra[coeff_cdf_q_ctx],
+                tile_num,
+                num_log2,
+            );
         }
         for ctx in 0..UV_MODE_CONTEXTS {
             avg_cdf_row(
@@ -282,6 +311,7 @@ impl BlockCdfRows {
             for ctx in 0..V_TXB_SKIP_CONTEXTS {
                 scale_cdf_count(&mut self.v_txb_skip[coeff_cdf_q_ctx][ctx]);
             }
+            scale_cdf_count(&mut self.eob_extra[coeff_cdf_q_ctx]);
         }
         for ctx in 0..UV_MODE_CONTEXTS {
             scale_cdf_count(&mut self.uv_mode_cfl_not_allowed[ctx]);
@@ -311,6 +341,11 @@ impl BlockCdfRows {
     #[cfg(test)]
     pub(crate) const fn v_txb_skip(&self) -> &VTxbSkipCdfRows {
         &self.v_txb_skip
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn eob_extra(&self) -> &EobExtraCdfRows {
+        &self.eob_extra
     }
 }
 
