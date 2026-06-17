@@ -6,8 +6,8 @@
 //! Feature tracking: `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER`.
 
 use splot_core::tables::cdf::{
-    DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF,
-    DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
+    DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF,
+    DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
     DEFAULT_EOB_PT_1024_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
     DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
@@ -24,6 +24,8 @@ const TX_SIZE_CONTEXTS: usize = 5;
 const TXB_SKIP_CONTEXTS: usize = 10;
 const UV_MODE_CONTEXTS: usize = 2;
 const V_TXB_SKIP_CONTEXTS: usize = 12;
+const DC_SIGN_GROUPS: usize = 2;
+const DC_SIGN_CONTEXTS: usize = 3;
 
 pub(crate) type YModeSetCdfRow = [i32; Y_MODE_SET_CDF_ROW_LEN];
 pub(crate) type YModeIndexCdfRows = [[i32; INTRA_MODE_CDF_ROW_LEN]; Y_MODE_INDEX_CONTEXTS];
@@ -36,6 +38,11 @@ pub(crate) type VTxbSkipCdfRows = [[[i32; CDF_ROW_LEN]; V_TXB_SKIP_CONTEXTS]; CO
 // must keep an inner width of 3; if `CDF_ROW_LEN` ever changes, give `eob_extra`
 // its own width constant rather than over-allocating from the generic one.
 pub(crate) type EobExtraCdfRows = [[i32; CDF_ROW_LEN]; COEFF_CDF_Q_CONTEXTS];
+// §9.3 `dc_sign`: `[coeff_cdf_q_ctx][plane_type][isHidden group][ctx][3]`. §8.3.2
+// reads `TileDcSignCdf[ptype][isHidden][ctx]`; `ctx` (0/1/2) is derived from the
+// Above/Left DC-context buffers (deferred with the coeffs() loop).
+pub(crate) type DcSignCdfRows =
+    [[[[[i32; CDF_ROW_LEN]; DC_SIGN_CONTEXTS]; DC_SIGN_GROUPS]; PLANE_TYPES]; COEFF_CDF_Q_CONTEXTS];
 
 // The §9.3 `eob_pt` CDF family: one bank per transform-size class, each
 // `[coeff_cdf_q_ctx][eobCtx][N]` with a class-specific symbol width N. §8.3.2
@@ -117,6 +124,19 @@ pub(crate) enum BlockCdfSelector {
         /// `eobCtx = (plane > 0) ? 2 : is_inter` (`0..EOB_PLANE_CTXS`).
         eob_ctx: usize,
     },
+    /// `TileDcSignCdf[coeff_cdf_q_ctx][plane_type][group][ctx]` (AV2 § 8.3.2):
+    /// `group` is the spec `isHidden` flag; `ctx` (`0..DC_SIGN_CONTEXTS`) is the
+    /// caller-resolved DC-sign context.
+    DcSign {
+        /// Coefficient-CDF quantization context.
+        coeff_cdf_q_ctx: usize,
+        /// Plane type context (luma vs chroma).
+        plane_type: usize,
+        /// `isHidden` group (`0..DC_SIGN_GROUPS`).
+        group: usize,
+        /// DC-sign context (`0..DC_SIGN_CONTEXTS`).
+        ctx: usize,
+    },
 }
 
 /// Supported block-symbol CDF arrays for the minimal flat-intra trace.
@@ -135,6 +155,7 @@ pub(crate) struct BlockCdfRows {
     pub(super) eob_pt_256: EobPt256CdfRows,
     pub(super) eob_pt_512: EobPt512CdfRows,
     pub(super) eob_pt_1024: EobPt1024CdfRows,
+    pub(super) dc_sign: DcSignCdfRows,
 }
 
 impl BlockCdfRows {
@@ -153,6 +174,7 @@ impl BlockCdfRows {
             eob_pt_256: DEFAULT_EOB_PT_256_CDF,
             eob_pt_512: DEFAULT_EOB_PT_512_CDF,
             eob_pt_1024: DEFAULT_EOB_PT_1024_CDF,
+            dc_sign: DEFAULT_DC_SIGN_CDF,
         }
     }
 
@@ -179,7 +201,7 @@ impl BlockCdfRows {
             } => {
                 let coeff_cdf_q_ctx =
                     checked_coeff_cdf_q_context(TileCdfArray::TxbSkip, coeff_cdf_q_ctx)?;
-                let plane_type = checked_plane_type(plane_type)?;
+                let plane_type = checked_plane_type(TileCdfArray::TxbSkip, plane_type)?;
                 let tx_size = checked_tx_size(tx_size)?;
                 let row = self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size]
                     .get(ctx)
@@ -240,6 +262,25 @@ impl BlockCdfRows {
                     EobPtSize::Pt1024 => self.eob_pt_1024[q][c].as_slice(),
                 })
             }
+            BlockCdfSelector::DcSign {
+                coeff_cdf_q_ctx,
+                plane_type,
+                group,
+                ctx,
+            } => {
+                let q = checked_coeff_cdf_q_context(TileCdfArray::DcSign, coeff_cdf_q_ctx)?;
+                let plane_type = checked_plane_type(TileCdfArray::DcSign, plane_type)?;
+                let group = checked_dc_sign_group(group)?;
+                let row = self.dc_sign[q][plane_type][group].get(ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::DcSign,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: DC_SIGN_CONTEXTS,
+                    },
+                )?;
+                Ok(row.as_slice())
+            }
         }
     }
 
@@ -270,7 +311,7 @@ impl BlockCdfRows {
             } => {
                 let coeff_cdf_q_ctx =
                     checked_coeff_cdf_q_context(TileCdfArray::TxbSkip, coeff_cdf_q_ctx)?;
-                let plane_type = checked_plane_type(plane_type)?;
+                let plane_type = checked_plane_type(TileCdfArray::TxbSkip, plane_type)?;
                 let tx_size = checked_tx_size(tx_size)?;
                 let max_exclusive = self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size].len();
                 let row = self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size]
@@ -334,6 +375,25 @@ impl BlockCdfRows {
                     EobPtSize::Pt1024 => self.eob_pt_1024[q][c].as_mut_slice(),
                 })
             }
+            BlockCdfSelector::DcSign {
+                coeff_cdf_q_ctx,
+                plane_type,
+                group,
+                ctx,
+            } => {
+                let q = checked_coeff_cdf_q_context(TileCdfArray::DcSign, coeff_cdf_q_ctx)?;
+                let plane_type = checked_plane_type(TileCdfArray::DcSign, plane_type)?;
+                let group = checked_dc_sign_group(group)?;
+                let row = self.dc_sign[q][plane_type][group].get_mut(ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::DcSign,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: DC_SIGN_CONTEXTS,
+                    },
+                )?;
+                Ok(row.as_mut_slice())
+            }
         }
     }
 
@@ -390,6 +450,16 @@ impl BlockCdfRows {
         avg_eob_pt_bank(&mut self.eob_pt_256, &tile.eob_pt_256, tile_num, num_log2);
         avg_eob_pt_bank(&mut self.eob_pt_512, &tile.eob_pt_512, tile_num, num_log2);
         avg_eob_pt_bank(&mut self.eob_pt_1024, &tile.eob_pt_1024, tile_num, num_log2);
+        for (frame_row, tile_row) in self
+            .dc_sign
+            .iter_mut()
+            .flatten()
+            .flatten()
+            .flatten()
+            .zip(tile.dc_sign.iter().flatten().flatten().flatten())
+        {
+            avg_cdf_row(frame_row, tile_row, tile_num, num_log2);
+        }
     }
 
     pub(crate) fn scale_counts_for_frame_end_update(&mut self) {
@@ -422,6 +492,9 @@ impl BlockCdfRows {
         scale_eob_pt_bank(&mut self.eob_pt_256);
         scale_eob_pt_bank(&mut self.eob_pt_512);
         scale_eob_pt_bank(&mut self.eob_pt_1024);
+        for row in self.dc_sign.iter_mut().flatten().flatten().flatten() {
+            scale_cdf_count(row);
+        }
     }
 
     #[cfg(test)]
@@ -494,6 +567,18 @@ fn checked_eob_plane_ctx(eob_ctx: usize) -> Result<usize, TileCdfError> {
     Ok(eob_ctx)
 }
 
+fn checked_dc_sign_group(group: usize) -> Result<usize, TileCdfError> {
+    if group >= DC_SIGN_GROUPS {
+        return Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::DcSign,
+            index_name: "group",
+            actual: group,
+            max_exclusive: DC_SIGN_GROUPS,
+        });
+    }
+    Ok(group)
+}
+
 fn checked_coeff_cdf_q_context(
     array: TileCdfArray,
     coeff_cdf_q_ctx: usize,
@@ -509,10 +594,10 @@ fn checked_coeff_cdf_q_context(
     Ok(coeff_cdf_q_ctx)
 }
 
-fn checked_plane_type(plane_type: usize) -> Result<usize, TileCdfError> {
+fn checked_plane_type(array: TileCdfArray, plane_type: usize) -> Result<usize, TileCdfError> {
     if plane_type >= PLANE_TYPES {
         return Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::TxbSkip,
+            array,
             index_name: "plane_type",
             actual: plane_type,
             max_exclusive: PLANE_TYPES,

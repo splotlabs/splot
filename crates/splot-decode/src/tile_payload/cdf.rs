@@ -350,6 +350,17 @@ pub(crate) enum TileCdfSelector {
         /// `eobCtx = (plane > 0) ? 2 : is_inter`.
         eob_ctx: usize,
     },
+    /// `TileDcSignCdf[coeff_cdf_q_ctx][plane_type][group][ctx]` (AV2 § 8.3.2).
+    DcSign {
+        /// Coefficient-CDF quantization context.
+        coeff_cdf_q_ctx: usize,
+        /// Plane type context (luma vs chroma).
+        plane_type: usize,
+        /// `isHidden` group.
+        group: usize,
+        /// DC-sign context (caller-resolved from the Above/Left DC contexts).
+        ctx: usize,
+    },
 }
 
 /// Supported CDF arrays for error reporting.
@@ -377,6 +388,8 @@ pub(crate) enum TileCdfArray {
     EobExtra,
     /// `TileEobPt<size>Cdf` family.
     EobPt,
+    /// `TileDcSignCdf`.
+    DcSign,
 }
 
 impl TileCdfArray {
@@ -393,6 +406,7 @@ impl TileCdfArray {
             Self::VTxbSkip => "TileVTxbSkipCdf",
             Self::EobExtra => "TileEobExtraCdf",
             Self::EobPt => "TileEobPtCdf",
+            Self::DcSign => "TileDcSignCdf",
         }
     }
 }
@@ -743,6 +757,17 @@ impl TileCdfRows {
                 coeff_cdf_q_ctx,
                 eob_ctx,
             }),
+            TileCdfSelector::DcSign {
+                coeff_cdf_q_ctx,
+                plane_type,
+                group,
+                ctx,
+            } => self.block.row(BlockCdfSelector::DcSign {
+                coeff_cdf_q_ctx,
+                plane_type,
+                group,
+                ctx,
+            }),
         }
     }
 
@@ -851,6 +876,17 @@ impl TileCdfRows {
                 size,
                 coeff_cdf_q_ctx,
                 eob_ctx,
+            }),
+            TileCdfSelector::DcSign {
+                coeff_cdf_q_ctx,
+                plane_type,
+                group,
+                ctx,
+            } => self.block.row_mut(BlockCdfSelector::DcSign {
+                coeff_cdf_q_ctx,
+                plane_type,
+                group,
+                ctx,
             }),
         }
     }

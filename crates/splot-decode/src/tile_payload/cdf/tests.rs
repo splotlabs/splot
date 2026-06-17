@@ -7,8 +7,8 @@ use super::*;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderConfig};
 use splot_core::tables::cdf::{
-    DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF,
-    DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
+    DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF,
+    DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
     DEFAULT_EOB_PT_1024_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
     DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
@@ -625,4 +625,127 @@ fn eob_pt_tile_copy_does_not_alias_the_frame() {
         frame.rows().block.eob_pt_16[1][2],
         DEFAULT_EOB_PT_16_CDF[1][2]
     );
+}
+
+#[test]
+fn dc_sign_loads_defaults_and_selects_by_all_indices() {
+    // AV2 §8.3.2: dc_sign reads TileDcSignCdf[ptype][isHidden][ctx] for the
+    // active q-context. Verify every [q][plane][group][ctx] cell round-trips.
+    let frame = FrameCdfSubset::from_defaults();
+    let tile = frame.tile_copy();
+    for (q, q_rows) in DEFAULT_DC_SIGN_CDF.iter().enumerate() {
+        for (p, p_rows) in q_rows.iter().enumerate() {
+            for (g, g_rows) in p_rows.iter().enumerate() {
+                for (c, expected) in g_rows.iter().enumerate() {
+                    let row = tile
+                        .row(TileCdfSelector::DcSign {
+                            coeff_cdf_q_ctx: q,
+                            plane_type: p,
+                            group: g,
+                            ctx: c,
+                        })
+                        .unwrap();
+                    assert_eq!(row, expected.as_slice(), "dc_sign q{q} p{p} g{g} c{c}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn dc_sign_selector_rejects_out_of_range_indices() {
+    let frame = FrameCdfSubset::from_defaults();
+    let tile = frame.tile_copy();
+    // Each of the four index axes is bounds-checked and names the DcSign array.
+    assert!(matches!(
+        tile.row(TileCdfSelector::DcSign {
+            coeff_cdf_q_ctx: 4,
+            plane_type: 0,
+            group: 0,
+            ctx: 0
+        }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::DcSign,
+            index_name: "coeff_cdf_q_ctx",
+            actual: 4,
+            max_exclusive: 4,
+        })
+    ));
+    assert!(matches!(
+        tile.row(TileCdfSelector::DcSign {
+            coeff_cdf_q_ctx: 0,
+            plane_type: 2,
+            group: 0,
+            ctx: 0
+        }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::DcSign,
+            index_name: "plane_type",
+            actual: 2,
+            max_exclusive: 2,
+        })
+    ));
+    assert!(matches!(
+        tile.row(TileCdfSelector::DcSign {
+            coeff_cdf_q_ctx: 0,
+            plane_type: 0,
+            group: 2,
+            ctx: 0
+        }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::DcSign,
+            index_name: "group",
+            actual: 2,
+            max_exclusive: 2,
+        })
+    ));
+    assert!(matches!(
+        tile.row(TileCdfSelector::DcSign {
+            coeff_cdf_q_ctx: 0,
+            plane_type: 0,
+            group: 0,
+            ctx: 3
+        }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::DcSign,
+            index_name: "ctx",
+            actual: 3,
+            max_exclusive: 3,
+        })
+    ));
+}
+
+#[test]
+fn dc_sign_tile_copy_does_not_alias_the_frame() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    tile.rows_mut().block.dc_sign[2][1][0][1] = [111, 5, 9];
+    assert_eq!(tile.rows().block.dc_sign[2][1][0][1], [111, 5, 9]);
+    assert_eq!(
+        frame.rows().block.dc_sign[2][1][0][1],
+        DEFAULT_DC_SIGN_CDF[2][1][0][1]
+    );
+}
+
+#[test]
+fn txb_skip_plane_type_error_still_names_txb_skip() {
+    // `checked_plane_type` is now parameterized with the owning array (shared by
+    // txb_skip and dc_sign); an out-of-range txb_skip plane_type must still name
+    // TxbSkip, not DcSign.
+    let frame = FrameCdfSubset::from_defaults();
+    let tile = frame.tile_copy();
+    assert!(matches!(
+        tile.row(TileCdfSelector::TxbSkip {
+            coeff_cdf_q_ctx: 0,
+            plane_type: 2,
+            tx_size: 0,
+            ctx: 0
+        }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::TxbSkip,
+            index_name: "plane_type",
+            actual: 2,
+            max_exclusive: 2,
+        })
+    ));
 }
