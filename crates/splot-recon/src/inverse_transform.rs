@@ -104,12 +104,14 @@ pub fn inverse_transform_1d(
 /// butterfly over `src` with a pre-scaling `shift`.
 ///
 /// This is the lossless-block 1D transform. It applies no `Clip3` (the spec
-/// produces the butterfly result directly) and is total: the additions use `i64`
-/// intermediates and the result is returned as `i32` (lossless residuals are
-/// bounded well within `i32`).
+/// produces the butterfly result directly) and is total: the arithmetic uses
+/// `i64` intermediates and the pre-scale `shift` is clamped below the `i64`
+/// width, so an out-of-contract `shift` saturates to the arithmetic-shift limit
+/// instead of panicking (spec-conformant callers use shift 0 or 3). The result
+/// is returned as `i32` (lossless residuals are bounded well within `i32`).
 #[must_use]
 pub fn inverse_walsh_hadamard(src: [i32; 4], shift: u8) -> [i32; 4] {
-    let shift = u32::from(shift);
+    let shift = u32::from(shift).min(i64::BITS - 1);
     let mut a = i64::from(src[0]) >> shift;
     let mut c = i64::from(src[1]) >> shift;
     let mut d = i64::from(src[2]) >> shift;
@@ -439,6 +441,14 @@ mod tests {
         // src = [8,0,0,0], shift 1 pre-scales src[0] to 4, then the [4,0,0,0]
         // butterfly gives [2, 2, 2, 2].
         assert_eq!(inverse_walsh_hadamard([8, 0, 0, 0], 1), [2, 2, 2, 2]);
+    }
+
+    #[test]
+    fn walsh_hadamard_is_total_for_large_shift() {
+        // Out-of-contract shift is clamped below the i64 width: non-negative
+        // inputs shift out to 0, so the butterfly is all-zero, with no panic.
+        assert_eq!(inverse_walsh_hadamard([4, 0, 0, 0], 64), [0, 0, 0, 0]);
+        assert_eq!(inverse_walsh_hadamard([7, 3, 1, 5], 200), [0, 0, 0, 0]);
     }
 
     fn identity(src: &[i32], scale: i32, shift: u8, col_tx: bool, bit_depth: BitDepth) -> Vec<i32> {
