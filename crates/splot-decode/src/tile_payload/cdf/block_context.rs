@@ -12,11 +12,15 @@
 //! Feature tracking: `DECODE-TILE-CDF-SELECTION-BOUNDARY`.
 //!
 //! Scope: the `y_mode_index` context (single-block tile-origin, out-of-frame
-//! `get_joint_mode` neighbours) and the `uv_mode` context (from the reconstructed
-//! luma `YMode`, for the non-directional Y-mode subset). The `txb_skip` /
-//! `v_txb_skip` contexts, the in-frame `get_joint_mode` neighbour lookup, and the
-//! directional / escape / second-mode `YMode` reconstruction paths are derived by
-//! future increments.
+//! `get_joint_mode` neighbours), the `uv_mode` context (from the reconstructed
+//! luma `YMode`, for the non-directional Y-mode subset), and the `all_zero`
+//! (`txb_skip` / `v_txb_skip`) context formula (the luma and V-plane § 8.3.2
+//! arithmetic over caller-supplied level context and transform-block geometry).
+//! The in-frame `get_joint_mode` neighbour lookup, the directional / escape /
+//! second-mode `YMode` reconstruction paths, the U-plane `txb_skip` branch, and
+//! the actual level-context buffers and transform-block geometry that feed the
+//! `all_zero` formula (which need the § 5.20 transform-block syntax) are derived
+//! by future increments.
 
 /// AV2 § 3 `NON_DIRECTIONAL_MODES_COUNT`: the number of non-directional intra
 /// modes (intra modes `0..5`); a mode value at or above this is directional.
@@ -133,6 +137,64 @@ pub(crate) const fn uv_mode_ctx(y_mode: IntraYMode) -> usize {
     y_mode.is_directional() as usize
 }
 
+/// AV2 § 3 `TXB_SKIP_CONTEXTS`: the number of luma/U `all_zero` (txb_skip)
+/// contexts; the `fsc_mode` luma branch selects the last one.
+const TXB_SKIP_CONTEXTS: usize = 10;
+
+/// AV2 § 8.3.2 luma `all_zero` (txb_skip) CDF context (`plane == 0`), selecting
+/// `TileTxbSkipCdf[is_inter || fsc_mode][txSzCtx][ctx]`.
+///
+/// `above_level_or` / `left_level_or` are the OR-reductions of
+/// `AboveLevelContext[0]` / `LeftLevelContext[0]` over the transform block's
+/// in-frame 4x4 columns / rows (the caller's bounded reduction); this function
+/// applies the § 8.3.2 `Min(·, 4)`. `tx_fills_block` is `bw == w && bh == h`
+/// (the transform fills its plane residual block), and `fsc_active` is
+/// `fsc_mode && enable_fsc`.
+pub(crate) const fn txb_skip_ctx_luma(
+    above_level_or: u32,
+    left_level_or: u32,
+    tx_fills_block: bool,
+    fsc_active: bool,
+) -> usize {
+    if fsc_active {
+        TXB_SKIP_CONTEXTS - 1
+    } else if tx_fills_block {
+        0
+    } else {
+        let top = if above_level_or < 4 {
+            above_level_or
+        } else {
+            4
+        };
+        let left = if left_level_or < 4 { left_level_or } else { 4 };
+        ((top + left + 3) >> 1) as usize
+    }
+}
+
+/// AV2 § 8.3.2 V-plane `all_zero` (v_txb_skip) CDF context (`plane == 2`),
+/// selecting `TileVTxbSkipCdf[ctx]`.
+///
+/// `above_nonzero` / `left_nonzero` are whether the OR of `AboveLevelContext[2]`
+/// with `AboveDcContext[2]` (resp. the left arrays) over the in-frame 4x4
+/// columns / rows is non-zero. `chroma_block_larger_than_tx` is `bw * bh > w * h`
+/// and `eob_u_nonzero` is `EobU != 0`. (The `plane == 1` U-plane `+6` branch is
+/// not modelled — the minimal trace has no U `all_zero` symbol.)
+pub(crate) const fn v_txb_skip_ctx(
+    above_nonzero: bool,
+    left_nonzero: bool,
+    chroma_block_larger_than_tx: bool,
+    eob_u_nonzero: bool,
+) -> usize {
+    let mut ctx = above_nonzero as usize + left_nonzero as usize;
+    if chroma_block_larger_than_tx {
+        ctx += 3;
+    }
+    if eob_u_nonzero {
+        ctx += 6;
+    }
+    ctx
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used)]
@@ -215,5 +277,52 @@ mod tests {
         assert_eq!(uv_mode_ctx(IntraYMode(IntraYMode::D67_PRED)), 1);
         // A non-directional mode above the directional range (PAETH_PRED) -> 0.
         assert_eq!(uv_mode_ctx(IntraYMode(12)), 0);
+    }
+
+    #[test]
+    fn luma_txb_skip_ctx_first_block_filling_transform_is_zero() {
+        // The minimal trace's first luma transform block: zero level context
+        // (first block, out-of-frame neighbours) and a transform that fills its
+        // residual block -> the `bw == w && bh == h` branch -> ctx 0, matching
+        // the value the conformant fixture forces.
+        assert_eq!(txb_skip_ctx_luma(0, 0, true, false), 0);
+    }
+
+    #[test]
+    fn luma_txb_skip_ctx_uses_min_clamped_level_sum_when_not_filling() {
+        // When the transform does not fill the block, ctx = (Min(top,4) +
+        // Min(left,4) + 3) >> 1. Zero context -> (0+0+3)>>1 = 1; saturated
+        // context -> (4+4+3)>>1 = 5 (the Min(.,4) clamp caps each term).
+        assert_eq!(txb_skip_ctx_luma(0, 0, false, false), 1);
+        assert_eq!(txb_skip_ctx_luma(9, 9, false, false), 5);
+        assert_eq!(txb_skip_ctx_luma(1, 2, false, false), 3);
+    }
+
+    #[test]
+    fn luma_txb_skip_ctx_fsc_selects_last_context() {
+        // fsc_mode && enable_fsc -> ctx = TXB_SKIP_CONTEXTS - 1, overriding the
+        // fill/level branches.
+        assert_eq!(txb_skip_ctx_luma(0, 0, true, true), TXB_SKIP_CONTEXTS - 1);
+        assert_eq!(txb_skip_ctx_luma(3, 3, false, true), TXB_SKIP_CONTEXTS - 1);
+    }
+
+    #[test]
+    fn v_txb_skip_ctx_first_block_larger_chroma_is_three() {
+        // The minimal trace's V transform block: zero level/DC context (first
+        // block), a chroma residual block larger than the transform (+3), and
+        // EobU == 0 (the U plane decoded all-zero) -> ctx 3, matching the value
+        // the conformant fixture forces.
+        assert_eq!(v_txb_skip_ctx(false, false, true, false), 3);
+    }
+
+    #[test]
+    fn v_txb_skip_ctx_adds_neighbour_chroma_and_eob_contributions() {
+        // ctx = (above != 0) + (left != 0), then +3 if the chroma block exceeds
+        // the transform and +6 if EobU != 0.
+        assert_eq!(v_txb_skip_ctx(false, false, false, false), 0);
+        assert_eq!(v_txb_skip_ctx(true, false, false, false), 1);
+        assert_eq!(v_txb_skip_ctx(true, true, false, false), 2);
+        assert_eq!(v_txb_skip_ctx(true, true, true, false), 5);
+        assert_eq!(v_txb_skip_ctx(true, true, true, true), 11);
     }
 }

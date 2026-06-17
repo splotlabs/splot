@@ -9,7 +9,9 @@ use splot_core::Error as CoreError;
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 
 use super::DecodeTileWorkUnit;
-use super::cdf::block_context::{YModeIndexContext, reconstruct_minimal_y_mode, uv_mode_ctx};
+use super::cdf::block_context::{
+    YModeIndexContext, reconstruct_minimal_y_mode, txb_skip_ctx_luma, uv_mode_ctx, v_txb_skip_ctx,
+};
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
 
@@ -134,7 +136,18 @@ fn consume_trace(
         },
     )?;
 
-    // luma/U all-zero transform (txb_skip); its context derivation is deferred.
+    // luma all-zero transform (txb_skip), § 8.3.2. The level context is 0 for
+    // this first transform block (no prior decoded transform blocks; the
+    // above/left 4x4 neighbours are out of frame at the tile origin), so the
+    // context reduces to the transform-fills-block branch -> 0.
+    //
+    // TODO(spec: DECODE-TILE-CDF-SELECTION-BOUNDARY): the `tx_fills_block`
+    // geometry and the `AboveLevelContext` / `LeftLevelContext` buffers come from
+    // the § 5.20 transform-block syntax (not yet modelled); they are asserted
+    // here to the values the conformant fixture forces.
+    let luma_txb_skip_ctx = txb_skip_ctx_luma(
+        0, 0, /* tx_fills_block */ true, /* fsc_active */ false,
+    );
     decode_block_symbol(
         cdfs,
         symbols,
@@ -142,7 +155,7 @@ fn consume_trace(
             coeff_cdf_q_ctx: 2,
             plane_type: 0,
             tx_size: 0,
-            ctx: 0,
+            ctx: luma_txb_skip_ctx,
         },
         0,
         LUMA_OR_U_ALL_ZERO_TRANSFORM_REASON,
@@ -159,13 +172,26 @@ fn consume_trace(
         UV_MODE_INDEX_REASON,
     )?;
 
-    // V all-zero transform (v_txb_skip); its context derivation is deferred.
+    // V all-zero transform (v_txb_skip), § 8.3.2. The level/DC context is 0 for
+    // this first transform block, and the U plane was decoded all-zero just above
+    // so EobU == 0; the context reduces to the chroma-block-larger-than-transform
+    // contribution -> 3.
+    //
+    // TODO(spec: DECODE-TILE-CDF-SELECTION-BOUNDARY): the
+    // `chroma_block_larger_than_tx` geometry and the `AboveLevelContext` /
+    // `AboveDcContext` (and left) buffers come from the § 5.20 transform-block
+    // syntax (not yet modelled); they are asserted here to the values the
+    // conformant fixture forces.
+    let v_txb_skip_context = v_txb_skip_ctx(
+        /* above_nonzero */ false, /* left_nonzero */ false,
+        /* chroma_block_larger_than_tx */ true, /* eob_u_nonzero */ false,
+    );
     decode_block_symbol(
         cdfs,
         symbols,
         TileCdfSelector::VTxbSkip {
             coeff_cdf_q_ctx: 1,
-            ctx: 3,
+            ctx: v_txb_skip_context,
         },
         0,
         V_ALL_ZERO_TRANSFORM_REASON,
