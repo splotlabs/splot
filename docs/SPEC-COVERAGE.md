@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 214 feature(s); 164 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 215 feature(s); 165 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -15,6 +15,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `AV2-8.2-SYMBOL-DECODER` | ✅ | ✅ | ✅ | ✅ | — |
 | [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `CONF-RECON-REFERENCE-FRAME-STORE-FUZZ` | ✅ | — | — | ✅ | — |
+| [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `RECON-DEQUANT-PROCESS` | ✅ | — | ✅ | ✅ | — |
 | [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION` | ✅ | — | — | ✅ | — |
 | [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `RECON-DEQUANT-QUANTIZER-LOOKUP` | ✅ | — | — | ✅ | — |
 | [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `RECON-INTRA-DC-RECTANGULAR-PREDICTION` | ✅ | — | ✅ | ✅ | — |
@@ -30,6 +31,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | Section | Spec item | Feature | Mapped | Parse | Validate | Tests | Diagnostics |
 |---|---|---|:-:|:-:|:-:|:-:|:-:|
 | [§ 4.8](./spec/av2/1.0.0/04-conventions.md#s-4-8) | Mathematical functions | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
+| [§ 4.8](./spec/av2/1.0.0/04-conventions.md#s-4-8) | Mathematical functions | `RECON-DEQUANT-PROCESS` | ✅ | — | ✅ | ✅ | — |
 | [§ 4.8](./spec/av2/1.0.0/04-conventions.md#s-4-8) | Mathematical functions | `RECON-INTRA-DC-RECTANGULAR-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 4.8](./spec/av2/1.0.0/04-conventions.md#s-4-8) | Mathematical functions | `RECON-INTRA-DC-SUBSAMPLED-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 4.8](./spec/av2/1.0.0/04-conventions.md#s-4-8) | Mathematical functions | `RECON-INTRA-IBP-DC-PREDICTION` | ✅ | — | ✅ | ✅ | — |
@@ -504,6 +506,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION` | ✅ | — | — | ✅ | — |
 | [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `RECON-DEQUANT-QUANTIZER-LOOKUP` | ✅ | — | — | ✅ | — |
 | [§ 7.14.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-3) | Reconstruct process | `RECON-RESIDUAL-ADDITION` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `RECON-DEQUANT-PROCESS` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-2-1) | 1d inverse transform process | `RECON-INVERSE-TRANSFORM-1D` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.2.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-2-2) | Inverse Walsh-Hadamard transform process | `RECON-INVERSE-TRANSFORM-MATRIX-FREE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.2.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-2-3) | Inverse identity transform process | `RECON-INVERSE-TRANSFORM-MATRIX-FREE` | ✅ | — | ✅ | ✅ | — |

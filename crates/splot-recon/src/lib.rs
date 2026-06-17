@@ -15,13 +15,16 @@
 //! (quantizer-value lookup, quantizer-index resolution, and per-plane DC/AC
 //! composition), the § 7.15.2 1D inverse transforms (§ 7.15.2.1 kernel,
 //! § 7.15.2.2 Walsh-Hadamard, and § 7.15.2.3 identity), the § 7.14.3
-//! residual-addition step, the § 7.15.4.1 2D matrix transform core, and the
+//! residual-addition step, the § 7.15.4.1 2D matrix transform core, the
 //! § 7.15.4 outer orchestration (the lossless IDTX shortcut, the DPCM cumulative
 //! sum, and adjusted-size sample duplication over caller-resolved transform
-//! selections); it does not implement byte-consuming decode, full
-//! reconstruction, the § 7.14.4 dequantization process, the § 7.15.3 secondary
-//! transform, the § 7.15.4 `Transform_Shift` / `get_transform_1d_type`
-//! derivations, runtime CLI Y4M output, or full AV2 reference refresh semantics.
+//! selections), and the § 7.14.4 dequantization process (the per-coefficient
+//! dequant arithmetic and the non-quantization-matrix transform-block helper
+//! over caller-resolved quantizers); it does not implement byte-consuming
+//! decode, full reconstruction, the § 7.14.4 quantization-matrix weighting or
+//! `shift` derivation, the § 7.15.3 secondary transform, the § 7.15.4
+//! `Transform_Shift` / `get_transform_1d_type` derivations, runtime CLI Y4M
+//! output, or full AV2 reference refresh semantics.
 //!
 //! The ownership model is view-first ([`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)):
 //! owned plane/frame/workspace storage hands out borrowed [`PlaneRef`]/[`PlaneMut`]
@@ -50,12 +53,14 @@
 //! `RECON-INVERSE-TRANSFORM-MATRIX-FREE`,
 //! `RECON-RESIDUAL-ADDITION`,
 //! `RECON-INVERSE-TRANSFORM-2D`,
-//! `RECON-INVERSE-TRANSFORM-2D-OUTER`.
+//! `RECON-INVERSE-TRANSFORM-2D-OUTER`,
+//! `RECON-DEQUANT-PROCESS`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
 
 mod dequant;
+mod dequant_process;
 mod error;
 mod format;
 mod frame;
@@ -83,6 +88,7 @@ pub use dequant::{
     QuantizerDeltas, ac_quantizer, dc_quantizer, max_quantizer_index, quantizer_index,
     quantizer_value,
 };
+pub use dequant_process::{DequantBlockParams, dequant_coefficient, dequantize_block};
 pub use error::{ReconError, Result};
 pub use format::{BitDepth, PixelFormat, PlaneId, ReconSample};
 pub use frame::{DecodedFrame, DecodedFrameInfo, FramePlanes, SharedFrame};
