@@ -238,6 +238,11 @@ fn decode_minimal_block_symbol_error(
             offset,
             "minimal runtime hash support only accepts the traced flat tile symbol values",
         ),
+        MinimalBlockSymbolTraceError::UnsupportedYMode { .. } => unsupported_at(
+            "minimal_tile_y_mode_reconstruction",
+            offset,
+            "minimal runtime hash support only reconstructs the traced flat tile non-directional YMode subset",
+        ),
         MinimalBlockSymbolTraceError::ExitSymbol { .. } => unsupported_at(
             "minimal_tile_exit_symbol",
             offset,
