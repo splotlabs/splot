@@ -488,6 +488,14 @@ pub enum ReconError {
         /// Whether the lossless flag was set (which requires a 4x4 block).
         lossless: bool,
     },
+    /// A § 7.15.4 `Transform_Shift` lookup was requested for a `(log2W, log2H)`
+    /// pair that is not one of the 25 AV2 `TX_SIZES_ALL` transform shapes.
+    InvalidTransformShiftShape {
+        /// Requested transform width base-2 logarithm.
+        log2_width: u32,
+        /// Requested transform height base-2 logarithm.
+        log2_height: u32,
+    },
     /// A 2D inverse transform input/output buffer length did not match `w * h`.
     InverseTransform2dBufferMismatch {
         /// Expected length (`w * h`).
@@ -984,6 +992,13 @@ impl fmt::Display for ReconError {
             } => write!(
                 f,
                 "unsupported 2D inverse transform log2 shape {log2_w}x{log2_h} (lossless={lossless}); expected each log2 in 2..=6, and 2x2 (4x4) when lossless"
+            ),
+            Self::InvalidTransformShiftShape {
+                log2_width,
+                log2_height,
+            } => write!(
+                f,
+                "no Transform_Shift entry for log2 shape {log2_width}x{log2_height}; expected one of the 25 AV2 TX_SIZES_ALL shapes"
             ),
             Self::InverseTransform2dBufferMismatch {
                 expected,

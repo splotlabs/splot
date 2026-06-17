@@ -842,6 +842,20 @@ local_reference_evidence = []
 notes = "Source-backed scheduler-free `splot-recon` AV2 §7.14.4 step-2 quantization-matrix weighting consuming the generated §9.4 `Quantizer_Matrix` and `Qm_Offset` tables. To reach those tables from `splot-recon` (which cannot depend on `splot-core`), the §9.4 `quantizer` gen-tables module is relocated to the dependency-free `splot-tables` crate via `output_dir_for` (the INFRA-SHARED-SPEC-TABLES mechanism; zero `splot-core` consumers, byte-identical move, 236-table determinism count unchanged). `quantization_matrix_weight(QmWeightIndex)` returns `m = Quantizer_Matrix[segLvl][plane>0][Qm_Offset[txSz] + i*tw + j]` with bounds-checked indices (typed `ReconError::InvalidQuantizerMatrixIndex`); `qm_weighted_quantizer(q, m) = Round2(q*m, 5)` computed in i64 and clamped into u32 (total). The caller feeds the weighted `q2` to `dequant_coefficient`. This row does not implement the `useQm`, `useUserQm`, and `segLvl` gating, the user-defined `UserQm` matrices, the `shift` and `useFsc` derivation, the coefficient entropy decode that produces `Quant`, the §7.15.4 inverse transform, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler state in `splot-recon`."
 
 [[row]]
+id = "transform-shift-lookup"
+name = "Inverse transform Transform_Shift lookup"
+feature_id = "RECON-TRANSFORM-SHIFT-LOOKUP"
+spec_sections = ["7.15.4", "9.2"]
+parser_source = "n/a"
+decode_module = "crates/splot-recon/src/transform_params.rs; crates/splot-recon/src/error.rs; crates/splot-recon/src/lib.rs"
+tier = "tier1-intra"
+status = "supported"
+self_contained_tests = ["crates/splot-recon/src/transform_params.rs::tests::transform_shift_returns_the_parallel_table_entry_for_every_shape", "crates/splot-recon/src/transform_params.rs::tests::tx_size_log2_dims_keys_are_distinct", "crates/splot-recon/src/transform_params.rs::tests::transform_shift_matches_independently_transcribed_spec_values", "crates/splot-recon/src/transform_params.rs::tests::transform_shift_is_symmetric_under_transpose", "crates/splot-recon/src/transform_params.rs::tests::transform_shift_rejects_non_av2_shapes", "cargo test -p splot-recon transform_params --locked", "cargo clippy -p splot-recon --all-targets --locked -- -D warnings", "cargo xtask check-dependency-direction", "cargo xtask check-decoder-support", "cargo xtask check-feature-status"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Source-backed scheduler-free `splot-recon` AV2 §7.15.4 `Transform_Shift` lookup, the first of the inverse-transform parameter derivations the RECON-INVERSE-TRANSFORM-2D-OUTER row left caller-resolved. `transform_shift(log2_width, log2_height)` returns the pair `(rowShift, colShift) = (Transform_Shift[txSz][0], Transform_Shift[txSz][1])` for the `txSz` whose `(Tx_Width_Log2, Tx_Height_Log2)` equals the requested shape. The verbatim 25-row §7.15.4 `Transform_Shift` constant is hand-written and spec-cited because it is a §7.15.4 process-body constant absent from the generated `all_tables.h` §9 attachment (deliberately not a gen-tables output); the parallel log2-dimension key table mirrors the §9.2 `Tx_Width_Log2` and `Tx_Height_Log2` values, which `splot-recon` cannot reach through `splot-core` under the one-way dependency rule (the same reason the §7.15 transforms take caller-resolved log2 dimensions). The result drops into the existing `InverseTransform2dOuter` row-shift and col-shift fields. Strictly additive and provably no-output-change: a leaf function plus one typed error variant (`ReconError::InvalidTransformShiftShape`) with no rewiring, so the minimal flat-intra fixture snapshots stay byte-identical. This row does not implement the `get_transform_1d_type` transform-type derivation, the DPCM-direction selection, any wiring into the runtime decode path, the §7.15.3 secondary transform, or the coefficient entropy decode that produces `Quant`."
+
+[[row]]
 id = "recon-intra-prediction-fuzz"
 name = "Intra prediction and workspace fuzz entry point"
 feature_id = "CONF-RECON-INTRA-PREDICTION-FUZZ"
