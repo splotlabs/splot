@@ -605,8 +605,12 @@ fn writer_rows(matrix: &Matrix) -> Vec<&Feature> {
         .feature
         .iter()
         .filter(|f| {
-            (f.kind == "bitstream-syntax" && f.status.write != "not-applicable")
-                || matches!(f.status.write.as_str(), "done" | "partial")
+            // The document describes the `splot-core::write` AV2 bitstream writer surface, so scope
+            // to `splot-core`: a non-`splot-core` feature with a generic `write` stage (e.g. the
+            // `splot-recon` Y4M output writer or an `xtask` generator) is not part of it.
+            f.krate == "splot-core"
+                && ((f.kind == "bitstream-syntax" && f.status.write != "not-applicable")
+                    || matches!(f.status.write.as_str(), "done" | "partial"))
         })
         .collect();
     rows.sort_by(|a, b| {
