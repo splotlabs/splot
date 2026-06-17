@@ -134,9 +134,11 @@ jobs:
 
   # Enumerate the registered fuzz targets once so the per-target smoke matrix
   # stays in lock step with the [[bin]] set (cargo xtask check-fuzz-targets gates
-  # that those equal fuzz_targets/*.rs). Reading fuzz/Cargo.toml avoids installing
-  # a nightly toolchain + cargo-fuzz just to list names; the matrix is derived,
-  # never hardcoded, so a new target is picked up with no workflow edit.
+  # that those equal fuzz_targets/*.rs). Parse fuzz/Cargo.toml with a real TOML
+  # reader (Python tomllib) so every valid [[bin]] entry is captured the same way
+  # the xtask drift gate sees it, regardless of spacing/indentation/comments — no
+  # nightly toolchain or cargo-fuzz needed just to list names. The matrix is
+  # derived, never hardcoded, so a new target is picked up with no workflow edit.
   fuzz-list:
     runs-on: ubuntu-latest
     outputs:
@@ -148,7 +150,12 @@ jobs:
       - id: list
         name: Enumerate registered fuzz targets
         run: |
-          targets=$(awk '/^\[\[bin\]\]/{b=1;next} b&&/^name = /{gsub(/name = "|"/,"");print;b=0}' fuzz/Cargo.toml | jq -R . | jq -sc .)
+          targets=$(python3 -c '
+          import json, tomllib
+          with open("fuzz/Cargo.toml", "rb") as f:
+              manifest = tomllib.load(f)
+          print(json.dumps([b["name"] for b in manifest.get("bin", [])]))
+          ')
           test -n "$targets" && test "$targets" != "[]"
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
           echo "Fuzz targets: $targets"
