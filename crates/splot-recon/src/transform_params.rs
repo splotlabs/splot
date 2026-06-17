@@ -102,10 +102,14 @@ const TX_SIZE_LOG2_DIMS: [(u32, u32); 25] = [
 /// The result drops straight into the `row_shift` / `col_shift` fields of
 /// [`InverseTransform2dOuter`](crate::InverseTransform2dOuter).
 ///
+/// This is a `const fn` so callers can resolve a fixed transform shape's shifts
+/// at compile time; the manual `while`/index loop (rather than an iterator
+/// combinator) keeps the body const-compatible.
+///
 /// # Errors
 /// Returns [`ReconError::InvalidTransformShiftShape`] if `(log2_width,
 /// log2_height)` is not one of the 25 AV2 `TX_SIZES_ALL` transform shapes.
-pub fn transform_shift(log2_width: u32, log2_height: u32) -> Result<(u8, u8)> {
+pub const fn transform_shift(log2_width: u32, log2_height: u32) -> Result<(u8, u8)> {
     let mut i = 0;
     while i < TX_SIZE_LOG2_DIMS.len() {
         let (w, h) = TX_SIZE_LOG2_DIMS[i];
@@ -124,6 +128,10 @@ pub fn transform_shift(log2_width: u32, log2_height: u32) -> Result<(u8, u8)> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    // The lookup is a `const fn`: a fixed shape resolves at compile time. This
+    // const item both exercises const evaluation and pins TX_4X4 -> (7, 10).
+    const _CONST_EVAL_CHECK: () = assert!(matches!(transform_shift(2, 2), Ok((7, 10))));
 
     #[test]
     fn transform_shift_returns_the_parallel_table_entry_for_every_shape() {
