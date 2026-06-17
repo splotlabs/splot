@@ -6901,6 +6901,64 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-DEQUANT-PROCESS"
+name = "Dequantization process (Quant to Dequant)"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["3", "4.8", "7.14.4"]
+sources = [
+    "docs/spec/av2/1.0.0/03-symbols.md#s-3",
+    "docs/spec/av2/1.0.0/04-conventions.md#s-4-8",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-14-4",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/dequant_process.rs"
+openspec_change = "recon-dequant-process"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds the scheduler-free `splot-recon` AV2 §7.14.4 dequantization process that turns coded `Quant` coefficients into the `Dequant` array the §7.15.4 inverse transform consumes. `dequant_coefficient(quant_coeff, q2, dq_denom, bit_depth)` implements steps 3-8 exactly: `sign = (qc<0)?-1:1`; `dqHigh = Abs(qc)*q2`; `dq = Round2(dqHigh & 0xFFFFFF, QUANT_TABLE_BITS=3)`; `dq2 = sign*(dq/dq_denom)`; `Dequant = Clip3(-(1<<(7+BitDepth)), (1<<(7+BitDepth))-1, dq2)`. `dequantize_block(params, quant, out)` with `DequantBlockParams` applies it over a `tx_width*tx_height` (each 4/8/16/32) row-major block, selecting `dc_quant` for the (0,0) DC coefficient and `ac_quant` otherwise (the §7.14.2 get_dc_quant/get_ac_quant values). `q2` is the resolved per-coefficient quantizer (the §7.14.2 DC/AC quantizer, optionally QM-weighted `Round2(q*m,5)`) and `dq_denom = 1<<shift`, both caller-resolved. It is total and panic-free: the product/rounding use `i64`, `unsigned_abs` handles `i32::MIN`, a zero `dq_denom` is treated as 1, and the `Clip3` keeps every result in range; typed `ReconError` rejects non-4/8/16/32 shapes and `quant`/`out` length mismatches. Completeness is proven by the Round2-mask vector, the dq_denom divide, the 24-bit mask, both bit-depth clip bounds, the `i32::MIN`/max-quantizer totality extreme, the DC-vs-AC block selection, and the shape/length rejections. This row does not implement the §7.14.4 quantization-matrix weighting (the `Quantizer_Matrix`/`UserQm` lookups), the `shift`/`useFsc`/`allow_tcq` derivation, the coefficient entropy decode that produces `Quant`, the §7.15.4 inverse transform, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler use inside `splot-recon`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/dequant_process.rs::tests::dequant_coefficient_applies_round2_mask_and_denom",
+    "crates/splot-recon/src/dequant_process.rs::tests::dequant_coefficient_divides_by_dq_denom",
+    "crates/splot-recon/src/dequant_process.rs::tests::dequant_coefficient_masks_to_24_bits",
+    "crates/splot-recon/src/dequant_process.rs::tests::dequant_coefficient_clips_to_bit_depth_bound",
+    "crates/splot-recon/src/dequant_process.rs::tests::dequant_coefficient_is_total_for_extreme_inputs",
+    "crates/splot-recon/src/dequant_process.rs::tests::dequantize_block_uses_dc_quant_for_origin_and_ac_elsewhere",
+    "crates/splot-recon/src/dequant_process.rs::tests::dequantize_block_rejects_unsupported_shape",
+    "crates/splot-recon/src/dequant_process.rs::tests::dequantize_block_rejects_length_mismatch",
+]
+commands = [
+    "cargo test -p splot-recon dequant_process --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "RUSTDOCFLAGS=\"-D warnings\" cargo doc -p splot-recon --no-deps --locked",
+    "cargo xtask check-source-lines",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/dequant_process.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
 name = "Decoded frame and plane model contract documentation"
 category = "docs"

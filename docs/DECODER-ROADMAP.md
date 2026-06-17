@@ -98,9 +98,14 @@ row-then-column matrix passes over a caller-supplied dequantized block, with the
 core with the `Lossless && IDTX` bit-shift shortcut, the DPCM cumulative sum, and
 adjusted-size sample duplication, all derived from the original log2 dimensions
 (no conversion tables) over caller-resolved transform selections. The § 7.14.4
-dequantization process with quantizer-matrix weighting, the rest of the § 7.14.3
-reconstruct process, the § 7.15.3 secondary transform, and the § 7.15.4
-`Transform_Shift` / `get_transform_1d_type` derivations remain unimplemented.
+dequantization process (`dequant_coefficient` / `dequantize_block`;
+`RECON-DEQUANT-PROCESS`) turns coded `Quant` coefficients into the `Dequant`
+array the inverse transform consumes — the per-coefficient steps 3-8 and the
+non-quantization-matrix transform-block helper, over caller-resolved quantizers.
+The § 7.14.4 quantization-matrix weighting and `shift` derivation, the rest of
+the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the § 7.15.4
+`Transform_Shift` / `get_transform_1d_type` derivations, and the coefficient
+entropy decode that produces `Quant` remain unimplemented.
 `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
 `splot-decode`, then call deterministic reconstruction primitives.

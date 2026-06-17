@@ -510,6 +510,23 @@ pub enum ReconError {
         /// Supplied residual buffer length.
         residual_len: usize,
     },
+    /// A § 7.14.4 dequantization block had an unsupported transform shape.
+    InvalidDequantBlockShape {
+        /// Supplied dequantized transform-block width.
+        tx_width: usize,
+        /// Supplied dequantized transform-block height.
+        tx_height: usize,
+    },
+    /// A § 7.14.4 dequantization `quant` / `out` buffer length did not match
+    /// `tx_width * tx_height`.
+    DequantBlockLengthMismatch {
+        /// Expected length (`tx_width * tx_height`).
+        expected: usize,
+        /// Supplied coded-coefficient buffer length.
+        quant_len: usize,
+        /// Supplied dequantized-output buffer length.
+        out_len: usize,
+    },
 }
 
 impl fmt::Display for ReconError {
@@ -974,6 +991,21 @@ impl fmt::Display for ReconError {
             } => write!(
                 f,
                 "2D outer inverse transform buffer mismatch: dequant expected {dequant_expected} (got {dequant_len}), residual expected {residual_expected} (got {residual_len})"
+            ),
+            Self::InvalidDequantBlockShape {
+                tx_width,
+                tx_height,
+            } => write!(
+                f,
+                "unsupported dequantization block shape {tx_width}x{tx_height}; expected each side 4, 8, 16, or 32"
+            ),
+            Self::DequantBlockLengthMismatch {
+                expected,
+                quant_len,
+                out_len,
+            } => write!(
+                f,
+                "dequantization block buffer mismatch: expected {expected}, quant {quant_len}, out {out_len}"
             ),
         }
     }
