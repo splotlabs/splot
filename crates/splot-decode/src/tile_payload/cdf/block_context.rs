@@ -5,9 +5,9 @@
 //!
 //! This module derives the per-symbol `ctx` index that selects a block-symbol
 //! CDF row in the § 8.3.2 Cdf selection process
-//! ([`08-parsing-process.md`](../../../../docs/spec/av2/1.0.0/08-parsing-process.md)
-//! `#s-8-3-2`), replacing the hardcoded context literals in the minimal
-//! flat-intra block-symbol trace with spec-grounded derivations.
+//! (`docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`), replacing the
+//! hardcoded context literals in the minimal flat-intra block-symbol trace with
+//! spec-grounded derivations.
 //!
 //! Feature tracking: `DECODE-TILE-CDF-SELECTION-BOUNDARY`.
 //!
