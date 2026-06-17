@@ -6643,6 +6643,7 @@ tests = [
     "crates/splot-recon/src/inverse_transform.rs::tests::length_32_uses_dct_kernel_for_every_type",
     "crates/splot-recon/src/inverse_transform.rs::tests::rejects_unsupported_size",
     "crates/splot-recon/src/inverse_transform.rs::tests::rejects_output_length_mismatch",
+    "crates/splot-recon/src/inverse_transform.rs::tests::round2_matches_spec_and_is_total_for_large_shift",
 ]
 commands = [
     "cargo test -p splot-recon inverse_transform --locked",

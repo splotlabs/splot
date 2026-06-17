@@ -150,12 +150,20 @@ fn kernel_sum(src: &[i32], tx_type: InverseTransform1dType, sz: usize, i: usize)
 
 /// AV2 § 4.8 `Round2(x, n)`: `n == 0` returns `x`, else `(x + (1 << (n - 1))) >> n`
 /// with arithmetic (sign-extending) shift over `i64`.
+///
+/// Total and panic-free for every `shift`: a `shift` at or above the `i64` width
+/// can only come from an out-of-contract caller (the spec's `Transform_Shift`
+/// values are small), so it saturates to the arithmetic-shift limit instead of
+/// overflowing.
 fn round2(value: i64, shift: u8) -> i64 {
     if shift == 0 {
-        value
-    } else {
-        (value + (1 << (u32::from(shift) - 1))) >> u32::from(shift)
+        return value;
     }
+    let shift = u32::from(shift);
+    if shift >= i64::BITS {
+        return value >> (i64::BITS - 1);
+    }
+    (value + (1i64 << (shift - 1))) >> shift
 }
 
 #[cfg(test)]
@@ -334,5 +342,17 @@ mod tests {
                 out_len: 3
             })
         ));
+    }
+
+    #[test]
+    fn round2_matches_spec_and_is_total_for_large_shift() {
+        // In-contract: Round2(x, n) = (x + (1 << (n - 1))) >> n.
+        assert_eq!(round2(0, 0), 0);
+        assert_eq!(round2(7, 0), 7);
+        assert_eq!(round2(6, 2), 2); // (6 + 2) >> 2
+        assert_eq!(round2(-6, 2), -1); // (-6 + 2) >> 2 = -4 >> 2
+        // Out-of-contract huge shift saturates to the arithmetic limit, no panic.
+        assert_eq!(round2(1_000, 64), 0);
+        assert_eq!(round2(-1_000, 200), -1);
     }
 }
