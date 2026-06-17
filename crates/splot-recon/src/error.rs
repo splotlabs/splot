@@ -496,6 +496,12 @@ pub enum ReconError {
         /// Requested transform height base-2 logarithm.
         log2_height: u32,
     },
+    /// A § 7.15.4 `get_transform_1d_type` lookup was requested with a
+    /// `PlaneTxType` outside the valid `TX_TYPES` range (`0..16`).
+    InvalidPlaneTxType {
+        /// Requested `PlaneTxType` index.
+        plane_tx_type: usize,
+    },
     /// A 2D inverse transform input/output buffer length did not match `w * h`.
     InverseTransform2dBufferMismatch {
         /// Expected length (`w * h`).
@@ -999,6 +1005,10 @@ impl fmt::Display for ReconError {
             } => write!(
                 f,
                 "no Transform_Shift entry for log2 shape {log2_width}x{log2_height}; expected one of the 25 AV2 TX_SIZES_ALL shapes"
+            ),
+            Self::InvalidPlaneTxType { plane_tx_type } => write!(
+                f,
+                "invalid PlaneTxType {plane_tx_type}; expected a TX_TYPES index in 0..16"
             ),
             Self::InverseTransform2dBufferMismatch {
                 expected,

@@ -5,10 +5,10 @@
 //!
 //! This module resolves the per-pass parameters the § 7.15.4 outer 2D inverse
 //! transform ([`inverse_transform_2d_outer`](crate::inverse_transform_2d_outer))
-//! consumes but leaves caller-resolved. It currently provides the
-//! [`transform_shift`] lookup (the `rowShift` / `colShift` down-shifts); the
-//! `get_transform_1d_type` row/column transform-type derivation and the DPCM
-//! direction selection are future rows.
+//! consumes but leaves caller-resolved. It provides the [`transform_shift`]
+//! lookup (the `rowShift` / `colShift` down-shifts) and the
+//! [`get_transform_1d_type`] row/column transform-type derivation; the DPCM
+//! direction selection and a combined `resolve` helper are future rows.
 //!
 //! Like the rest of `splot-recon`, transform shape is keyed by the original
 //! (unadjusted) `(log2W, log2H)` base-2 log dimensions rather than a `txSz`
@@ -19,8 +19,11 @@
 //! spec `Tx_Width_Log2` / `Tx_Height_Log2` tables prove `(log2W, log2H)`
 //! uniquely identifies every `TX_SIZES_ALL` ordinal, so the lookup is exact.
 //!
-//! Feature tracking: `RECON-TRANSFORM-SHIFT-LOOKUP`.
+//! Feature tracking: `RECON-TRANSFORM-SHIFT-LOOKUP`,
+//! `RECON-GET-TRANSFORM-1D-TYPE`.
 
+use crate::inverse_transform::InverseTransform1dType;
+use crate::inverse_transform_2d::InverseTransform2dDim;
 use crate::{ReconError, Result};
 
 /// AV2 § 7.15.4 `Transform_Shift[TX_SIZES_ALL][2]` = `(rowShift, colShift)` per
@@ -124,6 +127,104 @@ pub const fn transform_shift(log2_width: u32, log2_height: u32) -> Result<(u8, u
     })
 }
 
+/// Which § 7.15.4.1 transform pass a [`get_transform_1d_type`] query is for: the
+/// row pass (`get_transform_1d_type(0, w)`) or the column pass
+/// (`get_transform_1d_type(1, h)`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransformPass {
+    /// The first (row) pass — spec `dir = 0`, sized by the transform width.
+    Row,
+    /// The second (column) pass — spec `dir = 1`, sized by the transform height.
+    Col,
+}
+
+impl TransformPass {
+    /// The spec `dir` table index (`Row = 0`, `Col = 1`).
+    const fn dir_index(self) -> usize {
+        match self {
+            Self::Row => 0,
+            Self::Col => 1,
+        }
+    }
+}
+
+// Short aliases for the verbatim § 7.15.4 `Transform_1d_Type` table below; the
+// table holds only the four base types (DDTX / FDDT arise solely from the
+// `useDdt` substitution in `get_transform_1d_type`, never from the table).
+const DCT: InverseTransform2dDim = InverseTransform2dDim::Kernel(InverseTransform1dType::Dct);
+const ADST: InverseTransform2dDim = InverseTransform2dDim::Kernel(InverseTransform1dType::Adst);
+const FDST: InverseTransform2dDim = InverseTransform2dDim::Kernel(InverseTransform1dType::Fdst);
+const IDT: InverseTransform2dDim = InverseTransform2dDim::Identity;
+
+/// AV2 § 7.15.4 `Transform_1d_Type[TX_TYPES][2]` = `(rowType, colType)` per
+/// `PlaneTxType`, transcribed verbatim from the spec process body
+/// (`docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-4`, the constant table at
+/// lines 10679-10696). Like `Transform_Shift`, this is a § 7.15.4 process-body
+/// constant that is **not** part of the generated `all_tables.h` § 9 attachment,
+/// so it is a hand-written, spec-cited constant rather than a `gen-tables`
+/// output. `IDT` maps to [`InverseTransform2dDim::Identity`]; the kernel types
+/// map to [`InverseTransform2dDim::Kernel`].
+const TRANSFORM_1D_TYPE: [[InverseTransform2dDim; 2]; 16] = [
+    [DCT, DCT],   // 0  DCT_DCT
+    [DCT, ADST],  // 1  ADST_DCT
+    [ADST, DCT],  // 2  DCT_ADST
+    [ADST, ADST], // 3  ADST_ADST
+    [DCT, FDST],  // 4  FDST_DCT
+    [FDST, DCT],  // 5  DCT_FDST
+    [FDST, FDST], // 6  FDST_FDST
+    [FDST, ADST], // 7  ADST_FDST
+    [ADST, FDST], // 8  FDST_ADST
+    [IDT, IDT],   // 9  IDTX
+    [IDT, DCT],   // 10 V_DCT
+    [DCT, IDT],   // 11 H_DCT
+    [IDT, ADST],  // 12 V_ADST
+    [ADST, IDT],  // 13 H_ADST
+    [IDT, FDST],  // 14 V_FDST
+    [FDST, IDT],  // 15 H_FDST
+];
+
+/// Returns the AV2 § 7.15.4 1D transform type for the `pass` pass of a transform
+/// block, i.e. `get_transform_1d_type(dir, sz)` =
+/// `Transform_1d_Type[PlaneTxType][dir]` with the `useDdt` substitution
+/// (`07-decoding-process.md#s-7-15-4`).
+///
+/// `plane_tx_type` is `PlaneTxType` (`0..TX_TYPES`), `pass` selects the table
+/// column (`dir`), and `size` is the pass dimension's adjusted sample size (`w`
+/// for [`TransformPass::Row`], `h` for [`TransformPass::Col`]). When `use_ddt`
+/// (the caller-resolved `enable_inter_ddt && !use_intrabc && is_inter`) is set
+/// and the base type is `ADST` or `FDST` and `size != 4`, the type is replaced by
+/// `DDTX` or `FDDT` respectively. The result drops into the `row_type` /
+/// `col_type` fields of [`InverseTransform2dOuter`](crate::InverseTransform2dOuter).
+///
+/// # Errors
+/// Returns [`ReconError::InvalidPlaneTxType`] if `plane_tx_type` is not a valid
+/// `TX_TYPES` index (`0..16`).
+pub const fn get_transform_1d_type(
+    plane_tx_type: usize,
+    pass: TransformPass,
+    size: usize,
+    use_ddt: bool,
+) -> Result<InverseTransform2dDim> {
+    if plane_tx_type >= TRANSFORM_1D_TYPE.len() {
+        return Err(ReconError::InvalidPlaneTxType { plane_tx_type });
+    }
+    let base = TRANSFORM_1D_TYPE[plane_tx_type][pass.dir_index()];
+    if use_ddt && size != 4 {
+        // useDdt && (t == ADST || t == FDST) && sz != 4 -> ADST becomes DDTX and
+        // FDST becomes FDDT; every other type (incl. DCT and IDT) is unchanged.
+        match base {
+            InverseTransform2dDim::Kernel(InverseTransform1dType::Adst) => {
+                return Ok(InverseTransform2dDim::Kernel(InverseTransform1dType::Ddtx));
+            }
+            InverseTransform2dDim::Kernel(InverseTransform1dType::Fdst) => {
+                return Ok(InverseTransform2dDim::Kernel(InverseTransform1dType::Fddt));
+            }
+            _ => {}
+        }
+    }
+    Ok(base)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -208,6 +309,99 @@ mod tests {
         assert!(matches!(
             transform_shift(3, 7),
             Err(ReconError::InvalidTransformShiftShape { .. })
+        ));
+    }
+
+    use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
+    use InverseTransform2dDim::{Identity, Kernel};
+
+    // `get_transform_1d_type` is a `const fn`: a fixed (plane_tx_type, pass)
+    // resolves at compile time. Pins PlaneTxType 1 row -> DCT (no DDT).
+    const _CONST_TYPE_CHECK: () = assert!(matches!(
+        get_transform_1d_type(1, TransformPass::Row, 8, false),
+        Ok(Kernel(Dct))
+    ));
+
+    #[test]
+    fn get_transform_1d_type_matches_the_spec_table_without_ddt() {
+        // Independently transcribed (rowType, colType) per PlaneTxType from
+        // 07-decoding-process.md#s-7-15-4 lines 10679-10696, with use_ddt = false
+        // so the base table is returned verbatim. IDT -> Identity.
+        let expected: [(InverseTransform2dDim, InverseTransform2dDim); 16] = [
+            (Kernel(Dct), Kernel(Dct)),
+            (Kernel(Dct), Kernel(Adst)),
+            (Kernel(Adst), Kernel(Dct)),
+            (Kernel(Adst), Kernel(Adst)),
+            (Kernel(Dct), Kernel(Fdst)),
+            (Kernel(Fdst), Kernel(Dct)),
+            (Kernel(Fdst), Kernel(Fdst)),
+            (Kernel(Fdst), Kernel(Adst)),
+            (Kernel(Adst), Kernel(Fdst)),
+            (Identity, Identity),
+            (Identity, Kernel(Dct)),
+            (Kernel(Dct), Identity),
+            (Identity, Kernel(Adst)),
+            (Kernel(Adst), Identity),
+            (Identity, Kernel(Fdst)),
+            (Kernel(Fdst), Identity),
+        ];
+        for (ptt, &(row, col)) in expected.iter().enumerate() {
+            assert_eq!(
+                get_transform_1d_type(ptt, TransformPass::Row, 8, false).unwrap(),
+                row,
+                "PlaneTxType {ptt} rowType"
+            );
+            assert_eq!(
+                get_transform_1d_type(ptt, TransformPass::Col, 8, false).unwrap(),
+                col,
+                "PlaneTxType {ptt} colType"
+            );
+        }
+    }
+
+    #[test]
+    fn get_transform_1d_type_applies_ddt_substitution_only_when_eligible() {
+        // useDdt && size != 4: ADST -> DDTX, FDST -> FDDT. PlaneTxType 3 is
+        // (ADST, ADST); PlaneTxType 6 is (FDST, FDST).
+        assert_eq!(
+            get_transform_1d_type(3, TransformPass::Row, 8, true).unwrap(),
+            Kernel(Ddtx)
+        );
+        assert_eq!(
+            get_transform_1d_type(6, TransformPass::Col, 16, true).unwrap(),
+            Kernel(Fddt)
+        );
+        // size == 4 disables the substitution (ADST stays ADST).
+        assert_eq!(
+            get_transform_1d_type(3, TransformPass::Row, 4, true).unwrap(),
+            Kernel(Adst)
+        );
+        // use_ddt == false disables it too.
+        assert_eq!(
+            get_transform_1d_type(6, TransformPass::Row, 16, false).unwrap(),
+            Kernel(Fdst)
+        );
+        // DCT and IDT are never substituted, even when eligible. PlaneTxType 0 is
+        // (DCT, DCT); PlaneTxType 9 is (IDT, IDT).
+        assert_eq!(
+            get_transform_1d_type(0, TransformPass::Row, 16, true).unwrap(),
+            Kernel(Dct)
+        );
+        assert_eq!(
+            get_transform_1d_type(9, TransformPass::Col, 16, true).unwrap(),
+            Identity
+        );
+    }
+
+    #[test]
+    fn get_transform_1d_type_rejects_out_of_range_plane_tx_type() {
+        assert!(matches!(
+            get_transform_1d_type(16, TransformPass::Row, 8, false),
+            Err(ReconError::InvalidPlaneTxType { plane_tx_type: 16 })
+        ));
+        assert!(matches!(
+            get_transform_1d_type(usize::MAX, TransformPass::Col, 8, true),
+            Err(ReconError::InvalidPlaneTxType { .. })
         ));
     }
 }

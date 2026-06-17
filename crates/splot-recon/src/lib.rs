@@ -23,11 +23,13 @@
 //! caller-resolved quantizers, and the built-in-`Quantizer_Matrix`
 //! quantization-matrix weighting over caller-resolved indices), and the
 //! § 7.15.4 `Transform_Shift` row/column down-shift lookup keyed on the
-//! original `(log2W, log2H)` shape; it does not implement byte-consuming
-//! decode, full reconstruction, the § 7.14.4 `shift` derivation or the
-//! user-defined `UserQm` matrices, the § 7.15.3 secondary transform, the
-//! § 7.15.4 `get_transform_1d_type` derivation, runtime CLI Y4M output, or
-//! full AV2 reference refresh semantics.
+//! original `(log2W, log2H)` shape, and the § 7.15.4 `get_transform_1d_type`
+//! row/column transform-type derivation (the built-in `Transform_1d_Type`
+//! table plus the `useDdt` `DDTX`/`FDDT` substitution); it does not implement
+//! byte-consuming decode, full reconstruction, the § 7.14.4 `shift` derivation
+//! or the user-defined `UserQm` matrices, the § 7.15.3 secondary transform, the
+//! § 7.15.4 DPCM-direction selection and combined transform-parameter resolve
+//! helper, runtime CLI Y4M output, or full AV2 reference refresh semantics.
 //!
 //! The ownership model is view-first ([`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)):
 //! owned plane/frame/workspace storage hands out borrowed [`PlaneRef`]/[`PlaneMut`]
@@ -59,7 +61,8 @@
 //! `RECON-INVERSE-TRANSFORM-2D-OUTER`,
 //! `RECON-DEQUANT-PROCESS`,
 //! `RECON-DEQUANT-QM-WEIGHT`,
-//! `RECON-TRANSFORM-SHIFT-LOOKUP`.
+//! `RECON-TRANSFORM-SHIFT-LOOKUP`,
+//! `RECON-GET-TRANSFORM-1D-TYPE`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
@@ -143,7 +146,7 @@ pub use reference::{
     ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameReplacement, ReferenceFrameStore,
     ReferenceRefreshMask, ReferenceRefreshOutcome, ReferenceRefreshSlots, ReferenceSlot,
 };
-pub use transform_params::transform_shift;
+pub use transform_params::{TransformPass, get_transform_1d_type, transform_shift};
 pub use views::{FrameMut, FrameRef, PlaneMut, PlaneMutRows, PlaneRef, PlaneRefRows};
 pub use workspace::{
     CurrentFrameIntraEdges, CurrentFramePlane, CurrentFrameWorkspace, WorkspaceRectRows,
