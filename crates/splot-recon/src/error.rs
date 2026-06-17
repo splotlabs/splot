@@ -502,6 +502,21 @@ pub enum ReconError {
         /// Requested `PlaneTxType` index.
         plane_tx_type: usize,
     },
+    /// A § 5.20.7.30 `get_scan` request had an unsupported transform shape
+    /// (`w` / `h` must each be 4, 8, 16, or 32).
+    InvalidScanShape {
+        /// Requested operating width.
+        w: usize,
+        /// Requested operating height.
+        h: usize,
+    },
+    /// A § 5.20.7.30 `get_scan` output buffer length did not match `w * h`.
+    ScanLengthMismatch {
+        /// Expected length (`w * h`).
+        expected: usize,
+        /// Supplied output buffer length.
+        out_len: usize,
+    },
     /// A 2D inverse transform input/output buffer length did not match `w * h`.
     InverseTransform2dBufferMismatch {
         /// Expected length (`w * h`).
@@ -1009,6 +1024,14 @@ impl fmt::Display for ReconError {
             Self::InvalidPlaneTxType { plane_tx_type } => write!(
                 f,
                 "invalid PlaneTxType {plane_tx_type}; expected a TX_TYPES index in 0..16"
+            ),
+            Self::InvalidScanShape { w, h } => write!(
+                f,
+                "unsupported get_scan shape {w}x{h}; expected each of w/h in 4/8/16/32"
+            ),
+            Self::ScanLengthMismatch { expected, out_len } => write!(
+                f,
+                "get_scan output length mismatch: expected {expected}, got {out_len}"
             ),
             Self::InverseTransform2dBufferMismatch {
                 expected,

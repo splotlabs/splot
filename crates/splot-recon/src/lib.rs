@@ -23,10 +23,12 @@
 //! caller-resolved quantizers, and the built-in-`Quantizer_Matrix`
 //! quantization-matrix weighting over caller-resolved indices), and the
 //! § 7.15.4 `Transform_Shift` row/column down-shift lookup keyed on the
-//! original `(log2W, log2H)` shape, and the § 7.15.4 `get_transform_1d_type`
+//! original `(log2W, log2H)` shape, the § 7.15.4 `get_transform_1d_type`
 //! row/column transform-type derivation (the built-in `Transform_1d_Type`
-//! table plus the `useDdt` `DDTX`/`FDDT` substitution); it does not implement
-//! byte-consuming decode, full reconstruction, the § 7.14.4 `shift` derivation
+//! table plus the `useDdt` `DDTX`/`FDDT` substitution), and the § 5.20.7.30
+//! `get_scan` coefficient scan order (the anti-diagonal 2D scan and the
+//! row/column raster scans); it does not implement byte-consuming decode, full
+//! reconstruction, the § 7.14.4 `shift` derivation
 //! or the user-defined `UserQm` matrices, the § 7.15.3 secondary transform, the
 //! § 7.15.4 DPCM-direction selection and combined transform-parameter resolve
 //! helper, runtime CLI Y4M output, or full AV2 reference refresh semantics.
@@ -62,11 +64,13 @@
 //! `RECON-DEQUANT-PROCESS`,
 //! `RECON-DEQUANT-QM-WEIGHT`,
 //! `RECON-TRANSFORM-SHIFT-LOOKUP`,
-//! `RECON-GET-TRANSFORM-1D-TYPE`.
+//! `RECON-GET-TRANSFORM-1D-TYPE`,
+//! `RECON-COEFFICIENT-SCAN-ORDER`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
 
+mod coefficient_scan;
 mod dequant;
 mod dequant_process;
 mod error;
@@ -93,6 +97,7 @@ mod views;
 mod workspace;
 mod y4m;
 
+pub use coefficient_scan::{TransformClass, coefficient_scan_order};
 pub use dequant::{
     QuantizerDeltas, ac_quantizer, dc_quantizer, max_quantizer_index, quantizer_index,
     quantizer_value,
