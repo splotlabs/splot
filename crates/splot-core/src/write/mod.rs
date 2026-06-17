@@ -157,4 +157,7 @@ pub use seq_header::{
 pub use seq_tile::{
     write_sequence_filter_config, write_sequence_header, write_sequence_tile_config,
 };
-pub use tile_group::{write_tile_group_obu, write_tile_group_payload, write_tile_group_structure};
+pub use tile_group::{
+    write_tile_group_continuation_obu, write_tile_group_obu, write_tile_group_payload,
+    write_tile_group_structure,
+};
