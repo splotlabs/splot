@@ -532,8 +532,8 @@ pub enum ReconError {
     InvalidQuantizerMatrixIndex {
         /// Requested `segLvl` segment level.
         seg_level: usize,
-        /// Requested `txSz` transform-size index.
-        tx_size: usize,
+        /// Caller-resolved `Qm_Offset[txSz]` region start within the matrix row.
+        qm_offset: usize,
         /// Derived flattened position within the matrix row.
         position: usize,
     },
@@ -1019,11 +1019,11 @@ impl fmt::Display for ReconError {
             ),
             Self::InvalidQuantizerMatrixIndex {
                 seg_level,
-                tx_size,
+                qm_offset,
                 position,
             } => write!(
                 f,
-                "quantization-matrix index out of range: seg_level {seg_level}, tx_size {tx_size}, position {position}"
+                "quantization-matrix index out of range: seg_level {seg_level}, qm_offset {qm_offset}, position {position}"
             ),
         }
     }

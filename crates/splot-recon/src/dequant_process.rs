@@ -26,7 +26,7 @@
 //! out of scope (caller-resolved or future rows); the block helper covers the
 //! path where every AC coefficient shares one quantizer.
 
-use splot_tables::tables::quantizer::{QM_OFFSET, QUANTIZER_MATRIX};
+use splot_tables::tables::quantizer::QUANTIZER_MATRIX;
 
 use crate::{BitDepth, ReconError, Result};
 
@@ -134,20 +134,30 @@ pub fn dequantize_block(params: &DequantBlockParams, quant: &[i32], out: &mut [i
 }
 
 /// Caller-resolved indices for the § 7.14.4 built-in quantization-matrix weight
-/// lookup `Quantizer_Matrix[seg_level][plane > 0][Qm_Offset[tx_size] + row * tx_width + col]`.
+/// lookup `Quantizer_Matrix[seg_level][plane > 0][qm_offset + row * tx_width + col]`.
+///
+/// Every field is resolved by the caller from a single `txSz`, matching the
+/// crate-wide "caller resolves the spec dimensions" contract used by the § 7.15
+/// inverse-transform primitives (which take `Tx_Width_Log2` / `Tx_Height_Log2`
+/// rather than `txSz`, since `splot-recon` does not depend on the § 9.2
+/// conversion tables in `splot-core`). `qm_offset`, `tx_width`, and `tx_height`
+/// are therefore derived together — `Qm_Offset[txSz]`,
+/// `Min(32, Tx_Width[txSz])`, and `Min(32, Tx_Height[txSz])` — so the region
+/// offset and the row stride cannot disagree.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QmWeightIndex {
     /// `segLvl` quantization-matrix segment level (`0..NUM_CUSTOM_QMS`).
     pub seg_level: usize,
     /// `plane > 0` (chroma selects the second `Quantizer_Matrix` plane row).
     pub plane_is_chroma: bool,
-    /// `txSz` transform-size index (`0..TX_SIZES_ALL`) for the `Qm_Offset` lookup.
-    pub tx_size: usize,
+    /// Caller-resolved `Qm_Offset[txSz]`: the start of `txSz`'s region in the
+    /// flattened `Quantizer_Matrix` row (from `splot_tables` `QM_OFFSET`).
+    pub qm_offset: usize,
     /// Coefficient row `i` (must be `< tx_height`).
     pub row: usize,
     /// Coefficient column `j` (must be `< tx_width`).
     pub col: usize,
-    /// Dequantized block width `tw = Min(32, Tx_Width[txSz])`.
+    /// Dequantized block width `tw = Min(32, Tx_Width[txSz])`, the row stride.
     pub tx_width: usize,
     /// Dequantized block height `th = Min(32, Tx_Height[txSz])`.
     pub tx_height: usize,
@@ -160,11 +170,14 @@ pub struct QmWeightIndex {
 /// The coefficient `(row, col)` must lie inside the selected transform's
 /// `tx_width * tx_height` sub-block, so a coordinate outside the transform is
 /// rejected rather than silently reading a neighbouring transform's weight.
+/// Because `qm_offset` (the region start) and `tx_width` (the row stride) are
+/// resolved from the same `txSz` by the caller, the flattened index stays inside
+/// the intended region; the final matrix-row bound is a defensive backstop.
 ///
 /// # Errors
 /// Returns [`ReconError::InvalidQuantizerMatrixIndex`] if `row` / `col` are
-/// outside the `tx_width * tx_height` sub-block, or if `seg_level`, `tx_size`, or
-/// the derived position is out of range for the generated `Quantizer_Matrix`.
+/// outside the `tx_width * tx_height` sub-block, or if `seg_level` or the derived
+/// position is out of range for the generated `Quantizer_Matrix`.
 pub fn quantization_matrix_weight(index: &QmWeightIndex) -> Result<i32> {
     // The coefficient must lie inside the selected transform's sub-block; a
     // larger row/col would otherwise index a later transform's region of the
@@ -172,10 +185,10 @@ pub fn quantization_matrix_weight(index: &QmWeightIndex) -> Result<i32> {
     if index.row >= index.tx_height || index.col >= index.tx_width {
         return Err(ReconError::InvalidQuantizerMatrixIndex {
             seg_level: index.seg_level,
-            tx_size: index.tx_size,
+            qm_offset: index.qm_offset,
             position: index
-                .row
-                .saturating_mul(index.tx_width)
+                .qm_offset
+                .saturating_add(index.row.saturating_mul(index.tx_width))
                 .saturating_add(index.col),
         });
     }
@@ -184,22 +197,14 @@ pub fn quantization_matrix_weight(index: &QmWeightIndex) -> Result<i32> {
             .get(index.seg_level)
             .ok_or(ReconError::InvalidQuantizerMatrixIndex {
                 seg_level: index.seg_level,
-                tx_size: index.tx_size,
+                qm_offset: index.qm_offset,
                 position: 0,
             })?;
     let plane = &level[usize::from(index.plane_is_chroma)];
-    let offset =
-        QM_OFFSET
-            .get(index.tx_size)
-            .copied()
-            .ok_or(ReconError::InvalidQuantizerMatrixIndex {
-                seg_level: index.seg_level,
-                tx_size: index.tx_size,
-                position: 0,
-            })?;
-    // `offset` is a non-negative spec table value; widen in usize to derive the
-    // flattened position and bounds-check it against the matrix row.
-    let position = (offset.max(0) as usize)
+    // `qm_offset` is the caller-resolved region start; widen the in-region offset
+    // and bounds-check the flattened position against the matrix row.
+    let position = index
+        .qm_offset
         .saturating_add(index.row.saturating_mul(index.tx_width))
         .saturating_add(index.col);
     plane
@@ -207,7 +212,7 @@ pub fn quantization_matrix_weight(index: &QmWeightIndex) -> Result<i32> {
         .copied()
         .ok_or(ReconError::InvalidQuantizerMatrixIndex {
             seg_level: index.seg_level,
-            tx_size: index.tx_size,
+            qm_offset: index.qm_offset,
             position,
         })
 }
@@ -225,6 +230,8 @@ pub fn qm_weighted_quantizer(q: u32, m: i32) -> u32 {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use splot_tables::tables::quantizer::QM_OFFSET;
+
     use super::*;
 
     #[test]
@@ -360,7 +367,7 @@ mod tests {
         let index = QmWeightIndex {
             seg_level: 0,
             plane_is_chroma: false,
-            tx_size: 0,
+            qm_offset: QM_OFFSET[0] as usize,
             row: 0,
             col: 0,
             tx_width: 4,
@@ -377,16 +384,17 @@ mod tests {
             quantization_matrix_weight(&chroma).unwrap(),
             QUANTIZER_MATRIX[0][1][0]
         );
-        // A non-origin coefficient uses Qm_Offset[tx_size] + row*tw + col.
+        // A non-origin coefficient uses Qm_Offset[txSz] + row*tw + col, with the
+        // offset and the stride both resolved from tx_size 1 (an 8x8 transform).
+        let off = QM_OFFSET[1] as usize;
         let pos = QmWeightIndex {
-            tx_size: 1,
+            qm_offset: off,
             row: 1,
             col: 2,
             tx_width: 8,
             tx_height: 8,
             ..index
         };
-        let off = QM_OFFSET[1] as usize;
         assert_eq!(
             quantization_matrix_weight(&pos).unwrap(),
             QUANTIZER_MATRIX[0][0][off + pos.row * pos.tx_width + pos.col]
@@ -399,7 +407,7 @@ mod tests {
         let bad_level = QmWeightIndex {
             seg_level: 99,
             plane_is_chroma: false,
-            tx_size: 0,
+            qm_offset: QM_OFFSET[0] as usize,
             row: 0,
             col: 0,
             tx_width: 4,
@@ -421,7 +429,7 @@ mod tests {
         let outside_row = QmWeightIndex {
             seg_level: 0,
             plane_is_chroma: false,
-            tx_size: 0,
+            qm_offset: QM_OFFSET[0] as usize,
             row: 4,
             col: 0,
             tx_width: 4,
@@ -429,7 +437,7 @@ mod tests {
         };
         assert!(matches!(
             quantization_matrix_weight(&outside_row),
-            Err(ReconError::InvalidQuantizerMatrixIndex { tx_size: 0, .. })
+            Err(ReconError::InvalidQuantizerMatrixIndex { qm_offset: 0, .. })
         ));
         // A column outside the width is rejected too.
         let outside_col = QmWeightIndex {
@@ -439,7 +447,7 @@ mod tests {
         };
         assert!(matches!(
             quantization_matrix_weight(&outside_col),
-            Err(ReconError::InvalidQuantizerMatrixIndex { tx_size: 0, .. })
+            Err(ReconError::InvalidQuantizerMatrixIndex { qm_offset: 0, .. })
         ));
     }
 }

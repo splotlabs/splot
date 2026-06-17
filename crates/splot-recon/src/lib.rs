@@ -19,12 +19,13 @@
 //! § 7.15.4 outer orchestration (the lossless IDTX shortcut, the DPCM cumulative
 //! sum, and adjusted-size sample duplication over caller-resolved transform
 //! selections), and the § 7.14.4 dequantization process (the per-coefficient
-//! dequant arithmetic and the non-quantization-matrix transform-block helper
-//! over caller-resolved quantizers); it does not implement byte-consuming
-//! decode, full reconstruction, the § 7.14.4 quantization-matrix weighting or
-//! `shift` derivation, the § 7.15.3 secondary transform, the § 7.15.4
-//! `Transform_Shift` / `get_transform_1d_type` derivations, runtime CLI Y4M
-//! output, or full AV2 reference refresh semantics.
+//! dequant arithmetic, the non-quantization-matrix transform-block helper over
+//! caller-resolved quantizers, and the built-in-`Quantizer_Matrix`
+//! quantization-matrix weighting over caller-resolved indices); it does not
+//! implement byte-consuming decode, full reconstruction, the § 7.14.4 `shift`
+//! derivation or the user-defined `UserQm` matrices, the § 7.15.3 secondary
+//! transform, the § 7.15.4 `Transform_Shift` / `get_transform_1d_type`
+//! derivations, runtime CLI Y4M output, or full AV2 reference refresh semantics.
 //!
 //! The ownership model is view-first ([`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)):
 //! owned plane/frame/workspace storage hands out borrowed [`PlaneRef`]/[`PlaneMut`]
@@ -54,7 +55,8 @@
 //! `RECON-RESIDUAL-ADDITION`,
 //! `RECON-INVERSE-TRANSFORM-2D`,
 //! `RECON-INVERSE-TRANSFORM-2D-OUTER`,
-//! `RECON-DEQUANT-PROCESS`.
+//! `RECON-DEQUANT-PROCESS`,
+//! `RECON-DEQUANT-QM-WEIGHT`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
