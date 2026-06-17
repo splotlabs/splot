@@ -632,8 +632,9 @@ fn run_openspec_validate() -> Result<()> {
     )
 }
 
-/// Checks fuzz-target registration drift, on stable: the CI fuzz-smoke loop
-/// enumerates registered `[[bin]]` targets only (`cargo fuzz list`), so an
+/// Checks fuzz-target registration drift, on stable: the CI fuzz-smoke matrix
+/// enumerates registered `[[bin]]` targets only (the `fuzz-list` job derives the
+/// matrix from `Cargo.toml`; each leg's seed step uses `cargo fuzz list`), so an
 /// unregistered `fuzz_targets/*.rs` file would be silently skipped there. Run as
 /// `cargo xtask check-fuzz-targets` in the CI `ci` job and inside `cargo xtask ci`.
 fn check_fuzz_targets(root: &Path) -> Result<()> {

@@ -198,8 +198,9 @@ panic.
 - On **nightly**, cargo-fuzz targets cover the parser, validator, byte planner,
   minimal runtime hash/Y4M byte surfaces, decoded-frame/plane runtime types,
   and Y4M output serialization surfaces. CI runs a blocking per-target smoke on
-  every PR (`.github/workflows/ci.yml`, `fuzz-smoke` job).
-- The `fuzz-smoke` job **seeds** each target's corpus from the curated
+  every PR: each registered target is one parallel matrix leg, gated by the
+  `fuzz-smoke` status check (`.github/workflows/ci.yml`).
+- Each fuzz matrix leg **seeds** its target's corpus from the curated
   `tests/fixtures/*.av2` AND the committed conformance corpus
   (`tests/conformance/vectors/**.ivf`): the diverse AVM-generated streams are
   strong coverage-guided seeds — fed to `parse_ivf` directly, to

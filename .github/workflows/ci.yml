@@ -132,9 +132,38 @@ jobs:
           command: check advisories
           arguments: --all-features
 
-  # Blocking smoke fuzz: catch newly-introduced panics at PR time. Every fuzz
-  # target is enumerated and run for a per-target slice across the tracked fuzzed
-  # surfaces: parse_obu (read_leb128 / read_obu_header / parse_annex_b_obus),
+  # Enumerate the registered fuzz targets once so the per-target smoke matrix
+  # stays in lock step with the [[bin]] set (cargo xtask check-fuzz-targets gates
+  # that those equal fuzz_targets/*.rs). Parse fuzz/Cargo.toml with a real TOML
+  # reader (Python tomllib) so every valid [[bin]] entry is captured the same way
+  # the xtask drift gate sees it, regardless of spacing/indentation/comments — no
+  # nightly toolchain or cargo-fuzz needed just to list names. The matrix is
+  # derived, never hardcoded, so a new target is picked up with no workflow edit.
+  fuzz-list:
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.list.outputs.targets }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - id: list
+        name: Enumerate registered fuzz targets
+        run: |
+          targets=$(python3 -c '
+          import json, tomllib
+          with open("fuzz/Cargo.toml", "rb") as f:
+              manifest = tomllib.load(f)
+          print(json.dumps([b["name"] for b in manifest.get("bin", [])]))
+          ')
+          test -n "$targets" && test "$targets" != "[]"
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "Fuzz targets: $targets"
+
+  # Blocking smoke fuzz: catch newly-introduced panics at PR time. Each registered
+  # target runs as its own matrix leg, in parallel, for a per-target slice — so the
+  # smoke's wall-clock is one target's slice, not the sum of all of them. Tracked
+  # fuzzed surfaces: parse_obu (read_leb128 / read_obu_header / parse_annex_b_obus),
   # parse_ivf (IVF container), parse_bitstream (container auto-detect + envelope
   # parsing), symbol_decoder_bytes (AV2 §8.2 symbol decoder),
   # tile_payload_decode_bytes (minimal tile-payload frontier), validate_bytes
@@ -142,15 +171,20 @@ jobs:
   # decode_plan_bytes (raw byte planner),
   # decode_runtime_hash_bytes (minimal runtime hash byte API),
   # decode_runtime_raw_bytes (minimal runtime raw byte API),
-  # decode_runtime_y4m_bytes (minimal runtime Y4M byte API), and
+  # decode_runtime_y4m_bytes (minimal runtime Y4M byte API),
   # recon_frame_hash_bytes (decoded-frame hash serialization),
   # recon_frame_plane_types_bytes (decoded-frame/plane type model),
   # recon_reference_frame_store_bytes (reference-frame store API),
   # recon_y4m_output_bytes (Y4M output serialization), and
   # recon_intra_prediction_bytes (intra prediction/workspace primitives).
   # cargo-fuzz needs a nightly toolchain (ASan + coverage are nightly-only).
-  fuzz-smoke:
+  fuzz:
+    needs: fuzz-list
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.fuzz-list.outputs.targets) }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -277,24 +311,41 @@ jobs:
       # Force the gnu target. install-action has no cargo-fuzz, so it falls back to
       # a musl-built binary whose default target is musl — and AddressSanitizer
       # cannot link a static musl libc. Building for gnu (the host) keeps ASan working.
-      # Run every target for a per-target slice; bash -e fails the job on the first
-      # crash in any target, and the captured list is required non-empty (see the
-      # seed step) so a broken `cargo fuzz list` cannot skip the smoke silently.
-      - name: Fuzz every target (per-target smoke)
+      # One matrix leg per target: bash -e fails this leg on a crash, and the
+      # aggregating fuzz-smoke job (below) stays red unless every leg is green.
+      - name: Fuzz this target (per-target smoke)
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
         run: |
-          targets=$(cargo +nightly fuzz list)
-          test -n "$targets"
-          for target in $targets; do
-            cargo +nightly fuzz run "$target" --target x86_64-unknown-linux-gnu -- -max_total_time=45 -timeout=10 -rss_limit_mb=2048
-          done
+          cargo +nightly fuzz run "$FUZZ_TARGET" --target x86_64-unknown-linux-gnu -- -max_total_time=45 -timeout=10 -rss_limit_mb=2048
 
       - name: Upload crash artifacts on failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: fuzz-artifacts
+          name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/**
           if-no-files-found: ignore
+
+  # Single stable status check: green iff every fuzz matrix leg passed. Branch
+  # protection requires this `fuzz-smoke` job, whose name stays fixed even as
+  # targets are added to / removed from the dynamically-enumerated matrix above.
+  fuzz-smoke:
+    needs: [fuzz-list, fuzz]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every fuzz target to have passed
+        env:
+          LIST_RESULT: ${{ needs.fuzz-list.result }}
+          FUZZ_RESULT: ${{ needs.fuzz.result }}
+        run: |
+          echo "fuzz-list: $LIST_RESULT; fuzz matrix: $FUZZ_RESULT"
+          if [ "$LIST_RESULT" != "success" ] || [ "$FUZZ_RESULT" != "success" ]; then
+            echo "fuzz-smoke failed: a target crashed or the target list was not produced."
+            exit 1
+          fi
+          echo "All fuzz targets passed."
 
   # Coverage gate. Publishes the workspace summary + lcov artifact and blocks the
   # merge on >= 90% line coverage for splot-validate (the crate whose diagnostics are
