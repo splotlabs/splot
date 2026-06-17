@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 209 feature(s); 159 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 210 feature(s); 160 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -21,6 +21,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `RECON-INTRA-DC-SUBSAMPLED-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `RECON-INTRA-IBP-DC-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `RECON-INTRA-SMOOTH-PREDICTION` | ✅ | — | ✅ | ✅ | — |
+| [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `RECON-INVERSE-TRANSFORM-1D` | ✅ | — | ✅ | ✅ | — |
 | [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `RECON-REFERENCE-FRAME-STORE` | ✅ | — | — | ✅ | — |
 
 ## Chapter 4 — Conventions
@@ -34,6 +35,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 4.8](./spec/av2/1.0.0/04-conventions.md#s-4-8) | Mathematical functions | `RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 4.8](./spec/av2/1.0.0/04-conventions.md#s-4-8) | Mathematical functions | `RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 4.8](./spec/av2/1.0.0/04-conventions.md#s-4-8) | Mathematical functions | `RECON-INTRA-SMOOTH-PREDICTION` | ✅ | — | ✅ | ✅ | — |
+| [§ 4.8](./spec/av2/1.0.0/04-conventions.md#s-4-8) | Mathematical functions | `RECON-INVERSE-TRANSFORM-1D` | ✅ | — | ✅ | ✅ | — |
 | [§ 4.8](./spec/av2/1.0.0/04-conventions.md#s-4-8) | Mathematical functions | `RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 4.11.3](./spec/av2/1.0.0/04-conventions.md#s-4-11-3) | uvlc() | `AV2-4.11.3-UVLC` | ✅ | ✅ | — | ✅ | — |
 | [§ 4.11.4](./spec/av2/1.0.0/04-conventions.md#s-4-11-4) | svlc() | `AV2-4.11.4-SVLC` | ✅ | ✅ | — | ✅ | — |
@@ -496,6 +498,8 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.3.22](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-22) | Resolve divisor process | `RECON-INTRA-DC-SUBSAMPLED-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION` | ✅ | — | — | ✅ | — |
 | [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `RECON-DEQUANT-QUANTIZER-LOOKUP` | ✅ | — | — | ✅ | — |
+| [§ 7.15.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-2-1) | 1d inverse transform process | `RECON-INVERSE-TRANSFORM-1D` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.15.4.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4-1) | 2D matrix transform process | `RECON-INVERSE-TRANSFORM-1D` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 3 |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
@@ -629,6 +633,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | ✅ | ✅ | — | ✅ | 2 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 9.6](./spec/av2/1.0.0/09-additional-tables/09-06-1d-transform-tables.md#s-9-6) | 1d transform tables | `RECON-INVERSE-TRANSFORM-1D` | ✅ | — | ✅ | ✅ | — |
 
 ## Annexes
 

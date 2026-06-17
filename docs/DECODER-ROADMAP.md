@@ -81,9 +81,14 @@ scheduler-free `splot-recon` primitives: the quantizer-value lookup core
 (`Ac_Qlookup`, `qlookup`, `MaxQ`, and `get_q`;
 `RECON-DEQUANT-QUANTIZER-LOOKUP`) and `get_qindex` quantizer-index
 resolution plus the per-plane `get_dc_quant` and `get_ac_quant`
-composition (`RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION`). The § 7.14.4
-dequantization process with quantizer-matrix weighting, the § 7.14.3
-reconstruct process, and inverse transforms remain unimplemented.
+composition (`RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION`). The § 7.15.2.1
+kernel-based 1D inverse transform (DCT/ADST/FDST/DDTX/FDDT over the shared
+`splot-tables` § 9.6 kernels; `RECON-INVERSE-TRANSFORM-1D`) is available as a
+scheduler-free primitive. The § 7.14.4 dequantization process with
+quantizer-matrix weighting, the § 7.14.3 reconstruct process, the § 7.15.2.2
+Walsh-Hadamard and § 7.15.2.3 identity transforms, the § 7.15.3 secondary
+transform, and the § 7.15.4 2D inverse transform orchestration remain
+unimplemented.
 `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
 `splot-decode`, then call deterministic reconstruction primitives.

@@ -13,9 +13,11 @@
 //! directional intra prediction primitives and a mutable current-frame
 //! workspace, plus the AV2 § 7.14.2 dequantization quantizer functions
 //! (quantizer-value lookup, quantizer-index resolution, and per-plane DC/AC
-//! composition); it does not implement byte-consuming decode, full
-//! reconstruction, the § 7.14.4 dequantization process, inverse transforms,
-//! residual addition, runtime CLI Y4M output, or full AV2 reference refresh
+//! composition) and the § 7.15.2.1 kernel-based 1D inverse transform; it does
+//! not implement byte-consuming decode, full reconstruction, the § 7.14.4
+//! dequantization process, the § 7.15.2.2/§ 7.15.2.3/§ 7.15.4 transform
+//! processes, residual addition, runtime CLI Y4M output, or full AV2 reference
+//! refresh
 //! semantics.
 //!
 //! The ownership model is view-first ([`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)):
@@ -40,7 +42,8 @@
 //! `RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION`,
 //! `RECON-CURRENT-FRAME-WORKSPACE`,
 //! `RECON-DEQUANT-QUANTIZER-LOOKUP`,
-//! `RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION`.
+//! `RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION`,
+//! `RECON-INVERSE-TRANSFORM-1D`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
@@ -59,6 +62,7 @@ mod intra_directional;
 mod intra_directional_angle;
 mod intra_ibp_dc;
 mod intra_smooth;
+mod inverse_transform;
 mod plane;
 mod reference;
 mod views;
@@ -100,6 +104,7 @@ pub use intra_ibp_dc::apply_intra_ibp_dc_rect;
 pub use intra_smooth::{
     IntraSmoothEdge, IntraSmoothEdges, IntraSmoothMode, predict_intra_smooth_rect_into,
 };
+pub use inverse_transform::{InverseTransform1dType, inverse_transform_1d};
 pub use plane::{Plane, VisibleRows};
 pub use reference::{
     ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameReplacement, ReferenceFrameStore,

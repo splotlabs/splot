@@ -20,7 +20,7 @@ decode/reconstruction/hash/Y4M output handoff code.
 
 splot-parallel owns the approved concurrency primitives (local Rayon worker
 pool + bounded crossbeam queues) and depends on no splot-* crate.
-splot-recon has no splot-* dependencies.
+splot-recon depends only on splot-tables (the shared § 9 transform kernels).
 splot-tables holds the shared generated AV2 § 9 transform-kernel tables and
 depends on no splot-* crate and no external crate.
 xtask is standalone automation.
@@ -34,7 +34,7 @@ by `cargo xtask check-dependency-direction`):
 - `splot-parallel` depends on no other `splot-*` crate.
 - `splot-tables` depends on no other `splot-*` crate (and no external crate); it
   holds only generated AV2 § 9 spec tables and may be depended on by any crate.
-- `splot-recon` depends on no other `splot-*` crate.
+- `splot-recon` depends only on `splot-tables`.
 - `splot-decode` depends only on `splot-core`, `splot-parallel`, and
   `splot-recon`; the `splot-recon` edge is limited to runtime
   decode/reconstruction/hash/Y4M output handoff code.
