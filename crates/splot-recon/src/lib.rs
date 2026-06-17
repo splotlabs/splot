@@ -14,11 +14,13 @@
 //! workspace, plus the AV2 § 7.14.2 dequantization quantizer functions
 //! (quantizer-value lookup, quantizer-index resolution, and per-plane DC/AC
 //! composition), the § 7.15.2 1D inverse transforms (§ 7.15.2.1 kernel,
-//! § 7.15.2.2 Walsh-Hadamard, and § 7.15.2.3 identity), and the § 7.14.3
-//! residual-addition step; it does not implement byte-consuming decode, full
-//! reconstruction, the § 7.14.4 dequantization process, the § 7.15.3 secondary
-//! transform, the § 7.15.4 2D inverse transform orchestration, runtime CLI Y4M
-//! output, or full AV2 reference refresh semantics.
+//! § 7.15.2.2 Walsh-Hadamard, and § 7.15.2.3 identity), the § 7.14.3
+//! residual-addition step, and the § 7.15.4.1 2D matrix transform core; it does
+//! not implement byte-consuming decode, full reconstruction, the § 7.14.4
+//! dequantization process, the § 7.15.3 secondary transform, the § 7.15.4 outer
+//! orchestration (`Transform_Shift`, `get_transform_1d_type`, the lossless IDTX
+//! shortcut, DPCM, and sample duplication), runtime CLI Y4M output, or full AV2
+//! reference refresh semantics.
 //!
 //! The ownership model is view-first ([`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)):
 //! owned plane/frame/workspace storage hands out borrowed [`PlaneRef`]/[`PlaneMut`]
@@ -45,7 +47,8 @@
 //! `RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION`,
 //! `RECON-INVERSE-TRANSFORM-1D`,
 //! `RECON-INVERSE-TRANSFORM-MATRIX-FREE`,
-//! `RECON-RESIDUAL-ADDITION`.
+//! `RECON-RESIDUAL-ADDITION`,
+//! `RECON-INVERSE-TRANSFORM-2D`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
@@ -65,6 +68,7 @@ mod intra_directional_angle;
 mod intra_ibp_dc;
 mod intra_smooth;
 mod inverse_transform;
+mod inverse_transform_2d;
 mod plane;
 mod reconstruct;
 mod reference;
@@ -111,6 +115,7 @@ pub use inverse_transform::{
     InverseTransform1dType, inverse_identity_transform, inverse_transform_1d,
     inverse_walsh_hadamard,
 };
+pub use inverse_transform_2d::{InverseTransform2d, InverseTransform2dDim, inverse_transform_2d};
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::reconstruct_add_residual;
 pub use reference::{

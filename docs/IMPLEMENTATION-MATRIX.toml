@@ -6776,6 +6776,68 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-INVERSE-TRANSFORM-2D"
+name = "2D matrix inverse transform core (row-then-column)"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["4.8", "7.15.4.1"]
+sources = [
+    "docs/spec/av2/1.0.0/04-conventions.md#s-4-8",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-4-1",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/inverse_transform_2d.rs"
+openspec_change = "recon-inverse-transform-2d"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Wires the §7.15.2 1D inverse transforms (§7.15.2.1 kernel, §7.15.2.2 Walsh-Hadamard, §7.15.2.3 identity) into the §7.15.4.1 row-then-column 2D matrix transform `inverse_transform_2d(params, dequant, residual)` over a caller-supplied dequantized block. `InverseTransform2d` carries the *original* (unadjusted) `txSz` log2 dimensions `log2_width`/`log2_height` (`log2W`/`log2H`, each 2..=6), the lossless flag, the per-dimension transform selection, and the row/column shifts. The operating (adjusted) size is derived internally as `1 << Min(log2, 5)` per the `Adjusted_Tx_Size` table (`adjLog2 = Min(log2, 5)`; see also §8 `bwl = Min(Tx_Width_Log2[txSz], 5)`), so the block transformed is at most 32x32. The §7.15.4.1 √2 rescale `Round2(Dequant*2896, 12)` fires when `Abs(log2W - log2H)` is odd computed from the ORIGINAL log2 dimensions (so a 64-sample side, whose adjusted parity differs, rescales correctly), and the identity scale is `get_identity_scale` of the ORIGINAL pass log2 dimension. The row pass applies the WHT (shift 3, lossless), identity (`get_identity_scale(log2W)`, rowShift, colTx=0), or kernel (rowType, rowShift, colTx=0) transform; the column pass applies WHT (shift 0), identity (`get_identity_scale(log2H)`, colShift, colTx=1), or kernel (colType, colShift, colTx=1). It reads no frame/segment/tile state, validates the log2 shape (each 2..=6; both 2 when lossless) and the `w*h` buffer lengths with typed `ReconError`, and is panic-free for valid shapes via fixed 32x32 stack buffers and the total 1D primitives. Completeness is proven by DC-only 4x4 and 8x8 DCT flat fields, the lossless 4x4 WHT vector, identity position preservation, the rectangular 4x8 rescale path, an original-vs-adjusted parity regression (TX_64X32 vs a pre-rescaled 32x32), a mixed row-DCT/column-identity energy-confinement case, the `round2_2896` √2 vector, and shape/lossless/buffer rejections. This row does not implement the §7.15.4 outer process (the `Adjusted_Tx_Size` lookup itself, the `Transform_Shift` and `get_transform_1d_type` derivations, the `Lossless && IDTX` bit-shift shortcut, the DPCM cumulative sum, the adjusted-size sample duplication), the §7.15.3 secondary transform, the §7.14.4 dequantization process, residual addition, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler use inside `splot-recon`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/inverse_transform_2d.rs::tests::dc_only_dct_4x4_is_flat",
+    "crates/splot-recon/src/inverse_transform_2d.rs::tests::lossless_4x4_walsh_hadamard_dc",
+    "crates/splot-recon/src/inverse_transform_2d.rs::tests::identity_2d_preserves_coefficient_position",
+    "crates/splot-recon/src/inverse_transform_2d.rs::tests::round2_2896_applies_sqrt2_rescale",
+    "crates/splot-recon/src/inverse_transform_2d.rs::tests::rectangular_4x8_applies_rescale_path",
+    "crates/splot-recon/src/inverse_transform_2d.rs::tests::rescale_parity_uses_original_not_adjusted_dimensions",
+    "crates/splot-recon/src/inverse_transform_2d.rs::tests::dc_only_dct_8x8_is_flat",
+    "crates/splot-recon/src/inverse_transform_2d.rs::tests::mixed_row_dct_col_identity_confines_energy_to_row_zero",
+    "crates/splot-recon/src/inverse_transform_2d.rs::tests::orchestration_matches_manual_row_then_column_for_non_square_kernels",
+    "crates/splot-recon/src/inverse_transform_2d.rs::tests::rejects_unsupported_shape",
+    "crates/splot-recon/src/inverse_transform_2d.rs::tests::rejects_non_4x4_lossless",
+    "crates/splot-recon/src/inverse_transform_2d.rs::tests::rejects_buffer_length_mismatch",
+]
+commands = [
+    "cargo test -p splot-recon inverse_transform_2d --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "RUSTDOCFLAGS=\"-D warnings\" cargo doc -p splot-recon --no-deps --locked",
+    "cargo xtask check-source-lines",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/inverse_transform_2d.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
 name = "Decoded frame and plane model contract documentation"
 category = "docs"
