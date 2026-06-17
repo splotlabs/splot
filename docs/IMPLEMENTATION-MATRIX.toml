@@ -6495,6 +6495,64 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION"
+name = "Dequantization quantizer-index resolution and per-plane composition"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["3", "6.4.1", "7.14.2"]
+sources = [
+    "docs/spec/av2/1.0.0/03-symbols.md#s-3",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-14-2",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/dequant.rs"
+openspec_change = "recon-dequant-quantizer-index-resolution"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Extends the §7.14.2 lookup core (RECON-DEQUANT-QUANTIZER-LOOKUP) with quantizer-index resolution and per-plane quantizer composition. `quantizer_index` implements `get_qindex( ignoreDeltaQ, segmentId )`: when the alternative-quantizer segment feature is active it returns Clip3(0, MaxQ, base + segment_alt_q_data) where base is CurrentQIndex when delta_q applies (not ignore_delta_q and delta_q_present) and base_q_idx otherwise; when inactive it returns CurrentQIndex when delta_q applies and base_q_idx otherwise (unclamped, matching the spec, since the caller maintains those in range). The `QuantizerDeltas` carrier holds the caller-resolved per-plane DC and AC delta sums (y_dc, u_dc, v_dc, u_ac, v_ac; luma AC is 0 per spec), and `dc_quantizer` and `ac_quantizer` implement `get_dc_quant( plane )` and `get_ac_quant( plane )` by selecting the plane delta and applying the lookup `quantizer_value`. Segmentation and delta_q facts (seg_feature_active_idx, the FeatureData array, the CurrentQIndex update) are resolved by the caller; recon reads no frame, segment, or tile state. All functions are total and panic-free via i64 clamp intermediates. Completeness is proven by unit vectors for the three get_qindex branches, the ignore-delta-q override, both Clip3 bounds at the 8-bit and 10-bit MaxQ, input-extreme panic-freedom, per-plane DC and AC selection (including the luma AC-0 rule), and end-to-end composition reaching the qindex-0 special case. This row does not implement the §7.14.4 dequantization process, quantizer-matrix weighting, the §7.14.3 reconstruct process, inverse transforms, residual addition, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler use inside `splot-recon`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/dequant.rs::tests::quantizer_index_baseline_returns_base_q_idx",
+    "crates/splot-recon/src/dequant.rs::tests::quantizer_index_delta_q_returns_current_q_index",
+    "crates/splot-recon/src/dequant.rs::tests::quantizer_index_segment_feature_uses_base_then_clips",
+    "crates/splot-recon/src/dequant.rs::tests::quantizer_index_segment_feature_clips_both_bounds",
+    "crates/splot-recon/src/dequant.rs::tests::quantizer_index_is_panic_free_at_input_extremes",
+    "crates/splot-recon/src/dequant.rs::tests::dc_quantizer_selects_plane_delta",
+    "crates/splot-recon/src/dequant.rs::tests::ac_quantizer_uses_zero_for_luma_and_delta_for_chroma",
+    "crates/splot-recon/src/dequant.rs::tests::quantizer_composition_reaches_zero_index_special_case",
+]
+commands = [
+    "cargo test -p splot-recon dequant --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "RUSTDOCFLAGS=\"-D warnings\" cargo doc -p splot-recon --no-deps --locked",
+    "cargo xtask check-source-lines",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-concurrency-policy",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/dequant.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT"
 name = "Decoded frame and plane model contract documentation"
 category = "docs"

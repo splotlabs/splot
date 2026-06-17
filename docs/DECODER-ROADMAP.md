@@ -76,12 +76,14 @@ data-driven prediction, general directional-angle IBP, full CfL, full
 `predict_intra()` dispatch, the full dequantization process, inverse
 transforms, residual addition, runtime decode output, output
 scheduling, and AV2 reference refresh semantics remain unimplemented. The
-AV2 § 7.14.2 dequantization quantizer-value lookup core (`Ac_Qlookup`,
-`qlookup`, `MaxQ`, and `get_q`) is available as a scheduler-free
-`splot-recon` primitive (`RECON-DEQUANT-QUANTIZER-LOOKUP`); the § 7.14.2
-`get_qindex`/`get_dc_quant`/`get_ac_quant` composition and the § 7.14.4
-dequantization process with quantizer-matrix weighting remain
-unimplemented.
+full AV2 § 7.14.2 dequantization quantizer functions are available as
+scheduler-free `splot-recon` primitives: the quantizer-value lookup core
+(`Ac_Qlookup`, `qlookup`, `MaxQ`, and `get_q`;
+`RECON-DEQUANT-QUANTIZER-LOOKUP`) and `get_qindex` quantizer-index
+resolution plus the per-plane `get_dc_quant` and `get_ac_quant`
+composition (`RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION`). The § 7.14.4
+dequantization process with quantizer-matrix weighting, the § 7.14.3
+reconstruct process, and inverse transforms remain unimplemented.
 `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
 `splot-decode`, then call deterministic reconstruction primitives.

@@ -730,6 +730,20 @@ local_reference_evidence = []
 notes = "Source-backed scheduler-free `splot-recon` AV2 §7.14.2 dequantization quantizer-value lookup core: the 25-entry `Ac_Qlookup` base table, the `qlookup` shift-extension function, `max_quantizer_index` deriving §6.4.1 Table 6.3 `MaxQ` (8-bit -> 255, 10-bit -> 303; `bit_depth_idc` greater than 1 is reserved so no other decoded bit depth exists), and `quantizer_value` implementing §7.14.2 `get_q( qindex, delta )` with the qindex-0/non-positive-delta `Ac_Qlookup[0]` special case and the `1..=MaxQ` clamp. The functions take caller-resolved inputs, are total and panic-free via `i64` clamp intermediates, and read no frame, segment, or tile state. This row does not implement §7.14.2 `get_qindex` segment quantizer-index resolution, the per-plane `get_dc_quant` and `get_ac_quant` composition, the §7.14.4 dequantization process, quantizer-matrix weighting, the §7.14.3 reconstruct process, inverse transforms, residual addition, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler state in `splot-recon`."
 
 [[row]]
+id = "dequant-quantizer-index-resolution"
+name = "Dequantization quantizer-index resolution and per-plane composition"
+feature_id = "RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION"
+spec_sections = ["3", "6.4.1", "7.14.2"]
+parser_source = "n/a"
+decode_module = "crates/splot-recon/src/dequant.rs; crates/splot-recon/src/lib.rs"
+tier = "tier1-intra"
+status = "supported"
+self_contained_tests = ["crates/splot-recon/src/dequant.rs::tests::quantizer_index_baseline_returns_base_q_idx", "crates/splot-recon/src/dequant.rs::tests::quantizer_index_delta_q_returns_current_q_index", "crates/splot-recon/src/dequant.rs::tests::quantizer_index_segment_feature_uses_base_then_clips", "crates/splot-recon/src/dequant.rs::tests::quantizer_index_segment_feature_clips_both_bounds", "crates/splot-recon/src/dequant.rs::tests::quantizer_index_is_panic_free_at_input_extremes", "crates/splot-recon/src/dequant.rs::tests::dc_quantizer_selects_plane_delta", "crates/splot-recon/src/dequant.rs::tests::ac_quantizer_uses_zero_for_luma_and_delta_for_chroma", "crates/splot-recon/src/dequant.rs::tests::quantizer_composition_reaches_zero_index_special_case", "cargo test -p splot-recon dequant --locked", "cargo clippy -p splot-recon --all-targets --locked -- -D warnings", "cargo xtask check-source-lines", "cargo xtask check-dependency-direction", "cargo xtask check-concurrency-policy", "cargo xtask check-decoder-support", "cargo xtask check-feature-status"]
+diagnostics = []
+local_reference_evidence = []
+notes = "Source-backed scheduler-free `splot-recon` AV2 §7.14.2 quantizer-index resolution and per-plane quantizer composition, extending the lookup core. `quantizer_index` implements `get_qindex( ignoreDeltaQ, segmentId )` over caller-resolved facts: when the alternative-quantizer segment feature is active it returns Clip3(0, MaxQ, base + segment_alt_q_data) with base = CurrentQIndex when delta_q applies (not ignore_delta_q and delta_q_present) else base_q_idx; when inactive it returns CurrentQIndex when delta_q applies else base_q_idx (unclamped, matching the spec). The `QuantizerDeltas` carrier holds the resolved per-plane DC and AC delta sums (luma AC is 0), and `dc_quantizer` and `ac_quantizer` implement `get_dc_quant( plane )` and `get_ac_quant( plane )` by selecting the plane delta and applying `quantizer_value`. Segmentation and delta_q facts (seg_feature_active_idx, FeatureData, CurrentQIndex) are resolved by the caller; recon reads no frame, segment, or tile state, and all functions are total and panic-free via `i64` intermediates. This row does not implement the §7.14.4 dequantization process, quantizer-matrix weighting, the §7.14.3 reconstruct process, inverse transforms, residual addition, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler state in `splot-recon`."
+
+[[row]]
 id = "recon-intra-prediction-fuzz"
 name = "Intra prediction and workspace fuzz entry point"
 feature_id = "CONF-RECON-INTRA-PREDICTION-FUZZ"
