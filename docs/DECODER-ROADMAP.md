@@ -102,10 +102,14 @@ dequantization process (`dequant_coefficient` / `dequantize_block`;
 `RECON-DEQUANT-PROCESS`) turns coded `Quant` coefficients into the `Dequant`
 array the inverse transform consumes — the per-coefficient steps 3-8 and the
 non-quantization-matrix transform-block helper, over caller-resolved quantizers.
-The § 7.14.4 quantization-matrix weighting and `shift` derivation, the rest of
-the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the § 7.15.4
-`Transform_Shift` / `get_transform_1d_type` derivations, and the coefficient
-entropy decode that produces `Quant` remain unimplemented.
+The § 7.14.4 step-2 quantization-matrix weighting
+(`quantization_matrix_weight` / `qm_weighted_quantizer`; `RECON-DEQUANT-QM-WEIGHT`)
+is also available, consuming the built-in § 9.4 `Quantizer_Matrix` (relocated to
+the dependency-free `splot-tables` crate). The § 7.14.4 `useQm` / `UserQm` gating
+and `shift` derivation, the rest of the § 7.14.3 reconstruct process, the § 7.15.3
+secondary transform, the § 7.15.4 `Transform_Shift` / `get_transform_1d_type`
+derivations, and the coefficient entropy decode that produces `Quant` remain
+unimplemented.
 `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
 `splot-decode`, then call deterministic reconstruction primitives.

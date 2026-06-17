@@ -13,16 +13,20 @@
 //! Feature tracking: `RECON-DEQUANT-PROCESS`.
 //!
 //! Scope: the dequantization arithmetic over a caller-resolved per-coefficient
-//! quantizer `q2` and the dequant denominator `dq_denom = 1 << shift`. The
-//! caller resolves `q2` (the § 7.14.2 [`dc_quantizer`](crate::dc_quantizer) /
-//! [`ac_quantizer`](crate::ac_quantizer) value, optionally
-//! quantization-matrix-weighted as `Round2(q * m, 5)`) and `dq_denom` (the
-//! § 7.14.4 `shift` derivation, including the `allow_tcq` adjustment). The
-//! quantization-matrix weighting itself (the `Quantizer_Matrix` / `UserQm`
-//! lookups), the `shift` / `useFsc` derivation, and the adjusted-size handling
-//! beyond the `Min(32, ·)` block are out of scope (caller-resolved or future
-//! rows); the block helper covers the non-quantization-matrix path where every
-//! AC coefficient shares one quantizer.
+//! quantizer `q2` and the dequant denominator `dq_denom = 1 << shift`, plus the
+//! § 7.14.4 step-2 quantization-matrix weighting for the built-in
+//! `Quantizer_Matrix` (the `quantization_matrix_weight` lookup and the
+//! `qm_weighted_quantizer` `Round2(q * m, 5)`). The caller resolves `q2` (the
+//! § 7.14.2 [`dc_quantizer`](crate::dc_quantizer) /
+//! [`ac_quantizer`](crate::ac_quantizer) value, optionally passed through
+//! `qm_weighted_quantizer`) and `dq_denom` (the § 7.14.4 `shift` derivation,
+//! including the `allow_tcq` adjustment). The `useQm` / `useUserQm` / `segLvl`
+//! gating, the user-defined `UserQm` matrices, the `shift` / `useFsc`
+//! derivation, and the adjusted-size handling beyond the `Min(32, ·)` block are
+//! out of scope (caller-resolved or future rows); the block helper covers the
+//! path where every AC coefficient shares one quantizer.
+
+use splot_tables::tables::quantizer::{QM_OFFSET, QUANTIZER_MATRIX};
 
 use crate::{BitDepth, ReconError, Result};
 
@@ -32,6 +36,9 @@ const MAX_DEQUANT_DIM: usize = 32;
 /// AV2 § 3 `QUANT_TABLE_BITS`: the number of low bits discarded from the
 /// quantizer product before the denominator divide.
 const QUANT_TABLE_BITS: u32 = 3;
+
+/// AV2 § 7.14.4 quantization-matrix weight shift: `q2 = Round2(q * m, 5)`.
+const QM_WEIGHT_SHIFT: u32 = 5;
 
 /// AV2 § 4.8 `Round2(x, n)` for a non-negative `value`, computed in `i64`.
 fn round2(value: i64, n: u32) -> i64 {
@@ -124,6 +131,75 @@ pub fn dequantize_block(params: &DequantBlockParams, quant: &[i32], out: &mut [i
         }
     }
     Ok(())
+}
+
+/// Caller-resolved indices for the § 7.14.4 built-in quantization-matrix weight
+/// lookup `Quantizer_Matrix[seg_level][plane > 0][Qm_Offset[tx_size] + row * tx_width + col]`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QmWeightIndex {
+    /// `segLvl` quantization-matrix segment level (`0..NUM_CUSTOM_QMS`).
+    pub seg_level: usize,
+    /// `plane > 0` (chroma selects the second `Quantizer_Matrix` plane row).
+    pub plane_is_chroma: bool,
+    /// `txSz` transform-size index (`0..TX_SIZES_ALL`) for the `Qm_Offset` lookup.
+    pub tx_size: usize,
+    /// Coefficient row `i`.
+    pub row: usize,
+    /// Coefficient column `j`.
+    pub col: usize,
+    /// Dequantized block width `tw = Min(32, Tx_Width[txSz])`.
+    pub tx_width: usize,
+}
+
+/// AV2 § 7.14.4 built-in quantization-matrix weight `m`
+/// (`Quantizer_Matrix[segLvl][plane > 0][Qm_Offset[txSz] + i * tw + j]`), the
+/// non-`UserQm` path.
+///
+/// # Errors
+/// Returns [`ReconError::InvalidQuantizerMatrixIndex`] if `seg_level`, `tx_size`,
+/// or the derived position is out of range for the generated `Quantizer_Matrix`.
+pub fn quantization_matrix_weight(index: &QmWeightIndex) -> Result<i32> {
+    let level =
+        QUANTIZER_MATRIX
+            .get(index.seg_level)
+            .ok_or(ReconError::InvalidQuantizerMatrixIndex {
+                seg_level: index.seg_level,
+                tx_size: index.tx_size,
+                position: 0,
+            })?;
+    let plane = &level[usize::from(index.plane_is_chroma)];
+    let offset =
+        QM_OFFSET
+            .get(index.tx_size)
+            .copied()
+            .ok_or(ReconError::InvalidQuantizerMatrixIndex {
+                seg_level: index.seg_level,
+                tx_size: index.tx_size,
+                position: 0,
+            })?;
+    // `offset` is a non-negative spec table value; widen in usize to derive the
+    // flattened position and bounds-check it against the matrix row.
+    let position = (offset.max(0) as usize)
+        .saturating_add(index.row.saturating_mul(index.tx_width))
+        .saturating_add(index.col);
+    plane
+        .get(position)
+        .copied()
+        .ok_or(ReconError::InvalidQuantizerMatrixIndex {
+            seg_level: index.seg_level,
+            tx_size: index.tx_size,
+            position,
+        })
+}
+
+/// AV2 § 7.14.4 step 2 quantization-matrix-weighted quantizer
+/// `q2 = Round2(q * m, 5)`, computed in `i64` and clamped into `u32` so it is
+/// total (the built-in `Quantizer_Matrix` weights are non-negative).
+#[must_use]
+pub fn qm_weighted_quantizer(q: u32, m: i32) -> u32 {
+    let product = i64::from(q) * i64::from(m);
+    let rounded = (product + (1 << (QM_WEIGHT_SHIFT - 1))) >> QM_WEIGHT_SHIFT;
+    rounded.clamp(0, i64::from(u32::MAX)) as u32
 }
 
 #[cfg(test)]
@@ -237,6 +313,91 @@ mod tests {
                 quant_len: 15,
                 out_len: 16
             })
+        ));
+    }
+
+    #[test]
+    fn qm_weighted_quantizer_applies_round2_shift5() {
+        // q2 = Round2(q*m, 5). q=8, m=64 -> (512+16)>>5 = 16.
+        assert_eq!(qm_weighted_quantizer(8, 64), 16);
+        // A neutral weight of 32 (= 1<<5) round-trips q within rounding:
+        // Round2(q*32, 5) = q.
+        assert_eq!(qm_weighted_quantizer(40, 32), 40);
+        // Zero weight -> 0.
+        assert_eq!(qm_weighted_quantizer(100, 0), 0);
+    }
+
+    #[test]
+    fn qm_weighted_quantizer_is_total_for_extreme_inputs() {
+        // u32::MAX * a large weight must not panic/overflow (i64 + clamp).
+        let _ = qm_weighted_quantizer(u32::MAX, i32::MAX);
+    }
+
+    #[test]
+    fn quantization_matrix_weight_matches_the_generated_table() {
+        // The (0,0) coefficient of seg_level 0, luma, tx_size 0 is
+        // Quantizer_Matrix[0][0][Qm_Offset[0] + 0] = Quantizer_Matrix[0][0][0].
+        let index = QmWeightIndex {
+            seg_level: 0,
+            plane_is_chroma: false,
+            tx_size: 0,
+            row: 0,
+            col: 0,
+            tx_width: 4,
+        };
+        let m = quantization_matrix_weight(&index).unwrap();
+        assert_eq!(m, QUANTIZER_MATRIX[0][0][0]);
+        // Chroma selects the second plane row.
+        let chroma = QmWeightIndex {
+            plane_is_chroma: true,
+            ..index
+        };
+        assert_eq!(
+            quantization_matrix_weight(&chroma).unwrap(),
+            QUANTIZER_MATRIX[0][1][0]
+        );
+        // A non-origin coefficient uses Qm_Offset[tx_size] + row*tw + col.
+        let pos = QmWeightIndex {
+            tx_size: 1,
+            row: 1,
+            col: 2,
+            tx_width: 8,
+            ..index
+        };
+        let off = QM_OFFSET[1] as usize;
+        assert_eq!(
+            quantization_matrix_weight(&pos).unwrap(),
+            QUANTIZER_MATRIX[0][0][off + pos.row * pos.tx_width + pos.col]
+        );
+    }
+
+    #[test]
+    fn quantization_matrix_weight_rejects_out_of_range_indices() {
+        // seg_level beyond the matrix.
+        let bad_level = QmWeightIndex {
+            seg_level: 99,
+            plane_is_chroma: false,
+            tx_size: 0,
+            row: 0,
+            col: 0,
+            tx_width: 4,
+        };
+        assert!(matches!(
+            quantization_matrix_weight(&bad_level),
+            Err(ReconError::InvalidQuantizerMatrixIndex { seg_level: 99, .. })
+        ));
+        // A position past the 3600-entry matrix row.
+        let bad_pos = QmWeightIndex {
+            seg_level: 0,
+            plane_is_chroma: false,
+            tx_size: 0,
+            row: 1000,
+            col: 0,
+            tx_width: 32,
+        };
+        assert!(matches!(
+            quantization_matrix_weight(&bad_pos),
+            Err(ReconError::InvalidQuantizerMatrixIndex { .. })
         ));
     }
 }

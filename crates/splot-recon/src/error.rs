@@ -527,6 +527,16 @@ pub enum ReconError {
         /// Supplied dequantized-output buffer length.
         out_len: usize,
     },
+    /// A § 7.14.4 quantization-matrix weight lookup index was out of range for
+    /// the generated `Quantizer_Matrix`.
+    InvalidQuantizerMatrixIndex {
+        /// Requested `segLvl` segment level.
+        seg_level: usize,
+        /// Requested `txSz` transform-size index.
+        tx_size: usize,
+        /// Derived flattened position within the matrix row.
+        position: usize,
+    },
 }
 
 impl fmt::Display for ReconError {
@@ -1006,6 +1016,14 @@ impl fmt::Display for ReconError {
             } => write!(
                 f,
                 "dequantization block buffer mismatch: expected {expected}, quant {quant_len}, out {out_len}"
+            ),
+            Self::InvalidQuantizerMatrixIndex {
+                seg_level,
+                tx_size,
+                position,
+            } => write!(
+                f,
+                "quantization-matrix index out of range: seg_level {seg_level}, tx_size {tx_size}, position {position}"
             ),
         }
     }
