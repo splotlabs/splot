@@ -17,7 +17,5 @@ pub mod cdf;
 pub mod conversion;
 /// AV2 § 9.8 — Loop restoration tables.
 pub mod loop_restoration;
-/// AV2 § 9.4 — Quantizer matrix tables.
-pub mod quantizer;
 /// AV2 § 9.5 — Warp filter tables.
 pub mod warp_filter;

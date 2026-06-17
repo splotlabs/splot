@@ -88,7 +88,10 @@ pub use dequant::{
     QuantizerDeltas, ac_quantizer, dc_quantizer, max_quantizer_index, quantizer_index,
     quantizer_value,
 };
-pub use dequant_process::{DequantBlockParams, dequant_coefficient, dequantize_block};
+pub use dequant_process::{
+    DequantBlockParams, QmWeightIndex, dequant_coefficient, dequantize_block,
+    qm_weighted_quantizer, quantization_matrix_weight,
+};
 pub use error::{ReconError, Result};
 pub use format::{BitDepth, PixelFormat, PlaneId, ReconSample};
 pub use frame::{DecodedFrame, DecodedFrameInfo, FramePlanes, SharedFrame};

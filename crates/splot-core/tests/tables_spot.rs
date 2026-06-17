@@ -96,35 +96,6 @@ fn conversion_prob_inc_matches_mirror() {
 }
 
 #[test]
-fn quantizer_qm_offset_matches_mirror() {
-    // docs/spec/av2/1.0.0/09-additional-tables/09-04-quantizer-matrix-tables.md
-    // lines 90-97 (Qm_Offset[ TX_SIZES_ALL ]).
-    let t = &tables::quantizer::QM_OFFSET;
-    assert_eq!(t.len(), 25);
-    // line 92: "0, 16, 80, 336, 336, 1360, 1392, 1424,".
-    assert_eq!(&t[..8], &[0, 16, 80, 336, 336, 1360, 1392, 1424]);
-    // line 95: "3472," (the final element).
-    assert_eq!(t[24], 3472);
-}
-
-#[test]
-fn quantizer_matrix_luma_4x4_matches_mirror() {
-    // 09-04-quantizer-matrix-tables.md line 107, the first (lvl 0) luma matrix,
-    // "Size 4x4" run: "32, 43, 73, 97, 43, 67, 94, 110, 73, 94, 137, 150, 97,
-    // 110, 150, 200, ...".
-    let m = &tables::quantizer::QUANTIZER_MATRIX; // [15][2][3600]
-    assert_eq!(m.len(), 15);
-    assert_eq!(m[0].len(), 2);
-    assert_eq!(m[0][0].len(), 3600);
-    assert_eq!(
-        &m[0][0][..16],
-        &[
-            32, 43, 73, 97, 43, 67, 94, 110, 73, 94, 137, 150, 97, 110, 150, 200
-        ]
-    );
-}
-
-#[test]
 fn cdf_default_skip_cdf_matches_mirror() {
     // docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md
     // line 1200 onward (Default_Skip_Cdf[ SKIP_CONTEXTS ][ 3 ]); first three

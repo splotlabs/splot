@@ -36,7 +36,7 @@ section); `docs/SPEC-MAPPING.md` holds the spec sources and rules, not per-featu
 crates/splot-core      AV2 bitstream model + parsers (no other splot-* dependency)
 crates/splot-parallel  approved concurrency primitives (Rayon pool + bounded crossbeam queues); no other splot-* dependency
 crates/splot-tables    dependency-free generated AV2 § 9 spec tables shared across crates (no other splot-* dependency)
-crates/splot-recon     reconstruction primitives -> splot-tables (shared § 9 transform kernels)
+crates/splot-recon     reconstruction primitives -> splot-tables (shared § 9 transform kernels + quantizer matrix)
 crates/splot-decode    decoder diagnostic API + stream planning + minimal hash/Y4M runtime -> splot-core, splot-parallel, splot-recon
 crates/splot-validate  parser-driven conformance diagnostics  -> splot-core
 crates/splot-encode    future encoder API (stub)              -> splot-core, splot-parallel
@@ -51,7 +51,8 @@ fuzz                   cargo-fuzz target (outside the workspace)
 - `splot-parallel` depends on no other `splot-*` crate.
 - `splot-tables` depends on no other `splot-*` crate (and no external crate); it
   holds only generated AV2 § 9 spec tables and may be depended on by any crate.
-- `splot-recon` depends only on `splot-tables` (the shared § 9 transform kernels).
+- `splot-recon` depends only on `splot-tables` (the shared § 9 transform kernels
+  and quantizer matrix).
 - `splot-decode` depends only on `splot-core`, `splot-parallel`, and
   `splot-recon`; the `splot-recon` edge is limited to runtime
   decode/reconstruction/hash/Y4M output handoff code.
