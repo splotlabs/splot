@@ -9,9 +9,9 @@ use splot_core::Error as CoreError;
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 
 use super::DecodeTileWorkUnit;
-use super::cdf::TileCdfSelector;
-use super::cdf::block_context::YModeIndexContext;
+use super::cdf::block_context::{YModeIndexContext, reconstruct_minimal_y_mode, uv_mode_ctx};
 use super::cdf::block_read::BlockSymbolTraceReadError;
+use super::cdf::{TileCdfSelector, TileCdfSubset};
 
 const INTRA_Y_MODE_SET_REASON: &str = "intra_y_mode_set";
 const INTRA_Y_MODE_INDEX_REASON: &str = "intra_y_mode_index";
@@ -54,6 +54,18 @@ pub(crate) enum MinimalBlockSymbolTraceError {
         /// Actual decoded symbol value.
         actual: u8,
     },
+    /// The decoded `y_mode_set` / `y_mode_index` fell outside the supported
+    /// minimal `YMode` reconstruction subset (unreachable for the asserted
+    /// flat-intra trace, which decodes `y_mode_set == 0` and `y_mode_index == 0`).
+    #[error(
+        "minimal block-symbol trace cannot reconstruct YMode for y_mode_set {y_mode_set}, y_mode_index {y_mode_index}"
+    )]
+    UnsupportedYMode {
+        /// Decoded `y_mode_set` value.
+        y_mode_set: u8,
+        /// Decoded `y_mode_index` value.
+        y_mode_index: u8,
+    },
     /// `exit_symbol()` rejected the tile payload suffix.
     #[error("minimal block-symbol trace exit_symbol failed: {source}")]
     ExitSymbol {
@@ -83,78 +95,106 @@ pub(crate) fn consume_minimal_block_symbol_trace<'payload>(
     }
 }
 
+// The traced symbols are decoded sequentially (not from a static table) so the
+// § 8.3.2 context of a later symbol can be derived from earlier decodes — the
+// `uv_mode` context depends on the reconstructed luma `YMode`.
 fn consume_trace(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
 ) -> Result<(), MinimalBlockSymbolTraceError> {
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
-    for item in minimal_trace_items() {
-        let decoded = cdfs
-            .read_block_symbol_trace(item.selector, symbols)
-            .map_err(|source| MinimalBlockSymbolTraceError::SymbolRead {
-                reason: item.reason,
-                source,
-            })?
-            .get();
-        if decoded != item.expected {
-            return Err(MinimalBlockSymbolTraceError::UnexpectedSymbol {
-                reason: item.reason,
-                expected: item.expected,
-                actual: decoded,
-            });
-        }
-    }
+
+    // y_mode_set (§ 8.3.2 `TileYModeSetCdf`, no context).
+    let y_mode_set = decode_block_symbol(
+        cdfs,
+        symbols,
+        TileCdfSelector::YModeSet,
+        0,
+        INTRA_Y_MODE_SET_REASON,
+    )?;
+
+    // y_mode_index (§ 8.3.2 context from `get_joint_mode`; both neighbours are
+    // out of frame at the tile origin, so the context is 0).
+    let y_mode_index = decode_block_symbol(
+        cdfs,
+        symbols,
+        TileCdfSelector::YModeIndex {
+            ctx: YModeIndexContext::tile_origin_block().ctx(),
+        },
+        0,
+        INTRA_Y_MODE_INDEX_REASON,
+    )?;
+
+    // Reconstruct the luma `YMode` from the decoded set/index (§ 5); the asserted
+    // trace values (set 0, index 0) resolve to `DC_PRED`.
+    let y_mode = reconstruct_minimal_y_mode(y_mode_set, y_mode_index).ok_or(
+        MinimalBlockSymbolTraceError::UnsupportedYMode {
+            y_mode_set,
+            y_mode_index,
+        },
+    )?;
+
+    // luma/U all-zero transform (txb_skip); its context derivation is deferred.
+    decode_block_symbol(
+        cdfs,
+        symbols,
+        TileCdfSelector::TxbSkip {
+            coeff_cdf_q_ctx: 2,
+            plane_type: 0,
+            tx_size: 0,
+            ctx: 0,
+        },
+        0,
+        LUMA_OR_U_ALL_ZERO_TRANSFORM_REASON,
+    )?;
+
+    // uv_mode (§ 8.3.2 context = `is_directional_mode(YMode)`; DC_PRED -> 0).
+    decode_block_symbol(
+        cdfs,
+        symbols,
+        TileCdfSelector::UvModeCflNotAllowed {
+            ctx: uv_mode_ctx(y_mode),
+        },
+        6,
+        UV_MODE_INDEX_REASON,
+    )?;
+
+    // V all-zero transform (v_txb_skip); its context derivation is deferred.
+    decode_block_symbol(
+        cdfs,
+        symbols,
+        TileCdfSelector::VTxbSkip {
+            coeff_cdf_q_ctx: 1,
+            ctx: 3,
+        },
+        0,
+        V_ALL_ZERO_TRANSFORM_REASON,
+    )?;
+
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-struct MinimalTraceItem {
+/// Reads one traced block symbol, mapping CDF/symbol failures and an unexpected
+/// decoded value to typed errors, and returns the decoded value on success.
+fn decode_block_symbol(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
     selector: TileCdfSelector,
     expected: u8,
     reason: &'static str,
-}
-
-const fn minimal_trace_items() -> [MinimalTraceItem; 5] {
-    [
-        MinimalTraceItem {
-            selector: TileCdfSelector::YModeSet,
-            expected: 0,
-            reason: INTRA_Y_MODE_SET_REASON,
-        },
-        MinimalTraceItem {
-            // AV2 § 8.3.2 y_mode_index ctx for the single-block tile-origin
-            // case: both get_joint_mode neighbours are out of frame -> DC_PRED
-            // -> ctx 0 (see `YModeIndexContext`).
-            selector: TileCdfSelector::YModeIndex {
-                ctx: YModeIndexContext::tile_origin_block().ctx(),
-            },
-            expected: 0,
-            reason: INTRA_Y_MODE_INDEX_REASON,
-        },
-        MinimalTraceItem {
-            selector: TileCdfSelector::TxbSkip {
-                coeff_cdf_q_ctx: 2,
-                plane_type: 0,
-                tx_size: 0,
-                ctx: 0,
-            },
-            expected: 0,
-            reason: LUMA_OR_U_ALL_ZERO_TRANSFORM_REASON,
-        },
-        MinimalTraceItem {
-            selector: TileCdfSelector::UvModeCflNotAllowed { ctx: 0 },
-            expected: 6,
-            reason: UV_MODE_INDEX_REASON,
-        },
-        MinimalTraceItem {
-            selector: TileCdfSelector::VTxbSkip {
-                coeff_cdf_q_ctx: 1,
-                ctx: 3,
-            },
-            expected: 0,
-            reason: V_ALL_ZERO_TRANSFORM_REASON,
-        },
-    ]
+) -> Result<u8, MinimalBlockSymbolTraceError> {
+    let decoded = cdfs
+        .read_block_symbol_trace(selector, symbols)
+        .map_err(|source| MinimalBlockSymbolTraceError::SymbolRead { reason, source })?
+        .get();
+    if decoded != expected {
+        return Err(MinimalBlockSymbolTraceError::UnexpectedSymbol {
+            reason,
+            expected,
+            actual: decoded,
+        });
+    }
+    Ok(decoded)
 }
 
 #[cfg(test)]
