@@ -67,14 +67,19 @@ pub const fn max_quantizer_index(bit_depth: BitDepth) -> u32 {
 ///
 /// Callers pass `q` in `0..=MaxQ` for the active bit depth ([`quantizer_value`]
 /// guarantees this by clamping before calling), so for the largest defined
-/// `MaxQ` (303) the shift is at most 12 and the result stays well within `u32`.
+/// `MaxQ` (303) the shift is at most 12 and the result is exact. For any
+/// out-of-contract `q` whose shift would reach or exceed the `u32` width the
+/// result saturates to `u32::MAX` via `checked_shl`, so the function is total
+/// and never panics regardless of caller input.
 fn qlookup(q: u32) -> u32 {
     if q < 25 {
         u32::from(AC_QLOOKUP[q as usize])
     } else {
         let index = ((q - 1) % 24 + 1) as usize;
         let shift = (q - 1) / 24;
-        u32::from(AC_QLOOKUP[index]) << shift
+        u32::from(AC_QLOOKUP[index])
+            .checked_shl(shift)
+            .unwrap_or(u32::MAX)
     }
 }
 
@@ -129,6 +134,14 @@ mod tests {
         assert_eq!(qlookup(255), 61_440);
         // q = 303 (10-bit MaxQ): index 15 -> 60, shift 12 -> 60 << 12.
         assert_eq!(qlookup(303), 245_760);
+    }
+
+    #[test]
+    fn qlookup_is_total_beyond_contract() {
+        // Out-of-contract q whose shift reaches the u32 width must saturate,
+        // not panic. q = 769 -> shift (768 / 24) = 32 -> checked_shl is None.
+        assert_eq!(qlookup(769), u32::MAX);
+        assert_eq!(qlookup(u32::MAX), u32::MAX);
     }
 
     #[test]

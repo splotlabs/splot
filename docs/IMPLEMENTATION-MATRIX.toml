@@ -6472,6 +6472,7 @@ tests = [
     "crates/splot-recon/src/dequant.rs::tests::max_quantizer_index_matches_table_6_3",
     "crates/splot-recon/src/dequant.rs::tests::qlookup_returns_table_for_small_q",
     "crates/splot-recon/src/dequant.rs::tests::qlookup_applies_shift_extension_for_large_q",
+    "crates/splot-recon/src/dequant.rs::tests::qlookup_is_total_beyond_contract",
     "crates/splot-recon/src/dequant.rs::tests::quantizer_value_uses_zero_index_special_case",
     "crates/splot-recon/src/dequant.rs::tests::quantizer_value_adds_delta_then_looks_up",
     "crates/splot-recon/src/dequant.rs::tests::quantizer_value_clamps_into_one_through_max_q",
