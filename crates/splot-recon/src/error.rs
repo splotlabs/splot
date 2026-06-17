@@ -497,6 +497,19 @@ pub enum ReconError {
         /// Supplied residual buffer length.
         residual_len: usize,
     },
+    /// A § 7.15.4 outer 2D inverse transform buffer length did not match its
+    /// expected size: the dequantized block is the adjusted `adjW * adjH`, while
+    /// the residual block is the original `w * h`.
+    InverseTransform2dOuterBufferMismatch {
+        /// Expected dequantized-coefficient length (adjusted `adjW * adjH`).
+        dequant_expected: usize,
+        /// Expected residual length (original `w * h`).
+        residual_expected: usize,
+        /// Supplied dequantized-coefficient buffer length.
+        dequant_len: usize,
+        /// Supplied residual buffer length.
+        residual_len: usize,
+    },
 }
 
 impl fmt::Display for ReconError {
@@ -952,6 +965,15 @@ impl fmt::Display for ReconError {
             } => write!(
                 f,
                 "2D inverse transform buffer mismatch: expected {expected}, dequant {dequant_len}, residual {residual_len}"
+            ),
+            Self::InverseTransform2dOuterBufferMismatch {
+                dequant_expected,
+                residual_expected,
+                dequant_len,
+                residual_len,
+            } => write!(
+                f,
+                "2D outer inverse transform buffer mismatch: dequant expected {dequant_expected} (got {dequant_len}), residual expected {residual_expected} (got {residual_len})"
             ),
         }
     }

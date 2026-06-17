@@ -73,9 +73,9 @@ ranges. The current-frame workspace can hand off fully available in-storage
 one-sided and middle directional-angle prepared edges to those primitives.
 Luma/MRL/IDIF/full-dispatch directional angles, full edge preparation,
 data-driven prediction, general directional-angle IBP, full CfL, full
-`predict_intra()` dispatch, the full dequantization process, the § 7.15.4 outer
-2D inverse transform orchestration, runtime decode output, output
-scheduling, and AV2 reference refresh semantics remain unimplemented. The
+`predict_intra()` dispatch, the full dequantization process, the § 7.15.4
+`Transform_Shift` / `get_transform_1d_type` derivations, runtime decode output,
+output scheduling, and AV2 reference refresh semantics remain unimplemented. The
 full AV2 § 7.14.2 dequantization quantizer functions are available as
 scheduler-free `splot-recon` primitives: the quantizer-value lookup core
 (`Ac_Qlookup`, `qlookup`, `MaxQ`, and `get_q`;
@@ -93,12 +93,14 @@ a scheduler-free primitive. The § 7.15.4.1 2D matrix transform core
 row-then-column matrix passes over a caller-supplied dequantized block, with the
 √2 rescale and per-pass `get_identity_scale` derived from the original
 (unadjusted) `txSz` log2 dimensions and the adjusted operating size capped at
-32x32. The § 7.14.4 dequantization process with
-quantizer-matrix weighting, the rest of the § 7.14.3 reconstruct process, the
-§ 7.15.3 secondary transform, and the § 7.15.4 outer 2D inverse transform
-orchestration (the `Adjusted_Tx_Size`, `Transform_Shift`, and
-`get_transform_1d_type` derivations, the `Lossless && IDTX` shortcut, the DPCM
-cumulative sum, and adjusted-size sample duplication) remain unimplemented.
+32x32. The § 7.15.4 outer orchestration
+(`inverse_transform_2d_outer`; `RECON-INVERSE-TRANSFORM-2D-OUTER`) wraps that
+core with the `Lossless && IDTX` bit-shift shortcut, the DPCM cumulative sum, and
+adjusted-size sample duplication, all derived from the original log2 dimensions
+(no conversion tables) over caller-resolved transform selections. The § 7.14.4
+dequantization process with quantizer-matrix weighting, the rest of the § 7.14.3
+reconstruct process, the § 7.15.3 secondary transform, and the § 7.15.4
+`Transform_Shift` / `get_transform_1d_type` derivations remain unimplemented.
 `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
 `splot-decode`, then call deterministic reconstruction primitives.
