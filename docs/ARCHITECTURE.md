@@ -96,7 +96,8 @@ by `cargo xtask check-dependency-direction`):
   copying, immutable frames are shared without copying pixels via `SharedFrame`,
   and no media-storage type implements `Clone` (see the zero-copy ownership model
   below and [ZERO_COPY.md](./ZERO_COPY.md)). It intentionally exposes no runtime
-  reconstruction API yet and depends on no other `splot-*` crate.
+  reconstruction API yet and depends only on `splot-tables` (the shared § 9
+  transform kernels used by the § 7.15.2.1 inverse transform).
 - **`splot-decode`** — scaffold for the future AV2 decode driver. It owns the
   current structured `decode/unsupported-feature` diagnostic API,
   `DecodeRuntimeConfig` / `DecodeContext`, a plan-only stream planner over
