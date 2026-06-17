@@ -10,6 +10,7 @@ use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 
 use super::DecodeTileWorkUnit;
 use super::cdf::TileCdfSelector;
+use super::cdf::block_context::YModeIndexContext;
 use super::cdf::block_read::BlockSymbolTraceReadError;
 
 const INTRA_Y_MODE_SET_REASON: &str = "intra_y_mode_set";
@@ -121,7 +122,12 @@ const fn minimal_trace_items() -> [MinimalTraceItem; 5] {
             reason: INTRA_Y_MODE_SET_REASON,
         },
         MinimalTraceItem {
-            selector: TileCdfSelector::YModeIndex { ctx: 0 },
+            // AV2 § 8.3.2 y_mode_index ctx for the single-block tile-origin
+            // case: both get_joint_mode neighbours are out of frame -> DC_PRED
+            // -> ctx 0 (see `YModeIndexContext`).
+            selector: TileCdfSelector::YModeIndex {
+                ctx: YModeIndexContext::tile_origin_block().ctx(),
+            },
             expected: 0,
             reason: INTRA_Y_MODE_INDEX_REASON,
         },

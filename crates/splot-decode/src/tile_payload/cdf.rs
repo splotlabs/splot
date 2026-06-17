@@ -6,6 +6,7 @@
 //! Feature tracking: `DECODE-TILE-CDF-SELECTION-BOUNDARY` and
 //! `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY`.
 
+pub(crate) mod block_context;
 pub(crate) mod block_read;
 mod block_rows;
 pub(crate) mod context;
