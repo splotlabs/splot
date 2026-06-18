@@ -9,7 +9,8 @@ use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
 use super::super::cdf::{
     EobPtSize, FrameCdfSubset, TileCdfArray, TileCdfError, TileCdfSelector, TileCdfSubset,
 };
-use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState};
+use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
+use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
 use super::*;
 
 fn symbol_decoder(payload: &[u8], mode: CdfUpdateMode) -> SymbolDecoder<'_> {
@@ -134,10 +135,10 @@ fn branch_all_zero(branch: CoeffBlockEobBranch) -> Option<AllZeroCoeffBlock> {
     }
 }
 
-fn branch_nonzero(branch: CoeffBlockEobBranch) -> Option<NonZeroCoeffEobSymbolRead> {
+fn branch_nonzero(branch: CoeffBlockEobBranch) -> Option<NonZeroCoeffBlockStart> {
     match branch {
         CoeffBlockEobBranch::AllZero(_) => None,
-        CoeffBlockEobBranch::NonZero(read) => Some(read),
+        CoeffBlockEobBranch::NonZero(start) => Some(start),
     }
 }
 
@@ -304,20 +305,81 @@ fn coeff_block_eob_branch_nonzero_reads_derived_eob_without_state_mutation() {
         &mut state,
         &mut tile,
         &mut symbols,
-        CoeffBlockEobBranchInput::NonZero(NonZeroCoeffEobContextInput {
-            plane: 0,
-            is_inter: false,
-            tx_width_log2: 4,
-            tx_height_log2: 3,
-            coeff_cdf_q_ctx: 0,
+        CoeffBlockEobBranchInput::NonZero(NonZeroCoeffBlockStartInput {
+            block: AllZeroCoeffBlockInput {
+                plane: 0,
+                x4: 0,
+                y4: 0,
+                w4: 4,
+                h4: 2,
+            },
+            eob: NonZeroCoeffEobContextInput {
+                plane: 0,
+                is_inter: false,
+                tx_width_log2: 4,
+                tx_height_log2: 3,
+                coeff_cdf_q_ctx: 0,
+            },
         }),
     )
     .unwrap();
 
-    let read = branch_nonzero(branch).unwrap();
-    assert_eq!(read, expected);
+    let start = branch_nonzero(branch).unwrap();
+    assert_eq!(start.eob_read(), expected);
+    assert_eq!(start.block().width(), 16);
+    assert_eq!(start.block().height(), 8);
+    assert!(start.block().level().iter().all(|level| *level == 0));
+    assert!(start.block().quant_sign().iter().all(|sign| *sign == 0));
+    assert!(start.block().quant().iter().all(|quant| *quant == 0));
     assert_eq!(state, state_before);
     assert!(symbols.symbol_count() > symbol_count_before);
+}
+
+#[test]
+fn coeff_block_eob_branch_invalid_nonzero_geometry_preserves_symbol_state() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let tile_before = tile.clone();
+    let mut symbols = symbol_decoder(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+    let mut state = seeded_coeff_context_state();
+    let state_before = state.clone();
+
+    let err = read_coeff_block_eob_branch(
+        &mut state,
+        &mut tile,
+        &mut symbols,
+        CoeffBlockEobBranchInput::NonZero(NonZeroCoeffBlockStartInput {
+            block: AllZeroCoeffBlockInput {
+                plane: 0,
+                x4: 0,
+                y4: 0,
+                w4: 0,
+                h4: 2,
+            },
+            eob: NonZeroCoeffEobContextInput {
+                plane: 0,
+                is_inter: false,
+                tx_width_log2: 4,
+                tx_height_log2: 3,
+                coeff_cdf_q_ctx: 0,
+            },
+        }),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffLoopContextError::State(TileCoeffStateError::InvalidAdjustedTransformExtent {
+            axis: "width",
+            value: 0
+        })
+    ));
+    assert_eq!(state, state_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
 }
 
 #[test]
@@ -335,12 +397,21 @@ fn coeff_block_eob_branch_invalid_nonzero_context_preserves_mutable_state() {
         &mut state,
         &mut tile,
         &mut symbols,
-        CoeffBlockEobBranchInput::NonZero(NonZeroCoeffEobContextInput {
-            plane: 0,
-            is_inter: false,
-            tx_width_log2: 1,
-            tx_height_log2: 2,
-            coeff_cdf_q_ctx: 0,
+        CoeffBlockEobBranchInput::NonZero(NonZeroCoeffBlockStartInput {
+            block: AllZeroCoeffBlockInput {
+                plane: 0,
+                x4: 0,
+                y4: 0,
+                w4: 2,
+                h4: 2,
+            },
+            eob: NonZeroCoeffEobContextInput {
+                plane: 0,
+                is_inter: false,
+                tx_width_log2: 1,
+                tx_height_log2: 2,
+                coeff_cdf_q_ctx: 0,
+            },
         }),
     )
     .unwrap_err();

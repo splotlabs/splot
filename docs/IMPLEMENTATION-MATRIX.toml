@@ -8731,7 +8731,7 @@ openspec_change = "coeff-eob-branch-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds crate-private `splot-decode` branch handoff for the AV2 §5.20.7.27 coefficient EOB path after the caller has decoded `all_zero`. `CoeffBlockEobBranchInput` selects either the all-zero branch, which delegates to `apply_all_zero_coeff_block` and leaves CDF/symbol state untouched, or the nonzero branch, which delegates to `read_nonzero_coeff_eob_from_context` and leaves coefficient context state untouched. The minimal flat-intra block-symbol trace now routes its existing luma and V all-zero state applications through this handoff without changing fixture output. Tests cover all-zero state application without CDF/symbol consumption, nonzero derived EOB reading without coefficient state mutation, and invalid nonzero transform facts preserving coefficient state, CDF rows, and symbol-decoder counters. This feature remains partial: the runtime path still has no nonzero transform-block source for the required facts, scan traversal, coefficient base/br/sign reads, nonzero `Level[]` or `Quant[]` writes, `read_quant`, dequantization, inverse transforms, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, or broad `decode_block()` / `decode_tile()` support."
+notes = "Adds crate-private `splot-decode` branch handoff for the AV2 §5.20.7.27 coefficient EOB path after the caller has decoded `all_zero`. `CoeffBlockEobBranchInput` selects either the all-zero branch, which delegates to `apply_all_zero_coeff_block` and leaves CDF/symbol state untouched, or the nonzero branch, which initializes local nonzero block state and delegates to `read_nonzero_coeff_eob_from_context` while leaving coefficient context state untouched. The minimal flat-intra block-symbol trace routes its existing luma and V all-zero state applications through this handoff without changing fixture output. Tests cover all-zero state application without CDF/symbol consumption, nonzero derived EOB reading without coefficient state mutation, invalid nonzero geometry no-consumption behavior, and invalid nonzero transform facts preserving coefficient state, CDF rows, and symbol-decoder counters. This feature remains partial: the runtime path still has no nonzero transform-block source for the required facts, scan traversal, coefficient base/br/sign reads, nonzero `Level[]` or `Quant[]` writes, `read_quant`, dequantization, inverse transforms, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, or broad `decode_block()` / `decode_tile()` support."
 
 [feature.status]
 mapped = "done"
@@ -8763,6 +8763,61 @@ fixtures = [
     "crates/splot-decode/src/tile_payload/coeff_loop.rs",
     "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs",
     "crates/splot-decode/src/tile_payload/block_symbol.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-COEFF-NONZERO-BLOCK-STATE"
+name = "Coefficient nonzero block state"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "8.2.5", "8.2.6", "8.3.2", "9.2", "9.3"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-6",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/branch.rs"
+openspec_change = "coeff-nonzero-block-state"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds crate-private `splot-decode` nonzero coefficient block-start state for the AV2 §5.20.7.27 coefficient path. `NonZeroCoeffBlockStartInput` carries caller-resolved transform-block geometry plus the existing nonzero EOB context facts. The nonzero branch allocates zero-initialized `TransformCoeffBlockState` arrays (`Level[]`, `QuantSign[]`, and `Quant[]`) from the adjusted transform extent before reading EOB syntax, so invalid geometry fails before CDF rows or symbol-decoder state are consumed. `CoeffBlockEobBranch::NonZero` now returns `NonZeroCoeffBlockStart`, pairing the EOB read result with that local block state while leaving tile coefficient context state unchanged. The branch handoff was moved into `coeff_loop/branch.rs` to keep `coeff_loop.rs` below the source-line soft budget. Tests cover zeroed nonzero block allocation, invalid geometry no-consumption behavior, and invalid EOB selector facts preserving coefficient state, CDF rows, and symbol-decoder counters. This feature remains partial: the runtime path still does not walk scan order, read coefficient base/br/sign symbols, write nonzero `Level[]` or `Quant[]`, implement `read_quant`, dequantize, run inverse transforms, add residuals, reconstruct pixels, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` / `decode_tile()` support."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_block_eob_branch_nonzero_reads_derived_eob_without_state_mutation",
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_block_eob_branch_invalid_nonzero_geometry_preserves_symbol_state",
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_block_eob_branch_invalid_nonzero_context_preserves_mutable_state",
+]
+commands = [
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo test -p splot-decode block_symbol --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/branch.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
 
