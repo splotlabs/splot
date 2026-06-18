@@ -30,6 +30,7 @@ const EOB_MULTISIZE_OFFSET: usize = 4;
 const MIN_NONZERO_EOB_PT: usize = 1;
 const MAX_NONZERO_EOB_PT: usize = 11;
 
+pub(crate) mod base_symbol;
 mod branch;
 pub(crate) use branch::{CoeffBlockEobBranchInput, read_coeff_block_eob_branch};
 mod scan_walk;
@@ -638,6 +639,8 @@ fn adjusted_coeff_extent(size4: usize) -> usize {
         .min(MAX_ADJUSTED_COEFF_EXTENT)
 }
 
+#[cfg(test)]
+mod base_symbol_tests;
 #[cfg(test)]
 mod eob_symbol_tests;
 
