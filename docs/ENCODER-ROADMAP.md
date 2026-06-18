@@ -1,7 +1,7 @@
 # Encoder roadmap
 
-`status: active`  
-`owner: encoder`  
+`status: active`
+`owner: encoder`
 `Feature ID: DOC-ENCODER-PROGRAM-CONTRACT`
 
 This roadmap is sequenced for small PRs. Each non-trivial step needs a matrix row,

@@ -1,8 +1,8 @@
 # Encoder gap audit
 
-`status: active`  
-`owner: encoder`  
-`Feature ID: DOC-ENCODER-PROGRAM-CONTRACT`  
+`status: active`
+`owner: encoder`
+`Feature ID: DOC-ENCODER-PROGRAM-CONTRACT`
 `audit date: 2026-06-18`
 
 This audit records the baseline for the first encoder contract PR. It is scoped to
@@ -54,16 +54,15 @@ planning and status; it does not claim encoder behavior exists.
 
 ## Active ownership baseline
 
-As of the final review-readiness pass on 2026-06-18, no sibling PR is open against
-`main`. The earlier decoder-side coefficient `coeff_br` context PR was audited
-while it was open and did not overlap semantically with this docs-only encoder
-contract. If another PR opens or merges before this one is accepted, rebase the
-contract branch, recompute the Flight Manifest, and rerun local and GitHub gates.
+As of the post-merge readiness pass on 2026-06-18, PR #237 has merged into
+`main` as `d070ca2a`, and this branch has merged current `main`. No sibling PR is
+open against `main`. The earlier `docs/IMPLEMENTATION-MATRIX.toml` same-file
+intersection with PR #237 is now part of the base, and no semantic overlap remains.
 
 A local non-open writer-coverage worktree was observed during the initial audit
 touching generated writer/status docs and writer-coverage automation. If that work
-lands first, rebase the encoder contract branch and rerun the full gates before
-review.
+lands first, merge current `main` into the encoder contract branch and rerun the
+full gates before review.
 
 ## Parked work
 

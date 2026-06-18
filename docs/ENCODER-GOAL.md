@@ -1,7 +1,7 @@
 # Encoder goal
 
-`status: active`  
-`owner: encoder`  
+`status: active`
+`owner: encoder`
 `Feature ID: DOC-ENCODER-PROGRAM-CONTRACT`
 
 This document defines the program target for the first supported encoder profile.

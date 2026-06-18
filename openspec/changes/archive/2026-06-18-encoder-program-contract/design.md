@@ -78,8 +78,9 @@ building blocks, but `splot-encode` does not depend on it yet.
 - Feature IDs: `DOC-ENCODER-PROGRAM-CONTRACT`; existing encoder rows referenced but
   not advanced: `ENC-BITSTREAM-WRITER`, `ENC-Y4M-INPUT`, `ENC-INTRA-TOY-V0`,
   `ENC-RATE-CONTROL-V0`, `ENC-SPEED-PRESETS`
-- Base commit: `543eb6db`
-- Depends on merged changes: current `main` through `543eb6db`
+- Base commit: `d070ca2a`
+- Depends on merged changes: current `main` through `d070ca2a`, including merged
+  PR #237
 - Exact files/directories owned by this PR:
   - `docs/ENCODER-GOAL.md`
   - `docs/ENCODER-ROADMAP.md`
@@ -88,8 +89,10 @@ building blocks, but `splot-encode` does not depend on it yet.
   - `docs/IMPLEMENTATION-MATRIX.toml`
   - `docs/FEATURE-STATUS.md`
   - `docs/SPEC-COVERAGE.md`
-  - `openspec/changes/encoder-program-contract/**`
+  - `openspec/changes/archive/2026-06-18-encoder-program-contract/**`
   - `openspec/changes/toy-intra-encoder-v0/tasks.md`
+  - `openspec/specs/encoder-api/spec.md`
+  - `openspec/specs/encoder-program/spec.md`
   - `openspec/specs/encoder-tools/spec.md`
 - Exact files/directories forbidden to this PR:
   - `crates/**`
@@ -106,10 +109,13 @@ building blocks, but `splot-encode` does not depend on it yet.
 - Public APIs/types owned: none
 - Matrix rows owned: `DOC-ENCODER-PROGRAM-CONTRACT`
 - Generated files owned: `docs/FEATURE-STATUS.md`, `docs/SPEC-COVERAGE.md`
-- Open sibling PRs audited: none open as of the final review-readiness pass
+- Open sibling PRs audited: none open as of the post-merge readiness pass; PR
+  #237 is merged into base `d070ca2a`
 - Changed-file intersection with each sibling PR: none
 - Semantic overlap with each sibling PR: none
-- Can build/test/merge directly onto main without another open PR: yes
+- Can build/test/merge directly onto main without another open PR: yes, after
+  local gates, GitHub gates, and final Claude/Codex review acceptance on the final
+  HEAD
 
 ## Migration Plan
 
