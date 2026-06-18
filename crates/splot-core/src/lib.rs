@@ -37,6 +37,7 @@ pub mod segment;
 pub mod span;
 pub mod stream;
 pub mod symbol;
+pub mod symbol_encoder;
 pub mod tables;
 pub mod tile;
 pub mod types;

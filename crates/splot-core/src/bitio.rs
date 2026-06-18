@@ -2,8 +2,11 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! A minimal, panic-free, MSB-first bit reader for AV2 fixed-width `f(n)` syntax
-//! elements and direct bitstream descriptors, plus explicit stubs for the AV2
-//! entropy (range) coder.
+//! elements and direct bitstream descriptors.
+//!
+//! The working AV2 § 8.2 entropy primitives live in [`crate::symbol`] and
+//! [`crate::symbol_encoder`]. This module keeps only the historical
+//! `RangeDecoder` stub and `RangeEncoder` compatibility wrapper.
 
 use crate::error::{ByteAlignmentErrorKind, Error, Result};
 use crate::span::{BitOffset, ByteOffset};
@@ -475,20 +478,39 @@ impl RangeDecoder {
     }
 }
 
-/// Stub for the AV2 range (arithmetic) encoder. Entropy coding is not yet modeled.
+/// Compatibility wrapper for the AV2 § 8.2 symbol/range encoder.
+///
+/// New code should use [`crate::symbol_encoder::SymbolEncoder`] directly; this
+/// type preserves the older `bitio::RangeEncoder` name that predated the
+/// dedicated symbol encoder module.
 #[derive(Debug)]
-#[non_exhaustive]
-pub struct RangeEncoder;
+pub struct RangeEncoder {
+    inner: crate::symbol_encoder::SymbolEncoder,
+}
 
 impl RangeEncoder {
-    /// Creating a range encoder is not yet supported.
+    /// Creates a range encoder with default configuration.
     ///
     /// # Errors
-    /// Always returns [`Error::Unimplemented`].
+    /// This compatibility constructor is currently infallible.
     pub fn new() -> Result<Self> {
-        Err(Error::Unimplemented {
-            feature: "AV2 entropy coding",
+        Ok(Self {
+            inner: crate::symbol_encoder::SymbolEncoder::new(),
         })
+    }
+
+    /// Creates a range encoder with explicit symbol encoder configuration.
+    #[must_use]
+    pub fn with_config(config: crate::symbol_encoder::SymbolEncoderConfig) -> Self {
+        Self {
+            inner: crate::symbol_encoder::SymbolEncoder::with_config(config),
+        }
+    }
+
+    /// Consumes this compatibility wrapper and returns the underlying symbol encoder.
+    #[must_use]
+    pub fn into_symbol_encoder(self) -> crate::symbol_encoder::SymbolEncoder {
+        self.inner
     }
 }
 
@@ -523,15 +545,12 @@ mod tests {
     }
 
     #[test]
-    fn entropy_coder_is_unimplemented() {
+    fn range_decoder_stub_is_unimplemented_and_encoder_wrapper_constructs() {
         assert!(matches!(
             RangeDecoder::new(),
             Err(Error::Unimplemented { .. })
         ));
-        assert!(matches!(
-            RangeEncoder::new(),
-            Err(Error::Unimplemented { .. })
-        ));
+        assert!(RangeEncoder::new().is_ok());
     }
 
     #[test]

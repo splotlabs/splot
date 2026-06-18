@@ -64,6 +64,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "symbol_encoder_bytes"
+path = "fuzz_targets/symbol_encoder_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "tile_payload_decode_bytes"
 path = "fuzz_targets/tile_payload_decode_bytes.rs"
 test = false

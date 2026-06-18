@@ -26,10 +26,11 @@ planning and status; it does not claim encoder behavior exists.
 
 - `ENC-BITSTREAM-WRITER` is the current writer foundation.
 - `splot-core` has writer primitives, OBU payload writers for the parsed OBU model,
-  Annex B framing helpers, IVF helpers, and round-trip/fuzz coverage.
+  Annex B framing helpers, IVF helpers, the generic AV2 §8.2 `SymbolEncoder`
+  primitive, and round-trip/fuzz coverage.
 - This is still syntax/framing support, not an encoder. Coded tile payload
-  generation is missing because `RangeEncoder` and the AV2 `decode_tile()` body
-  path remain unimplemented.
+  generation is missing because encoder-owned §8.3 token/CDF selection and the
+  AV2 `decode_tile()` body path remain unimplemented.
 - Inter first-group tile-group composition remains blocked on inter frame-header
   writer support.
 - Partial or unimplemented syntax models must be rejected by writers rather than
@@ -58,15 +59,11 @@ planning and status; it does not claim encoder behavior exists.
 
 ## Active ownership baseline
 
-As of the post-merge readiness pass on 2026-06-18, PR #237 has merged into
-`main` as `d070ca2a`, and this branch has merged current `main`. No sibling PR is
-open against `main`. The earlier `docs/IMPLEMENTATION-MATRIX.toml` same-file
-intersection with PR #237 is now part of the base, and no semantic overlap remains.
-
-A local non-open writer-coverage worktree was observed during the initial audit
-touching generated writer/status docs and writer-coverage automation. If that work
-lands first, merge current `main` into the encoder contract branch and rerun the
-full gates before review.
+As of the final range-encoder sync pass on 2026-06-18, PR #244 has merged into
+`main` as `a2a9d969` and `e790cb96`, PR #246 has merged into `main` as
+`d526eeea`, and this branch has rebased onto `origin/main` at `d526eeea`. No
+sibling PR is open against `main`; the generated status-doc intersections from
+PR #244 and PR #246 are now part of the base, and no semantic overlap remains.
 
 ## Parked work
 
