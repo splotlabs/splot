@@ -509,6 +509,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(transformed.coefficients(), &[0; 16]);
+        let quantized = crate::quantization::QuantizedTransformBlock::dct_dct_4x4_dc_only(
+            &transformed,
+            crate::quantization::FixedQuantizationParams::new(splot_recon::BitDepth::Eight, 0)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(quantized.quantized(), &[0; 16]);
+        assert_eq!(quantized.dequantized(), &[0; 16]);
 
         assert!(matches!(
             ctx.send_frame(&input).unwrap(),
