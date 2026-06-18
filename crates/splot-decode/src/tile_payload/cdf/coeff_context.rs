@@ -30,8 +30,6 @@
 //! it is no-output-change (the derivations are exercised by compile-time
 //! spec-contract `const` checks and unit tests, not by any decode stage).
 
-use splot_recon::TransformClass;
-
 /// AV2 § 3 `SIG_COEF_CONTEXTS_EOB`: the number of `coeff_base_eob` contexts
 /// (`03-symbols.md`); the four contexts are `SIG_COEF_CONTEXTS_EOB - 4 ..=
 /// SIG_COEF_CONTEXTS_EOB - 1`, i.e. `0..=3`.
@@ -131,19 +129,20 @@ pub(crate) struct CoeffBrContext {
     pub(crate) plane: usize,
     /// Whether this transform block is low-frequency (`isLf`).
     pub(crate) is_lf: bool,
-    /// The transform class (`get_tx_class(PlaneTxType)`).
-    pub(crate) tx_class: TransformClass,
+    /// The spec `txClass` value: `0` = `TX_CLASS_2D`, `1` = `TX_CLASS_HORIZ`,
+    /// `2` = `TX_CLASS_VERT` — the caller-resolved `get_tx_class(PlaneTxType)`
+    /// result (kept a scalar here so the entropy CDF-selection layer does not
+    /// import a reconstruction transform-class type). An out-of-range value is
+    /// treated as `TX_CLASS_2D`.
+    pub(crate) tx_class: usize,
 }
 
 impl CoeffBrContext {
-    /// The spec `txClass` index into [`MAG_REF_OFFSET_WITH_TX_CLASS`]
-    /// (`TX_CLASS_2D` = 0, `TX_CLASS_HORIZ` = 1, `TX_CLASS_VERT` = 2).
-    const fn tx_class_index(self) -> usize {
-        match self.tx_class {
-            TransformClass::TwoD => 0,
-            TransformClass::Horizontal => 1,
-            TransformClass::Vertical => 2,
-        }
+    /// The bounded `txClass` index into [`MAG_REF_OFFSET_WITH_TX_CLASS`]: the
+    /// caller-resolved `tx_class` when in `0..3`, else `0` (`TX_CLASS_2D`), so the
+    /// table access is total.
+    const fn class_idx(self) -> usize {
+        if self.tx_class < 3 { self.tx_class } else { 0 }
     }
 
     /// Returns the AV2 § 8.3.2 `coeff_br` CDF context, reading the
@@ -151,14 +150,26 @@ impl CoeffBrContext {
     /// `txw`-wide; `level[row * txw + col]`).
     ///
     /// Neighbour reads outside the block bounds (`refRow >= txh` or
-    /// `refCol >= txw`) or past the `level` slice contribute `0`, exactly matching
-    /// the spec's `refRow < txh && refCol < txw` guard, so the function is total
-    /// and never panics. The result is the spec `ctx`: `0..=13` (luma /
-    /// low-frequency) or `0..=3` (chroma).
+    /// `refCol >= txw`) or past the `level` slice contribute `0`, matching the
+    /// spec's `refRow < txh && refCol < txw` guard. All geometry arithmetic is
+    /// checked or saturating — the shift width (`pos >> bwl` / `row << bwl`), and
+    /// the flat index (`row * txw + col`) — so the function is total and never
+    /// panics for any caller-provided geometry. The result is the spec `ctx`:
+    /// `0..=13` (luma / low-frequency) or `0..=3` (chroma).
     pub(crate) const fn ctx(self, level: &[u32]) -> usize {
-        let row = self.pos >> self.bwl;
-        let col = self.pos - (row << self.bwl);
-        let class_idx = self.tx_class_index();
+        // row = pos >> bwl, col = pos - (row << bwl), with a guarded shift width
+        // (a malformed bwl >= the word width yields a degenerate but total result
+        // rather than a shift-overflow panic).
+        let row = match self.pos.checked_shr(self.bwl) {
+            Some(v) => v,
+            None => 0,
+        };
+        let shifted = match row.checked_shl(self.bwl) {
+            Some(v) => v,
+            None => 0,
+        };
+        let col = self.pos - shifted;
+        let class_idx = self.class_idx();
         // num = 3, or 2 for non-2D chroma (§ 8.3.2).
         let num = if class_idx != 0 && self.plane > 0 {
             2
@@ -170,10 +181,12 @@ impl CoeffBrContext {
         let mut idx = 0;
         // `while` (not `for`): iterators are not permitted in a `const fn`.
         while idx < num {
-            let ref_row = row + MAG_REF_OFFSET_WITH_TX_CLASS[class_idx][idx][0];
-            let ref_col = col + MAG_REF_OFFSET_WITH_TX_CLASS[class_idx][idx][1];
+            // Saturating geometry: an out-of-range offset or stride saturates
+            // past the block bounds (so it is skipped) instead of overflowing.
+            let ref_row = row.saturating_add(MAG_REF_OFFSET_WITH_TX_CLASS[class_idx][idx][0]);
+            let ref_col = col.saturating_add(MAG_REF_OFFSET_WITH_TX_CLASS[class_idx][idx][1]);
             if ref_row < self.txh && ref_col < self.txw {
-                let flat = ref_row * self.txw + ref_col;
+                let flat = ref_row.saturating_mul(self.txw).saturating_add(ref_col);
                 if flat < level.len() {
                     let lvl = level[flat];
                     mag += if lvl < clamp { lvl } else { clamp };
@@ -222,7 +235,7 @@ const _COEFF_BR_CONTRACT: () = {
         txh: 4,
         plane: 0,
         is_lf: false,
-        tx_class: TransformClass::TwoD,
+        tx_class: 0, // TX_CLASS_2D
     };
     assert!(dc_2d.ctx(&zero) == 0);
     // Three saturating neighbours at (0,1),(1,0),(1,1): mag = 4+4+4 = 12 ->
@@ -237,7 +250,7 @@ const _COEFF_BR_CONTRACT: () = {
         txh: 4,
         plane: 0,
         is_lf: false,
-        tx_class: TransformClass::Vertical,
+        tx_class: 2, // TX_CLASS_VERT
     };
     assert!(dc_vert.ctx(&zero) == 7);
 };
@@ -312,7 +325,8 @@ mod tests {
     }
 
     /// A `coeff_br` context over TX_4X4 adjusted geometry (bwl 2, txw/txh 4).
-    fn br(pos: usize, plane: usize, is_lf: bool, tx_class: TransformClass) -> CoeffBrContext {
+    /// `tx_class` is the spec `txClass` value (0 = 2D, 1 = HORIZ, 2 = VERT).
+    fn br(pos: usize, plane: usize, is_lf: bool, tx_class: usize) -> CoeffBrContext {
         CoeffBrContext {
             pos,
             bwl: 2,
@@ -333,7 +347,7 @@ mod tests {
         level[1] = 7;
         level[4] = 2;
         level[5] = 10;
-        assert_eq!(br(0, 0, false, TransformClass::TwoD).ctx(&level), 6);
+        assert_eq!(br(0, 0, false, 0).ctx(&level), 6);
     }
 
     #[test]
@@ -344,18 +358,18 @@ mod tests {
         level[6] = 5;
         level[9] = 5;
         level[10] = 5;
-        assert_eq!(br(5, 0, false, TransformClass::TwoD).ctx(&level), 6);
+        assert_eq!(br(5, 0, false, 0).ctx(&level), 6);
     }
 
     #[test]
     fn coeff_br_dc_non_2d_and_low_frequency_add_seven() {
         let zero = [0u32; 16];
         // DC (pos 0) luma, non-2D (VERT): mag 0 + 7 -> ctx 7.
-        assert_eq!(br(0, 0, false, TransformClass::Vertical).ctx(&zero), 7);
+        assert_eq!(br(0, 0, false, 2).ctx(&zero), 7);
         // Non-DC (pos 5) luma, low-frequency: mag 0 + 7 -> ctx 7.
-        assert_eq!(br(5, 0, true, TransformClass::TwoD).ctx(&zero), 7);
+        assert_eq!(br(5, 0, true, 0).ctx(&zero), 7);
         // Non-DC (pos 5) luma, non-LF: mag 0 -> ctx 0.
-        assert_eq!(br(5, 0, false, TransformClass::TwoD).ctx(&zero), 0);
+        assert_eq!(br(5, 0, false, 0).ctx(&zero), 0);
     }
 
     #[test]
@@ -366,7 +380,7 @@ mod tests {
         level[1] = 5;
         level[4] = 5;
         level[5] = 5;
-        assert_eq!(br(0, 1, false, TransformClass::TwoD).ctx(&level), 3);
+        assert_eq!(br(0, 1, false, 0).ctx(&level), 3);
     }
 
     #[test]
@@ -379,7 +393,7 @@ mod tests {
         level[6] = 1;
         level[9] = 1;
         level[13] = 4;
-        assert_eq!(br(5, 1, false, TransformClass::Vertical).ctx(&level), 1);
+        assert_eq!(br(5, 1, false, 2).ctx(&level), 1);
     }
 
     #[test]
@@ -387,10 +401,39 @@ mod tests {
         // pos 15 -> (row,col) = (3,3); every 2D offset leaves the 4x4 block, so
         // no neighbour is read -> mag 0 -> luma non-DC ctx 0 (no panic).
         let full = [9u32; 16];
-        assert_eq!(br(15, 0, false, TransformClass::TwoD).ctx(&full), 0);
+        assert_eq!(br(15, 0, false, 0).ctx(&full), 0);
         // A short slice: only flat 1 is in range (flat 4,5 are past len 4) -> mag
         // = Min(5, 5) = 5 -> (6 >> 1) = 3 -> ctx 3 (no panic).
         let short = [0u32, 9, 0, 0];
-        assert_eq!(br(0, 0, false, TransformClass::TwoD).ctx(&short), 3);
+        assert_eq!(br(0, 0, false, 0).ctx(&short), 3);
+    }
+
+    #[test]
+    fn coeff_br_is_total_for_pathological_geometry() {
+        // Malformed caller geometry must not panic: an out-of-word-width shift,
+        // positions/strides near usize::MAX, and an out-of-range tx_class all take
+        // the checked-shift / saturating-geometry / class-guard paths. The test
+        // passing (no panic) is the assertion.
+        let level = [0u32; 16];
+        let _ = CoeffBrContext {
+            pos: usize::MAX,
+            bwl: u32::MAX,
+            txw: usize::MAX,
+            txh: usize::MAX,
+            plane: 0,
+            is_lf: false,
+            tx_class: 9,
+        }
+        .ctx(&level);
+        let _ = CoeffBrContext {
+            pos: usize::MAX,
+            bwl: 2,
+            txw: usize::MAX,
+            txh: 4,
+            plane: 1,
+            is_lf: true,
+            tx_class: 2,
+        }
+        .ctx(&level);
     }
 }
