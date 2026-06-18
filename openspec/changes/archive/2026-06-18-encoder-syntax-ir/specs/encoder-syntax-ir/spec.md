@@ -17,8 +17,8 @@ syntax/token events.
 #### Scenario: Context lifecycle remains non-emitting
 
 - **WHEN** frames are submitted through the existing encoder context lifecycle
-- **THEN** `receive_packet` continues to report that packet production is not
-  implemented until a later coded-frame feature lands
+- **THEN** `receive_packet` continues to return no coded packet until a later
+  coded-frame feature lands
 
 ### Requirement: Deterministic Plan Ordering
 

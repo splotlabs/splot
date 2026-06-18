@@ -16,7 +16,7 @@
 - [x] 3.1 Add positive construction tests for sequence/frame/tile/superblock/block/token plans.
 - [x] 3.2 Add negative tests for ordering, duplicate coefficients, zero coefficients, and count-limit/overflow failures.
 - [x] 3.3 Add regression tests showing repeated construction produces stable debug output and invalid construction returns no partially mutated plan.
-- [x] 3.4 Add a context regression test proving `receive_packet` still returns the existing unimplemented result.
+- [x] 3.4 Add a context regression test proving `receive_packet` still returns no coded packet.
 
 ## 4. Docs And Verification
 
