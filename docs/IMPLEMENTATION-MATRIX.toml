@@ -9090,6 +9090,59 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-MAX-LEVEL-DERIVE"
+name = "Coefficient maxLevel derivation"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["3", "5.20.7.27"]
+sources = [
+    "docs/spec/av2/1.0.0/03-symbols.md#s-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs"
+openspec_change = "coeff-max-level-derive"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private `splot-decode` ordinary non-FSC `maxLevel` derivation boundary for AV2 §5.20.7.27 after checked scan-walk entries and caller-resolved plane, transform-class, and hidden-parity facts exist. `derive_nonzero_coeff_max_levels` implements `get_lf_limits(row, col, txClass, plane)` for the 2D, horizontal, and vertical transform classes, applies the luma/chroma low-frequency and non-low-frequency spec constants from §3, applies the hidden `c == 0` override, and returns records convertible to `CoeffQuantPassInput` for the loaded quant-pass composer. Tests cover every transform-class/plane low-frequency branch, hidden final-entry override, quant-pass input conversion, and pathological-coordinate totality. This feature remains partial: the helper is not wired into runtime `coeffs()`, does not derive transform class, hidden parity, scan order, or CDF selectors from real block syntax, does not consume symbols, does not write `Level[]` or `Quant[]`, and does not implement dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, or broad `decode_block()` / `decode_tile()` support."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs::tests::coefficient_max_level_derives_low_frequency_limits",
+    "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs::tests::coefficient_max_level_hidden_final_scan_entry_overrides_limit",
+    "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs::tests::coefficient_max_level_builds_quant_pass_inputs_in_walk_order",
+    "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs::tests::coefficient_max_level_pathological_coordinates_are_total",
+]
+commands = [
+    "cargo test -p splot-decode max_level --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-READ-QUANT-SYNTAX"
 name = "Coefficient read_quant syntax"
 category = "infrastructure"
@@ -9234,7 +9287,8 @@ perf = "not-applicable"
 [feature.proof]
 tests = [
     "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_reads_quant_and_writes_signed_quant",
-    "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_applies_hidden_tcq_consistently",
+    "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_applies_hidden_parity_consistently",
+    "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_applies_tcq_consistently",
     "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_allows_hidden_dc_without_parity_sign_when_sum_abs1_zero",
     "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_rejects_bad_facts_before_consumption",
 ]
