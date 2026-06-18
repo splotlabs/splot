@@ -4113,28 +4113,28 @@ kind = "encoder-api"
 spec_sections = []
 sources = []
 crate = "splot-encode"
-module = "crates/splot-encode/src/config.rs"
+module = "crates/splot-encode/src/runtime.rs"
 openspec_change = "encoder-speed-presets"
 tracking_issue = ""
 owner = "encoder"
 risk = "medium"
-notes = "Runtime/policy knobs must not pollute bitstream-affecting configuration (EncoderConfig). Thread count is already a Context::new parameter rather than config."
+notes = "Non-normative encoder runtime-policy framework. `SpeedPreset` accepts the documented 0..=10 range, defaults to 6, is stored in `EncoderRuntimeConfig` beside thread policy, is exposed through `Context`, and is parsed by `splot encode --speed` before context construction. It deliberately stays out of `EncoderConfig`, emits no packets, makes no rate-control or mode-decision claim, and cannot by itself satisfy Baseline Encoder Profile v1."
 
 [feature.status]
-mapped = "partial"
-types = "todo"
+mapped = "done"
+types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "not-applicable"
-encode = "todo"
+encode = "not-applicable"
 decode_check = "not-applicable"
-tests = "todo"
+tests = "done"
 avm_diff = "not-applicable"
-perf = "todo"
+perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-encode/src/runtime.rs::tests", "crates/splot-encode/src/context.rs::tests::context_exposes_config_and_threads", "crates/splot-encode/src/context.rs::tests::syntax_and_header_planning_do_not_enable_packet_output", "crates/splot-cli/tests/encode_cli.rs"]
+commands = ["cargo test -p splot-encode speed_preset --locked", "cargo test -p splot-encode context_exposes_config_and_threads --locked", "cargo test -p splot-cli --test encode_cli --locked"]
 fixtures = []
 diagnostics = []
 

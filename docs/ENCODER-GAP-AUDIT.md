@@ -21,6 +21,10 @@ planning and status; it does not claim encoder behavior exists.
   configuration and first-frame metadata to typed sequence/frame/tile-group
   header intent. It rejects unsupported formats and mismatches, is not
   re-exported, owns no writer, and does not produce packets.
+- `ENC-SPEED-PRESETS` defines the typed runtime preset boundary used by
+  `splot encode --speed`. The preset is stored in `EncoderRuntimeConfig`, not
+  `EncoderConfig`, and currently does not affect packet output because no packet
+  output path exists.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile
