@@ -10142,6 +10142,58 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-ORDINARY-BRANCH-TX-CLASS-HANDOFF"
+name = "Coefficient ordinary branch transform-class handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "8.3.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass.rs"
+openspec_change = "coeff-ordinary-branch-tx-class-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds a crate-private loaded-but-unwired ordinary coefficient branch wrapper that accepts caller-resolved `PlaneTxType`, derives AV2 §8.3.2 `txClass` with the decode-local `CoeffTransformClass::from_plane_tx_type` helper, and delegates to the existing state-backed ordinary branch handoff. The wrapper leaves all-zero behavior unchanged and only derives transform class for the nonzero ordinary path before running the existing derived-base, derived-sign, maxLevel, read_quant, signed Quant[], and context-commit stages. Tests prove all-zero preservation plus nonzero branch equivalence for 2D, vertical, horizontal, and out-of-range fallback PlaneTxType values. This feature remains partial: runtime `coeffs()` still does not call this wrapper, §5.20.7.29 `compute_tx_type`, scan order, selector, geometry, plane, parity, TCQ, and lossless facts are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_state_context_tests.rs::coefficient_ordinary_branch_plane_tx_type_nonzero_matches_direct_tx_class",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_state_context_tests.rs::coefficient_ordinary_branch_plane_tx_type_all_zero_preserves_direct_branch",
+]
+commands = [
+    "cargo test -p splot-decode ordinary_state_context --locked",
+    "cargo test -p splot-decode ordinary_pass --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_state_context_tests.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs",
+    "crates/splot-decode/src/tile_payload/coeff_state.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"
 name = "Tile CDF save lifecycle boundary"
 category = "infrastructure"
