@@ -12,7 +12,8 @@
 //! `DECODE-COEFF-ORDINARY-BRANCH-TX-CLASS-HANDOFF`,
 //! `DECODE-COEFF-ORDINARY-BRANCH-PLANE-TYPE-HANDOFF`,
 //! `DECODE-COEFF-ORDINARY-BRANCH-GEOMETRY-HANDOFF`,
-//! `DECODE-COEFF-ORDINARY-BRANCH-COEFFS-GEOMETRY-HANDOFF`.
+//! `DECODE-COEFF-ORDINARY-BRANCH-COEFFS-GEOMETRY-HANDOFF`,
+//! `DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-DIMENSIONS`.
 
 use splot_core::symbol::SymbolDecoder;
 
@@ -454,6 +455,24 @@ pub(crate) enum CoeffOrdinaryPassError {
 /// Error returned by the ordinary coefficient branch handoff.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffOrdinaryBranchError {
+    /// `txSz` did not index the generated transform-size conversion tables.
+    #[error("ordinary coefficient branch invalid transform size index {tx_size}")]
+    InvalidTransformSize {
+        /// Caller-provided `txSz` index.
+        tx_size: usize,
+    },
+    /// A generated transform-size conversion table held an invalid dimension.
+    #[error(
+        "ordinary coefficient branch invalid {table}[{tx_size}] transform-size table value {value}"
+    )]
+    InvalidTransformSizeTableValue {
+        /// AV2 conversion table name.
+        table: &'static str,
+        /// Caller-provided `txSz` index.
+        tx_size: usize,
+        /// Generated table value.
+        value: i32,
+    },
     /// EOB branch handoff failed.
     #[error("ordinary coefficient branch handoff failed: {0}")]
     Branch(#[from] CoeffLoopContextError),

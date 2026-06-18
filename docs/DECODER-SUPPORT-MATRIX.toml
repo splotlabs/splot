@@ -856,6 +856,20 @@ local_reference_evidence = []
 notes = "Adds crate-private loaded-but-unwired ordinary coefficient branch handoff from AV2 §5.20.7.27 `coeffs()` geometry facts to the existing block-geometry ordinary branch. `apply_coeff_ordinary_branch_from_coeffs_geometry` preserves the all-zero branch, derives `x4`, `y4`, `w4`, and `h4` from caller-resolved `startX`, `startY`, `Tx_Width[txSz]`, and `Tx_Height[txSz]`-style inputs, then delegates to `apply_coeff_ordinary_branch_from_geometry`. This row remains partial: it does not derive `Tx_Width[txSz]` or `Tx_Height[txSz]` from `txSz`, derive `Tx_Width_Log2[txSz]`, `Tx_Height_Log2[txSz]`, or `txSzCtx`, implement §5.20.7.29 `compute_tx_type`, derive scan order, call runtime `coeffs()`, derive selectors from real syntax, dequantize, inverse transform, residual add, reconstruct, output, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` or `decode_tile()` support."
 
 [[row]]
+id = "coeff-ordinary-branch-tx-size-dimensions"
+name = "Coefficient ordinary branch tx size dimensions"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-DIMENSIONS"
+spec_sections = ["5.20.7.27", "9.2"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md; crates/splot-core/src/tables/conversion.rs"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_nonzero_matches_explicit_dimensions", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_all_zero_preserves_direct_branch", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_invalid_tx_size_preserves_mutable_state", "cargo test -p splot-decode ordinary_branch_coeffs_geometry --locked", "cargo test -p splot-decode ordinary_state_context --locked", "cargo test -p splot-decode ordinary_pass --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private loaded-but-unwired ordinary coefficient branch handoff from AV2 §5.20.7.27 `txSz` to generated §9.2 transform-size dimensions. `apply_coeff_ordinary_branch_from_tx_size_dimensions` preserves the all-zero branch, rejects out-of-range `txSz` before mutating coefficient context state, CDF rows, or symbol-decoder state, derives `Tx_Width[txSz]`, `Tx_Height[txSz]`, `Tx_Width_Log2[txSz]`, and `Tx_Height_Log2[txSz]` from `splot-core` generated conversion tables, then delegates to `apply_coeff_ordinary_branch_from_coeffs_geometry`. This row remains partial: it does not derive `Tx_Size_Sqr[txSz]`, `Tx_Size_Sqr_Up[txSz]`, `txSzCtx`, or `Adjusted_Tx_Size[txSz]`, implement §5.20.7.29 `compute_tx_type`, derive scan order, call runtime `coeffs()`, derive selectors from real syntax, dequantize, inverse transform, residual add, reconstruct, output, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` or `decode_tile()` support."
+
+[[row]]
 id = "coeff-base-derived-level-pass"
 name = "Coefficient base derived level pass"
 feature_id = "DECODE-COEFF-BASE-DERIVED-LEVEL-PASS"
