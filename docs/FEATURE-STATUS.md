@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 255 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 256 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -231,6 +231,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-COEFF-SIGN-SYMBOL-READ` | Coefficient sign symbol read | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs` |
 | `DECODE-COEFF-SIGN-SOURCE-DERIVE` | Coefficient sign source derivation | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs` |
 | `DECODE-COEFF-MAX-LEVEL-DERIVE` | Coefficient maxLevel derivation | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs` |
+| `DECODE-COEFF-TX-CLASS-DERIVE` | Coefficient transform class derivation | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs` |
 | `DECODE-COEFF-READ-QUANT-SYNTAX` | Coefficient read_quant syntax | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/read_quant.rs` |
 | `DECODE-COEFF-QUANT-STATE-WRITE` | Coefficient quantized state write | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs` |
 | `DECODE-COEFF-QUANT-PASS-COMPOSE` | Coefficient quant pass composition | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs` |

@@ -646,6 +646,20 @@ local_reference_evidence = []
 notes = "Adds crate-private `splot-decode` ordinary non-FSC `maxLevel` derivation for the AV2 §5.20.7.27 second coefficient pass after checked scan entries and caller-resolved plane, transform-class, and hidden-parity facts exist. `derive_nonzero_coeff_max_levels` implements `get_lf_limits(row, col, txClass, plane)` for 2D, horizontal, and vertical transform classes, applies the luma/chroma low-frequency and non-low-frequency spec constants, applies the hidden `c == 0` override, and returns records convertible to the existing quant-pass inputs. Tests prove transform-class/plane low-frequency limits, hidden final-entry override, quant-pass input conversion, and pathological-coordinate totality. This row remains partial: runtime `coeffs()` does not call this helper, transform class, hidden parity, scan order, sign-source, CDF-selector, TCQ, and lossless facts are still caller-resolved, and symbol reads, tile context writes, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
 
 [[row]]
+id = "coeff-tx-class-derive"
+name = "Coefficient transform class derivation"
+feature_id = "DECODE-COEFF-TX-CLASS-DERIVE"
+spec_sections = ["5.20.7.27", "8.3.2"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs::tests::coefficient_transform_class_derives_from_plane_tx_type", "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs::tests::coefficient_max_level_plane_tx_type_handoff_matches_direct_config", "cargo test -p splot-decode max_level --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private decode-local AV2 §8.3.2 `PlaneTxType -> txClass` derivation for ordinary coefficient syntax. `CoeffTransformClass::from_plane_tx_type` maps vertical-only transform types to vertical class, horizontal-only transform types to horizontal class, and every other value to the spec fallback two-dimensional class. `derive_nonzero_coeff_max_levels_from_plane_tx_type` derives that class from caller-resolved `PlaneTxType` before delegating to the existing max-level derivation over checked scan entries. This row remains partial: it does not implement §5.20.7.29 `compute_tx_type`, derive scan order, call runtime `coeffs()`, consume symbols, mutate CDF rows, write coefficient state, dequantize, inverse transform, residual add, reconstruct, output, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` or `decode_tile()` support."
+
+[[row]]
 id = "coeff-read-quant-syntax"
 name = "Coefficient read_quant syntax"
 feature_id = "DECODE-COEFF-READ-QUANT-SYNTAX"

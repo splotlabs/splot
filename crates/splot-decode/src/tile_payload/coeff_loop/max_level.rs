@@ -25,6 +25,25 @@ pub(crate) enum CoeffTransformClass {
     Vertical,
 }
 
+impl CoeffTransformClass {
+    /// Derives AV2 § 8.3.2 `get_tx_class(PlaneTxType)`.
+    ///
+    /// The spec maps only the vertical-only and horizontal-only transform types
+    /// to directional classes; every other value takes the `else` branch to
+    /// `TX_CLASS_2D`
+    /// (`docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`).
+    #[must_use]
+    pub(crate) const fn from_plane_tx_type(plane_tx_type: usize) -> Self {
+        match plane_tx_type {
+            // V_DCT, V_ADST, V_FLIPADST.
+            10 | 12 | 14 => Self::Vertical,
+            // H_DCT, H_ADST, H_FLIPADST.
+            11 | 13 | 15 => Self::Horizontal,
+            _ => Self::TwoD,
+        }
+    }
+}
+
 /// Block-level facts needed to derive §5.20.7.27 `maxLevel`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffMaxLevelConfig {
@@ -34,6 +53,27 @@ pub(crate) struct CoeffMaxLevelConfig {
     pub(crate) tx_class: CoeffTransformClass,
     /// Whether hidden parity is active for this transform block.
     pub(crate) is_hidden: bool,
+}
+
+/// Block-level `PlaneTxType` facts needed to derive §5.20.7.27 `maxLevel`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffMaxLevelPlaneTxTypeConfig {
+    /// Plane index, 0 for luma and greater than 0 for chroma.
+    pub(crate) plane: usize,
+    /// Caller-resolved `PlaneTxType` from AV2 § 5.20.7.29 `compute_tx_type`.
+    pub(crate) plane_tx_type: usize,
+    /// Whether hidden parity is active for this transform block.
+    pub(crate) is_hidden: bool,
+}
+
+impl CoeffMaxLevelPlaneTxTypeConfig {
+    const fn max_level_config(self) -> CoeffMaxLevelConfig {
+        CoeffMaxLevelConfig {
+            plane: self.plane,
+            tx_class: CoeffTransformClass::from_plane_tx_type(self.plane_tx_type),
+            is_hidden: self.is_hidden,
+        }
+    }
 }
 
 /// Result of deriving `maxLevel` for one checked scan entry.
@@ -85,6 +125,19 @@ pub(crate) fn derive_nonzero_coeff_max_levels(
         levels.push(derive_coeff_max_level(entry, config));
     }
     Ok(levels)
+}
+
+/// Derives §5.20.7.27 `maxLevel` records from caller-resolved `PlaneTxType`.
+///
+/// This is the decode-local handoff for AV2 § 5.20.7.27
+/// `txClass = get_tx_class(PlaneTxType)`. It does not implement
+/// `compute_tx_type`, derive scan order, read symbols, mutate CDF rows, or write
+/// coefficient state.
+pub(crate) fn derive_nonzero_coeff_max_levels_from_plane_tx_type(
+    walk: &NonZeroCoeffScanWalk,
+    config: CoeffMaxLevelPlaneTxTypeConfig,
+) -> Result<Vec<CoeffMaxLevel>, CoeffMaxLevelError> {
+    derive_nonzero_coeff_max_levels(walk, config.max_level_config())
 }
 
 /// Converts derived `maxLevel` records into quant-pass inputs.
@@ -177,6 +230,40 @@ mod tests {
         }
     }
 
+    fn plane_tx_config(
+        plane: usize,
+        plane_tx_type: usize,
+        is_hidden: bool,
+    ) -> CoeffMaxLevelPlaneTxTypeConfig {
+        CoeffMaxLevelPlaneTxTypeConfig {
+            plane,
+            plane_tx_type,
+            is_hidden,
+        }
+    }
+
+    #[test]
+    fn coefficient_transform_class_derives_from_plane_tx_type() {
+        for plane_tx_type in [10, 12, 14] {
+            assert_eq!(
+                CoeffTransformClass::from_plane_tx_type(plane_tx_type),
+                CoeffTransformClass::Vertical
+            );
+        }
+        for plane_tx_type in [11, 13, 15] {
+            assert_eq!(
+                CoeffTransformClass::from_plane_tx_type(plane_tx_type),
+                CoeffTransformClass::Horizontal
+            );
+        }
+        for plane_tx_type in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 16, usize::MAX] {
+            assert_eq!(
+                CoeffTransformClass::from_plane_tx_type(plane_tx_type),
+                CoeffTransformClass::TwoD
+            );
+        }
+    }
+
     #[test]
     fn coefficient_max_level_derives_low_frequency_limits() {
         let cases = [
@@ -232,6 +319,35 @@ mod tests {
         assert_eq!(inputs[1].max_level, 6);
         assert_eq!(inputs[2].entry, entries[2]);
         assert_eq!(inputs[2].max_level, 3);
+
+        Ok(())
+    }
+
+    #[test]
+    fn coefficient_max_level_plane_tx_type_handoff_matches_direct_config()
+    -> Result<(), CoeffMaxLevelError> {
+        let entries = vec![
+            entry(3, 0, 3),
+            entry(2, 7, 1),
+            entry(1, 1, 7),
+            entry(0, 31, 31),
+        ];
+        let walk = NonZeroCoeffScanWalk::from_entries_for_test(entries);
+        let cases = [
+            (0, 0, CoeffTransformClass::TwoD),
+            (0, 10, CoeffTransformClass::Vertical),
+            (2, 11, CoeffTransformClass::Horizontal),
+            (2, usize::MAX, CoeffTransformClass::TwoD),
+        ];
+
+        for (plane, plane_tx_type, tx_class) in cases {
+            let direct = derive_nonzero_coeff_max_levels(&walk, config(plane, tx_class, true))?;
+            let derived = derive_nonzero_coeff_max_levels_from_plane_tx_type(
+                &walk,
+                plane_tx_config(plane, plane_tx_type, true),
+            )?;
+            assert_eq!(derived, direct, "PlaneTxType {plane_tx_type}");
+        }
 
         Ok(())
     }

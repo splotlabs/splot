@@ -177,7 +177,13 @@ symbols. A crate-private `maxLevel` derivation boundary
 (`DECODE-COEFF-MAX-LEVEL-DERIVE`) now applies the § 5.20.7.27
 `get_lf_limits(row, col, txClass, plane)` branches plus the hidden `c == 0`
 override over checked scan entries, returning records convertible to the quant
-pass inputs. A crate-private § 5.20.7.28 `read_quant` parser
+pass inputs. `DECODE-COEFF-TX-CLASS-DERIVE` now removes one staged caller fact
+by deriving ordinary coefficient `txClass` from caller-resolved `PlaneTxType`
+locally in `splot-decode`, covering the § 8.3.2 vertical-only,
+horizontal-only, and fallback 2D branches before delegating to the existing
+max-level path. It still does not implement § 5.20.7.29 `compute_tx_type`,
+derive scan order, or wire runtime `coeffs()`. A crate-private § 5.20.7.28
+`read_quant` parser
 (`DECODE-COEFF-READ-QUANT-SYNTAX`) now consumes caller-resolved
 level, max-level, hidden, and TCQ facts plus the reached `q_length_bit`,
 `golomb_length_bit`, and `coeff_rem` literal syntax, returning quant records.
