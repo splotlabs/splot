@@ -33,10 +33,24 @@
 //! no-output-change (the derivations are exercised by compile-time spec-contract
 //! `const` checks and unit tests, not by any decode stage).
 
+use splot_core::tables::conversion::SIG_REF_DIFF_OFFSET;
+
 /// AV2 § 3 `SIG_COEF_CONTEXTS_EOB`: the number of `coeff_base_eob` contexts
 /// (`03-symbols.md`); the four contexts are `SIG_COEF_CONTEXTS_EOB - 4 ..=
 /// SIG_COEF_CONTEXTS_EOB - 1`, i.e. `0..=3`.
 const SIG_COEF_CONTEXTS_EOB: usize = 4;
+
+/// AV2 § 3 `SIG_REF_DIFF_OFFSET_NUM` (`03-symbols.md`): the number of `coeff_base`
+/// neighbour samples for luma (chroma uses 3 for 2D, 2 otherwise).
+const SIG_REF_DIFF_OFFSET_NUM: usize = 5;
+
+/// AV2 § 3 `LF_SIG_COEF_CONTEXTS_2D` (`03-symbols.md`): the low-frequency luma 2D
+/// `coeff_base` context-count offset used by the non-2D low-frequency branch.
+const LF_SIG_COEF_CONTEXTS_2D: usize = 21;
+
+/// AV2 § 3 `LF_SIG_COEF_CONTEXTS_2D_UV` (`03-symbols.md`): the chroma 2D
+/// `coeff_base` context-count offset used by the non-2D chroma branch.
+const LF_SIG_COEF_CONTEXTS_2D_UV: usize = 8;
 
 /// AV2 § 3 `MAX_BASE_BR_RANGE` = `COEFF_BASE_RANGE (3) + NUM_BASE_LEVELS (2) + 1`
 /// (`03-symbols.md`); the `coeff_br` magnitude sum clamps each neighbour level to
@@ -266,6 +280,163 @@ pub(crate) const fn coeff_base_idtx_ctx(
 pub(crate) const fn coeff_br_idtx_ctx(level: &[u32], row: usize, col: usize, txw: usize) -> usize {
     let mag = idtx_neighbour_mag(level, row, col, txw, MAX_BASE_BR_RANGE - 1);
     (if mag < 6 { mag } else { 6 }) as usize
+}
+
+/// The AV2 § 8.3.2 `coeff_base` CDF bank selected for a coefficient, plus its
+/// context index (`08-parsing-process.md#s-8-3-2`). The caller maps the variant
+/// to the bank, supplying the `txSzCtx` / `tcqState` dimensions the [`Lf`] and
+/// [`Hf`] banks carry.
+///
+/// [`Lf`]: CoeffBaseSelection::Lf
+/// [`Hf`]: CoeffBaseSelection::Hf
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CoeffBaseSelection {
+    /// `TileCoeffBasePhCdf[ctx]` — the parity-hidden DC coefficient (`isHidden`
+    /// and `c == 0`); `ctx` is `Min((mag+1)>>1, 4)`.
+    Ph { ctx: usize },
+    /// `TileCoeffBaseLfUvCdf[ctx]` — chroma low-frequency.
+    LfUv { ctx: usize },
+    /// `TileCoeffBaseUvCdf[ctx]` — chroma.
+    Uv { ctx: usize },
+    /// `TileCoeffBaseLfCdf[txSzCtx][ctx][(tcqState>>1)&1]` — luma low-frequency.
+    Lf { ctx: usize },
+    /// `TileCoeffBaseCdf[txSzCtx][ctx][(tcqState>>1)&1]` — luma high-frequency.
+    Hf { ctx: usize },
+}
+
+/// AV2 § 8.3.2 `coeff_base` CDF context derivation — the main 2D significant-
+/// coefficient context (`08-parsing-process.md#s-8-3-2`).
+///
+/// It sums the significant-neighbour `Level[]` magnitudes (each clamped by a
+/// position-dependent `magLimit`) at the `Sig_Ref_Diff_Offset` offsets for the
+/// transform class, forms `ctx = (mag+1) >> 1`, and selects one of the five
+/// `coeff_base` banks ([`CoeffBaseSelection`]) with its bank-specific context
+/// offset.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffBaseContext {
+    /// The coefficient scan position `pos` within the adjusted transform block.
+    pub(crate) pos: usize,
+    /// `Tx_Width_Log2[adjTxSz]` — the adjusted block width log2 (`row`/`col`
+    /// split of `pos`).
+    pub(crate) bwl: u32,
+    /// `Tx_Width[adjTxSz]` — the adjusted block width (column bound + row stride).
+    pub(crate) txw: usize,
+    /// `Tx_Height[adjTxSz]` — the adjusted block height (row bound).
+    pub(crate) txh: usize,
+    /// The plane index (`0` luma, `1` U, `2` V).
+    pub(crate) plane: usize,
+    /// Whether this transform block is low-frequency (`isLf`).
+    pub(crate) is_lf: bool,
+    /// Whether the parity is hidden for this block (`isHidden`).
+    pub(crate) is_hidden: bool,
+    /// The scan index `c` of this coefficient.
+    pub(crate) c: usize,
+    /// The spec `txClass` value: `0` = `TX_CLASS_2D`, `1` = `TX_CLASS_HORIZ`,
+    /// `2` = `TX_CLASS_VERT` (caller-resolved; out-of-range treated as 2D).
+    pub(crate) tx_class: usize,
+}
+
+impl CoeffBaseContext {
+    /// The bounded `txClass` index into `SIG_REF_DIFF_OFFSET`.
+    fn class_idx(&self) -> usize {
+        if self.tx_class < 3 { self.tx_class } else { 0 }
+    }
+
+    /// Returns the AV2 § 8.3.2 `coeff_base` bank selection and context, reading
+    /// the per-transform-block `Level[]` magnitudes from `level` (row-major,
+    /// `txw`-wide; `level[row * txw + col]`).
+    ///
+    /// Geometry is checked/saturating and the flat index is slice-bounds-guarded
+    /// (the spec's `refRow < height && refCol < width` guard), so out-of-range or
+    /// short-slice reads contribute `0` and the function is total and never
+    /// panics.
+    pub(crate) fn select(&self, level: &[u32]) -> CoeffBaseSelection {
+        let row = self.pos.checked_shr(self.bwl).unwrap_or(0);
+        let col = self.pos - row.checked_shl(self.bwl).unwrap_or(0);
+        let class_idx = self.class_idx();
+        // num = 5 (luma); 3 for chroma 2D, 2 for chroma non-2D (§ 8.3.2).
+        let num = if self.plane > 0 {
+            if class_idx == 0 { 3 } else { 2 }
+        } else {
+            SIG_REF_DIFF_OFFSET_NUM
+        };
+        let mut mag: u32 = 0;
+        let mut idx = 0;
+        while idx < num {
+            let off = SIG_REF_DIFF_OFFSET[class_idx][idx];
+            let ref_row = row.saturating_add(off[0] as usize);
+            let ref_col = col.saturating_add(off[1] as usize);
+            // magLimit is 5 for the low-frequency near-DC samples, else 3.
+            let mag_limit: u32 =
+                if self.is_lf && (class_idx == 0 || idx < 2) && !(self.is_hidden && self.c == 0) {
+                    5
+                } else {
+                    3
+                };
+            if ref_row < self.txh && ref_col < self.txw {
+                let flat = ref_row.saturating_mul(self.txw).saturating_add(ref_col);
+                if flat < level.len() {
+                    let v = level[flat];
+                    mag += if v < mag_limit { v } else { mag_limit };
+                }
+            }
+            idx += 1;
+        }
+        let ctx = ((mag + 1) >> 1) as usize;
+
+        // The parity-hidden DC coefficient overrides the plane/frequency banks.
+        if self.is_hidden && self.c == 0 {
+            return CoeffBaseSelection::Ph { ctx: ctx.min(4) };
+        }
+        if self.plane > 0 {
+            let ctx2 = ctx.min(3);
+            let uv_ctx = if class_idx != 0 {
+                ctx2 + LF_SIG_COEF_CONTEXTS_2D_UV
+            } else if self.plane == 1 {
+                ctx2
+            } else {
+                ctx2 + 4
+            };
+            return if self.is_lf {
+                CoeffBaseSelection::LfUv { ctx: uv_ctx }
+            } else {
+                CoeffBaseSelection::Uv { ctx: uv_ctx }
+            };
+        }
+        if self.is_lf {
+            let lf_ctx = if class_idx == 0 {
+                if self.c == 0 {
+                    ctx.min(8)
+                } else if row + col < 2 {
+                    ctx.min(6) + 9
+                } else {
+                    ctx.min(4) + 16
+                }
+            } else {
+                // TX_CLASS_HORIZ (1) keys on col; TX_CLASS_VERT (2) keys on row.
+                let lidx = if class_idx == 1 { col } else { row };
+                if lidx == 0 {
+                    LF_SIG_COEF_CONTEXTS_2D + ctx.min(6)
+                } else {
+                    LF_SIG_COEF_CONTEXTS_2D + 7 + ctx.min(4)
+                }
+            };
+            return CoeffBaseSelection::Lf { ctx: lf_ctx };
+        }
+        let ctx2 = ctx.min(4);
+        let hf_ctx = if class_idx == 0 {
+            if row + col < 6 {
+                ctx2
+            } else if row + col < 8 {
+                ctx2 + 5
+            } else {
+                ctx2 + 10
+            }
+        } else {
+            ctx2 + 15
+        };
+        CoeffBaseSelection::Hf { ctx: hf_ctx }
+    }
 }
 
 // Compile-time spec-contract checks. These `const` items are the non-test
@@ -547,5 +718,205 @@ mod tests {
         let lvl = [0u32; 4];
         let _ = coeff_base_idtx_ctx(&lvl, usize::MAX, usize::MAX, usize::MAX);
         let _ = coeff_br_idtx_ctx(&lvl, usize::MAX, usize::MAX, usize::MAX);
+    }
+
+    /// A `coeff_base` context over TX_8X8 adjusted geometry (bwl 3, txw/txh 8).
+    fn cb8(
+        pos: usize,
+        plane: usize,
+        is_lf: bool,
+        is_hidden: bool,
+        c: usize,
+        tx_class: usize,
+    ) -> CoeffBaseContext {
+        CoeffBaseContext {
+            pos,
+            bwl: 3,
+            txw: 8,
+            txh: 8,
+            plane,
+            is_lf,
+            is_hidden,
+            c,
+            tx_class,
+        }
+    }
+
+    #[test]
+    fn coeff_base_luma_hf_2d_position_buckets() {
+        // Zero level -> mag 0 -> ctx 0 -> ctx2 0. Luma non-LF 2D selects Hf by
+        // the row+col position bucket (< 6, < 8, else).
+        let z = [0u32; 64];
+        assert_eq!(
+            cb8(0, 0, false, false, 0, 0).select(&z),
+            CoeffBaseSelection::Hf { ctx: 0 }
+        ); // (0,0) sum 0
+        assert_eq!(
+            cb8(27, 0, false, false, 5, 0).select(&z),
+            CoeffBaseSelection::Hf { ctx: 5 }
+        ); // (3,3) sum 6
+        assert_eq!(
+            cb8(36, 0, false, false, 5, 0).select(&z),
+            CoeffBaseSelection::Hf { ctx: 10 }
+        ); // (4,4) sum 8
+    }
+
+    #[test]
+    fn coeff_base_luma_hf_non_2d_adds_fifteen() {
+        let z = [0u32; 64];
+        // Luma non-LF, non-2D (VERT) -> Hf{ctx2 + 15}.
+        assert_eq!(
+            cb8(0, 0, false, false, 1, 2).select(&z),
+            CoeffBaseSelection::Hf { ctx: 15 }
+        );
+    }
+
+    #[test]
+    fn coeff_base_luma_lf_2d_branches() {
+        let z = [0u32; 64];
+        // c == 0 -> Min(ctx,8).
+        assert_eq!(
+            cb8(0, 0, true, false, 0, 0).select(&z),
+            CoeffBaseSelection::Lf { ctx: 0 }
+        );
+        // c != 0, row+col < 2 -> Min(ctx,6) + 9.
+        assert_eq!(
+            cb8(1, 0, true, false, 1, 0).select(&z),
+            CoeffBaseSelection::Lf { ctx: 9 }
+        );
+        // c != 0, row+col >= 2 -> Min(ctx,4) + 16.
+        assert_eq!(
+            cb8(9, 0, true, false, 1, 0).select(&z),
+            CoeffBaseSelection::Lf { ctx: 16 }
+        );
+    }
+
+    #[test]
+    fn coeff_base_luma_lf_non_2d_keys_on_horiz_col_vert_row() {
+        let z = [0u32; 64];
+        // HORIZ keys on col: col 0 -> 21 + Min(ctx,6); col != 0 -> 21 + 7 + Min(ctx,4).
+        assert_eq!(
+            cb8(0, 0, true, false, 1, 1).select(&z),
+            CoeffBaseSelection::Lf { ctx: 21 }
+        );
+        assert_eq!(
+            cb8(1, 0, true, false, 1, 1).select(&z),
+            CoeffBaseSelection::Lf { ctx: 28 }
+        );
+        // VERT keys on row: row 0 -> 21; row != 0 -> 28.
+        assert_eq!(
+            cb8(0, 0, true, false, 1, 2).select(&z),
+            CoeffBaseSelection::Lf { ctx: 21 }
+        );
+        assert_eq!(
+            cb8(9, 0, true, false, 1, 2).select(&z),
+            CoeffBaseSelection::Lf { ctx: 28 }
+        );
+    }
+
+    #[test]
+    fn coeff_base_chroma_uv_branches() {
+        let z = [0u32; 64];
+        // Chroma non-LF 2D: U -> ctx2; V -> ctx2 + 4.
+        assert_eq!(
+            cb8(0, 1, false, false, 1, 0).select(&z),
+            CoeffBaseSelection::Uv { ctx: 0 }
+        );
+        assert_eq!(
+            cb8(0, 2, false, false, 1, 0).select(&z),
+            CoeffBaseSelection::Uv { ctx: 4 }
+        );
+        // Chroma non-LF non-2D: ctx2 + LF_SIG_COEF_CONTEXTS_2D_UV (8).
+        assert_eq!(
+            cb8(0, 1, false, false, 1, 2).select(&z),
+            CoeffBaseSelection::Uv { ctx: 8 }
+        );
+        // Chroma low-frequency -> LfUv.
+        assert_eq!(
+            cb8(0, 1, true, false, 1, 0).select(&z),
+            CoeffBaseSelection::LfUv { ctx: 0 }
+        );
+    }
+
+    #[test]
+    fn coeff_base_sums_clamped_neighbours_into_hf() {
+        // Luma 2D non-LF at (0,0): the 5 offsets {0,1},{1,0},{1,1},{0,2},{2,0}
+        // -> flats 1,8,9,2,16. Each level 9 clamps to 3 (non-LF magLimit) -> mag
+        // 15 -> ctx (16>>1) = 8 -> ctx2 Min(8,4) = 4 -> Hf (row+col 0 < 6).
+        let mut lvl = [0u32; 64];
+        for f in [1, 8, 9, 2, 16] {
+            lvl[f] = 9;
+        }
+        assert_eq!(
+            cb8(0, 0, false, false, 0, 0).select(&lvl),
+            CoeffBaseSelection::Hf { ctx: 4 }
+        );
+    }
+
+    #[test]
+    fn coeff_base_low_frequency_maglimit_raises_to_five() {
+        // Luma isLf 2D, not hidden, c == 0: one neighbour (offset {0,1} -> flat 1)
+        // = 9. magLimit = 5 (isLf && 2D && !(isHidden && c==0)) -> Min(9,5) = 5 ->
+        // mag 5 -> ctx (6>>1) = 3 -> Lf c==0 Min(3,8) = 3. (magLimit 3 would give
+        // Min(9,3)=3 -> ctx 2, so ctx 3 proves the raise.)
+        let mut lvl = [0u32; 64];
+        lvl[1] = 9;
+        assert_eq!(
+            cb8(0, 0, true, false, 0, 0).select(&lvl),
+            CoeffBaseSelection::Lf { ctx: 3 }
+        );
+    }
+
+    #[test]
+    fn coeff_base_parity_hidden_overrides_and_caps_maglimit() {
+        // isHidden && c == 0 -> Ph, and the magLimit hidden-gate forces 3 (not 5):
+        // neighbour flat 1 = 9 -> Min(9,3) = 3 -> mag 3 -> ctx 2 -> Ph Min(2,4) = 2.
+        let mut lvl = [0u32; 64];
+        lvl[1] = 9;
+        assert_eq!(
+            cb8(0, 0, true, true, 0, 0).select(&lvl),
+            CoeffBaseSelection::Ph { ctx: 2 }
+        );
+    }
+
+    #[test]
+    fn coeff_base_chroma_2d_reads_three_neighbours_not_five() {
+        // Chroma 2D -> num 3 (reads offsets 0,1,2 = flats 1,8,9), NOT offset 3
+        // (flat 2). Set flat 9 (read) and flat 2 (not read) to 9: only flat 9
+        // contributes -> Min(9,3)=3 -> mag 3 -> ctx 2 -> ctx2 Min(2,3)=2 -> Uv{2}.
+        // (num 5 would also read flat 2 -> mag 6 -> ctx 3 -> Uv{3}.)
+        let mut lvl = [0u32; 64];
+        lvl[9] = 9;
+        lvl[2] = 9;
+        assert_eq!(
+            cb8(0, 1, false, false, 1, 0).select(&lvl),
+            CoeffBaseSelection::Uv { ctx: 2 }
+        );
+    }
+
+    #[test]
+    fn coeff_base_is_total_for_short_slice_and_pathological_geometry() {
+        // Short slice: most neighbour flats are past the slice -> contribute 0,
+        // no panic. flat 1 ({0,1}) is in range -> Min(9,3)=3 -> mag 3 -> ctx 2 ->
+        // ctx2 Min(2,4)=2 -> Hf{2}.
+        let short = [0u32, 9];
+        assert_eq!(
+            cb8(0, 0, false, false, 0, 0).select(&short),
+            CoeffBaseSelection::Hf { ctx: 2 }
+        );
+        // Pathological geometry must not panic.
+        let z = [0u32; 4];
+        let _ = CoeffBaseContext {
+            pos: usize::MAX,
+            bwl: u32::MAX,
+            txw: usize::MAX,
+            txh: usize::MAX,
+            plane: 0,
+            is_lf: true,
+            is_hidden: false,
+            c: 0,
+            tx_class: 9,
+        }
+        .select(&z);
     }
 }
