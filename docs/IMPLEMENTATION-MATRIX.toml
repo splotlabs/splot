@@ -8822,6 +8822,56 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-SCAN-WALK"
+name = "Coefficient scan walk"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs"
+openspec_change = "coeff-scan-walk"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private `splot-decode` scan-walk boundary for the ordinary non-FSC AV2 §5.20.7.27 nonzero coefficient path. `walk_nonzero_coeff_scan` consumes a `NonZeroCoeffBlockStart` plus caller-supplied `scan[c]` positions, validates that decoded EOB is nonzero and fits the scan slice, validates every visited raster position against the initialized `TransformCoeffBlockState`, and returns checked `c`, `pos`, `row`, and `col` facts in reverse scan order (`eob - 1` down to `0`). The helper does not derive `get_scan`, import `splot-recon`, read coefficient base/br/sign symbols, mutate CDF rows or symbol-decoder state, write nonzero `Level[]`, `QuantSign[]`, or `Quant[]`, implement `read_quant`, dequantize, run inverse transforms, add residuals, reconstruct pixels, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` / `decode_tile()` support."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_scan_walk_returns_reverse_scan_entries_without_mutation",
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_scan_walk_rejects_eob_larger_than_scan_without_mutation",
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_scan_walk_rejects_out_of_range_position_without_mutation",
+]
+commands = [
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/branch.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"
 name = "Tile CDF save lifecycle boundary"
 category = "infrastructure"

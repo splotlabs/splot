@@ -6,7 +6,9 @@
 //! Feature tracking: `DECODE-COEFF-ALL-ZERO-CONTEXT-STATE`, `DECODE-COEFF-ALL-ZERO-BLOCK-STATE`,
 //! `DECODE-COEFF-EOB-VALUE-STATE`, `DECODE-COEFF-EOB-SYMBOL-READ`, `DECODE-COEFF-EOB-SIZE-CONTEXT`,
 //! `DECODE-COEFF-EOB-DERIVED-SYMBOL-READ`, `DECODE-COEFF-EOB-BRANCH-HANDOFF`,
-//! `DECODE-COEFF-NONZERO-BLOCK-STATE`.
+//! `DECODE-COEFF-NONZERO-BLOCK-STATE`, `DECODE-COEFF-SCAN-WALK`.
+
+use std::collections::TryReserveError;
 
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
@@ -30,6 +32,7 @@ const MAX_NONZERO_EOB_PT: usize = 11;
 
 mod branch;
 pub(crate) use branch::{CoeffBlockEobBranchInput, read_coeff_block_eob_branch};
+mod scan_walk;
 
 /// Caller-resolved facts for luma § 8.3.2 `all_zero` context derivation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -277,6 +280,35 @@ pub(crate) enum CoeffLoopContextError {
         /// Minimum accepted log2 dimension.
         minimum: usize,
     },
+    /// Caller reached the ordinary non-FSC scan walk without a positive EOB.
+    #[error("coefficient scan walk requires nonzero EOB, got {eob}")]
+    InvalidScanWalkEob {
+        /// Caller-provided EOB.
+        eob: usize,
+    },
+    /// Caller supplied fewer scan entries than the decoded EOB requires.
+    #[error("coefficient scan walk EOB {eob} exceeds scan length {scan_len}")]
+    ScanWalkEobOutOfRange {
+        /// Decoded EOB.
+        eob: usize,
+        /// Caller-supplied scan table length.
+        scan_len: usize,
+    },
+    /// Caller supplied a scan position outside the initialized coefficient block.
+    #[error(
+        "coefficient scan index {scan_index} points to position {pos}, outside coefficient count {coeff_count}"
+    )]
+    ScanWalkPositionOutOfRange {
+        /// Scan index `c` from § 5.20.7.27.
+        scan_index: usize,
+        /// Caller-supplied raster coefficient position.
+        pos: usize,
+        /// Local adjusted block coefficient count.
+        coeff_count: usize,
+    },
+    /// Allocation for checked scan-walk entries failed.
+    #[error("coefficient scan walk allocation failed: {0}")]
+    ScanWalkAllocation(#[from] TryReserveError),
 }
 
 /// Derives the luma § 8.3.2 `all_zero` (`txb_skip`) context from tile state.
