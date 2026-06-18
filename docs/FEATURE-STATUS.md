@@ -124,6 +124,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `ENC-SYNTAX-IR` | Encoder syntax planning IR | encoder | encoder-api | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-encode/src/syntax_ir.rs` |
 | `ENC-MINIMAL-HEADER-PLAN` | Encoder minimal header plan | encoder | encoder-api | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-encode/src/header_plan.rs` |
 | `ENC-RESIDUAL-FOUNDATION` | Encoder residual foundation | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/residual.rs` |
+| `ENC-FORWARD-TRANSFORM-FOUNDATION` | Encoder forward transform foundation | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/forward_transform.rs` |
 | `ENC-RECON-DEPENDENCY` | Encoder reconstruction dependency boundary | encoder | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-encode/src/recon_boundary.rs` |
 | `ENC-INTRA-TOY-V0` | Minimal toy intra encoder path | encoder | encoder-tool | partial | todo | n/a | n/a | todo | todo | todo | todo | pending | `crates/splot-encode/src/context.rs` |
 | `ENC-RATE-CONTROL-V0` | Initial rate control strategy | encoder | encoder-tool | partial | todo | n/a | n/a | n/a | todo | n/a | todo | n/a | `crates/splot-encode/src/context.rs` |

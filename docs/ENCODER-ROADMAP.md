@@ -83,6 +83,9 @@ Status: planned, replaces the parked toy bootstrap path.
 - Land a private residual foundation before forward transform work, so
   source-minus-prediction arithmetic, block geometry, and signed residual
   materialization are proven independently of packet output.
+- Land a private forward-transform foundation for the first 4x4 DCT_DCT DC-only
+  uniform-residual subset before quantization work, proving the no-op
+  quant/dequant inverse handoff without claiming broad transform support.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.
 - Record fixtures, hashes, and matrix proof before marking any encode stage done.
