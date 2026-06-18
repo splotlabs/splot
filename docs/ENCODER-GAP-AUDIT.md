@@ -40,8 +40,9 @@ planning and status; it does not claim encoder behavior exists.
   reference-store pieces, hash input, and Y4M output pieces.
 - It is not a byte-consuming decoder and does not yet provide a full encoder
   closed-loop reconstruction API.
-- `splot-encode` does not depend on `splot-recon`. That decision is reserved for
-  `encoder-recon-dependency`.
+- `splot-encode` has a direct private `splot-recon` dependency boundary, but no
+  public recon-backed encoder API or closed-loop reconstruction integration yet.
+  Those decisions remain future work.
 
 ## Conformance baseline
 

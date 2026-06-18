@@ -3908,6 +3908,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-RECON-DEPENDENCY"
+name = "Encoder reconstruction dependency boundary"
+category = "encoder"
+kind = "infrastructure"
+spec_sections = []
+sources = []
+crate = "splot-encode"
+module = "crates/splot-encode/src/recon_boundary.rs"
+openspec_change = "encoder-recon-dependency"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Non-normative encoder infrastructure. The encoder crate has the approved direct `splot-recon` dependency edge and a private compile-time boundary marker only; this does not expose a public reconstruction API, accept input frames, run a closed-loop encode path, or emit AV2 bitstreams."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/context.rs::tests::encoding_operations_are_unimplemented", "xtask/src/main.rs::tests::dependency_direction_allows_encoder_recon_edge_only", "xtask/src/main.rs::tests::dependency_direction_keeps_recon_tables_only"]
+commands = ["cargo check -p splot-encode --offline", "cargo test -p splot-encode encoding_operations_are_unimplemented --offline", "cargo test -p xtask dependency_direction --offline", "cargo xtask check-dependency-direction"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-INTRA-TOY-V0"
 name = "Minimal toy intra encoder path"
 category = "encoder"

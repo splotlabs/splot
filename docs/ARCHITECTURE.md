@@ -9,7 +9,7 @@ canonical for the rules summarized here.
 ```text
 splot-cli ───────┬──> splot-validate ───> splot-core
                  ├──> splot-decode   ───> splot-core, splot-parallel, splot-recon
-                 ├──> splot-encode   ───> splot-core, splot-parallel
+                 ├──> splot-encode   ───> splot-core, splot-parallel, splot-recon
                  ├──> splot-parallel
                  └──> splot-core
 
@@ -39,7 +39,10 @@ by `cargo xtask check-dependency-direction`):
   `splot-recon`; the `splot-recon` edge is limited to runtime
   decode/reconstruction/hash/Y4M output handoff code.
 - `splot-validate` depends only on `splot-core`.
-- `splot-encode` depends only on `splot-core` and `splot-parallel`.
+- `splot-encode` depends only on `splot-core`, `splot-parallel`, and
+  `splot-recon`; the `splot-recon` edge is limited to private lower-level
+  reconstruction-boundary preparation until later encoder phases add public
+  input or closed-loop reconstruction APIs.
 - `splot-cli` depends only on `splot-core`, `splot-decode`, `splot-parallel`,
   `splot-validate`, and `splot-encode`.
 - Nothing depends on `splot-cli`.
@@ -79,7 +82,9 @@ by `cargo xtask check-dependency-direction`):
   a report, never a process failure.
 - **`splot-encode`** — the *shape* of the future encoder API (configuration plus a
   push/pull `Context`). It implements no encoding; every operation returns
-  `Error::Unimplemented`.
+  `Error::Unimplemented`. Its direct `splot-recon` dependency is currently a
+  private compile-time boundary marker only; public frame input and closed-loop
+  reconstruction integration remain future encoder phases.
 - **`splot-cli`** — the thin `splot` binary. It parses arguments (clap),
   initializes logging (tracing), reads/writes files, and calls library APIs. No
   codec logic: the `inspect`/`validate` text and JSON rendering in
