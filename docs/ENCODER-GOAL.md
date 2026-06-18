@@ -51,9 +51,9 @@ The current encoder truth is intentionally narrow:
   return `Error::Unimplemented`.
 - `splot-core` owns writer primitives, OBU payload writers, and Annex B/IVF helpers,
   but it does not generate entropy-coded tile payloads.
-- `splot-recon` owns reconstruction building blocks, and `splot-encode` has a
-  private dependency boundary for future reuse; no public recon-backed encoder
-  API or closed-loop integration exists yet.
+- `splot-recon` owns reconstruction building blocks, and `splot-encode` uses
+  recon borrowed plane/shared-frame views for public input APIs. Closed-loop
+  integration and any encode success path remain future work.
 - The parked `toy-intra-encoder-v0` change is superseded as the implementation
   starting point. Future all-intra work must be re-proposed under this profile.
 

@@ -40,9 +40,9 @@ by `cargo xtask check-dependency-direction`):
   decode/reconstruction/hash/Y4M output handoff code.
 - `splot-validate` depends only on `splot-core`.
 - `splot-encode` depends only on `splot-core`, `splot-parallel`, and
-  `splot-recon`; the `splot-recon` edge is limited to private lower-level
-  reconstruction-boundary preparation until later encoder phases add public
-  input or closed-loop reconstruction APIs.
+  `splot-recon`; the `splot-recon` edge is limited to borrowed encoder input
+  views plus private lower-level reconstruction-boundary preparation until later
+  encoder phases add closed-loop reconstruction APIs.
 - `splot-cli` depends only on `splot-core`, `splot-decode`, `splot-parallel`,
   `splot-validate`, and `splot-encode`.
 - Nothing depends on `splot-cli`.
@@ -80,11 +80,12 @@ by `cargo xtask check-dependency-direction`):
   runs a registry of `Check`s. Each `Diagnostic` is structured data (rule id,
   severity, spec section, offset, message). A malformed bitstream or container is
   a report, never a process failure.
-- **`splot-encode`** — the *shape* of the future encoder API (configuration plus a
-  push/pull `Context`). It implements no encoding; every operation returns
-  `Error::Unimplemented`. Its direct `splot-recon` dependency is currently a
-  private compile-time boundary marker only; public frame input and closed-loop
-  reconstruction integration remain future encoder phases.
+- **`splot-encode`** — the *shape* of the future encoder API (configuration,
+  borrowed frame input views, explicit retained input sharing, and a push/pull
+  `Context`). It implements no encoding; every operation returns
+  `Error::Unimplemented`. Its direct `splot-recon` dependency currently supports
+  validated borrowed input views; closed-loop reconstruction integration remains
+  a future encoder phase.
 - **`splot-cli`** — the thin `splot` binary. It parses arguments (clap),
   initializes logging (tracing), reads/writes files, and calls library APIs. No
   codec logic: the `inspect`/`validate` text and JSON rendering in

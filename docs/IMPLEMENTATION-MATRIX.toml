@@ -3882,28 +3882,28 @@ kind = "encoder-api"
 spec_sections = []
 sources = []
 crate = "splot-encode"
-module = "crates/splot-encode/src/context.rs"
-openspec_change = "encoder-input-model"
+module = "crates/splot-encode/src/frame.rs"
+openspec_change = "encoder-frame-input-views"
 tracking_issue = ""
 owner = "encoder"
 risk = "medium"
-notes = "Input format plumbing; not normative AV2 syntax. Only the Frame stub exists today."
+notes = "Input format plumbing; not normative AV2 syntax. The encoder now has validated borrowed 8-bit YUV420 frame input views over splot-recon PlaneRef, typed frame id/timestamp metadata, explicit RetainedFrame sharing over SharedFrame, context send_frame accepts the real Frame<'_> type, and unit/property plus fuzz target coverage exercise dimensions, strides, odd visible sizes, missing planes, unsupported formats, and truncated buffers. Residual: no Y4M reader, no 10-bit input view, no lookahead materialization, no context state machine, and no public encode success path."
 
 [feature.status]
 mapped = "partial"
-types = "todo"
+types = "partial"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "not-applicable"
 encode = "todo"
 decode_check = "not-applicable"
-tests = "todo"
+tests = "partial"
 avm_diff = "not-applicable"
 perf = "todo"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-encode/src/frame.rs::tests", "crates/splot-encode/src/context.rs::tests::encoding_operations_are_unimplemented", "fuzz/fuzz_targets/encoder_frame_input_views_bytes.rs"]
+commands = ["cargo test -p splot-encode --locked", "cargo check --manifest-path fuzz/Cargo.toml --bins", "cargo +nightly fuzz run encoder_frame_input_views_bytes"]
 fixtures = []
 diagnostics = []
 

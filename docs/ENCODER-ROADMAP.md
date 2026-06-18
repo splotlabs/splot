@@ -10,7 +10,7 @@ the exact HEAD that would merge.
 
 ## Phase 0 - Program contract
 
-Status: this PR.
+Status: done.
 
 - Add `docs/ENCODER-GOAL.md`, `docs/ENCODER-ROADMAP.md`, and
   `docs/ENCODER-GAP-AUDIT.md`.
@@ -21,7 +21,7 @@ Status: this PR.
 
 ## Phase 1 - `encoder-recon-dependency`
 
-Status: current exclusive encoder change.
+Status: done.
 
 Decision: explicitly approve and land the `splot-encode -> splot-recon`
 dependency edge without adding public encode behavior. This phase owns:
@@ -37,12 +37,12 @@ legal-stream evidence gates.
 
 ## Phase 2 - Input and API model
 
-Status: planned.
+Status: in progress.
 
 Feature areas: `ENC-Y4M-INPUT`, `ENC-SPEED-PRESETS`.
 
-- Replace the empty `Frame` placeholder with a strong input model for 8/10-bit
-  YUV420 Y4M pictures.
+- Land validated borrowed 8-bit YUV420 input views, then extend the input model
+  to 10-bit and Y4M stream adaptation in follow-up PRs.
 - Keep bitstream-affecting configuration separate from runtime policy.
 - Define unsupported-format behavior for 12-bit, monochrome, YUV422, YUV444, and
   non-Y4M inputs.

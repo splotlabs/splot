@@ -53,8 +53,10 @@ What this policy **is not**:
 
 ## 3. The default ownership model
 
-Future decode/reconstruction/encoder code MUST follow this model. None of it is
-implemented yet; this is the contract those features are written against.
+Decode/reconstruction/encoder code MUST follow this model. Some pieces are
+implemented already, including `splot-recon` frame views and `splot-encode`
+borrowed input views; the rest remains the contract future media-buffer features
+are written against.
 
 - **Compressed bitstreams are borrowed as `&[u8]`.** Parsers and planners read the
   input slice; they do not own or copy the compressed payload.
@@ -110,8 +112,8 @@ rejects them:
   `SharedFrame`; never clones sample buffers.
 - `splot-decode` — borrows compressed bytes, plans, and (future) delegates the
   frame model to `splot-recon`; owns no decoded samples today.
-- `splot-encode` — (future) borrows input views; one marked lookahead
-  materialization point if retention is required.
+- `splot-encode` — borrows input views today; one marked lookahead
+  materialization point is required if future retention needs a copy.
 
 ## 6. Allowed copies (materialization boundaries)
 
@@ -202,10 +204,11 @@ line comment (a string literal containing the token is not a marker).
 
   `splot-recon` is the only crate that owns decoded sample buffers today.
   `splot-decode` handles compressed bytes and diagnostics and delegates the frame
-  model to `splot-recon`; `splot-encode` is a stub. Scanning their compressed-byte
-  and scalar code for these bulk-copy patterns would over-flag the ordinary scalar
-  parser/test code this policy explicitly leaves alone, and would churn files
-  shared with the concurrent decoder/writer work.
+  model to `splot-recon`; `splot-encode` currently borrows input views and owns no
+  decoded-sample materialization boundary. Scanning their compressed-byte,
+  borrowed-view, and scalar code for these bulk-copy patterns would over-flag the
+  ordinary scalar parser/test code this policy explicitly leaves alone, and would
+  churn files shared with the concurrent decoder/writer work.
   TODO(spec: INFRA-ZERO-COPY-MEDIA-POLICY): widen the sample-copy scan to
   `splot-decode`/`splot-encode` modules when they grow owned decoded-sample
   buffers.

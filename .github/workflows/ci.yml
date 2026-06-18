@@ -176,7 +176,9 @@ jobs:
   # recon_frame_plane_types_bytes (decoded-frame/plane type model),
   # recon_reference_frame_store_bytes (reference-frame store API),
   # recon_y4m_output_bytes (Y4M output serialization), and
-  # recon_intra_prediction_bytes (intra prediction/workspace primitives).
+  # recon_intra_prediction_bytes (intra prediction/workspace primitives),
+  # encoder_frame_input_views_bytes (encoder borrowed input views), and
+  # roundtrip_obu_bytes (typed OBU writer roundtrips).
   # cargo-fuzz needs a nightly toolchain (ASan + coverage are nightly-only).
   fuzz:
     needs: fuzz-list

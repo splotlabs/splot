@@ -12,18 +12,8 @@ use splot_parallel::{ThreadCount, WorkerPool};
 
 use crate::config::EncoderConfig;
 use crate::error::Result;
+use crate::frame::Frame;
 use crate::runtime::EncoderRuntimeConfig;
-
-/// An input video frame (stub).
-///
-/// Does not derive `Clone`: once this models plane data it will own sample
-/// storage, and the encoder must accept borrowed views rather than clone frames
-/// (see [`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)). Enforced by
-/// `cargo xtask check-zero-copy-policy`.
-// TODO(spec: ENC-Y4M-INPUT): model plane data, stride, and color format as borrowed views.
-#[derive(Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct Frame {}
 
 /// An output coded packet.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -100,7 +90,7 @@ impl Context {
     ///
     /// # Errors
     /// Always returns [`CoreError::Unimplemented`].
-    pub fn send_frame(&mut self, frame: Frame) -> CoreResult<()> {
+    pub fn send_frame(&mut self, frame: Frame<'_>) -> CoreResult<()> {
         let _ = frame;
         Err(CoreError::Unimplemented {
             feature: "AV2 encoder",
@@ -134,6 +124,27 @@ mod tests {
     use super::*;
     use splot_core::Error as CoreError;
     use splot_parallel::ThreadCount;
+    use splot_recon::{PlaneRect, PlaneSize};
+
+    fn size(width: usize, height: usize) -> PlaneSize {
+        PlaneSize::new(width, height).unwrap()
+    }
+
+    fn rect(width: usize, height: usize) -> PlaneRect {
+        PlaneRect::new(0, 0, width, height).unwrap()
+    }
+
+    fn frame<'a>(y: &'a [u8], u: &'a [u8], v: &'a [u8]) -> Frame<'a> {
+        crate::frame::Frame::from_planes(
+            crate::frame::FrameInfo::yuv420_8bit(crate::frame::FrameId::new(0), size(2, 2)),
+            crate::frame::FramePlanesInput::yuv(
+                crate::frame::FramePlaneInput::new(y, 2, rect(2, 2)),
+                crate::frame::FramePlaneInput::new(u, 1, rect(1, 1)),
+                crate::frame::FramePlaneInput::new(v, 1, rect(1, 1)),
+            ),
+        )
+        .unwrap()
+    }
 
     #[test]
     fn context_exposes_config_and_threads() {
@@ -149,8 +160,11 @@ mod tests {
     fn encoding_operations_are_unimplemented() {
         let mut ctx =
             Context::new(EncoderConfig::default(), EncoderRuntimeConfig::default()).unwrap();
+        let y = [0_u8; 4];
+        let u = [0_u8; 1];
+        let v = [0_u8; 1];
         assert!(matches!(
-            ctx.send_frame(Frame::default()),
+            ctx.send_frame(frame(&y, &u, &v)),
             Err(CoreError::Unimplemented { .. })
         ));
         assert!(matches!(
