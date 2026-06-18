@@ -63,14 +63,17 @@ previously-discarded layout bits (`intrabc_params()` / `force_integer_mv`; the e
 `TileParams`; the CCSO `ccso_offset_idx`); the quant, segmentation, loop-filter, and intra-tail
 slices are additive (their few read-but-not-stored points are redundant encodings or parser
 derivations, canonicalized/re-derived like the § 5.4 leb128-minimal case).
-Remaining: the inter / show-existing frame-header paths and the § 5.18.7.11 frame-level Wiener
-bank (out of the current intra scope),
-the tile-group/metadata payload writers, the
-**Annex B** muxer, and wiring the muxers into writer-track round-trip tests — the IVF
-container write helpers already exist (`AV2-IVF-CONTAINER`, `write` = `done`); plus the
-toy intra path (`ENC-INTRA-TOY-V0`) and rate control (`ENC-RATE-CONTROL-V0`). The
-bootstrap `add-bitstream-writer` stub was removed, superseded by these properly-scoped
-changes. The implementation matrix is the source of truth for per-row status.
+Remaining writer surface: inter / show-existing frame-header paths, the
+§ 5.18.7.11 frame-level Wiener bank (out of the current intra scope), inter
+first-group tile-group composition, and entropy-coded tile payload generation
+(`RangeEncoder` and the § 5.20 `decode_tile()` body remain unimplemented). The
+complete-OBU dispatch now has body writers for every parsed OBU payload variant,
+Annex B and IVF helpers exist, and writer-track round-trip/fuzz/cross-tool
+validation coverage is tracked in the implementation matrix. The parked
+`toy-intra-encoder-v0` bootstrap change is superseded by the Baseline Encoder
+Profile v1 contract; future all-intra work must be re-proposed. Rate control
+(`ENC-RATE-CONTROL-V0`) remains future work. The implementation matrix is the
+source of truth for per-row status.
 ## Requirements
 ### Requirement: writer symmetry
 
@@ -1089,3 +1092,40 @@ guards the sibling `docs/FEATURE-STATUS.md` and `docs/SPEC-COVERAGE.md`.
   status, and a subsequent `cargo xtask check-feature-status` SHALL pass; an out-of-date
   `docs/spec-coverage-writer.md` SHALL make `check-feature-status` fail with the regenerate command.
 
+### Requirement: Writer baseline is syntax and framing, not entropy coding
+
+The encoder tool contract SHALL distinguish the current `splot-core` writer
+baseline from an encoder. The writer can emit supported parsed syntax structures
+and container framing, but it SHALL NOT be treated as able to generate entropy-coded
+tile payloads while `RangeEncoder` and the `decode_tile()` body remain unimplemented.
+
+#### Scenario: entropy-coded tiles are not claimed
+
+- **WHEN** encoder documentation describes current writer support
+- **THEN** it states that coded tile payload generation is still a gap
+- **AND** no public encoder milestone depends on fabricated coded tile bytes.
+
+### Requirement: Closed-loop reconstruction reuse is gated
+
+The encoder program SHALL treat `splot-recon` as available lower-level
+reconstruction building blocks, not as an integrated encoder reconstruction loop,
+until the `encoder-recon-dependency` change lands.
+
+#### Scenario: recon APIs are not pulled in by the contract PR
+
+- **WHEN** the encoder-program contract PR is reviewed
+- **THEN** `splot-encode` still depends only on `splot-core` and `splot-parallel`
+- **AND** the recon reuse boundary is documented as future work.
+
+### Requirement: Parked toy intra change is superseded
+
+The parked `toy-intra-encoder-v0` change SHALL NOT be resumed directly. Future
+all-intra encoder work SHALL be re-proposed under the Baseline Encoder Profile v1
+contract with current writer, reconstruction, validation, and conformance gates.
+
+#### Scenario: toy encoder work restarts under a new proposal
+
+- **WHEN** all-intra encoder implementation resumes
+- **THEN** it uses a new or updated OpenSpec change tied to the Baseline Encoder
+  Profile v1 contract
+- **AND** the parked `toy-intra-encoder-v0` tasks remain unchecked.

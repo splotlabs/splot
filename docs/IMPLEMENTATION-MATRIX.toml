@@ -3920,7 +3920,7 @@ openspec_change = "toy-intra-encoder-v0"
 tracking_issue = ""
 owner = "encoder"
 risk = "high"
-notes = "Only after writer, headers, and validation are sufficient to produce a deliberately simple legal stream. Its OpenSpec change is parked (2026-06-11, encoder track behind the VALIDATOR-ROADMAP fence); revival means re-proposing."
+notes = "Bootstrap-era toy intra change remains unchecked and parked. It is superseded as the implementation starting point by the Baseline Encoder Profile v1 contract (`DOC-ENCODER-PROGRAM-CONTRACT`); future all-intra work must be re-proposed with current writer, reconstruction, validation, and conformance gates."
 
 [feature.status]
 mapped = "partial"
@@ -5435,6 +5435,39 @@ tracking_issue = ""
 owner = "docs"
 risk = "low"
 notes = "Documents the rav1e/SVT-AV1 inspiration-only policy, third-party notices, required encoder research gate, and reviewer/agent workflow wiring."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "not-applicable"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "DOC-ENCODER-PROGRAM-CONTRACT"
+name = "Encoder program contract documentation"
+category = "docs"
+kind = "docs"
+spec_sections = []
+sources = []
+crate = "docs"
+module = "docs/ENCODER-GOAL.md"
+openspec_change = "encoder-program-contract"
+tracking_issue = ""
+owner = "docs"
+risk = "low"
+notes = "Defines Baseline Encoder Profile v1, the encoder roadmap, gap audit, validator-roadmap carve-out, and parked toy-encoder supersession without changing Rust behavior or dependency direction."
 
 [feature.status]
 mapped = "done"

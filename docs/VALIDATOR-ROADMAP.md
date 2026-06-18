@@ -56,24 +56,25 @@ dependency order:
 | Deeper HLS semantics | the `validate = partial` HLS rows (LCR, atlas, OPS/BRT, metadata); the §6.10.7/§6.8.9/§7.3.8.7 dependency-map agreement checks, the §6.8.5 LCR PTL-ceiling and §6.8.8 LCR rep-info equality checks against the activated sequence header (`lcr/ptl-*-exceeds-max`, `lcr/rep-info-mismatch`; `lcr-ptl-activated-sequence-agreement`), the §6.4.13/§6.10.5 signaled buffer-delay sum-constancy checks (`decoder-model/*`), and the **static** Annex A profile/level/tier value-space subset (`annex-a/*`: Table A.1 profile + Table A.7/A.8/A.9 level/tier value-space and static level limits) are landed, with the Table A.4 interoperability-point OBU-presence checks deferred to the `msdo-global-lcr-agreement` backlog change (see the Planned diagnostics backlog), the LCR-declared PTL maxima Annex A value-space range checks (`lcr_seq_profile_idc[i]`/`lcr_max_level_idx[i]`/etc.) still on the Annex A table backlog, and the **rate-based** Annex A/E operating-point *semantics* (decoder-schedule simulation, buffer model) still future |
 | Frame-header continuation | the Phase 8 remaining work below |
 
-**Do not start yet** as a primary task: a full tile-group payload parser,
-entropy/range coding, a decoder, an encoder, or a *live* AVM differential
-harness. The active OpenSpec changes `toy-intra-encoder-v0` and
-`avm-differential-harness` are recorded intent behind this fence, not started
-work — none has implementation tasks checked. Prepare hooks and fixtures, but
-keep the core work focused on the gaps above.
+**Do not start yet as validator primary work:** a full tile-group payload parser,
+entropy/range coding, a decoder, or a *live* AVM differential harness. Encoder
+work is no longer controlled by this validator roadmap; it proceeds only through
+[`ENCODER-GOAL.md`](./ENCODER-GOAL.md),
+[`ENCODER-ROADMAP.md`](./ENCODER-ROADMAP.md), OpenSpec changes, and implementation
+matrix rows. The parked `toy-intra-encoder-v0` change is superseded as an
+implementation starting point by the encoder program contract, not resumed from
+behind this fence.
 
 **Carve-out (started 2026-06-14, maintainer-approved):** the **bitstream writer**
-is *out* from behind this fence. The writer is the exact inverse of the existing
-parser — its correctness is defined by `read(write(x)) == x` round-trips against
-`splot-core`, so it needs no decoder. The primitive layer landed via OpenSpec
-change `bit-writer-primitives` (`ENC-BITSTREAM-WRITER`, advancing the `write`
-stage of the §4.11 descriptors and §5.2.4 byte alignment); the bootstrap
-`add-bitstream-writer` stub has been removed, superseded by it and the upcoming
-`obu-header-and-size-writer` change. The only writer surface that depends on decode
-(the `writer minimal stream -> splot decode --hash` cross-tool test) stays deferred
-until intra reconstruction lands. Still fenced: the
-entropy/range *encoder*, the decoder, and the *live* AVM differential harness.
+is *out* from behind this fence. The writer is the inverse of the parser-owned
+syntax and framing models, with correctness defined by `read(write(x)) == x`
+round-trips against `splot-core`. The primitive layer, OBU header/trailing-bits,
+Annex B framing, sequence-header writers, intra frame-header writer surface, OBU
+payload writers, generated writer coverage, and writer/validate cross-tool checks
+are tracked under `ENC-BITSTREAM-WRITER` and child AV2 rows in the matrix. Still
+not implemented by that writer baseline: entropy-coded tile payload generation,
+the AV2 `decode_tile()` body, inter first-group tile-group composition, the
+decoder, and the *live* AVM differential harness.
 
 **Carve-out (started):** the **committed conformance corpus** is *out* from
 behind this fence (OpenSpec change `conformance-corpus-foundation`,
@@ -81,7 +82,7 @@ behind this fence (OpenSpec change `conformance-corpus-foundation`,
 plus a manifest and a committed runner now lands and gates in CI — **with no AVM
 dependency** (AVM is a local generator/source seed only; retimed vectors are
 identified in the manifest, and the runner never invokes AVM or the network).
-Still fenced: the encoder/decoder and the
+Still fenced for this validator roadmap: the decoder and the
 *live* `avm encode -> splot validate` / `splot encode -> avm decode`
 differential harness (`CONF-AVM-DIFF-HARNESS`).
 
