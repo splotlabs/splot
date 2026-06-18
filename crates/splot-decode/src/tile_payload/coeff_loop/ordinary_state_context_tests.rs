@@ -11,6 +11,10 @@ use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileC
 use super::base_level_pass::{CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError};
 use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
 use super::max_level::CoeffTransformClass;
+use super::ordinary_pass::geometry::{
+    CoeffOrdinaryBranchGeometryInput, CoeffOrdinaryBranchGeometryNonZeroInput,
+    CoeffOrdinaryGeometryStateContextConfig, apply_coeff_ordinary_branch_from_geometry,
+};
 use super::ordinary_pass::{
     CoeffOrdinaryBranch, CoeffOrdinaryBranchError, CoeffOrdinaryBranchInput,
     CoeffOrdinaryBranchNonZeroInput, CoeffOrdinaryBranchPlaneTxTypeBaseConfig,
@@ -163,13 +167,26 @@ fn state_context_config_for_plane_type(plane_type: usize) -> CoeffOrdinaryStateC
 }
 
 fn plane_type_state_context_config() -> CoeffOrdinaryPlaneTypeStateContextConfig {
+    plane_type_state_context_config_for_geometry(0, 0, 2, 2)
+}
+
+fn plane_type_state_context_config_for_geometry(
+    x4: usize,
+    y4: usize,
+    w4: usize,
+    h4: usize,
+) -> CoeffOrdinaryPlaneTypeStateContextConfig {
     CoeffOrdinaryPlaneTypeStateContextConfig {
         coeff_cdf_q_ctx: 0,
-        x4: 0,
-        y4: 0,
-        w4: 2,
-        h4: 2,
+        x4,
+        y4,
+        w4,
+        h4,
     }
+}
+
+fn geometry_state_context_config() -> CoeffOrdinaryGeometryStateContextConfig {
+    CoeffOrdinaryGeometryStateContextConfig { coeff_cdf_q_ctx: 0 }
 }
 
 fn invalid_update_state_context_config() -> CoeffOrdinaryStateContextConfig {
@@ -281,18 +298,42 @@ fn branch_plane_type_nonzero_input(
     })
 }
 
+fn branch_geometry_nonzero_input(
+    start: NonZeroCoeffBlockStartInput,
+    base_config: CoeffOrdinaryBranchPlaneTxTypeBaseConfig,
+    state_context: CoeffOrdinaryGeometryStateContextConfig,
+) -> CoeffOrdinaryBranchGeometryInput<'static> {
+    CoeffOrdinaryBranchGeometryInput::NonZero(CoeffOrdinaryBranchGeometryNonZeroInput {
+        start,
+        scan: &DC_ONLY_SCAN,
+        base_config,
+        state_context,
+        lossless: false,
+    })
+}
+
 fn nonzero_start_input() -> NonZeroCoeffBlockStartInput {
     nonzero_start_input_for_plane(0)
 }
 
 fn nonzero_start_input_for_plane(plane: usize) -> NonZeroCoeffBlockStartInput {
+    nonzero_start_input_for_plane_and_geometry(plane, 0, 0, 2, 2)
+}
+
+fn nonzero_start_input_for_plane_and_geometry(
+    plane: usize,
+    x4: usize,
+    y4: usize,
+    w4: usize,
+    h4: usize,
+) -> NonZeroCoeffBlockStartInput {
     NonZeroCoeffBlockStartInput {
         block: AllZeroCoeffBlockInput {
             plane,
-            x4: 0,
-            y4: 0,
-            w4: 2,
-            h4: 2,
+            x4,
+            y4,
+            w4,
+            h4,
         },
         eob: NonZeroCoeffEobContextInput {
             plane,
@@ -374,6 +415,36 @@ fn run_plane_type_branch(
     let mut symbols = symbol_decoder(payload);
     let mut context_state = seeded_context_state();
     let branch = apply_coeff_ordinary_branch_from_plane_type(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        input,
+    )
+    .unwrap();
+    (
+        branch,
+        context_state,
+        tile,
+        symbols.consumed_bits(),
+        symbols.symbol_count(),
+    )
+}
+
+fn run_geometry_branch(
+    payload: &[u8],
+    input: CoeffOrdinaryBranchGeometryInput<'_>,
+) -> (
+    CoeffOrdinaryBranch,
+    TileCoeffContextState,
+    TileCdfSubset,
+    SymbolBitPosition,
+    u64,
+) {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(payload);
+    let mut context_state = seeded_context_state();
+    let branch = apply_coeff_ordinary_branch_from_geometry(
         &mut context_state,
         &mut tile,
         &mut symbols,
@@ -693,6 +764,59 @@ fn coefficient_ordinary_branch_plane_type_all_zero_preserves_direct_branch() {
             h4: 2,
         }),
     );
+
+    assert_eq!(derived, direct);
+}
+
+#[test]
+fn coefficient_ordinary_branch_geometry_nonzero_matches_explicit_geometry() {
+    let start = nonzero_start_input_for_plane_and_geometry(1, 1, 1, 2, 2);
+    let direct_base_config = base_config_for_plane(1, false, false);
+    let direct_state_context = CoeffOrdinaryStateContextConfig {
+        coeff_cdf_q_ctx: 0,
+        plane_type: 1,
+        x4: start.block.x4,
+        y4: start.block.y4,
+        w4: start.block.w4,
+        h4: start.block.h4,
+    };
+    let explicit_state_context = plane_type_state_context_config_for_geometry(
+        start.block.x4,
+        start.block.y4,
+        start.block.w4,
+        start.block.h4,
+    );
+    let derived_base_config = plane_tx_type_base_config_for_plane(1, 0, false, false);
+    let payload = find_state_context_payload_with_start(
+        start,
+        direct_base_config,
+        direct_state_context,
+        |_| true,
+    );
+
+    let explicit = run_plane_type_branch(
+        &payload,
+        branch_plane_type_nonzero_input(start, derived_base_config, explicit_state_context),
+    );
+    let derived = run_geometry_branch(
+        &payload,
+        branch_geometry_nonzero_input(start, derived_base_config, geometry_state_context_config()),
+    );
+
+    assert_eq!(derived, explicit);
+}
+
+#[test]
+fn coefficient_ordinary_branch_geometry_all_zero_preserves_direct_branch() {
+    let block = AllZeroCoeffBlockInput {
+        plane: 1,
+        x4: 1,
+        y4: 1,
+        w4: 2,
+        h4: 2,
+    };
+    let direct = run_direct_branch(&[0x80], CoeffOrdinaryBranchInput::AllZero(block));
+    let derived = run_geometry_branch(&[0x80], CoeffOrdinaryBranchGeometryInput::AllZero(block));
 
     assert_eq!(derived, direct);
 }

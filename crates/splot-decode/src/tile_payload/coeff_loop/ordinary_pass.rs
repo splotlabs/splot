@@ -10,7 +10,8 @@
 //! `DECODE-COEFF-STATE-CONTEXT-HANDOFF`,
 //! `DECODE-COEFF-ORDINARY-BRANCH-HANDOFF`,
 //! `DECODE-COEFF-ORDINARY-BRANCH-TX-CLASS-HANDOFF`,
-//! `DECODE-COEFF-ORDINARY-BRANCH-PLANE-TYPE-HANDOFF`.
+//! `DECODE-COEFF-ORDINARY-BRANCH-PLANE-TYPE-HANDOFF`,
+//! `DECODE-COEFF-ORDINARY-BRANCH-GEOMETRY-HANDOFF`.
 
 use splot_core::symbol::SymbolDecoder;
 
@@ -50,6 +51,8 @@ use super::sign_symbol::{
 use super::{
     AllZeroCoeffBlock, AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffEobSymbolRead,
 };
+
+pub(crate) mod geometry;
 
 /// Caller-resolved facts for the loaded ordinary non-FSC coefficient pass.
 pub(crate) struct CoeffOrdinaryPassInput<'a> {
