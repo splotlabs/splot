@@ -148,9 +148,11 @@ and derives `eobCtx = (plane > 0) ? 2 : is_inter`, plus a derived EOB reader
 the symbol-read sequence. A coefficient EOB branch handoff
 (`DECODE-COEFF-EOB-BRANCH-HANDOFF`) now dispatches caller-selected all-zero
 branches to the all-zero state helper and nonzero branches to that derived EOB
-reader; the minimal trace uses it only for the existing luma and V all-zero
+reader, and the nonzero branch now initializes a zeroed local coefficient block
+state shell (`DECODE-COEFF-NONZERO-BLOCK-STATE`) before reading EOB syntax. The
+minimal trace uses the handoff only for the existing luma and V all-zero
 applications. Runtime nonzero coefficient blocks are still unsupported, and no
-scan walk or base/br/sign coefficient symbols are read yet. The
+scan walk or base/br/sign coefficient symbols are read or written yet. The
 § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the

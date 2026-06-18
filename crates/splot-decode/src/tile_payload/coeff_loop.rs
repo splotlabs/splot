@@ -5,7 +5,8 @@
 //!
 //! Feature tracking: `DECODE-COEFF-ALL-ZERO-CONTEXT-STATE`, `DECODE-COEFF-ALL-ZERO-BLOCK-STATE`,
 //! `DECODE-COEFF-EOB-VALUE-STATE`, `DECODE-COEFF-EOB-SYMBOL-READ`, `DECODE-COEFF-EOB-SIZE-CONTEXT`,
-//! `DECODE-COEFF-EOB-DERIVED-SYMBOL-READ`, `DECODE-COEFF-EOB-BRANCH-HANDOFF`.
+//! `DECODE-COEFF-EOB-DERIVED-SYMBOL-READ`, `DECODE-COEFF-EOB-BRANCH-HANDOFF`,
+//! `DECODE-COEFF-NONZERO-BLOCK-STATE`.
 
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
@@ -26,6 +27,9 @@ const EOB_MULTISIZE_LOG2_CAP: usize = 5;
 const EOB_MULTISIZE_OFFSET: usize = 4;
 const MIN_NONZERO_EOB_PT: usize = 1;
 const MAX_NONZERO_EOB_PT: usize = 11;
+
+mod branch;
+pub(crate) use branch::{CoeffBlockEobBranchInput, read_coeff_block_eob_branch};
 
 /// Caller-resolved facts for luma § 8.3.2 `all_zero` context derivation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -115,15 +119,6 @@ pub(crate) struct NonZeroCoeffEobContextInput {
     pub(crate) coeff_cdf_q_ctx: usize,
 }
 
-/// Caller-selected § 5.20.7.27 coefficient EOB branch.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CoeffBlockEobBranchInput {
-    /// Decoded `all_zero == 1`.
-    AllZero(AllZeroCoeffBlockInput),
-    /// Decoded `all_zero == 0`.
-    NonZero(NonZeroCoeffEobContextInput),
-}
-
 /// Summary of a § 5.20.7.27 all-zero coefficient block state application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AllZeroCoeffBlock {
@@ -157,15 +152,6 @@ impl AllZeroCoeffBlock {
     pub(crate) const fn block(&self) -> &TransformCoeffBlockState {
         &self.block
     }
-}
-
-/// Result of the § 5.20.7.27 coefficient EOB branch handoff.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum CoeffBlockEobBranch {
-    /// All-zero coefficient state was applied.
-    AllZero(AllZeroCoeffBlock),
-    /// Nonzero EOB syntax was read.
-    NonZero(NonZeroCoeffEobSymbolRead),
 }
 
 /// Checked nonzero § 5.20.7.27 EOB value.
@@ -506,28 +492,6 @@ pub(crate) fn read_nonzero_coeff_eob_from_context(
 ) -> Result<NonZeroCoeffEobSymbolRead, CoeffLoopContextError> {
     let input = nonzero_coeff_eob_symbol_input(input)?;
     read_nonzero_coeff_eob(cdfs, symbols, input)
-}
-
-/// Dispatches the AV2 § 5.20.7.27 branch after caller-decoded `all_zero`.
-///
-/// All-zero applies coefficient context state without consuming symbols or CDF
-/// rows. Nonzero derives EOB selector facts and reads only EOB syntax; scan
-/// traversal, coefficient reads, quantization, and reconstruction stay deferred.
-pub(crate) fn read_coeff_block_eob_branch(
-    state: &mut TileCoeffContextState,
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: CoeffBlockEobBranchInput,
-) -> Result<CoeffBlockEobBranch, CoeffLoopContextError> {
-    match input {
-        CoeffBlockEobBranchInput::AllZero(input) => {
-            apply_all_zero_coeff_block(state, input).map(CoeffBlockEobBranch::AllZero)
-        }
-        CoeffBlockEobBranchInput::NonZero(input) => {
-            read_nonzero_coeff_eob_from_context(cdfs, symbols, input)
-                .map(CoeffBlockEobBranch::NonZero)
-        }
-    }
 }
 
 /// Derives the AV2 § 5.20.7.27 nonzero EOB symbol-reader input.
