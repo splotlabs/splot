@@ -136,8 +136,12 @@ and `Quant[]` state, `eob == 0`, and zero above/left level/DC context writes for
 the traced luma and V all-zero branches. They are still not read by a real
 coefficient symbol loop. The nonzero branch now has a checked § 5.20.7.27 EOB
 value helper (`DECODE-COEFF-EOB-VALUE-STATE`) for caller-decoded `eobPt`,
-`eob_extra`, and packed `eob_extra_bit` refinements, but no `eob_pt` or
-coefficient symbols are read yet. The § 7.14.4
+`eob_extra`, and packed `eob_extra_bit` refinements, plus a crate-private EOB
+symbol reader (`DECODE-COEFF-EOB-SYMBOL-READ`) that consumes caller-selected
+`eob_pt_*` CDF rows, size-specific `eob_pt_*_extra` literal bits, `eob_extra`,
+and packed `eob_extra_bit` refinements before calling that value helper. That
+reader is still not wired into the runtime coefficient loop, and no scan walk or
+base/br/sign coefficient symbols are read yet. The § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the
 § 7.15.4 DPCM-direction selection and combined transform-parameter resolve helper,
