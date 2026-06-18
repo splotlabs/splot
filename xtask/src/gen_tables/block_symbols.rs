@@ -1,17 +1,22 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Narrow `BLOCK_*` symbol resolver for generated AV2 § 9.2 partition-size tables.
+//! Narrow symbol resolver for generated AV2 § 9.2 conversion tables.
 
 use anyhow::{Result, bail};
 
 const TABLES_WITH_BLOCK_SYMBOLS: &[&str] = &["H_Partition_Midsize", "Partition_Subsize"];
+const TABLES_WITH_TX_SIZE_SYMBOLS: &[&str] = &["Adjusted_Tx_Size", "Tx_Size_Sqr", "Tx_Size_Sqr_Up"];
 
-/// Resolves supported symbolic `BLOCK_*` table bodies into numeric bodies.
+/// Resolves supported symbolic table bodies into numeric bodies.
 pub(super) fn resolve_body(table_name: &str, body: &str) -> Result<Option<String>> {
-    if !TABLES_WITH_BLOCK_SYMBOLS.contains(&table_name) {
+    let resolver = if TABLES_WITH_BLOCK_SYMBOLS.contains(&table_name) {
+        block_size_symbol_value
+    } else if TABLES_WITH_TX_SIZE_SYMBOLS.contains(&table_name) {
+        tx_size_symbol_value
+    } else {
         return Ok(None);
-    }
+    };
 
     let bytes = body.as_bytes();
     let mut out = String::with_capacity(body.len());
@@ -24,10 +29,10 @@ pub(super) fn resolve_body(table_name: &str, body: &str) -> Result<Option<String
                 i += 1;
             }
             let symbol = &body[start..i];
-            let Some(value) = block_size_symbol_value(symbol) else {
+            let Some(value) = resolver(symbol) else {
                 bail!(
                     "gen-tables: unsupported symbol `{symbol}` in `{table_name}`; \
-                     only AV2 block-size symbols are modeled"
+                     this table's symbolic enum domain is not modeled"
                 );
             };
             out.push_str(&value.to_string());
@@ -78,6 +83,39 @@ fn block_size_symbol_value(symbol: &str) -> Option<i32> {
     })
 }
 
+// AV2 § 6.19.6.1 defines TxSize values 0..=24 and `TX_INVALID = 255`.
+fn tx_size_symbol_value(symbol: &str) -> Option<i32> {
+    Some(match symbol {
+        "TX_4X4" => 0,
+        "TX_8X8" => 1,
+        "TX_16X16" => 2,
+        "TX_32X32" => 3,
+        "TX_64X64" => 4,
+        "TX_4X8" => 5,
+        "TX_8X4" => 6,
+        "TX_8X16" => 7,
+        "TX_16X8" => 8,
+        "TX_16X32" => 9,
+        "TX_32X16" => 10,
+        "TX_32X64" => 11,
+        "TX_64X32" => 12,
+        "TX_4X16" => 13,
+        "TX_16X4" => 14,
+        "TX_8X32" => 15,
+        "TX_32X8" => 16,
+        "TX_16X64" => 17,
+        "TX_64X16" => 18,
+        "TX_4X32" => 19,
+        "TX_32X4" => 20,
+        "TX_8X64" => 21,
+        "TX_64X8" => 22,
+        "TX_4X64" => 23,
+        "TX_64X4" => 24,
+        "TX_INVALID" => 255,
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,13 +133,30 @@ mod tests {
     }
 
     #[test]
-    fn ignores_other_symbolic_tables() -> Result<()> {
-        assert_eq!(resolve_body("Tx_Size_Sqr", "{ TX_4X4 }")?, None);
+    fn resolves_supported_tx_size_table_body() -> Result<()> {
+        assert_eq!(
+            resolve_body(
+                "Adjusted_Tx_Size",
+                "{ TX_4X4, TX_64X64, TX_4X64, TX_64X4, TX_INVALID }",
+            )?,
+            Some("{ 0, 4, 23, 24, 255 }".to_string())
+        );
         Ok(())
     }
 
     #[test]
     fn rejects_non_block_symbol_in_supported_table() {
         assert!(resolve_body("H_Partition_Midsize", "{ TX_4X4 }").is_err());
+    }
+
+    #[test]
+    fn rejects_non_tx_size_symbol_in_supported_table() {
+        assert!(resolve_body("Tx_Size_Sqr", "{ BLOCK_4X4 }").is_err());
+    }
+
+    #[test]
+    fn ignores_other_symbolic_tables() -> Result<()> {
+        assert_eq!(resolve_body("Mode_To_Txfm", "{ TX_4X4 }")?, None);
+        Ok(())
     }
 }
