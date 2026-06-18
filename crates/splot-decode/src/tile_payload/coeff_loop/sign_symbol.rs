@@ -3,7 +3,8 @@
 
 //! Ordinary non-FSC coefficient sign reads.
 //!
-//! Feature tracking: `DECODE-COEFF-SIGN-SYMBOL-READ`.
+//! Feature tracking: `DECODE-COEFF-SIGN-SYMBOL-READ`,
+//! `DECODE-COEFF-SIGN-SOURCE-DERIVE`.
 
 use std::collections::TryReserveError;
 
@@ -11,8 +12,10 @@ use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::block_read::BlockSymbolTraceReadError;
+use super::super::cdf::coeff_context::dc_sign_ctx;
 use super::super::cdf::{TileCdfSelector, TileCdfSubset};
 use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
+use super::max_level::CoeffTransformClass;
 use super::scan_walk::{CoeffScanEntry, NonZeroCoeffScanWalk};
 
 /// Caller-selected sign CDF syntax name.
@@ -71,6 +74,46 @@ pub(crate) struct CoeffSignReadInput {
     pub(crate) entry: CoeffScanEntry,
     /// Caller-selected sign source.
     pub(crate) source: CoeffSignReadSource,
+}
+
+/// Caller-resolved facts needed to derive ordinary non-FSC sign sources.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffSignSourceDeriveConfig<'a> {
+    /// Coefficient-CDF quantization context.
+    pub(crate) coeff_cdf_q_ctx: usize,
+    /// Plane index, 0 for luma and greater than 0 for chroma.
+    pub(crate) plane: usize,
+    /// Plane type context used by `TileDcSignCdf`.
+    pub(crate) plane_type: usize,
+    /// Caller-resolved `get_tx_class(PlaneTxType)` result.
+    pub(crate) tx_class: CoeffTransformClass,
+    /// Whether hidden parity is active for this transform block.
+    pub(crate) is_hidden: bool,
+    /// First-pass `sumAbs1` parity summary.
+    pub(crate) sum_abs1: u32,
+    /// `AboveDcContext[plane]`.
+    pub(crate) above_dc: &'a [u8],
+    /// `LeftDcContext[plane]`.
+    pub(crate) left_dc: &'a [u8],
+    /// Transform-block x coordinate in 4x4 units.
+    pub(crate) x4: usize,
+    /// Transform-block y coordinate in 4x4 units.
+    pub(crate) y4: usize,
+    /// Transform-block width in 4x4 units.
+    pub(crate) w4: usize,
+    /// Transform-block height in 4x4 units.
+    pub(crate) h4: usize,
+}
+
+impl CoeffSignSourceDeriveConfig<'_> {
+    fn dc_selector(self, ctx: usize) -> CoeffDcSignSelector {
+        CoeffDcSignSelector {
+            coeff_cdf_q_ctx: self.coeff_cdf_q_ctx,
+            plane_type: self.plane_type,
+            group: usize::from(self.is_hidden),
+            ctx,
+        }
+    }
 }
 
 /// Raw sign syntax consumed for one entry.
@@ -193,6 +236,91 @@ pub(crate) enum CoeffSignReadError {
     },
 }
 
+/// Error returned by coefficient sign-source derivation.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum CoeffSignSourceDeriveError {
+    /// The local transform-block state rejected a checked coordinate.
+    #[error("coefficient sign-source derivation state error: {0}")]
+    State(#[from] TileCoeffStateError),
+    /// Allocation for derived coefficient sign inputs failed.
+    #[error("coefficient sign-source derivation allocation failed: {0}")]
+    Allocation(#[from] TryReserveError),
+}
+
+/// Derives ordinary non-FSC §5.20.7.27 sign sources over checked scan entries.
+///
+/// The caller supplies post-first-pass local `Level[]`, hidden-parity summary,
+/// plane, transform-class, and DC context facts. This helper derives the source
+/// for each existing [`CoeffSignReadInput`] according to the sign branch in
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`, using the
+/// §8.3.2 `dc_sign` context rule from
+/// `docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`. It does not consume
+/// symbols, mutate CDF rows, write coefficient state, commit tile context
+/// lines, or invoke reconstruction.
+pub(crate) fn derive_nonzero_coeff_sign_inputs(
+    block: &TransformCoeffBlockState,
+    walk: &NonZeroCoeffScanWalk,
+    config: CoeffSignSourceDeriveConfig<'_>,
+) -> Result<Vec<CoeffSignReadInput>, CoeffSignSourceDeriveError> {
+    let entries = walk.entries();
+    let mut inputs = Vec::new();
+    inputs.try_reserve(entries.len())?;
+    for entry in entries.iter().copied() {
+        let level = block.level_at(entry.row(), entry.col())?;
+        inputs.push(CoeffSignReadInput {
+            entry,
+            source: derive_coeff_sign_source(entry, level, config),
+        });
+    }
+    Ok(inputs)
+}
+
+fn derive_coeff_sign_source(
+    entry: CoeffScanEntry,
+    level: u32,
+    config: CoeffSignSourceDeriveConfig<'_>,
+) -> CoeffSignReadSource {
+    if !coeff_requires_sign_source(entry, level, config) {
+        return CoeffSignReadSource::None;
+    }
+
+    if entry.row() == 0 && entry.col() == 0 && config.plane == 0 {
+        return CoeffSignReadSource::Cdf {
+            syntax: CoeffSignCdfSyntax::DcSign,
+            selector: config.dc_selector(dc_sign_ctx(
+                config.above_dc,
+                config.left_dc,
+                config.x4,
+                config.y4,
+                config.w4,
+                config.h4,
+            )),
+        };
+    }
+    if config.tx_class == CoeffTransformClass::Horizontal && entry.col() == 0 && config.plane == 0 {
+        return CoeffSignReadSource::Cdf {
+            syntax: CoeffSignCdfSyntax::DcSignHorzVert,
+            selector: config.dc_selector(0),
+        };
+    }
+    if config.tx_class == CoeffTransformClass::Vertical && entry.row() == 0 && config.plane == 0 {
+        return CoeffSignReadSource::Cdf {
+            syntax: CoeffSignCdfSyntax::DcSignHorzVert,
+            selector: config.dc_selector(0),
+        };
+    }
+
+    CoeffSignReadSource::SignBit
+}
+
+fn coeff_requires_sign_source(
+    entry: CoeffScanEntry,
+    level: u32,
+    config: CoeffSignSourceDeriveConfig<'_>,
+) -> bool {
+    level != 0 || (config.is_hidden && entry.scan_index() == 0 && config.sum_abs1 > 0)
+}
+
 /// Reads ordinary non-FSC §5.20.7.27 coefficient signs over checked scan entries.
 ///
 /// The caller owns the branch that selects `dc_sign`, `dc_sign_horz_vert`,
@@ -312,6 +440,7 @@ mod tests {
     use super::super::super::cdf::{FrameCdfSubset, TileCdfArray, TileCdfError};
     use super::super::super::coeff_state::TransformCoeffBlockState;
     use super::super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStartInput};
+    use super::super::max_level::CoeffTransformClass;
     use super::super::scan_walk::{NonZeroCoeffScanWalk, walk_nonzero_coeff_scan};
     use super::super::*;
     use super::*;
@@ -324,6 +453,8 @@ mod tests {
         [0x55, 0xaa, 0x80],
         [0xff, 0xff, 0x80],
     ];
+    static ABOVE_DC_POSITIVE: [u8; 4] = [2, 2, 0, 0];
+    static LEFT_DC_ZERO: [u8; 4] = [0, 0, 0, 0];
 
     fn symbol_decoder(payload: &[u8], mode: CdfUpdateMode) -> SymbolDecoder<'_> {
         SymbolDecoder::with_base_and_config(
@@ -423,6 +554,37 @@ mod tests {
         }
     }
 
+    fn scan_entry(scan_index: usize, row: usize, col: usize) -> CoeffScanEntry {
+        CoeffScanEntry::for_test(
+            scan_index,
+            row.saturating_mul(8).saturating_add(col),
+            row,
+            col,
+        )
+    }
+
+    fn source_config(
+        plane: usize,
+        tx_class: CoeffTransformClass,
+        is_hidden: bool,
+        sum_abs1: u32,
+    ) -> CoeffSignSourceDeriveConfig<'static> {
+        CoeffSignSourceDeriveConfig {
+            coeff_cdf_q_ctx: 3,
+            plane,
+            plane_type: usize::from(plane > 0),
+            tx_class,
+            is_hidden,
+            sum_abs1,
+            above_dc: &ABOVE_DC_POSITIVE,
+            left_dc: &LEFT_DC_ZERO,
+            x4: 0,
+            y4: 0,
+            w4: 2,
+            h4: 2,
+        }
+    }
+
     fn inputs_for(walk: &NonZeroCoeffScanWalk) -> Vec<CoeffSignReadInput> {
         walk.entries()
             .iter()
@@ -444,6 +606,141 @@ mod tests {
                 },
             })
             .collect()
+    }
+
+    #[test]
+    fn coefficient_sign_source_derives_luma_dc_context_and_hidden_group() {
+        let entry = scan_entry(0, 0, 0);
+        let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entry]);
+        let block = TransformCoeffBlockState::new(8, 8).unwrap();
+
+        let inputs = derive_nonzero_coeff_sign_inputs(
+            &block,
+            &walk,
+            source_config(0, CoeffTransformClass::TwoD, true, 3),
+        )
+        .unwrap();
+
+        assert_eq!(
+            inputs,
+            vec![CoeffSignReadInput {
+                entry,
+                source: CoeffSignReadSource::Cdf {
+                    syntax: CoeffSignCdfSyntax::DcSign,
+                    selector: CoeffDcSignSelector {
+                        coeff_cdf_q_ctx: 3,
+                        plane_type: 0,
+                        group: 1,
+                        ctx: 2,
+                    },
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn coefficient_sign_source_derives_horizontal_and_vertical_axis_contexts() {
+        let horizontal_entry = scan_entry(2, 5, 0);
+        let horizontal_walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![horizontal_entry]);
+        let vertical_entry = scan_entry(2, 0, 5);
+        let vertical_walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![vertical_entry]);
+        let mut block = TransformCoeffBlockState::new(8, 8).unwrap();
+        block
+            .set_level(horizontal_entry.row(), horizontal_entry.col(), 1)
+            .unwrap();
+        block
+            .set_level(vertical_entry.row(), vertical_entry.col(), 1)
+            .unwrap();
+
+        let horizontal = derive_nonzero_coeff_sign_inputs(
+            &block,
+            &horizontal_walk,
+            source_config(0, CoeffTransformClass::Horizontal, false, 0),
+        )
+        .unwrap();
+        let vertical = derive_nonzero_coeff_sign_inputs(
+            &block,
+            &vertical_walk,
+            source_config(0, CoeffTransformClass::Vertical, false, 0),
+        )
+        .unwrap();
+
+        for (entry, inputs) in [(horizontal_entry, horizontal), (vertical_entry, vertical)] {
+            assert_eq!(
+                inputs,
+                vec![CoeffSignReadInput {
+                    entry,
+                    source: CoeffSignReadSource::Cdf {
+                        syntax: CoeffSignCdfSyntax::DcSignHorzVert,
+                        selector: CoeffDcSignSelector {
+                            coeff_cdf_q_ctx: 3,
+                            plane_type: 0,
+                            group: 0,
+                            ctx: 0,
+                        },
+                    },
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn coefficient_sign_source_derives_sign_bit_and_skip_sources() {
+        let sign_bit_entry = scan_entry(3, 1, 1);
+        let zero_entry = scan_entry(2, 2, 2);
+        let chroma_dc_entry = scan_entry(1, 0, 0);
+        let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![sign_bit_entry, zero_entry]);
+        let chroma_walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![chroma_dc_entry]);
+        let mut block = TransformCoeffBlockState::new(8, 8).unwrap();
+        block
+            .set_level(sign_bit_entry.row(), sign_bit_entry.col(), 4)
+            .unwrap();
+        block
+            .set_level(chroma_dc_entry.row(), chroma_dc_entry.col(), 2)
+            .unwrap();
+
+        let inputs = derive_nonzero_coeff_sign_inputs(
+            &block,
+            &walk,
+            source_config(0, CoeffTransformClass::TwoD, false, 0),
+        )
+        .unwrap();
+        let chroma_inputs = derive_nonzero_coeff_sign_inputs(
+            &block,
+            &chroma_walk,
+            source_config(1, CoeffTransformClass::TwoD, false, 0),
+        )
+        .unwrap();
+
+        assert_eq!(inputs[0].source, CoeffSignReadSource::SignBit);
+        assert_eq!(inputs[1].source, CoeffSignReadSource::None);
+        assert_eq!(chroma_inputs[0].source, CoeffSignReadSource::SignBit);
+    }
+
+    #[test]
+    fn coefficient_sign_source_derivation_reports_state_errors() {
+        let entry = CoeffScanEntry::for_test(0, 99, 4, 0);
+        let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entry]);
+        let block = TransformCoeffBlockState::new(4, 4).unwrap();
+
+        let err = derive_nonzero_coeff_sign_inputs(
+            &block,
+            &walk,
+            source_config(0, CoeffTransformClass::TwoD, false, 0),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            CoeffSignSourceDeriveError::State(
+                super::super::super::coeff_state::TileCoeffStateError::TransformCoordinateOutOfBounds {
+                    row: 4,
+                    col: 0,
+                    height: 4,
+                    width: 4,
+                }
+            )
+        ));
     }
 
     #[test]
