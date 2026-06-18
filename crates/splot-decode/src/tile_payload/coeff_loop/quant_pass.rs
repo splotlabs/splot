@@ -10,6 +10,10 @@ use std::collections::TryReserveError;
 use splot_core::symbol::SymbolDecoder;
 
 use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
+use super::max_level::{
+    CoeffMaxLevelConfig, CoeffMaxLevelError, CoeffTransformClass, derive_nonzero_coeff_max_levels,
+    max_levels_to_quant_pass_inputs,
+};
 use super::quant_state::{
     CoeffQuantReadInput, CoeffQuantStateConfig, CoeffQuantStateWriteError, NonZeroCoeffQuantState,
     apply_nonzero_coeff_quant_state,
@@ -34,6 +38,15 @@ pub(crate) struct CoeffQuantPassConfig {
     pub(crate) lossless: bool,
     /// Initial `hrLevelAvg` entering the `read_quant` pass.
     pub(crate) hr_level_avg: u32,
+}
+
+/// Block-level facts needed to derive quant-pass `maxLevel` inputs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffQuantPassMaxLevelConfig {
+    /// Plane index, 0 for luma and greater than 0 for chroma.
+    pub(crate) plane: usize,
+    /// Caller-resolved `get_tx_class(PlaneTxType)` result.
+    pub(crate) tx_class: CoeffTransformClass,
 }
 
 /// Per-coefficient caller facts for ordinary non-FSC quant pass composition.
@@ -159,6 +172,9 @@ pub(crate) enum CoeffQuantPassError {
     /// Allocation for composed quant inputs failed.
     #[error("coefficient quant pass allocation failed: {0}")]
     Allocation(#[from] TryReserveError),
+    /// Deriving `maxLevel` inputs failed.
+    #[error("coefficient quant pass maxLevel derivation failed: {0}")]
+    MaxLevel(#[from] CoeffMaxLevelError),
     /// The `read_quant` parser failed.
     #[error("coefficient quant pass read_quant failed: {0}")]
     ReadQuant(#[from] CoeffReadQuantError),
@@ -221,6 +237,35 @@ pub(crate) fn apply_nonzero_coeff_quant_pass(
         read_quants,
         quant_state,
     })
+}
+
+/// Runs the ordinary non-FSC quant pass with derived `maxLevel` inputs.
+///
+/// This is the same loaded-but-unwired second-pass boundary as
+/// [`apply_nonzero_coeff_quant_pass`], but it removes the per-coefficient
+/// `maxLevel` caller fact by applying the AV2 §5.20.7.27 derivation over the
+/// checked scan walk before invoking the quant pass. The caller still owns
+/// transform-class derivation, sign-source selection, hidden-parity and TCQ
+/// facts, runtime `coeffs()` integration, tile context writes, dequantization,
+/// and reconstruction.
+pub(crate) fn apply_nonzero_coeff_quant_pass_with_derived_max_levels(
+    symbols: &mut SymbolDecoder<'_>,
+    block: &mut TransformCoeffBlockState,
+    walk: &NonZeroCoeffScanWalk,
+    signs: &[CoeffSignRead],
+    max_level_config: CoeffQuantPassMaxLevelConfig,
+    config: CoeffQuantPassConfig,
+) -> Result<NonZeroCoeffQuantPass, CoeffQuantPassError> {
+    let levels = derive_nonzero_coeff_max_levels(
+        walk,
+        CoeffMaxLevelConfig {
+            plane: max_level_config.plane,
+            tx_class: max_level_config.tx_class,
+            is_hidden: config.is_hidden,
+        },
+    )?;
+    let inputs = max_levels_to_quant_pass_inputs(&levels)?;
+    apply_nonzero_coeff_quant_pass(symbols, block, walk, signs, &inputs, config)
 }
 
 fn preflight_quant_pass(
@@ -337,7 +382,16 @@ mod tests {
     }
 
     fn block_for(walk: &NonZeroCoeffScanWalk, levels: &[u32]) -> TransformCoeffBlockState {
-        let mut block = TransformCoeffBlockState::new(2, 2).unwrap();
+        block_for_extent(2, 2, walk, levels)
+    }
+
+    fn block_for_extent(
+        width: usize,
+        height: usize,
+        walk: &NonZeroCoeffScanWalk,
+        levels: &[u32],
+    ) -> TransformCoeffBlockState {
+        let mut block = TransformCoeffBlockState::new(width, height).unwrap();
         for (entry, level) in walk.entries().iter().copied().zip(levels.iter().copied()) {
             block.set_level(entry.row(), entry.col(), level).unwrap();
             block.set_quant_sign(entry.row(), entry.col(), 11).unwrap();
@@ -382,6 +436,13 @@ mod tests {
             use_tcq: false,
             lossless: false,
             hr_level_avg: 16,
+        }
+    }
+
+    fn max_level_config() -> CoeffQuantPassMaxLevelConfig {
+        CoeffQuantPassMaxLevelConfig {
+            plane: 0,
+            tx_class: CoeffTransformClass::TwoD,
         }
     }
 
@@ -431,6 +492,84 @@ mod tests {
         assert_eq!(pass.quant_state().dc_category(), 1);
         assert_eq!(block.quant_sign(), quant_sign_before);
         assert_eq!(symbols.symbol_count(), 7);
+    }
+
+    #[test]
+    fn coefficient_quant_pass_derives_low_frequency_max_levels() {
+        let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![
+            CoeffScanEntry::for_test(1, 1, 0, 1),
+            CoeffScanEntry::for_test(0, 15, 3, 3),
+        ]);
+        let levels = [7, 5];
+        let signs = signs_for(&walk, &levels, &[false, false]);
+        let mut block = block_for_extent(4, 4, &walk, &levels);
+        let mut symbols = symbol_decoder(&[0xff, 0x80]);
+        let consumed_before = symbols.consumed_bits();
+
+        let pass = apply_nonzero_coeff_quant_pass_with_derived_max_levels(
+            &mut symbols,
+            &mut block,
+            &walk,
+            &signs,
+            max_level_config(),
+            config(),
+        )
+        .unwrap();
+
+        assert_eq!(pass.read_quants().len(), 2);
+        assert_eq!(
+            pass.read_quants()[0].path(),
+            CoeffReadQuantPath::BelowThreshold
+        );
+        assert_eq!(
+            pass.read_quants()[1].path(),
+            CoeffReadQuantPath::BelowThreshold
+        );
+        assert_eq!(block.quant_at(1).unwrap(), 7);
+        assert_eq!(block.quant_at(15).unwrap(), 5);
+        assert_eq!(symbols.consumed_bits(), consumed_before);
+    }
+
+    #[test]
+    fn coefficient_quant_pass_derives_hidden_final_max_level() {
+        let entry = CoeffScanEntry::for_test(0, 0, 0, 0);
+        let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entry]);
+        let levels = [3];
+        let signs = signs_for(&walk, &levels, &[false]);
+        let mut block = block_for(&walk, &levels);
+        let mut symbols = symbol_decoder(&[0b1000_0000]);
+        let config = CoeffQuantPassConfig {
+            is_hidden: true,
+            sum_abs1: 1,
+            ..config()
+        };
+
+        let pass = apply_nonzero_coeff_quant_pass_with_derived_max_levels(
+            &mut symbols,
+            &mut block,
+            &walk,
+            &signs,
+            max_level_config(),
+            config,
+        )
+        .unwrap();
+
+        assert_eq!(
+            pass.read_quants()[0].path(),
+            CoeffReadQuantPath::Extended {
+                m: 3,
+                k: 4,
+                c_max: 6,
+                q: 0,
+                length: 3,
+                x_base: 0,
+                coeff_rem: 0,
+                x: 0,
+            }
+        );
+        assert_eq!(pass.read_quants()[0].quant_input().quant, 3);
+        assert_eq!(block.quant_at(entry.pos()).unwrap(), 7);
+        assert_eq!(symbols.symbol_count(), 4);
     }
 
     #[test]
@@ -551,6 +690,42 @@ mod tests {
         assert_eq!(pass.quant_state().dc_category(), 0);
         assert_eq!(block.quant_at(entry.pos()).unwrap(), 0);
         assert_eq!(symbols.consumed_bits(), consumed_before);
+    }
+
+    #[test]
+    fn coefficient_quant_pass_derived_max_levels_rejects_bad_facts_before_consumption() {
+        let walk = walk();
+        let levels = [3, 2];
+        let signs = signs_for(&walk, &levels, &[false, true]);
+        let mut block = block_for(&walk, &levels);
+        let before = block.clone();
+        let mut symbols = symbol_decoder(&[0xff, 0x80]);
+        let consumed_before = symbols.consumed_bits();
+        let config = CoeffQuantPassConfig {
+            is_hidden: true,
+            use_tcq: true,
+            ..config()
+        };
+
+        let err = apply_nonzero_coeff_quant_pass_with_derived_max_levels(
+            &mut symbols,
+            &mut block,
+            &walk,
+            &signs,
+            max_level_config(),
+            config,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            CoeffQuantPassError::InconsistentHiddenParityConfig {
+                use_tcq: true,
+                lossless: false,
+            }
+        ));
+        assert_eq!(symbols.consumed_bits(), consumed_before);
+        assert_eq!(block, before);
     }
 
     #[test]

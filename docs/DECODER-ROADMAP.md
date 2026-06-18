@@ -183,7 +183,11 @@ ordinary non-FSC quantized-state boundary
 while preserving `QuantSign[]`. A loaded-but-unwired composition boundary
 (`DECODE-COEFF-QUANT-PASS-COMPOSE`) now preflights caller facts, runs
 `read_quant`, and feeds those decoded records into the quantized-state writer
-for the ordinary non-FSC second pass. These boundaries are not wired into
+for the ordinary non-FSC second pass. A crate-private max-level handoff
+(`DECODE-COEFF-QUANT-PASS-MAXLEVEL-HANDOFF`) now derives those quant-pass
+`maxLevel` inputs from checked scan entries, caller-resolved plane and transform
+class, and the quant-pass hidden flag before delegating to the composer. These
+boundaries are not wired into
 runtime `coeffs()` yet. The minimal trace uses the handoff only for the existing
 luma and V all-zero applications. Runtime nonzero coefficient blocks and runtime
 quant-pass integration remain unsupported. The
