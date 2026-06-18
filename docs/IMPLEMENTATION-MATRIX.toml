@@ -8588,6 +8588,7 @@ tests = [
     "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::read_nonzero_coeff_eob_reads_eob_extra_and_literal_refinements",
     "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::read_nonzero_coeff_eob_respects_disabled_cdf_update_mode",
     "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::read_nonzero_coeff_eob_invalid_selector_fails_before_symbol_read",
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::read_eob_literal_wraps_symbol_decoder_errors",
 ]
 commands = [
     "cargo test -p splot-decode coeff_loop --locked",

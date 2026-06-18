@@ -254,3 +254,18 @@ fn read_nonzero_coeff_eob_invalid_selector_fails_before_symbol_read() {
     assert_eq!(symbols.symbol_count(), symbol_count_before);
     assert_eq!(tile.row(valid_selector).unwrap(), valid_before.as_slice());
 }
+
+#[test]
+fn read_eob_literal_wraps_symbol_decoder_errors() {
+    let mut symbols = symbol_decoder(&[0x80], CdfUpdateMode::Enabled);
+
+    let err = read_eob_literal(&mut symbols, 33, "eob_extra_bit").unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffLoopContextError::EobLiteralRead {
+            syntax: "eob_extra_bit",
+            ..
+        }
+    ));
+}
