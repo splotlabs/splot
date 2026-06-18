@@ -37,7 +37,7 @@ const EOB_CTX_LUMA_INTRA: usize = 0;
 const COEFF_BASE_LF_EOB_CTX_DC: usize = 0;
 const DC_SIGN_GROUP_VISIBLE: usize = 0;
 const DC_SIGN_CTX_NEUTRAL: usize = 0;
-const MAX_BASE_EOB_MAGNITUDE: u32 = 3;
+const MAX_BASE_EOB_MAGNITUDE: u32 = 4;
 const COEFF_CDF_Q_CTX_0_MAX_QINDEX: u32 = 90;
 const COEFF_CDF_Q_CTX_1_MAX_QINDEX: u32 = 140;
 const COEFF_CDF_Q_CTX_2_MAX_QINDEX: u32 = 190;
@@ -781,6 +781,42 @@ mod tests {
                 symbol: 1,
             })
         );
+    }
+
+    #[test]
+    fn accepts_lf_base_tier_boundary_magnitude() {
+        let mut coefficients = [0; DCT_DCT_4X4_COEFF_COUNT];
+        coefficients[0] = MAX_BASE_EOB_MAGNITUDE as i32;
+        let plan =
+            tokenize_coefficients(raw_input(PlaneId::Y, rect(4, 4), 4, 4, &coefficients)).unwrap();
+        let expected_symbol = (MAX_BASE_EOB_MAGNITUDE - 1) as u8;
+
+        assert_eq!(
+            plan.sign_magnitude(),
+            Some(CoefficientSignMagnitude {
+                scan_index: 0,
+                coefficient_index: 0,
+                row: 0,
+                col: 0,
+                magnitude: MAX_BASE_EOB_MAGNITUDE,
+                negative: false,
+            })
+        );
+        assert_eq!(
+            plan.tokens()[2],
+            CoefficientEntropyToken {
+                syntax: CoefficientTokenSyntax::CoeffBaseEob,
+                selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
+                    coeff_cdf_q_ctx: 0,
+                    tx_size: TX_SIZE_4X4_CTX,
+                    ctx: COEFF_BASE_LF_EOB_CTX_DC,
+                },
+                symbol: expected_symbol,
+            }
+        );
+
+        let proof = roundtrip_entropy_tokens(plan.tokens()).unwrap();
+        assert_eq!(proof.decoded_symbols(), &[0, 0, expected_symbol, 0]);
     }
 
     #[test]
