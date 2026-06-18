@@ -41,6 +41,11 @@ impl NonZeroCoeffBlockStart {
     pub(crate) const fn block(&self) -> &TransformCoeffBlockState {
         &self.block
     }
+
+    /// Consumes the start state into its decoded EOB facts and local block.
+    pub(crate) fn into_parts(self) -> (NonZeroCoeffEobSymbolRead, TransformCoeffBlockState) {
+        (self.eob_read, self.block)
+    }
 }
 
 /// Caller-selected § 5.20.7.27 coefficient EOB branch.
