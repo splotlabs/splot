@@ -41,6 +41,16 @@ impl CoeffScanEntry {
     pub(crate) const fn col(self) -> usize {
         self.col
     }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(scan_index: usize, pos: usize, row: usize, col: usize) -> Self {
+        Self {
+            scan_index,
+            pos,
+            row,
+            col,
+        }
+    }
 }
 
 /// Checked ordinary non-FSC coefficient scan window.
@@ -54,6 +64,11 @@ impl NonZeroCoeffScanWalk {
     #[must_use]
     pub(crate) fn entries(&self) -> &[CoeffScanEntry] {
         &self.entries
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_entries_for_test(entries: Vec<CoeffScanEntry>) -> Self {
+        Self { entries }
     }
 }
 
