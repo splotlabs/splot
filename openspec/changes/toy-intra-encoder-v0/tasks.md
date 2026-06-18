@@ -1,6 +1,9 @@
 # Tasks
 
-> Status: **parked** (2026-06-11, encoder track behind the VALIDATOR-ROADMAP fence). Blocked on the bitstream writer track (`bit-writer-primitives` landed; OBU/frame/tile header writers still pending) and enough frame/tile header writer support; revival means re-proposing.
+> Status: **parked and superseded** (2026-06-18, `encoder-program-contract`).
+> This bootstrap-era change is not the implementation starting point. Future
+> all-intra work must be re-proposed under Baseline Encoder Profile v1 with the
+> current writer, reconstruction, validation, and conformance gates.
 
 ## Implementation
 

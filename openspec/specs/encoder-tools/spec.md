@@ -63,14 +63,17 @@ previously-discarded layout bits (`intrabc_params()` / `force_integer_mv`; the e
 `TileParams`; the CCSO `ccso_offset_idx`); the quant, segmentation, loop-filter, and intra-tail
 slices are additive (their few read-but-not-stored points are redundant encodings or parser
 derivations, canonicalized/re-derived like the § 5.4 leb128-minimal case).
-Remaining: the inter / show-existing frame-header paths and the § 5.18.7.11 frame-level Wiener
-bank (out of the current intra scope),
-the tile-group/metadata payload writers, the
-**Annex B** muxer, and wiring the muxers into writer-track round-trip tests — the IVF
-container write helpers already exist (`AV2-IVF-CONTAINER`, `write` = `done`); plus the
-toy intra path (`ENC-INTRA-TOY-V0`) and rate control (`ENC-RATE-CONTROL-V0`). The
-bootstrap `add-bitstream-writer` stub was removed, superseded by these properly-scoped
-changes. The implementation matrix is the source of truth for per-row status.
+Remaining writer surface: inter / show-existing frame-header paths, the
+§ 5.18.7.11 frame-level Wiener bank (out of the current intra scope), inter
+first-group tile-group composition, and entropy-coded tile payload generation
+(`RangeEncoder` and the § 5.20 `decode_tile()` body remain unimplemented). The
+complete-OBU dispatch now has body writers for every parsed OBU payload variant,
+Annex B and IVF helpers exist, and writer-track round-trip/fuzz/cross-tool
+validation coverage is tracked in the implementation matrix. The parked
+`toy-intra-encoder-v0` bootstrap change is superseded by the Baseline Encoder
+Profile v1 contract; future all-intra work must be re-proposed. Rate control
+(`ENC-RATE-CONTROL-V0`) remains future work. The implementation matrix is the
+source of truth for per-row status.
 ## Requirements
 ### Requirement: writer symmetry
 
@@ -1088,4 +1091,3 @@ guards the sibling `docs/FEATURE-STATUS.md` and `docs/SPEC-COVERAGE.md`.
 - **THEN** it SHALL write a deterministic document listing the writable features with their `write`
   status, and a subsequent `cargo xtask check-feature-status` SHALL pass; an out-of-date
   `docs/spec-coverage-writer.md` SHALL make `check-feature-status` fail with the regenerate command.
-
