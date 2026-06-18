@@ -13,8 +13,8 @@ use super::cdf::block_context::{YModeIndexContext, reconstruct_minimal_y_mode, u
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
 use super::coeff_loop::{
-    CoeffLoopContextError, LumaAllZeroContextInput, VAllZeroContextInput, luma_all_zero_context,
-    v_all_zero_context,
+    AllZeroCoeffBlockInput, CoeffLoopContextError, LumaAllZeroContextInput, VAllZeroContextInput,
+    apply_all_zero_coeff_block, luma_all_zero_context, v_all_zero_context,
 };
 use super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
 
@@ -145,7 +145,7 @@ fn consume_trace(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
 ) -> Result<(), MinimalBlockSymbolTraceError> {
-    let coeff_context = minimal_tile_coeff_context(work_unit)?;
+    let mut coeff_context = minimal_tile_coeff_context(work_unit)?;
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
 
     // y_mode_set (§ 8.3.2 `TileYModeSetCdf`, no context).
@@ -210,6 +210,17 @@ fn consume_trace(
         0,
         LUMA_OR_U_ALL_ZERO_TRANSFORM_REASON,
     )?;
+    apply_all_zero_coeff_block(
+        &mut coeff_context,
+        AllZeroCoeffBlockInput {
+            plane: 0,
+            x4: 0,
+            y4: 0,
+            w4: MINIMAL_LUMA_TX_W4,
+            h4: MINIMAL_LUMA_TX_H4,
+        },
+    )
+    .map_err(|source| MinimalBlockSymbolTraceError::CoeffLoopContext { source })?;
 
     // uv_mode (§ 8.3.2 context = `is_directional_mode(YMode)`; DC_PRED -> 0).
     decode_block_symbol(
@@ -253,6 +264,17 @@ fn consume_trace(
         0,
         V_ALL_ZERO_TRANSFORM_REASON,
     )?;
+    apply_all_zero_coeff_block(
+        &mut coeff_context,
+        AllZeroCoeffBlockInput {
+            plane: 2,
+            x4: 0,
+            y4: 0,
+            w4: MINIMAL_CHROMA_TX_W4,
+            h4: MINIMAL_CHROMA_TX_H4,
+        },
+    )
+    .map_err(|source| MinimalBlockSymbolTraceError::CoeffLoopContext { source })?;
 
     Ok(())
 }
