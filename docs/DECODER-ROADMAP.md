@@ -198,13 +198,17 @@ state-derived first pass (`DECODE-COEFF-BASE-DERIVED-LEVEL-PASS`) now derives
 `coeff_base_eob`, later `coeff_base`, and conditional `coeff_br` selectors from
 the evolving local `Level[]`, updates first-pass `tcqState`, `sumAbs1`, `numNz`,
 and `isHidden`, and writes each decoded `Level[row][col]` before deriving the
-next selector; it remains loaded-but-unwired. `DECODE-COEFF-BASE-PH-CDF-ROW`
+next selector. `DECODE-COEFF-BASE-PH-CDF-ROW`
 now loads/selects the parity-hidden-only `TileCoeffBasePhCdf` row and proves an
 eob>=5 hidden-parity first pass consumes it for the final DC coefficient.
+`DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS` now composes that first pass into the
+ordinary coefficient pass, carrying first-pass `isHidden`, `sumAbs1`, and
+`useTcq` into the interleaved sign/`read_quant`/signed `Quant[]` stage and
+deriving second-pass plane/transform-class facts from the same config.
 The minimal trace uses the handoff only for the existing luma and V all-zero
-applications. Runtime integration of nonzero coefficient selector derivation,
-tile context writes for nonzero blocks, and runtime nonzero coefficient blocks
-remain unsupported. The
+applications. Runtime integration of nonzero coefficient blocks, sign-source
+derivation, tile context writes for nonzero blocks, dequantization, and
+reconstruction remain unsupported. The
 § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the
