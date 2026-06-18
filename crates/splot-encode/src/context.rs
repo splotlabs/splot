@@ -502,6 +502,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(residual.samples(), &[0, 0, 0, 0]);
+        let transformed = crate::forward_transform::ForwardTransformBlock::dct_dct_4x4_dc_only(
+            PlaneId::Y,
+            rect(4, 4),
+            &[0; 16],
+        )
+        .unwrap();
+        assert_eq!(transformed.coefficients(), &[0; 16]);
 
         assert!(matches!(
             ctx.send_frame(&input).unwrap(),
