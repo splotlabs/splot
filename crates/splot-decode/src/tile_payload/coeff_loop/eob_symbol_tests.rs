@@ -120,6 +120,105 @@ fn eob_point_extra_width_tracks_size_specific_extensions() {
 }
 
 #[test]
+fn eob_size_from_transform_log2_maps_all_spec_classes() {
+    let cases = [
+        (2, 2, EobPtSize::Pt16),
+        (3, 2, EobPtSize::Pt32),
+        (3, 3, EobPtSize::Pt64),
+        (4, 3, EobPtSize::Pt128),
+        (4, 4, EobPtSize::Pt256),
+        (5, 4, EobPtSize::Pt512),
+        (5, 5, EobPtSize::Pt1024),
+    ];
+
+    for (tx_width_log2, tx_height_log2, expected) in cases {
+        assert_eq!(
+            eob_pt_size_from_tx_log2(tx_width_log2, tx_height_log2).unwrap(),
+            expected,
+            "{tx_width_log2}x{tx_height_log2}"
+        );
+    }
+}
+
+#[test]
+fn eob_size_from_transform_log2_clamps_large_dimensions() {
+    assert_eq!(eob_pt_size_from_tx_log2(6, 6).unwrap(), EobPtSize::Pt1024);
+    assert_eq!(
+        eob_pt_size_from_tx_log2(usize::MAX, usize::MAX).unwrap(),
+        EobPtSize::Pt1024
+    );
+}
+
+#[test]
+fn eob_size_from_transform_log2_rejects_invalid_dimensions() {
+    let bad_width = eob_pt_size_from_tx_log2(1, 2).unwrap_err();
+    let bad_height = eob_pt_size_from_tx_log2(2, 1).unwrap_err();
+
+    assert!(matches!(
+        bad_width,
+        CoeffLoopContextError::InvalidEobTransformLog2 {
+            axis: "width",
+            value: 1,
+            minimum: 2
+        }
+    ));
+    assert!(matches!(
+        bad_height,
+        CoeffLoopContextError::InvalidEobTransformLog2 {
+            axis: "height",
+            value: 1,
+            minimum: 2
+        }
+    ));
+}
+
+#[test]
+fn eob_context_maps_luma_inter_flag_and_chroma_override() {
+    assert_eq!(eob_context(0, false), 0);
+    assert_eq!(eob_context(0, true), 1);
+    assert_eq!(eob_context(1, false), 2);
+    assert_eq!(eob_context(2, true), 2);
+    assert_eq!(eob_context(usize::MAX, false), 2);
+}
+
+#[test]
+fn nonzero_coeff_eob_symbol_input_derives_size_context_and_preserves_q_ctx() {
+    let luma_inter = nonzero_coeff_eob_symbol_input(NonZeroCoeffEobContextInput {
+        plane: 0,
+        is_inter: true,
+        tx_width_log2: 4,
+        tx_height_log2: 3,
+        coeff_cdf_q_ctx: 3,
+    })
+    .unwrap();
+    let chroma_intra = nonzero_coeff_eob_symbol_input(NonZeroCoeffEobContextInput {
+        plane: 1,
+        is_inter: false,
+        tx_width_log2: 5,
+        tx_height_log2: 4,
+        coeff_cdf_q_ctx: 2,
+    })
+    .unwrap();
+
+    assert_eq!(
+        luma_inter,
+        NonZeroCoeffEobSymbolInput {
+            size: EobPtSize::Pt128,
+            coeff_cdf_q_ctx: 3,
+            eob_ctx: 1
+        }
+    );
+    assert_eq!(
+        chroma_intra,
+        NonZeroCoeffEobSymbolInput {
+            size: EobPtSize::Pt512,
+            coeff_cdf_q_ctx: 2,
+            eob_ctx: 2
+        }
+    );
+}
+
+#[test]
 fn read_nonzero_coeff_eob_matches_direct_symbol_sequence() {
     let (payload, _) = find_eob_payload(EobPtSize::Pt128, |read| read.eob().eob_pt() >= 3);
     let input = eob_symbol_input(EobPtSize::Pt128);

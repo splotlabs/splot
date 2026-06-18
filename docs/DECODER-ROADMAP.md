@@ -140,8 +140,12 @@ value helper (`DECODE-COEFF-EOB-VALUE-STATE`) for caller-decoded `eobPt`,
 symbol reader (`DECODE-COEFF-EOB-SYMBOL-READ`) that consumes caller-selected
 `eob_pt_*` CDF rows, size-specific `eob_pt_*_extra` literal bits, `eob_extra`,
 and packed `eob_extra_bit` refinements before calling that value helper. That
-reader is still not wired into the runtime coefficient loop, and no scan walk or
-base/br/sign coefficient symbols are read yet. The § 7.14.4
+reader now has a caller-fact derivation helper
+(`DECODE-COEFF-EOB-SIZE-CONTEXT`) that maps caller-resolved
+`Tx_Width_Log2[txSz]` / `Tx_Height_Log2[txSz]` values to the `eob_pt_*` family
+and derives `eobCtx = (plane > 0) ? 2 : is_inter`. It is still not wired into the
+runtime coefficient loop, and no scan walk or base/br/sign coefficient symbols
+are read yet. The § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the
 § 7.15.4 DPCM-direction selection and combined transform-parameter resolve helper,
