@@ -8659,6 +8659,59 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-EOB-DERIVED-SYMBOL-READ"
+name = "Coefficient EOB derived symbol read"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "8.2.5", "8.2.6", "8.3.2", "9.2", "9.3"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-6",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop.rs"
+openspec_change = "coeff-eob-derived-symbol-read"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds crate-private `splot-decode` composition for reading nonzero coefficient EOB syntax from caller-resolved transform and plane/inter facts. `read_nonzero_coeff_eob_from_context` accepts `NonZeroCoeffEobContextInput`, derives the active `EobPtSize` and `eobCtx` through `nonzero_coeff_eob_symbol_input`, then delegates to `read_nonzero_coeff_eob` for the selected `eob_pt_*`, optional size-specific `eob_pt_*_extra`, `eob_extra`, and packed `eob_extra_bit` reads. Invalid transform log2 dimensions fail before CDF rows or symbol-decoder state are consumed; selector, symbol, and literal-read failures continue to use the existing typed errors. Tests cover explicit-selector equivalence, invalid transform-log2 no-consumption behavior, and propagation of EOB symbol-reader selector errors. The helper is loaded but not yet consumed by the runtime coefficient loop, so decode output is unchanged. This feature remains partial: it does not perform the transform-size table lookup from real `txSz`, walk scan order, read coefficient base/br/sign symbols, write nonzero `Level[]` or `Quant[]`, implement `read_quant`, dequantize, run inverse transforms, add residuals, reconstruct pixels, refresh references, invoke AVM/dav2d, add public APIs, or claim broad `decode_block()` or `decode_tile()` support."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::read_nonzero_coeff_eob_from_context_matches_explicit_selector_read",
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::read_nonzero_coeff_eob_from_context_rejects_invalid_log2_before_mutation",
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::read_nonzero_coeff_eob_from_context_propagates_symbol_reader_errors",
+]
+commands = [
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"
 name = "Tile CDF save lifecycle boundary"
 category = "infrastructure"

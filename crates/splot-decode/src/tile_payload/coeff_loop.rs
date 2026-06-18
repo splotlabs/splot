@@ -5,7 +5,8 @@
 //!
 //! Feature tracking: `DECODE-COEFF-ALL-ZERO-CONTEXT-STATE`,
 //! `DECODE-COEFF-ALL-ZERO-BLOCK-STATE`, `DECODE-COEFF-EOB-VALUE-STATE`,
-//! `DECODE-COEFF-EOB-SYMBOL-READ`, `DECODE-COEFF-EOB-SIZE-CONTEXT`.
+//! `DECODE-COEFF-EOB-SYMBOL-READ`, `DECODE-COEFF-EOB-SIZE-CONTEXT`,
+//! `DECODE-COEFF-EOB-DERIVED-SYMBOL-READ`.
 
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
@@ -474,6 +475,24 @@ pub(crate) fn read_nonzero_coeff_eob(
         eob_extra,
         eob_extra_bits,
     })
+}
+
+/// Derives EOB selector facts and reads the AV2 § 5.20.7.27 nonzero EOB syntax.
+///
+/// This is the production-shaped handoff for a future coefficient loop: callers
+/// supply transform log2 dimensions, plane/inter state, and `coeff_cdf_q_ctx`;
+/// this helper validates and derives the active `eob_pt_*` CDF selector before
+/// delegating to [`read_nonzero_coeff_eob`]. Invalid selector facts fail before
+/// CDF rows or symbol-decoder state are consumed. Scan walking, coefficient
+/// symbols, `Quant[]` writes, dequantization, and reconstruction remain
+/// deferred.
+pub(crate) fn read_nonzero_coeff_eob_from_context(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: NonZeroCoeffEobContextInput,
+) -> Result<NonZeroCoeffEobSymbolRead, CoeffLoopContextError> {
+    let input = nonzero_coeff_eob_symbol_input(input)?;
+    read_nonzero_coeff_eob(cdfs, symbols, input)
 }
 
 /// Derives the AV2 § 5.20.7.27 nonzero EOB symbol-reader input.

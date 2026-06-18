@@ -219,6 +219,112 @@ fn nonzero_coeff_eob_symbol_input_derives_size_context_and_preserves_q_ctx() {
 }
 
 #[test]
+fn read_nonzero_coeff_eob_from_context_matches_explicit_selector_read() {
+    let (payload, _) = find_eob_payload(EobPtSize::Pt128, |read| read.eob().eob_pt() >= 3);
+    let explicit_input = NonZeroCoeffEobSymbolInput {
+        size: EobPtSize::Pt128,
+        coeff_cdf_q_ctx: 0,
+        eob_ctx: 0,
+    };
+    let context_input = NonZeroCoeffEobContextInput {
+        plane: 0,
+        is_inter: false,
+        tx_width_log2: 4,
+        tx_height_log2: 3,
+        coeff_cdf_q_ctx: 0,
+    };
+    let frame = FrameCdfSubset::from_defaults();
+    let mut explicit_tile = frame.tile_copy();
+    let mut derived_tile = frame.tile_copy();
+    let mut explicit_symbols = symbol_decoder(&payload, CdfUpdateMode::Enabled);
+    let mut derived_symbols = symbol_decoder(&payload, CdfUpdateMode::Enabled);
+
+    let expected =
+        read_nonzero_coeff_eob(&mut explicit_tile, &mut explicit_symbols, explicit_input).unwrap();
+    let actual =
+        read_nonzero_coeff_eob_from_context(&mut derived_tile, &mut derived_symbols, context_input)
+            .unwrap();
+
+    assert_eq!(actual, expected);
+    assert_eq!(derived_tile, explicit_tile);
+    assert_eq!(
+        derived_symbols.consumed_bits(),
+        explicit_symbols.consumed_bits()
+    );
+    assert_eq!(
+        derived_symbols.symbol_count(),
+        explicit_symbols.symbol_count()
+    );
+}
+
+#[test]
+fn read_nonzero_coeff_eob_from_context_rejects_invalid_log2_before_mutation() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let tile_before = tile.clone();
+    let mut symbols = symbol_decoder(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+
+    let err = read_nonzero_coeff_eob_from_context(
+        &mut tile,
+        &mut symbols,
+        NonZeroCoeffEobContextInput {
+            plane: 0,
+            is_inter: false,
+            tx_width_log2: 1,
+            tx_height_log2: 2,
+            coeff_cdf_q_ctx: 0,
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffLoopContextError::InvalidEobTransformLog2 {
+            axis: "width",
+            value: 1,
+            minimum: 2
+        }
+    ));
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+#[test]
+fn read_nonzero_coeff_eob_from_context_propagates_symbol_reader_errors() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&[0x00, 0x80], CdfUpdateMode::Enabled);
+
+    let err = read_nonzero_coeff_eob_from_context(
+        &mut tile,
+        &mut symbols,
+        NonZeroCoeffEobContextInput {
+            plane: 0,
+            is_inter: false,
+            tx_width_log2: 2,
+            tx_height_log2: 2,
+            coeff_cdf_q_ctx: 4,
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffLoopContextError::EobSymbolRead(BlockSymbolTraceReadError::Cdf(
+            TileCdfError::SelectorOutOfRange {
+                array: TileCdfArray::EobPt,
+                index_name: "coeff_cdf_q_ctx",
+                actual: 4,
+                max_exclusive: 4,
+            }
+        ))
+    ));
+}
+
+#[test]
 fn read_nonzero_coeff_eob_matches_direct_symbol_sequence() {
     let (payload, _) = find_eob_payload(EobPtSize::Pt128, |read| read.eob().eob_pt() >= 3);
     let input = eob_symbol_input(EobPtSize::Pt128);
