@@ -62,14 +62,54 @@ building blocks, but `splot-encode` does not depend on it yet.
 
 ## Risks / Trade-offs
 
-- Same-file matrix churn with open decoder work -> keep edits to encoder/docs rows,
-  avoid decoder support files, and rebase before review if PR #234 lands first.
+- Same-file matrix churn with other work -> keep edits to encoder/docs rows, avoid
+  decoder support files, and rebase before review if another matrix-touching PR
+  lands first.
 - Roadmap over-promises implementation -> write every profile claim as a target or
   acceptance gate unless the source audit proves it exists today.
 - Reusing recon too early creates dependency ambiguity -> isolate that decision in
   `encoder-recon-dependency`.
 - External reference contamination -> keep rav1e and SVT-AV1 as architecture
   inspiration only and derive AV2 behavior from the AV2 spec mirror and AVM.
+
+## Flight Manifest
+
+- Change ID: `encoder-program-contract`
+- Feature IDs: `DOC-ENCODER-PROGRAM-CONTRACT`; existing encoder rows referenced but
+  not advanced: `ENC-BITSTREAM-WRITER`, `ENC-Y4M-INPUT`, `ENC-INTRA-TOY-V0`,
+  `ENC-RATE-CONTROL-V0`, `ENC-SPEED-PRESETS`
+- Base commit: `543eb6db`
+- Depends on merged changes: current `main` through `543eb6db`
+- Exact files/directories owned by this PR:
+  - `docs/ENCODER-GOAL.md`
+  - `docs/ENCODER-ROADMAP.md`
+  - `docs/ENCODER-GAP-AUDIT.md`
+  - `docs/VALIDATOR-ROADMAP.md`
+  - `docs/IMPLEMENTATION-MATRIX.toml`
+  - `docs/FEATURE-STATUS.md`
+  - `docs/SPEC-COVERAGE.md`
+  - `openspec/changes/encoder-program-contract/**`
+  - `openspec/changes/toy-intra-encoder-v0/tasks.md`
+  - `openspec/specs/encoder-tools/spec.md`
+- Exact files/directories forbidden to this PR:
+  - `crates/**`
+  - `Cargo.toml`
+  - `Cargo.lock`
+  - `AGENTS.md`
+  - `docs/ARCHITECTURE.md`
+  - `docs/CONCURRENCY.md`
+  - `docs/ZERO_COPY.md`
+  - `docs/DECODER-SUPPORT-*`
+  - `xtask/**`
+  - `fuzz/**`
+  - `tests/**`
+- Public APIs/types owned: none
+- Matrix rows owned: `DOC-ENCODER-PROGRAM-CONTRACT`
+- Generated files owned: `docs/FEATURE-STATUS.md`, `docs/SPEC-COVERAGE.md`
+- Open sibling PRs audited: none open as of the final review-readiness pass
+- Changed-file intersection with each sibling PR: none
+- Semantic overlap with each sibling PR: none
+- Can build/test/merge directly onto main without another open PR: yes
 
 ## Migration Plan
 

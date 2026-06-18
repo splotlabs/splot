@@ -54,14 +54,16 @@ planning and status; it does not claim encoder behavior exists.
 
 ## Active ownership baseline
 
-As of 2026-06-18, open PR #234 owns decoder-side coefficient `coeff_br` context
-derivation. It touches `docs/IMPLEMENTATION-MATRIX.toml`, but not encoder crate
-code, encoder docs, or encoder OpenSpec files. The encoder contract PR should keep
-matrix edits to docs/encoder rows and avoid decoder support files.
+As of the final review-readiness pass on 2026-06-18, no sibling PR is open against
+`main`. The earlier decoder-side coefficient `coeff_br` context PR was audited
+while it was open and did not overlap semantically with this docs-only encoder
+contract. If another PR opens or merges before this one is accepted, rebase the
+contract branch, recompute the Flight Manifest, and rerun local and GitHub gates.
 
-A local non-open writer-coverage worktree was observed touching generated
-writer/status docs and writer-coverage automation. If that work lands first, rebase
-the encoder contract branch and rerun the full gates before review.
+A local non-open writer-coverage worktree was observed during the initial audit
+touching generated writer/status docs and writer-coverage automation. If that work
+lands first, rebase the encoder contract branch and rerun the full gates before
+review.
 
 ## Parked work
 

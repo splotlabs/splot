@@ -7,6 +7,7 @@
 - [x] Create the `encoder-program-contract` OpenSpec proposal.
 - [x] Add design notes and spec deltas for `encoder-program`, `encoder-api`, and
   `encoder-tools`.
+- [x] Record the formal Flight Manifest in the design.
 
 ## Documentation
 
@@ -30,3 +31,10 @@
 - [x] `cargo xtask feature-status`
 - [x] `cargo xtask check-feature-status`
 - [x] `cargo xtask ci`
+
+## Review evidence
+
+- [ ] Local correctness/spec review pass.
+- [ ] Local security/zero-copy review pass.
+- [ ] Local determinism/concurrency review pass.
+- [ ] Local test/evidence review pass.
