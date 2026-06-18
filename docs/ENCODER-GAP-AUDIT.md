@@ -13,8 +13,8 @@ planning and status; it does not claim encoder behavior exists.
 - `splot-encode` is an API shell. `Context::send_frame`,
   `Context::receive_packet`, and `Context::flush` return
   `Error::Unimplemented`.
-- `Frame` is an empty placeholder under `ENC-Y4M-INPUT`; `Packet` is only a byte
-  buffer wrapper.
+- `Frame` now models validated borrowed 8-bit YUV420 input views under
+  `ENC-Y4M-INPUT`; `Packet` is still only a byte buffer wrapper.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile
   v1 does not support 12-bit encode.
 - The CLI encode command constructs a context and exits with the existing
@@ -40,9 +40,9 @@ planning and status; it does not claim encoder behavior exists.
   reference-store pieces, hash input, and Y4M output pieces.
 - It is not a byte-consuming decoder and does not yet provide a full encoder
   closed-loop reconstruction API.
-- `splot-encode` has a direct private `splot-recon` dependency boundary, but no
-  public recon-backed encoder API or closed-loop reconstruction integration yet.
-  Those decisions remain future work.
+- `splot-encode` has a direct `splot-recon` dependency and uses recon borrowed
+  plane/shared-frame views for input. It still has no closed-loop reconstruction
+  integration or public encode success path; those decisions remain future work.
 
 ## Conformance baseline
 

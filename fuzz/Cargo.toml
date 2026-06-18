@@ -23,6 +23,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 splot-core = { path = "../crates/splot-core" }
 splot-decode = { path = "../crates/splot-decode", features = ["fuzzing"] }
+splot-encode = { path = "../crates/splot-encode" }
 splot-parallel = { path = "../crates/splot-parallel" }
 splot-recon = { path = "../crates/splot-recon" }
 splot-validate = { path = "../crates/splot-validate" }
@@ -128,6 +129,13 @@ bench = false
 [[bin]]
 name = "recon_intra_prediction_bytes"
 path = "fuzz_targets/recon_intra_prediction_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "encoder_frame_input_views_bytes"
+path = "fuzz_targets/encoder_frame_input_views_bytes.rs"
 test = false
 doc = false
 bench = false

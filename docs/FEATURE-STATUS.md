@@ -119,7 +119,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-A-LEVELS-TIERS` | Annex A level and tier constraints | normative | bitstream-semantics | done | todo | n/a | partial | n/a | n/a | todo | done | pending | `crates/splot-validate/src/annex_a.rs` |
 | `AV2-E-DECODER-MODEL` | Annex E decoder model constraints | normative | bitstream-semantics | done | todo | n/a | todo | n/a | n/a | todo | todo | pending | `crates/splot-validate/src/checks/mod.rs` |
 | `ENC-BITSTREAM-WRITER` | Bitstream writer foundation | encoder | writer | partial | partial | n/a | n/a | partial | todo | todo | partial | pending | `crates/splot-core/src/write/mod.rs` |
-| `ENC-Y4M-INPUT` | Y4M input reader integration | encoder | encoder-api | partial | todo | n/a | n/a | n/a | todo | n/a | todo | n/a | `crates/splot-encode/src/context.rs` |
+| `ENC-Y4M-INPUT` | Y4M input reader integration | encoder | encoder-api | partial | partial | n/a | n/a | n/a | todo | n/a | partial | n/a | `crates/splot-encode/src/frame.rs` |
 | `ENC-RECON-DEPENDENCY` | Encoder reconstruction dependency boundary | encoder | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-encode/src/recon_boundary.rs` |
 | `ENC-INTRA-TOY-V0` | Minimal toy intra encoder path | encoder | encoder-tool | partial | todo | n/a | n/a | todo | todo | todo | todo | pending | `crates/splot-encode/src/context.rs` |
 | `ENC-RATE-CONTROL-V0` | Initial rate control strategy | encoder | encoder-tool | partial | todo | n/a | n/a | n/a | todo | n/a | todo | n/a | `crates/splot-encode/src/context.rs` |

@@ -8,7 +8,10 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Args;
-use splot_encode::{Context, EncoderConfig, EncoderRuntimeConfig, Frame};
+use splot_encode::{
+    Context, EncoderConfig, EncoderRuntimeConfig, Frame, FrameId, FrameInfo, FramePlaneInput,
+    FramePlanesInput, PlaneRect, PlaneSize,
+};
 use splot_parallel::ThreadCount;
 
 /// Arguments for `splot encode`.
@@ -34,12 +37,24 @@ pub struct EncodeArgs {
 /// the (stub) encoder API and exits non-zero.
 ///
 /// # Errors
-/// Returns an error only if the encoder context cannot be created.
+/// Returns an error if the encoder context or its temporary input probe cannot
+/// be created.
 pub fn run(args: &EncodeArgs) -> Result<ExitCode> {
     let _ = (&args.input, &args.output, &args.speed, &args.qp);
     let runtime = EncoderRuntimeConfig::new(args.threads);
     let mut context = Context::new(EncoderConfig::default(), runtime)?;
-    match context.send_frame(Frame::default()) {
+    let y = [0_u8; 1];
+    let u = [0_u8; 1];
+    let v = [0_u8; 1];
+    let frame = Frame::from_planes(
+        FrameInfo::yuv420_8bit(FrameId::new(0), PlaneSize::new(1, 1)?),
+        FramePlanesInput::yuv(
+            FramePlaneInput::new(&y, 1, PlaneRect::new(0, 0, 1, 1)?),
+            FramePlaneInput::new(&u, 1, PlaneRect::new(0, 0, 1, 1)?),
+            FramePlaneInput::new(&v, 1, PlaneRect::new(0, 0, 1, 1)?),
+        ),
+    )?;
+    match context.send_frame(frame) {
         Ok(()) => Ok(ExitCode::from(0)),
         Err(error) => {
             eprintln!("error: `splot encode` is not yet implemented ({error}).");

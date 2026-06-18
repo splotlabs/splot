@@ -39,7 +39,7 @@ crates/splot-tables    dependency-free generated AV2 § 9 spec tables shared acr
 crates/splot-recon     reconstruction primitives -> splot-tables (shared § 9 transform kernels + quantizer matrix)
 crates/splot-decode    decoder diagnostic API + stream planning + minimal hash/Y4M runtime -> splot-core, splot-parallel, splot-recon
 crates/splot-validate  parser-driven conformance diagnostics  -> splot-core
-crates/splot-encode    future encoder API (stub)              -> splot-core, splot-parallel, splot-recon
+crates/splot-encode    future encoder API + borrowed input views -> splot-core, splot-parallel, splot-recon
 crates/splot-cli       thin `splot` binary -> splot-core, splot-parallel, splot-decode, splot-validate, splot-encode
 xtask                  standalone automation (no splot-* dependency)
 fuzz                   cargo-fuzz target (outside the workspace)
@@ -58,9 +58,9 @@ fuzz                   cargo-fuzz target (outside the workspace)
   decode/reconstruction/hash/Y4M output handoff code.
 - `splot-validate` depends only on `splot-core`.
 - `splot-encode` depends only on `splot-core`, `splot-parallel`, and
-  `splot-recon`; the `splot-recon` edge is limited to private lower-level
-  reconstruction-boundary preparation until later encoder phases add public
-  input or closed-loop reconstruction APIs.
+  `splot-recon`; the `splot-recon` edge is limited to borrowed encoder input
+  views plus private lower-level reconstruction-boundary preparation until later
+  encoder phases add closed-loop reconstruction APIs.
 - `splot-cli` depends only on `splot-core`, `splot-parallel`, `splot-decode`,
   `splot-validate`, and `splot-encode`.
 - Nothing depends on `splot-cli`.
@@ -103,7 +103,7 @@ cargo xtask check-concurrency-policy        # enforce the concurrency-runtime po
 cargo xtask check-fixtures                  # verify tests/fixtures hashes + metadata vs MANIFEST.toml (also part of `cargo xtask ci`; see docs/FIXTURES.md)
 cargo xtask check-conventional-commits      # validates the current HEAD commit subject
 cargo +nightly fuzz run parse_obu   # full local fuzz run of one target (nightly-only; `cargo install cargo-fuzz --locked`).
-                                    # Targets: parse_obu, validate_bytes, parse_ivf, parse_bitstream, symbol_decoder_bytes, tile_payload_decode_bytes, decode_plan_bytes, decode_runtime_hash_bytes, decode_runtime_y4m_bytes, recon_frame_hash_bytes, recon_frame_plane_types_bytes, recon_reference_frame_store_bytes, recon_y4m_output_bytes, recon_intra_prediction_bytes, roundtrip_obu_bytes (`cargo +nightly fuzz list`).
+                                    # Targets: parse_obu, validate_bytes, parse_ivf, parse_bitstream, symbol_decoder_bytes, tile_payload_decode_bytes, decode_plan_bytes, decode_runtime_hash_bytes, decode_runtime_y4m_bytes, decode_runtime_raw_bytes, recon_frame_hash_bytes, recon_frame_plane_types_bytes, recon_reference_frame_store_bytes, recon_y4m_output_bytes, recon_intra_prediction_bytes, encoder_frame_input_views_bytes, roundtrip_obu_bytes (`cargo +nightly fuzz list`).
                                     # CI also runs a blocking per-target smoke (~45s each) over every target on every PR.
 ```
 

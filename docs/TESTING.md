@@ -8,13 +8,13 @@
 2. **Property / fuzz tests** — the parsers and the validator must never panic on
    arbitrary input. Implemented as `*_never_panic(s)` tests across the
    `splot-core` parser modules and `crates/splot-validate/tests/validator_never_panics.rs`
-   (mostly proptests, plus a few exhaustive-truncation unit tests). Fourteen
+   (mostly proptests, plus a few exhaustive-truncation unit tests). Seventeen
    `cargo fuzz` targets cover the parser, validator, symbol decoder,
-   tile-payload frontier, byte-planner, and minimal runtime
-   hash/Y4M byte surfaces, plus frame-hash serialization, reference-frame-store
-   operations, decoded-frame/plane runtime type validation, Y4M output
-   serialization from structured decoded frames, and intra prediction/workspace
-   primitives from structured inputs, and need a
+   tile-payload frontier, byte-planner, minimal runtime hash/raw/Y4M byte
+   surfaces, writer roundtrips, encoder input views, frame-hash serialization,
+   reference-frame-store operations, decoded-frame/plane runtime type validation,
+   Y4M output serialization from structured decoded frames, and intra
+   prediction/workspace primitives from structured inputs, and need a
    nightly toolchain; they run as a blocking per-target smoke (~45s each) in PR
    CI:
    - `parse_obu` — `read_leb128`, `read_obu_header`, `parse_annex_b_obus`.
@@ -41,6 +41,10 @@
      `DecodeContext::decode_y4m_bytes` with finite limits over arbitrary bytes,
      bounded mutations of the committed minimal runtime IVF fixture, and bounded
      in-memory writer success/error paths.
+   - `decode_runtime_raw_bytes` —
+     `DecodeContext::decode_raw_bytes` with finite limits over arbitrary bytes,
+     bounded mutations of the committed minimal runtime IVF fixture, and bounded
+     in-memory writer success/error paths.
    - `recon_frame_hash_bytes` — `splot-recon` `DecodedFrameHashInput`
      serialization and digest computation from bounded structured
      `DecodedFrame` inputs.
@@ -55,6 +59,11 @@
      bounded structured `DecodedFrame` inputs across supported Y4M formats.
    - `recon_intra_prediction_bytes` — `splot-recon` intra prediction and
      current-frame workspace primitives from bounded structured inputs.
+   - `encoder_frame_input_views_bytes` — `splot-encode` borrowed frame input
+     view construction over bounded dimensions, strides, format choices, plane
+     presence, and truncated buffers.
+   - `roundtrip_obu_bytes` — parsed OBU writer round trips for currently
+     writable typed payload models.
 3. **Decode planner unit tests** — `splot-decode` plan-only APIs over already
    parsed `splot-core` stream output must preserve OBU order/source metadata,
    reject malformed sources transactionally, enforce the limits they can derive
@@ -87,7 +96,7 @@ cargo xtask check-decoder-support # generated decoder support docs drift gate
 # never-panic invariant with bounded random inputs.
 cargo xtask fuzz [--time <secs>]    # local fuzz smoke over every target (nightly + cargo-fuzz, run-if-present), default 30s each
 cargo install cargo-fuzz --locked
-cargo +nightly fuzz list            # parse_obu, parse_ivf, parse_bitstream, symbol_decoder_bytes, tile_payload_decode_bytes, validate_bytes, decode_plan_bytes, decode_runtime_hash_bytes, decode_runtime_y4m_bytes, recon_frame_hash_bytes, recon_frame_plane_types_bytes, recon_reference_frame_store_bytes, recon_y4m_output_bytes, recon_intra_prediction_bytes
+cargo +nightly fuzz list            # parse_obu, parse_ivf, parse_bitstream, symbol_decoder_bytes, tile_payload_decode_bytes, validate_bytes, decode_plan_bytes, decode_runtime_hash_bytes, decode_runtime_y4m_bytes, decode_runtime_raw_bytes, recon_frame_hash_bytes, recon_frame_plane_types_bytes, recon_reference_frame_store_bytes, recon_y4m_output_bytes, recon_intra_prediction_bytes, encoder_frame_input_views_bytes, roundtrip_obu_bytes
 cargo +nightly fuzz run parse_obu   # run a single target (swap the name for any target above)
 
 cargo xtask conformance         # run the committed conformance corpus (no AVM)

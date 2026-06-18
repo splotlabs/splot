@@ -3,6 +3,10 @@
 
 //! Error and result types for the splot encoder API.
 
+use splot_recon::{PlaneId, PlaneSize, ReconError};
+
+use crate::config::{BitDepth, ChromaSubsampling};
+
 /// An error from the splot encoder API.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -13,6 +17,65 @@ pub enum Error {
         /// The underlying parallel-runtime error.
         #[from]
         source: splot_parallel::ParallelError,
+    },
+
+    /// Input frame bit depth is outside the current supported subset.
+    #[error("unsupported encoder input bit depth {bit_depth:?}; only 8-bit input is supported")]
+    UnsupportedInputBitDepth {
+        /// Requested input bit depth.
+        bit_depth: BitDepth,
+    },
+
+    /// Input frame chroma layout is outside the current supported subset.
+    #[error(
+        "unsupported encoder input chroma layout {chroma_subsampling:?}; only YUV420 input is supported"
+    )]
+    UnsupportedInputChromaSubsampling {
+        /// Requested input chroma layout.
+        chroma_subsampling: ChromaSubsampling,
+    },
+
+    /// A required input plane is absent.
+    #[error("missing required encoder input plane {plane:?}")]
+    MissingInputPlane {
+        /// Missing plane.
+        plane: PlaneId,
+    },
+
+    /// A plane was supplied where the current format has no plane.
+    #[error("unexpected encoder input plane {plane:?}")]
+    UnexpectedInputPlane {
+        /// Unexpected plane.
+        plane: PlaneId,
+    },
+
+    /// A borrowed input plane failed geometry validation.
+    #[error("invalid encoder input plane {plane:?}: {source}")]
+    InputPlane {
+        /// Failing plane.
+        plane: PlaneId,
+        /// Underlying reconstruction view validation error.
+        #[source]
+        source: ReconError,
+    },
+
+    /// A borrowed input plane's visible size does not match frame metadata.
+    #[error("encoder input plane {plane:?} has visible size {actual:?}; expected {expected:?}")]
+    InputPlaneSizeMismatch {
+        /// Failing plane.
+        plane: PlaneId,
+        /// Expected visible size.
+        expected: PlaneSize,
+        /// Actual visible size.
+        actual: PlaneSize,
+    },
+
+    /// Chroma-size derivation failed for the input metadata.
+    #[error("failed to derive encoder input chroma geometry: {source}")]
+    InputChromaGeometry {
+        /// Underlying chroma geometry error.
+        #[source]
+        source: ReconError,
     },
 }
 

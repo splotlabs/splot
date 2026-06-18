@@ -274,12 +274,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "splot-encode"
+version = "0.0.0"
+dependencies = [
+ "splot-core",
+ "splot-parallel",
+ "splot-recon",
+ "thiserror",
+]
+
+[[package]]
 name = "splot-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "splot-core",
  "splot-decode",
+ "splot-encode",
  "splot-parallel",
  "splot-recon",
  "splot-validate",
