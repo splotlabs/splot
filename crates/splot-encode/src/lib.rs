@@ -20,6 +20,7 @@
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
 
+mod coefficient_tokenization;
 pub mod config;
 pub mod context;
 mod core_boundary;

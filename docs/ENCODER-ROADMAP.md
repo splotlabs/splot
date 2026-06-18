@@ -89,6 +89,10 @@ Status: planned, replaces the parked toy bootstrap path.
 - Land a private fixed-quantizer v0 for that first 4x4 DCT_DCT DC-only subset,
   proving the `splot-recon` dequant/inverse handoff before coefficient
   tokenization or rate-control work.
+- Land a private coefficient-tokenization bridge for the current luma 4x4
+  DCT_DCT DC-only quantized subset, proving ordered base-tier entropy-token
+  records through the in-tree AV2 §8.2 symbol encoder/decoder before tile-body
+  writer integration.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.
 - Record fixtures, hashes, and matrix proof before marking any encode stage done.
