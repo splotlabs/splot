@@ -101,6 +101,6 @@ Matrix version 1. Last reviewed 2026-06-15. 88 writable feature(s).
 | 5.18.10, 6.17.10.1 | `AV2-5.18.10-FILM-GRAIN-STRUCTURES` | Frame film grain structures syntax | done | `crates/splot-core/src/headers/frame/tail.rs` |
 | 5.19, 5.20, 6.18, 6.19 | `AV2-5.19-TILE-GROUP` | Tile group OBU syntax | partial | `crates/splot-core/src/headers/tile_group.rs` |
 | 5.20, 6.19 | `AV2-5.20-TILE-GROUP-PAYLOAD` | Tile group payload syntax | partial | `crates/splot-core/src/headers/tile_group.rs` |
+| 8.2.2, 8.2.3, 8.2.4, 8.2.5, 8.2.6, 9.2 | `ENC-BITSTREAM-WRITER` | Bitstream writer foundation | partial | `crates/splot-core/src/write/mod.rs` |
 | — | `AV2-IVF-CONTAINER` | IVF container support | done | `crates/splot-core/src/ivf.rs` |
-| — | `ENC-BITSTREAM-WRITER` | Bitstream writer foundation | partial | `crates/splot-core/src/write/mod.rs` |
 | Annex B | `AV2-B-ANNEXB-OBU-ENVELOPE` | Annex B length-delimited OBU envelope | done | `crates/splot-core/src/annexb.rs` |

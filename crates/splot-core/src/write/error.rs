@@ -13,6 +13,8 @@
 
 use thiserror::Error;
 
+use crate::error::SymbolCdfErrorKind;
+
 /// An AV2 bitstream-writer descriptor could not encode the requested value.
 ///
 /// Every variant corresponds to a precondition of the matching
@@ -450,6 +452,50 @@ pub enum WriteError {
         /// `"passthrough"`).
         what: &'static str,
     },
+
+    /// A caller-supplied CDF row cannot be used by the AV2 § 8.2 symbol encoder.
+    #[error("invalid symbol CDF: {kind}")]
+    InvalidSymbolCdf {
+        /// Specific CDF-row violation.
+        kind: SymbolCdfErrorKind,
+    },
+
+    /// The requested symbol is outside the supplied CDF row's arity.
+    #[error("symbol {symbol} is outside the {symbols}-symbol CDF row")]
+    SymbolOutOfRange {
+        /// Requested symbol value.
+        symbol: u8,
+        /// Number of symbols represented by the CDF row.
+        symbols: usize,
+    },
+
+    /// A symbol-encoder arithmetic interval collapsed before renormalization.
+    #[error("symbol encoder arithmetic interval collapsed")]
+    SymbolArithmeticRange,
+
+    /// A symbol encoder payload would exceed its configured byte limit.
+    #[error("symbol encoder payload would require {requested} byte(s), exceeding limit {limit}")]
+    SymbolOutputTooLarge {
+        /// Required output bytes.
+        requested: usize,
+        /// Configured maximum output bytes.
+        limit: usize,
+    },
+
+    /// A symbol encoder stream would exceed its configured operation count limit.
+    #[error(
+        "symbol encoder stream would require {requested} operation(s), exceeding limit {limit}"
+    )]
+    SymbolOperationLimit {
+        /// Required primitive operation count.
+        requested: usize,
+        /// Configured maximum primitive operation count.
+        limit: usize,
+    },
+
+    /// A valid final symbol payload could not be constructed for the committed operations.
+    #[error("symbol encoder could not construct a valid finalized payload")]
+    SymbolFinalizationFailed,
 
     /// A writer for this OBU payload type does not exist yet — an honest stub returned by the
     /// complete-OBU dispatch for the `ParsedObu` variants whose body writer has not landed. Distinct

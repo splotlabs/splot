@@ -8,7 +8,7 @@
 2. **Property / fuzz tests** — the parsers and the validator must never panic on
    arbitrary input. Implemented as `*_never_panic(s)` tests across the
    `splot-core` parser modules and `crates/splot-validate/tests/validator_never_panics.rs`
-   (mostly proptests, plus a few exhaustive-truncation unit tests). Seventeen
+   (mostly proptests, plus a few exhaustive-truncation unit tests). The
    `cargo fuzz` targets cover the parser, validator, symbol decoder,
    tile-payload frontier, byte-planner, minimal runtime hash/raw/Y4M byte
    surfaces, writer roundtrips, encoder input views, frame-hash serialization,
@@ -25,6 +25,8 @@
    - `symbol_decoder_bytes` — public `splot-core` `SymbolDecoder` operations
      over bounded arbitrary tile-payload bytes plus bounded valid/invalid CDF
      rows.
+   - `symbol_encoder_bytes` — public `splot-core` `SymbolEncoder` operation
+     streams that must decode back through `SymbolDecoder`.
    - `tile_payload_decode_bytes` — feature-gated `splot-decode` fuzzing
      harness over the current minimal tile-payload boundary and block-symbol
      frontier, using bounded arbitrary tile-payload bytes and bounded known-good
@@ -62,6 +64,8 @@
    - `encoder_frame_input_views_bytes` — `splot-encode` borrowed frame input
      view construction over bounded dimensions, strides, format choices, plane
      presence, and truncated buffers.
+   - `encoder_context_state_machine_bytes` — `splot-encode` lifecycle command
+     sequences over valid borrowed frames.
    - `roundtrip_obu_bytes` — parsed OBU writer round trips for currently
      writable typed payload models.
 3. **Decode planner unit tests** — `splot-decode` plan-only APIs over already
@@ -96,7 +100,7 @@ cargo xtask check-decoder-support # generated decoder support docs drift gate
 # never-panic invariant with bounded random inputs.
 cargo xtask fuzz [--time <secs>]    # local fuzz smoke over every target (nightly + cargo-fuzz, run-if-present), default 30s each
 cargo install cargo-fuzz --locked
-cargo +nightly fuzz list            # parse_obu, parse_ivf, parse_bitstream, symbol_decoder_bytes, tile_payload_decode_bytes, validate_bytes, decode_plan_bytes, decode_runtime_hash_bytes, decode_runtime_y4m_bytes, decode_runtime_raw_bytes, recon_frame_hash_bytes, recon_frame_plane_types_bytes, recon_reference_frame_store_bytes, recon_y4m_output_bytes, recon_intra_prediction_bytes, encoder_frame_input_views_bytes, roundtrip_obu_bytes
+cargo +nightly fuzz list            # parse_obu, validate_bytes, parse_ivf, parse_bitstream, symbol_decoder_bytes, symbol_encoder_bytes, tile_payload_decode_bytes, decode_plan_bytes, decode_runtime_hash_bytes, decode_runtime_y4m_bytes, decode_runtime_raw_bytes, recon_frame_hash_bytes, recon_frame_plane_types_bytes, recon_reference_frame_store_bytes, recon_y4m_output_bytes, recon_intra_prediction_bytes, encoder_frame_input_views_bytes, encoder_context_state_machine_bytes, roundtrip_obu_bytes
 cargo +nightly fuzz run parse_obu   # run a single target (swap the name for any target above)
 
 cargo xtask conformance         # run the committed conformance corpus (no AVM)

@@ -65,11 +65,12 @@ slices are additive (their few read-but-not-stored points are redundant encoding
 derivations, canonicalized/re-derived like the § 5.4 leb128-minimal case).
 Remaining writer surface: inter / show-existing frame-header paths, the
 § 5.18.7.11 frame-level Wiener bank (out of the current intra scope), inter
-first-group tile-group composition, and entropy-coded tile payload generation
-(`RangeEncoder` and the § 5.20 `decode_tile()` body remain unimplemented). The
-complete-OBU dispatch now has body writers for every parsed OBU payload variant,
-Annex B and IVF helpers exist, and writer-track round-trip/fuzz/cross-tool
-validation coverage is tracked in the implementation matrix. The parked
+first-group tile-group composition, § 8.3 CDF selection, and the § 5.20
+`decode_tile()` coded tile body. The complete-OBU dispatch now has body writers
+for every parsed OBU payload variant, Annex B and IVF helpers exist, the
+generic § 8.2 symbol/range encoder primitive exists, and writer-track
+round-trip/fuzz/cross-tool validation coverage is tracked in the implementation
+matrix. The parked
 `toy-intra-encoder-v0` bootstrap change is superseded by the Baseline Encoder
 Profile v1 contract; future all-intra work must be re-proposed. Rate control
 (`ENC-RATE-CONTROL-V0`) remains future work. The implementation matrix is the
@@ -1097,7 +1098,7 @@ guards the sibling `docs/FEATURE-STATUS.md` and `docs/SPEC-COVERAGE.md`.
 The encoder tool contract SHALL distinguish the current `splot-core` writer
 baseline from an encoder. The writer can emit supported parsed syntax structures
 and container framing, but it SHALL NOT be treated as able to generate entropy-coded
-tile payloads while `RangeEncoder` and the `decode_tile()` body remain unimplemented.
+tile payloads while § 8.3 CDF selection and the `decode_tile()` body remain unimplemented.
 
 #### Scenario: entropy-coded tiles are not claimed
 
@@ -1138,3 +1139,31 @@ contract with current writer, reconstruction, validation, and conformance gates.
 - **THEN** it uses a new or updated OpenSpec change tied to the Baseline Encoder
   Profile v1 contract
 - **AND** the parked `toy-intra-encoder-v0` tasks remain unchecked.
+
+### Requirement: Symbol encoder belongs to the bitstream writer foundation
+
+`ENC-BITSTREAM-WRITER` SHALL include the generic AV2 § 8.2 symbol/range encoder
+primitive as a required writer foundation before any future encoder change emits
+real § 5.20 coded tile bodies. The matrix and generated writer/status docs SHALL
+describe this primitive as the inverse of the existing `splot-core`
+`SymbolDecoder` and SHALL keep its claim separate from § 8.3 CDF selection,
+tile CDF lifecycle, syntax planning, coefficient tokenization, and coded tile
+body generation.
+
+#### Scenario: Matrix proof distinguishes primitive from tile syntax
+
+- **WHEN** the symbol encoder primitive lands
+- **THEN** `docs/IMPLEMENTATION-MATRIX.toml` and generated status docs SHALL
+  record tests/fuzz evidence for the § 8.2 writer primitive under
+  `ENC-BITSTREAM-WRITER`
+- **AND** SHALL continue to mark coded tile body generation, coefficient syntax,
+  § 8.3 CDF selection, and public encoder packet output as future or partial
+  work unless those behaviors have separate runtime evidence.
+
+#### Scenario: Public encoder behavior does not change
+
+- **WHEN** only the symbol encoder primitive has landed
+- **THEN** `splot encode` SHALL still fail honestly for lack of a coded-packet
+  path
+- **AND** no documentation SHALL claim Baseline Encoder Profile v1, minimal
+  intra output, or broad AV2 encoder support from this primitive alone.
