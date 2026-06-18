@@ -168,7 +168,12 @@ untouched. A crate-private sign-read boundary
 (`DECODE-COEFF-SIGN-SYMBOL-READ`) now consumes caller-resolved `dc_sign`,
 `dc_sign_horz_vert`, and raw `sign_bit` sources over those local `Level[]`
 entries and returns sign summaries, but still does not write `QuantSign[]` or
-`Quant[]`. A crate-private `maxLevel` derivation boundary
+`Quant[]`. A crate-private sign-source derivation boundary
+(`DECODE-COEFF-SIGN-SOURCE-DERIVE`) now derives those sign read inputs from
+post-level `Level[]`, hidden parity, plane, transform class, and above/left DC
+context lines, selecting luma `dc_sign`, luma horizontal/vertical
+`dc_sign_horz_vert`, raw `sign_bit`, or a skipped source without consuming
+symbols. A crate-private `maxLevel` derivation boundary
 (`DECODE-COEFF-MAX-LEVEL-DERIVE`) now applies the § 5.20.7.27
 `get_lf_limits(row, col, txClass, plane)` branches plus the hidden `c == 0`
 override over checked scan entries, returning records convertible to the quant
@@ -206,8 +211,8 @@ ordinary coefficient pass, carrying first-pass `isHidden`, `sumAbs1`, and
 `useTcq` into the interleaved sign/`read_quant`/signed `Quant[]` stage and
 deriving second-pass plane/transform-class facts from the same config.
 The minimal trace uses the handoff only for the existing luma and V all-zero
-applications. Runtime integration of nonzero coefficient blocks, sign-source
-derivation, tile context writes for nonzero blocks, dequantization, and
+applications. Runtime integration of nonzero coefficient blocks, tile context
+writes for nonzero blocks, dequantization, and
 reconstruction remain unsupported. The
 § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest

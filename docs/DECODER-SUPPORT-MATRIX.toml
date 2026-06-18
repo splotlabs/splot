@@ -618,6 +618,20 @@ local_reference_evidence = []
 notes = "Adds crate-private `splot-decode` sign-read sequencing for ordinary non-FSC coefficient signs after local `Level[]` values exist. `read_nonzero_coeff_signs` validates input count, checked scan-entry identity, local level coordinates, and required sign sources for nonzero levels before consuming syntax; then reads caller-resolved `dc_sign` and `dc_sign_horz_vert` rows from the existing `TileDcSignCdf` bank or one-bit `sign_bit` literals in scan-walk order, returning checked entries, local levels, raw symbols/bits, and boolean signs. Tests prove mixed CDF/literal/skip reads, invalid selector no-consumption behavior, input-count mismatch, missing required signs, and scan-entry mismatch. This row remains partial: runtime `coeffs()` does not call this helper, sign-source policy is still caller-resolved, and it does not write `QuantSign[]`, nonzero `Quant[]`, run `read_quant`, dequantize, inverse transform, residual add, reconstruct pixels, output frames, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` or `decode_tile()` support."
 
 [[row]]
+id = "coeff-sign-source-derive"
+name = "Coefficient sign source derivation"
+feature_id = "DECODE-COEFF-SIGN-SOURCE-DERIVE"
+spec_sections = ["5.20.7.27", "8.3.2"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_source_derives_luma_dc_context_and_hidden_group", "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_source_derives_horizontal_and_vertical_axis_contexts", "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_source_derives_sign_bit_and_skip_sources", "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_source_derivation_reports_state_errors", "cargo test -p splot-decode sign_symbol --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` sign-source derivation for ordinary non-FSC coefficient signs after local `Level[]`, hidden-parity summary facts, plane, transform class, and DC context lines exist. `derive_nonzero_coeff_sign_inputs` derives `dc_sign`, `dc_sign_horz_vert`, raw `sign_bit`, or skipped sign inputs in checked scan-walk order, using the existing `dc_sign_ctx` helper for luma DC context selection and preserving the `isHidden` CDF group. Tests prove luma DC context/group derivation, horizontal and vertical luma axis selectors, generic sign-bit and chroma fallback, zero-level skip behavior, hidden-parity sign derivation, and typed state errors. This row remains partial: runtime `coeffs()` does not call the helper, the ordinary pass still receives sign inputs from callers, the helper does not consume symbols or CDF rows, write `QuantSign[]` or `Quant[]`, commit tile context lines, dequantize, inverse transform, residual add, reconstruct pixels, output frames, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` or `decode_tile()` support."
+
+[[row]]
 id = "coeff-max-level-derive"
 name = "Coefficient maxLevel derivation"
 feature_id = "DECODE-COEFF-MAX-LEVEL-DERIVE"

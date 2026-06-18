@@ -9123,6 +9123,60 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-SIGN-SOURCE-DERIVE"
+name = "Coefficient sign source derivation"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "8.3.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs"
+openspec_change = "coeff-sign-source-derive"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private `splot-decode` sign-source derivation boundary for the ordinary non-FSC AV2 §5.20.7.27 coefficient sign pass after local `Level[]` values, hidden-parity summary facts, plane, transform class, and DC context lines exist. `derive_nonzero_coeff_sign_inputs` returns per-entry `CoeffSignReadInput` records selecting `dc_sign`, `dc_sign_horz_vert`, raw `sign_bit`, or no source, using the existing §8.3.2 `dc_sign_ctx` helper for luma DC selectors and preserving the `isHidden` CDF group. Tests cover luma DC context/group derivation, horizontal and vertical luma axis selectors, generic sign-bit and chroma fallback, zero-level skip behavior, hidden-parity sign derivation, and typed state errors. This feature remains partial: runtime `coeffs()` does not call the helper, the ordinary pass still receives sign inputs from callers, the helper does not consume symbols or CDF rows, does not write `QuantSign[]` or `Quant[]`, does not commit tile context lines, and does not implement dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, or broad `decode_block()` / `decode_tile()` support."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_source_derives_luma_dc_context_and_hidden_group",
+    "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_source_derives_horizontal_and_vertical_axis_contexts",
+    "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_source_derives_sign_bit_and_skip_sources",
+    "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_source_derivation_reports_state_errors",
+]
+commands = [
+    "cargo test -p splot-decode sign_symbol --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs",
+    "crates/splot-decode/src/tile_payload/coeff_state.rs",
+    "crates/splot-decode/src/tile_payload/cdf/coeff_context.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-MAX-LEVEL-DERIVE"
 name = "Coefficient maxLevel derivation"
 category = "infrastructure"
