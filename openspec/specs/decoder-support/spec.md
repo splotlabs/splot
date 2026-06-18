@@ -3060,3 +3060,679 @@ superblock-padded context extents.
   reconstruction expansion, reference refresh, AVM/dav2d invocation, or
   external decoder integration
 
+### Requirement: Coefficient scan order get_scan
+
+The repository SHALL provide a scheduler-free `splot-recon` primitive for the AV2 § 5.20.7.30 `get_scan` coefficient scan order, tracked by `RECON-COEFFICIENT-SCAN-ORDER`. The `coefficient_scan_order` function SHALL write, for a `w * h` transform block and a `TransformClass`, the order in which transform coefficients are scanned — each `out[c]` being the flattened `y * w + x` position of the c-th scanned coefficient — implementing the three spec classes: `TX_CLASS_VERT` as row-major raster order, `TX_CLASS_HORIZ` as column-major (transpose) order, and `TX_CLASS_2D` as the anti-diagonal scan (each anti-diagonal `x + y` traversed from high `y` / low `x` to low `y` / high `x`). The block shape SHALL be caller-resolved (`w` / `h` each 4, 8, 16, or 32), and the function SHALL return a typed `ReconError` for an unsupported shape or a wrong-length output buffer, total and panic-free. The output for every supported shape and class SHALL be a permutation of `0..w*h`. The primitive SHALL NOT implement `get_tx_class`, the coefficient decode loop, the wiring of the scan into a decode path, the § 7.15.3 secondary-transform scan, or runtime decode output.
+
+#### Scenario: get_scan succeeds with self-contained tests
+
+- **WHEN** `cargo test -p splot-recon coefficient_scan --locked` runs
+- **THEN** the test suite covers the hand-traced 4x4 `TX_CLASS_2D` order, the
+  `TX_CLASS_VERT` identity and `TX_CLASS_HORIZ` transpose orders, and that the
+  output is a valid permutation of `0..w*h` for all 4/8/16/32 shapes and all three
+  classes
+- **AND** the implementation uses no AVM, dav2d, ffmpeg, runtime decode, or
+  external decoder invocation
+
+#### Scenario: Invalid scan shape or length is typed
+
+- **WHEN** callers request a `w` / `h` outside 4/8/16/32, or an output buffer not
+  exactly `w * h` long
+- **THEN** `coefficient_scan_order` returns a structured `ReconError`
+- **AND** library code does not panic, overflow, or unwrap
+
+#### Scenario: Coefficient decode remains incomplete
+
+- **WHEN** decoder support status is generated
+- **THEN** the matrix records the `get_scan` coefficient scan order as supported
+- **AND** the coefficient decode loop and broader reconstruction remain partial
+  until `get_tx_class`, the decode loop, and the runtime wiring are implemented
+  and proven
+
+### Requirement: Coefficient scan class get_tx_class
+
+The repository SHALL provide a scheduler-free `splot-recon` primitive for the AV2 § 8.3.2 `get_tx_class` transform-class derivation, tracked by `RECON-GET-TX-CLASS`. The `tx_class` function SHALL return, for a `PlaneTxType`, the `TransformClass` that selects the § 5.20.7.30 coefficient scan: the vertical-only transforms `V_DCT`, `V_ADST`, and `V_FLIPADST` to the vertical class, the horizontal-only transforms `H_DCT`, `H_ADST`, and `H_FLIPADST` to the horizontal class, and — per the spec `else` branch — every other value, including all 2D and identity transforms and any out-of-range input, to the 2D class. The function SHALL be total and panic-free over all inputs and SHALL reuse the existing `TransformClass` enum without adding an error variant. The primitive SHALL NOT implement the § 5.20.7.29 `compute_tx_type` transform-type computation that produces `PlaneTxType`, the coefficient decode loop, the wiring of the class into a decode path, or runtime decode output.
+
+#### Scenario: get_tx_class succeeds with self-contained tests
+
+- **WHEN** `cargo test -p splot-recon coefficient_scan --locked` runs
+- **THEN** the test suite covers each vertical transform type (10, 12, 14)
+  mapping to the vertical class, each horizontal transform type (11, 13, 15)
+  mapping to the horizontal class, every `0..=9` value mapping to the 2D class,
+  and out-of-range inputs mapping to the 2D class
+- **AND** the implementation uses no AVM, dav2d, ffmpeg, runtime decode, or
+  external decoder invocation
+
+#### Scenario: get_tx_class is total and panic-free
+
+- **WHEN** callers pass any `PlaneTxType`, including values outside the named
+  `TX_TYPE` range
+- **THEN** `tx_class` returns a `TransformClass` via the spec `else` branch
+- **AND** library code does not panic, overflow, or unwrap
+
+#### Scenario: Coefficient decode remains incomplete
+
+- **WHEN** decoder support status is generated
+- **THEN** the matrix records the `get_tx_class` transform-class derivation as
+  supported
+- **AND** the coefficient decode loop and broader reconstruction remain partial
+  until the § 5.20.7.29 `compute_tx_type` transform-type computation, the decode
+  loop, and the runtime wiring are implemented and proven
+
+### Requirement: Inverse transform Transform_Shift lookup
+
+The repository SHALL provide a scheduler-free `splot-recon` primitive for the AV2
+§ 7.15.4 `Transform_Shift` row and column down-shift lookup, tracked by
+`RECON-TRANSFORM-SHIFT-LOOKUP`. The `transform_shift` function SHALL return the
+pair `(rowShift, colShift) = (Transform_Shift[txSz][0], Transform_Shift[txSz][1])`
+for the `txSz` whose `(Tx_Width_Log2, Tx_Height_Log2)` equals the requested
+`(log2_width, log2_height)` shape, transcribed verbatim from the § 7.15.4
+constant table. Because `Transform_Shift` is a § 7.15.4 process-body constant
+absent from the generated `all_tables.h` § 9 attachment, it SHALL be a
+hand-written, spec-cited `splot-recon` constant rather than a `gen-tables`
+output. The function SHALL return a typed `ReconError` for a `(log2_width,
+log2_height)` pair that is not one of the 25 AV2 `TX_SIZES_ALL` transform shapes,
+and SHALL be total and panic-free. The primitive SHALL read no frame, segment, or
+tile state and SHALL NOT implement the `get_transform_1d_type` derivation, the
+DPCM-direction selection, the wiring of `Transform_Shift` into the runtime decode
+path, the § 7.15.3 secondary transform, or the coefficient entropy decode that
+produces `Quant`.
+
+#### Scenario: Transform_Shift lookup succeeds with self-contained tests
+
+- **WHEN** `cargo test -p splot-recon transform_params --locked` runs
+- **THEN** the test suite covers every `TX_SIZES_ALL` shape against the verbatim
+  spec table, the `(log2W, log2H)` key uniqueness invariant, independently
+  transcribed spec spot values, and transpose symmetry
+- **AND** the implementation uses no AVM, dav2d, ffmpeg, runtime decode, or
+  external decoder invocation
+
+#### Scenario: Non-AV2 transform shape is typed
+
+- **WHEN** callers request a `(log2_width, log2_height)` pair that is not one of
+  the 25 AV2 `TX_SIZES_ALL` transform shapes
+- **THEN** `transform_shift` returns a structured `ReconError`
+- **AND** library code does not panic, overflow, or unwrap
+
+#### Scenario: Full reconstruction remains incomplete
+
+- **WHEN** decoder support status is generated
+- **THEN** the matrix records the `Transform_Shift` lookup as supported
+- **AND** broader reconstruction remains partial until the `get_transform_1d_type`
+  derivation, the coefficient entropy decode, and the runtime transform wiring are
+  implemented and proven
+
+### Requirement: Inverse transform get_transform_1d_type derivation
+
+The repository SHALL provide a scheduler-free `splot-recon` primitive for the AV2
+§ 7.15.4 `get_transform_1d_type` row and column transform-type derivation, tracked
+by `RECON-GET-TRANSFORM-1D-TYPE`. The `get_transform_1d_type` function SHALL
+return `Transform_1d_Type[PlaneTxType][dir]` (as the `InverseTransform2dDim` the
+2D inverse transform consumes, with `IDT` mapped to `Identity` and the kernel
+types to `Kernel`), and SHALL apply the spec `useDdt` substitution: when the
+caller-resolved `use_ddt` is set, the base type is `ADST` or `FDST`, and the pass
+size is not 4, the type SHALL be replaced by `DDTX` or `FDDT` respectively.
+Because `Transform_1d_Type` is a § 7.15.4 process-body constant absent from the
+generated `all_tables.h` § 9 attachment, it SHALL be a hand-written, spec-cited
+`splot-recon` constant rather than a `gen-tables` output. The function SHALL
+return a typed `ReconError` for a `PlaneTxType` outside the `TX_TYPES` range
+(`0..16`), and SHALL be total and panic-free. The primitive SHALL read no frame,
+segment, or tile state beyond its caller-resolved arguments and SHALL NOT
+implement the DPCM-direction selection, the combined transform-parameter resolve
+helper, the wiring of `get_transform_1d_type` into the runtime decode path, the
+§ 7.15.3 secondary transform, or the coefficient entropy decode that produces
+`Quant`.
+
+#### Scenario: get_transform_1d_type succeeds with self-contained tests
+
+- **WHEN** `cargo test -p splot-recon transform_params --locked` runs
+- **THEN** the test suite covers every `PlaneTxType` row against the verbatim spec
+  `Transform_1d_Type` table for both passes, the `useDdt` substitution (eligible
+  and ineligible cases), and the out-of-range rejection
+- **AND** the implementation uses no AVM, dav2d, ffmpeg, runtime decode, or
+  external decoder invocation
+
+#### Scenario: Invalid PlaneTxType is typed
+
+- **WHEN** callers request a `PlaneTxType` outside the `TX_TYPES` range
+- **THEN** `get_transform_1d_type` returns a structured `ReconError`
+- **AND** library code does not panic, overflow, or unwrap
+
+#### Scenario: Full reconstruction remains incomplete
+
+- **WHEN** decoder support status is generated
+- **THEN** the matrix records the `get_transform_1d_type` derivation as supported
+- **AND** broader reconstruction remains partial until the DPCM-direction
+  selection, the runtime transform wiring, and the coefficient entropy decode are
+  implemented and proven
+
+### Requirement: eob_extra coefficient CDF bank
+
+The `splot-decode` tile CDF selection subset SHALL include the AV2 `TileEobExtraCdf` coefficient CDF bank, tracked by `DECODE-TILE-CDF-SELECTION-BOUNDARY`. The bank SHALL be copied from the generated AV2 § 9.3 `Default_Eob_Extra_Cdf` defaults, and SHALL be selectable by `coeff_cdf_q_ctx` with no per-symbol context (AV2 § 8.3.2: the cdf for `eob_extra` is given directly by `TileEobExtraCdf`). A `coeff_cdf_q_ctx`
+outside the valid range SHALL return a typed `SelectorOutOfRange` error naming the
+`TileEobExtraCdf` array, never panicking. The bank SHALL participate in the
+supported-subset tile copy/average and frame-end count-scaling paths. The bank is
+loaded but not consumed by a decode loop in this change (the § 5.20.7.27
+`coeffs()` syntax that reads it is not wired), so the minimal-fixture decode
+output SHALL be unchanged. Broader § 8.3 coefficient CDF selection and the
+coefficient decode loop remain partial.
+
+#### Scenario: eob_extra bank loads the generated defaults and selects by q-context
+
+- **WHEN** `cargo test -p splot-decode tile_payload --locked` runs
+- **THEN** the frame CDF subset copies `Default_Eob_Extra_Cdf` into the
+  `eob_extra` bank without aliasing, and the `EobExtra { coeff_cdf_q_ctx }`
+  selector returns the matching row for each valid `coeff_cdf_q_ctx`
+- **AND** an out-of-range `coeff_cdf_q_ctx` returns a typed `SelectorOutOfRange`
+  naming `TileEobExtraCdf`, and library code does not panic
+
+#### Scenario: Adding the bank does not change decode output
+
+- **WHEN** the minimal flat-intra fixture is decoded to a hash, raw, or Y4M output
+- **THEN** the output bytes are identical to before the bank was added (the bank
+  is loaded but not read by any decode path)
+
+#### Scenario: Coefficient CDF selection remains incomplete
+
+- **WHEN** decoder support status is generated
+- **THEN** the tile CDF selection boundary records the `eob_extra` bank
+- **AND** broader § 8.3 coefficient CDF selection (the remaining banks and the
+  coefficient decode loop) remains partial
+
+### Requirement: eob_pt coefficient CDF family
+
+The `splot-decode` tile CDF selection subset SHALL include the AV2 `eob_pt` coefficient CDF family — the seven transform-size class banks `TileEobPt16Cdf` through `TileEobPt1024Cdf` — tracked by `DECODE-TILE-CDF-SELECTION-BOUNDARY`. Each bank SHALL be copied from its generated AV2 § 9.3 `Default_Eob_Pt_<size>_Cdf` defaults, and SHALL be selectable by an `EobPtSize` transform-size class together with `coeff_cdf_q_ctx` and `eobCtx` (AV2 § 8.3.2: `eob_pt_<size>` reads `TileEobPt<size>Cdf[eobCtx]`, with `eobCtx = (plane > 0) ? 2 : is_inter`). A `coeff_cdf_q_ctx` or `eob_ctx` outside its valid range SHALL return a typed `SelectorOutOfRange` error naming the `eob_pt` family, never panicking. The family SHALL participate in the supported-subset tile copy/average and frame-end count-scaling paths. The family is loaded but not consumed by a decode loop in this change (the § 5.20.7.27 `coeffs()` syntax that reads it is not wired), so the minimal-fixture decode output SHALL be unchanged. Broader § 8.3 coefficient CDF selection and the coefficient decode loop remain partial.
+
+#### Scenario: eob_pt banks load defaults and select by size and context
+
+- **WHEN** `cargo test -p splot-decode tile_payload --locked` runs
+- **THEN** each of the seven `eob_pt` banks copies its `Default_Eob_Pt_<size>_Cdf`
+  table, and the `EobPt { size, coeff_cdf_q_ctx, eob_ctx }` selector returns the
+  matching row for every valid size, `coeff_cdf_q_ctx`, and `eob_ctx`
+- **AND** an out-of-range `coeff_cdf_q_ctx` or `eob_ctx` returns a typed
+  `SelectorOutOfRange` naming the `eob_pt` family, and library code does not panic
+
+#### Scenario: Adding the family does not change decode output
+
+- **WHEN** the minimal flat-intra fixture is decoded to a hash, raw, or Y4M output
+- **THEN** the output bytes are identical to before the family was added (the banks
+  are loaded but not read by any decode path)
+
+#### Scenario: Coefficient CDF selection remains incomplete
+
+- **WHEN** decoder support status is generated
+- **THEN** the tile CDF selection boundary records the `eob_pt` family
+- **AND** broader § 8.3 coefficient CDF selection (the remaining banks and the
+  coefficient decode loop) remains partial
+
+### Requirement: dc_sign coefficient CDF bank
+
+The `splot-decode` tile CDF selection subset SHALL include the AV2 `TileDcSignCdf` coefficient CDF bank, tracked by `DECODE-TILE-CDF-SELECTION-BOUNDARY`. The bank SHALL be copied from the generated AV2 § 9.3 `Default_Dc_Sign_Cdf` defaults, and SHALL be selectable by `coeff_cdf_q_ctx`, `plane_type`, the `isHidden` group, and the DC-sign `ctx` (AV2 § 8.3.2: `dc_sign` reads `TileDcSignCdf[ptype][isHidden][ctx]`). Each of the four selector index axes SHALL be bounds-checked and return a typed `SelectorOutOfRange` error naming the `dc_sign` bank, never panicking. The bank SHALL participate in the supported-subset tile copy/average and frame-end count-scaling paths. The § 8.3.2 `ctx` derivation from the Above/Left DC-context buffers is not implemented in this change (those buffers do not exist yet), so the bank is loaded but not consumed by a decode loop, and the minimal-fixture decode output SHALL be unchanged. Broader § 8.3 coefficient CDF selection and the coefficient decode loop remain partial.
+
+#### Scenario: dc_sign bank loads defaults and selects across all indices
+
+- **WHEN** `cargo test -p splot-decode tile_payload --locked` runs
+- **THEN** the `dc_sign` bank copies `Default_Dc_Sign_Cdf`, and the
+  `DcSign { coeff_cdf_q_ctx, plane_type, group, ctx }` selector returns the
+  matching row for every valid combination of the four indices
+- **AND** an out-of-range value on any of the four axes returns a typed
+  `SelectorOutOfRange` naming the `dc_sign` bank, and library code does not panic
+
+#### Scenario: Adding the bank does not change decode output
+
+- **WHEN** the minimal flat-intra fixture is decoded to a hash, raw, or Y4M output
+- **THEN** the output bytes are identical to before the bank was added (the bank
+  is loaded but not read by any decode path)
+
+#### Scenario: Coefficient CDF selection remains incomplete
+
+- **WHEN** decoder support status is generated
+- **THEN** the tile CDF selection boundary records the `dc_sign` bank
+- **AND** broader § 8.3 coefficient CDF selection (the `ctx` derivation, the
+  remaining banks, and the coefficient decode loop) remains partial
+
+### Requirement: Coefficient base position CDF contexts
+
+The `splot-decode` tile CDF selection subset SHALL derive the two position-only AV2 § 8.3.2 coefficient base CDF contexts, tracked by `DECODE-TILE-CDF-SELECTION-BOUNDARY`. `coeff_base_eob_ctx` SHALL compute the `coeff_base_eob` context by partitioning the scan position `c` against the adjusted transform block's coefficient count `Tx_Height[adjTxSz] << Tx_Width_Log2[adjTxSz]`: `0` when `c` is `0`, `1` when `c` is at most one eighth of the count, `2` when `c` is at most one quarter, and `3` otherwise (the `SIG_COEF_CONTEXTS_EOB - 4 ..= SIG_COEF_CONTEXTS_EOB - 1` contexts). `coeff_base_bob_ctx` SHALL compute the `coeff_base_bob` context by partitioning the begin position `bob` against the segment end-of-block `seg_eob`: `0` when `bob` is at most `seg_eob >> 3`, `1` when at most `seg_eob >> 2`, and `2` otherwise. Both SHALL be pure functions of caller-supplied scan and segment scalars plus caller-resolved adjusted geometry (needing no `Level[]` magnitude buffer), SHALL be total and panic-free (including an out-of-range shift width), and SHALL NOT be read by any decode path in this change, so the minimal-fixture decode output SHALL be unchanged. The `Level[]`-dependent coefficient contexts, the sign contexts, the per-transform-block level and sign buffers, and the coefficient decode loop remain partial.
+
+#### Scenario: Coefficient base position contexts partition the position
+
+- **WHEN** `cargo test -p splot-decode tile_payload --locked` runs
+- **THEN** `coeff_base_eob_ctx` returns the four contexts across the
+  `numCoeffs / 8` and `numCoeffs / 4` boundaries for TX_32X32 and TX_4X4
+  geometry, and `coeff_base_bob_ctx` returns contexts 0/1/2 across the
+  `seg_eob >> 3` and `seg_eob >> 2` boundaries
+- **AND** an out-of-range shift width does not panic, and library code does not
+  panic, overflow, or unwrap
+
+#### Scenario: Adding the contexts does not change decode output
+
+- **WHEN** the minimal flat-intra fixture is decoded to a hash, raw, or Y4M output
+- **THEN** the output bytes are identical to before the contexts were added (the
+  derivations are not read by any decode path)
+
+#### Scenario: Coefficient CDF selection remains incomplete
+
+- **WHEN** decoder support status is generated
+- **THEN** the tile CDF selection boundary records the two position-only
+  coefficient base contexts
+- **AND** broader § 8.3 coefficient CDF selection (the `Level[]`-dependent
+  contexts, the sign contexts, and the coefficient decode loop) remains partial
+
+### Requirement: coeff_br coefficient base-range CDF context
+
+The `splot-decode` tile CDF selection subset SHALL derive the AV2 § 8.3.2 `coeff_br` coefficient base-range CDF context, tracked by `DECODE-TILE-CDF-SELECTION-BOUNDARY`. `CoeffBrContext::ctx` SHALL, for a coefficient at scan position `pos` in an adjusted transform block of caller-resolved geometry (`bwl`, `txw`, `txh`) and a caller-provided row-major `Level[]` magnitude slice, compute the context by: deriving `row`/`col` from `pos` and `bwl`; summing up to three neighbour magnitudes at the § 8.3.2 `Mag_Ref_Offset_With_Tx_Class` offsets for the transform class (only the first two offsets when the transform class is not 2D and the plane is chroma), each clamped to `MAX_BASE_BR_RANGE - 1`; halving and clamping the sum as `Min((mag + 1) >> 1, 6)`; and offsetting it by plane (chroma `Min(mag, 3)`), DC position (non-2D `mag + 7`), or low-frequency (`mag + 7`). It SHALL read the level magnitudes over the caller-provided slice with the spec `refRow < txh && refCol < txw` bound (and a slice-length guard), so out-of-bounds and short-slice neighbour reads contribute `0` and the function is total and panic-free. It SHALL NOT be read by any decode path in this change, so the minimal-fixture decode output SHALL be unchanged. The remaining `Level[]`-dependent contexts, the sign contexts, the full per-transform-block level/sign buffers, and the coefficient decode loop remain partial.
+
+#### Scenario: coeff_br sums and offsets the context per the spec
+
+- **WHEN** `cargo test -p splot-decode tile_payload --locked` runs
+- **THEN** `CoeffBrContext::ctx` sums the clamped neighbour magnitudes, halves and
+  clamps to 6, and applies the plane / DC-position / low-frequency offsets, with
+  tests pinning the chroma `Min(mag, 3)` clamp, the non-2D `mag + 7` offset, and
+  the non-2D-chroma two-neighbour case (distinguished from the three-neighbour
+  case)
+- **AND** the implementation uses no AVM, dav2d, ffmpeg, runtime decode, or
+  external decoder invocation
+
+#### Scenario: coeff_br is total over out-of-bounds and short slices
+
+- **WHEN** neighbour offsets leave the transform block, or the `Level[]` slice is
+  shorter than the block
+- **THEN** those reads contribute `0` and `ctx` returns without panicking
+- **AND** library code does not panic, overflow, or unwrap
+
+#### Scenario: Adding the context does not change decode output
+
+- **WHEN** the minimal flat-intra fixture is decoded to a hash, raw, or Y4M output
+- **THEN** the output bytes are identical to before the context was added (the
+  derivation is not read by any decode path)
+
+#### Scenario: Coefficient CDF selection remains incomplete
+
+- **WHEN** decoder support status is generated
+- **THEN** the tile CDF selection boundary records the `coeff_br` context
+- **AND** broader § 8.3 coefficient CDF selection (the remaining `Level[]`-dependent
+  contexts, the sign contexts, and the coefficient decode loop) remains partial
+
+### Requirement: IDTX coefficient magnitude CDF contexts
+
+The `splot-decode` tile CDF selection subset SHALL derive the two AV2 § 8.3.2 identity-transform coefficient magnitude CDF contexts, tracked by `DECODE-TILE-CDF-SELECTION-BOUNDARY`. `coeff_base_idtx_ctx` SHALL compute the `coeff_base_idtx` context as `Min(3, Level[row][col-1]) + Min(3, Level[row-1][col])` (each neighbour included only when in range), and `coeff_br_idtx_ctx` SHALL compute the `coeff_br_idtx` context the same way with the `MAX_BASE_BR_RANGE - 1` per-neighbour clamp followed by `Min(mag, 6)`. Both SHALL read a caller-provided row-major `txw`-wide `Level[]` slice (`level[row * txw + col]`), with saturating flat-index geometry and a slice-length guard so out-of-range or short-slice reads contribute `0` and the functions are total and panic-free. Both results SHALL be the spec `mag`, used directly as the inner CDF index. They SHALL NOT be read by any decode path in this change, so the minimal-fixture decode output SHALL be unchanged. The remaining `Level[]`-dependent context, the sign contexts, the full level/sign buffers, and the coefficient decode loop remain partial.
+
+#### Scenario: IDTX magnitude contexts sum the clamped neighbours
+
+- **WHEN** `cargo test -p splot-decode tile_payload --locked` runs
+- **THEN** `coeff_base_idtx_ctx` sums the left and above neighbours clamped to 3,
+  and `coeff_br_idtx_ctx` sums them clamped to `MAX_BASE_BR_RANGE - 1` then clamps
+  the total to 6, with tests pinning the col==0 / row==0 missing-neighbour skips
+- **AND** the implementation uses no AVM, dav2d, ffmpeg, runtime decode, or
+  external decoder invocation
+
+#### Scenario: IDTX contexts are total over short slices and bad geometry
+
+- **WHEN** the `Level[]` slice is shorter than the block or the geometry is
+  malformed
+- **THEN** out-of-range reads contribute `0` and the functions return without
+  panicking
+- **AND** library code does not panic, overflow, or unwrap
+
+#### Scenario: Adding the contexts does not change decode output
+
+- **WHEN** the minimal flat-intra fixture is decoded to a hash, raw, or Y4M output
+- **THEN** the output bytes are identical to before the contexts were added (the
+  derivations are not read by any decode path)
+
+#### Scenario: Coefficient CDF selection remains incomplete
+
+- **WHEN** decoder support status is generated
+- **THEN** the tile CDF selection boundary records the two IDTX magnitude contexts
+- **AND** broader § 8.3 coefficient CDF selection (the `coeff_base` context, the
+  sign contexts, and the coefficient decode loop) remains partial
+
+### Requirement: coeff_base significant-coefficient CDF context
+
+The `splot-decode` tile CDF selection subset SHALL derive the AV2 § 8.3.2 `coeff_base` significant-coefficient CDF context, tracked by `DECODE-TILE-CDF-SELECTION-BOUNDARY`. `CoeffBaseContext::select` SHALL sum the significant-neighbour `Level[]` magnitudes at the generated § 9.2 `Sig_Ref_Diff_Offset[txClass]` offsets — over `SIG_REF_DIFF_OFFSET_NUM` samples for luma, 3 for chroma 2D, and 2 for chroma non-2D — each clamped by the position-dependent `magLimit` (5 for the low-frequency near-DC samples unless the coefficient is the parity-hidden DC, else 3), form `ctx = (mag + 1) >> 1`, and return a `CoeffBaseSelection` naming one of the five `coeff_base` banks with its bank-specific context offset: the parity-hidden DC bank (`Min(ctx, 4)`, overriding the others when `isHidden` and `c == 0`), the chroma and chroma low-frequency banks (`Min(ctx, 3)` plus the plane and 2D offsets), the luma low-frequency bank (the `c == 0` / `row + col` / horiz-col-vert-row sub-branches over `LF_SIG_COEF_CONTEXTS_2D`), and the luma high-frequency bank (`Min(ctx, 4)` plus the `row + col` position buckets, or `+ 15` for non-2D). It SHALL read a caller-provided row-major `txw`-wide `Level[]` slice with checked shifts, saturating flat-index geometry, and a slice-length guard (the spec `refRow < height && refCol < width` guard), so out-of-range or short-slice reads contribute `0` and the function is total and panic-free, and SHALL use the generated `Sig_Ref_Diff_Offset` conversion table rather than a duplicate. It SHALL NOT be read by any decode path in this change, so the minimal-fixture decode output SHALL be unchanged. The sign contexts, the full per-transform-block level/sign buffers, and the coefficient decode loop remain partial.
+
+#### Scenario: coeff_base selects the right bank and context per branch
+
+- **WHEN** `cargo test -p splot-decode tile_payload --locked` runs
+- **THEN** `CoeffBaseContext::select` returns the parity-hidden, chroma,
+  chroma-low-frequency, luma-low-frequency, and luma-high-frequency bank variants
+  with the spec context offsets, with tests pinning the high-frequency `row + col`
+  buckets, the non-2D `+ 15`, the low-frequency sub-branches, the chroma U-vs-V
+  and 2D-vs-non-2D offsets, the clamped neighbour sum, the magLimit raise, and the
+  parity-hidden override
+- **AND** the implementation uses no AVM, dav2d, ffmpeg, runtime decode, or
+  external decoder invocation
+
+#### Scenario: coeff_base is total over short slices and bad geometry
+
+- **WHEN** the `Level[]` slice is shorter than the block or the geometry is
+  malformed
+- **THEN** out-of-range neighbour reads contribute `0` and `select` returns
+  without panicking
+- **AND** library code does not panic, overflow, or unwrap
+
+#### Scenario: Adding the context does not change decode output
+
+- **WHEN** the minimal flat-intra fixture is decoded to a hash, raw, or Y4M output
+- **THEN** the output bytes are identical to before the context was added (the
+  derivation is not read by any decode path)
+
+#### Scenario: Coefficient CDF selection remains incomplete
+
+- **WHEN** decoder support status is generated
+- **THEN** the tile CDF selection boundary records the `coeff_base` context
+- **AND** broader § 8.3 coefficient CDF selection (the sign contexts and the
+  coefficient decode loop) remains partial
+
+### Requirement: dc_sign sign CDF context
+
+The `splot-decode` tile CDF selection subset SHALL derive the AV2 § 8.3.2 `dc_sign` sign CDF context, tracked by `DECODE-TILE-CDF-SELECTION-BOUNDARY`. `dc_sign_ctx` SHALL net the DC-sign votes of the block's above and left neighbours — `AboveDcContext[plane][x4 + k]` for `k` in `0..w4` and `LeftDcContext[plane][y4 + k]` for `k` in `0..h4`, where a sign value of `1` decrements and `2` increments a running `dcSign` — and return `1` when `dcSign < 0`, `2` when `dcSign > 0`, and `0` otherwise (the inner index of `TileDcSignCdf[ptype][isHidden][ctx]`). `above_dc` and `left_dc` SHALL be the caller-supplied `AboveDcContext` / `LeftDcContext` plane slices whose lengths are the spec `MiCols` / `MiRows` bounds, so reads past either slice are skipped; the loop SHALL break once the monotonic index leaves the slice, so a pathological `w4` / `h4` cannot spin and the function is total and panic-free. It SHALL NOT be read by any decode path in this change, so the minimal-fixture decode output SHALL be unchanged. The `idtx_sign` sign context, the DC-context buffers, and the coefficient decode loop remain partial.
+
+#### Scenario: dc_sign nets above and left votes
+
+- **WHEN** `cargo test -p splot-decode tile_payload --locked` runs
+- **THEN** `dc_sign_ctx` returns context 1 for a net-negative neighbour sum, 2 for
+  net-positive, and 0 for a balanced or empty sum, with tests pinning the position
+  offset and the out-of-slice (`MiCols` / `MiRows`) skip
+- **AND** the implementation uses no AVM, dav2d, ffmpeg, runtime decode, or
+  external decoder invocation
+
+#### Scenario: dc_sign is total over pathological geometry
+
+- **WHEN** `w4` / `h4` or the position offsets are far larger than the slices
+- **THEN** the loop terminates without spinning and `dc_sign_ctx` returns without
+  panicking
+- **AND** library code does not panic, overflow, or unwrap
+
+#### Scenario: Adding the context does not change decode output
+
+- **WHEN** the minimal flat-intra fixture is decoded to a hash, raw, or Y4M output
+- **THEN** the output bytes are identical to before the context was added (the
+  derivation is not read by any decode path)
+
+#### Scenario: Coefficient CDF selection remains incomplete
+
+- **WHEN** decoder support status is generated
+- **THEN** the tile CDF selection boundary records the `dc_sign` sign context
+- **AND** broader § 8.3 coefficient CDF selection (the `idtx_sign` context, the
+  DC-context buffers, and the coefficient decode loop) remains partial
+
+### Requirement: idtx_sign sign CDF context
+
+The `splot-decode` tile CDF selection subset SHALL derive the AV2 § 8.3.2 `idtx_sign` sign CDF context, tracked by `DECODE-TILE-CDF-SELECTION-BOUNDARY`. `idtx_sign_ctx` SHALL net the signs of the left (`QuantSign[row*txw + col-1]`), above (`QuantSign[(row-1)*txw + col]`), and above-left (`QuantSign[(row-1)*txw + col-1]`) coefficients into `signc` — the edge neighbours gated by `col > 0` and `row > 0` — map `signc` to a base context (`5` when `signc > 2`, `6` when `signc < -2`, `1` when `signc > 0`, `2` when `signc < 0`, else `0`), and add `2` when `Level[row][col]` exceeds `COEFF_BASE_RANGE` and the base context is non-zero (the inner index of `TileIdtxSignCdf[Min(TX_16X16, txSzCtx)][ctx]`). It SHALL read caller-provided row-major `txw`-wide `QuantSign[]` and `Level[]` slices with saturating flat-index geometry and a slice-length guard, so out-of-range reads contribute `0` and the function is total and panic-free. It SHALL NOT be read by any decode path in this change, so the minimal-fixture decode output SHALL be unchanged. The per-transform-block level/sign tile buffers and the coefficient decode loop remain partial.
+
+#### Scenario: idtx_sign maps the neighbour sign sum and level threshold
+
+- **WHEN** `cargo test -p splot-decode tile_payload --locked` runs
+- **THEN** `idtx_sign_ctx` returns the base context for each `signc` bucket
+  (5/6/1/2/0) and adds 2 only when the base context is non-zero and the current
+  level exceeds `COEFF_BASE_RANGE`, with tests pinning the missing-edge-neighbour
+  skips and the threshold boundary
+- **AND** the implementation uses no AVM, dav2d, ffmpeg, runtime decode, or
+  external decoder invocation
+
+#### Scenario: idtx_sign is total over short slices and bad geometry
+
+- **WHEN** the `QuantSign[]` / `Level[]` slices are shorter than the block or the
+  geometry is malformed
+- **THEN** out-of-range reads contribute `0` and `idtx_sign_ctx` returns without
+  panicking
+- **AND** library code does not panic, overflow, or unwrap
+
+#### Scenario: Adding the context does not change decode output
+
+- **WHEN** the minimal flat-intra fixture is decoded to a hash, raw, or Y4M output
+- **THEN** the output bytes are identical to before the context was added (the
+  derivation is not read by any decode path)
+
+#### Scenario: Coefficient CDF selection remains incomplete
+
+- **WHEN** decoder support status is generated
+- **THEN** the tile CDF selection boundary records the `idtx_sign` sign context
+  (completing the § 8.3.2 coefficient-symbol contexts)
+- **AND** broader coefficient decode (the per-transform-block level/sign tile
+  buffers and the `coeffs()` loop) remains partial
+
+### Requirement: Tile coefficient state buffers
+
+The decoder support model SHALL track `DECODE-TILE-COEFF-STATE-BUFFERS` as a
+crate-private `splot-decode` row named `tile-coeff-state-buffers`. The row SHALL
+cover decode-owned state for AV2 §5.20.7.27 transform-block-local `Level[]` and
+`QuantSign[]` buffers and the tile-neighbour `AboveLevelContext`,
+`LeftLevelContext`, `AboveDcContext`, and `LeftDcContext` lines read by §8.3.2
+coefficient contexts. The row SHALL remain partial until the §5.20.7.27
+`coeffs()` loop reads symbols, fills `Quant[]`, and wires reconstruction.
+
+#### Scenario: Transform block buffers are bounded and initialized
+
+- **WHEN** a transform-block coefficient state is constructed for caller-resolved
+  adjusted dimensions
+- **THEN** it allocates zeroed row-major `Level[]` and `QuantSign[]` arrays for at
+  most the §5.20.7.27 32x32 adjusted block extent
+- **AND** zero dimensions, dimensions above 32x32, arithmetic overflow, or
+  allocation failure return typed errors rather than panicking
+
+#### Scenario: Coefficient context lines update like coeffs
+
+- **WHEN** a coefficient block completes with caller-supplied `culLevel`,
+  `dcCategory`, `plane`, `x4`, `y4`, `w4`, and `h4`
+- **THEN** the tile state writes `culLevel` to `AboveLevelContext[plane]` and
+  `LeftLevelContext[plane]` over the block's above and left ranges
+- **AND** it writes `dcCategory` to `AboveDcContext[plane]` and
+  `LeftDcContext[plane]` over the same ranges
+- **AND** out-of-range plane or coordinate facts return typed errors rather than
+  panicking or silently wrapping
+
+#### Scenario: Coefficient context lines reset like reset_block_context
+
+- **WHEN** block syntax requests a level/DC context reset for caller-resolved
+  plane, start, size, and subsampling facts
+- **THEN** the tile state zeros the matching above and left level/DC context
+  ranges
+- **AND** the operation is bounded by the actual owned line lengths and cannot
+  spin on pathological caller counts
+
+#### Scenario: State does not change decode output yet
+
+- **WHEN** the minimal flat-intra fixture is decoded to hash, raw, or Y4M output
+- **THEN** output bytes remain unchanged because this change does not wire the
+  §5.20.7.27 `coeffs()` symbol loop or reconstruction
+
+#### Scenario: Broader coefficient decode remains incomplete
+
+- **WHEN** decoder support and conformance coverage are generated
+- **THEN** `tile-coeff-state-buffers` appears as a partial row linked to
+  `DECODE-TILE-COEFF-STATE-BUFFERS`
+- **AND** `tile-payload-decode`, `tile-cdf-selection-boundary`, reconstruction,
+  and full decoder conformance remain partial
+
+### Requirement: Coeff all_zero block state handoff
+
+The decoder support model SHALL track `DECODE-COEFF-ALL-ZERO-BLOCK-STATE` as a
+crate-private `splot-decode` row named `coeff-all-zero-block-state`. The row
+SHALL cover the §5.20.7.27 `all_zero == 1` coefficient-block state effects for
+the currently traced minimal luma and V branches: zero coefficient state,
+`eob == 0`, zero `culLevel` / `dcCategory`, and above/left context-line writes
+through `TileCoeffContextState`. The row SHALL remain partial until the full
+§5.20.7.27 `coeffs()` loop reads nonzero EOB and coefficient symbols, fills
+nonzero `Quant[]`, and wires reconstruction.
+
+#### Scenario: Transform block state includes Quant
+
+- **WHEN** crate-private transform coefficient block state is initialized for a
+  caller-resolved adjusted extent
+- **THEN** the decoder allocates zeroed row-major `Level[]`, `QuantSign[]`, and
+  `Quant[]` buffers with checked dimensions
+- **AND** checked accessors reject out-of-range coordinates or positions without
+  panicking
+
+#### Scenario: All-zero block applies coefficient context writes
+
+- **WHEN** the all-zero coefficient-block helper is applied for caller-resolved
+  plane coordinates and 4x4 transform dimensions
+- **THEN** it returns `eob == 0`, `culLevel == 0`, and `dcCategory == 0`
+- **AND** it initializes zero `Level[]`, `QuantSign[]`, and `Quant[]` state
+- **AND** it writes zero level/DC values to the covered above and left tile
+  context ranges through `TileCoeffContextState`
+- **AND** malformed ranges fail with typed coefficient-state errors before
+  mutating context state
+
+#### Scenario: Minimal trace writes all-zero state
+
+- **WHEN** the minimal flat-intra block-symbol trace reads the existing luma
+  `txb_skip` and V `v_txb_skip` symbols as all-zero
+- **THEN** it applies the all-zero block state helper after each read
+- **AND** the no-output-change symbol-frontier test remains unchanged
+
+#### Scenario: Full coefficient decode remains incomplete
+
+- **WHEN** decoder support and conformance coverage are generated
+- **THEN** `coeff-all-zero-block-state` appears as a partial row linked to
+  `DECODE-COEFF-ALL-ZERO-BLOCK-STATE`
+- **AND** nonzero EOB decode, coefficient scan walk, coefficient base/br/sign
+  reads, `read_quant`, dequantization, reconstruction, and full decoder
+  conformance remain partial
+
+### Requirement: Decoder support matrix tracks coefficient EOB value state
+
+The decoder support matrix SHALL include a partial row named
+`coeff-eob-value-state`, tracked by Feature ID
+`DECODE-COEFF-EOB-VALUE-STATE`, for the crate-private AV2 § 5.20.7.27 helper
+that derives a nonzero `eob` value from caller-decoded `eobPt`, `eob_extra`, and
+packed `eob_extra_bit` refinements. The row SHALL keep broad coefficient decode
+and decoded-output support partial until later changes read the `eob_pt_*` CDF
+rows, walk the coefficient scan, fill nonzero coefficient state, and run
+reconstruction.
+
+#### Scenario: EOB value helper is scoped and test-backed
+
+- **WHEN** `cargo xtask check-decoder-support` renders decoder support status
+- **THEN** `coeff-eob-value-state` appears with Feature ID
+  `DECODE-COEFF-EOB-VALUE-STATE`
+- **AND** it records focused tests for small `eobPt`, refined `eob_extra`, max
+  AV2 EOB, and invalid caller-provided EOB parts
+- **AND** it cites AV2 § 5.20.7.27 through
+  `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`
+
+#### Scenario: Broad coefficient decode remains partial
+
+- **WHEN** decoder support and conformance coverage status documents are
+  regenerated after this change
+- **THEN** broad tile payload, symbol/CDF, and coefficient-loop rows remain
+  partial for actual `eob_pt_*` symbol reads, `eob_extra` symbol reads,
+  `eob_extra_bit` literal reads, scan-order traversal, coefficient base/br/sign
+  symbol reads, nonzero `Quant[]` writes, `read_quant`, dequantization, inverse
+  transform, residual addition, and decoded output changes
+
+### Requirement: Decoder support matrix tracks coefficient EOB symbol reads
+
+The decoder support matrix SHALL include a partial row named
+`coeff-eob-symbol-read`, tracked by Feature ID
+`DECODE-COEFF-EOB-SYMBOL-READ`, for the crate-private AV2 § 5.20.7.27 helper
+that reads the caller-selected `eob_pt_*` symbol, any size-specific
+`eob_pt_*_extra` literal bits, `eob_extra`, and any `eob_extra_bit` refinement
+literals before producing the checked nonzero EOB value. The row SHALL keep
+broad coefficient decode and decoded-output support partial until later changes
+wire the helper into the coefficient scan and coefficient state writes.
+
+#### Scenario: EOB symbol helper is scoped and test-backed
+
+- **WHEN** `cargo xtask check-decoder-support` renders decoder support status
+- **THEN** `coeff-eob-symbol-read` appears with Feature ID
+  `DECODE-COEFF-EOB-SYMBOL-READ`
+- **AND** it records focused tests for EOB point CDF consumption, EOB extra CDF
+  consumption, size-class extra literal handling, invalid selector rollback
+  before reads, and disabled CDF update behavior
+- **AND** it cites AV2 § 5.20.7.27 and § 8.3.2 through the committed spec mirror
+
+#### Scenario: Broad coefficient decode remains partial
+
+- **WHEN** decoder support and conformance coverage status documents are
+  regenerated after this change
+- **THEN** broad tile payload, symbol/CDF, and coefficient-loop rows remain
+  partial for transform-size derivation, scan-order traversal, coefficient
+  base/br/sign symbol reads, nonzero `Level[]` and `Quant[]` writes,
+  `read_quant`, dequantization, inverse transform, residual addition, and
+  decoded output changes
+
+### Requirement: Coefficient scan walk support row
+The decoder support model SHALL track `DECODE-COEFF-SCAN-WALK` as a distinct
+crate-private row named `coeff-scan-walk`. The row SHALL mark only the
+decode-side, caller-supplied ordinary non-FSC § 5.20.7.27 coefficient scan walk
+boundary as supported, and SHALL keep scan-table derivation, transform-type
+computation, coefficient base/BR/sign reads, `read_quant`, dequantization,
+inverse transform, residual add, and runtime nonzero coefficient blocks partial
+or unsupported until separately implemented.
+
+#### Scenario: Matrix records narrow scan-walk support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix after this change
+- **THEN** `coeff-scan-walk` appears with Feature ID `DECODE-COEFF-SCAN-WALK`
+- **AND** it cites AV2 § 5.20.7.27 as the scan-walk syntax boundary
+- **AND** it names focused tests for reverse order, EOB length rejection, and
+  out-of-range scan-position rejection
+- **AND** it does not claim runtime nonzero coefficient decode or output support
+
+### Requirement: Coefficient base CDF row support
+The decoder support model SHALL track `DECODE-COEFF-BASE-CDF-ROWS` as a
+distinct crate-private row named `coeff-base-cdf-rows`. The row SHALL mark only
+loaded-but-unread tile CDF row storage, selection, and lifecycle coverage for
+ordinary non-IDTX coefficient base, base-EOB, and base-range symbol families as
+supported, and SHALL keep coefficient symbol reads, nonzero coefficient writes,
+`read_quant`, dequantization, inverse transform, residual add, and runtime
+nonzero coefficient blocks partial or unsupported until separately implemented.
+
+#### Scenario: Matrix records narrow CDF-row support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix after this change
+- **THEN** `coeff-base-cdf-rows` appears with Feature ID
+  `DECODE-COEFF-BASE-CDF-ROWS`
+- **AND** it cites AV2 § 8.3.2 and § 9.3 as the CDF-selection/default-table
+  boundary
+- **AND** it names focused tests for generated-default loading, selector bounds
+  errors, tile-copy non-aliasing, and mutable row handoff
+- **AND** it does not claim runtime coefficient symbol reads or output support
+
+### Requirement: Coefficient base symbol-read support
+The decoder support model SHALL track `DECODE-COEFF-BASE-SYMBOL-READ` as a
+distinct crate-private row named `coeff-base-symbol-read`. The row SHALL mark
+only ordinary non-FSC coefficient base/base-EOB/base-range symbol-read sequencing
+over caller-resolved scan and selector facts as implemented, and SHALL keep
+runtime coefficient-state writes, `read_quant`, reconstruction, and broad
+`decode_block()` support partial or unsupported until separately implemented.
+
+#### Scenario: Matrix records narrow symbol-read support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix after this change
+- **THEN** `coeff-base-symbol-read` appears with Feature ID
+  `DECODE-COEFF-BASE-SYMBOL-READ`
+- **AND** it cites AV2 §5.20.7.27 and §8.3.2 as the coefficient-loop read-order
+  and CDF-selection boundary
+- **AND** it names focused tests for direct-read equivalence, scan-entry
+  matching, base-range conditional reads, disabled CDF updates, and
+  invalid-selector no-consumption behavior
+- **AND** it does not claim nonzero `Quant[]` output, `read_quant`,
+  reconstruction, external decoder invocation, public API, or broad runtime
+  `decode_tile()` support
+
+### Requirement: Coefficient level state-write support
+The decoder support model SHALL track `DECODE-COEFF-LEVEL-STATE-WRITE` as a
+distinct crate-private row named `coeff-level-state-write`. The row SHALL mark
+only ordinary non-FSC decoded level application into local `Level[]` state as
+implemented, and SHALL keep sign reads, `QuantSign[]`, `Quant[]`, `read_quant`,
+reconstruction, and broad `decode_block()` support partial or unsupported until
+separately implemented.
+
+#### Scenario: Matrix records narrow level-write support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix after this change
+- **THEN** `coeff-level-state-write` appears with Feature ID
+  `DECODE-COEFF-LEVEL-STATE-WRITE`
+- **AND** it cites AV2 §5.20.7.27 as the `Level[row][col] = level`
+  state-application boundary
+- **AND** it names focused tests for row-major placement, untouched quantization
+  state, scan-entry mismatch rejection, and mismatched geometry rejection
+- **AND** it does not claim sign reads, nonzero `Quant[]` output, `read_quant`,
+  reconstruction, external decoder invocation, public API, or broad runtime
+  `decode_tile()` support
