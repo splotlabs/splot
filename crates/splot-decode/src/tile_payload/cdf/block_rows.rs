@@ -12,6 +12,7 @@ use splot_core::tables::cdf::{
     DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
+use super::coeff_rows::{CoeffCdfRows, CoeffCdfSelector};
 use super::{CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_row, scale_cdf_count};
 
 const Y_MODE_SET_CDF_ROW_LEN: usize = 5;
@@ -137,6 +138,8 @@ pub(crate) enum BlockCdfSelector {
         /// DC-sign context (`0..DC_SIGN_CONTEXTS`).
         ctx: usize,
     },
+    /// Ordinary non-IDTX coefficient base/base-EOB/base-range CDF rows.
+    Coeff(CoeffCdfSelector),
 }
 
 /// Supported block-symbol CDF arrays for the minimal flat-intra trace.
@@ -156,6 +159,7 @@ pub(crate) struct BlockCdfRows {
     pub(super) eob_pt_512: EobPt512CdfRows,
     pub(super) eob_pt_1024: EobPt1024CdfRows,
     pub(super) dc_sign: DcSignCdfRows,
+    pub(super) coeff: CoeffCdfRows,
 }
 
 impl BlockCdfRows {
@@ -175,6 +179,7 @@ impl BlockCdfRows {
             eob_pt_512: DEFAULT_EOB_PT_512_CDF,
             eob_pt_1024: DEFAULT_EOB_PT_1024_CDF,
             dc_sign: DEFAULT_DC_SIGN_CDF,
+            coeff: CoeffCdfRows::from_defaults(),
         }
     }
 
@@ -202,7 +207,7 @@ impl BlockCdfRows {
                 let coeff_cdf_q_ctx =
                     checked_coeff_cdf_q_context(TileCdfArray::TxbSkip, coeff_cdf_q_ctx)?;
                 let plane_type = checked_plane_type(TileCdfArray::TxbSkip, plane_type)?;
-                let tx_size = checked_tx_size(tx_size)?;
+                let tx_size = checked_tx_size(TileCdfArray::TxbSkip, tx_size)?;
                 let row = self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size]
                     .get(ctx)
                     .ok_or(TileCdfError::SelectorOutOfRange {
@@ -281,6 +286,7 @@ impl BlockCdfRows {
                 )?;
                 Ok(row.as_slice())
             }
+            BlockCdfSelector::Coeff(selector) => self.coeff.row(selector),
         }
     }
 
@@ -312,7 +318,7 @@ impl BlockCdfRows {
                 let coeff_cdf_q_ctx =
                     checked_coeff_cdf_q_context(TileCdfArray::TxbSkip, coeff_cdf_q_ctx)?;
                 let plane_type = checked_plane_type(TileCdfArray::TxbSkip, plane_type)?;
-                let tx_size = checked_tx_size(tx_size)?;
+                let tx_size = checked_tx_size(TileCdfArray::TxbSkip, tx_size)?;
                 let max_exclusive = self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size].len();
                 let row = self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size]
                     .get_mut(ctx)
@@ -394,6 +400,7 @@ impl BlockCdfRows {
                 )?;
                 Ok(row.as_mut_slice())
             }
+            BlockCdfSelector::Coeff(selector) => self.coeff.row_mut(selector),
         }
     }
 
@@ -460,6 +467,7 @@ impl BlockCdfRows {
         {
             avg_cdf_row(frame_row, tile_row, tile_num, num_log2);
         }
+        self.coeff.avg_from_tile(tile_num, &tile.coeff, num_log2);
     }
 
     pub(crate) fn scale_counts_for_frame_end_update(&mut self) {
@@ -495,6 +503,7 @@ impl BlockCdfRows {
         for row in self.dc_sign.iter_mut().flatten().flatten().flatten() {
             scale_cdf_count(row);
         }
+        self.coeff.scale_counts_for_frame_end_update();
     }
 
     #[cfg(test)]
@@ -606,10 +615,10 @@ fn checked_plane_type(array: TileCdfArray, plane_type: usize) -> Result<usize, T
     Ok(plane_type)
 }
 
-fn checked_tx_size(tx_size: usize) -> Result<usize, TileCdfError> {
+fn checked_tx_size(array: TileCdfArray, tx_size: usize) -> Result<usize, TileCdfError> {
     if tx_size >= TX_SIZE_CONTEXTS {
         return Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::TxbSkip,
+            array,
             index_name: "tx_size",
             actual: tx_size,
             max_exclusive: TX_SIZE_CONTEXTS,
