@@ -17,6 +17,10 @@ planning and status; it does not claim encoder behavior exists.
 - `ENC-SYNTAX-IR` adds a private deterministic planning model for future
   sequence/frame/tile/block/token decisions. It is not re-exported, owns no bit
   writer, and does not produce packets.
+- `ENC-MINIMAL-HEADER-PLAN` adds a private bridge from current encoder
+  configuration and first-frame metadata to typed sequence/frame/tile-group
+  header intent. It rejects unsupported formats and mismatches, is not
+  re-exported, owns no writer, and does not produce packets.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile
@@ -34,8 +38,8 @@ planning and status; it does not claim encoder behavior exists.
 - This is still syntax/framing support, not an encoder. Coded tile payload
   generation is missing because encoder-owned §8.3 token/CDF selection and the
   AV2 `decode_tile()` body path remain unimplemented.
-- The private syntax IR can stage future writer inputs, but no IR-to-writer
-  serialization path exists yet.
+- The private syntax IR and minimal header plan can stage future writer inputs,
+  but no IR-to-writer serialization path exists yet.
 - Inter first-group tile-group composition remains blocked on inter frame-header
   writer support.
 - Partial or unimplemented syntax models must be rejected by writers rather than
@@ -64,11 +68,11 @@ planning and status; it does not claim encoder behavior exists.
 
 ## Active ownership baseline
 
-As of the `encoder-syntax-ir` branch point on 2026-06-18, PR #247 has merged into
-`main` as `f19c95db`, PR #248 has merged into `main` as `6a9184a3`, and this
-branch is based on `origin/main` at `6a9184a3`. No sibling PR is open against
-`main`; the generated status-doc intersections from the prior encoder and decode
-work are now part of the base, and no semantic overlap remains.
+As of the `encoder-minimal-header-plan` branch point on 2026-06-18, PR #267 has
+merged into `main` as `66a941a`, and this branch is based on `origin/main` at
+`66a941a`. No sibling PR is open against `main`; the generated status-doc
+intersections from the prior encoder and decode work are now part of the base,
+and no semantic overlap remains.
 
 ## Parked work
 

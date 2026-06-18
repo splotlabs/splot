@@ -25,6 +25,7 @@ pub mod context;
 mod core_boundary;
 pub mod error;
 pub mod frame;
+mod header_plan;
 mod recon_boundary;
 pub mod runtime;
 mod syntax_ir;
