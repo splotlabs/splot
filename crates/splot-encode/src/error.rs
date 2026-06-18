@@ -242,6 +242,114 @@ pub enum Error {
         scale: i32,
     },
 
+    /// A quantization block shape is outside the current supported subset.
+    #[error(
+        "encoder quantization for plane {plane:?} supports only {expected_width}x{expected_height}, got block {block:?}"
+    )]
+    QuantizationUnsupportedShape {
+        /// Plane whose quantization was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Supported quantization width in samples.
+        expected_width: usize,
+        /// Supported quantization height in samples.
+        expected_height: usize,
+    },
+
+    /// A fixed quantizer index is outside the active bit-depth range.
+    #[error("encoder quantizer index {qindex} is outside {bit_depth:?} range 0..={max}")]
+    QuantizationQIndexOutOfRange {
+        /// Active decoded bit depth.
+        bit_depth: splot_recon::BitDepth,
+        /// Requested quantizer index.
+        qindex: u32,
+        /// Maximum legal quantizer index for the active bit depth.
+        max: u32,
+    },
+
+    /// A dequant denominator is invalid.
+    #[error("encoder quantization dequant denominator must be non-zero, got {dq_denom}")]
+    QuantizationInvalidDequantDenominator {
+        /// Requested dequant denominator.
+        dq_denom: u32,
+    },
+
+    /// A transform coefficient is outside the supported dequant-visible range.
+    #[error(
+        "encoder quantization coefficient {coefficient_index} for plane {plane:?}, block {block:?} is {value}, outside {bit_depth:?} dequant-visible range {min}..={max}"
+    )]
+    QuantizationCoefficientOutOfRange {
+        /// Plane whose quantization was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Row-major coefficient index.
+        coefficient_index: usize,
+        /// Transform coefficient value.
+        value: i32,
+        /// Minimum supported coefficient value.
+        min: i32,
+        /// Maximum supported coefficient value.
+        max: i32,
+        /// Active decoded bit depth.
+        bit_depth: splot_recon::BitDepth,
+    },
+
+    /// Quantization coefficient arithmetic overflowed.
+    #[error(
+        "encoder quantization arithmetic overflowed while computing {context} for plane {plane:?}, block {block:?}, coefficient {coefficient_index}, value {value}, quantizer {quantizer}, denominator {dq_denom}"
+    )]
+    QuantizationCoefficientOverflow {
+        /// Plane whose quantization was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Row-major coefficient index.
+        coefficient_index: usize,
+        /// Transform coefficient value.
+        value: i32,
+        /// Resolved quantizer value.
+        quantizer: u32,
+        /// Dequant denominator.
+        dq_denom: u32,
+        /// Short description of the failed calculation.
+        context: &'static str,
+    },
+
+    /// A quantized coefficient would exceed the AV2 dequant product domain.
+    #[error(
+        "encoder quantization dequant product for plane {plane:?}, block {block:?}, coefficient {coefficient_index} would exceed {max_product}: abs(quantized) {quantized_abs} * quantizer {quantizer}"
+    )]
+    QuantizationDequantProductOverflow {
+        /// Plane whose quantization was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Row-major coefficient index.
+        coefficient_index: usize,
+        /// Absolute quantized coefficient magnitude.
+        quantized_abs: u64,
+        /// Resolved quantizer value.
+        quantizer: u32,
+        /// Maximum supported product before AV2's 24-bit dequant mask would wrap.
+        max_product: u64,
+    },
+
+    /// Decoder-visible dequantization rejected quantized encoder output.
+    #[error(
+        "encoder quantization dequant handoff failed for plane {plane:?}, block {block:?}: {source}"
+    )]
+    QuantizationDequant {
+        /// Plane whose quantization was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Underlying reconstruction dequantization error.
+        #[source]
+        source: ReconError,
+    },
+
     /// An encoder lifecycle operation is invalid in the current context state.
     #[error("encoder operation {operation:?} is invalid while the context is {state:?}")]
     State {

@@ -4073,6 +4073,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-QUANTIZATION-V0"
+name = "Encoder quantization v0"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["7.14.2", "7.14.4", "7.15.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/quantization.rs"
+openspec_change = "encoder-quantization-v0"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder arithmetic primitive. `FixedQuantizationParams` validates a fixed qindex and dequant denominator for the current 4x4 DCT_DCT DC-only subset, and `QuantizedTransformBlock::dct_dct_4x4_dc_only` maps checked transform coefficients to row-major quantized coefficients, rejects unsupported dequant-visible ranges and dequant product wrap risk, and proves the qindex-zero dequant/inverse handoff through `splot-recon`. This row does not claim quantization matrices, delta-Q, segmentation, lossless mode, coefficient tokenization, entropy/range coding, tile-body emission, packet output, CLI success, rate control, quality behavior, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/quantization.rs::tests", "crates/splot-encode/src/context.rs::tests::syntax_and_header_planning_do_not_enable_packet_output"]
+commands = ["cargo test -p splot-encode quantization --locked", "cargo test -p splot-encode syntax_and_header_planning_do_not_enable_packet_output --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
