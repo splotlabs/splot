@@ -12,10 +12,12 @@ use super::DecodeTileWorkUnit;
 use super::cdf::block_context::{YModeIndexContext, reconstruct_minimal_y_mode, uv_mode_ctx};
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
+use super::coeff_loop::ordinary_pass::{
+    CoeffOrdinaryBranchError, CoeffOrdinaryBranchInput, apply_coeff_ordinary_branch,
+};
 use super::coeff_loop::{
-    AllZeroCoeffBlockInput, CoeffBlockEobBranchInput, CoeffLoopContextError,
-    LumaAllZeroContextInput, VAllZeroContextInput, luma_all_zero_context,
-    read_coeff_block_eob_branch, v_all_zero_context,
+    AllZeroCoeffBlockInput, CoeffLoopContextError, LumaAllZeroContextInput, VAllZeroContextInput,
+    luma_all_zero_context, v_all_zero_context,
 };
 use super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
 
@@ -109,6 +111,12 @@ pub(crate) enum MinimalBlockSymbolTraceError {
     CoeffLoopContext {
         /// Source coefficient-loop context error.
         source: CoeffLoopContextError,
+    },
+    /// Coefficient-loop ordinary branch handoff failed.
+    #[error("minimal block-symbol trace coefficient ordinary branch failed: {source}")]
+    CoeffOrdinaryBranch {
+        /// Source coefficient-loop ordinary branch error.
+        source: CoeffOrdinaryBranchError,
     },
     /// `exit_symbol()` rejected the tile payload suffix.
     #[error("minimal block-symbol trace exit_symbol failed: {source}")]
@@ -211,11 +219,11 @@ fn consume_trace(
         0,
         LUMA_OR_U_ALL_ZERO_TRANSFORM_REASON,
     )?;
-    read_coeff_block_eob_branch(
+    apply_coeff_ordinary_branch(
         &mut coeff_context,
         cdfs,
         symbols,
-        CoeffBlockEobBranchInput::AllZero(AllZeroCoeffBlockInput {
+        CoeffOrdinaryBranchInput::AllZero(AllZeroCoeffBlockInput {
             plane: 0,
             x4: 0,
             y4: 0,
@@ -223,7 +231,7 @@ fn consume_trace(
             h4: MINIMAL_LUMA_TX_H4,
         }),
     )
-    .map_err(|source| MinimalBlockSymbolTraceError::CoeffLoopContext { source })?;
+    .map_err(|source| MinimalBlockSymbolTraceError::CoeffOrdinaryBranch { source })?;
 
     // uv_mode (§ 8.3.2 context = `is_directional_mode(YMode)`; DC_PRED -> 0).
     decode_block_symbol(
@@ -267,11 +275,11 @@ fn consume_trace(
         0,
         V_ALL_ZERO_TRANSFORM_REASON,
     )?;
-    read_coeff_block_eob_branch(
+    apply_coeff_ordinary_branch(
         &mut coeff_context,
         cdfs,
         symbols,
-        CoeffBlockEobBranchInput::AllZero(AllZeroCoeffBlockInput {
+        CoeffOrdinaryBranchInput::AllZero(AllZeroCoeffBlockInput {
             plane: 2,
             x4: 0,
             y4: 0,
@@ -279,7 +287,7 @@ fn consume_trace(
             h4: MINIMAL_CHROMA_TX_H4,
         }),
     )
-    .map_err(|source| MinimalBlockSymbolTraceError::CoeffLoopContext { source })?;
+    .map_err(|source| MinimalBlockSymbolTraceError::CoeffOrdinaryBranch { source })?;
 
     Ok(())
 }

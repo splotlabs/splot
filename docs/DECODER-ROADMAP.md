@@ -222,9 +222,12 @@ above/left level and DC context lines through `TileCoeffContextState`.
 the ordinary nonzero pass reads `AboveDcContext[plane]` and
 `LeftDcContext[plane]` from that same `TileCoeffContextState` before sign-source
 derivation, then commits the final context lines after the pass succeeds.
-The minimal trace uses the handoff only for the existing luma and V all-zero
-applications. Runtime integration of nonzero coefficient blocks, tile context
-fact derivation for nonzero blocks, dequantization, and
+`DECODE-COEFF-ORDINARY-BRANCH-HANDOFF` now wraps the caller-decoded `all_zero`
+choice with one ordinary branch boundary: the minimal trace uses its all-zero
+arm for the existing luma and V applications without changing output, while the
+nonzero arm composes EOB start with the state-backed ordinary pass for staged
+tests. Runtime integration of nonzero coefficient blocks, tile context fact
+derivation for nonzero blocks, dequantization, and
 reconstruction remain unsupported. The
 § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
