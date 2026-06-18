@@ -12,8 +12,10 @@ use super::base_level_pass::{CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLe
 use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
 use super::max_level::CoeffTransformClass;
 use super::ordinary_pass::{
-    CoeffOrdinaryPassError, CoeffOrdinaryStateContextConfig, CoeffOrdinaryStateContextPassInput,
-    NonZeroCoeffOrdinaryDerivedBasePass, apply_nonzero_coeff_ordinary_pass_with_state_context,
+    CoeffOrdinaryBranch, CoeffOrdinaryBranchError, CoeffOrdinaryBranchInput,
+    CoeffOrdinaryBranchNonZeroInput, CoeffOrdinaryPassError, CoeffOrdinaryStateContextConfig,
+    CoeffOrdinaryStateContextPassInput, NonZeroCoeffOrdinaryDerivedBasePass,
+    apply_coeff_ordinary_branch, apply_nonzero_coeff_ordinary_pass_with_state_context,
 };
 use super::scan_walk::{NonZeroCoeffScanWalk, walk_nonzero_coeff_scan};
 use super::sign_symbol::{CoeffSignCdfSyntax, CoeffSignReadSource};
@@ -169,6 +171,39 @@ fn state_context_pass_for_payload(
     Some((context_state, pass))
 }
 
+fn branch_nonzero_input(
+    start: NonZeroCoeffBlockStartInput,
+    base_config: CoeffBaseDerivedLevelPassConfig,
+    state_context: CoeffOrdinaryStateContextConfig,
+) -> CoeffOrdinaryBranchInput<'static> {
+    CoeffOrdinaryBranchInput::NonZero(CoeffOrdinaryBranchNonZeroInput {
+        start,
+        scan: &DC_ONLY_SCAN,
+        base_config,
+        state_context,
+        lossless: false,
+    })
+}
+
+fn nonzero_start_input() -> NonZeroCoeffBlockStartInput {
+    NonZeroCoeffBlockStartInput {
+        block: AllZeroCoeffBlockInput {
+            plane: 0,
+            x4: 0,
+            y4: 0,
+            w4: 2,
+            h4: 2,
+        },
+        eob: NonZeroCoeffEobContextInput {
+            plane: 0,
+            is_inter: false,
+            tx_width_log2: 3,
+            tx_height_log2: 3,
+            coeff_cdf_q_ctx: 0,
+        },
+    }
+}
+
 fn find_state_context_payload(
     base_config: CoeffBaseDerivedLevelPassConfig,
     state_context: CoeffOrdinaryStateContextConfig,
@@ -190,6 +225,160 @@ fn find_state_context_payload(
         }
     }
     panic!("no state-context ordinary coefficient payload found");
+}
+
+#[test]
+fn coefficient_ordinary_branch_all_zero_preserves_symbol_state() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&[0x80]);
+    let mut context_state = seeded_context_state();
+    let consumed_before = symbols.consumed_bits();
+    let symbols_before = symbols.symbol_count();
+
+    let branch = apply_coeff_ordinary_branch(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        CoeffOrdinaryBranchInput::AllZero(AllZeroCoeffBlockInput {
+            plane: 0,
+            x4: 0,
+            y4: 0,
+            w4: 2,
+            h4: 2,
+        }),
+    )
+    .unwrap();
+
+    let CoeffOrdinaryBranch::AllZero(block) = branch else {
+        panic!("expected all-zero branch");
+    };
+    assert_eq!(block.eob(), 0);
+    assert_eq!(block.cul_level(), 0);
+    assert_eq!(block.dc_category(), 0);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbols_before);
+    assert_eq!(&context_state.above_level(0).unwrap()[0..2], &[0, 0]);
+    assert_eq!(&context_state.left_level(0).unwrap()[0..2], &[0, 0]);
+    assert_eq!(&context_state.above_dc(0).unwrap()[0..2], &[0, 0]);
+    assert_eq!(&context_state.left_dc(0).unwrap()[0..2], &[0, 0]);
+}
+
+#[test]
+fn coefficient_ordinary_branch_nonzero_runs_state_context_pass() {
+    let base_config = luma_base_config(false, false);
+    let state_context = state_context_config();
+    let payload = find_state_context_payload(base_config, state_context, |pass| {
+        dc_sign_ctx_from(pass) == Some(1)
+    });
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&payload);
+    let mut context_state = seeded_context_state();
+
+    let branch = apply_coeff_ordinary_branch(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        branch_nonzero_input(nonzero_start_input(), base_config, state_context),
+    )
+    .unwrap();
+
+    let CoeffOrdinaryBranch::NonZero(pass) = branch else {
+        panic!("expected nonzero branch");
+    };
+    let quant_state = pass.quant_pass().quant_state();
+
+    assert_eq!(dc_sign_ctx_from(&pass), Some(1));
+    assert_eq!(
+        &context_state.above_level(0).unwrap()[0..2],
+        &[quant_state.cul_level(); 2]
+    );
+    assert_eq!(
+        &context_state.left_level(0).unwrap()[0..2],
+        &[quant_state.cul_level(); 2]
+    );
+    assert_eq!(
+        &context_state.above_dc(0).unwrap()[0..2],
+        &[quant_state.dc_category(); 2]
+    );
+    assert_eq!(
+        &context_state.left_dc(0).unwrap()[0..2],
+        &[quant_state.dc_category(); 2]
+    );
+}
+
+#[test]
+fn coefficient_ordinary_branch_invalid_nonzero_start_preserves_mutable_state() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let tile_before = tile.clone();
+    let mut symbols = symbol_decoder(&[0x80]);
+    let consumed_before = symbols.consumed_bits();
+    let symbols_before = symbols.symbol_count();
+    let mut context_state = seeded_context_state();
+    let context_before = context_state.clone();
+    let mut start = nonzero_start_input();
+    start.eob.tx_width_log2 = 1;
+
+    let err = apply_coeff_ordinary_branch(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        branch_nonzero_input(
+            start,
+            luma_base_config(false, false),
+            state_context_config(),
+        ),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffOrdinaryBranchError::Branch(CoeffLoopContextError::InvalidEobTransformLog2 {
+            axis: "width",
+            value: 1,
+            minimum: 2,
+        })
+    ));
+    assert_eq!(context_state, context_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbols_before);
+}
+
+#[test]
+fn coefficient_ordinary_branch_preserves_context_on_ordinary_pass_failure() {
+    let payload = find_state_context_payload(
+        luma_base_config(false, false),
+        state_context_config(),
+        |_| true,
+    );
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&payload);
+    let mut context_state = seeded_context_state();
+    let context_before = context_state.clone();
+
+    let err = apply_coeff_ordinary_branch(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        branch_nonzero_input(
+            nonzero_start_input(),
+            luma_base_config(true, true),
+            state_context_config(),
+        ),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffOrdinaryBranchError::Ordinary(CoeffOrdinaryPassError::BaseDerived(
+            CoeffBaseDerivedLevelPassError::InconsistentParityAndTcq
+        ))
+    ));
+    assert_eq!(context_state, context_before);
 }
 
 fn dc_sign_ctx_from(pass: &NonZeroCoeffOrdinaryDerivedBasePass) -> Option<usize> {

@@ -9938,6 +9938,63 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-ORDINARY-BRANCH-HANDOFF"
+name = "Coefficient ordinary branch handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "5.20.7.28", "8.2.5", "8.3.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass.rs"
+openspec_change = "coeff-ordinary-branch-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private loaded-but-unwired ordinary coefficient branch handoff after caller-decoded `all_zero` for AV2 §5.20.7.27. `apply_coeff_ordinary_branch` preserves the existing all-zero branch by delegating to the EOB branch helper, and routes nonzero branches through nonzero EOB start plus `apply_nonzero_coeff_ordinary_pass_with_state_context`, so state-backed DC sign-source reads and final above/left context commits share one branch-level caller boundary. The minimal block-symbol trace now uses the handoff's all-zero arm without output change. Tests cover all-zero no-consumption behavior, nonzero state-backed ordinary pass success, invalid nonzero-start no-consumption behavior, and ordinary-pass failure preserving tile coefficient context state. This feature remains partial: runtime `coeffs()` still does not derive nonzero transform-block facts or call this wrapper from broad block syntax, scan, geometry, plane, transform-class, parity, TCQ, and lossless facts are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_state_context_tests.rs::coefficient_ordinary_branch_all_zero_preserves_symbol_state",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_state_context_tests.rs::coefficient_ordinary_branch_nonzero_runs_state_context_pass",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_state_context_tests.rs::coefficient_ordinary_branch_invalid_nonzero_start_preserves_mutable_state",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_state_context_tests.rs::coefficient_ordinary_branch_preserves_context_on_ordinary_pass_failure",
+]
+commands = [
+    "cargo test -p splot-decode ordinary_state_context --locked",
+    "cargo test -p splot-decode block_symbol --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_state_context_tests.rs",
+    "crates/splot-decode/src/tile_payload/block_symbol.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/branch.rs",
+    "crates/splot-decode/src/tile_payload/coeff_state.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"
 name = "Tile CDF save lifecycle boundary"
 category = "infrastructure"

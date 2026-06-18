@@ -772,6 +772,20 @@ local_reference_evidence = []
 notes = "Adds a crate-private loaded-but-unwired ordinary non-FSC nonzero coefficient-pass state-context handoff. `apply_nonzero_coeff_ordinary_pass_with_state_context` reads `AboveDcContext[plane]` and `LeftDcContext[plane]` from `TileCoeffContextState` before derived sign-source selection, then delegates to the existing derived-base/context-commit path so the same state object receives the final `culLevel` and `dcCategory` context-line update after the pass succeeds. Tests prove seeded DC context read-before-write behavior, ordinary-pass failure preserving tile context lines, and invalid context-update geometry preserving pre-existing context lines after the pass succeeds. This row remains partial: runtime `coeffs()` does not call this wrapper, scan, geometry, plane, transform-class, parity, TCQ, and lossless facts are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
 
 [[row]]
+id = "coeff-ordinary-branch-handoff"
+name = "Coefficient ordinary branch handoff"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-HANDOFF"
+spec_sections = ["5.20.7.27", "5.20.7.28", "8.2.5", "8.3.2"]
+parser_source = "crates/splot-core/src/symbol.rs; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass.rs; crates/splot-decode/src/tile_payload/block_symbol.rs; crates/splot-decode/src/tile_payload/coeff_state.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/ordinary_state_context_tests.rs::coefficient_ordinary_branch_all_zero_preserves_symbol_state", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_state_context_tests.rs::coefficient_ordinary_branch_nonzero_runs_state_context_pass", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_state_context_tests.rs::coefficient_ordinary_branch_invalid_nonzero_start_preserves_mutable_state", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_state_context_tests.rs::coefficient_ordinary_branch_preserves_context_on_ordinary_pass_failure", "cargo test -p splot-decode ordinary_state_context --locked", "cargo test -p splot-decode block_symbol --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds a crate-private loaded-but-unwired ordinary coefficient branch handoff after caller-decoded `all_zero`. `apply_coeff_ordinary_branch` keeps the all-zero branch on the existing EOB branch helper and routes nonzero branches through nonzero EOB start plus the state-backed ordinary non-FSC pass, allowing one caller boundary to read state-backed DC sign-source context and commit final above/left context state. The minimal all-zero block-symbol trace now calls the handoff's all-zero arm without output change. Tests prove all-zero no-consumption behavior, nonzero state-backed ordinary pass success, invalid nonzero-start no-consumption behavior, and ordinary-pass failure preserving tile coefficient context state. This row remains partial: broad runtime `coeffs()` still does not derive nonzero transform-block facts or call this wrapper from real block syntax, scan, geometry, plane, transform-class, parity, TCQ, and lossless facts are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
 id = "coeff-base-derived-level-pass"
 name = "Coefficient base derived level pass"
 feature_id = "DECODE-COEFF-BASE-DERIVED-LEVEL-PASS"

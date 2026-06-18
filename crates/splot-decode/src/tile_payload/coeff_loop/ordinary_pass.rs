@@ -7,7 +7,8 @@
 //! `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS`,
 //! `DECODE-COEFF-ORDINARY-DERIVED-SIGN-PASS`,
 //! `DECODE-COEFF-NONZERO-CONTEXT-COMMIT`,
-//! `DECODE-COEFF-STATE-CONTEXT-HANDOFF`.
+//! `DECODE-COEFF-STATE-CONTEXT-HANDOFF`,
+//! `DECODE-COEFF-ORDINARY-BRANCH-HANDOFF`.
 
 use splot_core::symbol::SymbolDecoder;
 
@@ -23,7 +24,10 @@ use super::base_symbol::{
     CoeffBaseSymbolRead, CoeffBaseSymbolReadError, CoeffBaseSymbolReadInput,
     read_nonzero_coeff_base_symbols,
 };
-use super::branch::NonZeroCoeffBlockStart;
+use super::branch::{
+    CoeffBlockEobBranch, CoeffBlockEobBranchInput, NonZeroCoeffBlockStart,
+    NonZeroCoeffBlockStartInput, read_coeff_block_eob_branch,
+};
 use super::level_state::{CoeffLevelStateWriteError, apply_nonzero_coeff_base_levels};
 use super::max_level::{CoeffMaxLevelConfig, derive_nonzero_coeff_max_levels};
 use super::quant_pass::{
@@ -41,7 +45,9 @@ use super::sign_symbol::{
     CoeffSignSourceDeriveConfig, CoeffSignSourceDeriveError, derive_nonzero_coeff_sign_inputs,
     preflight_nonzero_coeff_signs, read_preflighted_nonzero_coeff_sign,
 };
-use super::{CoeffLoopContextError, NonZeroCoeffEobSymbolRead};
+use super::{
+    AllZeroCoeffBlock, AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffEobSymbolRead,
+};
 
 /// Caller-resolved facts for the loaded ordinary non-FSC coefficient pass.
 pub(crate) struct CoeffOrdinaryPassInput<'a> {
@@ -86,6 +92,28 @@ pub(crate) struct CoeffOrdinaryDerivedBasePassInput<'a> {
 pub(crate) struct CoeffOrdinaryStateContextPassInput<'a> {
     /// Decoded nonzero EOB and zeroed local coefficient state.
     pub(crate) start: NonZeroCoeffBlockStart,
+    /// Caller-resolved `scan = get_scan(txSz, txClass)` raster positions.
+    pub(crate) scan: &'a [u16],
+    /// Caller-resolved facts for deriving base selectors and first-pass state.
+    pub(crate) base_config: CoeffBaseDerivedLevelPassConfig,
+    /// Caller-resolved facts for reading and committing tile context lines.
+    pub(crate) state_context: CoeffOrdinaryStateContextConfig,
+    /// Caller-resolved lossless flag for the quantized-state update.
+    pub(crate) lossless: bool,
+}
+
+/// Caller-selected ordinary coefficient branch after `all_zero`.
+pub(crate) enum CoeffOrdinaryBranchInput<'a> {
+    /// Decoded `all_zero == 1`.
+    AllZero(AllZeroCoeffBlockInput),
+    /// Decoded `all_zero == 0`.
+    NonZero(CoeffOrdinaryBranchNonZeroInput<'a>),
+}
+
+/// Caller-resolved facts for the ordinary nonzero branch.
+pub(crate) struct CoeffOrdinaryBranchNonZeroInput<'a> {
+    /// Caller-resolved facts for nonzero EOB start.
+    pub(crate) start: NonZeroCoeffBlockStartInput,
     /// Caller-resolved `scan = get_scan(txSz, txClass)` raster positions.
     pub(crate) scan: &'a [u16],
     /// Caller-resolved facts for deriving base selectors and first-pass state.
@@ -208,6 +236,19 @@ pub(crate) struct NonZeroCoeffOrdinaryDerivedBasePass {
     block: TransformCoeffBlockState,
 }
 
+/// Result of the ordinary coefficient branch handoff.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "crate-private coefficient handoff avoids boxing the hot-path nonzero pass result"
+)]
+pub(crate) enum CoeffOrdinaryBranch {
+    /// All-zero coefficient state was applied.
+    AllZero(AllZeroCoeffBlock),
+    /// Nonzero ordinary coefficient pass completed and committed context state.
+    NonZero(NonZeroCoeffOrdinaryDerivedBasePass),
+}
+
 impl NonZeroCoeffOrdinaryDerivedBasePass {
     /// Decoded nonzero EOB syntax carried from block start.
     #[must_use]
@@ -291,6 +332,92 @@ pub(crate) enum CoeffOrdinaryPassError {
     /// End-of-`coeffs()` tile context-line update failed.
     #[error("ordinary coefficient pass context update failed: {0}")]
     ContextUpdate(#[from] TileCoeffStateError),
+}
+
+/// Error returned by the ordinary coefficient branch handoff.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum CoeffOrdinaryBranchError {
+    /// EOB branch handoff failed.
+    #[error("ordinary coefficient branch handoff failed: {0}")]
+    Branch(#[from] CoeffLoopContextError),
+    /// Nonzero ordinary coefficient pass failed.
+    #[error("ordinary coefficient branch nonzero pass failed: {0}")]
+    Ordinary(#[from] CoeffOrdinaryPassError),
+    /// Internal branch routing returned a different branch than requested.
+    #[error(
+        "ordinary coefficient branch returned unexpected {actual} arm while expecting {expected}"
+    )]
+    UnexpectedBranch {
+        /// Expected branch arm.
+        expected: &'static str,
+        /// Actual branch arm.
+        actual: &'static str,
+    },
+}
+
+/// Dispatches the ordinary coefficient branch after caller-decoded `all_zero`.
+///
+/// This mirrors the AV2 § 5.20.7.27 `coeffs()` all-zero branch
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`). The all-zero
+/// arm preserves the existing context-state application. The nonzero arm first
+/// initializes and reads the EOB start, then runs the state-backed ordinary
+/// non-FSC pass. Runtime transform-block syntax fact derivation,
+/// dequantization, inverse transform, residual add, and reconstruction remain
+/// out of scope.
+pub(crate) fn apply_coeff_ordinary_branch(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffOrdinaryBranchInput<'_>,
+) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
+    match input {
+        CoeffOrdinaryBranchInput::AllZero(input) => {
+            match read_coeff_block_eob_branch(
+                state,
+                cdfs,
+                symbols,
+                CoeffBlockEobBranchInput::AllZero(input),
+            )? {
+                CoeffBlockEobBranch::AllZero(block) => Ok(CoeffOrdinaryBranch::AllZero(block)),
+                CoeffBlockEobBranch::NonZero(_) => {
+                    Err(CoeffOrdinaryBranchError::UnexpectedBranch {
+                        expected: "all-zero",
+                        actual: "nonzero",
+                    })
+                }
+            }
+        }
+        CoeffOrdinaryBranchInput::NonZero(input) => {
+            let start = match read_coeff_block_eob_branch(
+                state,
+                cdfs,
+                symbols,
+                CoeffBlockEobBranchInput::NonZero(input.start),
+            )? {
+                CoeffBlockEobBranch::NonZero(start) => start,
+                CoeffBlockEobBranch::AllZero(_) => {
+                    return Err(CoeffOrdinaryBranchError::UnexpectedBranch {
+                        expected: "nonzero",
+                        actual: "all-zero",
+                    });
+                }
+            };
+            apply_nonzero_coeff_ordinary_pass_with_state_context(
+                state,
+                cdfs,
+                symbols,
+                CoeffOrdinaryStateContextPassInput {
+                    start,
+                    scan: input.scan,
+                    base_config: input.base_config,
+                    state_context: input.state_context,
+                    lossless: input.lossless,
+                },
+            )
+            .map(CoeffOrdinaryBranch::NonZero)
+            .map_err(CoeffOrdinaryBranchError::from)
+        }
+    }
 }
 
 /// Runs the loaded ordinary non-FSC coefficient pass from nonzero EOB start.
