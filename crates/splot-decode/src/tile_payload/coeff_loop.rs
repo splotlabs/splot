@@ -34,6 +34,7 @@ mod branch;
 pub(crate) use branch::{CoeffBlockEobBranchInput, read_coeff_block_eob_branch};
 pub(crate) mod level_state;
 pub(crate) mod quant_state;
+pub(crate) mod read_quant;
 mod scan_walk;
 pub(crate) mod sign_symbol;
 /// Caller-resolved facts for luma § 8.3.2 `all_zero` context derivation.
@@ -639,7 +640,6 @@ fn adjusted_coeff_extent(size4: usize) -> usize {
         .saturating_mul(COEFFS_PER_4X4)
         .min(MAX_ADJUSTED_COEFF_EXTENT)
 }
-
 #[cfg(test)]
 mod base_symbol_tests;
 #[cfg(test)]
