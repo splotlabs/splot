@@ -187,7 +187,13 @@ pub(crate) fn read_nonzero_coeff_base_symbols(
     Ok(reads)
 }
 
-fn read_coeff_base_symbol(
+/// Reads one ordinary non-FSC §5.20.7.27 coefficient base/base-range symbol pair.
+///
+/// This is the single-entry primitive used when selector derivation depends on
+/// `Level[]` updates from earlier scan entries. Batch callers should normally
+/// use [`read_nonzero_coeff_base_symbols`] so scan-entry cardinality is checked
+/// in one place.
+pub(crate) fn read_coeff_base_symbol(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     input: CoeffBaseSymbolReadInput,

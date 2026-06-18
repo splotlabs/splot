@@ -193,10 +193,17 @@ scan walk, base-symbol reads, local `Level[]` writes, and the per-coefficient
 interleaved sign, `maxLevel`, `read_quant`, and signed `Quant[]` write steps
 over caller-resolved scan, selector, plane, transform-class, hidden, sumAbs1,
 TCQ, and lossless facts while resetting `hrLevelAvg` to 0 at block entry. These
-boundaries are not wired into runtime `coeffs()` yet. The minimal trace uses the
-handoff only for the existing luma and V all-zero applications. Runtime selector
-derivation, tile context writes for nonzero blocks, and runtime nonzero
-coefficient blocks remain unsupported. The
+boundaries are not wired into runtime `coeffs()` yet. A crate-private
+state-derived first pass (`DECODE-COEFF-BASE-DERIVED-LEVEL-PASS`) now derives
+`coeff_base_eob`, later `coeff_base`, and conditional `coeff_br` selectors from
+the evolving local `Level[]`, updates first-pass `tcqState`, `sumAbs1`, `numNz`,
+and `isHidden`, and writes each decoded `Level[row][col]` before deriving the
+next selector; it remains loaded-but-unwired and reports unsupported if the
+not-yet-loaded parity-hidden-only `TileCoeffBasePhCdf` row is actually selected.
+The minimal trace uses the handoff only for the existing luma and V all-zero
+applications. Runtime integration of nonzero coefficient selector derivation,
+tile context writes for nonzero blocks, and runtime nonzero coefficient blocks
+remain unsupported. The
 § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the
