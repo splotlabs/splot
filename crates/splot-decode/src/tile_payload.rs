@@ -17,6 +17,7 @@
 
 mod block_symbol;
 mod cdf;
+mod coeff_state;
 mod input;
 mod mi_size_state;
 mod partition;
