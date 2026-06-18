@@ -83,13 +83,26 @@ pub(crate) const fn coeff_base_bob_ctx(bob: usize, seg_eob: usize) -> usize {
     }
 }
 
+// Compile-time spec-contract checks. These `const` items are the non-test
+// consumer of the two context derivations until the §5.20.7.27 `coeffs()` decode
+// loop wires them: they pin the §8.3.2 contract at the four/three boundaries
+// (TX_32X32 geometry: numCoeffs = 32 << 5 = 1024, so thresholds 128 and 256;
+// segEob = 64, so thresholds 8 and 16) so any drift fails the build.
+const _COEFF_BASE_EOB_CONTRACT: () = {
+    assert!(coeff_base_eob_ctx(0, 5, 32) == 0);
+    assert!(coeff_base_eob_ctx(128, 5, 32) == 1);
+    assert!(coeff_base_eob_ctx(256, 5, 32) == 2);
+    assert!(coeff_base_eob_ctx(257, 5, 32) == 3);
+};
+const _COEFF_BASE_BOB_CONTRACT: () = {
+    assert!(coeff_base_bob_ctx(0, 64) == 0);
+    assert!(coeff_base_bob_ctx(16, 64) == 1);
+    assert!(coeff_base_bob_ctx(17, 64) == 2);
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // A fixed PlaneTxType/position resolves at compile time (const fn).
-    const _CONST_EOB_CHECK: () = assert!(coeff_base_eob_ctx(0, 5, 32) == 0);
-    const _CONST_BOB_CHECK: () = assert!(coeff_base_bob_ctx(0, 64) == 0);
 
     #[test]
     fn coeff_base_eob_partitions_the_scan_position() {
