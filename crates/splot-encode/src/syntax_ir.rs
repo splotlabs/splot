@@ -45,11 +45,53 @@ pub(crate) enum SyntaxIrError {
         next: PlanOrderKey,
     },
 
+    #[error(
+        "{collection} index is not zero-based and contiguous: expected position {expected}, actual {actual:?}"
+    )]
+    NonContiguousIndex {
+        collection: &'static str,
+        expected: usize,
+        actual: PlanOrderKey,
+    },
+
+    #[error("frame {frame:?} {field} does not match the sequence plan")]
+    FrameFormatMismatch { frame: FrameId, field: &'static str },
+
+    #[error(
+        "frame {frame:?} visible luma size {visible_luma_size:?} exceeds coded luma size {coded_luma_size:?}"
+    )]
+    FrameLumaSizeOutOfBounds {
+        frame: FrameId,
+        coded_luma_size: PlaneSize,
+        visible_luma_size: PlaneSize,
+    },
+
+    #[error("syntax event {event:?} references {actual:?}, expected {expected:?}")]
+    ReferenceMismatch {
+        event: SyntaxEventIndex,
+        expected: PlanOrderKey,
+        actual: PlanOrderKey,
+    },
+
+    #[error("syntax event {event:?} references missing {reference:?} in {scope}")]
+    InvalidReference {
+        event: SyntaxEventIndex,
+        reference: PlanOrderKey,
+        scope: &'static str,
+    },
+
     #[error("duplicate quantized coefficient index {index:?}")]
     DuplicateCoefficient { index: CoefficientIndex },
 
     #[error("quantized coefficient {index:?} has zero value")]
     ZeroCoefficient { index: CoefficientIndex },
+
+    #[error("block {block:?} coefficient eob {eob} exceeds transform area {area}")]
+    CoefficientsOutsideTransform {
+        block: BlockIndex,
+        eob: usize,
+        area: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -163,6 +205,7 @@ impl SequencePlan {
             |frame| frame.info.id(),
             PlanOrderKey::Frame,
         )?;
+        validate_sequence_frame_info(coded_luma_size, bit_depth, chroma_subsampling, &frames)?;
         let syntax_event_count = sum_counts(
             "sequence syntax events",
             frames.iter().map(FramePlan::event_count),
@@ -213,7 +256,14 @@ pub(crate) struct FramePlan {
 impl FramePlan {
     pub(crate) fn new(info: FrameInfo, tiles: Vec<TilePlan>) -> SyntaxIrResult<Self> {
         check_count("tiles per frame", tiles.len(), MAX_TILES_PER_FRAME)?;
-        validate_strict_order("frame tiles", &tiles, |tile| tile.index, PlanOrderKey::Tile)?;
+        validate_contiguous_order(
+            "frame tiles",
+            &tiles,
+            |tile| tile.index,
+            PlanOrderKey::Tile,
+            |index| usize::try_from(index.get()).ok(),
+        )?;
+        validate_frame_event_references(info.id(), &tiles)?;
         let syntax_event_count = sum_counts(
             "frame syntax events",
             tiles.iter().map(TilePlan::event_count),
@@ -262,23 +312,26 @@ impl TilePlan {
             superblocks.len(),
             MAX_SUPERBLOCKS_PER_TILE,
         )?;
-        validate_strict_order(
+        validate_contiguous_order(
             "tile superblocks",
             &superblocks,
             |superblock| superblock.index,
             PlanOrderKey::SuperBlock,
+            |index| usize::try_from(index.get()).ok(),
         )?;
         check_count(
             "syntax events per tile",
             syntax_events.len(),
             MAX_SYNTAX_EVENTS_PER_TILE,
         )?;
-        validate_strict_order(
+        validate_contiguous_order(
             "tile syntax events",
             &syntax_events,
             SyntaxEvent::index,
             PlanOrderKey::Event,
+            |index| usize::try_from(index.get()).ok(),
         )?;
+        validate_tile_event_references(index, &superblocks, &syntax_events)?;
 
         Ok(Self {
             index,
@@ -317,11 +370,12 @@ impl SuperBlockPlan {
             blocks.len(),
             MAX_BLOCKS_PER_SUPERBLOCK,
         )?;
-        validate_strict_order(
+        validate_contiguous_order(
             "superblock blocks",
             &blocks,
             |block| block.index,
             PlanOrderKey::Block,
+            |index| usize::try_from(index.get()).ok(),
         )?;
         Ok(Self { index, blocks })
     }
@@ -344,18 +398,34 @@ pub(crate) struct BlockDecision {
 }
 
 impl BlockDecision {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         index: BlockIndex,
         prediction: PredictionDecision,
         transform: TransformDecision,
         coefficients: QuantizedCoefficients,
-    ) -> Self {
-        Self {
+    ) -> SyntaxIrResult<Self> {
+        let area = transform
+            .block_size()
+            .width()
+            .checked_mul(transform.block_size().height())
+            .ok_or(SyntaxIrError::CountOverflow {
+                field: "transform coefficient capacity",
+            })?;
+        let eob = coefficients.eob();
+        if eob > area {
+            return Err(SyntaxIrError::CoefficientsOutsideTransform {
+                block: index,
+                eob,
+                area,
+            });
+        }
+
+        Ok(Self {
             index,
             prediction,
             transform,
             coefficients,
-        }
+        })
     }
 
     pub(crate) const fn index(&self) -> BlockIndex {
@@ -458,6 +528,12 @@ impl QuantizedCoefficients {
             .last()
             .map_or(0, |entry| usize::from(entry.index.get()) + 1)
     }
+
+    fn contains(&self, index: CoefficientIndex) -> bool {
+        self.entries
+            .binary_search_by_key(&index, |entry| entry.index)
+            .is_ok()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -548,6 +624,166 @@ fn sum_counts(
     Ok(total)
 }
 
+fn validate_sequence_frame_info(
+    coded_luma_size: PlaneSize,
+    bit_depth: BitDepth,
+    chroma_subsampling: ChromaSubsampling,
+    frames: &[FramePlan],
+) -> SyntaxIrResult<()> {
+    for frame in frames {
+        let info = frame.info();
+        if info.bit_depth() != bit_depth {
+            return Err(SyntaxIrError::FrameFormatMismatch {
+                frame: info.id(),
+                field: "bit depth",
+            });
+        }
+        if info.chroma_subsampling() != chroma_subsampling {
+            return Err(SyntaxIrError::FrameFormatMismatch {
+                frame: info.id(),
+                field: "chroma subsampling",
+            });
+        }
+        let visible_luma_size = info.visible_luma_size();
+        if visible_luma_size.width() > coded_luma_size.width()
+            || visible_luma_size.height() > coded_luma_size.height()
+        {
+            return Err(SyntaxIrError::FrameLumaSizeOutOfBounds {
+                frame: info.id(),
+                coded_luma_size,
+                visible_luma_size,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_frame_event_references(frame_id: FrameId, tiles: &[TilePlan]) -> SyntaxIrResult<()> {
+    for tile in tiles {
+        for event in tile.syntax_events() {
+            if let SyntaxEvent::Frame { index, frame, .. } = event {
+                validate_reference_match(
+                    *index,
+                    PlanOrderKey::Frame(frame_id),
+                    PlanOrderKey::Frame(*frame),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_tile_event_references(
+    tile_index: TileIndex,
+    superblocks: &[SuperBlockPlan],
+    events: &[SyntaxEvent],
+) -> SyntaxIrResult<()> {
+    for event in events {
+        match event {
+            SyntaxEvent::Sequence { .. } | SyntaxEvent::Frame { .. } => {}
+            SyntaxEvent::Tile { index, tile, .. } => {
+                validate_reference_match(
+                    *index,
+                    PlanOrderKey::Tile(tile_index),
+                    PlanOrderKey::Tile(*tile),
+                )?;
+            }
+            SyntaxEvent::Block {
+                index,
+                tile,
+                superblock,
+                block,
+                ..
+            } => {
+                validate_reference_match(
+                    *index,
+                    PlanOrderKey::Tile(tile_index),
+                    PlanOrderKey::Tile(*tile),
+                )?;
+                let superblock_plan = find_superblock(superblocks, *superblock).ok_or(
+                    SyntaxIrError::InvalidReference {
+                        event: *index,
+                        reference: PlanOrderKey::SuperBlock(*superblock),
+                        scope: "tile syntax events",
+                    },
+                )?;
+                find_block(superblock_plan, *block).ok_or(SyntaxIrError::InvalidReference {
+                    event: *index,
+                    reference: PlanOrderKey::Block(*block),
+                    scope: "tile syntax events",
+                })?;
+            }
+            SyntaxEvent::Token {
+                index,
+                tile,
+                superblock,
+                block,
+                coefficient,
+                ..
+            } => {
+                validate_reference_match(
+                    *index,
+                    PlanOrderKey::Tile(tile_index),
+                    PlanOrderKey::Tile(*tile),
+                )?;
+                let superblock_plan = find_superblock(superblocks, *superblock).ok_or(
+                    SyntaxIrError::InvalidReference {
+                        event: *index,
+                        reference: PlanOrderKey::SuperBlock(*superblock),
+                        scope: "tile syntax events",
+                    },
+                )?;
+                let block_plan =
+                    find_block(superblock_plan, *block).ok_or(SyntaxIrError::InvalidReference {
+                        event: *index,
+                        reference: PlanOrderKey::Block(*block),
+                        scope: "tile syntax events",
+                    })?;
+                if !block_plan.coefficients().contains(*coefficient) {
+                    return Err(SyntaxIrError::InvalidReference {
+                        event: *index,
+                        reference: PlanOrderKey::Coefficient(*coefficient),
+                        scope: "tile syntax events",
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn find_superblock(
+    superblocks: &[SuperBlockPlan],
+    index: SuperBlockIndex,
+) -> Option<&SuperBlockPlan> {
+    superblocks
+        .iter()
+        .find(|superblock| superblock.index == index)
+}
+
+fn find_block(superblock: &SuperBlockPlan, index: BlockIndex) -> Option<&BlockDecision> {
+    superblock
+        .blocks()
+        .iter()
+        .find(|block| block.index == index)
+}
+
+fn validate_reference_match(
+    event: SyntaxEventIndex,
+    expected: PlanOrderKey,
+    actual: PlanOrderKey,
+) -> SyntaxIrResult<()> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(SyntaxIrError::ReferenceMismatch {
+            event,
+            expected,
+            actual,
+        })
+    }
+}
+
 fn validate_strict_order<T, K>(
     collection: &'static str,
     items: &[T],
@@ -577,256 +813,30 @@ where
     Ok(())
 }
 
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests {
-    use super::*;
-
-    fn size(width: usize, height: usize) -> PlaneSize {
-        PlaneSize::new(width, height).unwrap()
+fn validate_contiguous_order<T, K>(
+    collection: &'static str,
+    items: &[T],
+    key: impl Fn(&T) -> K,
+    order_key: impl Fn(K) -> PlanOrderKey,
+    to_usize: impl Fn(K) -> Option<usize>,
+) -> SyntaxIrResult<()>
+where
+    K: Copy + Ord,
+{
+    validate_strict_order(collection, items, &key, &order_key)?;
+    for (expected, item) in items.iter().enumerate() {
+        let actual = key(item);
+        if to_usize(actual) != Some(expected) {
+            return Err(SyntaxIrError::NonContiguousIndex {
+                collection,
+                expected,
+                actual: order_key(actual),
+            });
+        }
     }
-
-    fn symbol(symbol_id: u16) -> PlanSymbolId {
-        PlanSymbolId::new(symbol_id)
-    }
-
-    fn coefficient(index: u16, value: i32) -> (CoefficientIndex, i32) {
-        (CoefficientIndex::new(index), value)
-    }
-
-    fn sample_block(index: u32) -> BlockDecision {
-        let coefficients =
-            QuantizedCoefficients::new(vec![coefficient(0, 7), coefficient(3, -2)]).unwrap();
-        BlockDecision::new(
-            BlockIndex::new(index),
-            PredictionDecision::intra(symbol(1)),
-            TransformDecision::new(size(4, 4), symbol(2)),
-            coefficients,
-        )
-    }
-
-    fn sample_tile(index: u32) -> TilePlan {
-        let tile = TileIndex::new(index);
-        let superblock =
-            SuperBlockPlan::new(SuperBlockIndex::new(0), vec![sample_block(0)]).unwrap();
-        let events = vec![
-            SyntaxEvent::Sequence {
-                index: SyntaxEventIndex::new(0),
-                symbol: symbol(0),
-            },
-            SyntaxEvent::Frame {
-                index: SyntaxEventIndex::new(1),
-                frame: FrameId::new(0),
-                symbol: symbol(1),
-            },
-            SyntaxEvent::Tile {
-                index: SyntaxEventIndex::new(2),
-                tile,
-                symbol: symbol(2),
-            },
-            SyntaxEvent::Block {
-                index: SyntaxEventIndex::new(3),
-                tile,
-                superblock: SuperBlockIndex::new(0),
-                block: BlockIndex::new(0),
-                symbol: symbol(3),
-            },
-            SyntaxEvent::Token {
-                index: SyntaxEventIndex::new(4),
-                tile,
-                superblock: SuperBlockIndex::new(0),
-                block: BlockIndex::new(0),
-                coefficient: CoefficientIndex::new(3),
-                symbol: symbol(4),
-            },
-        ];
-        TilePlan::new(tile, vec![superblock], events).unwrap()
-    }
-
-    fn sample_frame(frame_id: u64) -> FramePlan {
-        let info = FrameInfo::yuv420_8bit(FrameId::new(frame_id), size(16, 16));
-        FramePlan::new(info, vec![sample_tile(0)]).unwrap()
-    }
-
-    fn sample_sequence() -> SequencePlan {
-        SequencePlan::new(
-            size(16, 16),
-            BitDepth::Eight,
-            ChromaSubsampling::Yuv420,
-            vec![sample_frame(0)],
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn builds_nested_syntax_plan() {
-        let plan = sample_sequence();
-        assert_eq!(plan.coded_luma_size(), size(16, 16));
-        assert_eq!(plan.bit_depth(), BitDepth::Eight);
-        assert_eq!(plan.chroma_subsampling(), ChromaSubsampling::Yuv420);
-        assert_eq!(plan.frames().len(), 1);
-        assert_eq!(plan.event_count(), 5);
-
-        let frame = &plan.frames()[0];
-        assert_eq!(frame.info().id(), FrameId::new(0));
-        assert_eq!(frame.tiles().len(), 1);
-
-        let tile = &frame.tiles()[0];
-        assert_eq!(tile.index().get(), 0);
-        assert_eq!(tile.superblocks().len(), 1);
-        assert_eq!(tile.syntax_events().len(), 5);
-
-        let block = &tile.superblocks()[0].blocks()[0];
-        assert_eq!(block.index().get(), 0);
-        assert_eq!(block.coefficients().entries().len(), 2);
-        assert_eq!(block.coefficients().eob(), 4);
-    }
-
-    #[test]
-    fn rejects_out_of_order_plan_children() {
-        let err = FramePlan::new(
-            FrameInfo::yuv420_8bit(FrameId::new(0), size(16, 16)),
-            vec![sample_tile(1), sample_tile(0)],
-        )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            SyntaxIrError::OutOfOrder {
-                collection: "frame tiles",
-                previous: PlanOrderKey::Tile(TileIndex(1)),
-                next: PlanOrderKey::Tile(TileIndex(0)),
-            }
-        ));
-
-        let err = SuperBlockPlan::new(
-            SuperBlockIndex::new(0),
-            vec![sample_block(1), sample_block(0)],
-        )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            SyntaxIrError::OutOfOrder {
-                collection: "superblock blocks",
-                previous: PlanOrderKey::Block(BlockIndex(1)),
-                next: PlanOrderKey::Block(BlockIndex(0)),
-            }
-        ));
-    }
-
-    #[test]
-    fn rejects_out_of_order_syntax_events_before_returning_plan() {
-        let result = TilePlan::new(
-            TileIndex::new(0),
-            Vec::new(),
-            vec![
-                SyntaxEvent::Tile {
-                    index: SyntaxEventIndex::new(1),
-                    tile: TileIndex::new(0),
-                    symbol: symbol(1),
-                },
-                SyntaxEvent::Frame {
-                    index: SyntaxEventIndex::new(0),
-                    frame: FrameId::new(0),
-                    symbol: symbol(0),
-                },
-            ],
-        );
-
-        assert!(matches!(
-            result,
-            Err(SyntaxIrError::OutOfOrder {
-                collection: "tile syntax events",
-                previous: PlanOrderKey::Event(SyntaxEventIndex(1)),
-                next: PlanOrderKey::Event(SyntaxEventIndex(0)),
-            })
-        ));
-    }
-
-    #[test]
-    fn rejects_duplicate_and_zero_quantized_coefficients() {
-        let err =
-            QuantizedCoefficients::new(vec![coefficient(2, 1), coefficient(2, -1)]).unwrap_err();
-        assert!(matches!(
-            err,
-            SyntaxIrError::DuplicateCoefficient {
-                index: CoefficientIndex(2),
-            }
-        ));
-
-        let err = QuantizedCoefficients::new(vec![coefficient(2, 0)]).unwrap_err();
-        assert!(matches!(
-            err,
-            SyntaxIrError::ZeroCoefficient {
-                index: CoefficientIndex(2),
-            }
-        ));
-
-        let err =
-            QuantizedCoefficients::new(vec![coefficient(3, 1), coefficient(2, 1)]).unwrap_err();
-        assert!(matches!(
-            err,
-            SyntaxIrError::OutOfOrder {
-                collection: "quantized coefficients",
-                previous: PlanOrderKey::Coefficient(CoefficientIndex(3)),
-                next: PlanOrderKey::Coefficient(CoefficientIndex(2)),
-            }
-        ));
-    }
-
-    #[test]
-    fn rejects_planning_count_limit_and_overflow() {
-        let too_many_events = (0..=MAX_SYNTAX_EVENTS_PER_TILE as u32)
-            .map(|index| SyntaxEvent::Sequence {
-                index: SyntaxEventIndex::new(index),
-                symbol: symbol(0),
-            })
-            .collect();
-        let err = TilePlan::new(TileIndex::new(0), Vec::new(), too_many_events).unwrap_err();
-        assert!(matches!(
-            err,
-            SyntaxIrError::CountLimitExceeded {
-                field: "syntax events per tile",
-                actual,
-                limit: MAX_SYNTAX_EVENTS_PER_TILE,
-            } if actual == MAX_SYNTAX_EVENTS_PER_TILE + 1
-        ));
-
-        let err = checked_add_count("syntax events", usize::MAX, 1).unwrap_err();
-        assert!(matches!(
-            err,
-            SyntaxIrError::CountOverflow {
-                field: "syntax events",
-            }
-        ));
-    }
-
-    #[test]
-    fn repeated_construction_has_stable_debug_output_and_event_order() {
-        let first = sample_sequence();
-        let second = sample_sequence();
-
-        assert_eq!(format!("{first:#?}"), format!("{second:#?}"));
-
-        let first_events: Vec<_> = first.frames()[0].tiles()[0]
-            .syntax_events()
-            .iter()
-            .map(SyntaxEvent::index)
-            .collect();
-        let second_events: Vec<_> = second.frames()[0].tiles()[0]
-            .syntax_events()
-            .iter()
-            .map(SyntaxEvent::index)
-            .collect();
-        assert_eq!(first_events, second_events);
-        assert_eq!(
-            first_events,
-            vec![
-                SyntaxEventIndex::new(0),
-                SyntaxEventIndex::new(1),
-                SyntaxEventIndex::new(2),
-                SyntaxEventIndex::new(3),
-                SyntaxEventIndex::new(4),
-            ]
-        );
-    }
+    Ok(())
 }
+
+#[cfg(test)]
+#[path = "syntax_ir_tests.rs"]
+mod tests;
