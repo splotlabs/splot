@@ -119,11 +119,16 @@ the 2D transform consumes), with the `useDdt` `DDTX`/`FDDT` substitution. The
 `RECON-COEFFICIENT-SCAN-ORDER`) is available too: it writes the coefficient scan
 order for a `w * h` block (the anti-diagonal 2D scan and the row/column raster
 scans), a prerequisite for the coefficient decode loop and § 7.14.4 coefficient
-placement. The § 7.14.4 `useQm` / `UserQm` gating and `shift` derivation, the rest
+placement. Its § 8.3.2 `get_tx_class` companion (`tx_class`;
+`RECON-GET-TX-CLASS`) is available too: a `const fn` mapping a `PlaneTxType` to the
+`TransformClass` that selects the scan (the vertical-only and horizontal-only
+transforms to `Vertical`/`Horizontal`, everything else to `TwoD`). The § 7.14.4
+`useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the
 § 7.15.4 DPCM-direction selection and combined transform-parameter resolve helper,
-`get_tx_class`, and the coefficient entropy decode that produces `Quant` remain
-unimplemented.
+the § 5.20.7.29 `compute_tx_type` transform-type computation that produces
+`PlaneTxType`, and the coefficient
+entropy decode that produces `Quant` remain unimplemented.
 `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
 `splot-decode`, then call deterministic reconstruction primitives.
