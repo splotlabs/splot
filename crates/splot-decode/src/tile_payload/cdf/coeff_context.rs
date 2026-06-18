@@ -21,14 +21,17 @@
 //!   geometry, needing no `Level[]` magnitude buffer; and
 //! - the `coeff_br` coefficient base-range context ([`CoeffBrContext`]), the first
 //!   context that reads the per-transform-block `Level[]` magnitudes, over a
-//!   caller-provided level slice.
+//!   caller-provided level slice; and
+//! - the two identity-transform magnitude contexts `coeff_base_idtx`
+//!   ([`coeff_base_idtx_ctx`]) and `coeff_br_idtx` ([`coeff_br_idtx_ctx`]), which
+//!   read only the left and above `Level[]` neighbours.
 //!
-//! The remaining `Level[]`-dependent coefficient contexts (`coeff_base`, the IDTX
-//! variants) and the sign contexts (`dc_sign`, `idtx_sign`) are derived by future
-//! increments once the full per-transform-block level/sign buffers and the § 5.20
-//! coefficient decode loop exist. Nothing here is wired into a decode path yet, so
-//! it is no-output-change (the derivations are exercised by compile-time
-//! spec-contract `const` checks and unit tests, not by any decode stage).
+//! The remaining `Level[]`-dependent coefficient context (`coeff_base`) and the
+//! sign contexts (`dc_sign`, `idtx_sign`) are derived by future increments once
+//! the full per-transform-block level/sign buffers and the § 5.20 coefficient
+//! decode loop exist. Nothing here is wired into a decode path yet, so it is
+//! no-output-change (the derivations are exercised by compile-time spec-contract
+//! `const` checks and unit tests, not by any decode stage).
 
 /// AV2 § 3 `SIG_COEF_CONTEXTS_EOB`: the number of `coeff_base_eob` contexts
 /// (`03-symbols.md`); the four contexts are `SIG_COEF_CONTEXTS_EOB - 4 ..=
@@ -209,6 +212,62 @@ impl CoeffBrContext {
     }
 }
 
+/// The shared AV2 § 8.3.2 identity-transform magnitude sum: the left
+/// (`Level[row][col-1]`) and above (`Level[row-1][col]`) neighbour magnitudes,
+/// each clamped to `clamp`, over a caller-provided row-major `txw`-wide `level`
+/// slice. Geometry is saturating and the flat index is slice-bounds-guarded, so
+/// out-of-range or short-slice reads contribute `0` and the helper never panics.
+const fn idtx_neighbour_mag(level: &[u32], row: usize, col: usize, txw: usize, clamp: u32) -> u32 {
+    let mut mag = 0u32;
+    if col > 0 {
+        let flat = row.saturating_mul(txw).saturating_add(col - 1);
+        if flat < level.len() {
+            let v = level[flat];
+            mag += if v < clamp { v } else { clamp };
+        }
+    }
+    if row > 0 {
+        let flat = (row - 1).saturating_mul(txw).saturating_add(col);
+        if flat < level.len() {
+            let v = level[flat];
+            mag += if v < clamp { v } else { clamp };
+        }
+    }
+    mag
+}
+
+/// Returns the AV2 § 8.3.2 `coeff_base_idtx` CDF context — the spec `mag`, used
+/// directly as the inner index of `TileCoeffBaseIdtxCdf[Min(TX_16X16, txSzCtx)]`
+/// (`08-parsing-process.md#s-8-3-2`).
+///
+/// `mag = Min(3, Level[row][col-1]) + Min(3, Level[row-1][col])` (each neighbour
+/// included only when in range). `level` is a caller-provided row-major
+/// `txw`-wide `Level[]` slice; out-of-range or short-slice reads contribute `0`,
+/// so the function is total and never panics. The result is in `0..=6`.
+pub(crate) const fn coeff_base_idtx_ctx(
+    level: &[u32],
+    row: usize,
+    col: usize,
+    txw: usize,
+) -> usize {
+    // The base-level clamp is 3 (= COEFF_BASE_RANGE) per § 8.3.2.
+    idtx_neighbour_mag(level, row, col, txw, 3) as usize
+}
+
+/// Returns the AV2 § 8.3.2 `coeff_br_idtx` CDF context — the spec `mag`, used
+/// directly as the inner index of `TileCoeffBrIdtxCdf[Min(TX_16X16, txSzCtx)]`
+/// (`08-parsing-process.md#s-8-3-2`).
+///
+/// `mag = Min(MAX_BASE_BR_RANGE-1, Level[row][col-1]) + Min(MAX_BASE_BR_RANGE-1,
+/// Level[row-1][col])`, then `mag = Min(mag, 6)`. `level` is a caller-provided
+/// row-major `txw`-wide `Level[]` slice; out-of-range or short-slice reads
+/// contribute `0`, so the function is total and never panics. The result is in
+/// `0..=6`.
+pub(crate) const fn coeff_br_idtx_ctx(level: &[u32], row: usize, col: usize, txw: usize) -> usize {
+    let mag = idtx_neighbour_mag(level, row, col, txw, MAX_BASE_BR_RANGE - 1);
+    (if mag < 6 { mag } else { 6 }) as usize
+}
+
 // Compile-time spec-contract checks. These `const` items are the non-test
 // consumer of the context derivations until the §5.20.7.27 `coeffs()` decode
 // loop wires them: they pin the §8.3.2 contract at the four/three boundaries
@@ -253,6 +312,17 @@ const _COEFF_BR_CONTRACT: () = {
         tx_class: 2, // TX_CLASS_VERT
     };
     assert!(dc_vert.ctx(&zero) == 7);
+};
+const _COEFF_IDTX_CONTRACT: () = {
+    let zero = [0u32; 16];
+    assert!(coeff_base_idtx_ctx(&zero, 1, 1, 4) == 0);
+    assert!(coeff_br_idtx_ctx(&zero, 1, 1, 4) == 0);
+    // TX_4X4: left = Level[1][0] = 2, above = Level[0][1] = 10.
+    let lvl = [0u32, 10, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    // base: Min(3,2) + Min(3,10) = 2 + 3 = 5.
+    assert!(coeff_base_idtx_ctx(&lvl, 1, 1, 4) == 5);
+    // br: Min(5,2) + Min(5,10) = 2 + 5 = 7 -> Min(7,6) = 6.
+    assert!(coeff_br_idtx_ctx(&lvl, 1, 1, 4) == 6);
 };
 
 #[cfg(test)]
@@ -435,5 +505,47 @@ mod tests {
             tx_class: 2,
         }
         .ctx(&level);
+    }
+
+    #[test]
+    fn coeff_base_idtx_sums_clamped_left_and_above() {
+        // TX_4X4: left = Level[1][0], above = Level[0][1], each Min(3, .).
+        let mut lvl = [0u32; 16];
+        lvl[4] = 1; // (1,0) = left of (1,1)
+        lvl[1] = 9; // (0,1) = above of (1,1)
+        // Min(3,1) + Min(3,9) = 1 + 3 = 4.
+        assert_eq!(coeff_base_idtx_ctx(&lvl, 1, 1, 4), 4);
+    }
+
+    #[test]
+    fn coeff_base_idtx_skips_missing_neighbours() {
+        let lvl = [7u32; 16];
+        // (0,0): no left (col 0) and no above (row 0) -> 0.
+        assert_eq!(coeff_base_idtx_ctx(&lvl, 0, 0, 4), 0);
+        // (0,1): left = Level[0][0] = 7 -> Min(3,7) = 3; no above -> 3.
+        assert_eq!(coeff_base_idtx_ctx(&lvl, 0, 1, 4), 3);
+        // (1,0): above = Level[0][0] = 7 -> 3; no left -> 3.
+        assert_eq!(coeff_base_idtx_ctx(&lvl, 1, 0, 4), 3);
+    }
+
+    #[test]
+    fn coeff_br_idtx_clamps_to_five_then_six() {
+        let lvl = [9u32; 16];
+        // (1,1): left = Min(5,9) = 5, above = Min(5,9) = 5 -> 10 -> Min(10,6) = 6.
+        assert_eq!(coeff_br_idtx_ctx(&lvl, 1, 1, 4), 6);
+        // (0,1): only left = 5 -> Min(5,6) = 5.
+        assert_eq!(coeff_br_idtx_ctx(&lvl, 0, 1, 4), 5);
+    }
+
+    #[test]
+    fn coeff_idtx_is_total_for_short_slice_and_pathological_geometry() {
+        // Short slice: (1,1) txw 4 -> left flat 4 is past len 2 (skipped), above
+        // flat 1 is in range -> Level[1] = 3 -> base mag 3.
+        let short = [3u32, 3];
+        assert_eq!(coeff_base_idtx_ctx(&short, 1, 1, 4), 3);
+        // Pathological geometry must not panic (saturating flat index).
+        let lvl = [0u32; 4];
+        let _ = coeff_base_idtx_ctx(&lvl, usize::MAX, usize::MAX, usize::MAX);
+        let _ = coeff_br_idtx_ctx(&lvl, usize::MAX, usize::MAX, usize::MAX);
     }
 }
