@@ -9201,6 +9201,64 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-QUANT-PASS-COMPOSE"
+name = "Coefficient quant pass composition"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "5.20.7.28", "8.2.5"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs"
+openspec_change = "coeff-quant-pass-compose"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private `splot-decode` ordinary non-FSC quant-pass composition boundary for AV2 §5.20.7.27 and §5.20.7.28 after local `Level[]` values, checked scan-walk entries, sign summaries, and caller-derived `maxLevel` facts exist. `apply_nonzero_coeff_quant_pass` validates sign and max-level input counts, scan-entry identity, local level agreement, hidden-parity sign presence for `c == 0` when `sumAbs1` is nonzero, hidden-parity consistency with TCQ and lossless facts, `maxLevel - useTcq`, lossless and TCQ consistency, and local `Quant[pos]` addresses before consuming bits, then runs `read_nonzero_coeff_quants` and feeds the decoded `CoeffQuantReadInput` records into `apply_nonzero_coeff_quant_state`. Tests cover positive `read_quant` to signed `Quant[]` composition, hidden-parity composition, TCQ composition, hidden DC with zero `sumAbs1`, and bad caller facts failing before bit consumption or block mutation. This feature remains partial: the helper is not wired into runtime `coeffs()`, does not derive `maxLevel`, hidden, `sumAbs1`, `useTcq`, lossless, sign sources, CDF selectors, scan facts, transform facts, or `QuantSign[]` writes from real block syntax, and does not implement tile context writes, dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, or broad `decode_block()` / `decode_tile()` support."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_reads_quant_and_writes_signed_quant",
+    "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_applies_hidden_tcq_consistently",
+    "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_allows_hidden_dc_without_parity_sign_when_sum_abs1_zero",
+    "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_rejects_bad_facts_before_consumption",
+]
+commands = [
+    "cargo test -p splot-decode quant_pass --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/read_quant.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs",
+    "crates/splot-decode/src/tile_payload/coeff_state.rs",
+    "crates/splot-core/src/symbol.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"
 name = "Tile CDF save lifecycle boundary"
 category = "infrastructure"

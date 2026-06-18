@@ -170,16 +170,19 @@ untouched. A crate-private sign-read boundary
 entries and returns sign summaries, but still does not write `QuantSign[]` or
 `Quant[]`. A crate-private § 5.20.7.28 `read_quant` parser
 (`DECODE-COEFF-READ-QUANT-SYNTAX`) now consumes caller-resolved
-level/max-level/hidden/TCQ facts and the reached `q_length_bit`,
-`golomb_length_bit`, and `coeff_rem` literal syntax, returning quant records for
-the next coefficient phase. Those sign summaries plus `read_quant` outputs can
-now feed a crate-private ordinary non-FSC quantized-state boundary
+level, max-level, hidden, and TCQ facts plus the reached `q_length_bit`,
+`golomb_length_bit`, and `coeff_rem` literal syntax, returning quant records.
+Those sign summaries plus `read_quant` outputs can feed a crate-private
+ordinary non-FSC quantized-state boundary
 (`DECODE-COEFF-QUANT-STATE-WRITE`) that applies hidden parity, clamped
 `culLevel`, `dcCategory`, optional TCQ, sign, and signed `Quant[pos]` writes
-while preserving `QuantSign[]`. These boundaries are not wired into runtime
-`coeffs()` yet. The minimal trace uses the handoff only for the existing luma
-and V all-zero applications. Runtime nonzero coefficient blocks are still
-unsupported, and runtime `read_quant` integration remains unimplemented. The
+while preserving `QuantSign[]`. A loaded-but-unwired composition boundary
+(`DECODE-COEFF-QUANT-PASS-COMPOSE`) now preflights caller facts, runs
+`read_quant`, and feeds those decoded records into the quantized-state writer
+for the ordinary non-FSC second pass. These boundaries are not wired into
+runtime `coeffs()` yet. The minimal trace uses the handoff only for the existing
+luma and V all-zero applications. Runtime nonzero coefficient blocks and runtime
+quant-pass integration remain unsupported. The
 § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the

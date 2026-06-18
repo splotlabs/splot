@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 239 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 240 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -227,6 +227,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-COEFF-SIGN-SYMBOL-READ` | Coefficient sign symbol read | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs` |
 | `DECODE-COEFF-READ-QUANT-SYNTAX` | Coefficient read_quant syntax | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/read_quant.rs` |
 | `DECODE-COEFF-QUANT-STATE-WRITE` | Coefficient quantized state write | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs` |
+| `DECODE-COEFF-QUANT-PASS-COMPOSE` | Coefficient quant pass composition | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs` |
 | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | Tile CDF save lifecycle boundary | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/cdf/lifecycle.rs` |
 | `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY` | Tile partition symbol read boundary | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/cdf/partition_read.rs` |
 | `DECODE-TILE-PARTITION-DECISION-BOUNDARY` | Tile partition decision boundary | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/partition.rs` |
