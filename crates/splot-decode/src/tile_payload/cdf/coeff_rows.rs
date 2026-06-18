@@ -57,7 +57,8 @@ pub(crate) type CoeffBrUvCdfRows =
 pub(crate) type CoeffBrLfCdfRows =
     [[[i32; COEFF_BR_ROW_LEN]; COEFF_BR_LF_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
 
-/// Ordinary non-IDTX coefficient CDF selector.
+/// Ordinary non-IDTX coefficient CDF selector for AV2 §8.3.2 row selection
+/// over AV2 §9.3 default CDF banks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoeffCdfSelector {
     /// `TileCoeffBaseCdf[coeff_cdf_q_ctx][tx_size][ctx][tcq_ctx]`.

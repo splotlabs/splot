@@ -345,6 +345,7 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
         20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 12,
     ];
     tile.rows_mut().block.v_txb_skip[1][3] = [26_000, 14, 24];
+    tile.rows_mut().block.coeff.coeff_base[1][2][3][1] = [20_000, 21_000, 22_000, 9, 8];
 
     let mut saved = SavedCdfSubset::from_frame(&frame);
     saved.apply_completed_tile(
@@ -391,6 +392,10 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
         ]
     );
     assert_eq!(saved.rows().v_txb_skip()[1][3], [31_076, 14, 6]);
+    assert_eq!(
+        saved.rows().block.coeff.coeff_base[1][2][3][1],
+        [29_576, 29_826, 30_076, 9, 2]
+    );
 }
 
 #[test]
@@ -446,6 +451,7 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
         20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 16,
     ];
     tile.rows_mut().block.v_txb_skip[1][3] = [26_000, 14, 24];
+    tile.rows_mut().block.coeff.coeff_base[1][2][3][1] = [20_000, 21_000, 22_000, 9, 20];
 
     let mut saved = SavedCdfSubset::from_frame(&frame);
     saved.apply_completed_tile(
@@ -482,6 +488,10 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
         ]
     );
     assert_eq!(frame.rows().v_txb_skip()[1][3], [26_000, 14, 18]);
+    assert_eq!(
+        frame.rows().block.coeff.coeff_base[1][2][3][1],
+        [20_000, 21_000, 22_000, 9, 15]
+    );
 }
 
 #[test]
