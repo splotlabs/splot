@@ -29,11 +29,11 @@ const EOB_MULTISIZE_LOG2_CAP: usize = 5;
 const EOB_MULTISIZE_OFFSET: usize = 4;
 const MIN_NONZERO_EOB_PT: usize = 1;
 const MAX_NONZERO_EOB_PT: usize = 11;
-
 pub(crate) mod base_symbol;
 mod branch;
 pub(crate) use branch::{CoeffBlockEobBranchInput, read_coeff_block_eob_branch};
 pub(crate) mod level_state;
+pub(crate) mod quant_state;
 mod scan_walk;
 pub(crate) mod sign_symbol;
 /// Caller-resolved facts for luma § 8.3.2 `all_zero` context derivation.
