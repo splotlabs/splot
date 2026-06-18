@@ -74,7 +74,7 @@ thin.
 
 - Change ID: `encoder-recon-dependency`
 - Feature IDs: new `ENC-RECON-DEPENDENCY`
-- Base commit: `ed78cc66`
+- Base commit: `97f01c8a`
 - Depends on merged changes: `encoder-program-contract` through PR #236
 - Exact files/directories owned by this PR:
   - `AGENTS.md`
@@ -89,7 +89,7 @@ thin.
   - `docs/FEATURE-STATUS.md`
   - `docs/IMPLEMENTATION-MATRIX.toml`
   - `docs/SPEC-COVERAGE.md`
-  - `openspec/changes/encoder-recon-dependency/**`
+  - `openspec/changes/archive/2026-06-18-encoder-recon-dependency/**`
   - `openspec/specs/encoder-program/spec.md`
   - `openspec/specs/encoder-tools/spec.md`
   - `openspec/specs/process/spec.md`
