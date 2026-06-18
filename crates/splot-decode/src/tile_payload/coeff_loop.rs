@@ -35,6 +35,7 @@ mod branch;
 pub(crate) use branch::{CoeffBlockEobBranchInput, read_coeff_block_eob_branch};
 pub(crate) mod level_state;
 mod scan_walk;
+pub(crate) mod sign_symbol;
 /// Caller-resolved facts for luma § 8.3.2 `all_zero` context derivation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LumaAllZeroContextInput {
@@ -645,7 +646,6 @@ mod base_symbol_tests;
 mod eob_symbol_tests;
 #[cfg(test)]
 mod level_state_tests;
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

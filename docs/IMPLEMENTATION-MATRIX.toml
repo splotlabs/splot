@@ -9033,6 +9033,63 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-SIGN-SYMBOL-READ"
+name = "Coefficient sign symbol read"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "8.2.5", "8.2.6", "8.3.2", "9.3"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-6",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs"
+openspec_change = "coeff-sign-symbol-read"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private `splot-decode` sign-read boundary for the ordinary non-FSC AV2 §5.20.7.27 coefficient sign pass after nonzero EOB, checked scan walk, base-symbol reads, and local `Level[]` writes. `read_nonzero_coeff_signs` accepts caller-resolved per-entry sources for `dc_sign`, `dc_sign_horz_vert`, raw `sign_bit`, or skipped zero-level entries; validates input count, scan-entry identity, local `Level[row][col]` coordinates, and required signs for nonzero levels before consuming syntax; reads selected `TileDcSignCdf` rows through `SymbolDecoder` or one-bit literals; and returns sign summaries without writing `QuantSign[]`, `Quant[]`, tile context lines, or reconstruction state. Tests cover mixed CDF/literal/skip reads, missing required signs, scan-entry mismatch, invalid CDF selector no-consumption behavior, and input-count mismatch. This feature remains partial: the helper is not wired into runtime `coeffs()`, does not derive sign sources from real transform/block syntax, does not write `QuantSign[]` or `Quant[]`, does not implement `read_quant`, dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, or broad `decode_block()` / `decode_tile()` support."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_read_consumes_mixed_sources",
+    "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_read_rejects_missing_required_sign_before_consumption",
+    "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_read_rejects_scan_entry_mismatch_before_consumption",
+    "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_read_rejects_invalid_cdf_selector_before_symbol_read",
+    "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_read_rejects_input_count_mismatch_before_consumption",
+]
+commands = [
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs",
+    "crates/splot-decode/src/tile_payload/coeff_state.rs",
+    "crates/splot-decode/src/tile_payload/cdf/block_rows.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"
 name = "Tile CDF save lifecycle boundary"
 category = "infrastructure"
