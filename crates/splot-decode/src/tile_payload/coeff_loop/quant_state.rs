@@ -36,8 +36,6 @@ pub(crate) struct CoeffQuantStateConfig {
     pub(crate) use_tcq: bool,
     /// Whether the block is lossless.
     pub(crate) lossless: bool,
-    /// Caller-maintained `tcqState` at the start of the quant-state pass.
-    pub(crate) tcq_state: usize,
 }
 
 /// Caller-provided output of §5.20.7.28 `read_quant` for one scan entry.
@@ -218,12 +216,6 @@ pub(crate) enum CoeffQuantStateWriteError {
         /// Level carried by the sign record.
         actual: u32,
     },
-    /// The caller-provided TCQ state was outside `Tcq_Next_State`.
-    #[error("invalid coefficient quant TCQ state {tcq_state}")]
-    InvalidTcqState {
-        /// Rejected TCQ state.
-        tcq_state: usize,
-    },
     /// A quantized coefficient arithmetic operation overflowed the local type.
     #[error("coefficient quant input {index} overflowed during {operation}")]
     QuantOverflow {
@@ -245,8 +237,9 @@ pub(crate) enum CoeffQuantStateWriteError {
 /// The caller owns §5.20.7.28 `read_quant` parsing and all block facts such as
 /// parity hiding, `sumAbs1`, TCQ enablement, and lossless mode. This helper
 /// validates the checked scan walk, sign summaries, local `Level[]`, and
-/// `Quant[pos]` positions before mutation, then writes signed `Quant[pos]`
-/// values and returns the derived `culLevel`, `dcCategory`, `tcqState`, and
+/// `Quant[pos]` positions, computes all writes, then mutates `Quant[pos]`. The
+/// ordinary non-FSC branch resets `tcqState` to `0` immediately before this pass.
+/// The helper returns the derived `culLevel`, `dcCategory`, `tcqState`, and
 /// `hrLevelAvg` facts. It does not mutate `QuantSign[]`, update tile context
 /// lines, run dequantization, or invoke reconstruction.
 pub(crate) fn apply_nonzero_coeff_quant_state(
@@ -269,12 +262,6 @@ pub(crate) fn apply_nonzero_coeff_quant_state(
             entries: entries.len(),
         });
     }
-    if config.tcq_state >= TCQ_STATES {
-        return Err(CoeffQuantStateWriteError::InvalidTcqState {
-            tcq_state: config.tcq_state,
-        });
-    }
-
     let levels = preflight_quant_writes(block, entries, signs, inputs)?;
     let mut state = QuantAccumulator::new(config);
     let mut writes = Vec::new();
@@ -288,8 +275,11 @@ pub(crate) fn apply_nonzero_coeff_quant_state(
         .enumerate()
     {
         let write = state.apply(index, entry, levels[index], sign.sign(), input)?;
-        block.set_quant(entry.pos(), write.quant())?;
         writes.push(write);
+    }
+
+    for write in &writes {
+        block.set_quant(write.entry().pos(), write.quant())?;
     }
 
     Ok(NonZeroCoeffQuantState {
@@ -365,7 +355,7 @@ impl QuantAccumulator {
             lossless: config.lossless,
             cul_level: 0,
             dc_category: 0,
-            tcq_state: config.tcq_state,
+            tcq_state: 0,
             hr_level_avg: 0,
         }
     }
@@ -612,7 +602,6 @@ mod tests {
             sum_abs1: 0,
             use_tcq: false,
             lossless: false,
-            tcq_state: 0,
         }
     }
 
@@ -670,7 +659,6 @@ mod tests {
             sum_abs1: 1,
             use_tcq: true,
             lossless: false,
-            tcq_state: 2,
         };
 
         let state = apply_nonzero_coeff_quant_state(&mut block, &walk, &signs, &inputs, hidden_tcq)
@@ -682,13 +670,13 @@ mod tests {
             .find(|write| write.entry().scan_index() == 0)
             .unwrap();
         assert_eq!(dc_write.read_quant(), 1);
-        assert_eq!(dc_write.quant().unsigned_abs(), 5);
+        assert_eq!(dc_write.quant().unsigned_abs(), 6);
         assert_eq!(
             block.quant_at(dc_write.entry().pos()).unwrap(),
             dc_write.quant()
         );
         assert_eq!(state.cul_level(), 3);
-        assert_eq!(state.tcq_state(), 3);
+        assert_eq!(state.tcq_state(), 4);
         assert_eq!(state.hr_level_avg(), 40);
     }
 
