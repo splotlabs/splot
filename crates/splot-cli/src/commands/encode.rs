@@ -54,12 +54,8 @@ pub fn run(args: &EncodeArgs) -> Result<ExitCode> {
             FramePlaneInput::new(&v, 1, PlaneRect::new(0, 0, 1, 1)?),
         ),
     )?;
-    match context.send_frame(frame) {
-        Ok(()) => Ok(ExitCode::from(0)),
-        Err(error) => {
-            eprintln!("error: `splot encode` is not yet implemented ({error}).");
-            eprintln!("note: the AV2 encoder is a planned milestone.");
-            Ok(ExitCode::from(1))
-        }
-    }
+    let _ = context.send_frame(frame)?;
+    eprintln!("error: `splot encode` is not yet implemented.");
+    eprintln!("note: the AV2 encoder lifecycle exists, but no coded packet path has landed.");
+    Ok(ExitCode::from(1))
 }

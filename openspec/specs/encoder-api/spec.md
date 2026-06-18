@@ -3,11 +3,12 @@
 ## Purpose
 
 The shape of the future AV2 encoder API in `splot-encode`: bitstream-affecting
-configuration plus a push/pull `Context`. No encoding is implemented; every
-operation returns `Error::Unimplemented`.
+configuration plus a push/pull `Context`. The lifecycle state machine is
+implemented, but no coded packet production or successful public encode path is
+implemented.
 
-Tracked by Feature IDs: `ENC-Y4M-INPUT`, `ENC-SPEED-PRESETS`,
-`ENC-BITSTREAM-WRITER` (the writer this API will drive).
+Tracked by Feature IDs: `ENC-Y4M-INPUT`, `ENC-CONTEXT-STATE-MACHINE`,
+`ENC-SPEED-PRESETS`, `ENC-BITSTREAM-WRITER` (the writer this API will drive).
 ## Requirements
 ### Requirement: bitstream-affecting vs runtime configuration
 
@@ -22,13 +23,37 @@ presets) SHALL NOT live in `EncoderConfig`; they are passed to `Context::new`.
 
 ### Requirement: push/pull state machine
 
-The encoder SHALL expose `send_frame` / `receive_packet` / `flush`. Until the
-encoder is implemented, each SHALL return `Error::Unimplemented`, never a panic.
+The encoder SHALL expose `send_frame` / `receive_packet` / `flush` as a
+deterministic push/pull lifecycle. The lifecycle SHALL use explicit accepting,
+draining, finished, and failed states, SHALL return operation-specific statuses
+for normal flow control, and SHALL return typed encoder state errors for invalid
+transitions. Until a coded-frame path lands, this lifecycle SHALL NOT emit fake
+packets or report successful public bitstream production.
 
-#### Scenario: unimplemented today
+#### Scenario: receive before input needs data
 
-- **WHEN** `send_frame`, `receive_packet`, or `flush` is called
-- **THEN** `Error::Unimplemented` is returned
+- **WHEN** a newly created context receives a packet before any frame is sent
+- **THEN** `receive_packet` reports that more input is needed
+- **AND** the context remains accepting input
+
+#### Scenario: bounded send backpressure
+
+- **WHEN** callers send frames until the bounded input queue is full
+- **THEN** the frame that fills the queue is accepted
+- **AND** a later send reports queue-full backpressure without changing state
+
+#### Scenario: flush drains queued input without fake packets
+
+- **WHEN** a caller sends one or more valid frames and then flushes
+- **THEN** the context enters draining state
+- **AND** repeated `receive_packet` calls retire queued input without emitting a
+  packet until the context reports finished
+
+#### Scenario: terminal state rejects new input
+
+- **WHEN** a context is draining, finished, or failed
+- **THEN** `send_frame` fails with a typed encoder state error
+- **AND** no input frame is accepted
 
 ### Requirement: Borrowed frame input views
 
@@ -70,15 +95,36 @@ sample data.
 ### Requirement: Push/pull lifecycle remains unavailable
 
 The encoder context SHALL accept the real frame input type at the `send_frame`
-boundary, but `send_frame`, `receive_packet`, and `flush` SHALL continue to
-return `splot_core::Error::Unimplemented` until the encoder state-machine and a
-proved coded-frame path land under separate Feature IDs.
+boundary and SHALL expose a real lifecycle state machine, but `receive_packet`
+SHALL continue to return no coded packet until the encoder state-machine and a
+proved coded-frame path land under separate Feature IDs. A successful
+`send_frame` or `flush` SHALL NOT be documented as successful AV2 encoding.
 
-#### Scenario: send frame remains unimplemented
+#### Scenario: send frame is lifecycle success only
 
 - **WHEN** a caller sends a valid borrowed input frame to `Context::send_frame`
-- **THEN** the call returns `splot_core::Error::Unimplemented`
+- **THEN** the call returns an operation-specific accepted or backpressure status
 - **AND** no packet or fake encode success is produced
+
+#### Scenario: end of stream has no packet before encode core
+
+- **WHEN** all accepted input has been drained after flush
+- **THEN** `receive_packet` reports finished
+- **AND** no packet bytes are returned
+
+### Requirement: Encoder lifecycle fuzz coverage
+
+The encoder API SHALL include a bounded fuzz target for arbitrary lifecycle
+command sequences over valid borrowed frames. The target SHALL exercise send,
+receive, flush, repeated flush, backpressure, end-of-stream, and invalid-state
+paths without panicking or emitting packets before packet production is
+implemented.
+
+#### Scenario: arbitrary lifecycle commands are bounded
+
+- **WHEN** the fuzz target receives arbitrary bytes
+- **THEN** it maps them to a finite command sequence over a small valid frame
+- **AND** every command returns a typed status or typed error without panicking
 
 ### Requirement: Baseline profile public support gate
 

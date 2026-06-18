@@ -109,9 +109,10 @@ feature, this mapping must identify:
 |---|---|---|---|---|---|
 
 The table remains intentionally empty for decoder-visible encoder behavior. The
-current encoder input-view work is non-normative API plumbing tracked in
-`docs/IMPLEMENTATION-MATRIX.toml` under `ENC-Y4M-INPUT`; the first
-decoder-visible encoder feature adds the first row here.
+current encoder input-view and lifecycle work is non-normative API plumbing
+tracked in `docs/IMPLEMENTATION-MATRIX.toml` under `ENC-Y4M-INPUT` and
+`ENC-CONTEXT-STATE-MACHINE`; the first decoder-visible encoder feature adds the
+first row here.
 
 If the AV2 section or AVM oracle is unknown, use `TODO(spec: <FEATURE-ID>): <section/topic>` in code
 and keep the feature stubbed.

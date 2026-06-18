@@ -6,6 +6,7 @@
 use splot_recon::{PlaneId, PlaneSize, ReconError};
 
 use crate::config::{BitDepth, ChromaSubsampling};
+use crate::context::{EncoderOperation, EncoderState};
 
 /// An error from the splot encoder API.
 #[derive(Debug, thiserror::Error)]
@@ -76,6 +77,15 @@ pub enum Error {
         /// Underlying chroma geometry error.
         #[source]
         source: ReconError,
+    },
+
+    /// An encoder lifecycle operation is invalid in the current context state.
+    #[error("encoder operation {operation:?} is invalid while the context is {state:?}")]
+    State {
+        /// Requested operation.
+        operation: EncoderOperation,
+        /// Current context state.
+        state: EncoderState,
     },
 }
 
