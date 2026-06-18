@@ -164,10 +164,14 @@ scan-walk entries and returns decoded level-building symbols. Those decoded
 ordinary non-FSC levels can now be applied to local transform-block `Level[]`
 state (`DECODE-COEFF-LEVEL-STATE-WRITE`) after validating the read records
 against the checked scan walk, while keeping `QuantSign[]` and `Quant[]`
-untouched. Neither boundary is wired into runtime `coeffs()` yet. The minimal
+untouched. A crate-private sign-read boundary
+(`DECODE-COEFF-SIGN-SYMBOL-READ`) now consumes caller-resolved `dc_sign`,
+`dc_sign_horz_vert`, and raw `sign_bit` sources over those local `Level[]`
+entries and returns sign summaries, but still does not write `QuantSign[]` or
+`Quant[]`. Neither boundary is wired into runtime `coeffs()` yet. The minimal
 trace uses the handoff only for the existing luma and V all-zero applications.
-Runtime nonzero coefficient blocks are still unsupported, and no sign or
-`read_quant` coefficient state is written yet. The
+Runtime nonzero coefficient blocks are still unsupported, and no `read_quant`
+coefficient state is written yet. The
 § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the

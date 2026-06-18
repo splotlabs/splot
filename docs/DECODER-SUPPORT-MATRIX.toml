@@ -590,6 +590,20 @@ local_reference_evidence = []
 notes = "Adds crate-private `splot-decode` local coefficient state writes for the ordinary non-FSC AV2 §5.20.7.27 `Level[row][col] = level` step after nonzero EOB, checked scan walk, and decoded base/base-range symbol summaries. `apply_nonzero_coeff_base_levels` consumes the nonzero block start, validates read-count and scan-entry identity against the checked walk, preflights every row/column coordinate against the local `TransformCoeffBlockState`, writes decoded levels into row-major `Level[]`, and returns the updated block state with EOB facts preserved. Tests prove row-major placement, untouched `QuantSign[]` and `Quant[]`, read-count mismatch rejection, scan-entry mismatch rejection, and mismatched block/walk geometry rejection. This row remains partial: runtime `coeffs()` does not call this helper, selectors and scan tables are still caller-resolved, sign reads, nonzero `QuantSign[]` and `Quant[]`, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
 
 [[row]]
+id = "coeff-sign-symbol-read"
+name = "Coefficient sign symbol read"
+feature_id = "DECODE-COEFF-SIGN-SYMBOL-READ"
+spec_sections = ["5.20.7.27", "8.2.5", "8.2.6", "8.3.2", "9.3"]
+parser_source = "crates/splot-core/src/symbol.rs; crates/splot-core/src/tables/cdf.rs; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md; docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_read_consumes_mixed_sources", "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_read_rejects_missing_required_sign_before_consumption", "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_read_rejects_scan_entry_mismatch_before_consumption", "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_read_rejects_invalid_cdf_selector_before_symbol_read", "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_read_rejects_input_count_mismatch_before_consumption", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` sign-read sequencing for ordinary non-FSC coefficient signs after local `Level[]` values exist. `read_nonzero_coeff_signs` validates input count, checked scan-entry identity, local level coordinates, and required sign sources for nonzero levels before consuming syntax; then reads caller-resolved `dc_sign` and `dc_sign_horz_vert` rows from the existing `TileDcSignCdf` bank or one-bit `sign_bit` literals in scan-walk order, returning checked entries, local levels, raw symbols/bits, and boolean signs. Tests prove mixed CDF/literal/skip reads, invalid selector no-consumption behavior, input-count mismatch, missing required signs, and scan-entry mismatch. This row remains partial: runtime `coeffs()` does not call this helper, sign-source policy is still caller-resolved, and it does not write `QuantSign[]`, nonzero `Quant[]`, run `read_quant`, dequantize, inverse transform, residual add, reconstruct pixels, output frames, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` or `decode_tile()` support."
+
+[[row]]
 id = "tile-cdf-save-lifecycle-boundary"
 name = "Tile CDF save lifecycle boundary"
 feature_id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"
