@@ -604,6 +604,20 @@ local_reference_evidence = []
 notes = "Adds crate-private `splot-decode` sign-read sequencing for ordinary non-FSC coefficient signs after local `Level[]` values exist. `read_nonzero_coeff_signs` validates input count, checked scan-entry identity, local level coordinates, and required sign sources for nonzero levels before consuming syntax; then reads caller-resolved `dc_sign` and `dc_sign_horz_vert` rows from the existing `TileDcSignCdf` bank or one-bit `sign_bit` literals in scan-walk order, returning checked entries, local levels, raw symbols/bits, and boolean signs. Tests prove mixed CDF/literal/skip reads, invalid selector no-consumption behavior, input-count mismatch, missing required signs, and scan-entry mismatch. This row remains partial: runtime `coeffs()` does not call this helper, sign-source policy is still caller-resolved, and it does not write `QuantSign[]`, nonzero `Quant[]`, run `read_quant`, dequantize, inverse transform, residual add, reconstruct pixels, output frames, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` or `decode_tile()` support."
 
 [[row]]
+id = "coeff-quant-state-write"
+name = "Coefficient quantized state write"
+feature_id = "DECODE-COEFF-QUANT-STATE-WRITE"
+spec_sections = ["5.20.7.27", "5.20.7.28"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs::tests::coefficient_quant_state_writes_signed_quant_and_summary_state", "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs::tests::coefficient_quant_state_applies_hidden_parity_and_tcq", "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs::tests::coefficient_quant_state_preserves_quant_sign", "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs::tests::coefficient_quant_state_rejects_mismatches_before_mutation", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` local quantized-coefficient state writes for the ordinary non-FSC AV2 §5.20.7.27 pass after local levels, sign summaries, checked scan-walk entries, and caller-provided §5.20.7.28 `read_quant` outputs exist. `apply_nonzero_coeff_quant_state` validates counts, scan-entry identity, sign-entry identity, local level agreement, TCQ state bounds, and local `Quant[pos]` addresses before mutation; then applies hidden-parity, clamped `culLevel`, `dcCategory`, optional TCQ state and magnitude adjustment, sign application, and signed `Quant[pos]` writes. Tests prove positive writes and summary state, hidden-parity and TCQ adjustment, `QuantSign[]` preservation, and mismatch rejection before mutation. This row remains partial: runtime `coeffs()` does not call this helper, §5.20.7.28 `read_quant` bit parsing is not implemented, TCQ/parity/lossless/scan facts are caller-provided, `QuantSign[]` is not written, and dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
 id = "tile-cdf-save-lifecycle-boundary"
 name = "Tile CDF save lifecycle boundary"
 feature_id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"

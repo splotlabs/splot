@@ -9090,6 +9090,59 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-QUANT-STATE-WRITE"
+name = "Coefficient quantized state write"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "5.20.7.28"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs"
+openspec_change = "coeff-quant-state-write"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private `splot-decode` quantized-coefficient state boundary for the ordinary non-FSC AV2 §5.20.7.27 coefficient pass after local `Level[]` values, checked scan-walk entries, sign summaries, and caller-provided §5.20.7.28 `read_quant` outputs exist. `apply_nonzero_coeff_quant_state` validates sign and quant counts, scan-entry identity, sign-entry identity, local level agreement, TCQ state bounds, and local `Quant[pos]` addresses before mutating the block; then applies hidden-parity, clamped `culLevel`, `dcCategory`, optional TCQ state and magnitude adjustment, sign application, and signed `Quant[pos]` writes in scan-walk order. Tests cover positive quant writes and summary state, hidden parity plus TCQ adjustment, `QuantSign[]` preservation, and mismatch rejection before mutation. This feature remains partial: the helper is not wired into runtime `coeffs()`, does not parse `read_quant` syntax, does not derive TCQ/parity/lossless/scan facts from real block syntax, does not mutate `QuantSign[]`, and does not implement dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, or broad `decode_block()` / `decode_tile()` support."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs::tests::coefficient_quant_state_writes_signed_quant_and_summary_state",
+    "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs::tests::coefficient_quant_state_applies_hidden_parity_and_tcq",
+    "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs::tests::coefficient_quant_state_preserves_quant_sign",
+    "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs::tests::coefficient_quant_state_rejects_mismatches_before_mutation",
+]
+commands = [
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs",
+    "crates/splot-decode/src/tile_payload/coeff_state.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"
 name = "Tile CDF save lifecycle boundary"
 category = "infrastructure"
